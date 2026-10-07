@@ -18,15 +18,33 @@
 ### M0.2 – pixi environment and the deterministic OCCT build
 
 **Builds:**
-- A `pixi.toml` that pins the toolchain: clang 21, libc++, cmake, and ninja. On macOS, linking uses Apple's linker, because lld 21 can't read the macOS 27 SDK.
+- A `pixi.toml` that pins the toolchain: clang 21.1.8, libc++ 21.1.8 (headers and runtime), cmake, and ninja. On macOS, linking uses Apple's linker, because lld 21 can't read the macOS 27 SDK.
 - `third_party/occt/`: the pinned OCCT release (tag and sha256), the patch series, and a build script that fetches, verifies, patches, and builds OCCT's modeling modules with the recipe in ARCHITECTURE.md's *Deterministic kernel*. The `libm` math shim is part of this step.
-- pixi tasks `occt`, `build`, `test`, and `lint`.
+- pixi tasks `occt`, `build`, `test`, `lint`, `stress`, `test-guards`, and `shim-test`.
 - A separate `oracle` environment that provides FreeCAD for the oracle tests. Locally on macOS, `/Applications/FreeCAD.app` is the fallback.
 
+**As built:**
+- The libm shim is the standalone crate `third_party/occt/libm-shim/`, outside the Cargo workspace because it needs `panic = "abort"` and fat LTO. It's compiled to a single object with no undefined symbols and linked into every OCCT library as a private copy (an unexported-symbols list on macOS, a version script on Linux). Its tests check every export against known values and against the platform library (1 to 4 ulps; `atanh` up to 32 because Rust's own `atanh` is a formula). In the test build the C symbols aren't exported: otherwise the test binary's `sin` replaces the platform's, and the comparison is with itself.
+- `third_party/occt/build.sh` caches by a stamp over everything that affects the binaries: VERSION, series, patches, the script, the shim, the Rust toolchain, the clang version line, every package in the pixi environment, the SDK and linker (macOS) or libc (Linux), and the flags. It holds no absolute paths, so every checkout of a commit computes the same stamp. The checks in `third_party/occt/scripts/` run on every invocation, even when the build is up to date. Output goes to `target/occt/install/`, with `share/silico/recipe.env` describing the recipe for other worker C++.
+- The recipe adds `-fmath-errno` and `-fno-builtin-<fn>` for each inexact function in `scripts/inexact-math.txt`: without them clang folds math calls with constant arguments at build time using the build machine's math library. The same list generates the canary (54 calls, double and float). A blanket `-fno-builtin` also worked but pushed every `sqrt` and `memcpy` out of line for about 2.5% speed.
+- OCCT is built with `BUILD_RELEASE_DISABLE_EXCEPTIONS=OFF`, so its input checks throw instead of being compiled out; `check-exceptions.sh` proves it. The stress output was unchanged.
+- The recipe costs about 6% against stock conda-forge OCCT on the stress test.
+- Patches are applied with `patch --forward` and verified with `patch -R -f --dry-run`. Not `git apply`, which silently skips patches inside another repository, and not `--batch` for the check, which "assumes" a reverse patch that looks already reversed was meant forwards and so passes on unpatched source. Both traps were hit while building this step.
+- `test-guards` feeds every guard input it must reject and fails if any guard lets it through: unpatched source; plain flags and `-fmath-errno` alone; a library calling the platform's `sin`; a weak import of `sin`; a static archive and an object file; an empty directory; a TKernel calling `sin`; an OCCT with its input checks compiled out; a library exporting the shim; no libraries at all; and on Linux, `feenableexcept` outside TKernel. Negative cases must fail with the expected message, not just fail. It also checks the canary covered every listed function, and on Linux that TKernel may enable traps.
+- `recipe.env` exists only while the checks pass: every run removes it, checks against a fresh copy written from current paths, and publishes that copy on success. Moving the checkout, or a check that starts failing, can't leave a stale recipe behind.
+- The shim's `every_export_is_tested` test fails if an export is added without a test.
+- The oracle is FreeCAD 1.1.3 on **OCCT 7.9.3** from conda-forge; the local `FreeCAD.app` is FreeCAD 1.1.3 on OCCT 7.8.1. Neither matches Silico's 8.0.1, so M1.8 compares geometry within tolerance and treats a case that succeeds in one and fails in the other as a finding to triage, not an automatic failure.
+
 **Tests:**
-- On a clean checkout, `pixi run test` installs the toolchain, builds OCCT, and runs the workspace tests.
-- `occt_imports_no_platform_math`: every math function a built OCCT library imports from the system is on the exact-by-definition allowlist (`sqrt`, `floor`, `fmod`, `ldexp`, and the like). Anything else, such as `sin`, `powf`, or `__exp10`, fails. An allowlist, not a blocklist: the compiler can introduce calls nobody wrote, such as `pow(10, x)` becoming `exp10`.
-- `stress_corpus_bit_identical`: the 605-case stress test from `experiments/deterministic-kernel/` gives byte-identical output across 10 runs, and matches the committed reference output.
+Each named check below is a script in `third_party/occt/scripts/`, run by `build.sh` on every invocation and exercised against bad input by `test-guards`.
+
+- On a clean checkout, `pixi run test` installs the toolchain, builds OCCT, and runs the shim tests, the guard tests, and the workspace tests.
+- `occt_patches_applied` (`verify-patches.sh`): after patching, every patch in `series` reverse-applies cleanly (`patch -R --dry-run`), proving it's really in the source. A build that skipped a patch fails. This guards against `git apply` silently skipping patches inside another repository.
+- `occt_no_build_time_math` (`fold-canary.sh`): a constant-argument call to every function in `inexact-math.txt` (double and float), compiled with the recipe's flags, must remain a real call.
+- `occt_throws` (`check-exceptions.sh`): the built OCCT throws `Standard_Failure` on invalid input (a zero scale).
+- `occt_shim_private` (`check-shim-hidden.sh`): no OCCT library exports a shim symbol.
+- `occt_imports_no_platform_math` (`check-math-imports.sh`; only TKernel may import `feenableexcept`): every math function a built OCCT library imports from the system is on the exact-by-definition allowlist (`sqrt`, `floor`, `fmod`, `ldexp`, and the like). Anything else, such as `sin`, `powf`, or `__exp10`, fails. An allowlist, not a blocklist: the compiler can introduce calls nobody wrote, such as `pow(10, x)` becoming `exp10`.
+- `stress_corpus_bit_identical` (`pixi run stress`, `stress.sh`): the 605-case stress test from `experiments/deterministic-kernel/` gives byte-identical output across 10 runs, and matches the committed reference output.
 - `pixi run -e oracle freecadcmd -c "import Part; print(Part.OCC_VERSION)"` runs and prints the version it uses. The oracle needs only results within tolerance, so its OCCT version is recorded, not required to match.
 
 ### M0.3 – The local gate
@@ -35,7 +53,8 @@
 
 The gate checks out the branch's **committed** tree into a fresh temporary worktree, so it can't depend on uncommitted files or local leftovers. There it runs:
 - `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`;
-- `cargo nextest run`, including the oracle tests once they exist;
+- `pixi run test` (workspace tests, shim tests, guard tests), including the oracle tests once they exist;
+- `pixi run stress`, the cross-run determinism check;
 - `cargo mutants --in-diff` against `main`;
 - **forbid `unsafe` outside FFI crates:** `cargo check --workspace --all-targets` with a `RUSTC_WORKSPACE_WRAPPER` script that appends `-F unsafe_code` unless `$CARGO_PKG_NAME` is an FFI crate. A lint forbidden on the command line can't be lowered by any attribute (`allow`, `expect`, `warn`, `cfg_attr`). The wrapper applies it per crate because `RUSTFLAGS` would also hit FFI crates built as dependencies, and would replace any `rustflags` in `.cargo/config.toml`;
 - **forbid panics and platform math in non-test code:** `cargo clippy --workspace --lib --bins -- -D warnings -F clippy::unwrap_used -F clippy::expect_used -F clippy::panic -F clippy::todo -F clippy::unimplemented -F clippy::dbg_macro -F clippy::print_stdout -F clippy::print_stderr -F clippy::disallowed_methods`. Test targets aren't compiled in this pass, so test files keep their exemption. Build scripts are compiled, so `build.rs` files return `Result` from `main` and report through `cargo:warning=`, never `expect`, `panic!`, or `eprintln!`;
@@ -59,7 +78,7 @@ A pre-commit hook in `.githooks/`, installed with `pixi run install-hooks`, runs
 
 ### M0.4 – The cxx bridge
 
-**Builds:** in `silico-kernel`, a C++ shim and a `cxx` bridge. `build.rs` finds OCCT inside the pixi environment. Two functions: `make_box(dx, dy, dz) -> Result<UniquePtr<Shape>>` and `volume(&Shape) -> f64`. Every shim function catches `Standard_Failure` and `std::exception` and turns them into Rust `Err`, so no exception ever crosses the bridge.
+**Builds:** in `silico-kernel`, a C++ shim and a `cxx` bridge. `build.rs` builds the bridge with the deterministic recipe from `target/occt/install/share/silico/recipe.env`: its compiler (`SILICO_CXX`) and flags. `build.rs` also emits `cargo:rustc-link-arg=<the shim object>`, so every executable of `silico-kernel` (the worker, test binaries, benches, examples) links one copy of the shim, which covers the bridge's math and Rust's own. It never relies on OCCT's copies, which are private. Only `silico-kernel` links the bridge: other crates reach OCCT through the worker process (invariant 1), and a gate check rejects any other crate depending on `silico-kernel`'s library. `check-math-imports.sh` runs on every built `silico-kernel` executable, including the test binaries. Two functions: `make_box(dx, dy, dz) -> Result<UniquePtr<Shape>>` and `volume(&Shape) -> f64`. Every shim function catches `Standard_Failure` and `std::exception` and turns them into Rust `Err`, so no exception ever crosses the bridge.
 
 **Tests:**
 - `box_volume_is_exact`: a 10 × 20 × 30 box has volume 6000, within relative 1e-9 (analytic).
@@ -89,7 +108,7 @@ A pre-commit hook in `.githooks/`, installed with `pixi run install-hooks`, runs
 
 ### M0.7 – Worker process and client
 
-**Builds:** the `silico-kernel-worker` binary, which reads requests from stdin and writes responses to stdout, with logs on stderr. In `silico-core`, a client that spawns one worker, sends a request, and waits with a timeout. When a worker crashes or times out, the client kills it, reaps the process, and returns a structured `WorkerCrashed` or `WorkerTimeout` error. Behind a cargo feature `test-ops`, the worker has extra operations for testing: `debug_sleep`, `debug_abort`, `debug_segfault`, and `debug_garbage` (writes invalid bytes).
+**Builds:** the `silico-kernel-worker` binary, which reads requests from stdin and writes responses to stdout, with logs on stderr. At startup it disables OCCT's floating-point traps (`OSD::SetFloatingSignal(false)`) and refuses to run if any trap is enabled, and it checks again after every request. Like every `silico-kernel` executable, it links the libm shim object through `build.rs`, and `check-math-imports.sh` runs on it. In `silico-core`, a client that spawns one worker, sends a request, and waits with a timeout. When a worker crashes or times out, the client kills it, reaps the process, and returns a structured `WorkerCrashed` or `WorkerTimeout` error. Behind a cargo feature `test-ops`, the worker has extra operations for testing: `debug_sleep`, `debug_abort`, `debug_segfault`, and `debug_garbage` (writes invalid bytes).
 
 **Tests:**
 - `box_volume_through_worker`: `make_box` then `volume` through the worker returns 6000.
@@ -97,6 +116,8 @@ A pre-commit hook in `.githooks/`, installed with `pixi run install-hooks`, runs
 - `abort_becomes_error`: same, for `debug_abort`.
 - `hang_times_out`: `debug_sleep(60s)` with a 1 s timeout gives `WorkerTimeout` within 2 s, and the worker's process ID no longer exists.
 - `garbage_reply_is_error`: `debug_garbage` gives a protocol error and the worker is killed.
+- `fp_traps_off`: the worker reports no floating-point traps enabled on startup, a worker started with traps forced on refuses to run, and a request that turns traps on fails with a structured error.
+- `worker_imports_no_platform_math`: `check-math-imports.sh` passes on the built worker executable, and fails on a test build that calls the platform's `sin`.
 - `no_zombies`: after 100 crash and timeout cycles, the test process has no child processes left.
 
 ### M0.8 – Fillet and the FreeCAD oracle

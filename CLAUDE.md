@@ -51,11 +51,11 @@ Tests stand in for line-by-line human review, so they have to be able to fail.
 ## Commands
 
 ```bash
-cargo build
-cargo clippy --all-targets -- -D warnings
-cargo fmt --check
-cargo nextest run
+pixi run occt      # build OCCT with the deterministic recipe (cached; about 3 minutes when inputs change)
+pixi run test      # OCCT, then the libm shim tests, the OCCT guard tests, and cargo nextest
+pixi run lint      # fmt and clippy, including the libm shim crate
+pixi run stress    # 605-case stress test, 10 runs, byte-identical to the committed reference
 cargo mutants --in-diff <(git diff main...HEAD)
 ```
 
-`pixi run gate` (once M0.3 lands) runs every check on the committed tree and must pass before a merge. `silico check` and `silico fmt` arrive in M2.
+Run C++ builds through pixi so the pinned clang is used. `pixi run gate` (once M0.3 lands) runs every check on the committed tree and must pass before a merge. `silico check` and `silico fmt` arrive in M2.
