@@ -1,51 +1,94 @@
 ---
 name: adversarial-review
-description: Run Silico's adversarial reviewers in parallel, each in a fresh context, then have independent skeptics try to disprove every finding before reporting. Use before committing or merging agent-written code, after a porting session, or when asked for an adversarial, thorough, or pre-merge review. Pass a diff range, branch, or paths, optionally followed by lens names (port, tests, robustness, format, architecture) to run only those. With no argument it reviews the current branch plus uncommitted work and picks lenses from what changed.
+description: Convene Silico's council of adversarial reviewers (test skeptic, reliability engineer, maintainer, architect, FreeCAD porter, format steward), each in a fresh context. Have skeptics try to disprove unproven findings, fix what's confirmed, and repeat for up to three rounds until the council approves. Scales with the size of the change, from one generalist for small diffs to the full council at milestone boundaries. Use before merging agent-written code, at the end of a milestone, or when asked for an adversarial, thorough, or pre-merge review. Pass a diff range, branch, or paths. Optional flags: `--once` (one round, report only, no fixes), `--milestone` (full council), or lens names (tests, robustness, quality, architecture, port, format) to pick personas yourself.
 ---
 
 # Adversarial review
 
 **Arguments:** $ARGUMENTS
 
-You coordinate. You don't review. You probably share context with whoever wrote the code, so your own judgment of a finding counts for nothing here. Fresh reviewers find the problems and fresh skeptics decide which ones are real.
+You coordinate the council. You don't review. You probably share context with whoever wrote the code, so your own judgment of a finding counts for nothing. Fresh reviewers find problems, fresh skeptics decide which are real, and you fix what they confirm.
 
-## 1. Resolve the target
+## The council
 
-Work out the review target from the arguments. The default is `git diff main...HEAD`, plus uncommitted and untracked changes. Write it down as one exact string, such as a commit range or a path list, and pass that string to every agent unchanged. If the diff is empty, say so and stop. If the repo has no git history and no paths were given, ask for paths.
+| Lens | Persona | Runs | Model |
+|---|---|---|---|
+| `tests` | Test skeptic | always | default |
+| `robustness` | Reliability and security engineer | always | default |
+| `quality` | Maintainer | always | `sonnet` |
+| `architecture` | Architect and performance engineer | crates, `Cargo.toml`, kernel shim, workers or IPC, the recompute scheduler, rendering, hot paths, the MCP server or command API, new feature types | default |
+| `port` | FreeCAD porter | changed code has a FreeCAD counterpart | default |
+| `format` | Format steward | naming, element maps, serialization, document schema, recompute order | default |
 
-## 2. Pick lenses
+Each persona's instructions are in `.claude/skills/review-<lens>/SKILL.md`.
 
-If the user named lenses, run exactly those. Otherwise:
+## 1. Resolve the target and pick a tier
 
-| Lens | Run when |
-|---|---|
-| `tests` | always |
-| `robustness` | always |
-| `port` | changed code has a FreeCAD counterpart (sketcher, features, naming, expressions, assembly, import/export) or mentions FreeCAD |
-| `format` | changes touch naming, element maps, serialization, document schema, or recompute order |
-| `architecture` | changes touch `Cargo.toml`, crate boundaries, the C++ kernel shim, MCP tools, UI actions, or add a feature type |
+Work out the target. The default is `git diff main...HEAD`, plus uncommitted and untracked changes. Write it down as one exact string and pass it unchanged to every agent. If the diff is empty, say so and stop.
 
-## 3. Review in parallel
+| Tier | When | Review |
+|---|---|---|
+| **Small** | Under ~100 changed lines, one crate, and nothing touching the kernel shim, naming, serialization, or protected tests | One generalist reviewer, one round |
+| **Normal** | Everything else | The personas whose trigger matches, rounds until approved |
+| **Milestone** | `--milestone`, or the target is a whole milestone branch | Every persona, rounds until approved |
 
-Spawn one `general-purpose` Agent per lens, all in a single message. Use this prompt, filled in, and nothing else:
+Lens names in the arguments override the tier's selection.
 
-> You are the `<lens>` reviewer for Silico, the repository at `<repo root>`. Read `.claude/skills/review-<lens>/SKILL.md` and follow it exactly. Review target: `<target string>`. Return the report in the format it specifies.
+The **generalist** is one Agent with this prompt:
 
-Don't add your own summary of the change, what it's for, or which parts look fine. Reviewers must not inherit the author's framing.
+> Review `<target>` in the Silico repository at `<repo root>`. Read `.claude/skills/adversarial-review/reviewer-rules.md` and follow it, except that you cover every lane: correctness, test strength, robustness, and cleanliness. Report in its format.
 
-## 4. Try to disprove every finding
+## 2. Review
 
-Collect the critical, high, and medium findings. Group them by file into at most 6 batches and spawn one skeptic Agent per batch, in parallel, with `isolation: "worktree"`. Give each skeptic the findings verbatim and this prompt:
+Spawn one `general-purpose` Agent per selected persona, all in a single message. Use the model from the council table, and this prompt, filled in, and nothing else:
 
-> Try to disprove each finding below. Your worktree starts at HEAD. If the review target includes uncommitted work, first apply it: run `git -C <repo root> diff HEAD --binary | git apply`, then copy over the untracked files listed by `git -C <repo root> ls-files --others --exclude-standard`. Read the cited code yourself. If a finding includes a proof test, add it and run it. For each finding, return one verdict: CONFIRMED (reproduced, or the evidence holds up when you check it), PLAUSIBLE (consistent with the code but not proven), or REFUTED (say exactly why it's wrong). Add a short paragraph of reasoning and any test output.
+> You are the `<lens>` reviewer on Silico's council, for the repository at `<repo root>`. Read `.claude/skills/review-<lens>/SKILL.md` and follow it exactly. Review target: `<target string>`. Return the report in the format it specifies.
 
-Low findings skip this step and are reported as unverified.
+Don't add a summary of the change, its purpose, or which parts look fine. Reviewers must not inherit the author's framing, and they never see earlier rounds' reports.
 
-## 5. Report
+## 3. Verify
 
-- Rank findings by severity, CONFIRMED before PLAUSIBLE. Include the proof test for every confirmed finding.
-- List REFUTED findings at the end, one line each with the skeptic's reason, so the maintainer can check the skeptics too.
-- Merge each reviewer's "Checked and held up" list into one compact coverage section.
-- Finish with one verdict: **block**, **fix then merge**, or **clean**.
+Findings that need a skeptic are those that are critical, high, or medium **and** don't already have a proof test that ran and failed. Low findings and proven findings skip this step.
 
-Don't fix anything unless asked. If asked to fix a finding, commit its proof test to the repo first, watch it fail, then fix the code until it passes.
+Batch the findings that need a skeptic into at most 3 skeptic Agents, grouped by file, run in parallel with `isolation: "worktree"`. Give each skeptic its findings verbatim, every entry from the refuted list in the ledger, and this prompt:
+
+> Try to disprove each finding below. Your worktree starts at HEAD. If the review target includes uncommitted work, first apply it: run `git -C <repo root> diff HEAD --binary | git apply`, then copy over the untracked files listed by `git -C <repo root> ls-files --others --exclude-standard`. Read the cited code yourself. If a finding includes a proof test, add it and run it. If a finding repeats one already refuted in an earlier round, refute it again unless it brings new evidence. For each finding, return one verdict: CONFIRMED (reproduced, or the evidence holds up when you check it), PLAUSIBLE (consistent with the code but not proven), or REFUTED (say exactly why it's wrong). Add a short paragraph of reasoning and any test output.
+
+## 4. Decide
+
+The council **approves** when no CONFIRMED finding of medium or higher remains and no PLAUSIBLE finding of high or higher remains. Proven findings count as CONFIRMED.
+
+- If it approves, or the run is `--once`, go to step 6.
+- Otherwise, go to step 5.
+
+## 5. Fix, then run another round
+
+For each blocking finding, in order of severity:
+
+1. Add its proof test to the repo, or write one if it has none. Watch it fail. For a PLAUSIBLE finding, the test settles the question: if it passes, record the finding as refuted.
+2. Fix the code until the test passes, then run the full test suite.
+3. Commit on the branch as `fix(<scope>): <what the fix gains>`. The branch is squash-merged later.
+
+Then run the next round:
+- **Target:** the diff of this round's fix commits only.
+- **Personas:** those whose findings were fixed, plus `tests`.
+- Steps 2–4 again.
+
+Rounds are capped at **3**. Stop and escalate to the maintainer with the ledger when any of these happen:
+- the cap is reached without approval;
+- a finding that was already fixed comes back;
+- a fix would require changing an architecture invariant or a protected test;
+- personas disagree on a real tradeoff, such as performance against simplicity.
+
+## Ledger
+
+Keep the ledger at `/tmp/silico-review/<branch>/ledger.md`. For each round, record the target, the personas run, every finding with its verdict, and the fix commit for each fixed finding. Use it for the refuted list in step 3 and to spot findings that come back after a fix.
+
+## 6. Report
+
+- **Rounds:** how many rounds ran, which personas ran in each, and each persona's final verdict.
+- **Fixed:** each finding that was fixed, with its fix commit and proof test.
+- **Open:** low findings, and anything escalated, with the reason it was escalated.
+- **Refuted:** one line each, with the skeptic's reason, so the maintainer can check the skeptics too.
+- **Coverage:** the merged "Checked and held up" lists.
+- **Verdict:** **approved**, **approved with low findings open**, or **escalated**.

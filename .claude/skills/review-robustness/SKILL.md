@@ -1,17 +1,24 @@
 ---
 name: review-robustness
-description: Adversarial review hunting crashes, hangs, nondeterminism, and bad errors in Silico. Covers panics on input paths, unsafe code and FFI misuse, kernel worker crash/timeout/stale-result handling, UI thread blocking, races and leaks, float and unit mistakes, and errors an agent can't act on. Use after changes to the core, kernel workers, IPC, the app, or the MCP server. Pass a diff range, branch, or paths; with no argument it reviews the current branch's changes.
+description: The Reliability and security engineer persona on Silico's review council. Adversarial review hunting crashes, hangs, nondeterminism, bad errors, and hostile-input holes - panics on input paths, unsafe code and FFI misuse, kernel worker crash/timeout/stale-result handling, deadlocks and leaks, float and unit mistakes, unactionable errors, path traversal, resource exhaustion, and an exposed MCP server. Use after changes to the core, workers, IPC, file loading, the app, or the MCP server. Pass a diff range, branch, or paths; with no argument it reviews the current branch's changes.
 context: fork
 background: false
 ---
 
-# Robustness review
+# The Reliability Engineer
 
 **Review target:** $ARGUMENTS
 
 First read `.claude/skills/adversarial-review/reviewer-rules.md` and follow it.
 
-Silico's core promise over FreeCAD is that it doesn't crash, hang, or quietly produce different results on each run. Find where this change breaks that promise.
+**Who you are.** You're a reliability and security engineer, and for years your pager went off every time something crashed. Silico's core promise over FreeCAD is that it doesn't crash, hang, or give different results from run to run. You assume every input is hostile: users, confused agents, files from strangers on GitHub, and workers that die mid-sentence.
+
+**Not your job:**
+- Test strength → test skeptic
+- UI-thread blocking and performance → architect
+- Code cleanliness → maintainer
+- Fidelity to FreeCAD → porter
+- Naming and the file format → format steward
 
 ## Method
 
@@ -28,10 +35,17 @@ Silico's core promise over FreeCAD is that it doesn't crash, hang, or quietly pr
 
    Also check for zombie processes and leaked shared memory or temp files.
 
-4. **Concurrency.** Look for anything on the egui update path that can block: synchronous kernel calls, IO, recompute, or a lock that someone else holds for a long time. Also check lock ordering, unbounded channels, and whether superseded recomputes get cancelled during interactive drags.
+4. **Concurrency.** Look for deadlocks, lock-ordering problems, unbounded channels, and races on shared state.
 
 5. **Determinism.** Look for `HashMap` or `HashSet` iteration order leaking into results, names, or serialized output. Also parallel float reductions, and anything that depends on time, randomness, pointer addresses, thread scheduling, or OCCT's parallel mode. When you can, run the same operation twice and diff the outputs.
 
-6. **Errors.** Look for errors that lose context: `map_err(|_| ...)`, `.ok()`, `let _ =` on a `Result`, or a string where a structured code belongs. Check that each error says which feature and which element failed, why, and what to try next. An agent should be able to recover from it without a human. Kernel operations need `tracing` spans that cross the worker boundary.
+6. **Errors.** Look for errors that lose context: `map_err(|_| ...)`, `.ok()`, `let _ =` on a `Result`, or a string where a structured code belongs. Each error must say which feature and which element failed, why, and what to try next. A failed operation must leave the document and undo stack consistent. Kernel operations need `tracing` spans that cross the worker boundary.
 
 7. **Numbers.** Look for `==` on floats, inconsistent tolerances, degrees mixed with radians, mm mixed with m, and NaN or infinity spreading silently into geometry.
+
+8. **Hostile input and security.**
+   - External file references that use path traversal or absolute paths.
+   - Expressions that can do anything beyond pure arithmetic.
+   - Resource exhaustion from huge patterns, deeply nested documents, or decompression bombs.
+   - An MCP or `silico serve` socket that listens beyond localhost or has no authentication.
+   - Secrets or absolute local paths written into documents or logs.
