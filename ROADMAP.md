@@ -25,7 +25,7 @@ Every milestone ends with `/adversarial-review --milestone`, and the council mus
 The goal: sketch → pad/pocket → fillet/chamfer → recompute with stable names → STEP and 3MF export, all usable from both the UI and MCP.
 
 ### M0 – Foundations
-Cargo workspace. A pixi environment with OCCT 8.0.x. A local gate (`pixi run gate`) that runs fmt, clippy, nextest, mutation testing, and the `unsafe` check on the committed tree. `tracing` set up, and the structured error type.
+Cargo workspace. A pixi toolchain and a deterministic OCCT 8.0.1 build from source. A local gate (`pixi run gate`) that runs fmt, clippy, nextest, mutation testing, and the `unsafe` check on the committed tree. `tracing` set up, and the structured error type.
 
 **Done when** one end-to-end test passes: Rust sends a request to a worker process, the worker has OCCT build a box and fillet an edge, and the volume that comes back matches FreeCAD's. This proves the process boundary, the `cxx` bridge, and the OCCT build all work together.
 
@@ -37,7 +37,7 @@ Worker pool. Handling for crashes, timeouts, and restarts, and discarding of sta
 ### M2 – Document and naming
 The JSON timeline, the canonical writer, and the single parse → validate → recompute gate. DAG recompute, the per-feature cache, and fingerprints. The port of topological naming (`ElementMap` and `TopoShapeExpansion`). The CLI commands `silico check`, `silico fmt`, and `silico show`.
 
-**Done when** golden models rebuild byte-for-byte deterministically, and references survive upstream edits or fail loudly.
+**Done when** golden models save and rebuild byte-identically on every platform, and references survive upstream edits or fail loudly.
 
 ### M3 – Sketcher
 Can run in parallel with M2. PlaneGCS in a worker, sketch entities and constraints, profile-to-face conversion, and pad, pocket, and revolve driven by sketches.

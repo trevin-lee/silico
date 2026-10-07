@@ -10,7 +10,7 @@ This document records decisions. The **Invariants** section is enforced by the r
 2. **Workers are dumb.** A geometry operation goes in; a shape plus raw history (input sub-shape → output sub-shapes) comes out. Topological naming, the feature graph, recompute, caching, and error reporting all live in the Rust core.
 3. **One headless core, many clients.** The egui app, the MCP server, the CLI, and the tests all go through the same command API. Anything the UI can do, the API can do.
 4. **The UI thread never blocks** on recompute, worker calls, or IO.
-5. **Recompute is deterministic.** The same document with the same pinned kernel gives identical shapes, names, and serialized bytes.
+5. **Recompute is bit-identical on every checked platform.** The same document rebuilt by the same build of Silico's workers gives byte-identical shapes, names, and saved documents in every run and on every checked platform. Checked platforms are macOS ARM and Linux x86; a platform joins the list once it passes `cross_platform_determinism`. The *Deterministic kernel* section explains how. Any difference is a bug: a rebuild that doesn't match a stored fingerprint fails as drift and is never smoothed over.
 6. **Documents are git-native text.** The file stores the feature timeline, never B-rep. B-rep and meshes are rebuildable caches and are never committed. No LFS.
 7. **One modeling workflow.** There is no Part vs PartDesign split. Primitives, booleans, and sketch-based features are all features in one timeline, and a feature can target any body.
 8. **`unsafe` appears only in FFI crates.** No panics on paths reachable from user, agent, file, or worker input. Those return structured errors.
@@ -38,10 +38,26 @@ This document records decisions. The **Invariants** section is enforced by the r
 - **Failure handling.** Every request has a timeout. A crashed or hung worker is killed and respawned, and the request fails with a structured error naming the feature. Each request carries a document generation number, and results for superseded generations are discarded.
 - **Worker output.** Serialized B-rep (OCCT binary format), raw history maps, and tessellation when requested.
 - **Workers are Rust binaries.** They handle protocol, timeouts, and errors in Rust, and call OCCT through a thin `cxx` bridge. The C++ side only calls OCCT and returns shapes and history.
-- **OCCT 8.0.x**, the same version FreeCAD's baseline pins, so oracle tests compare like with like. It's installed from conda-forge through pixi (`pixi.toml`), never built ad hoc.
+- **OCCT 8.0.1**, built from source with the recipe below. FreeCAD's oracle uses its own OCCT build; oracle comparisons only need results within tolerance.
 - **Platforms.** macOS first; Linux and Windows come later.
-- **Checks run locally.** `pixi run gate` runs every check on the committed tree before a merge. Hosted CI waits until the repository moves to GitHub.
+- **Checks run on our own hardware.** `pixi run gate` runs every check on the committed tree before a merge, on the Mac (ARM macOS). CI runs the same script, plus heavy jobs, through GitHub Actions on a self-hosted runner on the maintainer's k3s workstation (x86-64 Linux), so a private repository uses no paid minutes. That covers both operating systems and both CPU architectures, at no cost.
 - **Headless mode.** `silico serve` runs the core without the UI, for CI and remote agents.
+
+### Deterministic kernel
+
+Stock OCCT is not deterministic. Its results differ in the last bits between CPU architectures and math libraries, and some algorithms differ between two runs on one machine because they iterate maps hashed by memory address. Silico builds all C++ that runs in workers (OCCT, the `cxx` shim, PlaneGCS, OndselSolver) so that it is:
+
+1. **From source**, at a pinned release, with Silico's patch set applied (OCCT's lives in `third_party/occt/`).
+2. **With one pinned compiler** on every platform: clang from pixi.
+3. **With `-ffp-contract=off`** and no fast-math, so the compiler never fuses or reorders floating-point operations differently per CPU. Libraries that fuse operations explicitly are configured not to: Eigen, used by PlaneGCS, is built with vectorization off (`EIGEN_DONT_VECTORIZE`).
+4. **With the platform math library replaced**: a shim backed by the Rust `libm` crate is linked into every worker library, so `sin`, `pow`, `exp10`, and the rest are the same code everywhere. A check fails the build if any worker library imports a platform math function that isn't exact by IEEE definition (`sqrt`, `floor`, `fmod`, and the like).
+5. **Single-threaded inside each worker.** Parallelism comes from the worker pool.
+
+Each component is verified with the stress-test method when it arrives: OCCT in M0.2, PlaneGCS in M3, OndselSolver with assembly.
+
+Evidence (the experiment moves into `experiments/deterministic-kernel/` with M0.2): with OCCT 8.0.1, PR #1600, and the full shim, a 605-case randomized stress test (booleans, fillets, chamfers, shells, offsets, revolves, prisms, lofts, sweeps, meshes) is bit-identical across repeated runs and between macOS ARM, macOS x86, and Linux x86 (Ryzen 9950X3D), with exactly the same failures as stock OCCT, and the import check passes on all three. In the experiment the recipe cost about 15% speed against stock OCCT. Rerun the stress test on every OCCT upgrade and every patch change.
+
+**OCCT patch policy.** Patches live in `third_party/occt/patches/`, applied in order to the pinned release. Each patch must fix determinism or a crash that Silico can't work around. Each must exist upstream as a PR or issue, and its header names it. No features. A patch is dropped once an OCCT release includes it. The first patch is upstream PR #1600, which makes arc-join offsets iterate their faces in the order they were created rather than by memory address.
 
 ## Crates (planned)
 
@@ -67,6 +83,7 @@ A `.silico` file is strict JSON describing the feature timeline. Silico rebuilds
 ```json
 {
   "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
   "features": [
     {
       "id": "k7f2qx3m", "type": "sketch", "v": 1, "name": "base", "plane": "XY",
@@ -93,15 +110,27 @@ A `.silico` file is strict JSON describing the feature timeline. Silico rebuilds
 
 - **The timeline is the array order** of `features`.
 - **IDs** are random 8-character lowercase base32, unique within the document, so parallel branches don't collide. Display names are separate and don't need to be unique.
-- **Units are fixed in the file:** millimetres and degrees. Display units are a UI setting. Expressions are strings starting with `=` (`"length": "=width * 2"`).
+- **Units** are declared in the `units` header. Version 1 accepts only millimetres at 1 nm resolution, with angles in degrees at 1 nanodegree resolution. The header exists so other scales, such as nanometre-scale documents, can be added later without breaking the format. The length unit is also the kernel's working unit, because OCCT's tolerances are absolute: a 5 nm feature in a millimetre document would be only 50× OCCT's tolerance. Display units are a UI setting. Expressions are strings starting with `=` (`"length": "=width * 2"`).
 - **Parameters** are named, typed values with units, stored at the top of the document. Expressions reference them. This is the data model only. How parameters are presented and edited (a spreadsheet, a parameter panel, inline in dimension fields) is a separate UX decision.
 - **Sketches store solved coordinates.** On load they are the solver's initial guess. If the constraints changed, for example after a hand edit, the sketch is re-solved and `silico fmt` writes the corrected coordinates back.
 - **Fingerprints** record volume, area, bounding box, and face/edge/vertex counts for each feature, much as a lockfile does. A rebuild that doesn't match its fingerprint is flagged loudly, and CI fails on drift. Fingerprints also make PR diffs meaningful.
 - **Features are versioned** with `v`. Changing a feature's behavior bumps its version. Old documents keep rebuilding with the old behavior until they're explicitly upgraded.
 - **Notes** are a data field, not comments, so they survive UI saves and are visible in the UI and through MCP.
-- **Canonical form.** Keys are written in schema order, floats as the shortest round-trip form with no `-0`, one leaf entity per line, LF line endings, and a trailing newline. `silico fmt` produces canonical form, and every save writes it.
+- **Canonical form.** Keys are written in schema order, numbers as described in *Numbers in the file*, one leaf entity per line, LF line endings, and a trailing newline. `silico fmt` produces canonical form, and every save writes it.
 - **Imported geometry** is an `import` feature that references a STEP file committed next to the document.
-- **Cache.** `.silico-cache/` stores the B-rep for each feature, keyed by a hash of the feature, its inputs, and the kernel version. It's gitignored. A fresh clone rebuilds once.
+- **Cache.** `.silico-cache/` stores the B-rep for each feature, keyed by a hash of the feature, its inputs, the kernel version, and the platform. It's gitignored. A fresh clone rebuilds once.
+
+### Numbers in the file
+
+These rules keep a document's bytes identical on every machine and make any drift visible.
+
+- **Lengths and angles are fixed-point integers:** `i64` nanometres and nanodegrees, behind `Length` and `Angle` types. They're written as plain decimals (`10.5`) and parsed straight from the decimal text, never through a float. NaN, infinity, and `-0` can't be represented, typed values are exact, and equality and hashing are exact. Values with more decimals than the resolution, and values out of range, are rejected with a structured error. Computation converts to `f64` at the boundary.
+- **Silico's own math is deterministic.** The Rust core uses a pure-Rust math library (`libm`) instead of the platform's, so expressions and other core calculations give bit-identical results everywhere. `clippy.toml` bans the platform versions (`f64::sin`, `powf`, and the like), and the gate forbids lowering that lint.
+- **Computed values are written exactly as computed.** Fingerprints are rounded to fixed precision before they're written, so diffs read `8000` rather than `7999.999999999998`. Solved sketch coordinates are written in full. Nothing is kept from a previous save to hide a difference.
+- **Drift is an error.** A rebuild whose results don't match a stored fingerprint fails `silico check` and CI, naming the feature. It's either a determinism bug or a kernel change, and both need a human to look. Kernel upgrades rebuild the golden corpus and show every fingerprint that moved, for review.
+- **Cross-platform identity is tested, not assumed.** M0.9 rebuilds the stress corpus, the golden corpus, and every oracle case on the Mac and the Linux workstation and requires bit-identical results.
+
+FreeCAD avoids this problem by storing each feature's B-rep in the file and loading it instead of recomputing. That's also what makes its files impossible to diff. It writes floats with 16 significant digits, which isn't enough for an exact round trip. Silico recomputes from text, so it needs these rules instead.
 
 **One gate for every write.** The UI, MCP, hand edits to the text, and git merges all go through the same steps: parse → validate → recompute → structured errors. Agents may edit `.silico` files directly, then run `silico check`. The app watches open files and reloads when they change on disk.
 

@@ -4,7 +4,7 @@
 
 **Exit tests:** the `kill -9` suite (M1.6) passes, every oracle case (M1.8) matches FreeCAD, the determinism sweep (M1.9) is byte-identical, and the council approves with `/adversarial-review --milestone`.
 
-**Tolerances used below:** relative 1e-9 for shapes made only of planes, relative 1e-6 for curved shapes. Tighten them if OCCT turns out to be more precise.
+**Tolerances used below:** relative 1e-9 for shapes made only of planes, relative 1e-6 for curved shapes. Tighten them if OCCT turns out to be more precise. These are for comparing against analytic values and FreeCAD. They're far too loose for cross-platform determinism, which uses the tolerance measured in M0.9.
 
 ---
 
@@ -14,7 +14,7 @@
 
 **Tests:**
 - `blob_roundtrip_preserves_shape`: serializing and deserializing leaves volume, area, topology counts, and validity unchanged.
-- `blob_hash_is_deterministic`: the same operation run 100 times, across fresh workers, gives an identical hash. If OCCT's output isn't byte-stable, hash a canonical form instead and record why in this file.
+- `blob_hash_is_deterministic`: the same operation run 100 times, across fresh workers, gives an identical hash. If it isn't, that's a determinism bug: find the cause and fix it (with an upstream issue or patch if it's in OCCT). Never hash around it.
 - `corrupt_blob_is_error`: a truncated or bit-flipped blob returns a structured error.
 - Benchmark: round-trip time for a 1,000-face shape, recorded as the baseline.
 
@@ -115,5 +115,6 @@ After each expected failure, the next valid operation on the same worker must su
 **Builds:** nothing new. Run `/break-it` on the kernel layer and the worker pool, using the catalog sections for numbers, features, workers and IPC.
 
 **Tests:**
-- `determinism_sweep`: every oracle case run twice on fresh pools gives byte-identical blobs and summaries.
+- `determinism_sweep`: every oracle case run twice on fresh pools gives byte-identical blobs and summaries. Once M0.9 lands, the same cases are bit-identical on the workstation too.
+- `scrambled_hash_sweep`: the stress corpus run on a diagnostic OCCT build whose shape hashes are deliberately scrambled. Any result that changes reveals an algorithm whose output depends on hash order. Each one found becomes an upstream issue and, if needed, a patch.
 - Every break `/break-it` finds is fixed, or recorded in this file as an accepted limitation with the reason.

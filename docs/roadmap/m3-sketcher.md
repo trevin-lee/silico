@@ -19,10 +19,10 @@
 
 | Step | Builds | Key tests |
 |---|---|---|
-| M3.1 PlaneGCS worker | PlaneGCS built through pixi, a `silico-sketch` worker with a `cxx` bridge | Solves a constrained rectangle; a solver exception becomes `Err`; the worker crash and timeout suite from M0.7, reused |
+| M3.1 PlaneGCS worker | PlaneGCS and Eigen built with the deterministic recipe (`-ffp-contract=off`, `EIGEN_DONT_VECTORIZE`, the `libm` shim), a `silico-sketch` worker with a `cxx` bridge | Solves a constrained rectangle; a solver exception becomes `Err`; the worker crash and timeout suite from M0.7, reused; the math-import allowlist check passes; a randomized sketch stress corpus is bit-identical across runs and between the Mac and the workstation |
 | M3.2 Sketch model | Points, lines, arcs, circles, ellipses, B-splines, and constraints, in the document schema | Schema round trip; constraints that reference missing geometry are rejected by the validation gate |
 | M3.3 Solving and diagnostics | Solving, degrees of freedom, and conflicting and redundant constraint reports | Ported FreeCAD solver tests; over-constrained sketches report the exact conflicting constraint IDs |
-| M3.4 Stored coordinates | Solved coordinates written to the file, re-solved on load when constraints changed | A hand edit to a constraint triggers a re-solve, and `fmt` writes back the corrected coordinates; unchanged sketches don't move by even one ULP |
+| M3.4 Stored coordinates | Solved coordinates written to the file, re-solved on load when constraints changed | A hand edit to a constraint triggers a re-solve, and `fmt` writes back the corrected coordinates; re-solving an unchanged sketch leaves the file's bytes unchanged on every checked platform |
 | M3.5 Profile to face | Port of `FaceMakerBullseye` covering nesting, holes, and islands | Ported `FaceMakerBullseye` tests; `/break-it` catalog cases for open, self-intersecting, and touching profiles |
 | M3.6 Sketch-driven features | Pad, pocket, and revolve from sketches, as timeline features | Ported `TestPad`, `TestPocket`, and `TestRevolve` cases, as oracle cases with analytic volumes |
 | M3.7 Drag latency | A benchmark of the solve round trip during a simulated drag | p50 and p99 latency recorded. If p99 exceeds the frame budget, decide between shared-memory IPC and an in-process solver, and record the decision in ARCHITECTURE.md |

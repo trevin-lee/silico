@@ -33,7 +33,7 @@ Element names are how saved documents, other features, and agents point at geome
 
 3. **Canonical output.** The same document must serialize to the same bytes on every run and every machine. Check for:
    - stable key and entry order, with no `HashMap` iteration order leaking in;
-   - deterministic float formatting: shortest round-trip, no `-0.0`/`0.0` flips, no locale effects;
+   - the rules in ARCHITECTURE.md's *Numbers in the file*: fixed-point lengths and angles parsed without going through a float, too many decimals rejected, the `units` header, quantized fingerprints, and drift treated as an error rather than smoothed over, no locale effects;
    - no timestamps, absolute paths, usernames, or machine-specific data.
 
    Test it: serialize twice and compare, then change one parameter and check that the diff is one line or close to it.

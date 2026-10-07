@@ -4,7 +4,7 @@ Silico is a parametric CAD system: a Rust core, an egui/wgpu UI, and OpenCascade
 
 **Read [ARCHITECTURE.md](ARCHITECTURE.md) before structural work.** Its invariants are non-negotiable unless the maintainer agrees to change them.
 
-**Status:** pre-code. No crates exist yet. Work starts at M0 in [ROADMAP.md](ROADMAP.md).
+**Status:** M0 (foundations) in progress; see [ROADMAP.md](ROADMAP.md). The crates are empty scaffolding.
 
 ## FreeCAD reference
 
@@ -16,7 +16,7 @@ Silico is a parametric CAD system: a Rust core, an egui/wgpu UI, and OpenCascade
 ## Writing code
 
 - No C++ in the app process. OCCT, PlaneGCS, and OndselSolver run in worker processes only.
-- `unsafe` only in FFI crates. No `unwrap`, `expect`, or `panic!` on paths reachable from user, agent, file, or worker input. Return structured errors (code, feature, element, cause, suggestion).
+- `unsafe` only in FFI crates. No `unwrap`, `expect`, or `panic!` on paths reachable from user, agent, file, or worker input. Return structured errors (code, feature, element, cause, suggestion). Workspace lints enforce this. Tests may unwrap inside `#[test]` functions and `#[cfg(test)]` modules, and integration-test files under `tests/` may allow those lints at their top. Never add lint allows anywhere else.
 - Nothing that reaches results, names, or serialized output may depend on `HashMap` order, time, randomness, or thread scheduling. Use `BTreeMap` or `IndexMap`.
 - Never block the UI thread.
 - Every capability goes through the core command API, so the UI, MCP, and CLI all reach it.
@@ -50,4 +50,12 @@ Tests stand in for line-by-line human review, so they have to be able to fail.
 
 ## Commands
 
-`pixi run gate` (once M0.3 lands) runs every check and must pass before a merge. Add build, test (`cargo nextest run`), mutation (`cargo mutants --in-diff`), and `silico check` / `silico fmt` here once the workspace exists.
+```bash
+cargo build
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
+cargo nextest run
+cargo mutants --in-diff <(git diff main...HEAD)
+```
+
+`pixi run gate` (once M0.3 lands) runs every check on the committed tree and must pass before a merge. `silico check` and `silico fmt` arrive in M2.

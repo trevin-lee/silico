@@ -8,42 +8,54 @@
 
 ### M0.1 – Workspace and lints
 
-**Builds:** a Cargo workspace with empty crates `silico-core`, `silico-protocol`, `silico-kernel`, and `silico-cli`. `rust-toolchain.toml` pins the toolchain. Shared lints live in `[workspace.lints]`: `unsafe_code = "forbid"` everywhere except `silico-kernel`, and clippy `unwrap_used`, `expect_used`, and `panic` set to deny outside tests. Also `rustfmt.toml`, and `[workspace.dependencies]` for shared versions.
+**Builds:** a Cargo workspace with empty crates `silico-core`, `silico-protocol`, `silico-kernel`, and `silico-cli`. `rust-toolchain.toml` pins the toolchain. Shared lints live in `[workspace.lints]`: `unsafe_code = "deny"`, which `silico-kernel` overrides at its crate root, and clippy `unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented`, `dbg_macro`, `print_stdout`, and `print_stderr` set to deny. `clippy.toml` still allows unwrap, expect, and panic in `#[test]` functions and `#[cfg(test)]` modules. Helpers in integration-test files (`tests/*.rs`) aren't covered by that, so those files may start with `#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]`, and only those files. `forbid` isn't usable in the workspace table, because no crate could then override it. The gaps this leaves are closed by the gate in M0.3: an `allow`, `expect`, `warn`, or `cfg_attr` lowering `unsafe_code` in a non-FFI crate, or a crate missing `[lints] workspace = true`. Also `rustfmt.toml`, and `[workspace.dependencies]` for shared versions.
 
 **Tests:**
-- `cargo build`, `cargo clippy --all-targets -- -D warnings`, and `cargo nextest run` all pass on the empty workspace.
-- Manual check, recorded in the PR: adding `unsafe {}` to `silico-core` fails to compile, and adding `.unwrap()` in non-test code fails clippy.
+- `cargo build`, `cargo clippy --all-targets -- -D warnings`, and `cargo nextest run` all pass.
+- `silico_binary_runs`: the `silico` binary starts and exits 0. It's the workspace's first real test, so `nextest` never needs `--no-tests=pass`, and the gate never uses that flag: a run that collects zero tests always fails.
+- Manual check, recorded in the merge commit: adding `unsafe {}` to `silico-core` fails to compile, and adding `.unwrap()` in non-test code fails clippy.
 
-### M0.2 – pixi environment
+### M0.2 – pixi environment and the deterministic OCCT build
 
-**Builds:** a `pixi.toml` with OCCT `>=8.0,<8.1`, cmake, and a C++ compiler toolchain, plus pixi tasks `build`, `test`, and `lint`. A separate `oracle` environment provides FreeCAD for the oracle tests, using the same OCCT minor version. Locally on macOS, `/Applications/FreeCAD.app` is the fallback.
+**Builds:**
+- A `pixi.toml` that pins the toolchain: clang 21, libc++, cmake, and ninja. On macOS, linking uses Apple's linker, because lld 21 can't read the macOS 27 SDK.
+- `third_party/occt/`: the pinned OCCT release (tag and sha256), the patch series, and a build script that fetches, verifies, patches, and builds OCCT's modeling modules with the recipe in ARCHITECTURE.md's *Deterministic kernel*. The `libm` math shim is part of this step.
+- pixi tasks `occt`, `build`, `test`, and `lint`.
+- A separate `oracle` environment that provides FreeCAD for the oracle tests. Locally on macOS, `/Applications/FreeCAD.app` is the fallback.
 
 **Tests:**
-- On a clean checkout, `pixi run test` installs everything and runs the workspace tests.
-- `pixi run -e oracle freecadcmd -c "import Part; print(Part.OCC_VERSION)"` prints `8.0.x`.
-
-**Risk:** conda-forge's FreeCAD build may not use OCCT 8.0. If it doesn't, the oracle environment pins whichever FreeCAD build matches, and this file records the decision.
+- On a clean checkout, `pixi run test` installs the toolchain, builds OCCT, and runs the workspace tests.
+- `occt_imports_no_platform_math`: every math function a built OCCT library imports from the system is on the exact-by-definition allowlist (`sqrt`, `floor`, `fmod`, `ldexp`, and the like). Anything else, such as `sin`, `powf`, or `__exp10`, fails. An allowlist, not a blocklist: the compiler can introduce calls nobody wrote, such as `pow(10, x)` becoming `exp10`.
+- `stress_corpus_bit_identical`: the 605-case stress test from `experiments/deterministic-kernel/` gives byte-identical output across 10 runs, and matches the committed reference output.
+- `pixi run -e oracle freecadcmd -c "import Part; print(Part.OCC_VERSION)"` runs and prints the version it uses. The oracle needs only results within tolerance, so its OCCT version is recorded, not required to match.
 
 ### M0.3 – The local gate
 
-**Builds:** `pixi run gate`, the check every branch must pass before it merges. Hosted CI is deferred: the repository is local-only, and the gate costs nothing to run.
+**Builds:** `pixi run gate`, the check every branch must pass before it merges. It runs on the Mac, and CI (M0.9) runs the same script on the workstation.
 
 The gate checks out the branch's **committed** tree into a fresh temporary worktree, so it can't depend on uncommitted files or local leftovers. There it runs:
 - `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`;
 - `cargo nextest run`, including the oracle tests once they exist;
 - `cargo mutants --in-diff` against `main`;
-- a check that `#[allow(unsafe_code)]` appears only in FFI crates.
+- **forbid `unsafe` outside FFI crates:** `cargo check --workspace --all-targets` with a `RUSTC_WORKSPACE_WRAPPER` script that appends `-F unsafe_code` unless `$CARGO_PKG_NAME` is an FFI crate. A lint forbidden on the command line can't be lowered by any attribute (`allow`, `expect`, `warn`, `cfg_attr`). The wrapper applies it per crate because `RUSTFLAGS` would also hit FFI crates built as dependencies, and would replace any `rustflags` in `.cargo/config.toml`;
+- **forbid panics and platform math in non-test code:** `cargo clippy --workspace --lib --bins -- -D warnings -F clippy::unwrap_used -F clippy::expect_used -F clippy::panic -F clippy::todo -F clippy::unimplemented -F clippy::dbg_macro -F clippy::print_stdout -F clippy::print_stderr -F clippy::disallowed_methods`. Test targets aren't compiled in this pass, so test files keep their exemption. Build scripts are compiled, so `build.rs` files return `Result` from `main` and report through `cargo:warning=`, never `expect`, `panic!`, or `eprintln!`;
+- **cover every configuration:** the unsafe and panic passes run twice, once as above and once with `--release --all-features`, so code behind `cfg(not(debug_assertions))` or an optional feature is checked too. A source check rejects `cfg(clippy)` and `cfg(not(clippy))`, which would hide code from clippy entirely;
+- a check that every member crate's `Cargo.toml` has `[lints] workspace = true`.
 
 A pre-commit hook in `.githooks/`, installed with `pixi run install-hooks`, runs fmt and clippy on every commit. `/adversarial-review` runs the gate first and stops if it fails.
 
-**Tests (each a manual check, recorded in the PR):**
+**Tests (each a manual check, recorded in the merge commit):**
 - The gate passes on a clean branch.
 - A deliberately failing test fails the gate.
 - Code that depends on an uncommitted file fails the gate, even though it builds in the working tree.
 - A surviving mutant fails the gate.
-- `#[allow(unsafe_code)]` added to `silico-core` fails the gate.
-
-**Later:** when the repository moves to GitHub, the gate script becomes the CI job, run on a public repo or a self-hosted runner to avoid paying for minutes.
+- Each of `#[allow(unsafe_code)]`, `#[expect(unsafe_code)]`, `#[warn(unsafe_code)]`, and `#[cfg_attr(all(), allow(unsafe_code))]` on an `unsafe` block in `silico-core` fails the gate.
+- With `silico-kernel` added as a dependency of `silico-cli`, the clean tree still passes the gate.
+- Each of `#[expect(clippy::unwrap_used)]`, `#[allow(clippy::restriction)]`, and `#[cfg_attr(all(), allow(clippy::panic))]` on non-test code in `silico-core` fails the gate.
+- A new crate without `[lints] workspace = true` fails the gate.
+- Each of these in `silico-core` fails the gate: `.unwrap()` under `#[cfg(not(debug_assertions))]`; `.unwrap()` under an optional feature; `.unwrap()` under `#[cfg(not(clippy))]`; `#[allow(clippy::disallowed_methods)]` on a function calling `x.exp()`.
+- `platform_math_banned`: calling `x.sin()`, `f64::powi(x, 2)`, or `.map(f64::tan)` in `silico-core` fails the gate. This also catches a mistyped path in `clippy.toml`, which clippy accepts silently.
+- Long tests (the stress and oracle suites) have their own longer timeout in `.config/nextest.toml`, so the 2-minute hang limit applies only to ordinary tests.
 
 ### M0.4 – The cxx bridge
 
@@ -99,3 +111,22 @@ A pre-commit hook in `.githooks/`, installed with `pixi run install-hooks`, runs
   - a valid shape.
 - `box_fillet_through_worker_matches_freecad` (**the M0 exit test**): the same operation through the worker and through FreeCAD gives the same volume and area within relative 1e-9, the same topology counts, and both shapes are valid.
 - `fillet_too_large_is_structured_error`: r = 11 on an edge whose adjacent face is 10 wide returns a `FilletFailed` error naming the edge. If FreeCAD succeeds on this input, record it as a spec question instead of asserting.
+
+### M0.9 – CI on the workstation
+
+**Lands whenever the maintainer's runner is ready. It doesn't block the M0 exit test.**
+
+**Builds:** GitHub Actions on a private GitHub repository. Jobs run only on the maintainer's self-hosted runner: the Ryzen 9950X3D k3s workstation, x86-64 Linux, using Actions Runner Controller (ARC).
+- Every job's `runs-on` targets the self-hosted runner's labels and never a GitHub-hosted runner. If the workstation is offline, jobs queue instead of spending paid minutes. GitHub fails a job that has been queued for more than 24 hours, so after a long outage those runs need a re-run.
+- The repository stays private while CI caches persist between jobs. If it ever goes public, fork pull requests must require approval before running, because they could poison the shared caches or run code on the workstation.
+- Runner pods are ephemeral, and persistent volumes cache pixi packages, the cargo registry, and compiled output (sccache).
+- On every push, the workflow runs `pixi run gate`, the same script as the local gate, plus the jobs too heavy for the laptop: full mutation testing and the oracle suite.
+- Nightly, it runs long fuzzing and the generated oracle cases.
+
+**Needs first:** the private GitHub repository and the remote. The maintainer creates these, or approves creating them.
+
+**Tests:**
+- A push to a branch triggers the gate, and its status shows on the commit.
+- A deliberately failing test fails the run.
+- No workflow job can select a GitHub-hosted runner. A check in the gate rejects any `runs-on` value without the self-hosted labels, and a workflow with `runs-on: ubuntu-latest` fails the gate (manual check).
+- `cross_platform_determinism`: the stress corpus, the golden corpus, and every oracle case are bit-identical between the Mac and the workstation: shapes, names, summaries, and saved documents. Any difference fails the run and is treated as a bug.
