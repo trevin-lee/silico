@@ -1,0 +1,10 @@
+# FreeCAD reference checkout (read-only, not part of Silico)
+/FreeCAD/
+
+# Rust
+/target/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
