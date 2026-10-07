@@ -1,0 +1,8 @@
+# A test that runs past 2 minutes is treated as hung and fails.
+[profile.default]
+slow-timeout = { period = "30s", terminate-after = 4 }
+
+# The stress and oracle suites legitimately run for minutes.
+[[profile.default.overrides]]
+filter = 'test(/stress|oracle/)'
+slow-timeout = { period = "60s", terminate-after = 10 }

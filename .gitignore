@@ -11,3 +11,9 @@
 
 # Silico rebuild cache (B-rep, meshes)
 .silico-cache/
+
+# cargo-mutants output
+/mutants.out*/
+
+# Agent worktrees created by Claude Code
+/.claude/worktrees/
