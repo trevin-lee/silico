@@ -1,0 +1,21 @@
+[package]
+name = "silico-libm-shim"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+description = "C math functions backed by the pure-Rust libm crate, linked into OCCT so results are identical on every platform."
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+# Pure-Rust port of musl's libm: the same code, and the same bits, on every CPU.
+libm = { version = "=0.2.16", default-features = false }
+
+# Built standalone (excluded from the Silico workspace) because it needs its own
+# profile: no unwinding, and one LTO'd object with no outside dependencies.
+[profile.release]
+panic = "abort"
+lto = "fat"
+codegen-units = 1

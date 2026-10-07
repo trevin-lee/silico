@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# Standalone crates with their own profiles: experiments and the OCCT math shim.
+exclude = ["experiments", "third_party"]
 
 [workspace.package]
 version = "0.0.0"

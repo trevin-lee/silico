@@ -1,0 +1,39 @@
+[workspace]
+name = "silico"
+channels = ["conda-forge"]
+platforms = ["osx-arm64", "linux-64"]
+
+# The pinned C++ toolchain. Determinism depends on every machine compiling
+# worker C++ with the same compiler (ARCHITECTURE.md, Deterministic kernel).
+[dependencies]
+clangxx = "21.1.8.*"
+# Runtime and headers pinned together: OCCT calls libc++ (std::sort, ...) at runtime.
+libcxx = "21.1.8.*"
+libcxx-devel = "21.1.8.*"
+cmake = ">=3.28,<5"
+ninja = "*"
+
+# On macOS, linking uses Apple's ld: lld 21 can't read the macOS 27 SDK.
+[target.linux-64.dependencies]
+lld = "21.*"
+
+[tasks]
+occt = { cmd = "bash third_party/occt/build.sh", description = "Fetch, verify, patch, and build OCCT with the deterministic recipe" }
+stress = { cmd = "bash third_party/occt/scripts/stress.sh", depends-on = ["occt"], description = "Run the 605-case stress test 10 times; each run must match the reference byte for byte" }
+test-guards = { cmd = "bash third_party/occt/scripts/test-guards.sh", depends-on = ["occt"], description = "Prove every OCCT build guard rejects bad input" }
+# The libm shim is outside the workspace (its own profile), so it gets its own Cargo
+# target dirs: target/libm-shim for tests and lint, target/occt/shim-target for the build.
+shim-test = { cmd = "CARGO_TARGET_DIR=target/libm-shim cargo test --manifest-path third_party/occt/libm-shim/Cargo.toml", description = "Test the libm shim against known values and the platform library" }
+build = { cmd = "cargo build --workspace", depends-on = ["occt"] }
+test = { cmd = "cargo nextest run --workspace", depends-on = ["occt", "shim-test", "test-guards"] }
+lint = "cargo fmt --check && cargo fmt --check --manifest-path third_party/occt/libm-shim/Cargo.toml && cargo clippy --workspace --all-targets -- -D warnings && CARGO_TARGET_DIR=target/libm-shim cargo clippy --manifest-path third_party/occt/libm-shim/Cargo.toml --release --all-targets -- -D warnings"
+
+# FreeCAD, for oracle tests. Its OCCT is its own; oracle comparisons use tolerances.
+[feature.oracle]
+platforms = ["osx-arm64", "linux-64"]
+
+[feature.oracle.dependencies]
+freecad = "*"
+
+[environments]
+oracle = { features = ["oracle"], no-default-feature = true }

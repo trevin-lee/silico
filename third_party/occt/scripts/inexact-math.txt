@@ -1,0 +1,41 @@
+# C math functions whose results aren't exactly specified, so platforms can disagree in
+# the last bits. The single source for:
+#   - build.sh: -fno-builtin-<name>{,f,l} for each, so clang never folds them at build time
+#   - fold-canary.sh: a constant-argument call to each (double and float) that must survive
+#
+# Format: name, arity (1 or 2), then optional flags:
+#   nocanary  no direct canary call, because <cmath> doesn't declare it. exp10 is reached
+#             through pow(10, x); sincos is formed from separate sin and cos calls.
+#
+# The libm shim exports every one of these that OCCT imports.
+sin 1
+cos 1
+tan 1
+asin 1
+acos 1
+atan 1
+atan2 2
+sinh 1
+cosh 1
+tanh 1
+asinh 1
+acosh 1
+atanh 1
+exp 1
+exp2 1
+expm1 1
+exp10 1 nocanary
+log 1
+log10 1
+log2 1
+log1p 1
+cbrt 1
+pow 2
+hypot 2
+sincos 1 nocanary
+# Not exported by the shim yet, because OCCT doesn't import them. If a library ever
+# does, check-math-imports.sh fails and the shim gains the function.
+erf 1
+erfc 1
+tgamma 1
+lgamma 1
