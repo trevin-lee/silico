@@ -8,3 +8,6 @@
 .DS_Store
 .idea/
 .vscode/
+
+# Silico rebuild cache (B-rep, meshes)
+.silico-cache/
