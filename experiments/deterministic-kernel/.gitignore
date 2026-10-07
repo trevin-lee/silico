@@ -1,0 +1,7 @@
+# Work directories created when running the experiment.
+/src/
+/envs/
+/build/
+/toolenv*/
+/results/*
+!/results/reference/

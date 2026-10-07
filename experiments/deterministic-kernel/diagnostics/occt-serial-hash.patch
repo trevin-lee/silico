@@ -1,0 +1,111 @@
+diff --git a/src/FoundationClasses/TKernel/Standard/Standard_Handle.hxx b/src/FoundationClasses/TKernel/Standard/Standard_Handle.hxx
+index 1dcd3a95..acd358a9 100644
+--- a/src/FoundationClasses/TKernel/Standard/Standard_Handle.hxx
++++ b/src/FoundationClasses/TKernel/Standard/Standard_Handle.hxx
+@@ -456,7 +456,10 @@ struct hash<Handle(TheTransientType)>
+ {
+   size_t operator()(const Handle(TheTransientType)& theHandle) const noexcept
+   {
+-    return static_cast<size_t>(reinterpret_cast<std::uintptr_t>(theHandle.get()));
++    // Silico: hash the creation serial, not the address. Unmixed on purpose: like the
++    // original identity hash of addresses, it keeps map iteration close to creation order,
++    // which some OCCT algorithms (e.g. BRepTools_Quilt) depend on.
++    return theHandle.get() == nullptr ? 0 : static_cast<size_t>(theHandle->Serial());
+   }
+ };
+ } // namespace std
+diff --git a/src/FoundationClasses/TKernel/Standard/Standard_Transient.cxx b/src/FoundationClasses/TKernel/Standard/Standard_Transient.cxx
+index 81d0591d..5bef1baf 100644
+--- a/src/FoundationClasses/TKernel/Standard/Standard_Transient.cxx
++++ b/src/FoundationClasses/TKernel/Standard/Standard_Transient.cxx
+@@ -74,3 +74,19 @@ Standard_Transient* Standard_Transient::This() const
+   }
+   return const_cast<Standard_Transient*>(this);
+ }
++
++// Silico: creation-order serial numbers for reproducible hashing.
++namespace
++{
++uint64_t THE_SERIAL_COUNTER = 0;
++}
++
++uint64_t Standard_Transient::NextSerial() noexcept
++{
++  return ++THE_SERIAL_COUNTER;
++}
++
++void Standard_Transient::SetSerialCounter(uint64_t theValue) noexcept
++{
++  THE_SERIAL_COUNTER = theValue;
++}
+diff --git a/src/FoundationClasses/TKernel/Standard/Standard_Transient.hxx b/src/FoundationClasses/TKernel/Standard/Standard_Transient.hxx
+index 87d67cf6..0a842c93 100644
+--- a/src/FoundationClasses/TKernel/Standard/Standard_Transient.hxx
++++ b/src/FoundationClasses/TKernel/Standard/Standard_Transient.hxx
+@@ -49,13 +49,15 @@ public:
+ public:
+   //! Empty constructor
+   Standard_Transient()
+-      : myRefCount_(0)
++      : myRefCount_(0),
++        mySerial_(NextSerial())
+   {
+   }
+ 
+   //! Copy constructor -- does nothing
+   Standard_Transient(const Standard_Transient&)
+-      : myRefCount_(0)
++      : myRefCount_(0),
++        mySerial_(NextSerial())
+   {
+   }
+ 
+@@ -65,6 +67,16 @@ public:
+   //! Destructor must be virtual
+   virtual ~Standard_Transient() = default;
+ 
++  //! Silico: creation-order serial number. Hashing by serial instead of by
++  //! address makes hash-map iteration order, and so results, reproducible.
++  uint64_t Serial() const noexcept { return mySerial_; }
++
++  //! Silico: returns the next serial number (single-threaded use).
++  Standard_EXPORT static uint64_t NextSerial() noexcept;
++
++  //! Silico: sets the serial counter, e.g. at the start of each kernel request.
++  Standard_EXPORT static void SetSerialCounter(uint64_t theValue) noexcept;
++
+ public:
+   //!@name Support of run-time type information (RTTI)
+ 
+@@ -138,6 +150,7 @@ private:
+   //! Note use of underscore, aimed to reduce probability
+   //! of conflict with names of members of derived classes.
+   std::atomic_int myRefCount_;
++  uint64_t        mySerial_;
+ };
+ 
+ //! Definition of opencascade::handle<Standard_Transient> as typedef for compatibility
+diff --git a/src/ModelingData/TKBRep/TopoDS/TopoDS_Shape.hxx b/src/ModelingData/TKBRep/TopoDS/TopoDS_Shape.hxx
+index b9f5da9b..f4a7c0c6 100644
+--- a/src/ModelingData/TKBRep/TopoDS/TopoDS_Shape.hxx
++++ b/src/ModelingData/TKBRep/TopoDS/TopoDS_Shape.hxx
+@@ -333,10 +333,15 @@ struct hash<TopoDS_Shape>
+ {
+   size_t operator()(const TopoDS_Shape& theShape) const noexcept
+   {
+-    const size_t aHL = std::hash<TopLoc_Location>{}(theShape.Location());
+-    return aHL == 0
+-             ? opencascade::hash(theShape.TShape().get())
+-             : opencascade::MurmurHash::hash_combine(theShape.TShape().get(), sizeof(void*), aHL);
++    // Silico: hash the TShape's creation serial, not its address.
++    const size_t   aHL = std::hash<TopLoc_Location>{}(theShape.Location());
++    const size_t   aHT = std::hash<occ::handle<TopoDS_TShape>>{}(theShape.TShape());
++    const uint64_t aS  = aHT;
++    // Located shapes hash by location only. Upstream hashes the TShape's first bytes (its
++    // vtable pointer, the same for every TShape of a type) with the location, so it never
++    // depended on which TShape it was; some algorithms rely on that.
++    (void)aS;
++    return aHL == 0 ? aHT : aHL;
+   }
+ };
+ } // namespace std
