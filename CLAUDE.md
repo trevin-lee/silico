@@ -50,4 +50,4 @@ Tests stand in for line-by-line human review, so they have to be able to fail.
 
 ## Commands
 
-None yet. Add build, test (`cargo nextest run`), mutation (`cargo mutants --in-diff`), and `silico check` / `silico fmt` here once the workspace exists.
+`pixi run gate` (once M0.3 lands) runs every check and must pass before a merge. Add build, test (`cargo nextest run`), mutation (`cargo mutants --in-diff`), and `silico check` / `silico fmt` here once the workspace exists.

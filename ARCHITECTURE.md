@@ -39,7 +39,8 @@ This document records decisions. The **Invariants** section is enforced by the r
 - **Worker output.** Serialized B-rep (OCCT binary format), raw history maps, and tessellation when requested.
 - **Workers are Rust binaries.** They handle protocol, timeouts, and errors in Rust, and call OCCT through a thin `cxx` bridge. The C++ side only calls OCCT and returns shapes and history.
 - **OCCT 8.0.x**, the same version FreeCAD's baseline pins, so oracle tests compare like with like. It's installed from conda-forge through pixi (`pixi.toml`), never built ad hoc.
-- **Platforms.** macOS first, with CI on macOS and Linux. Windows comes later.
+- **Platforms.** macOS first; Linux and Windows come later.
+- **Checks run locally.** `pixi run gate` runs every check on the committed tree before a merge. Hosted CI waits until the repository moves to GitHub.
 - **Headless mode.** `silico serve` runs the core without the UI, for CI and remote agents.
 
 ## Crates (planned)

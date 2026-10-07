@@ -4,12 +4,28 @@ The plan is to take the biggest risks first and build headless before the UI. Ag
 
 Every milestone ends with `/adversarial-review --milestone`, and the council must approve before the next milestone starts.
 
+## Detailed plans
+
+| Milestone | Plan | Status |
+|---|---|---|
+| M0 – Foundations | [docs/roadmap/m0-foundations.md](docs/roadmap/m0-foundations.md) | Detailed |
+| M1 – The kernel layer | [docs/roadmap/m1-kernel.md](docs/roadmap/m1-kernel.md) | Detailed |
+| M2 – Document and naming | [docs/roadmap/m2-document-naming.md](docs/roadmap/m2-document-naming.md) | Outline, detailed after the FreeCAD study |
+| M3 – Sketcher | [docs/roadmap/m3-sketcher.md](docs/roadmap/m3-sketcher.md) | Outline, detailed after the FreeCAD study |
+| M4, M5 | This file | Detailed when M3 ends |
+
+**How to work through a plan:**
+- **One step is one branch and one PR**, sized so the council can review it in one round.
+- **Tests come first.** A step's listed tests are its specification. Write them, watch them fail, then implement. The listed tests are the minimum; `/break-it` and the council add more.
+- **Expected values come from somewhere independent:** an analytic formula, a hand calculation, or the FreeCAD oracle. Never from the code under test.
+- **Plans are refined one milestone at a time.** Near milestones are detailed; later ones stay as outlines until what we learn earlier can shape them. When reality differs from a plan, update the plan in the same PR and say why.
+
 ## Stage 1: the vertical slice
 
 The goal: sketch → pad/pocket → fillet/chamfer → recompute with stable names → STEP and 3MF export, all usable from both the UI and MCP.
 
 ### M0 – Foundations
-Cargo workspace. A pixi environment with OCCT 8.0.x. CI on macOS and Linux running fmt, clippy, nextest, a check that `unsafe` stays in FFI crates, and mutation testing on PRs. `tracing` set up, and the structured error type.
+Cargo workspace. A pixi environment with OCCT 8.0.x. A local gate (`pixi run gate`) that runs fmt, clippy, nextest, mutation testing, and the `unsafe` check on the committed tree. `tracing` set up, and the structured error type.
 
 **Done when** one end-to-end test passes: Rust sends a request to a worker process, the worker has OCCT build a box and fillet an edge, and the volume that comes back matches FreeCAD's. This proves the process boundary, the `cxx` bridge, and the OCCT build all work together.
 
