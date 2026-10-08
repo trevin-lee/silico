@@ -4,7 +4,7 @@ Silico is a parametric CAD system: a Rust core, an egui/wgpu UI, and OpenCascade
 
 **Read [ARCHITECTURE.md](ARCHITECTURE.md) before structural work.** Its invariants are non-negotiable unless the maintainer agrees to change them.
 
-**Status:** M0 (foundations) in progress; see [ROADMAP.md](ROADMAP.md). The crates are empty scaffolding.
+**Status:** M0 (foundations) in progress; see [ROADMAP.md](ROADMAP.md). `silico-kernel` has the OCCT bridge (M0.4); the other crates are scaffolding.
 
 ## FreeCAD reference
 

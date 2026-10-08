@@ -1,0 +1,10 @@
+# Every C++ file in the build, including the cxx crate's own runtime, is compiled by the
+# pinned clang against the pinned libc++ (pixi.toml). Mixing in the system compiler, or
+# libstdc++ on Linux, would put two C++ standard libraries in one process. force: these
+# win over the shell's own CXX, CXXFLAGS, and CXXSTDLIB; silico-kernel's build.rs rejects
+# any other C++ compiler variable the cc crate reads (CXXFLAGS_<target> and the like).
+# silico-kernel's build.rs adds the deterministic recipe's flags on top for its own code.
+[env]
+CXX = { value = ".pixi/envs/default/bin/clang++", relative = true, force = true }
+CXXFLAGS = { value = "-stdlib=libc++", force = true }
+CXXSTDLIB = { value = "c++", force = true }

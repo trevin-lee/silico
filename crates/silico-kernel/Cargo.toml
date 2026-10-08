@@ -6,5 +6,19 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# Operations that exist only to test the bridge. This crate's own tests turn it on
+# (the dev-dependency on itself below); nothing else should.
+test_ops = []
+
+[dependencies]
+cxx.workspace = true
+
+[dev-dependencies]
+silico-kernel = { path = ".", features = ["test_ops"] }
+
+[build-dependencies]
+cxx-build.workspace = true
+
 [lints]
 workspace = true
