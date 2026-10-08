@@ -464,3 +464,39 @@ fn a_fillet_is_byte_for_byte_deterministic() {
     let c = fillet_brep(&mut w, &[1, 2], 1.5);
     assert!(a.as_bytes() == b.as_bytes() && b.as_bytes() == c.as_bytes());
 }
+
+#[test]
+fn a_mesh_through_the_worker_matches_one_made_here() {
+    let mut w = worker();
+    let brep = fillet_brep(&mut w, &[1], 2.0);
+    let there = match w
+        .call(
+            1,
+            Op::Tessellate {
+                shape: brep.clone(),
+                deflection: 0.05,
+            },
+            TIMEOUT,
+        )
+        .unwrap()
+    {
+        Reply::Mesh(mesh) => mesh,
+        other => panic!("{other:?}"),
+    };
+    let here = silico_kernel::tessellate(&silico_kernel::from_brep(brep.as_bytes()).unwrap(), 0.05)
+        .unwrap();
+    assert_eq!(there, here);
+    assert!(there.validate().is_ok());
+    // Bad requests come back as invalid input, and the worker carries on.
+    for (shape, deflection) in [
+        (brep.clone(), 0.0),
+        (brep.clone(), 1e-9),
+        (Blob::inline(b"not a shape".to_vec()), 0.05),
+    ] {
+        let err = w
+            .call(1, Op::Tessellate { shape, deflection }, TIMEOUT)
+            .unwrap_err();
+        assert_eq!(err.code(), ErrorCode::InvalidInput, "{deflection}: {err}");
+    }
+    assert!(!w.is_stopped());
+}

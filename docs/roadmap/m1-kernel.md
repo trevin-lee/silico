@@ -93,7 +93,9 @@ After each expected failure, the next valid operation on the same worker must su
 
 ### M1.7 – Tessellation and the Rerun debug viewer
 
-**Builds:** a `tessellate(shape, deflection)` operation. It returns positions, normals, triangle indices, the face index of every triangle (used later for picking), and edges as polylines. A `silico-debug` crate logs shapes to Rerun from tests and scripts.
+**Already built in M0** (see m0-foundations.md, Debug viewer): `Op::Tessellate { shape, deflection }` replying `silico_protocol::Mesh` (positions, outward triangles, triangles per face, and a polyline per edge numbered as `Op::Fillet` numbers them), a deflection floor relative to the shape's size, and `silico-view`, which builds parts through a worker and logs them to Rerun (`pixi run view`, or `--save` to a recording).
+
+**Builds:** extends that mesh rather than adding a second one: per-vertex normals from the surfaces (so the viewer stops estimating them from triangles), and the face index of every triangle, derived from the per-face counts (used later for picking). `silico-view` gains a library half that tests and scripts call to log a shape, instead of a separate `silico-debug` crate.
 
 **Tests:**
 - `box_mesh`: 12 triangles, every face index from 0 to 5 present, and all vertices inside the bounding box.

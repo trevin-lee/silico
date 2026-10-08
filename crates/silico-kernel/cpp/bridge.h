@@ -13,6 +13,7 @@
 #include <exception>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "rust/cxx.h"
 
@@ -57,6 +58,38 @@ ShapeSummary summarize(const Shape &shape);
 
 // The number of distinct edges, which TopExp::MapShapes numbers from 1.
 uint32_t edge_count(const Shape &shape);
+
+// A triangle mesh of a shape's faces and polylines along its edges, for display. Faces
+// and edges are in TopExp::MapShapes order (edges numbered as fillet's). Built whole in
+// C++ and read from Rust as slices, so each array crosses the bridge in one copy.
+class Tessellation {
+public:
+  std::vector<double> positions_;        // x, y, z per vertex
+  std::vector<uint32_t> triangles_;      // three vertex indices per triangle, outward
+  std::vector<uint32_t> face_triangles_; // triangles per face
+  std::vector<double> edge_points_;      // x, y, z per polyline point, edge after edge
+  std::vector<uint32_t> edge_points_per_edge_;
+
+  rust::Slice<const double> positions() const { return {positions_.data(), positions_.size()}; }
+  rust::Slice<const uint32_t> triangles() const { return {triangles_.data(), triangles_.size()}; }
+  rust::Slice<const uint32_t> face_triangles() const {
+    return {face_triangles_.data(), face_triangles_.size()};
+  }
+  rust::Slice<const double> edge_points() const {
+    return {edge_points_.data(), edge_points_.size()};
+  }
+  rust::Slice<const uint32_t> edge_points_per_edge() const {
+    return {edge_points_per_edge_.data(), edge_points_per_edge_.size()};
+  }
+};
+
+// The length of the shape's bounding box diagonal (0 for an empty shape).
+double bounding_diagonal(const Shape &shape);
+
+// Meshes a copy of the shape with OCCT's mesher, single-threaded so the mesh is
+// deterministic. The shape itself is left exactly as it was.
+// `deflection` is the largest distance allowed between the mesh and the surface.
+std::unique_ptr<Tessellation> tessellate(const Shape &shape, double deflection);
 
 // Rounds the given edges (numbered as edge_count's) with a constant radius.
 std::unique_ptr<Shape> fillet(const Shape &shape, rust::Slice<const uint32_t> edges,

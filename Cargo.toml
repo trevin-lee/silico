@@ -27,6 +27,8 @@ command-fds = "0.3"
 socket2 = "0.6"
 crc32fast = "1.4"
 libc = "0.2"
+# Debug views of geometry until the app exists: the logging SDK only, not the viewer.
+rerun = { version = "=0.38.1", default-features = false, features = ["sdk"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 

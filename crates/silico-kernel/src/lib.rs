@@ -50,6 +50,15 @@ mod ffi {
         fn summarize(shape: &Shape) -> Result<ShapeSummary>;
         fn edge_count(shape: &Shape) -> Result<u32>;
         fn fillet(shape: &Shape, edges: &[u32], radius: f64) -> Result<UniquePtr<Shape>>;
+
+        type Tessellation;
+        fn bounding_diagonal(shape: &Shape) -> Result<f64>;
+        fn tessellate(shape: &Shape, deflection: f64) -> Result<UniquePtr<Tessellation>>;
+        fn positions(self: &Tessellation) -> &[f64];
+        fn triangles(self: &Tessellation) -> &[u32];
+        fn face_triangles(self: &Tessellation) -> &[u32];
+        fn edge_points(self: &Tessellation) -> &[f64];
+        fn edge_points_per_edge(self: &Tessellation) -> &[u32];
         fn shape_to_brep(shape: &Shape) -> Result<UniquePtr<CxxString>>;
         fn shape_from_brep(brep: &[u8]) -> Result<UniquePtr<Shape>>;
         fn fp_trap_mask() -> u32;
@@ -71,6 +80,7 @@ mod ffi {
 }
 
 pub use ffi::{MassProperties, Point3, ShapeSummary};
+pub use silico_protocol::Mesh;
 
 pub mod worker;
 
@@ -270,6 +280,58 @@ pub fn fillet(shape: &Shape, edges: &[u32], radius: f64) -> Result<Shape, Kernel
         return Err(KernelError::new("OCCT returned no shape"));
     }
     Ok(Shape(rounded))
+}
+
+/// The smallest mesh deflection allowed, as a fraction of the shape's size. Finer meshes
+/// cost far more than they're worth for display: every tenth of the deflection is about
+/// ten times the triangles and seventy times the time.
+pub const MIN_RELATIVE_DEFLECTION: f64 = 1e-4;
+
+/// Meshes `shape` for display, with no point of the mesh further than `deflection` from
+/// the surface. Single-threaded, so the same shape always gives the same mesh, and it
+/// leaves the shape as it was (OCCT would otherwise keep the mesh on it). Faces and edges
+/// are in OCCT's order; `edges[0]` is Edge1, as [`fillet`] numbers them.
+pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
+    if !(deflection.is_finite() && deflection > 0.0) {
+        return Err(KernelError::invalid_input(format!(
+            "mesh deflection must be a positive, finite length, got {deflection}"
+        )));
+    }
+    let inner = shape.get()?;
+    let floor = (ffi::bounding_diagonal(inner)? * MIN_RELATIVE_DEFLECTION).max(1e-7);
+    if deflection < floor {
+        return Err(KernelError::invalid_input(format!(
+            "mesh deflection {deflection} is too fine for this shape: use at least {floor}"
+        )));
+    }
+    let raw = ffi::tessellate(inner, deflection)?;
+    let raw = raw
+        .as_ref()
+        .ok_or_else(|| KernelError::new("OCCT returned no mesh"))?;
+    let triples = |values: &[f64]| -> Vec<[f64; 3]> {
+        values.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect()
+    };
+    let mut edges = Vec::new();
+    let mut points = raw.edge_points().chunks_exact(3);
+    for &count in raw.edge_points_per_edge() {
+        edges.push(
+            points
+                .by_ref()
+                .take(count as usize)
+                .map(|p| [p[0], p[1], p[2]])
+                .collect(),
+        );
+    }
+    Ok(Mesh {
+        positions: triples(raw.positions()),
+        triangles: raw
+            .triangles()
+            .chunks_exact(3)
+            .map(|t| [t[0], t[1], t[2]])
+            .collect(),
+        face_triangles: raw.face_triangles().to_vec(),
+        edges,
+    })
 }
 
 /// The volume of a solid (from [`mass_properties`]).

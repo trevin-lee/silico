@@ -58,6 +58,11 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
                 brep: Blob::inline(brep),
             })
         }
+        Op::Tessellate { shape, deflection } => {
+            let shape = crate::from_brep(shape.as_bytes()).map_err(failure)?;
+            let mesh = crate::tessellate(&shape, deflection).map_err(failure)?;
+            Ok(Reply::Mesh(mesh))
+        }
         Op::Echo { data } => Ok(Reply::Echo { data }),
         Op::DebugSleep { .. }
         | Op::DebugAbort

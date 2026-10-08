@@ -192,6 +192,23 @@ A pre-commit hook in `.githooks/`, installed with `pixi run install-hooks`, runs
 - Checked by breaking it: edge numbers off by one, the radius off by 1e-6 (caught by the analytic test alone, at relative 1e-12), validity always true (`test_ops::open_box`, a box with a face missing, must summarize as invalid), the validity refusal removed, the failing edge left unnamed, and the first of several edges blamed. Each fails a test. A fillet is also byte-for-byte deterministic across workers and repeats.
 - Found along the way: OCCT aborts the process on some corrupted B-reps even when their checksum is made to match, which is what running it in a worker is for: in a worker, that's a `worker_crashed` error, not a crashed app.
 
+### Debug viewer (added during M0)
+
+**Builds:** a way to see what the kernel builds before the app exists (ROADMAP.md: "tests and agents log geometry to Rerun as a debug viewer").
+- `Op::Tessellate { shape, deflection }` replies `Reply::Mesh`: triangles wound outward, triangles per face, and a polyline along each edge, edges numbered as `Op::Fillet` numbers them. Meshing is OCCT's `BRepMesh_IncrementalMesh`, single-threaded so a shape always gives the same mesh, run on a copy of the shape: meshing changes the shape it meshes (OCCT stores the mesh on it and updates edge flags, which changes its B-rep bytes), and B-reps are written without meshes. A deflection below 1e-4 of the shape's diagonal is refused (each tenth of the deflection costs about ten times the triangles and seventy times the time: 1e-5 on a filleted box took 48 s), and a face that fails to mesh is an error rather than a hole. The bridge returns the mesh as an opaque C++ object whose arrays Rust copies once each, into `silico_protocol::Mesh`, which `Mesh::validate` checks before anything indexes it.
+- `silico-view` (a binary crate, no C++) builds a box, the box with Edge1 filleted at r = 2, and the box with every edge filleted at r = 1, through a real worker, and logs each to Rerun: shaded faces, every edge labelled `Edge1`, `Edge2`, ..., and a summary (volume, area, topology, validity). `pixi run view` runs it with the Rerun viewer pinned in the pixi `viewer` environment (`rerun-sdk` 0.38.1, matching the `rerun` crate, logging SDK only). `--save <file.rrd>` writes a recording instead.
+
+**Tests:**
+- `a_box_mesh_is_closed_and_faces_outward`: the box mesh's enclosed volume (divergence theorem, about a point inside the box) is 6000 and its area 2200, both within relative 1e-12 (flat faces mesh exactly). About an interior point every outward triangle adds volume, so a missing or flipped one changes the result; about the origin, the faces on planes through it would add nothing either way (a review found that version couldn't fail).
+- `edges_are_numbered_as_the_fillet_numbers_them`: Edge1's polyline runs between (0, 0, 30) and (0, 0, 0), FreeCAD's Edge1.
+- `a_filleted_box_mesh_approximates_the_solid`: the mesh of the r = 2 fillet encloses slightly less than the analytic volume, by no more than the deflection allows.
+- `a_mesh_is_the_same_every_time` (two separately built shapes; OCCT keeps a shape's mesh, so meshing one twice would prove nothing), and a bad deflection is `invalid_input`.
+- `meshing_leaves_the_shape_as_it_was`: a shape's B-rep, a later fillet of it, and a coarse mesh after a fine one are all as if it had never been meshed. A deflection too fine for the shape is refused.
+- Through the worker, a mesh equals one made in-process, and a bad deflection or corrupted B-rep is `invalid_input`. `Mesh::validate` rejects an index past the vertices, per-face counts that don't add up, and coordinates that aren't finite.
+- `silico-view` saves a recording end to end through a real worker; its edge labels are tested in a pure function (Edge1 on the right polyline, degenerate edges skipped); a path it can't write or a viewer it can't start is `invalid_input`, and `--help` prints usage.
+
+**Notes:** The Rerun viewer collects anonymous usage analytics by default; `rerun analytics disable` turns them off (the `rerun` crate is built without its analytics feature). One of Rerun's dependencies (`webpki-roots`) is licensed CDLA-Permissive-2.0, allowed in `deny.toml`, and one (`paste`) carries an "unmaintained" advisory, recorded as accepted there. The `rerun` crate adds about 470 packages to the workspace build.
+
 ### M0.9 – CI on the workstation
 
 **Lands whenever the maintainer's runner is ready. It doesn't block the M0 exit test.**

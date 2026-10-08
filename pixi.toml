@@ -35,6 +35,8 @@ shim-test = { cmd = "CARGO_TARGET_DIR=target/libm-shim cargo test --manifest-pat
 build = { cmd = "cargo build --workspace", depends-on = ["occt"] }
 # FreeCAD for the oracle tests (M0.8 on), installed on first use.
 install-oracle = { cmd = "pixi install -e oracle", description = "Install the FreeCAD oracle environment" }
+install-viewer = { cmd = "pixi install -e viewer", description = "Install the Rerun viewer" }
+view = { cmd = "cargo build -p silico-kernel --bin silico-kernel-worker && cargo run -p silico-view -- --viewer .pixi/envs/viewer/bin/rerun", depends-on = ["occt", "install-viewer"], description = "Show the M0 parts in the Rerun viewer" }
 test = { cmd = "cargo nextest run --workspace", depends-on = ["occt", "install-oracle", "shim-test", "test-guards", "test-cache"] }
 # Every check on the committed tree; must pass before a merge.
 gate = { cmd = "bash scripts/gate.sh", description = "Run every check on the committed tree" }
@@ -47,5 +49,13 @@ platforms = ["osx-arm64", "linux-64"]
 [feature.oracle.dependencies]
 freecad = "*"
 
+# The Rerun viewer, for silico-view (pixi run view). Same version as the rerun crate.
+[feature.viewer]
+platforms = ["osx-arm64", "linux-64"]
+
+[feature.viewer.dependencies]
+rerun-sdk = "==0.38.1"
+
 [environments]
 oracle = { features = ["oracle"], no-default-feature = true }
+viewer = { features = ["viewer"], no-default-feature = true }

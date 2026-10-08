@@ -58,6 +58,7 @@ pixi run test      # OCCT, then the libm shim tests, the OCCT guard and cache te
 pixi run lint      # fmt and clippy, including the libm shim crate
 pixi run stress    # 605-case stress test, 10 runs, byte-identical to the committed reference
 pixi run gate      # every check on the committed tree: workspace lints, cargo-deny, lint, test, one stress run
+pixi run view      # the M0 parts (box, fillets) in the Rerun viewer, edges labelled Edge1, Edge2, ...
 cargo mutants --in-diff <(git diff main...HEAD)
 ```
 

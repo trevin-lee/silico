@@ -75,6 +75,7 @@ Evidence, in `tests/determinism/`: with OCCT 8.0.1, PR #1600, and the full shim,
 | `silico-mcp` | MCP server client, including the perception tools |
 | `silico-cli` | `check`, `fmt`, `show`, `export`, `serve`, CI commands |
 | `silico-oracle` | Differential test harness against FreeCAD |
+| `silico-view` | Debug views of geometry in the Rerun viewer, until the app exists (`pixi run view`) |
 
 `silico-core` must never depend on egui, wgpu, or any client crate.
 

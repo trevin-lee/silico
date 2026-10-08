@@ -1,7 +1,15 @@
 #include "silico-kernel/cpp/bridge.h"
 #include "silico-kernel/src/lib.rs.h"
 
+#include <BRepAdaptor_Curve.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <BRepMesh_IncrementalMesh.hxx>
+#include <BRepBndLib.hxx>
+#include <BRepBuilderAPI_Copy.hxx>
+#include <BRep_Tool.hxx>
+#include <Bnd_Box.hxx>
+#include <GCPnts_TangentialDeflection.hxx>
+#include <Poly_Triangulation.hxx>
 #include <BRep_Builder.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
@@ -20,6 +28,7 @@
 #include <TopoDS_Solid.hxx>
 #include <gp_Pnt.hxx>
 
+#include <cmath>
 #include <csignal>
 #include <sstream>
 #include <stdexcept>
@@ -70,6 +79,80 @@ ShapeSummary summarize(const Shape &shape) {
                       BRepCheck_Analyzer(shape.shape).IsValid()};
 }
 
+double bounding_diagonal(const Shape &shape) {
+  Bnd_Box box;
+  BRepBndLib::Add(shape.shape, box);
+  return box.IsVoid() ? 0.0 : std::sqrt(box.SquareExtent());
+}
+
+std::unique_ptr<Tessellation> tessellate(const Shape &shape, double deflection) {
+  // Mesh a copy. Meshing changes the shape it meshes: OCCT stores the mesh on it (where
+  // later meshing would reuse it) and updates edge flags, which changes the shape's B-rep
+  // bytes. The copy shares the geometry but not the topology those live on.
+  const TopoDS_Shape copy = BRepBuilderAPI_Copy(shape.shape, false, false).Shape();
+  // isRelative = false, angular deflection 0.5 rad, isInParallel = false (deterministic).
+  BRepMesh_IncrementalMesh mesher(copy, deflection, false, 0.5, false);
+  if (!mesher.IsDone()) {
+    throw Standard_Failure("the shape couldn't be meshed");
+  }
+  auto out = std::make_unique<Tessellation>();
+  int unmeshed = 0;
+
+  ShapeMap faces;
+  TopExp::MapShapes(copy, TopAbs_FACE, faces);
+  for (int i = 1; i <= faces.Extent(); ++i) {
+    const TopoDS_Face face = TopoDS::Face(faces(i));
+    TopLoc_Location location;
+    const Handle(Poly_Triangulation) mesh = BRep_Tool::Triangulation(face, location);
+    if (mesh.IsNull()) {
+      ++unmeshed;
+      continue;
+    }
+    const gp_Trsf transform = location.Transformation();
+    const uint32_t base = static_cast<uint32_t>(out->positions_.size() / 3);
+    for (int n = 1; n <= mesh->NbNodes(); ++n) {
+      const gp_Pnt p = mesh->Node(n).Transformed(transform);
+      out->positions_.insert(out->positions_.end(), {p.X(), p.Y(), p.Z()});
+    }
+    // A reversed face's triangles wind the other way, so they still face outward.
+    const bool reversed = face.Orientation() == TopAbs_REVERSED;
+    for (int t = 1; t <= mesh->NbTriangles(); ++t) {
+      int a, b, c;
+      mesh->Triangle(t).Get(a, b, c);
+      if (reversed) {
+        std::swap(b, c);
+      }
+      out->triangles_.insert(out->triangles_.end(),
+                             {base + static_cast<uint32_t>(a - 1),
+                              base + static_cast<uint32_t>(b - 1),
+                              base + static_cast<uint32_t>(c - 1)});
+    }
+    out->face_triangles_.push_back(static_cast<uint32_t>(mesh->NbTriangles()));
+  }
+
+  ShapeMap edges;
+  TopExp::MapShapes(copy, TopAbs_EDGE, edges);
+  for (int i = 1; i <= edges.Extent(); ++i) {
+    const TopoDS_Edge edge = TopoDS::Edge(edges(i));
+    if (BRep_Tool::Degenerated(edge)) {
+      out->edge_points_per_edge_.push_back(0);
+      continue;
+    }
+    const BRepAdaptor_Curve curve(edge);
+    const GCPnts_TangentialDeflection points(curve, 0.5, deflection);
+    for (int k = 1; k <= points.NbPoints(); ++k) {
+      const gp_Pnt p = points.Value(k);
+      out->edge_points_.insert(out->edge_points_.end(), {p.X(), p.Y(), p.Z()});
+    }
+    out->edge_points_per_edge_.push_back(static_cast<uint32_t>(points.NbPoints()));
+  }
+  if (unmeshed > 0) {
+    // A display with holes in it would be worse than an error.
+    throw Standard_Failure((std::to_string(unmeshed) + " faces couldn't be meshed").c_str());
+  }
+  return out;
+}
+
 uint32_t edge_count(const Shape &shape) { return count_distinct(shape.shape, TopAbs_EDGE); }
 
 std::unique_ptr<Shape> fillet(const Shape &shape, rust::Slice<const uint32_t> edges,
@@ -108,7 +191,8 @@ std::unique_ptr<Shape> fillet(const Shape &shape, rust::Slice<const uint32_t> ed
 // about 16 times more).
 std::unique_ptr<std::string> shape_to_brep(const Shape &shape) {
   std::ostringstream out(std::ios::binary);
-  BinTools::Write(shape.shape, out);
+  // Without triangulations: a mesh made for display must never change a shape's bytes.
+  BinTools::Write(shape.shape, out, false, false, BinTools_FormatVersion_CURRENT);
   if (!out) {
     throw Standard_Failure("writing the B-rep failed");
   }

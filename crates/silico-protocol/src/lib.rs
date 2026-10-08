@@ -49,6 +49,9 @@ pub enum Op {
         edges: Vec<u32>,
         radius: f64,
     },
+    /// A triangle mesh of a shape for display, no further than `deflection` from its
+    /// surface. Replies with [`Reply::Mesh`].
+    Tessellate { shape: Blob, deflection: f64 },
     /// Sends `data` straight back as [`Reply::Echo`]: a health check, and the cheapest
     /// round trip, which the IPC benchmark measures.
     Echo { data: Blob },
@@ -75,6 +78,7 @@ impl Op {
             Op::MakeBox { .. } => "MakeBox",
             Op::Summarize { .. } => "Summarize",
             Op::Fillet { .. } => "Fillet",
+            Op::Tessellate { .. } => "Tessellate",
             Op::Echo { .. } => "Echo",
             Op::DebugSleep { .. } => "DebugSleep",
             Op::DebugAbort => "DebugAbort",
@@ -102,6 +106,7 @@ pub enum Reply {
         brep: Blob,
     },
     Summary(ShapeSummary),
+    Mesh(Mesh),
     Echo {
         data: Blob,
     },
@@ -120,6 +125,53 @@ pub struct ShapeSummary {
     pub vertices: u32,
     /// Whether OCCT's `BRepCheck_Analyzer` finds the shape valid.
     pub valid: bool,
+}
+
+/// A triangle mesh of a shape's faces, and polylines along its edges, for display.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Mesh {
+    pub positions: Vec<[f64; 3]>,
+    /// Vertex indices, three per triangle, wound counterclockwise seen from outside.
+    pub triangles: Vec<[u32; 3]>,
+    /// How many triangles belong to each face, in OCCT's face order.
+    pub face_triangles: Vec<u32>,
+    /// A polyline along each edge: `edges[0]` is `Edge1`, as [`Op::Fillet`] numbers them.
+    pub edges: Vec<Vec<[f64; 3]>>,
+}
+
+impl Mesh {
+    /// Checks that the mesh is consistent: every index names a vertex, the per-face counts
+    /// add up to the triangles, and every coordinate is finite. Run it before indexing a
+    /// mesh that came from another process.
+    pub fn validate(&self) -> Result<(), String> {
+        let vertices = self.positions.len();
+        if let Some(t) = self
+            .triangles
+            .iter()
+            .find(|t| t.iter().any(|&i| i as usize >= vertices))
+        {
+            return Err(format!(
+                "triangle {t:?} names a vertex past the {vertices} there are"
+            ));
+        }
+        let counted: u64 = self.face_triangles.iter().map(|&n| u64::from(n)).sum();
+        if counted != self.triangles.len() as u64 {
+            return Err(format!(
+                "faces account for {counted} triangles, but there are {}",
+                self.triangles.len()
+            ));
+        }
+        let finite = |p: &[f64; 3]| p.iter().all(|c| c.is_finite());
+        if !self
+            .positions
+            .iter()
+            .chain(self.edges.iter().flatten())
+            .all(finite)
+        {
+            return Err("a coordinate isn't finite".to_owned());
+        }
+        Ok(())
+    }
 }
 
 /// An operation the worker refused or that failed. The core turns this into a structured

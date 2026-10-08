@@ -27,6 +27,9 @@ allow = [
     # Silico's own crates.
     "GPL-3.0-or-later",
     "CC0-1.0",
+    # A permissive data license: webpki-roots (Mozilla's list of certificate authorities),
+    # used by Rerun's network code (silico-view only).
+    "CDLA-Permissive-2.0",
     "ISC",
     "MIT",
     "MPL-2.0",
@@ -39,3 +42,9 @@ confidence-threshold = 0.9
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+
+[advisories]
+# Not run by the gate yet (it needs the network); recorded for when it is.
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained, not vulnerable; it comes in through the rerun crate (silico-view only)" },
+]

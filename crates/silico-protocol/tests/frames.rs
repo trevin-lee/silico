@@ -4,7 +4,7 @@
 
 use proptest::prelude::*;
 use silico_protocol::{
-    Blob, Failure, FailureKind, FrameError, FrameReader, MAX_FRAME_LEN, Op, Reply, Request,
+    Blob, Failure, FailureKind, FrameError, FrameReader, MAX_FRAME_LEN, Mesh, Op, Reply, Request,
     Response, ShapeSummary, write_message,
 };
 
@@ -26,6 +26,10 @@ fn every_op() -> Vec<Op> {
             edges: vec![1, 3],
             radius: 2.5,
         },
+        Op::Tessellate {
+            shape: Blob::inline(vec![3]),
+            deflection: 0.01,
+        },
         Op::Echo {
             data: Blob::inline(vec![9; 3]),
         },
@@ -42,16 +46,17 @@ fn every_op() -> Vec<Op> {
             Op::MakeBox { .. } => 0,
             Op::Summarize { .. } => 1,
             Op::Fillet { .. } => 2,
-            Op::Echo { .. } => 3,
-            Op::DebugSleep { .. } => 4,
-            Op::DebugAbort => 5,
-            Op::DebugSegfault => 6,
-            Op::DebugGarbage => 7,
-            Op::DebugEnableFpTraps => 8,
-            Op::DebugReplyOutOfTurn { .. } => 9,
+            Op::Tessellate { .. } => 3,
+            Op::Echo { .. } => 4,
+            Op::DebugSleep { .. } => 5,
+            Op::DebugAbort => 6,
+            Op::DebugSegfault => 7,
+            Op::DebugGarbage => 8,
+            Op::DebugEnableFpTraps => 9,
+            Op::DebugReplyOutOfTurn { .. } => 10,
         })
         .collect();
-    assert_eq!(indices, (0..10).collect(), "an operation has no case");
+    assert_eq!(indices, (0..11).collect(), "an operation has no case");
     ops
 }
 
@@ -73,6 +78,12 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         Ok(Reply::Echo {
             data: Blob::inline(vec![]),
         }),
+        Ok(Reply::Mesh(Mesh {
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            triangles: vec![[0, 1, 2]],
+            face_triangles: vec![1],
+            edges: vec![vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], vec![]],
+        })),
         Ok(Reply::Done),
         Err(Failure {
             kind: FailureKind::InvalidInput,
@@ -100,19 +111,20 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         .map(|result| match result {
             Ok(Reply::Shape { .. }) => 0,
             Ok(Reply::Summary(_)) => 1,
-            Ok(Reply::Echo { .. }) => 2,
-            Ok(Reply::Done) => 3,
+            Ok(Reply::Mesh(_)) => 2,
+            Ok(Reply::Echo { .. }) => 3,
+            Ok(Reply::Done) => 4,
             Err(Failure { kind, .. }) => match kind {
-                FailureKind::InvalidInput => 4,
-                FailureKind::KernelFailed => 5,
-                FailureKind::UnknownOp => 6,
-                FailureKind::Internal => 7,
+                FailureKind::InvalidInput => 5,
+                FailureKind::KernelFailed => 6,
+                FailureKind::UnknownOp => 7,
+                FailureKind::Internal => 8,
             },
         })
         .collect();
     assert_eq!(
         indices,
-        (0..8).collect(),
+        (0..9).collect(),
         "a reply or failure kind has no case"
     );
     results
@@ -171,7 +183,7 @@ fn roundtrip_every_op() {
 #[test]
 fn frame_layout_is_length_then_payload() {
     // A 4-byte little-endian length, then postcard: Request { id: 1, generation: 2,
-    // trace: 3, op: DebugAbort } is the varints 1, 2, and 3, then variant index 5. (Both ends ship
+    // trace: 3, op: DebugAbort } is the varints 1, 2, and 3, then variant index 6. (Both ends ship
     // together, so indices may shift when operations are added.)
     let bytes = frame_of(&Request {
         id: 1,
@@ -179,7 +191,7 @@ fn frame_layout_is_length_then_payload() {
         trace: 3,
         op: Op::DebugAbort,
     });
-    assert_eq!(bytes, [4, 0, 0, 0, 1, 2, 3, 5]);
+    assert_eq!(bytes, [4, 0, 0, 0, 1, 2, 3, 6]);
 }
 
 #[test]
@@ -458,6 +470,7 @@ fn every_op_has_its_own_name() {
             "MakeBox",
             "Summarize",
             "Fillet",
+            "Tessellate",
             "Echo",
             "DebugSleep",
             "DebugAbort",
@@ -467,4 +480,27 @@ fn every_op_has_its_own_name() {
             "DebugReplyOutOfTurn"
         ]
     );
+}
+
+#[test]
+fn a_mesh_is_validated_before_use() {
+    let good = Mesh {
+        positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        triangles: vec![[0, 1, 2]],
+        face_triangles: vec![1],
+        edges: vec![vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]],
+    };
+    assert_eq!(good.validate(), Ok(()));
+    let mut bad_index = good.clone();
+    bad_index.triangles = vec![[0, 1, 3]];
+    assert!(bad_index.validate().unwrap_err().contains("past the 3"));
+    let mut bad_counts = good.clone();
+    bad_counts.face_triangles = vec![2];
+    assert!(bad_counts.validate().unwrap_err().contains("account for 2"));
+    let mut not_finite = good.clone();
+    not_finite.edges[0][1][2] = f64::NAN;
+    assert!(not_finite.validate().unwrap_err().contains("finite"));
+    let mut huge_counts = good;
+    huge_counts.face_triangles = vec![u32::MAX, u32::MAX];
+    assert!(huge_counts.validate().is_err());
 }
