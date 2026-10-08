@@ -28,7 +28,7 @@ Silico is a parametric CAD system: a Rust core, an egui/wgpu UI, and OpenCascade
 Tests stand in for line-by-line human review, so they have to be able to fail.
 
 - Every behavior change comes with tests whose expected values come from an independent source: an analytic result, a hand calculation, or FreeCAD as an oracle.
-- Never weaken, delete, or `#[ignore]` a test to get to green. `tests/oracle/` and `tests/golden/` are protected: stop and ask before changing anything there.
+- Never weaken, delete, or `#[ignore]` a test to get to green. `tests/oracle/`, `tests/golden/`, and every crate's `tests/contract/` (the JSON shapes agents rely on) are protected: stop and ask before changing anything there.
 - After implementing or porting something, run `/break-it` on it.
 - Before merging, run `/adversarial-review`. It fixes confirmed findings and repeats rounds until the council approves, or it escalates to the maintainer. At the end of a milestone, run it with `--milestone`.
 

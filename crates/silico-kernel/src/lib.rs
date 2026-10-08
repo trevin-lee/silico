@@ -48,7 +48,9 @@ mod ffi {
 pub use ffi::{MassProperties, Point3};
 
 /// An operation OCCT refused or failed, with OCCT's own message (for example
-/// `Standard_DomainError: ...`). M0.5 replaces this with the structured error type.
+/// `Standard_DomainError: ...`). It stays inside the worker: the worker reports it as a
+/// protocol `Failure`, and the core turns that into its structured `Error`
+/// (`kernel_failed`, with this message as the cause), adding the feature it knows about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KernelError {
     message: String,

@@ -17,6 +17,10 @@ silico-protocol = { path = "crates/silico-protocol" }
 silico-kernel = { path = "crates/silico-kernel" }
 cxx = "1.0"
 cxx-build = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [workspace.lints.rust]
 # `unsafe` is allowed only in FFI crates, which opt out at the crate root.

@@ -10,5 +10,12 @@ publish.workspace = true
 name = "silico"
 path = "src/main.rs"
 
+[dependencies]
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
 [lints]
 workspace = true

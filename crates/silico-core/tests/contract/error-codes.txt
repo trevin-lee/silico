@@ -1,0 +1,8 @@
+# Every error code and its string form, in declaration order. Agents match on these
+# strings, so a code is never renamed or removed; new codes are appended.
+invalid_input
+kernel_failed
+worker_crashed
+worker_timeout
+protocol_error
+internal

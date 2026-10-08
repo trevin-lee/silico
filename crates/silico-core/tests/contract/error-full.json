@@ -1,0 +1,12 @@
+{
+  "code": "kernel_failed",
+  "message": "fillet failed",
+  "feature": "Fillet1",
+  "element": "Edge3",
+  "cause": "StdFail_NotDone: BRepFilletAPI_MakeFillet",
+  "suggestion": "reduce the radius below 5 mm",
+  "candidates": [
+    "Edge2",
+    "Edge4"
+  ]
+}
