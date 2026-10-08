@@ -7,7 +7,7 @@ set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 occt=$root/target/occt/install
 # shellcheck disable=SC1090
-. "${SILICO_RECIPE:-$occt/share/silico/recipe.env}"
+. "${SILICO_RECIPE:-$root/target/occt/recipe.env}"
 first=${1:-$occt/lib}
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT

@@ -25,7 +25,7 @@ mkdir -p "$work"
 
 # Build with the same recipe as OCCT.
 # shellcheck disable=SC1091
-. "$occt/share/silico/recipe.env"
+. "$root/target/occt/recipe.env"
 
 libs=(TKernel TKMath TKG2d TKG3d TKGeomBase TKGeomAlgo TKBRep TKTopAlgo TKPrim TKBO TKBool TKFillet TKOffset TKMesh TKShHealing)
 clang++ -std=c++17 -O2 $SILICO_CXXFLAGS $SILICO_LDFLAGS \

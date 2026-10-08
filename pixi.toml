@@ -12,20 +12,26 @@ libcxx = "21.1.8.*"
 libcxx-devel = "21.1.8.*"
 cmake = ">=3.28,<5"
 ninja = "*"
+# flock for the shared OCCT build cache (macOS has no flock command).
+perl = "5.*"
 
 # On macOS, linking uses Apple's ld: lld 21 can't read the macOS 27 SDK.
 [target.linux-64.dependencies]
 lld = "21.*"
+# Rewrites OCCT's library search path so a cached build is shared between checkouts.
+patchelf = "*"
 
 [tasks]
 occt = { cmd = "bash third_party/occt/build.sh", description = "Fetch, verify, patch, and build OCCT with the deterministic recipe" }
 stress = { cmd = "bash third_party/occt/scripts/stress.sh", depends-on = ["occt"], description = "Run the 605-case stress test 10 times; each run must match the reference byte for byte" }
 test-guards = { cmd = "bash third_party/occt/scripts/test-guards.sh", depends-on = ["occt"], description = "Prove every OCCT build guard rejects bad input" }
+test-cache = { cmd = "bash third_party/occt/scripts/test-cache.sh", description = "Prove the shared OCCT build cache keeps, replaces, and removes entries as documented" }
 # The libm shim is outside the workspace (its own profile), so it gets its own Cargo
-# target dirs: target/libm-shim for tests and lint, target/occt/shim-target for the build.
+# target dir, target/libm-shim, for tests and lint. The OCCT build compiles it in a
+# temporary directory inside the shared build cache.
 shim-test = { cmd = "CARGO_TARGET_DIR=target/libm-shim cargo test --manifest-path third_party/occt/libm-shim/Cargo.toml", description = "Test the libm shim against known values and the platform library" }
 build = { cmd = "cargo build --workspace", depends-on = ["occt"] }
-test = { cmd = "cargo nextest run --workspace", depends-on = ["occt", "shim-test", "test-guards"] }
+test = { cmd = "cargo nextest run --workspace", depends-on = ["occt", "shim-test", "test-guards", "test-cache"] }
 lint = "cargo fmt --check && cargo fmt --check --manifest-path third_party/occt/libm-shim/Cargo.toml && cargo clippy --workspace --all-targets -- -D warnings && CARGO_TARGET_DIR=target/libm-shim cargo clippy --manifest-path third_party/occt/libm-shim/Cargo.toml --release --all-targets -- -D warnings"
 
 # FreeCAD, for oracle tests. Its OCCT is its own; oracle comparisons use tolerances.

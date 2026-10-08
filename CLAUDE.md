@@ -51,8 +51,10 @@ Tests stand in for line-by-line human review, so they have to be able to fail.
 ## Commands
 
 ```bash
-pixi run occt      # build OCCT with the deterministic recipe (cached; about 3 minutes when inputs change)
-pixi run test      # OCCT, then the libm shim tests, the OCCT guard tests, and cargo nextest
+pixi run occt      # build OCCT with the deterministic recipe (about 3 minutes when inputs change;
+                   # builds are shared between checkouts in ~/.cache/silico/occt, or $XDG_CACHE_HOME/silico/occt
+                   # or $SILICO_OCCT_CACHE if set; delete it to start fresh)
+pixi run test      # OCCT, then the libm shim tests, the OCCT guard and cache tests, and cargo nextest
 pixi run lint      # fmt and clippy, including the libm shim crate
 pixi run stress    # 605-case stress test, 10 runs, byte-identical to the committed reference
 cargo mutants --in-diff <(git diff main...HEAD)

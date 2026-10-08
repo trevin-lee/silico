@@ -8,9 +8,9 @@ pixi run test-guards   # prove each check rejects bad input
 pixi run stress        # 605-case stress test, byte-identical to the reference
 ```
 
-- [build.sh](build.sh): fetch, verify, patch, build, check, and write `recipe.env` for other worker C++.
+- [build.sh](build.sh): fetch, verify, patch, build, check, and write `target/occt/recipe.env` for other worker C++. Builds are shared between checkouts through a cache keyed by the build's inputs (`~/.cache/silico/occt`, or under `$XDG_CACHE_HOME` or `$SILICO_OCCT_CACHE`); delete it to start fresh. [scripts/cache.sh](scripts/cache.sh) describes how entries are kept.
 - [libm-shim/](libm-shim/): the platform math library replacement, backed by Rust's `libm`.
-- [scripts/](scripts/): `inexact-math.txt` (the function list behind the no-folding flags and the canary), `fold-canary.sh`, `verify-patches.sh`, `check-math-imports.sh`, `check-shim-hidden.sh`, `check-exceptions.sh`, `test-guards.sh`, and `stress.sh`.
+- [scripts/](scripts/): `inexact-math.txt` (the function list behind the no-folding flags and the canary), `fold-canary.sh`, `verify-patches.sh`, `check-math-imports.sh`, `check-shim-hidden.sh`, `check-exceptions.sh`, `check-relocatable.sh`, `cache.sh` (publishing, using, and pruning shared builds, under one lock), `older-layouts.sh`, `platform.sh` (commands that differ between macOS and Linux, shared by several scripts), `test-guards.sh` and `test-cache.sh` (with shared helpers in `test-lib.sh`), and `stress.sh`.
 
 ## Patch policy
 
