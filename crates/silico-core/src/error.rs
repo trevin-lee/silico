@@ -63,9 +63,13 @@ impl fmt::Display for ErrorCode {
     }
 }
 
-/// A structured error. Build one with [`Error::new`] and the `with_*` methods.
+/// A structured error. Build one with [`Error::new`] and the `with_*` methods. Boxed, so
+/// a `Result` carrying one stays small.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Error(Box<Fields>);
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Error {
+struct Fields {
     code: ErrorCode,
     message: String,
     feature: Option<String>,
@@ -78,7 +82,7 @@ pub struct Error {
 impl Error {
     /// An error with a code and a one-line message saying what went wrong.
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
-        Self {
+        Self(Box::new(Fields {
             code,
             message: message.into(),
             feature: None,
@@ -86,34 +90,34 @@ impl Error {
             cause: None,
             suggestion: None,
             candidates: Vec::new(),
-        }
+        }))
     }
 
     /// The feature the error is about, by name.
     #[must_use]
     pub fn with_feature(mut self, feature: impl Into<String>) -> Self {
-        self.feature = Some(feature.into());
+        self.0.feature = Some(feature.into());
         self
     }
 
     /// The sub-element (face, edge, vertex, sketch entity) the error is about.
     #[must_use]
     pub fn with_element(mut self, element: impl Into<String>) -> Self {
-        self.element = Some(element.into());
+        self.0.element = Some(element.into());
         self
     }
 
     /// The underlying cause, such as the kernel's own message.
     #[must_use]
     pub fn with_cause(mut self, cause: impl Into<String>) -> Self {
-        self.cause = Some(cause.into());
+        self.0.cause = Some(cause.into());
         self
     }
 
     /// What the user or agent could do about it.
     #[must_use]
     pub fn with_suggestion(mut self, suggestion: impl Into<String>) -> Self {
-        self.suggestion = Some(suggestion.into());
+        self.0.suggestion = Some(suggestion.into());
         self
     }
 
@@ -124,36 +128,36 @@ impl Error {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.candidates = candidates.into_iter().map(Into::into).collect();
+        self.0.candidates = candidates.into_iter().map(Into::into).collect();
         self
     }
 
     pub fn code(&self) -> ErrorCode {
-        self.code
+        self.0.code
     }
 
     pub fn message(&self) -> &str {
-        &self.message
+        &self.0.message
     }
 
     pub fn feature(&self) -> Option<&str> {
-        self.feature.as_deref()
+        self.0.feature.as_deref()
     }
 
     pub fn element(&self) -> Option<&str> {
-        self.element.as_deref()
+        self.0.element.as_deref()
     }
 
     pub fn cause(&self) -> Option<&str> {
-        self.cause.as_deref()
+        self.0.cause.as_deref()
     }
 
     pub fn suggestion(&self) -> Option<&str> {
-        self.suggestion.as_deref()
+        self.0.suggestion.as_deref()
     }
 
     pub fn candidates(&self) -> &[String] {
-        &self.candidates
+        &self.0.candidates
     }
 }
 
@@ -161,8 +165,8 @@ impl Error {
 /// leaving out whatever is absent.
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.code, self.message)?;
-        match (&self.feature, &self.element) {
+        write!(f, "{}: {}", self.0.code, self.0.message)?;
+        match (&self.0.feature, &self.0.element) {
             (Some(feature), Some(element)) => write!(f, " (feature {feature}, element {element})")?,
             (Some(feature), None) => write!(f, " (feature {feature})")?,
             (None, Some(element)) => write!(f, " (element {element})")?,
@@ -170,19 +174,25 @@ impl fmt::Display for Error {
         }
         // Text that already ends a sentence doesn't get a second period.
         let sentence = |text: &str| text.strip_suffix('.').unwrap_or(text).to_owned();
-        if let Some(cause) = &self.cause {
+        if let Some(cause) = &self.0.cause {
             write!(f, ": {}", sentence(cause))?;
         }
-        if let Some(suggestion) = &self.suggestion {
+        if let Some(suggestion) = &self.0.suggestion {
             write!(f, ". Suggestion: {}", sentence(suggestion))?;
         }
-        if !self.candidates.is_empty() {
-            write!(f, ". Candidates: {}", self.candidates.join(", "))?;
+        if !self.0.candidates.is_empty() {
+            write!(f, ". Candidates: {}", self.0.candidates.join(", "))?;
         }
-        if self.suggestion.is_some() || !self.candidates.is_empty() {
+        if self.0.suggestion.is_some() || !self.0.candidates.is_empty() {
             f.write_str(".")?;
         }
         Ok(())
+    }
+}
+
+impl Serialize for Error {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
     }
 }
 

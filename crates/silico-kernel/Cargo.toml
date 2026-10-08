@@ -12,9 +12,29 @@ publish.workspace = true
 test_ops = []
 
 [dependencies]
+crc32fast.workspace = true
 cxx.workspace = true
+silico-protocol.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[[bin]]
+name = "silico-kernel-worker"
+path = "src/bin/silico-kernel-worker.rs"
+
+[[bin]]
+name = "silico-kernel-test-worker"
+path = "src/bin/silico-kernel-test-worker.rs"
+required-features = ["test_ops"]
+
+[[bench]]
+name = "ipc"
+harness = false
 
 [dev-dependencies]
+command-fds.workspace = true
+silico-protocol.workspace = true
+silico-core.workspace = true
 silico-kernel = { path = ".", features = ["test_ops"] }
 
 [build-dependencies]

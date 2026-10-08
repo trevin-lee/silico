@@ -2,5 +2,6 @@
 //! topological naming, and the command API that every client uses.
 
 mod error;
+pub mod worker;
 
 pub use error::{Error, ErrorCode};

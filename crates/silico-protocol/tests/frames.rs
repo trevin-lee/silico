@@ -21,23 +21,31 @@ fn every_op() -> Vec<Op> {
         Op::MassProperties {
             shape: Blob::inline((0..=255).collect()),
         },
+        Op::Echo {
+            data: Blob::inline(vec![9; 3]),
+        },
         Op::DebugSleep { millis: 60_000 },
         Op::DebugAbort,
         Op::DebugSegfault,
         Op::DebugGarbage,
+        Op::DebugEnableFpTraps,
+        Op::DebugReplyOutOfTurn { wrong_id: true },
     ];
     let indices: std::collections::BTreeSet<usize> = ops
         .iter()
         .map(|op| match op {
             Op::MakeBox { .. } => 0,
             Op::MassProperties { .. } => 1,
-            Op::DebugSleep { .. } => 2,
-            Op::DebugAbort => 3,
-            Op::DebugSegfault => 4,
-            Op::DebugGarbage => 5,
+            Op::Echo { .. } => 2,
+            Op::DebugSleep { .. } => 3,
+            Op::DebugAbort => 4,
+            Op::DebugSegfault => 5,
+            Op::DebugGarbage => 6,
+            Op::DebugEnableFpTraps => 7,
+            Op::DebugReplyOutOfTurn { .. } => 8,
         })
         .collect();
-    assert_eq!(indices, (0..6).collect(), "an operation has no case");
+    assert_eq!(indices, (0..9).collect(), "an operation has no case");
     ops
 }
 
@@ -50,6 +58,9 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         Ok(Reply::MassProperties {
             volume: 6000.0,
             center: [5.0, 10.0, -15.0],
+        }),
+        Ok(Reply::Echo {
+            data: Blob::inline(vec![]),
         }),
         Ok(Reply::Done),
         Err(Failure {
@@ -64,23 +75,29 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             kind: FailureKind::UnknownOp,
             message: String::new(),
         }),
+        Err(Failure {
+            kind: FailureKind::Internal,
+            message: "floating-point traps were on".to_owned(),
+        }),
     ];
     let indices: std::collections::BTreeSet<usize> = results
         .iter()
         .map(|result| match result {
             Ok(Reply::Shape { .. }) => 0,
             Ok(Reply::MassProperties { .. }) => 1,
-            Ok(Reply::Done) => 2,
+            Ok(Reply::Echo { .. }) => 2,
+            Ok(Reply::Done) => 3,
             Err(Failure { kind, .. }) => match kind {
-                FailureKind::InvalidInput => 3,
-                FailureKind::KernelFailed => 4,
-                FailureKind::UnknownOp => 5,
+                FailureKind::InvalidInput => 4,
+                FailureKind::KernelFailed => 5,
+                FailureKind::UnknownOp => 6,
+                FailureKind::Internal => 7,
             },
         })
         .collect();
     assert_eq!(
         indices,
-        (0..6).collect(),
+        (0..8).collect(),
         "a reply or failure kind has no case"
     );
     results
@@ -101,6 +118,7 @@ fn roundtrip_every_op() {
         .map(|(i, op)| Request {
             id: i as u64,
             generation: u64::MAX - i as u64,
+            trace: 1000 + i as u64,
             op,
         })
         .collect();
@@ -109,6 +127,7 @@ fn roundtrip_every_op() {
         .enumerate()
         .map(|(i, result)| Response {
             id: i as u64,
+            generation: 7,
             result,
         })
         .collect();
@@ -137,13 +156,15 @@ fn roundtrip_every_op() {
 #[test]
 fn frame_layout_is_length_then_payload() {
     // A 4-byte little-endian length, then postcard: Request { id: 1, generation: 2,
-    // op: DebugAbort } is the varints 1 and 2, then variant index 3.
+    // trace: 3, op: DebugAbort } is the varints 1, 2, and 3, then variant index 4. (Both ends ship
+    // together, so indices may shift when operations are added.)
     let bytes = frame_of(&Request {
         id: 1,
         generation: 2,
+        trace: 3,
         op: Op::DebugAbort,
     });
-    assert_eq!(bytes, [3, 0, 0, 0, 1, 2, 3]);
+    assert_eq!(bytes, [4, 0, 0, 0, 1, 2, 3, 4]);
 }
 
 #[test]
@@ -151,6 +172,7 @@ fn truncated_frame_is_error() {
     let frame = frame_of(&Request {
         id: 7,
         generation: 1,
+        trace: 0,
         op: Op::MassProperties {
             shape: Blob::inline(vec![42; 100]),
         },
@@ -187,6 +209,7 @@ fn oversized_frame_rejected() {
     let frame = frame_of(&Request {
         id: 1,
         generation: 1,
+        trace: 0,
         op: Op::DebugGarbage,
     });
     let payload = frame.len() as u32 - 4;
@@ -221,6 +244,7 @@ fn trailing_bytes_are_an_error() {
     let mut frame = frame_of(&Request {
         id: 1,
         generation: 1,
+        trace: 0,
         op: Op::DebugAbort,
     });
     frame.push(0);
@@ -236,6 +260,7 @@ fn a_frame_of_the_wrong_message_is_a_decode_error() {
     // A response read where a request is expected doesn't silently decode.
     let frame = frame_of(&Response {
         id: 1,
+        generation: 0,
         result: Err(Failure {
             kind: FailureKind::UnknownOp,
             message: "x".repeat(300),
@@ -292,7 +317,7 @@ proptest! {
             Op::MakeBox { dx: dims[0], dy: dims[1], dz: dims[2] },
             Op::MassProperties { shape: Blob::inline(blob.clone()) },
         ] {
-            let request = Request { id, generation, op };
+            let request = Request { id, generation, trace: 0, op };
             let frame = frame_of(&request);
             let back = FrameReader::new(frame.as_slice()).read_message::<Request>().unwrap().unwrap();
             // Compare bit patterns, so NaN round-trips count as equal.
@@ -337,6 +362,7 @@ fn interrupted_reads_are_retried() {
     let request = Request {
         id: 9,
         generation: 3,
+        trace: 0,
         op: Op::MassProperties {
             shape: Blob::inline(vec![7; 20]),
         },
@@ -400,4 +426,23 @@ fn frame_errors_explain_themselves() {
         "{decode}"
     );
     assert!(decode.source().is_some());
+}
+
+#[test]
+fn every_op_has_its_own_name() {
+    let names: Vec<&str> = every_op().iter().map(Op::name).collect();
+    assert_eq!(
+        names,
+        [
+            "MakeBox",
+            "MassProperties",
+            "Echo",
+            "DebugSleep",
+            "DebugAbort",
+            "DebugSegfault",
+            "DebugGarbage",
+            "DebugEnableFpTraps",
+            "DebugReplyOutOfTurn"
+        ]
+    );
 }

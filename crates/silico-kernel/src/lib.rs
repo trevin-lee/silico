@@ -35,6 +35,10 @@ mod ffi {
 
         fn make_box(dx: f64, dy: f64, dz: f64) -> Result<UniquePtr<Shape>>;
         fn mass_properties(shape: &Shape) -> Result<MassProperties>;
+        fn shape_to_brep(shape: &Shape) -> Result<UniquePtr<CxxString>>;
+        fn shape_from_brep(brep: &[u8]) -> Result<UniquePtr<Shape>>;
+        fn fp_trap_mask() -> u32;
+        fn disable_fp_traps() -> Result<()>;
 
         #[cfg(feature = "test_ops")]
         fn debug_throw_standard_failure(message: &str) -> Result<()>;
@@ -42,10 +46,16 @@ mod ffi {
         fn debug_throw_std_runtime_error(message: &str) -> Result<()>;
         #[cfg(feature = "test_ops")]
         fn debug_throw_non_exception() -> Result<()>;
+        #[cfg(feature = "test_ops")]
+        fn debug_enable_fp_traps() -> Result<()>;
+        #[cfg(feature = "test_ops")]
+        fn debug_raise_sigsegv();
     }
 }
 
 pub use ffi::{MassProperties, Point3};
+
+pub mod worker;
 
 /// An operation OCCT refused or failed, with OCCT's own message (for example
 /// `Standard_DomainError: ...`). It stays inside the worker: the worker reports it as a
@@ -54,18 +64,34 @@ pub use ffi::{MassProperties, Point3};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KernelError {
     message: String,
+    invalid_input: bool,
 }
 
 impl KernelError {
     fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            invalid_input: false,
+        }
+    }
+
+    /// The bridge refused the request's values before calling OCCT.
+    fn invalid_input(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            invalid_input: true,
         }
     }
 
     /// What went wrong, in OCCT's words where OCCT reported it.
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    /// Whether the request's values were refused before reaching OCCT (rather than OCCT
+    /// refusing or failing the operation).
+    pub fn is_invalid_input(&self) -> bool {
+        self.invalid_input
     }
 }
 
@@ -104,7 +130,7 @@ pub fn make_box(dx: f64, dy: f64, dz: f64) -> Result<Shape, KernelError> {
     // for a positive box and places it.
     for (name, value) in [("dx", dx), ("dy", dy), ("dz", dz)] {
         if !(value.is_finite() && value >= 0.0) {
-            return Err(KernelError::new(format!(
+            return Err(KernelError::invalid_input(format!(
                 "box size {name} must be a positive, finite length, got {value}"
             )));
         }
@@ -119,6 +145,51 @@ pub fn make_box(dx: f64, dy: f64, dz: f64) -> Result<Shape, KernelError> {
 /// A solid's volume and center of mass, taken as uniformly dense.
 pub fn mass_properties(shape: &Shape) -> Result<MassProperties, KernelError> {
     Ok(ffi::mass_properties(shape.get()?)?)
+}
+
+/// The shape as OCCT's binary B-rep followed by its CRC-32 (4 bytes, little-endian):
+/// how shapes cross the worker boundary, and how they'll be cached. OCCT reads many
+/// corrupted B-reps without complaint, as a different shape, so [`from_brep`] checks the
+/// CRC first.
+pub fn to_brep(shape: &Shape) -> Result<Vec<u8>, KernelError> {
+    let bytes = ffi::shape_to_brep(shape.get()?)?;
+    let bytes = bytes
+        .as_ref()
+        .ok_or_else(|| KernelError::new("OCCT returned no B-rep"))?
+        .as_bytes();
+    let mut brep = Vec::with_capacity(bytes.len() + 4);
+    brep.extend_from_slice(bytes);
+    brep.extend_from_slice(&crc32fast::hash(bytes).to_le_bytes());
+    Ok(brep)
+}
+
+/// A shape from [`to_brep`]'s output. Bytes whose CRC doesn't match are refused before
+/// OCCT sees them.
+pub fn from_brep(brep: &[u8]) -> Result<Shape, KernelError> {
+    let (body, crc) = brep
+        .split_last_chunk::<4>()
+        .ok_or_else(|| KernelError::invalid_input("B-rep is too short to be one"))?;
+    if crc32fast::hash(body) != u32::from_le_bytes(*crc) {
+        return Err(KernelError::invalid_input(
+            "B-rep is corrupted: its checksum doesn't match",
+        ));
+    }
+    let shape = ffi::shape_from_brep(body)?;
+    if shape.is_null() {
+        return Err(KernelError::new("OCCT returned no shape"));
+    }
+    Ok(Shape(shape))
+}
+
+/// The floating-point trap-enable bits that are set, 0 when none is. Workers must run
+/// with every trap off (ARCHITECTURE.md, Deterministic kernel).
+pub fn fp_trap_mask() -> u32 {
+    ffi::fp_trap_mask()
+}
+
+/// Turns every floating-point trap off, through OCCT.
+pub fn disable_fp_traps() -> Result<(), KernelError> {
+    Ok(ffi::disable_fp_traps()?)
 }
 
 /// The volume of a solid (from [`mass_properties`]).
@@ -145,6 +216,17 @@ pub mod test_ops {
     /// Throws an `int`, which isn't an exception class at all.
     pub fn throw_non_exception() -> Result<(), KernelError> {
         Ok(ffi::debug_throw_non_exception()?)
+    }
+
+    /// Turns floating-point traps on through OCCT. Only Linux can; on Apple silicon the
+    /// hardware ignores the request.
+    pub fn enable_fp_traps() -> Result<(), KernelError> {
+        Ok(ffi::debug_enable_fp_traps()?)
+    }
+
+    /// Crashes the process with SIGSEGV, as a fault inside OCCT would.
+    pub fn raise_sigsegv() {
+        ffi::debug_raise_sigsegv();
     }
 }
 

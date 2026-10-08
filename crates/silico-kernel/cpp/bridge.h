@@ -50,11 +50,25 @@ struct Shape {
 std::unique_ptr<Shape> make_box(double dx, double dy, double dz);
 MassProperties mass_properties(const Shape &shape);
 
+// OCCT's binary B-rep format, which is how shapes cross the worker boundary.
+std::unique_ptr<std::string> shape_to_brep(const Shape &shape);
+std::unique_ptr<Shape> shape_from_brep(rust::Slice<const uint8_t> brep);
+
+// Floating-point traps (ARCHITECTURE.md, Deterministic kernel): the trap-enable bits that
+// are set, 0 if none, and turning them all off through OCCT.
+uint32_t fp_trap_mask();
+void disable_fp_traps();
+
 #ifdef SILICO_TEST_OPS
 // Each throws something different, to prove every branch of the trycatch above.
 void debug_throw_standard_failure(rust::Str message);
 void debug_throw_std_runtime_error(rust::Str message);
 void debug_throw_non_exception();
+// Turns floating-point traps on through OCCT. Only Linux can: Apple silicon ignores the
+// trap-enable bits.
+void debug_enable_fp_traps();
+// Crashes the process with SIGSEGV, as a fault inside OCCT would.
+void debug_raise_sigsegv();
 #endif
 
 } // namespace silico

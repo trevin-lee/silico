@@ -62,7 +62,7 @@ impl std::error::Error for FrameError {
 }
 
 /// Encodes `message` and writes it as one frame, then flushes.
-pub fn write_message<W: Write, T: Serialize>(
+pub fn write_message<W: Write + ?Sized, T: Serialize>(
     writer: &mut W,
     message: &T,
 ) -> Result<(), FrameError> {

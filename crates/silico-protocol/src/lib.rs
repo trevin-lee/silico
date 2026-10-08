@@ -12,6 +12,13 @@ use serde::{Deserialize, Serialize};
 
 pub use frame::{FrameError, FrameReader, MAX_FRAME_LEN, write_message};
 
+/// The file descriptor a worker inherits its end of the socket pair as.
+pub const WORKER_FD: i32 = 3;
+
+/// The environment variable that tells a worker which descriptor its socket is. A worker
+/// started without it wasn't started by the core, and refuses to run.
+pub const WORKER_FD_ENV: &str = "SILICO_WORKER_FD";
+
 /// A request from the core to a worker.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Request {
@@ -20,6 +27,9 @@ pub struct Request {
     /// The document generation the request belongs to. Results for a superseded
     /// generation are discarded by the core.
     pub generation: u64,
+    /// Ties the worker's logs for this request to the core's span for it (ARCHITECTURE.md,
+    /// Errors and logging): the worker records it on its request span.
+    pub trace: u64,
     pub op: Op,
 }
 
@@ -30,6 +40,9 @@ pub enum Op {
     MakeBox { dx: f64, dy: f64, dz: f64 },
     /// The volume and center of mass of a shape. Replies with [`Reply::MassProperties`].
     MassProperties { shape: Blob },
+    /// Sends `data` straight back as [`Reply::Echo`]: a health check, and the cheapest
+    /// round trip, which the IPC benchmark measures.
+    Echo { data: Blob },
     /// Test operations, answered only by the test worker: sleep, then reply [`Reply::Done`].
     DebugSleep { millis: u64 },
     /// Test operation: abort the process.
@@ -38,12 +51,36 @@ pub enum Op {
     DebugSegfault,
     /// Test operation: write bytes that aren't a valid frame.
     DebugGarbage,
+    /// Test operation: turn floating-point traps on (only possible on Linux), which the
+    /// worker must notice after the request.
+    DebugEnableFpTraps,
+    /// Test operation: first send a reply out of turn, carrying the previous request's id
+    /// (`wrong_id`) or this request's id with another generation.
+    DebugReplyOutOfTurn { wrong_id: bool },
 }
 
-/// A worker's answer to the request with the same `id`.
+impl Op {
+    /// The operation's name, for logs and errors.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Op::MakeBox { .. } => "MakeBox",
+            Op::MassProperties { .. } => "MassProperties",
+            Op::Echo { .. } => "Echo",
+            Op::DebugSleep { .. } => "DebugSleep",
+            Op::DebugAbort => "DebugAbort",
+            Op::DebugSegfault => "DebugSegfault",
+            Op::DebugGarbage => "DebugGarbage",
+            Op::DebugEnableFpTraps => "DebugEnableFpTraps",
+            Op::DebugReplyOutOfTurn { .. } => "DebugReplyOutOfTurn",
+        }
+    }
+}
+
+/// A worker's answer to the request with the same `id`, echoing its `generation`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Response {
     pub id: u64,
+    pub generation: u64,
     pub result: Result<Reply, Failure>,
 }
 
@@ -57,6 +94,9 @@ pub enum Reply {
     MassProperties {
         volume: f64,
         center: [f64; 3],
+    },
+    Echo {
+        data: Blob,
     },
     /// The operation succeeded and has nothing to return.
     Done,
@@ -79,6 +119,9 @@ pub enum FailureKind {
     KernelFailed,
     /// This worker doesn't perform that operation.
     UnknownOp,
+    /// Something went wrong in the worker itself, such as floating-point traps found
+    /// switched on after the request.
+    Internal,
 }
 
 /// Bytes carried by a message, such as a serialized shape. Sent inline in the frame for
