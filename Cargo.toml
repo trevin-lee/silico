@@ -32,7 +32,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [workspace.lints.rust]
 # `unsafe` is allowed only in FFI crates, which opt out at the crate root.
-# Attributes can lower `deny`, so the M0.3 gate will recheck with `-F unsafe_code`.
+# Attributes can lower `deny`; review catches that (the gate doesn't recheck it).
 unsafe_code = "deny"
 
 [workspace.lints.clippy]

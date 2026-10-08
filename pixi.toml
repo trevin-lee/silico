@@ -14,6 +14,8 @@ cmake = ">=3.28,<5"
 ninja = "*"
 # flock for the shared OCCT build cache (macOS has no flock command).
 perl = "5.*"
+# Banned dependencies, licenses, and sources, checked by the gate.
+cargo-deny = "0.20.*"
 
 # On macOS, linking uses Apple's ld: lld 21 can't read the macOS 27 SDK.
 [target.linux-64.dependencies]
@@ -34,7 +36,9 @@ build = { cmd = "cargo build --workspace", depends-on = ["occt"] }
 # FreeCAD for the oracle tests (M0.8 on), installed on first use.
 install-oracle = { cmd = "pixi install -e oracle", description = "Install the FreeCAD oracle environment" }
 test = { cmd = "cargo nextest run --workspace", depends-on = ["occt", "install-oracle", "shim-test", "test-guards", "test-cache"] }
-lint = "cargo fmt --check && cargo fmt --check --manifest-path third_party/occt/libm-shim/Cargo.toml && cargo clippy --workspace --all-targets -- -D warnings && CARGO_TARGET_DIR=target/libm-shim cargo clippy --manifest-path third_party/occt/libm-shim/Cargo.toml --release --all-targets -- -D warnings"
+# Every check on the committed tree; must pass before a merge.
+gate = { cmd = "bash scripts/gate.sh", description = "Run every check on the committed tree" }
+lint = { cmd = "cargo fmt --check && cargo fmt --check --manifest-path third_party/occt/libm-shim/Cargo.toml && cargo clippy --workspace --all-targets -- -D warnings && CARGO_TARGET_DIR=target/libm-shim cargo clippy --manifest-path third_party/occt/libm-shim/Cargo.toml --release --all-targets -- -D warnings", depends-on = ["occt"] }
 
 # FreeCAD, for oracle tests. Its OCCT is its own; oracle comparisons use tolerances.
 [feature.oracle]

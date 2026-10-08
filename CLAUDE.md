@@ -57,7 +57,8 @@ pixi run occt      # build OCCT with the deterministic recipe (about 3 minutes w
 pixi run test      # OCCT, then the libm shim tests, the OCCT guard and cache tests, and cargo nextest
 pixi run lint      # fmt and clippy, including the libm shim crate
 pixi run stress    # 605-case stress test, 10 runs, byte-identical to the committed reference
+pixi run gate      # every check on the committed tree: workspace lints, cargo-deny, lint, test, one stress run
 cargo mutants --in-diff <(git diff main...HEAD)
 ```
 
-Run C++ builds through pixi so the pinned clang is used. `pixi run gate` (once M0.3 lands) runs every check on the committed tree and must pass before a merge. `silico check` and `silico fmt` arrive in M2.
+Run C++ builds through pixi so the pinned clang is used. `pixi run gate` runs every check on the committed tree and must pass before a merge. `silico check` and `silico fmt` arrive in M2.

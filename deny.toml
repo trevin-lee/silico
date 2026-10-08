@@ -1,0 +1,41 @@
+# Checked by the gate (pixi run gate): cargo deny check bans licenses sources.
+
+[graph]
+# Optional features too, so a feature-gated dependency can't slip past.
+all-features = true
+
+[bans]
+multiple-versions = "allow"
+# No C++ in the app process (ARCHITECTURE.md, invariant 1): only silico-kernel may reach
+# OCCT and the cxx bridge machinery. A crate depending on silico-kernel would also get OCCT
+# without the libm shim, breaking determinism. (silico-kernel lists itself: its tests
+# depend on it with the test_ops feature.)
+deny = [
+    { crate = "silico-kernel", wrappers = ["silico-kernel"], reason = "only the kernel links OCCT; other crates reach it through the worker" },
+    { crate = "cxx", wrappers = ["silico-kernel"], reason = "C++ belongs in worker crates only" },
+    { crate = "cxx-build", wrappers = ["silico-kernel"], reason = "C++ belongs in worker crates only" },
+    { crate = "link-cplusplus", wrappers = ["cxx"], reason = "C++ belongs in worker crates only" },
+]
+
+[licenses]
+# Compatible with Silico's GPL-3.0-or-later.
+allow = [
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    # Silico's own crates.
+    "GPL-3.0-or-later",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
