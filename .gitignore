@@ -1,6 +1,3 @@
-# FreeCAD reference checkout (read-only, not part of Silico)
-/FreeCAD/
-
 # Rust
 # Cargo output wherever a crate lives (the workspace and standalone crates)
 target/

@@ -1,6 +1,6 @@
 # FreeCAD source map
 
-Where to find FreeCAD's implementation of each Silico subsystem. Paths are relative to `FreeCAD/`, the local reference checkout, which is gitignored and has full history. Baseline commit: `876271d660` (2026-10-04).
+Where to find FreeCAD's implementation of each Silico subsystem. Paths are relative to `~/Git/FreeCAD/`, the maintainer's clone of FreeCAD (a fork, kept outside this repository), which has full history. Baseline commit: `876271d660` (2026-10-04).
 
 FreeCAD keeps tests in two places. Python tests are in `src/Mod/<Module>/<Module>Tests/` and C++ tests are in `tests/src/Mod/<Module>/`.
 
@@ -28,10 +28,10 @@ FreeCAD keeps tests in two places. Python tests are in `src/Mod/<Module>/<Module
 ## Mining the history
 
 ```bash
-git -C FreeCAD log --oneline --follow -- <file>                       # history of a file
-git -C FreeCAD log --oneline -i --grep='crash\|segfault\|hang' -- <file>  # bug fixes
-git -C FreeCAD log --oneline -S'<symbol>'                             # when a symbol or condition was added
-git -C FreeCAD show <hash>                                            # read a fix
+git -C ~/Git/FreeCAD log --oneline --follow -- <file>                       # history of a file
+git -C ~/Git/FreeCAD log --oneline -i --grep='crash\|segfault\|hang' -- <file>  # bug fixes
+git -C ~/Git/FreeCAD log --oneline -S'<symbol>'                             # when a symbol or condition was added
+git -C ~/Git/FreeCAD show <hash>                                            # read a fix
 ```
 
 ## Running FreeCAD headless

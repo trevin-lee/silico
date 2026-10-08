@@ -8,7 +8,7 @@ Silico is a parametric CAD system: a Rust core, an egui/wgpu UI, and OpenCascade
 
 ## FreeCAD reference
 
-- `FreeCAD/` is a local, gitignored clone with full history. Never modify it. If it's missing, run `git clone https://github.com/FreeCAD/FreeCAD.git FreeCAD`.
+- FreeCAD's source is a separate clone at `~/Git/FreeCAD`, outside this repository, with full history. It's the maintainer's fork, kept for reference and for upstream PRs: read it, but don't modify it from Silico work. If it's missing, run `git clone git@github.com:trevin-lee/FreeCAD.git ~/Git/FreeCAD`.
 - [docs/freecad-map.md](docs/freecad-map.md) maps each Silico subsystem to FreeCAD's code, and shows how to mine FreeCAD's history and run it headless.
 - **Port behavior, not lines.** Before porting a subsystem, write `docs/ports/<subsystem>.md` covering what it does, its edge cases, the bug fixes from FreeCAD's git history (with commit hashes), and which FreeCAD tests to port. Then implement from that note and those tests, in idiomatic Rust.
 - Link PlaneGCS and OndselSolver as C++ in worker processes. Don't port them.

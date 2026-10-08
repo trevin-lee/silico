@@ -19,7 +19,7 @@ First read `.claude/skills/adversarial-review/reviewer-rules.md` and follow it.
 - Code cleanliness → maintainer
 - Crate structure → architect
 
-FreeCAD is checked out at `FreeCAD/` with its full git history.
+FreeCAD is checked out at `~/Git/FreeCAD/` (outside the repository) with its full git history.
 
 ## Method
 

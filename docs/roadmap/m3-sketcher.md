@@ -9,11 +9,11 @@
 ## Study first
 
 **`docs/ports/sketcher.md`**, from:
-- `FreeCAD/src/Mod/Sketcher/App/SketchObject.cpp`, `Sketch.cpp`, `Constraint.cpp`, `SketchAnalysis.cpp`;
-- the PlaneGCS API in `FreeCAD/src/Mod/Sketcher/App/planegcs/`;
-- the C++ tests in `FreeCAD/tests/src/Mod/Sketcher/App/` (including `planegcs/`);
-- `FreeCAD/src/Mod/Part/App/FaceMakerBullseye.cpp` and `FaceMakerCheese.cpp`, with tests in `FreeCAD/tests/src/Mod/Part/App/FaceMakerBullseye.cpp`;
-- `FreeCAD/src/Mod/PartDesign/PartDesignTests/TestSketch.py`, `TestPad.py`, `TestPocket.py`, `TestRevolve.py`.
+- `~/Git/FreeCAD/src/Mod/Sketcher/App/SketchObject.cpp`, `Sketch.cpp`, `Constraint.cpp`, `SketchAnalysis.cpp`;
+- the PlaneGCS API in `~/Git/FreeCAD/src/Mod/Sketcher/App/planegcs/`;
+- the C++ tests in `~/Git/FreeCAD/tests/src/Mod/Sketcher/App/` (including `planegcs/`);
+- `~/Git/FreeCAD/src/Mod/Part/App/FaceMakerBullseye.cpp` and `FaceMakerCheese.cpp`, with tests in `~/Git/FreeCAD/tests/src/Mod/Part/App/FaceMakerBullseye.cpp`;
+- `~/Git/FreeCAD/src/Mod/PartDesign/PartDesignTests/TestSketch.py`, `TestPad.py`, `TestPocket.py`, `TestRevolve.py`.
 
 ## Steps
 

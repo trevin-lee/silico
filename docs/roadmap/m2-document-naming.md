@@ -9,14 +9,14 @@
 ## Study first
 
 - **`docs/ports/naming.md`**, from:
-  - `FreeCAD/src/Mod/Part/App/TopoShapeExpansion.cpp` (6,455 lines);
-  - `FreeCAD/src/App/ElementMap.cpp`, `MappedName.*`, `StringHasher.*`;
-  - the 92 tests in `FreeCAD/tests/src/Mod/Part/App/TopoShapeExpansion.cpp`;
-  - `FreeCAD/src/Mod/PartDesign/PartDesignTests/TestTopologicalNamingProblem.py`;
+  - `~/Git/FreeCAD/src/Mod/Part/App/TopoShapeExpansion.cpp` (6,455 lines);
+  - `~/Git/FreeCAD/src/App/ElementMap.cpp`, `MappedName.*`, `StringHasher.*`;
+  - the 92 tests in `~/Git/FreeCAD/tests/src/Mod/Part/App/TopoShapeExpansion.cpp`;
+  - `~/Git/FreeCAD/src/Mod/PartDesign/PartDesignTests/TestTopologicalNamingProblem.py`;
   - the git history of those files, especially crash and regression fixes.
 
   The note decides Silico's readable name syntax, which is an open question in ARCHITECTURE.md.
-- **`docs/ports/recompute.md`**, from the recompute and dependency logic in `FreeCAD/src/App/Document.cpp`, with tests in `FreeCAD/tests/src/App/Document.cpp`.
+- **`docs/ports/recompute.md`**, from the recompute and dependency logic in `~/Git/FreeCAD/src/App/Document.cpp`, with tests in `~/Git/FreeCAD/tests/src/App/Document.cpp`.
 
 ## Steps
 

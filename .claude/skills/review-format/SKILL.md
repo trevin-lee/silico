@@ -29,7 +29,7 @@ Element names are how saved documents, other features, and agents point at geome
    - fails loudly with a structured error (acceptable), or
    - resolves to a different element without any error (critical).
 
-   Compare with what FreeCAD's element map does for the same operation (`FreeCAD/src/App/ElementMap.cpp`, `FreeCAD/src/Mod/Part/App/TopoShapeExpansion.cpp`).
+   Compare with what FreeCAD's element map does for the same operation (`~/Git/FreeCAD/src/App/ElementMap.cpp`, `~/Git/FreeCAD/src/Mod/Part/App/TopoShapeExpansion.cpp`).
 
 3. **Canonical output.** The same document must serialize to the same bytes on every run and every machine. Check for:
    - stable key and entry order, with no `HashMap` iteration order leaking in;
