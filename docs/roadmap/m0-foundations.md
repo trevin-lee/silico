@@ -45,7 +45,7 @@ Each named check below is a script in `third_party/occt/scripts/`, run by `build
 - `occt_throws` (`check-exceptions.sh`): the built OCCT throws `Standard_Failure` on invalid input (a zero scale).
 - `occt_shim_private` (`check-shim-hidden.sh`): no OCCT library exports a shim symbol.
 - `occt_imports_no_platform_math` (`check-math-imports.sh`; only TKernel may import `feenableexcept`): every math function a built OCCT library imports from the system is on the exact-by-definition allowlist (`sqrt`, `floor`, `fmod`, `ldexp`, and the like). Anything else, such as `sin`, `powf`, or `__exp10`, fails. An allowlist, not a blocklist: the compiler can introduce calls nobody wrote, such as `pow(10, x)` becoming `exp10`.
-- `stress_corpus_bit_identical` (`pixi run stress`, `stress.sh`): the 605-case stress test from `experiments/deterministic-kernel/` gives byte-identical output across 10 runs, and matches the committed reference output.
+- `stress_corpus_bit_identical` (`pixi run stress`, `stress.sh`): the 605-case stress test from `tests/determinism/` gives byte-identical output across 10 runs, and matches the committed reference output.
 - `pixi run -e oracle freecadcmd -c "import Part; print(Part.OCC_VERSION)"` runs and prints the version it uses. The oracle needs only results within tolerance, so its OCCT version is recorded, not required to match.
 
 ### M0.3 – The local gate

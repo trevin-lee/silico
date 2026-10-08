@@ -1,13 +1,13 @@
-# Deterministic kernel experiment
+# Determinism tests
 
-Can OCCT produce bit-identical results on every machine? Silico stores models as feature timelines and rebuilds them, so it needs to. This experiment (October 2026) answered yes, with the recipe now in ARCHITECTURE.md's *Deterministic kernel* and built by `third_party/occt/build.sh`. Its stress test lives on as `pixi run stress`: rerun it on every OCCT upgrade, every patch change, and every toolchain change.
+Can OCCT produce bit-identical results on every machine? Silico stores models as feature timelines and rebuilds them, so it needs to. An experiment in October 2026 answered yes, with the recipe now in ARCHITECTURE.md's *Deterministic kernel* and built by `third_party/occt/build.sh`. Its stress test is `pixi run stress`: run it on every OCCT upgrade, every patch change, and every toolchain change. `stress-reference.json` is the reference every run must match byte for byte; it's protected (CLAUDE.md), and changes only deliberately, when a kernel change moves results.
 
 ## What it measures
 
-- `scripts/probe.cpp`: 12 fixed operations plus direct tests of 10 math library functions.
-- `scripts/stress.cpp`: 605 randomized operations across 11 kinds: booleans of curved and rotated primitives, fillets, chamfers, shells, offsets, revolves, B-spline prisms, lofts, pipe sweeps, and meshes. Inputs come from an integer-only seeded generator, so they're identical everywhere without touching a math library.
+- `probe.cpp`: 12 fixed operations plus direct tests of 10 math library functions.
+- `stress.cpp`: 605 randomized operations across 11 kinds: booleans of curved and rotated primitives, fillets, chamfers, shells, offsets, revolves, B-spline prisms, lofts, pipe sweeps, and meshes. Inputs come from an integer-only seeded generator, so they're identical everywhere without touching a math library.
 
-Every result is written as exact bits: volume, area, centre of mass, bounding box, topology counts, validity, a hash of all vertex coordinates, and a hash of the `BinTools` dump. Failures are compared by exception type and message. `scripts/compare-stress.py` compares two outputs case by case.
+Every result is written as exact bits: volume, area, centre of mass, bounding box, topology counts, validity, a hash of all vertex coordinates, and a hash of the `BinTools` dump. Failures are compared by exception type and message. `compare-stress.py` compares two outputs case by case.
 
 ## Findings
 
@@ -20,7 +20,7 @@ Each row adds to the one above it.
 | + Rust `libm` shim in place of the platform math library | 0 of 9 matched the first | probe: 22 of 22; stress: 573 of 605 |
 | + upstream PR #1600 (the adopted recipe) | **9 of 9 matched the first** | **stress: 605 of 605** |
 
-The adopted recipe was also built on Linux x86 (Ryzen 9950X3D, Debian 13, clang 21.1.8 from pixi): 3 of 3 repeat runs identical and **605 of 605 identical to macOS ARM**. The committed `results/reference/stress-reference.json` is byte-identical to the Linux output. The same 47 cases fail on every build, with identical error messages, including genuinely stock conda-forge OCCT 8.0.1, so the recipe changes no outcomes.
+The adopted recipe was also built on Linux x86 (Ryzen 9950X3D, Debian 13, clang 21.1.8 from pixi): 3 of 3 repeat runs identical and **605 of 605 identical to macOS ARM**. The committed `stress-reference.json` is byte-identical to the Linux output. The same 47 cases fail on every build, with identical error messages, including genuinely stock conda-forge OCCT 8.0.1, so the recipe changes no outcomes.
 
 What caused each difference:
 
@@ -43,9 +43,9 @@ Developing it surfaced an undocumented OCCT behaviour. Upstream's `std::hash<Top
 pixi run stress    # builds OCCT if needed, then 10 runs, each byte-identical to the reference
 ```
 
-This works on macOS ARM and Linux x86. For a run-by-run comparison, use `scripts/compare-stress.py <reference> <run>`. `scripts/probe.cpp` is the original 12-case probe, and `diagnostics/` holds the serial-hash patch.
+This works on macOS ARM and Linux x86. For a run-by-run comparison, use `compare-stress.py <reference> <run>`. `probe.cpp` is the original 12-case probe (compare its outputs with `compare.py`), and `diagnostics/` holds the serial-hash patch.
 
-The experiment's original one-off scripts (macOS x86 builds under Rosetta, a self-contained Linux runner, the first `detmath` shim) are in this directory's git history. They were removed once `third_party/occt/` replaced them, so there's only one way to build OCCT.
+The experiment's original one-off scripts (macOS x86 builds under Rosetta, a self-contained Linux runner, the first `detmath` shim) are in git history, under `experiments/deterministic-kernel/`. They were removed once `third_party/occt/` replaced them, so there's only one way to build OCCT.
 
 ## Not covered
 

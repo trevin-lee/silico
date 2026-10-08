@@ -7,9 +7,9 @@ set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 occt=$root/target/occt/install
-exp=$root/experiments/deterministic-kernel
+dir=$root/tests/determinism
 # One reference for every platform: the results are bit-identical on macOS and Linux.
-reference=$exp/results/reference/stress-reference.json
+reference=$dir/stress-reference.json
 work=$root/target/occt/stress
 runs=${STRESS_RUNS:-10}
 case "$runs" in
@@ -29,7 +29,7 @@ mkdir -p "$work"
 
 libs=(TKernel TKMath TKG2d TKG3d TKGeomBase TKGeomAlgo TKBRep TKTopAlgo TKPrim TKBO TKBool TKFillet TKOffset TKMesh TKShHealing)
 clang++ -std=c++17 -O2 $SILICO_CXXFLAGS $SILICO_LDFLAGS \
-  -I"$occt/include/opencascade" "$exp/scripts/stress.cpp" -o "$work/stress" \
+  -I"$occt/include/opencascade" "$dir/stress.cpp" -o "$work/stress" \
   -L"$occt/lib" "${libs[@]/#/-l}" \
   -Wl,-rpath,"$occt/lib" -Wl,-rpath,"$CONDA_PREFIX/lib" 2> "$work/compile.log" \
   || { cat "$work/compile.log" >&2; exit 1; }
@@ -42,7 +42,7 @@ for i in $(seq 1 "$runs"); do
   "$work/stress" "$work/run$i.json"
   if ! cmp -s "$reference" "$work/run$i.json"; then
     echo "stress: run $i differs from the reference:" >&2
-    python3 -I "$exp/scripts/compare-stress.py" "$reference" "$work/run$i.json" | sed -n '/TOTAL/,$p' | head -12 >&2
+    python3 -I "$dir/compare-stress.py" "$reference" "$work/run$i.json" | sed -n '/TOTAL/,$p' | head -12 >&2
     failed=1
   fi
 done
