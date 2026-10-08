@@ -28,7 +28,7 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 /// Every export carries `#[cfg_attr(not(test), unsafe(no_mangle))]`, applied here once:
 /// the C symbol exists only in real builds. In a test build, an exported `sin` would
 /// replace the platform `sin` that the tests compare against, and they would compare
-/// the shim with itself. Hand-written exports below must carry the same attribute.
+/// the shim with itself. Every export goes through this macro or [`export_sincos!`].
 macro_rules! export {
     ($($name:ident = $libm:ident($($arg:ident),+): $ty:ty;)*) => {
         $(
@@ -99,57 +99,48 @@ export! {
     powf = powf(x, y): f32;
 }
 
-/// Apple's combined sine and cosine, which clang emits on macOS when code needs both.
-#[repr(C)]
-pub struct SinCos {
-    sin: f64,
-    cos: f64,
+/// Defines the combined sine-and-cosine exports for one float type: Apple's
+/// `__sincos*_stret`, which returns both (clang emits it on macOS when code needs both),
+/// and glibc's `sincos*`, which writes both through pointers (compilers emit it on Linux).
+/// Carries the same test-only `no_mangle` as [`export!`].
+macro_rules! export_sincos {
+    ($($ty:ty: $pair:ident, $stret:ident, $ptrs:ident, $sin:ident, $cos:ident;)*) => {
+        $(
+            #[repr(C)]
+            pub struct $pair {
+                sin: $ty,
+                cos: $ty,
+            }
+
+            #[cfg_attr(not(test), unsafe(no_mangle))]
+            pub extern "C" fn $stret(x: $ty) -> $pair {
+                $pair {
+                    sin: libm::$sin(x),
+                    cos: libm::$cos(x),
+                }
+            }
+
+            /// # Safety
+            /// `s` and `c` must be valid for writes, as in the C library contract.
+            #[cfg_attr(not(test), unsafe(no_mangle))]
+            pub unsafe extern "C" fn $ptrs(x: $ty, s: *mut $ty, c: *mut $ty) {
+                // SAFETY: the caller guarantees both pointers are valid for writes.
+                unsafe {
+                    *s = libm::$sin(x);
+                    *c = libm::$cos(x);
+                }
+            }
+        )*
+
+        /// Every function this macro exports, so tests can prove each one is tested.
+        #[cfg(test)]
+        const SINCOS_EXPORTS: &[&str] = &[$(stringify!($stret), stringify!($ptrs)),*];
+    };
 }
 
-#[cfg_attr(not(test), unsafe(no_mangle))]
-pub extern "C" fn __sincos_stret(x: f64) -> SinCos {
-    SinCos {
-        sin: libm::sin(x),
-        cos: libm::cos(x),
-    }
-}
-
-#[repr(C)]
-pub struct SinCosF {
-    sin: f32,
-    cos: f32,
-}
-
-#[cfg_attr(not(test), unsafe(no_mangle))]
-pub extern "C" fn __sincosf_stret(x: f32) -> SinCosF {
-    SinCosF {
-        sin: libm::sinf(x),
-        cos: libm::cosf(x),
-    }
-}
-
-/// glibc's combined sine and cosine, which compilers emit on Linux.
-///
-/// # Safety
-/// `s` and `c` must be valid for writes, as in the C library contract.
-#[cfg_attr(not(test), unsafe(no_mangle))]
-pub unsafe extern "C" fn sincos(x: f64, s: *mut f64, c: *mut f64) {
-    // SAFETY: the caller guarantees both pointers are valid for writes.
-    unsafe {
-        *s = libm::sin(x);
-        *c = libm::cos(x);
-    }
-}
-
-/// # Safety
-/// `s` and `c` must be valid for writes, as in the C library contract.
-#[cfg_attr(not(test), unsafe(no_mangle))]
-pub unsafe extern "C" fn sincosf(x: f32, s: *mut f32, c: *mut f32) {
-    // SAFETY: the caller guarantees both pointers are valid for writes.
-    unsafe {
-        *s = libm::sinf(x);
-        *c = libm::cosf(x);
-    }
+export_sincos! {
+    f64: SinCos, __sincos_stret, sincos, sin, cos;
+    f32: SinCosF, __sincosf_stret, sincosf, sinf, cosf;
 }
 
 #[cfg(test)]
@@ -159,37 +150,40 @@ mod tests {
 
     use core::f64::consts::{FRAC_PI_2, FRAC_PI_6, PI, SQRT_2};
 
-    fn ulps(a: f64, b: f64) -> u64 {
-        if a == b || (a.is_nan() && b.is_nan()) {
-            return 0;
+    /// Distance in units in the last place between two floats of one type.
+    trait Ulps: Copy + core::fmt::LowerExp {
+        fn ulps(self, other: Self) -> u64;
+    }
+
+    impl Ulps for f64 {
+        fn ulps(self, other: Self) -> u64 {
+            if self == other || (self.is_nan() && other.is_nan()) {
+                return 0;
+            }
+            (self.to_bits() as i64)
+                .wrapping_sub(other.to_bits() as i64)
+                .unsigned_abs()
         }
-        (a.to_bits() as i64)
-            .wrapping_sub(b.to_bits() as i64)
-            .unsigned_abs()
     }
 
-    fn ulps_f32(a: f32, b: f32) -> u32 {
-        if a == b || (a.is_nan() && b.is_nan()) {
-            return 0;
+    impl Ulps for f32 {
+        fn ulps(self, other: Self) -> u64 {
+            if self == other || (self.is_nan() && other.is_nan()) {
+                return 0;
+            }
+            u64::from(
+                (self.to_bits() as i32)
+                    .wrapping_sub(other.to_bits() as i32)
+                    .unsigned_abs(),
+            )
         }
-        (a.to_bits() as i32)
-            .wrapping_sub(b.to_bits() as i32)
-            .unsigned_abs()
     }
 
-    fn assert_close(name: &str, got: f64, want: f64, max_ulps: u64) {
+    fn assert_close<T: Ulps>(name: &str, got: T, want: T, max_ulps: u64) {
         assert!(
-            ulps(got, want) <= max_ulps,
+            got.ulps(want) <= max_ulps,
             "{name}: got {got:e}, want {want:e} ({} ulps)",
-            ulps(got, want)
-        );
-    }
-
-    fn assert_close_f32(name: &str, got: f32, want: f32, max_ulps: u32) {
-        assert!(
-            ulps_f32(got, want) <= max_ulps,
-            "{name}: got {got:e}, want {want:e} ({} ulps)",
-            ulps_f32(got, want)
+            got.ulps(want)
         );
     }
 
@@ -304,7 +298,7 @@ mod tests {
             if std::env::var_os("SHIM_REPORT_ULPS").is_some() {
                 let worst = (0..=100_000)
                     .map(|i| lo + (hi - lo) * f64::from(i) / 100_000.0)
-                    .map(|x| ulps(ours(x), platform(x)))
+                    .map(|x| ours(x).ulps(platform(x)))
                     .max()
                     .unwrap_or(0);
                 std::println!("{name}: worst {worst} ulps vs the platform library");
@@ -366,61 +360,101 @@ mod tests {
         for &(name, ours, platform, lo, hi) in unary {
             for i in 0..=1000 {
                 let x = lo + (hi - lo) * i as f32 / 1000.0;
-                assert_close_f32(name, ours(x), platform(x), 4);
+                assert_close(name, ours(x), platform(x), 4);
             }
         }
         // As for f64: Rust's atanh is a formula, so it gets a looser bound plus a known value.
         for i in 0..=1000 {
             let x = -0.9 + 1.8 * i as f32 / 1000.0;
-            assert_close_f32("atanhf", super::atanhf(x), x.atanh(), 32);
+            assert_close("atanhf", super::atanhf(x), x.atanh(), 32);
         }
-        assert_close_f32("atanhf", super::atanhf(0.0), 0.0, 0);
+        assert_close("atanhf", super::atanhf(0.0), 0.0, 0);
         for i in 0..=100 {
             let a = -5.0 + 10.0 * i as f32 / 100.0;
             for j in 0..=20 {
                 let b = -3.0 + 6.0 * j as f32 / 20.0;
-                assert_close_f32("atan2f", super::atan2f(a, b), a.atan2(b), 4);
-                assert_close_f32("hypotf", super::hypotf(a, b), a.hypot(b), 4);
+                assert_close("atan2f", super::atan2f(a, b), a.atan2(b), 4);
+                assert_close("hypotf", super::hypotf(a, b), a.hypot(b), 4);
                 let base = a.abs() + 0.5;
-                assert_close_f32("powf", super::powf(base, b), base.powf(b), 4);
+                assert_close("powf", super::powf(base, b), base.powf(b), 4);
             }
         }
         let mut s = 0.0f32;
         let mut c = 0.0f32;
         // SAFETY: both pointers point to live locals.
         unsafe { super::sincosf(1.25, &mut s, &mut c) };
-        assert_close_f32("sincosf.sin", s, 1.25f32.sin(), 4);
-        assert_close_f32("sincosf.cos", c, 1.25f32.cos(), 4);
+        assert_close("sincosf.sin", s, 1.25f32.sin(), 4);
+        assert_close("sincosf.cos", c, 1.25f32.cos(), 4);
         let sc = super::__sincosf_stret(1.25);
-        assert_close_f32("__sincosf_stret.sin", sc.sin, 1.25f32.sin(), 4);
-        assert_close_f32("__sincosf_stret.cos", sc.cos, 1.25f32.cos(), 4);
+        assert_close("__sincosf_stret.sin", sc.sin, 1.25f32.sin(), 4);
+        assert_close("__sincosf_stret.cos", sc.cos, 1.25f32.cos(), 4);
     }
 
     /// Every export is exercised by the tests above. Adding an export without testing it
-    /// fails here; hand-written exports are listed by hand.
+    /// fails here. Every export comes from `export!` or `export_sincos!`, which list them.
     #[test]
     fn every_export_is_tested() {
+        // Exercised by matches_platform_library (f64), f32_matches_platform_library (f32),
+        // and aliases_are_identical (the Apple aliases).
         let tested: &[&str] = &[
-            // matches_platform_library (f64 sweeps, two-argument grid, sincos)
-            "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "asinh", "acosh",
-            "atanh", "exp", "exp2", "expm1", "log", "log2", "log10", "log1p", "cbrt", "exp10",
-            "atan2", "hypot", "pow", // aliases_are_identical
-            "__exp10", "__exp10f", // f32_matches_platform_library
-            "sinf", "cosf", "tanf", "asinf", "acosf", "atanf", "sinhf", "coshf", "tanhf", "asinhf",
-            "acoshf", "atanhf", "expf", "exp2f", "expm1f", "logf", "log2f", "log10f", "log1pf",
-            "cbrtf", "exp10f", "atan2f", "hypotf", "powf",
+            "sin",
+            "cos",
+            "tan",
+            "asin",
+            "acos",
+            "atan",
+            "sinh",
+            "cosh",
+            "tanh",
+            "asinh",
+            "acosh",
+            "atanh",
+            "exp",
+            "exp2",
+            "expm1",
+            "log",
+            "log2",
+            "log10",
+            "log1p",
+            "cbrt",
+            "exp10",
+            "atan2",
+            "hypot",
+            "pow",
+            "sincos",
+            "__sincos_stret",
+            "sinf",
+            "cosf",
+            "tanf",
+            "asinf",
+            "acosf",
+            "atanf",
+            "sinhf",
+            "coshf",
+            "tanhf",
+            "asinhf",
+            "acoshf",
+            "atanhf",
+            "expf",
+            "exp2f",
+            "expm1f",
+            "logf",
+            "log2f",
+            "log10f",
+            "log1pf",
+            "cbrtf",
+            "exp10f",
+            "atan2f",
+            "hypotf",
+            "powf",
+            "sincosf",
+            "__sincosf_stret",
+            "__exp10",
+            "__exp10f",
         ];
-        for name in super::MACRO_EXPORTS {
+        for name in super::MACRO_EXPORTS.iter().chain(super::SINCOS_EXPORTS) {
             assert!(tested.contains(name), "export {name} has no test");
         }
-        // The hand-written exports, tested in matches_platform_library and
-        // f32_matches_platform_library.
-        let _ = (
-            super::sincos,
-            super::sincosf,
-            super::__sincos_stret,
-            super::__sincosf_stret,
-        );
     }
 
     /// IEEE special values come through unchanged in kind.
