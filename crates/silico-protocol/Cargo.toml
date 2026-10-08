@@ -6,5 +6,14 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[dependencies]
+serde.workspace = true
+serde_bytes.workspace = true
+postcard.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+stats_alloc.workspace = true
+
 [lints]
 workspace = true
