@@ -28,6 +28,18 @@ mod ffi {
         center: Point3,
     }
 
+    /// What a solid is: its mass properties, area, how many distinct faces, edges, and
+    /// vertices it has, and whether OCCT's BRepCheck_Analyzer finds it valid.
+    struct ShapeSummary {
+        volume: f64,
+        area: f64,
+        center: Point3,
+        faces: u32,
+        edges: u32,
+        vertices: u32,
+        valid: bool,
+    }
+
     unsafe extern "C++" {
         include!("silico-kernel/cpp/bridge.h");
 
@@ -35,6 +47,9 @@ mod ffi {
 
         fn make_box(dx: f64, dy: f64, dz: f64) -> Result<UniquePtr<Shape>>;
         fn mass_properties(shape: &Shape) -> Result<MassProperties>;
+        fn summarize(shape: &Shape) -> Result<ShapeSummary>;
+        fn edge_count(shape: &Shape) -> Result<u32>;
+        fn fillet(shape: &Shape, edges: &[u32], radius: f64) -> Result<UniquePtr<Shape>>;
         fn shape_to_brep(shape: &Shape) -> Result<UniquePtr<CxxString>>;
         fn shape_from_brep(brep: &[u8]) -> Result<UniquePtr<Shape>>;
         fn fp_trap_mask() -> u32;
@@ -50,10 +65,12 @@ mod ffi {
         fn debug_enable_fp_traps() -> Result<()>;
         #[cfg(feature = "test_ops")]
         fn debug_raise_sigsegv();
+        #[cfg(feature = "test_ops")]
+        fn debug_open_box() -> Result<UniquePtr<Shape>>;
     }
 }
 
-pub use ffi::{MassProperties, Point3};
+pub use ffi::{MassProperties, Point3, ShapeSummary};
 
 pub mod worker;
 
@@ -65,6 +82,7 @@ pub mod worker;
 pub struct KernelError {
     message: String,
     invalid_input: bool,
+    element: Option<String>,
 }
 
 impl KernelError {
@@ -72,6 +90,7 @@ impl KernelError {
         Self {
             message: message.into(),
             invalid_input: false,
+            element: None,
         }
     }
 
@@ -80,7 +99,18 @@ impl KernelError {
         Self {
             message: message.into(),
             invalid_input: true,
+            element: None,
         }
+    }
+
+    fn with_element(mut self, element: impl Into<String>) -> Self {
+        self.element = Some(element.into());
+        self
+    }
+
+    /// The sub-element at fault (such as `Edge3`), when known.
+    pub fn element(&self) -> Option<&str> {
+        self.element.as_deref()
     }
 
     /// What went wrong, in OCCT's words where OCCT reported it.
@@ -192,6 +222,56 @@ pub fn disable_fp_traps() -> Result<(), KernelError> {
     Ok(ffi::disable_fp_traps()?)
 }
 
+/// The shape's summary: volume, area, center, topology counts, and validity.
+pub fn summarize(shape: &Shape) -> Result<ShapeSummary, KernelError> {
+    Ok(ffi::summarize(shape.get()?)?)
+}
+
+/// Rounds `edges` of `shape` with a constant `radius`. Edges are numbered from 1 in OCCT's
+/// `TopExp::MapShapes` order, which is also FreeCAD's `Edge1`, `Edge2`, and so on.
+pub fn fillet(shape: &Shape, edges: &[u32], radius: f64) -> Result<Shape, KernelError> {
+    if !(radius.is_finite() && radius > 0.0) {
+        return Err(KernelError::invalid_input(format!(
+            "fillet radius must be a positive, finite length, got {radius}"
+        )));
+    }
+    if edges.is_empty() {
+        return Err(KernelError::invalid_input(
+            "a fillet needs at least one edge",
+        ));
+    }
+    let inner = shape.get()?;
+    let count = ffi::edge_count(inner)?;
+    let mut seen = std::collections::BTreeSet::new();
+    for &n in edges {
+        if n == 0 || n > count {
+            return Err(KernelError::invalid_input(format!(
+                "Edge{n} doesn't exist: the shape has edges 1 to {count}"
+            ))
+            .with_element(format!("Edge{n}")));
+        }
+        if !seen.insert(n) {
+            return Err(
+                KernelError::invalid_input(format!("Edge{n} is listed twice"))
+                    .with_element(format!("Edge{n}")),
+            );
+        }
+    }
+    // When OCCT fails a single-edge fillet, that edge is the one at fault; it doesn't say
+    // which of several it was.
+    let rounded = ffi::fillet(inner, edges, radius).map_err(|e| {
+        let error = KernelError::from(e);
+        match edges {
+            [edge] => error.with_element(format!("Edge{edge}")),
+            _ => error,
+        }
+    })?;
+    if rounded.is_null() {
+        return Err(KernelError::new("OCCT returned no shape"));
+    }
+    Ok(Shape(rounded))
+}
+
 /// The volume of a solid (from [`mass_properties`]).
 pub fn volume(shape: &Shape) -> Result<f64, KernelError> {
     Ok(mass_properties(shape)?.volume)
@@ -227,6 +307,11 @@ pub mod test_ops {
     /// Crashes the process with SIGSEGV, as a fault inside OCCT would.
     pub fn raise_sigsegv() {
         ffi::debug_raise_sigsegv();
+    }
+
+    /// A box with one face left out: a solid whose shell doesn't close.
+    pub fn open_box() -> Result<super::Shape, KernelError> {
+        Ok(super::Shape(ffi::debug_open_box()?))
     }
 }
 

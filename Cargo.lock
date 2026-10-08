@@ -641,6 +641,7 @@ dependencies = [
  "crc32fast",
  "cxx",
  "cxx-build",
+ "serde_json",
  "silico-core",
  "silico-kernel",
  "silico-protocol",

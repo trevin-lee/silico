@@ -19,6 +19,8 @@ type BuildResult<T> = Result<T, Box<dyn Error>>;
 /// The OCCT libraries the bridge calls into directly. Their own dependencies are found
 /// through the libraries themselves.
 const OCCT_LIBS: &[&str] = &[
+    "TKFillet",
+    "TKShHealing",
     "TKPrim",
     "TKTopAlgo",
     "TKBRep",

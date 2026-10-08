@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use silico_core::worker::Worker;
 use silico_core::{Error, ErrorCode};
-use silico_protocol::{Blob, Op, Reply};
+use silico_protocol::{Blob, Op, Reply, ShapeSummary};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-worker");
 const TEST_WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-test-worker");
@@ -51,18 +51,15 @@ fn make_box(w: &mut Worker, dx: f64, dy: f64, dz: f64) -> Result<Blob, Error> {
 fn box_volume_through_worker() {
     let mut w = worker();
     let brep = make_box(&mut w, 10.0, 20.0, 30.0).unwrap();
-    match w
-        .call(1, Op::MassProperties { shape: brep }, TIMEOUT)
-        .unwrap()
-    {
-        Reply::MassProperties { volume, center } => {
+    match w.call(1, Op::Summarize { shape: brep }, TIMEOUT).unwrap() {
+        Reply::Summary(ShapeSummary { volume, center, .. }) => {
             // Analytic: 10 × 20 × 30, centered at (5, 10, 15).
             assert!(relative_error(volume, 6000.0) <= 1e-9, "volume {volume}");
             for (got, want) in center.into_iter().zip([5.0, 10.0, 15.0]) {
                 assert!(relative_error(got, want) <= 1e-9, "center {center:?}");
             }
         }
-        other => panic!("MassProperties replied {other:?}"),
+        other => panic!("Summarize replied {other:?}"),
     }
 }
 
@@ -72,10 +69,10 @@ fn shapes_are_stateless_across_workers() {
     let brep = make_box(&mut worker(), 1.0, 2.0, 3.0).unwrap();
     let mut other = worker();
     match other
-        .call(1, Op::MassProperties { shape: brep }, TIMEOUT)
+        .call(1, Op::Summarize { shape: brep }, TIMEOUT)
         .unwrap()
     {
-        Reply::MassProperties { volume, .. } => assert!(relative_error(volume, 6.0) <= 1e-9),
+        Reply::Summary(ShapeSummary { volume, .. }) => assert!(relative_error(volume, 6.0) <= 1e-9),
         other => panic!("{other:?}"),
     }
 }
@@ -98,7 +95,7 @@ fn kernel_and_input_errors_are_structured_and_the_worker_lives_on() {
     let err = w
         .call(
             1,
-            Op::MassProperties {
+            Op::Summarize {
                 shape: Blob::inline(b"not a shape".to_vec()),
             },
             TIMEOUT,

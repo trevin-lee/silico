@@ -14,8 +14,8 @@ use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
 
 use silico_protocol::{
-    Blob, Failure, FailureKind, FrameError, FrameReader, Op, Reply, Request, Response, WORKER_FD,
-    WORKER_FD_ENV, write_message,
+    Blob, Failure, FailureKind, FrameError, FrameReader, Op, Reply, Request, Response,
+    ShapeSummary, WORKER_FD, WORKER_FD_ENV, write_message,
 };
 
 use crate::KernelError;
@@ -30,14 +30,32 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
                 brep: Blob::inline(brep),
             })
         }
-        Op::MassProperties { shape } => {
+        Op::Summarize { shape } => {
             let shape = crate::from_brep(shape.as_bytes()).map_err(failure)?;
-            let props = crate::mass_properties(&shape).map_err(failure)?;
-            let center = [props.center.x, props.center.y, props.center.z];
-            check_finite(props.volume, center)?;
-            Ok(Reply::MassProperties {
-                volume: props.volume,
+            let s = crate::summarize(&shape).map_err(failure)?;
+            let center = [s.center.x, s.center.y, s.center.z];
+            check_finite(s.volume, center)?;
+            check_finite(s.area, [0.0; 3])?;
+            Ok(Reply::Summary(ShapeSummary {
+                volume: s.volume,
+                area: s.area,
                 center,
+                faces: s.faces,
+                edges: s.edges,
+                vertices: s.vertices,
+                valid: s.valid,
+            }))
+        }
+        Op::Fillet {
+            shape,
+            edges,
+            radius,
+        } => {
+            let shape = crate::from_brep(shape.as_bytes()).map_err(failure)?;
+            let rounded = crate::fillet(&shape, &edges, radius).map_err(failure)?;
+            let brep = crate::to_brep(&rounded).map_err(failure)?;
+            Ok(Reply::Shape {
+                brep: Blob::inline(brep),
             })
         }
         Op::Echo { data } => Ok(Reply::Echo { data }),
@@ -52,6 +70,7 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
                 "{} is a test operation, not answered by this worker",
                 op.name()
             ),
+            element: None,
         }),
     }
 }
@@ -64,6 +83,7 @@ pub fn check_finite(volume: f64, center: [f64; 3]) -> Result<(), Failure> {
     Err(Failure {
         kind: FailureKind::KernelFailed,
         message: format!("mass properties aren't finite (volume {volume}, center {center:?})"),
+        element: None,
     })
 }
 
@@ -75,6 +95,7 @@ fn failure(e: KernelError) -> Failure {
             FailureKind::KernelFailed
         },
         message: e.message().to_owned(),
+        element: e.element().map(str::to_owned),
     }
 }
 
@@ -117,6 +138,7 @@ where
             result = Err(Failure {
                 kind: FailureKind::Internal,
                 message: format!("{problem} after {name}"),
+                element: None,
             });
         }
         write_message(

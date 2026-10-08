@@ -33,6 +33,7 @@ harness = false
 
 [dev-dependencies]
 command-fds.workspace = true
+serde_json.workspace = true
 silico-protocol.workspace = true
 silico-core.workspace = true
 silico-kernel = { path = ".", features = ["test_ops"] }

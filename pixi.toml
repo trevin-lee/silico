@@ -31,7 +31,9 @@ test-cache = { cmd = "bash third_party/occt/scripts/test-cache.sh", description 
 # temporary directory inside the shared build cache.
 shim-test = { cmd = "CARGO_TARGET_DIR=target/libm-shim cargo test --manifest-path third_party/occt/libm-shim/Cargo.toml", description = "Test the libm shim against known values and the platform library" }
 build = { cmd = "cargo build --workspace", depends-on = ["occt"] }
-test = { cmd = "cargo nextest run --workspace", depends-on = ["occt", "shim-test", "test-guards", "test-cache"] }
+# FreeCAD for the oracle tests (M0.8 on), installed on first use.
+install-oracle = { cmd = "pixi install -e oracle", description = "Install the FreeCAD oracle environment" }
+test = { cmd = "cargo nextest run --workspace", depends-on = ["occt", "install-oracle", "shim-test", "test-guards", "test-cache"] }
 lint = "cargo fmt --check && cargo fmt --check --manifest-path third_party/occt/libm-shim/Cargo.toml && cargo clippy --workspace --all-targets -- -D warnings && CARGO_TARGET_DIR=target/libm-shim cargo clippy --manifest-path third_party/occt/libm-shim/Cargo.toml --release --all-targets -- -D warnings"
 
 # FreeCAD, for oracle tests. Its OCCT is its own; oracle comparisons use tolerances.

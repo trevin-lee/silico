@@ -66,11 +66,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             Reply::Shape { brep } => brep,
             other => return Err(format!("MakeBox replied {other:?}").into()),
         };
-        worker.call(
-            1,
-            Op::MassProperties { shape: brep },
-            Duration::from_secs(30),
-        )?;
+        worker.call(1, Op::Summarize { shape: brep }, Duration::from_secs(30))?;
         shape_times.push(start.elapsed());
     }
     shape_times.sort();

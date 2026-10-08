@@ -5,7 +5,7 @@
 use proptest::prelude::*;
 use silico_protocol::{
     Blob, Failure, FailureKind, FrameError, FrameReader, MAX_FRAME_LEN, Op, Reply, Request,
-    Response, write_message,
+    Response, ShapeSummary, write_message,
 };
 
 /// One request per operation. The match gives each variant its own index and every
@@ -18,8 +18,13 @@ fn every_op() -> Vec<Op> {
             dy: 20.0,
             dz: 30.0,
         },
-        Op::MassProperties {
+        Op::Summarize {
             shape: Blob::inline((0..=255).collect()),
+        },
+        Op::Fillet {
+            shape: Blob::inline(vec![1, 2]),
+            edges: vec![1, 3],
+            radius: 2.5,
         },
         Op::Echo {
             data: Blob::inline(vec![9; 3]),
@@ -35,17 +40,18 @@ fn every_op() -> Vec<Op> {
         .iter()
         .map(|op| match op {
             Op::MakeBox { .. } => 0,
-            Op::MassProperties { .. } => 1,
-            Op::Echo { .. } => 2,
-            Op::DebugSleep { .. } => 3,
-            Op::DebugAbort => 4,
-            Op::DebugSegfault => 5,
-            Op::DebugGarbage => 6,
-            Op::DebugEnableFpTraps => 7,
-            Op::DebugReplyOutOfTurn { .. } => 8,
+            Op::Summarize { .. } => 1,
+            Op::Fillet { .. } => 2,
+            Op::Echo { .. } => 3,
+            Op::DebugSleep { .. } => 4,
+            Op::DebugAbort => 5,
+            Op::DebugSegfault => 6,
+            Op::DebugGarbage => 7,
+            Op::DebugEnableFpTraps => 8,
+            Op::DebugReplyOutOfTurn { .. } => 9,
         })
         .collect();
-    assert_eq!(indices, (0..9).collect(), "an operation has no case");
+    assert_eq!(indices, (0..10).collect(), "an operation has no case");
     ops
 }
 
@@ -55,10 +61,15 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         Ok(Reply::Shape {
             brep: Blob::inline(vec![0, 1, 2, 255]),
         }),
-        Ok(Reply::MassProperties {
+        Ok(Reply::Summary(ShapeSummary {
             volume: 6000.0,
+            area: 2200.0,
             center: [5.0, 10.0, -15.0],
-        }),
+            faces: 6,
+            edges: 12,
+            vertices: 8,
+            valid: true,
+        })),
         Ok(Reply::Echo {
             data: Blob::inline(vec![]),
         }),
@@ -66,25 +77,29 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         Err(Failure {
             kind: FailureKind::InvalidInput,
             message: "box size dx must be a positive, finite length, got -1".to_owned(),
+            element: None,
         }),
         Err(Failure {
             kind: FailureKind::KernelFailed,
             message: "Standard_DomainError".to_owned(),
+            element: Some("Edge3".to_owned()),
         }),
         Err(Failure {
             kind: FailureKind::UnknownOp,
             message: String::new(),
+            element: None,
         }),
         Err(Failure {
             kind: FailureKind::Internal,
             message: "floating-point traps were on".to_owned(),
+            element: None,
         }),
     ];
     let indices: std::collections::BTreeSet<usize> = results
         .iter()
         .map(|result| match result {
             Ok(Reply::Shape { .. }) => 0,
-            Ok(Reply::MassProperties { .. }) => 1,
+            Ok(Reply::Summary(_)) => 1,
             Ok(Reply::Echo { .. }) => 2,
             Ok(Reply::Done) => 3,
             Err(Failure { kind, .. }) => match kind {
@@ -156,7 +171,7 @@ fn roundtrip_every_op() {
 #[test]
 fn frame_layout_is_length_then_payload() {
     // A 4-byte little-endian length, then postcard: Request { id: 1, generation: 2,
-    // trace: 3, op: DebugAbort } is the varints 1, 2, and 3, then variant index 4. (Both ends ship
+    // trace: 3, op: DebugAbort } is the varints 1, 2, and 3, then variant index 5. (Both ends ship
     // together, so indices may shift when operations are added.)
     let bytes = frame_of(&Request {
         id: 1,
@@ -164,7 +179,7 @@ fn frame_layout_is_length_then_payload() {
         trace: 3,
         op: Op::DebugAbort,
     });
-    assert_eq!(bytes, [4, 0, 0, 0, 1, 2, 3, 4]);
+    assert_eq!(bytes, [4, 0, 0, 0, 1, 2, 3, 5]);
 }
 
 #[test]
@@ -173,7 +188,7 @@ fn truncated_frame_is_error() {
         id: 7,
         generation: 1,
         trace: 0,
-        op: Op::MassProperties {
+        op: Op::Summarize {
             shape: Blob::inline(vec![42; 100]),
         },
     });
@@ -264,6 +279,7 @@ fn a_frame_of_the_wrong_message_is_a_decode_error() {
         result: Err(Failure {
             kind: FailureKind::UnknownOp,
             message: "x".repeat(300),
+            element: None,
         }),
     });
     assert!(matches!(
@@ -315,7 +331,12 @@ proptest! {
     ) {
         for op in [
             Op::MakeBox { dx: dims[0], dy: dims[1], dz: dims[2] },
-            Op::MassProperties { shape: Blob::inline(blob.clone()) },
+            Op::Summarize { shape: Blob::inline(blob.clone()) },
+            Op::Fillet {
+                shape: Blob::inline(blob.clone()),
+                edges: blob.iter().map(|&b| u32::from(b) * 1_000_003).collect(),
+                radius: dims[0],
+            },
         ] {
             let request = Request { id, generation, trace: 0, op };
             let frame = frame_of(&request);
@@ -363,7 +384,7 @@ fn interrupted_reads_are_retried() {
         id: 9,
         generation: 3,
         trace: 0,
-        op: Op::MassProperties {
+        op: Op::Summarize {
             shape: Blob::inline(vec![7; 20]),
         },
     };
@@ -435,7 +456,8 @@ fn every_op_has_its_own_name() {
         names,
         [
             "MakeBox",
-            "MassProperties",
+            "Summarize",
+            "Fillet",
             "Echo",
             "DebugSleep",
             "DebugAbort",

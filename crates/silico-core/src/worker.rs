@@ -425,9 +425,10 @@ fn signal_name(signal: i32) -> Option<&'static str> {
     .map(|(_, name)| name)
 }
 
-/// A worker's refusal or failure, as a structured error.
+/// A worker's refusal or failure, as a structured error, naming the element at fault when
+/// the worker knew it.
 fn failure_error(op: &str, failure: Failure) -> Error {
-    match failure.kind {
+    let error = match failure.kind {
         FailureKind::InvalidInput => Error::new(ErrorCode::InvalidInput, failure.message),
         FailureKind::KernelFailed => {
             Error::new(ErrorCode::KernelFailed, format!("{op} failed")).with_cause(failure.message)
@@ -437,6 +438,10 @@ fn failure_error(op: &str, failure: Failure) -> Error {
             format!("the kernel worker couldn't do {op}"),
         )
         .with_cause(failure.message),
+    };
+    match failure.element {
+        Some(element) => error.with_element(element),
+        None => error,
     }
 }
 

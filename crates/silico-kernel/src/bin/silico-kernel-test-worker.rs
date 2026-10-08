@@ -31,6 +31,7 @@ fn main() -> std::process::ExitCode {
                 .map_err(|e| Failure {
                     kind: FailureKind::Internal,
                     message: e.to_string(),
+                    element: None,
                 })?;
             Ok(Reply::Done)
         }
@@ -38,6 +39,7 @@ fn main() -> std::process::ExitCode {
             test_ops::enable_fp_traps().map_err(|e| Failure {
                 kind: FailureKind::Internal,
                 message: e.message().to_owned(),
+                element: None,
             })?;
             Ok(Reply::Done)
         }
@@ -54,6 +56,7 @@ fn main() -> std::process::ExitCode {
             write_message(socket, &stale).map_err(|e| Failure {
                 kind: FailureKind::Internal,
                 message: e.to_string(),
+                element: None,
             })?;
             Ok(Reply::Done)
         }

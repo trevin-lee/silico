@@ -38,8 +38,17 @@ pub struct Request {
 pub enum Op {
     /// A box from the origin to `(dx, dy, dz)`. Replies with [`Reply::Shape`].
     MakeBox { dx: f64, dy: f64, dz: f64 },
-    /// The volume and center of mass of a shape. Replies with [`Reply::MassProperties`].
-    MassProperties { shape: Blob },
+    /// A shape's volume, area, center, topology counts, and validity. Replies with
+    /// [`Reply::Summary`].
+    Summarize { shape: Blob },
+    /// Rounds `edges` of `shape` with a constant `radius`. Edges are numbered from 1 in
+    /// OCCT's `TopExp::MapShapes` order, as FreeCAD's `Edge1`, `Edge2`, and so on. Replies
+    /// with [`Reply::Shape`].
+    Fillet {
+        shape: Blob,
+        edges: Vec<u32>,
+        radius: f64,
+    },
     /// Sends `data` straight back as [`Reply::Echo`]: a health check, and the cheapest
     /// round trip, which the IPC benchmark measures.
     Echo { data: Blob },
@@ -64,7 +73,8 @@ impl Op {
     pub fn name(&self) -> &'static str {
         match self {
             Op::MakeBox { .. } => "MakeBox",
-            Op::MassProperties { .. } => "MassProperties",
+            Op::Summarize { .. } => "Summarize",
+            Op::Fillet { .. } => "Fillet",
             Op::Echo { .. } => "Echo",
             Op::DebugSleep { .. } => "DebugSleep",
             Op::DebugAbort => "DebugAbort",
@@ -91,15 +101,25 @@ pub enum Reply {
     Shape {
         brep: Blob,
     },
-    MassProperties {
-        volume: f64,
-        center: [f64; 3],
-    },
+    Summary(ShapeSummary),
     Echo {
         data: Blob,
     },
     /// The operation succeeded and has nothing to return.
     Done,
+}
+
+/// What a solid is, from [`Op::Summarize`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShapeSummary {
+    pub volume: f64,
+    pub area: f64,
+    pub center: [f64; 3],
+    pub faces: u32,
+    pub edges: u32,
+    pub vertices: u32,
+    /// Whether OCCT's `BRepCheck_Analyzer` finds the shape valid.
+    pub valid: bool,
 }
 
 /// An operation the worker refused or that failed. The core turns this into a structured
@@ -109,6 +129,8 @@ pub struct Failure {
     pub kind: FailureKind,
     /// What went wrong, in the kernel's words where the kernel reported it.
     pub message: String,
+    /// The sub-element at fault, such as `Edge1`, when the worker knows it.
+    pub element: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
