@@ -61,6 +61,8 @@ const USAGE: &str = "usage: silico-view [--viewer <rerun executable>] [--save <f
                      Shows a box and two fillets, built by the kernel worker, in Rerun.";
 
 fn main() -> ExitCode {
+    // Logs (the kernel worker's among them) go to stderr, filtered by SILICO_LOG.
+    silico_core::logging::init();
     let mut out = std::io::stdout().lock();
     let result = parse_args().and_then(|command| match command {
         Command::Help => Ok(USAGE.to_owned()),

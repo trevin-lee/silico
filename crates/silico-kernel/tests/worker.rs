@@ -5,9 +5,12 @@
 
 #[path = "common/imports.rs"]
 mod imports;
+#[path = "common/numbers.rs"]
+mod numbers;
 #[path = "common/scripts.rs"]
 mod scripts;
 
+use numbers::relative_error;
 use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -15,7 +18,7 @@ use std::time::{Duration, Instant};
 use scripts::script;
 use silico_core::worker::Worker;
 use silico_core::{Error, ErrorCode};
-use silico_protocol::{Blob, Generation, Op, Reply, ShapeData, ShapeSummary};
+use silico_protocol::{Blob, DebugOp, Generation, Op, OutOfTurn, Reply, ShapeData, ShapeSummary};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-worker");
 const TEST_WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-test-worker");
@@ -27,10 +30,6 @@ fn worker() -> Worker {
 
 fn test_worker() -> Worker {
     Worker::spawn(Path::new(TEST_WORKER)).unwrap()
-}
-
-fn relative_error(actual: f64, expected: f64) -> f64 {
-    ((actual - expected) / expected).abs()
 }
 
 /// Whether a process with this ID exists (zombies included).
@@ -129,12 +128,12 @@ fn kernel_and_input_errors_are_structured_and_the_worker_lives_on() {
 fn production_worker_refuses_debug_ops() {
     let mut w = worker();
     for op in [
-        Op::DebugSleep { millis: 1 },
-        Op::DebugAbort,
-        Op::DebugSegfault,
-        Op::DebugGarbage,
-        Op::DebugEnableFpTraps,
-        Op::DebugReplyOutOfTurn { wrong_id: true },
+        Op::Debug(DebugOp::Sleep { millis: 1 }),
+        Op::Debug(DebugOp::Abort),
+        Op::Debug(DebugOp::Segfault),
+        Op::Debug(DebugOp::Garbage),
+        Op::Debug(DebugOp::EnableFpTraps),
+        Op::Debug(DebugOp::ReplyOutOfTurn(OutOfTurn::WrongId)),
     ] {
         let name = op.name();
         let err = w.call(Generation(1), op, TIMEOUT).unwrap_err();
@@ -176,12 +175,12 @@ fn assert_crashed(op: Op, signal: &str) {
 
 #[test]
 fn segfault_becomes_error() {
-    assert_crashed(Op::DebugSegfault, "SIGSEGV");
+    assert_crashed(Op::Debug(DebugOp::Segfault), "SIGSEGV");
 }
 
 #[test]
 fn abort_becomes_error() {
-    assert_crashed(Op::DebugAbort, "SIGABRT");
+    assert_crashed(Op::Debug(DebugOp::Abort), "SIGABRT");
 }
 
 #[test]
@@ -193,7 +192,7 @@ fn hang_times_out() {
     let err = w
         .call(
             Generation(1),
-            Op::DebugSleep { millis: 60_000 },
+            Op::Debug(DebugOp::Sleep { millis: 60_000 }),
             Duration::from_secs(1),
         )
         .unwrap_err();
@@ -212,7 +211,7 @@ fn garbage_reply_is_error() {
     let pid = w.pid();
     assert!(process_exists(pid), "worker {pid} isn't running");
     let err = w
-        .call(Generation(1), Op::DebugGarbage, TIMEOUT)
+        .call(Generation(1), Op::Debug(DebugOp::Garbage), TIMEOUT)
         .unwrap_err();
     assert_eq!(err.code(), ErrorCode::ProtocolError, "{err}");
     assert!(!process_exists(pid), "worker {pid} still exists");
@@ -222,7 +221,9 @@ fn garbage_reply_is_error() {
 fn a_crash_report_carries_the_workers_last_output() {
     // The test worker logs 25 lines before aborting; the report keeps the last 20.
     let mut w = test_worker();
-    let err = w.call(Generation(1), Op::DebugAbort, TIMEOUT).unwrap_err();
+    let err = w
+        .call(Generation(1), Op::Debug(DebugOp::Abort), TIMEOUT)
+        .unwrap_err();
     let cause = err.cause().unwrap();
     for line in 6..=25 {
         assert!(
@@ -240,13 +241,13 @@ fn a_crash_report_carries_the_workers_last_output() {
 fn a_reply_out_of_turn_is_a_protocol_error() {
     // The worker first sends a reply with the previous request's id, or with this request's
     // id but another generation; either way the client stops it.
-    for (wrong_id, cause) in [
+    for (out_of_turn, cause) in [
         (
-            true,
+            OutOfTurn::WrongId,
             "reply for request 0 (generation 1), expected 1 (generation 1)",
         ),
         (
-            false,
+            OutOfTurn::WrongGeneration,
             "reply for request 1 (generation 2), expected 1 (generation 1)",
         ),
     ] {
@@ -255,7 +256,11 @@ fn a_reply_out_of_turn_is_a_protocol_error() {
         assert!(process_exists(pid), "worker {pid} isn't running");
         assert!(echo(&mut w, vec![], TIMEOUT).is_ok());
         let err = w
-            .call(Generation(1), Op::DebugReplyOutOfTurn { wrong_id }, TIMEOUT)
+            .call(
+                Generation(1),
+                Op::Debug(DebugOp::ReplyOutOfTurn(out_of_turn)),
+                TIMEOUT,
+            )
             .unwrap_err();
         assert_eq!(err.code(), ErrorCode::ProtocolError, "{err}");
         assert_eq!(err.cause(), Some(cause), "{err}");
@@ -287,7 +292,7 @@ fn a_worker_given_something_other_than_a_socket_refuses_to_run() {
 fn fp_traps_switched_on_by_a_request_fail_it() {
     let mut w = test_worker();
     let err = w
-        .call(Generation(1), Op::DebugEnableFpTraps, TIMEOUT)
+        .call(Generation(1), Op::Debug(DebugOp::EnableFpTraps), TIMEOUT)
         .unwrap_err();
     assert_eq!(err.code(), ErrorCode::Internal, "{err}");
     assert!(
@@ -304,7 +309,7 @@ fn fp_traps_cant_be_switched_on_on_apple_silicon() {
     // The hardware ignores the trap-enable bits, so the request succeeds and traps stay off.
     let mut w = test_worker();
     assert!(matches!(
-        w.call(Generation(1), Op::DebugEnableFpTraps, TIMEOUT)
+        w.call(Generation(1), Op::Debug(DebugOp::EnableFpTraps), TIMEOUT)
             .unwrap(),
         Reply::Done
     ));
@@ -343,9 +348,9 @@ fn no_zombies() {
     for i in 0..100 {
         let mut w = test_worker();
         let op = match i % 3 {
-            0 => Op::DebugSegfault,
-            1 => Op::DebugAbort,
-            _ => Op::DebugSleep { millis: 10_000 },
+            0 => Op::Debug(DebugOp::Segfault),
+            1 => Op::Debug(DebugOp::Abort),
+            _ => Op::Debug(DebugOp::Sleep { millis: 10_000 }),
         };
         assert!(
             w.call(Generation(1), op, Duration::from_millis(200))
@@ -755,7 +760,10 @@ fn worker_logs_keep_their_level_and_carry_the_calls_trace() {
         .init();
     let mut w = test_worker();
     let pid = w.pid();
-    assert!(w.call(Generation(1), Op::DebugAbort, TIMEOUT).is_err());
+    assert!(
+        w.call(Generation(1), Op::Debug(DebugOp::Abort), TIMEOUT)
+            .is_err()
+    );
     // Other tests in this process log too (under `cargo test` they share the subscriber),
     // so only this worker's lines count: its process ID is on each of them.
     let text = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
@@ -875,4 +883,43 @@ fn a_fillet_reply_says_when_its_result_is_invalid() {
         Reply::Summary(s) => assert!(!s.valid, "summarized as valid"),
         other => panic!("{other:?}"),
     }
+}
+
+/// Set in a copy of this test binary that `an_empty_silico_log_leaves_workers_warning` runs.
+const EMPTY_LOG_CHILD: &str = "SILICO_TEST_EMPTY_LOG_CHILD";
+
+#[test]
+fn an_empty_silico_log_leaves_workers_warning() {
+    // An empty SILICO_LOG is the default, warn, in workers as in the app; parsed as a
+    // filter it would be "nothing", and a crash report would lose the worker's last lines.
+    let out = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "a_worker_under_an_empty_silico_log_still_warns",
+            "--nocapture",
+        ])
+        .env(EMPTY_LOG_CHILD, "1")
+        .env("SILICO_LOG", "")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("1 passed"), "{stdout}");
+}
+
+#[test]
+fn a_worker_under_an_empty_silico_log_still_warns() {
+    // Only does anything in the copy that the test above runs.
+    if std::env::var_os(EMPTY_LOG_CHILD).is_none() {
+        return;
+    }
+    let err = test_worker()
+        .call(Generation(1), Op::Debug(DebugOp::Abort), TIMEOUT)
+        .unwrap_err();
+    let cause = err.cause().unwrap();
+    assert!(cause.contains("aborting, as asked: line 25"), "{cause}");
 }

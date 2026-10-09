@@ -5,9 +5,12 @@
 
 #[path = "common/imports.rs"]
 mod imports;
+#[path = "common/numbers.rs"]
+mod numbers;
 #[path = "common/oracle.rs"]
 mod oracle;
 
+use numbers::relative_error;
 use std::f64::consts::PI;
 use std::path::Path;
 use std::time::Duration;
@@ -18,10 +21,6 @@ use silico_protocol::{Blob, Generation, Op, Reply, ShapeData, ShapeSummary};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-worker");
 const TIMEOUT: Duration = Duration::from_secs(30);
-
-fn relative_error(actual: f64, expected: f64) -> f64 {
-    ((actual - expected) / expected).abs()
-}
 
 #[test]
 fn box_fillet_analytic() {

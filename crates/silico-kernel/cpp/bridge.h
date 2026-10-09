@@ -41,8 +41,7 @@ static void trycatch(Try &&func, Fail &&fail) noexcept try {
 
 namespace silico {
 
-struct MassProperties;
-struct ShapeSummary;
+struct Measures;
 
 // An OCCT shape, owned from Rust through a UniquePtr.
 struct Shape {
@@ -50,11 +49,9 @@ struct Shape {
 };
 
 std::unique_ptr<Shape> make_box(double dx, double dy, double dz);
-MassProperties mass_properties(const Shape &shape);
 
 // Volume, area, center of mass, and the numbers of distinct faces, edges, and vertices.
-// `valid` is left false: Rust fills it in from the shape's validity, checked once.
-ShapeSummary summarize(const Shape &shape);
+Measures measure(const Shape &shape);
 
 // The number of distinct edges, which TopExp::MapShapes numbers from 1.
 uint32_t edge_count(const Shape &shape);

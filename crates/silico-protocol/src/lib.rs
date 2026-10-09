@@ -65,20 +65,9 @@ pub enum Op {
     /// Sends `data` straight back as [`Reply::Echo`]: a health check, and the cheapest
     /// round trip, which the IPC benchmark measures.
     Echo { data: Blob },
-    /// Test operations, answered only by the test worker: sleep, then reply [`Reply::Done`].
-    DebugSleep { millis: u64 },
-    /// Test operation: abort the process.
-    DebugAbort,
-    /// Test operation: crash with a segmentation fault.
-    DebugSegfault,
-    /// Test operation: write bytes that aren't a valid frame.
-    DebugGarbage,
-    /// Test operation: turn floating-point traps on (only possible on Linux), which the
-    /// worker must notice after the request.
-    DebugEnableFpTraps,
-    /// Test operation: first send a reply out of turn, carrying the previous request's id
-    /// (`wrong_id`) or this request's id with another generation.
-    DebugReplyOutOfTurn { wrong_id: bool },
+    /// Operations only the test worker answers, for tests of how the core treats a worker
+    /// that crashes, hangs, or misbehaves. The production worker refuses them all.
+    Debug(DebugOp),
 }
 
 impl Op {
@@ -90,12 +79,48 @@ impl Op {
             Op::Fillet { .. } => "Fillet",
             Op::Tessellate { .. } => "Tessellate",
             Op::Echo { .. } => "Echo",
-            Op::DebugSleep { .. } => "DebugSleep",
-            Op::DebugAbort => "DebugAbort",
-            Op::DebugSegfault => "DebugSegfault",
-            Op::DebugGarbage => "DebugGarbage",
-            Op::DebugEnableFpTraps => "DebugEnableFpTraps",
-            Op::DebugReplyOutOfTurn { .. } => "DebugReplyOutOfTurn",
+            Op::Debug(op) => op.name(),
+        }
+    }
+}
+
+/// A test operation (see [`Op::Debug`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DebugOp {
+    /// Sleep, then reply [`Reply::Done`].
+    Sleep { millis: u64 },
+    /// Abort the process.
+    Abort,
+    /// Crash with a segmentation fault.
+    Segfault,
+    /// Write bytes that aren't a valid frame.
+    Garbage,
+    /// Turn floating-point traps on (only possible on Linux), which the worker must notice
+    /// after the request.
+    EnableFpTraps,
+    /// First send a reply out of turn, then the real one.
+    ReplyOutOfTurn(OutOfTurn),
+}
+
+/// How [`DebugOp::ReplyOutOfTurn`]'s extra reply is wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OutOfTurn {
+    /// It carries the previous request's id.
+    WrongId,
+    /// It carries this request's id, with another generation.
+    WrongGeneration,
+}
+
+impl DebugOp {
+    pub fn name(&self) -> &'static str {
+        match self {
+            DebugOp::Sleep { .. } => "DebugSleep",
+            DebugOp::Abort => "DebugAbort",
+            DebugOp::Segfault => "DebugSegfault",
+            DebugOp::Garbage => "DebugGarbage",
+            DebugOp::EnableFpTraps => "DebugEnableFpTraps",
+            DebugOp::ReplyOutOfTurn(OutOfTurn::WrongId) => "DebugReplyWithWrongId",
+            DebugOp::ReplyOutOfTurn(OutOfTurn::WrongGeneration) => "DebugReplyWithWrongGeneration",
         }
     }
 }
@@ -212,6 +237,18 @@ pub struct Failure {
     pub element: Option<String>,
     /// What to try instead, when the worker has a suggestion.
     pub suggestion: Option<String>,
+}
+
+impl Failure {
+    /// A failure with no element or suggestion; add them with the fields.
+    pub fn new(kind: FailureKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+            element: None,
+            suggestion: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -83,3 +83,20 @@ fn help_prints_usage() {
     assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).starts_with("usage: silico-view"));
 }
+
+#[test]
+fn logs_are_shown_when_asked_for() {
+    // The viewer logs to stderr like every Silico process, so a worker's trouble is visible.
+    let file = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("view-logs-{}.rrd", std::process::id()));
+    let out = Command::new(env!("CARGO_BIN_EXE_silico-view"))
+        .env("SILICO_KERNEL_WORKER", worker())
+        .env("SILICO_LOG", "silico_core=debug")
+        .args(["--save", file.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    std::fs::remove_file(&file).unwrap();
+    assert!(stderr.contains("started kernel worker"), "{stderr}");
+}

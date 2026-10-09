@@ -27,11 +27,15 @@ int main() {
   return 1;
 }
 CPP
+# The OCCT libraries, $first first; once when they're the same directory (the linker
+# warns about a repeated -rpath).
+libs=(-L"$first" -Wl,-rpath,"$first")
+[ "$first" = "$occt/lib" ] || libs+=(-L"$occt/lib" -Wl,-rpath,"$occt/lib")
 # shellcheck disable=SC2086
 "$SILICO_CXX" -std=c++17 $SILICO_CXXFLAGS $SILICO_LDFLAGS -I"$occt/include/opencascade" \
   "$tmp/throws.cpp" "$SILICO_LIBM_SHIM" -o "$tmp/throws" \
-  -L"$first" -L"$occt/lib" -lTKMath -lTKernel \
-  -Wl,-rpath,"$first" -Wl,-rpath,"$occt/lib" -Wl,-rpath,"$(dirname "$(dirname "$SILICO_CXX")")/lib"
+  "${libs[@]}" -lTKMath -lTKernel \
+  -Wl,-rpath,"$(dirname "$(dirname "$SILICO_CXX")")/lib"
 if ! "$tmp/throws"; then
   echo "FAIL: OCCT doesn't throw on invalid input (built with No_Exception?)" >&2
   exit 1

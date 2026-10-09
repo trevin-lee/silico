@@ -210,6 +210,16 @@ A pre-commit hook in `.githooks/`, installed with `pixi run install-hooks`, runs
 
 **Notes:** The Rerun viewer collects anonymous usage analytics by default; `rerun analytics disable` turns them off (the `rerun` crate is built without its analytics feature). One of Rerun's dependencies (`webpki-roots`) is licensed CDLA-Permissive-2.0, allowed in `deny.toml`, and one (`paste`) carries an "unmaintained" advisory, recorded as accepted there. The `rerun` crate adds about 470 packages to the workspace build.
 
+### After the milestone review
+
+The sections above describe each step as it was built. The milestone review and the cleanup after it changed some of what they name:
+
+- The kernel's `mass_properties` and `volume` are gone: `summarize` is the one way to measure a shape, and returns the protocol's `ShapeSummary` (the C++ side returns `Measures`, without validity, which Rust adds from the shape's own check).
+- The test operations are one variant, `Op::Debug(DebugOp)`, so the production worker refuses them in one arm and a new one touches only `DebugOp` and the test worker. `ReplyOutOfTurn` takes `OutOfTurn::WrongId` or `WrongGeneration` instead of a bool.
+- `Failure::new(kind, message)` builds a failure with no element or suggestion.
+- App-side logging (`SILICO_LOG`, `SILICO_LOG_FORMAT`) is `silico_core::logging::init`, used by the CLI and `silico-view`; workers keep their own JSON logging, with the same default for an empty or unusable `SILICO_LOG`.
+- `tests/determinism/probe.cpp` and `compare.py`, superseded by the stress test, are removed (in git history).
+
 ### M0.9 – CI on the workstation
 
 **Lands whenever the maintainer's runner is ready. It doesn't block the M0 exit test.**

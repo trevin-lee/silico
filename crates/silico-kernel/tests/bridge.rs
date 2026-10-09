@@ -4,21 +4,23 @@
 
 #[path = "common/imports.rs"]
 mod imports;
+#[path = "common/numbers.rs"]
+mod numbers;
 
+use numbers::relative_error;
 use silico_kernel::test_ops::{
     throw_non_exception, throw_standard_failure, throw_std_runtime_error,
 };
-use silico_kernel::{KernelErrorKind, make_box, mass_properties, volume};
+use silico_kernel::{KernelErrorKind, Shape, make_box, summarize};
 
-/// Relative error between `actual` and a nonzero `expected`.
-fn relative_error(actual: f64, expected: f64) -> f64 {
-    ((actual - expected) / expected).abs()
+fn volume(shape: &Shape) -> f64 {
+    summarize(shape).unwrap().volume
 }
 
 #[test]
 fn box_volume_is_exact() {
     let shape = make_box(10.0, 20.0, 30.0).unwrap();
-    let v = volume(&shape).unwrap();
+    let v = volume(&shape);
     // Analytic: 10 × 20 × 30.
     assert!(relative_error(v, 6000.0) <= 1e-9, "volume {v}");
 }
@@ -27,10 +29,10 @@ fn box_volume_is_exact() {
 fn box_spans_origin_to_its_size() {
     // A box from the origin to (10, 20, 30) has its center at (5, 10, 15) (analytic), which
     // a box with its sizes swapped between axes, or centered on the origin, doesn't.
-    let c = mass_properties(&make_box(10.0, 20.0, 30.0).unwrap())
+    let [x, y, z] = summarize(&make_box(10.0, 20.0, 30.0).unwrap())
         .unwrap()
         .center;
-    for (axis, got, want) in [("x", c.x, 5.0), ("y", c.y, 10.0), ("z", c.z, 15.0)] {
+    for (axis, got, want) in [("x", x, 5.0), ("y", y, 10.0), ("z", z, 15.0)] {
         assert!(
             relative_error(got, want) <= 1e-9,
             "center {axis} = {got}, want {want}"
@@ -47,7 +49,7 @@ fn box_sizes_near_the_limits_are_accepted() {
         (1e6, 1e6, 1e6),
         (1e-6, 1e3, 1e5),
     ] {
-        let v = volume(&make_box(dx, dy, dz).unwrap()).unwrap();
+        let v = volume(&make_box(dx, dy, dz).unwrap());
         let want = dx * dy * dz;
         assert!(
             relative_error(v, want) <= 1e-9,
@@ -155,7 +157,7 @@ fn errors_leave_the_bridge_usable() {
         assert!(throw_standard_failure("again").is_err());
         assert!(throw_non_exception().is_err());
     }
-    let v = volume(&make_box(1.0, 2.0, 3.0).unwrap()).unwrap();
+    let v = volume(&make_box(1.0, 2.0, 3.0).unwrap());
     assert!(relative_error(v, 6.0) <= 1e-9, "volume {v}");
 }
 

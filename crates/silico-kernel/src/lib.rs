@@ -21,23 +21,16 @@ mod ffi {
         z: f64,
     }
 
-    /// A solid's mass properties, taken as uniformly dense, from one integration over
-    /// its faces.
-    struct MassProperties {
-        volume: f64,
-        center: Point3,
-    }
-
-    /// What a solid is: its mass properties, area, how many distinct faces, edges, and
-    /// vertices it has, and whether OCCT's BRepCheck_Analyzer finds it valid.
-    struct ShapeSummary {
+    /// What OCCT measures of a shape: its volume and center of mass (taken as uniformly
+    /// dense), its area, and how many distinct faces, edges, and vertices it has.
+    /// [`summarize`](super::summarize) adds its validity.
+    struct Measures {
         volume: f64,
         area: f64,
         center: Point3,
         faces: u32,
         edges: u32,
         vertices: u32,
-        valid: bool,
     }
 
     unsafe extern "C++" {
@@ -46,8 +39,7 @@ mod ffi {
         type Shape;
 
         fn make_box(dx: f64, dy: f64, dz: f64) -> Result<UniquePtr<Shape>>;
-        fn mass_properties(shape: &Shape) -> Result<MassProperties>;
-        fn summarize(shape: &Shape) -> Result<ShapeSummary>;
+        fn measure(shape: &Shape) -> Result<Measures>;
         fn edge_count(shape: &Shape) -> Result<u32>;
         fn fillet(shape: &Shape, edges: &[u32], radius: f64) -> Result<UniquePtr<Shape>>;
         fn is_valid_where_changed(input: &Shape, result: &Shape) -> Result<bool>;
@@ -81,22 +73,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{MassProperties, Point3, ShapeSummary};
-
-impl From<ShapeSummary> for silico_protocol::ShapeSummary {
-    fn from(s: ShapeSummary) -> Self {
-        Self {
-            volume: s.volume,
-            area: s.area,
-            center: [s.center.x, s.center.y, s.center.z],
-            faces: s.faces,
-            edges: s.edges,
-            vertices: s.vertices,
-            valid: s.valid,
-        }
-    }
-}
-pub use silico_protocol::Mesh;
+pub use silico_protocol::{Mesh, ShapeSummary};
 
 pub mod worker;
 
@@ -254,11 +231,6 @@ pub fn make_box(dx: f64, dy: f64, dz: f64) -> Result<Shape, KernelError> {
     Ok(Shape::new(shape))
 }
 
-/// A solid's volume and center of mass, taken as uniformly dense.
-pub fn mass_properties(shape: &Shape) -> Result<MassProperties, KernelError> {
-    Ok(ffi::mass_properties(shape.get()?)?)
-}
-
 /// The shape as OCCT's binary B-rep followed by its CRC-32 (4 bytes, little-endian):
 /// how shapes cross the worker boundary, and how they'll be cached. OCCT reads many
 /// corrupted B-reps without complaint, as a different shape, so [`from_brep`] checks the
@@ -306,9 +278,16 @@ pub fn disable_fp_traps() -> Result<(), KernelError> {
 
 /// The shape's summary: volume, area, center, topology counts, and validity.
 pub fn summarize(shape: &Shape) -> Result<ShapeSummary, KernelError> {
-    let mut summary = ffi::summarize(shape.get()?)?;
-    summary.valid = shape.is_valid()?;
-    Ok(summary)
+    let m = ffi::measure(shape.get()?)?;
+    Ok(ShapeSummary {
+        volume: m.volume,
+        area: m.area,
+        center: [m.center.x, m.center.y, m.center.z],
+        faces: m.faces,
+        edges: m.edges,
+        vertices: m.vertices,
+        valid: shape.is_valid()?,
+    })
 }
 
 /// Rounds `edges` of `shape` with a constant `radius`. Edges are numbered from 1 in OCCT's
@@ -437,11 +416,6 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
         edge_points: triples(raw.edge_points()),
         edge_point_counts: raw.edge_points_per_edge().to_vec(),
     })
-}
-
-/// The volume of a solid (from [`mass_properties`]).
-pub fn volume(shape: &Shape) -> Result<f64, KernelError> {
-    Ok(mass_properties(shape)?.volume)
 }
 
 /// Operations that exist only to test the bridge, built with the `test_ops` feature

@@ -4,12 +4,11 @@
 
 #[path = "common/imports.rs"]
 mod imports;
+#[path = "common/numbers.rs"]
+mod numbers;
 
+use numbers::relative_error;
 use silico_kernel::{KernelErrorKind, Mesh, fillet, make_box, tessellate};
-
-fn relative_error(actual: f64, expected: f64) -> f64 {
-    ((actual - expected) / expected).abs()
-}
 
 fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]

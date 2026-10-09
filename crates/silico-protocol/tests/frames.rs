@@ -4,8 +4,9 @@
 
 use proptest::prelude::*;
 use silico_protocol::{
-    Blob, Failure, FailureKind, FrameError, FrameReader, Generation, MAX_FRAME_LEN, Mesh, Op,
-    Reply, Request, RequestId, Response, ShapeData, ShapeSummary, TraceId, write_message,
+    Blob, DebugOp, Failure, FailureKind, FrameError, FrameReader, Generation, MAX_FRAME_LEN, Mesh,
+    Op, OutOfTurn, Reply, Request, RequestId, Response, ShapeData, ShapeSummary, TraceId,
+    write_message,
 };
 
 /// One request per operation. The match gives each variant its own index and every
@@ -34,12 +35,13 @@ fn every_op() -> Vec<Op> {
         Op::Echo {
             data: Blob::inline(vec![9; 3]),
         },
-        Op::DebugSleep { millis: 60_000 },
-        Op::DebugAbort,
-        Op::DebugSegfault,
-        Op::DebugGarbage,
-        Op::DebugEnableFpTraps,
-        Op::DebugReplyOutOfTurn { wrong_id: true },
+        Op::Debug(DebugOp::Sleep { millis: 60_000 }),
+        Op::Debug(DebugOp::Abort),
+        Op::Debug(DebugOp::Segfault),
+        Op::Debug(DebugOp::Garbage),
+        Op::Debug(DebugOp::EnableFpTraps),
+        Op::Debug(DebugOp::ReplyOutOfTurn(OutOfTurn::WrongId)),
+        Op::Debug(DebugOp::ReplyOutOfTurn(OutOfTurn::WrongGeneration)),
     ];
     let indices: std::collections::BTreeSet<usize> = ops
         .iter()
@@ -49,15 +51,16 @@ fn every_op() -> Vec<Op> {
             Op::Fillet { .. } => 2,
             Op::Tessellate { .. } => 3,
             Op::Echo { .. } => 4,
-            Op::DebugSleep { .. } => 5,
-            Op::DebugAbort => 6,
-            Op::DebugSegfault => 7,
-            Op::DebugGarbage => 8,
-            Op::DebugEnableFpTraps => 9,
-            Op::DebugReplyOutOfTurn { .. } => 10,
+            Op::Debug(DebugOp::Sleep { .. }) => 5,
+            Op::Debug(DebugOp::Abort) => 6,
+            Op::Debug(DebugOp::Segfault) => 7,
+            Op::Debug(DebugOp::Garbage) => 8,
+            Op::Debug(DebugOp::EnableFpTraps) => 9,
+            Op::Debug(DebugOp::ReplyOutOfTurn(OutOfTurn::WrongId)) => 10,
+            Op::Debug(DebugOp::ReplyOutOfTurn(OutOfTurn::WrongGeneration)) => 11,
         })
         .collect();
-    assert_eq!(indices, (0..11).collect(), "an operation has no case");
+    assert_eq!(indices, (0..12).collect(), "an operation has no case");
     ops
 }
 
@@ -88,36 +91,25 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             edge_point_counts: vec![2, 0],
         })),
         Ok(Reply::Done),
-        Err(Failure {
-            kind: FailureKind::InvalidInput,
-            message: "box size dx must be a positive, finite length, got -1".to_owned(),
-            element: None,
-            suggestion: None,
-        }),
+        Err(Failure::new(
+            FailureKind::InvalidInput,
+            "box size dx must be a positive, finite length, got -1".to_owned(),
+        )),
         Err(Failure {
             kind: FailureKind::KernelFailed,
             message: "Standard_DomainError".to_owned(),
             element: Some("Edge3".to_owned()),
             suggestion: Some("try a smaller radius".to_owned()),
         }),
-        Err(Failure {
-            kind: FailureKind::InvalidResult,
-            message: "the fillet's result isn't a valid solid".to_owned(),
-            element: None,
-            suggestion: None,
-        }),
-        Err(Failure {
-            kind: FailureKind::UnknownOp,
-            message: String::new(),
-            element: None,
-            suggestion: None,
-        }),
-        Err(Failure {
-            kind: FailureKind::Internal,
-            message: "floating-point traps were on".to_owned(),
-            element: None,
-            suggestion: None,
-        }),
+        Err(Failure::new(
+            FailureKind::InvalidResult,
+            "the fillet's result isn't a valid solid".to_owned(),
+        )),
+        Err(Failure::new(FailureKind::UnknownOp, String::new())),
+        Err(Failure::new(
+            FailureKind::Internal,
+            "floating-point traps were on".to_owned(),
+        )),
     ];
     let indices: std::collections::BTreeSet<usize> = results
         .iter()
@@ -197,15 +189,16 @@ fn roundtrip_every_op() {
 #[test]
 fn frame_layout_is_length_then_payload() {
     // A 4-byte little-endian length, then postcard: Request { id: 1, generation: 2,
-    // trace: 3, op: DebugAbort } is the varints 1, 2, and 3, then variant index 6. (Both ends ship
-    // together, so indices may shift when operations are added.)
+    // trace: 3, op: Debug(Abort) } is the varints 1, 2, and 3, then Op's variant index 5
+    // (Debug) and DebugOp's 1 (Abort). (Both ends ship together, so indices may shift when
+    // operations are added.)
     let bytes = frame_of(&Request {
         id: RequestId(1),
         generation: Generation(2),
         trace: TraceId(3),
-        op: Op::DebugAbort,
+        op: Op::Debug(DebugOp::Abort),
     });
-    assert_eq!(bytes, [4, 0, 0, 0, 1, 2, 3, 6]);
+    assert_eq!(bytes, [5, 0, 0, 0, 1, 2, 3, 5, 1]);
 }
 
 #[test]
@@ -251,7 +244,7 @@ fn oversized_frame_rejected() {
         id: RequestId(1),
         generation: Generation(1),
         trace: TraceId(0),
-        op: Op::DebugGarbage,
+        op: Op::Debug(DebugOp::Garbage),
     });
     let payload = frame.len() as u32 - 4;
     assert!(matches!(
@@ -286,7 +279,7 @@ fn trailing_bytes_are_an_error() {
         id: RequestId(1),
         generation: Generation(1),
         trace: TraceId(0),
-        op: Op::DebugAbort,
+        op: Op::Debug(DebugOp::Abort),
     });
     frame.push(0);
     frame[0] += 1; // the length now covers the extra byte
@@ -302,12 +295,7 @@ fn a_frame_of_the_wrong_message_is_a_decode_error() {
     let frame = frame_of(&Response {
         id: RequestId(1),
         generation: Generation(0),
-        result: Err(Failure {
-            kind: FailureKind::UnknownOp,
-            message: "x".repeat(300),
-            element: None,
-            suggestion: None,
-        }),
+        result: Err(Failure::new(FailureKind::UnknownOp, "x".repeat(300))),
     });
     assert!(matches!(
         FrameReader::new(frame.as_slice()).read_message::<Request>(),
@@ -502,7 +490,8 @@ fn every_op_has_its_own_name() {
             "DebugSegfault",
             "DebugGarbage",
             "DebugEnableFpTraps",
-            "DebugReplyOutOfTurn"
+            "DebugReplyWithWrongId",
+            "DebugReplyWithWrongGeneration"
         ]
     );
 }

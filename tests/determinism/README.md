@@ -4,7 +4,7 @@ Can OCCT produce bit-identical results on every machine? Silico stores models as
 
 ## What it measures
 
-- `probe.cpp`: 12 fixed operations plus direct tests of 10 math library functions.
+- `probe.cpp` (removed; in git history up to c8afc82): 12 fixed operations plus direct tests of 10 math library functions. It gave the early "probe" results below; the stress test superseded it.
 - `stress.cpp`: 605 randomized operations across 11 kinds: booleans of curved and rotated primitives, fillets, chamfers, shells, offsets, revolves, B-spline prisms, lofts, pipe sweeps, and meshes. Inputs come from an integer-only seeded generator, so they're identical everywhere without touching a math library.
 
 Every result is written as exact bits: volume, area, centre of mass, bounding box, topology counts, validity, a hash of all vertex coordinates, and a hash of the `BinTools` dump. Failures are compared by exception type and message. `compare-stress.py` compares two outputs case by case.
@@ -43,7 +43,7 @@ Developing it surfaced an undocumented OCCT behaviour. Upstream's `std::hash<Top
 pixi run stress    # builds OCCT if needed, then 10 runs, each byte-identical to the reference
 ```
 
-This works on macOS ARM and Linux x86. For a run-by-run comparison, use `compare-stress.py <reference> <run>`. `probe.cpp` is the original 12-case probe (compare its outputs with `compare.py`), and `diagnostics/` holds the serial-hash patch.
+This works on macOS ARM and Linux x86. For a run-by-run comparison, use `compare-stress.py <reference> <run>`. `diagnostics/` holds the serial-hash patch.
 
 The experiment's original one-off scripts (macOS x86 builds under Rosetta, a self-contained Linux runner, the first `detmath` shim) are in git history, under `experiments/deterministic-kernel/`. They were removed once `third_party/occt/` replaced them, so there's only one way to build OCCT.
 

@@ -5,68 +5,54 @@
 
 use silico_kernel::{test_ops, worker};
 use silico_protocol::{
-    Failure, FailureKind, Generation, Op, Reply, RequestId, Response, write_message,
+    DebugOp, Failure, FailureKind, Generation, Op, OutOfTurn, Reply, RequestId, Response,
+    write_message,
 };
 
 fn main() -> std::process::ExitCode {
     worker::run(|id, generation, op, socket| match op {
-        Op::DebugSleep { millis } => {
+        Op::Debug(DebugOp::Sleep { millis }) => {
             std::thread::sleep(std::time::Duration::from_millis(millis));
             Ok(Reply::Done)
         }
-        Op::DebugAbort => {
+        Op::Debug(DebugOp::Abort) => {
             // More lines than a crash report keeps, so the client's cap shows.
             for line in 1..=25 {
                 tracing::warn!("aborting, as asked: line {line}");
             }
             std::process::abort()
         }
-        Op::DebugSegfault => {
+        Op::Debug(DebugOp::Segfault) => {
             test_ops::raise_sigsegv();
             Ok(Reply::Done)
         }
-        Op::DebugGarbage => {
+        Op::Debug(DebugOp::Garbage) => {
             // A header claiming the largest possible frame: never a valid reply.
             socket
                 .write_all(&[0xff; 16])
                 .and_then(|()| socket.flush())
-                .map_err(|e| Failure {
-                    kind: FailureKind::Internal,
-                    message: e.to_string(),
-                    element: None,
-                    suggestion: None,
-                })?;
+                .map_err(|e| Failure::new(FailureKind::Internal, e.to_string()))?;
             Ok(Reply::Done)
         }
-        Op::DebugEnableFpTraps => {
-            test_ops::enable_fp_traps().map_err(|e| Failure {
-                kind: FailureKind::Internal,
-                message: e.message().to_owned(),
-                element: None,
-                suggestion: None,
-            })?;
+        Op::Debug(DebugOp::EnableFpTraps) => {
+            test_ops::enable_fp_traps()
+                .map_err(|e| Failure::new(FailureKind::Internal, e.message().to_owned()))?;
             Ok(Reply::Done)
         }
-        Op::DebugReplyOutOfTurn { wrong_id } => {
+        Op::Debug(DebugOp::ReplyOutOfTurn(out_of_turn)) => {
             let stale = Response {
-                id: if wrong_id {
-                    RequestId(id.0.wrapping_sub(1))
-                } else {
-                    id
+                id: match out_of_turn {
+                    OutOfTurn::WrongId => RequestId(id.0.wrapping_sub(1)),
+                    OutOfTurn::WrongGeneration => id,
                 },
-                generation: if wrong_id {
-                    generation
-                } else {
-                    Generation(generation.0.wrapping_add(1))
+                generation: match out_of_turn {
+                    OutOfTurn::WrongId => generation,
+                    OutOfTurn::WrongGeneration => Generation(generation.0.wrapping_add(1)),
                 },
                 result: Ok(Reply::Done),
             };
-            write_message(socket, &stale).map_err(|e| Failure {
-                kind: FailureKind::Internal,
-                message: e.to_string(),
-                element: None,
-                suggestion: None,
-            })?;
+            write_message(socket, &stale)
+                .map_err(|e| Failure::new(FailureKind::Internal, e.to_string()))?;
             Ok(Reply::Done)
         }
         other => worker::handle(other),

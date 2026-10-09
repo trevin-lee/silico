@@ -11,8 +11,8 @@ name = "silico"
 path = "src/main.rs"
 
 [dependencies]
+silico-core.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

@@ -29,7 +29,7 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
         }
         Op::Summarize { shape } => {
             let shape = shape_of(&shape)?;
-            let summary = ShapeSummary::from(crate::summarize(&shape).map_err(failure)?);
+            let summary = crate::summarize(&shape).map_err(failure)?;
             check_finite(&summary)?;
             Ok(Reply::Summary(summary))
         }
@@ -48,20 +48,13 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
             Ok(Reply::Mesh(mesh))
         }
         Op::Echo { data } => Ok(Reply::Echo { data }),
-        Op::DebugSleep { .. }
-        | Op::DebugAbort
-        | Op::DebugSegfault
-        | Op::DebugGarbage
-        | Op::DebugEnableFpTraps
-        | Op::DebugReplyOutOfTurn { .. } => Err(Failure {
-            kind: FailureKind::UnknownOp,
-            message: format!(
+        Op::Debug(_) => Err(Failure::new(
+            FailureKind::UnknownOp,
+            format!(
                 "{} is a test operation, not answered by this worker",
                 op.name()
             ),
-            element: None,
-            suggestion: None,
-        }),
+        )),
     }
 }
 
@@ -95,12 +88,10 @@ fn check_finite(summary: &ShapeSummary) -> Result<(), Failure> {
     ];
     match values.into_iter().find(|(_, value)| !value.is_finite()) {
         None => Ok(()),
-        Some((name, value)) => Err(Failure {
-            kind: FailureKind::KernelFailed,
-            message: format!("the shape's {name} isn't finite ({value})"),
-            element: None,
-            suggestion: None,
-        }),
+        Some((name, value)) => Err(Failure::new(
+            FailureKind::KernelFailed,
+            format!("the shape's {name} isn't finite ({value})"),
+        )),
     }
 }
 
@@ -158,12 +149,10 @@ where
         if let Err(problem) = check_fp_traps() {
             let fixed = crate::disable_fp_traps().is_ok() && check_fp_traps().is_ok();
             tracing::error!("{problem} after {name}; switched off: {fixed}");
-            result = Err(Failure {
-                kind: FailureKind::Internal,
-                message: format!("{problem} after {name}"),
-                element: None,
-                suggestion: None,
-            });
+            result = Err(Failure::new(
+                FailureKind::Internal,
+                format!("{problem} after {name}"),
+            ));
         }
         write_message(
             &mut writer,
@@ -209,8 +198,13 @@ pub fn run<F>(handle: F) -> ExitCode
 where
     F: FnMut(RequestId, Generation, Op, &mut dyn Write) -> Result<Reply, Failure>,
 {
-    let filter = tracing_subscriber::EnvFilter::try_from_env("SILICO_LOG")
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+    // The app reports a SILICO_LOG it can't use (silico_core::logging); a worker, which
+    // inherits it, quietly uses the same default.
+    let filter = std::env::var("SILICO_LOG")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .and_then(|value| tracing_subscriber::EnvFilter::try_new(value).ok())
+        .unwrap_or_else(|| tracing_subscriber::EnvFilter::new("warn"));
     let _ = tracing_subscriber::fmt()
         .json()
         .with_env_filter(filter)

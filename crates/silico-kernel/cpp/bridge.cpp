@@ -47,13 +47,6 @@ std::unique_ptr<Shape> make_box(double dx, double dy, double dz) {
   return std::make_unique<Shape>(Shape{box.Shape()});
 }
 
-MassProperties mass_properties(const Shape &shape) {
-  GProp_GProps props;
-  BRepGProp::VolumeProperties(shape.shape, props);
-  gp_Pnt c = props.CentreOfMass();
-  return MassProperties{props.Mass(), Point3{c.X(), c.Y(), c.Z()}};
-}
-
 namespace {
 // Distinct sub-shapes, numbered from 1 in the order TopExp::MapShapes finds them.
 using ShapeMap = NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>;
@@ -65,20 +58,18 @@ uint32_t count_distinct(const TopoDS_Shape &shape, TopAbs_ShapeEnum kind) {
 }
 } // namespace
 
-ShapeSummary summarize(const Shape &shape) {
+Measures measure(const Shape &shape) {
   GProp_GProps volume;
   BRepGProp::VolumeProperties(shape.shape, volume);
   GProp_GProps surface;
   BRepGProp::SurfaceProperties(shape.shape, surface);
   const gp_Pnt c = volume.CentreOfMass();
-  return ShapeSummary{volume.Mass(),
-                      surface.Mass(),
-                      Point3{c.X(), c.Y(), c.Z()},
-                      count_distinct(shape.shape, TopAbs_FACE),
-                      count_distinct(shape.shape, TopAbs_EDGE),
-                      count_distinct(shape.shape, TopAbs_VERTEX),
-                      // Filled in by Rust, which checks each shape at most once.
-                      false};
+  return Measures{volume.Mass(),
+                  surface.Mass(),
+                  Point3{c.X(), c.Y(), c.Z()},
+                  count_distinct(shape.shape, TopAbs_FACE),
+                  count_distinct(shape.shape, TopAbs_EDGE),
+                  count_distinct(shape.shape, TopAbs_VERTEX)};
 }
 
 double bounding_diagonal(const Shape &shape) {
