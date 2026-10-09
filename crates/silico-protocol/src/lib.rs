@@ -7,10 +7,12 @@
 //! there's no version negotiation.
 
 pub mod frame;
+mod primitive;
 
 use serde::{Deserialize, Serialize};
 
 pub use frame::{FrameError, FrameReader, MAX_FRAME_LEN, write_message};
+pub use primitive::{InvalidParameter, LENGTH_TOLERANCE, MAX_LENGTH, Primitive, format_number};
 
 /// The file descriptor a worker inherits its end of the socket pair as.
 pub const WORKER_FD: i32 = 3;
@@ -46,8 +48,8 @@ pub struct Request {
 /// An operation for a worker. Lengths are in the document's unit (millimetres in v1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Op {
-    /// A box from the origin to `(dx, dy, dz)`. Replies with [`Reply::Shape`].
-    MakeBox { dx: f64, dy: f64, dz: f64 },
+    /// A solid primitive. Replies with [`Reply::Shape`].
+    MakePrimitive(Primitive),
     /// A shape's volume, area, center, topology counts, and validity (as `shape` says).
     /// Replies with [`Reply::Summary`].
     Summarize { shape: ShapeData },
@@ -74,7 +76,7 @@ impl Op {
     /// The operation's name, for logs and errors.
     pub fn name(&self) -> &'static str {
         match self {
-            Op::MakeBox { .. } => "MakeBox",
+            Op::MakePrimitive(primitive) => primitive.op_name(),
             Op::Summarize { .. } => "Summarize",
             Op::Fillet { .. } => "Fillet",
             Op::Tessellate { .. } => "Tessellate",
@@ -100,6 +102,17 @@ pub enum DebugOp {
     EnableFpTraps,
     /// First send a reply out of turn, then the real one.
     ReplyOutOfTurn(OutOfTurn),
+    /// From now on, answer operations wrongly in this way.
+    Misbehave(Misbehavior),
+}
+
+/// How [`DebugOp::Misbehave`] makes the test worker answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Misbehavior {
+    /// A mesh whose triangle names a vertex that isn't there.
+    BadMesh,
+    /// [`Reply::Done`] to every operation, whatever it asked for.
+    WrongReply,
 }
 
 /// How [`DebugOp::ReplyOutOfTurn`]'s extra reply is wrong.
@@ -121,6 +134,8 @@ impl DebugOp {
             DebugOp::EnableFpTraps => "DebugEnableFpTraps",
             DebugOp::ReplyOutOfTurn(OutOfTurn::WrongId) => "DebugReplyWithWrongId",
             DebugOp::ReplyOutOfTurn(OutOfTurn::WrongGeneration) => "DebugReplyWithWrongGeneration",
+            DebugOp::Misbehave(Misbehavior::BadMesh) => "DebugMisbehaveBadMesh",
+            DebugOp::Misbehave(Misbehavior::WrongReply) => "DebugMisbehaveWrongReply",
         }
     }
 }
@@ -145,6 +160,19 @@ pub enum Reply {
     },
     /// The operation succeeded and has nothing to return.
     Done,
+}
+
+impl Reply {
+    /// The kind of reply, for messages (never its contents, which can be megabytes).
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Reply::Shape(_) => "Shape",
+            Reply::Summary(_) => "Summary",
+            Reply::Mesh(_) => "Mesh",
+            Reply::Echo { .. } => "Echo",
+            Reply::Done => "Done",
+        }
+    }
 }
 
 /// What a solid is, from [`Op::Summarize`].

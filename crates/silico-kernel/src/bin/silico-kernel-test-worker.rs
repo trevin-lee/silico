@@ -1,16 +1,44 @@
 //! The kernel worker with the test operations, for tests of the core's worker client:
-//! sleeping, aborting, crashing, replying with garbage, and switching floating-point traps
-//! on. Built only with the `test_ops` feature, and kept in its own binary so the
-//! production worker's code never dispatches these.
+//! sleeping, aborting, crashing, replying with garbage, switching floating-point traps on,
+//! and misbehaving on request. Built only with the `test_ops` feature, and kept in its own
+//! binary so the production worker's code never dispatches these.
 
 use silico_kernel::{test_ops, worker};
 use silico_protocol::{
-    DebugOp, Failure, FailureKind, Generation, Op, OutOfTurn, Reply, RequestId, Response,
-    write_message,
+    DebugOp, Failure, FailureKind, Generation, Mesh, Misbehavior, Op, OutOfTurn, Reply, RequestId,
+    Response, write_message,
 };
 
 fn main() -> std::process::ExitCode {
-    worker::run(|id, generation, op, socket| match op {
+    let mut misbehavior = None;
+    worker::run(move |id, generation, op, socket| match op {
+        Op::Debug(DebugOp::Misbehave(how)) => {
+            misbehavior = Some(how);
+            Ok(Reply::Done)
+        }
+        Op::Debug(_) => debug(id, generation, op, socket),
+        Op::Tessellate { .. } if misbehavior == Some(Misbehavior::BadMesh) => {
+            Ok(Reply::Mesh(Mesh {
+                positions: vec![[0.0; 3]; 3],
+                triangles: vec![[0, 1, 3]],
+                face_triangles: vec![1],
+                edge_points: vec![],
+                edge_point_counts: vec![],
+            }))
+        }
+        _ if misbehavior == Some(Misbehavior::WrongReply) => Ok(Reply::Done),
+        other => worker::handle(other),
+    })
+}
+
+/// The test operations other than `Misbehave`.
+fn debug(
+    id: RequestId,
+    generation: Generation,
+    op: Op,
+    socket: &mut dyn std::io::Write,
+) -> Result<Reply, Failure> {
+    match op {
         Op::Debug(DebugOp::Sleep { millis }) => {
             std::thread::sleep(std::time::Duration::from_millis(millis));
             Ok(Reply::Done)
@@ -56,5 +84,5 @@ fn main() -> std::process::ExitCode {
             Ok(Reply::Done)
         }
         other => worker::handle(other),
-    })
+    }
 }

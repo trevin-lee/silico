@@ -15,6 +15,19 @@
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
+#include <BRepPrimAPI_MakeCone.hxx>
+#include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepPrimAPI_MakeSphere.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepPrimAPI_MakePrism.hxx>
+#include <BRepPrimAPI_MakeRevol.hxx>
+#include <BRepPrim_Cylinder.hxx>
+#include <gp_Ax1.hxx>
+#include <gp_Circ.hxx>
+#include <gp_Dir.hxx>
+#include <gp_Vec.hxx>
 #include <BinTools.hxx>
 #include <GProp_GProps.hxx>
 #include <OSD.hxx>
@@ -56,7 +69,55 @@ uint32_t count_distinct(const TopoDS_Shape &shape, TopAbs_ShapeEnum kind) {
   TopExp::MapShapes(shape, kind, map);
   return static_cast<uint32_t>(map.Extent());
 }
+
+// Degrees to radians as FreeCAD converts them (Base::toRadians), so OCCT gets the same
+// angles, bit for bit.
+double radians(double degrees) { return degrees * (M_PI / 180.0); }
 } // namespace
+
+// Each primitive is built as FreeCAD's Part and PartDesign features build it, so faces
+// and edges come out in the same order (FreeCAD's Face1, Edge1, ...). See
+// docs/ports/primitives.md.
+
+std::unique_ptr<Shape> make_cylinder(double radius, double height) {
+  // FreeCAD extrudes the cylinder's bottom disc (Part::Cylinder, through PrismExtension),
+  // which numbers faces and edges differently from the cylinder itself.
+  BRepPrimAPI_MakeCylinder cylinder(radius, height, radians(360.0));
+  BRepPrim_Cylinder &primitive = cylinder.Cylinder();
+  BRepPrimAPI_MakePrism prism(primitive.BottomFace(), gp_Vec(0.0, 0.0, height));
+  return std::make_unique<Shape>(Shape{prism.Shape()});
+}
+
+std::unique_ptr<Shape> make_sphere(double radius) {
+  BRepPrimAPI_MakeSphere sphere(radius, radians(-90.0), radians(90.0), radians(360.0));
+  return std::make_unique<Shape>(Shape{sphere.Shape()});
+}
+
+std::unique_ptr<Shape> make_cylinder_directly(double radius, double height) {
+  BRepPrimAPI_MakeCylinder cylinder(radius, height, radians(360.0));
+  return std::make_unique<Shape>(Shape{cylinder.Shape()});
+}
+
+std::unique_ptr<Shape> make_cone(double radius1, double radius2, double height) {
+  BRepPrimAPI_MakeCone cone(radius1, radius2, height, radians(360.0));
+  return std::make_unique<Shape>(Shape{cone.Shape()});
+}
+
+std::unique_ptr<Shape> make_torus(double major_radius, double minor_radius) {
+  // FreeCAD revolves a circular face about Z (TopoShape::makeTorus) rather than building
+  // OCCT's torus: the circle centered at (major, 0, 0), in the XZ plane, from -180 to 180
+  // degrees, revolved a full turn.
+  gp_Circ circle;
+  circle.SetRadius(minor_radius);
+  circle.SetAxis(gp_Ax1(gp_Pnt(major_radius, 0.0, 0.0), gp_Dir(0.0, 1.0, 0.0)));
+  BRepBuilderAPI_MakeEdge edge(circle, radians(-180.0), radians(180.0));
+  BRepBuilderAPI_MakeWire wire;
+  wire.Add(edge.Edge());
+  BRepBuilderAPI_MakeFace face(wire.Wire());
+  BRepPrimAPI_MakeRevol revolve(face.Face(), gp_Ax1(gp_Pnt(0.0, 0.0, 0.0), gp_Dir(0.0, 0.0, 1.0)),
+                                radians(360.0), true);
+  return std::make_unique<Shape>(Shape{revolve.Shape()});
+}
 
 Measures measure(const Shape &shape) {
   GProp_GProps volume;

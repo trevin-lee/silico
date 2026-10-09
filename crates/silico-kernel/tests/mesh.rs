@@ -213,5 +213,7 @@ fn a_deflection_too_fine_for_the_shape_is_refused() {
     let err = tessellate(&b, 1e-5).unwrap_err();
     assert_eq!(err.kind(), KernelErrorKind::InvalidInput, "{err}");
     assert!(err.message().contains("too fine"), "{err}");
+    // The floor, readable: about √1400 × 1e-4 (OCCT's box is a hair larger).
+    assert!(err.message().contains("use at least 0.003741657"), "{err}");
     assert!(tessellate(&b, 0.004).is_ok());
 }

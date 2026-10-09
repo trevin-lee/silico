@@ -39,6 +39,11 @@ mod ffi {
         type Shape;
 
         fn make_box(dx: f64, dy: f64, dz: f64) -> Result<UniquePtr<Shape>>;
+        fn make_cylinder(radius: f64, height: f64) -> Result<UniquePtr<Shape>>;
+        fn make_sphere(radius: f64) -> Result<UniquePtr<Shape>>;
+        fn make_cylinder_directly(radius: f64, height: f64) -> Result<UniquePtr<Shape>>;
+        fn make_cone(radius1: f64, radius2: f64, height: f64) -> Result<UniquePtr<Shape>>;
+        fn make_torus(major_radius: f64, minor_radius: f64) -> Result<UniquePtr<Shape>>;
         fn measure(shape: &Shape) -> Result<Measures>;
         fn edge_count(shape: &Shape) -> Result<u32>;
         fn fillet(shape: &Shape, edges: &[u32], radius: f64) -> Result<UniquePtr<Shape>>;
@@ -73,7 +78,7 @@ mod ffi {
     }
 }
 
-pub use silico_protocol::{Mesh, ShapeSummary};
+pub use silico_protocol::{LENGTH_TOLERANCE, Mesh, Primitive, ShapeSummary};
 
 pub mod worker;
 
@@ -206,29 +211,67 @@ impl Shape {
     }
 }
 
-/// OCCT's length tolerance (`Precision::Confusion()`): lengths at or below it are zero.
-pub const LENGTH_TOLERANCE: f64 = 1e-7;
+/// A solid primitive, placed as [`Primitive`] says. Values that can't make one are refused
+/// before OCCT sees them, naming the parameter (the core refuses them first; this is the
+/// worker's own guard). OCCT would build a box with a negative size on the other side of
+/// the origin, lets NaN past its checks, and rejects lengths at or below its tolerance
+/// without saying which.
+pub fn make(primitive: &Primitive) -> Result<Shape, KernelError> {
+    primitive
+        .check()
+        .map_err(|invalid| KernelError::invalid_input(invalid.message))?;
+    let shape = match *primitive {
+        Primitive::Box { dx, dy, dz } => ffi::make_box(dx, dy, dz)?,
+        Primitive::Cylinder { radius, height } => ffi::make_cylinder(radius, height)?,
+        Primitive::Sphere { radius } => ffi::make_sphere(radius)?,
+        Primitive::Cone {
+            radius1,
+            radius2,
+            height,
+        } => {
+            // Radii within OCCT's tolerance of each other make a cylinder, built directly
+            // (so numbered like OCCT's cylinder, not like the cylinder primitive), as
+            // FreeCAD's Part::Cone does. OCCT's cone would refuse them.
+            if (radius1 - radius2).abs() < LENGTH_TOLERANCE {
+                ffi::make_cylinder_directly(radius1, height)?
+            } else {
+                // A radius of -0.0 is zero; written as 0.0, so the B-rep's bytes don't
+                // depend on the sign of a zero.
+                let unsigned_zero = |r: f64| if r == 0.0 { 0.0 } else { r };
+                ffi::make_cone(unsigned_zero(radius1), unsigned_zero(radius2), height)?
+            }
+        }
+        Primitive::Torus {
+            major_radius,
+            minor_radius,
+        } => ffi::make_torus(major_radius, minor_radius)?,
+    };
+    if shape.is_null() {
+        return Err(KernelError::new(format!(
+            "OCCT returned no {}",
+            primitive.name()
+        )));
+    }
+    // A result OCCT builds isn't always valid (a sphere of radius 1e300 comes back with
+    // three faces), refused as an operation's invalid result is. Within the allowed sizes
+    // no input is known to reach this; it guards against one that does.
+    let shape = Shape::new(shape);
+    if !shape.is_valid()? {
+        return Err(KernelError::of_kind(
+            KernelErrorKind::InvalidResult,
+            format!("the {} isn't a valid solid", primitive.name()),
+        )
+        .with_suggestion(format!(
+            "give the {} sizes nearer the model's scale",
+            primitive.name()
+        )));
+    }
+    Ok(shape)
+}
 
 /// A box with one corner at the origin and the opposite corner at `(dx, dy, dz)`.
-/// Every size must be a finite length above [`LENGTH_TOLERANCE`]: that's this operation's
-/// precondition.
 pub fn make_box(dx: f64, dy: f64, dz: f64) -> Result<Shape, KernelError> {
-    // OCCT would build a negative size as a box on the other side of the origin, lets NaN
-    // past its checks, and rejects sizes at or below its tolerance without saying which;
-    // all break the precondition, so they're refused here, naming the size. A feature that
-    // wants a reversed extent (core's decision) asks for a positive box and places it.
-    for (name, value) in [("dx", dx), ("dy", dy), ("dz", dz)] {
-        if !(value.is_finite() && value > LENGTH_TOLERANCE) {
-            return Err(KernelError::invalid_input(format!(
-                "box size {name} must be a finite length above {LENGTH_TOLERANCE}, got {value}"
-            )));
-        }
-    }
-    let shape = ffi::make_box(dx, dy, dz)?;
-    if shape.is_null() {
-        return Err(KernelError::new("OCCT returned no box"));
-    }
-    Ok(Shape::new(shape))
+    make(&Primitive::Box { dx, dy, dz })
 }
 
 /// The shape as OCCT's binary B-rep followed by its CRC-32 (4 bytes, little-endian):
@@ -376,6 +419,9 @@ fn checked_result(
     Ok(Shape::new(result).with_validity(valid))
 }
 
+/// What to try when a shape's geometry can't be meshed.
+const UNUSABLE_GEOMETRY: &str = "the shape's geometry is broken (a value too large, or not a number): rebuild it from its inputs";
+
 /// The smallest mesh deflection allowed, as a fraction of the shape's size. Finer meshes
 /// cost far more than they're worth for display: every tenth of the deflection is about
 /// ten times the triangles and seventy times the time.
@@ -388,24 +434,36 @@ pub const MIN_RELATIVE_DEFLECTION: f64 = 1e-4;
 pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
     if !(deflection.is_finite() && deflection > 0.0) {
         return Err(KernelError::invalid_input(format!(
-            "mesh deflection must be a positive, finite length, got {deflection}"
+            "mesh deflection must be a positive, finite length, got {}",
+            silico_protocol::format_number(deflection)
         )));
     }
     let inner = shape.get()?;
-    let floor = (ffi::bounding_diagonal(inner)? * MIN_RELATIVE_DEFLECTION).max(LENGTH_TOLERANCE);
+    let diagonal = ffi::bounding_diagonal(inner)?;
+    if !diagonal.is_finite() {
+        return Err(KernelError::new(
+            "the shape's extent is too large or not finite, so it can't be meshed",
+        )
+        .with_suggestion(UNUSABLE_GEOMETRY));
+    }
+    let floor = (diagonal * MIN_RELATIVE_DEFLECTION).max(LENGTH_TOLERANCE);
     if deflection < floor {
         return Err(KernelError::invalid_input(format!(
-            "mesh deflection {deflection} is too fine for this shape: use at least {floor}"
+            "mesh deflection {} is too fine for this shape: use at least {}",
+            silico_protocol::format_number(deflection),
+            silico_protocol::format_number(floor)
         )));
     }
-    let raw = ffi::tessellate(inner, deflection)?;
+    // A face OCCT can't mesh is almost always broken geometry, not the deflection.
+    let raw = ffi::tessellate(inner, deflection)
+        .map_err(|e| KernelError::from(e).with_suggestion(UNUSABLE_GEOMETRY))?;
     let raw = raw
         .as_ref()
         .ok_or_else(|| KernelError::new("OCCT returned no mesh"))?;
     let triples = |values: &[f64]| -> Vec<[f64; 3]> {
         values.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect()
     };
-    Ok(Mesh {
+    let mesh = Mesh {
         positions: triples(raw.positions()),
         triangles: raw
             .triangles()
@@ -415,7 +473,20 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
         face_triangles: raw.face_triangles().to_vec(),
         edge_points: triples(raw.edge_points()),
         edge_point_counts: raw.edge_points_per_edge().to_vec(),
-    })
+    };
+    // OCCT meshes what it's given: a shape whose geometry isn't finite (a curve with NaN in
+    // it, from a B-rep that was stored or written badly) gives coordinates that aren't
+    // finite. That's the shape's fault, reported as such. Anything else wrong with the
+    // mesh would be the bridge's bug, which the core's own check catches (and stops the
+    // worker for).
+    let finite = |p: &[f64; 3]| p.iter().all(|c| c.is_finite());
+    if !mesh.positions.iter().chain(&mesh.edge_points).all(finite) {
+        return Err(
+            KernelError::new("the shape's mesh has coordinates that aren't finite")
+                .with_suggestion(UNUSABLE_GEOMETRY),
+        );
+    }
+    Ok(mesh)
 }
 
 /// Operations that exist only to test the bridge, built with the `test_ops` feature

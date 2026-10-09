@@ -1,4 +1,4 @@
-//! silico-view runs the M0 parts through a real kernel worker and logs them to Rerun.
+//! silico-view makes the kernel's parts through a real kernel worker and logs them to Rerun.
 //! Saving to a file needs no viewer, so the test checks that path end to end.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -33,8 +33,26 @@ fn the_parts_are_built_and_saved() {
     );
     let size = std::fs::metadata(&file).unwrap().len();
     std::fs::remove_file(&file).unwrap();
-    // Three meshes with their edges: tens of kilobytes, not an empty recording.
+    // Seven meshes with their edges: tens of kilobytes, not an empty recording.
     assert!(size > 10_000, "only {size} bytes saved");
+}
+
+#[test]
+fn the_viewer_finds_the_worker_beside_it() {
+    // As `pixi run view` runs it: no SILICO_KERNEL_WORKER, the worker built next to it.
+    let file = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("view-beside-{}.rrd", std::process::id()));
+    let out = Command::new(env!("CARGO_BIN_EXE_silico-view"))
+        .env_remove("SILICO_KERNEL_WORKER")
+        .args(["--save", file.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    std::fs::remove_file(&file).unwrap();
 }
 
 #[test]

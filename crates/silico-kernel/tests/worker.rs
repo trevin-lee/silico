@@ -18,7 +18,10 @@ use std::time::{Duration, Instant};
 use scripts::script;
 use silico_core::worker::Worker;
 use silico_core::{Error, ErrorCode};
-use silico_protocol::{Blob, DebugOp, Generation, Op, OutOfTurn, Reply, ShapeData, ShapeSummary};
+use silico_protocol::{
+    Blob, DebugOp, Generation, Misbehavior, Op, OutOfTurn, Primitive, Reply, ShapeData,
+    ShapeSummary,
+};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-worker");
 const TEST_WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-test-worker");
@@ -43,7 +46,11 @@ fn process_exists(pid: u32) -> bool {
 }
 
 fn make_box(w: &mut Worker, dx: f64, dy: f64, dz: f64) -> Result<ShapeData, Error> {
-    match w.call(Generation(1), Op::MakeBox { dx, dy, dz }, TIMEOUT)? {
+    match w.call(
+        Generation(1),
+        Op::MakePrimitive(Primitive::Box { dx, dy, dz }),
+        TIMEOUT,
+    )? {
         Reply::Shape(shape) => Ok(shape),
         other => panic!("MakeBox replied {other:?}"),
     }
@@ -87,18 +94,32 @@ fn kernel_and_input_errors_are_structured_and_the_worker_lives_on() {
     let mut w = worker();
     let err = make_box(&mut w, -1.0, 1.0, 1.0).unwrap_err();
     assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
-    assert!(err.message().contains("box size dx"), "{err}");
+    assert!(err.message().contains("box dx"), "{err}");
 
     let err = make_box(&mut w, 1.0, 0.0, 1.0).unwrap_err();
     assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
-    assert!(err.message().contains("box size dy"), "{err}");
+    assert!(err.message().contains("box dy"), "{err}");
 
-    // OCCT's own failure: the cause is OCCT's, and there's always a suggestion.
-    let err = make_box(&mut w, 1e300, 1.0, 1.0).unwrap_err();
+    // OCCT's own failure: bytes with a good checksum that aren't a B-rep get past the
+    // checksum to OCCT, which can't read them. The cause is OCCT's, and there's always a
+    // suggestion.
+    let garbage = b"not a shape, but checksummed".to_vec();
+    let mut brep = garbage.clone();
+    brep.extend(crc32fast::hash(&garbage).to_le_bytes());
+    let err = w
+        .call(
+            Generation(1),
+            Op::Summarize {
+                shape: ShapeData::unchecked(Blob::inline(brep)),
+            },
+            TIMEOUT,
+        )
+        .unwrap_err();
     assert_eq!(err.code(), ErrorCode::KernelFailed, "{err}");
-    assert_eq!(err.message(), "MakeBox failed");
-    assert!(
-        err.cause().unwrap().contains("Standard_DomainError"),
+    assert_eq!(err.message(), "Summarize failed");
+    assert_eq!(
+        err.cause(),
+        Some("Storage_StreamTypeMismatchError"),
         "{err}"
     );
     assert_eq!(
@@ -134,6 +155,7 @@ fn production_worker_refuses_debug_ops() {
         Op::Debug(DebugOp::Garbage),
         Op::Debug(DebugOp::EnableFpTraps),
         Op::Debug(DebugOp::ReplyOutOfTurn(OutOfTurn::WrongId)),
+        Op::Debug(DebugOp::Misbehave(Misbehavior::WrongReply)),
     ] {
         let name = op.name();
         let err = w.call(Generation(1), op, TIMEOUT).unwrap_err();

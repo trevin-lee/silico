@@ -9,7 +9,6 @@ publish.workspace = true
 [dependencies]
 rerun = { workspace = true }
 silico-core.workspace = true
-silico-protocol.workspace = true
 
 [lints]
 workspace = true

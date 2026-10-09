@@ -1,6 +1,6 @@
 //! `silico-view`: shows what the kernel worker builds, in the Rerun viewer, until Silico
-//! has its own app (ROADMAP.md). It runs the M0 operations through a real worker (a box,
-//! a fillet, every edge rounded), meshes each result, and logs the faces, each edge's
+//! has its own app (ROADMAP.md). It makes each part through the core's kernel API (a box
+//! and its fillets, then the other primitives), meshes it, and logs the faces, each edge's
 //! polyline labelled with its number (`Edge1`, ...), and a summary of each part.
 //!
 //! Usage: `silico-view [--viewer <rerun executable>] [--save <file.rrd>]`. Without
@@ -9,39 +9,80 @@
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Duration;
 
-use silico_core::worker::Worker;
+use silico_core::kernel::{KernelWorker, Mesh, Primitive, ShapeSummary};
 use silico_core::{Error, ErrorCode};
-use silico_protocol::{Generation, Mesh, Op, Reply, ShapeData, ShapeSummary};
-
-const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// How far the mesh may stray from the surface, in millimetres.
 const DEFLECTION: f64 = 0.02;
 
-/// A part to show: a name, how it's made from a 10 × 20 × 30 box, and where it sits.
+/// A part to show: a name, how it's made, and where it sits. Parts are laid out in rows,
+/// 30 apart, the rows 40 apart; none is more than 24 across.
 struct Part {
     name: &'static str,
+    primitive: Primitive,
     fillet: Option<(&'static [u32], f64)>,
-    x: f32,
+    at: [f32; 2],
 }
+
+const BOX: Primitive = Primitive::Box {
+    dx: 10.0,
+    dy: 20.0,
+    dz: 30.0,
+};
 
 const PARTS: &[Part] = &[
     Part {
         name: "box",
+        primitive: BOX,
         fillet: None,
-        x: 0.0,
+        at: [0.0, 0.0],
     },
     Part {
         name: "fillet_edge1_r2",
+        primitive: BOX,
         fillet: Some((&[1], 2.0)),
-        x: 25.0,
+        at: [30.0, 0.0],
     },
     Part {
         name: "every_edge_r1",
+        primitive: BOX,
         fillet: Some((&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], 1.0)),
-        x: 50.0,
+        at: [60.0, 0.0],
+    },
+    Part {
+        name: "cylinder",
+        primitive: Primitive::Cylinder {
+            radius: 5.0,
+            height: 10.0,
+        },
+        fillet: None,
+        at: [0.0, 40.0],
+    },
+    Part {
+        name: "sphere",
+        primitive: Primitive::Sphere { radius: 5.0 },
+        fillet: None,
+        at: [30.0, 40.0],
+    },
+    Part {
+        name: "cone",
+        primitive: Primitive::Cone {
+            radius1: 5.0,
+            radius2: 2.0,
+            height: 10.0,
+        },
+        fillet: None,
+        at: [60.0, 40.0],
+    },
+    Part {
+        name: "torus",
+        primitive: Primitive::Torus {
+            major_radius: 10.0,
+            minor_radius: 2.0,
+        },
+        fillet: None,
+        at: [90.0, 40.0],
     },
 ];
 
@@ -105,93 +146,16 @@ fn parse_args() -> Result<Command, Error> {
     Ok(Command::Show(sink))
 }
 
-/// The kernel worker: `SILICO_KERNEL_WORKER`, or the one built next to this executable.
-fn worker_path() -> Result<PathBuf, Error> {
-    if let Some(path) = std::env::var_os("SILICO_KERNEL_WORKER") {
-        return Ok(PathBuf::from(path));
-    }
-    let exe = std::env::current_exe().map_err(|e| {
-        Error::new(ErrorCode::Internal, "can't find this executable").with_cause(e.to_string())
-    })?;
-    let worker = exe.with_file_name("silico-kernel-worker");
-    if worker.exists() {
-        Ok(worker)
-    } else {
-        Err(Error::new(
-            ErrorCode::Internal,
-            format!("no kernel worker at {}", worker.display()),
-        )
-        .with_suggestion("build it: cargo build -p silico-kernel --bin silico-kernel-worker"))
-    }
-}
-
-fn shape_of(reply: Reply) -> Result<ShapeData, Error> {
-    match reply {
-        Reply::Shape(shape) => Ok(shape),
-        other => Err(unexpected(&other)),
-    }
-}
-
-fn unexpected(reply: &Reply) -> Error {
-    Error::new(
-        ErrorCode::ProtocolError,
-        "the kernel worker sent an unexpected reply",
-    )
-    .with_cause(format!("{reply:?}"))
-}
-
-/// Builds `part` through the worker, and returns its mesh and summary.
-fn build(worker: &mut Worker, part: &Part) -> Result<(Mesh, ShapeSummary), Error> {
-    let mut shape = shape_of(worker.call(
-        Generation(1),
-        Op::MakeBox {
-            dx: 10.0,
-            dy: 20.0,
-            dz: 30.0,
-        },
-        TIMEOUT,
-    )?)?;
+/// Makes `part` through the kernel, and returns its mesh and summary.
+fn build(kernel: &mut KernelWorker, part: &Part) -> Result<(Mesh, ShapeSummary), Error> {
+    let mut shape = kernel.make(part.primitive)?;
     if let Some((edges, radius)) = part.fillet {
-        shape = shape_of(worker.call(
-            Generation(1),
-            Op::Fillet {
-                shape,
-                edges: edges.to_vec(),
-                radius,
-            },
-            TIMEOUT,
-        )?)?;
+        shape = kernel.fillet(&shape, edges, radius)?;
     }
-    let summary = match worker.call(
-        Generation(1),
-        Op::Summarize {
-            shape: shape.clone(),
-        },
-        TIMEOUT,
-    )? {
-        Reply::Summary(summary) => summary,
-        other => return Err(unexpected(&other)),
-    };
-    let mesh = match worker.call(
-        Generation(1),
-        Op::Tessellate {
-            shape,
-            deflection: DEFLECTION,
-        },
-        TIMEOUT,
-    )? {
-        Reply::Mesh(mesh) => mesh,
-        other => return Err(unexpected(&other)),
-    };
-    // Everything below indexes into the mesh: a worker's reply is checked first.
-    mesh.validate().map_err(|problem| {
-        Error::new(
-            ErrorCode::ProtocolError,
-            "the kernel worker sent an inconsistent mesh",
-        )
-        .with_cause(problem)
-    })?;
-    Ok((mesh, summary))
+    Ok((
+        kernel.tessellate(&shape, DEFLECTION)?,
+        kernel.summarize(&shape)?,
+    ))
 }
 
 fn rerun_error(e: impl std::fmt::Display) -> Error {
@@ -262,7 +226,7 @@ fn log_part(
 ) -> Result<(), Error> {
     rec.log_static(
         part.name,
-        &rerun::Transform3D::from_translation([part.x, 0.0, 0.0]),
+        &rerun::Transform3D::from_translation([part.at[0], part.at[1], 0.0]),
     )
     .map_err(rerun_error)?;
     rec.log_static(
@@ -298,7 +262,7 @@ fn log_part(
 }
 
 fn run(sink: Sink) -> Result<String, Error> {
-    let mut worker = Worker::spawn(&worker_path()?)?;
+    let mut kernel = KernelWorker::start()?;
     let builder = rerun::RecordingStreamBuilder::new("silico");
     let (rec, done) = match &sink {
         Sink::File(path) => (
@@ -327,7 +291,7 @@ fn run(sink: Sink) -> Result<String, Error> {
     rec.log_static("/", &rerun::ViewCoordinates::RIGHT_HAND_Z_UP())
         .map_err(rerun_error)?;
     for part in PARTS {
-        let (mesh, summary) = build(&mut worker, part)?;
+        let (mesh, summary) = build(&mut kernel, part)?;
         log_part(&rec, part, &mesh, &summary)?;
     }
     rec.flush_blocking().map_err(rerun_error)?;
@@ -336,7 +300,7 @@ fn run(sink: Sink) -> Result<String, Error> {
 
 #[cfg(test)]
 mod tests {
-    use silico_protocol::Mesh;
+    use silico_core::kernel::{Mesh, Primitive};
 
     use super::{PARTS, edge_strips};
 
@@ -363,14 +327,29 @@ mod tests {
 
     #[test]
     fn parts_sit_apart() {
-        // Each part is 10 wide; they mustn't overlap.
-        for pair in PARTS.windows(2) {
-            assert!(
-                pair[1].x - pair[0].x > 10.0,
-                "{} and {}",
-                pair[0].name,
-                pair[1].name
-            );
+        // Each part's footprint on the ground, from its primitive's sizes (a fillet only
+        // removes material): no two overlap.
+        let footprint = |part: &super::Part| -> [f32; 4] {
+            let [x, y] = part.at;
+            let round = |r: f64| [x - r as f32, y - r as f32, x + r as f32, y + r as f32];
+            match part.primitive {
+                Primitive::Box { dx, dy, .. } => [x, y, x + dx as f32, y + dy as f32],
+                Primitive::Cylinder { radius, .. } | Primitive::Sphere { radius } => round(radius),
+                Primitive::Cone {
+                    radius1, radius2, ..
+                } => round(radius1.max(radius2)),
+                Primitive::Torus {
+                    major_radius,
+                    minor_radius,
+                } => round(major_radius + minor_radius),
+            }
+        };
+        for (i, a) in PARTS.iter().enumerate() {
+            for b in &PARTS[i + 1..] {
+                let ([a0, a1, a2, a3], [b0, b1, b2, b3]) = (footprint(a), footprint(b));
+                let apart = a2 < b0 || b2 < a0 || a3 < b1 || b3 < a1;
+                assert!(apart, "{} and {} overlap", a.name, b.name);
+            }
         }
     }
 }

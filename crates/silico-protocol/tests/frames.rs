@@ -5,8 +5,8 @@
 use proptest::prelude::*;
 use silico_protocol::{
     Blob, DebugOp, Failure, FailureKind, FrameError, FrameReader, Generation, MAX_FRAME_LEN, Mesh,
-    Op, OutOfTurn, Reply, Request, RequestId, Response, ShapeData, ShapeSummary, TraceId,
-    write_message,
+    Misbehavior, Op, OutOfTurn, Primitive, Reply, Request, RequestId, Response, ShapeData,
+    ShapeSummary, TraceId, write_message,
 };
 
 /// One request per operation. The match gives each variant its own index and every
@@ -14,11 +14,25 @@ use silico_protocol::{
 /// compile, and an arm without a case leaves its index out.
 fn every_op() -> Vec<Op> {
     let ops = vec![
-        Op::MakeBox {
+        Op::MakePrimitive(Primitive::Box {
             dx: 10.0,
             dy: 20.0,
             dz: 30.0,
-        },
+        }),
+        Op::MakePrimitive(Primitive::Cylinder {
+            radius: 5.0,
+            height: 10.0,
+        }),
+        Op::MakePrimitive(Primitive::Sphere { radius: 5.0 }),
+        Op::MakePrimitive(Primitive::Cone {
+            radius1: 5.0,
+            radius2: 0.0,
+            height: 10.0,
+        }),
+        Op::MakePrimitive(Primitive::Torus {
+            major_radius: 10.0,
+            minor_radius: 2.0,
+        }),
         // Each state of a shape's validity: false, true, and unknown.
         Op::Summarize {
             shape: ShapeData::checked(Blob::inline((0..=255).collect()), false),
@@ -42,25 +56,33 @@ fn every_op() -> Vec<Op> {
         Op::Debug(DebugOp::EnableFpTraps),
         Op::Debug(DebugOp::ReplyOutOfTurn(OutOfTurn::WrongId)),
         Op::Debug(DebugOp::ReplyOutOfTurn(OutOfTurn::WrongGeneration)),
+        Op::Debug(DebugOp::Misbehave(Misbehavior::BadMesh)),
+        Op::Debug(DebugOp::Misbehave(Misbehavior::WrongReply)),
     ];
     let indices: std::collections::BTreeSet<usize> = ops
         .iter()
         .map(|op| match op {
-            Op::MakeBox { .. } => 0,
-            Op::Summarize { .. } => 1,
-            Op::Fillet { .. } => 2,
-            Op::Tessellate { .. } => 3,
-            Op::Echo { .. } => 4,
-            Op::Debug(DebugOp::Sleep { .. }) => 5,
-            Op::Debug(DebugOp::Abort) => 6,
-            Op::Debug(DebugOp::Segfault) => 7,
-            Op::Debug(DebugOp::Garbage) => 8,
-            Op::Debug(DebugOp::EnableFpTraps) => 9,
-            Op::Debug(DebugOp::ReplyOutOfTurn(OutOfTurn::WrongId)) => 10,
-            Op::Debug(DebugOp::ReplyOutOfTurn(OutOfTurn::WrongGeneration)) => 11,
+            Op::MakePrimitive(Primitive::Box { .. }) => 0,
+            Op::MakePrimitive(Primitive::Cylinder { .. }) => 1,
+            Op::MakePrimitive(Primitive::Sphere { .. }) => 2,
+            Op::MakePrimitive(Primitive::Cone { .. }) => 3,
+            Op::MakePrimitive(Primitive::Torus { .. }) => 4,
+            Op::Summarize { .. } => 5,
+            Op::Fillet { .. } => 6,
+            Op::Tessellate { .. } => 7,
+            Op::Echo { .. } => 8,
+            Op::Debug(DebugOp::Sleep { .. }) => 9,
+            Op::Debug(DebugOp::Abort) => 10,
+            Op::Debug(DebugOp::Segfault) => 11,
+            Op::Debug(DebugOp::Garbage) => 12,
+            Op::Debug(DebugOp::EnableFpTraps) => 13,
+            Op::Debug(DebugOp::ReplyOutOfTurn(OutOfTurn::WrongId)) => 14,
+            Op::Debug(DebugOp::ReplyOutOfTurn(OutOfTurn::WrongGeneration)) => 15,
+            Op::Debug(DebugOp::Misbehave(Misbehavior::BadMesh)) => 16,
+            Op::Debug(DebugOp::Misbehave(Misbehavior::WrongReply)) => 17,
         })
         .collect();
-    assert_eq!(indices, (0..12).collect(), "an operation has no case");
+    assert_eq!(indices, (0..18).collect(), "an operation has no case");
     ops
 }
 
@@ -93,7 +115,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         Ok(Reply::Done),
         Err(Failure::new(
             FailureKind::InvalidInput,
-            "box size dx must be a positive, finite length, got -1".to_owned(),
+            "box dx must be a finite length above 1e-7, got -1".to_owned(),
         )),
         Err(Failure {
             kind: FailureKind::KernelFailed,
@@ -350,7 +372,7 @@ proptest! {
             None => ShapeData::unchecked(Blob::inline(blob.clone())),
         };
         for op in [
-            Op::MakeBox { dx: dims[0], dy: dims[1], dz: dims[2] },
+            Op::MakePrimitive(Primitive::Box { dx: dims[0], dy: dims[1], dz: dims[2] }),
             Op::Summarize { shape: shape() },
             Op::Fillet {
                 shape: shape(),
@@ -481,6 +503,10 @@ fn every_op_has_its_own_name() {
         names,
         [
             "MakeBox",
+            "MakeCylinder",
+            "MakeSphere",
+            "MakeCone",
+            "MakeTorus",
             "Summarize",
             "Fillet",
             "Tessellate",
@@ -491,7 +517,9 @@ fn every_op_has_its_own_name() {
             "DebugGarbage",
             "DebugEnableFpTraps",
             "DebugReplyWithWrongId",
-            "DebugReplyWithWrongGeneration"
+            "DebugReplyWithWrongGeneration",
+            "DebugMisbehaveBadMesh",
+            "DebugMisbehaveWrongReply"
         ]
     );
 }

@@ -169,6 +169,19 @@ impl Worker {
         self.child.id()
     }
 
+    /// Stops the worker (kills and reaps it); later calls fail at once. For a worker whose
+    /// replies can't be trusted.
+    pub fn shut_down(&mut self) {
+        kill_and_reap(&mut self.child);
+        self.stopped = true;
+    }
+
+    /// How many requests have been sent to this worker (or tried). For tests, which check
+    /// that a refused value never reached it.
+    pub fn requests_sent(&self) -> u64 {
+        self.next_id
+    }
+
     /// Whether the worker has been stopped after a crash, hang, or bad reply.
     pub fn is_stopped(&self) -> bool {
         self.stopped

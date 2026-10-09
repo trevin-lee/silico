@@ -78,8 +78,7 @@ fn box_zero_dimension_is_err() {
             .unwrap_or_else(|| panic!("box {dx} × {dy} × {dz} was accepted"));
         assert_eq!(err.kind(), KernelErrorKind::InvalidInput, "{err}");
         assert!(
-            err.message()
-                .starts_with(&format!("box size {name} must be")),
+            err.message().starts_with(&format!("box {name} must be")),
             "{err}"
         );
     }
@@ -103,24 +102,32 @@ fn box_negative_and_nan_are_err() {
             .err()
             .unwrap_or_else(|| panic!("box {dx} × {dy} × {dz} was accepted"));
         assert!(
-            err.message()
-                .starts_with(&format!("box size {name} must be")),
+            err.message().starts_with(&format!("box {name} must be")),
             "{dx} × {dy} × {dz}: {err}"
         );
     }
 }
 
 #[test]
-fn box_huge_sizes_are_err() {
-    // OCCT treats sizes past about 1e100 as infinite.
-    for (dx, dy, dz) in [(f64::MAX, 1.0, 1.0), (1e300, 1e300, 1e300)] {
+fn box_sizes_above_a_kilometre_are_refused() {
+    // OCCT treats sizes past about 1e100 as infinite and mismeasures some long before;
+    // the bridge refuses anything above 1e6 (a kilometre), naming the size.
+    for (dx, dy, dz, name) in [
+        (f64::MAX, 1.0, 1.0, "dx"),
+        (1.0, 1e300, 1.0, "dy"),
+        (1.0, 1.0, 1e6 + 1.0, "dz"),
+    ] {
         let err = make_box(dx, dy, dz)
             .err()
             .unwrap_or_else(|| panic!("box {dx:e} × {dy:e} × {dz:e} was accepted"));
-        // OCCT's own refusal, not the bridge's.
-        assert_eq!(err.kind(), KernelErrorKind::Failed, "{err}");
-        assert!(err.message().contains("Standard_DomainError"), "{err}");
+        assert_eq!(err.kind(), KernelErrorKind::InvalidInput, "{err}");
+        assert!(
+            err.message().starts_with(&format!("box {name} must be")),
+            "{err}"
+        );
     }
+    // A kilometre itself is allowed.
+    assert!(make_box(1e6, 1.0, 1.0).is_ok());
 }
 
 #[test]

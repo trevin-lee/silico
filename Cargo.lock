@@ -3926,6 +3926,7 @@ dependencies = [
  "crc32fast",
  "cxx",
  "cxx-build",
+ "proptest",
  "serde_json",
  "silico-core",
  "silico-kernel",
@@ -3951,7 +3952,6 @@ version = "0.0.0"
 dependencies = [
  "rerun",
  "silico-core",
- "silico-protocol",
 ]
 
 [[package]]

@@ -23,8 +23,8 @@ use crate::{KernelError, KernelErrorKind};
 /// The production operations. Test operations get [`FailureKind::UnknownOp`].
 pub fn handle(op: Op) -> Result<Reply, Failure> {
     match op {
-        Op::MakeBox { dx, dy, dz } => {
-            let shape = crate::make_box(dx, dy, dz).map_err(failure)?;
+        Op::MakePrimitive(primitive) => {
+            let shape = crate::make(&primitive).map_err(failure)?;
             shape_reply(&shape)
         }
         Op::Summarize { shape } => {

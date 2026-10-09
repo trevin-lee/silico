@@ -9,7 +9,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use silico_core::worker::Worker;
-use silico_protocol::{Blob, Generation, Op, Reply};
+use silico_protocol::{Blob, Generation, Op, Primitive, Reply};
 
 const ROUND_TRIP_BUDGET: Duration = Duration::from_micros(50);
 const THROUGHPUT_BUDGET: f64 = 1e9; // bytes per second
@@ -56,11 +56,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         let start = Instant::now();
         let brep = match worker.call(
             Generation(1),
-            Op::MakeBox {
+            Op::MakePrimitive(Primitive::Box {
                 dx: 10.0,
                 dy: 20.0,
                 dz: 30.0,
-            },
+            }),
             Duration::from_secs(30),
         )? {
             Reply::Shape(shape) => shape,

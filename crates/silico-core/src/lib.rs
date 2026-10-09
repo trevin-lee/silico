@@ -3,6 +3,7 @@
 //! topological naming, and the command API every client uses arrive from M1 on.
 
 mod error;
+pub mod kernel;
 pub mod logging;
 pub mod worker;
 

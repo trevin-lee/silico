@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use silico_core::ErrorCode;
 use silico_core::worker::Worker;
-use silico_protocol::{Blob, Generation, Op, Reply, ShapeData, ShapeSummary};
+use silico_protocol::{Blob, Generation, Op, Primitive, Reply, ShapeData, ShapeSummary};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-worker");
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -81,11 +81,11 @@ fn fillet_through_worker(
 ) -> Result<ShapeSummary, silico_core::Error> {
     let shape = match w.call(
         Generation(1),
-        Op::MakeBox {
+        Op::MakePrimitive(Primitive::Box {
             dx: 10.0,
             dy: 20.0,
             dz: 30.0,
-        },
+        }),
         TIMEOUT,
     )? {
         Reply::Shape(shape) => shape,
@@ -284,11 +284,11 @@ fn a_filleted_shape_crosses_the_boundary_intact() {
     let brep = match w
         .call(
             Generation(1),
-            Op::MakeBox {
+            Op::MakePrimitive(Primitive::Box {
                 dx: 10.0,
                 dy: 20.0,
                 dz: 30.0,
-            },
+            }),
             TIMEOUT,
         )
         .unwrap()
@@ -432,11 +432,11 @@ fn fillet_brep(w: &mut Worker, edges: &[u32], radius: f64) -> ShapeData {
     let shape = match w
         .call(
             Generation(1),
-            Op::MakeBox {
+            Op::MakePrimitive(Primitive::Box {
                 dx: 10.0,
                 dy: 20.0,
                 dz: 30.0,
-            },
+            }),
             TIMEOUT,
         )
         .unwrap()

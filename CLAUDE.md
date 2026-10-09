@@ -7,8 +7,8 @@ Silico is a parametric CAD system: a Rust core, an egui/wgpu UI, and OpenCascade
 **Status:** M0 (foundations) is built; M1 (the kernel's operations) is next. See [ROADMAP.md](ROADMAP.md) and the walkthrough, [docs/walkthrough/m0.md](docs/walkthrough/m0.md). What each crate holds now:
 
 - `silico-kernel`: the OCCT bridge (C++ through `cxx`) and the kernel worker binaries. The only crate that links OCCT.
-- `silico-protocol`: the messages between the core and workers, and their framing.
-- `silico-core`: the structured `Error`, and the worker client (`worker::Worker`), which starts workers and turns crashes, hangs, and bad replies into errors. The document model, feature graph, and command API come in M1 and later.
+- `silico-protocol`: the messages between the core and workers, their framing, and the rule for valid primitive values (`Primitive::check`).
+- `silico-core`: the structured `Error`; the worker client (`worker::Worker`), which starts workers and turns crashes, hangs, and bad replies into errors; and the typed layer over one kernel worker (`kernel::KernelWorker`: primitives, fillet, summarize, tessellate), which checks values and replies so nothing above it handles protocol messages. The document model, feature graph, and command API come later.
 - `silico-cli`: logging setup only, so far.
 - `silico-view`: a debug viewer that shows the kernel's parts in Rerun, until the app exists.
 
@@ -64,7 +64,7 @@ pixi run test      # OCCT, then the libm shim tests, the OCCT guard and cache te
 pixi run lint      # fmt and clippy, including the libm shim crate
 pixi run stress    # 605-case stress test, 10 runs, byte-identical to the committed reference
 pixi run gate      # every check on the committed tree: workspace lints, cargo-deny, lint, test, one stress run
-pixi run view      # the M0 parts (box, fillets) in the Rerun viewer, edges labelled Edge1, Edge2, ...
+pixi run view      # the kernel's parts (a box, fillets, the primitives) in Rerun, edges labelled Edge1, ...
 cargo mutants --in-place --in-diff <(git diff main...HEAD)
                    # every workspace test, with nextest (.cargo/mutants.toml). In place, since a
                    # copy of the tree has no target/occt: run it in a scratch worktree

@@ -49,6 +49,12 @@ struct Shape {
 };
 
 std::unique_ptr<Shape> make_box(double dx, double dy, double dz);
+std::unique_ptr<Shape> make_cylinder(double radius, double height);
+std::unique_ptr<Shape> make_sphere(double radius);
+// OCCT's own cylinder, not extruded (FreeCAD builds a cone with equal radii this way).
+std::unique_ptr<Shape> make_cylinder_directly(double radius, double height);
+std::unique_ptr<Shape> make_cone(double radius1, double radius2, double height);
+std::unique_ptr<Shape> make_torus(double major_radius, double minor_radius);
 
 // Volume, area, center of mass, and the numbers of distinct faces, edges, and vertices.
 Measures measure(const Shape &shape);
