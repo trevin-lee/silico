@@ -19,7 +19,7 @@ mkdir -p "$(dirname "$tree")"
 
 # One run at a time per checkout: a second run would switch the shared worktree to its
 # own commit halfway through the first. Re-run this script holding a lock on it (Perl's
-# flock, as scripts/cache.sh does; released if the process dies).
+# flock, as third_party/occt/scripts/cache.sh does; released if the process dies).
 if [ "${SILICO_GATE_LOCKED-}" != 1 ]; then
   exec env SILICO_GATE_LOCKED=1 perl -MFcntl=:flock -e '
     BEGIN { $^F = 1023 }
