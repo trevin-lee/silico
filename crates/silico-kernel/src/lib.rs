@@ -33,6 +33,51 @@ mod ffi {
         vertices: u32,
     }
 
+    /// A kind of sub-shape, as the bridge reports history. `Other` is a kind history
+    /// doesn't use (a wire, a shell), which Rust leaves out.
+    #[repr(u8)]
+    enum Kind {
+        Vertex = 0,
+        Edge = 1,
+        Face = 2,
+        Solid = 3,
+        Other = 4,
+    }
+
+    /// How an input element relates to a result element.
+    #[repr(u8)]
+    enum Relation {
+        /// The same sub-shape, unchanged.
+        Kept,
+        /// OCCT's `Modified`.
+        Modified,
+        /// OCCT's `Generated`.
+        Generated,
+    }
+
+    /// One fact of an operation's history, as OCCT reports it: input `input`'s element
+    /// (`input_kind`, `input_index`, numbered from 1) relates to the result's element
+    /// (`output_kind`, `output_index`), or to something the result doesn't have
+    /// (`output_index` 0). `position` is where OCCT's `Modified` or `Generated` list had
+    /// it, from 1 (0 for `Kept`). For each input element, `Kept` comes first.
+    struct HistoryEntry {
+        input: u32,
+        input_kind: Kind,
+        input_index: u32,
+        relation: Relation,
+        output_kind: Kind,
+        output_index: u32,
+        position: u32,
+    }
+
+    /// How many distinct faces, edges, vertices, and solids a shape has.
+    struct Counts {
+        faces: u32,
+        edges: u32,
+        vertices: u32,
+        solids: u32,
+    }
+
     unsafe extern "C++" {
         include!("silico-kernel/cpp/bridge.h");
 
@@ -46,7 +91,13 @@ mod ffi {
         fn make_torus(major_radius: f64, minor_radius: f64) -> Result<UniquePtr<Shape>>;
         fn measure(shape: &Shape) -> Result<Measures>;
         fn edge_count(shape: &Shape) -> Result<u32>;
-        fn fillet(shape: &Shape, edges: &[u32], radius: f64) -> Result<UniquePtr<Shape>>;
+        fn fillet(
+            shape: &Shape,
+            edges: &[u32],
+            radius: f64,
+            history: &mut Vec<HistoryEntry>,
+        ) -> Result<UniquePtr<Shape>>;
+        fn count_elements(shape: &Shape) -> Result<Counts>;
         fn is_valid_where_changed(input: &Shape, result: &Shape) -> Result<bool>;
         fn is_valid(shape: &Shape) -> Result<bool>;
 
@@ -78,7 +129,10 @@ mod ffi {
     }
 }
 
-pub use silico_protocol::{LENGTH_TOLERANCE, Mesh, Primitive, ShapeSummary};
+pub use silico_protocol::{
+    ElementCounts, ElementFate, ElementKind, ElementRef, History, InputHistory, LENGTH_TOLERANCE,
+    Mesh, Primitive, Reported, ShapeSummary,
+};
 
 pub mod worker;
 
@@ -104,6 +158,8 @@ pub enum KernelErrorKind {
     Failed,
     /// OCCT performed the operation, but its result isn't valid, so it was refused.
     InvalidResult,
+    /// Silico's bridge did something it shouldn't: a bug.
+    Internal,
 }
 
 impl KernelError {
@@ -335,7 +391,7 @@ pub fn summarize(shape: &Shape) -> Result<ShapeSummary, KernelError> {
 
 /// Rounds `edges` of `shape` with a constant `radius`. Edges are numbered from 1 in OCCT's
 /// `TopExp::MapShapes` order, which is also FreeCAD's `Edge1`, `Edge2`, and so on.
-pub fn fillet(shape: &Shape, edges: &[u32], radius: f64) -> Result<Shape, KernelError> {
+pub fn fillet(shape: &Shape, edges: &[u32], radius: f64) -> Result<Built, KernelError> {
     if !(radius.is_finite() && radius > 0.0) {
         return Err(KernelError::invalid_input(format!(
             "fillet radius must be a positive, finite length, got {radius}"
@@ -373,8 +429,144 @@ pub fn fillet(shape: &Shape, edges: &[u32], radius: f64) -> Result<Shape, Kernel
             "try a smaller radius, or fillet the edges one at a time to find the one that fails",
         ),
     };
-    let rounded = ffi::fillet(inner, edges, radius).map_err(|e| blame(e.into()))?;
-    checked_result(shape, rounded, "fillet").map_err(blame)
+    let mut entries = Vec::new();
+    let rounded = ffi::fillet(inner, edges, radius, &mut entries).map_err(|e| blame(e.into()))?;
+    let shape_out = checked_result(shape, rounded, "fillet").map_err(blame)?;
+    let history = history_of(&[inner], shape_out.get()?, &entries)?;
+    Ok(Built {
+        shape: shape_out,
+        history,
+    })
+}
+
+/// A shape an operation built, and what the operation did to its inputs' faces, edges,
+/// and vertices (docs/ports/history.md).
+pub struct Built {
+    pub shape: Shape,
+    pub history: History,
+}
+
+/// The history the bridge reported for an operation on `inputs` giving `result`.
+fn history_of(
+    inputs: &[&ffi::Shape],
+    result: &ffi::Shape,
+    entries: &[ffi::HistoryEntry],
+) -> Result<History, KernelError> {
+    let counts = |shape: &ffi::Shape| -> Result<ElementCounts, KernelError> {
+        let c = ffi::count_elements(shape)?;
+        Ok(ElementCounts {
+            faces: c.faces,
+            edges: c.edges,
+            vertices: c.vertices,
+            solids: c.solids,
+        })
+    };
+    let input_counts = inputs
+        .iter()
+        .map(|input| counts(input))
+        .collect::<Result<Vec<_>, _>>()?;
+    assemble_history(&input_counts, counts(result)?, entries)
+}
+
+/// The history as Silico keeps it, from the bridge's facts: each input element's fate,
+/// with what OCCT named that the result doesn't have left out (its position still counts),
+/// an element "modified" into itself counted as kept, a "modified" of another kind left
+/// out (FreeCAD's rule: OCCT's `Modified` means the same kind), and each list sorted by
+/// element so its order never depends on OCCT's.
+fn assemble_history(
+    inputs: &[ElementCounts],
+    result: ElementCounts,
+    entries: &[ffi::HistoryEntry],
+) -> Result<History, KernelError> {
+    let mut history = History {
+        inputs: inputs
+            .iter()
+            .map(|c| InputHistory {
+                faces: vec![ElementFate::default(); c.faces as usize],
+                edges: vec![ElementFate::default(); c.edges as usize],
+                vertices: vec![ElementFate::default(); c.vertices as usize],
+            })
+            .collect(),
+        result,
+    };
+    let malformed = |what: &str| {
+        KernelError::of_kind(
+            KernelErrorKind::Internal,
+            format!("the bridge reported a history {what}"),
+        )
+        .with_suggestion("this is a bug in Silico's kernel bridge: report it")
+    };
+    for e in entries {
+        let input = history
+            .inputs
+            .get_mut(e.input as usize)
+            .ok_or_else(|| malformed("for an input the operation doesn't have"))?;
+        let input_kind = element_kind(e.input_kind);
+        let fates = match input_kind {
+            Some(ElementKind::Face) => &mut input.faces,
+            Some(ElementKind::Edge) => &mut input.edges,
+            Some(ElementKind::Vertex) => &mut input.vertices,
+            _ => return Err(malformed("for an element of the wrong kind")),
+        };
+        let fate = (e.input_index as usize)
+            .checked_sub(1)
+            .and_then(|i| fates.get_mut(i))
+            .ok_or_else(|| malformed("for an element the input doesn't have"))?;
+        // A wire or a shell, or something the result doesn't have (OCCT names those, as
+        // for a revolve's vertices): not part of the history.
+        let Some(kind) = element_kind(e.output_kind) else {
+            continue;
+        };
+        if e.output_index == 0 {
+            continue;
+        }
+        let output = Reported {
+            element: ElementRef {
+                kind,
+                index: e.output_index,
+            },
+            position: e.position,
+        };
+        let listed = |list: &[Reported]| list.iter().any(|r| r.element == output.element);
+        match e.relation {
+            ffi::Relation::Kept => fate.kept = Some(e.output_index),
+            ffi::Relation::Modified => {
+                let same_kind = Some(kind) == input_kind;
+                let itself = same_kind && fate.kept == Some(e.output_index);
+                if same_kind && !itself && !listed(&fate.modified) {
+                    fate.modified.push(output);
+                }
+            }
+            ffi::Relation::Generated => {
+                if !listed(&fate.generated) {
+                    fate.generated.push(output);
+                }
+            }
+            _ => return Err(malformed("with an unknown relation")),
+        }
+    }
+    for input in &mut history.inputs {
+        for fate in input
+            .faces
+            .iter_mut()
+            .chain(&mut input.edges)
+            .chain(&mut input.vertices)
+        {
+            fate.modified.sort();
+            fate.generated.sort();
+        }
+    }
+    Ok(history)
+}
+
+fn element_kind(kind: ffi::Kind) -> Option<ElementKind> {
+    match kind {
+        ffi::Kind::Vertex => Some(ElementKind::Vertex),
+        ffi::Kind::Edge => Some(ElementKind::Edge),
+        ffi::Kind::Face => Some(ElementKind::Face),
+        ffi::Kind::Solid => Some(ElementKind::Solid),
+        _ => None,
+    }
 }
 
 /// The check every operation's result passes before it's returned. OCCT can report an
@@ -538,5 +730,175 @@ mod tests {
     #[test]
     fn unit_test_binary_imports_no_platform_math() {
         super::imports::assert_this_binary_imports_no_platform_math();
+    }
+
+    use super::ffi::{HistoryEntry, Kind, Relation};
+    use super::{
+        ElementCounts, ElementKind, ElementRef, KernelErrorKind, Reported, assemble_history,
+    };
+
+    fn at(position: u32, e: HistoryEntry) -> HistoryEntry {
+        HistoryEntry { position, ..e }
+    }
+
+    fn reported(kind: ElementKind, index: u32, position: u32) -> Reported {
+        Reported {
+            element: ElementRef { kind, index },
+            position,
+        }
+    }
+
+    fn entry(
+        input_index: u32,
+        relation: Relation,
+        output_kind: Kind,
+        output_index: u32,
+    ) -> HistoryEntry {
+        HistoryEntry {
+            input: 0,
+            input_kind: Kind::Face,
+            input_index,
+            relation,
+            output_kind,
+            output_index,
+            position: 1,
+        }
+    }
+
+    const ONE_FACE: ElementCounts = ElementCounts {
+        faces: 1,
+        edges: 0,
+        vertices: 0,
+        solids: 0,
+    };
+    const RESULT: ElementCounts = ElementCounts {
+        faces: 3,
+        edges: 2,
+        vertices: 0,
+        solids: 1,
+    };
+
+    #[test]
+    fn history_keeps_what_the_result_has_and_drops_the_rest() {
+        let h = assemble_history(
+            &[ONE_FACE],
+            RESULT,
+            &[
+                at(0, entry(1, Relation::Kept, Kind::Face, 2)),
+                // Modified into itself (as transforms report): kept, not modified.
+                at(1, entry(1, Relation::Modified, Kind::Face, 2)),
+                // Something the result doesn't have still counts for the next position.
+                at(2, entry(1, Relation::Modified, Kind::Face, 0)),
+                at(3, entry(1, Relation::Modified, Kind::Face, 3)),
+                at(4, entry(1, Relation::Modified, Kind::Face, 3)),
+                // Modified into another kind: not what Modified means (FreeCAD skips it).
+                at(5, entry(1, Relation::Modified, Kind::Edge, 1)),
+                // Reported out of order, twice, and with a kind history doesn't use.
+                at(1, entry(1, Relation::Generated, Kind::Solid, 1)),
+                at(2, entry(1, Relation::Generated, Kind::Other, 1)),
+                at(3, entry(1, Relation::Generated, Kind::Edge, 2)),
+                at(4, entry(1, Relation::Generated, Kind::Edge, 2)),
+                at(5, entry(1, Relation::Generated, Kind::Edge, 1)),
+            ],
+        )
+        .unwrap();
+        let fate = &h.inputs[0].faces[0];
+        assert_eq!(fate.kept, Some(2));
+        assert_eq!(fate.modified, [reported(ElementKind::Face, 3, 3)]);
+        // Sorted by element (edges before solids), each with OCCT's position.
+        assert_eq!(
+            fate.generated,
+            [
+                reported(ElementKind::Edge, 1, 5),
+                reported(ElementKind::Edge, 2, 3),
+                reported(ElementKind::Solid, 1, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn every_list_of_every_kind_is_sorted() {
+        let one_each = ElementCounts {
+            faces: 1,
+            edges: 1,
+            vertices: 1,
+            solids: 0,
+        };
+        let result = ElementCounts {
+            faces: 3,
+            edges: 3,
+            vertices: 3,
+            solids: 0,
+        };
+        let of = |input_kind, relation, output_kind, output_index, position| HistoryEntry {
+            input: 0,
+            input_kind,
+            input_index: 1,
+            relation,
+            output_kind,
+            output_index,
+            position,
+        };
+        let h = assemble_history(
+            &[one_each],
+            result,
+            &[
+                of(Kind::Face, Relation::Modified, Kind::Face, 3, 1),
+                of(Kind::Face, Relation::Modified, Kind::Face, 1, 2),
+                of(Kind::Edge, Relation::Modified, Kind::Edge, 3, 1),
+                of(Kind::Edge, Relation::Modified, Kind::Edge, 1, 2),
+                of(Kind::Vertex, Relation::Generated, Kind::Edge, 3, 1),
+                of(Kind::Vertex, Relation::Generated, Kind::Edge, 1, 2),
+            ],
+        )
+        .unwrap();
+        let i = &h.inputs[0];
+        assert_eq!(
+            i.faces[0].modified,
+            [
+                reported(ElementKind::Face, 1, 2),
+                reported(ElementKind::Face, 3, 1)
+            ]
+        );
+        assert_eq!(
+            i.edges[0].modified,
+            [
+                reported(ElementKind::Edge, 1, 2),
+                reported(ElementKind::Edge, 3, 1)
+            ]
+        );
+        assert_eq!(
+            i.vertices[0].generated,
+            [
+                reported(ElementKind::Edge, 1, 2),
+                reported(ElementKind::Edge, 3, 1)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_malformed_report_is_an_error() {
+        for bad in [
+            // An input element the input doesn't have, numbered 0 or past the end.
+            entry(0, Relation::Kept, Kind::Face, 1),
+            entry(2, Relation::Kept, Kind::Face, 1),
+            HistoryEntry {
+                input: 1,
+                ..entry(1, Relation::Kept, Kind::Face, 1)
+            },
+            HistoryEntry {
+                input_kind: Kind::Solid,
+                ..entry(1, Relation::Kept, Kind::Face, 1)
+            },
+            HistoryEntry {
+                relation: Relation { repr: 9 },
+                ..entry(1, Relation::Kept, Kind::Face, 1)
+            },
+        ] {
+            let err = assemble_history(&[ONE_FACE], RESULT, &[bad]).unwrap_err();
+            assert!(err.message().contains("history"), "{err}");
+            assert_eq!(err.kind(), KernelErrorKind::Internal);
+            assert!(err.suggestion().unwrap().contains("bug"), "{err}");
+        }
     }
 }

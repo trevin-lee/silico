@@ -126,7 +126,9 @@ fn every_box_edge_polyline_is_its_own_box_edge() {
 
 #[test]
 fn a_filleted_box_mesh_approximates_the_solid() {
-    let rounded = fillet(&make_box(10.0, 20.0, 30.0).unwrap(), &[1], 2.0).unwrap();
+    let rounded = fillet(&make_box(10.0, 20.0, 30.0).unwrap(), &[1], 2.0)
+        .unwrap()
+        .shape;
     let mesh = tessellate(&rounded, 0.01).unwrap();
     // Analytic volume; the mesh's chords cut the curved face, so it's slightly less, and
     // within what a 0.01 deflection allows over the fillet's 2π·2/4·30 ≈ 94 area.
@@ -157,7 +159,9 @@ fn a_mesh_is_the_same_every_time() {
     // Two shapes built separately (OCCT keeps a shape's mesh, so meshing one shape twice
     // would prove nothing).
     let mesh = || {
-        let rounded = fillet(&make_box(10.0, 20.0, 30.0).unwrap(), &[1, 2], 1.5).unwrap();
+        let rounded = fillet(&make_box(10.0, 20.0, 30.0).unwrap(), &[1, 2], 1.5)
+            .unwrap()
+            .shape;
         tessellate(&rounded, 0.05).unwrap()
     };
     assert_eq!(mesh(), mesh());
@@ -193,16 +197,21 @@ fn meshing_leaves_the_shape_as_it_was() {
         before,
         "the B-rep changed"
     );
-    let fillet_of = |shape| silico_kernel::to_brep(&fillet(shape, &[1], 2.0).unwrap()).unwrap();
+    let fillet_of =
+        |shape| silico_kernel::to_brep(&fillet(shape, &[1], 2.0).unwrap().shape).unwrap();
     assert_eq!(
         fillet_of(&b),
         fillet_of(&make_box(10.0, 20.0, 30.0).unwrap())
     );
     // A coarse mesh after a fine one is the coarse mesh, not the fine one kept.
-    let rounded = fillet(&make_box(10.0, 20.0, 30.0).unwrap(), &[1], 2.0).unwrap();
+    let rounded = fillet(&make_box(10.0, 20.0, 30.0).unwrap(), &[1], 2.0)
+        .unwrap()
+        .shape;
     tessellate(&rounded, 0.01).unwrap();
     let coarse_after = tessellate(&rounded, 1.0).unwrap();
-    let fresh = fillet(&make_box(10.0, 20.0, 30.0).unwrap(), &[1], 2.0).unwrap();
+    let fresh = fillet(&make_box(10.0, 20.0, 30.0).unwrap(), &[1], 2.0)
+        .unwrap()
+        .shape;
     assert_eq!(coarse_after, tessellate(&fresh, 1.0).unwrap());
 }
 

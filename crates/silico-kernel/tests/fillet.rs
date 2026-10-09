@@ -30,7 +30,8 @@ fn box_fillet_analytic() {
         &[1],
         2.0,
     )
-    .unwrap();
+    .unwrap()
+    .shape;
     let s = silico_kernel::summarize(&rounded).unwrap();
     // Analytic: the fillet removes a corner of cross-section r² − πr²/4 = 4 − π along the
     // edge's 30; the area loses two 2 × 30 strips, gains a quarter cylinder 2πr·30/4, and
@@ -100,7 +101,7 @@ fn fillet_through_worker(
         },
         TIMEOUT,
     )? {
-        Reply::Shape(shape) => shape,
+        Reply::Built(built) => built.shape,
         other => panic!("Fillet replied {other:?}"),
     };
     match w.call(Generation(1), Op::Summarize { shape: rounded }, TIMEOUT)? {
@@ -308,7 +309,7 @@ fn a_filleted_shape_crosses_the_boundary_intact() {
         )
         .unwrap()
     {
-        Reply::Shape(shape) => shape,
+        Reply::Built(built) => built.shape,
         other => panic!("{other:?}"),
     };
     let here =
@@ -350,8 +351,8 @@ fn freecad_fillet_cube_to_sphere() {
     // just under 5 leaves (nearly) a sphere of radius 5. FreeCAD asserts places=3.
     let cube = silico_kernel::make_box(10.0, 10.0, 10.0).unwrap();
     let all: Vec<u32> = (1..=12).collect();
-    let s =
-        silico_kernel::summarize(&silico_kernel::fillet(&cube, &all, 4.999999).unwrap()).unwrap();
+    let s = silico_kernel::summarize(&silico_kernel::fillet(&cube, &all, 4.999999).unwrap().shape)
+        .unwrap();
     let sphere = 4.0 / 3.0 * PI * 125.0;
     assert!(
         (s.volume - sphere).abs() < 5e-4,
@@ -375,7 +376,8 @@ fn freecad_fillet_every_edge_of_a_unit_cube() {
         + 4.0 / 3.0 * PI * r * r * r;
     let cube = silico_kernel::make_box(1.0, 1.0, 1.0).unwrap();
     let all: Vec<u32> = (1..=12).collect();
-    let s = silico_kernel::summarize(&silico_kernel::fillet(&cube, &all, r).unwrap()).unwrap();
+    let s =
+        silico_kernel::summarize(&silico_kernel::fillet(&cube, &all, r).unwrap().shape).unwrap();
     assert!(
         (area - 5.739646).abs() < 1e-6,
         "the analytic area itself: {area}"
@@ -456,7 +458,7 @@ fn fillet_brep(w: &mut Worker, edges: &[u32], radius: f64) -> ShapeData {
         )
         .unwrap()
     {
-        Reply::Shape(shape) => shape,
+        Reply::Built(built) => built.shape,
         other => panic!("{other:?}"),
     }
 }
@@ -533,7 +535,8 @@ fn a_problem_the_input_already_had_isnt_blamed_on_the_fillet() {
     // it accepts this fillet, and so does Silico. The result is still the open box.
     let open = silico_kernel::test_ops::open_box().unwrap();
     let rounded = silico_kernel::fillet(&open, &[5], 2.0)
-        .unwrap_or_else(|e| panic!("refused: {e} (element {:?})", e.element()));
+        .unwrap_or_else(|e| panic!("refused: {e} (element {:?})", e.element()))
+        .shape;
     let s = silico_kernel::summarize(&rounded).unwrap();
     assert_eq!(s.faces, 6, "five faces and the fillet's");
     assert!(!s.valid);
@@ -562,7 +565,9 @@ fn a_fillet_that_breaks_a_valid_filleted_box_is_refused() {
     // the 6000 box it was cut from. The input was valid, so the result must be.
     let b = silico_kernel::make_box(10.0, 20.0, 30.0).unwrap();
     for (first_radius, second_edge) in [(3.0, 5), (1.0, 11)] {
-        let once = silico_kernel::fillet(&b, &[1, 3, 5], first_radius).unwrap();
+        let once = silico_kernel::fillet(&b, &[1, 3, 5], first_radius)
+            .unwrap()
+            .shape;
         let s = silico_kernel::summarize(&once).unwrap();
         assert!(s.valid && s.volume < 6000.0, "the input is a valid fillet");
         match silico_kernel::fillet(&once, &[second_edge], 5.0) {
@@ -572,7 +577,7 @@ fn a_fillet_that_breaks_a_valid_filleted_box_is_refused() {
                 "{e}"
             ),
             Ok(twice) => {
-                let t = silico_kernel::summarize(&twice).unwrap();
+                let t = silico_kernel::summarize(&twice.shape).unwrap();
                 panic!(
                     "r = {first_radius}, Edge{second_edge}: accepted, valid {} volume {}",
                     t.valid, t.volume
@@ -588,8 +593,10 @@ fn a_valid_second_fillet_on_a_filleted_box_is_accepted() {
     // edges along z, r = 2: each removes (4 − π)·30 of volume and 120 − 30π of flat face,
     // adds 30π of quarter cylinder, and cuts (4 − π) from each of its two end faces.
     let b = silico_kernel::make_box(10.0, 20.0, 30.0).unwrap();
-    let once = silico_kernel::fillet(&b, &[7], 2.0).unwrap();
-    let twice = silico_kernel::fillet(&once, &[3], 2.0).unwrap_or_else(|e| panic!("refused: {e}"));
+    let once = silico_kernel::fillet(&b, &[7], 2.0).unwrap().shape;
+    let twice = silico_kernel::fillet(&once, &[3], 2.0)
+        .unwrap_or_else(|e| panic!("refused: {e}"))
+        .shape;
     let s = silico_kernel::summarize(&twice).unwrap();
     let volume = 6000.0 - 2.0 * (4.0 - PI) * 30.0;
     let area = 2200.0 - 2.0 * (120.0 - 30.0 * PI) - 4.0 * (4.0 - PI);
@@ -625,8 +632,9 @@ fn each_shape_is_checked_as_a_whole_at_most_once() {
     // through. Its result's own check is kept with it.
     let once = silico_kernel::fillet(&b, &[1, 3, 5], 3.0)
         .unwrap()
+        .shape
         .with_validity(false);
-    let twice = silico_kernel::fillet(&once, &[5], 5.0).unwrap();
+    let twice = silico_kernel::fillet(&once, &[5], 5.0).unwrap().shape;
     assert!(!twice.is_valid().unwrap());
     assert!(!silico_kernel::summarize(&twice).unwrap().valid);
 }

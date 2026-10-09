@@ -42,6 +42,10 @@ static void trycatch(Try &&func, Fail &&fail) noexcept try {
 namespace silico {
 
 struct Measures;
+struct HistoryEntry;
+struct Counts;
+enum class Kind : uint8_t;
+enum class Relation : uint8_t;
 
 // An OCCT shape, owned from Rust through a UniquePtr.
 struct Shape {
@@ -94,10 +98,14 @@ double bounding_diagonal(const Shape &shape);
 // `deflection` is the largest distance allowed between the mesh and the surface.
 std::unique_ptr<Tessellation> tessellate(const Shape &shape, double deflection);
 
-// Rounds the given edges (numbered as edge_count's) with a constant radius. Throws if
-// OCCT can't build it; whether the result is valid is the caller's question.
+// Rounds the given edges (numbered as edge_count's) with a constant radius, appending what
+// it did to the shape's faces, edges, and vertices to `history`. Throws if OCCT can't build
+// it; whether the result is valid is the caller's question.
 std::unique_ptr<Shape> fillet(const Shape &shape, rust::Slice<const uint32_t> edges,
-                              double radius);
+                              double radius, rust::Vec<HistoryEntry> &history);
+
+// How many distinct faces, edges, vertices, and solids the shape has.
+Counts count_elements(const Shape &shape);
 
 // Whether the faces of `result` that aren't in `input` (those an operation made or
 // changed) are valid, and its shells oriented: OCCT's BRepAlgo::IsValid, as FreeCAD's

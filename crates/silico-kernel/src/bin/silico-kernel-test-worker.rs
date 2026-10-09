@@ -27,6 +27,27 @@ fn main() -> std::process::ExitCode {
             }))
         }
         _ if misbehavior == Some(Misbehavior::WrongReply) => Ok(Reply::Done),
+        Op::Fillet { .. }
+            if matches!(
+                misbehavior,
+                Some(Misbehavior::BadHistory | Misbehavior::HistoryForNoInputs)
+            ) =>
+        {
+            let mut reply = worker::handle(op)?;
+            if let Reply::Built(built) = &mut reply {
+                if misbehavior == Some(Misbehavior::HistoryForNoInputs) {
+                    built.history.inputs.clear();
+                } else if let Some(face) = built
+                    .history
+                    .inputs
+                    .first_mut()
+                    .and_then(|i| i.faces.first_mut())
+                {
+                    face.kept = Some(99);
+                }
+            }
+            Ok(reply)
+        }
         other => worker::handle(other),
     })
 }

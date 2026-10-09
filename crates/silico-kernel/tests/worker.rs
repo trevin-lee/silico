@@ -843,7 +843,7 @@ fn a_shape_carries_its_validity_and_workers_take_its_word() {
         )
         .unwrap()
     {
-        Reply::Shape(rounded) => assert_eq!(rounded.valid(), Some(false)),
+        Reply::Built(rounded) => assert_eq!(rounded.shape.valid(), Some(false)),
         other => panic!("Fillet replied {other:?}"),
     }
     assert!(summarize(&mut w, ShapeData::unchecked(b.brep().clone())).valid);
@@ -860,7 +860,7 @@ fn a_shape_carries_its_validity_and_workers_take_its_word() {
         )
         .unwrap()
     {
-        Reply::Shape(rounded) => assert_eq!(rounded.valid(), Some(true)),
+        Reply::Built(rounded) => assert_eq!(rounded.shape.valid(), Some(true)),
         other => panic!("Fillet replied {other:?}"),
     }
 }
@@ -883,7 +883,7 @@ fn a_fillet_reply_says_when_its_result_is_invalid() {
         )
         .unwrap()
     {
-        Reply::Shape(s) => s,
+        Reply::Built(b) => b.shape,
         other => panic!("Fillet replied {other:?}"),
     };
     let b = make_box(&mut w, 10.0, 20.0, 30.0).unwrap();

@@ -845,7 +845,8 @@ fn the_kernel_fillets_every_edge_it_is_given() {
         .unwrap();
     let rounded = k
         .fillet(&shape, &(1..=12).collect::<Vec<u32>>(), r)
-        .unwrap();
+        .unwrap()
+        .shape;
     assert_eq!(rounded.valid(), Some(true));
     let s = k.summarize(&rounded).unwrap();
     assert!(
@@ -962,7 +963,7 @@ fn the_kernel_fillets_the_edges_and_radius_it_is_given() {
             dz: 30.0,
         })
         .unwrap();
-    let rounded = k.fillet(&shape, &[1], 2.0).unwrap();
+    let rounded = k.fillet(&shape, &[1], 2.0).unwrap().shape;
     let s = k.summarize(&rounded).unwrap();
     let volume = 6000.0 - (4.0 - PI) * 30.0;
     assert!(

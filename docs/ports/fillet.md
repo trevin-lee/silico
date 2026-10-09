@@ -72,4 +72,4 @@ Not yet checked, because a box has no such edges: edges that can't be filleted a
 ## Notes
 
 - A B-rep written by FreeCAD 1.1.3 (OCCT 7.9.3) doesn't read in Silico's OCCT 8.0.1 (`Standard_OutOfRange` in `BinTools`), CRC or not. Compare with FreeCAD by values (volume, area, topology, validity), never by B-rep bytes.
-- Chamfer (M1) has its own guards in FreeCAD (a degenerated edge, an edge with no adjacent face; `TopoShapeExpansion.cpp` `makeElementChamfer`, `19bc5077c8`), and gets its own port note.
+- Chamfer (M1) has its own guards in FreeCAD (a degenerated edge, an edge with no adjacent face; `TopoShapeExpansion.cpp` `makeElementChamfer`, `d214306d1b`, 2026, not in FreeCAD 1.1.3; `19bc5077c8` is the chamfer's validity check, its counterpart of `87293fac9b`), and gets its own port note.

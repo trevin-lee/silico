@@ -1,0 +1,173 @@
+//! What an operation did to its inputs' faces, edges, and vertices, as OCCT's builders
+//! report it (docs/ports/history.md). Topological naming (M2) is built on it.
+
+use serde::{Deserialize, Serialize};
+
+/// A kind of sub-shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum ElementKind {
+    Vertex,
+    Edge,
+    Face,
+    /// A whole solid: what an extrusion reports its profile face generated.
+    Solid,
+}
+
+/// A sub-shape of a result, by kind and 1-based number in OCCT's `TopExp::MapShapes` order
+/// (FreeCAD's `Face1`, `Edge1`, ...).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ElementRef {
+    pub kind: ElementKind,
+    pub index: u32,
+}
+
+/// A result element OCCT reported for an input element, and where in OCCT's list it was:
+/// 1-based, counting entries the result doesn't have. FreeCAD's element names record the
+/// position (`;:G2`, the second reported), so naming needs it; the list itself is sorted
+/// by element, so its order never depends on OCCT's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct Reported {
+    pub element: ElementRef,
+    pub position: u32,
+}
+
+/// What became of one input face, edge, or vertex.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ElementFate {
+    /// Its number in the result (the same kind), when it's there unchanged.
+    pub kept: Option<u32>,
+    /// The result elements of the same kind it became, sorted by element.
+    pub modified: Vec<Reported>,
+    /// The result elements it created, of any kind (a filleted edge generates a face, an
+    /// extruded face its solid), sorted by element.
+    pub generated: Vec<Reported>,
+}
+
+impl ElementFate {
+    /// Neither kept nor modified: gone from the result (though it may have generated
+    /// something, as a filleted edge does).
+    pub fn is_deleted(&self) -> bool {
+        self.kept.is_none() && self.modified.is_empty()
+    }
+}
+
+/// The history of one input shape: a fate for each of its faces, edges, and vertices, in
+/// order (`faces[0]` is `Face1`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputHistory {
+    pub faces: Vec<ElementFate>,
+    pub edges: Vec<ElementFate>,
+    pub vertices: Vec<ElementFate>,
+}
+
+/// How many of each kind of element a shape has.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ElementCounts {
+    pub faces: u32,
+    pub edges: u32,
+    pub vertices: u32,
+    pub solids: u32,
+}
+
+impl ElementCounts {
+    pub fn of(&self, kind: ElementKind) -> u32 {
+        match kind {
+            ElementKind::Vertex => self.vertices,
+            ElementKind::Edge => self.edges,
+            ElementKind::Face => self.faces,
+            ElementKind::Solid => self.solids,
+        }
+    }
+}
+
+/// An operation's history: one [`InputHistory`] per input shape, in the operation's order,
+/// and the result's element counts, so every reference can be checked against them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct History {
+    pub inputs: Vec<InputHistory>,
+    pub result: ElementCounts,
+}
+
+impl History {
+    /// The fate of input `input`'s element (`input` from 0, the element numbered from 1),
+    /// if the history has it. Use this rather than indexing: a history from another
+    /// process is checked by [`History::validate`] for its references, not its lengths.
+    pub fn fate(&self, input: usize, element: ElementRef) -> Option<&ElementFate> {
+        let input = self.inputs.get(input)?;
+        let fates = match element.kind {
+            ElementKind::Face => &input.faces,
+            ElementKind::Edge => &input.edges,
+            ElementKind::Vertex => &input.vertices,
+            ElementKind::Solid => return None,
+        };
+        fates.get((element.index as usize).checked_sub(1)?)
+    }
+
+    /// Checks that the history is for `inputs` input shapes, that every element it names is
+    /// within the result's counts, and that it keeps its own promises: each `modified` is
+    /// the input element's kind, every position is from 1, and each list is sorted by
+    /// element without repeats. Run it before using a history that came from another
+    /// process. Two things it can't check: how many elements each input has (read fates
+    /// with [`History::fate`]), and that `result` counts the shape that came with it (the
+    /// core can't count without OCCT, so look result elements up with `get`).
+    pub fn validate(&self, inputs: usize) -> Result<(), String> {
+        if self.inputs.len() != inputs {
+            return Err(format!(
+                "the history is for {} input shapes, but the operation had {inputs}",
+                self.inputs.len()
+            ));
+        }
+        let counts = self.result;
+        for (i, input) in self.inputs.iter().enumerate() {
+            let kinds = [
+                (ElementKind::Face, &input.faces),
+                (ElementKind::Edge, &input.edges),
+                (ElementKind::Vertex, &input.vertices),
+            ];
+            for (kind, fates) in kinds {
+                for (n, fate) in fates.iter().enumerate() {
+                    let what = || format!("input {} {kind:?}{}", i + 1, n + 1);
+                    for (list, name) in
+                        [(&fate.modified, "modified"), (&fate.generated, "generated")]
+                    {
+                        if !list.windows(2).all(|w| w[0].element < w[1].element) {
+                            return Err(format!(
+                                "{}'s {name} list isn't sorted by element, or repeats one",
+                                what()
+                            ));
+                        }
+                        if list.iter().any(|r| r.position == 0) {
+                            return Err(format!("{} has a {name} element at position 0", what()));
+                        }
+                    }
+                    if fate.modified.iter().any(|r| r.element.kind != kind) {
+                        return Err(format!(
+                            "{} is modified into an element of another kind",
+                            what()
+                        ));
+                    }
+                    if let Some(kept) = fate.kept
+                        && !(1..=counts.of(kind)).contains(&kept)
+                    {
+                        return Err(format!(
+                            "{} is kept as {kind:?}{kept}, which the result doesn't have",
+                            what()
+                        ));
+                    }
+                    for r in fate.modified.iter().chain(&fate.generated) {
+                        let r = r.element;
+                        if !(1..=counts.of(r.kind)).contains(&r.index) {
+                            return Err(format!(
+                                "{} names {:?}{}, which the result doesn't have",
+                                what(),
+                                r.kind,
+                                r.index
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}

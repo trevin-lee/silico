@@ -4,9 +4,10 @@
 
 use proptest::prelude::*;
 use silico_protocol::{
-    Blob, DebugOp, Failure, FailureKind, FrameError, FrameReader, Generation, MAX_FRAME_LEN, Mesh,
-    Misbehavior, Op, OutOfTurn, Primitive, Reply, Request, RequestId, Response, ShapeData,
-    ShapeSummary, TraceId, write_message,
+    Blob, BuiltData, DebugOp, ElementCounts, ElementFate, ElementKind, ElementRef, Failure,
+    FailureKind, FrameError, FrameReader, Generation, History, InputHistory, MAX_FRAME_LEN, Mesh,
+    Misbehavior, Op, OutOfTurn, Primitive, Reply, Reported, Request, RequestId, Response,
+    ShapeData, ShapeSummary, TraceId, write_message,
 };
 
 /// One request per operation. The match gives each variant its own index and every
@@ -58,6 +59,8 @@ fn every_op() -> Vec<Op> {
         Op::Debug(DebugOp::ReplyOutOfTurn(OutOfTurn::WrongGeneration)),
         Op::Debug(DebugOp::Misbehave(Misbehavior::BadMesh)),
         Op::Debug(DebugOp::Misbehave(Misbehavior::WrongReply)),
+        Op::Debug(DebugOp::Misbehave(Misbehavior::BadHistory)),
+        Op::Debug(DebugOp::Misbehave(Misbehavior::HistoryForNoInputs)),
     ];
     let indices: std::collections::BTreeSet<usize> = ops
         .iter()
@@ -80,15 +83,55 @@ fn every_op() -> Vec<Op> {
             Op::Debug(DebugOp::ReplyOutOfTurn(OutOfTurn::WrongGeneration)) => 15,
             Op::Debug(DebugOp::Misbehave(Misbehavior::BadMesh)) => 16,
             Op::Debug(DebugOp::Misbehave(Misbehavior::WrongReply)) => 17,
+            Op::Debug(DebugOp::Misbehave(Misbehavior::BadHistory)) => 18,
+            Op::Debug(DebugOp::Misbehave(Misbehavior::HistoryForNoInputs)) => 19,
         })
         .collect();
-    assert_eq!(indices, (0..18).collect(), "an operation has no case");
+    assert_eq!(indices, (0..20).collect(), "an operation has no case");
     ops
 }
 
 /// One response per reply and failure kind, checked the same way.
 fn every_result() -> Vec<Result<Reply, Failure>> {
     let results = vec![
+        Ok(Reply::Built(BuiltData {
+            shape: ShapeData::checked(Blob::inline(vec![9, 8]), true),
+            history: History {
+                inputs: vec![InputHistory {
+                    faces: vec![
+                        ElementFate {
+                            kept: Some(2),
+                            ..ElementFate::default()
+                        },
+                        ElementFate {
+                            kept: None,
+                            modified: vec![Reported {
+                                element: ElementRef {
+                                    kind: ElementKind::Face,
+                                    index: 1,
+                                },
+                                position: 1,
+                            }],
+                            generated: vec![Reported {
+                                element: ElementRef {
+                                    kind: ElementKind::Edge,
+                                    index: 3,
+                                },
+                                position: 2,
+                            }],
+                        },
+                    ],
+                    edges: vec![ElementFate::default()],
+                    vertices: vec![],
+                }],
+                result: ElementCounts {
+                    faces: 2,
+                    edges: 3,
+                    vertices: 0,
+                    solids: 1,
+                },
+            },
+        })),
         Ok(Reply::Shape(ShapeData::checked(
             Blob::inline(vec![0, 1, 2, 255]),
             false,
@@ -141,6 +184,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             Ok(Reply::Mesh(_)) => 2,
             Ok(Reply::Echo { .. }) => 3,
             Ok(Reply::Done) => 4,
+            Ok(Reply::Built(_)) => 10,
             Err(Failure { kind, .. }) => match kind {
                 FailureKind::InvalidInput => 5,
                 FailureKind::KernelFailed => 6,
@@ -152,7 +196,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         .collect();
     assert_eq!(
         indices,
-        (0..10).collect(),
+        (0..11).collect(),
         "a reply or failure kind has no case"
     );
     results
@@ -519,7 +563,9 @@ fn every_op_has_its_own_name() {
             "DebugReplyWithWrongId",
             "DebugReplyWithWrongGeneration",
             "DebugMisbehaveBadMesh",
-            "DebugMisbehaveWrongReply"
+            "DebugMisbehaveWrongReply",
+            "DebugMisbehaveBadHistory",
+            "DebugMisbehaveHistoryForNoInputs"
         ]
     );
 }

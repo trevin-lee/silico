@@ -150,7 +150,7 @@ fn parse_args() -> Result<Command, Error> {
 fn build(kernel: &mut KernelWorker, part: &Part) -> Result<(Mesh, ShapeSummary), Error> {
     let mut shape = kernel.make(part.primitive)?;
     if let Some((edges, radius)) = part.fillet {
-        shape = kernel.fillet(&shape, edges, radius)?;
+        shape = kernel.fillet(&shape, edges, radius)?.shape;
     }
     Ok((
         kernel.tessellate(&shape, DEFLECTION)?,

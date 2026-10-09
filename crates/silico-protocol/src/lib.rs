@@ -7,11 +7,15 @@
 //! there's no version negotiation.
 
 pub mod frame;
+mod history;
 mod primitive;
 
 use serde::{Deserialize, Serialize};
 
 pub use frame::{FrameError, FrameReader, MAX_FRAME_LEN, write_message};
+pub use history::{
+    ElementCounts, ElementFate, ElementKind, ElementRef, History, InputHistory, Reported,
+};
 pub use primitive::{InvalidParameter, LENGTH_TOLERANCE, MAX_LENGTH, Primitive, format_number};
 
 /// The file descriptor a worker inherits its end of the socket pair as.
@@ -113,6 +117,10 @@ pub enum Misbehavior {
     BadMesh,
     /// [`Reply::Done`] to every operation, whatever it asked for.
     WrongReply,
+    /// A history that names an element the result doesn't have.
+    BadHistory,
+    /// A history for no inputs at all.
+    HistoryForNoInputs,
 }
 
 /// How [`DebugOp::ReplyOutOfTurn`]'s extra reply is wrong.
@@ -136,6 +144,10 @@ impl DebugOp {
             DebugOp::ReplyOutOfTurn(OutOfTurn::WrongGeneration) => "DebugReplyWithWrongGeneration",
             DebugOp::Misbehave(Misbehavior::BadMesh) => "DebugMisbehaveBadMesh",
             DebugOp::Misbehave(Misbehavior::WrongReply) => "DebugMisbehaveWrongReply",
+            DebugOp::Misbehave(Misbehavior::BadHistory) => "DebugMisbehaveBadHistory",
+            DebugOp::Misbehave(Misbehavior::HistoryForNoInputs) => {
+                "DebugMisbehaveHistoryForNoInputs"
+            }
         }
     }
 }
@@ -151,8 +163,10 @@ pub struct Response {
 /// A successful result.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Reply {
-    /// A shape a worker made.
+    /// A shape a worker made from nothing (a primitive).
     Shape(ShapeData),
+    /// A shape an operation made from other shapes, with what it did to them.
+    Built(BuiltData),
     Summary(ShapeSummary),
     Mesh(Mesh),
     Echo {
@@ -167,6 +181,7 @@ impl Reply {
     pub fn kind(&self) -> &'static str {
         match self {
             Reply::Shape(_) => "Shape",
+            Reply::Built(_) => "Built",
             Reply::Summary(_) => "Summary",
             Reply::Mesh(_) => "Mesh",
             Reply::Echo { .. } => "Echo",
@@ -336,6 +351,13 @@ impl ShapeData {
     pub fn valid(&self) -> Option<bool> {
         self.valid
     }
+}
+
+/// A shape an operation made, and its [`History`], as they cross the worker boundary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BuiltData {
+    pub shape: ShapeData,
+    pub history: History,
 }
 
 /// Bytes carried by a message, such as a serialized shape. Sent inline in the frame for

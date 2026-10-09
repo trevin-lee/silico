@@ -14,8 +14,8 @@ use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
 
 use silico_protocol::{
-    Blob, Failure, FailureKind, FrameError, FrameReader, Generation, Op, Reply, Request, RequestId,
-    Response, ShapeData, ShapeSummary, WORKER_FD, WORKER_FD_ENV, write_message,
+    Blob, BuiltData, Failure, FailureKind, FrameError, FrameReader, Generation, Op, Reply, Request,
+    RequestId, Response, ShapeData, ShapeSummary, WORKER_FD, WORKER_FD_ENV, write_message,
 };
 
 use crate::{KernelError, KernelErrorKind};
@@ -40,7 +40,7 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
         } => {
             let shape = shape_of(&shape)?;
             let rounded = crate::fillet(&shape, &edges, radius).map_err(failure)?;
-            shape_reply(&rounded)
+            built_reply(rounded)
         }
         Op::Tessellate { shape, deflection } => {
             let shape = shape_of(&shape)?;
@@ -69,11 +69,23 @@ fn shape_of(data: &ShapeData) -> Result<crate::Shape, Failure> {
 }
 
 /// A shape to send back, with its validity (checked now if it wasn't already).
-fn shape_reply(shape: &crate::Shape) -> Result<Reply, Failure> {
-    Ok(Reply::Shape(ShapeData::checked(
+fn shape_data(shape: &crate::Shape) -> Result<ShapeData, Failure> {
+    Ok(ShapeData::checked(
         Blob::inline(crate::to_brep(shape).map_err(failure)?),
         shape.is_valid().map_err(failure)?,
-    )))
+    ))
+}
+
+fn shape_reply(shape: &crate::Shape) -> Result<Reply, Failure> {
+    Ok(Reply::Shape(shape_data(shape)?))
+}
+
+/// An operation's result and its history.
+fn built_reply(built: crate::Built) -> Result<Reply, Failure> {
+    Ok(Reply::Built(BuiltData {
+        shape: shape_data(&built.shape)?,
+        history: built.history,
+    }))
 }
 
 /// A shape OCCT read but can't integrate gives NaN or infinity: never a result.
@@ -101,6 +113,7 @@ fn failure(e: KernelError) -> Failure {
             KernelErrorKind::InvalidInput => FailureKind::InvalidInput,
             KernelErrorKind::Failed => FailureKind::KernelFailed,
             KernelErrorKind::InvalidResult => FailureKind::InvalidResult,
+            KernelErrorKind::Internal => FailureKind::Internal,
         },
         message: e.message().to_owned(),
         element: e.element().map(str::to_owned),
@@ -238,6 +251,25 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn each_kind_of_kernel_error_reaches_the_app_as_its_own_failure() {
+        use silico_protocol::FailureKind;
+
+        use crate::{KernelError, KernelErrorKind};
+        for (kind, want) in [
+            (KernelErrorKind::InvalidInput, FailureKind::InvalidInput),
+            (KernelErrorKind::Failed, FailureKind::KernelFailed),
+            (KernelErrorKind::InvalidResult, FailureKind::InvalidResult),
+            (KernelErrorKind::Internal, FailureKind::Internal),
+        ] {
+            let e = KernelError::of_kind(kind, "words").with_suggestion("try this");
+            let f = super::failure(e);
+            assert_eq!(f.kind, want, "{kind:?}");
+            assert_eq!(f.message, "words");
+            assert_eq!(f.suggestion.as_deref(), Some("try this"));
+        }
+    }
+
     use silico_protocol::{FailureKind, ShapeSummary};
 
     use super::check_finite;

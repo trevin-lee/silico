@@ -8,8 +8,11 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub use silico_protocol::{
+    BuiltData, ElementCounts, ElementFate, ElementKind, ElementRef, History, InputHistory, Mesh,
+    Primitive, Reported, ShapeData, ShapeSummary,
+};
 use silico_protocol::{Generation, Op, Reply};
-pub use silico_protocol::{Mesh, Primitive, ShapeData, ShapeSummary};
 
 use crate::worker::Worker;
 use crate::{Error, ErrorCode};
@@ -73,18 +76,19 @@ impl KernelWorker {
     }
 
     /// Rounds `edges` of `shape` (numbered from 1, as FreeCAD's `Edge1`, ...) with a
-    /// constant `radius`.
+    /// constant `radius`, and says what became of the shape's faces, edges, and vertices.
     pub fn fillet(
         &mut self,
         shape: &ShapeData,
         edges: &[u32],
         radius: f64,
-    ) -> Result<ShapeData, Error> {
-        self.shape(Op::Fillet {
+    ) -> Result<BuiltData, Error> {
+        let op = Op::Fillet {
             shape: shape.clone(),
             edges: edges.to_vec(),
             radius,
-        })
+        };
+        self.built(op, 1)
     }
 
     /// The shape's volume, area, center, topology counts, and validity.
@@ -117,6 +121,28 @@ impl KernelWorker {
                     Err(Error::new(
                         ErrorCode::ProtocolError,
                         "the kernel worker sent an inconsistent mesh",
+                    )
+                    .with_cause(problem)
+                    .with_suggestion("start a new kernel worker"))
+                }
+            },
+            other => Err(self.unexpected(name, &other)),
+        }
+    }
+
+    /// An operation's result, its history checked before it's returned: for `inputs`
+    /// input shapes, naming only elements the result has.
+    fn built(&mut self, op: Op, inputs: usize) -> Result<BuiltData, Error> {
+        let name = op.name();
+        match self.call(op)? {
+            Reply::Built(built) => match built.history.validate(inputs) {
+                Ok(()) => Ok(built),
+                Err(problem) => {
+                    // As for a mesh that doesn't hold together: the worker can't be trusted.
+                    self.worker.shut_down();
+                    Err(Error::new(
+                        ErrorCode::ProtocolError,
+                        format!("the kernel worker sent an inconsistent history for {name}"),
                     )
                     .with_cause(problem)
                     .with_suggestion("start a new kernel worker"))

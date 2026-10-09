@@ -209,8 +209,77 @@ std::unique_ptr<Tessellation> tessellate(const Shape &shape, double deflection) 
 
 uint32_t edge_count(const Shape &shape) { return count_distinct(shape.shape, TopAbs_EDGE); }
 
+namespace {
+Kind kind_of(TopAbs_ShapeEnum type) {
+  switch (type) {
+  case TopAbs_VERTEX:
+    return Kind::Vertex;
+  case TopAbs_EDGE:
+    return Kind::Edge;
+  case TopAbs_FACE:
+    return Kind::Face;
+  case TopAbs_SOLID:
+    return Kind::Solid;
+  default:
+    return Kind::Other;
+  }
+}
+
+// Reports what `maker` did to input `input` (`source`): for each of its faces, edges, and
+// vertices, whether the result has it unchanged (the same sub-shape: TShape and location),
+// and what OCCT says it was modified into and generated, each numbered in the result
+// (0 when the result doesn't have it) with its position in OCCT's list. Facts only; Rust
+// decides what to keep. For each element the Kept entry comes first: Rust relies on it.
+// OCCT's IsDeleted isn't asked: it's wrong for fillets (docs/ports/history.md).
+void capture_history(BRepBuilderAPI_MakeShape &maker, uint32_t input,
+                     const TopoDS_Shape &source, const TopoDS_Shape &result,
+                     rust::Vec<HistoryEntry> &history) {
+  // Indexed by Kind's values, which lib.rs fixes at Vertex 0, Edge 1, Face 2, Solid 3.
+  static_assert(static_cast<uint8_t>(Kind::Vertex) == 0 && static_cast<uint8_t>(Kind::Edge) == 1 &&
+                    static_cast<uint8_t>(Kind::Face) == 2 && static_cast<uint8_t>(Kind::Solid) == 3,
+                "results[] is indexed by Kind");
+  ShapeMap results[4];
+  TopExp::MapShapes(result, TopAbs_VERTEX, results[0]);
+  TopExp::MapShapes(result, TopAbs_EDGE, results[1]);
+  TopExp::MapShapes(result, TopAbs_FACE, results[2]);
+  TopExp::MapShapes(result, TopAbs_SOLID, results[3]);
+  for (TopAbs_ShapeEnum type : {TopAbs_FACE, TopAbs_EDGE, TopAbs_VERTEX}) {
+    const Kind input_kind = kind_of(type);
+    ShapeMap inputs;
+    TopExp::MapShapes(source, type, inputs);
+    for (int i = 1; i <= inputs.Extent(); ++i) {
+      const TopoDS_Shape &element = inputs(i);
+      auto record = [&](Relation relation, const TopoDS_Shape &output, uint32_t position) {
+        const Kind kind = kind_of(output.ShapeType());
+        const int index =
+            kind == Kind::Other ? 0 : results[static_cast<uint8_t>(kind)].FindIndex(output);
+        history.push_back(HistoryEntry{input, input_kind, static_cast<uint32_t>(i), relation,
+                                       kind, static_cast<uint32_t>(index), position});
+      };
+      if (results[static_cast<uint8_t>(input_kind)].Contains(element)) {
+        record(Relation::Kept, element, 0);
+      }
+      uint32_t position = 0;
+      for (const TopoDS_Shape &output : maker.Modified(element)) {
+        record(Relation::Modified, output, ++position);
+      }
+      position = 0;
+      for (const TopoDS_Shape &output : maker.Generated(element)) {
+        record(Relation::Generated, output, ++position);
+      }
+    }
+  }
+}
+} // namespace
+
+Counts count_elements(const Shape &shape) {
+  return Counts{count_distinct(shape.shape, TopAbs_FACE), count_distinct(shape.shape, TopAbs_EDGE),
+                count_distinct(shape.shape, TopAbs_VERTEX),
+                count_distinct(shape.shape, TopAbs_SOLID)};
+}
+
 std::unique_ptr<Shape> fillet(const Shape &shape, rust::Slice<const uint32_t> edges,
-                              double radius) {
+                              double radius, rust::Vec<HistoryEntry> &history) {
   ShapeMap map;
   TopExp::MapShapes(shape.shape, TopAbs_EDGE, map);
   BRepFilletAPI_MakeFillet make(shape.shape);
@@ -225,7 +294,9 @@ std::unique_ptr<Shape> fillet(const Shape &shape, rust::Slice<const uint32_t> ed
   if (!make.IsDone()) {
     throw Standard_Failure("the fillet couldn't be built");
   }
-  return std::make_unique<Shape>(Shape{make.Shape()});
+  const TopoDS_Shape result = make.Shape();
+  capture_history(make, 0, shape.shape, result, history);
+  return std::make_unique<Shape>(Shape{result});
 }
 
 bool is_valid_where_changed(const Shape &input, const Shape &result) {
