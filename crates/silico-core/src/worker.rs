@@ -23,8 +23,8 @@ use std::time::{Duration, Instant};
 
 use command_fds::{CommandFdExt, FdMapping};
 use silico_protocol::{
-    Failure, FailureKind, FrameError, FrameReader, Op, Reply, Request, Response, WORKER_FD,
-    WORKER_FD_ENV, write_message,
+    Failure, FailureKind, FrameError, FrameReader, Generation, Op, Reply, Request, RequestId,
+    Response, TraceId, WORKER_FD, WORKER_FD_ENV, write_message,
 };
 
 use crate::{Error, ErrorCode};
@@ -32,8 +32,8 @@ use crate::{Error, ErrorCode};
 /// How many of a worker's last log lines a crash report carries.
 const STDERR_TAIL_LINES: usize = 20;
 
-/// The longest log line kept; anything longer is cut, so a worker can't make the core
-/// buffer without limit.
+/// The longest log line kept; the rest of a longer line is dropped, so a worker can't make
+/// the core buffer without limit.
 const MAX_LOG_LINE: usize = 8 * 1024;
 
 /// How long a worker whose socket closed gets to exit on its own before it's killed, and
@@ -42,6 +42,11 @@ const EXIT_GRACE: Duration = Duration::from_secs(2);
 
 /// The socket buffer size asked for on each end.
 const SOCKET_BUFFER: usize = 4 * 1024 * 1024;
+
+/// The only variables a worker gets from the app's environment. OCCT reads others (such
+/// as `CSF_MeshAlgo`, which picks the meshing algorithm), so passing the user's shell
+/// environment through would make results depend on it.
+const WORKER_ENV: &[&str] = &["SILICO_LOG", "RUST_BACKTRACE", "RUST_LIB_BACKTRACE", "PATH"];
 
 /// Trace IDs, unique within this process (across all workers).
 static NEXT_TRACE: AtomicU64 = AtomicU64::new(1);
@@ -71,6 +76,12 @@ impl Worker {
             let _ = socket.set_recv_buffer_size(SOCKET_BUFFER);
         }
         let mut command = Command::new(exe);
+        command.env_clear();
+        for name in WORKER_ENV {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
         command
             .env(WORKER_FD_ENV, WORKER_FD.to_string())
             .stdin(Stdio::null())
@@ -109,6 +120,9 @@ impl Worker {
                 .map_err(|e| internal("starting the log thread", e))?;
         }
 
+        // Non-blocking, so a send can give up at its deadline (see `DeadlineWriter`).
+        ours.set_nonblocking(true)
+            .map_err(|e| internal("making the socket non-blocking", e))?;
         let reader = ours.try_clone().map_err(|e| internal("socket clone", e))?;
         // One reply in flight: a worker sending unrequested replies can't make the core
         // buffer them without limit.
@@ -116,7 +130,7 @@ impl Worker {
         std::thread::Builder::new()
             .name(format!("worker-{pid}-replies"))
             .spawn(move || {
-                let mut frames = FrameReader::new(reader);
+                let mut frames = FrameReader::new(PatientReader(reader));
                 loop {
                     match frames.read_message::<Response>() {
                         Ok(Some(response)) => {
@@ -162,7 +176,12 @@ impl Worker {
 
     /// Sends `op` and waits for the reply. `timeout` covers both sending the request and
     /// waiting for the reply.
-    pub fn call(&mut self, generation: u64, op: Op, timeout: Duration) -> Result<Reply, Error> {
+    pub fn call(
+        &mut self,
+        generation: Generation,
+        op: Op,
+        timeout: Duration,
+    ) -> Result<Reply, Error> {
         let name = op.name();
         if self.stopped {
             return Err(Error::new(
@@ -173,16 +192,17 @@ impl Worker {
             )
             .with_suggestion("start a new kernel worker"));
         }
-        let deadline = Instant::now() + timeout;
-        let id = self.next_id;
+        // A timeout too long to add to the clock has no deadline.
+        let deadline = Instant::now().checked_add(timeout);
+        let id = RequestId(self.next_id);
         self.next_id += 1;
-        let trace = NEXT_TRACE.fetch_add(1, Ordering::Relaxed);
+        let trace = TraceId(NEXT_TRACE.fetch_add(1, Ordering::Relaxed));
         let span = tracing::debug_span!(
             "worker_call",
-            trace,
+            trace = trace.0,
             pid = self.pid(),
-            id,
-            generation,
+            id = id.0,
+            generation = generation.0,
             op = name
         );
         let _entered = span.enter();
@@ -193,11 +213,13 @@ impl Worker {
             trace,
             op,
         };
-        // A send that can't finish in time (a worker that stopped reading) is a timeout.
-        let _ = self
-            .socket
-            .set_write_timeout(Some(timeout.max(Duration::from_millis(1))));
-        match write_message(&mut self.socket, &request) {
+        // A send that can't finish in time (a worker that stopped reading, or reads slowly)
+        // is a timeout.
+        let mut writer = DeadlineWriter {
+            socket: &self.socket,
+            deadline,
+        };
+        match write_message(&mut writer, &request) {
             Ok(()) => {}
             // Refused before anything was sent: the request, not the worker, is at fault.
             Err(e @ (FrameError::TooLarge { .. } | FrameError::Encode(_))) => {
@@ -219,8 +241,16 @@ impl Worker {
         }
         tracing::trace!("sent");
 
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        match self.replies.recv_timeout(remaining) {
+        let reply = match deadline {
+            Some(deadline) => self
+                .replies
+                .recv_timeout(deadline.saturating_duration_since(Instant::now())),
+            None => self
+                .replies
+                .recv()
+                .map_err(|_| RecvTimeoutError::Disconnected),
+        };
+        match reply {
             Ok(Ok(response)) if response.id == id && response.generation == generation => response
                 .result
                 .map_err(|failure| failure_error(name, failure)),
@@ -230,8 +260,8 @@ impl Worker {
                     format!("the kernel worker answered {name} out of turn"),
                 )
                 .with_cause(format!(
-                    "reply for request {} (generation {}), expected {id} (generation {generation})",
-                    response.id, response.generation
+                    "reply for request {} (generation {}), expected {} (generation {})",
+                    response.id.0, response.generation.0, id.0, generation.0
                 )),
             )),
             Ok(Err(FrameError::Io(_) | FrameError::Truncated { .. }))
@@ -315,6 +345,77 @@ impl Drop for Worker {
     }
 }
 
+/// Writes to the worker's (non-blocking) socket, giving up when `deadline` passes. A
+/// socket's write timeout can't do this: on macOS it limits each wait for buffer space, not
+/// the write, so a worker that reads a little at a time could keep a write going without
+/// end. Instead each write sends what fits, and waits for space with `poll`.
+struct DeadlineWriter<'a> {
+    socket: &'a UnixStream,
+    deadline: Option<Instant>,
+}
+
+impl io::Write for DeadlineWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        loop {
+            match (&*self.socket).write(bytes) {
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                result => return result,
+            }
+            let left = match self.deadline {
+                Some(deadline) => {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        return Err(io::ErrorKind::TimedOut.into());
+                    }
+                    Some(left)
+                }
+                None => None,
+            };
+            wait_for(self.socket, rustix::event::PollFlags::OUT, left)?;
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Reads from the worker's (non-blocking) socket, waiting as long as it takes.
+struct PatientReader(UnixStream);
+
+impl Read for PatientReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        loop {
+            match self.0.read(buf) {
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                result => return result,
+            }
+            wait_for(&self.0, rustix::event::PollFlags::IN, None)?;
+        }
+    }
+}
+
+/// Waits until `socket` is ready for `events` (or has closed), or `timeout` passes.
+fn wait_for(
+    socket: &UnixStream,
+    events: rustix::event::PollFlags,
+    timeout: Option<Duration>,
+) -> io::Result<()> {
+    use rustix::event::{PollFd, Timespec, poll};
+    // poll takes whole milliseconds as a C int on macOS, so a longer wait is refused (about
+    // 24.8 days). Waiting at most a day at a time is the same: the callers wait again.
+    const LONGEST_WAIT: Duration = Duration::from_secs(24 * 60 * 60);
+    let timeout = timeout.map(|t| t.min(LONGEST_WAIT)).map(|t| Timespec {
+        tv_sec: i64::try_from(t.as_secs()).unwrap_or(i64::MAX),
+        tv_nsec: i64::from(t.subsec_nanos()),
+    });
+    let mut fds = [PollFd::new(socket, events)];
+    match poll(&mut fds, timeout.as_ref()) {
+        Ok(_) | Err(rustix::io::Errno::INTR) => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
 fn kill_and_reap(child: &mut Child) {
     // Either may fail only because the process is already gone and reaped.
     let _ = child.kill();
@@ -361,6 +462,10 @@ fn forward_logs(stderr: impl Read, pid: u32, tail: &Mutex<VecDeque<String>>) {
         {
             Ok(0) | Err(_) => break,
             Ok(_) => {}
+        }
+        if line.len() == MAX_LOG_LINE && !line.ends_with(b"\n") {
+            // Cut: drop the rest of the line, so it doesn't arrive as more lines.
+            let _ = reader.skip_until(b'\n');
         }
         let text = String::from_utf8_lossy(&line);
         let text = text.trim_end_matches(['\n', '\r']);
@@ -425,22 +530,39 @@ fn signal_name(signal: i32) -> Option<&'static str> {
     .map(|(_, name)| name)
 }
 
-/// A worker's refusal or failure, as a structured error, naming the element at fault when
-/// the worker knew it.
+/// A worker's refusal or failure, as a structured error, naming the element at fault and
+/// what to try instead when the worker knew them. A kernel failure always suggests
+/// something.
 fn failure_error(op: &str, failure: Failure) -> Error {
-    let error = match failure.kind {
-        FailureKind::InvalidInput => Error::new(ErrorCode::InvalidInput, failure.message),
-        FailureKind::KernelFailed => {
-            Error::new(ErrorCode::KernelFailed, format!("{op} failed")).with_cause(failure.message)
-        }
-        FailureKind::UnknownOp | FailureKind::Internal => Error::new(
-            ErrorCode::Internal,
-            format!("the kernel worker couldn't do {op}"),
-        )
-        .with_cause(failure.message),
+    let (error, fallback) = match failure.kind {
+        FailureKind::InvalidInput => (Error::new(ErrorCode::InvalidInput, failure.message), None),
+        FailureKind::KernelFailed => (
+            Error::new(ErrorCode::KernelFailed, format!("{op} failed")).with_cause(failure.message),
+            Some("change the operation's values: the kernel can't build it from these"),
+        ),
+        FailureKind::InvalidResult => (
+            Error::new(
+                ErrorCode::InvalidResult,
+                format!("{op} gave an invalid result, which was refused"),
+            )
+            .with_cause(failure.message),
+            Some("change the operation's values: the kernel can't build a valid result from these"),
+        ),
+        FailureKind::UnknownOp | FailureKind::Internal => (
+            Error::new(
+                ErrorCode::Internal,
+                format!("the kernel worker couldn't do {op}"),
+            )
+            .with_cause(failure.message),
+            None,
+        ),
     };
-    match failure.element {
+    let error = match failure.element {
         Some(element) => error.with_element(element),
+        None => error,
+    };
+    match failure.suggestion.as_deref().or(fallback) {
+        Some(suggestion) => error.with_suggestion(suggestion),
         None => error,
     }
 }
@@ -460,7 +582,80 @@ mod tests {
     use std::process::ExitStatus;
     use std::sync::Mutex;
 
-    use super::{MAX_LOG_LINE, STDERR_TAIL_LINES, describe_exit, forward_logs};
+    use silico_protocol::{Failure, FailureKind};
+
+    use super::{MAX_LOG_LINE, STDERR_TAIL_LINES, describe_exit, failure_error, forward_logs};
+    use crate::ErrorCode;
+
+    #[test]
+    fn wait_for_sleeps_until_its_timeout_and_takes_any_timeout() {
+        use std::os::unix::net::UnixStream;
+        use std::time::{Duration, Instant};
+        // Nothing arrives, so it sleeps the whole timeout.
+        let (a, _b) = UnixStream::pair().unwrap();
+        let start = Instant::now();
+        super::wait_for(
+            &a,
+            rustix::event::PollFlags::IN,
+            Some(Duration::from_millis(200)),
+        )
+        .unwrap();
+        assert!(
+            start.elapsed() >= Duration::from_millis(190),
+            "{:?}",
+            start.elapsed()
+        );
+        // Any timeout, however long, is accepted (the socket is writable, so it returns).
+        for days in [1, 24, 25, 30, 365 * 100] {
+            super::wait_for(
+                &a,
+                rustix::event::PollFlags::OUT,
+                Some(Duration::from_secs(days * 86_400)),
+            )
+            .unwrap();
+        }
+        super::wait_for(&a, rustix::event::PollFlags::OUT, Some(Duration::MAX)).unwrap();
+    }
+
+    #[test]
+    fn kernel_failures_get_their_own_code_and_always_a_suggestion() {
+        let failure = |kind, suggestion: Option<&str>| Failure {
+            kind,
+            message: "the kernel's words".to_owned(),
+            element: Some("Edge1".to_owned()),
+            suggestion: suggestion.map(str::to_owned),
+        };
+        let cases = [
+            (
+                FailureKind::KernelFailed,
+                ErrorCode::KernelFailed,
+                "Fillet failed",
+                "change the operation's values: the kernel can't build it from these",
+            ),
+            (
+                FailureKind::InvalidResult,
+                ErrorCode::InvalidResult,
+                "Fillet gave an invalid result, which was refused",
+                "change the operation's values: the kernel can't build a valid result from these",
+            ),
+        ];
+        for (kind, code, message, fallback) in cases {
+            let error = failure_error("Fillet", failure(kind, None));
+            assert_eq!(
+                (
+                    error.code(),
+                    error.message(),
+                    error.cause(),
+                    error.element()
+                ),
+                (code, message, Some("the kernel's words"), Some("Edge1"))
+            );
+            assert_eq!(error.suggestion(), Some(fallback));
+            // The worker's own suggestion, when it has one, comes first.
+            let error = failure_error("Fillet", failure(kind, Some("try a smaller radius")));
+            assert_eq!(error.suggestion(), Some("try a smaller radius"));
+        }
+    }
 
     #[test]
     fn exits_and_signals_are_named_by_this_platforms_numbers() {
@@ -548,6 +743,28 @@ mod tests {
     fn text_that_isnt_utf8_doesnt_stop_the_reading() {
         let lines = logs_of(b"before\n\xff\xfe\nLAST WORDS\n");
         assert_eq!(lines, ["before", "\u{fffd}\u{fffd}", "LAST WORDS"]);
+    }
+
+    #[test]
+    fn a_long_line_is_cut_to_one_line() {
+        let mut bytes = vec![b'x'; MAX_LOG_LINE * 2 + 10];
+        bytes.extend(b"\nnext\n");
+        let lines = logs_of(&bytes);
+        assert_eq!(
+            lines.len(),
+            2,
+            "{:?}",
+            lines.iter().map(String::len).collect::<Vec<_>>()
+        );
+        assert_eq!(lines[0], "x".repeat(MAX_LOG_LINE));
+        assert_eq!(lines[1], "next");
+        // A line of exactly the maximum, newline included, is whole.
+        let mut bytes = vec![b'y'; MAX_LOG_LINE - 1];
+        bytes.extend(b"\nnext\n");
+        assert_eq!(
+            logs_of(&bytes),
+            ["y".repeat(MAX_LOG_LINE - 1), "next".to_owned()]
+        );
     }
 
     #[test]

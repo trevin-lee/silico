@@ -1,0 +1,5 @@
+# cargo-mutants: run every test in the workspace against each mutant, with nextest. The
+# worker client in silico-core is tested from silico-kernel's tests (they need the real
+# workers), so a package's own tests alone would miss most of its mutants.
+test_tool = "nextest"
+test_workspace = true

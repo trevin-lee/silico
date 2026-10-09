@@ -19,17 +19,27 @@ pub const WORKER_FD: i32 = 3;
 /// started without it wasn't started by the core, and refuses to run.
 pub const WORKER_FD_ENV: &str = "SILICO_WORKER_FD";
 
-/// A request from the core to a worker.
+/// Identifies a request to a worker. Chosen by the core; the response carries it back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct RequestId(pub u64);
+
+/// The document generation a request belongs to. Results for a superseded generation are
+/// discarded by the core.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct Generation(pub u64);
+
+/// Ties a worker's logs for a request to the core's span for it (ARCHITECTURE.md, Errors
+/// and logging): the worker records it on its request span.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct TraceId(pub u64);
+
+/// A request from the core to a worker. The three numbers are distinct types, so one
+/// can't be passed for another; on the wire each is a plain number.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Request {
-    /// Chosen by the core; the response carries it back.
-    pub id: u64,
-    /// The document generation the request belongs to. Results for a superseded
-    /// generation are discarded by the core.
-    pub generation: u64,
-    /// Ties the worker's logs for this request to the core's span for it (ARCHITECTURE.md,
-    /// Errors and logging): the worker records it on its request span.
-    pub trace: u64,
+    pub id: RequestId,
+    pub generation: Generation,
+    pub trace: TraceId,
     pub op: Op,
 }
 
@@ -38,20 +48,20 @@ pub struct Request {
 pub enum Op {
     /// A box from the origin to `(dx, dy, dz)`. Replies with [`Reply::Shape`].
     MakeBox { dx: f64, dy: f64, dz: f64 },
-    /// A shape's volume, area, center, topology counts, and validity. Replies with
-    /// [`Reply::Summary`].
-    Summarize { shape: Blob },
+    /// A shape's volume, area, center, topology counts, and validity (as `shape` says).
+    /// Replies with [`Reply::Summary`].
+    Summarize { shape: ShapeData },
     /// Rounds `edges` of `shape` with a constant `radius`. Edges are numbered from 1 in
     /// OCCT's `TopExp::MapShapes` order, as FreeCAD's `Edge1`, `Edge2`, and so on. Replies
     /// with [`Reply::Shape`].
     Fillet {
-        shape: Blob,
+        shape: ShapeData,
         edges: Vec<u32>,
         radius: f64,
     },
     /// A triangle mesh of a shape for display, no further than `deflection` from its
     /// surface. Replies with [`Reply::Mesh`].
-    Tessellate { shape: Blob, deflection: f64 },
+    Tessellate { shape: ShapeData, deflection: f64 },
     /// Sends `data` straight back as [`Reply::Echo`]: a health check, and the cheapest
     /// round trip, which the IPC benchmark measures.
     Echo { data: Blob },
@@ -93,18 +103,16 @@ impl Op {
 /// A worker's answer to the request with the same `id`, echoing its `generation`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Response {
-    pub id: u64,
-    pub generation: u64,
+    pub id: RequestId,
+    pub generation: Generation,
     pub result: Result<Reply, Failure>,
 }
 
 /// A successful result.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Reply {
-    /// A shape, as OCCT's binary B-rep.
-    Shape {
-        brep: Blob,
-    },
+    /// A shape a worker made.
+    Shape(ShapeData),
     Summary(ShapeSummary),
     Mesh(Mesh),
     Echo {
@@ -135,13 +143,30 @@ pub struct Mesh {
     pub triangles: Vec<[u32; 3]>,
     /// How many triangles belong to each face, in OCCT's face order.
     pub face_triangles: Vec<u32>,
-    /// A polyline along each edge: `edges[0]` is `Edge1`, as [`Op::Fillet`] numbers them.
-    pub edges: Vec<Vec<[f64; 3]>>,
+    /// The points of every edge's polyline, one edge after another, split by
+    /// `edge_point_counts`. Flat, so every value on the wire costs no more than a few times
+    /// its size to read (a list of lists would let a few bytes cost a whole empty list).
+    pub edge_points: Vec<[f64; 3]>,
+    /// How many of `edge_points` belong to each edge: the first count is `Edge1`'s, as
+    /// [`Op::Fillet`] numbers them.
+    pub edge_point_counts: Vec<u32>,
 }
 
 impl Mesh {
+    /// Each edge's polyline, in order: the first is `Edge1`. An edge whose points aren't
+    /// there (in a mesh that fails [`Mesh::validate`]) is empty.
+    pub fn edges(&self) -> impl Iterator<Item = &[[f64; 3]]> {
+        let mut start = 0usize;
+        self.edge_point_counts.iter().map(move |&count| {
+            let end = start.saturating_add(count as usize);
+            let points = self.edge_points.get(start..end).unwrap_or(&[]);
+            start = end;
+            points
+        })
+    }
+
     /// Checks that the mesh is consistent: every index names a vertex, the per-face counts
-    /// add up to the triangles, and every coordinate is finite. Run it before indexing a
+    /// and per-edge counts add up, and every coordinate is finite. Run it before indexing a
     /// mesh that came from another process.
     pub fn validate(&self) -> Result<(), String> {
         let vertices = self.positions.len();
@@ -161,13 +186,15 @@ impl Mesh {
                 self.triangles.len()
             ));
         }
+        let edge_points: u64 = self.edge_point_counts.iter().map(|&n| u64::from(n)).sum();
+        if edge_points != self.edge_points.len() as u64 {
+            return Err(format!(
+                "edges account for {edge_points} points, but there are {}",
+                self.edge_points.len()
+            ));
+        }
         let finite = |p: &[f64; 3]| p.iter().all(|c| c.is_finite());
-        if !self
-            .positions
-            .iter()
-            .chain(self.edges.iter().flatten())
-            .all(finite)
-        {
+        if !self.positions.iter().chain(&self.edge_points).all(finite) {
             return Err("a coordinate isn't finite".to_owned());
         }
         Ok(())
@@ -183,6 +210,8 @@ pub struct Failure {
     pub message: String,
     /// The sub-element at fault, such as `Edge1`, when the worker knows it.
     pub element: Option<String>,
+    /// What to try instead, when the worker has a suggestion.
+    pub suggestion: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -191,11 +220,57 @@ pub enum FailureKind {
     InvalidInput,
     /// The kernel refused or failed the operation.
     KernelFailed,
+    /// The kernel performed the operation, but the result isn't valid, so the worker
+    /// refused it.
+    InvalidResult,
     /// This worker doesn't perform that operation.
     UnknownOp,
     /// Something went wrong in the worker itself, such as floating-point traps found
     /// switched on after the request.
     Internal,
+}
+
+/// A shape as it crosses the worker boundary: OCCT's binary B-rep (with its checksum), and
+/// whether OCCT's `BRepCheck_Analyzer` finds the whole shape valid, if that's known. A
+/// worker checks each shape it makes and says; the core sends the shape back as it got it,
+/// and the worker takes its word, so a shape a worker made is never checked as a whole
+/// again (the check costs as much as the shape is large). A shape no worker has vouched
+/// for (a file, an import) is [`ShapeData::unchecked`], and each worker given it checks
+/// it.
+///
+/// The fields are private so validity can't be claimed by accident: a
+/// [`ShapeData::checked`] is only ever made from a worker's word, given live in a reply
+/// or replayed from where the core stored that reply (the cache, M2, stores the validity
+/// with the B-rep, under the same checksum).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShapeData {
+    brep: Blob,
+    valid: Option<bool>,
+}
+
+impl ShapeData {
+    /// A shape whose validity isn't known.
+    pub fn unchecked(brep: Blob) -> Self {
+        Self { brep, valid: None }
+    }
+
+    /// A shape whose validity a worker has checked: in its reply, or rebuilt from a stored
+    /// reply. Never from a guess.
+    pub fn checked(brep: Blob, valid: bool) -> Self {
+        Self {
+            brep,
+            valid: Some(valid),
+        }
+    }
+
+    pub fn brep(&self) -> &Blob {
+        &self.brep
+    }
+
+    /// Whether the whole shape is valid, if a worker has checked it.
+    pub fn valid(&self) -> Option<bool> {
+        self.valid
+    }
 }
 
 /// Bytes carried by a message, such as a serialized shape. Sent inline in the frame for

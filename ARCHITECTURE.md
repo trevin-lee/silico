@@ -121,7 +121,7 @@ A `.silico` file is strict JSON describing the feature timeline. Silico rebuilds
 - **Notes** are a data field, not comments, so they survive UI saves and are visible in the UI and through MCP.
 - **Canonical form.** Keys are written in schema order, numbers as described in *Numbers in the file*, one leaf entity per line, LF line endings, and a trailing newline. `silico fmt` produces canonical form, and every save writes it.
 - **Imported geometry** is an `import` feature that references a STEP file committed next to the document.
-- **Cache.** `.silico-cache/` stores the B-rep for each feature, keyed by a hash of the feature, its inputs, the kernel version, and the platform. It's gitignored. A fresh clone rebuilds once.
+- **Cache.** `.silico-cache/` stores the B-rep for each feature with the worker's word on whether it's valid, both under one checksum (so it isn't checked again), keyed by a hash of the feature, its inputs, the kernel version, and the platform. It's gitignored. A fresh clone rebuilds once.
 
 ### Numbers in the file
 

@@ -14,52 +14,36 @@ use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
 
 use silico_protocol::{
-    Blob, Failure, FailureKind, FrameError, FrameReader, Op, Reply, Request, Response,
-    ShapeSummary, WORKER_FD, WORKER_FD_ENV, write_message,
+    Blob, Failure, FailureKind, FrameError, FrameReader, Generation, Op, Reply, Request, RequestId,
+    Response, ShapeData, ShapeSummary, WORKER_FD, WORKER_FD_ENV, write_message,
 };
 
-use crate::KernelError;
+use crate::{KernelError, KernelErrorKind};
 
 /// The production operations. Test operations get [`FailureKind::UnknownOp`].
 pub fn handle(op: Op) -> Result<Reply, Failure> {
     match op {
         Op::MakeBox { dx, dy, dz } => {
             let shape = crate::make_box(dx, dy, dz).map_err(failure)?;
-            let brep = crate::to_brep(&shape).map_err(failure)?;
-            Ok(Reply::Shape {
-                brep: Blob::inline(brep),
-            })
+            shape_reply(&shape)
         }
         Op::Summarize { shape } => {
-            let shape = crate::from_brep(shape.as_bytes()).map_err(failure)?;
-            let s = crate::summarize(&shape).map_err(failure)?;
-            let center = [s.center.x, s.center.y, s.center.z];
-            check_finite(s.volume, center)?;
-            check_finite(s.area, [0.0; 3])?;
-            Ok(Reply::Summary(ShapeSummary {
-                volume: s.volume,
-                area: s.area,
-                center,
-                faces: s.faces,
-                edges: s.edges,
-                vertices: s.vertices,
-                valid: s.valid,
-            }))
+            let shape = shape_of(&shape)?;
+            let summary = ShapeSummary::from(crate::summarize(&shape).map_err(failure)?);
+            check_finite(&summary)?;
+            Ok(Reply::Summary(summary))
         }
         Op::Fillet {
             shape,
             edges,
             radius,
         } => {
-            let shape = crate::from_brep(shape.as_bytes()).map_err(failure)?;
+            let shape = shape_of(&shape)?;
             let rounded = crate::fillet(&shape, &edges, radius).map_err(failure)?;
-            let brep = crate::to_brep(&rounded).map_err(failure)?;
-            Ok(Reply::Shape {
-                brep: Blob::inline(brep),
-            })
+            shape_reply(&rounded)
         }
         Op::Tessellate { shape, deflection } => {
-            let shape = crate::from_brep(shape.as_bytes()).map_err(failure)?;
+            let shape = shape_of(&shape)?;
             let mesh = crate::tessellate(&shape, deflection).map_err(failure)?;
             Ok(Reply::Mesh(mesh))
         }
@@ -76,31 +60,60 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
                 op.name()
             ),
             element: None,
+            suggestion: None,
         }),
     }
 }
 
-/// A shape OCCT read but can't integrate gives NaN or infinity: never a result.
-pub fn check_finite(volume: f64, center: [f64; 3]) -> Result<(), Failure> {
-    if volume.is_finite() && center.iter().all(|c| c.is_finite()) {
-        return Ok(());
-    }
-    Err(Failure {
-        kind: FailureKind::KernelFailed,
-        message: format!("mass properties aren't finite (volume {volume}, center {center:?})"),
-        element: None,
+/// A shape from a request, with the validity it came with, if a worker checked it (if
+/// not, it's checked when it's first needed).
+fn shape_of(data: &ShapeData) -> Result<crate::Shape, Failure> {
+    let shape = crate::from_brep(data.brep().as_bytes()).map_err(failure)?;
+    Ok(match data.valid() {
+        Some(valid) => shape.with_validity(valid),
+        None => shape,
     })
+}
+
+/// A shape to send back, with its validity (checked now if it wasn't already).
+fn shape_reply(shape: &crate::Shape) -> Result<Reply, Failure> {
+    Ok(Reply::Shape(ShapeData::checked(
+        Blob::inline(crate::to_brep(shape).map_err(failure)?),
+        shape.is_valid().map_err(failure)?,
+    )))
+}
+
+/// A shape OCCT read but can't integrate gives NaN or infinity: never a result.
+fn check_finite(summary: &ShapeSummary) -> Result<(), Failure> {
+    let [x, y, z] = summary.center;
+    let values = [
+        ("volume", summary.volume),
+        ("area", summary.area),
+        ("center x", x),
+        ("center y", y),
+        ("center z", z),
+    ];
+    match values.into_iter().find(|(_, value)| !value.is_finite()) {
+        None => Ok(()),
+        Some((name, value)) => Err(Failure {
+            kind: FailureKind::KernelFailed,
+            message: format!("the shape's {name} isn't finite ({value})"),
+            element: None,
+            suggestion: None,
+        }),
+    }
 }
 
 fn failure(e: KernelError) -> Failure {
     Failure {
-        kind: if e.is_invalid_input() {
-            FailureKind::InvalidInput
-        } else {
-            FailureKind::KernelFailed
+        kind: match e.kind() {
+            KernelErrorKind::InvalidInput => FailureKind::InvalidInput,
+            KernelErrorKind::Failed => FailureKind::KernelFailed,
+            KernelErrorKind::InvalidResult => FailureKind::InvalidResult,
         },
         message: e.message().to_owned(),
         element: e.element().map(str::to_owned),
+        suggestion: e.suggestion().map(str::to_owned),
     }
 }
 
@@ -122,17 +135,22 @@ pub fn check_fp_trap_mask(mask: u32) -> Result<(), String> {
 
 /// Serves requests from `socket` until the core closes it. `handle` performs each
 /// operation, given the request's id and generation, and may write to the socket directly
-/// (the test worker's garbage and out-of-turn operations do). Returns an error if the stream breaks or a request can't be read.
+/// (the test worker's garbage and out-of-turn operations do). Returns an error if the
+/// stream breaks or a request can't be read.
 pub fn serve<F>(socket: UnixStream, mut handle: F) -> Result<(), FrameError>
 where
-    F: FnMut(u64, u64, Op, &mut dyn Write) -> Result<Reply, Failure>,
+    F: FnMut(RequestId, Generation, Op, &mut dyn Write) -> Result<Reply, Failure>,
 {
     let mut writer = socket.try_clone().map_err(FrameError::Io)?;
     let mut requests = FrameReader::new(socket);
     while let Some(request) = requests.read_message::<Request>()? {
         let name = request.op.name();
-        let span =
-            tracing::warn_span!("request", trace = request.trace, id = request.id, op = name);
+        let span = tracing::warn_span!(
+            "request",
+            trace = request.trace.0,
+            id = request.id.0,
+            op = name
+        );
         let _entered = span.enter();
         let mut result = handle(request.id, request.generation, request.op, &mut writer);
         // Traps switched on during a request would make later results platform-
@@ -144,6 +162,7 @@ where
                 kind: FailureKind::Internal,
                 message: format!("{problem} after {name}"),
                 element: None,
+                suggestion: None,
             });
         }
         write_message(
@@ -188,7 +207,7 @@ fn inherited_socket() -> Result<UnixStream, String> {
 /// traps off (or refuse to run); then serve the inherited socket.
 pub fn run<F>(handle: F) -> ExitCode
 where
-    F: FnMut(u64, u64, Op, &mut dyn Write) -> Result<Reply, Failure>,
+    F: FnMut(RequestId, Generation, Op, &mut dyn Write) -> Result<Reply, Failure>,
 {
     let filter = tracing_subscriber::EnvFilter::try_from_env("SILICO_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
@@ -219,6 +238,47 @@ where
         Err(e) => {
             tracing::error!("stopping: {e}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use silico_protocol::{FailureKind, ShapeSummary};
+
+    use super::check_finite;
+
+    #[test]
+    fn a_summary_that_isnt_finite_is_refused_naming_the_value() {
+        let good = ShapeSummary {
+            volume: 6000.0,
+            area: 2200.0,
+            center: [5.0, 10.0, 15.0],
+            faces: 6,
+            edges: 12,
+            vertices: 8,
+            valid: true,
+        };
+        assert!(check_finite(&good).is_ok());
+        type Spoil = fn(&mut ShapeSummary);
+        let cases: [(&str, Spoil); 6] = [
+            ("volume isn't finite (NaN)", |s| s.volume = f64::NAN),
+            ("volume isn't finite (inf)", |s| s.volume = f64::INFINITY),
+            ("area isn't finite (NaN)", |s| s.area = f64::NAN),
+            ("center x isn't finite (NaN)", |s| s.center[0] = f64::NAN),
+            ("center y isn't finite (-inf)", |s| {
+                s.center[1] = f64::NEG_INFINITY
+            }),
+            ("center z isn't finite (inf)", |s| {
+                s.center[2] = f64::INFINITY
+            }),
+        ];
+        for (want, spoil) in cases {
+            let mut bad = good.clone();
+            spoil(&mut bad);
+            let failure = check_finite(&bad).unwrap_err();
+            assert_eq!(failure.kind, FailureKind::KernelFailed);
+            assert_eq!(failure.message, format!("the shape's {want}"));
         }
     }
 }

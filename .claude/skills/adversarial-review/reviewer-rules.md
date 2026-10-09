@@ -16,7 +16,7 @@ The target comes from the skill's arguments: a diff range, a branch, or paths. W
 
 ## Don't touch the working tree
 
-Other reviewers run in parallel on the same checkout. Don't edit, stash, checkout, or reset anything in it. Read-only commands are fine (`cargo check`, `cargo test`, `cargo mutants`, which copies the tree first). To build another revision, use `git worktree add /tmp/silico-<lens>-<rev> <rev>` and remove it when you're done. Write scratch files only under `/tmp`.
+Other reviewers run in parallel on the same checkout. Don't edit, stash, checkout, or reset anything in it. Read-only commands are fine (`cargo check`, `cargo test`). `cargo mutants` edits the tree it runs in, so run it only in a worktree of your own (see `review-tests`). To build another revision, use `git worktree add /tmp/silico-<lens>-<rev> <rev>` and remove it when you're done. Write scratch files only under `/tmp`.
 
 ## Evidence bar
 

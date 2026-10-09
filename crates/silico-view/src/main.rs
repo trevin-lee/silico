@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use silico_core::worker::Worker;
 use silico_core::{Error, ErrorCode};
-use silico_protocol::{Blob, Mesh, Op, Reply, ShapeSummary};
+use silico_protocol::{Generation, Mesh, Op, Reply, ShapeData, ShapeSummary};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -45,10 +45,16 @@ const PARTS: &[Part] = &[
     },
 ];
 
+/// What the command line asks for.
+enum Command {
+    Help,
+    Show(Sink),
+}
+
+/// Where the parts go.
 enum Sink {
     Viewer(Option<String>),
     File(PathBuf),
-    Help,
 }
 
 const USAGE: &str = "usage: silico-view [--viewer <rerun executable>] [--save <file.rrd>]\n\
@@ -56,7 +62,10 @@ const USAGE: &str = "usage: silico-view [--viewer <rerun executable>] [--save <f
 
 fn main() -> ExitCode {
     let mut out = std::io::stdout().lock();
-    let result = parse_args().and_then(run);
+    let result = parse_args().and_then(|command| match command {
+        Command::Help => Ok(USAGE.to_owned()),
+        Command::Show(sink) => run(sink),
+    });
     match result {
         Ok(message) => {
             let _ = writeln!(out, "{message}");
@@ -69,12 +78,12 @@ fn main() -> ExitCode {
     }
 }
 
-fn parse_args() -> Result<Sink, Error> {
+fn parse_args() -> Result<Command, Error> {
     let mut args = std::env::args().skip(1);
     let mut sink = Sink::Viewer(None);
     while let Some(arg) = args.next() {
         if arg == "--help" || arg == "-h" {
-            return Ok(Sink::Help);
+            return Ok(Command::Help);
         }
         let value = args.next().ok_or_else(|| {
             Error::new(ErrorCode::InvalidInput, format!("{arg} needs a value"))
@@ -91,7 +100,7 @@ fn parse_args() -> Result<Sink, Error> {
             }
         };
     }
-    Ok(sink)
+    Ok(Command::Show(sink))
 }
 
 /// The kernel worker: `SILICO_KERNEL_WORKER`, or the one built next to this executable.
@@ -107,16 +116,16 @@ fn worker_path() -> Result<PathBuf, Error> {
         Ok(worker)
     } else {
         Err(Error::new(
-            ErrorCode::WorkerCrashed,
+            ErrorCode::Internal,
             format!("no kernel worker at {}", worker.display()),
         )
         .with_suggestion("build it: cargo build -p silico-kernel --bin silico-kernel-worker"))
     }
 }
 
-fn shape_of(reply: Reply) -> Result<Blob, Error> {
+fn shape_of(reply: Reply) -> Result<ShapeData, Error> {
     match reply {
-        Reply::Shape { brep } => Ok(brep),
+        Reply::Shape(shape) => Ok(shape),
         other => Err(unexpected(&other)),
     }
 }
@@ -132,7 +141,7 @@ fn unexpected(reply: &Reply) -> Error {
 /// Builds `part` through the worker, and returns its mesh and summary.
 fn build(worker: &mut Worker, part: &Part) -> Result<(Mesh, ShapeSummary), Error> {
     let mut shape = shape_of(worker.call(
-        1,
+        Generation(1),
         Op::MakeBox {
             dx: 10.0,
             dy: 20.0,
@@ -142,7 +151,7 @@ fn build(worker: &mut Worker, part: &Part) -> Result<(Mesh, ShapeSummary), Error
     )?)?;
     if let Some((edges, radius)) = part.fillet {
         shape = shape_of(worker.call(
-            1,
+            Generation(1),
             Op::Fillet {
                 shape,
                 edges: edges.to_vec(),
@@ -152,7 +161,7 @@ fn build(worker: &mut Worker, part: &Part) -> Result<(Mesh, ShapeSummary), Error
         )?)?;
     }
     let summary = match worker.call(
-        1,
+        Generation(1),
         Op::Summarize {
             shape: shape.clone(),
         },
@@ -162,7 +171,7 @@ fn build(worker: &mut Worker, part: &Part) -> Result<(Mesh, ShapeSummary), Error
         other => return Err(unexpected(&other)),
     };
     let mesh = match worker.call(
-        1,
+        Generation(1),
         Op::Tessellate {
             shape,
             deflection: DEFLECTION,
@@ -229,10 +238,9 @@ fn normals(mesh: &Mesh) -> Vec<[f32; 3]> {
         .collect()
 }
 
-/// One polyline per edge that has points, labelled with its number: `edges[0]` is Edge1.
+/// One polyline per edge that has points, labelled with its number: the first is Edge1.
 fn edge_strips(mesh: &Mesh) -> (Vec<Vec<[f32; 3]>>, Vec<String>) {
-    mesh.edges
-        .iter()
+    mesh.edges()
         .enumerate()
         .filter(|(_, points)| !points.is_empty())
         .map(|(i, points)| {
@@ -297,7 +305,6 @@ fn run(sink: Sink) -> Result<String, Error> {
                 .map_err(|e| sink_error(format!("couldn't write {}", path.display()), e))?,
             format!("saved to {}", path.display()),
         ),
-        Sink::Help => return Ok(USAGE.to_owned()),
         Sink::Viewer(executable) => {
             let opts = rerun::SpawnOptions {
                 executable_path: executable.clone(),
@@ -337,11 +344,14 @@ mod tests {
             positions: vec![],
             triangles: vec![],
             face_triangles: vec![],
-            edges: vec![
-                vec![[0.0, 0.0, 30.0], [0.0, 0.0, 0.0]],
-                vec![],
-                vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]],
+            edge_points: vec![
+                [0.0, 0.0, 30.0],
+                [0.0, 0.0, 0.0],
+                [1.0, 2.0, 3.0],
+                [4.0, 5.0, 6.0],
+                [7.0, 8.0, 9.0],
             ],
+            edge_point_counts: vec![2, 0, 3],
         };
         let (strips, labels) = edge_strips(&mesh);
         assert_eq!(labels, ["Edge1", "Edge3"]);

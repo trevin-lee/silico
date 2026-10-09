@@ -4,8 +4,8 @@
 
 use proptest::prelude::*;
 use silico_protocol::{
-    Blob, Failure, FailureKind, FrameError, FrameReader, MAX_FRAME_LEN, Mesh, Op, Reply, Request,
-    Response, ShapeSummary, write_message,
+    Blob, Failure, FailureKind, FrameError, FrameReader, Generation, MAX_FRAME_LEN, Mesh, Op,
+    Reply, Request, RequestId, Response, ShapeData, ShapeSummary, TraceId, write_message,
 };
 
 /// One request per operation. The match gives each variant its own index and every
@@ -18,16 +18,17 @@ fn every_op() -> Vec<Op> {
             dy: 20.0,
             dz: 30.0,
         },
+        // Each state of a shape's validity: false, true, and unknown.
         Op::Summarize {
-            shape: Blob::inline((0..=255).collect()),
+            shape: ShapeData::checked(Blob::inline((0..=255).collect()), false),
         },
         Op::Fillet {
-            shape: Blob::inline(vec![1, 2]),
+            shape: ShapeData::checked(Blob::inline(vec![1, 2]), true),
             edges: vec![1, 3],
             radius: 2.5,
         },
         Op::Tessellate {
-            shape: Blob::inline(vec![3]),
+            shape: ShapeData::unchecked(Blob::inline(vec![3])),
             deflection: 0.01,
         },
         Op::Echo {
@@ -63,9 +64,10 @@ fn every_op() -> Vec<Op> {
 /// One response per reply and failure kind, checked the same way.
 fn every_result() -> Vec<Result<Reply, Failure>> {
     let results = vec![
-        Ok(Reply::Shape {
-            brep: Blob::inline(vec![0, 1, 2, 255]),
-        }),
+        Ok(Reply::Shape(ShapeData::checked(
+            Blob::inline(vec![0, 1, 2, 255]),
+            false,
+        ))),
         Ok(Reply::Summary(ShapeSummary {
             volume: 6000.0,
             area: 2200.0,
@@ -82,28 +84,39 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             triangles: vec![[0, 1, 2]],
             face_triangles: vec![1],
-            edges: vec![vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], vec![]],
+            edge_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            edge_point_counts: vec![2, 0],
         })),
         Ok(Reply::Done),
         Err(Failure {
             kind: FailureKind::InvalidInput,
             message: "box size dx must be a positive, finite length, got -1".to_owned(),
             element: None,
+            suggestion: None,
         }),
         Err(Failure {
             kind: FailureKind::KernelFailed,
             message: "Standard_DomainError".to_owned(),
             element: Some("Edge3".to_owned()),
+            suggestion: Some("try a smaller radius".to_owned()),
+        }),
+        Err(Failure {
+            kind: FailureKind::InvalidResult,
+            message: "the fillet's result isn't a valid solid".to_owned(),
+            element: None,
+            suggestion: None,
         }),
         Err(Failure {
             kind: FailureKind::UnknownOp,
             message: String::new(),
             element: None,
+            suggestion: None,
         }),
         Err(Failure {
             kind: FailureKind::Internal,
             message: "floating-point traps were on".to_owned(),
             element: None,
+            suggestion: None,
         }),
     ];
     let indices: std::collections::BTreeSet<usize> = results
@@ -117,14 +130,15 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             Err(Failure { kind, .. }) => match kind {
                 FailureKind::InvalidInput => 5,
                 FailureKind::KernelFailed => 6,
-                FailureKind::UnknownOp => 7,
-                FailureKind::Internal => 8,
+                FailureKind::InvalidResult => 7,
+                FailureKind::UnknownOp => 8,
+                FailureKind::Internal => 9,
             },
         })
         .collect();
     assert_eq!(
         indices,
-        (0..9).collect(),
+        (0..10).collect(),
         "a reply or failure kind has no case"
     );
     results
@@ -143,9 +157,9 @@ fn roundtrip_every_op() {
         .into_iter()
         .enumerate()
         .map(|(i, op)| Request {
-            id: i as u64,
-            generation: u64::MAX - i as u64,
-            trace: 1000 + i as u64,
+            id: RequestId(i as u64),
+            generation: Generation(u64::MAX - i as u64),
+            trace: TraceId(1000 + i as u64),
             op,
         })
         .collect();
@@ -153,8 +167,8 @@ fn roundtrip_every_op() {
         .into_iter()
         .enumerate()
         .map(|(i, result)| Response {
-            id: i as u64,
-            generation: 7,
+            id: RequestId(i as u64),
+            generation: Generation(7),
             result,
         })
         .collect();
@@ -186,9 +200,9 @@ fn frame_layout_is_length_then_payload() {
     // trace: 3, op: DebugAbort } is the varints 1, 2, and 3, then variant index 6. (Both ends ship
     // together, so indices may shift when operations are added.)
     let bytes = frame_of(&Request {
-        id: 1,
-        generation: 2,
-        trace: 3,
+        id: RequestId(1),
+        generation: Generation(2),
+        trace: TraceId(3),
         op: Op::DebugAbort,
     });
     assert_eq!(bytes, [4, 0, 0, 0, 1, 2, 3, 6]);
@@ -197,11 +211,11 @@ fn frame_layout_is_length_then_payload() {
 #[test]
 fn truncated_frame_is_error() {
     let frame = frame_of(&Request {
-        id: 7,
-        generation: 1,
-        trace: 0,
+        id: RequestId(7),
+        generation: Generation(1),
+        trace: TraceId(0),
         op: Op::Summarize {
-            shape: Blob::inline(vec![42; 100]),
+            shape: ShapeData::unchecked(Blob::inline(vec![42; 100])),
         },
     });
     assert!(
@@ -234,9 +248,9 @@ fn oversized_frame_rejected() {
     }
     // A reader's own lower maximum applies too, and the maximum itself is allowed.
     let frame = frame_of(&Request {
-        id: 1,
-        generation: 1,
-        trace: 0,
+        id: RequestId(1),
+        generation: Generation(1),
+        trace: TraceId(0),
         op: Op::DebugGarbage,
     });
     let payload = frame.len() as u32 - 4;
@@ -269,9 +283,9 @@ fn a_lying_length_is_truncation() {
 #[test]
 fn trailing_bytes_are_an_error() {
     let mut frame = frame_of(&Request {
-        id: 1,
-        generation: 1,
-        trace: 0,
+        id: RequestId(1),
+        generation: Generation(1),
+        trace: TraceId(0),
         op: Op::DebugAbort,
     });
     frame.push(0);
@@ -286,12 +300,13 @@ fn trailing_bytes_are_an_error() {
 fn a_frame_of_the_wrong_message_is_a_decode_error() {
     // A response read where a request is expected doesn't silently decode.
     let frame = frame_of(&Response {
-        id: 1,
-        generation: 0,
+        id: RequestId(1),
+        generation: Generation(0),
         result: Err(Failure {
             kind: FailureKind::UnknownOp,
             message: "x".repeat(300),
             element: None,
+            suggestion: None,
         }),
     });
     assert!(matches!(
@@ -340,17 +355,27 @@ proptest! {
         generation in any::<u64>(),
         dims in proptest::array::uniform3(any::<f64>()),
         blob in proptest::collection::vec(any::<u8>(), 0..2048),
+        valid in proptest::option::of(any::<bool>()),
     ) {
+        let shape = || match valid {
+            Some(valid) => ShapeData::checked(Blob::inline(blob.clone()), valid),
+            None => ShapeData::unchecked(Blob::inline(blob.clone())),
+        };
         for op in [
             Op::MakeBox { dx: dims[0], dy: dims[1], dz: dims[2] },
-            Op::Summarize { shape: Blob::inline(blob.clone()) },
+            Op::Summarize { shape: shape() },
             Op::Fillet {
-                shape: Blob::inline(blob.clone()),
+                shape: shape(),
                 edges: blob.iter().map(|&b| u32::from(b) * 1_000_003).collect(),
                 radius: dims[0],
             },
         ] {
-            let request = Request { id, generation, trace: 0, op };
+            let request = Request {
+                id: RequestId(id),
+                generation: Generation(generation),
+                trace: TraceId(0),
+                op,
+            };
             let frame = frame_of(&request);
             let back = FrameReader::new(frame.as_slice()).read_message::<Request>().unwrap().unwrap();
             // Compare bit patterns, so NaN round-trips count as equal.
@@ -393,11 +418,11 @@ impl std::io::Read for Interrupting<'_> {
 #[test]
 fn interrupted_reads_are_retried() {
     let request = Request {
-        id: 9,
-        generation: 3,
-        trace: 0,
+        id: RequestId(9),
+        generation: Generation(3),
+        trace: TraceId(0),
         op: Op::Summarize {
-            shape: Blob::inline(vec![7; 20]),
+            shape: ShapeData::unchecked(Blob::inline(vec![7; 20])),
         },
     };
     let frame = frame_of(&request);
@@ -488,8 +513,17 @@ fn a_mesh_is_validated_before_use() {
         positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
         triangles: vec![[0, 1, 2]],
         face_triangles: vec![1],
-        edges: vec![vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]],
+        edge_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]],
+        edge_point_counts: vec![2, 0, 1],
     };
+    assert_eq!(
+        good.edges().collect::<Vec<_>>(),
+        [
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]][..],
+            &[],
+            &[[1.0, 1.0, 0.0]]
+        ]
+    );
     assert_eq!(good.validate(), Ok(()));
     let mut bad_index = good.clone();
     bad_index.triangles = vec![[0, 1, 3]];
@@ -498,8 +532,22 @@ fn a_mesh_is_validated_before_use() {
     bad_counts.face_triangles = vec![2];
     assert!(bad_counts.validate().unwrap_err().contains("account for 2"));
     let mut not_finite = good.clone();
-    not_finite.edges[0][1][2] = f64::NAN;
+    not_finite.edge_points[1][2] = f64::NAN;
     assert!(not_finite.validate().unwrap_err().contains("finite"));
+    for counts in [vec![2, 0], vec![2, 0, 2], vec![u32::MAX, u32::MAX, 3]] {
+        let mut bad_edges = good.clone();
+        bad_edges.edge_point_counts = counts;
+        assert!(
+            bad_edges
+                .validate()
+                .unwrap_err()
+                .contains("edges account for"),
+            "{:?}",
+            bad_edges.edge_point_counts
+        );
+        // Unvalidated, the edges still can't index past the points.
+        assert!(bad_edges.edges().flatten().count() <= 3);
+    }
     let mut huge_counts = good;
     huge_counts.face_triangles = vec![u32::MAX, u32::MAX];
     assert!(huge_counts.validate().is_err());

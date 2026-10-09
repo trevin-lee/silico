@@ -5,19 +5,20 @@
 
 use std::alloc::System;
 
-use silico_protocol::{FrameError, FrameReader, MAX_FRAME_LEN};
+use silico_protocol::{
+    FrameError, FrameReader, Generation, MAX_FRAME_LEN, Mesh, Reply, RequestId, Response,
+    write_message,
+};
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
 
 #[global_allocator]
 static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
-/// Bytes allocated (and grown by reallocation) while reading one frame from `stream`.
+/// Bytes allocated (growth by reallocation included) while reading one frame from `stream`.
 fn bytes_allocated_reading(stream: &[u8]) -> (Result<Option<Vec<u8>>, FrameError>, usize) {
     let region = Region::new(GLOBAL);
     let result = FrameReader::new(stream).read_frame();
-    let change = region.change();
-    let grown = usize::try_from(change.bytes_reallocated.max(0)).unwrap();
-    (result, change.bytes_allocated + grown)
+    (result, region.change().bytes_allocated)
 }
 
 #[test]
@@ -55,4 +56,60 @@ fn a_real_frame_allocates_about_its_size() {
     let (result, allocated) = bytes_allocated_reading(&stream);
     assert_eq!(result.unwrap().unwrap().len(), len as usize);
     assert!(allocated >= len as usize, "allocated {allocated} bytes");
+}
+
+/// The memory a decoded `response` holds (allocated while decoding and not freed), and
+/// the size of its frame.
+fn bytes_held_after_decoding(response: &Response) -> (usize, usize) {
+    let mut frame = Vec::new();
+    write_message(&mut frame, response).unwrap();
+    let region = Region::new(GLOBAL);
+    let decoded: Response = FrameReader::new(frame.as_slice())
+        .read_message()
+        .unwrap()
+        .unwrap();
+    let change = region.change();
+    drop(decoded);
+    // Growth by reallocation is already in `bytes_allocated`.
+    (
+        change.bytes_allocated - change.bytes_deallocated,
+        frame.len(),
+    )
+}
+
+#[test]
+fn a_reply_costs_at_most_a_few_times_its_size_to_read() {
+    // A worker's reply can't make the core hold much more memory than the reply's size.
+    // The worst case is a number: one byte on the wire, four in memory, in a list that may
+    // have room for up to twice what it holds. So no more than 8 times. (A list of lists
+    // was 24 times: one byte for an empty list on the wire, 24 in memory.)
+    let n = 1 << 20;
+    let mesh = |f: &dyn Fn(&mut Mesh)| {
+        let mut mesh = Mesh {
+            positions: vec![],
+            triangles: vec![],
+            face_triangles: vec![],
+            edge_points: vec![],
+            edge_point_counts: vec![],
+        };
+        f(&mut mesh);
+        Response {
+            id: RequestId(0),
+            generation: Generation(0),
+            result: Ok(Reply::Mesh(mesh)),
+        }
+    };
+    let cases = [
+        ("empty edges", mesh(&|m| m.edge_point_counts = vec![0; n])),
+        ("empty faces", mesh(&|m| m.face_triangles = vec![0; n])),
+        ("triangles", mesh(&|m| m.triangles = vec![[0; 3]; n])),
+        ("positions", mesh(&|m| m.positions = vec![[0.0; 3]; n])),
+    ];
+    for (what, response) in cases {
+        let (held, wire) = bytes_held_after_decoding(&response);
+        assert!(
+            held <= 8 * wire,
+            "{what}: {wire} bytes on the wire, {held} held after reading"
+        );
+    }
 }

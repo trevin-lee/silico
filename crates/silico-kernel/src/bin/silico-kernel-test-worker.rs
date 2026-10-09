@@ -4,7 +4,9 @@
 //! production worker's code never dispatches these.
 
 use silico_kernel::{test_ops, worker};
-use silico_protocol::{Failure, FailureKind, Op, Reply, Response, write_message};
+use silico_protocol::{
+    Failure, FailureKind, Generation, Op, Reply, RequestId, Response, write_message,
+};
 
 fn main() -> std::process::ExitCode {
     worker::run(|id, generation, op, socket| match op {
@@ -32,6 +34,7 @@ fn main() -> std::process::ExitCode {
                     kind: FailureKind::Internal,
                     message: e.to_string(),
                     element: None,
+                    suggestion: None,
                 })?;
             Ok(Reply::Done)
         }
@@ -40,16 +43,21 @@ fn main() -> std::process::ExitCode {
                 kind: FailureKind::Internal,
                 message: e.message().to_owned(),
                 element: None,
+                suggestion: None,
             })?;
             Ok(Reply::Done)
         }
         Op::DebugReplyOutOfTurn { wrong_id } => {
             let stale = Response {
-                id: if wrong_id { id.wrapping_sub(1) } else { id },
+                id: if wrong_id {
+                    RequestId(id.0.wrapping_sub(1))
+                } else {
+                    id
+                },
                 generation: if wrong_id {
                     generation
                 } else {
-                    generation.wrapping_add(1)
+                    Generation(generation.0.wrapping_add(1))
                 },
                 result: Ok(Reply::Done),
             };
@@ -57,6 +65,7 @@ fn main() -> std::process::ExitCode {
                 kind: FailureKind::Internal,
                 message: e.to_string(),
                 element: None,
+                suggestion: None,
             })?;
             Ok(Reply::Done)
         }

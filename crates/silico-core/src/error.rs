@@ -49,6 +49,9 @@ error_codes! {
     ProtocolError = "protocol_error",
     /// A bug in Silico itself.
     Internal = "internal",
+    /// The geometry kernel performed an operation, but its result wasn't valid, so it was
+    /// refused rather than built on.
+    InvalidResult = "invalid_result",
 }
 
 impl Serialize for ErrorCode {

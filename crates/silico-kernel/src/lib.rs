@@ -50,6 +50,8 @@ mod ffi {
         fn summarize(shape: &Shape) -> Result<ShapeSummary>;
         fn edge_count(shape: &Shape) -> Result<u32>;
         fn fillet(shape: &Shape, edges: &[u32], radius: f64) -> Result<UniquePtr<Shape>>;
+        fn is_valid_where_changed(input: &Shape, result: &Shape) -> Result<bool>;
+        fn is_valid(shape: &Shape) -> Result<bool>;
 
         type Tessellation;
         fn bounding_diagonal(shape: &Shape) -> Result<f64>;
@@ -80,42 +82,85 @@ mod ffi {
 }
 
 pub use ffi::{MassProperties, Point3, ShapeSummary};
+
+impl From<ShapeSummary> for silico_protocol::ShapeSummary {
+    fn from(s: ShapeSummary) -> Self {
+        Self {
+            volume: s.volume,
+            area: s.area,
+            center: [s.center.x, s.center.y, s.center.z],
+            faces: s.faces,
+            edges: s.edges,
+            vertices: s.vertices,
+            valid: s.valid,
+        }
+    }
+}
 pub use silico_protocol::Mesh;
 
 pub mod worker;
 
-/// An operation OCCT refused or failed, with OCCT's own message (for example
-/// `Standard_DomainError: ...`). It stays inside the worker: the worker reports it as a
-/// protocol `Failure`, and the core turns that into its structured `Error`
-/// (`kernel_failed`, with this message as the cause), adding the feature it knows about.
+/// An operation refused or failed, with OCCT's own message where OCCT reported it (for
+/// example `Standard_DomainError: ...`). It stays inside the worker: the worker reports it
+/// as a protocol `Failure`, and the core turns that into its structured `Error`, with a
+/// code for each [`KernelErrorKind`] (`invalid_input`, `kernel_failed`, `invalid_result`)
+/// and this message as the cause, adding the feature it knows about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KernelError {
+    kind: KernelErrorKind,
     message: String,
-    invalid_input: bool,
     element: Option<String>,
+    suggestion: Option<String>,
+}
+
+/// What kind of failure a [`KernelError`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KernelErrorKind {
+    /// The request's values were refused before reaching OCCT.
+    InvalidInput,
+    /// OCCT refused or couldn't perform the operation.
+    Failed,
+    /// OCCT performed the operation, but its result isn't valid, so it was refused.
+    InvalidResult,
 }
 
 impl KernelError {
-    fn new(message: impl Into<String>) -> Self {
+    fn of_kind(kind: KernelErrorKind, message: impl Into<String>) -> Self {
         Self {
+            kind,
             message: message.into(),
-            invalid_input: false,
             element: None,
+            suggestion: None,
         }
+    }
+
+    fn new(message: impl Into<String>) -> Self {
+        Self::of_kind(KernelErrorKind::Failed, message)
     }
 
     /// The bridge refused the request's values before calling OCCT.
     fn invalid_input(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            invalid_input: true,
-            element: None,
-        }
+        Self::of_kind(KernelErrorKind::InvalidInput, message)
     }
 
     fn with_element(mut self, element: impl Into<String>) -> Self {
         self.element = Some(element.into());
         self
+    }
+
+    fn with_suggestion(mut self, suggestion: impl Into<String>) -> Self {
+        self.suggestion = Some(suggestion.into());
+        self
+    }
+
+    /// Whether the values were refused, OCCT failed, or OCCT's result was refused.
+    pub fn kind(&self) -> KernelErrorKind {
+        self.kind
+    }
+
+    /// What to try instead, when there's something to suggest.
+    pub fn suggestion(&self) -> Option<&str> {
+        self.suggestion.as_deref()
     }
 
     /// The sub-element at fault (such as `Edge3`), when known.
@@ -126,12 +171,6 @@ impl KernelError {
     /// What went wrong, in OCCT's words where OCCT reported it.
     pub fn message(&self) -> &str {
         &self.message
-    }
-
-    /// Whether the request's values were refused before reaching OCCT (rather than OCCT
-    /// refusing or failing the operation).
-    pub fn is_invalid_input(&self) -> bool {
-        self.invalid_input
     }
 }
 
@@ -150,28 +189,61 @@ impl From<cxx::Exception> for KernelError {
 }
 
 /// A shape owned by OCCT.
-pub struct Shape(cxx::UniquePtr<ffi::Shape>);
+pub struct Shape {
+    inner: cxx::UniquePtr<ffi::Shape>,
+    /// Whether `BRepCheck_Analyzer` finds the whole shape valid: checked at most once,
+    /// since it costs as much as the shape is large.
+    valid: std::cell::OnceCell<bool>,
+}
 
 impl Shape {
+    fn new(inner: cxx::UniquePtr<ffi::Shape>) -> Self {
+        Self {
+            inner,
+            valid: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// Whether OCCT's `BRepCheck_Analyzer` finds the whole shape valid. Checked the first
+    /// time it's asked, unless [`Shape::with_validity`] already said.
+    pub fn is_valid(&self) -> Result<bool, KernelError> {
+        if let Some(&valid) = self.valid.get() {
+            return Ok(valid);
+        }
+        let valid = ffi::is_valid(self.get()?)?;
+        Ok(*self.valid.get_or_init(|| valid))
+    }
+
+    /// Records the shape's validity, already known (from the worker that made it, which
+    /// checked), so it isn't checked again. A shape that crosses the worker boundary
+    /// carries its validity this way.
+    pub fn with_validity(mut self, valid: bool) -> Self {
+        self.valid = std::cell::OnceCell::from(valid);
+        self
+    }
+
     fn get(&self) -> Result<&ffi::Shape, KernelError> {
-        self.0
+        self.inner
             .as_ref()
             .ok_or_else(|| KernelError::new("shape is empty"))
     }
 }
 
+/// OCCT's length tolerance (`Precision::Confusion()`): lengths at or below it are zero.
+pub const LENGTH_TOLERANCE: f64 = 1e-7;
+
 /// A box with one corner at the origin and the opposite corner at `(dx, dy, dz)`.
-/// Every size must be a positive, finite length: that's this operation's precondition.
+/// Every size must be a finite length above [`LENGTH_TOLERANCE`]: that's this operation's
+/// precondition.
 pub fn make_box(dx: f64, dy: f64, dz: f64) -> Result<Shape, KernelError> {
-    // OCCT would build a negative size as a box on the other side of the origin, and lets
-    // NaN past its checks; both break the precondition, so they're refused here. Zero and
-    // sizes below OCCT's 1e-7 tolerance are left to OCCT, which rejects them with
-    // Standard_DomainError. A feature that wants a reversed extent (core's decision) asks
-    // for a positive box and places it.
+    // OCCT would build a negative size as a box on the other side of the origin, lets NaN
+    // past its checks, and rejects sizes at or below its tolerance without saying which;
+    // all break the precondition, so they're refused here, naming the size. A feature that
+    // wants a reversed extent (core's decision) asks for a positive box and places it.
     for (name, value) in [("dx", dx), ("dy", dy), ("dz", dz)] {
-        if !(value.is_finite() && value >= 0.0) {
+        if !(value.is_finite() && value > LENGTH_TOLERANCE) {
             return Err(KernelError::invalid_input(format!(
-                "box size {name} must be a positive, finite length, got {value}"
+                "box size {name} must be a finite length above {LENGTH_TOLERANCE}, got {value}"
             )));
         }
     }
@@ -179,7 +251,7 @@ pub fn make_box(dx: f64, dy: f64, dz: f64) -> Result<Shape, KernelError> {
     if shape.is_null() {
         return Err(KernelError::new("OCCT returned no box"));
     }
-    Ok(Shape(shape))
+    Ok(Shape::new(shape))
 }
 
 /// A solid's volume and center of mass, taken as uniformly dense.
@@ -218,7 +290,7 @@ pub fn from_brep(brep: &[u8]) -> Result<Shape, KernelError> {
     if shape.is_null() {
         return Err(KernelError::new("OCCT returned no shape"));
     }
-    Ok(Shape(shape))
+    Ok(Shape::new(shape))
 }
 
 /// The floating-point trap-enable bits that are set, 0 when none is. Workers must run
@@ -234,7 +306,9 @@ pub fn disable_fp_traps() -> Result<(), KernelError> {
 
 /// The shape's summary: volume, area, center, topology counts, and validity.
 pub fn summarize(shape: &Shape) -> Result<ShapeSummary, KernelError> {
-    Ok(ffi::summarize(shape.get()?)?)
+    let mut summary = ffi::summarize(shape.get()?)?;
+    summary.valid = shape.is_valid()?;
+    Ok(summary)
 }
 
 /// Rounds `edges` of `shape` with a constant `radius`. Edges are numbered from 1 in OCCT's
@@ -267,19 +341,60 @@ pub fn fillet(shape: &Shape, edges: &[u32], radius: f64) -> Result<Shape, Kernel
             );
         }
     }
-    // When OCCT fails a single-edge fillet, that edge is the one at fault; it doesn't say
+    // When a single-edge fillet fails, that edge is the one at fault; OCCT doesn't say
     // which of several it was.
-    let rounded = ffi::fillet(inner, edges, radius).map_err(|e| {
-        let error = KernelError::from(e);
-        match edges {
-            [edge] => error.with_element(format!("Edge{edge}")),
-            _ => error,
-        }
-    })?;
-    if rounded.is_null() {
-        return Err(KernelError::new("OCCT returned no shape"));
+    let blame = |error: KernelError| match edges {
+        [edge] => error
+            .with_element(format!("Edge{edge}"))
+            .with_suggestion("try a smaller radius"),
+        _ => error.with_suggestion(
+            "try a smaller radius, or fillet the edges one at a time to find the one that fails",
+        ),
+    };
+    let rounded = ffi::fillet(inner, edges, radius).map_err(|e| blame(e.into()))?;
+    checked_result(shape, rounded, "fillet").map_err(blame)
+}
+
+/// The check every operation's result passes before it's returned. OCCT can report an
+/// operation done whose result isn't valid (all of a 10 × 20 × 30 box's edges filleted at
+/// r = 5.5 gives a "solid" of volume 7792); Silico refuses those rather than build on
+/// them, as FreeCAD's features did from 87293fac9b.
+///
+/// The faces the operation made or changed must be valid (FreeCAD's check). That alone
+/// misses some broken results (a second fillet on a filleted box can give a "solid" larger
+/// than the box, valid where it changed), so when the input is valid the whole result must
+/// be too: an invalid result from a valid input is the operation's fault. When the input
+/// was already invalid, only the changed faces count, so its problem isn't blamed on the
+/// operation. See docs/ports/fillet.md.
+///
+/// Each shape is checked as a whole at most once: the input's validity is usually already
+/// known (the worker that made it checked it, and it came with the shape), and the
+/// result's is kept with it for the reply and its summary.
+fn checked_result(
+    input: &Shape,
+    result: cxx::UniquePtr<ffi::Shape>,
+    operation: &str,
+) -> Result<Shape, KernelError> {
+    let refused = || {
+        KernelError::of_kind(
+            KernelErrorKind::InvalidResult,
+            format!("the {operation}'s result isn't a valid solid"),
+        )
+    };
+    let checked = result
+        .as_ref()
+        .ok_or_else(|| KernelError::new("OCCT returned no shape"))?;
+    if !ffi::is_valid_where_changed(input.get()?, checked)? {
+        return Err(refused());
     }
-    Ok(Shape(rounded))
+    // After the changed-faces check, which may repair SameParameter flags on the result in
+    // place, so this judges the shape that's returned. (No input tested so far needs that
+    // repair, so the order hasn't yet changed an answer; see docs/ports/fillet.md.)
+    let valid = ffi::is_valid(checked)?;
+    if input.is_valid()? && !valid {
+        return Err(refused());
+    }
+    Ok(Shape::new(result).with_validity(valid))
 }
 
 /// The smallest mesh deflection allowed, as a fraction of the shape's size. Finer meshes
@@ -290,7 +405,7 @@ pub const MIN_RELATIVE_DEFLECTION: f64 = 1e-4;
 /// Meshes `shape` for display, with no point of the mesh further than `deflection` from
 /// the surface. Single-threaded, so the same shape always gives the same mesh, and it
 /// leaves the shape as it was (OCCT would otherwise keep the mesh on it). Faces and edges
-/// are in OCCT's order; `edges[0]` is Edge1, as [`fillet`] numbers them.
+/// are in OCCT's order; the first edge is Edge1, as [`fillet`] numbers them.
 pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
     if !(deflection.is_finite() && deflection > 0.0) {
         return Err(KernelError::invalid_input(format!(
@@ -298,7 +413,7 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
         )));
     }
     let inner = shape.get()?;
-    let floor = (ffi::bounding_diagonal(inner)? * MIN_RELATIVE_DEFLECTION).max(1e-7);
+    let floor = (ffi::bounding_diagonal(inner)? * MIN_RELATIVE_DEFLECTION).max(LENGTH_TOLERANCE);
     if deflection < floor {
         return Err(KernelError::invalid_input(format!(
             "mesh deflection {deflection} is too fine for this shape: use at least {floor}"
@@ -311,17 +426,6 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
     let triples = |values: &[f64]| -> Vec<[f64; 3]> {
         values.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect()
     };
-    let mut edges = Vec::new();
-    let mut points = raw.edge_points().chunks_exact(3);
-    for &count in raw.edge_points_per_edge() {
-        edges.push(
-            points
-                .by_ref()
-                .take(count as usize)
-                .map(|p| [p[0], p[1], p[2]])
-                .collect(),
-        );
-    }
     Ok(Mesh {
         positions: triples(raw.positions()),
         triangles: raw
@@ -330,7 +434,8 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
             .map(|t| [t[0], t[1], t[2]])
             .collect(),
         face_triangles: raw.face_triangles().to_vec(),
-        edges,
+        edge_points: triples(raw.edge_points()),
+        edge_point_counts: raw.edge_points_per_edge().to_vec(),
     })
 }
 
@@ -373,7 +478,7 @@ pub mod test_ops {
 
     /// A box with one face left out: a solid whose shell doesn't close.
     pub fn open_box() -> Result<super::Shape, KernelError> {
-        Ok(super::Shape(ffi::debug_open_box()?))
+        Ok(super::Shape::new(ffi::debug_open_box()?))
     }
 }
 

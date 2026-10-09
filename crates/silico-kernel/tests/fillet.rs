@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use silico_core::ErrorCode;
 use silico_core::worker::Worker;
-use silico_protocol::{Blob, Op, Reply, ShapeSummary};
+use silico_protocol::{Blob, Generation, Op, Reply, ShapeData, ShapeSummary};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-worker");
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -81,7 +81,7 @@ fn fillet_through_worker(
     radius: f64,
 ) -> Result<ShapeSummary, silico_core::Error> {
     let shape = match w.call(
-        1,
+        Generation(1),
         Op::MakeBox {
             dx: 10.0,
             dy: 20.0,
@@ -89,11 +89,11 @@ fn fillet_through_worker(
         },
         TIMEOUT,
     )? {
-        Reply::Shape { brep } => brep,
+        Reply::Shape(shape) => shape,
         other => panic!("MakeBox replied {other:?}"),
     };
     let rounded = match w.call(
-        1,
+        Generation(1),
         Op::Fillet {
             shape,
             edges: edges.to_vec(),
@@ -101,10 +101,10 @@ fn fillet_through_worker(
         },
         TIMEOUT,
     )? {
-        Reply::Shape { brep } => brep,
+        Reply::Shape(shape) => shape,
         other => panic!("Fillet replied {other:?}"),
     };
-    match w.call(1, Op::Summarize { shape: rounded }, TIMEOUT)? {
+    match w.call(Generation(1), Op::Summarize { shape: rounded }, TIMEOUT)? {
         Reply::Summary(summary) => Ok(summary),
         other => panic!("Summarize replied {other:?}"),
     }
@@ -211,11 +211,8 @@ fn box_fillet_through_worker_matches_freecad() {
             // FreeCAD returns an invalid solid; Silico refuses it. Anything else differing
             // is a failure.
             (Err(e), None) if theirs["valid"] == false => {
-                assert_eq!(e.code(), ErrorCode::KernelFailed, "{case}: {e}");
-                assert!(
-                    e.cause().unwrap().contains("isn't a valid solid"),
-                    "{case}: {e}"
-                );
+                assert_eq!(e.code(), ErrorCode::InvalidResult, "{case}: {e}");
+                assert_eq!(e.message(), INVALID_RESULT, "{case}: {e}");
                 refused_invalid += 1;
             }
             (ours, theirs) => panic!("{case}: Silico gave {ours:?}, FreeCAD gave {theirs:?}"),
@@ -226,6 +223,9 @@ fn box_fillet_through_worker_matches_freecad() {
     assert!(compared >= 8, "only {compared} cases compared");
     assert_eq!(refused_invalid, 2);
 }
+
+/// The message for a fillet OCCT built, but whose result was refused as invalid.
+const INVALID_RESULT: &str = "Fillet gave an invalid result, which was refused";
 
 #[test]
 fn fillet_too_large_is_structured_error() {
@@ -241,6 +241,7 @@ fn fillet_too_large_is_structured_error() {
             || err.cause().unwrap().contains("couldn't be built"),
         "{err}"
     );
+    assert_eq!(err.suggestion(), Some("try a smaller radius"));
     // The worker carries on.
     assert!(fillet_through_worker(&mut w, &[1], 2.0).is_ok());
 }
@@ -283,7 +284,7 @@ fn a_filleted_shape_crosses_the_boundary_intact() {
     let mut w = worker();
     let brep = match w
         .call(
-            1,
+            Generation(1),
             Op::MakeBox {
                 dx: 10.0,
                 dy: 20.0,
@@ -293,12 +294,12 @@ fn a_filleted_shape_crosses_the_boundary_intact() {
         )
         .unwrap()
     {
-        Reply::Shape { brep } => brep,
+        Reply::Shape(shape) => shape,
         other => panic!("{other:?}"),
     };
     let rounded = match w
         .call(
-            1,
+            Generation(1),
             Op::Fillet {
                 shape: brep,
                 edges: vec![1],
@@ -308,16 +309,17 @@ fn a_filleted_shape_crosses_the_boundary_intact() {
         )
         .unwrap()
     {
-        Reply::Shape { brep } => brep,
+        Reply::Shape(shape) => shape,
         other => panic!("{other:?}"),
     };
     let here =
-        silico_kernel::summarize(&silico_kernel::from_brep(rounded.as_bytes()).unwrap()).unwrap();
+        silico_kernel::summarize(&silico_kernel::from_brep(rounded.brep().as_bytes()).unwrap())
+            .unwrap();
     let there = match w
         .call(
-            1,
+            Generation(1),
             Op::Summarize {
-                shape: Blob::inline(rounded.as_bytes().to_vec()),
+                shape: rounded.clone(),
             },
             TIMEOUT,
         )
@@ -333,6 +335,8 @@ fn a_filleted_shape_crosses_the_boundary_intact() {
         (here.faces, here.edges, here.vertices),
         (there.faces, there.edges, there.vertices)
     );
+    // The validity the reply carried is what a fresh check finds here.
+    assert_eq!(rounded.valid(), Some(here.valid));
 }
 
 #[test]
@@ -398,13 +402,15 @@ fn an_invalid_fillet_result_is_refused() {
     let all: Vec<u32> = (1..=12).collect();
     for radius in [5.01, 5.5, 9.0] {
         let err = fillet_through_worker(&mut w, &all, radius).unwrap_err();
-        assert_eq!(err.code(), ErrorCode::KernelFailed, "r = {radius}: {err}");
+        assert_eq!(err.code(), ErrorCode::InvalidResult, "r = {radius}: {err}");
+        assert_eq!(err.message(), INVALID_RESULT, "r = {radius}: {err}");
+        // Several edges: OCCT doesn't say which one is at fault, so the suggestion says
+        // how to find it.
+        assert_eq!(err.element(), None, "r = {radius}: {err}");
         assert!(
-            err.cause().unwrap().contains("isn't a valid solid"),
+            err.suggestion().unwrap().contains("one at a time"),
             "r = {radius}: {err}"
         );
-        // Several edges: OCCT doesn't say which one is at fault.
-        assert_eq!(err.element(), None, "r = {radius}: {err}");
     }
     // Just under the limit is fine, as in FreeCAD.
     assert!(fillet_through_worker(&mut w, &all, 4.99).is_ok());
@@ -422,11 +428,11 @@ fn a_failed_fillet_names_only_the_edge_at_fault() {
     assert_eq!(err.element(), None, "{err}");
 }
 
-/// The fillet's bytes, through the worker.
-fn fillet_brep(w: &mut Worker, edges: &[u32], radius: f64) -> Blob {
+/// The fillet, through the worker.
+fn fillet_brep(w: &mut Worker, edges: &[u32], radius: f64) -> ShapeData {
     let shape = match w
         .call(
-            1,
+            Generation(1),
             Op::MakeBox {
                 dx: 10.0,
                 dy: 20.0,
@@ -436,12 +442,12 @@ fn fillet_brep(w: &mut Worker, edges: &[u32], radius: f64) -> Blob {
         )
         .unwrap()
     {
-        Reply::Shape { brep } => brep,
+        Reply::Shape(shape) => shape,
         other => panic!("{other:?}"),
     };
     match w
         .call(
-            1,
+            Generation(1),
             Op::Fillet {
                 shape,
                 edges: edges.to_vec(),
@@ -451,7 +457,7 @@ fn fillet_brep(w: &mut Worker, edges: &[u32], radius: f64) -> Blob {
         )
         .unwrap()
     {
-        Reply::Shape { brep } => brep,
+        Reply::Shape(shape) => shape,
         other => panic!("{other:?}"),
     }
 }
@@ -462,7 +468,7 @@ fn a_fillet_is_byte_for_byte_deterministic() {
     let mut w = worker();
     let b = fillet_brep(&mut w, &[1, 2], 1.5);
     let c = fillet_brep(&mut w, &[1, 2], 1.5);
-    assert!(a.as_bytes() == b.as_bytes() && b.as_bytes() == c.as_bytes());
+    assert!(a == b && b == c);
 }
 
 #[test]
@@ -471,7 +477,7 @@ fn a_mesh_through_the_worker_matches_one_made_here() {
     let brep = fillet_brep(&mut w, &[1], 2.0);
     let there = match w
         .call(
-            1,
+            Generation(1),
             Op::Tessellate {
                 shape: brep.clone(),
                 deflection: 0.05,
@@ -483,20 +489,145 @@ fn a_mesh_through_the_worker_matches_one_made_here() {
         Reply::Mesh(mesh) => mesh,
         other => panic!("{other:?}"),
     };
-    let here = silico_kernel::tessellate(&silico_kernel::from_brep(brep.as_bytes()).unwrap(), 0.05)
-        .unwrap();
+    let here = silico_kernel::tessellate(
+        &silico_kernel::from_brep(brep.brep().as_bytes()).unwrap(),
+        0.05,
+    )
+    .unwrap();
     assert_eq!(there, here);
     assert!(there.validate().is_ok());
     // Bad requests come back as invalid input, and the worker carries on.
     for (shape, deflection) in [
         (brep.clone(), 0.0),
         (brep.clone(), 1e-9),
-        (Blob::inline(b"not a shape".to_vec()), 0.05),
+        (
+            ShapeData::unchecked(Blob::inline(b"not a shape".to_vec())),
+            0.05,
+        ),
     ] {
         let err = w
-            .call(1, Op::Tessellate { shape, deflection }, TIMEOUT)
+            .call(Generation(1), Op::Tessellate { shape, deflection }, TIMEOUT)
             .unwrap_err();
         assert_eq!(err.code(), ErrorCode::InvalidInput, "{deflection}: {err}");
     }
     assert!(!w.is_stopped());
+}
+
+#[test]
+fn a_fillet_that_cant_be_built_and_an_invalid_result_are_told_apart() {
+    // Two failures an agent must handle differently: OCCT couldn't build the fillet, or
+    // built one that isn't valid. The stable code says which, not just the message.
+    let mut w = worker();
+    let not_built = fillet_through_worker(&mut w, &[1, 2], 11.0).unwrap_err();
+    let all: Vec<u32> = (1..=12).collect();
+    let invalid = fillet_through_worker(&mut w, &all, 5.5).unwrap_err();
+    assert_eq!(not_built.code(), ErrorCode::KernelFailed, "{not_built}");
+    assert_eq!(not_built.message(), "Fillet failed", "{not_built}");
+    assert_eq!(invalid.code(), ErrorCode::InvalidResult, "{invalid}");
+    assert_eq!(invalid.message(), INVALID_RESULT, "{invalid}");
+}
+
+#[test]
+fn a_problem_the_input_already_had_isnt_blamed_on_the_fillet() {
+    // The open box is missing Face1 (x = 0), so it's invalid; Edge5 is on the far side.
+    // FreeCAD's check (87293fac9b) looks only at the faces the fillet made or changed, so
+    // it accepts this fillet, and so does Silico. The result is still the open box.
+    let open = silico_kernel::test_ops::open_box().unwrap();
+    let rounded = silico_kernel::fillet(&open, &[5], 2.0)
+        .unwrap_or_else(|e| panic!("refused: {e} (element {:?})", e.element()));
+    let s = silico_kernel::summarize(&rounded).unwrap();
+    assert_eq!(s.faces, 6, "five faces and the fillet's");
+    assert!(!s.valid);
+}
+
+#[test]
+fn a_fillet_that_breaks_a_valid_input_is_still_refused_directly() {
+    // The same check, called in-process: the refusal is its own kind, with a suggestion.
+    let b = silico_kernel::make_box(10.0, 20.0, 30.0).unwrap();
+    let all: Vec<u32> = (1..=12).collect();
+    let err = silico_kernel::fillet(&b, &all, 5.5).err().unwrap();
+    assert_eq!(
+        err.kind(),
+        silico_kernel::KernelErrorKind::InvalidResult,
+        "{err}"
+    );
+    assert!(
+        err.suggestion().unwrap().contains("smaller radius"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_fillet_that_breaks_a_valid_filleted_box_is_refused() {
+    // Valid where the second fillet changed it, but not as a whole: a "solid" larger than
+    // the 6000 box it was cut from. The input was valid, so the result must be.
+    let b = silico_kernel::make_box(10.0, 20.0, 30.0).unwrap();
+    for (first_radius, second_edge) in [(3.0, 5), (1.0, 11)] {
+        let once = silico_kernel::fillet(&b, &[1, 3, 5], first_radius).unwrap();
+        let s = silico_kernel::summarize(&once).unwrap();
+        assert!(s.valid && s.volume < 6000.0, "the input is a valid fillet");
+        match silico_kernel::fillet(&once, &[second_edge], 5.0) {
+            Err(e) => assert_eq!(
+                e.kind(),
+                silico_kernel::KernelErrorKind::InvalidResult,
+                "{e}"
+            ),
+            Ok(twice) => {
+                let t = silico_kernel::summarize(&twice).unwrap();
+                panic!(
+                    "r = {first_radius}, Edge{second_edge}: accepted, valid {} volume {}",
+                    t.valid, t.volume
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_valid_second_fillet_on_a_filleted_box_is_accepted() {
+    // The stricter check mustn't refuse a good fillet on a modified solid. Two opposite
+    // edges along z, r = 2: each removes (4 − π)·30 of volume and 120 − 30π of flat face,
+    // adds 30π of quarter cylinder, and cuts (4 − π) from each of its two end faces.
+    let b = silico_kernel::make_box(10.0, 20.0, 30.0).unwrap();
+    let once = silico_kernel::fillet(&b, &[7], 2.0).unwrap();
+    let twice = silico_kernel::fillet(&once, &[3], 2.0).unwrap_or_else(|e| panic!("refused: {e}"));
+    let s = silico_kernel::summarize(&twice).unwrap();
+    let volume = 6000.0 - 2.0 * (4.0 - PI) * 30.0;
+    let area = 2200.0 - 2.0 * (120.0 - 30.0 * PI) - 4.0 * (4.0 - PI);
+    assert!(
+        relative_error(s.volume, volume) <= 1e-12,
+        "volume {} vs {volume}",
+        s.volume
+    );
+    assert!(
+        relative_error(s.area, area) <= 1e-12,
+        "area {} vs {area}",
+        s.area
+    );
+    assert_eq!((s.faces, s.edges, s.vertices), (8, 18, 12));
+    assert!(s.valid);
+}
+
+#[test]
+fn each_shape_is_checked_as_a_whole_at_most_once() {
+    // A shape keeps its validity once known, from a check or from the worker that made it.
+    let b = silico_kernel::make_box(10.0, 20.0, 30.0).unwrap();
+    assert!(b.is_valid().unwrap());
+    let open = silico_kernel::test_ops::open_box().unwrap();
+    assert!(!open.is_valid().unwrap());
+    let said_invalid = silico_kernel::make_box(10.0, 20.0, 30.0)
+        .unwrap()
+        .with_validity(false);
+    assert!(!said_invalid.is_valid().unwrap());
+    assert!(!silico_kernel::summarize(&said_invalid).unwrap().valid);
+    // A fillet doesn't check its input again: told the filleted box is invalid, it applies
+    // only FreeCAD's changed-faces check, and the broken second fillet (refused when the
+    // input is known valid, a_fillet_that_breaks_a_valid_filleted_box_is_refused) gets
+    // through. Its result's own check is kept with it.
+    let once = silico_kernel::fillet(&b, &[1, 3, 5], 3.0)
+        .unwrap()
+        .with_validity(false);
+    let twice = silico_kernel::fillet(&once, &[5], 5.0).unwrap();
+    assert!(!twice.is_valid().unwrap());
+    assert!(!silico_kernel::summarize(&twice).unwrap().valid);
 }

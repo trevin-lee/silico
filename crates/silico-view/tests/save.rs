@@ -74,7 +74,9 @@ fn a_path_or_viewer_that_wont_work_is_the_users_input() {
 
 #[test]
 fn help_prints_usage() {
+    // Without starting a worker: it works before one is built.
     let out = Command::new(env!("CARGO_BIN_EXE_silico-view"))
+        .env("SILICO_KERNEL_WORKER", "/nonexistent/silico-kernel-worker")
         .arg("--help")
         .output()
         .unwrap();

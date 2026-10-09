@@ -5,7 +5,7 @@
 #[path = "common/imports.rs"]
 mod imports;
 
-use silico_kernel::{Mesh, fillet, make_box, tessellate};
+use silico_kernel::{KernelErrorKind, Mesh, fillet, make_box, tessellate};
 
 fn relative_error(actual: f64, expected: f64) -> f64 {
     ((actual - expected) / expected).abs()
@@ -87,13 +87,42 @@ fn edges_are_numbered_as_the_fillet_numbers_them() {
     // FreeCAD's Edge1 of this box runs from (0, 0, 30) to (0, 0, 0); the fillet tests rely
     // on the same numbering.
     let mesh = tessellate(&make_box(10.0, 20.0, 30.0).unwrap(), 0.1).unwrap();
-    assert_eq!(mesh.edges.len(), 12);
-    let edge1 = &mesh.edges[0];
+    let edges: Vec<_> = mesh.edges().collect();
+    assert_eq!(edges.len(), 12);
+    let edge1 = edges[0];
     let ends = [edge1[0], edge1[edge1.len() - 1]];
     assert!(
         ends.contains(&[0.0, 0.0, 30.0]) && ends.contains(&[0.0, 0.0, 0.0]),
         "{ends:?}"
     );
+}
+
+#[test]
+fn every_box_edge_polyline_is_its_own_box_edge() {
+    // Each of the twelve polylines runs between two corners that differ in one coordinate
+    // (a box edge), and no two are the same edge.
+    let mesh = tessellate(&make_box(10.0, 20.0, 30.0).unwrap(), 0.1).unwrap();
+    let corner = |p: [f64; 3]| {
+        assert!(
+            (p[0] == 0.0 || p[0] == 10.0)
+                && (p[1] == 0.0 || p[1] == 20.0)
+                && (p[2] == 0.0 || p[2] == 30.0),
+            "{p:?} isn't a corner"
+        );
+        p.map(|c| c as i64)
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    for (i, edge) in mesh.edges().enumerate() {
+        let (a, b) = (corner(edge[0]), corner(edge[edge.len() - 1]));
+        assert_eq!(
+            (0..3).filter(|&k| a[k] != b[k]).count(),
+            1,
+            "Edge{} isn't a box edge",
+            i + 1
+        );
+        assert!(seen.insert((a.min(b), a.max(b))), "Edge{} repeats", i + 1);
+    }
+    assert_eq!(seen.len(), 12);
 }
 
 #[test]
@@ -109,7 +138,19 @@ fn a_filleted_box_mesh_approximates_the_solid() {
         "{meshed} vs {volume}"
     );
     assert_eq!(mesh.face_triangles.len(), 7);
-    assert_eq!(mesh.edges.len(), 15);
+    assert_eq!(mesh.edges().count(), 15);
+    // The fillet's arc edges stay within the deflection of the true circle: radius 2 about
+    // the line x = 2, y = 2 (Edge1 of the box ran along x = 0, y = 0).
+    let off_circle = mesh
+        .edges()
+        .flatten()
+        .filter(|p| p[0] < 2.0 && p[1] < 2.0)
+        .map(|p| {
+            let (dx, dy) = (p[0] - 2.0, p[1] - 2.0);
+            ((dx * dx + dy * dy).sqrt() - 2.0).abs()
+        })
+        .fold(0.0, f64::max);
+    assert!(off_circle <= 1e-6, "{off_circle}");
 }
 
 #[test]
@@ -128,7 +169,11 @@ fn a_bad_deflection_is_invalid_input() {
     let b = make_box(1.0, 1.0, 1.0).unwrap();
     for deflection in [0.0, -1.0, f64::NAN, f64::INFINITY] {
         let err = tessellate(&b, deflection).unwrap_err();
-        assert!(err.is_invalid_input(), "{deflection}: {err}");
+        assert_eq!(
+            err.kind(),
+            KernelErrorKind::InvalidInput,
+            "{deflection}: {err}"
+        );
     }
 }
 
@@ -167,9 +212,7 @@ fn a_deflection_too_fine_for_the_shape_is_refused() {
     // The box's diagonal is √1400 ≈ 37.4, so the floor is about 0.0037.
     let b = make_box(10.0, 20.0, 30.0).unwrap();
     let err = tessellate(&b, 1e-5).unwrap_err();
-    assert!(
-        err.is_invalid_input() && err.message().contains("too fine"),
-        "{err}"
-    );
+    assert_eq!(err.kind(), KernelErrorKind::InvalidInput, "{err}");
+    assert!(err.message().contains("too fine"), "{err}");
     assert!(tessellate(&b, 0.004).is_ok());
 }

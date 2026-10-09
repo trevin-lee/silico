@@ -4,7 +4,13 @@ Silico is a parametric CAD system: a Rust core, an egui/wgpu UI, and OpenCascade
 
 **Read [ARCHITECTURE.md](ARCHITECTURE.md) before structural work.** Its invariants are non-negotiable unless the maintainer agrees to change them.
 
-**Status:** M0 (foundations) in progress; see [ROADMAP.md](ROADMAP.md). `silico-kernel` has the OCCT bridge (M0.4); the other crates are scaffolding.
+**Status:** M0 (foundations) is built; M1 (the kernel's operations) is next. See [ROADMAP.md](ROADMAP.md) and the walkthrough, [docs/walkthrough/m0.md](docs/walkthrough/m0.md). What each crate holds now:
+
+- `silico-kernel`: the OCCT bridge (C++ through `cxx`) and the kernel worker binaries. The only crate that links OCCT.
+- `silico-protocol`: the messages between the core and workers, and their framing.
+- `silico-core`: the structured `Error`, and the worker client (`worker::Worker`), which starts workers and turns crashes, hangs, and bad replies into errors. The document model, feature graph, and command API come in M1 and later.
+- `silico-cli`: logging setup only, so far.
+- `silico-view`: a debug viewer that shows the kernel's parts in Rerun, until the app exists.
 
 ## FreeCAD reference
 
@@ -59,7 +65,11 @@ pixi run lint      # fmt and clippy, including the libm shim crate
 pixi run stress    # 605-case stress test, 10 runs, byte-identical to the committed reference
 pixi run gate      # every check on the committed tree: workspace lints, cargo-deny, lint, test, one stress run
 pixi run view      # the M0 parts (box, fillets) in the Rerun viewer, edges labelled Edge1, Edge2, ...
-cargo mutants --in-diff <(git diff main...HEAD)
+cargo mutants --in-place --in-diff <(git diff main...HEAD)
+                   # every workspace test, with nextest (.cargo/mutants.toml). In place, since a
+                   # copy of the tree has no target/occt: run it in a scratch worktree
+                   # (git worktree add /tmp/silico-mutants HEAD, then link .pixi and target/occt
+                   # from the main checkout), never in a checkout others are using
 ```
 
 Run C++ builds through pixi so the pinned clang is used. `pixi run gate` runs every check on the committed tree and must pass before a merge. `silico check` and `silico fmt` arrive in M2.

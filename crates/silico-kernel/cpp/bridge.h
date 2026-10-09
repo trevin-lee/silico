@@ -52,8 +52,8 @@ struct Shape {
 std::unique_ptr<Shape> make_box(double dx, double dy, double dz);
 MassProperties mass_properties(const Shape &shape);
 
-// Volume, area, center of mass, the numbers of distinct faces, edges, and vertices, and
-// whether BRepCheck_Analyzer finds the shape valid.
+// Volume, area, center of mass, and the numbers of distinct faces, edges, and vertices.
+// `valid` is left false: Rust fills it in from the shape's validity, checked once.
 ShapeSummary summarize(const Shape &shape);
 
 // The number of distinct edges, which TopExp::MapShapes numbers from 1.
@@ -91,9 +91,18 @@ double bounding_diagonal(const Shape &shape);
 // `deflection` is the largest distance allowed between the mesh and the surface.
 std::unique_ptr<Tessellation> tessellate(const Shape &shape, double deflection);
 
-// Rounds the given edges (numbered as edge_count's) with a constant radius.
+// Rounds the given edges (numbered as edge_count's) with a constant radius. Throws if
+// OCCT can't build it; whether the result is valid is the caller's question.
 std::unique_ptr<Shape> fillet(const Shape &shape, rust::Slice<const uint32_t> edges,
                               double radius);
+
+// Whether the faces of `result` that aren't in `input` (those an operation made or
+// changed) are valid, and its shells oriented: OCCT's BRepAlgo::IsValid, as FreeCAD's
+// features call it. Repairs SameParameter flags on those faces' edges in place first.
+bool is_valid_where_changed(const Shape &input, const Shape &result);
+
+// Whether OCCT's BRepCheck_Analyzer finds the whole shape valid.
+bool is_valid(const Shape &shape);
 
 // OCCT's binary B-rep format, which is how shapes cross the worker boundary.
 std::unique_ptr<std::string> shape_to_brep(const Shape &shape);

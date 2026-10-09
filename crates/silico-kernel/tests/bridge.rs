@@ -8,7 +8,7 @@ mod imports;
 use silico_kernel::test_ops::{
     throw_non_exception, throw_standard_failure, throw_std_runtime_error,
 };
-use silico_kernel::{make_box, mass_properties, volume};
+use silico_kernel::{KernelErrorKind, make_box, mass_properties, volume};
 
 /// Relative error between `actual` and a nonzero `expected`.
 fn relative_error(actual: f64, expected: f64) -> f64 {
@@ -58,19 +58,28 @@ fn box_sizes_near_the_limits_are_accepted() {
 
 #[test]
 fn box_zero_dimension_is_err() {
-    // Zero, negative zero, and a size below OCCT's 1e-7 tolerance.
-    for (dx, dy, dz) in [
-        (0.0, 20.0, 30.0),
-        (10.0, 0.0, 30.0),
-        (10.0, 20.0, 0.0),
-        (-0.0, 20.0, 30.0),
-        (1e-8, 20.0, 30.0),
+    // Zero, negative zero, and sizes at or below OCCT's 1e-7 tolerance (OCCT's BRepPrim
+    // rejects a size <= Precision::Confusion()), including subnormals. Refused before OCCT,
+    // naming the size at fault.
+    for (dx, dy, dz, name) in [
+        (0.0, 20.0, 30.0, "dx"),
+        (10.0, 0.0, 30.0, "dy"),
+        (10.0, 20.0, 0.0, "dz"),
+        (-0.0, 20.0, 30.0, "dx"),
+        (1e-8, 20.0, 30.0, "dx"),
+        (10.0, 1e-7, 30.0, "dy"),
+        (f64::MIN_POSITIVE, 1.0, 1.0, "dx"),
+        (1.0, 1.0, 5e-324, "dz"),
     ] {
         let err = make_box(dx, dy, dz)
             .err()
             .unwrap_or_else(|| panic!("box {dx} × {dy} × {dz} was accepted"));
-        // OCCT's own check, so this is the exception conversion at work.
-        assert!(err.message().contains("Standard_DomainError"), "{err}");
+        assert_eq!(err.kind(), KernelErrorKind::InvalidInput, "{err}");
+        assert!(
+            err.message()
+                .starts_with(&format!("box size {name} must be")),
+            "{err}"
+        );
     }
 }
 
@@ -100,17 +109,14 @@ fn box_negative_and_nan_are_err() {
 }
 
 #[test]
-fn box_huge_or_subnormal_sizes_are_err() {
-    // OCCT treats sizes past about 1e100 as infinite, and subnormals as zero.
-    for (dx, dy, dz) in [
-        (f64::MAX, 1.0, 1.0),
-        (1e300, 1e300, 1e300),
-        (f64::MIN_POSITIVE, 1.0, 1.0),
-        (5e-324, 1.0, 1.0),
-    ] {
+fn box_huge_sizes_are_err() {
+    // OCCT treats sizes past about 1e100 as infinite.
+    for (dx, dy, dz) in [(f64::MAX, 1.0, 1.0), (1e300, 1e300, 1e300)] {
         let err = make_box(dx, dy, dz)
             .err()
             .unwrap_or_else(|| panic!("box {dx:e} × {dy:e} × {dz:e} was accepted"));
+        // OCCT's own refusal, not the bridge's.
+        assert_eq!(err.kind(), KernelErrorKind::Failed, "{err}");
         assert!(err.message().contains("Standard_DomainError"), "{err}");
     }
 }

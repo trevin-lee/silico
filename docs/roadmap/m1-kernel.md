@@ -120,3 +120,14 @@ After each expected failure, the next valid operation on the same worker must su
 - `determinism_sweep`: every oracle case run twice on fresh pools gives byte-identical blobs and summaries. Once M0.9 lands, the same cases are bit-identical on the workstation too.
 - `scrambled_hash_sweep`: the stress corpus run on a diagnostic OCCT build whose shape hashes are deliberately scrambled. Any result that changes reveals an algorithm whose output depends on hash order. Each one found becomes an upstream issue and, if needed, a patch.
 - Every break `/break-it` finds is fixed, or recorded in this file as an accepted limitation with the reason.
+
+### Carried over from the M0 milestone review
+
+Raised by the review council and left for M1, where the code they concern is built:
+
+- **Typed core functions.** Clients call `Worker::call` with raw `Op`s and match `Reply` variants themselves; only `silico-view` validates meshes. Add core functions (`make_box`, `fillet`, `summarize`, `tessellate`) that match the reply, validate it, and find the worker, so no client handles protocol messages (M1.1/M1.6).
+- **Element references, not names, from workers.** The worker writes `Edge3` and decides which edge to blame. Have `Failure` carry the element's kind and index, and the core name it and apply the blame rule, ready for M2's stable names.
+- **Finding the failing edge of a multi-edge fillet** belongs in the core: one command that tries the edges (in parallel across the pool) and returns the failing ones as `candidates`, instead of a suggestion to try them one at a time.
+- **A crash inside OCCT's fillet.** Filleting an edge of a filleted box again with a much larger radius (Edge1 at r = 4, then Edge1 at r = 14.9) segfaults in `BRepFilletAPI_MakeFillet`. The worker contains it (`worker_crashed`), but the error has no suggestion and no element. Refuse radii that can't fit before calling OCCT, or give the crash a suggestion (M1.5, M1.9).
+- **Small cleanups:** a `Failure::new` constructor; a unit test for `PatientReader` passing on read errors other than "would block"; porting the geometric half of FreeCAD's `testDeletingPreviousFeatureRelinksUniqueMatchingBaseEdge`.
+

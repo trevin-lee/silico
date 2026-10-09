@@ -2,6 +2,7 @@
 #include "silico-kernel/src/lib.rs.h"
 
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepAlgo.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepBndLib.hxx>
@@ -18,9 +19,9 @@
 #include <GProp_GProps.hxx>
 #include <OSD.hxx>
 #include <Precision.hxx>
-#include <ShapeFix_ShapeTolerance.hxx>
 #include <TopExp.hxx>
 #include <NCollection_IndexedMap.hxx>
+#include <NCollection_List.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
@@ -76,7 +77,8 @@ ShapeSummary summarize(const Shape &shape) {
                       count_distinct(shape.shape, TopAbs_FACE),
                       count_distinct(shape.shape, TopAbs_EDGE),
                       count_distinct(shape.shape, TopAbs_VERTEX),
-                      BRepCheck_Analyzer(shape.shape).IsValid()};
+                      // Filled in by Rust, which checks each shape at most once.
+                      false};
 }
 
 double bounding_diagonal(const Shape &shape) {
@@ -171,21 +173,17 @@ std::unique_ptr<Shape> fillet(const Shape &shape, rust::Slice<const uint32_t> ed
   if (!make.IsDone()) {
     throw Standard_Failure("the fillet couldn't be built");
   }
-  // OCCT can report a fillet done that isn't a valid solid (all of a 10 x 20 x 30 box's
-  // edges at r = 5.5 gives volume 7792). FreeCAD refused those from 87293fac9b (2016),
-  // first trying to repair tolerances as in 9ff76fc813 (2017), and later lost the refusal;
-  // Silico keeps it. See docs/ports/fillet.md.
-  TopoDS_Shape result = make.Shape();
-  if (!BRepCheck_Analyzer(result).IsValid()) {
-    ShapeFix_ShapeTolerance tolerance;
-    tolerance.LimitTolerance(result, Precision::Confusion(), Precision::Confusion(),
-                             TopAbs_SHAPE);
-    if (!BRepCheck_Analyzer(result).IsValid()) {
-      throw Standard_Failure("the fillet's result isn't a valid solid");
-    }
-  }
-  return std::make_unique<Shape>(Shape{result});
+  return std::make_unique<Shape>(Shape{make.Shape()});
 }
+
+bool is_valid_where_changed(const Shape &input, const Shape &result) {
+  NCollection_List<TopoDS_Shape> inputs;
+  inputs.Append(input.shape);
+  // closedSolid = false, GeomCtrl = false: FreeCAD's arguments since 87293fac9b.
+  return BRepAlgo::IsValid(inputs, result.shape, false, false);
+}
+
+bool is_valid(const Shape &shape) { return BRepCheck_Analyzer(shape.shape).IsValid(); }
 
 // Returned whole, so Rust copies it once (copying byte by byte across the bridge costs
 // about 16 times more).

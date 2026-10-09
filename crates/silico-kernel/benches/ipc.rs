@@ -9,14 +9,14 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use silico_core::worker::Worker;
-use silico_protocol::{Blob, Op, Reply};
+use silico_protocol::{Blob, Generation, Op, Reply};
 
 const ROUND_TRIP_BUDGET: Duration = Duration::from_micros(50);
 const THROUGHPUT_BUDGET: f64 = 1e9; // bytes per second
 
 fn echo(worker: &mut Worker, bytes: Vec<u8>) -> Result<usize, Box<dyn Error>> {
     match worker.call(
-        1,
+        Generation(1),
         Op::Echo {
             data: Blob::inline(bytes),
         },
@@ -55,7 +55,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     for _ in 0..500 {
         let start = Instant::now();
         let brep = match worker.call(
-            1,
+            Generation(1),
             Op::MakeBox {
                 dx: 10.0,
                 dy: 20.0,
@@ -63,10 +63,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             },
             Duration::from_secs(30),
         )? {
-            Reply::Shape { brep } => brep,
+            Reply::Shape(shape) => shape,
             other => return Err(format!("MakeBox replied {other:?}").into()),
         };
-        worker.call(1, Op::Summarize { shape: brep }, Duration::from_secs(30))?;
+        worker.call(
+            Generation(1),
+            Op::Summarize { shape: brep },
+            Duration::from_secs(30),
+        )?;
         shape_times.push(start.elapsed());
     }
     shape_times.sort();

@@ -5,14 +5,17 @@
 
 #[path = "common/imports.rs"]
 mod imports;
+#[path = "common/scripts.rs"]
+mod scripts;
 
 use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use scripts::script;
 use silico_core::worker::Worker;
 use silico_core::{Error, ErrorCode};
-use silico_protocol::{Blob, Op, Reply, ShapeSummary};
+use silico_protocol::{Blob, Generation, Op, Reply, ShapeData, ShapeSummary};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-worker");
 const TEST_WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-test-worker");
@@ -40,9 +43,9 @@ fn process_exists(pid: u32) -> bool {
         .success()
 }
 
-fn make_box(w: &mut Worker, dx: f64, dy: f64, dz: f64) -> Result<Blob, Error> {
-    match w.call(1, Op::MakeBox { dx, dy, dz }, TIMEOUT)? {
-        Reply::Shape { brep } => Ok(brep),
+fn make_box(w: &mut Worker, dx: f64, dy: f64, dz: f64) -> Result<ShapeData, Error> {
+    match w.call(Generation(1), Op::MakeBox { dx, dy, dz }, TIMEOUT)? {
+        Reply::Shape(shape) => Ok(shape),
         other => panic!("MakeBox replied {other:?}"),
     }
 }
@@ -51,7 +54,10 @@ fn make_box(w: &mut Worker, dx: f64, dy: f64, dz: f64) -> Result<Blob, Error> {
 fn box_volume_through_worker() {
     let mut w = worker();
     let brep = make_box(&mut w, 10.0, 20.0, 30.0).unwrap();
-    match w.call(1, Op::Summarize { shape: brep }, TIMEOUT).unwrap() {
+    match w
+        .call(Generation(1), Op::Summarize { shape: brep }, TIMEOUT)
+        .unwrap()
+    {
         Reply::Summary(ShapeSummary { volume, center, .. }) => {
             // Analytic: 10 × 20 × 30, centered at (5, 10, 15).
             assert!(relative_error(volume, 6000.0) <= 1e-9, "volume {volume}");
@@ -69,7 +75,7 @@ fn shapes_are_stateless_across_workers() {
     let brep = make_box(&mut worker(), 1.0, 2.0, 3.0).unwrap();
     let mut other = worker();
     match other
-        .call(1, Op::Summarize { shape: brep }, TIMEOUT)
+        .call(Generation(1), Op::Summarize { shape: brep }, TIMEOUT)
         .unwrap()
     {
         Reply::Summary(ShapeSummary { volume, .. }) => assert!(relative_error(volume, 6.0) <= 1e-9),
@@ -84,19 +90,29 @@ fn kernel_and_input_errors_are_structured_and_the_worker_lives_on() {
     assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
     assert!(err.message().contains("box size dx"), "{err}");
 
-    let err = make_box(&mut w, 0.0, 1.0, 1.0).unwrap_err();
+    let err = make_box(&mut w, 1.0, 0.0, 1.0).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
+    assert!(err.message().contains("box size dy"), "{err}");
+
+    // OCCT's own failure: the cause is OCCT's, and there's always a suggestion.
+    let err = make_box(&mut w, 1e300, 1.0, 1.0).unwrap_err();
     assert_eq!(err.code(), ErrorCode::KernelFailed, "{err}");
     assert_eq!(err.message(), "MakeBox failed");
     assert!(
         err.cause().unwrap().contains("Standard_DomainError"),
         "{err}"
     );
+    assert_eq!(
+        err.suggestion(),
+        Some("change the operation's values: the kernel can't build it from these"),
+        "{err}"
+    );
 
     let err = w
         .call(
-            1,
+            Generation(1),
             Op::Summarize {
-                shape: Blob::inline(b"not a shape".to_vec()),
+                shape: ShapeData::unchecked(Blob::inline(b"not a shape".to_vec())),
             },
             TIMEOUT,
         )
@@ -121,7 +137,7 @@ fn production_worker_refuses_debug_ops() {
         Op::DebugReplyOutOfTurn { wrong_id: true },
     ] {
         let name = op.name();
-        let err = w.call(1, op, TIMEOUT).unwrap_err();
+        let err = w.call(Generation(1), op, TIMEOUT).unwrap_err();
         assert_eq!(err.code(), ErrorCode::Internal, "{name}: {err}");
         assert!(
             err.cause().unwrap().contains("test operation"),
@@ -130,7 +146,7 @@ fn production_worker_refuses_debug_ops() {
     }
     // Still alive and answering.
     assert!(matches!(
-        w.call(1, Op::Echo { data: Blob::inline(vec![1]) }, TIMEOUT).unwrap(),
+        w.call(Generation(1), Op::Echo { data: Blob::inline(vec![1]) }, TIMEOUT).unwrap(),
         Reply::Echo { data } if data.as_bytes() == [1]
     ));
 }
@@ -139,7 +155,7 @@ fn assert_crashed(op: Op, signal: &str) {
     let mut w = test_worker();
     let pid = w.pid();
     assert!(process_exists(pid), "worker {pid} isn't running");
-    let err = w.call(1, op, TIMEOUT).unwrap_err();
+    let err = w.call(Generation(1), op, TIMEOUT).unwrap_err();
     assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
     assert!(err.cause().unwrap().contains(signal), "{err}");
     assert!(w.is_stopped());
@@ -147,7 +163,7 @@ fn assert_crashed(op: Op, signal: &str) {
     // A stopped worker refuses further calls at once, saying to start a new one.
     let err = w
         .call(
-            1,
+            Generation(1),
             Op::Echo {
                 data: Blob::inline(vec![]),
             },
@@ -175,7 +191,11 @@ fn hang_times_out() {
     assert!(process_exists(pid), "worker {pid} isn't running");
     let start = Instant::now();
     let err = w
-        .call(1, Op::DebugSleep { millis: 60_000 }, Duration::from_secs(1))
+        .call(
+            Generation(1),
+            Op::DebugSleep { millis: 60_000 },
+            Duration::from_secs(1),
+        )
         .unwrap_err();
     assert!(
         start.elapsed() < Duration::from_secs(2),
@@ -191,7 +211,9 @@ fn garbage_reply_is_error() {
     let mut w = test_worker();
     let pid = w.pid();
     assert!(process_exists(pid), "worker {pid} isn't running");
-    let err = w.call(1, Op::DebugGarbage, TIMEOUT).unwrap_err();
+    let err = w
+        .call(Generation(1), Op::DebugGarbage, TIMEOUT)
+        .unwrap_err();
     assert_eq!(err.code(), ErrorCode::ProtocolError, "{err}");
     assert!(!process_exists(pid), "worker {pid} still exists");
 }
@@ -200,7 +222,7 @@ fn garbage_reply_is_error() {
 fn a_crash_report_carries_the_workers_last_output() {
     // The test worker logs 25 lines before aborting; the report keeps the last 20.
     let mut w = test_worker();
-    let err = w.call(1, Op::DebugAbort, TIMEOUT).unwrap_err();
+    let err = w.call(Generation(1), Op::DebugAbort, TIMEOUT).unwrap_err();
     let cause = err.cause().unwrap();
     for line in 6..=25 {
         assert!(
@@ -233,7 +255,7 @@ fn a_reply_out_of_turn_is_a_protocol_error() {
         assert!(process_exists(pid), "worker {pid} isn't running");
         assert!(echo(&mut w, vec![], TIMEOUT).is_ok());
         let err = w
-            .call(1, Op::DebugReplyOutOfTurn { wrong_id }, TIMEOUT)
+            .call(Generation(1), Op::DebugReplyOutOfTurn { wrong_id }, TIMEOUT)
             .unwrap_err();
         assert_eq!(err.code(), ErrorCode::ProtocolError, "{err}");
         assert_eq!(err.cause(), Some(cause), "{err}");
@@ -264,7 +286,9 @@ fn a_worker_given_something_other_than_a_socket_refuses_to_run() {
 #[cfg(target_os = "linux")]
 fn fp_traps_switched_on_by_a_request_fail_it() {
     let mut w = test_worker();
-    let err = w.call(1, Op::DebugEnableFpTraps, TIMEOUT).unwrap_err();
+    let err = w
+        .call(Generation(1), Op::DebugEnableFpTraps, TIMEOUT)
+        .unwrap_err();
     assert_eq!(err.code(), ErrorCode::Internal, "{err}");
     assert!(
         err.cause().unwrap().contains("floating-point traps are on"),
@@ -280,7 +304,8 @@ fn fp_traps_cant_be_switched_on_on_apple_silicon() {
     // The hardware ignores the trap-enable bits, so the request succeeds and traps stay off.
     let mut w = test_worker();
     assert!(matches!(
-        w.call(1, Op::DebugEnableFpTraps, TIMEOUT).unwrap(),
+        w.call(Generation(1), Op::DebugEnableFpTraps, TIMEOUT)
+            .unwrap(),
         Reply::Done
     ));
 }
@@ -322,7 +347,10 @@ fn no_zombies() {
             1 => Op::DebugAbort,
             _ => Op::DebugSleep { millis: 10_000 },
         };
-        assert!(w.call(1, op, Duration::from_millis(200)).is_err());
+        assert!(
+            w.call(Generation(1), op, Duration::from_millis(200))
+                .is_err()
+        );
     }
     // Healthy workers dropped while idle are reaped too.
     for _ in 0..10 {
@@ -364,18 +392,9 @@ fn test_binary_imports_no_platform_math() {
 }
 
 /// A stand-in worker: a shell script, written to this test's temporary directory.
-fn script(name: &str, body: &str) -> std::path::PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-    let path =
-        Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}-{}.sh", std::process::id()));
-    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    path
-}
-
 fn echo(w: &mut Worker, data: Vec<u8>, timeout: Duration) -> Result<Vec<u8>, Error> {
     match w.call(
-        1,
+        Generation(1),
         Op::Echo {
             data: Blob::inline(data),
         },
@@ -398,7 +417,11 @@ fn a_corrupted_brep_is_never_read_as_a_shape() {
         let err = silico_kernel::from_brep(&flipped)
             .err()
             .unwrap_or_else(|| panic!("byte {at} flipped was read"));
-        assert!(err.is_invalid_input(), "byte {at}: {err}");
+        assert_eq!(
+            err.kind(),
+            silico_kernel::KernelErrorKind::InvalidInput,
+            "byte {at}: {err}"
+        );
     }
     for len in [0, 3, 4, brep.len() / 2, brep.len() - 1] {
         assert!(
@@ -442,7 +465,7 @@ fn the_generation_goes_to_the_worker_and_back() {
     for generation in [0, 42, u64::MAX] {
         assert!(
             w.call(
-                generation,
+                Generation(generation),
                 Op::Echo {
                     data: Blob::inline(vec![])
                 },
@@ -525,6 +548,178 @@ fn the_timeout_covers_sending() {
 }
 
 #[test]
+fn the_timeout_covers_a_worker_that_reads_slowly() {
+    // Each write gets through a little at a time, so a per-write timeout never fires; the
+    // call's timeout must still cover the whole send.
+    let exe = script(
+        "slow-reader",
+        "while :; do dd bs=16384 count=1 <&3 >/dev/null 2>&1; sleep 0.5; done",
+    );
+    let (done, result) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut w = Worker::spawn(&exe).unwrap();
+        let start = Instant::now();
+        let err = echo(&mut w, vec![0; 32 * 1024 * 1024], Duration::from_secs(1)).unwrap_err();
+        let _ = done.send((err, start.elapsed()));
+    });
+    let (err, elapsed) = result
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the call was still blocked after 20 s");
+    assert_eq!(err.code(), ErrorCode::WorkerTimeout, "{err}");
+    assert!(elapsed < Duration::from_millis(1500), "{elapsed:?}");
+}
+
+#[test]
+fn a_timeout_of_weeks_is_waited_out_in_pieces() {
+    // 32 MiB doesn't fit the socket's buffers, so the send waits for room; a wait longer
+    // than poll takes (about 24.8 days on macOS) must not fail the call.
+    let mut w = worker();
+    let data = vec![7u8; 32 * 1024 * 1024];
+    let echoed = echo(&mut w, data.clone(), Duration::from_secs(30 * 24 * 60 * 60)).unwrap();
+    // Not assert_eq!: a failure would print megabytes.
+    assert!(echoed == data);
+}
+
+#[test]
+fn a_timeout_too_long_for_the_clock_means_no_deadline() {
+    // More than the socket's buffers hold, so the send has to wait, with no deadline.
+    let data: Vec<u8> = (0..9 * 1024 * 1024u32).map(|i| (i % 251) as u8).collect();
+    // Not assert_eq!: a failure would print megabytes.
+    assert!(echo(&mut worker(), data.clone(), Duration::MAX).unwrap() == data);
+}
+
+/// Set in a copy of this test binary that `the_variables_a_worker_needs_reach_it` runs.
+const ENV_CHILD: &str = "SILICO_TEST_WORKER_ENV_DUMP";
+
+#[test]
+fn the_variables_a_worker_needs_reach_it() {
+    // Runs this test binary again, with each allowed variable set to a value of its own,
+    // and the copy (below) starts a worker that writes its environment to a file.
+    let dump = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("worker-env-values-{}.txt", std::process::id()));
+    let wanted = [
+        ("SILICO_LOG", "silico=trace"),
+        ("RUST_BACKTRACE", "full"),
+        ("RUST_LIB_BACKTRACE", "0"),
+        ("PATH", "/usr/bin:/bin:/silico-test-path"),
+    ];
+    let out = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "a_worker_started_with_set_variables_dumps_them",
+            "--nocapture",
+        ])
+        .env(ENV_CHILD, &dump)
+        .envs(wanted)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = std::fs::read_to_string(&dump).unwrap();
+    std::fs::remove_file(&dump).unwrap();
+    for (name, value) in wanted {
+        assert!(
+            text.lines().any(|l| l == format!("{name}={value}")),
+            "the worker didn't get {name}={value}:\n{text}"
+        );
+    }
+}
+
+#[test]
+fn a_worker_started_with_set_variables_dumps_them() {
+    // Only does anything in the copy that the test above runs.
+    let Some(dump) = std::env::var_os(ENV_CHILD) else {
+        return;
+    };
+    let exe = script(
+        "dump-env-values",
+        &format!("/usr/bin/env > '{}'; exit 0", Path::new(&dump).display()),
+    );
+    assert!(echo(&mut Worker::spawn(&exe).unwrap(), vec![], TIMEOUT).is_err());
+}
+
+#[test]
+fn a_worker_gets_only_the_variables_it_needs() {
+    // OCCT reads variables such as CSF_MeshAlgo, so the app's environment mustn't reach a
+    // worker. The test process has cargo's variables; the worker must not.
+    assert!(std::env::var_os("CARGO_MANIFEST_DIR").is_some());
+    let dump = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("worker-env-{}.txt", std::process::id()));
+    let exe = script(
+        "dump-env",
+        &format!("/usr/bin/env > '{}'; exit 0", dump.display()),
+    );
+    assert!(echo(&mut Worker::spawn(&exe).unwrap(), vec![], TIMEOUT).is_err());
+    let text = std::fs::read_to_string(&dump).unwrap();
+    std::fs::remove_file(&dump).unwrap();
+    let names: Vec<&str> = text
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .map(|(n, _)| n)
+        .collect();
+    assert!(names.contains(&"SILICO_WORKER_FD"), "{names:?}");
+    // What the core passes on, and what the shell running the script sets itself.
+    let allowed = [
+        "SILICO_WORKER_FD",
+        "SILICO_LOG",
+        "RUST_BACKTRACE",
+        "RUST_LIB_BACKTRACE",
+        "PATH",
+        "PWD",
+        "OLDPWD",
+        "SHLVL",
+        "_",
+    ];
+    let extra: Vec<&&str> = names.iter().filter(|n| !allowed.contains(n)).collect();
+    assert!(extra.is_empty(), "the worker got {extra:?}");
+}
+
+/// Waits until the process has exited (it's a zombie, or gone).
+fn wait_until_exited(pid: u32) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let out = Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .unwrap();
+        let stat = String::from_utf8_lossy(&out.stdout);
+        if !out.status.success() || stat.trim_start().starts_with('Z') {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "process {pid} didn't exit: {stat}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn a_request_to_a_worker_that_has_exited_is_a_crash() {
+    // The worker is gone before the request is written, so the write itself fails.
+    let mut w = worker();
+    let pid = w.pid();
+    assert!(
+        Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    wait_until_exited(pid);
+    let err = echo(&mut w, vec![0; 64], TIMEOUT).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    let cause = err.cause().unwrap();
+    assert!(
+        cause.contains("SIGKILL") && cause.contains("sending the request failed"),
+        "{err}"
+    );
+}
+
+#[test]
 fn the_trap_check_rejects_any_trap_bit() {
     // The decision itself, on every platform (Apple silicon can't switch traps on).
     use silico_kernel::worker::check_fp_trap_mask;
@@ -559,18 +754,24 @@ fn worker_logs_keep_their_level_and_carry_the_calls_trace() {
         .with_writer(move || writer.clone())
         .init();
     let mut w = test_worker();
-    assert!(w.call(1, Op::DebugAbort, TIMEOUT).is_err());
+    let pid = w.pid();
+    assert!(w.call(Generation(1), Op::DebugAbort, TIMEOUT).is_err());
+    // Other tests in this process log too (under `cargo test` they share the subscriber),
+    // so only this worker's lines count: its process ID is on each of them.
     let text = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
     // The core's span for the call names its trace.
     let trace = text
         .split("worker_call{trace=")
-        .nth(1)
-        .and_then(|rest| rest.split([' ', '}']).next())
-        .unwrap_or_else(|| panic!("no worker_call span in:\n{text}"));
+        .skip(1)
+        .find_map(|rest| {
+            let (trace, rest) = rest.split_once(' ')?;
+            rest.starts_with(&format!("pid={pid} ")).then_some(trace)
+        })
+        .unwrap_or_else(|| panic!("no worker_call span for {pid} in:\n{text}"));
     // The worker's warning comes back at WARN, from the worker, with the same trace.
     let forwarded = text
         .lines()
-        .find(|l| l.contains("aborting, as asked: line 25"))
+        .find(|l| l.contains("aborting, as asked: line 25") && l.contains(&format!("pid={pid}")))
         .unwrap_or_else(|| panic!("worker warning not forwarded:\n{text}"));
     assert!(forwarded.contains("WARN"), "{forwarded}");
     assert!(forwarded.contains("silico::worker"), "{forwarded}");
@@ -578,22 +779,100 @@ fn worker_logs_keep_their_level_and_carry_the_calls_trace() {
 }
 
 #[test]
-fn mass_properties_that_arent_finite_are_refused() {
-    use silico_kernel::worker::check_finite;
-    assert!(check_finite(6000.0, [5.0, 10.0, 15.0]).is_ok());
-    for (volume, center) in [
-        (f64::NAN, [0.0; 3]),
-        (f64::INFINITY, [0.0; 3]),
-        (1.0, [f64::NAN, 0.0, 0.0]),
-        (1.0, [0.0, f64::NEG_INFINITY, 0.0]),
-        (1.0, [0.0, 0.0, f64::INFINITY]),
-    ] {
-        let failure = check_finite(volume, center).unwrap_err();
-        assert_eq!(failure.kind, silico_protocol::FailureKind::KernelFailed);
-        assert!(
-            failure.message.contains("aren't finite"),
-            "{}",
-            failure.message
-        );
+fn a_shape_carries_its_validity_and_workers_take_its_word() {
+    // The worker that makes a shape checks it once and says; later requests carry that
+    // answer, and the summary reports it rather than checking the whole shape again.
+    let mut w = worker();
+    let b = make_box(&mut w, 10.0, 20.0, 30.0).unwrap();
+    assert_eq!(b.valid(), Some(true), "a box is valid");
+    let summarize = |w: &mut Worker, shape: ShapeData| match w
+        .call(Generation(1), Op::Summarize { shape }, TIMEOUT)
+        .unwrap()
+    {
+        Reply::Summary(s) => s,
+        other => panic!("Summarize replied {other:?}"),
+    };
+    assert!(summarize(&mut w, b.clone()).valid);
+    let said_invalid = ShapeData::checked(b.brep().clone(), false);
+    assert!(!summarize(&mut w, said_invalid).valid);
+    // A shape no worker has checked (from a file, say) is checked: an open box isn't
+    // valid, whatever else it is, and a box is.
+    let open = silico_kernel::to_brep(&silico_kernel::test_ops::open_box().unwrap()).unwrap();
+    assert!(!summarize(&mut w, ShapeData::unchecked(Blob::inline(open.clone()))).valid);
+    // And a fillet on it is judged knowing that: Edge5, away from the missing face, is
+    // accepted, its result still invalid, as the input was.
+    match w
+        .call(
+            Generation(1),
+            Op::Fillet {
+                shape: ShapeData::unchecked(Blob::inline(open)),
+                edges: vec![5],
+                radius: 2.0,
+            },
+            TIMEOUT,
+        )
+        .unwrap()
+    {
+        Reply::Shape(rounded) => assert_eq!(rounded.valid(), Some(false)),
+        other => panic!("Fillet replied {other:?}"),
+    }
+    assert!(summarize(&mut w, ShapeData::unchecked(b.brep().clone())).valid);
+    // A fillet's reply says whether its result is valid.
+    match w
+        .call(
+            Generation(1),
+            Op::Fillet {
+                shape: b,
+                edges: vec![1],
+                radius: 2.0,
+            },
+            TIMEOUT,
+        )
+        .unwrap()
+    {
+        Reply::Shape(rounded) => assert_eq!(rounded.valid(), Some(true)),
+        other => panic!("Fillet replied {other:?}"),
+    }
+}
+
+#[test]
+fn a_fillet_reply_says_when_its_result_is_invalid() {
+    // Told its input is invalid, the worker applies only FreeCAD's changed-faces check and
+    // returns the broken second fillet (a "solid" larger than the box); its reply must say
+    // it isn't valid, and so must its summary.
+    let mut w = worker();
+    let fillet = |w: &mut Worker, shape: ShapeData, edges: Vec<u32>, radius: f64| match w
+        .call(
+            Generation(1),
+            Op::Fillet {
+                shape,
+                edges,
+                radius,
+            },
+            TIMEOUT,
+        )
+        .unwrap()
+    {
+        Reply::Shape(s) => s,
+        other => panic!("Fillet replied {other:?}"),
+    };
+    let b = make_box(&mut w, 10.0, 20.0, 30.0).unwrap();
+    let once = fillet(&mut w, b, vec![1, 3, 5], 3.0);
+    assert_eq!(once.valid(), Some(true));
+    let said_invalid = ShapeData::checked(once.brep().clone(), false);
+    let twice = fillet(&mut w, said_invalid, vec![5], 5.0);
+    let fresh = silico_kernel::from_brep(twice.brep().as_bytes()).unwrap();
+    assert!(!fresh.is_valid().unwrap(), "the result really is invalid");
+    assert_eq!(
+        twice.valid(),
+        Some(false),
+        "an invalid result was reported valid"
+    );
+    match w
+        .call(Generation(1), Op::Summarize { shape: twice }, TIMEOUT)
+        .unwrap()
+    {
+        Reply::Summary(s) => assert!(!s.valid, "summarized as valid"),
+        other => panic!("{other:?}"),
     }
 }
