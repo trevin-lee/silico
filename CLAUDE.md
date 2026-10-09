@@ -8,7 +8,7 @@ Silico is a parametric CAD system: a Rust core, an egui/wgpu UI, and OpenCascade
 
 - `silico-kernel`: the OCCT bridge (C++ through `cxx`) and the kernel worker binaries. The only crate that links OCCT.
 - `silico-protocol`: the messages between the core and workers, their framing, and the rule for valid primitive values (`Primitive::check`).
-- `silico-core`: the structured `Error`; the worker client (`worker::Worker`), which starts workers and turns crashes, hangs, and bad replies into errors; and the typed layer over one kernel worker (`kernel::KernelWorker`: primitives, fillet, summarize, tessellate), which checks values and replies so nothing above it handles protocol messages. The document model, feature graph, and command API come later.
+- `silico-core`: the structured `Error`; the worker client (`worker::Worker`), which starts workers and turns crashes, hangs, and bad replies into errors; and the typed layer over one kernel worker (`kernel::KernelWorker`: primitives, fillet, translate, booleans, summarize, tessellate), which checks values and replies so nothing above it handles protocol messages. The document model, feature graph, and command API come later.
 - `silico-cli`: logging setup only, so far.
 - `silico-view`: a debug viewer that shows the kernel's parts in Rerun, until the app exists.
 

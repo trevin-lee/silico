@@ -42,10 +42,13 @@ static void trycatch(Try &&func, Fail &&fail) noexcept try {
 namespace silico {
 
 struct Measures;
+struct Point3;
+struct Amounts;
 struct HistoryEntry;
 struct Counts;
 enum class Kind : uint8_t;
 enum class Relation : uint8_t;
+enum class BooleanOp : uint8_t;
 
 // An OCCT shape, owned from Rust through a UniquePtr.
 struct Shape {
@@ -60,8 +63,13 @@ std::unique_ptr<Shape> make_cylinder_directly(double radius, double height);
 std::unique_ptr<Shape> make_cone(double radius1, double radius2, double height);
 std::unique_ptr<Shape> make_torus(double major_radius, double minor_radius);
 
-// Volume, area, center of mass, and the numbers of distinct faces, edges, and vertices.
+// Volume, area (each integrated to a relative precision of 1e-9), center of mass, and
+// the numbers of distinct faces, edges, and vertices.
 Measures measure(const Shape &shape);
+
+// The volume and area by OCCT's quick fixed-order integration: up to 1% off on faces
+// trimmed by curves, and further on broken shapes (a "solid" of volume -2e-4 reads 1.9).
+Amounts rough_amounts(const Shape &shape);
 
 // The number of distinct edges, which TopExp::MapShapes numbers from 1.
 uint32_t edge_count(const Shape &shape);
@@ -104,6 +112,21 @@ std::unique_ptr<Tessellation> tessellate(const Shape &shape, double deflection);
 std::unique_ptr<Shape> fillet(const Shape &shape, rust::Slice<const uint32_t> edges,
                               double radius, rust::Vec<HistoryEntry> &history);
 
+// The shape moved by (dx, dy, dz), appending what became of its faces, edges, and vertices
+// to `history`. The geometry isn't copied: the result is the shape with a new location,
+// the move composed with its own.
+std::unique_ptr<Shape> translate(const Shape &shape, double dx, double dy, double dz,
+                                 rust::Vec<HistoryEntry> &history);
+
+// Fuses, cuts, or intersects `base` and `tool` with OCCT's Boolean Operations, as FreeCAD
+// does (non-destructive, OCCT's default fuzzy value), but single-threaded. Appends the
+// history of `base` as input 0 and of `tool` as input 1, and the names of the warnings
+// OCCT reported (BOPAlgo_AlertTooSmallEdge, ...) to `warnings`. Throws with OCCT's report
+// if it fails.
+std::unique_ptr<Shape> boolean(BooleanOp op, const Shape &base, const Shape &tool,
+                               rust::Vec<HistoryEntry> &history,
+                               rust::Vec<rust::String> &warnings);
+
 // How many distinct faces, edges, vertices, and solids the shape has.
 Counts count_elements(const Shape &shape);
 
@@ -111,6 +134,9 @@ Counts count_elements(const Shape &shape);
 // changed) are valid, and its shells oriented: OCCT's BRepAlgo::IsValid, as FreeCAD's
 // features call it. Repairs SameParameter flags on those faces' edges in place first.
 bool is_valid_where_changed(const Shape &input, const Shape &result);
+// The same, for an operation on two shapes: the faces in neither input are checked.
+bool is_valid_where_changed_from_two(const Shape &first, const Shape &second,
+                                     const Shape &result);
 
 // Whether OCCT's BRepCheck_Analyzer finds the whole shape valid.
 bool is_valid(const Shape &shape);
@@ -137,6 +163,8 @@ void debug_raise_sigsegv();
 // A box with one face left out: a solid whose shell doesn't close, which
 // BRepCheck_Analyzer must find invalid.
 std::unique_ptr<Shape> debug_open_box();
+// A compound with nothing in it: a shape that isn't null, with no faces, edges, or vertices.
+std::unique_ptr<Shape> debug_empty_shape();
 #endif
 
 } // namespace silico

@@ -20,6 +20,7 @@ type BuildResult<T> = Result<T, Box<dyn Error>>;
 /// through the libraries themselves.
 const OCCT_LIBS: &[&str] = &[
     "TKFillet",
+    "TKBO",
     "TKBool",
     "TKMesh",
     "TKPrim",

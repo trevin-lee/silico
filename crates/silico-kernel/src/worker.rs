@@ -42,6 +42,15 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
             let rounded = crate::fillet(&shape, &edges, radius).map_err(failure)?;
             built_reply(rounded)
         }
+        Op::Translate { shape, offset } => {
+            let shape = shape_of(&shape)?;
+            built_reply(crate::translate(&shape, offset).map_err(failure)?)
+        }
+        Op::Boolean { op, base, tool } => {
+            let base = shape_of(&base)?;
+            let tool = shape_of(&tool)?;
+            built_reply(crate::boolean(op, &base, &tool).map_err(failure)?)
+        }
         Op::Tessellate { shape, deflection } => {
             let shape = shape_of(&shape)?;
             let mesh = crate::tessellate(&shape, deflection).map_err(failure)?;

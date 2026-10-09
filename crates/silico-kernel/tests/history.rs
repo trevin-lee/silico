@@ -352,9 +352,8 @@ fn test_binary_imports_no_platform_math() {
 fn a_box_fillets_reported_elements_are_each_first_in_occts_list() {
     // A description of box fillets, not a check of the bridge's counting: each trimmed
     // face, shortened edge, and filleted edge becomes or makes exactly one element, so
-    // OCCT's list for it has one entry, at position 1. (No operation yet reports a longer
-    // list, so a bridge that always wrote 1 would pass; booleans will pin the counting,
-    // M1.5.)
+    // OCCT's list for it has one entry, at position 1. (A bridge that always wrote 1 would
+    // pass this; booleans, whose lists are longer, pin the counting in boolean.rs.)
     let h = silico_kernel::fillet(&box_10_20_30(), &[1, 2, 5], 1.5)
         .unwrap()
         .history;

@@ -156,3 +156,23 @@ pub fn format_number(value: f64) -> String {
         format!("{value}")
     }
 }
+
+/// Whether a move by `offset` (x, y, z) is allowed: each component finite and at most
+/// [`MAX_LENGTH`] either way, as far as a primitive may reach. The rule lives here, as
+/// [`Primitive::check`] does, so the core refuses an offset before sending it and a worker
+/// refuses it again.
+pub fn check_offset(offset: [f64; 3]) -> Result<(), InvalidParameter> {
+    for (parameter, value) in ["x", "y", "z"].into_iter().zip(offset) {
+        if !(value.is_finite() && value.abs() <= MAX_LENGTH) {
+            return Err(InvalidParameter {
+                parameter,
+                message: format!(
+                    "the offset's {parameter} must be a finite length of at most {} either way, got {}",
+                    format_number(MAX_LENGTH),
+                    format_number(value)
+                ),
+            });
+        }
+    }
+    Ok(())
+}

@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub use silico_protocol::{
-    BuiltData, ElementCounts, ElementFate, ElementKind, ElementRef, History, InputHistory, Mesh,
-    Primitive, Reported, ShapeData, ShapeSummary,
+    BooleanOp, BuiltData, ElementCounts, ElementFate, ElementKind, ElementRef, History,
+    InputHistory, Mesh, Primitive, Reported, ShapeData, ShapeSummary,
 };
 use silico_protocol::{Generation, Op, Reply};
 
@@ -89,6 +89,40 @@ impl KernelWorker {
             radius,
         };
         self.built(op, 1)
+    }
+
+    /// `shape` moved by `offset`; each face, edge, and vertex is modified into its moved
+    /// self. An offset that isn't finite, or reaches past a kilometre, is refused here and
+    /// never reaches the worker.
+    pub fn translate(&mut self, shape: &ShapeData, offset: [f64; 3]) -> Result<BuiltData, Error> {
+        if let Err(invalid) = silico_protocol::check_offset(offset) {
+            return Err(
+                Error::new(ErrorCode::InvalidInput, invalid.message).with_suggestion(
+                    "move the shape by a finite offset, no more than a kilometre each way",
+                ),
+            );
+        }
+        let op = Op::Translate {
+            shape: shape.clone(),
+            offset,
+        };
+        self.built(op, 1)
+    }
+
+    /// Fuses `tool` with `base`, cuts it from `base`, or keeps what they share, and says
+    /// what became of both: `base` is the history's input 0, `tool` its input 1.
+    pub fn boolean(
+        &mut self,
+        op: BooleanOp,
+        base: &ShapeData,
+        tool: &ShapeData,
+    ) -> Result<BuiltData, Error> {
+        let op = Op::Boolean {
+            op,
+            base: base.clone(),
+            tool: tool.clone(),
+        };
+        self.built(op, 2)
     }
 
     /// The shape's volume, area, center, topology counts, and validity.

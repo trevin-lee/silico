@@ -16,7 +16,9 @@ pub use frame::{FrameError, FrameReader, MAX_FRAME_LEN, write_message};
 pub use history::{
     ElementCounts, ElementFate, ElementKind, ElementRef, History, InputHistory, Reported,
 };
-pub use primitive::{InvalidParameter, LENGTH_TOLERANCE, MAX_LENGTH, Primitive, format_number};
+pub use primitive::{
+    InvalidParameter, LENGTH_TOLERANCE, MAX_LENGTH, Primitive, check_offset, format_number,
+};
 
 /// The file descriptor a worker inherits its end of the socket pair as.
 pub const WORKER_FD: i32 = 3;
@@ -59,11 +61,20 @@ pub enum Op {
     Summarize { shape: ShapeData },
     /// Rounds `edges` of `shape` with a constant `radius`. Edges are numbered from 1 in
     /// OCCT's `TopExp::MapShapes` order, as FreeCAD's `Edge1`, `Edge2`, and so on. Replies
-    /// with [`Reply::Shape`].
+    /// with [`Reply::Built`].
     Fillet {
         shape: ShapeData,
         edges: Vec<u32>,
         radius: f64,
+    },
+    /// `shape` moved by `offset`. Replies with [`Reply::Built`].
+    Translate { shape: ShapeData, offset: [f64; 3] },
+    /// Fuses `tool` with `base`, cuts it from `base`, or keeps what they share. Replies
+    /// with [`Reply::Built`], whose history has `base` as input 0 and `tool` as input 1.
+    Boolean {
+        op: BooleanOp,
+        base: ShapeData,
+        tool: ShapeData,
     },
     /// A triangle mesh of a shape for display, no further than `deflection` from its
     /// surface. Replies with [`Reply::Mesh`].
@@ -83,9 +94,33 @@ impl Op {
             Op::MakePrimitive(primitive) => primitive.op_name(),
             Op::Summarize { .. } => "Summarize",
             Op::Fillet { .. } => "Fillet",
+            Op::Translate { .. } => "Translate",
+            Op::Boolean { op, .. } => op.name(),
             Op::Tessellate { .. } => "Tessellate",
             Op::Echo { .. } => "Echo",
             Op::Debug(op) => op.name(),
+        }
+    }
+}
+
+/// Which boolean [`Op::Boolean`] performs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BooleanOp {
+    /// Everything in either shape.
+    Fuse,
+    /// The base, less what's in the tool.
+    Cut,
+    /// What's in both.
+    Common,
+}
+
+impl BooleanOp {
+    /// The operation's name, for logs and errors.
+    pub fn name(&self) -> &'static str {
+        match self {
+            BooleanOp::Fuse => "Fuse",
+            BooleanOp::Cut => "Cut",
+            BooleanOp::Common => "Common",
         }
     }
 }

@@ -4,10 +4,10 @@
 
 use proptest::prelude::*;
 use silico_protocol::{
-    Blob, BuiltData, DebugOp, ElementCounts, ElementFate, ElementKind, ElementRef, Failure,
-    FailureKind, FrameError, FrameReader, Generation, History, InputHistory, MAX_FRAME_LEN, Mesh,
-    Misbehavior, Op, OutOfTurn, Primitive, Reply, Reported, Request, RequestId, Response,
-    ShapeData, ShapeSummary, TraceId, write_message,
+    Blob, BooleanOp, BuiltData, DebugOp, ElementCounts, ElementFate, ElementKind, ElementRef,
+    Failure, FailureKind, FrameError, FrameReader, Generation, History, InputHistory,
+    MAX_FRAME_LEN, Mesh, Misbehavior, Op, OutOfTurn, Primitive, Reply, Reported, Request,
+    RequestId, Response, ShapeData, ShapeSummary, TraceId, write_message,
 };
 
 /// One request per operation. The match gives each variant its own index and every
@@ -47,6 +47,25 @@ fn every_op() -> Vec<Op> {
             shape: ShapeData::unchecked(Blob::inline(vec![3])),
             deflection: 0.01,
         },
+        Op::Translate {
+            shape: ShapeData::checked(Blob::inline(vec![4]), true),
+            offset: [1.0, -2.0, 3.5],
+        },
+        Op::Boolean {
+            op: BooleanOp::Fuse,
+            base: ShapeData::checked(Blob::inline(vec![5]), true),
+            tool: ShapeData::unchecked(Blob::inline(vec![6, 7])),
+        },
+        Op::Boolean {
+            op: BooleanOp::Cut,
+            base: ShapeData::unchecked(Blob::inline(vec![])),
+            tool: ShapeData::checked(Blob::inline(vec![8]), false),
+        },
+        Op::Boolean {
+            op: BooleanOp::Common,
+            base: ShapeData::checked(Blob::inline(vec![9]), false),
+            tool: ShapeData::checked(Blob::inline(vec![10]), true),
+        },
         Op::Echo {
             data: Blob::inline(vec![9; 3]),
         },
@@ -85,9 +104,21 @@ fn every_op() -> Vec<Op> {
             Op::Debug(DebugOp::Misbehave(Misbehavior::WrongReply)) => 17,
             Op::Debug(DebugOp::Misbehave(Misbehavior::BadHistory)) => 18,
             Op::Debug(DebugOp::Misbehave(Misbehavior::HistoryForNoInputs)) => 19,
+            Op::Translate { .. } => 20,
+            Op::Boolean {
+                op: BooleanOp::Fuse,
+                ..
+            } => 21,
+            Op::Boolean {
+                op: BooleanOp::Cut, ..
+            } => 22,
+            Op::Boolean {
+                op: BooleanOp::Common,
+                ..
+            } => 23,
         })
         .collect();
-    assert_eq!(indices, (0..20).collect(), "an operation has no case");
+    assert_eq!(indices, (0..24).collect(), "an operation has no case");
     ops
 }
 
@@ -255,7 +286,7 @@ fn roundtrip_every_op() {
 #[test]
 fn frame_layout_is_length_then_payload() {
     // A 4-byte little-endian length, then postcard: Request { id: 1, generation: 2,
-    // trace: 3, op: Debug(Abort) } is the varints 1, 2, and 3, then Op's variant index 5
+    // trace: 3, op: Debug(Abort) } is the varints 1, 2, and 3, then Op's variant index 7
     // (Debug) and DebugOp's 1 (Abort). (Both ends ship together, so indices may shift when
     // operations are added.)
     let bytes = frame_of(&Request {
@@ -264,7 +295,7 @@ fn frame_layout_is_length_then_payload() {
         trace: TraceId(3),
         op: Op::Debug(DebugOp::Abort),
     });
-    assert_eq!(bytes, [5, 0, 0, 0, 1, 2, 3, 5, 1]);
+    assert_eq!(bytes, [5, 0, 0, 0, 1, 2, 3, 7, 1]);
 }
 
 #[test]
@@ -423,6 +454,8 @@ proptest! {
                 edges: blob.iter().map(|&b| u32::from(b) * 1_000_003).collect(),
                 radius: dims[0],
             },
+            Op::Translate { shape: shape(), offset: dims },
+            Op::Boolean { op: BooleanOp::Cut, base: shape(), tool: shape() },
         ] {
             let request = Request {
                 id: RequestId(id),
@@ -554,6 +587,10 @@ fn every_op_has_its_own_name() {
             "Summarize",
             "Fillet",
             "Tessellate",
+            "Translate",
+            "Fuse",
+            "Cut",
+            "Common",
             "Echo",
             "DebugSleep",
             "DebugAbort",

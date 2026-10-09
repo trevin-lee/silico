@@ -55,8 +55,8 @@ The M1.4 plan's two examples don't match what OCCT reports (verified on OCCT 8.0
 
 | Test | Status |
 |---|---|
-| `tests/src/Mod/Part/App/FeaturePartCommon.cpp` `testHistory`: two 1 × 2 × 3 boxes, the second at (0, 1, 0), common; face histories `{0:[0], 1:[5], 2:[], 3:[2], 4:[3], 5:[1]}` and `{0:[0], 1:[5], 2:[4], 3:[], 4:[3], 5:[1]}` (0-based; the assertions were dropped in `ecf7e51ab3` and are recovered from its parent) | M1.5, with booleans. Re-verified on OCCT 8.0.1. |
-| `tests/src/Mod/Part/App/TopoShapeExpansion.cpp` `makeElementFillet`, `makeElementChamfer`, `makeElementPrism`, `makeElementRevolve`, `makeElementCut`, `makeElementFuse`: the raw relations under their element names | With each operation (fillet now, the rest in M1.5), as relations decoded from the names. |
+| `tests/src/Mod/Part/App/FeaturePartCommon.cpp` `testHistory`: two 1 × 2 × 3 boxes, the second at (0, 1, 0), common; face histories `{0:[0], 1:[5], 2:[], 3:[2], 4:[3], 5:[1]}` and `{0:[0], 1:[5], 2:[4], 3:[], 4:[3], 5:[1]}` (0-based; the assertions were dropped in `ecf7e51ab3` and are recovered from its parent) | Ported with booleans (`crates/silico-kernel/tests/boolean.rs`). |
+| `tests/src/Mod/Part/App/TopoShapeExpansion.cpp` `makeElementFillet`, `makeElementChamfer`, `makeElementPrism`, `makeElementRevolve`, `makeElementCut`, `makeElementFuse`: the raw relations under their element names | With each operation (fillet and booleans now, the rest in M1.5), as relations decoded from the names; for booleans, positions too. |
 | `TopoShapeExpansion.cpp` `MapperMaker*`, `MapperHistory*` | Not ported: they test FreeCAD's mapper classes, which Silico doesn't have. |
 | `tests/src/Mod/Part/App/PropertyTopoShape.cpp` `testShapeHistory` | Not ported: it tests FreeCAD's legacy history map, whose counts follow from that map's own rules (Edge1's generated face isn't an edge, so it gets no entry), not OCCT's history. |
 | `src/Mod/Part/parttests/TopoShapeTest.py:731` `testTopoShapeMakeFillet` (element map 42); `src/Mod/PartDesign/PartDesignTests/TestTopologicalNamingProblem.py:1043` `testPartDesignElementMapFillet` (26 faces, 56 edges, 24 vertices), `:1822` `testPartDesignTNPFillet` | M2.7 and M2.8, with naming. |
@@ -65,6 +65,6 @@ The M1.4 plan's two examples don't match what OCCT reports (verified on OCCT 8.0
 
 Found while researching this note, for the operations that come next:
 
-- **Booleans:** in OCCT's default (destructive) mode, a boolean reuses the input's own sub-shapes in the result, so they're reported unchanged, and the result shares sub-shapes with the inputs. In non-destructive mode they're new, reported as modified, as FreeCAD's names expect. FreeCAD always uses non-destructive mode, and so will Silico.
+- **Booleans** (done, docs/ports/booleans.md): in OCCT's default (destructive) mode, a boolean reuses the input's own sub-shapes in the result, so they're reported unchanged, and the result shares sub-shapes with the inputs. In non-destructive mode they're new, reported as modified, as FreeCAD's names expect. FreeCAD always uses non-destructive mode, and so does Silico.
 - **Revolve:** a full 360° revolve reports its profile face and its radial edges deleted with nothing generated, though the end faces come from them, and its `FirstShape` and `LastShape` are the input face, which isn't in the result (OCCT's own DRAW test `bug30346_1` expects this). Its history needs its own handling.
 - **Extrude:** the profile face generates the whole solid and is kept as the bottom (`FirstShape`); `LastShape` is the top; each profile edge generates a side face, and each vertex a side edge.

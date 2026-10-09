@@ -39,10 +39,15 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Chamfer across a chain of tangent-continuous edges
 - Shell thicker than the part, or shelling with every face removed
 - Booleans of identical shapes, coplanar touching faces, edge-only or vertex-only contact, an empty operand
+- Boolean operands offset by 1-3x `Precision::Confusion()` (1e-7, 2e-7) so parallel faces or curved surfaces nearly coincide: OCCT can miss the intersection and return a valid-looking wrong solid (check OCCT warnings such as `BOPAlgo_AlertAcquiredSelfIntersection`)
+- Booleans of two equal tori offset sideways, and other curved pairs (cone on a cylinder's base with axes 1e-7 apart): check volumes against an independent Monte Carlo point-membership model, since inclusion-exclusion holds even when OCCT treats distinct operands as one
+- The same object passed as both operands, or operands sharing geometry (a shape and its moved copy), against the same shapes read separately from bytes: results and history must match
 - Revolve with an axis that crosses the profile, or angles of 0°, 360°, or more than 360°
 - Patterns with count 0, count 1, count 100,000, or instances that overlap each other
 - Mirroring across a plane that passes through the body
 - Features applied to an empty or invalid base shape
+- Transforms chained many times, including a move and its inverse: location chains that grow without bound, and bytes that differ from the original
+- Measured volumes of results with curved faces trimmed by curves: compare with a closed form (sphere lens), as fixed-order integration is off by 1e-4
 
 ## Feature tree and naming
 

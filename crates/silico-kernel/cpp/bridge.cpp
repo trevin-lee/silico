@@ -3,6 +3,9 @@
 
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAlgo.hxx>
+#include <BRepAlgoAPI_Common.hxx>
+#include <BRepAlgoAPI_Cut.hxx>
+#include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepBndLib.hxx>
@@ -30,6 +33,8 @@
 #include <gp_Vec.hxx>
 #include <BinTools.hxx>
 #include <GProp_GProps.hxx>
+#include <Message_Alert.hxx>
+#include <Message_Report.hxx>
 #include <OSD.hxx>
 #include <Precision.hxx>
 #include <TopExp.hxx>
@@ -38,6 +43,7 @@
 #include <TopTools_ShapeMapHasher.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
+#include <TopoDS_Compound.hxx>
 #include <TopoDS_Shell.hxx>
 #include <TopoDS_Solid.hxx>
 #include <gp_Pnt.hxx>
@@ -120,10 +126,14 @@ std::unique_ptr<Shape> make_torus(double major_radius, double minor_radius) {
 }
 
 Measures measure(const Shape &shape) {
+  // Integrated adaptively to a relative precision of 1e-9. OCCT's default, a fixed order
+  // of Gauss points per face (FreeCAD's Shape.Volume), misjudges faces trimmed by curves:
+  // the common of two tori (R 2, r 1) 2.2 apart measures 12.238 for 12.3586, 1% low.
+  constexpr double precision = 1e-9;
   GProp_GProps volume;
-  BRepGProp::VolumeProperties(shape.shape, volume);
+  BRepGProp::VolumeProperties(shape.shape, volume, precision);
   GProp_GProps surface;
-  BRepGProp::SurfaceProperties(shape.shape, surface);
+  BRepGProp::SurfaceProperties(shape.shape, surface, precision);
   const gp_Pnt c = volume.CentreOfMass();
   return Measures{volume.Mass(),
                   surface.Mass(),
@@ -131,6 +141,14 @@ Measures measure(const Shape &shape) {
                   count_distinct(shape.shape, TopAbs_FACE),
                   count_distinct(shape.shape, TopAbs_EDGE),
                   count_distinct(shape.shape, TopAbs_VERTEX)};
+}
+
+Amounts rough_amounts(const Shape &shape) {
+  GProp_GProps volume;
+  BRepGProp::VolumeProperties(shape.shape, volume);
+  GProp_GProps surface;
+  BRepGProp::SurfaceProperties(shape.shape, surface);
+  return Amounts{volume.Mass(), surface.Mass()};
 }
 
 double bounding_diagonal(const Shape &shape) {
@@ -299,10 +317,118 @@ std::unique_ptr<Shape> fillet(const Shape &shape, rust::Slice<const uint32_t> ed
   return std::make_unique<Shape>(Shape{result});
 }
 
+namespace {
+bool is_identity(const gp_Trsf &trsf) {
+  for (int row = 1; row <= 3; ++row) {
+    for (int column = 1; column <= 4; ++column) {
+      if (trsf.Value(row, column) != (row == column ? 1.0 : 0.0)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+} // namespace
+
+std::unique_ptr<Shape> translate(const Shape &shape, double dx, double dy, double dz,
+                                 rust::Vec<HistoryEntry> &history) {
+  gp_Trsf move;
+  move.SetTranslation(gp_Vec(dx, dy, dz));
+  // One location, the move composed with the shape's own, as FreeCAD places a shape:
+  // moving it again replaces the location rather than adding to it, and a shape moved
+  // back to where it was has no location at all, as it started.
+  const gp_Trsf placed = move * shape.shape.Location().Transformation();
+  // A move by nothing is the shape itself, with its own location, so every element is
+  // kept (a new location of the same value isn't the same sub-shape to OCCT).
+  const TopoDS_Shape result =
+      is_identity(move)     ? shape.shape
+      : is_identity(placed) ? shape.shape.Located(TopLoc_Location())
+                            : shape.shape.Located(TopLoc_Location(placed));
+  // The result has the same sub-shapes in the same order, each with a new location: its
+  // element n is the input's element n (the same TShape, the same orientation), moved.
+  // Checked rather than assumed; kept where it's the same sub-shape (a move by nothing).
+  for (TopAbs_ShapeEnum type : {TopAbs_FACE, TopAbs_EDGE, TopAbs_VERTEX}) {
+    const Kind kind = kind_of(type);
+    ShapeMap inputs, outputs;
+    TopExp::MapShapes(shape.shape, type, inputs);
+    TopExp::MapShapes(result, type, outputs);
+    if (inputs.Extent() != outputs.Extent()) {
+      throw Standard_Failure("the moved shape doesn't have the shape's elements");
+    }
+    for (int i = 1; i <= inputs.Extent(); ++i) {
+      const TopoDS_Shape &in = inputs(i);
+      const TopoDS_Shape &out = outputs(i);
+      if (!in.IsPartner(out) || in.Orientation() != out.Orientation()) {
+        throw Standard_Failure("the moved shape's elements aren't the shape's, in order");
+      }
+      const Relation relation = in.IsSame(out) ? Relation::Kept : Relation::Modified;
+      history.push_back(HistoryEntry{0, kind, static_cast<uint32_t>(i), relation, kind,
+                                     static_cast<uint32_t>(i),
+                                     relation == Relation::Kept ? 0u : 1u});
+    }
+  }
+  return std::make_unique<Shape>(Shape{result});
+}
+
+std::unique_ptr<Shape> boolean(BooleanOp op, const Shape &base, const Shape &tool,
+                               rust::Vec<HistoryEntry> &history,
+                               rust::Vec<rust::String> &warnings) {
+  std::unique_ptr<BRepAlgoAPI_BooleanOperation> maker;
+  switch (op) {
+  case BooleanOp::Fuse:
+    maker = std::make_unique<BRepAlgoAPI_Fuse>();
+    break;
+  case BooleanOp::Cut:
+    maker = std::make_unique<BRepAlgoAPI_Cut>();
+    break;
+  case BooleanOp::Common:
+    maker = std::make_unique<BRepAlgoAPI_Common>();
+    break;
+  default:
+    throw Standard_Failure("unknown boolean operation");
+  }
+  NCollection_List<TopoDS_Shape> arguments;
+  arguments.Append(base.shape);
+  NCollection_List<TopoDS_Shape> tools;
+  tools.Append(tool.shape);
+  maker->SetArguments(arguments);
+  maker->SetTools(tools);
+  // Leave the inputs' sub-shapes as they are, so history reports changed elements as
+  // modified (docs/ports/booleans.md). Single-threaded, so the result is deterministic.
+  maker->SetNonDestructive(true);
+  maker->SetRunParallel(false);
+  maker->Build();
+  if (maker->HasErrors() || !maker->IsDone()) {
+    std::ostringstream report;
+    maker->DumpErrors(report);
+    std::string message = report.str();
+    while (!message.empty() && (message.back() == '\n' || message.back() == ' ')) {
+      message.pop_back();
+    }
+    throw Standard_Failure(
+        (message.empty() ? std::string("the boolean couldn't be built") : message).c_str());
+  }
+  for (const Handle(Message_Alert) &alert : maker->GetReport()->GetAlerts(Message_Warning)) {
+    warnings.push_back(rust::String(alert->GetMessageKey()));
+  }
+  const TopoDS_Shape result = maker->Shape();
+  capture_history(*maker, 0, base.shape, result, history);
+  capture_history(*maker, 1, tool.shape, result, history);
+  return std::make_unique<Shape>(Shape{result});
+}
+
 bool is_valid_where_changed(const Shape &input, const Shape &result) {
   NCollection_List<TopoDS_Shape> inputs;
   inputs.Append(input.shape);
   // closedSolid = false, GeomCtrl = false: FreeCAD's arguments since 87293fac9b.
+  return BRepAlgo::IsValid(inputs, result.shape, false, false);
+}
+
+bool is_valid_where_changed_from_two(const Shape &first, const Shape &second,
+                                     const Shape &result) {
+  NCollection_List<TopoDS_Shape> inputs;
+  inputs.Append(first.shape);
+  inputs.Append(second.shape);
   return BRepAlgo::IsValid(inputs, result.shape, false, false);
 }
 
@@ -411,6 +537,12 @@ std::unique_ptr<Shape> debug_open_box() {
   builder.MakeSolid(solid);
   builder.Add(solid, shell);
   return std::make_unique<Shape>(Shape{solid});
+}
+
+std::unique_ptr<Shape> debug_empty_shape() {
+  TopoDS_Compound compound;
+  BRep_Builder().MakeCompound(compound);
+  return std::make_unique<Shape>(Shape{compound});
 }
 
 void debug_raise_sigsegv() {

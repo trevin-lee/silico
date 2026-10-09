@@ -33,6 +33,12 @@ mod ffi {
         vertices: u32,
     }
 
+    /// A shape's volume and area.
+    struct Amounts {
+        volume: f64,
+        area: f64,
+    }
+
     /// A kind of sub-shape, as the bridge reports history. `Other` is a kind history
     /// doesn't use (a wire, a shell), which Rust leaves out.
     #[repr(u8)]
@@ -70,6 +76,14 @@ mod ffi {
         position: u32,
     }
 
+    /// Which boolean the bridge performs.
+    #[repr(u8)]
+    enum BooleanOp {
+        Fuse,
+        Cut,
+        Common,
+    }
+
     /// How many distinct faces, edges, vertices, and solids a shape has.
     struct Counts {
         faces: u32,
@@ -97,8 +111,28 @@ mod ffi {
             radius: f64,
             history: &mut Vec<HistoryEntry>,
         ) -> Result<UniquePtr<Shape>>;
+        fn translate(
+            shape: &Shape,
+            dx: f64,
+            dy: f64,
+            dz: f64,
+            history: &mut Vec<HistoryEntry>,
+        ) -> Result<UniquePtr<Shape>>;
+        fn boolean(
+            op: BooleanOp,
+            base: &Shape,
+            tool: &Shape,
+            history: &mut Vec<HistoryEntry>,
+            warnings: &mut Vec<String>,
+        ) -> Result<UniquePtr<Shape>>;
         fn count_elements(shape: &Shape) -> Result<Counts>;
+        fn rough_amounts(shape: &Shape) -> Result<Amounts>;
         fn is_valid_where_changed(input: &Shape, result: &Shape) -> Result<bool>;
+        fn is_valid_where_changed_from_two(
+            first: &Shape,
+            second: &Shape,
+            result: &Shape,
+        ) -> Result<bool>;
         fn is_valid(shape: &Shape) -> Result<bool>;
 
         type Tessellation;
@@ -126,12 +160,14 @@ mod ffi {
         fn debug_raise_sigsegv();
         #[cfg(feature = "test_ops")]
         fn debug_open_box() -> Result<UniquePtr<Shape>>;
+        #[cfg(feature = "test_ops")]
+        fn debug_empty_shape() -> Result<UniquePtr<Shape>>;
     }
 }
 
 pub use silico_protocol::{
-    ElementCounts, ElementFate, ElementKind, ElementRef, History, InputHistory, LENGTH_TOLERANCE,
-    Mesh, Primitive, Reported, ShapeSummary,
+    BooleanOp, ElementCounts, ElementFate, ElementKind, ElementRef, History, InputHistory,
+    LENGTH_TOLERANCE, MAX_LENGTH, Mesh, Primitive, Reported, ShapeSummary,
 };
 
 pub mod worker;
@@ -431,12 +467,160 @@ pub fn fillet(shape: &Shape, edges: &[u32], radius: f64) -> Result<Built, Kernel
     };
     let mut entries = Vec::new();
     let rounded = ffi::fillet(inner, edges, radius, &mut entries).map_err(|e| blame(e.into()))?;
-    let shape_out = checked_result(shape, rounded, "fillet").map_err(blame)?;
+    let shape_out = checked_result(&[shape], rounded, "fillet").map_err(blame)?;
     let history = history_of(&[inner], shape_out.get()?, &entries)?;
     Ok(Built {
         shape: shape_out,
         history,
     })
+}
+
+/// `shape` moved by `offset`. Each face, edge, and vertex is modified into its moved
+/// self, numbered the same (or kept, for an offset of zero). An offset must be finite and,
+/// in each direction, at most [`MAX_LENGTH`].
+pub fn translate(shape: &Shape, offset: [f64; 3]) -> Result<Built, KernelError> {
+    silico_protocol::check_offset(offset).map_err(|invalid| {
+        KernelError::invalid_input(invalid.message).with_suggestion(OFFSET_SUGGESTION)
+    })?;
+    let inner = shape.get()?;
+    let [dx, dy, dz] = offset;
+    let mut entries = Vec::new();
+    let moved = ffi::translate(inner, dx, dy, dz, &mut entries)?;
+    if moved.is_null() {
+        return Err(KernelError::new("OCCT returned no shape"));
+    }
+    // Moving a shape doesn't change whether it's valid: it has the input's validity, which
+    // is checked now if no one had.
+    let moved = Shape::new(moved).with_validity(shape.is_valid()?);
+    let history = history_of(&[inner], moved.get()?, &entries)?;
+    Ok(Built {
+        shape: moved,
+        history,
+    })
+}
+
+/// What to try when an offset is refused.
+const OFFSET_SUGGESTION: &str =
+    "move the shape by a finite offset, no more than a kilometre each way";
+
+/// Fuses `tool` with `base`, cuts it from `base`, or keeps what they share
+/// (docs/ports/booleans.md). The history has `base` as input 0 and `tool` as input 1. A
+/// shape with nothing in it is refused, as either input (OCCT would fuse it, or cut it
+/// away, as if nothing were wrong) or as the result (a common of shapes that don't
+/// overlap, a cut that removes everything) or as a result of solids with no volume to
+/// speak of. A valid result is otherwise accepted as OCCT gives it, as FreeCAD accepts it,
+/// though OCCT gets some wrong (the port note lists them).
+pub fn boolean(op: BooleanOp, base: &Shape, tool: &Shape) -> Result<Built, KernelError> {
+    let name = op.name().to_lowercase();
+    let bridge_op = match op {
+        BooleanOp::Fuse => ffi::BooleanOp::Fuse,
+        BooleanOp::Cut => ffi::BooleanOp::Cut,
+        BooleanOp::Common => ffi::BooleanOp::Common,
+    };
+    let (base_inner, tool_inner) = (base.get()?, tool.get()?);
+    for (role, input) in [("base", base_inner), ("tool", tool_inner)] {
+        if is_empty(input)? {
+            return Err(KernelError::invalid_input(format!(
+                "the {name}'s {role} is empty"
+            ))
+            .with_suggestion(format!(
+                "give the {name} a {role} with something in it: the operation that made it made nothing"
+            )));
+        }
+    }
+    let mut entries = Vec::new();
+    let mut warnings = Vec::new();
+    let built = ffi::boolean(
+        bridge_op,
+        base_inner,
+        tool_inner,
+        &mut entries,
+        &mut warnings,
+    )
+    .map_err(|e| {
+        KernelError::from(e).with_suggestion("check that the shapes are solids that overlap")
+    })?;
+    // FreeCAD accepts whatever valid result OCCT gives, warnings or not, and so does
+    // Silico (docs/ports/booleans.md, Known wrong results). The warnings are logged.
+    if !warnings.is_empty() {
+        let alerts: std::collections::BTreeSet<&str> =
+            warnings.iter().map(String::as_str).collect();
+        tracing::warn!(
+            "OCCT warned about the {name}: {}",
+            alerts.into_iter().collect::<Vec<_>>().join(", ")
+        );
+    }
+    if let Some(result) = built.as_ref()
+        && (is_empty(result)? || has_no_volume(result, &[base_inner, tool_inner])?)
+    {
+        // OCCT found nothing (or a result with no volume), which it can do for shapes that
+        // do overlap (where faces or edges nearly meet, or across a torus's seam), so the
+        // suggestion doesn't claim more than that.
+        let suggestion = match op {
+            BooleanOp::Fuse => "OCCT lost both shapes: rebuild them, or move one slightly",
+            BooleanOp::Cut => {
+                "OCCT found the tool removes all of the base: move or shrink the tool (if it doesn't, move it slightly)"
+            }
+            BooleanOp::Common => {
+                "OCCT found no overlap: move the shapes so they overlap (if they already do, move one slightly)"
+            }
+        };
+        return Err(
+            KernelError::new(format!("the {name}'s result is empty")).with_suggestion(suggestion)
+        );
+    }
+    let result = checked_result(&[base, tool], built, &name).map_err(|e| {
+        if e.kind() == KernelErrorKind::InvalidResult {
+            e.with_suggestion(NEARLY_MEET)
+        } else {
+            e
+        }
+    })?;
+    let history = history_of(&[base_inner, tool_inner], result.get()?, &entries)?;
+    Ok(Built {
+        shape: result,
+        history,
+    })
+}
+
+/// What to try when OCCT's boolean goes wrong: it does where the shapes nearly meet.
+const NEARLY_MEET: &str = "faces or edges of the two shapes nearly meet: move one so they clearly overlap or stay clearly apart";
+
+/// Whether a boolean of solids gave a result with no volume to speak of: no solid at all,
+/// or a mean thickness (volume over area) of at most OCCT's length tolerance, or less
+/// than none. OCCT returns such results for some booleans it gets wrong (a torus cut by
+/// a copy of itself moved 0.5 across its seam: two whole torus surfaces of volume
+/// -8e-11, a center 2.5e11 away), and they're as empty as an empty compound; their mean
+/// thickness is under 1e-11. A real result is far thicker, however little of its
+/// bounding box it fills: a 1 × 2 × 3 box's common with a copy 1e-4 into it is 5e-5
+/// thick on average, a 0.01 mm wire 0.005. Not judged when an input has no solid in it.
+fn has_no_volume(result: &ffi::Shape, inputs: &[&ffi::Shape]) -> Result<bool, KernelError> {
+    for input in inputs {
+        if ffi::count_elements(input)?.solids == 0 {
+            return Ok(false);
+        }
+    }
+    if ffi::count_elements(result)?.solids == 0 {
+        return Ok(true);
+    }
+    // The quick measure clears most results, against their size: on these broken shapes
+    // its error grows with the model (it read the cut above as 4e-6, and the same cut 100
+    // times larger as 1.9, both really negative), so it's compared with the cube of the
+    // bounding diagonal, not the area. What it doesn't clear (results that fill little of
+    // their box, too) is measured precisely, and judged by its mean thickness.
+    let rough = ffi::rough_amounts(result)?;
+    let diagonal = ffi::bounding_diagonal(result)?;
+    if rough.volume > 1e-5 * diagonal * diagonal * diagonal {
+        return Ok(false);
+    }
+    let precise = ffi::measure(result)?;
+    Ok(precise.volume.is_nan() || precise.volume <= LENGTH_TOLERANCE * precise.area)
+}
+
+/// Whether the shape has nothing in it: no faces, edges, or vertices.
+fn is_empty(shape: &ffi::Shape) -> Result<bool, KernelError> {
+    let c = ffi::count_elements(shape)?;
+    Ok(c.faces == 0 && c.edges == 0 && c.vertices == 0)
 }
 
 /// A shape an operation built, and what the operation did to its inputs' faces, edges,
@@ -577,7 +761,7 @@ fn element_kind(kind: ffi::Kind) -> Option<ElementKind> {
 /// The faces the operation made or changed must be valid (FreeCAD's check). That alone
 /// misses some broken results (a second fillet on a filleted box can give a "solid" larger
 /// than the box, valid where it changed), so when the input is valid the whole result must
-/// be too: an invalid result from a valid input is the operation's fault. When the input
+/// be too: an invalid result from valid inputs is the operation's fault. When an input
 /// was already invalid, only the changed faces count, so its problem isn't blamed on the
 /// operation. See docs/ports/fillet.md.
 ///
@@ -585,7 +769,7 @@ fn element_kind(kind: ffi::Kind) -> Option<ElementKind> {
 /// known (the worker that made it checked it, and it came with the shape), and the
 /// result's is kept with it for the reply and its summary.
 fn checked_result(
-    input: &Shape,
+    inputs: &[&Shape],
     result: cxx::UniquePtr<ffi::Shape>,
     operation: &str,
 ) -> Result<Shape, KernelError> {
@@ -598,17 +782,41 @@ fn checked_result(
     let checked = result
         .as_ref()
         .ok_or_else(|| KernelError::new("OCCT returned no shape"))?;
-    if !ffi::is_valid_where_changed(input.get()?, checked)? {
+    let valid_where_changed = match inputs {
+        [input] => ffi::is_valid_where_changed(input.get()?, checked)?,
+        [first, second] => {
+            ffi::is_valid_where_changed_from_two(first.get()?, second.get()?, checked)?
+        }
+        _ => {
+            return Err(KernelError::of_kind(
+                KernelErrorKind::Internal,
+                format!(
+                    "no result check for an operation on {} shapes",
+                    inputs.len()
+                ),
+            ));
+        }
+    };
+    if !valid_where_changed {
         return Err(refused());
     }
     // After the changed-faces check, which may repair SameParameter flags on the result in
     // place, so this judges the shape that's returned. (No input tested so far needs that
     // repair, so the order hasn't yet changed an answer; see docs/ports/fillet.md.)
     let valid = ffi::is_valid(checked)?;
-    if input.is_valid()? && !valid {
+    if !valid && every_input_valid(inputs)? {
         return Err(refused());
     }
     Ok(Shape::new(result).with_validity(valid))
+}
+
+fn every_input_valid(inputs: &[&Shape]) -> Result<bool, KernelError> {
+    for input in inputs {
+        if !input.is_valid()? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// What to try when a shape's geometry can't be meshed.
@@ -716,6 +924,11 @@ pub mod test_ops {
     /// A box with one face left out: a solid whose shell doesn't close.
     pub fn open_box() -> Result<super::Shape, KernelError> {
         Ok(super::Shape::new(ffi::debug_open_box()?))
+    }
+
+    /// A compound with nothing in it.
+    pub fn empty_shape() -> Result<super::Shape, KernelError> {
+        Ok(super::Shape::new(ffi::debug_empty_shape()?))
     }
 }
 
