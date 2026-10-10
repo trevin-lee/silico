@@ -14,6 +14,7 @@ test_ops = []
 [dependencies]
 crc32fast.workspace = true
 cxx.workspace = true
+libc.workspace = true
 silico-protocol.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -31,9 +32,14 @@ required-features = ["test_ops"]
 name = "ipc"
 harness = false
 
+[[bench]]
+name = "pool"
+harness = false
+
 [dev-dependencies]
 command-fds.workspace = true
 proptest.workspace = true
+rustix = { workspace = true, features = ["process"] }
 serde_json.workspace = true
 silico-protocol.workspace = true
 silico-core.workspace = true

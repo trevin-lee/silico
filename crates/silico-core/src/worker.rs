@@ -51,9 +51,22 @@ const WORKER_ENV: &[&str] = &["SILICO_LOG", "RUST_BACKTRACE", "RUST_LIB_BACKTRAC
 /// Trace IDs, unique within this process (across all workers).
 static NEXT_TRACE: AtomicU64 = AtomicU64::new(1);
 
+/// Held while a worker is started, from making its socket pair until the process is
+/// running. On macOS the standard library marks new descriptors close-on-exec only after
+/// making them, so a worker started by another thread in that gap would inherit this one's
+/// socket, log pipe, or the pipe `Command::spawn` waits on to learn the program started.
+/// Workers close what they inherit when they start running (`silico_kernel::worker`), so
+/// such a descriptor would be held only until then; but until then is as long as the
+/// system takes to launch the worker (macOS has held a newly copied binary for 17 s and
+/// more), and that spawn would wait as long. Starting workers one at a time closes the gap;
+/// it costs a pool of fourteen a few milliseconds at start.
+static SPAWNING: Mutex<()> = Mutex::new(());
+
 /// A running kernel worker. Dropping it kills and reaps the process.
 pub struct Worker {
-    child: Child,
+    /// Shared with [`WorkerKiller`]s, behind a lock taken for every kill and every reap, so a
+    /// killer never signals a process that's been reaped (whose ID may be someone else's).
+    child: Arc<Mutex<Child>>,
     socket: UnixStream,
     replies: Receiver<Result<Response, FrameError>>,
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
@@ -67,6 +80,7 @@ pub struct Worker {
 impl Worker {
     /// Starts the worker executable at `exe`.
     pub fn spawn(exe: &Path) -> Result<Self, Error> {
+        let spawning = lock(&SPAWNING);
         let (ours, theirs) = UnixStream::pair().map_err(|e| internal("socket pair", e))?;
         // Larger buffers than the platform default (8 KiB on macOS), so a multi-megabyte
         // shape moves in few system calls. The kernel may cap them; that's fine.
@@ -103,6 +117,7 @@ impl Worker {
         // The command (and with it the worker's end of the socket) must go now, or the
         // worker's end stays open here and its exit would never close the socket.
         drop(command);
+        drop(spawning);
         // From here on, an early return must not leave the process running.
         let mut guard = KillOnDrop(Some(child));
         let pid = guard.id();
@@ -154,7 +169,7 @@ impl Worker {
             .ok_or_else(|| internal("keeping the process", "it was lost"))?;
         tracing::debug!(pid, exe = %exe.display(), "started kernel worker");
         Ok(Self {
-            child,
+            child: Arc::new(Mutex::new(child)),
             socket: ours,
             replies,
             stderr_tail,
@@ -166,13 +181,33 @@ impl Worker {
 
     /// The worker's process ID.
     pub fn pid(&self) -> u32 {
-        self.child.id()
+        lock(&self.child).id()
+    }
+
+    /// A handle that kills this worker from another thread, so a call waiting on it ends at
+    /// once (as a crash). Safe to use after the worker is gone: it never signals a process
+    /// that's been reaped.
+    pub fn killer(&self) -> WorkerKiller {
+        WorkerKiller(Arc::clone(&self.child))
+    }
+
+    /// Whether the process has exited (killed from outside while idle, say), reaping it if
+    /// so. A call to it would fail as a crash.
+    pub fn has_exited(&mut self) -> bool {
+        matches!(lock(&self.child).try_wait(), Ok(Some(_)))
+    }
+
+    /// Whether the worker has sent something no call asked for (a second reply to an
+    /// earlier request, say), which is read and dropped. Such a worker can't be trusted:
+    /// its next call would fail on that reply, out of turn.
+    pub fn has_stray_reply(&mut self) -> bool {
+        self.replies.try_recv().is_ok()
     }
 
     /// Stops the worker (kills and reaps it); later calls fail at once. For a worker whose
     /// replies can't be trusted.
     pub fn shut_down(&mut self) {
-        kill_and_reap(&mut self.child);
+        kill_and_reap(&self.child);
         self.stopped = true;
     }
 
@@ -334,19 +369,20 @@ impl Worker {
     fn wait_for_exit(&mut self) -> Option<ExitStatus> {
         let deadline = Instant::now() + EXIT_GRACE;
         while Instant::now() < deadline {
-            match self.child.try_wait() {
+            match lock(&self.child).try_wait() {
                 Ok(Some(status)) => return Some(status),
-                Ok(None) => std::thread::sleep(Duration::from_millis(5)),
+                Ok(None) => {}
                 Err(_) => break,
             }
+            std::thread::sleep(Duration::from_millis(1));
         }
-        kill_and_reap(&mut self.child);
+        kill_and_reap(&self.child);
         None
     }
 
     /// Kills and reaps the worker, and returns `error`.
     fn stop(&mut self, error: Error) -> Error {
-        kill_and_reap(&mut self.child);
+        kill_and_reap(&self.child);
         self.stopped = true;
         error
     }
@@ -354,8 +390,39 @@ impl Worker {
 
 impl Drop for Worker {
     fn drop(&mut self) {
-        kill_and_reap(&mut self.child);
+        kill_and_reap(&self.child);
     }
+}
+
+/// Kills a [`Worker`] from another thread (see [`Worker::killer`]).
+#[derive(Clone)]
+pub struct WorkerKiller(Arc<Mutex<Child>>);
+
+impl WorkerKiller {
+    /// Kills the worker if it's still running, and says whether it was: false if it had
+    /// already exited, on its own or killed before, so that its call's failure isn't this
+    /// kill's doing. Its call, if one is waiting, ends as a crash; the worker's owner reaps it
+    /// (or finds it reaped here, if it had exited).
+    pub fn kill(&self) -> bool {
+        let mut child = lock(&self.0);
+        // Once the child has been waited for its status is kept, and `Child::kill` signals
+        // nothing, so a process ID the system has given to another process is never signalled.
+        match child.try_wait() {
+            Ok(None) => child.kill().is_ok(),
+            Ok(Some(_)) | Err(_) => false,
+        }
+    }
+
+    /// The worker's process ID.
+    pub fn pid(&self) -> u32 {
+        lock(&self.0).id()
+    }
+}
+
+/// Locks `mutex`, carrying on if a thread panicked holding it: what it guards (a process, a
+/// queue) is still the truth, and the core must not panic on a worker's account.
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Writes to the worker's (non-blocking) socket, giving up when `deadline` passes. A
@@ -429,8 +496,25 @@ fn wait_for(
     }
 }
 
-fn kill_and_reap(child: &mut Child) {
-    // Either may fail only because the process is already gone and reaped.
+/// Kills and reaps a worker that a [`WorkerKiller`] on another thread may also hold.
+fn kill_and_reap(child: &Mutex<Child>) {
+    // Does nothing once the process has been reaped (and the wait below then returns its
+    // kept status at once); if the signal fails otherwise, there's nothing else to do.
+    let _ = lock(child).kill();
+    // Waited for without holding the lock (a large process takes a while to go: about 70 ms
+    // for 4 GB), so a killer on another thread isn't held up meanwhile; polled, since a
+    // blocking wait would need the lock throughout.
+    loop {
+        match lock(child).try_wait() {
+            Ok(None) => std::thread::sleep(Duration::from_millis(1)),
+            Ok(Some(_)) | Err(_) => return,
+        }
+    }
+}
+
+/// Kills and reaps a process nothing else holds, so its wait can block.
+fn kill_and_reap_child(child: &mut Child) {
+    // There's nothing else to do if either fails.
     let _ = child.kill();
     let _ = child.wait();
 }
@@ -456,7 +540,7 @@ impl KillOnDrop {
 impl Drop for KillOnDrop {
     fn drop(&mut self) {
         if let Some(child) = &mut self.0 {
-            kill_and_reap(child);
+            kill_and_reap_child(child);
         }
     }
 }
@@ -597,7 +681,9 @@ mod tests {
 
     use silico_protocol::{Failure, FailureKind};
 
-    use super::{MAX_LOG_LINE, STDERR_TAIL_LINES, describe_exit, failure_error, forward_logs};
+    use super::{
+        KillOnDrop, MAX_LOG_LINE, STDERR_TAIL_LINES, describe_exit, failure_error, forward_logs,
+    };
     use crate::ErrorCode;
 
     #[test]
@@ -794,5 +880,26 @@ mod tests {
             &format!("line {}", STDERR_TAIL_LINES + 4)
         );
         assert!(lines.iter().all(|l| l.len() <= MAX_LOG_LINE));
+    }
+
+    #[test]
+    fn a_kill_on_drop_guard_kills_and_reaps_its_process() {
+        // The guard `Worker::spawn` holds until a worker is set up: an early return must not
+        // leave the process running.
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = child.id().to_string();
+        // Killed, not only waited for: `sleep` would end on its own after 30 s.
+        let start = std::time::Instant::now();
+        drop(KillOnDrop(Some(child)));
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+        // Gone and reaped: `kill -0` finds no such process.
+        let found = std::process::Command::new("kill")
+            .args(["-0", &pid])
+            .status()
+            .unwrap();
+        assert!(!found.success(), "process {pid} outlived its guard");
     }
 }

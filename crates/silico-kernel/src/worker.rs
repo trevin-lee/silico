@@ -232,6 +232,33 @@ fn inherited_socket() -> Result<UnixStream, String> {
     }
 }
 
+/// Closes every descriptor the worker inherited above its socket ([`WORKER_FD`]). The app
+/// may hold descriptors not marked close-on-exec (a library's, or a test runner's jobserver
+/// pipe), and a worker would keep them for its life, holding open pipes others wait on.
+/// Runs first, before anything in this process has opened a descriptor of its own.
+fn close_inherited_descriptors() {
+    let listing = if cfg!(target_os = "linux") {
+        "/proc/self/fd"
+    } else {
+        "/dev/fd"
+    };
+    let Ok(entries) = std::fs::read_dir(listing) else {
+        return;
+    };
+    // Read whole first: the listing's own descriptor is among these, and is closed (with the
+    // listing) before the loop, so closing its number again fails harmlessly.
+    let fds: Vec<i32> = entries
+        .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
+        .collect();
+    for fd in fds.into_iter().filter(|&fd| fd > WORKER_FD) {
+        // SAFETY: nothing in this process owns a descriptor above WORKER_FD yet, so each is
+        // one it inherited; close only ends this process's use of it.
+        unsafe {
+            libc::close(fd);
+        }
+    }
+}
+
 /// The worker process: logging to stderr as JSON lines (filtered by `SILICO_LOG`), which
 /// the core re-emits at each line's own level with the request's trace; floating-point
 /// traps off (or refuse to run); then serve the inherited socket.
@@ -239,6 +266,7 @@ pub fn run<F>(handle: F) -> ExitCode
 where
     F: FnMut(RequestId, Generation, Op, &mut dyn Write) -> Result<Reply, Failure>,
 {
+    close_inherited_descriptors();
     // The app reports a SILICO_LOG it can't use (silico_core::logging); a worker, which
     // inherits it, quietly uses the same default.
     let filter = std::env::var("SILICO_LOG")

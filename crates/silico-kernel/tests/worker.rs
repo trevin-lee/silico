@@ -461,20 +461,15 @@ fn a_corrupted_brep_is_never_read_as_a_shape() {
 #[test]
 fn a_request_over_the_frame_limit_is_invalid_input_and_the_worker_lives_on() {
     let mut w = worker();
+    let too_large = vec![0; silico_protocol::MAX_FRAME_LEN as usize + 1];
     let start = Instant::now();
-    let err = echo(
-        &mut w,
-        vec![0; silico_protocol::MAX_FRAME_LEN as usize + 1],
-        TIMEOUT,
-    )
-    .unwrap_err();
+    let err = echo(&mut w, too_large, TIMEOUT).unwrap_err();
     assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
     assert!(!w.is_stopped());
-    assert!(
-        start.elapsed() < Duration::from_secs(1),
-        "{:?}",
-        start.elapsed()
-    );
+    // Refused before sending, not by waiting out the timeout. Encoding the 512 MiB request
+    // takes about 0.2 s alone and over a second on a loaded machine (under cargo mutants),
+    // so the bound is a fraction of the timeout, not of a second.
+    assert!(start.elapsed() < TIMEOUT / 4, "{:?}", start.elapsed());
     assert_eq!(echo(&mut w, vec![1, 2], TIMEOUT).unwrap(), [1, 2]);
 }
 

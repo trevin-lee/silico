@@ -96,6 +96,13 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Operations that use up memory (a pattern with 1e6 instances, a huge mesh export)
 - Many concurrent requests, worker restart during a burst of requests
 - A result that arrives after the request was superseded
+- Workers started from several threads at once (a pool's start, replacements after a burst of crashes): on macOS std marks new pipes and socket pairs close-on-exec only after making them, so a sibling forked in between inherits them; `lsof` each worker, and check `Command::spawn` never blocks on an exec-status pipe a sibling holds
+- Shutdown landing while a slot replaces a dead worker for a request it has already taken: the new worker, started after shutdown killed every registered one, runs the request to the end
+- A worker that answers once more than asked: the left-over reply waits on the socket and fails the next request, someone else's
+- Worker executables named by a relative path, or deleted, rebuilt, or moved under a running pool: every replacement re-resolves the path
+- Worker counts of `usize::MAX`: a `vec![_; n]` sized before the count is checked panics with capacity overflow
+- A worker stopped with SIGSTOP: alive to `try_wait` but silent; its request must time out, and the stopped process be killed and reaped
+- A worker held at launch: macOS holds a newly written executable at `_dyld_start` while it assesses it, at times past a minute, so the first request times out blaming itself (in tests, link worker binaries rather than copy them)
 
 ## Import
 
