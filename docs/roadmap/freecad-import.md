@@ -1,0 +1,42 @@
+# FreeCAD file import
+
+**Status: outline.** Detail it once its prerequisites exist and the study note below is written. Each item under "To settle" needs a decision then, recorded in the detailed plan; none is decided here.
+
+**Goal:** Silico opens a FreeCAD `.FCStd` file and saves it as a Silico document. It's one way: Silico never writes `.FCStd`, which would mean following FreeCAD's format forever. Features Silico has become Silico features; the rest come in as shapes with no history, or are left out, and the import says which and why.
+
+**Prerequisites:** M2 (document and naming), M3 (sketches), refine (`docs/ports/booleans.md`), and Silico's `import` feature, which keeps imported geometry as a STEP file committed next to the document (ARCHITECTURE.md; the document itself never holds B-rep, invariant 6). Its STEP writer is OCCT's DataExchange module, which Silico's OCCT build leaves out today; it joins the deterministic recipe, with its own stress check, first. The import doesn't block the vertical slice.
+
+**Exit tests (outline):** a corpus of FreeCAD files, each with a table written by hand from the file (never from the importer's output) saying what each object must become: a Silico feature, a stored shape, or left out, each with its reason. The import must reproduce the table exactly. Then FreeCAD (the oracle), not Silico's reader of the stored B-rep, compares each imported shape, rebuilt from the saved Silico document, with its own. The measures are validity, volume, area, center of mass, the tight bounding box (`optimalBoundingBox(False, False)`; the default `BoundBox` is loose on curved faces), topology counts, and the volume each leaves when cut from the other. The last catches an element matched to its mirror image where the others can't (two diagonal fillets on a box, against the other diagonal pair). The tolerance is no looser than the import's own check. Every fallback, every line the import report can say, and every kind of hostile file has a case, and the council approves with `/adversarial-review --milestone`. Adding the corpus to `tests/oracle/` needs the maintainer's sign-off, as any change there does.
+
+## Study first
+
+**`docs/ports/freecad-import.md`**, building on M2's `docs/ports/naming.md` (element maps and the string hasher), from:
+- `~/Git/FreeCAD/src/App/Document.cpp` (Save and Restore: `Document.xml`, and each object's `Touched`, `Invalid`, and `Freeze` flags);
+- `~/Git/FreeCAD/src/App/PropertyLinks.cpp` (references: each stores its plain name, `Edge1`, beside its element-map name);
+- `~/Git/FreeCAD/src/Mod/Part/App/PropertyTopoShape.cpp` and `TopoShape.cpp` (stored shapes, as text B-rep by default or binary when the user chose `SaveBinaryBrep`, and their element maps);
+- `~/Git/FreeCAD/src/App/ElementMap.cpp`, `StringHasher.cpp`, and `ComplexGeoData.cpp` (stored element names carry object tags and hashed ids, not names Silico can look up), `PropertyGeo.cpp` and `DocumentObject.cpp` (`checkElementMapVersion`, which strips the string's first two fields before `ComplexGeoData`'s check, with no length check of its own), and `GeoFeature.cpp` (`updateElementReference`): how FreeCAD treats a file's element-map version;
+- each supported feature's own `Restore` and property migrations;
+- the tests in `~/Git/FreeCAD/tests/src/Mod/Part/App/PropertyTopoShape.cpp` and `~/Git/FreeCAD/tests/src/App/` (`Document`, `ComplexGeoData`, `StringHasher`, `ElementMap`, `ProjectFile`);
+- the history, noting for each commit whether FreeCAD 1.1.3 (the oracle) has it: `e9ea3d0d25` (element map version 4 to 5, for 1.1), `c3828d6225` (an exception, not OCCT's text B-rep reader looping, on a truncated file), `e45af2d260` (the stream's locale after that exception).
+
+## Steps
+
+1. **Shapes.** Objects come in as their stored shapes, as the topology they are, with no history, through the `import` feature. A stored shape that's empty or that the reader rejects is reported and left out; a file whose archive or `Document.xml` can't be read, or that breaks a limit, is refused whole.
+2. **Parametric.** The features Silico has (bodies, sketches with their constraints, pad, pocket, revolve, fillet, chamfer, primitives, booleans) become Silico features. A reference resolves by decoding its stored element-map name through the file's own maps to an element of the stored shape, then finding that element in Silico's recompute by its geometry; a match that isn't unique fails loudly, listing the candidates, as Silico's references do. A feature whose recompute doesn't match its stored shape falls back to the stored shape, reported.
+
+## Decided
+
+- **One way only.** Silico reads `.FCStd`; it never writes it.
+- **A `.FCStd` is untrusted input:** it's parsed with limits, in a worker where its B-rep is read (OCCT's text reader can loop on a truncated one unless its stream raises, `c3828d6225`), names in it never become paths, and embedded Python (add-ons, macros, objects defined in Python) is never run.
+
+## To settle
+
+- **Which FreeCAD versions.** 1.1 and later at first. A file's `ElementMap` attribute reads like `15.70200.5`; how FreeCAD checks and acts on it on restore and after (the files above), and so which parts Silico checks, is for the study note.
+- **Read failures and limits.** A timeout must never change what a saved document holds: whether an object came in can't depend on the machine's speed. Settle what a reader crash does (refuse the file, or mark the object failed), and which bounds checked before reading (objects, depth, expansion, size, total work) keep a file that passes them from reaching a timeout.
+- **Which objects come in:** each body's tip and the visible objects outside bodies, say, and which of an object's stored shapes counts; everything left out is reported.
+- **Stale, failed, or frozen objects** (`Touched`, `Invalid`, `Freeze`): their properties may no longer describe their stored shapes.
+- **Binary B-rep:** whether to read it. FreeCAD writes the root shape its own way, and read that way it works (docs/ports/fillet.md, Notes); FreeCAD's own reader returns an empty shape without a word for a root index out of range, so Silico's would check it.
+- **Byte-stable output:** OCCT stamps the time into a STEP file's header, and a per-process counter into its `PRODUCT` names (and a static one into the ids of its assembly links); feature IDs are random (ARCHITECTURE.md), so importing a file twice makes different documents unless imported IDs are chosen otherwise.
+- **FreeCAD's floating-point values against Silico's fixed point** (1 nm, 1 nanodegree): FreeCAD stores doubles (`33.33333333333333`); feature angles are degrees, sketch angles (constraints, arcs) radians. Converting them is a change of format, not a fix-up of the user's values, but it moves geometry, so the comparison's tolerance is decided with it.
+- **Comparing shapes that aren't solids:** a sketch's wires have no volume or area; compare edges (lengths, ends) too.
+- **Expressions and spreadsheets,** and **variants of supported features** Silico doesn't have yet (Pad's `UpToFace`, `TwoLengths`, ...).

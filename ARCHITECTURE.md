@@ -200,7 +200,7 @@ Silico has one maintainer and mostly agent-written code. Tests stand in for line
 
 | Stage | Scope |
 |---|---|
-| 1. Parity | Sketcher, Part and PartDesign (merged into one workflow), Assembly, Measure, expressions and parameters, STEP/STL/3MF import and export |
+| 1. Parity | Sketcher, Part and PartDesign (merged into one workflow), Assembly, Measure, expressions and parameters, STEP/STL/3MF import and export, and importing FreeCAD files (one way: Silico never writes `.FCStd`; docs/roadmap/freecad-import.md) |
 | 2 | Surface modeling, mesh editing, text-to-geometry (engraving), DXF/SVG import into sketches |
 | 3 | CAM, FEA, TechDraw (2D engineering drawings) |
 | Out of scope | BIM, Robot, Draft as a separate workbench |

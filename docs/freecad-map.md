@@ -23,6 +23,7 @@ FreeCAD keeps tests in two places. Python tests are in `src/Mod/<Module>/<Module
 | Assembly solver (link, don't port) | `src/3rdParty/OndselSolver/` | |
 | Measure and mass properties | `src/Mod/Measure/App/` | |
 | STEP import and export | `src/Mod/Import/App/ReaderStep.*`, `WriterStep.*`, `ImportOCAF2.*`, `ExportOCAF2.*` | The `*2` versions are the current implementations. |
+| FreeCAD file import (`.FCStd`) | `src/App/Document.cpp` (Save, Restore), `src/App/PropertyLinks.cpp`, `src/Mod/Part/App/PropertyTopoShape.cpp`, `src/Mod/Part/App/TopoShape.cpp`, `src/App/ElementMap.cpp`, `src/App/StringHasher.cpp`, `src/App/ComplexGeoData.cpp`, `src/App/PropertyGeo.cpp`, `src/App/DocumentObject.cpp`, `src/App/GeoFeature.cpp` | A zip of `Document.xml`, each feature's stored shape (text B-rep, or binary if saved so), and its element map; references keep their plain name (`Edge1`) beside the element-map name. See docs/roadmap/freecad-import.md. |
 | STL and 3MF export | `src/Mod/Mesh/App/Core/MeshIO.*`, `src/Mod/MeshPart/App/Mesher.*` | |
 
 ## Mining the history

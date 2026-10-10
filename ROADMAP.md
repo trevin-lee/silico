@@ -13,6 +13,7 @@ Every milestone ends with `/adversarial-review --milestone`, and the council mus
 | M2 – Document and naming | [docs/roadmap/m2-document-naming.md](docs/roadmap/m2-document-naming.md) | Outline, detailed after the FreeCAD study |
 | M3 – Sketcher | [docs/roadmap/m3-sketcher.md](docs/roadmap/m3-sketcher.md) | Outline, detailed after the FreeCAD study |
 | M4, M5 | This file | Detailed when M3 ends |
+| FreeCAD file import | [docs/roadmap/freecad-import.md](docs/roadmap/freecad-import.md) | Outline, detailed when its prerequisites exist |
 
 **How to work through a plan:**
 - **One step is one branch and one PR**, sized so the council can review it in one round.
@@ -53,6 +54,11 @@ The command API exposed over MCP: transactions, geometry queries that return sta
 A Fusion-style layout with browser tree, timeline bar, and property panel. A viewport built on `re_renderer` with crisp edges and GPU picking. The sketch-mode UI. Behavior follows SolidWorks; visuals follow Fusion 360.
 
 **Done when** the vertical slice works end to end in both the UI and MCP.
+
+### FreeCAD file import
+Once M2, M3, refine, and the `import` feature (with a deterministic STEP writer) exist; it doesn't block the slice. Silico opens a FreeCAD `.FCStd` file and saves it as a Silico document, one way: features Silico has become Silico features, checked against the shapes FreeCAD stored, and the rest come in as shapes with no history or are left out, reported. Silico never writes `.FCStd`.
+
+**Done when** each file in a corpus imports as its hand-written table says (what each object becomes: a Silico feature, a stored shape, or left out, and why), and every imported shape matches FreeCAD's own, within the import's tolerance, by FreeCAD's measures and cut against it both ways.
 
 ### After the slice: the rest of stage 1
 The full feature set (holes, loft, sweep, helix, draft, shell, patterns, mirror). Multi-body booleans. Parameters and their UX. Measure. Assembly with OndselSolver. STEP import.

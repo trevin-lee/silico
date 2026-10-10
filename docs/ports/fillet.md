@@ -73,5 +73,5 @@ Edges that can't be filleted (seams, degenerate edges, edges between smoothly jo
 
 ## Notes
 
-- A binary B-rep written by FreeCAD 1.1.3 doesn't read in Silico's OCCT (`Standard_OutOfRange: NCollection_IndexedMap::FindKey` in `BinTools`), CRC or not, though both run OCCT 7.9.3; the cause is open (it isn't the OCCT version). Compare with FreeCAD by values (volume, area, topology, validity), never by B-rep bytes.
+- A binary B-rep written by FreeCAD 1.1.3 doesn't read with OCCT's `BinTools::Read` (`Standard_OutOfRange: NCollection_IndexedMap::FindKey`), though both run OCCT 7.9.3. The cause is FreeCAD's layout, not OCCT's version: after the shape set, FreeCAD writes the root shape as three integers (shape index, location index, orientation; `TopoShape::exportBinary`, `TopoShape.cpp`) and reads it back the same way (`importBinary`), where `BinTools::Write` writes an orientation and a reversed index. Read FreeCAD's way (`BinTools_ShapeSet::Read`, then the three integers), the same file gives the right shape: a 10 mm cube saved by the oracle FreeCAD with `SaveBinaryBrep` on, read so by a probe linked against Silico's OCCT build, is valid with volume 1000. Compare with FreeCAD by values (volume, area, topology, validity), never by B-rep bytes.
 - The chamfer has its own port note, docs/ports/chamfer.md, and shares this note's result check and edge rules.
