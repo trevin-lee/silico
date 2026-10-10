@@ -1,16 +1,16 @@
 Subject: Modeling Algorithms - BRepOffset_MakeOffset visits arc-join offset faces in the order they were bound
 Upstream: https://github.com/Open-Cascade-SAS/OCCT/pull/1600 (author: gsdali; open as of 2026-10-07)
-Applies to: OCCT V8_0_1. Source change only; the PR's GTest file targets IR and is left out.
+Applies to: OCCT V7_9_3, backported from the PR (written for 8.0): 7.9.3's iterator over the
+     offset map is BRepOffset_DataMapIteratorOfDataMapOfShapeOffset, otherwise the change is
+     the same. Source change only; the PR's GTest file targets IR and is left out.
 Why: BuildOffsetByArc iterated a map hashed by TShape address, so the face order of every
      arc-join offset (and the last bits of its volume) changed from run to run. With this patch
      the experiment's 605-case stress test is bit-identical across runs and platforms.
 Drop when: Silico upgrades to an OCCT release that includes PR #1600 (or upstream's equivalent).
 
-diff --git a/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_MakeOffset.cxx b/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_MakeOffset.cxx
-index 75132843..4395dfc8 100644
---- a/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_MakeOffset.cxx
-+++ b/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_MakeOffset.cxx
-@@ -1914,6 +1914,23 @@ void BRepOffset_MakeOffset::BuildOffsetByArc(const Message_ProgressRange& theRan
+--- a/src/BRepOffset/BRepOffset_MakeOffset.cxx
++++ b/src/BRepOffset/BRepOffset_MakeOffset.cxx
+@@ -1925,6 +1925,23 @@
    {
      return;
    }
@@ -34,7 +34,7 @@ index 75132843..4395dfc8 100644
    //--------------------------------------------------------
    // Construction of tubes on edge.
    //--------------------------------------------------------
-@@ -1987,6 +2004,7 @@ void BRepOffset_MakeOffset::BuildOffsetByArc(const Message_ProgressRange& theRan
+@@ -1994,6 +2011,7 @@
            }
            BRepOffset_Offset OF(E, EOn1, EOn2, CurOffset, E1f, E1l);
            MapSF.Bind(E, OF);
@@ -42,7 +42,7 @@ index 75132843..4395dfc8 100644
          }
        }
        else
-@@ -2046,6 +2064,7 @@ void BRepOffset_MakeOffset::BuildOffsetByArc(const Message_ProgressRange& theRan
+@@ -2054,6 +2072,7 @@
  
          BRepOffset_Offset OF(V, LOE, CurOffset);
          MapSF.Bind(V, OF);
@@ -50,14 +50,14 @@ index 75132843..4395dfc8 100644
        }
        //--------------------------------------------------------------
        // Particular processing if V is at least a free border.
-@@ -2089,17 +2108,22 @@ void BRepOffset_MakeOffset::BuildOffsetByArc(const Message_ProgressRange& theRan
-   {
+@@ -2093,17 +2112,22 @@
+   ChFiDS_TypeOfConcavity RT = ChFiDS_Concave;
+   if (myOffset < 0.)
      RT = ChFiDS_Convex;
-   }
--  NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>::Iterator It(MapSF);
--  Message_ProgressScope aPS3(aPSOuter.Next(), nullptr, MapSF.Length());
+-  BRepOffset_DataMapIteratorOfDataMapOfShapeOffset It(MapSF);
+-  Message_ProgressScope                            aPS3(aPSOuter.Next(), NULL, MapSF.Size());
 -  for (; It.More(); It.Next(), aPS3.Next())
-+  Message_ProgressScope aPS3(aPSOuter.Next(), nullptr, aBindOrder.Extent());
++  Message_ProgressScope aPS3(aPSOuter.Next(), NULL, aBindOrder.Extent());
 +  for (int anIdx = 1; anIdx <= aBindOrder.Extent(); ++anIdx, aPS3.Next())
    {
      if (!aPS3.More())
@@ -78,7 +78,7 @@ index 75132843..4395dfc8 100644
      if (SF.Status() == BRepOffset_Reversed || SF.Status() == BRepOffset_Degenerated)
      {
        //------------------------------------------------
-@@ -2108,7 +2132,7 @@ void BRepOffset_MakeOffset::BuildOffsetByArc(const Message_ProgressRange& theRan
+@@ -2112,7 +2136,7 @@
        continue;
      }
  
@@ -87,7 +87,7 @@ index 75132843..4395dfc8 100644
      myInitOffsetFace.Bind(SI, OF);
      myInitOffsetFace.SetRoot(SI); // Initial<-> Offset
      myImageOffset.SetRoot(OF);    // FaceOffset root of images
-@@ -2127,7 +2151,7 @@ void BRepOffset_MakeOffset::BuildOffsetByArc(const Message_ProgressRange& theRan
+@@ -2131,7 +2155,7 @@
          if (!L.IsEmpty() && L.First().Type() != RT)
          {
            TopAbs_Orientation OO          = E.Orientation();

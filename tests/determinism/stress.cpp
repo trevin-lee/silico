@@ -313,7 +313,11 @@ int main(int argc, char** argv) {
     try {
       body = summarize(makeCase(kind, r), kind == 10);
     } catch (const Standard_Failure& e) {
-      body = std::string("{\"error\": \"") + escape(e.ExceptionType()) + ": " + escape(e.what()) + "\"}";
+      // The type and message as OCCT 7.9 gives them (its Standard_Failure isn't a
+      // std::exception).
+      const char* message = e.GetMessageString();
+      body = std::string("{\"error\": \"") + escape(e.DynamicType()->Name()) + ": " +
+             escape(message != nullptr ? message : "") + "\"}";
     } catch (const std::exception& e) {
       body = std::string("{\"error\": \"std: ") + escape(e.what()) + "\"}";
     }

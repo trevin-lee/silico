@@ -43,16 +43,6 @@ pub fn radians(degrees: f64) -> f64 {
     degrees * (std::f64::consts::PI / 180.0)
 }
 
-/// What a revolve sweeps, once its values are checked.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Revolution {
-    /// The axis's direction, of length 1.
-    pub direction: [f64; 3],
-    /// The turn in degrees: as asked, or 360 for one too nearly full to leave a gap wider
-    /// than OCCT's tolerance at the profile's farthest corner.
-    pub angle: f64,
-}
-
 /// A line to revolve about: a point on it and its direction (any length but zero).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Axis {
@@ -374,16 +364,15 @@ pub fn extrusion_vector(
 /// Whether the profile can be revolved about `axis` by `angle` degrees: the axis must lie
 /// in the profile's plane (within OCCT's tolerance wherever it passes a corner) with the
 /// profile on one side of it (touching it at most), and the angle must be more than 0 and
-/// at most 360, and move the profile further than OCCT's tolerance. A turn that leaves a
-/// gap narrower than the tolerance at the farthest corner is a full turn, unlike FreeCAD,
-/// which keeps the slit: OCCT 8.0.1's booleans take a slit that narrow for no gap, and a
-/// cut across it removes nothing (docs/ports/extrude-revolve.md). Returns what to sweep.
+/// at most 360, and move the profile further than OCCT's tolerance. A turn a hair short of
+/// 360 is the turn it says, leaving a slit, as FreeCAD's is. Returns the axis's unit
+/// direction.
 pub fn check_revolve(
     plane: &ProfilePlane,
     points: &[[f64; 3]],
     axis: &Axis,
     angle: f64,
-) -> Result<Revolution, InvalidParameter> {
+) -> Result<[f64; 3], InvalidParameter> {
     if !axis
         .origin
         .iter()
@@ -478,16 +467,7 @@ pub fn check_revolve(
             ),
         ));
     }
-    // The gap a turn leaves, at the farthest corner.
-    let angle = if reach * radians(360.0 - angle) <= LENGTH_TOLERANCE {
-        360.0
-    } else {
-        angle
-    };
-    Ok(Revolution {
-        direction: unit,
-        angle,
-    })
+    Ok(unit)
 }
 
 #[cfg(test)]
@@ -697,38 +677,7 @@ mod tests {
         let y = axis([0.0; 3], [0.0, 2.0, 0.0]);
         assert_eq!(
             check_revolve(&plane, &profile.points, &y, 360.0).unwrap(),
-            Revolution {
-                direction: [0.0, 1.0, 0.0],
-                angle: 360.0
-            }
-        );
-        // A turn whose gap at the far corner (2 from the axis) is under the tolerance is a
-        // full turn; one whose gap is over it isn't.
-        let nearly = |angle| {
-            check_revolve(&plane, &profile.points, &y, angle)
-                .unwrap()
-                .angle
-        };
-        assert_eq!(nearly(360.0 - 2e-6), 360.0);
-        assert_eq!(nearly(360.0 - 1e-5), 360.0 - 1e-5);
-        // Judged at the farthest corner, not the nearest: 4e-6 short leaves 7e-8 at the near
-        // corner (1 from the axis) but 1.4e-7 at the far one, so it stays as asked; and a
-        // square 100 from the axis leaves 1.75e-6 at 1e-6 short.
-        assert_eq!(nearly(360.0 - 4e-6), 360.0 - 4e-6);
-        let far = Profile {
-            points: vec![
-                [100.0, 0.0, 0.0],
-                [101.0, 0.0, 0.0],
-                [101.0, 1.0, 0.0],
-                [100.0, 1.0, 0.0],
-            ],
-        };
-        let far_plane = far.check().unwrap();
-        assert_eq!(
-            check_revolve(&far_plane, &far.points, &y, 360.0 - 1e-6)
-                .unwrap()
-                .angle,
-            360.0 - 1e-6
+            [0.0, 1.0, 0.0]
         );
         // Touching it along a side is fine; crossing it isn't.
         let touching = axis([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);

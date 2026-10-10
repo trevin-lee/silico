@@ -25,7 +25,7 @@ Every milestone ends with `/adversarial-review --milestone`, and the council mus
 The goal: sketch → pad/pocket → fillet/chamfer → recompute with stable names → STEP and 3MF export, all usable from both the UI and MCP.
 
 ### M0 – Foundations
-Cargo workspace. A pixi toolchain and a deterministic OCCT 8.0.1 build from source. A local gate (`pixi run gate`) that runs the workspace-lint check, cargo-deny, fmt, clippy, the tests, and a stress run on the committed tree. `tracing` set up, and the structured error type.
+Cargo workspace. A pixi toolchain and a deterministic OCCT build from source (7.9.3, its FreeCAD reference's). A local gate (`pixi run gate`) that runs the workspace-lint check, cargo-deny, fmt, clippy, the tests, and a stress run on the committed tree. `tracing` set up, and the structured error type.
 
 **Done when** one end-to-end test passes: Rust sends a request to a worker process, the worker has OCCT build a box and fillet an edge, and the volume that comes back matches FreeCAD's. This proves the process boundary, the `cxx` bridge, and the OCCT build all work together.
 

@@ -15,7 +15,7 @@ FreeCAD reads history in `TopoShape::makeShapeWithElementMap` (`src/Mod/Part/App
 
 | Pitfall | FreeCAD | Silico |
 |---|---|---|
-| **`IsDeleted` is wrong for fillets and chamfers:** `BRepFilletAPI_MakeFillet::IsDeleted` is `!(myMap.Contains(F) \|\| IsSplit(...))`, and `myMap` holds only result faces, so every untouched edge and vertex reports deleted (probe, OCCT 8.0.1). | Never calls it. | Never calls it. An element is deleted when it isn't kept and wasn't modified. |
+| **`IsDeleted` is wrong for fillets and chamfers:** `BRepFilletAPI_MakeFillet::IsDeleted` is `!(myMap.Contains(F) \|\| IsSplit(...))`, and `myMap` holds only result faces, so every untouched edge and vertex reports deleted (probe, OCCT 8.0.1; the history tests hold on 7.9.3). | Never calls it. | Never calls it. An element is deleted when it isn't kept and wasn't modified. |
 | **Unchanged elements aren't reported:** for booleans, `Modified` is empty and `IsDeleted` false for an element that survives as it was; for transforms and sewing, `Modified` returns the element itself. | Names by identity first, then skips anything already named. | `kept`: each input element is looked up in the result's element map (`IsSame`) before its history is read. |
 | **`Modified` and `Generated` can name sub-shapes not in the result** (the revolve's are the known case: "some shape from a vertex that never made into the final shape"). | Skips them (`newInfo.find(newShape) == 0`), but counts them first: an element's position in OCCT's list goes into its name (`;:G2`, `K-2`; `TopoShapeExpansion.cpp:1509`, `:1733-1750`). | Dropped, but each kept entry records its position in OCCT's list, counting the dropped ones (`Reported::position`), so naming can reproduce FreeCAD's names. The lists themselves are sorted by element, so their order never depends on OCCT's. |
 | **`Generated` can name a coarser sub-shape:** `BRepPrimAPI_MakePrism::Generated(face)` is the whole solid. | Expands it into faces and edges as a last-resort name (wires into edges; shells, solids, and compounds into faces; `:1471-1478`). | A solid is kept as a reference to it (`ElementKind::Solid`); naming decides what to do with it. A wire, shell, or compound is left out for now: no operation reports one yet. When one does (M1.5), it's decided then and recorded here. |
@@ -46,7 +46,7 @@ FreeCAD's element names record history: a result face named `Face3;:M;FLT;...` w
 
 ## The roadmap's tests, corrected
 
-The M1.4 plan's two examples don't match what OCCT reports (verified on OCCT 8.0.1 for this note):
+The M1.4 plan's two examples don't match what OCCT reports (verified on OCCT 8.0.1 for this note, and by the tests on 7.9.3):
 
 - **Filleting Edge1 of a 10 × 20 × 30 box (r = 2):** Edge1 is deleted and generates one face. **Four** faces are modified, not two: the two the edge joined, and the two end caps whose outlines change. **Two** faces are kept, not four. Edges 2, 4, 9, and 10 are modified; the rest of the edges, and six of the eight vertices, are kept.
 - **Cutting a cylinder through a box:** the box's top and bottom faces are modified, each also generating the hole's circle edge and its seam vertex. The cylinder's side face is **modified** into the hole's face (not generated); it generates the two circle edges. The cylinder's caps, circle edges, and vertices are deleted.

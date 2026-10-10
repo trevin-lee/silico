@@ -24,8 +24,10 @@ static void trycatch(Try &&func, Fail &&fail) noexcept try {
   func();
 } catch (const Standard_Failure &e) {
   // "Standard_DomainError: <OCCT's message>", or just the type when there's no message.
-  std::string message = e.ExceptionType();
-  const char *detail = e.what();
+  // (In OCCT 7.9, Standard_Failure isn't a std::exception: its type comes from its
+  // runtime type, and its message from GetMessageString.)
+  std::string message = e.DynamicType()->Name();
+  const char *detail = e.GetMessageString();
   if (detail != nullptr && *detail != '\0') {
     message += ": ";
     message += detail;

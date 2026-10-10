@@ -69,7 +69,7 @@ fn revolve_axis_with_huge_finite_components_is_not_blamed_on_the_angle() {
         direction: [0.0, 1e300, 0.0],
     };
     match check_revolve(&plane, &p.points, &axis, 90.0) {
-        Ok(revolution) => assert_eq!(revolution.direction, [0.0, 1.0, 0.0]),
+        Ok(unit) => assert_eq!(unit, [0.0, 1.0, 0.0]),
         Err(e) => assert_eq!(e.parameter, "axis", "{}", e.message),
     }
 }
@@ -566,11 +566,10 @@ fn a_leaning_axis_that_crosses_the_profile_past_the_tolerance_is_refused() {
 }
 
 #[test]
-fn a_leaning_axis_snaps_and_moves_by_true_distance() {
+fn a_leaning_axis_moves_the_profile_by_true_distance() {
     // A 3e-7 × 10 sliver beside an axis along x leaning (0.9, 0, 0.4): its far corners are
-    // 10 from the axis, so 6e-7 degrees short of a turn leaves 1.047e-7 there, over the
-    // tolerance (not snapped), and 6e-7 degrees moves them that far (enough). Measured
-    // without the lean, they'd read 9% short, and both would go the other way.
+    // 10 from the axis, so 6e-7 degrees moves them 1.047e-7, enough. Measured without the
+    // lean, they'd read 9% short, and it would be refused.
     let p = profile(&[
         [-1.5e-7, 0.0, 0.0],
         [1.5e-7, 0.0, 0.0],
@@ -582,12 +581,6 @@ fn a_leaning_axis_snaps_and_moves_by_true_distance() {
         origin: [0.0; 3],
         direction: [0.9, 0.0, 0.4],
     };
-    assert_eq!(
-        check_revolve(&plane, &p.points, &a, 360.0 - 6e-7)
-            .unwrap()
-            .angle,
-        360.0 - 6e-7
-    );
     assert!(check_revolve(&plane, &p.points, &a, 6e-7).is_ok());
 }
 

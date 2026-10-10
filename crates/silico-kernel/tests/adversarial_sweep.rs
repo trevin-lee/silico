@@ -477,44 +477,38 @@ fn a_thousand_corner_profile_extrudes_and_revolves_in_reasonable_time() {
 }
 
 #[test]
-fn a_revolve_a_hair_short_of_a_turn_is_a_full_turn() {
-    // A unit square from x = 1 about y by 360 − ε, where the gap at its far corner (2 from
-    // the axis) is under the tolerance: OCCT would leave a slit narrower than 1e-7, which
-    // its booleans take for no gap (a cut across it removed nothing). It's a full turn,
-    // unlike FreeCAD, which keeps the slit (docs/ports/extrude-revolve.md): volume 2π · 1.5,
-    // and no ends. With a gap over the tolerance (1e-5°: 3.5e-7 at the far corner) it's
-    // the turn it says.
-    for angle in [
-        360.0 - 1e-6,
-        360.0 - 1e-10,
-        360.0 - 1e-12,
-        359.999_999_999_999_94,
+fn a_revolve_a_hair_short_of_a_turn_is_the_turn_it_says() {
+    // A unit square from x = 1 about y by 360 − ε: a partial turn with a slit between its
+    // ends, as FreeCAD's is, and its volume θ · 1.5. Within OCCT's angular tolerance of a
+    // turn (1e-12 radians, 5.73e-11 degrees), OCCT makes it a full one, without ends.
+    for (angle, ends) in [
+        (360.0 - 1e-5, (1, 1)),
+        (360.0 - 1e-6, (1, 1)),
+        (360.0 - 1e-10, (1, 1)),
+        (360.0 - 1e-12, (0, 0)),
+        (359.999_999_999_999_94, (0, 0)),
     ] {
         let (b, s) = sound(
             &format!("{angle}"),
             revolve(&rect(1.0, 0.0, 1.0, 1.0), &axis([0.0; 3], Y), angle),
         );
-        assert_volume(&format!("{angle}"), s.volume, TAU * 1.5, 1e-12);
-        assert_eq!(b.history.ends, silico_kernel::Ends::default(), "{angle}");
+        assert_volume(
+            &format!("{angle}"),
+            s.volume,
+            angle.to_radians() * 1.5,
+            1e-9,
+        );
+        let got = (b.history.ends.start.len(), b.history.ends.end.len());
+        assert_eq!(got, ends, "{angle}");
     }
-    let angle = 360.0 - 1e-5;
-    let (b, s) = sound(
-        "1e-5 short",
-        revolve(&rect(1.0, 0.0, 1.0, 1.0), &axis([0.0; 3], Y), angle),
-    );
-    assert_volume("1e-5 short", s.volume, angle.to_radians() * 1.5, 1e-12);
-    assert_eq!(
-        (b.history.ends.start.len(), b.history.ends.end.len()),
-        (1, 1)
-    );
 }
 
 #[test]
 fn a_cut_across_where_a_nearly_full_turn_would_leave_its_gap_removes_what_it_covers() {
-    // A ring from a unit square at x = 1..2 about y by 360 − 1e-6 would leave a gap of
-    // 3.5e-8, and OCCT's cut of a box across it (x 1.2..1.7, y 0.2..0.7, z −0.5..0.5)
-    // removed nothing. Snapped to a full turn, the box (0.5 × 0.5 × 1 = 0.25) lies wholly
-    // inside the ring, so the cut removes exactly 0.25.
+    // A ring from a unit square at x = 1..2 about y by 360 − 1e-6 leaves a slit of 3.5e-8;
+    // a box (0.5 × 0.5 × 1 = 0.25) across it lies wholly inside the ring, so the cut
+    // removes exactly 0.25. (OCCT 8.0.1 removed nothing, a regression from the 7.9.3 that
+    // Silico and FreeCAD's oracle run.)
     let ring = revolve(&rect(1.0, 0.0, 1.0, 1.0), &axis([0.0; 3], Y), 360.0 - 1e-6).unwrap();
     let block = silico_kernel::make(&silico_kernel::Primitive::Box {
         dx: 0.5,
@@ -568,35 +562,44 @@ fn merged_corners_are_named_off_the_origin_and_off_the_xy_plane() {
 }
 
 #[test]
-fn a_cut_across_a_large_nearly_full_ring_removes_nothing_in_occt_8_0_1() {
-    // A regression in OCCT 8.0.1 (a stock build too; FreeCAD's 7.9.3 and 7.8.1 cut it
-    // right): a ring from x = 100..200 revolved by 360 − 1e-7 degrees leaves a slit of
-    // 1.7e-7 to 3.5e-7 mm, over the tolerance, so it isn't snapped shut, and a 0.5 × 0.5 × 1
-    // box cut across it should remove 0.25 but removes nothing. Accepted and documented
-    // (docs/ports/booleans.md) by the maintainer's decision, and pinned here so an OCCT
-    // that fixes it shows up: when this fails, update the note and this test.
-    let ring = revolve(
-        &rect(100.0, 0.0, 100.0, 1.0),
-        &axis([0.0; 3], Y),
-        360.0 - 1e-7,
-    )
-    .unwrap();
-    let block = silico_kernel::make(&silico_kernel::Primitive::Box {
-        dx: 0.5,
-        dy: 0.5,
-        dz: 1.0,
-    })
-    .unwrap();
-    let block = silico_kernel::translate(&block, [120.0, 0.2, -0.5])
-        .unwrap()
-        .shape;
-    let before = summarize(&ring.shape).unwrap().volume;
-    let cut = silico_kernel::boolean(silico_kernel::BooleanOp::Cut, &ring.shape, &block).unwrap();
-    let removed = before - summarize(&cut.shape).unwrap().volume;
-    assert!(
-        removed.abs() < 1e-9,
-        "OCCT now removes {removed}: update docs/ports/booleans.md"
-    );
+fn a_cut_across_a_large_nearly_full_ring_removes_what_it_covers() {
+    // Rings of other sizes and angles where OCCT 8.0.1's cut removed nothing across the
+    // slit (a stock build too, and FreeCAD 26.3 on it); OCCT 7.9.3, which Silico and
+    // FreeCAD's oracle run, cuts them right. A 0.5 × 0.5 × 1 box across the slit, wholly
+    // inside the ring: 0.25.
+    for (x0, width, short, at) in [
+        (1.0, 9.0, 1e-6, 1.2),
+        (100.0, 100.0, 1e-7, 120.0),
+        (100.0, 100.0, 3e-7, 120.0),
+        (1000.0, 1000.0, 1e-8, 1200.0),
+    ] {
+        let ring = revolve(
+            &rect(x0, 0.0, width, 1.0),
+            &axis([0.0; 3], Y),
+            360.0 - short,
+        )
+        .unwrap();
+        let block = silico_kernel::make(&silico_kernel::Primitive::Box {
+            dx: 0.5,
+            dy: 0.5,
+            dz: 1.0,
+        })
+        .unwrap();
+        let block = silico_kernel::translate(&block, [at, 0.2, -0.5])
+            .unwrap()
+            .shape;
+        let before = summarize(&ring.shape).unwrap().volume;
+        let cut =
+            silico_kernel::boolean(silico_kernel::BooleanOp::Cut, &ring.shape, &block).unwrap();
+        let s = summarize(&cut.shape).unwrap();
+        assert!(s.valid);
+        let removed = before - s.volume;
+        assert!(
+            (removed - 0.25).abs() < 1e-5,
+            "{x0}..{} by 360 − {short}: removed {removed}",
+            x0 + width
+        );
+    }
 }
 
 #[test]

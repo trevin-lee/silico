@@ -608,19 +608,16 @@ pub fn extrude(
 }
 
 /// `profile` swept around `axis`, which lies in its plane with the profile on one side, by
-/// `angle` degrees, more than 0 and at most 360 (docs/ports/extrude-revolve.md); a turn
-/// that would leave a gap under OCCT's tolerance is a full one. The history is the
-/// profile's, as [`extrude`]'s is; a full turn has no ends.
+/// `angle` degrees, more than 0 and at most 360 (docs/ports/extrude-revolve.md). The
+/// history is the profile's, as [`extrude`]'s is; a full turn has no ends.
 pub fn revolve(profile: &Profile, axis: &Axis, angle: f64) -> Result<Built, KernelError> {
     let (face, plane) = profile_face(profile)?;
-    let revolution = silico_protocol::check_revolve(&plane, &profile.points, axis, angle)
+    let [dx, dy, dz] = silico_protocol::check_revolve(&plane, &profile.points, axis, angle)
         .map_err(|invalid| KernelError::invalid_input(invalid.message))?;
-    let [dx, dy, dz] = revolution.direction;
     let [ox, oy, oz] = axis.origin;
     let inner = face.get()?;
     let (mut entries, mut start, mut end) = (Vec::new(), Vec::new(), Vec::new());
-    // A turn too nearly full to leave a gap is a full one (`Revolution::angle`).
-    let radians = silico_protocol::radians(revolution.angle);
+    let radians = silico_protocol::radians(angle);
     // OCCT fails on some profiles the rules accept, a side exactly 1e-7 from the axis
     // among them (FreeCAD's OCCT too): say what to change.
     let advise = |e: KernelError| {

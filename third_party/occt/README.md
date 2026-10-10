@@ -23,12 +23,12 @@ pixi run stress        # 605-case stress test, byte-identical to the reference
 
 | Patch | Upstream | What it fixes |
 |---|---|---|
-| [0001](patches/0001-offset-deterministic-face-order.patch) | [PR #1600](https://github.com/Open-Cascade-SAS/OCCT/pull/1600) | Arc-join offsets returned their faces in an order that depended on memory addresses, so results changed from run to run. |
+| [0001](patches/0001-offset-deterministic-face-order.patch) | [PR #1600](https://github.com/Open-Cascade-SAS/OCCT/pull/1600), backported to 7.9.3 | Arc-join offsets returned their faces in an order that depended on memory addresses, so results changed from run to run. |
 
 ## Applying the patches by hand (inspection only)
 
 ```bash
-tar -xzf V8_0_1.tar.gz && cd OCCT-8_0_1
+tar -xzf V7_9_3.tar.gz && cd OCCT-7_9_3
 while read -r p; do patch -p1 --forward --batch < "../third_party/occt/patches/$p"; done < ../third_party/occt/series
 ```
 

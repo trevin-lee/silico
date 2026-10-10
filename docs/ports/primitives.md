@@ -66,7 +66,7 @@ All of these are inputs FreeCAD accepts and builds something broken from, or cla
 ## Notes
 
 - `Part.makeTorus`, the Python function, uses OCCT's `MakeTorus` and so differs from the `Part::Torus` feature (seam at `R + r`). The oracle uses the features, as a person's model does.
-- OCCT 8 fixed partial tori with inverted heights (bug 23612); it matters once angle parameters arrive.
+- OCCT 8 fixed partial tori with inverted heights (bug 23612); whether Silico's 7.9.3 has the fix is to be checked when angle parameters arrive.
 - When the cone gets its angle, the equal-radii cylinder must take it too: FreeCAD built a full cylinder whatever the angle until `990b9b27fe`.
 - The choice between a cone and a cylinder is made in Rust (`silico_kernel::make`); the C++ only builds what it's told.
 - FreeCAD's PartDesign wraps each primitive in `FeaturePrimitive::execute`, which fuses it with the body's base shape when there is one. That's the feature layer's job (M2), with booleans (M1.5).

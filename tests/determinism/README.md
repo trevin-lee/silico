@@ -11,7 +11,7 @@ Every result is written as exact bits: volume, area, centre of mass, bounding bo
 
 ## Findings
 
-Each row adds to the one above it.
+The experiment ran on OCCT 8.0.1, the release Silico pinned first. Each row adds to the one above it.
 
 | OCCT build | Stress test: 10 runs on one Mac | macOS ARM vs x86 |
 |---|---|---|
@@ -20,7 +20,18 @@ Each row adds to the one above it.
 | + Rust `libm` shim in place of the platform math library | 0 of 9 matched the first | probe: 22 of 22; stress: 573 of 605 |
 | + upstream PR #1600 (the adopted recipe) | **9 of 9 matched the first** | **stress: 605 of 605** |
 
-The adopted recipe was also built on Linux x86 (Ryzen 9950X3D, Debian 13, clang 21.1.8 from pixi): 3 of 3 repeat runs identical and **605 of 605 identical to macOS ARM**. The committed `stress-reference.json` is byte-identical to the Linux output. The same 47 cases fail on every build, with identical error messages, including genuinely stock conda-forge OCCT 8.0.1, so the recipe changes no outcomes.
+The adopted recipe was also built on Linux x86 (Ryzen 9950X3D, Debian 13, clang 21.1.8 from pixi): 3 of 3 repeat runs identical and **605 of 605 identical to macOS ARM**. The same 47 cases fail on every build, with identical error messages, including genuinely stock conda-forge OCCT 8.0.1, so the recipe changes no outcomes.
+
+### OCCT 7.9.3
+
+In M1.5 Silico moved to OCCT 7.9.3, the release its FreeCAD oracle runs (8.0.1 has a boolean regression 7.9.3 doesn't: docs/ports/booleans.md). PR #1600 is backported to 7.9.3's source layout. With the same recipe:
+
+- 10 of 10 runs on macOS ARM are byte-identical.
+- 3 of 3 runs on Linux x86 (a 32-core Proxmox host, clang 21.1.8 from pixi) are identical, and **605 of 605 identical to macOS ARM**.
+- The same 47 cases fail as on stock conda-forge OCCT 7.9.3, with identical messages (the recipe build is bit-identical to stock on 78 of 605 cases, the rest differing in the last bits, as expected).
+- Against the 8.0.1 reference, 294 of 605 cases are bit-identical: most others differ in the last bits, and a few shells and offsets differ outright, as the releases' algorithms do.
+
+The committed `stress-reference.json` is the 7.9.3 output, byte-identical on both platforms. macOS x86 wasn't rerun for 7.9.3.
 
 What caused each difference:
 
@@ -33,7 +44,7 @@ The recipe's cost against stock OCCT on the stress test is recorded in ARCHITECT
 
 ## Diagnostics
 
-`diagnostics/occt-serial-hash.patch` hashes every handle and shape by a creation-order serial number instead of an address. It was the experiment's first fix for finding 3 and isn't used in builds. It's kept for a planned *scrambled hash* sweep: build OCCT with a deliberately different hash and rerun the stress test, so any other algorithm that depends on hash order shows up.
+`diagnostics/occt-serial-hash.patch` hashes every handle and shape by a creation-order serial number instead of an address. It's written against OCCT 8.0.1's source layout (`src/FoundationClasses/TKernel/...`); rebase it onto 7.9.3's (`src/Standard/...`) before the sweep. It was the experiment's first fix for finding 3 and isn't used in builds. It's kept for a planned *scrambled hash* sweep: build OCCT with a deliberately different hash and rerun the stress test, so any other algorithm that depends on hash order shows up.
 
 Developing it surfaced an undocumented OCCT behaviour. Upstream's `std::hash<TopoDS_Shape>` for located shapes hashes the `TShape`'s first bytes (its vtable pointer) rather than its address. `BRepTools_Quilt` (used by revolves, prisms and pipes) depends on that, and fails with `Standard_NoSuchObject` if located shapes are hashed by `TShape` identity. The diagnostic patch keeps upstream's behaviour for located shapes. The root cause is still open.
 

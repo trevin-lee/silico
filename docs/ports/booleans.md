@@ -21,7 +21,7 @@ FreeCAD's wrapper sets three options on every boolean:
 | `e8cb83a48b` (2014, #1429) | A null base or tool is refused | Kernel: a B-rep that doesn't read is refused before OCCT builds anything. |
 | `107b784d13` (2012, #684), `e490531510` (2024), `e299c46a94` | The result is checked with `BRepCheck_Analyzer` ("Resulting shape is invalid"); on by default since 2024 | Kernel: the same result check as every operation (docs/ports/fillet.md): the faces the boolean made or changed must be valid, and the whole result too when both inputs are. |
 | `947f1ca235` (2025), `45543df93b` reverted by `3f5a2ae6b8` (2026, #30856) | An invalid **input** is a warning, not a refusal: a small defect elsewhere in a model blocked booleans that would have worked | The same: inputs aren't checked before the boolean. |
-| `3f5a2ae6b8` | A degenerate edge with no parametric curve crashes OCCT before 7.9.3 | Not needed: Silico's OCCT is 8.0.1. |
+| `3f5a2ae6b8` | A degenerate edge with no parametric curve crashes OCCT before 7.9.3 | Not needed: Silico's OCCT is 7.9.3. |
 | `e55b718cd6` (2019, #3694) | When OCCT fails, the error names an input that isn't a solid | The error says why OCCT failed (its own message) and suggests checking that the shapes overlap and are solids. |
 | `488c1a1fdf` (2017), `c107ca3100` (2021) | A refine failure keeps the unrefined result | Refine is deferred (below). |
 | `dfd3d86b22` (2018, #3333), `10d95b9ce9` | A result made only of loose faces is turned into a shell | Not needed yet: both inputs are solids from Silico's own operations. |
@@ -38,7 +38,7 @@ FreeCAD's wrapper sets three options on every boolean:
 
 ## History
 
-Both inputs get a history (input 0 the base, input 1 the tool). What OCCT 8.0.1 reports, in non-destructive mode, verified for docs/ports/history.md:
+Both inputs get a history (input 0 the base, input 1 the tool). What OCCT reports, in non-destructive mode (verified on 8.0.1 for docs/ports/history.md, and by the tests on 7.9.3):
 
 - **A cylinder through a box (cut):** the box's untouched side faces are kept; its top and bottom faces are modified, and each generates the hole's circle edge and its seam vertex. The cylinder's side face is modified into the hole's face, and generates the two circle edges. Its caps, circle edges, and vertices are deleted.
 - **A face shared by both inputs** can be modified into one result face from both (a fuse's top).
@@ -52,7 +52,7 @@ This is a stopgap until placements exist (M2): it exists so booleans can be test
 
 ## Known wrong results
 
-OCCT sometimes returns a valid solid that's simply wrong, without a warning that says so. Unless it has no volume (refused as empty, above), Silico accepts it, as FreeCAD does: FreeCAD's `makeElementBoolean` accepts any valid result, and its OCCT 7.9.3 gives the same wrong answers on these inputs when the torus is built as FreeCAD's `Part::Torus` builds it, which is how Silico builds it. (Silico tried refusing them during review, with OCCT's warnings, volume bounds, and points sampled on both inputs' faces; the sampling cost up to 30 s a boolean on curved models, and the maintainer chose FreeCAD's behavior.) Found by `/break-it` and the review council, with the right values from closed forms, integrals, or Monte Carlo:
+OCCT sometimes returns a valid solid that's simply wrong, without a warning that says so. Unless it has no volume (refused as empty, above), Silico accepts it, as FreeCAD does: FreeCAD's `makeElementBoolean` accepts any valid result, and on the OCCT both run (7.9.3) every row below gives the same wrong answer in each, with the torus built as FreeCAD's `Part::Torus` builds it, which is how Silico builds it. (Silico tried refusing them during review, with OCCT's warnings, volume bounds, and points sampled on both inputs' faces; the sampling cost up to 30 s a boolean on curved models, and the maintainer chose FreeCAD's behavior.) Found by `/break-it` and the review council, with the right values from closed forms, integrals, or Monte Carlo:
 
 | Inputs | OCCT | Right |
 |---|---|---|
@@ -64,9 +64,10 @@ OCCT sometimes returns a valid solid that's simply wrong, without a warning that
 | Two tori (R 1.5, r 0.5), the second moved 0.3 along x | common 6.277 (fuse 8.528, cut 1.125); a mesh of it measures 6.270, so it's the shape, not the measurement | common 5.6236 (integrated), 5.622 ± 0.005 (Monte Carlo) |
 | A torus (R 1.5, r 0.5) and a torus (R 2, r 1) at (−0.3568, −0.4123, −1.4127) | treated as apart: fuse 46.881, common empty | common 0.1122 (Monte Carlo) |
 | A torus (R 2, r 1) and a 2 mm cube at (0.999999, 0, 0) | treated as apart: fuse 47.478 | as at (1, 0, 0), within a millionth |
-| A ring revolved within about 1.5e-6 degrees of a full turn (a slit up to about 1e-6 mm wide), and a box cut across the slit: for example the rectangle x 100..200, y 0..1 about y by 360 − 1e-7, and a 0.5 × 0.5 × 1 box at (120, 0.2, −0.5) | the cut removes nothing (valid, 18 faces), with no warning; the same box elsewhere on the ring is cut right | the box's volume, 0.25. A regression in OCCT 8.0.1 itself: a stock 8.0.1 build fails the same way, and FreeCAD's OCCT 7.9.3 and 7.8.1 both cut every case right. Silico's revolves close only slits under the tolerance (docs/ports/extrude-revolve.md), so wider ones reach this; it's accepted and documented, for reporting upstream (`a_cut_across_a_large_nearly_full_ring_removes_nothing_in_occt_8_0_1`). |
 
-The tori moved along y cross Silico's torus's seam, which is on its inner equator, as `Part::Torus` builds it; along x, OCCT gets most of them right, but not all (0.3 above). OCCT's own torus (seamed on the outer equator) gives right answers in some of these cases on OCCT 8.0.1, but fails others on FreeCAD's 7.9.3, so the seam isn't shown to be the cause. These are for reporting to OCCT.
+The tori moved along y cross Silico's torus's seam, which is on its inner equator, as `Part::Torus` builds it; along x, OCCT gets most of them right, but not all (0.3 above). OCCT's own torus (seamed on the outer equator) gets some of these right and fails others, so the seam isn't shown to be the cause. These are for reporting to OCCT.
+
+Silico ran OCCT 8.0.1 until M1.5. It gets all of these wrong too, and one more that 7.9.3 and 7.8.1 get right: a box cut across the slit of a revolve within about 1.5e-6 degrees of a full turn (the rectangle x 100..200, y 0..1 about y by 360 − 1e-7, and a 0.5 × 0.5 × 1 box at (120, 0.2, −0.5)) removes nothing, in a stock 8.0.1 build and in FreeCAD 26.3 on it alike. That regression is why Silico runs 7.9.3, the same release as its FreeCAD oracle (`a_cut_across_a_large_nearly_full_ring_removes_what_it_covers` checks 7.9.3 cuts it right).
 
 **Volumes are integrated adaptively.** OCCT's default integration, a fixed number of Gauss points a face, which FreeCAD's `Shape.Volume` uses, measures some results up to 1% off: Silico's common of two tori (R 2, r 1) 2.2 apart measured 12.238 where its volume is 12.3586 (FreeCAD, whose OCCT builds that common with one more face, measures 12.3598), and a cylinder and torus at (0, 1.999999, 0) measured 43.769 for a fuse of 43.089. The summary now integrates to a relative 1e-9: 12.3586093, and 43.0891. Volumes and areas agree with FreeCAD's to about 2e-8 on the oracle tests; a horn torus's center comes out 7.5e-6 off its axis (of a torus 40 across), where the fixed order is exact. The stress test measures on its own, so its reference doesn't change.
 

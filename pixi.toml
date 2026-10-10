@@ -42,12 +42,16 @@ test = { cmd = "cargo nextest run --workspace", depends-on = ["occt", "install-o
 gate = { cmd = "bash tests/gate.sh", description = "Run every check on the committed tree" }
 lint = { cmd = "cargo fmt --check && cargo fmt --check --manifest-path third_party/occt/libm-shim/Cargo.toml && cargo clippy --workspace --all-targets -- -D warnings && CARGO_TARGET_DIR=target/libm-shim cargo clippy --manifest-path third_party/occt/libm-shim/Cargo.toml --release --all-targets -- -D warnings", depends-on = ["occt"] }
 
-# FreeCAD, for oracle tests. Its OCCT is its own; oracle comparisons use tolerances.
+# FreeCAD, for oracle tests: the FreeCAD Silico references, on the same OCCT release as
+# Silico's own (ARCHITECTURE.md). Pinned, so a re-solve can't move either: they move
+# together, deliberately. Oracle comparisons still use tolerances (Silico's recipe changes
+# the last bits).
 [feature.oracle]
 platforms = ["osx-arm64", "linux-64"]
 
 [feature.oracle.dependencies]
-freecad = "*"
+freecad = "==1.1.3"
+occt = "==7.9.3"
 
 # The Rerun viewer, for silico-view (pixi run view). Same version as the rerun crate.
 [feature.viewer]

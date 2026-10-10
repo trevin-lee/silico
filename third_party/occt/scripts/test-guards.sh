@@ -85,7 +85,7 @@ fi
 mkdir -p "$tmp/noexc"
 # shellcheck disable=SC2046,SC2086
 "$SILICO_CXX" -shared -fPIC -std=c++17 $SILICO_CXXFLAGS $SILICO_LDFLAGS -DNo_Exception $(soname_flag "libTKMathNoExc.$lib_ext") \
-  -I"$out/install/include/opencascade" "$out/src/src/FoundationClasses/TKMath/gp/gp_Trsf.cxx" \
+  -I"$out/install/include/opencascade" "$out/src/src/gp/gp_Trsf.cxx" \
   -o "$tmp/noexc/libTKMathNoExc.$lib_ext" -L"$out/install/lib" -lTKMath -lTKernel -Wl,-rpath,"$out/install/lib"
 ln -s "libTKMathNoExc.$lib_ext" "$tmp/noexc/libTKMath.$lib_ext"
 expect_fail_with "check-exceptions" "accepted a zero scale" bash "$scripts/check-exceptions.sh" "$tmp/noexc"

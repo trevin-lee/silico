@@ -69,7 +69,8 @@ cargo mutants --in-place --in-diff <(git diff main...HEAD)
                    # every workspace test, with nextest (.cargo/mutants.toml). In place, since a
                    # copy of the tree has no target/occt: run it in a scratch worktree
                    # (git worktree add /tmp/silico-mutants HEAD, then link .pixi and target/occt
-                   # from the main checkout), never in a checkout others are using
+                   # from the main checkout), never in a checkout others are using. Don't run
+                   # `pixi run occt` or `stress` there: they rewrite the shared target/occt/recipe.env
 ```
 
 Run C++ builds through pixi so the pinned clang is used. `pixi run gate` runs every check on the committed tree and must pass before a merge. `silico check` and `silico fmt` arrive in M2.

@@ -67,14 +67,16 @@ fn main() -> BuildResult<()> {
         .map(|prefix| prefix.join("lib"))
         .ok_or_else(|| format!("can't find the toolchain's lib directory from {cxx}"))?;
 
-    // C++17 is OCCT 8's own minimum, so the bridge can include any OCCT header.
+    // C++17 builds every OCCT header. OCCT's headers are system headers to the bridge, so
+    // their own warnings (OCCT 7.9's use of sprintf) don't drown out the bridge's.
     let mut build = cxx_build::bridge("src/lib.rs");
     build
         .file("cpp/bridge.cpp")
         .compiler(cxx)
         .std("c++17")
         .cpp_link_stdlib("c++")
-        .include(&occt_include);
+        .flag("-isystem")
+        .flag(&occt_include);
     for flag in get("SILICO_CXXFLAGS")?.split_whitespace() {
         build.flag(flag);
     }
