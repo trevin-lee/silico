@@ -46,6 +46,16 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
             let shape = shape_of(&shape)?;
             built_reply(crate::translate(&shape, offset).map_err(failure)?)
         }
+        Op::Extrude {
+            profile,
+            length,
+            direction,
+        } => built_reply(crate::extrude(&profile, length, direction).map_err(failure)?),
+        Op::Revolve {
+            profile,
+            axis,
+            angle,
+        } => built_reply(crate::revolve(&profile, &axis, angle).map_err(failure)?),
         Op::Boolean { op, base, tool } => {
             let base = shape_of(&base)?;
             let tool = shape_of(&tool)?;

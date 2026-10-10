@@ -9,15 +9,20 @@
 pub mod frame;
 mod history;
 mod primitive;
+mod profile;
 
 use serde::{Deserialize, Serialize};
 
 pub use frame::{FrameError, FrameReader, MAX_FRAME_LEN, write_message};
 pub use history::{
-    ElementCounts, ElementFate, ElementKind, ElementRef, History, InputHistory, Reported,
+    ElementCounts, ElementFate, ElementKind, ElementRef, Ends, History, InputHistory, Reported,
 };
 pub use primitive::{
     InvalidParameter, LENGTH_TOLERANCE, MAX_LENGTH, Primitive, check_offset, format_number,
+};
+pub use profile::{
+    Axis, MAX_PROFILE_POINTS, Profile, ProfilePlane, Revolution, check_revolve, extrusion_vector,
+    radians,
 };
 
 /// The file descriptor a worker inherits its end of the socket pair as.
@@ -69,6 +74,21 @@ pub enum Op {
     },
     /// `shape` moved by `offset`. Replies with [`Reply::Built`].
     Translate { shape: ShapeData, offset: [f64; 3] },
+    /// `profile` swept into a solid along its normal by `length`, or along `direction`
+    /// far enough to rise `length` along the normal. Replies with [`Reply::Built`], whose
+    /// history is the profile's (docs/ports/extrude-revolve.md).
+    Extrude {
+        profile: Profile,
+        length: f64,
+        direction: Option<[f64; 3]>,
+    },
+    /// `profile` swept around `axis`, which lies in its plane, by `angle` degrees.
+    /// Replies with [`Reply::Built`], whose history is the profile's.
+    Revolve {
+        profile: Profile,
+        axis: Axis,
+        angle: f64,
+    },
     /// Fuses `tool` with `base`, cuts it from `base`, or keeps what they share. Replies
     /// with [`Reply::Built`], whose history has `base` as input 0 and `tool` as input 1.
     Boolean {
@@ -95,6 +115,8 @@ impl Op {
             Op::Summarize { .. } => "Summarize",
             Op::Fillet { .. } => "Fillet",
             Op::Translate { .. } => "Translate",
+            Op::Extrude { .. } => "Extrude",
+            Op::Revolve { .. } => "Revolve",
             Op::Boolean { op, .. } => op.name(),
             Op::Tessellate { .. } => "Tessellate",
             Op::Echo { .. } => "Echo",

@@ -118,6 +118,25 @@ mod ffi {
             dz: f64,
             history: &mut Vec<HistoryEntry>,
         ) -> Result<UniquePtr<Shape>>;
+        fn make_polygon_face(points: &[Point3]) -> Result<UniquePtr<Shape>>;
+        fn extrude(
+            face: &Shape,
+            dx: f64,
+            dy: f64,
+            dz: f64,
+            history: &mut Vec<HistoryEntry>,
+            start: &mut Vec<u32>,
+            end: &mut Vec<u32>,
+        ) -> Result<UniquePtr<Shape>>;
+        fn revolve(
+            face: &Shape,
+            origin: Point3,
+            direction: Point3,
+            radians: f64,
+            history: &mut Vec<HistoryEntry>,
+            start: &mut Vec<u32>,
+            end: &mut Vec<u32>,
+        ) -> Result<UniquePtr<Shape>>;
         fn boolean(
             op: BooleanOp,
             base: &Shape,
@@ -166,8 +185,8 @@ mod ffi {
 }
 
 pub use silico_protocol::{
-    BooleanOp, ElementCounts, ElementFate, ElementKind, ElementRef, History, InputHistory,
-    LENGTH_TOLERANCE, MAX_LENGTH, Mesh, Primitive, Reported, ShapeSummary,
+    Axis, BooleanOp, ElementCounts, ElementFate, ElementKind, ElementRef, Ends, History,
+    InputHistory, LENGTH_TOLERANCE, MAX_LENGTH, Mesh, Primitive, Profile, Reported, ShapeSummary,
 };
 
 pub mod worker;
@@ -503,6 +522,139 @@ pub fn translate(shape: &Shape, offset: [f64; 3]) -> Result<Built, KernelError> 
 const OFFSET_SUGGESTION: &str =
     "move the shape by a finite offset, no more than a kilometre each way";
 
+/// The face a profile bounds, its edges and vertices in its points' order. The profile is
+/// checked first ([`Profile::check`]), and its plane returned with it.
+fn profile_face(profile: &Profile) -> Result<(Shape, silico_protocol::ProfilePlane), KernelError> {
+    let plane = profile
+        .check()
+        .map_err(|invalid| KernelError::invalid_input(invalid.message))?;
+    let points: Vec<ffi::Point3> = profile
+        .points
+        .iter()
+        .map(|&[x, y, z]| ffi::Point3 { x, y, z })
+        .collect();
+    let face = ffi::make_polygon_face(&points)?;
+    let Some(made) = face.as_ref() else {
+        return Err(KernelError::new("OCCT returned no face"));
+    };
+    // OCCT drops a corner it finds within its tolerance of the one before, measuring the
+    // distance its own way: a side the rules measure as a hair over 1e-7 can be exactly
+    // 1e-7 to OCCT. Every edge after it would then be misnumbered, so a face without one
+    // edge and one vertex per corner is refused.
+    let c = ffi::count_elements(made)?;
+    let n = profile.points.len();
+    if c.edges as usize != n || c.vertices as usize != n {
+        // The pair OCCT merged is the closest consecutive pair.
+        let i = profile.shortest_side();
+        return Err(KernelError::invalid_input(format!(
+            "OCCT made the profile's {n} corners into {} sides: corners {} and {} are within its tolerance ({} mm) of each other as it measures them",
+            c.edges,
+            i + 1,
+            (i + 1) % n + 1,
+            silico_protocol::format_number(LENGTH_TOLERANCE)
+        ))
+        .with_element(format!("Vertex{}", i + 1))
+        .with_suggestion("move those corners further apart, or make them one corner"));
+    }
+    Ok((Shape::new(face), plane))
+}
+
+/// A sweep's ends as the bridge reported them: faces the result doesn't have (0) left
+/// out, sorted.
+fn ends(start: Vec<u32>, end: Vec<u32>) -> Ends {
+    let tidy = |mut faces: Vec<u32>| {
+        faces.retain(|&f| f != 0);
+        faces.sort_unstable();
+        faces.dedup();
+        faces
+    };
+    Ends {
+        start: tidy(start),
+        end: tidy(end),
+    }
+}
+
+/// `profile` swept into a solid along its normal by `length`, or along `direction` far
+/// enough to rise `length` along the normal (docs/ports/extrude-revolve.md). The history is
+/// the profile's: its face (`Face1`), its edges (`Edge1` from its first point to its
+/// second, ...), and its vertices (`Vertex1` its first point, ...), with the bottom and top
+/// faces as its ends.
+pub fn extrude(
+    profile: &Profile,
+    length: f64,
+    direction: Option<[f64; 3]>,
+) -> Result<Built, KernelError> {
+    let (face, plane) = profile_face(profile)?;
+    let [dx, dy, dz] = silico_protocol::extrusion_vector(&plane, length, direction)
+        .map_err(|invalid| KernelError::invalid_input(invalid.message))?;
+    let inner = face.get()?;
+    let (mut entries, mut start, mut end) = (Vec::new(), Vec::new(), Vec::new());
+    // OCCT has built every extrusion of a valid profile tried; should one fail, say what
+    // to change.
+    let advise = |e: KernelError| {
+        e.with_suggestion(
+            "OCCT couldn't extrude this profile: change its length or direction slightly",
+        )
+    };
+    let solid = ffi::extrude(inner, dx, dy, dz, &mut entries, &mut start, &mut end)
+        .map_err(|e| advise(e.into()))?;
+    let result = checked_result(&[&face], solid, "extrusion").map_err(advise)?;
+    let mut history = history_of(&[inner], result.get()?, &entries)?;
+    history.ends = ends(start, end);
+    Ok(Built {
+        shape: result,
+        history,
+    })
+}
+
+/// `profile` swept around `axis`, which lies in its plane with the profile on one side, by
+/// `angle` degrees, more than 0 and at most 360 (docs/ports/extrude-revolve.md); a turn
+/// that would leave a gap under OCCT's tolerance is a full one. The history is the
+/// profile's, as [`extrude`]'s is; a full turn has no ends.
+pub fn revolve(profile: &Profile, axis: &Axis, angle: f64) -> Result<Built, KernelError> {
+    let (face, plane) = profile_face(profile)?;
+    let revolution = silico_protocol::check_revolve(&plane, &profile.points, axis, angle)
+        .map_err(|invalid| KernelError::invalid_input(invalid.message))?;
+    let [dx, dy, dz] = revolution.direction;
+    let [ox, oy, oz] = axis.origin;
+    let inner = face.get()?;
+    let (mut entries, mut start, mut end) = (Vec::new(), Vec::new(), Vec::new());
+    // A turn too nearly full to leave a gap is a full one (`Revolution::angle`).
+    let radians = silico_protocol::radians(revolution.angle);
+    // OCCT fails on some profiles the rules accept, a side exactly 1e-7 from the axis
+    // among them (FreeCAD's OCCT too): say what to change.
+    let advise = |e: KernelError| {
+        e.with_suggestion(
+            "OCCT couldn't revolve this profile: move it slightly further from the axis, or onto it",
+        )
+    };
+    let solid = ffi::revolve(
+        inner,
+        ffi::Point3 {
+            x: ox,
+            y: oy,
+            z: oz,
+        },
+        ffi::Point3 {
+            x: dx,
+            y: dy,
+            z: dz,
+        },
+        radians,
+        &mut entries,
+        &mut start,
+        &mut end,
+    )
+    .map_err(|e| advise(e.into()))?;
+    let result = checked_result(&[&face], solid, "revolve").map_err(advise)?;
+    let mut history = history_of(&[inner], result.get()?, &entries)?;
+    history.ends = ends(start, end);
+    Ok(Built {
+        shape: result,
+        history,
+    })
+}
+
 /// Fuses `tool` with `base`, cuts it from `base`, or keeps what they share
 /// (docs/ports/booleans.md). The history has `base` as input 0 and `tool` as input 1. A
 /// shape with nothing in it is refused, as either input (OCCT would fuse it, or cut it
@@ -672,6 +824,7 @@ fn assemble_history(
             })
             .collect(),
         result,
+        ends: Ends::default(),
     };
     let malformed = |what: &str| {
         KernelError::of_kind(

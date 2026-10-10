@@ -23,6 +23,7 @@
 #include <BRepPrimAPI_MakeSphere.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
@@ -367,6 +368,71 @@ std::unique_ptr<Shape> translate(const Shape &shape, double dx, double dy, doubl
                                      relation == Relation::Kept ? 0u : 1u});
     }
   }
+  return std::make_unique<Shape>(Shape{result});
+}
+
+std::unique_ptr<Shape> make_polygon_face(rust::Slice<const Point3> points) {
+  BRepBuilderAPI_MakePolygon polygon;
+  for (const Point3 &p : points) {
+    polygon.Add(gp_Pnt(p.x, p.y, p.z));
+  }
+  polygon.Close();
+  if (!polygon.IsDone()) {
+    throw Standard_Failure("the profile's polygon couldn't be built");
+  }
+  // OnlyPlane = true: the face's surface is a plane, as the points are.
+  BRepBuilderAPI_MakeFace face(polygon.Wire(), true);
+  if (!face.IsDone()) {
+    throw Standard_Failure("the profile's face couldn't be built");
+  }
+  return std::make_unique<Shape>(Shape{face.Face()});
+}
+
+namespace {
+// The faces of `ends` (a sweep's FirstShape or LastShape) by their numbers in `result`,
+// 0 for one the result doesn't have.
+void record_ends(const TopoDS_Shape &ends, const TopoDS_Shape &result,
+                 rust::Vec<uint32_t> &numbers) {
+  if (ends.IsNull()) {
+    return;
+  }
+  ShapeMap faces;
+  TopExp::MapShapes(result, TopAbs_FACE, faces);
+  ShapeMap seen;
+  TopExp::MapShapes(ends, TopAbs_FACE, seen);
+  for (int i = 1; i <= seen.Extent(); ++i) {
+    numbers.push_back(static_cast<uint32_t>(faces.FindIndex(seen(i))));
+  }
+}
+} // namespace
+
+std::unique_ptr<Shape> extrude(const Shape &face, double dx, double dy, double dz,
+                               rust::Vec<HistoryEntry> &history, rust::Vec<uint32_t> &start,
+                               rust::Vec<uint32_t> &end) {
+  BRepPrimAPI_MakePrism prism(face.shape, gp_Vec(dx, dy, dz));
+  if (!prism.IsDone()) {
+    throw Standard_Failure("the extrusion couldn't be built");
+  }
+  const TopoDS_Shape result = prism.Shape();
+  capture_history(prism, 0, face.shape, result, history);
+  record_ends(prism.FirstShape(), result, start);
+  record_ends(prism.LastShape(), result, end);
+  return std::make_unique<Shape>(Shape{result});
+}
+
+std::unique_ptr<Shape> revolve(const Shape &face, Point3 origin, Point3 direction,
+                               double radians, rust::Vec<HistoryEntry> &history,
+                               rust::Vec<uint32_t> &start, rust::Vec<uint32_t> &end) {
+  const gp_Ax1 axis(gp_Pnt(origin.x, origin.y, origin.z),
+                    gp_Dir(direction.x, direction.y, direction.z));
+  BRepPrimAPI_MakeRevol revolution(face.shape, axis, radians);
+  if (!revolution.IsDone()) {
+    throw Standard_Failure("the revolve couldn't be built");
+  }
+  const TopoDS_Shape result = revolution.Shape();
+  capture_history(revolution, 0, face.shape, result, history);
+  record_ends(revolution.FirstShape(), result, start);
+  record_ends(revolution.LastShape(), result, end);
   return std::make_unique<Shape>(Shape{result});
 }
 

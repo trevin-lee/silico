@@ -118,6 +118,24 @@ std::unique_ptr<Shape> fillet(const Shape &shape, rust::Slice<const uint32_t> ed
 std::unique_ptr<Shape> translate(const Shape &shape, double dx, double dy, double dz,
                                  rust::Vec<HistoryEntry> &history);
 
+// A flat face bounded by the closed polygon through `points` (checked by Rust first: flat,
+// distinct, not crossing itself). Its edges and vertices are in the points' order.
+std::unique_ptr<Shape> make_polygon_face(rust::Slice<const Point3> points);
+
+// `face` swept along (dx, dy, dz) into a solid (BRepPrimAPI_MakePrism, as FreeCAD's
+// makeElementPrism). Appends the face's history to `history`, and the result's faces the
+// sweep starts and ends with (OCCT's FirstShape and LastShape) to `start` and `end`, 0
+// where the result doesn't have one.
+std::unique_ptr<Shape> extrude(const Shape &face, double dx, double dy, double dz,
+                               rust::Vec<HistoryEntry> &history, rust::Vec<uint32_t> &start,
+                               rust::Vec<uint32_t> &end);
+
+// `face` swept around the axis through `origin` along `direction` by `radians`
+// (BRepPrimAPI_MakeRevol, as FreeCAD's makeElementRevolve). History and ends as extrude's.
+std::unique_ptr<Shape> revolve(const Shape &face, Point3 origin, Point3 direction,
+                               double radians, rust::Vec<HistoryEntry> &history,
+                               rust::Vec<uint32_t> &start, rust::Vec<uint32_t> &end);
+
 // Fuses, cuts, or intersects `base` and `tool` with OCCT's Boolean Operations, as FreeCAD
 // does (non-destructive, OCCT's default fuzzy value), but single-threaded. Appends the
 // history of `base` as input 0 and of `tool` as input 1, and the names of the warnings

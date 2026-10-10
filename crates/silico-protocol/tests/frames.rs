@@ -4,9 +4,9 @@
 
 use proptest::prelude::*;
 use silico_protocol::{
-    Blob, BooleanOp, BuiltData, DebugOp, ElementCounts, ElementFate, ElementKind, ElementRef,
-    Failure, FailureKind, FrameError, FrameReader, Generation, History, InputHistory,
-    MAX_FRAME_LEN, Mesh, Misbehavior, Op, OutOfTurn, Primitive, Reply, Reported, Request,
+    Axis, Blob, BooleanOp, BuiltData, DebugOp, ElementCounts, ElementFate, ElementKind, ElementRef,
+    Ends, Failure, FailureKind, FrameError, FrameReader, Generation, History, InputHistory,
+    MAX_FRAME_LEN, Mesh, Misbehavior, Op, OutOfTurn, Primitive, Profile, Reply, Reported, Request,
     RequestId, Response, ShapeData, ShapeSummary, TraceId, write_message,
 };
 
@@ -69,6 +69,23 @@ fn every_op() -> Vec<Op> {
         Op::Echo {
             data: Blob::inline(vec![9; 3]),
         },
+        Op::Extrude {
+            profile: Profile {
+                points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            },
+            length: 2.0,
+            direction: Some([0.0, 0.5, 1.0]),
+        },
+        Op::Revolve {
+            profile: Profile {
+                points: vec![[1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 0.0, 1.0]],
+            },
+            axis: Axis {
+                origin: [0.0, 0.0, 0.0],
+                direction: [0.0, 0.0, 1.0],
+            },
+            angle: 90.0,
+        },
         Op::Debug(DebugOp::Sleep { millis: 60_000 }),
         Op::Debug(DebugOp::Abort),
         Op::Debug(DebugOp::Segfault),
@@ -116,9 +133,11 @@ fn every_op() -> Vec<Op> {
                 op: BooleanOp::Common,
                 ..
             } => 23,
+            Op::Extrude { .. } => 24,
+            Op::Revolve { .. } => 25,
         })
         .collect();
-    assert_eq!(indices, (0..24).collect(), "an operation has no case");
+    assert_eq!(indices, (0..26).collect(), "an operation has no case");
     ops
 }
 
@@ -160,6 +179,10 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
                     edges: 3,
                     vertices: 0,
                     solids: 1,
+                },
+                ends: Ends {
+                    start: vec![1],
+                    end: vec![2, 3],
                 },
             },
         })),
@@ -286,7 +309,7 @@ fn roundtrip_every_op() {
 #[test]
 fn frame_layout_is_length_then_payload() {
     // A 4-byte little-endian length, then postcard: Request { id: 1, generation: 2,
-    // trace: 3, op: Debug(Abort) } is the varints 1, 2, and 3, then Op's variant index 7
+    // trace: 3, op: Debug(Abort) } is the varints 1, 2, and 3, then Op's variant index 9
     // (Debug) and DebugOp's 1 (Abort). (Both ends ship together, so indices may shift when
     // operations are added.)
     let bytes = frame_of(&Request {
@@ -295,7 +318,7 @@ fn frame_layout_is_length_then_payload() {
         trace: TraceId(3),
         op: Op::Debug(DebugOp::Abort),
     });
-    assert_eq!(bytes, [5, 0, 0, 0, 1, 2, 3, 7, 1]);
+    assert_eq!(bytes, [5, 0, 0, 0, 1, 2, 3, 9, 1]);
 }
 
 #[test]
@@ -455,6 +478,16 @@ proptest! {
                 radius: dims[0],
             },
             Op::Translate { shape: shape(), offset: dims },
+            Op::Extrude {
+                profile: Profile { points: vec![dims; blob.len() % 5] },
+                length: dims[1],
+                direction: valid.map(|_| dims),
+            },
+            Op::Revolve {
+                profile: Profile { points: vec![dims; 3] },
+                axis: Axis { origin: dims, direction: dims },
+                angle: dims[2],
+            },
             Op::Boolean { op: BooleanOp::Cut, base: shape(), tool: shape() },
         ] {
             let request = Request {
@@ -592,6 +625,8 @@ fn every_op_has_its_own_name() {
             "Cut",
             "Common",
             "Echo",
+            "Extrude",
+            "Revolve",
             "DebugSleep",
             "DebugAbort",
             "DebugSegfault",

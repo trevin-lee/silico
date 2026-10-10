@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use silico_protocol::{
-    ElementCounts, ElementFate, ElementKind, ElementRef, History, InputHistory, Reported,
+    ElementCounts, ElementFate, ElementKind, ElementRef, Ends, History, InputHistory, Reported,
 };
 
 const RESULT: ElementCounts = ElementCounts {
@@ -37,6 +37,7 @@ fn with_face(fate: ElementFate) -> History {
             vertices: vec![],
         }],
         result: RESULT,
+        ends: Default::default(),
     }
 }
 
@@ -92,6 +93,7 @@ fn a_history_is_checked_for_every_kind_and_every_input() {
     let history = |inputs| History {
         inputs,
         result: RESULT,
+        ends: Default::default(),
     };
     let edge = history(vec![input(vec![], vec![bad.clone()], vec![])]);
     assert!(edge.validate(1).unwrap_err().starts_with("input 1 Edge1"));
@@ -114,6 +116,7 @@ fn a_history_is_for_as_many_inputs_as_the_operation_had() {
     let none = History {
         inputs: vec![],
         result: RESULT,
+        ends: Default::default(),
     };
     assert!(none.validate(1).unwrap_err().contains("for 0 input shapes"));
     let one = with_face(ElementFate::default());
@@ -163,6 +166,7 @@ fn a_fate_is_read_from_its_own_kinds_list() {
             vertices: vec![mark(3)],
         }],
         result: RESULT,
+        ends: Default::default(),
     };
     let first = |kind| ElementRef { kind, index: 1 };
     assert_eq!(h.fate(0, first(ElementKind::Face)).unwrap().kept, Some(1));
@@ -218,4 +222,25 @@ fn a_history_keeps_the_promises_its_types_make() {
         vec![at(ElementKind::Edge, 1, 3), at(ElementKind::Edge, 2, 1)],
     );
     assert_eq!(with_face(good).validate(1), Ok(()));
+}
+
+#[test]
+fn a_sweeps_ends_name_only_faces_the_result_has_in_order() {
+    // The result has two faces.
+    let with_ends = |start: Vec<u32>, end: Vec<u32>| History {
+        ends: Ends { start, end },
+        ..with_face(fate(Some(1), vec![], vec![]))
+    };
+    assert_eq!(with_ends(vec![1], vec![2]).validate(1), Ok(()));
+    assert_eq!(with_ends(vec![], vec![]).validate(1), Ok(()));
+    assert_eq!(with_ends(vec![1, 2], vec![]).validate(1), Ok(()));
+    for (start, end, says) in [
+        (vec![3], vec![], "start faces name Face3"),
+        (vec![], vec![0], "end faces name Face0"),
+        (vec![2, 1], vec![], "start faces aren't sorted"),
+        (vec![], vec![1, 1], "end faces aren't sorted, or repeat"),
+    ] {
+        let err = with_ends(start, end).validate(1).unwrap_err();
+        assert!(err.contains(says), "{err}");
+    }
 }

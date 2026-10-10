@@ -80,12 +80,25 @@ impl ElementCounts {
     }
 }
 
+/// The result's faces a sweep starts and ends with (an extrusion's bottom and top, a
+/// partial revolve's two sides), as OCCT's `FirstShape` and `LastShape` give them: its
+/// history doesn't name them otherwise (FreeCAD guesses the top by its plane). Each list
+/// is sorted; both are empty for an operation that isn't a sweep, and for a full revolve,
+/// which has no ends (docs/ports/extrude-revolve.md).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ends {
+    pub start: Vec<u32>,
+    pub end: Vec<u32>,
+}
+
 /// An operation's history: one [`InputHistory`] per input shape, in the operation's order,
-/// and the result's element counts, so every reference can be checked against them.
+/// the result's element counts, so every reference can be checked against them, and a
+/// sweep's [`Ends`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct History {
     pub inputs: Vec<InputHistory>,
     pub result: ElementCounts,
+    pub ends: Ends,
 }
 
 impl History {
@@ -166,6 +179,16 @@ impl History {
                         }
                     }
                 }
+            }
+        }
+        for (list, name) in [(&self.ends.start, "start"), (&self.ends.end, "end")] {
+            if !list.windows(2).all(|w| w[0] < w[1]) {
+                return Err(format!("the {name} faces aren't sorted, or repeat one"));
+            }
+            if let Some(face) = list.iter().find(|&&f| !(1..=counts.faces).contains(&f)) {
+                return Err(format!(
+                    "the {name} faces name Face{face}, which the result doesn't have"
+                ));
             }
         }
         Ok(())

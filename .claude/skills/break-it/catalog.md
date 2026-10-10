@@ -10,6 +10,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Extreme scale ratios: a 1e-5 mm feature on a 1e5 mm part
 - Angles of 0, 360, 360 + ε, -ε, and 2π + ε. Degree values passed where radians are expected (90 as radians).
 - Integer counts of 0, 1, `u32::MAX`, and negative counts passed through a signed type
+- Vectors with finite components whose length overflows (`[1e300, 0, 1e300]`): normalizing gives `(0, 0, 0)`, and the error blames the wrong parameter
 
 ## Sketch geometry
 
@@ -19,6 +20,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Open profiles, almost-closed profiles with a gap just above tolerance
 - Nested profiles: holes, islands inside holes, a hole touching the outer boundary
 - Tangent circles, internally tangent arcs, near-tangent geometry (a gap of 1e-9)
+- Two long sides crossing at a very shallow angle (1e-8 rad over 100 mm): a closest-point formula using `uu·vv − uv²` cancels to noise and misses the crossing
 - B-splines with repeated control points, degree higher than the number of control points, or periodic closure
 - Thousands of entities, or a sketch entirely outside its own bounding region
 
@@ -43,11 +45,16 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Booleans of two equal tori offset sideways, and other curved pairs (cone on a cylinder's base with axes 1e-7 apart): check volumes against an independent Monte Carlo point-membership model, since inclusion-exclusion holds even when OCCT treats distinct operands as one
 - The same object passed as both operands, or operands sharing geometry (a shape and its moved copy), against the same shapes read separately from bytes: results and history must match
 - Revolve with an axis that crosses the profile, or angles of 0°, 360°, or more than 360°
+- Revolve a side leaning just off parallel to the axis (its length within 1e-7 of its length along the axis): OCCT makes a cylinder, not a cone, and calls the solid valid
+- Revolve with a side or corner exactly 1e-7 from the axis, or across it by less than 1e-7: OCCT throws (`NCollection_Sequence::Value`, `BRep_API: command not done`)
+- Revolve by less than `Precision::Angular()` (1e-12 rad) far enough from the axis to move the profile, and by 360° − ε, which OCCT sweeps as a partial turn whose ends coincide
 - Patterns with count 0, count 1, count 100,000, or instances that overlap each other
 - Mirroring across a plane that passes through the body
 - Features applied to an empty or invalid base shape
 - Transforms chained many times, including a move and its inverse: location chains that grow without bound, and bytes that differ from the original
 - Measured volumes of results with curved faces trimmed by curves: compare with a closed form (sphere lens), as fixed-order integration is off by 1e-4
+- Measured volumes of slender slanted prisms (travel 1e6 times their width) and tiny features far from the origin: each face's integral dwarfs the volume and cancels; check flat-faced solids against their mesh
+- Meshes of thin valid solids (100 × 100 × 1e-6, or 1.1e-7 thick 10 mm from the origin): meshing fails, or gives faces too few triangles that still pass validation
 
 ## Feature tree and naming
 

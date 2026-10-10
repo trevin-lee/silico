@@ -1,0 +1,61 @@
+# Extrude and revolve
+
+A flat profile swept along a vector into a solid (extrude) or around an axis (revolve), ported in M1.5 as kernel operations (`Op::Extrude`, `Op::Revolve`). Each returns its solid and its history for the profile, including the faces the sweep starts and ends with, which OCCT's history doesn't name.
+
+## What FreeCAD does
+
+Two families again: Part's `Part::Extrusion` and `Part::Revolution` (`src/Mod/Part/App/FeatureExtrusion.cpp`, `FeatureRevolution.cpp`), and PartDesign's Pad, Pocket, Revolution, and Groove (`src/Mod/PartDesign/App/FeatureExtrude.cpp`, `FeatureRevolved.cpp`, `FeatureSketchBased.cpp`). Underneath, both call OCCT's `BRepPrimAPI_MakePrism` (`TopoShape::makeElementPrism`, `TopoShapeExpansion.cpp`) and `BRepPrimAPI_MakeRevol` (`makeElementRevolve`), on a face made from the sketch's wires.
+
+- **Extrude length.** Part::Extrusion measures length along its direction. PartDesign's Pad measures it along the sketch's normal when the direction is custom (`AlongSketchNormal`, on by default): the vector is lengthened by 1 / |direction · normal|. SolidWorks measures depth along the normal too.
+- **Revolve angle** is in degrees, and 360 is a full turn. Part::Revolution has always taken −360 to 360; PartDesign refused 0 or less from 2021 (`c0de42335b`, `3694da3102`) until two-sided revolves brought negative angles back (`b2da06bfe0`, 2026).
+- **Normal.** A sketch's normal is its local Z. For any other shape, Part::Extrusion finds the plane with `BRepLib_FindSurface` and refuses a shape that isn't flat ("Can't find normal direction, because the shape is not on a plane").
+
+## Guards, from FreeCAD's history
+
+| FreeCAD | Guard | In Silico |
+|---|---|---|
+| `FeatureExtrusion.cpp` | "Direction is zero-length"; "Total length of extrusion is zero" (both below `Precision::Confusion()`) | The same: a direction must be longer than OCCT's tolerance, a length above it and at most a kilometre (`MAX_LENGTH`), as a primitive's lengths are. |
+| `FeatureExtrude.cpp` | "Creation failed because direction is orthogonal to sketch's normal vector" (|direction · normal| below `Precision::Confusion()`) | The same, and the lengthened vector must stay within a kilometre: a direction nearly in the profile's plane makes a sheet a kilometre long. |
+| `FeatureRevolved.cpp` (`checkLineCrossesFace`) | "Revolve axis intersects the sketch": the axis may touch the profile's outline, not cross it | The same, decided exactly: the profile must lie on one side of the axis, touching it (within OCCT's tolerance) at most. |
+| `c0de42335b`, `3694da3102`, lifted by `b2da06bfe0` | A revolve angle of 0 or less was refused; now only 0 is | Silico refuses 0 or less, and past 360°: it turns one way, as SolidWorks does, and the axis's direction says which (the error says so). |
+| `FeatureRevolved.cpp` ("Angle of revolution too small") | An angle at or below `Precision::Angular()` (1e-12 radians), which OCCT's `BRepSweep_Revol` refuses | The same, and an angle that moves the profile's farthest corner less than OCCT's length tolerance. |
+| `d29bed15d1` (2017) | A revolve about an axis perpendicular to the sketch threw; caught | Refused before OCCT sees it. FreeCAD's own `testAxisLink` revolves a rectangle about an axis normal to it and expects a shape of volume 0; Silico doesn't make shapes with no volume. |
+| `61d17a6122` (2025, #21429) | An infinite shape (a datum line) as the profile crashed OCCT | Not reachable: a profile is a polygon of finite points. |
+| `d21f339a0f` (2016, #2720) | `Solid = true` relaxed for profiles that can't make a solid | Not needed: a profile is always one closed polygon, so the result is always a solid. |
+
+## Where Silico differs on purpose
+
+- **A profile is a closed polygon** (`Profile`), until sketches (M3): its points in order, three or more, every coordinate finite and within a kilometre, consecutive points further apart than OCCT's tolerance, all within that tolerance of one plane, enclosing an area, and not crossing itself. Two sides cross where each one's ends lie on opposite sides of the other's line, in the plane through the three corners furthest apart (a test that holds at any angle: the distance between two nearly parallel lines cancels to rounding noise), and touch where a corner of one is within the tolerance of the other. The rule lives in `silico-protocol` with the type, so the core refuses a bad profile before sending it, and the worker refuses it again. FreeCAD builds faces from whatever wires a sketch has (with holes, through its face makers); profiles with holes and curves come with sketches.
+- **The normal follows the points** (counterclockwise seen from the normal's tip, the right-hand rule): with no direction, an extrusion goes that way.
+- **A revolve axis lies in the profile's plane**: within OCCT's tolerance of it wherever it passes a corner, the same distance a profile may be off flat, so a profile flat within the tolerance can turn about its own side. FreeCAD allows any axis that doesn't cross the profile; an axis out of the plane sweeps a face whose copies can cut each other (two points the same distance from the axis and at the same height along it trace the same circle), and one that leans a little but passes far from its own point can be well off the plane at the profile (a 1e-9 lean, 2 km away, made a tube where a solid cylinder belonged). SolidWorks revolves about a line in the sketch. An axis nearly perpendicular to the plane is refused with the rest.
+- **The ends are reported** (below), where FreeCAD guesses them.
+- **A turn too nearly full to leave a gap is a full turn.** A revolve a hair short of a full turn (360 − 1e-6 degrees, down to 1e-10) is, to OCCT, a partial turn whose ends are within 1e-7 of each other: a valid solid with a slit, which FreeCAD keeps (`Part.revolve` and PartDesign alike). OCCT 8.0.1's booleans take a slit that narrow for no gap, and a cut across it removes nothing; FreeCAD's OCCT 7.9.3 and 7.8.1 both cut it right (docs/ports/booleans.md). So a turn whose gap at the profile's farthest corner is 1e-7 mm or less is a full turn. FreeCAD caps only two-sided revolves, at 1e-12 radians short of a turn (`b2da06bfe0`). This closes only slits under the tolerance: OCCT 8.0.1's cut fails across slits up to about 1e-6 mm wide (within about 1.5e-6 degrees of a turn), a regression from 7.9.3 that's accepted and documented in docs/ports/booleans.md rather than snapped further, by the maintainer's decision.
+
+## What OCCT gets wrong, accepted as FreeCAD accepts it
+
+Found by `/break-it`; FreeCAD's OCCT 7.9.3 does the same on each.
+
+- **A side within about 1e-4 of parallel to the axis is revolved into a cylinder, not a cone.** OCCT's `GeomAdaptor_SurfaceOfRevolution` calls a revolved line a cylinder when its length exceeds its length along the axis by `Precision::Confusion()` or less, which is second order in the lean: a 100 mm wall from (40, 0) to (50, 0), (50.003, 100), (40, 100), revolved, is valid and 1.1e-4 of its volume (31 mm³) too small. Silico knows every side exactly and could refuse such a side, but a lean that small is real geometry (a draft), so the result is accepted, as FreeCAD's is.
+- **A side exactly 1e-7 from the axis**, or a corner across it by less than that, makes OCCT fail (`Standard_OutOfRange: NCollection_Sequence::Value`, or the revolve isn't done), though 0.999e-7 and 1.01e-7 both work. Silico passes OCCT's failure on, with a suggestion to move the profile off the axis or onto it.
+
+## History
+
+The profile is the operation's input: its face is `Face1`, its edges `Edge1` (from point 1 to point 2), `Edge2`, ..., and its vertices `Vertex1` (point 1), `Vertex2`, ... (`TopExp::MapShapes` order on the polygon's face, verified by a test). What OCCT 8.0.1 reports (docs/ports/history.md):
+
+- **Extrude:** `Generated(face)` is the whole solid, and the face itself is the bottom (kept); each edge generates a side face, and each vertex a side edge.
+- **Revolve, part of a turn:** the face is the start (kept); each edge generates a face (an edge on the axis generates nothing, and stays as an edge of the result), each vertex an edge (one on the axis generates nothing).
+- **Revolve, a full turn:** the face isn't in the result, and OCCT reports edges in the plane of the profile as deleted with nothing generated, though the faces the other edges generate meet there.
+- **The ends.** OCCT's `FirstShape()` and `LastShape()` are the faces a sweep starts and ends with: the bottom and top of an extrusion, the start and end of a partial revolve. FreeCAD finds the top face by testing which generated face is parallel or coplanar with the profile (`checkForParallelOrCoplanar`, fixed in `8fff92618c`), and names it `;:G0`. Silico reports them: `History::ends`, the result's faces at the start and at the end. A full revolve has none (its first and last shapes are the profile itself, which isn't in the result).
+
+## Tests
+
+From FreeCAD, with expected values:
+
+| Test | Status |
+|---|---|
+| `tests/src/Mod/Part/App/FeatureExtrusion.cpp`: a 3 × 4 rectangle extruded 10 (120), reversed, and along (0, 1, 1) (`testExecuteDir`: 120 sin 45°), with their bounding boxes | Ported, the boxes from a fine mesh; `testExecuteDir` with its rise along the normal (10 sin 45°), since Silico measures length that way. `testExecuteEdge` (a direction from a linked edge), `Symmetric`, `TaperAngle`, and two-sided lengths are options Silico doesn't have yet. |
+| `tests/src/Mod/Part/App/FeatureRevolution.cpp`: the 3 × 4 rectangle about y (π · 9 · 4), with the axis at (4, 0, 0) (π · 4 · (16 − 1)), about x (π · 16 · 3), and by 90° (a quarter), with their bounding boxes, which pin which way a turn goes | Ported, the boxes from a fine mesh. `testAxisLink` (an axis normal to the profile, volume 0) is refused instead. `testSymmetric` waits for a symmetric option. |
+| `tests/src/Mod/Part/App/TopoShapeExpansion.cpp` `makeElementPrism` (a unit square extruded 0.75: 0.75) and `makeElementRevolve` (0.50885141 and its bounding box, its history in its element names) | Ported, with the history the names state. `makeElementRevolve` passes 45 as radians, which OCCT folds to 45 − 14π (58.31°); Silico refuses angles past 360°, so the port revolves by 58.31°. |
+| `src/Mod/PartDesign/PartDesignTests/TestPad.py`, `TestRevolve.py`, and `tests/src/Mod/PartDesign/App/Revolution.cpp` (`b2da06bfe0`: two-sided revolves, axes projected onto the profile, `ProjectPerpendicularAxisIsAnError`) | With sketches and bodies (M2, M3). Projecting an axis onto the profile's plane is a deliberate difference: Silico refuses an axis not in the plane rather than move it. |
+
+And Silico's own, from the roadmap: `extrude_rect` (1000), `revolve_ring_full` (160π), `revolve_ring_quarter` (40π); FreeCAD as an oracle (volume, area, counts, validity, and the history its element names state, positions included); the ends of every sweep against the profile's geometry; refusals for every guard above, each followed by an operation that works on the same worker; and determinism. Hostile inputs (`crates/silico-protocol/tests/adversarial_profile.rs`, `crates/silico-kernel/tests/adversarial_sweep.rs`, from `/break-it`): every tolerance boundary and a step either side, shallow crossings, pinches, spikes, a thousand corners, the profile check against exact integer geometry on 4000 simple and non-simple polygons, and extrusion and revolve volumes against the shoelace formula and Pappus's theorem on 1000 random profiles each.

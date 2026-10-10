@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub use silico_protocol::{
-    BooleanOp, BuiltData, ElementCounts, ElementFate, ElementKind, ElementRef, History,
-    InputHistory, Mesh, Primitive, Reported, ShapeData, ShapeSummary,
+    Axis, BooleanOp, BuiltData, ElementCounts, ElementFate, ElementKind, ElementRef, Ends, History,
+    InputHistory, Mesh, Primitive, Profile, Reported, ShapeData, ShapeSummary,
 };
 use silico_protocol::{Generation, Op, Reply};
 
@@ -105,6 +105,53 @@ impl KernelWorker {
         let op = Op::Translate {
             shape: shape.clone(),
             offset,
+        };
+        self.built(op, 1)
+    }
+
+    /// `profile` swept into a solid along its normal by `length`, or along `direction` far
+    /// enough to rise `length` along the normal; its history is the profile's, with the
+    /// bottom and top faces as its ends. Values that can't make one are refused here,
+    /// naming the parameter, and never reach the worker.
+    pub fn extrude(
+        &mut self,
+        profile: &Profile,
+        length: f64,
+        direction: Option<[f64; 3]>,
+    ) -> Result<BuiltData, Error> {
+        let checked = profile
+            .check()
+            .and_then(|plane| silico_protocol::extrusion_vector(&plane, length, direction));
+        if let Err(invalid) = checked {
+            return Err(refused("extrusion", invalid));
+        }
+        let op = Op::Extrude {
+            profile: profile.clone(),
+            length,
+            direction,
+        };
+        self.built(op, 1)
+    }
+
+    /// `profile` swept around `axis` (in its plane, with the profile on one side) by
+    /// `angle` degrees, more than 0 and at most 360; its history is the profile's. Values
+    /// that can't make one are refused here, naming the parameter.
+    pub fn revolve(
+        &mut self,
+        profile: &Profile,
+        axis: Axis,
+        angle: f64,
+    ) -> Result<BuiltData, Error> {
+        let checked = profile.check().and_then(|plane| {
+            silico_protocol::check_revolve(&plane, &profile.points, &axis, angle)
+        });
+        if let Err(invalid) = checked {
+            return Err(refused("revolve", invalid));
+        }
+        let op = Op::Revolve {
+            profile: profile.clone(),
+            axis,
+            angle,
         };
         self.built(op, 1)
     }
@@ -210,6 +257,16 @@ impl KernelWorker {
         // One generation until there's a document to recompute (M2).
         self.worker.call(Generation(0), op, self.timeout)
     }
+}
+
+/// A sweep's values refused before sending, naming the parameter.
+fn refused(what: &str, invalid: silico_protocol::InvalidParameter) -> Error {
+    let parameter = match invalid.parameter {
+        "points" => "profile",
+        other => other,
+    };
+    Error::new(ErrorCode::InvalidInput, invalid.message)
+        .with_suggestion(format!("give the {what} a valid {parameter}"))
 }
 
 /// The kernel worker executable: [`KERNEL_WORKER_ENV`], or `silico-kernel-worker` next to

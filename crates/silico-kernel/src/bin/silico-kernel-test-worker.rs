@@ -27,7 +27,11 @@ fn main() -> std::process::ExitCode {
             }))
         }
         _ if misbehavior == Some(Misbehavior::WrongReply) => Ok(Reply::Done),
-        Op::Fillet { .. } | Op::Translate { .. } | Op::Boolean { .. }
+        Op::Fillet { .. }
+        | Op::Translate { .. }
+        | Op::Boolean { .. }
+        | Op::Extrude { .. }
+        | Op::Revolve { .. }
             if matches!(
                 misbehavior,
                 Some(Misbehavior::BadHistory | Misbehavior::HistoryForNoInputs)
