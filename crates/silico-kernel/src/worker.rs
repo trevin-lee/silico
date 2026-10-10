@@ -42,6 +42,15 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
             let rounded = crate::fillet(&shape, &edges, radius).map_err(failure)?;
             built_reply(rounded)
         }
+        Op::Chamfer {
+            shape,
+            edges,
+            size,
+            flip,
+        } => {
+            let shape = shape_of(&shape)?;
+            built_reply(crate::chamfer(&shape, &edges, size, flip).map_err(failure)?)
+        }
         Op::Translate { shape, offset } => {
             let shape = shape_of(&shape)?;
             built_reply(crate::translate(&shape, offset).map_err(failure)?)

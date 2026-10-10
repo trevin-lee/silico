@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub use silico_protocol::{
-    Axis, BooleanOp, BuiltData, ElementCounts, ElementFate, ElementKind, ElementRef, Ends, History,
-    InputHistory, Mesh, Primitive, Profile, Reported, ShapeData, ShapeSummary,
+    Axis, BooleanOp, BuiltData, ChamferSize, ElementCounts, ElementFate, ElementKind, ElementRef,
+    Ends, History, InputHistory, Mesh, Primitive, Profile, Reported, ShapeData, ShapeSummary,
 };
 use silico_protocol::{Generation, Op, Reply};
 
@@ -87,6 +87,30 @@ impl KernelWorker {
             shape: shape.clone(),
             edges: edges.to_vec(),
             radius,
+        };
+        self.built(op, 1)
+    }
+
+    /// Cuts `edges` of `shape` (numbered from 1, as FreeCAD's `Edge1`, ...) back by `size`,
+    /// measured from each edge's lower-numbered face, or its higher-numbered one when `flip`
+    /// is set, and says what became of the shape's faces, edges, and vertices. A size that
+    /// can't make a chamfer is refused here, naming the parameter, and never reaches the
+    /// worker.
+    pub fn chamfer(
+        &mut self,
+        shape: &ShapeData,
+        edges: &[u32],
+        size: ChamferSize,
+        flip: bool,
+    ) -> Result<BuiltData, Error> {
+        if let Err(invalid) = size.check() {
+            return Err(refused("chamfer", invalid));
+        }
+        let op = Op::Chamfer {
+            shape: shape.clone(),
+            edges: edges.to_vec(),
+            size,
+            flip,
         };
         self.built(op, 1)
     }
@@ -259,10 +283,11 @@ impl KernelWorker {
     }
 }
 
-/// A sweep's values refused before sending, naming the parameter.
+/// An operation's values refused before sending, naming the parameter.
 fn refused(what: &str, invalid: silico_protocol::InvalidParameter) -> Error {
     let parameter = match invalid.parameter {
         "points" => "profile",
+        "other" => "other distance",
         other => other,
     };
     Error::new(ErrorCode::InvalidInput, invalid.message)

@@ -3,6 +3,10 @@
 //! and through a worker.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/close.rs"]
+mod close;
+#[path = "common/facts.rs"]
+mod facts;
 #[path = "common/imports.rs"]
 mod imports;
 #[path = "common/numbers.rs"]
@@ -14,13 +18,14 @@ use std::f64::consts::PI;
 use std::path::Path;
 use std::time::Duration;
 
-use numbers::relative_error;
+use close::assert_close;
+use facts::{Fact, facts};
 use silico_core::ErrorCode;
 use silico_core::kernel::KernelWorker;
 use silico_core::worker::Worker;
 use silico_kernel::{
-    Axis, Built, ElementKind, History, KernelErrorKind, Profile, Shape, ShapeSummary, extrude,
-    revolve, summarize, tessellate,
+    Axis, Built, ElementKind, KernelErrorKind, Profile, Shape, ShapeSummary, extrude, revolve,
+    summarize, tessellate,
 };
 use silico_protocol::{DebugOp, Generation, Misbehavior, Op};
 
@@ -60,13 +65,6 @@ fn axis(origin: [f64; 3], direction: [f64; 3]) -> Axis {
 }
 
 const Z: [f64; 3] = [0.0, 0.0, 1.0];
-
-fn assert_close(what: &str, got: f64, want: f64, tolerance: f64) {
-    assert!(
-        relative_error(got, want) <= tolerance,
-        "{what}: got {got}, want {want}"
-    );
-}
 
 fn summary(built: &Built) -> ShapeSummary {
     summarize(&built.shape).unwrap()
@@ -402,36 +400,6 @@ fn concave_triangular_and_tilted_profiles_sweep() {
         assert!(s.valid, "{what}");
         assert_eq!(built.history.validate(1), Ok(()), "{what}");
     }
-}
-
-/// Silico's history of the profile as facts: (relation, input element, result element,
-/// position), as boolean.rs reads them.
-type Fact = (String, String, String, u32);
-
-fn facts(history: &History) -> Vec<Fact> {
-    let mut out = Vec::new();
-    let input = &history.inputs[0];
-    let kinds = [
-        (ElementKind::Face, &input.faces),
-        (ElementKind::Edge, &input.edges),
-        (ElementKind::Vertex, &input.vertices),
-    ];
-    for (kind, fates) in kinds {
-        for (i, fate) in fates.iter().enumerate() {
-            let from = format!("{kind:?}{}", i + 1);
-            if let Some(kept) = fate.kept {
-                out.push(("kept".into(), from.clone(), format!("{kind:?}{kept}"), 0));
-            }
-            for (relation, list) in [("modified", &fate.modified), ("generated", &fate.generated)] {
-                for r in list {
-                    let to = format!("{:?}{}", r.element.kind, r.element.index);
-                    out.push((relation.into(), from.clone(), to, r.position));
-                }
-            }
-        }
-    }
-    out.sort();
-    out
 }
 
 /// How a case sweeps: along a vector, or around an axis by an angle in degrees.

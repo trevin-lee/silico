@@ -2,6 +2,8 @@
 //! calculations, FreeCAD's own tests, FreeCAD's element names, and through a worker.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/close.rs"]
+mod close;
 #[path = "common/imports.rs"]
 mod imports;
 #[path = "common/numbers.rs"]
@@ -12,7 +14,7 @@ mod oracle;
 use std::path::Path;
 use std::time::Duration;
 
-use numbers::relative_error;
+use close::assert_close;
 use silico_core::ErrorCode;
 use silico_core::kernel::KernelWorker;
 use silico_core::worker::Worker;
@@ -42,13 +44,6 @@ fn at(primitive: Primitive, offset: [f64; 3]) -> Shape {
 
 fn apply(op: BooleanOp, base: &Shape, tool: &Shape) -> ShapeSummary {
     summarize(&boolean(op, base, tool).unwrap().shape).unwrap()
-}
-
-fn assert_close(what: &str, got: f64, want: f64, tolerance: f64) {
-    assert!(
-        relative_error(got, want) <= tolerance,
-        "{what}: got {got}, want {want}"
-    );
 }
 
 #[test]

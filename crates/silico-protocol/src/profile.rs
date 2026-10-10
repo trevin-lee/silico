@@ -99,7 +99,11 @@ fn invalid(parameter: &'static str, message: String) -> InvalidParameter {
 }
 
 /// A length's check: finite, above OCCT's tolerance, at most [`MAX_LENGTH`].
-fn check_length(parameter: &'static str, what: &str, value: f64) -> Result<(), InvalidParameter> {
+pub(crate) fn check_length(
+    parameter: &'static str,
+    what: &str,
+    value: f64,
+) -> Result<(), InvalidParameter> {
     if value > LENGTH_TOLERANCE && value <= MAX_LENGTH {
         Ok(())
     } else {

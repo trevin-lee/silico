@@ -51,6 +51,8 @@ struct Counts;
 enum class Kind : uint8_t;
 enum class Relation : uint8_t;
 enum class BooleanOp : uint8_t;
+struct EdgeFact;
+struct EdgeFacts;
 
 // An OCCT shape, owned from Rust through a UniquePtr.
 struct Shape {
@@ -73,11 +75,8 @@ Measures measure(const Shape &shape);
 // trimmed by curves, and further on broken shapes (a "solid" of volume -2e-4 reads 1.9).
 Amounts rough_amounts(const Shape &shape);
 
-// The number of distinct edges, which TopExp::MapShapes numbers from 1.
-uint32_t edge_count(const Shape &shape);
-
 // A triangle mesh of a shape's faces and polylines along its edges, for display. Faces
-// and edges are in TopExp::MapShapes order (edges numbered as fillet's). Built whole in
+// and edges are in TopExp::MapShapes order (edges numbered as edge_facts's). Built whole in
 // C++ and read from Rust as slices, so each array crosses the bridge in one copy.
 class Tessellation {
 public:
@@ -108,11 +107,38 @@ double bounding_diagonal(const Shape &shape);
 // `deflection` is the largest distance allowed between the mesh and the surface.
 std::unique_ptr<Tessellation> tessellate(const Shape &shape, double deflection);
 
-// Rounds the given edges (numbered as edge_count's) with a constant radius, appending what
-// it did to the shape's faces, edges, and vertices to `history`. Throws if OCCT can't build
-// it; whether the result is valid is the caller's question.
-std::unique_ptr<Shape> fillet(const Shape &shape, rust::Slice<const uint32_t> edges,
-                              double radius, rust::Vec<HistoryEntry> &history);
+// For each edge (numbered from 1 in TopExp::MapShapes order), in order: whether it's
+// degenerate or a seam, its end vertices, and the faces it lies on, as
+// TopExp::MapShapesAndAncestors lists them. Facts only: Rust decides which edges a fillet
+// or chamfer may take.
+EdgeFacts edge_facts(const Shape &shape);
+
+// A fillet or chamfer of a shape, given its edges one at a time (numbered as edge_facts
+// numbers them, faces in TopExp::MapShapes order too), which Rust then asks OCCT about:
+// which contour took each edge (0 for none), and each contour's edges, before it's built.
+// Built, it appends what it did to the shape's faces, edges, and vertices to `history`, and
+// throws if OCCT can't build it; whether the result is valid is the caller's question.
+class Dressing {
+public:
+  enum class Of { Fillet, Chamfer };
+  Dressing(const TopoDS_Shape &shape, Of of);
+  ~Dressing();
+  void add_fillet(uint32_t edge, double radius);
+  // `distance` along `face`, and along the edge's other face `other`, or as far as a
+  // chamfer face at `radians` to `face` reaches.
+  void add_distances(uint32_t edge, uint32_t face, double distance, double other);
+  void add_distance_angle(uint32_t edge, uint32_t face, double distance, double radians);
+  uint32_t contour_of(uint32_t edge) const;
+  rust::Vec<uint32_t> contour_edges(uint32_t contour) const;
+  std::unique_ptr<Shape> build(rust::Vec<HistoryEntry> &history);
+
+private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
+
+std::unique_ptr<Dressing> new_fillet(const Shape &shape);
+std::unique_ptr<Dressing> new_chamfer(const Shape &shape);
 
 // The shape moved by (dx, dy, dz), appending what became of its faces, edges, and vertices
 // to `history`. The geometry isn't copied: the result is the shape with a new location,
@@ -183,6 +209,9 @@ void debug_raise_sigsegv();
 // A box with one face left out: a solid whose shell doesn't close, which
 // BRepCheck_Analyzer must find invalid.
 std::unique_ptr<Shape> debug_open_box();
+// A compound of a 10 x 20 x 30 box and an edge on no face, from (20, 0, 0) to (30, 0, 0):
+// the box's 12 edges, then the loose one (Edge13).
+std::unique_ptr<Shape> debug_box_with_loose_edge();
 // A compound with nothing in it: a shape that isn't null, with no faces, edges, or vertices.
 std::unique_ptr<Shape> debug_empty_shape();
 #endif

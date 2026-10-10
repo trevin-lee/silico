@@ -241,7 +241,12 @@ fn fillet_too_large_is_structured_error() {
             || err.cause().unwrap().contains("couldn't be built"),
         "{err}"
     );
-    assert_eq!(err.suggestion(), Some("try a smaller radius"));
+    assert_eq!(
+        err.suggestion(),
+        Some(
+            "if the fillet runs past a face beside the edge, try a smaller radius; if not, try another radius, or leave the edge out: OCCT can't fillet some edges at any size"
+        )
+    );
     // The worker carries on.
     assert!(fillet_through_worker(&mut w, &[1], 2.0).is_ok());
 }

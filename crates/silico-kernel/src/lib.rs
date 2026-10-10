@@ -84,6 +84,27 @@ mod ffi {
         Common,
     }
 
+    /// One edge, as the bridge reports it for a fillet or chamfer to decide on.
+    struct EdgeFact {
+        /// A point where a surface closes (a sphere's pole, a cone's tip).
+        degenerate: bool,
+        /// Bounding one of its faces twice: a seam.
+        seam: bool,
+        /// Its end vertices, numbered from 1 in `TopExp::MapShapes` order (0 when it has
+        /// none); the same twice for a closed edge.
+        first_vertex: u32,
+        last_vertex: u32,
+        /// How many of [`EdgeFacts::faces`] are its.
+        face_count: u32,
+    }
+
+    /// A shape's edges in order, and the faces each lies on (numbered from 1, as OCCT lists
+    /// them: a seam's face twice), edge after edge.
+    struct EdgeFacts {
+        edges: Vec<EdgeFact>,
+        faces: Vec<u32>,
+    }
+
     /// How many distinct faces, edges, vertices, and solids a shape has.
     struct Counts {
         faces: u32,
@@ -104,11 +125,30 @@ mod ffi {
         fn make_cone(radius1: f64, radius2: f64, height: f64) -> Result<UniquePtr<Shape>>;
         fn make_torus(major_radius: f64, minor_radius: f64) -> Result<UniquePtr<Shape>>;
         fn measure(shape: &Shape) -> Result<Measures>;
-        fn edge_count(shape: &Shape) -> Result<u32>;
-        fn fillet(
-            shape: &Shape,
-            edges: &[u32],
-            radius: f64,
+        fn edge_facts(shape: &Shape) -> Result<EdgeFacts>;
+
+        type Dressing;
+        fn new_fillet(shape: &Shape) -> Result<UniquePtr<Dressing>>;
+        fn new_chamfer(shape: &Shape) -> Result<UniquePtr<Dressing>>;
+        fn add_fillet(self: Pin<&mut Dressing>, edge: u32, radius: f64) -> Result<()>;
+        fn add_distances(
+            self: Pin<&mut Dressing>,
+            edge: u32,
+            face: u32,
+            distance: f64,
+            other: f64,
+        ) -> Result<()>;
+        fn add_distance_angle(
+            self: Pin<&mut Dressing>,
+            edge: u32,
+            face: u32,
+            distance: f64,
+            radians: f64,
+        ) -> Result<()>;
+        fn contour_of(self: &Dressing, edge: u32) -> Result<u32>;
+        fn contour_edges(self: &Dressing, contour: u32) -> Result<Vec<u32>>;
+        fn build(
+            self: Pin<&mut Dressing>,
             history: &mut Vec<HistoryEntry>,
         ) -> Result<UniquePtr<Shape>>;
         fn translate(
@@ -180,16 +220,22 @@ mod ffi {
         #[cfg(feature = "test_ops")]
         fn debug_open_box() -> Result<UniquePtr<Shape>>;
         #[cfg(feature = "test_ops")]
+        fn debug_box_with_loose_edge() -> Result<UniquePtr<Shape>>;
+        #[cfg(feature = "test_ops")]
         fn debug_empty_shape() -> Result<UniquePtr<Shape>>;
     }
 }
 
 pub use silico_protocol::{
-    Axis, BooleanOp, ElementCounts, ElementFate, ElementKind, ElementRef, Ends, History,
-    InputHistory, LENGTH_TOLERANCE, MAX_LENGTH, Mesh, Primitive, Profile, Reported, ShapeSummary,
+    Axis, BooleanOp, ChamferSize, ElementCounts, ElementFate, ElementKind, ElementRef, Ends,
+    History, InputHistory, LENGTH_TOLERANCE, MAX_LENGTH, Mesh, Primitive, Profile, Reported,
+    ShapeSummary,
 };
 
+mod dressing;
 pub mod worker;
+
+pub use dressing::{chamfer, fillet};
 
 /// An operation refused or failed, with OCCT's own message where OCCT reported it (for
 /// example `Standard_DomainError: ...`). It stays inside the worker: the worker reports it
@@ -441,56 +487,6 @@ pub fn summarize(shape: &Shape) -> Result<ShapeSummary, KernelError> {
         edges: m.edges,
         vertices: m.vertices,
         valid: shape.is_valid()?,
-    })
-}
-
-/// Rounds `edges` of `shape` with a constant `radius`. Edges are numbered from 1 in OCCT's
-/// `TopExp::MapShapes` order, which is also FreeCAD's `Edge1`, `Edge2`, and so on.
-pub fn fillet(shape: &Shape, edges: &[u32], radius: f64) -> Result<Built, KernelError> {
-    if !(radius.is_finite() && radius > 0.0) {
-        return Err(KernelError::invalid_input(format!(
-            "fillet radius must be a positive, finite length, got {radius}"
-        )));
-    }
-    if edges.is_empty() {
-        return Err(KernelError::invalid_input(
-            "a fillet needs at least one edge",
-        ));
-    }
-    let inner = shape.get()?;
-    let count = ffi::edge_count(inner)?;
-    let mut seen = std::collections::BTreeSet::new();
-    for &n in edges {
-        if n == 0 || n > count {
-            return Err(KernelError::invalid_input(format!(
-                "Edge{n} doesn't exist: the shape has edges 1 to {count}"
-            ))
-            .with_element(format!("Edge{n}")));
-        }
-        if !seen.insert(n) {
-            return Err(
-                KernelError::invalid_input(format!("Edge{n} is listed twice"))
-                    .with_element(format!("Edge{n}")),
-            );
-        }
-    }
-    // When a single-edge fillet fails, that edge is the one at fault; OCCT doesn't say
-    // which of several it was.
-    let blame = |error: KernelError| match edges {
-        [edge] => error
-            .with_element(format!("Edge{edge}"))
-            .with_suggestion("try a smaller radius"),
-        _ => error.with_suggestion(
-            "try a smaller radius, or fillet the edges one at a time to find the one that fails",
-        ),
-    };
-    let mut entries = Vec::new();
-    let rounded = ffi::fillet(inner, edges, radius, &mut entries).map_err(|e| blame(e.into()))?;
-    let shape_out = checked_result(&[shape], rounded, "fillet").map_err(blame)?;
-    let history = history_of(&[inner], shape_out.get()?, &entries)?;
-    Ok(Built {
-        shape: shape_out,
-        history,
     })
 }
 
@@ -1074,6 +1070,11 @@ pub mod test_ops {
     /// A box with one face left out: a solid whose shell doesn't close.
     pub fn open_box() -> Result<super::Shape, KernelError> {
         Ok(super::Shape::new(ffi::debug_open_box()?))
+    }
+
+    /// A compound of a 10 × 20 × 30 box and an edge on no face (Edge13).
+    pub fn box_with_loose_edge() -> Result<super::Shape, KernelError> {
+        Ok(super::Shape::new(ffi::debug_box_with_loose_edge()?))
     }
 
     /// A compound with nothing in it.

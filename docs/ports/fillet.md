@@ -46,7 +46,9 @@ When the input was already invalid (an imported shape that fails `BRepCheck` som
 
 - **Invalid results are refused** (above).
 - **A repeated edge is refused** (`invalid_input`, naming it). OCCT skips an edge it already has, so FreeCAD silently ignores repeats.
-- **The failing edge is named** when a single-edge fillet fails (`element: Edge3`), with the suggestion to try a smaller radius. OCCT doesn't say which of several edges failed, so for several the element is left out rather than guessed, and the suggestion is to fillet them one at a time to find it.
+- **The failing edge is named** when a single-edge fillet fails (`element: Edge3`). OCCT doesn't say which of several edges failed, so for several the element is left out rather than guessed, and the suggestion is to fillet them one at a time to find it. Nor does OCCT say why, so the suggestion offers a smaller radius if the fillet runs past a face beside the edge, another if not, or leaving the edge out (M1.5, with the chamfer; docs/ports/chamfer.md).
+- **The edges are a set** (M1.5, with the chamfer): OCCT is given them in increasing order, so the order they're listed in doesn't change the result.
+- **An edge OCCT won't fillet is refused, naming it and why** (M1.5, with the chamfer, which shares the rule; docs/ports/chamfer.md): a seam, a degenerate edge, an edge between faces that meet smoothly (OCCT's own verdict, from `Contour(E)`), an edge on one face or none, and edges joining more than two faces, ending at a corner where the shape touches itself or another solid at a point, or continuing smoothly into an edge that does, which OCCT never builds (it segfaults on them). One refusal names every edge at fault. OCCT throws "There are no suitable edges for chamfer or fillet" for such an edge alone, and skips it silently among others, as FreeCAD's `Part.makeFillet` does; FreeCAD's feature layer drops it with a warning (`fc1e8b8d17`).
 
 ## Same as FreeCAD
 
@@ -55,7 +57,7 @@ Checked against the oracle:
 - Radii too large for an adjacent face (r = 10 and 11 on a 10-wide face) fail in both. r = 9.99 succeeds in both.
 - Radii far below or above any sensible length (1e-12, 1e300) fail in both; 1e-8 succeeds in both, barely changing the box.
 
-Not yet checked, because a box has no such edges: edges that can't be filleted alone (seams, degenerate edges, edges between smoothly joined faces). In OCCT they throw "There are no suitable edges for chamfer or fillet", and mixed with filletable edges they're skipped silently; FreeCAD's feature layer filters them first (`fc1e8b8d17`). Add oracle cases when M1 brings cylinders.
+Edges that can't be filleted (seams, degenerate edges, edges between smoothly joined faces) are refused before OCCT builds anything (above), tested with the chamfer's (`an_edge_occt_wont_take_is_refused_naming_it` in `chamfer.rs`).
 
 ## FreeCAD tests
 
@@ -72,4 +74,4 @@ Not yet checked, because a box has no such edges: edges that can't be filleted a
 ## Notes
 
 - A binary B-rep written by FreeCAD 1.1.3 doesn't read in Silico's OCCT (`Standard_OutOfRange: NCollection_IndexedMap::FindKey` in `BinTools`), CRC or not, though both run OCCT 7.9.3; the cause is open (it isn't the OCCT version). Compare with FreeCAD by values (volume, area, topology, validity), never by B-rep bytes.
-- Chamfer (M1) has its own guards in FreeCAD (a degenerated edge, an edge with no adjacent face; `TopoShapeExpansion.cpp` `makeElementChamfer`, `d214306d1b`, 2026, not in FreeCAD 1.1.3; `19bc5077c8` is the chamfer's validity check, its counterpart of `87293fac9b`), and gets its own port note.
+- The chamfer has its own port note, docs/ports/chamfer.md, and shares this note's result check and edge rules.

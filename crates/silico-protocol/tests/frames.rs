@@ -4,10 +4,10 @@
 
 use proptest::prelude::*;
 use silico_protocol::{
-    Axis, Blob, BooleanOp, BuiltData, DebugOp, ElementCounts, ElementFate, ElementKind, ElementRef,
-    Ends, Failure, FailureKind, FrameError, FrameReader, Generation, History, InputHistory,
-    MAX_FRAME_LEN, Mesh, Misbehavior, Op, OutOfTurn, Primitive, Profile, Reply, Reported, Request,
-    RequestId, Response, ShapeData, ShapeSummary, TraceId, write_message,
+    Axis, Blob, BooleanOp, BuiltData, ChamferSize, DebugOp, ElementCounts, ElementFate,
+    ElementKind, ElementRef, Ends, Failure, FailureKind, FrameError, FrameReader, Generation,
+    History, InputHistory, MAX_FRAME_LEN, Mesh, Misbehavior, Op, OutOfTurn, Primitive, Profile,
+    Reply, Reported, Request, RequestId, Response, ShapeData, ShapeSummary, TraceId, write_message,
 };
 
 /// One request per operation. The match gives each variant its own index and every
@@ -86,6 +86,30 @@ fn every_op() -> Vec<Op> {
             },
             angle: 90.0,
         },
+        Op::Chamfer {
+            shape: ShapeData::checked(Blob::inline(vec![11]), true),
+            edges: vec![1, 3],
+            size: ChamferSize::Equal { distance: 2.0 },
+            flip: false,
+        },
+        Op::Chamfer {
+            shape: ShapeData::unchecked(Blob::inline(vec![12])),
+            edges: vec![2],
+            size: ChamferSize::TwoDistances {
+                distance: 1.0,
+                other: 3.0,
+            },
+            flip: true,
+        },
+        Op::Chamfer {
+            shape: ShapeData::checked(Blob::inline(vec![13]), false),
+            edges: vec![],
+            size: ChamferSize::DistanceAngle {
+                distance: 1.0,
+                angle: 30.0,
+            },
+            flip: false,
+        },
         Op::Debug(DebugOp::Sleep { millis: 60_000 }),
         Op::Debug(DebugOp::Abort),
         Op::Debug(DebugOp::Segfault),
@@ -135,9 +159,21 @@ fn every_op() -> Vec<Op> {
             } => 23,
             Op::Extrude { .. } => 24,
             Op::Revolve { .. } => 25,
+            Op::Chamfer {
+                size: ChamferSize::Equal { .. },
+                ..
+            } => 26,
+            Op::Chamfer {
+                size: ChamferSize::TwoDistances { .. },
+                ..
+            } => 27,
+            Op::Chamfer {
+                size: ChamferSize::DistanceAngle { .. },
+                ..
+            } => 28,
         })
         .collect();
-    assert_eq!(indices, (0..26).collect(), "an operation has no case");
+    assert_eq!(indices, (0..29).collect(), "an operation has no case");
     ops
 }
 
@@ -309,7 +345,7 @@ fn roundtrip_every_op() {
 #[test]
 fn frame_layout_is_length_then_payload() {
     // A 4-byte little-endian length, then postcard: Request { id: 1, generation: 2,
-    // trace: 3, op: Debug(Abort) } is the varints 1, 2, and 3, then Op's variant index 9
+    // trace: 3, op: Debug(Abort) } is the varints 1, 2, and 3, then Op's variant index 10
     // (Debug) and DebugOp's 1 (Abort). (Both ends ship together, so indices may shift when
     // operations are added.)
     let bytes = frame_of(&Request {
@@ -318,7 +354,7 @@ fn frame_layout_is_length_then_payload() {
         trace: TraceId(3),
         op: Op::Debug(DebugOp::Abort),
     });
-    assert_eq!(bytes, [5, 0, 0, 0, 1, 2, 3, 9, 1]);
+    assert_eq!(bytes, [5, 0, 0, 0, 1, 2, 3, 10, 1]);
 }
 
 #[test]
@@ -627,6 +663,9 @@ fn every_op_has_its_own_name() {
             "Echo",
             "Extrude",
             "Revolve",
+            "Chamfer",
+            "Chamfer",
+            "Chamfer",
             "DebugSleep",
             "DebugAbort",
             "DebugSegfault",

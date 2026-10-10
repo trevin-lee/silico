@@ -6,6 +6,7 @@
 //! encoded with `postcard` ([`frame`]). Both ends are Rust and always ship together, so
 //! there's no version negotiation.
 
+mod chamfer;
 pub mod frame;
 mod history;
 mod primitive;
@@ -13,6 +14,7 @@ mod profile;
 
 use serde::{Deserialize, Serialize};
 
+pub use chamfer::ChamferSize;
 pub use frame::{FrameError, FrameReader, MAX_FRAME_LEN, write_message};
 pub use history::{
     ElementCounts, ElementFate, ElementKind, ElementRef, Ends, History, InputHistory, Reported,
@@ -71,6 +73,15 @@ pub enum Op {
         edges: Vec<u32>,
         radius: f64,
     },
+    /// Cuts `edges` of `shape` back by `size`, measured from each edge's lower-numbered
+    /// face, or its higher-numbered one when `flip` is set. Edges are numbered as for
+    /// [`Op::Fillet`]. Replies with [`Reply::Built`].
+    Chamfer {
+        shape: ShapeData,
+        edges: Vec<u32>,
+        size: ChamferSize,
+        flip: bool,
+    },
     /// `shape` moved by `offset`. Replies with [`Reply::Built`].
     Translate { shape: ShapeData, offset: [f64; 3] },
     /// `profile` swept into a solid along its normal by `length`, or along `direction`
@@ -113,6 +124,7 @@ impl Op {
             Op::MakePrimitive(primitive) => primitive.op_name(),
             Op::Summarize { .. } => "Summarize",
             Op::Fillet { .. } => "Fillet",
+            Op::Chamfer { .. } => "Chamfer",
             Op::Translate { .. } => "Translate",
             Op::Extrude { .. } => "Extrude",
             Op::Revolve { .. } => "Revolve",

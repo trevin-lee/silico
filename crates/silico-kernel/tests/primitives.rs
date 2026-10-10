@@ -4,6 +4,8 @@
 
 #[path = "common/imports.rs"]
 mod imports;
+#[path = "common/kernel.rs"]
+mod kernel;
 #[path = "common/numbers.rs"]
 mod numbers;
 #[path = "common/oracle.rs"]
@@ -13,6 +15,7 @@ use std::f64::consts::PI;
 use std::path::Path;
 use std::time::Duration;
 
+use kernel::kernel;
 use numbers::relative_error;
 use proptest::prelude::*;
 use silico_core::ErrorCode;
@@ -21,10 +24,6 @@ use silico_core::worker::Worker;
 use silico_protocol::{Blob, DebugOp, Generation, Misbehavior, Op};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-worker");
-
-fn kernel() -> KernelWorker {
-    KernelWorker::start_worker(Path::new(WORKER)).unwrap()
-}
 
 /// Curved faces are integrated numerically; OCCT gets these to well within this.
 const CURVED: f64 = 1e-9;

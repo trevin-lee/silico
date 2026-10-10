@@ -15,6 +15,7 @@
 #include <GCPnts_TangentialDeflection.hxx>
 #include <Poly_Triangulation.hxx>
 #include <BRep_Builder.hxx>
+#include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
@@ -41,6 +42,7 @@
 #include <TopExp.hxx>
 #include <NCollection_IndexedMap.hxx>
 #include <NCollection_List.hxx>
+#include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
@@ -226,8 +228,6 @@ std::unique_ptr<Tessellation> tessellate(const Shape &shape, double deflection) 
   return out;
 }
 
-uint32_t edge_count(const Shape &shape) { return count_distinct(shape.shape, TopAbs_EDGE); }
-
 namespace {
 Kind kind_of(TopAbs_ShapeEnum type) {
   switch (type) {
@@ -297,25 +297,135 @@ Counts count_elements(const Shape &shape) {
                 count_distinct(shape.shape, TopAbs_SOLID)};
 }
 
-std::unique_ptr<Shape> fillet(const Shape &shape, rust::Slice<const uint32_t> edges,
-                              double radius, rust::Vec<HistoryEntry> &history) {
-  ShapeMap map;
-  TopExp::MapShapes(shape.shape, TopAbs_EDGE, map);
-  BRepFilletAPI_MakeFillet make(shape.shape);
-  for (uint32_t n : edges) {
-    // The Rust side checks the numbers; this guards the map itself.
-    if (n < 1 || static_cast<int>(n) > map.Extent()) {
+EdgeFacts edge_facts(const Shape &shape) {
+  ShapeMap edges, vertices, faces;
+  TopExp::MapShapes(shape.shape, TopAbs_EDGE, edges);
+  TopExp::MapShapes(shape.shape, TopAbs_VERTEX, vertices);
+  TopExp::MapShapes(shape.shape, TopAbs_FACE, faces);
+  TopTools_IndexedDataMapOfShapeListOfShape ancestors;
+  TopExp::MapShapesAndAncestors(shape.shape, TopAbs_EDGE, TopAbs_FACE, ancestors);
+  EdgeFacts facts;
+  for (int i = 1; i <= edges.Extent(); ++i) {
+    const TopoDS_Edge &edge = TopoDS::Edge(edges(i));
+    TopoDS_Vertex first, last;
+    TopExp::Vertices(edge, first, last);
+    auto number = [&](const TopoDS_Vertex &v) {
+      return v.IsNull() ? 0u : static_cast<uint32_t>(vertices.FindIndex(v));
+    };
+    bool seam = false;
+    uint32_t count = 0;
+    if (const TopTools_ListOfShape *on = ancestors.Seek(edge)) {
+      for (const TopoDS_Shape &face : *on) {
+        facts.faces.push_back(static_cast<uint32_t>(faces.FindIndex(face)));
+        seam = seam || BRep_Tool::IsClosed(edge, TopoDS::Face(face));
+        ++count;
+      }
+    }
+    facts.edges.push_back(
+        EdgeFact{BRep_Tool::Degenerated(edge), seam, number(first), number(last), count});
+  }
+  return facts;
+}
+
+struct Dressing::Impl {
+  TopoDS_Shape shape;
+  ShapeMap edges;
+  ShapeMap faces;
+  // The fillet or the chamfer: `maker` owns it, never null, and exactly one of `fillet` and
+  // `chamfer` points to it too.
+  std::unique_ptr<BRepFilletAPI_LocalOperation> maker;
+  BRepFilletAPI_MakeFillet *fillet = nullptr;
+  BRepFilletAPI_MakeChamfer *chamfer = nullptr;
+
+  const TopoDS_Edge &edge(uint32_t n) const {
+    // Rust checks the numbers; this guards the map itself.
+    if (n < 1 || static_cast<int>(n) > edges.Extent()) {
       throw Standard_Failure("edge number out of range");
     }
-    make.Add(radius, TopoDS::Edge(map(static_cast<int>(n))));
+    return TopoDS::Edge(edges(static_cast<int>(n)));
   }
-  make.Build();
-  if (!make.IsDone()) {
-    throw Standard_Failure("the fillet couldn't be built");
+  const TopoDS_Face &face(uint32_t n) const {
+    if (n < 1 || static_cast<int>(n) > faces.Extent()) {
+      throw Standard_Failure("face number out of range");
+    }
+    return TopoDS::Face(faces(static_cast<int>(n)));
   }
-  const TopoDS_Shape result = make.Shape();
-  capture_history(make, 0, shape.shape, result, history);
+  BRepFilletAPI_MakeChamfer &chamfer_maker() const {
+    if (chamfer == nullptr) {
+      throw Standard_Failure("not a chamfer");
+    }
+    return *chamfer;
+  }
+};
+
+Dressing::Dressing(const TopoDS_Shape &shape, Of of) : impl_(std::make_unique<Impl>()) {
+  impl_->shape = shape;
+  TopExp::MapShapes(shape, TopAbs_EDGE, impl_->edges);
+  TopExp::MapShapes(shape, TopAbs_FACE, impl_->faces);
+  if (of == Of::Chamfer) {
+    auto chamfer = std::make_unique<BRepFilletAPI_MakeChamfer>(shape);
+    impl_->chamfer = chamfer.get();
+    impl_->maker = std::move(chamfer);
+  } else {
+    auto fillet = std::make_unique<BRepFilletAPI_MakeFillet>(shape);
+    impl_->fillet = fillet.get();
+    impl_->maker = std::move(fillet);
+  }
+}
+
+Dressing::~Dressing() = default;
+
+void Dressing::add_fillet(uint32_t edge, double radius) {
+  if (impl_->fillet == nullptr) {
+    throw Standard_Failure("not a fillet");
+  }
+  impl_->fillet->Add(radius, impl_->edge(edge));
+}
+
+void Dressing::add_distances(uint32_t edge, uint32_t face, double distance, double other) {
+  impl_->chamfer_maker().Add(distance, other, impl_->edge(edge), impl_->face(face));
+}
+
+void Dressing::add_distance_angle(uint32_t edge, uint32_t face, double distance,
+                                  double radians) {
+  impl_->chamfer_maker().AddDA(distance, radians, impl_->edge(edge), impl_->face(face));
+}
+
+uint32_t Dressing::contour_of(uint32_t edge) const {
+  return static_cast<uint32_t>(impl_->maker->Contour(impl_->edge(edge)));
+}
+
+rust::Vec<uint32_t> Dressing::contour_edges(uint32_t contour) const {
+  const BRepFilletAPI_LocalOperation &maker = *impl_->maker;
+  const int ic = static_cast<int>(contour);
+  if (ic < 1 || ic > maker.NbContours()) {
+    throw Standard_Failure("contour number out of range");
+  }
+  rust::Vec<uint32_t> out;
+  for (int j = 1; j <= maker.NbEdges(ic); ++j) {
+    out.push_back(static_cast<uint32_t>(impl_->edges.FindIndex(maker.Edge(ic, j))));
+  }
+  return out;
+}
+
+std::unique_ptr<Shape> Dressing::build(rust::Vec<HistoryEntry> &history) {
+  BRepFilletAPI_LocalOperation &maker = *impl_->maker;
+  maker.Build();
+  if (!maker.IsDone()) {
+    throw Standard_Failure(impl_->fillet != nullptr ? "the fillet couldn't be built"
+                                                    : "the chamfer couldn't be built");
+  }
+  const TopoDS_Shape result = maker.Shape();
+  capture_history(maker, 0, impl_->shape, result, history);
   return std::make_unique<Shape>(Shape{result});
+}
+
+std::unique_ptr<Dressing> new_fillet(const Shape &shape) {
+  return std::make_unique<Dressing>(shape.shape, Dressing::Of::Fillet);
+}
+
+std::unique_ptr<Dressing> new_chamfer(const Shape &shape) {
+  return std::make_unique<Dressing>(shape.shape, Dressing::Of::Chamfer);
 }
 
 namespace {
@@ -603,6 +713,15 @@ std::unique_ptr<Shape> debug_open_box() {
   builder.MakeSolid(solid);
   builder.Add(solid, shell);
   return std::make_unique<Shape>(Shape{solid});
+}
+
+std::unique_ptr<Shape> debug_box_with_loose_edge() {
+  BRep_Builder builder;
+  TopoDS_Compound compound;
+  builder.MakeCompound(compound);
+  builder.Add(compound, BRepPrimAPI_MakeBox(10, 20, 30).Shape());
+  builder.Add(compound, BRepBuilderAPI_MakeEdge(gp_Pnt(20, 0, 0), gp_Pnt(30, 0, 0)).Edge());
+  return std::make_unique<Shape>(Shape{compound});
 }
 
 std::unique_ptr<Shape> debug_empty_shape() {
