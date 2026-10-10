@@ -160,7 +160,7 @@ fn a_result_still_pending_when_advance_returns_is_never_delivered() {
     // races `advance` many times, the advance swept across the echo's round trip. It
     // catches a missing generation check; the narrower window of a result sent after the
     // check (the pool decides and sends under the lock `advance` takes) is too short for a
-    // test to land in.
+    // race to land in, and is tested directly in the pool's own unit tests.
     let pool = pool(WORKER, 1);
     // Warm up, and measure a round trip.
     let start = Instant::now();

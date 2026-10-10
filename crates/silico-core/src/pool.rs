@@ -530,11 +530,7 @@ impl<T: Send + 'static> Task for Submitted<T> {
         } else {
             (Outcome::Done(result), None)
         };
-        // The caller may have stopped waiting; nothing more to do then, but to free the
-        // outcome after the lock (a large result takes milliseconds to free).
-        let unsent = reply.send(outcome).err();
-        drop(state);
-        drop(unsent);
+        deliver(state, &reply, outcome);
         // Not delivered, so said here (after the lock: a log that blocks mustn't hold up the
         // pool). A failure that wasn't the pool's stopping of it (a kill that found the worker
         // alive) is a worker failing, worth seeing in the logs.
@@ -566,6 +562,15 @@ impl<T: Send + 'static> Task for Submitted<T> {
     fn supersede(self: Box<Self>) {
         let _ = self.reply.send(Outcome::Superseded);
     }
+}
+
+/// Sends `outcome` while `state` (the pool's lock) is held, then lets the lock go. The
+/// caller may have stopped waiting; nothing more to do then, but to free the outcome, after
+/// the lock (a large result takes milliseconds to free).
+fn deliver<G, T>(state: G, reply: &SyncSender<Outcome<T>>, outcome: Outcome<T>) {
+    let unsent = reply.send(outcome).err();
+    drop(state);
+    drop(unsent);
 }
 
 /// One slot of the pool: starts its worker, reports it ready (or not), then runs requests
@@ -682,5 +687,56 @@ impl Keeper<'_> {
         self.shared.with_slot(self.slot, |s| s.killer = None);
         // Dropping the worker kills and reaps it.
         self.worker = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::sync::{Arc, Mutex, mpsc};
+
+    use super::{Outcome, deliver};
+
+    #[test]
+    fn an_outcome_is_sent_before_the_lock_is_let_go() {
+        // A lock that, as it's let go, notes whether the outcome is already on its way: so
+        // once `advance` (which takes the lock) has returned, no older result is delivered.
+        struct Lock<'a>(&'a mpsc::Receiver<Outcome<u8>>, &'a Cell<bool>);
+        impl Drop for Lock<'_> {
+            fn drop(&mut self) {
+                self.1.set(self.0.try_recv().is_ok());
+            }
+        }
+        let sent_under_lock = Cell::new(false);
+        let (reply, waiting) = mpsc::sync_channel(1);
+        deliver(
+            Lock(&waiting, &sent_under_lock),
+            &reply,
+            Outcome::Done(Ok(7)),
+        );
+        assert!(sent_under_lock.get(), "sent after the lock was let go");
+    }
+
+    #[test]
+    fn an_outcome_no_one_waits_for_is_freed_after_the_lock() {
+        // A result that, as it's freed, notes whether the lock is still held.
+        struct Tattle(Arc<Mutex<()>>, Arc<Mutex<Option<bool>>>);
+        impl Drop for Tattle {
+            fn drop(&mut self) {
+                *self.1.lock().unwrap() = Some(self.0.try_lock().is_err());
+            }
+        }
+        let lock = Arc::new(Mutex::new(()));
+        let freed_under_lock = Arc::new(Mutex::new(None));
+        let (reply, waiting) = mpsc::sync_channel(1);
+        // The caller stopped waiting.
+        drop(waiting);
+        let result = Tattle(Arc::clone(&lock), Arc::clone(&freed_under_lock));
+        deliver(lock.lock().unwrap(), &reply, Outcome::Done(Ok(result)));
+        assert_eq!(
+            *freed_under_lock.lock().unwrap(),
+            Some(false),
+            "Some(true): freed under the lock; None: never freed"
+        );
     }
 }
