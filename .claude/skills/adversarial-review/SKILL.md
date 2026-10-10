@@ -1,6 +1,6 @@
 ---
 name: adversarial-review
-description: Convene Silico's council of adversarial reviewers (test skeptic, reliability engineer, maintainer, architect, FreeCAD porter, format steward), each in a fresh context. Have skeptics try to disprove unproven findings, fix what's confirmed, and repeat for up to three rounds until the council approves. Scales with the size of the change, from one generalist for small diffs to the full council at milestone boundaries. Use before merging agent-written code, at the end of a milestone, or when asked for an adversarial, thorough, or pre-merge review. Pass a diff range, branch, or paths. Optional flags: `--once` (one round, report only, no fixes), `--milestone` (full council), or lens names (tests, robustness, quality, architecture, port, format) to pick personas yourself.
+description: Convene Silico's council of adversarial reviewers (test skeptic, reliability engineer, maintainer, architect, FreeCAD porter, format steward), each in a fresh context. Have skeptics try to disprove unproven findings, fix what's confirmed, and repeat rounds until the council approves. Scales with the size of the change, from one generalist for small diffs to the full council at milestone boundaries. Use before merging agent-written code, at the end of a milestone, or when asked for an adversarial, thorough, or pre-merge review. Pass a diff range, branch, or paths. Optional flags: `--once` (one round, report only, no fixes), `--milestone` (full council), or lens names (tests, robustness, quality, architecture, port, format) to pick personas yourself.
 ---
 
 # Adversarial review
@@ -74,11 +74,11 @@ Then run the next round:
 - **Personas:** those whose findings were fixed, plus `tests`.
 - Steps 2–4 again.
 
-Rounds are capped at **3**. Stop and escalate to the maintainer with the ledger when any of these happen:
-- the cap is reached without approval;
+Rounds go on until the council approves: there's no cap. Stop and escalate to the maintainer with the ledger only when one of these happens:
 - a finding that was already fixed comes back;
 - a fix would require changing an architecture invariant or a protected test;
-- personas disagree on a real tradeoff, such as performance against simplicity.
+- personas disagree on a real tradeoff, such as performance against simplicity;
+- a fix can't be made to pass the full test suite and the gate.
 
 ## Ledger
 
