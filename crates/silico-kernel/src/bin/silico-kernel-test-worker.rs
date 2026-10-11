@@ -20,6 +20,7 @@ fn main() -> std::process::ExitCode {
         Op::Tessellate { .. } if misbehavior == Some(Misbehavior::BadMesh) => {
             Ok(Reply::Mesh(Mesh {
                 positions: vec![[0.0; 3]; 3],
+                normals: vec![[0.0, 0.0, 1.0]; 3],
                 triangles: vec![[0, 1, 3]],
                 face_triangles: vec![1],
                 edge_points: vec![],

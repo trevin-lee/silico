@@ -8,12 +8,12 @@
 #[path = "common/scripts.rs"]
 mod scripts;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use silico_core::kernel::KernelRequest;
-use silico_core::pool::{KernelPool, Outcome};
+use silico_core::pool::{KernelPool, Outcome, Pending};
 use silico_protocol::{DebugOp, Generation};
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
@@ -39,11 +39,11 @@ struct Events(Arc<Mutex<Vec<Logged>>>);
 
 impl Events {
     /// The events logged since the last call, once one about a superseded request is among
-    /// them (waiting up to five seconds): the pool logs it after delivering the outcome, and
+    /// them (waiting up to two seconds): the pool logs it after delivering the outcome, and
     /// outside its lock, so it can come a moment after the outcome. Then a moment more, for
     /// any other the pool logs with it.
     fn take_once_superseded(&self) -> Vec<Logged> {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(2);
         while !self
             .0
             .lock()
@@ -117,6 +117,39 @@ fn assert_superseded_logged(seen: &[Logged], level: Level, text: &str, code: &st
     assert!(e.spans.contains(&"recompute_feature"), "{e:#?}");
 }
 
+/// A worker that, given a request, notes it by writing `marker`, then sleeps without
+/// replying until it's killed: so a test knows its request is running.
+fn marking_worker(marker: &Path) -> PathBuf {
+    scripts::script(
+        "marks-its-request",
+        &format!(
+            "head -c 1 <&3 >/dev/null\n: > '{}'\nexec sleep 30",
+            marker.display()
+        ),
+    )
+}
+
+/// Submits `request` for the pool's generation, in `span`, and waits until the worker has
+/// it (`marker` written). A request superseded only then can't have been dropped unrun.
+fn submit_running<T: Send + 'static>(
+    pool: &KernelPool,
+    span: &tracing::Span,
+    marker: &Path,
+    request: KernelRequest<T>,
+) -> Pending<T> {
+    let _ = std::fs::remove_file(marker);
+    let pending = span.in_scope(|| pool.submit(pool.generation(), request));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !marker.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the worker never got the request"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    pending
+}
+
 #[test]
 fn a_superseded_failure_is_logged_at_warn_unless_the_pool_stopped_it() {
     let events = Events::default();
@@ -124,14 +157,16 @@ fn a_superseded_failure_is_logged_at_warn_unless_the_pool_stopped_it() {
         .unwrap();
     let feature = tracing::info_span!("recompute_feature", feature = "pad1");
     let sleep_for = |millis| KernelRequest::debug(DebugOp::Sleep { millis });
+    let marker = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("pool-logs-received-{}", std::process::id()));
+    let next = |pool: &KernelPool| Generation(pool.generation().0 + 1);
 
     // Stopped by the pool (its worker killed while running it): the failure is its own
     // stopping, at debug.
-    let pool = KernelPool::start_workers(Path::new(TEST_WORKER), 1).unwrap();
+    let pool = KernelPool::start_workers(&marking_worker(&marker), 1).unwrap();
     pool.set_stop_after(Duration::ZERO);
-    let stopped = feature.in_scope(|| pool.submit(Generation(1), sleep_for(5_000)));
-    std::thread::sleep(Duration::from_millis(100));
-    pool.advance(Generation(2));
+    let stopped = submit_running(&pool, &feature, &marker, sleep_for(5_000));
+    pool.advance(next(&pool));
     assert!(matches!(stopped.wait(), Outcome::Superseded));
     assert_superseded_logged(
         &events.take_once_superseded(),
@@ -144,50 +179,26 @@ fn a_superseded_failure_is_logged_at_warn_unless_the_pool_stopped_it() {
     // Failed on its own after it was superseded (timed out, left running as the stop-after
     // is long): a worker failing, at warn, though not delivered.
     pool.set_stop_after(Duration::from_secs(3600));
-    let timed_out = feature.in_scope(|| {
-        pool.submit(
-            Generation(2),
-            sleep_for(5_000).with_timeout(Duration::from_millis(300)),
-        )
-    });
-    std::thread::sleep(Duration::from_millis(50));
-    pool.advance(Generation(3));
+    let timed_out = submit_running(
+        &pool,
+        &feature,
+        &marker,
+        sleep_for(5_000).with_timeout(Duration::from_secs(3)),
+    );
+    pool.advance(next(&pool));
     assert!(matches!(timed_out.wait(), Outcome::Superseded));
     assert_superseded_logged(
         &events.take_once_superseded(),
         Level::WARN,
         "DebugSleep failed after it was superseded: worker_timeout: the kernel worker didn't \
-         finish DebugSleep within 300ms",
+         finish DebugSleep within 3s",
         "worker_timeout",
     );
 
-    // Succeeded after it was superseded: nothing went wrong, so the pool logs nothing. A
-    // 25 ms request superseded 8 ms in; one not yet running by then is dropped instead (and
-    // logs nothing either), so it's tried until one has run to its end on its worker.
-    let mut ran = false;
-    for _ in 0..10 {
-        let g = pool.generation().0;
-        let before = pool.pids();
-        let start = Instant::now();
-        let succeeded = feature.in_scope(|| pool.submit(Generation(g), sleep_for(25)));
-        std::thread::sleep(Duration::from_millis(8));
-        pool.advance(Generation(g + 1));
-        assert!(matches!(succeeded.wait(), Outcome::Superseded));
-        ran = start.elapsed() >= Duration::from_millis(25) && pool.pids() == before;
-        let seen = events.take_after(Duration::from_millis(200));
-        assert!(seen.is_empty(), "{seen:#?}");
-        if ran {
-            break;
-        }
-    }
-    assert!(ran, "no superseded request ran to its end");
-
     // Crashed after it was superseded, before the pool came to stop it (killed from outside
     // here): a worker failing, at warn.
-    let g = pool.generation().0;
-    let crashed = feature.in_scope(|| pool.submit(Generation(g), sleep_for(5_000)));
-    std::thread::sleep(Duration::from_millis(100));
-    pool.advance(Generation(g + 1));
+    let crashed = submit_running(&pool, &feature, &marker, sleep_for(5_000));
+    pool.advance(next(&pool));
     let status = std::process::Command::new("kill")
         .args(["-9", &pool.pids()[0].to_string()])
         .status()
@@ -203,18 +214,49 @@ fn a_superseded_failure_is_logged_at_warn_unless_the_pool_stopped_it() {
     );
     drop(pool);
 
+    let pool = KernelPool::start_workers(Path::new(TEST_WORKER), 1).unwrap();
+    pool.set_stop_after(Duration::from_secs(3600));
+    // Discard the pool's start event.
+    events.take_after(Duration::ZERO);
+    // Succeeded after it was superseded: nothing went wrong, so the pool logs nothing. A
+    // 1 s request superseded 0.5 s in; one not yet running by then is dropped instead (and
+    // logs nothing either), so it's tried until one has run to its end on its worker.
+    let mut ran = false;
+    for _ in 0..10 {
+        let g = pool.generation().0;
+        let before = pool.pids();
+        let start = Instant::now();
+        let succeeded = feature.in_scope(|| pool.submit(Generation(g), sleep_for(1_000)));
+        std::thread::sleep(Duration::from_millis(500));
+        pool.advance(Generation(g + 1));
+        assert!(matches!(succeeded.wait(), Outcome::Superseded));
+        ran = start.elapsed() >= Duration::from_millis(1_000) && pool.pids() == before;
+        let seen = events.take_after(Duration::from_millis(200));
+        assert!(seen.is_empty(), "{seen:#?}");
+        if ran {
+            break;
+        }
+    }
+    assert!(ran, "no superseded request ran to its end");
+    drop(pool);
+
     // Died on its own before the pool came to stop it: the kill finds it already dead, so
     // the failure is the worker's, at warn. The worker reads the start of a request and
-    // exits, leaving a process that holds its log pipe open for two seconds; the pool waits
-    // that long for the last log lines before it reports the crash. So the advance, 300 ms
-    // in, lands after the worker is dead and reaped, and before its request has ended.
+    // exits, leaving a process that holds its log pipe open for five seconds; the pool waits
+    // up to two for the last log lines before it reports the crash. So the advance, once the
+    // worker is dead and reaped, lands before its request has ended.
     let dies = scripts::script(
         "dies-holding-its-log",
-        "sleep 2 3>&- &\nhead -c 1 <&3 >/dev/null\nexit 3",
+        "sleep 5 3>&- &\nhead -c 1 <&3 >/dev/null\nexit 3",
     );
     let pool = KernelPool::start_workers(&dies, 1).unwrap();
+    let pid = rustix::process::Pid::from_raw(i32::try_from(pool.pids()[0]).unwrap()).unwrap();
     let died = feature.in_scope(|| pool.submit(Generation(1), sleep_for(0)));
-    std::thread::sleep(Duration::from_millis(300));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while rustix::process::test_kill_process(pid) != Err(rustix::io::Errno::SRCH) {
+        assert!(Instant::now() < deadline, "the worker didn't die");
+        std::thread::sleep(Duration::from_millis(5));
+    }
     pool.advance(Generation(2));
     assert!(matches!(died.wait(), Outcome::Superseded));
     assert_superseded_logged(

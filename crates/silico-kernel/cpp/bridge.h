@@ -51,6 +51,7 @@ struct Counts;
 enum class Kind : uint8_t;
 enum class Relation : uint8_t;
 enum class BooleanOp : uint8_t;
+enum class BrepDefect : uint8_t;
 struct EdgeFact;
 struct EdgeFacts;
 
@@ -81,12 +82,15 @@ Amounts rough_amounts(const Shape &shape);
 class Tessellation {
 public:
   std::vector<double> positions_;        // x, y, z per vertex
+  std::vector<float> normals_;           // x, y, z per vertex: unit, out of the solid (but
+                                         // see docs/ports/tessellation.md)
   std::vector<uint32_t> triangles_;      // three vertex indices per triangle, outward
   std::vector<uint32_t> face_triangles_; // triangles per face
   std::vector<double> edge_points_;      // x, y, z per polyline point, edge after edge
   std::vector<uint32_t> edge_points_per_edge_;
 
   rust::Slice<const double> positions() const { return {positions_.data(), positions_.size()}; }
+  rust::Slice<const float> normals() const { return {normals_.data(), normals_.size()}; }
   rust::Slice<const uint32_t> triangles() const { return {triangles_.data(), triangles_.size()}; }
   rust::Slice<const uint32_t> face_triangles() const {
     return {face_triangles_.data(), face_triangles_.size()};
@@ -190,6 +194,8 @@ bool is_valid(const Shape &shape);
 // OCCT's binary B-rep format, which is how shapes cross the worker boundary.
 std::unique_ptr<std::string> shape_to_brep(const Shape &shape);
 std::unique_ptr<Shape> shape_from_brep(rust::Slice<const uint8_t> brep);
+// What makes a shape read from bytes unusable, if anything.
+BrepDefect brep_defect(const Shape &shape);
 
 // Floating-point traps (ARCHITECTURE.md, Deterministic kernel): the trap-enable bits that
 // are set, 0 if none, and turning them all off through OCCT.

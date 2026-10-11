@@ -271,10 +271,19 @@ pub struct ShapeSummary {
     pub valid: bool,
 }
 
+/// How far a [`Mesh`] normal's length may be from 1: about ten times what rounding a unit
+/// vector to 32-bit floats can leave (√3 · 2⁻²⁴, about 1e-7).
+pub const NORMAL_LENGTH_TOLERANCE: f64 = 1e-6;
+
 /// A triangle mesh of a shape's faces, and polylines along its edges, for display.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Mesh {
     pub positions: Vec<[f64; 3]>,
+    /// One per position: the unit normal of its face's surface there, pointing out of the
+    /// solid, for smooth shading. 32-bit, as OCCT keeps them. OCCT gets a few wrong, as
+    /// FreeCAD shows them (a tiny ball's or hollow's pole, a needle's apex): see
+    /// docs/ports/tessellation.md.
+    pub normals: Vec<[f32; 3]>,
     /// Vertex indices, three per triangle, wound counterclockwise seen from outside.
     pub triangles: Vec<[u32; 3]>,
     /// How many triangles belong to each face, in OCCT's face order.
@@ -289,6 +298,18 @@ pub struct Mesh {
 }
 
 impl Mesh {
+    /// The face of each triangle, from the per-face counts: what a picked triangle belongs
+    /// to. Counted from 0, so face 0 is the element `Face1`. Triangles the counts don't
+    /// account for (in a mesh that fails [`Mesh::validate`]) are left out.
+    pub fn triangle_faces(&self) -> Vec<u32> {
+        let mut faces = Vec::with_capacity(self.triangles.len());
+        for (face, &count) in (0u32..).zip(&self.face_triangles) {
+            let left = self.triangles.len().saturating_sub(faces.len());
+            faces.extend(std::iter::repeat_n(face, (count as usize).min(left)));
+        }
+        faces
+    }
+
     /// Each edge's polyline, in order: the first is `Edge1`. An edge whose points aren't
     /// there (in a mesh that fails [`Mesh::validate`]) is empty.
     pub fn edges(&self) -> impl Iterator<Item = &[[f64; 3]]> {
@@ -301,11 +322,18 @@ impl Mesh {
         })
     }
 
-    /// Checks that the mesh is consistent: every index names a vertex, the per-face counts
-    /// and per-edge counts add up, and every coordinate is finite. Run it before indexing a
-    /// mesh that came from another process.
+    /// Checks that the mesh is consistent: every index names a vertex, every vertex has a
+    /// normal, the per-face counts and per-edge counts add up, every coordinate is finite,
+    /// and every normal is a unit vector (to [`NORMAL_LENGTH_TOLERANCE`]). Run it before
+    /// indexing a mesh that came from another process.
     pub fn validate(&self) -> Result<(), String> {
         let vertices = self.positions.len();
+        if self.normals.len() != vertices {
+            return Err(format!(
+                "{} normals for {vertices} vertices",
+                self.normals.len()
+            ));
+        }
         if let Some(t) = self
             .triangles
             .iter()
@@ -332,6 +360,19 @@ impl Mesh {
         let finite = |p: &[f64; 3]| p.iter().all(|c| c.is_finite());
         if !self.positions.iter().chain(&self.edge_points).all(finite) {
             return Err("a coordinate isn't finite".to_owned());
+        }
+        if !self.normals.iter().flatten().all(|c| c.is_finite()) {
+            return Err("a normal isn't finite".to_owned());
+        }
+        if let Some(n) = self.normals.iter().find(|n| {
+            let length = n
+                .iter()
+                .map(|&c| f64::from(c) * f64::from(c))
+                .sum::<f64>()
+                .sqrt();
+            (length - 1.0).abs() > NORMAL_LENGTH_TOLERANCE
+        }) {
+            return Err(format!("the normal {n:?} isn't a unit vector"));
         }
         Ok(())
     }

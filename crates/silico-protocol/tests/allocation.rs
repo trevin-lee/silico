@@ -87,6 +87,7 @@ fn a_reply_costs_at_most_a_few_times_its_size_to_read() {
     let mesh = |f: &dyn Fn(&mut Mesh)| {
         let mut mesh = Mesh {
             positions: vec![],
+            normals: vec![],
             triangles: vec![],
             face_triangles: vec![],
             edge_points: vec![],
@@ -104,6 +105,7 @@ fn a_reply_costs_at_most_a_few_times_its_size_to_read() {
         ("empty faces", mesh(&|m| m.face_triangles = vec![0; n])),
         ("triangles", mesh(&|m| m.triangles = vec![[0; 3]; n])),
         ("positions", mesh(&|m| m.positions = vec![[0.0; 3]; n])),
+        ("normals", mesh(&|m| m.normals = vec![[0.0; 3]; n])),
     ];
     for (what, response) in cases {
         let (held, wire) = bytes_held_after_decoding(&response);

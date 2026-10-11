@@ -76,6 +76,18 @@ mod ffi {
         position: u32,
     }
 
+    /// What makes a shape read from bytes unusable, as `brep_defect` finds it.
+    #[repr(u8)]
+    enum BrepDefect {
+        None,
+        /// A location that mirrors or scales.
+        MirrorOrScale,
+        /// A location whose values aren't finite.
+        NotFinite,
+        /// A face with no surface.
+        FaceWithoutSurface,
+    }
+
     /// Which boolean the bridge performs.
     #[repr(u8)]
     enum BooleanOp {
@@ -198,12 +210,14 @@ mod ffi {
         fn bounding_diagonal(shape: &Shape) -> Result<f64>;
         fn tessellate(shape: &Shape, deflection: f64) -> Result<UniquePtr<Tessellation>>;
         fn positions(self: &Tessellation) -> &[f64];
+        fn normals(self: &Tessellation) -> &[f32];
         fn triangles(self: &Tessellation) -> &[u32];
         fn face_triangles(self: &Tessellation) -> &[u32];
         fn edge_points(self: &Tessellation) -> &[f64];
         fn edge_points_per_edge(self: &Tessellation) -> &[u32];
         fn shape_to_brep(shape: &Shape) -> Result<UniquePtr<CxxString>>;
         fn shape_from_brep(brep: &[u8]) -> Result<UniquePtr<Shape>>;
+        fn brep_defect(shape: &Shape) -> Result<BrepDefect>;
         fn fp_trap_mask() -> u32;
         fn disable_fp_traps() -> Result<()>;
 
@@ -448,7 +462,12 @@ pub fn to_brep(shape: &Shape) -> Result<Vec<u8>, KernelError> {
 }
 
 /// A shape from [`to_brep`]'s output. Bytes whose CRC doesn't match are refused before
-/// OCCT sees them.
+/// OCCT sees them. Then three things OCCT reads but can't work on are refused: a location
+/// that mirrors or scales (OCCT's operations disagree about which side of the shape is
+/// solid), a location with a value that isn't finite, and a face with no surface (OCCT's
+/// validity check crashes on one with edges, and its booleans on one of only a
+/// triangulation, as mesh import makes). The geometry's own numbers aren't checked yet
+/// (docs/roadmap/m1-kernel.md, M1.9).
 pub fn from_brep(brep: &[u8]) -> Result<Shape, KernelError> {
     let (body, crc) = brep
         .split_last_chunk::<4>()
@@ -459,10 +478,32 @@ pub fn from_brep(brep: &[u8]) -> Result<Shape, KernelError> {
         ));
     }
     let shape = ffi::shape_from_brep(body)?;
-    if shape.is_null() {
+    let Some(read) = shape.as_ref() else {
         return Err(KernelError::new("OCCT returned no shape"));
+    };
+    const REBUILD: &str = "rebuild the shape from its inputs";
+    let refused = |what: &str, suggestion: &str| {
+        Err(KernelError::invalid_input(format!("B-rep {what}")).with_suggestion(suggestion))
+    };
+    match ffi::brep_defect(read)? {
+        ffi::BrepDefect::None => Ok(Shape::new(shape)),
+        ffi::BrepDefect::MirrorOrScale => refused(
+            "places a shape by a transformation that mirrors or scales, which OCCT can't model consistently",
+            REBUILD,
+        ),
+        ffi::BrepDefect::NotFinite => refused(
+            "places a shape by a transformation whose values aren't finite",
+            REBUILD,
+        ),
+        ffi::BrepDefect::FaceWithoutSurface => refused(
+            "has a face with no surface, which OCCT can't operate on",
+            "rebuild the shape from its inputs; a mesh (a face of only triangles, as STEP or glTF import makes) can't be used as a solid yet",
+        ),
+        other => Err(KernelError::new(format!(
+            "the bridge reported an unknown B-rep defect {}",
+            other.repr
+        ))),
     }
-    Ok(Shape::new(shape))
 }
 
 /// The floating-point trap-enable bits that are set, 0 when none is. Workers must run
@@ -976,7 +1017,9 @@ pub const MIN_RELATIVE_DEFLECTION: f64 = 1e-4;
 /// Meshes `shape` for display, with no point of the mesh further than `deflection` from
 /// the surface. Single-threaded, so the same shape always gives the same mesh, and it
 /// leaves the shape as it was (OCCT would otherwise keep the mesh on it). Faces and edges
-/// are in OCCT's order; the first edge is Edge1, as [`fillet`] numbers them.
+/// are in OCCT's order; the first edge is Edge1, as [`fillet`] numbers them. Each vertex
+/// carries its face's surface normal there, pointing out of the solid
+/// (docs/ports/tessellation.md).
 pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
     if !(deflection.is_finite() && deflection > 0.0) {
         return Err(KernelError::invalid_input(format!(
@@ -1011,6 +1054,11 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
     };
     let mesh = Mesh {
         positions: triples(raw.positions()),
+        normals: raw
+            .normals()
+            .chunks_exact(3)
+            .map(|n| [n[0], n[1], n[2]])
+            .collect(),
         triangles: raw
             .triangles()
             .chunks_exact(3)

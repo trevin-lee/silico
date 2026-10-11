@@ -7,6 +7,7 @@
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <BRepLib_ToolTriangulatedShape.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
@@ -41,6 +42,10 @@
 #include <Precision.hxx>
 #include <TopExp.hxx>
 #include <NCollection_IndexedMap.hxx>
+#include <TopLoc_Datum3D.hxx>
+#include <TopLoc_Location.hxx>
+#include <TopTools_MapOfShape.hxx>
+#include <TopoDS_Iterator.hxx>
 #include <NCollection_List.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
@@ -185,12 +190,26 @@ std::unique_ptr<Tessellation> tessellate(const Shape &shape, double deflection) 
     }
     const gp_Trsf transform = location.Transformation();
     const uint32_t base = static_cast<uint32_t>(out->positions_.size() / 3);
+    // A reversed face's triangles wind the other way, and its normals point the other way,
+    // so both still face out of the solid. (No location mirrors: `from_brep` refuses one.)
+    const bool reversed = face.Orientation() == TopAbs_REVERSED;
+    // Each node's normal is the face's surface normal at the node's (u, v). Where the surface
+    // has none, it's the average of the node's triangles' normals. This is OCCT's own
+    // ComputeNormals, which FreeCAD's display uses; it keeps them as floats. Each normal is
+    // turned with the face, like its node.
+    BRepLib_ToolTriangulatedShape::ComputeNormals(face, mesh);
     for (int n = 1; n <= mesh->NbNodes(); ++n) {
       const gp_Pnt p = mesh->Node(n).Transformed(transform);
       out->positions_.insert(out->positions_.end(), {p.X(), p.Y(), p.Z()});
+      gp_Dir normal = mesh->Normal(n);
+      if (reversed) {
+        normal.Reverse();
+      }
+      normal.Transform(transform);
+      out->normals_.insert(out->normals_.end(), {static_cast<float>(normal.X()),
+                                                 static_cast<float>(normal.Y()),
+                                                 static_cast<float>(normal.Z())});
     }
-    // A reversed face's triangles wind the other way, so they still face outward.
-    const bool reversed = face.Orientation() == TopAbs_REVERSED;
     for (int t = 1; t <= mesh->NbTriangles(); ++t) {
       int a, b, c;
       mesh->Triangle(t).Get(a, b, c);
@@ -664,6 +683,55 @@ std::unique_ptr<Shape> shape_from_brep(rust::Slice<const uint8_t> brep) {
     throw Standard_Failure("not a B-rep");
   }
   return std::make_unique<Shape>(Shape{shape});
+}
+
+BrepDefect brep_defect(const Shape &shape) {
+  // Every link of every location in the shape's tree, raised to its power: values that
+  // aren't finite, or a mirror or scale (OCCT's TopoDS_Shape::validateTransformation test,
+  // which OCCT makes only when asked). Every face: a surface. (A face of only a
+  // triangulation, as OCCT's STEP and glTF readers make, has none; OCCT measures and meshes
+  // it, but a boolean on it segfaults.) Each shared sub-shape is visited once. The
+  // geometry's own numbers aren't checked.
+  const auto location_defect = [](const TopLoc_Location &location) {
+    for (TopLoc_Location l = location; !l.IsIdentity(); l = l.NextLocation()) {
+      const gp_Trsf t = l.FirstDatum()->Transformation().Powered(l.FirstPower());
+      bool finite = std::isfinite(t.ScaleFactor());
+      for (int row = 1; row <= 3; ++row) {
+        for (int column = 1; column <= 4; ++column) {
+          finite = finite && std::isfinite(t.Value(row, column));
+        }
+      }
+      if (!finite) {
+        return BrepDefect::NotFinite;
+      }
+      if (Abs(Abs(t.ScaleFactor()) - 1.) > TopLoc_Location::ScalePrec() || t.IsNegative()) {
+        return BrepDefect::MirrorOrScale;
+      }
+    }
+    return BrepDefect::None;
+  };
+  TopTools_MapOfShape seen;
+  std::vector<TopoDS_Shape> todo{shape.shape};
+  while (!todo.empty()) {
+    const TopoDS_Shape s = todo.back();
+    todo.pop_back();
+    const BrepDefect defect = location_defect(s.Location());
+    if (defect != BrepDefect::None) {
+      return defect;
+    }
+    if (s.ShapeType() == TopAbs_FACE) {
+      TopLoc_Location ignored;
+      if (BRep_Tool::Surface(TopoDS::Face(s), ignored).IsNull()) {
+        return BrepDefect::FaceWithoutSurface;
+      }
+    }
+    for (TopoDS_Iterator it(s, false, false); it.More(); it.Next()) {
+      if (seen.Add(it.Value())) {
+        todo.push_back(it.Value());
+      }
+    }
+  }
+  return BrepDefect::None;
 }
 
 uint32_t fp_trap_mask() {

@@ -240,6 +240,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         }),
         Ok(Reply::Mesh(Mesh {
             positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            normals: vec![[0.0, 0.0, 1.0]; 3],
             triangles: vec![[0, 1, 2]],
             face_triangles: vec![1],
             edge_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
@@ -682,9 +683,29 @@ fn every_op_has_its_own_name() {
 }
 
 #[test]
+fn each_triangle_belongs_to_the_face_its_counts_say() {
+    let mesh = |triangles: usize, face_triangles: Vec<u32>| Mesh {
+        positions: vec![[0.0; 3]],
+        normals: vec![[0.0, 0.0, 1.0]],
+        triangles: vec![[0, 0, 0]; triangles],
+        face_triangles,
+        edge_points: vec![],
+        edge_point_counts: vec![],
+    };
+    // Two triangles on face 0, none on face 1, three on face 2.
+    assert_eq!(mesh(5, vec![2, 0, 3]).triangle_faces(), [0, 0, 2, 2, 2]);
+    assert_eq!(mesh(0, vec![]).triangle_faces(), Vec::<u32>::new());
+    // Counts that don't add up (a mesh that fails `validate`): no more faces than
+    // triangles, and triangles left over get none.
+    assert_eq!(mesh(3, vec![2, u32::MAX]).triangle_faces(), [0, 0, 1]);
+    assert_eq!(mesh(4, vec![1, 1]).triangle_faces(), [0, 1]);
+}
+
+#[test]
 fn a_mesh_is_validated_before_use() {
     let good = Mesh {
         positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        normals: vec![[0.0, 0.0, 1.0]; 3],
         triangles: vec![[0, 1, 2]],
         face_triangles: vec![1],
         edge_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]],
@@ -708,6 +729,40 @@ fn a_mesh_is_validated_before_use() {
     let mut not_finite = good.clone();
     not_finite.edge_points[1][2] = f64::NAN;
     assert!(not_finite.validate().unwrap_err().contains("finite"));
+    let mut normal_not_finite = good.clone();
+    normal_not_finite.normals[2][0] = f32::INFINITY;
+    assert!(
+        normal_not_finite
+            .validate()
+            .unwrap_err()
+            .contains("a normal isn't finite")
+    );
+    // A unit vector, give or take the 1e-6 allowed, and no more.
+    for length in [1.0 + 2e-6, 1.0 - 2e-6, 1.01, 0.9, 1.5] {
+        let mut off = good.clone();
+        off.normals[1] = [length, 0.0, 0.0];
+        assert!(
+            off.validate().unwrap_err().contains("isn't a unit vector"),
+            "length {length}"
+        );
+    }
+    for length in [1.0 + 5e-7, 1.0 - 5e-7] {
+        let mut close = good.clone();
+        close.normals[1] = [length, 0.0, 0.0];
+        assert_eq!(close.validate(), Ok(()), "length {length}");
+    }
+    for normals in [vec![], vec![[0.0, 0.0, 1.0]; 2], vec![[0.0, 0.0, 1.0]; 4]] {
+        let mut bad_normals = good.clone();
+        bad_normals.normals = normals;
+        assert!(
+            bad_normals
+                .validate()
+                .unwrap_err()
+                .contains("normals for 3 vertices"),
+            "{:?}",
+            bad_normals.normals
+        );
+    }
     for counts in [vec![2, 0], vec![2, 0, 2], vec![u32::MAX, u32::MAX, 3]] {
         let mut bad_edges = good.clone();
         bad_edges.edge_point_counts = counts;

@@ -12,6 +12,7 @@ use std::process::ExitCode;
 
 use silico_core::kernel::{KernelWorker, Mesh, Primitive, ShapeSummary};
 use silico_core::{Error, ErrorCode};
+use silico_view::{log_mesh, log_summary, rerun_error};
 
 /// How far the mesh may stray from the surface, in millimetres.
 const DEFLECTION: f64 = 0.02;
@@ -158,64 +159,9 @@ fn build(kernel: &mut KernelWorker, part: &Part) -> Result<(Mesh, ShapeSummary),
     ))
 }
 
-fn rerun_error(e: impl std::fmt::Display) -> Error {
-    Error::new(ErrorCode::Internal, "couldn't log to Rerun").with_cause(e.to_string())
-}
-
 /// Couldn't open the file or start the viewer the user named: their input, not a bug.
 fn sink_error(what: String, e: impl std::fmt::Display) -> Error {
     Error::new(ErrorCode::InvalidInput, what).with_cause(e.to_string())
-}
-
-fn point(p: [f64; 3]) -> [f32; 3] {
-    p.map(|c| c as f32)
-}
-
-/// Per-vertex normals for smooth shading within each face (vertices aren't shared
-/// between faces, so edges stay sharp).
-fn normals(mesh: &Mesh) -> Vec<[f32; 3]> {
-    let mut sums = vec![[0.0f64; 3]; mesh.positions.len()];
-    for t in &mesh.triangles {
-        let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
-        let (u, v) = (
-            [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
-            [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
-        );
-        let n = [
-            u[1] * v[2] - u[2] * v[1],
-            u[2] * v[0] - u[0] * v[2],
-            u[0] * v[1] - u[1] * v[0],
-        ];
-        for &i in t {
-            for k in 0..3 {
-                sums[i as usize][k] += n[k];
-            }
-        }
-    }
-    sums.into_iter()
-        .map(|n| {
-            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-            if len > 0.0 {
-                point([n[0] / len, n[1] / len, n[2] / len])
-            } else {
-                [0.0, 0.0, 1.0]
-            }
-        })
-        .collect()
-}
-
-/// One polyline per edge that has points, labelled with its number: the first is Edge1.
-fn edge_strips(mesh: &Mesh) -> (Vec<Vec<[f32; 3]>>, Vec<String>) {
-    mesh.edges()
-        .enumerate()
-        .filter(|(_, points)| !points.is_empty())
-        .map(|(i, points)| {
-            (
-                points.iter().copied().map(point).collect(),
-                format!("Edge{}", i + 1),
-            )
-        })
-        .unzip()
 }
 
 fn log_part(
@@ -229,36 +175,8 @@ fn log_part(
         &rerun::Transform3D::from_translation([part.at[0], part.at[1], 0.0]),
     )
     .map_err(rerun_error)?;
-    rec.log_static(
-        format!("{}/faces", part.name),
-        &rerun::Mesh3D::new(mesh.positions.iter().copied().map(point))
-            .with_triangle_indices(mesh.triangles.iter().copied())
-            .with_vertex_normals(normals(mesh))
-            .with_albedo_factor(rerun::Rgba32::from_rgb(180, 190, 205)),
-    )
-    .map_err(rerun_error)?;
-    let (strips, labels) = edge_strips(mesh);
-    rec.log_static(
-        format!("{}/edges", part.name),
-        &rerun::LineStrips3D::new(strips)
-            .with_labels(labels)
-            .with_colors([rerun::Color::from_rgb(30, 30, 30)]),
-    )
-    .map_err(rerun_error)?;
-    rec.log_static(
-        format!("{}/summary", part.name),
-        &rerun::TextDocument::new(format!(
-            "volume {:.6}\narea {:.6}\nfaces {}, edges {}, vertices {}\nvalid: {}",
-            summary.volume,
-            summary.area,
-            summary.faces,
-            summary.edges,
-            summary.vertices,
-            summary.valid
-        )),
-    )
-    .map_err(rerun_error)?;
-    Ok(())
+    log_mesh(rec, part.name, mesh)?;
+    log_summary(rec, part.name, summary)
 }
 
 fn run(sink: Sink) -> Result<String, Error> {
@@ -300,30 +218,9 @@ fn run(sink: Sink) -> Result<String, Error> {
 
 #[cfg(test)]
 mod tests {
-    use silico_core::kernel::{Mesh, Primitive};
+    use silico_core::kernel::Primitive;
 
-    use super::{PARTS, edge_strips};
-
-    #[test]
-    fn edges_are_labelled_by_their_number_and_degenerate_ones_skipped() {
-        let mesh = Mesh {
-            positions: vec![],
-            triangles: vec![],
-            face_triangles: vec![],
-            edge_points: vec![
-                [0.0, 0.0, 30.0],
-                [0.0, 0.0, 0.0],
-                [1.0, 2.0, 3.0],
-                [4.0, 5.0, 6.0],
-                [7.0, 8.0, 9.0],
-            ],
-            edge_point_counts: vec![2, 0, 3],
-        };
-        let (strips, labels) = edge_strips(&mesh);
-        assert_eq!(labels, ["Edge1", "Edge3"]);
-        assert_eq!(strips[0], [[0.0, 0.0, 30.0], [0.0, 0.0, 0.0]]);
-        assert_eq!(strips[1].len(), 3);
-    }
+    use super::PARTS;
 
     #[test]
     fn parts_sit_apart() {

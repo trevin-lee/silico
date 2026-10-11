@@ -1,30 +1,24 @@
 //! Display meshes: closed and facing outward (checked by the volume they enclose), edges
-//! numbered as the fillet numbers them, and the same every time.
+//! numbered as the fillet numbers them, and the same every time; each triangle's face, and
+//! each vertex's normal, which is its surface's, pointing out of the solid
+//! (docs/ports/tessellation.md).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/mesh_geometry.rs"]
+mod geometry;
 #[path = "common/imports.rs"]
 mod imports;
 #[path = "common/numbers.rs"]
 mod numbers;
 
+use geometry::{apart, cross, cylinder, dot, faces, norm, sub, wide};
 use numbers::relative_error;
-use silico_kernel::{KernelErrorKind, Mesh, fillet, make_box, tessellate};
+use std::collections::BTreeMap;
 
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
+use silico_kernel::{
+    BooleanOp, KernelErrorKind, Mesh, Primitive, Shape, boolean, fillet, make, make_box,
+    tessellate, translate,
+};
 
 /// The volume a closed mesh encloses (divergence theorem), taken about `o`, a point inside
 /// the solid: every triangle then adds a positive tetrahedron if it faces outward, so a
@@ -225,4 +219,179 @@ fn a_deflection_too_fine_for_the_shape_is_refused() {
     // The floor, readable: about √1400 × 1e-4 (OCCT's box is a hair larger).
     assert!(err.message().contains("use at least 0.003741657"), "{err}");
     assert!(tessellate(&b, 0.004).is_ok());
+}
+
+/// A 20 × 20 × 10 box with a hole of radius 5 through it, about the vertical axis through
+/// (10, 10).
+fn box_with_a_hole() -> Shape {
+    let tool = translate(&cylinder(5.0, 12.0), [10.0, 10.0, -1.0]).unwrap();
+    boolean(
+        BooleanOp::Cut,
+        &make_box(20.0, 20.0, 10.0).unwrap(),
+        &tool.shape,
+    )
+    .unwrap()
+    .shape
+}
+
+#[test]
+fn box_mesh() {
+    // Two triangles on each of six faces, the faces numbered 0 to 5, every vertex inside
+    // the box, and every normal the outward axis of its face: -x on the face at x = 0, +x
+    // at x = 10, and so on.
+    let mesh = tessellate(&make_box(10.0, 20.0, 30.0).unwrap(), 0.1).unwrap();
+    assert_eq!(mesh.validate(), Ok(()));
+    assert_eq!(mesh.triangles.len(), 12);
+    assert_eq!(mesh.triangle_faces(), [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5]);
+    let size = [10.0, 20.0, 30.0];
+    for (p, n) in mesh.positions.iter().zip(&mesh.normals) {
+        assert!((0..3).all(|k| (0.0..=size[k]).contains(&p[k])), "{p:?}");
+        let axis = (0..3).find(|&k| n[k] != 0.0).unwrap();
+        let mut expected = [0.0f32; 3];
+        expected[axis] = if p[axis] == 0.0 { -1.0 } else { 1.0 };
+        assert_eq!(*n, expected, "at {p:?}");
+        assert!(p[axis] == 0.0 || p[axis] == size[axis], "{p:?}");
+    }
+}
+
+/// Every edge between two triangles, with vertices joined where their coordinates are
+/// equal (each face has its own vertices), and how many triangles share it.
+fn shared_edges(mesh: &Mesh) -> BTreeMap<(usize, usize), u32> {
+    let mut joined: BTreeMap<[u64; 3], usize> = BTreeMap::new();
+    let ids: Vec<usize> = mesh
+        .positions
+        .iter()
+        .map(|p| {
+            let next = joined.len();
+            *joined.entry(p.map(f64::to_bits)).or_insert(next)
+        })
+        .collect();
+    let mut edges = BTreeMap::new();
+    for t in &mesh.triangles {
+        let [a, b, c] = t.map(|i| ids[i as usize]);
+        assert!(a != b && b != c && c != a, "a degenerate triangle: {t:?}");
+        for (u, v) in [(a, b), (b, c), (c, a)] {
+            *edges.entry((u.min(v), u.max(v))).or_insert(0) += 1;
+        }
+    }
+    edges
+}
+
+#[test]
+fn closed_solid_mesh_watertight() {
+    // Neighbouring faces share their edge's points exactly, so the mesh closes: every edge
+    // has a triangle on each side.
+    for (what, shape) in [
+        ("box", make_box(10.0, 20.0, 30.0).unwrap()),
+        ("cylinder", cylinder(5.0, 10.0)),
+        ("box minus cylinder", box_with_a_hole()),
+    ] {
+        let mesh = tessellate(&shape, 0.05).unwrap();
+        let open: Vec<_> = shared_edges(&mesh)
+            .into_iter()
+            .filter(|&(_, n)| n != 2)
+            .collect();
+        assert!(open.is_empty(), "{what}: edges not shared by two: {open:?}");
+    }
+}
+
+#[test]
+fn cylinder_deflection_respected() {
+    // The side of a cylinder of radius 5: every vertex on the surface, every chord between
+    // neighbouring vertices within the deflection of it (its sagitta, 5 less its midpoint's
+    // distance from the axis), and every normal radial. The ends' normals are the axis.
+    let deflection = 0.05;
+    let mesh = tessellate(&cylinder(5.0, 10.0), deflection).unwrap();
+    let on_side = |t: &[u32; 3]| t.iter().all(|&i| mesh.normals[i as usize][2] == 0.0);
+    let mut sides = 0;
+    let mut worst = 0.0f64;
+    for face in faces(&mesh) {
+        if !face.iter().all(on_side) {
+            for i in face.iter().flatten() {
+                let (p, n) = (mesh.positions[*i as usize], mesh.normals[*i as usize]);
+                assert_eq!(n, [0.0, 0.0, if p[2] == 0.0 { -1.0 } else { 1.0 }], "{p:?}");
+            }
+            continue;
+        }
+        sides += 1;
+        for t in &face {
+            for i in t {
+                let (p, n) = (mesh.positions[*i as usize], mesh.normals[*i as usize]);
+                let r = norm([p[0], p[1], 0.0]);
+                assert!((r - 5.0).abs() <= 1e-12, "{p:?} is {r} from the axis");
+                let radial = [p[0] / r, p[1] / r, 0.0];
+                assert!(apart(wide(n), radial) <= 1e-6, "{n:?} at {p:?}");
+            }
+            for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                let (a, b) = (mesh.positions[a as usize], mesh.positions[b as usize]);
+                let middle = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, 0.0];
+                worst = worst.max(5.0 - norm(middle));
+            }
+        }
+    }
+    assert_eq!(sides, 1);
+    assert!(worst > 0.0 && worst <= deflection, "sagitta {worst}");
+}
+
+#[test]
+fn a_spheres_normals_point_from_its_center() {
+    let mesh = tessellate(&make(&Primitive::Sphere { radius: 5.0 }).unwrap(), 0.05).unwrap();
+    for (p, n) in mesh.positions.iter().zip(&mesh.normals) {
+        let out = p.map(|c| c / norm(*p));
+        assert!(apart(wide(*n), out) <= 1e-6, "{n:?} at {p:?}");
+    }
+}
+
+#[test]
+fn a_holes_normals_point_toward_its_axis() {
+    // The hole's face is the cylinder's surface reversed: its normals point out of the
+    // solid, into the hole, toward the axis through (10, 10).
+    let mesh = tessellate(&box_with_a_hole(), 0.05).unwrap();
+    let mut on_hole = 0;
+    for (p, n) in mesh.positions.iter().zip(&mesh.normals) {
+        let from_axis = [p[0] - 10.0, p[1] - 10.0, 0.0];
+        if (norm(from_axis) - 5.0).abs() > 1e-9 || n[2] != 0.0 {
+            continue;
+        }
+        on_hole += 1;
+        let inward = from_axis.map(|c| -c / norm(from_axis));
+        assert!(apart(wide(*n), inward) <= 1e-6, "{n:?} at {p:?}");
+    }
+    assert!(on_hole > 0);
+}
+
+#[test]
+fn every_triangle_winds_as_its_normals_point() {
+    // Seen from where its vertices' normals point, every triangle winds counterclockwise:
+    // the two agree on which side is out. On flat faces, curved ones, reversed ones, and
+    // fillets. (A sphere's or torus's mesh has triangles of no area where a degenerate
+    // edge, a pole, is a single point: they wind no way, and can't be seen.)
+    let shapes = [
+        make_box(10.0, 20.0, 30.0).unwrap(),
+        cylinder(5.0, 10.0),
+        make(&Primitive::Sphere { radius: 5.0 }).unwrap(),
+        make(&Primitive::Torus {
+            major_radius: 10.0,
+            minor_radius: 2.0,
+        })
+        .unwrap(),
+        box_with_a_hole(),
+        fillet(&make_box(10.0, 20.0, 30.0).unwrap(), &[1, 2, 3], 2.0)
+            .unwrap()
+            .shape,
+    ];
+    for shape in &shapes {
+        let mesh = tessellate(shape, 0.05).unwrap();
+        for t in &mesh.triangles {
+            let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+            let facing = cross(sub(b, a), sub(c, a));
+            if facing == [0.0; 3] {
+                continue;
+            }
+            let normals = t.map(|i| wide(mesh.normals[i as usize]));
+            for n in normals {
+                assert!(dot(facing, n) > 0.0, "{t:?}: {facing:?} against {n:?}");
+            }
+        }
+    }
 }
