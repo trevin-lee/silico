@@ -883,15 +883,16 @@ fn every_worker_crashing_at_once_leaves_a_full_pool_every_time() {
             assert_eq!(err.code(), ErrorCode::WorkerCrashed, "round {round}: {err}");
         }
         // The pool may hand a crash to a slot it has already replaced, so a worker can be
-        // missed: that one is crashed by hand. A worker that crashed and wasn't replaced
-        // isn't running, so it's left for `wait_full` to find.
+        // missed: that one is killed by hand (SIGKILL: OCCT catches a SIGSEGV sent from
+        // outside on Linux). A worker that crashed and wasn't replaced isn't running, so
+        // it's left for `wait_full` to find.
         let running: BTreeSet<u32> = children()
             .into_iter()
             .filter(|(_, stat)| !stat.starts_with('Z'))
             .map(|(pid, _)| pid)
             .collect();
         for &pid in before.iter().filter(|p| running.contains(p)) {
-            signal("SEGV", pid);
+            signal("KILL", pid);
         }
         let after = wait_full(&pool, size, &before.iter().copied().collect());
         assert_eq!(after.len(), size, "round {round}");
