@@ -20,7 +20,7 @@ use silico_core::kernel::KernelWorker;
 use silico_core::worker::Worker;
 use silico_kernel::{
     BooleanOp, ElementKind, History, KernelErrorKind, Primitive, Shape, ShapeSummary, boolean,
-    make, summarize, translate,
+    make, measure_as_freecad, summarize, translate,
 };
 use silico_protocol::{DebugOp, Generation, Misbehavior, Op};
 
@@ -658,6 +658,85 @@ print("SILICO_ORACLE " + json.dumps(out))
         tool_at = tool.1,
     );
     oracle::freecad(&script)
+}
+
+#[test]
+fn a_boolean_measured_as_freecad_measures_matches_freecad_where_the_precise_measure_doesnt() {
+    // A cone fused with a cylinder (the oracle's generated case 7 #782). OCCT's default
+    // integration, which FreeCAD measures with, misjudges the faces the intersection trims:
+    // 3.6e-3 off the precise volume, and 0.012 mm off its center. Measured as FreeCAD
+    // measures it, Silico's fuse is FreeCAD's to the oracle's tolerance for booleans of
+    // curved shapes; its precise measures aren't.
+    let cone = Primitive::Cone {
+        radius1: 8.917,
+        radius2: 0.0,
+        height: 12.397,
+    };
+    let cylinder = Primitive::Cylinder {
+        radius: 4.203,
+        height: 21.611,
+    };
+    let offset = [-0.474, 4.27, -0.853];
+    let fused = boolean(
+        BooleanOp::Fuse,
+        &make(&cone).unwrap(),
+        &at(cylinder, offset),
+    )
+    .unwrap()
+    .shape;
+    let ours = measure_as_freecad(&fused).unwrap();
+    let precise = summarize(&fused).unwrap();
+    let script = format!(
+        r#"
+import json, FreeCAD
+doc = FreeCAD.newDocument()
+def solid(spec, at):
+    kind, props = spec
+    o = doc.addObject("Part::" + kind, kind)
+    for k, v in props.items():
+        setattr(o, k, v)
+    o.Placement.Base = FreeCAD.Vector(*at)
+    return o
+a = solid({cone}, [0.0, 0.0, 0.0])
+b = solid({cylinder}, {offset:?})
+doc.recompute()
+r = a.Shape.fuse(b.Shape)
+box = r.optimalBoundingBox(False, False)
+out = {{"volume": r.Volume, "area": r.Area, "solids": len(r.Solids),
+        "center": list(r.Solids[0].CenterOfMass),
+        "bounds": [[box.XMin, box.YMin, box.ZMin], [box.XMax, box.YMax, box.ZMax]]}}
+print("SILICO_ORACLE " + json.dumps(out))
+"#,
+        cone = freecad_solid(cone),
+        cylinder = freecad_solid(cylinder),
+    );
+    let theirs = oracle::freecad(&script);
+    let num = |v: &serde_json::Value| v.as_f64().unwrap();
+    let point = |v: &serde_json::Value| -> [f64; 3] {
+        std::array::from_fn(|k| num(&v.as_array().unwrap()[k]))
+    };
+    let tolerance = silico_oracle::Tolerance::CURVED_BOOLEAN;
+    assert_eq!(theirs["solids"], 1);
+    let volume = num(&theirs["volume"]);
+    assert_close("volume", ours.volume, volume, tolerance.relative);
+    assert_close("area", ours.area, num(&theirs["area"]), tolerance.relative);
+    assert!(numbers::relative_error(precise.volume, volume) > 1e-3);
+    let our_box = ours.bounds.unwrap();
+    let their_box = [point(&theirs["bounds"][0]), point(&theirs["bounds"][1])];
+    let their_center = point(&theirs["center"]);
+    let size = (0..3)
+        .map(|k| our_box[1][k] - our_box[0][k])
+        .fold(0.0, f64::max);
+    for k in 0..3 {
+        let off = (ours.center[k] - their_center[k]).abs();
+        assert!(off <= tolerance.center * size, "{ours:?} {theirs}");
+        for corner in 0..2 {
+            let off = (our_box[corner][k] - their_box[corner][k]).abs();
+            assert!(off <= tolerance.bounds * size, "{ours:?} {theirs}");
+        }
+    }
+    let off = (0..3).map(|k| (precise.center[k] - their_center[k]).abs());
+    assert!(off.fold(0.0, f64::max) > 1e-3, "{precise:?} {theirs}");
 }
 
 #[test]

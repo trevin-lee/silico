@@ -705,7 +705,7 @@ fn a_reply_of_the_wrong_kind_is_a_protocol_error() {
     // names the operation and the kind of reply (never its contents), and the worker is
     // stopped, since its replies can't be trusted.
     type Call = fn(&mut KernelWorker) -> silico_core::Error;
-    let calls: [(&str, Call); 4] = [
+    let calls: [(&str, Call); 5] = [
         ("MakeBox", |k| {
             k.make(Primitive::Box {
                 dx: 1.0,
@@ -715,6 +715,9 @@ fn a_reply_of_the_wrong_kind_is_a_protocol_error() {
             .unwrap_err()
         }),
         ("Summarize", |k| k.summarize(&shape()).unwrap_err()),
+        ("MeasureAsFreecad", |k| {
+            k.measure_as_freecad(&shape()).unwrap_err()
+        }),
         ("Tessellate", |k| k.tessellate(&shape(), 0.1).unwrap_err()),
         ("Fillet", |k| k.fillet(&shape(), &[1], 1.0).unwrap_err()),
     ];
@@ -1175,4 +1178,47 @@ fn a_shape_with_a_surface_that_isnt_finite_suggests_rebuilding_it() {
     let err = k.tessellate(&bad, 1.0).unwrap_err();
     assert_eq!(err.code(), ErrorCode::KernelFailed, "{err}");
     assert!(err.suggestion().unwrap().contains("rebuild"), "{err}");
+}
+
+#[test]
+fn a_box_measured_as_freecad_measures_is_exactly_itself() {
+    // OCCT's default integration is exact on flat faces, and the tight box of a box is its
+    // corners: 6000, 2200, the center (5, 10, 15), and (0, 0, 0) to (10, 20, 30).
+    let mut k = kernel();
+    let shape = k
+        .make(Primitive::Box {
+            dx: 10.0,
+            dy: 20.0,
+            dz: 30.0,
+        })
+        .unwrap();
+    let m = k.measure_as_freecad(&shape).unwrap();
+    assert!(relative_error(m.volume, 6000.0) <= 1e-12, "{m:?}");
+    assert!(relative_error(m.area, 2200.0) <= 1e-12, "{m:?}");
+    for (got, want) in m.center.into_iter().zip([5.0, 10.0, 15.0]) {
+        assert!((got - want).abs() <= 1e-12, "{m:?}");
+    }
+    assert_eq!(m.bounds, Some([[0.0; 3], [10.0, 20.0, 30.0]]), "{m:?}");
+}
+
+#[test]
+fn a_torus_is_bounded_tightly() {
+    // A torus of radii 10 and 2 about z reaches from (−12, −12, −2) to (12, 12, 2): its
+    // tight box is that, widened by no more than OCCT's confusion tolerance (1e-7), where
+    // the quick box (FreeCAD's Shape.BoundBox) reaches ±12.99 in x and y.
+    let mut k = kernel();
+    let shape = k
+        .make(Primitive::Torus {
+            major_radius: 10.0,
+            minor_radius: 2.0,
+        })
+        .unwrap();
+    let [low, high] = k.measure_as_freecad(&shape).unwrap().bounds.unwrap();
+    for (got, want) in low
+        .into_iter()
+        .chain(high)
+        .zip([-12.0, -12.0, -2.0, 12.0, 12.0, 2.0])
+    {
+        assert!((got - want).abs() <= 2e-7, "{low:?} {high:?}");
+    }
 }

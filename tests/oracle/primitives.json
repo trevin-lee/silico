@@ -1,0 +1,17 @@
+[
+  {"name": "box_10_20_30", "note": "A plain box.", "shape": {"box": {"dx": 10.0, "dy": 20.0, "dz": 30.0}}},
+  {"name": "box_unround", "note": "A box with sides no binary fraction holds exactly.", "shape": {"box": {"dx": 0.1, "dy": 3.3, "dz": 7.07}}},
+  {"name": "box_thin", "note": "A box one side of which is twice OCCT's tolerance.", "boundary": "a side just above the 1e-7 length tolerance", "shape": {"box": {"dx": 10.0, "dy": 20.0, "dz": 2e-7}}},
+  {"name": "cylinder_5_10", "note": "A plain cylinder.", "shape": {"cylinder": {"radius": 5.0, "height": 10.0}}},
+  {"name": "cylinder_slender", "note": "A long, thin cylinder.", "shape": {"cylinder": {"radius": 0.5, "height": 200.0}}},
+  {"name": "cylinder_hair", "note": "A cylinder whose radius is twice OCCT's tolerance.", "boundary": "a radius just above the 1e-7 length tolerance", "shape": {"cylinder": {"radius": 2e-7, "height": 10.0}}},
+  {"name": "sphere_5", "note": "A plain sphere.", "shape": {"sphere": {"radius": 5.0}}},
+  {"name": "sphere_unround", "note": "A sphere with an unround radius.", "shape": {"sphere": {"radius": 7.31}}},
+  {"name": "sphere_kilometre", "note": "A sphere of the largest radius Silico takes.", "boundary": "a radius at the 1e6 length limit", "shape": {"sphere": {"radius": 1000000.0}}},
+  {"name": "cone_pointed", "note": "A cone to a point.", "shape": {"cone": {"radius1": 5.0, "radius2": 0.0, "height": 10.0}}},
+  {"name": "cone_frustum_widening", "note": "A frustum wider at its top.", "shape": {"cone": {"radius1": 2.0, "radius2": 6.0, "height": 8.0}}},
+  {"name": "cone_almost_pointed", "note": "A frustum whose top radius is twice OCCT's tolerance.", "boundary": "a radius just above the 1e-7 length tolerance", "shape": {"cone": {"radius1": 5.0, "radius2": 2e-7, "height": 10.0}}},
+  {"name": "torus_10_2", "note": "A plain ring torus.", "shape": {"torus": {"major_radius": 10.0, "minor_radius": 2.0}}},
+  {"name": "torus_fat", "note": "A ring torus whose hole is small.", "shape": {"torus": {"major_radius": 10.0, "minor_radius": 9.0}}},
+  {"name": "torus_horn", "note": "A horn torus: the tube touches the axis.", "boundary": "the minor radius equal to the major, the most Silico takes", "shape": {"torus": {"major_radius": 10.0, "minor_radius": 10.0}}}
+]

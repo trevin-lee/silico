@@ -11,8 +11,8 @@ use std::time::Duration;
 
 pub use silico_protocol::{
     Axis, Blob, BooleanOp, BuiltData, ChamferSize, ElementCounts, ElementFate, ElementKind,
-    ElementRef, Ends, History, InputHistory, Mesh, Primitive, Profile, Reported, ShapeData,
-    ShapeSummary,
+    ElementRef, Ends, FreecadMeasures, History, InputHistory, Mesh, Primitive, Profile, Reported,
+    ShapeData, ShapeSummary,
 };
 use silico_protocol::{DebugOp, Generation, Op, Reply};
 
@@ -209,6 +209,20 @@ impl KernelRequest<ShapeSummary> {
     }
 }
 
+impl KernelRequest<FreecadMeasures> {
+    /// The shape measured as FreeCAD measures it, for comparing with FreeCAD like for like
+    /// ([`FreecadMeasures`]).
+    pub fn measure_as_freecad(shape: &ShapeData) -> Self {
+        let op = Op::MeasureAsFreecad {
+            shape: shape.clone(),
+        };
+        Self::new(op, |name, reply| match reply {
+            Reply::FreecadMeasures(measures) => Ok(measures),
+            other => Err(unexpected(name, &other)),
+        })
+    }
+}
+
 impl KernelRequest<Mesh> {
     /// A triangle mesh of `shape` for display, no further than `deflection` from its
     /// surface. The mesh is checked before it's returned, so it can be indexed safely.
@@ -399,6 +413,11 @@ impl KernelWorker {
     /// A shape's summary ([`KernelRequest::summarize`]).
     pub fn summarize(&mut self, shape: &ShapeData) -> Result<ShapeSummary, Error> {
         self.run(KernelRequest::summarize(shape))
+    }
+
+    /// A shape measured as FreeCAD measures it ([`KernelRequest::measure_as_freecad`]).
+    pub fn measure_as_freecad(&mut self, shape: &ShapeData) -> Result<FreecadMeasures, Error> {
+        self.run(KernelRequest::measure_as_freecad(shape))
     }
 
     /// A shape's mesh ([`KernelRequest::tessellate`]).

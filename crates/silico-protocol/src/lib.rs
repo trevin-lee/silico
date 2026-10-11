@@ -65,6 +65,9 @@ pub enum Op {
     /// A shape's volume, area, center, topology counts, and validity (as `shape` says).
     /// Replies with [`Reply::Summary`].
     Summarize { shape: ShapeData },
+    /// A shape measured as FreeCAD measures it, for comparing with FreeCAD. Replies with
+    /// [`Reply::FreecadMeasures`].
+    MeasureAsFreecad { shape: ShapeData },
     /// Rounds `edges` of `shape` with a constant `radius`. Edges are numbered from 1 in
     /// OCCT's `TopExp::MapShapes` order, as FreeCAD's `Edge1`, `Edge2`, and so on. Replies
     /// with [`Reply::Built`].
@@ -123,6 +126,7 @@ impl Op {
         match self {
             Op::MakePrimitive(primitive) => primitive.op_name(),
             Op::Summarize { .. } => "Summarize",
+            Op::MeasureAsFreecad { .. } => "MeasureAsFreecad",
             Op::Fillet { .. } => "Fillet",
             Op::Chamfer { .. } => "Chamfer",
             Op::Translate { .. } => "Translate",
@@ -236,6 +240,7 @@ pub enum Reply {
     /// A shape an operation made from other shapes, with what it did to them.
     Built(BuiltData),
     Summary(ShapeSummary),
+    FreecadMeasures(FreecadMeasures),
     Mesh(Mesh),
     Echo {
         data: Blob,
@@ -251,6 +256,7 @@ impl Reply {
             Reply::Shape(_) => "Shape",
             Reply::Built(_) => "Built",
             Reply::Summary(_) => "Summary",
+            Reply::FreecadMeasures(_) => "FreecadMeasures",
             Reply::Mesh(_) => "Mesh",
             Reply::Echo { .. } => "Echo",
             Reply::Done => "Done",
@@ -269,6 +275,21 @@ pub struct ShapeSummary {
     pub vertices: u32,
     /// Whether OCCT's `BRepCheck_Analyzer` finds the shape valid.
     pub valid: bool,
+}
+
+/// A solid measured as FreeCAD measures it, from [`Op::MeasureAsFreecad`], so the FreeCAD
+/// oracle compares like with like. The volume, area, and center are by OCCT's default
+/// integration, a fixed number of points per face, as FreeCAD's `Shape.Volume`, `Area`, and
+/// `CenterOfMass`: on a face trimmed by curves they can be 1% off, where a
+/// [`ShapeSummary`]'s are precise. The bounds are the lowest and highest corners of the
+/// tight bounding box of its geometry, as `Shape.optimalBoundingBox(False, False)`; none
+/// for a shape with nothing in it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FreecadMeasures {
+    pub volume: f64,
+    pub area: f64,
+    pub center: [f64; 3],
+    pub bounds: Option<[[f64; 3]; 2]>,
 }
 
 /// How far a [`Mesh`] normal's length may be from 1: about ten times what rounding a unit

@@ -188,7 +188,7 @@ Rerun's `re_ui` provides the dark styling toolkit (color, type, density) used to
 Silico has one maintainer and mostly agent-written code. Tests stand in for line-by-line human review.
 
 - **Unit tests** cover every behavior change. Expected values must come from an independent source, not from the code under test.
-- **Oracle tests** (`tests/oracle/`, protected): run the same operation in Silico and in headless FreeCAD, and compare volume, area, bounding box, topology counts, and validity.
+- **Oracle tests** (`tests/oracle/`, protected): run the same operation in Silico and in headless FreeCAD, and compare volume, area, bounding box, center of mass, topology counts, and validity.
 - **Golden corpus** (`tests/golden/`, protected): real models with fingerprints. Rebuilds must match.
 - **Ported FreeCAD tests** for every subsystem that has them.
 - **Determinism tests:** rebuild twice and compare bytes.

@@ -44,6 +44,7 @@ serde_json.workspace = true
 silico-protocol.workspace = true
 silico-core.workspace = true
 silico-kernel = { path = ".", features = ["test_ops"] }
+silico-oracle.workspace = true
 
 [build-dependencies]
 cxx-build.workspace = true

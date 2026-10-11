@@ -39,6 +39,17 @@ mod ffi {
         area: f64,
     }
 
+    /// A shape measured as FreeCAD measures it: volume, area, and center by OCCT's default
+    /// integration, and its tight bounding box, from `low` to `high` if it's `bounded`.
+    struct FreecadMeasures {
+        volume: f64,
+        area: f64,
+        center: Point3,
+        bounded: bool,
+        low: Point3,
+        high: Point3,
+    }
+
     /// A kind of sub-shape, as the bridge reports history. `Other` is a kind history
     /// doesn't use (a wire, a shell), which Rust leaves out.
     #[repr(u8)]
@@ -198,6 +209,7 @@ mod ffi {
         ) -> Result<UniquePtr<Shape>>;
         fn count_elements(shape: &Shape) -> Result<Counts>;
         fn rough_amounts(shape: &Shape) -> Result<Amounts>;
+        fn measure_as_freecad(shape: &Shape) -> Result<FreecadMeasures>;
         fn is_valid_where_changed(input: &Shape, result: &Shape) -> Result<bool>;
         fn is_valid_where_changed_from_two(
             first: &Shape,
@@ -528,6 +540,18 @@ pub fn summarize(shape: &Shape) -> Result<ShapeSummary, KernelError> {
         edges: m.edges,
         vertices: m.vertices,
         valid: shape.is_valid()?,
+    })
+}
+
+/// `shape` measured as FreeCAD measures it ([`silico_protocol::FreecadMeasures`]).
+pub fn measure_as_freecad(shape: &Shape) -> Result<silico_protocol::FreecadMeasures, KernelError> {
+    let m = ffi::measure_as_freecad(shape.get()?)?;
+    let point = |p: ffi::Point3| [p.x, p.y, p.z];
+    Ok(silico_protocol::FreecadMeasures {
+        volume: m.volume,
+        area: m.area,
+        center: point(m.center),
+        bounds: m.bounded.then(|| [point(m.low), point(m.high)]),
     })
 }
 

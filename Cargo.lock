@@ -3932,9 +3932,19 @@ dependencies = [
  "serde_json",
  "silico-core",
  "silico-kernel",
+ "silico-oracle",
  "silico-protocol",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "silico-oracle"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "silico-core",
 ]
 
 [[package]]

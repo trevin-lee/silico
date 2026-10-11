@@ -4,13 +4,14 @@ Silico is a parametric CAD system: a Rust core, an egui/wgpu UI, and OpenCascade
 
 **Read [ARCHITECTURE.md](ARCHITECTURE.md) before structural work.** Its invariants are non-negotiable unless the maintainer agrees to change them.
 
-**Status:** M0 (foundations) is built. M1 (the kernel layer) is under way: primitives, history, booleans, extrude and revolve, fillet and chamfer, the worker pool, and display meshes with surface normals are built; the oracle harness and hardening remain. See [ROADMAP.md](ROADMAP.md) and the walkthrough, [docs/walkthrough/m0.md](docs/walkthrough/m0.md). What each crate holds now:
+**Status:** M0 (foundations) is built. M1 (the kernel layer) is under way: primitives, history, booleans, extrude and revolve, fillet and chamfer, the worker pool, display meshes with surface normals, and the FreeCAD oracle harness are built; hardening remains. See [ROADMAP.md](ROADMAP.md) and the walkthrough, [docs/walkthrough/m0.md](docs/walkthrough/m0.md). What each crate holds now:
 
 - `silico-kernel`: the OCCT bridge (C++ through `cxx`) and the kernel worker binaries. The only crate that links OCCT.
 - `silico-protocol`: the messages between the core and workers, their framing, and the rules for valid primitive values (`Primitive::check`), profiles (`Profile::check`), and chamfer sizes (`ChamferSize::check`).
-- `silico-core`: the structured `Error`; the worker client (`worker::Worker`), which starts workers and turns crashes, hangs, and bad replies into errors; typed kernel requests (`kernel::KernelRequest`: primitives, extrude, revolve, fillet, chamfer, translate, booleans, summarize, tessellate), which check values and replies so nothing above them handles protocol messages, run on one worker (`kernel::KernelWorker`) or a pool of them (`pool::KernelPool`, which replaces workers that crash or hang, and drops or stops work of superseded generations). The document model, feature graph, and command API come later.
+- `silico-core`: the structured `Error`; the worker client (`worker::Worker`), which starts workers and turns crashes, hangs, and bad replies into errors; typed kernel requests (`kernel::KernelRequest`: primitives, extrude, revolve, fillet, chamfer, translate, booleans, summarize, measure as FreeCAD does, tessellate), which check values and replies so nothing above them handles protocol messages, run on one worker (`kernel::KernelWorker`) or a pool of them (`pool::KernelPool`, which replaces workers that crash or hang, and drops or stops work of superseded generations). The document model, feature graph, and command API come later.
 - `silico-cli`: logging setup only, so far.
 - `silico-view`: a debug viewer that shows the kernel's parts in Rerun, until the app exists; its library logs any mesh (faces shaded by the kernel's normals, labelled edges) for tests and scripts.
+- `silico-oracle`: the FreeCAD oracle harness. Each case in `tests/oracle/` (protected) is built through a kernel worker and through headless FreeCAD and compared: volume, area, and center of mass measured as FreeCAD measures them, the tight bounding box, topology counts, and validity, to a tolerance set by what the shape is made of.
 
 ## FreeCAD reference
 
@@ -65,6 +66,8 @@ pixi run lint      # fmt and clippy, including the libm shim crate
 pixi run stress    # 605-case stress test, 10 runs, byte-identical to the committed reference
 pixi run gate      # every check on the committed tree: workspace lints, cargo-deny, lint, test, one stress run
 pixi run view      # the kernel's parts (a box, fillets, the primitives) in Rerun, edges labelled Edge1, ...
+pixi run oracle    # every case in tests/oracle compared with FreeCAD
+pixi run oracle-sweep  # 500 generated cases compared with FreeCAD (-- --seed S for others)
 cargo mutants --in-place --in-diff <(git diff main...HEAD) --minimum-test-timeout 300
                    # every workspace test, with nextest (.cargo/mutants.toml); the timeout floor,
                    # since the baseline it's scaled from may time a single package. In place, since a

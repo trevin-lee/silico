@@ -5,9 +5,10 @@
 use proptest::prelude::*;
 use silico_protocol::{
     Axis, Blob, BooleanOp, BuiltData, ChamferSize, DebugOp, ElementCounts, ElementFate,
-    ElementKind, ElementRef, Ends, Failure, FailureKind, FrameError, FrameReader, Generation,
-    History, InputHistory, MAX_FRAME_LEN, Mesh, Misbehavior, Op, OutOfTurn, Primitive, Profile,
-    Reply, Reported, Request, RequestId, Response, ShapeData, ShapeSummary, TraceId, write_message,
+    ElementKind, ElementRef, Ends, Failure, FailureKind, FrameError, FrameReader, FreecadMeasures,
+    Generation, History, InputHistory, MAX_FRAME_LEN, Mesh, Misbehavior, Op, OutOfTurn, Primitive,
+    Profile, Reply, Reported, Request, RequestId, Response, ShapeData, ShapeSummary, TraceId,
+    write_message,
 };
 
 /// One request per operation. The match gives each variant its own index and every
@@ -110,6 +111,9 @@ fn every_op() -> Vec<Op> {
             },
             flip: false,
         },
+        Op::MeasureAsFreecad {
+            shape: ShapeData::unchecked(Blob::inline(vec![14])),
+        },
         Op::Debug(DebugOp::Sleep { millis: 60_000 }),
         Op::Debug(DebugOp::Abort),
         Op::Debug(DebugOp::Segfault),
@@ -171,9 +175,10 @@ fn every_op() -> Vec<Op> {
                 size: ChamferSize::DistanceAngle { .. },
                 ..
             } => 28,
+            Op::MeasureAsFreecad { .. } => 29,
         })
         .collect();
-    assert_eq!(indices, (0..29).collect(), "an operation has no case");
+    assert_eq!(indices, (0..30).collect(), "an operation has no case");
     ops
 }
 
@@ -235,6 +240,18 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             vertices: 8,
             valid: true,
         })),
+        Ok(Reply::FreecadMeasures(FreecadMeasures {
+            volume: 6000.0,
+            area: 2200.0,
+            center: [5.0, 10.0, -15.0],
+            bounds: Some([[0.0, 0.0, -30.0], [10.0, 20.0, 0.0]]),
+        })),
+        Ok(Reply::FreecadMeasures(FreecadMeasures {
+            volume: 0.0,
+            area: 0.0,
+            center: [0.0; 3],
+            bounds: None,
+        })),
         Ok(Reply::Echo {
             data: Blob::inline(vec![]),
         }),
@@ -276,6 +293,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             Ok(Reply::Echo { .. }) => 3,
             Ok(Reply::Done) => 4,
             Ok(Reply::Built(_)) => 10,
+            Ok(Reply::FreecadMeasures(_)) => 11,
             Err(Failure { kind, .. }) => match kind {
                 FailureKind::InvalidInput => 5,
                 FailureKind::KernelFailed => 6,
@@ -287,7 +305,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         .collect();
     assert_eq!(
         indices,
-        (0..11).collect(),
+        (0..12).collect(),
         "a reply or failure kind has no case"
     );
     results
@@ -346,7 +364,7 @@ fn roundtrip_every_op() {
 #[test]
 fn frame_layout_is_length_then_payload() {
     // A 4-byte little-endian length, then postcard: Request { id: 1, generation: 2,
-    // trace: 3, op: Debug(Abort) } is the varints 1, 2, and 3, then Op's variant index 10
+    // trace: 3, op: Debug(Abort) } is the varints 1, 2, and 3, then Op's variant index 11
     // (Debug) and DebugOp's 1 (Abort). (Both ends ship together, so indices may shift when
     // operations are added.)
     let bytes = frame_of(&Request {
@@ -355,7 +373,7 @@ fn frame_layout_is_length_then_payload() {
         trace: TraceId(3),
         op: Op::Debug(DebugOp::Abort),
     });
-    assert_eq!(bytes, [5, 0, 0, 0, 1, 2, 3, 10, 1]);
+    assert_eq!(bytes, [5, 0, 0, 0, 1, 2, 3, 11, 1]);
 }
 
 #[test]
@@ -509,6 +527,7 @@ proptest! {
         for op in [
             Op::MakePrimitive(Primitive::Box { dx: dims[0], dy: dims[1], dz: dims[2] }),
             Op::Summarize { shape: shape() },
+            Op::MeasureAsFreecad { shape: shape() },
             Op::Fillet {
                 shape: shape(),
                 edges: blob.iter().map(|&b| u32::from(b) * 1_000_003).collect(),
@@ -667,6 +686,7 @@ fn every_op_has_its_own_name() {
             "Chamfer",
             "Chamfer",
             "Chamfer",
+            "MeasureAsFreecad",
             "DebugSleep",
             "DebugAbort",
             "DebugSegfault",

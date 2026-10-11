@@ -46,6 +46,7 @@ namespace silico {
 struct Measures;
 struct Point3;
 struct Amounts;
+struct FreecadMeasures;
 struct HistoryEntry;
 struct Counts;
 enum class Kind : uint8_t;
@@ -75,6 +76,10 @@ Measures measure(const Shape &shape);
 // The volume and area by OCCT's quick fixed-order integration: up to 1% off on faces
 // trimmed by curves, and further on broken shapes (a "solid" of volume -2e-4 reads 1.9).
 Amounts rough_amounts(const Shape &shape);
+
+// The volume, area, and center by OCCT's default integration, and the tight bounding box,
+// as FreeCAD measures them, for comparing with FreeCAD like for like.
+FreecadMeasures measure_as_freecad(const Shape &shape);
 
 // A triangle mesh of a shape's faces and polylines along its edges, for display. Faces
 // and edges are in TopExp::MapShapes order (edges numbered as edge_facts's). Built whole in

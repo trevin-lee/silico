@@ -290,6 +290,7 @@ for kind, props, edges, typ, size, size2, angle, flip in [{}]:
     base = body.newObject("PartDesign::FeatureBase", "Base")
     base.BaseFeature = prim
     ch = body.newObject("PartDesign::Chamfer", "Chamfer")
+    ch.Refine = False
     ch.Base = (base, edges)
     ch.ChamferType = typ
     ch.Size = size

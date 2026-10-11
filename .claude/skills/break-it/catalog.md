@@ -11,6 +11,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Angles of 0, 360, 360 + ε, -ε, and 2π + ε. Degree values passed where radians are expected (90 as radians).
 - Integer counts of 0, 1, `u32::MAX`, and negative counts passed through a signed type
 - Vectors with finite components whose length overflows (`[1e300, 0, 1e300]`): normalizing gives `(0, 0, 0)`, and the error blames the wrong parameter
+- Counts from a command line fed to `(0..n).map(..).collect()`: `collect` sizes the Vec up front, so `usize::MAX` panics (capacity overflow) and 1e15 aborts on allocation
 - Absolute tolerances on quantities that scale with the part (OCCT's `GeomLib::NormEstim` orients a pole's or apex's normal only when \|dP/du × dP/dv\| a 1e-5 step away is over 1e-8): a ball under 0.0316 mm radius or a cone slenderer than 1:1000 gets a normal pointing into the solid
 
 ## Sketch geometry
@@ -106,6 +107,15 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Worker counts of `usize::MAX`: a `vec![_; n]` sized before the count is checked panics with capacity overflow
 - A worker stopped with SIGSTOP: alive to `try_wait` but silent; its request must time out, and the stopped process be killed and reaped
 - A worker held at launch: macOS holds a newly written executable at `_dyld_start` while it assesses it, at times past a minute, so the first request times out blaming itself (in tests, link worker binaries rather than copy them)
+
+## Oracles and comparisons
+
+- Pairs of different shapes with equal volume, area, bounding box, and counts (a two-distance chamfer and its flip, a frustum upside down, a fillet on the opposite parallel edge, a feature below the relative tolerance): a comparison of global measures passes either
+- The reference program's own settings: FreeCAD reads (and rewrites) the GUI's user.cfg, and PartDesign's `Refine` follows it; pin every property a call reads, and isolate the config with `FREECAD_USER_HOME`
+- Element numbers turned into Python indices: 0 becomes −1, the last element (`Edges[i - 1]`)
+- Measures that depend on parametrization, not geometry (OCCT's fixed-order integration, BRepBndLib's loose box): two builds of one OCCT differ beyond a tight tolerance on curved booleans; sweep thousands of seeds before calibrating
+- A reference process that hangs (no deadline), and a crash partway through a batch on either side: later cases must still run in a fresh process
+- No cases at all (an empty directory, `--count 0`): a harness that compared nothing must not exit 0
 
 ## Import
 

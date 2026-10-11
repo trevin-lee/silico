@@ -38,6 +38,8 @@ install-oracle = { cmd = "pixi install -e oracle", description = "Install the Fr
 install-viewer = { cmd = "pixi install -e viewer", description = "Install the Rerun viewer" }
 view = { cmd = "cargo build -p silico-kernel --bin silico-kernel-worker && cargo run -p silico-view -- --viewer .pixi/envs/viewer/bin/rerun", depends-on = ["occt", "install-viewer"], description = "Show the kernel's parts (a box, fillets, the primitives) in the Rerun viewer" }
 test = { cmd = "cargo nextest run --workspace", depends-on = ["occt", "install-oracle", "shim-test", "test-guards", "test-cache"] }
+oracle = { cmd = "cargo build -p silico-kernel --bin silico-kernel-worker && cargo run -p silico-oracle -- run tests/oracle", depends-on = ["occt", "install-oracle"], description = "Compare every case in tests/oracle with FreeCAD" }
+oracle-sweep = { cmd = "cargo build -p silico-kernel --bin silico-kernel-worker && cargo run -p silico-oracle -- sweep --count 500", depends-on = ["occt", "install-oracle"], description = "Compare 500 generated cases with FreeCAD (pass --seed S to vary them)" }
 # Every check on the committed tree; must pass before a merge.
 gate = { cmd = "bash tests/gate.sh", description = "Run every check on the committed tree" }
 lint = { cmd = "cargo fmt --check && cargo fmt --check --manifest-path third_party/occt/libm-shim/Cargo.toml && cargo clippy --workspace --all-targets -- -D warnings && CARGO_TARGET_DIR=target/libm-shim cargo clippy --manifest-path third_party/occt/libm-shim/Cargo.toml --release --all-targets -- -D warnings", depends-on = ["occt"] }

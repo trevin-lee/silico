@@ -14,8 +14,9 @@ use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
 
 use silico_protocol::{
-    Blob, BuiltData, Failure, FailureKind, FrameError, FrameReader, Generation, Op, Reply, Request,
-    RequestId, Response, ShapeData, ShapeSummary, WORKER_FD, WORKER_FD_ENV, write_message,
+    Blob, BuiltData, Failure, FailureKind, FrameError, FrameReader, FreecadMeasures, Generation,
+    Op, Reply, Request, RequestId, Response, ShapeData, ShapeSummary, WORKER_FD, WORKER_FD_ENV,
+    write_message,
 };
 
 use crate::{KernelError, KernelErrorKind};
@@ -32,6 +33,12 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
             let summary = crate::summarize(&shape).map_err(failure)?;
             check_finite(&summary)?;
             Ok(Reply::Summary(summary))
+        }
+        Op::MeasureAsFreecad { shape } => {
+            let shape = shape_of(&shape)?;
+            let measures = crate::measure_as_freecad(&shape).map_err(failure)?;
+            check_freecad_finite(&measures)?;
+            Ok(Reply::FreecadMeasures(measures))
         }
         Op::Fillet {
             shape,
@@ -119,13 +126,35 @@ fn built_reply(built: crate::Built) -> Result<Reply, Failure> {
 /// A shape OCCT read but can't integrate gives NaN or infinity: never a result.
 fn check_finite(summary: &ShapeSummary) -> Result<(), Failure> {
     let [x, y, z] = summary.center;
-    let values = [
+    all_finite([
         ("volume", summary.volume),
         ("area", summary.area),
         ("center x", x),
         ("center y", y),
         ("center z", z),
-    ];
+    ])
+}
+
+/// As [`check_finite`], for a shape measured as FreeCAD measures it, with its box.
+fn check_freecad_finite(m: &FreecadMeasures) -> Result<(), Failure> {
+    let [x, y, z] = m.center;
+    let [low, high] = m.bounds.unwrap_or_default();
+    all_finite([
+        ("volume", m.volume),
+        ("area", m.area),
+        ("center x", x),
+        ("center y", y),
+        ("center z", z),
+        ("bounding box's lowest x", low[0]),
+        ("bounding box's lowest y", low[1]),
+        ("bounding box's lowest z", low[2]),
+        ("bounding box's highest x", high[0]),
+        ("bounding box's highest y", high[1]),
+        ("bounding box's highest z", high[2]),
+    ])
+}
+
+fn all_finite<const N: usize>(values: [(&str, f64); N]) -> Result<(), Failure> {
     match values.into_iter().find(|(_, value)| !value.is_finite()) {
         None => Ok(()),
         Some((name, value)) => Err(Failure::new(
@@ -326,9 +355,9 @@ mod tests {
         }
     }
 
-    use silico_protocol::{FailureKind, ShapeSummary};
+    use silico_protocol::{FailureKind, FreecadMeasures, ShapeSummary};
 
-    use super::check_finite;
+    use super::{check_finite, check_freecad_finite};
 
     #[test]
     fn a_summary_that_isnt_finite_is_refused_naming_the_value() {
@@ -359,6 +388,44 @@ mod tests {
             let mut bad = good.clone();
             spoil(&mut bad);
             let failure = check_finite(&bad).unwrap_err();
+            assert_eq!(failure.kind, FailureKind::KernelFailed);
+            assert_eq!(failure.message, format!("the shape's {want}"));
+        }
+    }
+
+    #[test]
+    fn freecad_measures_that_arent_finite_are_refused() {
+        let good = FreecadMeasures {
+            volume: 6000.0,
+            area: 2200.0,
+            center: [5.0, 10.0, 15.0],
+            bounds: Some([[0.0; 3], [10.0, 20.0, 30.0]]),
+        };
+        assert!(check_freecad_finite(&good).is_ok());
+        let unbounded = FreecadMeasures {
+            bounds: None,
+            ..good.clone()
+        };
+        assert!(check_freecad_finite(&unbounded).is_ok());
+        type Spoil = fn(&mut FreecadMeasures);
+        let cases: [(&str, Spoil); 6] = [
+            ("volume isn't finite (NaN)", |m| m.volume = f64::NAN),
+            ("area isn't finite (inf)", |m| m.area = f64::INFINITY),
+            ("center y isn't finite (NaN)", |m| m.center[1] = f64::NAN),
+            ("center z isn't finite (-inf)", |m| {
+                m.center[2] = f64::NEG_INFINITY;
+            }),
+            ("bounding box's lowest y isn't finite (NaN)", |m| {
+                m.bounds = Some([[0.0, f64::NAN, 0.0], [10.0, 20.0, 30.0]]);
+            }),
+            ("bounding box's highest x isn't finite (inf)", |m| {
+                m.bounds = Some([[0.0; 3], [f64::INFINITY, 20.0, 30.0]]);
+            }),
+        ];
+        for (want, spoil) in cases {
+            let mut bad = good.clone();
+            spoil(&mut bad);
+            let failure = check_freecad_finite(&bad).unwrap_err();
             assert_eq!(failure.kind, FailureKind::KernelFailed);
             assert_eq!(failure.message, format!("the shape's {want}"));
         }

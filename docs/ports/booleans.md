@@ -95,7 +95,7 @@ In `crates/silico-kernel/tests/boolean.rs`, and hostile inputs in `adversarial_b
 | `FuzzyBoolean.cpp` (cylinder fused with a helix: fuzzy 10 clean, 0.01 faulty, 1e10 fails); `makeElementBooleanAcceptsShapeRejectedByAnalyzer` | With a fuzzy parameter, and with imported shapes. Their fixtures are FreeCAD B-rep files; copying them into `tests/oracle/` needs the maintainer's approval. |
 | `testPartCompoundCut1/2`, `makeElementBooleanCommonWithCompoundTool`, `FeaturePartFuse.cpp` `testCompound` and `testRecursiveCompound` | With compound inputs (M2). |
 | `TopoShapeExpansion.cpp` `makeElementBooleanImpossibleCommon` (volume 0, an empty map) | A deliberate difference: Silico refuses the empty common. |
-| `src/Mod/Part/parttests/TopoShapeTest.py` `testPartCommon`, `testPartCut`, `testPartFuse`, `testTopoShapeFuse`, `testTopoShapeCommon`, `testTopoShapeCut` (bounds, and element-map sizes 58, 26, 26 without refine) | Not yet: their counts are covered by the oracle test's; the bounds come with a bounding box in the summary. |
+| `src/Mod/Part/parttests/TopoShapeTest.py` `testPartCommon`, `testPartCut`, `testPartFuse`, `testTopoShapeFuse`, `testTopoShapeCommon`, `testTopoShapeCut` (bounds, and element-map sizes 58, 26, 26 without refine) | Not yet: their counts are covered by the oracle test's. Their bounds can be checked now that the kernel measures a tight box (`measure_as_freecad`, M1.8): port them in M1.9. |
 | `PartDesignTests/TestBoolean.py` `testBooleanCutUses*Placement`, `testBooleanFirstFeature*` | With bodies and placements (M2). |
 
 And Silico's own:

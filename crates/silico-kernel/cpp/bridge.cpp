@@ -159,6 +159,28 @@ Amounts rough_amounts(const Shape &shape) {
   return Amounts{volume.Mass(), surface.Mass()};
 }
 
+FreecadMeasures measure_as_freecad(const Shape &shape) {
+  // OCCT's default integration, as FreeCAD's Shape.Volume, Area, and CenterOfMass.
+  GProp_GProps volume;
+  BRepGProp::VolumeProperties(shape.shape, volume);
+  GProp_GProps surface;
+  BRepGProp::SurfaceProperties(shape.shape, surface);
+  const gp_Pnt c = volume.CentreOfMass();
+  // The tight box of the shape's geometry, as Shape.optimalBoundingBox(False, False).
+  // OCCT's quick box (Shape.BoundBox) bounds each surface's control points, so it moves
+  // with how a surface is parametrized, which two OCCT builds can do differently.
+  Bnd_Box box;
+  BRepBndLib::AddOptimal(shape.shape, box, false, false);
+  Point3 low{0.0, 0.0, 0.0};
+  Point3 high{0.0, 0.0, 0.0};
+  const bool bounded = !box.IsVoid();
+  if (bounded) {
+    box.Get(low.x, low.y, low.z, high.x, high.y, high.z);
+  }
+  return FreecadMeasures{volume.Mass(), surface.Mass(), Point3{c.X(), c.Y(), c.Z()},
+                         bounded,       low,           high};
+}
+
 double bounding_diagonal(const Shape &shape) {
   Bnd_Box box;
   BRepBndLib::Add(shape.shape, box);

@@ -1,0 +1,5 @@
+[
+  {"name": "translate_box", "note": "A box moved.", "shape": {"translate": {"shape": {"box": {"dx": 10.0, "dy": 20.0, "dz": 30.0}}, "by": [1.5, -2.25, 3.0]}}},
+  {"name": "translate_torus_unround", "note": "A torus moved by unround amounts.", "shape": {"translate": {"shape": {"torus": {"major_radius": 10.0, "minor_radius": 2.0}}, "by": [0.1, 0.2, 0.3]}}},
+  {"name": "translate_far", "note": "A box moved by the most Silico takes in each direction.", "boundary": "an offset at the 1e6 limit", "shape": {"translate": {"shape": {"box": {"dx": 1.0, "dy": 1.0, "dz": 1.0}}, "by": [1000000.0, -1000000.0, 1000000.0]}}}
+]
