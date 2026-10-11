@@ -22,6 +22,8 @@ cargo-deny = "0.20.*"
 lld = "21.*"
 # Rewrites OCCT's library search path so a cached build is shared between checkouts.
 patchelf = "*"
+# The pool's descriptor tests list a worker's open descriptors (macOS has lsof built in).
+lsof = "*"
 
 [tasks]
 occt = { cmd = "bash third_party/occt/build.sh", description = "Fetch, verify, patch, and build OCCT with the deterministic recipe" }

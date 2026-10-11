@@ -64,6 +64,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libzlib-1.3.2-h25fd6f3_3.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/lld-21.1.8-h5985d43_2.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/llvm-openmp-23.1.3-h7148c6a_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/lsof-4.99.7-pl5321h8c9361a_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/ncurses-6.6-hdb14827_1.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/ninja-1.13.2-h171cf75_1.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/openssl-3.6.5-h781a0a9_0.conda
@@ -4944,6 +4945,16 @@ packages:
     - _openmp_mutex * *_llvm
   size: 6125613
   timestamp: 1791368084421
+- conda: https://conda.anaconda.org/conda-forge/linux-64/lsof-4.99.7-pl5321h8c9361a_0.conda
+  sha256: 0cdd5a5a343b57b67810ad4ed78a23d76592a0fa07483edda19ed7669947d080
+  md5: 48ea7638243ffa365b050f8e08a548e0
+  depends:
+  - __glibc >=2.17,<3.0.a0
+  - libgcc >=14
+  license: lsof
+  run_exports: {}
+  size: 103267
+  timestamp: 1781627801558
 - conda: https://conda.anaconda.org/conda-forge/linux-64/lz4-c-1.10.0-hee9eb32_2.conda
   sha256: b8c0e930183e6b7f83cd35ace102f2b8c2f0faae41dc05255dc72f247dfc556a
   md5: e38a3253d72ab07d471483f24947e2a2

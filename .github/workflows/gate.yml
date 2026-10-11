@@ -17,6 +17,9 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  NEXTEST_PROFILE: ci
+
 jobs:
   gate:
     runs-on: [self-hosted, linux, x64, pve]
