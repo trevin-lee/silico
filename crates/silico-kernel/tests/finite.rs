@@ -160,6 +160,21 @@ fn scaled(text: &str, marker: &str, skip: usize, field: usize) -> String {
     format!("{}{}{}", &text[..line], fields.join(" "), &text[end..])
 }
 
+/// `text` with `from` (which must be in it) replaced by `to`, once.
+fn swap(text: &str, from: &str, to: &str) -> String {
+    assert!(text.contains(from), "no {from:?}");
+    text.replacen(from, to, 1)
+}
+
+/// `text` with one location, which scales by 2 (it had none).
+fn with_scale(text: &str) -> String {
+    swap(
+        text,
+        "\nLocations 0\n",
+        "\nLocations 1\n1\n2 0 0 0\n0 2 0 0\n0 0 2 0\n",
+    )
+}
+
 fn refused(text: &str) -> String {
     silico_kernel::from_text_brep(text.as_bytes())
         .err()
@@ -262,7 +277,11 @@ fn every_kind_of_geometry_that_isnt_finite_is_refused_naming_it() {
         // (Geom_TrimmedCurve's SetTrim and Reverse call each other forever).
         (
             "a trimmed curve",
-            f("trimmed_surface").replacen("\n1 0.53125 0 ", "\n1 0.53125 nan ", 1),
+            swap(
+                f("trimmed_surface"),
+                "\n1 0.53125 0 0 0 1 0",
+                "\n1 nan 0 0 0 1 0",
+            ),
             EDGE,
         ),
         (
@@ -349,6 +368,78 @@ fn every_kind_of_geometry_that_isnt_finite_is_refused_naming_it() {
             SCALED,
         ),
         (
+            "a stored polygon, scaled",
+            with_scale(&graft(
+                f("line"),
+                "Polygon3D",
+                "2 0\n0.1\n0 0 0 1.5 0 0",
+                "Ed",
+                1,
+                "5  1 1",
+            )),
+            SCALED,
+        ),
+        (
+            "a plane's direction",
+            swap(
+                f("plane"),
+                "\n1 0 0 0 0 0 1 1 0 -0 -0 1 0",
+                "\n1 0 0 0 0 0 nan 1 0 -0 -0 1 0",
+            ),
+            FACE,
+        ),
+        (
+            "a line's direction",
+            swap(f("line"), "\n1 0 0 0 1 0 0", "\n1 0 0 0 nan 0 0"),
+            EDGE,
+        ),
+        (
+            "an offset curve's basis",
+            swap(f("offset_curve"), " 1.5625 ", " nan "),
+            EDGE,
+        ),
+        (
+            "an offset curve's direction",
+            swap(f("offset_curve"), "\n0 0 1 \n", "\n0 0 nan \n"),
+            EDGE,
+        ),
+        (
+            "an offset surface's basis",
+            swap(
+                f("offset_surface"),
+                "\n1 0 0 0 0 0 1 1 0 0 0 1 0",
+                "\n1 nan 0 0 0 0 1 1 0 0 0 1 0",
+            ),
+            FACE,
+        ),
+        (
+            "a surface of extrusion's direction",
+            swap(f("extrusion_surface"), "6 0 0 1", "6 0 0 nan"),
+            FACE,
+        ),
+        (
+            "an ellipse's major radius",
+            swap(f("ellipse"), " 3.125 1.875", " nan 1.875"),
+            EDGE,
+        ),
+        (
+            "a hyperbola's minor radius",
+            swap(f("hyperbola"), " 1.125", " nan"),
+            EDGE,
+        ),
+        (
+            "a stored mesh's surface parameters",
+            graft(
+                f("plane"),
+                "Triangulations",
+                "4 2 1 0\n0 0 0 2.5 0 0 2.5 3.5 0 0 3.5 0\n0 0 1 0 1 1 0 nan\n1 2 3 1 3 4",
+                "Fa",
+                1,
+                "2 1",
+            ),
+            FACE,
+        ),
+        (
             "a location",
             spoil(f("moved_box"), "Locations", "0.71875"),
             PLACED,
@@ -367,6 +458,21 @@ fn every_kind_of_geometry_that_isnt_finite_is_refused_naming_it() {
     // Curves on a face of the kinds FreeCAD doesn't write, in place of the plane's first.
     let curves_on_faces = [
         ("an ellipse on a face", "3 0 0 1 0 0 1 2 nan"),
+        ("an ellipse on a face's major radius", "3 0 0 1 0 0 1 nan 1"),
+        (
+            "a hyperbola on a face's minor radius",
+            "5 0 0 1 0 0 1 1 nan",
+        ),
+        ("a Bezier curve on a face's weight", "6 1 1 0 0 inf 1 0 1"),
+        (
+            "a B-spline on a face's weight",
+            "7 1 0 1 2 2 0 0 inf 1 0 1 0 2 1 2",
+        ),
+        (
+            "a B-spline on a face's knot",
+            "7 0 0 1 2 2 0 0 1 0 0 2 nan 2",
+        ),
+        ("an offset curve on a face's basis", "9 1\n1 nan 0 1 0"),
         ("a parabola on a face", "4 0 0 1 0 0 1 nan"),
         ("a hyperbola on a face", "5 0 0 1 0 0 1 nan 1"),
         ("a Bezier curve on a face", "6 0 1 0 0 1 nan"),

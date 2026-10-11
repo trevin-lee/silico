@@ -95,6 +95,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 
 #if defined(__linux__)
 #include <fenv.h>
@@ -985,6 +986,10 @@ BrepDefect location_defect(const TopLoc_Location &location) {
 }
 
 
+bool finite_geometry(const Handle(Geom_Curve) &c) { return finite_curve(c); }
+bool finite_geometry(const Handle(Geom2d_Curve) &c) { return finite_curve(c); }
+bool finite_geometry(const Handle(Geom_Surface) &s) { return finite_surface(s); }
+
 // A sub-shape's own tolerance: BRep_Tool::Tolerance gives at least Precision::Confusion,
 // which hides a NaN (NaN compares false), though OCCT's algorithms read the raw value.
 template <typename TShape> bool finite_tolerance(const TopoDS_Shape &s) {
@@ -994,7 +999,23 @@ template <typename TShape> bool finite_tolerance(const TopoDS_Shape &s) {
 
 // An edge's tolerance, its curve in space (and range), and its stored polygon, each with
 // the location it's placed by, which may no more mirror or scale than a shape's.
-BrepDefect edge_defect(const TopoDS_Edge &edge) {
+// The curves and surfaces already found finite in one walk: one may be shared by many
+// edges or faces, and is checked once.
+using Checked = std::unordered_set<const Standard_Transient *>;
+
+template <typename Geometry>
+bool finite_once(Checked &checked, const Handle(Geometry) &geometry) {
+  if (checked.count(geometry.get()) != 0) {
+    return true;
+  }
+  const bool ok = finite_geometry(geometry);
+  if (ok) {
+    checked.insert(geometry.get());
+  }
+  return ok;
+}
+
+BrepDefect edge_defect(const TopoDS_Edge &edge, Checked &checked) {
   if (!finite_tolerance<BRep_TEdge>(edge)) {
     return BrepDefect::CurveNotFinite;
   }
@@ -1005,7 +1026,7 @@ BrepDefect edge_defect(const TopoDS_Edge &edge) {
     if (const BrepDefect d = location_defect(location); d != BrepDefect::None) {
       return d;
     }
-    if (!(finite(first) && finite(last) && finite_curve(curve))) {
+    if (!(finite(first) && finite(last) && finite_once(checked, curve))) {
       return BrepDefect::CurveNotFinite;
     }
   }
@@ -1024,7 +1045,7 @@ BrepDefect edge_defect(const TopoDS_Edge &edge) {
 }
 
 // A face's surface, tolerance, stored mesh, and its edges' curves on it.
-BrepDefect face_defect(const TopoDS_Face &face) {
+BrepDefect face_defect(const TopoDS_Face &face, Checked &checked) {
   TopLoc_Location location;
   const Handle(Geom_Surface) surface = BRep_Tool::Surface(face, location);
   if (surface.IsNull()) {
@@ -1033,7 +1054,7 @@ BrepDefect face_defect(const TopoDS_Face &face) {
   if (const BrepDefect d = location_defect(location); d != BrepDefect::None) {
     return d;
   }
-  if (!finite_tolerance<BRep_TFace>(face) || !finite_surface(surface)) {
+  if (!finite_tolerance<BRep_TFace>(face) || !finite_once(checked, surface)) {
     return BrepDefect::SurfaceNotFinite;
   }
   const Handle(Poly_Triangulation) mesh = BRep_Tool::Triangulation(face, location);
@@ -1052,7 +1073,7 @@ BrepDefect face_defect(const TopoDS_Face &face) {
     double first = 0.0, last = 0.0;
     const Handle(Geom2d_Curve) pcurve =
         BRep_Tool::CurveOnSurface(TopoDS::Edge(it.Current()), face, first, last);
-    if (!pcurve.IsNull() && !(finite(first) && finite(last) && finite_curve(pcurve))) {
+    if (!pcurve.IsNull() && !(finite(first) && finite(last) && finite_once(checked, pcurve))) {
       return BrepDefect::CurveNotFinite;
     }
   }
@@ -1069,6 +1090,7 @@ BrepDefect brep_defect(const Shape &shape) {
   // measures and meshes it, but a boolean on it segfaults), mesh, tolerance, and curves
   // on it. Each shared sub-shape is visited once.
   TopTools_MapOfShape seen;
+  Checked checked;
   std::vector<TopoDS_Shape> todo{shape.shape};
   while (!todo.empty()) {
     const TopoDS_Shape s = todo.back();
@@ -1086,12 +1108,12 @@ BrepDefect brep_defect(const Shape &shape) {
       break;
     }
     case TopAbs_EDGE:
-      if (const BrepDefect d = edge_defect(TopoDS::Edge(s)); d != BrepDefect::None) {
+      if (const BrepDefect d = edge_defect(TopoDS::Edge(s), checked); d != BrepDefect::None) {
         return d;
       }
       break;
     case TopAbs_FACE:
-      if (const BrepDefect d = face_defect(TopoDS::Face(s)); d != BrepDefect::None) {
+      if (const BrepDefect d = face_defect(TopoDS::Face(s), checked); d != BrepDefect::None) {
         return d;
       }
       break;

@@ -212,3 +212,53 @@ fn a_part_the_converter_crashes_on_is_refused_saying_so() {
     };
     assert!(why.contains("silico-brep-convert crashed"), "{why}");
 }
+
+#[test]
+fn a_part_the_converter_refuses_is_refused_saying_why() {
+    // A face of only a triangulation: silico-brep-convert refuses it as Silico would, and
+    // its reason is the part's refusal, not a crash.
+    let part = silico_oracle::Shape::Brep {
+        path: concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../silico-kernel/tests/fixtures/brep/meshonly.brep"
+        )
+        .to_owned(),
+    };
+    let mut kernel = silico_core::kernel::KernelWorker::start().unwrap();
+    let outcome = silico_oracle::silico::measure(&mut kernel, &part);
+    let Outcome::Failed(why) = outcome else {
+        panic!("{outcome:?}")
+    };
+    assert!(
+        why.contains("no surface") && !why.contains("crashed"),
+        "{why}"
+    );
+}
+
+#[test]
+fn the_corpus_reads_its_step_files_and_names_those_freecad_cant() {
+    // A box written as STEP (named with quotes and a space, which reach FreeCAD as they are)
+    // and a file that isn't STEP: the box is two cases, as it is and moved, which Silico
+    // meshes; the other is named as unread.
+    let dir = std::env::temp_dir().join(format!("silico-corpus-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let step = dir.join("it's \"a\" box.stp");
+    silico_oracle::freecad::script(&format!(
+        "import json, Part\nPart.makeBox(10, 20, 30).exportStep({})\nprint('SILICO_ORACLE ' + json.dumps(1))\n",
+        serde_json::to_string(step.to_str().unwrap()).unwrap()
+    ))
+    .unwrap();
+    std::fs::write(dir.join("bad.stp"), "not a step file").unwrap();
+    let (cases, unread) = silico_oracle::corpus::cases(&dir).unwrap();
+    let names: Vec<&str> = cases.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["it's \"a\" box.stp", "it's \"a\" box.stp_moved"]);
+    assert_eq!(unread.len(), 1, "{unread:?}");
+    assert!(
+        unread[0].starts_with("bad.stp: FreeCAD can't read it"),
+        "{unread:?}"
+    );
+    assert!(silico_oracle::corpus::meshes(&cases).unwrap().is_empty());
+    let found = run(&cases).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(found.differences.is_empty() && found.refused.is_empty());
+}
