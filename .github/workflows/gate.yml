@@ -1,0 +1,33 @@
+# The gate (tests/gate.sh) on every pull request and push to main, on the self-hosted
+# runner (the Proxmox VM ci-runner, x86-64 Linux; docs/roadmap/m0-foundations.md, M0.9).
+# Each job starts from an empty workspace; the runner's home keeps the toolchains, the
+# OCCT build cache, pixi's package cache, and the gate's worktree with its target/.
+name: gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: gate-${{ github.ref }}
+  # A pull request's newer push replaces its older run; every commit on main is checked.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  NEXTEST_PROFILE: ci
+
+jobs:
+  gate:
+    runs-on: [self-hosted, linux, x64, pve]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - name: Toolchains
+        run: bash .github/tools.sh
+      - name: Gate
+        run: pixi run gate

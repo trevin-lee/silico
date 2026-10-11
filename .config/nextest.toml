@@ -6,3 +6,12 @@ slow-timeout = { period = "30s", terminate-after = 4 }
 [[profile.default.overrides]]
 filter = 'test(/stress|oracle/)'
 slow-timeout = { period = "60s", terminate-after = 10 }
+
+# CI (NEXTEST_PROFILE=ci): every test runs, so one run reports every failure.
+[profile.ci]
+fail-fast = false
+slow-timeout = { period = "30s", terminate-after = 4 }
+
+[[profile.ci.overrides]]
+filter = 'test(/stress|oracle/)'
+slow-timeout = { period = "60s", terminate-after = 10 }

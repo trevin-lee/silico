@@ -37,6 +37,21 @@ if [ -n "$(git -C "$root" status --porcelain)" ]; then
   echo "gate: note: uncommitted changes aren't checked; checking $commit" >&2
 fi
 
+if [ -e "$tree/.git" ] && ! git -C "$tree" rev-parse --git-dir >/dev/null 2>&1; then
+  # Its checkout is gone, cloned again at the same path (a CI runner's is, every job):
+  # start the worktree again, keeping its build caches.
+  keep=$(mktemp -d "$tree.keep.XXXXXX")
+  for cache in target .pixi; do
+    if [ -e "$tree/$cache" ]; then mv "$tree/$cache" "$keep/"; fi
+  done
+  rm -rf "$tree"
+  git -C "$root" worktree prune
+  git -C "$root" worktree add --detach --quiet "$tree" "$commit"
+  for cache in target .pixi; do
+    if [ -e "$keep/$cache" ]; then mv "$keep/$cache" "$tree/"; fi
+  done
+  rmdir "$keep"
+fi
 if [ ! -e "$tree/.git" ]; then
   # A worktree registered here but deleted: forget only that one, not the user's others.
   git -C "$root" worktree remove --force "$tree" 2>/dev/null || true

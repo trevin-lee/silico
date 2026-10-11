@@ -1,0 +1,25 @@
+# Generated cases compared with FreeCAD, nightly (docs/roadmap/m1-kernel.md, M1.8): 500
+# from a seed that changes every run, so the nights add up to broad coverage. A failing
+# night names its seed; `pixi run oracle-sweep -- --seed S` repeats it.
+name: oracle-sweep
+
+on:
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    runs-on: [self-hosted, linux, x64, pve]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - name: Toolchains
+        run: bash .github/tools.sh
+      - name: Sweep
+        run: |
+          echo "seed ${{ github.run_number }}"
+          pixi run oracle-sweep -- --seed ${{ github.run_number }}
