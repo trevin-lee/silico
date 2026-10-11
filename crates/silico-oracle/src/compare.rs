@@ -73,12 +73,14 @@ impl Tolerance {
 fn is_curved(shape: &Shape) -> bool {
     match shape {
         Shape::Block { .. } | Shape::Extrude { .. } => false,
+        // A real part: taken as curved, unless the corpus shows otherwise.
         Shape::Cylinder { .. }
         | Shape::Sphere { .. }
         | Shape::Cone { .. }
         | Shape::Torus { .. }
         | Shape::Fillet { .. }
-        | Shape::Revolve { .. } => true,
+        | Shape::Revolve { .. }
+        | Shape::Brep { .. } => true,
         Shape::Translate { shape, .. } | Shape::Chamfer { shape, .. } => is_curved(shape),
         Shape::Fuse { base, tool } | Shape::Cut { base, tool } | Shape::Common { base, tool } => {
             is_curved(base) || is_curved(tool)
@@ -101,7 +103,8 @@ fn has_curved_boolean(shape: &Shape) -> bool {
         | Shape::Cone { .. }
         | Shape::Torus { .. }
         | Shape::Extrude { .. }
-        | Shape::Revolve { .. } => false,
+        | Shape::Revolve { .. }
+        | Shape::Brep { .. } => false,
     }
 }
 
@@ -505,6 +508,19 @@ mod tests {
                     tool: boxed(moved(cylinder())),
                 },
                 Tolerance::CURVED_BOOLEAN,
+            ),
+            // A real part: compared as curved (its center and box to 1e-8 and 1e-7).
+            (
+                Shape::Brep {
+                    path: "part.brep".to_owned(),
+                },
+                Tolerance::CURVED,
+            ),
+            (
+                moved(Shape::Brep {
+                    path: "part.brep".to_owned(),
+                }),
+                Tolerance::CURVED,
             ),
         ];
         for (shape, tolerance) in cases.into_iter().chain(more) {

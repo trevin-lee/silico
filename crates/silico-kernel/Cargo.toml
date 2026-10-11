@@ -24,6 +24,10 @@ name = "silico-kernel-worker"
 path = "src/bin/silico-kernel-worker.rs"
 
 [[bin]]
+name = "silico-brep-convert"
+path = "src/bin/silico-brep-convert.rs"
+
+[[bin]]
 name = "silico-kernel-test-worker"
 path = "src/bin/silico-kernel-test-worker.rs"
 required-features = ["test_ops"]

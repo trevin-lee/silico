@@ -97,6 +97,13 @@ mod ffi {
         NotFinite,
         /// A face with no surface.
         FaceWithoutSurface,
+        /// A vertex whose point or tolerance isn't finite.
+        PointNotFinite,
+        /// An edge whose curve (in space or on a face), parameter range, stored polygon,
+        /// or tolerance isn't finite.
+        CurveNotFinite,
+        /// A face whose surface, stored mesh, or tolerance isn't finite.
+        SurfaceNotFinite,
     }
 
     /// Which boolean the bridge performs.
@@ -229,6 +236,7 @@ mod ffi {
         fn edge_points_per_edge(self: &Tessellation) -> &[u32];
         fn shape_to_brep(shape: &Shape) -> Result<UniquePtr<CxxString>>;
         fn shape_from_brep(brep: &[u8]) -> Result<UniquePtr<Shape>>;
+        fn shape_from_text_brep(brep: &[u8]) -> Result<UniquePtr<Shape>>;
         fn brep_defect(shape: &Shape) -> Result<BrepDefect>;
         fn fp_trap_mask() -> u32;
         fn disable_fp_traps() -> Result<()>;
@@ -474,12 +482,14 @@ pub fn to_brep(shape: &Shape) -> Result<Vec<u8>, KernelError> {
 }
 
 /// A shape from [`to_brep`]'s output. Bytes whose CRC doesn't match are refused before
-/// OCCT sees them. Then three things OCCT reads but can't work on are refused: a location
-/// that mirrors or scales (OCCT's operations disagree about which side of the shape is
-/// solid), a location with a value that isn't finite, and a face with no surface (OCCT's
-/// validity check crashes on one with edges, and its booleans on one of only a
-/// triangulation, as mesh import makes). The geometry's own numbers aren't checked yet
-/// (docs/roadmap/m1-kernel.md, M1.9).
+/// OCCT sees them. Then what OCCT reads but can't work on is refused: a location, on a
+/// shape or on its geometry, that mirrors or scales (OCCT's operations disagree about which
+/// side of the shape is solid); a face with no surface (OCCT's validity check crashes on
+/// one with edges, and its booleans on one of only a triangulation, as mesh import makes);
+/// and a value that isn't finite in a location, a vertex's point or tolerance, an edge's
+/// tolerance, curve in space or on a face, range, or stored polygon, or a face's
+/// tolerance, surface, or stored mesh (docs/roadmap/m1-kernel.md, M1.9). Not checked: a
+/// vertex's parameters on its edges, and an edge's polygons on a mesh.
 pub fn from_brep(brep: &[u8]) -> Result<Shape, KernelError> {
     let (body, crc) = brep
         .split_last_chunk::<4>()
@@ -489,7 +499,21 @@ pub fn from_brep(brep: &[u8]) -> Result<Shape, KernelError> {
             "B-rep is corrupted: its checksum doesn't match",
         ));
     }
-    let shape = ffi::shape_from_brep(body)?;
+    checked(ffi::shape_from_brep(body)?)
+}
+
+/// A shape from OCCT's text B-rep (FreeCAD's `Shape.exportBrep`, the `.brp` files it
+/// keeps in documents), refused as [`from_brep`] refuses one. Only for text OCCT wrote:
+/// OCCT's text reader crashes or never returns on some corrupt text (a file cut short, a
+/// negative radius, a trim that isn't finite), so only tools use it, in a process of their
+/// own (`silico-brep-convert`), to bring shapes FreeCAD made to Silico for the oracle's
+/// corpus of real parts.
+pub fn from_text_brep(brep: &[u8]) -> Result<Shape, KernelError> {
+    checked(ffi::shape_from_text_brep(brep)?)
+}
+
+/// A shape just read, unless OCCT can't work on it correctly.
+fn checked(shape: cxx::UniquePtr<ffi::Shape>) -> Result<Shape, KernelError> {
     let Some(read) = shape.as_ref() else {
         return Err(KernelError::new("OCCT returned no shape"));
     };
@@ -510,6 +534,18 @@ pub fn from_brep(brep: &[u8]) -> Result<Shape, KernelError> {
         ffi::BrepDefect::FaceWithoutSurface => refused(
             "has a face with no surface, which OCCT can't operate on",
             "rebuild the shape from its inputs; a mesh (a face of only triangles, as STEP or glTF import makes) can't be used as a solid yet",
+        ),
+        ffi::BrepDefect::PointNotFinite => refused(
+            "has a vertex whose point or tolerance isn't finite",
+            REBUILD,
+        ),
+        ffi::BrepDefect::CurveNotFinite => refused(
+            "has an edge whose curve, parameter range, or tolerance isn't finite",
+            REBUILD,
+        ),
+        ffi::BrepDefect::SurfaceNotFinite => refused(
+            "has a face whose surface, mesh, or tolerance isn't finite",
+            REBUILD,
         ),
         other => Err(KernelError::new(format!(
             "the bridge reported an unknown B-rep defect {}",
@@ -1092,18 +1128,10 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
         edge_points: triples(raw.edge_points()),
         edge_point_counts: raw.edge_points_per_edge().to_vec(),
     };
-    // OCCT meshes what it's given: a shape whose geometry isn't finite (a curve with NaN in
-    // it, from a B-rep that was stored or written badly) gives coordinates that aren't
-    // finite. That's the shape's fault, reported as such. Anything else wrong with the
-    // mesh would be the bridge's bug, which the core's own check catches (and stops the
-    // worker for).
-    let finite = |p: &[f64; 3]| p.iter().all(|c| c.is_finite());
-    if !mesh.positions.iter().chain(&mesh.edge_points).all(finite) {
-        return Err(
-            KernelError::new("the shape's mesh has coordinates that aren't finite")
-                .with_suggestion(UNUSABLE_GEOMETRY),
-        );
-    }
+    // Geometry that isn't finite is refused when it's read, and a shape far enough out to
+    // overflow its coordinates overflows its extent first: a mesh's coordinates are finite.
+    // Anything else wrong with the mesh would be the bridge's bug, which the core's own
+    // check catches (and stops the worker for).
     Ok(mesh)
 }
 

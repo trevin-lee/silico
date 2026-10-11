@@ -15,6 +15,7 @@
 #include <Bnd_Box.hxx>
 #include <GCPnts_TangentialDeflection.hxx>
 #include <Poly_Triangulation.hxx>
+#include <BRepTools.hxx>
 #include <BRep_Builder.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
@@ -39,6 +40,39 @@
 #include <Message_Alert.hxx>
 #include <Message_Report.hxx>
 #include <OSD.hxx>
+#include <Geom2d_BSplineCurve.hxx>
+#include <Geom2d_BezierCurve.hxx>
+#include <Geom2d_Circle.hxx>
+#include <Geom2d_Ellipse.hxx>
+#include <Geom2d_Hyperbola.hxx>
+#include <Geom2d_Line.hxx>
+#include <Geom2d_OffsetCurve.hxx>
+#include <Geom2d_Parabola.hxx>
+#include <Geom2d_TrimmedCurve.hxx>
+#include <Geom_BSplineCurve.hxx>
+#include <Geom_BSplineSurface.hxx>
+#include <Geom_BezierCurve.hxx>
+#include <Geom_BezierSurface.hxx>
+#include <Geom_Circle.hxx>
+#include <Geom_ConicalSurface.hxx>
+#include <Geom_CylindricalSurface.hxx>
+#include <Geom_Ellipse.hxx>
+#include <Geom_Hyperbola.hxx>
+#include <Geom_Line.hxx>
+#include <Geom_OffsetCurve.hxx>
+#include <Geom_OffsetSurface.hxx>
+#include <Geom_Parabola.hxx>
+#include <Geom_RectangularTrimmedSurface.hxx>
+#include <Geom_SphericalSurface.hxx>
+#include <Geom_SurfaceOfRevolution.hxx>
+#include <Geom_SweptSurface.hxx>
+#include <Geom_ToroidalSurface.hxx>
+#include <Geom_TrimmedCurve.hxx>
+#include <BRep_TEdge.hxx>
+#include <BRep_TFace.hxx>
+#include <BRep_TVertex.hxx>
+#include <Poly_Polygon3D.hxx>
+#include <gp_Ax22d.hxx>
 #include <Precision.hxx>
 #include <TopExp.hxx>
 #include <NCollection_IndexedMap.hxx>
@@ -61,6 +95,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 
 #if defined(__linux__)
 #include <fenv.h>
@@ -707,32 +742,355 @@ std::unique_ptr<Shape> shape_from_brep(rust::Slice<const uint8_t> brep) {
   return std::make_unique<Shape>(Shape{shape});
 }
 
-BrepDefect brep_defect(const Shape &shape) {
-  // Every link of every location in the shape's tree, raised to its power: values that
-  // aren't finite, or a mirror or scale (OCCT's TopoDS_Shape::validateTransformation test,
-  // which OCCT makes only when asked). Every face: a surface. (A face of only a
-  // triangulation, as OCCT's STEP and glTF readers make, has none; OCCT measures and meshes
-  // it, but a boolean on it segfaults.) Each shared sub-shape is visited once. The
-  // geometry's own numbers aren't checked.
-  const auto location_defect = [](const TopLoc_Location &location) {
-    for (TopLoc_Location l = location; !l.IsIdentity(); l = l.NextLocation()) {
-      const gp_Trsf t = l.FirstDatum()->Transformation().Powered(l.FirstPower());
-      bool finite = std::isfinite(t.ScaleFactor());
-      for (int row = 1; row <= 3; ++row) {
-        for (int column = 1; column <= 4; ++column) {
-          finite = finite && std::isfinite(t.Value(row, column));
-        }
-      }
-      if (!finite) {
-        return BrepDefect::NotFinite;
-      }
-      if (Abs(Abs(t.ScaleFactor()) - 1.) > TopLoc_Location::ScalePrec() || t.IsNegative()) {
-        return BrepDefect::MirrorOrScale;
+std::unique_ptr<Shape> shape_from_text_brep(rust::Slice<const uint8_t> brep) {
+  ByteStreamBuf buffer(reinterpret_cast<const char *>(brep.data()), brep.size());
+  std::istream in(&buffer);
+  TopoDS_Shape shape;
+  BRep_Builder builder;
+  BRepTools::Read(shape, in, builder);
+  if (shape.IsNull()) {
+    throw Standard_Failure("not a text B-rep");
+  }
+  return std::make_unique<Shape>(Shape{shape});
+}
+
+namespace {
+
+// Whether every number a piece of geometry is defined by is finite: OCCT reads NaN and
+// infinity from a B-rep without complaint, then measures, meshes, or operates on them
+// wrongly, slowly, or with a crash.
+bool finite(double v) { return std::isfinite(v); }
+bool finite(const gp_XYZ &p) { return finite(p.X()) && finite(p.Y()) && finite(p.Z()); }
+bool finite(const gp_Pnt &p) { return finite(p.XYZ()); }
+bool finite(const gp_Dir &d) { return finite(d.XYZ()); }
+bool finite(const gp_XY &p) { return finite(p.X()) && finite(p.Y()); }
+bool finite(const gp_Pnt2d &p) { return finite(p.XY()); }
+bool finite(const gp_Dir2d &d) { return finite(d.XY()); }
+bool finite(const gp_Ax1 &a) { return finite(a.Location()) && finite(a.Direction()); }
+bool finite(const gp_Ax2 &a) {
+  return finite(a.Location()) && finite(a.Direction()) && finite(a.XDirection()) &&
+         finite(a.YDirection());
+}
+bool finite(const gp_Ax3 &a) {
+  return finite(a.Location()) && finite(a.Direction()) && finite(a.XDirection()) &&
+         finite(a.YDirection());
+}
+bool finite(const gp_Ax2d &a) { return finite(a.Location()) && finite(a.Direction()); }
+bool finite(const gp_Ax22d &a) {
+  return finite(a.Location()) && finite(a.XDirection()) && finite(a.YDirection());
+}
+
+// A curve in space. Kinds no reader or operation makes (none Silico knows of) are taken
+// as they are.
+bool finite_curve(const Handle(Geom_Curve) &curve) {
+  if (curve.IsNull()) {
+    return true;
+  }
+  if (Handle(Geom_TrimmedCurve) c = Handle(Geom_TrimmedCurve)::DownCast(curve); !c.IsNull()) {
+    return finite(c->FirstParameter()) && finite(c->LastParameter()) &&
+           finite_curve(c->BasisCurve());
+  }
+  if (Handle(Geom_OffsetCurve) c = Handle(Geom_OffsetCurve)::DownCast(curve); !c.IsNull()) {
+    return finite(c->Offset()) && finite(c->Direction()) && finite_curve(c->BasisCurve());
+  }
+  if (Handle(Geom_Line) c = Handle(Geom_Line)::DownCast(curve); !c.IsNull()) {
+    return finite(c->Position());
+  }
+  if (Handle(Geom_Circle) c = Handle(Geom_Circle)::DownCast(curve); !c.IsNull()) {
+    return finite(c->Position()) && finite(c->Radius());
+  }
+  if (Handle(Geom_Ellipse) c = Handle(Geom_Ellipse)::DownCast(curve); !c.IsNull()) {
+    return finite(c->Position()) && finite(c->MajorRadius()) && finite(c->MinorRadius());
+  }
+  if (Handle(Geom_Hyperbola) c = Handle(Geom_Hyperbola)::DownCast(curve); !c.IsNull()) {
+    return finite(c->Position()) && finite(c->MajorRadius()) && finite(c->MinorRadius());
+  }
+  if (Handle(Geom_Parabola) c = Handle(Geom_Parabola)::DownCast(curve); !c.IsNull()) {
+    return finite(c->Position()) && finite(c->Focal());
+  }
+  if (Handle(Geom_BezierCurve) c = Handle(Geom_BezierCurve)::DownCast(curve); !c.IsNull()) {
+    for (int i = 1; i <= c->NbPoles(); ++i) {
+      if (!finite(c->Pole(i)) || !finite(c->Weight(i))) {
+        return false;
       }
     }
-    return BrepDefect::None;
-  };
+    return true;
+  }
+  if (Handle(Geom_BSplineCurve) c = Handle(Geom_BSplineCurve)::DownCast(curve); !c.IsNull()) {
+    for (int i = 1; i <= c->NbPoles(); ++i) {
+      if (!finite(c->Pole(i)) || !finite(c->Weight(i))) {
+        return false;
+      }
+    }
+    for (int i = 1; i <= c->NbKnots(); ++i) {
+      if (!finite(c->Knot(i))) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return true;
+}
+
+// A curve in a surface's parameters (an edge's pcurve).
+bool finite_curve(const Handle(Geom2d_Curve) &curve) {
+  if (curve.IsNull()) {
+    return true;
+  }
+  if (Handle(Geom2d_TrimmedCurve) c = Handle(Geom2d_TrimmedCurve)::DownCast(curve);
+      !c.IsNull()) {
+    return finite(c->FirstParameter()) && finite(c->LastParameter()) &&
+           finite_curve(c->BasisCurve());
+  }
+  if (Handle(Geom2d_OffsetCurve) c = Handle(Geom2d_OffsetCurve)::DownCast(curve); !c.IsNull()) {
+    return finite(c->Offset()) && finite_curve(c->BasisCurve());
+  }
+  if (Handle(Geom2d_Line) c = Handle(Geom2d_Line)::DownCast(curve); !c.IsNull()) {
+    return finite(c->Position());
+  }
+  if (Handle(Geom2d_Circle) c = Handle(Geom2d_Circle)::DownCast(curve); !c.IsNull()) {
+    return finite(c->Position()) && finite(c->Radius());
+  }
+  if (Handle(Geom2d_Ellipse) c = Handle(Geom2d_Ellipse)::DownCast(curve); !c.IsNull()) {
+    return finite(c->Position()) && finite(c->MajorRadius()) && finite(c->MinorRadius());
+  }
+  if (Handle(Geom2d_Hyperbola) c = Handle(Geom2d_Hyperbola)::DownCast(curve); !c.IsNull()) {
+    return finite(c->Position()) && finite(c->MajorRadius()) && finite(c->MinorRadius());
+  }
+  if (Handle(Geom2d_Parabola) c = Handle(Geom2d_Parabola)::DownCast(curve); !c.IsNull()) {
+    return finite(c->Position()) && finite(c->Focal());
+  }
+  if (Handle(Geom2d_BezierCurve) c = Handle(Geom2d_BezierCurve)::DownCast(curve);
+      !c.IsNull()) {
+    for (int i = 1; i <= c->NbPoles(); ++i) {
+      if (!finite(c->Pole(i)) || !finite(c->Weight(i))) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (Handle(Geom2d_BSplineCurve) c = Handle(Geom2d_BSplineCurve)::DownCast(curve);
+      !c.IsNull()) {
+    for (int i = 1; i <= c->NbPoles(); ++i) {
+      if (!finite(c->Pole(i)) || !finite(c->Weight(i))) {
+        return false;
+      }
+    }
+    for (int i = 1; i <= c->NbKnots(); ++i) {
+      if (!finite(c->Knot(i))) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return true;
+}
+
+bool finite_surface(const Handle(Geom_Surface) &surface) {
+  if (surface.IsNull()) {
+    return true;
+  }
+  if (Handle(Geom_RectangularTrimmedSurface) s =
+          Handle(Geom_RectangularTrimmedSurface)::DownCast(surface);
+      !s.IsNull()) {
+    double u1 = 0.0, u2 = 0.0, v1 = 0.0, v2 = 0.0;
+    s->Bounds(u1, u2, v1, v2);
+    return finite(u1) && finite(u2) && finite(v1) && finite(v2) &&
+           finite_surface(s->BasisSurface());
+  }
+  if (Handle(Geom_OffsetSurface) s = Handle(Geom_OffsetSurface)::DownCast(surface);
+      !s.IsNull()) {
+    return finite(s->Offset()) && finite_surface(s->BasisSurface());
+  }
+  if (Handle(Geom_SweptSurface) s = Handle(Geom_SweptSurface)::DownCast(surface); !s.IsNull()) {
+    bool ok = finite(s->Direction()) && finite_curve(s->BasisCurve());
+    if (Handle(Geom_SurfaceOfRevolution) r = Handle(Geom_SurfaceOfRevolution)::DownCast(s);
+        !r.IsNull()) {
+      ok = ok && finite(r->Location());
+    }
+    return ok;
+  }
+  if (Handle(Geom_ElementarySurface) s = Handle(Geom_ElementarySurface)::DownCast(surface);
+      !s.IsNull()) {
+    bool ok = finite(s->Position());
+    if (Handle(Geom_CylindricalSurface) c = Handle(Geom_CylindricalSurface)::DownCast(s);
+        !c.IsNull()) {
+      ok = ok && finite(c->Radius());
+    } else if (Handle(Geom_ConicalSurface) c = Handle(Geom_ConicalSurface)::DownCast(s);
+               !c.IsNull()) {
+      ok = ok && finite(c->RefRadius()) && finite(c->SemiAngle());
+    } else if (Handle(Geom_SphericalSurface) c = Handle(Geom_SphericalSurface)::DownCast(s);
+               !c.IsNull()) {
+      ok = ok && finite(c->Radius());
+    } else if (Handle(Geom_ToroidalSurface) c = Handle(Geom_ToroidalSurface)::DownCast(s);
+               !c.IsNull()) {
+      ok = ok && finite(c->MajorRadius()) && finite(c->MinorRadius());
+    }
+    return ok;
+  }
+  if (Handle(Geom_BezierSurface) s = Handle(Geom_BezierSurface)::DownCast(surface);
+      !s.IsNull()) {
+    for (int i = 1; i <= s->NbUPoles(); ++i) {
+      for (int j = 1; j <= s->NbVPoles(); ++j) {
+        if (!finite(s->Pole(i, j)) || !finite(s->Weight(i, j))) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+  if (Handle(Geom_BSplineSurface) s = Handle(Geom_BSplineSurface)::DownCast(surface);
+      !s.IsNull()) {
+    for (int i = 1; i <= s->NbUPoles(); ++i) {
+      for (int j = 1; j <= s->NbVPoles(); ++j) {
+        if (!finite(s->Pole(i, j)) || !finite(s->Weight(i, j))) {
+          return false;
+        }
+      }
+    }
+    for (int i = 1; i <= s->NbUKnots(); ++i) {
+      if (!finite(s->UKnot(i))) {
+        return false;
+      }
+    }
+    for (int i = 1; i <= s->NbVKnots(); ++i) {
+      if (!finite(s->VKnot(i))) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return true;
+}
+
+// A location's links, each raised to its power: values that aren't finite, or a mirror or
+// scale (OCCT's TopoDS_Shape::validateTransformation test, which OCCT makes only when
+// asked).
+BrepDefect location_defect(const TopLoc_Location &location) {
+  for (TopLoc_Location l = location; !l.IsIdentity(); l = l.NextLocation()) {
+    const gp_Trsf t = l.FirstDatum()->Transformation().Powered(l.FirstPower());
+    bool ok = finite(t.ScaleFactor());
+    for (int row = 1; row <= 3; ++row) {
+      for (int column = 1; column <= 4; ++column) {
+        ok = ok && finite(t.Value(row, column));
+      }
+    }
+    if (!ok) {
+      return BrepDefect::NotFinite;
+    }
+    if (Abs(Abs(t.ScaleFactor()) - 1.) > TopLoc_Location::ScalePrec() || t.IsNegative()) {
+      return BrepDefect::MirrorOrScale;
+    }
+  }
+  return BrepDefect::None;
+}
+
+
+bool finite_geometry(const Handle(Geom_Curve) &c) { return finite_curve(c); }
+bool finite_geometry(const Handle(Geom2d_Curve) &c) { return finite_curve(c); }
+bool finite_geometry(const Handle(Geom_Surface) &s) { return finite_surface(s); }
+
+// A sub-shape's own tolerance: BRep_Tool::Tolerance gives at least Precision::Confusion,
+// which hides a NaN (NaN compares false), though OCCT's algorithms read the raw value.
+template <typename TShape> bool finite_tolerance(const TopoDS_Shape &s) {
+  const Handle(TShape) t = Handle(TShape)::DownCast(s.TShape());
+  return t.IsNull() || finite(t->Tolerance());
+}
+
+// An edge's tolerance, its curve in space (and range), and its stored polygon, each with
+// the location it's placed by, which may no more mirror or scale than a shape's.
+// The curves and surfaces already found finite in one walk: one may be shared by many
+// edges or faces, and is checked once.
+using Checked = std::unordered_set<const Standard_Transient *>;
+
+template <typename Geometry>
+bool finite_once(Checked &checked, const Handle(Geometry) &geometry) {
+  if (checked.count(geometry.get()) != 0) {
+    return true;
+  }
+  const bool ok = finite_geometry(geometry);
+  if (ok) {
+    checked.insert(geometry.get());
+  }
+  return ok;
+}
+
+BrepDefect edge_defect(const TopoDS_Edge &edge, Checked &checked) {
+  if (!finite_tolerance<BRep_TEdge>(edge)) {
+    return BrepDefect::CurveNotFinite;
+  }
+  TopLoc_Location location;
+  double first = 0.0, last = 0.0;
+  const Handle(Geom_Curve) curve = BRep_Tool::Curve(edge, location, first, last);
+  if (!curve.IsNull()) {
+    if (const BrepDefect d = location_defect(location); d != BrepDefect::None) {
+      return d;
+    }
+    if (!(finite(first) && finite(last) && finite_once(checked, curve))) {
+      return BrepDefect::CurveNotFinite;
+    }
+  }
+  const Handle(Poly_Polygon3D) polygon = BRep_Tool::Polygon3D(edge, location);
+  if (!polygon.IsNull()) {
+    if (const BrepDefect d = location_defect(location); d != BrepDefect::None) {
+      return d;
+    }
+    for (int i = 1; i <= polygon->NbNodes(); ++i) {
+      if (!finite(polygon->Nodes().Value(i))) {
+        return BrepDefect::CurveNotFinite;
+      }
+    }
+  }
+  return BrepDefect::None;
+}
+
+// A face's surface, tolerance, stored mesh, and its edges' curves on it.
+BrepDefect face_defect(const TopoDS_Face &face, Checked &checked) {
+  TopLoc_Location location;
+  const Handle(Geom_Surface) surface = BRep_Tool::Surface(face, location);
+  if (surface.IsNull()) {
+    return BrepDefect::FaceWithoutSurface;
+  }
+  if (const BrepDefect d = location_defect(location); d != BrepDefect::None) {
+    return d;
+  }
+  if (!finite_tolerance<BRep_TFace>(face) || !finite_once(checked, surface)) {
+    return BrepDefect::SurfaceNotFinite;
+  }
+  const Handle(Poly_Triangulation) mesh = BRep_Tool::Triangulation(face, location);
+  if (!mesh.IsNull()) {
+    if (const BrepDefect d = location_defect(location); d != BrepDefect::None) {
+      return d;
+    }
+    for (int i = 1; i <= mesh->NbNodes(); ++i) {
+      if (!finite(mesh->Node(i)) || (mesh->HasUVNodes() && !finite(mesh->UVNode(i)))) {
+        return BrepDefect::SurfaceNotFinite;
+      }
+    }
+  }
+  // Each pcurve: an edge on a seam is there twice, once each way round.
+  for (TopExp_Explorer it(face, TopAbs_EDGE); it.More(); it.Next()) {
+    double first = 0.0, last = 0.0;
+    const Handle(Geom2d_Curve) pcurve =
+        BRep_Tool::CurveOnSurface(TopoDS::Edge(it.Current()), face, first, last);
+    if (!pcurve.IsNull() && !(finite(first) && finite(last) && finite_once(checked, pcurve))) {
+      return BrepDefect::CurveNotFinite;
+    }
+  }
+  return BrepDefect::None;
+}
+
+} // namespace
+
+BrepDefect brep_defect(const Shape &shape) {
+  // Every location in the shape's tree, and on its geometry (none may mirror or scale, or
+  // hold a value that isn't finite); every vertex's point and
+  // tolerance; every edge's curve, range, polygon, and tolerance; every face's surface
+  // (a face of only a triangulation, as OCCT's STEP and glTF readers make, has none: OCCT
+  // measures and meshes it, but a boolean on it segfaults), mesh, tolerance, and curves
+  // on it. Each shared sub-shape is visited once.
   TopTools_MapOfShape seen;
+  Checked checked;
   std::vector<TopoDS_Shape> todo{shape.shape};
   while (!todo.empty()) {
     const TopoDS_Shape s = todo.back();
@@ -741,11 +1099,26 @@ BrepDefect brep_defect(const Shape &shape) {
     if (defect != BrepDefect::None) {
       return defect;
     }
-    if (s.ShapeType() == TopAbs_FACE) {
-      TopLoc_Location ignored;
-      if (BRep_Tool::Surface(TopoDS::Face(s), ignored).IsNull()) {
-        return BrepDefect::FaceWithoutSurface;
+    switch (s.ShapeType()) {
+    case TopAbs_VERTEX: {
+      const TopoDS_Vertex &v = TopoDS::Vertex(s);
+      if (!finite(BRep_Tool::Pnt(v)) || !finite_tolerance<BRep_TVertex>(v)) {
+        return BrepDefect::PointNotFinite;
       }
+      break;
+    }
+    case TopAbs_EDGE:
+      if (const BrepDefect d = edge_defect(TopoDS::Edge(s), checked); d != BrepDefect::None) {
+        return d;
+      }
+      break;
+    case TopAbs_FACE:
+      if (const BrepDefect d = face_defect(TopoDS::Face(s), checked); d != BrepDefect::None) {
+        return d;
+      }
+      break;
+    default:
+      break;
     }
     for (TopoDS_Iterator it(s, false, false); it.More(); it.Next()) {
       if (seen.Add(it.Value())) {
