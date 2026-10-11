@@ -19,6 +19,8 @@ if [ "$("$HOME/.pixi/bin/pixi" --version 2>/dev/null)" != "pixi ${PIXI_VERSION#v
 fi
 echo "$HOME/.pixi/bin" >>"$GITHUB_PATH"
 
-if [ "$("$HOME/.cargo/bin/cargo-nextest" nextest --version 2>/dev/null | head -1)" != "cargo-nextest $NEXTEST_VERSION" ]; then
-  curl -LsSf "https://get.nexte.st/$NEXTEST_VERSION/linux" | tar zxf - -C "$HOME/.cargo/bin"
-fi
+# It prints "cargo-nextest 0.9.146 (<commit> <date>)".
+case "$("$HOME/.cargo/bin/cargo-nextest" nextest --version 2>/dev/null | head -1)" in
+"cargo-nextest $NEXTEST_VERSION "*) ;;
+*) curl -LsSf "https://get.nexte.st/$NEXTEST_VERSION/linux" | tar zxf - -C "$HOME/.cargo/bin" ;;
+esac

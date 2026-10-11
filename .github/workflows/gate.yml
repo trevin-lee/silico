@@ -12,7 +12,8 @@ on:
 
 concurrency:
   group: gate-${{ github.ref }}
-  cancel-in-progress: true
+  # A pull request's newer push replaces its older run; every commit on main is checked.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

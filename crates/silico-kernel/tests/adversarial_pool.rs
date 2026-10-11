@@ -892,7 +892,10 @@ fn every_worker_crashing_at_once_leaves_a_full_pool_every_time() {
             .map(|(pid, _)| pid)
             .collect();
         for &pid in before.iter().filter(|p| running.contains(p)) {
-            signal("KILL", pid);
+            // It may have ended since it was listed: `wait_full` checks what came of it.
+            let _ = Command::new("kill")
+                .args(["-KILL", &pid.to_string()])
+                .status();
         }
         let after = wait_full(&pool, size, &before.iter().copied().collect());
         assert_eq!(after.len(), size, "round {round}");
