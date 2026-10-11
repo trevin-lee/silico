@@ -984,9 +984,6 @@ BrepDefect location_defect(const TopLoc_Location &location) {
   return BrepDefect::None;
 }
 
-bool finite_location(const TopLoc_Location &location) {
-  return location_defect(location) != BrepDefect::NotFinite;
-}
 
 // A sub-shape's own tolerance: BRep_Tool::Tolerance gives at least Precision::Confusion,
 // which hides a NaN (NaN compares false), though OCCT's algorithms read the raw value.
@@ -995,29 +992,35 @@ template <typename TShape> bool finite_tolerance(const TopoDS_Shape &s) {
   return t.IsNull() || finite(t->Tolerance());
 }
 
-bool finite_edge(const TopoDS_Edge &edge) {
+// An edge's tolerance, its curve in space (and range), and its stored polygon, each with
+// the location it's placed by, which may no more mirror or scale than a shape's.
+BrepDefect edge_defect(const TopoDS_Edge &edge) {
   if (!finite_tolerance<BRep_TEdge>(edge)) {
-    return false;
+    return BrepDefect::CurveNotFinite;
   }
   TopLoc_Location location;
   double first = 0.0, last = 0.0;
   const Handle(Geom_Curve) curve = BRep_Tool::Curve(edge, location, first, last);
-  if (!curve.IsNull() &&
-      !(finite(first) && finite(last) && finite_curve(curve) && finite_location(location))) {
-    return false;
+  if (!curve.IsNull()) {
+    if (const BrepDefect d = location_defect(location); d != BrepDefect::None) {
+      return d;
+    }
+    if (!(finite(first) && finite(last) && finite_curve(curve))) {
+      return BrepDefect::CurveNotFinite;
+    }
   }
   const Handle(Poly_Polygon3D) polygon = BRep_Tool::Polygon3D(edge, location);
   if (!polygon.IsNull()) {
-    if (!finite_location(location)) {
-      return false;
+    if (const BrepDefect d = location_defect(location); d != BrepDefect::None) {
+      return d;
     }
     for (int i = 1; i <= polygon->NbNodes(); ++i) {
       if (!finite(polygon->Nodes().Value(i))) {
-        return false;
+        return BrepDefect::CurveNotFinite;
       }
     }
   }
-  return true;
+  return BrepDefect::None;
 }
 
 // A face's surface, tolerance, stored mesh, and its edges' curves on it.
@@ -1027,14 +1030,16 @@ BrepDefect face_defect(const TopoDS_Face &face) {
   if (surface.IsNull()) {
     return BrepDefect::FaceWithoutSurface;
   }
-  if (!finite_tolerance<BRep_TFace>(face) || !finite_surface(surface) ||
-      !finite_location(location)) {
+  if (const BrepDefect d = location_defect(location); d != BrepDefect::None) {
+    return d;
+  }
+  if (!finite_tolerance<BRep_TFace>(face) || !finite_surface(surface)) {
     return BrepDefect::SurfaceNotFinite;
   }
   const Handle(Poly_Triangulation) mesh = BRep_Tool::Triangulation(face, location);
   if (!mesh.IsNull()) {
-    if (!finite_location(location)) {
-      return BrepDefect::SurfaceNotFinite;
+    if (const BrepDefect d = location_defect(location); d != BrepDefect::None) {
+      return d;
     }
     for (int i = 1; i <= mesh->NbNodes(); ++i) {
       if (!finite(mesh->Node(i)) || (mesh->HasUVNodes() && !finite(mesh->UVNode(i)))) {
@@ -1057,7 +1062,8 @@ BrepDefect face_defect(const TopoDS_Face &face) {
 } // namespace
 
 BrepDefect brep_defect(const Shape &shape) {
-  // Every location in the shape's tree, and in its geometry; every vertex's point and
+  // Every location in the shape's tree, and on its geometry (none may mirror or scale, or
+  // hold a value that isn't finite); every vertex's point and
   // tolerance; every edge's curve, range, polygon, and tolerance; every face's surface
   // (a face of only a triangulation, as OCCT's STEP and glTF readers make, has none: OCCT
   // measures and meshes it, but a boolean on it segfaults), mesh, tolerance, and curves
@@ -1080,8 +1086,8 @@ BrepDefect brep_defect(const Shape &shape) {
       break;
     }
     case TopAbs_EDGE:
-      if (!finite_edge(TopoDS::Edge(s))) {
-        return BrepDefect::CurveNotFinite;
+      if (const BrepDefect d = edge_defect(TopoDS::Edge(s)); d != BrepDefect::None) {
+        return d;
       }
       break;
     case TopAbs_FACE:

@@ -171,3 +171,44 @@ print("SILICO_ORACLE " + json.dumps(len(s.Faces)))
         report(&found.differences)
     );
 }
+
+#[test]
+fn a_part_the_converter_crashes_on_is_refused_saying_so() {
+    // OCCT's text reader crashes on some corrupt text (here, a fillet's circle given a
+    // negative radius): silico-brep-convert's crash is the part's refusal, saying so, and
+    // the harness carries on.
+    let dir = std::env::temp_dir().join(format!("silico-brep-crash-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("part.brep");
+    let text: String = serde_json::from_value(
+        silico_oracle::freecad::script(
+            "import json, Part\ns = Part.makeBox(10, 20, 30)\ns = s.makeFillet(2, [s.Edges[0]])\nprint('SILICO_ORACLE ' + json.dumps(s.exportBrepToString()))\n",
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    // The first circle in the curves: its last number is its radius.
+    let curves = text.find("\nCurves ").unwrap();
+    let start = curves + text[curves..].find("\n2 ").unwrap() + 1;
+    let end = start + text[start..].find('\n').unwrap();
+    let line = text[start..end].trim_end();
+    let radius = line.rfind(' ').unwrap();
+    let corrupt = format!(
+        "{}{} -{}{}",
+        &text[..start],
+        &line[..radius],
+        &line[radius + 1..],
+        &text[end..]
+    );
+    std::fs::write(&path, corrupt).unwrap();
+    let mut kernel = silico_core::kernel::KernelWorker::start().unwrap();
+    let part = silico_oracle::Shape::Brep {
+        path: path.to_string_lossy().into_owned(),
+    };
+    let outcome = silico_oracle::silico::measure(&mut kernel, &part);
+    std::fs::remove_dir_all(&dir).unwrap();
+    let Outcome::Failed(why) = outcome else {
+        panic!("{outcome:?}")
+    };
+    assert!(why.contains("silico-brep-convert crashed"), "{why}");
+}

@@ -30,7 +30,10 @@ fn main() -> ExitCode {
         if let Some(unread) = corpus {
             problems = unread;
             problems.extend(corpus::meshes(&cases)?);
-            (report.differences, known) = corpus::without_known(report.differences);
+            let missing;
+            (report.differences, known, missing) =
+                corpus::without_known(report.differences, corpus::KNOWN);
+            problems.extend(missing);
         }
         Ok((cases.len(), report, problems, known))
     });

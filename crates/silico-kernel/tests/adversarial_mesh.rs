@@ -1502,7 +1502,8 @@ fn many_faces_of_no_triangles_cost_little() {
 fn a_text_brep_is_refused_as_a_binary_one_is() {
     // OCCT's text B-rep (FreeCAD's exportBrep), read for the corpus of real parts, goes
     // through the same checks: the text of meshonly.bin's face is refused for the same
-    // reason. Text that isn't a B-rep, or is cut short, is an error, not a crash.
+    // reason. Text that isn't a B-rep is an error. (Some corrupt text crashes OCCT's
+    // reader, or never returns: it's read only in silico-brep-convert's own process.)
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/brep");
     let text = std::fs::read(dir.join("meshonly.brep")).unwrap();
     let err = silico_kernel::from_text_brep(&text).err().unwrap();

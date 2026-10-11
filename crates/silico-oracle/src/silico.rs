@@ -1,9 +1,10 @@
 //! Silico's side: a case's shape built through the core's kernel API on a worker, and
 //! measured.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use silico_core::kernel::{
     Axis, Blob, BooleanOp, ChamferSize, KernelWorker, Primitive, Profile, ShapeData,
@@ -137,6 +138,9 @@ fn boolean(
 /// Names a `silico-brep-convert` to use instead of the one beside this executable.
 pub const BREP_CONVERT_ENV: &str = "SILICO_BREP_CONVERT";
 
+/// How long `silico-brep-convert` may take over one part.
+const CONVERT_DEADLINE: Duration = Duration::from_secs(60);
+
 /// The text B-rep at `path` as Silico's B-rep, through `silico-brep-convert` (from the
 /// kernel crate, the only one that reads B-reps): beside this executable (or its `deps/`
 /// directory's parent, for tests), or where [`BREP_CONVERT_ENV`] says.
@@ -186,21 +190,58 @@ fn converted(path: &Path) -> Result<ShapeData, Error> {
         .stdin
         .take()
         .map(|mut stdin| std::thread::spawn(move || stdin.write_all(&text)));
-    let out = child.wait_with_output().map_err(|e| {
-        Error::new(ErrorCode::Internal, "can't wait for silico-brep-convert")
-            .with_cause(e.to_string())
-    })?;
+    let read = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            bytes
+        })
+    };
+    let stdout = read(child.stdout.take().map(|p| Box::new(p) as _));
+    let stderr = read(child.stderr.take().map(|p| Box::new(p) as _));
+    // OCCT's text reader crashes, or never returns, on some corrupt text.
+    let deadline = Instant::now() + CONVERT_DEADLINE;
+    let status = loop {
+        let waited = child.try_wait().map_err(|e| {
+            Error::new(ErrorCode::Internal, "can't wait for silico-brep-convert")
+                .with_cause(e.to_string())
+        })?;
+        if let Some(status) = waited {
+            break Some(status);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
     if let Some(fed) = fed {
         let _ = fed.join();
     }
-    if !out.status.success() {
-        return Err(Error::new(
+    let stdout = stdout.join().unwrap_or_default();
+    let stderr = stderr.join().unwrap_or_default();
+    let stderr = String::from_utf8_lossy(&stderr).trim().to_owned();
+    let refused = |why: String| {
+        Err(Error::new(
             ErrorCode::InvalidInput,
             format!("{} can't be read", path.display()),
         )
-        .with_cause(String::from_utf8_lossy(&out.stderr).trim().to_owned()));
+        .with_cause(why))
+    };
+    match status {
+        None => refused(format!(
+            "silico-brep-convert took longer than {} s",
+            CONVERT_DEADLINE.as_secs()
+        )),
+        Some(status) if !status.success() && stderr.is_empty() => {
+            refused(format!("silico-brep-convert crashed ({status})"))
+        }
+        Some(status) if !status.success() => refused(stderr),
+        Some(_) => Ok(ShapeData::unchecked(Blob::inline(stdout))),
     }
-    Ok(ShapeData::unchecked(Blob::inline(out.stdout)))
 }
 
 #[cfg(test)]

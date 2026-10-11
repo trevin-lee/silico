@@ -30,18 +30,22 @@ pub fn cases(dir: &Path) -> Result<(Vec<Case>, Vec<String>), String> {
     std::fs::create_dir_all(&out).map_err(|e| format!("can't make {}: {e}", out.display()))?;
     let (mut cases, mut unread) = (Vec::new(), Vec::new());
     for file in files {
+        // Named for the whole file name, so `a.stp` and `a.step` don't share a case.
         let stem = file
-            .file_stem()
+            .file_name()
             .and_then(|s| s.to_str())
             .ok_or_else(|| format!("{} has no name", file.display()))?
             .to_owned();
         let brep = out.join(format!("{stem}.brep"));
+        // The paths reach Python as JSON in a string literal (whose escapes JSON's are):
+        // any name is passed as it is.
         let jobs = serde_json::to_string(&[&file, &brep])
+            .and_then(|json| serde_json::to_string(&json))
             .map_err(|e| format!("can't write the paths: {e}"))?;
         let script = format!(
             r#"
 import json, Part
-source, target = json.loads({jobs:?})
+source, target = json.loads({jobs})
 try:
     s = Part.Shape()
     s.read(source)
@@ -113,31 +117,88 @@ pub fn meshes(cases: &[Case]) -> Result<Vec<String>, String> {
 /// Differences the corpus shows that are understood, each with why: reported as known, not
 /// failed. A known difference that changes, or goes away, is reported as it is.
 pub const KNOWN: &[(&str, &str, &str)] = &[(
-    "nist_stc_07_asme1_ap242-e3",
+    "nist_stc_07_asme1_ap242-e3.stp",
     "valid: Silico false, FreeCAD true",
     "OCCT's analyzer finds four faces' wires unorientable in Silico's build of OCCT 7.9.3, \
      and the part valid in FreeCAD's, reading the same B-rep: a borderline numeric check, \
      most likely the exact math Silico's build uses",
 )];
 
-/// `differences` without the [`KNOWN`] ones, and the known ones found, in words.
-pub fn without_known(differences: Vec<Difference>) -> (Vec<Difference>, Vec<String>) {
-    let mut known = Vec::new();
+/// `differences` without those `known` lists, the known ones found (in words), and the
+/// known ones not found: a problem, since the list should say what the corpus shows.
+pub fn without_known(
+    differences: Vec<Difference>,
+    known: &[(&str, &str, &str)],
+) -> (Vec<Difference>, Vec<String>, Vec<String>) {
+    let mut found = Vec::new();
+    let mut seen = vec![false; known.len()];
     let rest = differences
         .into_iter()
         .filter(|d| {
             let how = d.how.join("; ");
-            match KNOWN
+            match known
                 .iter()
-                .find(|(case, what, _)| *case == d.case && *what == how)
+                .position(|(case, what, _)| *case == d.case && *what == how)
             {
-                Some((_, _, why)) => {
-                    known.push(format!("{d} (known: {why})"));
+                Some(i) => {
+                    seen[i] = true;
+                    found.push(format!("{d} (known: {})", known[i].2));
                     false
                 }
                 None => true,
             }
         })
         .collect();
-    (rest, known)
+    let missing = known
+        .iter()
+        .zip(seen)
+        .filter(|(_, seen)| !seen)
+        .map(|((case, what, _), _)| format!("{case}: a known difference didn't show: {what}"))
+        .collect();
+    (rest, found, missing)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::without_known;
+    use crate::{Difference, Outcome};
+
+    fn difference(case: &str, how: &str) -> Difference {
+        Difference {
+            case: case.to_owned(),
+            ours: Outcome::Failed(String::new()),
+            theirs: Outcome::Failed(String::new()),
+            how: vec![how.to_owned()],
+        }
+    }
+
+    #[test]
+    fn only_a_known_difference_exactly_as_listed_is_set_aside() {
+        let known = [("a", "valid: Silico false, FreeCAD true", "why")];
+        let (rest, found, missing) = without_known(
+            vec![
+                difference("a", "valid: Silico false, FreeCAD true"),
+                difference("a", "valid: Silico true, FreeCAD false"),
+                difference("b", "valid: Silico false, FreeCAD true"),
+            ],
+            &known,
+        );
+        assert_eq!(rest.len(), 2);
+        assert_eq!(rest[0].how, ["valid: Silico true, FreeCAD false"]);
+        assert_eq!(rest[1].case, "b");
+        assert_eq!(found, ["a: valid: Silico false, FreeCAD true (known: why)"]);
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn a_known_difference_that_didnt_show_is_a_problem() {
+        let known = [("a", "valid: Silico false, FreeCAD true", "why")];
+        let (rest, found, missing) = without_known(vec![difference("b", "x")], &known);
+        assert_eq!(rest.len(), 1);
+        assert!(found.is_empty());
+        assert_eq!(
+            missing,
+            ["a: a known difference didn't show: valid: Silico false, FreeCAD true"]
+        );
+    }
 }

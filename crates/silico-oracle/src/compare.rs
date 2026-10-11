@@ -509,6 +509,19 @@ mod tests {
                 },
                 Tolerance::CURVED_BOOLEAN,
             ),
+            // A real part: compared as curved (its center and box to 1e-8 and 1e-7).
+            (
+                Shape::Brep {
+                    path: "part.brep".to_owned(),
+                },
+                Tolerance::CURVED,
+            ),
+            (
+                moved(Shape::Brep {
+                    path: "part.brep".to_owned(),
+                }),
+                Tolerance::CURVED,
+            ),
         ];
         for (shape, tolerance) in cases.into_iter().chain(more) {
             assert_eq!(Tolerance::of(&shape), tolerance, "{shape:?}");
