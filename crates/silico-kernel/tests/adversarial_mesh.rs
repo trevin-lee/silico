@@ -1036,6 +1036,33 @@ fn a_location_raised_to_a_power_is_checked_as_raised() {
 }
 
 #[test]
+fn internal_and_external_faces_mesh_with_triangles_and_normals_agreeing() {
+    // A box whose face at x = 0 is INTERNAL, or EXTERNAL, in its shell (made in the FreeCAD
+    // oracle: tests/fixtures/brep/README.md). Silico winds a face's triangles the other way
+    // only when it's REVERSED, as it reverses its normals then, so on these faces both stay
+    // as the plane has them, +x (the oracle's normal there), and agree. FreeCAD swaps the
+    // corners of every face that isn't FORWARD but reverses normals only on REVERSED ones,
+    // so there its triangles face -x against normals of +x.
+    for name in ["box_internal_face1.bin", "box_external_face1.bin"] {
+        let mesh = tessellate(&from_brep(&fixture(name)).unwrap(), 0.1).unwrap();
+        assert_flat_normals_match_triangles(name, &mesh);
+        let on_face: Vec<_> = mesh
+            .positions
+            .iter()
+            .zip(&mesh.normals)
+            .filter(|(p, n)| p[0] == 0.0 && n[0] != 0.0)
+            .collect();
+        assert!(
+            !on_face.is_empty(),
+            "{name}: no vertex on the face at x = 0"
+        );
+        for (p, n) in on_face {
+            assert_eq!(*n, [1.0, 0.0, 0.0], "{name}: at {p:?}");
+        }
+    }
+}
+
+#[test]
 fn a_bare_face_with_no_surface_is_refused() {
     // No surface, no edges, and no triangles: meshonly.bin with its face's triangulation
     // reference taken out (the flag at 0x135 from 2 to 0, and the 4-byte index after it).
