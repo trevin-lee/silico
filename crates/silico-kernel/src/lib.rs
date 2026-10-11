@@ -97,6 +97,13 @@ mod ffi {
         NotFinite,
         /// A face with no surface.
         FaceWithoutSurface,
+        /// A vertex whose point or tolerance isn't finite.
+        PointNotFinite,
+        /// An edge whose curve (in space or on a face), parameter range, stored polygon,
+        /// or tolerance isn't finite.
+        CurveNotFinite,
+        /// A face whose surface, stored mesh, or tolerance isn't finite.
+        SurfaceNotFinite,
     }
 
     /// Which boolean the bridge performs.
@@ -229,6 +236,7 @@ mod ffi {
         fn edge_points_per_edge(self: &Tessellation) -> &[u32];
         fn shape_to_brep(shape: &Shape) -> Result<UniquePtr<CxxString>>;
         fn shape_from_brep(brep: &[u8]) -> Result<UniquePtr<Shape>>;
+        fn shape_from_text_brep(brep: &[u8]) -> Result<UniquePtr<Shape>>;
         fn brep_defect(shape: &Shape) -> Result<BrepDefect>;
         fn fp_trap_mask() -> u32;
         fn disable_fp_traps() -> Result<()>;
@@ -489,7 +497,18 @@ pub fn from_brep(brep: &[u8]) -> Result<Shape, KernelError> {
             "B-rep is corrupted: its checksum doesn't match",
         ));
     }
-    let shape = ffi::shape_from_brep(body)?;
+    checked(ffi::shape_from_brep(body)?)
+}
+
+/// A shape from OCCT's text B-rep (FreeCAD's `Shape.exportBrep`, the `.brp` files it
+/// keeps in documents), refused as [`from_brep`] refuses one. Only tools use it, to bring
+/// shapes FreeCAD made to Silico: for the oracle's corpus of real parts.
+pub fn from_text_brep(brep: &[u8]) -> Result<Shape, KernelError> {
+    checked(ffi::shape_from_text_brep(brep)?)
+}
+
+/// A shape just read, unless OCCT can't work on it correctly.
+fn checked(shape: cxx::UniquePtr<ffi::Shape>) -> Result<Shape, KernelError> {
     let Some(read) = shape.as_ref() else {
         return Err(KernelError::new("OCCT returned no shape"));
     };
@@ -510,6 +529,18 @@ pub fn from_brep(brep: &[u8]) -> Result<Shape, KernelError> {
         ffi::BrepDefect::FaceWithoutSurface => refused(
             "has a face with no surface, which OCCT can't operate on",
             "rebuild the shape from its inputs; a mesh (a face of only triangles, as STEP or glTF import makes) can't be used as a solid yet",
+        ),
+        ffi::BrepDefect::PointNotFinite => refused(
+            "has a vertex whose point or tolerance isn't finite",
+            REBUILD,
+        ),
+        ffi::BrepDefect::CurveNotFinite => refused(
+            "has an edge whose curve, parameter range, or tolerance isn't finite",
+            REBUILD,
+        ),
+        ffi::BrepDefect::SurfaceNotFinite => refused(
+            "has a face whose surface, mesh, or tolerance isn't finite",
+            REBUILD,
         ),
         other => Err(KernelError::new(format!(
             "the bridge reported an unknown B-rep defect {}",

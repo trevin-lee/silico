@@ -121,3 +121,53 @@ fn harness_catches_wrong_result_through_both_sides() {
     face.faces += 1;
     assert!(!differences(&Outcome::Built(face), &theirs, tolerance).is_empty());
 }
+
+#[test]
+fn a_part_freecad_wrote_matches_as_both_sides_read_it() {
+    // A filleted box FreeCAD made and wrote as a text B-rep (as the corpus's parts are):
+    // Silico reads it through silico-brep-convert, FreeCAD as it is, and they match, as is
+    // and moved.
+    let dir = std::env::temp_dir().join(format!("silico-brep-case-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("part.brep");
+    let written = silico_oracle::freecad::script(&format!(
+        r#"
+import json, Part
+s = Part.makeBox(10, 20, 30)
+s = s.makeFillet(2, [s.Edges[0]])
+s.exportBrep({:?})
+print("SILICO_ORACLE " + json.dumps(len(s.Faces)))
+"#,
+        path.to_str().unwrap()
+    ))
+    .unwrap();
+    assert_eq!(written, 7);
+    let part = silico_oracle::Shape::Brep {
+        path: path.to_string_lossy().into_owned(),
+    };
+    let cases = [
+        Case {
+            name: "part".to_owned(),
+            note: String::new(),
+            boundary: None,
+            shape: part.clone(),
+        },
+        Case {
+            name: "part_moved".to_owned(),
+            note: String::new(),
+            boundary: None,
+            shape: silico_oracle::Shape::Translate {
+                shape: Box::new(part),
+                by: [1.0, 2.0, 3.0],
+            },
+        },
+    ];
+    let found = run(&cases).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(found.refused.is_empty(), "{:?}", found.refused);
+    assert!(
+        found.differences.is_empty(),
+        "{}",
+        report(&found.differences)
+    );
+}

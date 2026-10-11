@@ -119,6 +119,10 @@ def build(doc, spec):
             d = unit(direction)
             vector = [c * a["length"] / abs(dot(d, normal)) for c in d]
         return face(points).extrude(V(*vector))
+    if kind == "brep":
+        s = Part.Shape()
+        s.read(a["path"])
+        return s
     if kind == "revolve":
         return face(a["profile"]).revolve(V(*a["origin"]), V(*a["direction"]), a["angle"])
     raise ValueError("unknown operation " + kind)
@@ -131,12 +135,11 @@ def measure(s):
         raise RuntimeError("the result is empty")
     b = s.optimalBoundingBox(False, False)
     bounds = [[b.XMin, b.YMin, b.ZMin], [b.XMax, b.YMax, b.ZMax]] if b.isValid() else None
-    # The center of mass of all its solids, as OCCT's volume properties of the whole shape.
-    solids = s.Solids
-    mass = sum(x.Volume for x in solids)
+    # The center of the whole shape's volume, as Silico measures it: a real part can carry
+    # shells and faces beside its solids, which count in its volume too.
     center = None
-    if solids and mass != 0:
-        center = [sum(x.Volume * x.CenterOfMass[k] for x in solids) / mass for k in range(3)]
+    if s.Solids and s.Volume != 0:
+        center = list(s.CenterOfGravity)
     return {
         "volume": s.Volume,
         "area": s.Area,

@@ -1497,3 +1497,44 @@ fn many_faces_of_no_triangles_cost_little() {
     // Counting them out one by one would allocate u32::MAX entries per face, and fail.
     assert!(mesh.triangle_faces().is_empty());
 }
+
+#[test]
+fn a_text_brep_is_refused_as_a_binary_one_is() {
+    // OCCT's text B-rep (FreeCAD's exportBrep), read for the corpus of real parts, goes
+    // through the same checks: the text of meshonly.bin's face is refused for the same
+    // reason. Text that isn't a B-rep, or is cut short, is an error, not a crash.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/brep");
+    let text = std::fs::read(dir.join("meshonly.brep")).unwrap();
+    let err = silico_kernel::from_text_brep(&text).err().unwrap();
+    assert!(err.message().contains("no surface"), "{err:?}");
+    for bad in [&b""[..], b"not a B-rep at all", &text[..text.len() / 2]] {
+        assert!(silico_kernel::from_text_brep(bad).is_err());
+    }
+}
+
+#[test]
+fn the_converter_writes_what_the_reader_reads() {
+    // silico-brep-convert: the text of a part on stdin, Silico's B-rep on stdout; a part
+    // Silico would refuse is refused, with why on stderr and a failing exit.
+    use std::io::Write as _;
+    let convert = |text: &[u8]| {
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_silico-brep-convert"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(text).unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/brep");
+    let out = convert(&std::fs::read(dir.join("meshonly.brep")).unwrap());
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("no surface"),
+        "{out:?}"
+    );
+    let out = convert(b"garbage");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).starts_with("silico-brep-convert: "));
+}

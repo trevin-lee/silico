@@ -1,6 +1,7 @@
-# Generated cases compared with FreeCAD, nightly (docs/roadmap/m1-kernel.md, M1.8): 500
-# from a seed that changes every run, so the nights add up to broad coverage. A failing
-# night names its seed; `pixi run oracle-sweep -- --seed S` repeats it.
+# Silico compared with FreeCAD, nightly: 500 generated cases (docs/roadmap/m1-kernel.md,
+# M1.8) from a seed that changes every run, so the nights add up to broad coverage (a
+# failing night names its seed; `pixi run oracle-sweep -- --seed S` repeats it), and the
+# corpus of real parts (M1.9; `pixi run corpus`).
 name: oracle-sweep
 
 on:
@@ -23,3 +24,6 @@ jobs:
         run: |
           echo "seed ${{ github.run_number }}"
           pixi run oracle-sweep -- --seed ${{ github.run_number }}
+      - name: Corpus
+        if: ${{ !cancelled() }}
+        run: pixi run corpus

@@ -1075,10 +1075,10 @@ fn refusals_show_the_value_given() {
     }
 }
 
-/// A box's B-rep with every `30.0` in the section that starts at `section` (up to the
-/// next section) replaced by `with`, and a checksum that matches: as a badly stored shape
-/// might be. Also returns how many values were replaced.
-fn spoiled_box(k: &mut KernelWorker, section: &[u8], with: f64) -> (ShapeData, usize) {
+/// A 10 × 20 × 30 box's B-rep with every `from` in the section that starts at `section`
+/// (up to the next section) replaced by `with`, and a checksum that matches: as a badly
+/// stored shape might be. Also returns how many values were replaced.
+fn spoiled_box(k: &mut KernelWorker, section: &[u8], from: f64, with: f64) -> (ShapeData, usize) {
     let shape = k
         .make(Primitive::Box {
             dx: 10.0,
@@ -1105,8 +1105,8 @@ fn spoiled_box(k: &mut KernelWorker, section: &[u8], with: f64) -> (ShapeData, u
     .into_iter()
     .filter_map(|name| find(name, start + section.len()))
     .min()
-    .unwrap();
-    let (from, to) = (30.0f64.to_le_bytes(), with.to_le_bytes());
+    .unwrap_or(bytes.len());
+    let (from, to) = (from.to_le_bytes(), with.to_le_bytes());
     let (mut i, mut replaced) = (start, 0);
     while i + 8 <= end {
         if bytes[i..i + 8] == from {
@@ -1123,22 +1123,45 @@ fn spoiled_box(k: &mut KernelWorker, section: &[u8], with: f64) -> (ShapeData, u
 }
 
 #[test]
-fn a_shape_with_a_curve_that_isnt_finite_doesnt_cost_a_worker() {
-    // NaN in the box's curves: OCCT meshes it into coordinates that aren't finite. That's
-    // the shape's fault, reported by the worker, which carries on; a broken worker is a
-    // different error.
+fn geometry_that_isnt_finite_is_refused_when_read() {
+    // NaN or infinity in a box's curves (its edges' lines), the curves on its faces, its
+    // planes, or its vertices' points and tolerances: OCCT reads it without complaint, then
+    // measured a box of 6000 as 5000, meshed it into coordinates that aren't finite, or
+    // crashed filleting it. Refused as the shape's fault, naming the kind of element,
+    // with a suggestion to rebuild it; the worker carries on.
     let mut k = kernel();
-    let (bad, replaced) = spoiled_box(&mut k, b"Curves", f64::NAN);
-    assert!(replaced > 0);
-    let err = k.tessellate(&bad, 1.0).unwrap_err();
-    assert_eq!(err.code(), ErrorCode::KernelFailed, "{err}");
-    assert!(
-        err.cause()
-            .unwrap()
-            .contains("coordinates that aren't finite"),
-        "{err}"
-    );
-    assert!(err.suggestion().unwrap().contains("rebuild"), "{err}");
+    let cases: [(&[u8], f64, f64, &str); 7] = [
+        (b"Curves", 30.0, f64::NAN, "has an edge whose curve"),
+        (b"Curves", 30.0, f64::INFINITY, "has an edge whose curve"),
+        (b"Curve2ds", 30.0, f64::NAN, "has an edge whose curve"),
+        (b"Surfaces", 30.0, f64::NAN, "has a face whose surface"),
+        (
+            b"Surfaces",
+            30.0,
+            f64::NEG_INFINITY,
+            "has a face whose surface",
+        ),
+        (b"TShapes", 30.0, f64::NAN, "isn't finite"),
+        (b"TShapes", 1e-7, f64::NAN, "isn't finite"),
+    ];
+    for (section, from, with, says) in cases {
+        let what = format!("{} {from} -> {with}", String::from_utf8_lossy(section));
+        let (bad, replaced) = spoiled_box(&mut k, section, from, with);
+        assert!(replaced > 0, "{what}: nothing to spoil");
+        for got in [
+            k.summarize(&bad).map(|_| ()),
+            k.tessellate(&bad, 1.0).map(|_| ()),
+            k.fillet(&bad, &[1], 1.0).map(|_| ()),
+        ] {
+            let err = got.expect_err(&what);
+            assert_eq!(err.code(), ErrorCode::InvalidInput, "{what}: {err}");
+            assert!(err.to_string().contains(says), "{what}: {err}");
+            assert!(
+                err.suggestion().unwrap().contains("rebuild"),
+                "{what}: {err}"
+            );
+        }
+    }
     // The worker is still there.
     let good = k
         .make(Primitive::Box {
@@ -1151,33 +1174,16 @@ fn a_shape_with_a_curve_that_isnt_finite_doesnt_cost_a_worker() {
 }
 
 #[test]
-fn a_shape_whose_extent_isnt_finite_is_the_shapes_fault() {
-    // Infinity in the curves: the shape's bounding box isn't finite, so no deflection
-    // would do. The error says so, rather than asking for an infinite deflection.
+fn finite_geometry_is_read_as_it_was_written() {
+    // The same box, unspoiled, and one with its 30s swapped for another finite value in
+    // every section: read, not refused (the box spoiled in its curves alone isn't a valid
+    // box, but it's finite).
     let mut k = kernel();
-    let (bad, replaced) = spoiled_box(&mut k, b"Curves", f64::INFINITY);
-    assert!(replaced > 0);
-    let err = k.tessellate(&bad, 1.0).unwrap_err();
-    assert_eq!(err.code(), ErrorCode::KernelFailed, "{err}");
-    assert!(
-        err.cause()
-            .unwrap()
-            .contains("extent is too large or not finite"),
-        "{err}"
-    );
-    assert!(err.suggestion().unwrap().contains("rebuild"), "{err}");
-}
-
-#[test]
-fn a_shape_with_a_surface_that_isnt_finite_suggests_rebuilding_it() {
-    // NaN in the box's planes: OCCT can't mesh those faces. The suggestion is about the
-    // shape, not the deflection, which no change would help.
-    let mut k = kernel();
-    let (bad, replaced) = spoiled_box(&mut k, b"Surfaces", f64::NAN);
-    assert!(replaced > 0);
-    let err = k.tessellate(&bad, 1.0).unwrap_err();
-    assert_eq!(err.code(), ErrorCode::KernelFailed, "{err}");
-    assert!(err.suggestion().unwrap().contains("rebuild"), "{err}");
+    for section in [&b"Curves"[..], b"Curve2ds", b"Surfaces", b"TShapes"] {
+        let (odd, replaced) = spoiled_box(&mut k, section, 30.0, 31.0);
+        assert!(replaced > 0);
+        k.summarize(&odd).unwrap();
+    }
 }
 
 #[test]

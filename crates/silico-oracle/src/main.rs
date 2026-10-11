@@ -3,18 +3,20 @@
 //! - `silico-oracle run [DIR]`: the cases in DIR (default `tests/oracle`).
 //! - `silico-oracle sweep [--count N] [--seed S]`: N generated cases (default 500) from seed
 //!   S (default 1).
+//! - `silico-oracle corpus DIR`: the STEP files in DIR, as FreeCAD reads them, each as it is
+//!   and moved; Silico also meshes each (`pixi run corpus` fetches them first).
 //!
 //! Prints each case that differs, and exits 1 if any does. Needs the kernel worker beside
 //! it (`pixi run oracle` and `pixi run oracle-sweep` build it) and the FreeCAD oracle
 //! (`pixi install -e oracle`).
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use silico_oracle::{Case, generate, load, run};
+use silico_oracle::{Case, corpus, generate, load, run};
 
-const USAGE: &str = "usage: silico-oracle run [DIR] | silico-oracle sweep [--count N] [--seed S]";
+const USAGE: &str = "usage: silico-oracle run [DIR] | silico-oracle sweep [--count N] [--seed S] | silico-oracle corpus DIR";
 
 /// The most cases a sweep runs: a few hours' worth (500 take about 10 s), a few hundred
 /// megabytes of cases.
@@ -22,10 +24,26 @@ const MAX_SWEEP: usize = 1_000_000;
 
 fn main() -> ExitCode {
     let mut out = std::io::stdout().lock();
-    match cases().and_then(|cases| Ok((cases.len(), run(&cases)?))) {
-        Ok((count, report)) => {
+    let ran = cases().and_then(|(cases, corpus)| {
+        let mut report = run(&cases)?;
+        let (mut problems, mut known) = (Vec::new(), Vec::new());
+        if let Some(unread) = corpus {
+            problems = unread;
+            problems.extend(corpus::meshes(&cases)?);
+            (report.differences, known) = corpus::without_known(report.differences);
+        }
+        Ok((cases.len(), report, problems, known))
+    });
+    match ran {
+        Ok((count, report, problems, known)) => {
             for d in &report.differences {
                 let _ = writeln!(out, "{d}");
+            }
+            for k in &known {
+                let _ = writeln!(out, "{k}");
+            }
+            for p in &problems {
+                let _ = writeln!(out, "{p}");
             }
             let found = report.differences.len();
             let _ = match report.refused.len() {
@@ -36,7 +54,10 @@ fn main() -> ExitCode {
                     report.refused.join(", ")
                 ),
             };
-            if found == 0 {
+            if !problems.is_empty() {
+                let _ = writeln!(out, "{} more problems with the corpus", problems.len());
+            }
+            if found == 0 && problems.is_empty() {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE
@@ -49,8 +70,9 @@ fn main() -> ExitCode {
     }
 }
 
-/// The cases the command line asks for.
-fn cases() -> Result<Vec<Case>, String> {
+/// The cases the command line asks for, and for the corpus, its files FreeCAD couldn't
+/// read.
+fn cases() -> Result<(Vec<Case>, Option<Vec<String>>), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("run") => {
@@ -60,8 +82,15 @@ fn cases() -> Result<Vec<Case>, String> {
             let dir = args
                 .get(1)
                 .map_or_else(|| PathBuf::from("tests/oracle"), PathBuf::from);
-            load(&dir)
+            Ok((load(&dir)?, None))
         }
+        Some("corpus") => match &args[1..] {
+            [dir] => {
+                let (cases, unread) = corpus::cases(Path::new(dir))?;
+                Ok((cases, Some(unread)))
+            }
+            _ => Err(format!("corpus takes one directory\n{USAGE}")),
+        },
         Some("sweep") => {
             let (mut count, mut seed) = (500usize, 1u64);
             let mut rest = args[1..].iter();
@@ -86,7 +115,7 @@ fn cases() -> Result<Vec<Case>, String> {
             if count > MAX_SWEEP {
                 return Err(format!("--count {count}: at most {MAX_SWEEP}\n{USAGE}"));
             }
-            Ok(generate::cases(seed, count))
+            Ok((generate::cases(seed, count), None))
         }
         _ => Err(USAGE.to_owned()),
     }

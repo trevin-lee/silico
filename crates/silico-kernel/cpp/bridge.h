@@ -199,6 +199,8 @@ bool is_valid(const Shape &shape);
 // OCCT's binary B-rep format, which is how shapes cross the worker boundary.
 std::unique_ptr<std::string> shape_to_brep(const Shape &shape);
 std::unique_ptr<Shape> shape_from_brep(rust::Slice<const uint8_t> brep);
+// OCCT's text B-rep, as FreeCAD's Shape.exportBrep writes it.
+std::unique_ptr<Shape> shape_from_text_brep(rust::Slice<const uint8_t> brep);
 // What makes a shape read from bytes unusable, if anything.
 BrepDefect brep_defect(const Shape &shape);
 

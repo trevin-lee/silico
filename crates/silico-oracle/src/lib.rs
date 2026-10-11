@@ -8,6 +8,7 @@
 
 pub mod case;
 pub mod compare;
+pub mod corpus;
 pub mod freecad;
 pub mod generate;
 pub mod silico;

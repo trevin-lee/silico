@@ -1,8 +1,12 @@
 //! Silico's side: a case's shape built through the core's kernel API on a worker, and
 //! measured.
 
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
 use silico_core::kernel::{
-    Axis, BooleanOp, ChamferSize, KernelWorker, Primitive, Profile, ShapeData,
+    Axis, Blob, BooleanOp, ChamferSize, KernelWorker, Primitive, Profile, ShapeData,
 };
 use silico_core::{Error, ErrorCode};
 
@@ -25,7 +29,7 @@ pub fn measure(kernel: &mut KernelWorker, shape: &Shape) -> Outcome {
 }
 
 /// Whether an error with `code` means Silico couldn't finish, rather than refused.
-fn lost(code: ErrorCode) -> bool {
+pub(crate) fn lost(code: ErrorCode) -> bool {
     matches!(
         code,
         ErrorCode::WorkerCrashed
@@ -38,6 +42,7 @@ fn lost(code: ErrorCode) -> bool {
 /// `shape`, built through `kernel`.
 pub fn build(kernel: &mut KernelWorker, shape: &Shape) -> Result<ShapeData, Error> {
     match shape {
+        Shape::Brep { path } => converted(Path::new(path)),
         &Shape::Block { dx, dy, dz } => kernel.make(Primitive::Box { dx, dy, dz }),
         &Shape::Cylinder { radius, height } => kernel.make(Primitive::Cylinder { radius, height }),
         &Shape::Sphere { radius } => kernel.make(Primitive::Sphere { radius }),
@@ -127,6 +132,75 @@ fn boolean(
     let base = build(kernel, base)?;
     let tool = build(kernel, tool)?;
     Ok(kernel.boolean(op, &base, &tool)?.shape)
+}
+
+/// Names a `silico-brep-convert` to use instead of the one beside this executable.
+pub const BREP_CONVERT_ENV: &str = "SILICO_BREP_CONVERT";
+
+/// The text B-rep at `path` as Silico's B-rep, through `silico-brep-convert` (from the
+/// kernel crate, the only one that reads B-reps): beside this executable (or its `deps/`
+/// directory's parent, for tests), or where [`BREP_CONVERT_ENV`] says.
+fn converted(path: &Path) -> Result<ShapeData, Error> {
+    let tool = match std::env::var_os(BREP_CONVERT_ENV) {
+        Some(tool) => PathBuf::from(tool),
+        None => {
+            let exe = std::env::current_exe().map_err(|e| {
+                Error::new(ErrorCode::Internal, "can't find the running executable")
+                    .with_cause(e.to_string())
+            })?;
+            let dir = exe.parent().unwrap_or(Path::new("."));
+            let dir = if dir.file_name().is_some_and(|n| n == "deps") {
+                dir.parent().unwrap_or(dir)
+            } else {
+                dir
+            };
+            dir.join(format!(
+                "silico-brep-convert{}",
+                std::env::consts::EXE_SUFFIX
+            ))
+        }
+    };
+    let text = std::fs::read(path).map_err(|e| {
+        Error::new(
+            ErrorCode::InvalidInput,
+            format!("can't read {}", path.display()),
+        )
+        .with_cause(e.to_string())
+    })?;
+    let mut child = Command::new(&tool)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            Error::new(
+                ErrorCode::Internal,
+                format!(
+                    "can't run {} (cargo build -p silico-kernel --bins)",
+                    tool.display()
+                ),
+            )
+            .with_cause(e.to_string())
+        })?;
+    let fed = child
+        .stdin
+        .take()
+        .map(|mut stdin| std::thread::spawn(move || stdin.write_all(&text)));
+    let out = child.wait_with_output().map_err(|e| {
+        Error::new(ErrorCode::Internal, "can't wait for silico-brep-convert")
+            .with_cause(e.to_string())
+    })?;
+    if let Some(fed) = fed {
+        let _ = fed.join();
+    }
+    if !out.status.success() {
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            format!("{} can't be read", path.display()),
+        )
+        .with_cause(String::from_utf8_lossy(&out.stderr).trim().to_owned()));
+    }
+    Ok(ShapeData::unchecked(Blob::inline(out.stdout)))
 }
 
 #[cfg(test)]

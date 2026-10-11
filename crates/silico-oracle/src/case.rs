@@ -91,6 +91,12 @@ pub enum Shape {
         direction: [f64; 3],
         angle: f64,
     },
+    /// A shape FreeCAD made, as OCCT's text B-rep at `path` (`Shape.exportBrep`): a real
+    /// part, from the corpus (`pixi run corpus`). Silico reads it converted to its own
+    /// B-rep by `silico-brep-convert`, FreeCAD as it is.
+    Brep {
+        path: String,
+    },
 }
 
 /// A chamfer's sizes, as `ChamferSize` has them.
@@ -119,6 +125,7 @@ impl Shape {
             Shape::Chamfer { .. } => "chamfer",
             Shape::Extrude { .. } => "extrude",
             Shape::Revolve { .. } => "revolve",
+            Shape::Brep { .. } => "brep",
         }
     }
 }
