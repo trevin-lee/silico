@@ -1365,12 +1365,15 @@ fn a_request_refused_before_its_sent_doesnt_end_a_slots_wait() {
         std::thread::sleep(Duration::from_millis(5));
     }
     assert_eq!(count(), 3, "launches before the request");
+    // Its script logs, then exits: time to exit, well short of the idle check (1 s) that
+    // sees it, so the request starts a worker of its own.
+    std::thread::sleep(Duration::from_millis(200));
     let too_large = vec![0; silico_protocol::MAX_FRAME_LEN as usize + 1];
     let err =
         done(pool.submit(Generation(1), KernelRequest::echo(Blob::inline(too_large)))).unwrap_err();
     assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
-    // The request's own launch, however slowly its script logs it.
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // The request's own launch: soon, not the slot's next, seconds later.
+    let deadline = Instant::now() + Duration::from_secs(2);
     while count() < 4 {
         assert!(Instant::now() < deadline, "the request started no worker");
         std::thread::sleep(Duration::from_millis(5));
