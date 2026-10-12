@@ -619,6 +619,8 @@ fn a_worker_that_closed_its_socket_is_replaced_before_its_next_request() {
     let (exe, closed) = closes_its_socket_once("closed-socket-request");
     let pool = KernelPool::start_workers(&exe, 1).unwrap();
     wait_for(&closed);
+    // Time for the core to read the socket's end; well short of an idle check.
+    std::thread::sleep(Duration::from_millis(100));
     let result = done(pool.submit(Generation(1), pool::echo(&[1])));
     let held = pool.pids();
     drop(pool);

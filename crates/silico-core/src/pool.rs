@@ -660,10 +660,15 @@ fn serve(slot: usize, exe: &Path, shared: &Shared, ready: &mpsc::Sender<Result<(
         }
         let answers = worker.answers();
         let condemned = task.run(worker, shared, slot);
-        if condemned || worker.is_stopped() {
-            keeper.replace();
-        } else if worker.answers() > answers {
+        // An answer, even one followed by a kill (superseded), shows the binary works; a
+        // worker stopped for its answer (the wrong kind) doesn't.
+        let answered = worker.answers() > answers && !worker.is_stopped();
+        let stopped = worker.is_stopped();
+        if answered {
             keeper.answered();
+        }
+        if condemned || stopped {
+            keeper.replace();
         }
     }
 }

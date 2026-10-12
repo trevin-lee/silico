@@ -1214,9 +1214,10 @@ fn a_kill_at_launch_after_an_exit_of_its_own_is_taken_as_from_outside() {
 fn an_answer_ends_a_slots_wait() {
     // While `fail` exists, a launch exits on its own before it starts; otherwise it's the
     // test worker. The slot's wait grows (launches at about 0, 2, and 5 s, the next wait 4
-    // s), then a worker starts and answers a request. Killed after `fail` is back, it's
-    // replaced at once and that one fails: the next launch comes after a fresh wait (about
-    // 2 s later), not after the one grown before the answer (8 s, about 9 s later).
+    // s), then a worker starts and answers a request, refusing it. Killed after `fail` is
+    // back, it's replaced at once and that one fails: the next launch comes after a fresh
+    // wait (about 2 s later), not after the one grown before the answer (4 s, about 5 s
+    // later).
     let dir = scratch_dir("answer-resets");
     let fail = dir.join("fail");
     std::fs::write(&fail, "").unwrap();
@@ -1230,7 +1231,11 @@ fn an_answer_ends_a_slots_wait() {
     let pool = KernelPool::start_workers(&script, 1).unwrap();
     std::thread::sleep(Duration::from_millis(5_500));
     std::fs::remove_file(&fail).unwrap();
-    done(pool.submit(Generation(1), sleep(1))).unwrap();
+    // A refusal is an answer too: the worker reads the bytes, finds no shape in them, and
+    // says so.
+    let garbage = silico_protocol::ShapeData::unchecked(Blob::inline(b"not a shape".to_vec()));
+    let refused = done(pool.submit(Generation(1), KernelRequest::summarize(&garbage))).unwrap_err();
+    assert_eq!(refused.code(), ErrorCode::InvalidInput, "{refused}");
     std::fs::write(&fail, "").unwrap();
     let killed_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1285,16 +1290,23 @@ fn a_wait_ended_early_by_a_newer_worker_still_doubles_on_the_next_failure() {
             .count()
     };
     let pool = KernelPool::start_workers(&script, 2).unwrap();
-    std::thread::sleep(Duration::from_millis(500));
     let pids = pool.pids();
     assert_eq!(pids.len(), 2);
     let (a, b) = (pids[0], pids[1]);
+    // A's script has started its worker, however slowly the machine runs it.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let a_child = loop {
+        let listed = std::fs::read_to_string(&children).unwrap_or_default();
+        if let Some(child) = listed
+            .lines()
+            .find_map(|l| l.strip_prefix(&format!("{a} ")).map(str::to_owned))
+        {
+            break child;
+        }
+        assert!(Instant::now() < deadline, "A's worker never started");
+        std::thread::sleep(Duration::from_millis(5));
+    };
     std::fs::write(&mode, "fail").unwrap();
-    let a_child = std::fs::read_to_string(&children)
-        .unwrap()
-        .lines()
-        .find_map(|l| l.strip_prefix(&format!("{a} ")).map(str::to_owned))
-        .unwrap();
     signal("KILL", a_child.trim().parse().unwrap());
     // A: its exit seen at about 1 s, launches at about 2, 5, and 10 s, its wait 8 s from
     // about 11 s (19 next).
@@ -1318,6 +1330,33 @@ fn a_wait_ended_early_by_a_newer_worker_still_doubles_on_the_next_failure() {
     drop(pool);
     let (times, gaps) = launches(&log);
     assert_eq!(times.len(), 7, "gaps {gaps:?}");
+}
+
+#[test]
+fn a_request_refused_before_its_sent_doesnt_end_a_slots_wait() {
+    // Launches at about 0, 2, and 5 s (the wait 2 s). A request over the frame limit at
+    // 5.5 s starts a worker (which fails) and is refused before it's sent: no answer, so the
+    // next wait is 4 s (a launch about 5 s after the refusal), not 1 s (about 2 s after).
+    let dir = scratch_dir("refusal-keeps-wait");
+    let (script, log) = launch_logger(&dir, "exit 3");
+    let pool = KernelPool::start_workers(&script, 1).unwrap();
+    std::thread::sleep(Duration::from_millis(5_500));
+    let too_large = vec![0; silico_protocol::MAX_FRAME_LEN as usize + 1];
+    let err =
+        done(pool.submit(Generation(1), KernelRequest::echo(Blob::inline(too_large)))).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
+    let refused_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64();
+    std::thread::sleep(Duration::from_millis(3_500));
+    drop(pool);
+    let (times, _) = launches(&log);
+    let after: Vec<f64> = times.iter().copied().filter(|t| *t > refused_at).collect();
+    assert!(
+        after.is_empty(),
+        "a refusal ended the wait: launches at {times:?}, refused at {refused_at}"
+    );
 }
 
 #[test]
