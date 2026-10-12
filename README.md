@@ -2,7 +2,7 @@
 
 A parametric CAD system: a Rust core, an egui/wgpu app, and OpenCascade as the geometry kernel. Agents and people are equal users (through MCP and the app), and models are plain, diffable text: a timeline of features, rebuilt bit for bit on any machine.
 
-**Status:** M1 (the kernel layer). OpenCascade runs in a pool of worker processes behind a structured, crash-proof protocol, built deterministically (bit-identical on macOS and Linux), and checked against FreeCAD case by case: primitives, booleans, extrude and revolve, fillet and chamfer, with history, and display meshes. There's no app yet; `pixi run view` shows what the kernel builds.
+**Status:** M1 (the kernel layer) is done; M2 (the document and naming) is next. OpenCascade runs in a pool of worker processes behind a structured, crash-proof protocol, built deterministically (bit-identical on macOS and Linux), and checked against FreeCAD case by case: primitives, booleans, extrude and revolve, fillet and chamfer, with history, and display meshes. There's no app yet; `pixi run view` shows what the kernel builds.
 
 ## Try it
 
