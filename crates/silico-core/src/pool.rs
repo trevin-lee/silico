@@ -660,13 +660,12 @@ fn serve(slot: usize, exe: &Path, shared: &Shared, ready: &mpsc::Sender<Result<(
         }
         let answers = worker.answers();
         let condemned = task.run(worker, shared, slot);
-        let (ends_wait, replace) =
-            after_run(worker.answers() > answers, worker.is_stopped(), condemned);
+        let then = after_run(worker.answers() > answers, worker.is_stopped(), condemned);
         // In this order: the answer is the worker's, noted before it's replaced.
-        if ends_wait {
+        if then.ends_wait {
             keeper.answered();
         }
-        if replace {
+        if then.replace {
             keeper.replace();
         }
     }
@@ -712,14 +711,25 @@ impl Retry {
     }
 }
 
-/// After a request ran on a slot's worker: whether it ends the slot's wait, and whether the
-/// worker is replaced. `answered`, whether the worker read back an answer (a result or a
-/// refusal); `stopped`, whether the worker was stopped (it crashed, hung, or answered
-/// wrongly); `condemned`, whether the pool killed it (its request superseded). An answer
-/// shows the binary works, even one followed by a kill; one the worker was stopped for
-/// doesn't.
-fn after_run(answered: bool, stopped: bool, condemned: bool) -> (bool, bool) {
-    (answered && !stopped, stopped || condemned)
+/// What a request's run means for its slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AfterRun {
+    /// The slot's wait ends: the binary works.
+    ends_wait: bool,
+    /// The slot's worker is replaced.
+    replace: bool,
+}
+
+/// After a request ran on a slot's worker. `answered`, whether the worker read back an
+/// answer (a result or a refusal); `stopped`, whether the worker was stopped (it crashed,
+/// hung, or answered wrongly); `condemned`, whether its request was superseded and stopped
+/// (its worker killed, or found dead). An answer shows the binary works, even one followed
+/// by a kill; one the worker was stopped for doesn't.
+fn after_run(answered: bool, stopped: bool, condemned: bool) -> AfterRun {
+    AfterRun {
+        ends_wait: answered && !stopped,
+        replace: stopped || condemned,
+    }
 }
 
 /// Whether an idle slot replaces a worker that ended with `status` at once, rather than
@@ -896,7 +906,7 @@ mod tests {
 
     #[test]
     fn an_answer_ends_a_slots_wait_unless_the_worker_was_stopped_for_it() {
-        use super::after_run;
+        use super::{AfterRun, after_run};
         // (answered, stopped, condemned) → (ends the wait, replaced)
         for (answered, stopped, condemned, then) in [
             (true, false, false, (true, false)),
@@ -911,9 +921,10 @@ mod tests {
             (false, true, false, (false, true)),
             (false, true, true, (false, true)),
         ] {
+            let (ends_wait, replace) = then;
             assert_eq!(
                 after_run(answered, stopped, condemned),
-                then,
+                AfterRun { ends_wait, replace },
                 "answered {answered} stopped {stopped} condemned {condemned}"
             );
         }

@@ -1334,14 +1334,20 @@ fn a_wait_ended_early_by_a_newer_worker_still_doubles_on_the_next_failure() {
     drop(pool);
     let (times, gaps) = launches(&log);
     assert_eq!(times.len(), 7, "gaps {gaps:?}");
+    // A's early launch (7) came well before its own 8 s wait from its last failure (launch
+    // 5) would have run out, about 9 s after it, however slowly the machine ran.
+    assert!(
+        times[6] - times[4] < 6.0,
+        "A's wait didn't end early: gaps {gaps:?}"
+    );
 }
 
 #[test]
 fn a_request_refused_before_its_sent_doesnt_end_a_slots_wait() {
-    // Launches at about 0, 2, and 5 s (the wait 2 s). A request over the frame limit at
-    // 5.5 s starts a worker (which fails: launch 4) and is refused before it's sent: no
-    // answer, so the next wait is 4 s (a launch about 5 s after the refusal), not 1 s
-    // (about 2 s after). Still four launches 3.5 s after the refusal.
+    // Launches at about 0, 2, and 5 s (the wait 2 s). A request over the frame limit just
+    // after the third starts a worker (which fails: launch 4) and is refused before it's
+    // sent: no answer, so the next wait is 4 s (a launch about 5 s after the refusal), not
+    // 1 s (about 2 s after). Still four launches 3.5 s after the refusal.
     let dir = scratch_dir("refusal-keeps-wait");
     let (script, log) = launch_logger(&dir, "exit 3");
     let count = || {
@@ -1351,7 +1357,13 @@ fn a_request_refused_before_its_sent_doesnt_end_a_slots_wait() {
             .count()
     };
     let pool = KernelPool::start_workers(&script, 1).unwrap();
-    std::thread::sleep(Duration::from_millis(5_500));
+    // The third launch, however slowly its script logs it.
+    std::thread::sleep(Duration::from_millis(5_000));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while count() < 3 {
+        assert!(Instant::now() < deadline, "only {} launches", count());
+        std::thread::sleep(Duration::from_millis(5));
+    }
     assert_eq!(count(), 3, "launches before the request");
     let too_large = vec![0; silico_protocol::MAX_FRAME_LEN as usize + 1];
     let err =
