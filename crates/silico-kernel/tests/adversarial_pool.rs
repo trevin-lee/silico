@@ -1104,29 +1104,35 @@ fn a_worker_that_dies_as_it_starts_isnt_started_over_while_the_pool_is_idle() {
 
 #[test]
 fn an_idle_slot_whose_worker_dies_at_start_waits_longer_each_time() {
-    // Doubling from 1 s, with a tick to notice each end: launches at about 0, 2, 5, 10, and
-    // 19 s, so one a slot between 8 s and 16 s idle, where no back-off (a launch every other
-    // tick) would be four.
+    // One slot, its worker ending at once each time: it's started again after waits that
+    // double from 1 s (each after a tick to notice the end), so launches at about 0, 2, 5,
+    // and 10 s. At least three relaunches in 13 s, each gap longer than the one before:
+    // not never, not every tick, not a fixed wait.
     let dir = std::env::temp_dir().join(format!("silico-pool-backoff-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let script = dir.join("worker.sh");
     let log = dir.join("launches");
     std::fs::write(
         &script,
-        format!("#!/bin/sh\necho launched >> '{}'\nexit 3\n", log.display()),
+        format!(
+            "#!/bin/sh\nperl -MTime::HiRes=time -e 'print time, \"\\n\"' >> '{}'\nexit 3\n",
+            log.display()
+        ),
     )
     .unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let launches = || std::fs::read_to_string(&log).map_or(0, |l| l.lines().count());
-    let pool = KernelPool::start_workers(&script, 4).unwrap();
-    std::thread::sleep(Duration::from_secs(8));
-    let early = launches();
-    std::thread::sleep(Duration::from_secs(8));
-    let late = launches() - early;
+    let pool = KernelPool::start_workers(&script, 1).unwrap();
+    std::thread::sleep(Duration::from_secs(13));
     drop(pool);
+    let times: Vec<f64> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|l| l.trim().parse().unwrap())
+        .collect();
     std::fs::remove_dir_all(&dir).unwrap();
-    assert!(
-        late <= 6,
-        "{late} launches in [8 s, 16 s] idle, {early} before"
-    );
+    let gaps: Vec<f64> = times.windows(2).map(|w| w[1] - w[0]).collect();
+    assert!(gaps.len() >= 3, "launches at {times:?}");
+    for pair in gaps.windows(2) {
+        assert!(pair[1] > pair[0], "gaps {gaps:?} don't grow");
+    }
 }

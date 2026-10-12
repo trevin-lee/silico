@@ -1570,14 +1570,7 @@ fn a_valid_solid_with_faces_too_small_to_mesh_is_meshed_without_them() {
         .map(|i| i + 1)
         .collect();
     assert_eq!(empty, [8, 9, 11, 13, 14, 15, 17, 19]);
-    let area: f64 = mesh
-        .triangles
-        .iter()
-        .map(|t| {
-            let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
-            norm(cross(sub(b, a), sub(c, a))) / 2.0
-        })
-        .sum();
+    let area = mesh_area(&mesh);
     assert!(
         (area - summary.area).abs() <= 1e-4,
         "{area} {}",
@@ -1621,11 +1614,24 @@ fn a_valid_solid_with_slivers_meshes_at_every_deflection_silico_allows() {
         false,
     )
     .unwrap();
-    assert!(silico_kernel::summarize(&built.shape).unwrap().valid);
+    let summary = silico_kernel::summarize(&built.shape).unwrap();
+    assert!(summary.valid);
     let floor = 14.0f64.sqrt() * silico_kernel::MIN_RELATIVE_DEFLECTION;
     for deflection in [0.01, 0.001, floor * 1.001] {
-        let mesh = silico_kernel::tessellate(&built.shape, deflection);
-        assert!(mesh.is_ok(), "deflection {deflection}: {:?}", mesh.err());
+        let mesh = silico_kernel::tessellate(&built.shape, deflection)
+            .unwrap_or_else(|e| panic!("deflection {deflection}: {e:?}"));
+        // Exactly the slivers OCCT can't mesh, as FreeCAD finds them: Face8 and Face13.
+        let empty: Vec<usize> = (0..mesh.face_triangles.len())
+            .filter(|&i| mesh.face_triangles[i] == 0)
+            .map(|i| i + 1)
+            .collect();
+        assert_eq!(empty, [8, 13], "deflection {deflection}");
+        let area = mesh_area(&mesh);
+        assert!(
+            (area - summary.area).abs() <= 1e-5,
+            "deflection {deflection}: {area} {}",
+            summary.area
+        );
     }
 }
 
@@ -1646,10 +1652,24 @@ fn a_valid_film_meshes_without_its_side_faces_at_any_deflection() {
     assert!(summarize(&film).unwrap().valid);
     for deflection in [0.003, 0.004, 0.005, 0.1] {
         let mesh = tessellate(&film, deflection).unwrap();
-        let empty: Vec<usize> = (0..mesh.face_triangles.len())
-            .filter(|&i| mesh.face_triangles[i] == 0)
-            .collect();
-        assert_eq!(empty.len(), 4, "{deflection}: {:?}", mesh.face_triangles);
+        // The four sides (Face1 to Face4) are left out; the two 10 × 20 ends are meshed.
         assert_eq!(mesh.face_triangles.len(), 6, "{deflection}");
+        assert_eq!(mesh.face_triangles[..4], [0, 0, 0, 0], "{deflection}");
+        assert!(
+            mesh.face_triangles[4..].iter().all(|&n| n > 0),
+            "{deflection}"
+        );
+        assert!((mesh_area(&mesh) - 400.0).abs() <= 1e-9, "{deflection}");
     }
+}
+
+/// The sum of a mesh's triangles' areas.
+fn mesh_area(mesh: &Mesh) -> f64 {
+    mesh.triangles
+        .iter()
+        .map(|t| {
+            let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+            norm(cross(sub(b, a), sub(c, a))) / 2.0
+        })
+        .sum()
 }

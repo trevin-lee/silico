@@ -229,7 +229,8 @@ impl KernelRequest<FreecadMeasures> {
 
 impl KernelRequest<Mesh> {
     /// A triangle mesh of `shape` for display, no further than `deflection` from its
-    /// surface. The mesh is checked before it's returned, so it can be indexed safely.
+    /// surface. The mesh is checked before it's returned, so it can be indexed safely. A face
+    /// OCCT can't mesh on a valid shape has no triangles (`Mesh::face_triangles`).
     pub fn tessellate(shape: &ShapeData, deflection: f64) -> Self {
         let op = Op::Tessellate {
             shape: shape.clone(),

@@ -308,7 +308,9 @@ pub struct Mesh {
     pub normals: Vec<[f32; 3]>,
     /// Vertex indices, three per triangle, wound counterclockwise seen from outside.
     pub triangles: Vec<[u32; 3]>,
-    /// How many triangles belong to each face, in OCCT's face order.
+    /// How many triangles belong to each face, in OCCT's face order. A count of 0 is a face
+    /// OCCT couldn't mesh on a valid shape (a sliver too narrow for its tolerance), missing
+    /// from the display: export and inspection decide what that means for them.
     pub face_triangles: Vec<u32>,
     /// The points of every edge's polyline, one edge after another, split by
     /// `edge_point_counts`. Flat, so every value on the wire costs no more than a few times

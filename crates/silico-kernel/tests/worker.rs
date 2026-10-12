@@ -1029,10 +1029,26 @@ fn every_failure_says_what_to_try() {
                 w.run(KernelRequest::debug(DebugOp::Sleep { millis: 10_000 }))
                     .unwrap_err()
             },
+            "try the request once more",
+        ),
+        (
+            "a SIGTERM from outside",
+            {
+                let mut w = KernelWorker::start_worker(Path::new(TEST_WORKER)).unwrap();
+                let pid = w.pid();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(200));
+                    let _ = Command::new("kill")
+                        .args(["-TERM", &pid.to_string()])
+                        .status();
+                });
+                w.run(KernelRequest::debug(DebugOp::Sleep { millis: 10_000 }))
+                    .unwrap_err()
+            },
             "try the request again",
         ),
         (
-            "a kill while idle, before the request",
+            "a worker that crashed while idle, before the request",
             {
                 let mut w = KernelWorker::start_worker(Path::new(TEST_WORKER)).unwrap();
                 let _ = Command::new("kill")

@@ -610,31 +610,46 @@ fn emit_worker_log(line: &str, pid: u32) -> String {
     format!("{level} {message}")
 }
 
-/// How the worker process ended, naming common signals by this platform's numbering.
-/// What to try after a worker crashed, by how it ended: a crash of its own (a signal such
-/// as SIGSEGV or SIGABRT) while it had the request is the request's values, which would
-/// crash it again; a kill from outside (SIGKILL: out of memory, say), a worker that stopped
-/// responding, or one that was gone before the request reached it is worth trying again
-/// (the next request starts another); a worker that exited with a code ended on its own,
-/// which is its install, not the request.
+/// What to try after a worker crashed, by how it ended. A fault of its own (SIGSEGV,
+/// SIGBUS, SIGILL, SIGFPE, SIGABRT, SIGTRAP, SIGSYS) while it had the request is the
+/// request's values, which would crash it again. SIGKILL is usually the system's, when it
+/// runs out of memory, and the request may be what used the memory: worth one more try.
+/// Any other signal (SIGTERM, SIGINT, SIGHUP: a kill, a Ctrl-C, a shutdown), a worker that
+/// stopped responding, or one gone before the request reached it is from outside, worth
+/// trying again (the next request starts another worker). A worker that exited with a code
+/// ended on its own, which is its install, not the request.
 fn crash_advice(status: Option<ExitStatus>, delivered: bool) -> &'static str {
+    const FAULTS: [i32; 7] = [
+        libc::SIGSEGV,
+        libc::SIGBUS,
+        libc::SIGILL,
+        libc::SIGFPE,
+        libc::SIGABRT,
+        libc::SIGTRAP,
+        libc::SIGSYS,
+    ];
     match status.map(|s| (s.code(), s.signal())) {
         Some((Some(_), _)) => {
             "check Silico's install: the kernel worker exited on its own (see its last output), \
              which no change to the request will help; report it if it persists"
         }
-        Some((None, Some(signal))) if delivered && signal != libc::SIGKILL => {
+        Some((None, Some(signal))) if delivered && FAULTS.contains(&signal) => {
             "change the operation's values: these crashed the kernel, and the same request \
              would crash it again"
         }
+        Some((None, Some(libc::SIGKILL))) => {
+            "try the request once more: the kernel worker was killed, most likely by the \
+             system for running out of memory; if it's killed again, the request needs too \
+             much memory: simplify it"
+        }
         _ => {
-            "try the request again: the kernel worker was stopped from outside (out of memory, \
-             say), stopped responding, or was gone before the request reached it, not by these \
-             values"
+            "try the request again: the kernel worker was stopped from outside, stopped \
+             responding, or was gone before the request reached it, not by these values"
         }
     }
 }
 
+/// How the worker process ended, naming common signals by this platform's numbering.
 fn describe_exit(status: ExitStatus) -> String {
     match (status.code(), status.signal()) {
         (Some(code), _) => format!("it exited with code {code}"),
