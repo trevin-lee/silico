@@ -1003,7 +1003,29 @@ fn every_failure_says_what_to_try() {
         assert!(err.suggestion().unwrap().starts_with(says), "{what}: {err}");
     }
     // A crash's advice follows how the worker ended: its own crash is the values'; a kill
-    // from outside is worth a retry; an exit of its own is its install.
+    // from outside is worth a retry; an exit of its own is its install. SIGSEGV and SIGBUS
+    // sent from outside don't end the worker (Rust's stack-overflow handler takes them), so
+    // a segfault is the worker's own.
+    let mid_request = |signal: &'static str| {
+        let mut w = KernelWorker::start_worker(Path::new(TEST_WORKER)).unwrap();
+        let pid = w.pid();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            let _ = Command::new("kill")
+                .args([format!("-{signal}"), pid.to_string()])
+                .status();
+        });
+        w.run(KernelRequest::debug(DebugOp::Sleep { millis: 10_000 }))
+            .unwrap_err()
+    };
+    let while_idle = |signal: &str| {
+        let mut w = KernelWorker::start_worker(Path::new(TEST_WORKER)).unwrap();
+        let _ = Command::new("kill")
+            .args([format!("-{signal}"), w.pid().to_string()])
+            .status();
+        std::thread::sleep(Duration::from_millis(200));
+        w.make(Primitive::Sphere { radius: 1.0 }).unwrap_err()
+    };
     for (what, err, says) in [
         (
             "a segfault",
@@ -1016,47 +1038,46 @@ fn every_failure_says_what_to_try() {
             "change the operation's values",
         ),
         (
+            "a SIGILL",
+            mid_request("ILL"),
+            "change the operation's values",
+        ),
+        (
+            "a SIGFPE",
+            mid_request("FPE"),
+            "change the operation's values",
+        ),
+        (
+            "a SIGTRAP",
+            mid_request("TRAP"),
+            "change the operation's values",
+        ),
+        (
+            "a SIGSYS",
+            mid_request("SYS"),
+            "change the operation's values",
+        ),
+        ("a Ctrl-C", mid_request("INT"), "try the request again"),
+        ("a hangup", mid_request("HUP"), "try the request again"),
+        ("a SIGUSR1", mid_request("USR1"), "try the request again"),
+        (
             "a kill from outside",
-            {
-                let mut w = KernelWorker::start_worker(Path::new(TEST_WORKER)).unwrap();
-                let pid = w.pid();
-                std::thread::spawn(move || {
-                    std::thread::sleep(Duration::from_millis(200));
-                    let _ = Command::new("kill")
-                        .args(["-KILL", &pid.to_string()])
-                        .status();
-                });
-                w.run(KernelRequest::debug(DebugOp::Sleep { millis: 10_000 }))
-                    .unwrap_err()
-            },
+            mid_request("KILL"),
             "try the request once more",
         ),
         (
             "a SIGTERM from outside",
-            {
-                let mut w = KernelWorker::start_worker(Path::new(TEST_WORKER)).unwrap();
-                let pid = w.pid();
-                std::thread::spawn(move || {
-                    std::thread::sleep(Duration::from_millis(200));
-                    let _ = Command::new("kill")
-                        .args(["-TERM", &pid.to_string()])
-                        .status();
-                });
-                w.run(KernelRequest::debug(DebugOp::Sleep { millis: 10_000 }))
-                    .unwrap_err()
-            },
+            mid_request("TERM"),
             "try the request again",
         ),
         (
             "a worker that crashed while idle, before the request",
-            {
-                let mut w = KernelWorker::start_worker(Path::new(TEST_WORKER)).unwrap();
-                let _ = Command::new("kill")
-                    .args(["-SEGV", &w.pid().to_string()])
-                    .status();
-                std::thread::sleep(Duration::from_millis(200));
-                w.make(Primitive::Sphere { radius: 1.0 }).unwrap_err()
-            },
+            while_idle("SEGV"),
+            "try the request again",
+        ),
+        (
+            "a worker killed while idle, before the request",
+            while_idle("KILL"),
             "try the request again",
         ),
         (

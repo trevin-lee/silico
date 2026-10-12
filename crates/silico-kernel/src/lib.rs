@@ -1118,19 +1118,18 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
     // FreeCAD gives such a face an empty domain (`TopoShape::getDomains`). On a shape that
     // isn't valid it's refused, naming the face: there it says something is broken (a face
     // whose edges cross can't be meshed, and its area, its halves cancelling, says nothing).
-    if !raw.unmeshed_faces().is_empty() {
-        tracing::debug!(faces = ?raw.unmeshed_faces(), "faces OCCT couldn't mesh");
-    }
-    if let Some(&face) = raw.unmeshed_faces().first()
-        && !shape.is_valid()?
-    {
-        let name = format!("Face{}", face + 1);
-        return Err(KernelError::new(format!("{name} couldn't be meshed"))
-            .with_element(name)
-            .with_suggestion(
-                "the shape isn't valid, and this face of it can't be meshed: rebuild the \
-                 shape from its inputs",
-            ));
+    let unmeshed = raw.unmeshed_faces();
+    if let Some(&face) = unmeshed.first() {
+        if !shape.is_valid()? {
+            let name = format!("Face{}", face + 1);
+            return Err(KernelError::new(format!("{name} couldn't be meshed"))
+                .with_element(name)
+                .with_suggestion(
+                    "the shape isn't valid, and this face of it can't be meshed: rebuild the \
+                     shape from its inputs",
+                ));
+        }
+        tracing::debug!(faces = ?unmeshed, "faces OCCT couldn't mesh, left without triangles");
     }
     let triples = |values: &[f64]| -> Vec<[f64; 3]> {
         values.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect()

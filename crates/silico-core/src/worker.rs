@@ -613,12 +613,14 @@ fn emit_worker_log(line: &str, pid: u32) -> String {
 /// What to try after a worker crashed, by how it ended. A fault of its own (SIGSEGV,
 /// SIGBUS, SIGILL, SIGFPE, SIGABRT, SIGTRAP, SIGSYS) while it had the request is the
 /// request's values, which would crash it again. SIGKILL is usually the system's, when it
-/// runs out of memory, and the request may be what used the memory: worth one more try.
+/// runs out of memory, and the request may be what used the memory: worth one more try,
+/// if the request reached it.
 /// Any other signal (SIGTERM, SIGINT, SIGHUP: a kill, a Ctrl-C, a shutdown), a worker that
 /// stopped responding, or one gone before the request reached it is from outside, worth
 /// trying again (the next request starts another worker). A worker that exited with a code
 /// ended on its own, which is its install, not the request.
 fn crash_advice(status: Option<ExitStatus>, delivered: bool) -> &'static str {
+    // Each is named in `signal_name` too.
     const FAULTS: [i32; 7] = [
         libc::SIGSEGV,
         libc::SIGBUS,
@@ -637,7 +639,7 @@ fn crash_advice(status: Option<ExitStatus>, delivered: bool) -> &'static str {
             "change the operation's values: these crashed the kernel, and the same request \
              would crash it again"
         }
-        Some((None, Some(libc::SIGKILL))) => {
+        Some((None, Some(libc::SIGKILL))) if delivered => {
             "try the request once more: the kernel worker was killed, most likely by the \
              system for running out of memory; if it's killed again, the request needs too \
              much memory: simplify it"
@@ -670,6 +672,8 @@ fn signal_name(signal: i32) -> Option<&'static str> {
         (libc::SIGKILL, "SIGKILL"),
         (libc::SIGSEGV, "SIGSEGV"),
         (libc::SIGTERM, "SIGTERM"),
+        (libc::SIGTRAP, "SIGTRAP"),
+        (libc::SIGSYS, "SIGSYS"),
     ]
     .into_iter()
     .find(|(number, _)| *number == signal)

@@ -1106,8 +1106,9 @@ fn a_worker_that_dies_as_it_starts_isnt_started_over_while_the_pool_is_idle() {
 fn an_idle_slot_whose_worker_dies_at_start_waits_longer_each_time() {
     // One slot, its worker ending at once each time: it's started again after waits that
     // double from 1 s (each after a tick to notice the end), so launches at about 0, 2, 5,
-    // and 10 s. At least three relaunches in 13 s, each gap longer than the one before:
-    // not never, not every tick, not a fixed wait.
+    // 10, and 19 s. Exactly four in 16 s, each gap longer than the one before: not never,
+    // not every tick, not a fixed wait, and not a wait that grows by a tick each time
+    // (launches at 0, 2, 5, 9, and 14 s).
     let dir = std::env::temp_dir().join(format!("silico-pool-backoff-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let script = dir.join("worker.sh");
@@ -1122,7 +1123,7 @@ fn an_idle_slot_whose_worker_dies_at_start_waits_longer_each_time() {
     .unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     let pool = KernelPool::start_workers(&script, 1).unwrap();
-    std::thread::sleep(Duration::from_secs(13));
+    std::thread::sleep(Duration::from_secs(16));
     drop(pool);
     let times: Vec<f64> = std::fs::read_to_string(&log)
         .unwrap()
@@ -1131,7 +1132,7 @@ fn an_idle_slot_whose_worker_dies_at_start_waits_longer_each_time() {
         .collect();
     std::fs::remove_dir_all(&dir).unwrap();
     let gaps: Vec<f64> = times.windows(2).map(|w| w[1] - w[0]).collect();
-    assert!(gaps.len() >= 3, "launches at {times:?}");
+    assert_eq!(times.len(), 4, "launches at {times:?}");
     for pair in gaps.windows(2) {
         assert!(pair[1] > pair[0], "gaps {gaps:?} don't grow");
     }
