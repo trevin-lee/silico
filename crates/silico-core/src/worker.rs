@@ -1004,6 +1004,14 @@ mod tests {
         for errno in [libc::ENOENT, libc::EACCES, libc::ENOEXEC, libc::ENOTDIR] {
             assert_eq!(says(errno), None, "{errno}");
         }
+        // Not the OS's at all (a path with a NUL byte in it): not a shortage.
+        assert_eq!(
+            shortage(
+                &io::Error::other("nul byte found in provided data"),
+                "couldn't start"
+            ),
+            None
+        );
     }
 
     #[test]
