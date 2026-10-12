@@ -16,7 +16,7 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{Child, ChildStderr, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use command_fds::{CommandFdExt, FdMapping};
 use silico_protocol::{
     Failure, FailureKind, FrameError, FrameReader, Generation, Op, Reply, Request, RequestId,
-    Response, TraceId, WORKER_FD, WORKER_FD_ENV, write_message,
+    Response, TraceId, WORKER_FD, WORKER_FD_ENV, decode, write_message,
 };
 
 use crate::{Error, ErrorCode};
@@ -72,6 +72,9 @@ pub struct Worker {
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
     /// Closes when the log thread has read everything the worker wrote.
     stderr_done: Receiver<()>,
+    /// Set when the worker says it has started (see [`silico_protocol::write_started`]), or
+    /// replies.
+    started: Arc<AtomicBool>,
     next_id: u64,
     /// Set once the worker has crashed, hung, or misbehaved and been stopped.
     stopped: bool,
@@ -142,23 +145,29 @@ impl Worker {
         // One reply in flight: a worker sending unrequested replies can't make the core
         // buffer them without limit.
         let (tx, replies) = mpsc::sync_channel(1);
+        let started = Arc::new(AtomicBool::new(false));
+        let has_started = Arc::clone(&started);
         std::thread::Builder::new()
             .name(format!("worker-{pid}-replies"))
             .spawn(move || {
                 let mut frames = FrameReader::new(PatientReader(reader));
                 loop {
-                    match frames.read_message::<Response>() {
-                        Ok(Some(response)) => {
-                            if tx.send(Ok(response)).is_err() {
-                                break;
+                    let reply = match frames.read_frame() {
+                        // The worker has started (any frame says so); an empty one says only that.
+                        Ok(Some(frame)) => {
+                            has_started.store(true, Ordering::Relaxed);
+                            if frame.is_empty() {
+                                continue;
                             }
+                            decode::<Response>(&frame)
                         }
                         // The socket closed: dropping the sender tells the caller.
                         Ok(None) => break,
-                        Err(e) => {
-                            let _ = tx.send(Err(e));
-                            break;
-                        }
+                        Err(e) => Err(e),
+                    };
+                    let failed = reply.is_err();
+                    if tx.send(reply).is_err() || failed {
+                        break;
                     }
                 }
             })
@@ -174,6 +183,7 @@ impl Worker {
             replies,
             stderr_tail,
             stderr_done,
+            started,
             next_id: 0,
             stopped: false,
         })
@@ -349,8 +359,20 @@ impl Worker {
     }
 
     /// The worker's socket closed: report how it ended, with its last log lines.
-    fn crashed(&mut self, name: &str, reached: bool, write_error: Option<String>) -> Error {
+    fn crashed(&mut self, name: &str, took_request: bool, write_error: Option<String>) -> Error {
         let status = self.wait_for_exit();
+        // The reply thread reads to the end of what the worker sent, which may say it started.
+        let deadline = Instant::now() + EXIT_GRACE;
+        while self
+            .replies
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .is_ok()
+        {}
+        let reached = match (self.started.load(Ordering::Relaxed), took_request) {
+            (false, _) => Reached::NotStarted,
+            (true, false) => Reached::Started,
+            (true, true) => Reached::Request,
+        };
         // The worker has exited, so its log pipe closes; let the log thread read the last
         // lines before the report is built.
         let _ = self.stderr_done.recv_timeout(EXIT_GRACE);
@@ -631,25 +653,44 @@ const FAULTS: [i32; 7] = [
     libc::SIGSYS,
 ];
 
-/// What to try after a worker crashed, by how it ended, and whether any of the request
-/// reached it. A fault of its own (SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT, SIGTRAP,
-/// SIGSYS) once the request reached it is the request's values, which would crash it again.
-/// SIGKILL is usually the system's, when it runs out of memory, and a request that reached
-/// it may be what used the memory: worth one more try. Any other signal (SIGTERM, SIGINT, SIGHUP: a kill, a Ctrl-C, a shutdown), a worker that
-/// stopped responding, or one gone before the request reached it is from outside, worth
-/// trying again (the next request starts another worker). A worker that exited with a code
-/// ended on its own, which is its install, not the request.
-fn crash_advice(status: Option<ExitStatus>, reached: bool) -> &'static str {
+/// How far a worker got before it ended.
+#[derive(Clone, Copy, Debug)]
+enum Reached {
+    /// It never said it had started.
+    NotStarted,
+    /// It started, but none of the request reached it.
+    Started,
+    /// Some of the request reached it (its socket took some, at least).
+    Request,
+}
+
+/// What to try after a worker crashed, by how it ended, and how far it got. A fault of its
+/// own (SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT, SIGTRAP, SIGSYS) before it started is
+/// its install (a missing library: dyld aborts it), and once the request reached it is the
+/// request's values, which would crash it again. SIGKILL is usually the system's, when it
+/// runs out of memory, and a request that reached it may be what used the memory: worth
+/// one more try. Any other signal (SIGTERM, SIGINT, SIGHUP: a kill, a Ctrl-C, a
+/// shutdown), a worker that stopped responding, or one gone before the request reached it
+/// is from outside, worth trying again (the next request starts another worker). A worker
+/// that exited with a code ended on its own, which is its install, not the request.
+fn crash_advice(status: Option<ExitStatus>, reached: Reached) -> &'static str {
+    let request = matches!(reached, Reached::Request);
     match status.map(|s| (s.code(), s.signal())) {
         Some((Some(_), _)) => {
             "check Silico's install: the kernel worker exited on its own (see its last output), \
              which no change to the request will help; report it if it persists"
         }
-        Some((None, Some(signal))) if reached && FAULTS.contains(&signal) => {
+        Some((None, Some(signal)))
+            if matches!(reached, Reached::NotStarted) && FAULTS.contains(&signal) =>
+        {
+            "check Silico's install: the kernel worker crashed as it started, before it could \
+             read the request (see its last output); report it if it persists"
+        }
+        Some((None, Some(signal))) if request && FAULTS.contains(&signal) => {
             "change the operation's values: these crashed the kernel, and the same request \
              would crash it again"
         }
-        Some((None, Some(libc::SIGKILL))) if reached => {
+        Some((None, Some(libc::SIGKILL))) if request => {
             "try the request once more: the kernel worker was killed, most likely by the \
              system for running out of memory; if it's killed again, the request needs too \
              much memory: simplify it"
@@ -762,10 +803,12 @@ mod tests {
 
     #[test]
     fn crash_advice_follows_how_the_worker_ended() {
+        use super::Reached::{NotStarted, Request, Started};
         // From the signals' meanings, not from `FAULTS`: a fault of the worker's own once
-        // the request reached it is the values'.
+        // the request reached it is the values'; before it started, the install's.
         let values = "change the operation's values";
         let again = "try the request again";
+        let install = "check Silico's install";
         let signalled = |signal| Some(ExitStatus::from_raw(signal));
         for signal in [
             libc::SIGSEGV,
@@ -776,39 +819,38 @@ mod tests {
             libc::SIGTRAP,
             libc::SIGSYS,
         ] {
-            assert!(
-                crash_advice(signalled(signal), true).starts_with(values),
-                "{signal}"
-            );
-            assert!(
-                crash_advice(signalled(signal), false).starts_with(again),
-                "{signal}"
-            );
-        }
-        assert!(crash_advice(signalled(libc::SIGKILL), true).starts_with("try the request once"));
-        assert!(crash_advice(signalled(libc::SIGKILL), false).starts_with(again));
-        for signal in [
-            libc::SIGTERM,
-            libc::SIGINT,
-            libc::SIGHUP,
-            libc::SIGUSR1,
-            libc::SIGPIPE,
-        ] {
-            for reached in [true, false] {
-                assert!(
-                    crash_advice(signalled(signal), reached).starts_with(again),
-                    "{signal}"
-                );
+            for (reached, says) in [(Request, values), (Started, again), (NotStarted, install)] {
+                let advice = crash_advice(signalled(signal), reached);
+                assert!(advice.starts_with(says), "{signal} {reached:?}: {advice}");
             }
         }
-        // Killed after it stopped responding: no status.
-        assert!(crash_advice(None, true).starts_with(again));
-        // An exit code (3, in the status's high byte) is the install's, either way.
-        for reached in [true, false] {
+        for (reached, says) in [
+            (Request, "try the request once more"),
+            (Started, again),
+            (NotStarted, again),
+        ] {
+            let advice = crash_advice(signalled(libc::SIGKILL), reached);
+            assert!(advice.starts_with(says), "{reached:?}: {advice}");
+        }
+        for reached in [Request, Started, NotStarted] {
+            for signal in [
+                libc::SIGTERM,
+                libc::SIGINT,
+                libc::SIGHUP,
+                libc::SIGUSR1,
+                libc::SIGPIPE,
+            ] {
+                let advice = crash_advice(signalled(signal), reached);
+                assert!(advice.starts_with(again), "{signal} {reached:?}: {advice}");
+            }
+            // Killed after it stopped responding: no status.
             assert!(
-                crash_advice(Some(ExitStatus::from_raw(3 << 8)), reached)
-                    .starts_with("check Silico's install")
+                crash_advice(None, reached).starts_with(again),
+                "{reached:?}"
             );
+            // An exit code (3, in the status's high byte) is the install's, either way.
+            let exited = crash_advice(Some(ExitStatus::from_raw(3 << 8)), reached);
+            assert!(exited.starts_with(install), "{reached:?}: {exited}");
         }
     }
 

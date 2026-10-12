@@ -16,7 +16,7 @@ use std::process::ExitCode;
 use silico_protocol::{
     Blob, BuiltData, Failure, FailureKind, FrameError, FrameReader, FreecadMeasures, Generation,
     Op, Reply, Request, RequestId, Response, ShapeData, ShapeSummary, WORKER_FD, WORKER_FD_ENV,
-    write_message,
+    write_message, write_started,
 };
 
 use crate::{KernelError, KernelErrorKind};
@@ -203,6 +203,7 @@ where
     F: FnMut(RequestId, Generation, Op, &mut dyn Write) -> Result<Reply, Failure>,
 {
     let mut writer = socket.try_clone().map_err(FrameError::Io)?;
+    write_started(&mut writer)?;
     let mut requests = FrameReader::new(socket);
     while let Some(request) = requests.read_message::<Request>()? {
         let name = request.op.name();

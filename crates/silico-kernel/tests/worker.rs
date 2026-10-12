@@ -1018,10 +1018,12 @@ fn every_failure_says_what_to_try() {
         w.run(KernelRequest::debug(DebugOp::Sleep { millis: 10_000 }))
             .unwrap_err()
     };
-    // Sent, then waited on until the worker has ended (a zombie, or gone), so the request
-    // can't reach it.
+    // Sent once the worker has started (it has answered), then waited on until the worker
+    // has ended (a zombie, or gone), so the request can't reach it.
     let while_idle = |signal: &str| {
         let mut w = KernelWorker::start_worker(Path::new(TEST_WORKER)).unwrap();
+        w.run(KernelRequest::debug(DebugOp::Sleep { millis: 0 }))
+            .unwrap();
         let pid = w.pid().to_string();
         let _ = Command::new("kill")
             .args([format!("-{signal}"), pid.clone()])
@@ -1092,11 +1094,12 @@ fn every_failure_says_what_to_try() {
         (
             "a worker killed partway through reading a large request",
             {
-                // Takes 1 MiB of the 64 MiB request, then is killed, as the system kills
-                // a worker that runs out of memory reading it.
+                // Says it has started (an empty frame), takes 1 MiB of the 64 MiB request,
+                // then is killed, as the system kills a worker that runs out of memory
+                // reading it.
                 let exe = script(
                     "killed-reading",
-                    "head -c 1048576 <&3 >/dev/null\nkill -KILL $$",
+                    "printf '\\0\\0\\0\\0' >&3\nhead -c 1048576 <&3 >/dev/null\nkill -KILL $$",
                 );
                 let mut w = KernelWorker::start_worker(&exe).unwrap();
                 let big = ShapeData::unchecked(Blob::inline(vec![b'x'; 64 * 1024 * 1024]));
@@ -1108,6 +1111,17 @@ fn every_failure_says_what_to_try() {
             "a worker killed while idle, before the request",
             while_idle("KILL"),
             "try the request again",
+        ),
+        (
+            "a worker that crashed as it started",
+            {
+                // As dyld aborts a worker whose library is missing: before it says it has
+                // started, whatever the request.
+                let exe = script("aborts-at-start", "kill -ABRT $$");
+                let mut w = KernelWorker::start_worker(&exe).unwrap();
+                w.make(Primitive::Sphere { radius: 1.0 }).unwrap_err()
+            },
+            "check Silico's install",
         ),
         (
             "an exit of its own",

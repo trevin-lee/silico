@@ -1,8 +1,9 @@
 //! Message types shared by the core and the worker processes, and how they're framed on
 //! the wire (ARCHITECTURE.md, Process model).
 //!
-//! The core sends a [`Request`]; a worker answers with a [`Response`] carrying the same
-//! `id`. Each message travels as one frame: a 4-byte little-endian length, then the message
+//! A worker first sends an empty frame, saying it has started ([`write_started`]). The core
+//! sends a [`Request`]; a worker answers with a [`Response`] carrying the same `id`. Each
+//! message travels as one frame: a 4-byte little-endian length, then the message
 //! encoded with `postcard` ([`frame`]). Both ends are Rust and always ship together, so
 //! there's no version negotiation.
 
@@ -15,7 +16,7 @@ mod profile;
 use serde::{Deserialize, Serialize};
 
 pub use chamfer::ChamferSize;
-pub use frame::{FrameError, FrameReader, MAX_FRAME_LEN, write_message};
+pub use frame::{FrameError, FrameReader, MAX_FRAME_LEN, decode, write_message, write_started};
 pub use history::{
     ElementCounts, ElementFate, ElementKind, ElementRef, Ends, History, InputHistory, Reported,
 };
