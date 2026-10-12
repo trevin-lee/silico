@@ -200,7 +200,7 @@ Raised by the review council and left for M1, where the code they concern is bui
   - `tessellate` on thin, valid solids: faces too small to show at the deflection are left out, as FreeCAD's display leaves them (the review);
   - worker start, partly. A worker that ends on its own before answering is started again less and less often while the pool is idle (1 s, doubling to 60 s), where it was started every second. A pool of such workers still starts; its first request reports how the worker ended.
 - **Moved to M2:**
-  - before the feature layer reads refusals: element references (not names) from workers, the parameter at fault as data, every refused edge as data, and finding a multi-edge fillet's failing edge in the core. These change the protocol and the error contract (`tests/contract/`), so they need the maintainer.
+  - before the feature layer reads refusals: element references (not names) from workers, the parameter at fault as data, every refused edge as data, and finding a multi-edge fillet's failing edge in the core. These change the protocol and the error contract (`tests/contract/`): the maintainer agreed to make them M2's first step (M2.0).
   - with recompute (M2.4):
     - `summarize`'s cost (in the review, 4 to 9 times the operation it measures, on a plate with 100 holes): measure a shape once and carry or cache the result, at the precision fingerprints are rounded to;
     - its mismeasure where faces' integrals cancel.
