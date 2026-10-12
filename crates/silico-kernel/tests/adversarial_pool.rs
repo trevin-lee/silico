@@ -1293,17 +1293,20 @@ fn a_wait_ended_early_by_a_newer_worker_still_doubles_on_the_next_failure() {
     let pids = pool.pids();
     assert_eq!(pids.len(), 2);
     let (a, b) = (pids[0], pids[1]);
-    // A's script has started its worker, however slowly the machine runs it.
+    // Both scripts have read `mode` (work) and started their workers, however slowly the
+    // machine runs them.
+    let child_of = |script: u32| {
+        std::fs::read_to_string(&children)
+            .unwrap_or_default()
+            .lines()
+            .find_map(|l| l.strip_prefix(&format!("{script} ")).map(str::to_owned))
+    };
     let deadline = Instant::now() + Duration::from_secs(10);
     let a_child = loop {
-        let listed = std::fs::read_to_string(&children).unwrap_or_default();
-        if let Some(child) = listed
-            .lines()
-            .find_map(|l| l.strip_prefix(&format!("{a} ")).map(str::to_owned))
-        {
+        if let (Some(child), Some(_)) = (child_of(a), child_of(b)) {
             break child;
         }
-        assert!(Instant::now() < deadline, "A's worker never started");
+        assert!(Instant::now() < deadline, "the workers never started");
         std::thread::sleep(Duration::from_millis(5));
     };
     std::fs::write(&mode, "fail").unwrap();
@@ -1315,13 +1318,14 @@ fn a_wait_ended_early_by_a_newer_worker_still_doubles_on_the_next_failure() {
     std::fs::write(&mode, "work").unwrap();
     signal("KILL", b);
     // B's replacement (launch 6) works; A's next launch (7), early, must fail.
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + Duration::from_secs(6);
     while count() < 6 {
         assert!(Instant::now() < deadline, "B wasn't replaced");
         std::thread::sleep(Duration::from_millis(5));
     }
     std::fs::write(&mode, "fail").unwrap();
-    let deadline = Instant::now() + Duration::from_secs(4);
+    // Well before A's own wait would end (about 7 s from here).
+    let deadline = Instant::now() + Duration::from_secs(5);
     while count() < 7 {
         assert!(Instant::now() < deadline, "A's wait didn't end early");
         std::thread::sleep(Duration::from_millis(5));
