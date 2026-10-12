@@ -12,6 +12,8 @@
 
 #[path = "common/pool.rs"]
 mod pool;
+#[path = "common/process.rs"]
+mod process;
 #[path = "common/scripts.rs"]
 mod scripts;
 
@@ -19,13 +21,14 @@ use std::collections::BTreeSet;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use pool::{
     TEST_WORKER, WORKER, assert_reaped, done, kill9_and_wait, outcome, sleep, spin, state,
     wait_full, wait_no_children,
 };
+use process::{open_fds, scratch_dir, threads};
 use rustix::process::{Resource, getrlimit, setrlimit};
 use scripts::script;
 use silico_core::kernel::{Blob, KernelRequest};
@@ -298,11 +301,39 @@ fn a_worker_that_never_starts_doesnt_have_its_request_blamed() {
         let mut w = Worker::spawn(&exe).unwrap();
         call_echo(&mut w, &[1], Duration::from_millis(500)).unwrap_err()
     });
-    let suggestion = err.suggestion().unwrap_or_default();
+    assert_eq!(err.code(), ErrorCode::WorkerTimeout, "{err}");
     assert!(
-        !suggestion.starts_with("simplify the operation"),
+        err.cause().is_some_and(|c| c.contains("hadn't started")),
+        "{err}"
+    );
+    assert!(
+        err.suggestion()
+            .is_some_and(|s| s.starts_with("try the request again")),
         "a worker that never started blamed the request: {err}"
     );
+}
+
+#[test]
+fn a_started_worker_that_times_out_blames_the_request() {
+    // The other side of the one above: a worker that has started (it answered) and then
+    // runs past the timeout was working on the request.
+    let err = within(Duration::from_secs(10), || {
+        let mut w = Worker::spawn(Path::new(TEST_WORKER)).unwrap();
+        call_echo(&mut w, &[1], Duration::from_secs(20)).unwrap();
+        w.call(
+            Generation(1),
+            Op::Debug(DebugOp::Sleep { millis: 60_000 }),
+            Duration::from_millis(300),
+        )
+        .unwrap_err()
+    });
+    assert_eq!(err.code(), ErrorCode::WorkerTimeout, "{err}");
+    assert!(
+        err.suggestion()
+            .is_some_and(|s| s.starts_with("simplify the operation")),
+        "{err}"
+    );
+    assert!(err.cause().is_none(), "{err}");
 }
 
 #[test]
@@ -320,11 +351,10 @@ fn a_worker_that_closes_its_socket_mid_request_and_lingers_fails_within_its_time
         let err = call_echo(&mut w, &[1], Duration::from_millis(300)).unwrap_err();
         (err, start.elapsed())
     });
+    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
     assert!(
-        matches!(
-            err.code(),
-            ErrorCode::WorkerCrashed | ErrorCode::ProtocolError | ErrorCode::WorkerTimeout
-        ),
+        err.cause()
+            .is_some_and(|c| c.starts_with("it stopped responding and was killed")),
         "{err}"
     );
     assert!(err.suggestion().is_some(), "{err}");
@@ -334,21 +364,41 @@ fn a_worker_that_closes_its_socket_mid_request_and_lingers_fails_within_its_time
     );
 }
 
+#[test]
+fn a_worker_whose_child_holds_its_pipes_fails_within_its_timeout() {
+    // The worker takes the request and exits, but a process it started holds its log open:
+    // waiting to read it to its end stops at the call's deadline too. (One that held the
+    // socket too would keep the call waiting for a reply, until its timeout.)
+    let dir = scratch_dir("child-holds-pipes");
+    let pidfile = dir.join("pid");
+    let exe = script(
+        "child-holds-pipes",
+        &format!(
+            "printf '\\0\\0\\0\\0' >&3\ndd bs=1 count=1 <&3 >/dev/null 2>&1\nexec 3>&-\n\
+             sleep 600 &\necho $! > '{}'\nexit 0",
+            pidfile.display()
+        ),
+    );
+    let (err, took) = within(Duration::from_secs(10), move || {
+        let mut w = Worker::spawn(&exe).unwrap();
+        let start = Instant::now();
+        let err = call_echo(&mut w, &[1], Duration::from_millis(300)).unwrap_err();
+        (err, start.elapsed())
+    });
+    if let Ok(pid) = std::fs::read_to_string(&pidfile) {
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", pid.trim()])
+            .status();
+    }
+    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert!(
+        took < Duration::from_millis(1300),
+        "a call allowed 300 ms took {took:?}: {err}"
+    );
+}
+
 // ---------------------------------------------------------------------------------------
 // Starts that fail
-
-/// A fresh directory under the target's scratch space.
-fn scratch_dir(what: &str) -> PathBuf {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
-        "adversarial_worker-{what}-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
 
 #[test]
 fn every_way_a_worker_cant_be_started_says_what_to_try() {
@@ -408,16 +458,11 @@ fn every_way_a_worker_cant_be_started_says_what_to_try() {
     );
 }
 
-/// Open descriptors in this process (the listing's own included).
-fn open_fds() -> u64 {
-    std::fs::read_dir("/dev/fd").unwrap().count() as u64
-}
-
 /// Runs `f` with this process allowed only `spare` descriptors more than it has open, and
 /// puts the limit back after.
 fn short_of_descriptors<T>(spare: u64, f: impl FnOnce() -> T) -> T {
     let saved = getrlimit(Resource::Nofile);
-    let open = open_fds();
+    let open = open_fds() as u64;
     setrlimit(
         Resource::Nofile,
         rustix::process::Rlimit {
@@ -432,7 +477,7 @@ fn short_of_descriptors<T>(spare: u64, f: impl FnOnce() -> T) -> T {
 }
 
 /// Waits up to five seconds for this process's open descriptors to fall to `fds`.
-fn wait_fds(fds: u64, context: &str) {
+fn wait_fds(fds: usize, context: &str) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while open_fds() > fds {
         assert!(
@@ -492,10 +537,7 @@ fn a_pool_short_of_descriptors_fails_its_request_cleanly_and_recovers() {
     let first = pool.pids();
     kill9_and_wait(first[0]);
     let err = short_of_descriptors(0, || done(pool.submit(Generation(1), sleep(1)))).unwrap_err();
-    assert!(
-        matches!(err.code(), ErrorCode::Internal | ErrorCode::WorkerCrashed),
-        "{err}"
-    );
+    assert_eq!(err.code(), ErrorCode::Internal, "{err}");
     assert!(err.cause().is_some(), "{err}");
     done(pool.submit(Generation(1), sleep(1))).unwrap();
     let held = wait_full(&pool, 1, &first.iter().copied().collect());
@@ -527,29 +569,33 @@ fn an_idle_slot_whose_worker_starts_then_exits_on_its_own_backs_off() {
     drop(pool);
     let launches = std::fs::read_to_string(&log).unwrap().lines().count();
     assert!(
-        launches <= 4,
+        (3..=4).contains(&launches),
         "{launches} launches in 8.5 s idle of a worker that exits on its own"
     );
     wait_no_children("after the drop");
 }
 
-#[test]
-fn an_idle_worker_that_closed_its_socket_is_replaced_before_its_next_request() {
-    // The first worker says it has started, then closes its socket and lingers (any later
-    // worker is the real one). A worker of no use between requests is replaced before it's
-    // given one, and an idle slot checks its worker every second, so after 1.5 s idle the
-    // next request runs on a replacement.
-    let dir = scratch_dir("closed-socket");
-    let exe = script(
-        "closed-socket-once",
+/// A worker whose first launch says it has started, then closes its socket and lingers;
+/// any later launch is the real test worker.
+fn closes_its_socket_once(what: &str) -> PathBuf {
+    let dir = scratch_dir(what);
+    script(
+        what,
         &format!(
             "if mkdir '{}' 2>/dev/null; then printf '\\0\\0\\0\\0' >&3; exec 3>&-; exec sleep 600; fi\n\
              exec '{TEST_WORKER}'",
             dir.join("once").display()
         ),
-    );
-    let pool = KernelPool::start_workers(&exe, 1).unwrap();
-    std::thread::sleep(Duration::from_millis(1_500));
+    )
+}
+
+#[test]
+fn a_worker_that_closed_its_socket_is_replaced_before_its_next_request() {
+    // A request 500 ms after the start, before any idle check: the worker, of no use, is
+    // replaced before it's given the request, which runs on the replacement.
+    let pool =
+        KernelPool::start_workers(&closes_its_socket_once("closed-socket-request"), 1).unwrap();
+    std::thread::sleep(Duration::from_millis(500));
     let result = done(pool.submit(Generation(1), pool::echo(&[1])));
     let held = pool.pids();
     drop(pool);
@@ -558,20 +604,28 @@ fn an_idle_worker_that_closed_its_socket_is_replaced_before_its_next_request() {
     assert_eq!(result.unwrap(), Blob::inline(vec![1]));
 }
 
+#[test]
+fn an_idle_worker_that_closed_its_socket_is_replaced_and_reaped_while_idle() {
+    // No request: the idle check, within a second or so, replaces the worker and reaps it.
+    let pool = KernelPool::start_workers(&closes_its_socket_once("closed-socket-idle"), 1).unwrap();
+    let first = pool.pids();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let held = loop {
+        let pids = pool.pids();
+        if pids.len() == 1 && pids[0] != first[0] {
+            break pids;
+        }
+        assert!(Instant::now() < deadline, "still {pids:?}");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(state(first[0]), None, "the lingering worker wasn't reaped");
+    drop(pool);
+    assert_reaped(&held, "after the drop");
+    wait_no_children("after the drop");
+}
+
 // ---------------------------------------------------------------------------------------
 // Dropping the pool in the middle of everything
-
-/// Threads in this process.
-fn threads() -> usize {
-    if cfg!(target_os = "linux") {
-        return std::fs::read_dir("/proc/self/task").unwrap().count();
-    }
-    let out = std::process::Command::new("ps")
-        .args(["-M", "-p", &std::process::id().to_string()])
-        .output()
-        .unwrap();
-    String::from_utf8(out.stdout).unwrap().lines().count() - 1
-}
 
 /// A small deterministic sequence, so every run hits the same moments.
 fn next(seed: &mut u64) -> u64 {
@@ -757,6 +811,11 @@ fn start_child_entry() {
     let pool = KernelPool::start().err().expect("a pool started");
     let worker = KernelWorker::start().err().expect("a worker started");
     for (what, err) in [("the pool", pool), ("a worker", worker)] {
+        assert_eq!(
+            err.code(),
+            silico_core::ErrorCode::InvalidInput,
+            "{what}: {err}"
+        );
         let says = |text: Option<&str>| text.is_some_and(|t| t.contains(KERNEL_WORKER_ENV));
         assert!(
             says(Some(err.message())) || says(err.suggestion()),
@@ -767,12 +826,18 @@ fn start_child_entry() {
 
 #[test]
 fn a_worker_named_by_an_unusable_variable_says_so() {
-    // SILICO_KERNEL_WORKER empty, or naming nothing, is refused naming the variable, the
-    // first thing to fix, as the default path, when missing, says to set it.
+    // SILICO_KERNEL_WORKER empty, naming nothing, or naming a directory is refused as
+    // invalid input naming the variable, the first thing to fix, as the default path, when
+    // missing, says to set it.
     use silico_core::kernel::KERNEL_WORKER_ENV;
     let me = std::env::current_exe().unwrap();
     let mut bad = Vec::new();
-    for value in ["", "/nonexistent/silico-kernel-worker", "not-here/worker"] {
+    for value in [
+        "",
+        "/nonexistent/silico-kernel-worker",
+        "not-here/worker",
+        "/",
+    ] {
         let out = std::process::Command::new(&me)
             .args([
                 "--exact",
@@ -795,6 +860,75 @@ fn a_worker_named_by_an_unusable_variable_says_so() {
         }
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+/// Set in a copy of this test binary that
+/// `a_worker_named_by_a_bare_name_runs_the_one_in_the_working_directory` runs.
+const RELATIVE_CHILD: &str = "SILICO_ADVERSARIAL_WORKER_RELATIVE_CHILD";
+
+/// Not a test of its own: in the copy, starts a worker and a pool from the variable.
+#[test]
+fn relative_child_entry() {
+    use silico_core::kernel::KernelWorker;
+    if std::env::var_os(RELATIVE_CHILD).is_none() {
+        return;
+    }
+    let worker = KernelWorker::start().unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    drop(worker);
+    let pool = KernelPool::start().unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    drop(pool);
+}
+
+#[test]
+fn a_worker_named_by_a_bare_name_runs_the_one_in_the_working_directory() {
+    // SILICO_KERNEL_WORKER=silico-kernel-worker, with one in the working directory and
+    // another on PATH: the one checked, in the working directory, is the one run, by a
+    // worker and by a pool alike.
+    use silico_core::kernel::KERNEL_WORKER_ENV;
+    let dir = scratch_dir("bare-name");
+    let marker = dir.join("ran");
+    for place in ["cwd", "bin"] {
+        std::fs::create_dir_all(dir.join(place)).unwrap();
+        let exe = dir.join(place).join("silico-kernel-worker");
+        std::fs::write(
+            &exe,
+            format!(
+                "#!/bin/sh\necho {place} >> '{}'\nexec '{TEST_WORKER}'\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "relative_child_entry",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .current_dir(dir.join("cwd"))
+        .env(RELATIVE_CHILD, "1")
+        .env(KERNEL_WORKER_ENV, "silico-kernel-worker")
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", dir.join("bin").display()),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let ran = std::fs::read_to_string(&marker).unwrap();
+    assert!(
+        !ran.is_empty() && ran.lines().all(|l| l == "cwd"),
+        "ran: {ran:?}"
+    );
 }
 
 #[test]

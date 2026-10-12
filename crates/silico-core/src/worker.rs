@@ -114,20 +114,19 @@ impl Worker {
             .map_err(|e| internal("passing the socket", e))?;
         let child = command.spawn().map_err(|e| {
             let message = format!("couldn't start the kernel worker {}", exe.display());
-            if out_of_descriptors(&e) {
-                return Error::new(ErrorCode::Internal, message)
+            match short_of(&e) {
+                // This process, or the system, is short of something: the worker never ran.
+                Some(advice) => Error::new(ErrorCode::Internal, message)
                     .with_cause(e.to_string())
-                    .with_suggestion(OUT_OF_DESCRIPTORS);
+                    .with_suggestion(advice),
+                None => Error::new(ErrorCode::WorkerCrashed, message)
+                    .with_cause(e.to_string())
+                    .with_suggestion(format!(
+                        "check Silico's install: {} can't be run (missing, not executable, or \
+                         needing an interpreter that's missing): rebuild it",
+                        exe.display()
+                    )),
             }
-            Error::new(ErrorCode::WorkerCrashed, message)
-                .with_cause(e.to_string())
-                .with_suggestion(format!(
-                    "check Silico's install: {} can't be run (missing, not executable, or \
-                     needing an interpreter that's missing); rebuild it, or name a kernel worker \
-                     in {}",
-                    exe.display(),
-                    crate::kernel::KERNEL_WORKER_ENV
-                ))
         })?;
         // The command (and with it the worker's end of the socket) must go now, or the
         // worker's end stays open here and its exit would never close the socket.
@@ -228,31 +227,31 @@ impl Worker {
 
     /// Whether the worker has said it started (see [`silico_protocol::write_started`]). A
     /// worker that has ended may have said so in frames not yet read: [`Self::has_exited`]
-    /// and then [`Self::read_to_end`] first.
-    pub fn has_started(&self) -> bool {
+    /// and then [`Self::drain_replies`] first.
+    pub(crate) fn has_started(&self) -> bool {
         self.started.load(Ordering::Relaxed)
     }
 
-    /// Reads, and drops, what a worker whose socket has closed sent before it ended, waiting
-    /// up to two seconds for the end. Then [`Self::has_started`] is final.
-    pub fn read_to_end(&mut self) {
-        let deadline = Instant::now() + EXIT_GRACE;
+    /// Blocks until `until`, at the latest, reading and dropping what a worker whose socket
+    /// has closed sent before it ended. Once the socket's end is read (it ends at once,
+    /// unless a process the worker started holds it open), [`Self::has_started`] is final.
+    pub(crate) fn drain_replies(&mut self, until: Instant) {
         while self
             .replies
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .recv_timeout(until.saturating_duration_since(Instant::now()))
             .is_ok()
         {}
     }
 
     /// Whether the worker can't be given a request: it has sent something no call asked for
-    /// (read and dropped, as [`Self::has_stray_reply`]), or closed its socket, though it may
-    /// still be running.
-    pub fn has_hung_up(&mut self) -> bool {
+    /// (a second reply to an earlier request, say, which is read and dropped: its next call
+    /// would fail on it, out of turn), or closed its socket, though it may still be running.
+    pub(crate) fn has_hung_up(&mut self) -> bool {
         !matches!(self.replies.try_recv(), Err(TryRecvError::Empty))
     }
 
     /// How the process ended, waiting up to `grace` for it to (reaping it).
-    pub fn exit_status_within(&mut self, grace: Duration) -> Option<ExitStatus> {
+    pub(crate) fn exit_status_within(&mut self, grace: Duration) -> Option<ExitStatus> {
         let deadline = Instant::now() + grace;
         loop {
             if let Some(status) = self.exit_status() {
@@ -263,13 +262,6 @@ impl Worker {
             }
             std::thread::sleep(Duration::from_millis(1));
         }
-    }
-
-    /// Whether the worker has sent something no call asked for (a second reply to an
-    /// earlier request, say), which is read and dropped. Such a worker can't be trusted:
-    /// its next call would fail on that reply, out of turn.
-    pub fn has_stray_reply(&mut self) -> bool {
-        self.replies.try_recv().is_ok()
     }
 
     /// Stops the worker (kills and reaps it); later calls fail at once. For a worker whose
@@ -430,15 +422,17 @@ impl Worker {
         write_error: Option<String>,
     ) -> Error {
         // Within the call's time, if it's sooner, but long enough to reap a worker that's
-        // ending: one that closed its socket and lingers is killed then.
+        // ending: one that closed its socket and lingers is killed then. Its replies and its
+        // log are read until then too (a process it started may hold them open).
         let grace = deadline.map_or(EXIT_GRACE, |deadline| {
             deadline
                 .saturating_duration_since(Instant::now())
                 .clamp(MIN_EXIT_GRACE, EXIT_GRACE)
         });
+        let until = Instant::now() + grace;
         let status = self.wait_for_exit(grace);
         // What the worker sent before it ended may say it started.
-        self.read_to_end();
+        self.drain_replies(until);
         let reached = match (self.has_started(), took_request) {
             (false, _) => Reached::NotStarted,
             (true, false) => Reached::Started,
@@ -446,7 +440,9 @@ impl Worker {
         };
         // The worker has exited, so its log pipe closes; let the log thread read the last
         // lines before the report is built.
-        let _ = self.stderr_done.recv_timeout(EXIT_GRACE);
+        let _ = self
+            .stderr_done
+            .recv_timeout(until.saturating_duration_since(Instant::now()));
         let mut cause = match status {
             Some(status) => describe_exit(status),
             None => "it stopped responding and was killed".to_owned(),
@@ -864,23 +860,31 @@ fn internal(what: &str, e: impl std::fmt::Display) -> Error {
     .with_suggestion(SILICO_BUG)
 }
 
-/// A step of starting a worker failed in this process: short of descriptors, most likely.
+/// A step of starting a worker failed in this process: short of descriptors, threads, or
+/// memory, most likely.
 fn start_failed(what: &str, e: &io::Error) -> Error {
     let error = internal(what, e);
-    if out_of_descriptors(e) {
-        error.with_suggestion(OUT_OF_DESCRIPTORS)
-    } else {
-        error
+    match short_of(e) {
+        Some(advice) => error.with_suggestion(advice),
+        None => error,
     }
 }
 
-/// Whether `e` says this process, or the system, has too many files open.
-fn out_of_descriptors(e: &io::Error) -> bool {
-    matches!(e.raw_os_error(), Some(libc::EMFILE | libc::ENFILE))
+/// What to do if `e` says this process, or the system, is short of something a worker
+/// needs to start: open files, processes or threads, or memory.
+fn short_of(e: &io::Error) -> Option<&'static str> {
+    match e.raw_os_error()? {
+        libc::EMFILE | libc::ENFILE => Some(
+            "Silico has too many files open to start a kernel worker: close some documents or \
+             other programs, or raise the limit on open files (ulimit -n)",
+        ),
+        libc::EAGAIN | libc::ENOMEM => Some(
+            "the system is short of processes or memory to start a kernel worker: close some \
+             documents or other programs, then try again",
+        ),
+        _ => None,
+    }
 }
-
-const OUT_OF_DESCRIPTORS: &str = "Silico has too many files open to start a kernel worker: close \
-     some documents or other programs, or raise the limit on open files (ulimit -n)";
 
 #[cfg(test)]
 mod tests {
@@ -952,6 +956,30 @@ mod tests {
             // An exit code (3, in the status's high byte) is the install's, either way.
             let exited = crash_advice(Some(ExitStatus::from_raw(3 << 8)), reached);
             assert!(exited.starts_with(install), "{reached:?}: {exited}");
+        }
+    }
+
+    #[test]
+    fn a_start_short_of_files_processes_or_memory_is_told_apart_from_a_bad_install() {
+        use std::io;
+
+        use super::short_of;
+        let says = |errno| short_of(&io::Error::from_raw_os_error(errno));
+        for errno in [libc::EMFILE, libc::ENFILE] {
+            assert!(
+                says(errno).is_some_and(|s| s.contains("too many files open")),
+                "{errno}"
+            );
+        }
+        for errno in [libc::EAGAIN, libc::ENOMEM] {
+            assert!(
+                says(errno).is_some_and(|s| s.contains("processes or memory")),
+                "{errno}"
+            );
+        }
+        // The install's: missing, not executable, not a program, a path through a file.
+        for errno in [libc::ENOENT, libc::EACCES, libc::ENOEXEC, libc::ENOTDIR] {
+            assert_eq!(says(errno), None, "{errno}");
         }
     }
 

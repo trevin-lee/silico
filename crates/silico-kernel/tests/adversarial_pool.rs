@@ -11,19 +11,21 @@
 
 #[path = "common/pool.rs"]
 mod pool;
+#[path = "common/process.rs"]
+mod process;
 
 use std::collections::BTreeSet;
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use pool::{
     PATIENCE, TEST_WORKER, WORKER, assert_reaped, children, done, echo, kill9_and_wait, outcome,
     pool, signal, sleep, spin, state, wait_full, wait_no_children,
 };
+use process::{open_fds, scratch_dir, threads};
 use silico_core::ErrorCode;
 use silico_core::kernel::{Blob, KernelRequest, Primitive};
 use silico_core::pool::{KernelPool, Outcome};
@@ -31,19 +33,6 @@ use silico_core::worker::Worker;
 use silico_protocol::{
     DebugOp, Failure, FailureKind, Generation, Op, Reply, Response, write_message,
 };
-
-/// A fresh directory under the target's scratch space.
-fn scratch_dir(what: &str) -> PathBuf {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
-        "adversarial_pool-{what}-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
 
 fn write_executable(path: &Path, text: &str) {
     let mut file = std::fs::File::create(path).unwrap();
@@ -511,24 +500,6 @@ fn a_reply_left_over_from_one_request_doesnt_fail_the_next() {
 
 // ---------------------------------------------------------------------------------------
 // Resources across many replacements
-
-/// Open descriptors in this process.
-fn open_fds() -> usize {
-    std::fs::read_dir("/dev/fd").unwrap().count()
-}
-
-/// Threads in this process.
-fn threads() -> usize {
-    if cfg!(target_os = "linux") {
-        return std::fs::read_dir("/proc/self/task").unwrap().count();
-    }
-    let out = Command::new("ps")
-        .args(["-M", "-p", &std::process::id().to_string()])
-        .output()
-        .unwrap();
-    // A header line, then one line per thread.
-    String::from_utf8(out.stdout).unwrap().lines().count() - 1
-}
 
 #[test]
 fn dropping_pools_leaks_no_threads() {
@@ -1197,6 +1168,46 @@ fn an_idle_slot_whose_worker_is_killed_at_launch_backs_off_after_the_second_kill
     for pair in gaps.windows(2) {
         assert!(pair[1] > pair[0], "gaps {gaps:?} don't grow");
     }
+}
+
+#[test]
+fn an_idle_slot_whose_worker_starts_then_exits_a_tick_later_waits_longer_each_time() {
+    // The worker says it has started, runs past an idle check (seen running), then exits on
+    // its own at 1.5 s. Its having run doesn't end the slot's wait: only an answer does.
+    // Launches at about 0, 3, and 7 s (13 next): three in 10.5 s, not one every 3 s.
+    let dir = scratch_dir("starts-runs-exits");
+    let (script, log) = launch_logger(&dir, "printf '\\0\\0\\0\\0' >&3\nsleep 1.5\nexit 3");
+    let pool = KernelPool::start_workers(&script, 1).unwrap();
+    std::thread::sleep(Duration::from_millis(10_500));
+    drop(pool);
+    let (times, _) = launches(&log);
+    assert_eq!(times.len(), 3, "launches at {times:?}");
+}
+
+#[test]
+fn a_kill_at_launch_after_an_exit_of_its_own_is_taken_as_from_outside() {
+    // The first launch exits on its own (code 3) before it starts; every later one is
+    // killed (SIGKILL) before it starts. The first kill follows an exit, not a kill, so it's
+    // taken as from outside and replaced at once; the second in a row is waited on. Launches
+    // at about 0, 2, 3, and 6 s: the second gap about one check, the third longer.
+    let dir = scratch_dir("exit-then-kills");
+    let (script, log) = launch_logger(
+        &dir,
+        &format!(
+            "if mkdir '{}' 2>/dev/null; then exit 3; fi\nkill -KILL $$",
+            dir.join("first").display()
+        ),
+    );
+    let pool = KernelPool::start_workers(&script, 1).unwrap();
+    std::thread::sleep(Duration::from_millis(7_000));
+    drop(pool);
+    let (times, gaps) = launches(&log);
+    assert!(times.len() >= 4, "launches at {times:?}");
+    assert!(gaps[1] < 1.8, "the first kill was waited on: gaps {gaps:?}");
+    assert!(
+        gaps[2] > gaps[1] + 0.5,
+        "the second kill wasn't: gaps {gaps:?}"
+    );
 }
 
 #[test]
