@@ -14,7 +14,7 @@ This document records decisions. The **Invariants** section is enforced by the r
 6. **Documents are git-native text.** The file stores the feature timeline, never B-rep. B-rep and meshes are rebuildable caches and are never committed. No LFS.
 7. **One modeling workflow.** There is no Part vs PartDesign split. Primitives, booleans, and sketch-based features are all features in one timeline, and a feature can target any body.
 8. **`unsafe` appears only in FFI crates.** No panics on paths reachable from user, agent, file, or worker input. Those return structured errors.
-9. **Errors are structured:** a stable code, the feature, the sub-element, the cause, and a suggestion. `tracing` spans follow work across the worker boundary.
+9. **Errors are structured:** a stable code, the feature, every sub-element at fault, the parameter at fault, the cause, and a suggestion. `tracing` spans follow work across the worker boundary.
 10. **Port behavior, not lines.** FreeCAD is the reference for *what* the code must do and *why*. The Rust is idiomatic in *how*.
 11. **Oracle and golden tests are protected.** Any change to `tests/oracle/` or `tests/golden/` needs the maintainer's review.
 
@@ -155,7 +155,7 @@ FreeCAD avoids this problem by storing each feature's B-rep in the file and load
   - geometric queries that return stable names ("largest planar face facing +Z");
   - measurement and mass properties;
   - `check`.
-- **Errors** carry a code, the feature, the element, the cause, a suggestion, and candidate fixes where they exist.
+- **Errors** carry a code, the feature, the elements and parameter at fault, the cause, a suggestion, and candidate fixes where they exist.
 - **`read_logs`**, so agents can debug failures themselves.
 - Typical agent workflow: query through MCP to get stable names, edit the timeline as text or through commands, then `check`.
 

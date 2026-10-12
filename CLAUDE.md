@@ -23,7 +23,7 @@ Silico is a parametric CAD system: a Rust core, an egui/wgpu UI, and OpenCascade
 ## Writing code
 
 - No C++ in the app process. OCCT, PlaneGCS, and OndselSolver run in worker processes only.
-- `unsafe` only in FFI crates. No `unwrap`, `expect`, or `panic!` on paths reachable from user, agent, file, or worker input. Return structured errors (code, feature, element, cause, suggestion). Workspace lints enforce this. Tests may unwrap inside `#[test]` functions and `#[cfg(test)]` modules, and integration-test files under `tests/` may allow those lints at their top. Never add lint allows anywhere else.
+- `unsafe` only in FFI crates. No `unwrap`, `expect`, or `panic!` on paths reachable from user, agent, file, or worker input. Return structured errors (code, feature, elements, parameter, cause, suggestion). Workspace lints enforce this. Tests may unwrap inside `#[test]` functions and `#[cfg(test)]` modules, and integration-test files under `tests/` may allow those lints at their top. Never add lint allows anywhere else.
 - Nothing that reaches results, names, or serialized output may depend on `HashMap` order, time, randomness, or thread scheduling. Use `BTreeMap` or `IndexMap`.
 - Never block the UI thread.
 - Every capability goes through the core command API, so the UI, MCP, and CLI all reach it.

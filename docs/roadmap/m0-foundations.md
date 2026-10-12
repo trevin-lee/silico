@@ -219,6 +219,7 @@ The sections above describe each step as it was built. The milestone review and 
 - `Failure::new(kind, message)` builds a failure with no element or suggestion.
 - App-side logging (`SILICO_LOG`, `SILICO_LOG_FORMAT`) is `silico_core::logging::init`, used by the CLI and `silico-view`; workers keep their own JSON logging, with the same default for an empty or unusable `SILICO_LOG`.
 - `tests/determinism/probe.cpp` and `compare.py`, superseded by the stress test, are removed (in git history).
+- Since M2.0, the error names every sub-element at fault (`elements`, a list, in place of `element`) and the parameter at fault (`parameter`), and a shortage of files, processes, memory, or buffers has its own code, `resource_exhausted` (the maintainer agreed the contract change).
 - Since the M1 milestone review, a worker's first frame is an empty one saying it has started. A fault before it (a library that won't load: dyld aborts the worker) is put down to the install rather than the request.
 
 ### M0.9 – CI on the workstation

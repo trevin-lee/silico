@@ -335,10 +335,18 @@ fn spawn_thread(
     std::thread::Builder::new()
         .name(name)
         .spawn(run)
-        .map_err(|e| {
-            Error::new(ErrorCode::Internal, "couldn't start a kernel pool thread")
-                .with_cause(e.to_string())
-        })
+        .map_err(|e| thread_error(&e))
+}
+
+/// A pool thread that couldn't start: the system short of threads (`resource_exhausted`),
+/// or a bug.
+fn thread_error(e: &std::io::Error) -> Error {
+    const MESSAGE: &str = "couldn't start a kernel pool thread";
+    crate::worker::shortage(e, MESSAGE).unwrap_or_else(|| {
+        Error::new(ErrorCode::Internal, MESSAGE)
+            .with_cause(e.to_string())
+            .with_suggestion(crate::worker::SILICO_BUG)
+    })
 }
 
 /// What the pool's threads share. Its locks are taken in the order `state`, then `slots`
@@ -903,6 +911,31 @@ mod tests {
     use std::sync::{Arc, Mutex, mpsc};
 
     use super::{Outcome, deliver};
+
+    #[test]
+    fn a_pool_thread_that_cant_start_is_a_shortage_or_a_bug() {
+        use std::io;
+
+        use super::thread_error;
+        use crate::ErrorCode;
+        let short = thread_error(&io::Error::from_raw_os_error(libc::EAGAIN));
+        assert_eq!(short.code(), ErrorCode::ResourceExhausted, "{short}");
+        assert_eq!(short.message(), "couldn't start a kernel pool thread");
+        // The OS's own words for it.
+        let words = |errno| io::Error::from_raw_os_error(errno).to_string();
+        assert_eq!(short.cause(), Some(words(libc::EAGAIN).as_str()), "{short}");
+        assert!(
+            short
+                .suggestion()
+                .is_some_and(|s| s.contains("processes or memory")),
+            "{short}"
+        );
+        let bug = thread_error(&io::Error::from_raw_os_error(libc::EINVAL));
+        assert_eq!(bug.code(), ErrorCode::Internal, "{bug}");
+        assert_eq!(bug.message(), "couldn't start a kernel pool thread");
+        assert_eq!(bug.cause(), Some(words(libc::EINVAL).as_str()), "{bug}");
+        assert_eq!(bug.suggestion(), Some(crate::worker::SILICO_BUG), "{bug}");
+    }
 
     #[test]
     fn an_answer_ends_a_slots_wait_unless_the_worker_was_stopped_for_it() {

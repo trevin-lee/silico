@@ -7,3 +7,4 @@ worker_timeout
 protocol_error
 internal
 invalid_result
+resource_exhausted

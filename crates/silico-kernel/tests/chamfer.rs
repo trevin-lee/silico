@@ -1000,11 +1000,15 @@ fn the_worker_refuses_what_the_core_would_and_goes_on() {
             "{edges:?} {size:?}: {err}"
         );
         assert!(err.message().contains(says), "{edges:?} {size:?}: {err}");
-        assert_eq!(err.element(), element, "{edges:?} {size:?}: {err}");
+        assert_eq!(
+            err.elements(),
+            element.as_slice(),
+            "{edges:?} {size:?}: {err}"
+        );
     }
     let err = call(&[1], equal(10.0)).unwrap_err();
     assert_eq!(err.code(), ErrorCode::KernelFailed, "{err}");
-    assert_eq!(err.element(), Some("Edge1"));
+    assert_eq!(err.elements(), ["Edge1"]);
     // The worker goes on.
     assert!(matches!(call(&[1], equal(2.0)), Ok(Reply::Built(_))));
 }

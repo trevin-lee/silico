@@ -521,7 +521,7 @@ fn a_start_short_of_descriptors_fails_cleanly_at_every_step() {
         match result {
             Ok(w) => drop(w),
             Err(e) => {
-                assert_eq!(e.code(), ErrorCode::Internal, "{spare} spare: {e}");
+                assert_eq!(e.code(), ErrorCode::ResourceExhausted, "{spare} spare: {e}");
                 assert!(e.cause().is_some(), "{spare} spare: {e}");
                 failures.push((spare, e));
             }
@@ -530,8 +530,8 @@ fn a_start_short_of_descriptors_fails_cleanly_at_every_step() {
     }
     wait_fds(fds, "after every start");
     assert!(!failures.is_empty(), "no start ran out of descriptors");
-    // Each says it's this process's shortage (`internal`, not `worker_crashed`, which would
-    // blame a worker that never ran), and what to do about it.
+    // Each says it's this process's shortage (`resource_exhausted`, not `worker_crashed`,
+    // which would blame a worker that never ran), and what to do about it.
     let unadvised: Vec<String> = failures
         .iter()
         .filter(|(_, e)| {
@@ -556,7 +556,7 @@ fn a_pool_short_of_descriptors_fails_its_request_cleanly_and_recovers() {
     let first = pool.pids();
     kill9_and_wait(first[0]);
     let err = short_of_descriptors(0, || done(pool.submit(Generation(1), sleep(1)))).unwrap_err();
-    assert_eq!(err.code(), ErrorCode::Internal, "{err}");
+    assert_eq!(err.code(), ErrorCode::ResourceExhausted, "{err}");
     assert!(err.cause().is_some(), "{err}");
     done(pool.submit(Generation(1), sleep(1))).unwrap();
     let held = wait_full(&pool, 1, &first.iter().copied().collect());

@@ -116,19 +116,16 @@ impl Worker {
             .map_err(|e| internal("passing the socket", e))?;
         let child = command.spawn().map_err(|e| {
             let message = format!("couldn't start the kernel worker {}", exe.display());
-            match shortage_advice(&e) {
-                // This process, or the system, is short of something: the worker never ran.
-                Some(advice) => Error::new(ErrorCode::Internal, message)
-                    .with_cause(e.to_string())
-                    .with_suggestion(advice),
-                None => Error::new(ErrorCode::WorkerCrashed, message)
+            // Short of something, the worker never ran; otherwise it can't be run.
+            shortage(&e, &message).unwrap_or_else(|| {
+                Error::new(ErrorCode::WorkerCrashed, message)
                     .with_cause(e.to_string())
                     .with_suggestion(format!(
                         "check Silico's install: {} can't be run (missing, not executable, or \
                          needing an interpreter that's missing): rebuild it",
                         exe.display()
-                    )),
-            }
+                    ))
+            })
         })?;
         // The command (and with it the worker's end of the socket) must go now, or the
         // worker's end stays open here and its exit would never close the socket.
@@ -821,7 +818,7 @@ const BROKEN_WORKER: &str = "this is a bug in Silico's kernel worker, not in the
      it (the worker was stopped, and the next request starts another)";
 
 /// What to try after an internal error: a bug, not the request's values.
-const SILICO_BUG: &str = "this is a bug in Silico, not in the request: report it";
+pub(crate) const SILICO_BUG: &str = "this is a bug in Silico, not in the request: report it";
 
 /// A worker's refusal or failure, as a structured error, naming the element at fault and
 /// what to try instead when the worker knew them. A kernel failure always suggests
@@ -875,27 +872,32 @@ fn internal(what: &str, e: impl std::fmt::Display) -> Error {
 /// A step of starting a worker failed in this process: short of descriptors, threads, or
 /// memory, most likely.
 fn start_failed(what: &str, e: &io::Error) -> Error {
-    let error = internal(what, e);
-    match shortage_advice(e) {
-        Some(advice) => error.with_suggestion(advice),
-        None => error,
-    }
+    shortage(
+        e,
+        &format!("couldn't start the kernel worker: {what} failed"),
+    )
+    .unwrap_or_else(|| internal(what, e))
 }
 
-/// What to do if `e` says this process, or the system, is short of something a worker
-/// needs to start: open files, processes or threads, or memory.
-fn shortage_advice(e: &io::Error) -> Option<&'static str> {
-    match e.raw_os_error()? {
-        libc::EMFILE | libc::ENFILE => Some(
-            "Silico has too many files open to start a kernel worker: close some documents or \
-             other programs, or raise the limit on open files (ulimit -n)",
-        ),
-        libc::EAGAIN | libc::ENOMEM => Some(
-            "the system is short of processes or memory to start a kernel worker: close some \
-             documents or other programs, then try again",
-        ),
-        _ => None,
-    }
+/// `message` as a `resource_exhausted` error, if `e` says this process, or the system, is
+/// short of something: open files, processes or threads, memory, or buffers.
+pub(crate) fn shortage(e: &io::Error, message: &str) -> Option<Error> {
+    let advice = match e.raw_os_error()? {
+        libc::EMFILE | libc::ENFILE => {
+            "Silico has too many files open: close some documents or other programs, or raise \
+             the limit on open files (ulimit -n)"
+        }
+        libc::EAGAIN | libc::ENOMEM | libc::ENOBUFS => {
+            "the system is short of processes or memory: close some documents or other \
+             programs, then try again"
+        }
+        _ => return None,
+    };
+    Some(
+        Error::new(ErrorCode::ResourceExhausted, message)
+            .with_cause(e.to_string())
+            .with_suggestion(advice),
+    )
 }
 
 #[cfg(test)]
@@ -975,24 +977,41 @@ mod tests {
     fn a_start_short_of_files_processes_or_memory_is_told_apart_from_a_bad_install() {
         use std::io;
 
-        use super::shortage_advice;
-        let says = |errno| shortage_advice(&io::Error::from_raw_os_error(errno));
-        for errno in [libc::EMFILE, libc::ENFILE] {
-            assert!(
-                says(errno).is_some_and(|s| s.contains("too many files open")),
-                "{errno}"
+        use super::shortage;
+        let says = |errno| shortage(&io::Error::from_raw_os_error(errno), "couldn't start");
+        for (errno, advice) in [
+            (libc::EMFILE, "too many files open"),
+            (libc::ENFILE, "too many files open"),
+            (libc::EAGAIN, "processes or memory"),
+            (libc::ENOMEM, "processes or memory"),
+            (libc::ENOBUFS, "processes or memory"),
+        ] {
+            let error = says(errno).unwrap_or_else(|| panic!("{errno}: not a shortage"));
+            assert_eq!(error.code(), ErrorCode::ResourceExhausted, "{error}");
+            assert_eq!(error.message(), "couldn't start", "{error}");
+            // The OS's own words for it.
+            assert_eq!(
+                error.cause(),
+                Some(io::Error::from_raw_os_error(errno).to_string().as_str()),
+                "{error}"
             );
-        }
-        for errno in [libc::EAGAIN, libc::ENOMEM] {
             assert!(
-                says(errno).is_some_and(|s| s.contains("processes or memory")),
-                "{errno}"
+                error.suggestion().is_some_and(|s| s.contains(advice)),
+                "{error}"
             );
         }
         // The install's: missing, not executable, not a program, a path through a file.
         for errno in [libc::ENOENT, libc::EACCES, libc::ENOEXEC, libc::ENOTDIR] {
             assert_eq!(says(errno), None, "{errno}");
         }
+        // Not the OS's at all (a path with a NUL byte in it): not a shortage.
+        assert_eq!(
+            shortage(
+                &io::Error::other("nul byte found in provided data"),
+                "couldn't start"
+            ),
+            None
+        );
     }
 
     #[test]
@@ -1061,9 +1080,14 @@ mod tests {
                     error.code(),
                     error.message(),
                     error.cause(),
-                    error.element()
+                    error.elements()
                 ),
-                (code, message, Some("the kernel's words"), Some("Edge1"))
+                (
+                    code,
+                    message,
+                    Some("the kernel's words"),
+                    &["Edge1".to_owned()][..]
+                )
             );
             assert_eq!(error.suggestion(), Some(fallback));
             // The worker's own suggestion, when it has one, comes first.

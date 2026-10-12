@@ -239,7 +239,7 @@ fn an_edge_ending_where_two_solids_touch_at_a_corner_is_refused_not_a_crash() {
                     k = kernel();
                 }
                 Err(err) => {
-                    assert_eq!(err.element(), Some(format!("Edge{edge}").as_str()), "{err}");
+                    assert_eq!(err.elements(), [format!("Edge{edge}")], "{err}");
                     assert!(err.suggestion().is_some(), "{err}");
                 }
             }
@@ -331,11 +331,7 @@ fn a_tangent_chain_that_reaches_a_shared_corner_is_refused_not_a_crash() {
             let what = format!("{operation} {edges:?}");
             let err = result.err().unwrap_or_else(|| panic!("{what}: built"));
             assert_eq!(err.code(), ErrorCode::InvalidInput, "{what}: {err}");
-            assert_eq!(
-                err.element(),
-                Some(format!("Edge{along_x}").as_str()),
-                "{what}"
-            );
+            assert_eq!(err.elements(), [format!("Edge{along_x}")], "{what}");
             assert!(err.message().starts_with(&says), "{what}: {err}");
             for sound in [below, above] {
                 assert!(
@@ -1203,7 +1199,7 @@ fn every_edge_of_two_boxes_sharing_an_edge_chamfers_or_is_refused_never_crashes(
             }
             Err(err) => {
                 assert_ne!(err.code(), ErrorCode::WorkerCrashed, "Edge{edge}: {err}");
-                assert_eq!(err.element(), Some(format!("Edge{edge}").as_str()), "{err}");
+                assert_eq!(err.elements(), [format!("Edge{edge}")], "{err}");
                 assert!(err.suggestion().is_some(), "{err}");
                 refused += 1;
             }
@@ -1228,12 +1224,12 @@ fn a_million_edges_is_refused_quickly_and_the_worker_goes_on() {
     let repeated = vec![1u32; 1_000_000];
     let err = k.chamfer(&b, &repeated, equal(1.0), false).unwrap_err();
     assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
-    assert_eq!(err.element(), Some("Edge1"));
+    assert_eq!(err.elements(), ["Edge1"]);
     let counting: Vec<u32> = (1..=1_000_000).collect();
     let err = k.chamfer(&b, &counting, equal(1.0), false).unwrap_err();
-    assert_eq!(err.element(), Some("Edge13"), "{err}");
+    assert_eq!(err.elements(), ["Edge13"], "{err}");
     let err = k.chamfer(&b, &[u32::MAX], equal(1.0), false).unwrap_err();
-    assert_eq!(err.element(), Some("Edge4294967295"), "{err}");
+    assert_eq!(err.elements(), ["Edge4294967295"], "{err}");
     assert!(
         start.elapsed() < Duration::from_secs(20),
         "{:?}",

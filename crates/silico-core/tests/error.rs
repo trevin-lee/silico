@@ -13,6 +13,8 @@ fn full() -> Error {
     Error::new(ErrorCode::KernelFailed, "fillet failed")
         .with_feature("Fillet1")
         .with_element("Edge3")
+        .with_element("Edge5")
+        .with_parameter("radius")
         .with_cause("StdFail_NotDone: BRepFilletAPI_MakeFillet")
         .with_suggestion("reduce the radius below 5 mm")
         .with_candidates(["Edge2", "Edge4"])
@@ -54,10 +56,10 @@ fn error_codes_are_stable() {
 }
 
 #[test]
-fn display_names_feature_and_element() {
+fn display_names_feature_elements_and_parameter() {
     assert_eq!(
         full().to_string(),
-        "kernel_failed: fillet failed (feature Fillet1, element Edge3): \
+        "kernel_failed: fillet failed (feature Fillet1, elements Edge3, Edge5, parameter radius): \
          StdFail_NotDone: BRepFilletAPI_MakeFillet. Suggestion: reduce the radius below 5 mm. \
          Candidates: Edge2, Edge4."
     );
@@ -85,6 +87,23 @@ fn display_without_optional_fields() {
 }
 
 #[test]
+fn elements_add_up() {
+    let e = Error::new(ErrorCode::InvalidInput, "edges refused")
+        .with_element("Edge1")
+        .with_element("Edge2");
+    assert_eq!(e.elements(), ["Edge1", "Edge2"]);
+    assert_eq!(
+        e.with_elements(["Edge7", "Edge9"]).elements(),
+        ["Edge1", "Edge2", "Edge7", "Edge9"]
+    );
+    let e = Error::new(ErrorCode::InvalidInput, "dx must be positive").with_parameter("dx");
+    assert_eq!(
+        e.to_string(),
+        "invalid_input: dx must be positive (parameter dx)"
+    );
+}
+
+#[test]
 fn display_doesnt_double_a_period() {
     assert_eq!(
         Error::new(ErrorCode::KernelFailed, "fillet failed")
@@ -101,7 +120,8 @@ fn accessors_return_what_was_set() {
     assert_eq!(e.code(), ErrorCode::KernelFailed);
     assert_eq!(e.message(), "fillet failed");
     assert_eq!(e.feature(), Some("Fillet1"));
-    assert_eq!(e.element(), Some("Edge3"));
+    assert_eq!(e.elements(), ["Edge3", "Edge5"]);
+    assert_eq!(e.parameter(), Some("radius"));
     assert_eq!(e.cause(), Some("StdFail_NotDone: BRepFilletAPI_MakeFillet"));
     assert_eq!(e.suggestion(), Some("reduce the radius below 5 mm"));
     assert_eq!(e.candidates(), ["Edge2", "Edge4"]);
