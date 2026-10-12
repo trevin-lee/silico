@@ -447,7 +447,21 @@ fn refused(what: &str, invalid: silico_protocol::InvalidParameter) -> Error {
 /// worker's, so from there it looks one directory up.
 pub(crate) fn worker_path() -> Result<PathBuf, Error> {
     if let Some(path) = std::env::var_os(KERNEL_WORKER_ENV) {
-        return Ok(PathBuf::from(path));
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Ok(path);
+        }
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            format!(
+                "{KERNEL_WORKER_ENV} names {:?}, which isn't a file",
+                path.display().to_string()
+            ),
+        )
+        .with_suggestion(format!(
+            "point {KERNEL_WORKER_ENV} at the silico-kernel-worker binary, or unset it to use \
+             the one beside Silico"
+        )));
     }
     let exe = std::env::current_exe().map_err(|e| {
         Error::new(ErrorCode::Internal, "can't find the running executable")

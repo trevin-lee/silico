@@ -41,6 +41,10 @@ pub const IDLE_CHECK: Duration = Duration::from_secs(1);
 /// be started (the wait doubles from [`IDLE_CHECK`] each time).
 const MAX_RETRY: Duration = Duration::from_secs(60);
 
+/// How long an idle thread gives a worker whose socket closed to exit, to tell one that's
+/// ending (and how) from one that's running on with its socket closed.
+const HUNG_UP_GRACE: Duration = Duration::from_millis(100);
+
 /// How long a superseded request may run, counted from its start, before the pool stops it,
 /// unless [`KernelPool::set_stop_after`] says otherwise. Replacing a stopped worker takes
 /// about 30 ms of wall time and CPU (noticing it has ended, and starting another), so
@@ -703,12 +707,13 @@ impl Retry {
 
 impl Keeper<'_> {
     /// The slot's worker, starting a new one (a process) if it has none, or if its worker
-    /// stopped, died, or sent something unasked (which is then discarded).
+    /// stopped, died, closed its socket, or sent something unasked (which is then
+    /// discarded).
     fn live_worker(&mut self) -> Result<&mut Worker, Error> {
         if self
             .worker
             .as_mut()
-            .is_some_and(|w| w.is_stopped() || w.has_exited() || w.has_stray_reply())
+            .is_some_and(|w| w.is_stopped() || w.has_exited() || w.has_hung_up())
         {
             self.discard();
         }
@@ -741,38 +746,50 @@ impl Keeper<'_> {
         }
     }
 
-    /// While the slot is idle: a worker that died is replaced, so the pool stays full. One
-    /// that had started (said so: see [`Worker::has_started`]) is replaced now, as is one
-    /// killed (SIGKILL) before it started, from outside. One that ended before it started
-    /// (a worker binary that can't start: a missing library, a refusal at start, or, a
-    /// second time running, a kill at launch, as macOS kills a binary whose code signature
-    /// is broken) is started again after a wait that doubles each time from [`IDLE_CHECK`]
-    /// up to [`MAX_RETRY`], as is one that couldn't be started at all (its executable
-    /// missing while it's rebuilt), rather than every [`IDLE_CHECK`] for as long as the
-    /// pool is idle; or at the next check, once a worker started after the failure has
-    /// started. A request starts one at once either way, and reports why it can't.
+    /// While the slot is idle: a worker that died, closed its socket, or sent something
+    /// unasked is replaced, so the pool stays full. One that had started (said so: see
+    /// [`Worker::has_started`]) and was killed or crashed is replaced now, as is one killed
+    /// (SIGKILL) before it started, from outside. One that exited on its own (an exit code),
+    /// or ended before it started (a worker binary that can't start: a missing library, a
+    /// refusal at start, or, a second time running, a kill at launch, as macOS kills a
+    /// binary whose code signature is broken), is started again after a wait that doubles
+    /// each time from [`IDLE_CHECK`] up to [`MAX_RETRY`], as is one that couldn't be
+    /// started at all (its executable missing while it's rebuilt), rather than every
+    /// [`IDLE_CHECK`] for as long as the pool is idle; or at the next check, once a worker
+    /// started after the failure has started. A request starts one at once either way, and
+    /// reports why it can't.
     fn tend(&mut self) {
         let slot = self.slot;
         self.note_started();
         if let Some(w) = self.worker.as_mut() {
-            let replace_now = if w.is_stopped() || w.has_stray_reply() {
+            let replace_now = if w.is_stopped() {
                 true
             } else {
-                let Some(status) = w.exit_status() else {
-                    return;
+                let status = match w.exit_status() {
+                    Some(status) => Some(status),
+                    // Its socket closed (or it sent something unasked): it may be ending.
+                    None if w.has_hung_up() => w.exit_status_within(HUNG_UP_GRACE),
+                    None => return,
                 };
-                w.read_to_end();
-                let started = w.has_started();
-                let killed = status.signal() == Some(libc::SIGKILL);
-                let again = std::mem::replace(&mut self.killed_unstarted, killed && !started);
-                started || (killed && !again)
+                match status {
+                    // Running, but of no use.
+                    None => true,
+                    Some(status) => {
+                        w.read_to_end();
+                        let started = w.has_started();
+                        let killed = status.signal() == Some(libc::SIGKILL);
+                        let again =
+                            std::mem::replace(&mut self.killed_unstarted, killed && !started);
+                        status.code().is_none() && (started || (killed && !again))
+                    }
+                }
             };
             self.discard();
             if !replace_now {
                 self.wait_to_retry();
                 tracing::warn!(
                     slot,
-                    "a kernel worker ended before it started; starting another later"
+                    "a kernel worker ended on its own, or before it started; starting another later"
                 );
                 return;
             }
@@ -792,10 +809,16 @@ impl Keeper<'_> {
         }
     }
 
-    /// Notes the slot's worker having started, once: the binary works, so the slot's wait
-    /// ends, and so do other slots' that began before it was started.
+    /// Notes the slot's worker having started, and still running, once: the binary works,
+    /// so the slot's wait ends, and so do other slots' that began before it was started. (A
+    /// worker that starts and exits at once proves nothing.)
     fn note_started(&mut self) {
-        if !self.noted && self.worker.as_ref().is_some_and(Worker::has_started) {
+        if !self.noted
+            && self
+                .worker
+                .as_mut()
+                .is_some_and(|w| w.has_started() && !w.has_exited())
+        {
             self.noted = true;
             self.retry = None;
             self.killed_unstarted = false;

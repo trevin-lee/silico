@@ -17,7 +17,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{Child, ChildStderr, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -39,6 +39,8 @@ const MAX_LOG_LINE: usize = 8 * 1024;
 /// How long a worker whose socket closed gets to exit on its own before it's killed, and
 /// how long its log thread then gets to finish.
 const EXIT_GRACE: Duration = Duration::from_secs(2);
+/// The least a crashed call waits for its worker to exit, past the call's deadline.
+const MIN_EXIT_GRACE: Duration = Duration::from_millis(100);
 
 /// The socket buffer size asked for on each end.
 const SOCKET_BUFFER: usize = 4 * 1024 * 1024;
@@ -84,7 +86,7 @@ impl Worker {
     /// Starts the worker executable at `exe`.
     pub fn spawn(exe: &Path) -> Result<Self, Error> {
         let spawning = lock(&SPAWNING);
-        let (ours, theirs) = UnixStream::pair().map_err(|e| internal("socket pair", e))?;
+        let (ours, theirs) = UnixStream::pair().map_err(|e| start_failed("socket pair", &e))?;
         // Larger buffers than the platform default (8 KiB on macOS), so a multi-megabyte
         // shape moves in few system calls. The kernel may cap them; that's fine.
         for end in [&ours, &theirs] {
@@ -111,11 +113,21 @@ impl Worker {
             }])
             .map_err(|e| internal("passing the socket", e))?;
         let child = command.spawn().map_err(|e| {
-            Error::new(
-                ErrorCode::WorkerCrashed,
-                format!("couldn't start the kernel worker {}", exe.display()),
-            )
-            .with_cause(e.to_string())
+            let message = format!("couldn't start the kernel worker {}", exe.display());
+            if out_of_descriptors(&e) {
+                return Error::new(ErrorCode::Internal, message)
+                    .with_cause(e.to_string())
+                    .with_suggestion(OUT_OF_DESCRIPTORS);
+            }
+            Error::new(ErrorCode::WorkerCrashed, message)
+                .with_cause(e.to_string())
+                .with_suggestion(format!(
+                    "check Silico's install: {} can't be run (missing, not executable, or \
+                     needing an interpreter that's missing); rebuild it, or name a kernel worker \
+                     in {}",
+                    exe.display(),
+                    crate::kernel::KERNEL_WORKER_ENV
+                ))
         })?;
         // The command (and with it the worker's end of the socket) must go now, or the
         // worker's end stays open here and its exit would never close the socket.
@@ -135,13 +147,15 @@ impl Worker {
                     forward_logs(stderr, pid, &tail);
                     drop(done_tx);
                 })
-                .map_err(|e| internal("starting the log thread", e))?;
+                .map_err(|e| start_failed("starting the log thread", &e))?;
         }
 
         // Non-blocking, so a send can give up at its deadline (see `DeadlineWriter`).
         ours.set_nonblocking(true)
-            .map_err(|e| internal("making the socket non-blocking", e))?;
-        let reader = ours.try_clone().map_err(|e| internal("socket clone", e))?;
+            .map_err(|e| start_failed("making the socket non-blocking", &e))?;
+        let reader = ours
+            .try_clone()
+            .map_err(|e| start_failed("socket clone", &e))?;
         // One reply in flight: a worker sending unrequested replies can't make the core
         // buffer them without limit.
         let (tx, replies) = mpsc::sync_channel(1);
@@ -171,7 +185,7 @@ impl Worker {
                     }
                 }
             })
-            .map_err(|e| internal("starting the reply thread", e))?;
+            .map_err(|e| start_failed("starting the reply thread", &e))?;
 
         let child = guard
             .release()
@@ -228,6 +242,27 @@ impl Worker {
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
             .is_ok()
         {}
+    }
+
+    /// Whether the worker can't be given a request: it has sent something no call asked for
+    /// (read and dropped, as [`Self::has_stray_reply`]), or closed its socket, though it may
+    /// still be running.
+    pub fn has_hung_up(&mut self) -> bool {
+        !matches!(self.replies.try_recv(), Err(TryRecvError::Empty))
+    }
+
+    /// How the process ended, waiting up to `grace` for it to (reaping it).
+    pub fn exit_status_within(&mut self, grace: Duration) -> Option<ExitStatus> {
+        let deadline = Instant::now() + grace;
+        loop {
+            if let Some(status) = self.exit_status() {
+                return Some(status);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     /// Whether the worker has sent something no call asked for (a second reply to an
@@ -324,7 +359,7 @@ impl Worker {
             {
                 return Err(self.timed_out(name, timeout));
             }
-            Err(e) => return Err(self.crashed(name, reached, Some(e.to_string()))),
+            Err(e) => return Err(self.crashed(name, deadline, reached, Some(e.to_string()))),
         }
         tracing::trace!("sent");
 
@@ -353,7 +388,7 @@ impl Worker {
                 .with_suggestion(BROKEN_WORKER),
             )),
             Ok(Err(FrameError::Io(_) | FrameError::Truncated { .. }))
-            | Err(RecvTimeoutError::Disconnected) => Err(self.crashed(name, true, None)),
+            | Err(RecvTimeoutError::Disconnected) => Err(self.crashed(name, deadline, true, None)),
             Ok(Err(e)) => Err(self.stop(
                 Error::new(
                     ErrorCode::ProtocolError,
@@ -367,18 +402,41 @@ impl Worker {
     }
 
     fn timed_out(&mut self, name: &str, timeout: Duration) -> Error {
-        self.stop(
-            Error::new(
-                ErrorCode::WorkerTimeout,
-                format!("the kernel worker didn't finish {name} within {timeout:?}"),
-            )
-            .with_suggestion("simplify the operation, or allow it more time"),
-        )
+        let error = Error::new(
+            ErrorCode::WorkerTimeout,
+            format!("the kernel worker didn't finish {name} within {timeout:?}"),
+        );
+        // A worker that hadn't started never had the request to work on.
+        let error = if self.has_started() {
+            error.with_suggestion("simplify the operation, or allow it more time")
+        } else {
+            error
+                .with_cause("the kernel worker hadn't started")
+                .with_suggestion(
+                    "try the request again: the kernel worker hadn't started in the time \
+                     allowed (a new worker binary's first launch can be slow while the system \
+                     checks it); if it never starts, check Silico's install",
+                )
+        };
+        self.stop(error)
     }
 
     /// The worker's socket closed: report how it ended, with its last log lines.
-    fn crashed(&mut self, name: &str, took_request: bool, write_error: Option<String>) -> Error {
-        let status = self.wait_for_exit();
+    fn crashed(
+        &mut self,
+        name: &str,
+        deadline: Option<Instant>,
+        took_request: bool,
+        write_error: Option<String>,
+    ) -> Error {
+        // Within the call's time, if it's sooner, but long enough to reap a worker that's
+        // ending: one that closed its socket and lingers is killed then.
+        let grace = deadline.map_or(EXIT_GRACE, |deadline| {
+            deadline
+                .saturating_duration_since(Instant::now())
+                .clamp(MIN_EXIT_GRACE, EXIT_GRACE)
+        });
+        let status = self.wait_for_exit(grace);
         // What the worker sent before it ended may say it started.
         self.read_to_end();
         let reached = match (self.has_started(), took_request) {
@@ -415,8 +473,8 @@ impl Worker {
     }
 
     /// Waits briefly for a worker whose socket closed to exit, then kills it if needed.
-    fn wait_for_exit(&mut self) -> Option<ExitStatus> {
-        let deadline = Instant::now() + EXIT_GRACE;
+    fn wait_for_exit(&mut self, grace: Duration) -> Option<ExitStatus> {
+        let deadline = Instant::now() + grace;
         while Instant::now() < deadline {
             match lock(&self.child).try_wait() {
                 Ok(Some(status)) => return Some(status),
@@ -803,7 +861,26 @@ fn internal(what: &str, e: impl std::fmt::Display) -> Error {
         format!("couldn't start the kernel worker: {what} failed"),
     )
     .with_cause(e.to_string())
+    .with_suggestion(SILICO_BUG)
 }
+
+/// A step of starting a worker failed in this process: short of descriptors, most likely.
+fn start_failed(what: &str, e: &io::Error) -> Error {
+    let error = internal(what, e);
+    if out_of_descriptors(e) {
+        error.with_suggestion(OUT_OF_DESCRIPTORS)
+    } else {
+        error
+    }
+}
+
+/// Whether `e` says this process, or the system, has too many files open.
+fn out_of_descriptors(e: &io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(libc::EMFILE | libc::ENFILE))
+}
+
+const OUT_OF_DESCRIPTORS: &str = "Silico has too many files open to start a kernel worker: close \
+     some documents or other programs, or raise the limit on open files (ulimit -n)";
 
 #[cfg(test)]
 mod tests {
