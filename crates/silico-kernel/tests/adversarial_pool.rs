@@ -373,6 +373,38 @@ fn a_worker_executable_deleted_and_restored_under_a_running_pool() {
     wait_no_children("after the drop");
 }
 
+#[test]
+fn a_pool_whose_binary_comes_back_after_many_failed_starts_fills_at_once() {
+    // While the binary is missing, each failed start doubles its slot's wait, toward a
+    // minute. Once a worker answers, the binary is back: every slot starts one at its next
+    // check, not after its wait.
+    let dir = scratch_dir("restored-late");
+    let exe = dir.join("silico-kernel-test-worker");
+    std::os::unix::fs::symlink(TEST_WORKER, &exe).unwrap();
+    let pool = KernelPool::start_workers(&exe, 2).unwrap();
+    std::fs::remove_file(&exe).unwrap();
+    let before = pool.pids();
+    for &pid in &before {
+        kill9_and_wait(pid);
+    }
+    // In pairs, so both slots fail to start workers.
+    for _ in 0..8 {
+        let pair = [
+            pool.submit(Generation(1), sleep(1)),
+            pool.submit(Generation(1), sleep(1)),
+        ];
+        for pending in pair {
+            assert!(done(pending).is_err());
+        }
+    }
+    std::os::unix::fs::symlink(TEST_WORKER, &exe).unwrap();
+    assert!(done(pool.submit(Generation(1), sleep(1))).is_ok());
+    let held = wait_full(&pool, 2, &before.iter().copied().collect());
+    drop(pool);
+    assert_reaped(&held, "after the drop");
+    wait_no_children("after the drop");
+}
+
 // ---------------------------------------------------------------------------------------
 // Workers stopped, slowed, and talking out of turn
 
@@ -883,8 +915,8 @@ fn every_worker_crashing_at_once_leaves_a_full_pool_every_time() {
             assert_eq!(err.code(), ErrorCode::WorkerCrashed, "round {round}: {err}");
         }
         // The pool may hand a crash to a slot it has already replaced, so a worker can be
-        // missed: that one is killed by hand (SIGKILL: OCCT catches a SIGSEGV sent from
-        // outside on Linux). A worker that crashed and wasn't replaced isn't running, so
+        // missed: that one is killed by hand (SIGKILL: Rust's runtime survives a SIGSEGV
+        // sent from outside). A worker that crashed and wasn't replaced isn't running, so
         // it's left for `wait_full` to find.
         let running: BTreeSet<u32> = children()
             .into_iter()

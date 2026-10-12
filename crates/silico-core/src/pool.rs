@@ -22,6 +22,7 @@
 use std::collections::VecDeque;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
@@ -165,6 +166,7 @@ impl KernelPool {
             }),
             work: Condvar::new(),
             due: Condvar::new(),
+            answered: AtomicU64::new(0),
             slots: Mutex::new((0..size).map(|_| Slot::default()).collect()),
         });
         let mut pool = Self {
@@ -344,6 +346,9 @@ struct Shared {
     /// What each slot holds and runs, to kill its worker when the pool stops or its request
     /// is superseded, and to report its process ID.
     slots: Mutex<Vec<Slot>>,
+    /// How many requests workers have answered: once one has, slots waiting to start a
+    /// worker again (its binary missing, say) know it starts now.
+    answered: AtomicU64,
 }
 
 struct State {
@@ -648,6 +653,7 @@ fn serve(slot: usize, exe: &Path, shared: &Shared, ready: &mpsc::Sender<Result<(
         } else {
             keeper.served = true;
             keeper.retry = None;
+            shared.answered.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -661,8 +667,16 @@ struct Keeper<'a> {
     /// Whether the worker has answered a request.
     served: bool,
     /// After workers ended before answering, or couldn't be started: when to start one
-    /// again, and how long that wait was. Cleared when one answers.
-    retry: Option<(Instant, Duration)>,
+    /// again, how long that wait was, and how many requests the pool's workers had
+    /// answered then. Cleared when one answers.
+    retry: Option<Retry>,
+}
+
+#[derive(Clone, Copy)]
+struct Retry {
+    at: Instant,
+    wait: Duration,
+    answered: u64,
 }
 
 impl Keeper<'_> {
@@ -710,8 +724,9 @@ impl Keeper<'_> {
     /// library, a refusal at start) is started again after a wait that doubles each time
     /// from [`IDLE_CHECK`] up to [`MAX_RETRY`], as is one that couldn't be started at all
     /// (its executable missing while it's rebuilt), rather than every [`IDLE_CHECK`] for as
-    /// long as the pool is idle. A request starts one at once either way, and reports why
-    /// it can't.
+    /// long as the pool is idle; or at the next check, once another slot's worker has
+    /// answered a request. A request starts one at once either way, and reports why it
+    /// can't.
     fn tend(&mut self) {
         let slot = self.slot;
         if let Some(w) = self.worker.as_mut() {
@@ -732,7 +747,14 @@ impl Keeper<'_> {
                 );
                 return;
             }
-        } else if !self.retry.is_some_and(|(at, _)| Instant::now() >= at) {
+        } else if let Some(retry) = self.retry {
+            // Another slot's worker answering since shows the binary works now.
+            if self.shared.answered.load(Ordering::Relaxed) != retry.answered {
+                self.retry = None;
+            } else if Instant::now() < retry.at {
+                return;
+            }
+        } else {
             return;
         }
         if let Err(e) = self.live_worker() {
@@ -744,8 +766,12 @@ impl Keeper<'_> {
     fn wait_to_retry(&mut self) {
         let wait = self
             .retry
-            .map_or(IDLE_CHECK, |(_, wait)| (wait * 2).min(MAX_RETRY));
-        self.retry = Some((Instant::now() + wait, wait));
+            .map_or(IDLE_CHECK, |retry| (retry.wait * 2).min(MAX_RETRY));
+        self.retry = Some(Retry {
+            at: Instant::now() + wait,
+            wait,
+            answered: self.shared.answered.load(Ordering::Relaxed),
+        });
     }
 
     fn discard(&mut self) {
