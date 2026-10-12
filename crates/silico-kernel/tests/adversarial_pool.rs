@@ -1335,28 +1335,34 @@ fn a_wait_ended_early_by_a_newer_worker_still_doubles_on_the_next_failure() {
 #[test]
 fn a_request_refused_before_its_sent_doesnt_end_a_slots_wait() {
     // Launches at about 0, 2, and 5 s (the wait 2 s). A request over the frame limit at
-    // 5.5 s starts a worker (which fails) and is refused before it's sent: no answer, so the
-    // next wait is 4 s (a launch about 5 s after the refusal), not 1 s (about 2 s after).
+    // 5.5 s starts a worker (which fails: launch 4) and is refused before it's sent: no
+    // answer, so the next wait is 4 s (a launch about 5 s after the refusal), not 1 s
+    // (about 2 s after). Still four launches 3.5 s after the refusal.
     let dir = scratch_dir("refusal-keeps-wait");
     let (script, log) = launch_logger(&dir, "exit 3");
+    let count = || {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
     let pool = KernelPool::start_workers(&script, 1).unwrap();
     std::thread::sleep(Duration::from_millis(5_500));
+    assert_eq!(count(), 3, "launches before the request");
     let too_large = vec![0; silico_protocol::MAX_FRAME_LEN as usize + 1];
     let err =
         done(pool.submit(Generation(1), KernelRequest::echo(Blob::inline(too_large)))).unwrap_err();
     assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
-    let refused_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs_f64();
+    // The request's own launch, however slowly its script logs it.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while count() < 4 {
+        assert!(Instant::now() < deadline, "the request started no worker");
+        std::thread::sleep(Duration::from_millis(5));
+    }
     std::thread::sleep(Duration::from_millis(3_500));
     drop(pool);
-    let (times, _) = launches(&log);
-    let after: Vec<f64> = times.iter().copied().filter(|t| *t > refused_at).collect();
-    assert!(
-        after.is_empty(),
-        "a refusal ended the wait: launches at {times:?}, refused at {refused_at}"
-    );
+    let (times, gaps) = launches(&log);
+    assert_eq!(times.len(), 4, "a refusal ended the wait: gaps {gaps:?}");
 }
 
 #[test]

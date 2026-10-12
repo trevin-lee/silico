@@ -660,14 +660,13 @@ fn serve(slot: usize, exe: &Path, shared: &Shared, ready: &mpsc::Sender<Result<(
         }
         let answers = worker.answers();
         let condemned = task.run(worker, shared, slot);
-        // An answer, even one followed by a kill (superseded), shows the binary works; a
-        // worker stopped for its answer (the wrong kind) doesn't.
-        let answered = worker.answers() > answers && !worker.is_stopped();
-        let stopped = worker.is_stopped();
-        if answered {
+        let (ends_wait, replace) =
+            after_run(worker.answers() > answers, worker.is_stopped(), condemned);
+        // In this order: the answer is the worker's, noted before it's replaced.
+        if ends_wait {
             keeper.answered();
         }
-        if condemned || stopped {
+        if replace {
             keeper.replace();
         }
     }
@@ -711,6 +710,16 @@ impl Retry {
     fn is_moot(self, newest_started: u64) -> bool {
         newest_started >= self.after
     }
+}
+
+/// After a request ran on a slot's worker: whether it ends the slot's wait, and whether the
+/// worker is replaced. `answered`, whether the worker read back an answer (a result or a
+/// refusal); `stopped`, whether the worker was stopped (it crashed, hung, or answered
+/// wrongly); `condemned`, whether the pool killed it (its request superseded). An answer
+/// shows the binary works, even one followed by a kill; one the worker was stopped for
+/// doesn't.
+fn after_run(answered: bool, stopped: bool, condemned: bool) -> (bool, bool) {
+    (answered && !stopped, stopped || condemned)
 }
 
 /// Whether an idle slot replaces a worker that ended with `status` at once, rather than
@@ -884,6 +893,31 @@ mod tests {
     use std::sync::{Arc, Mutex, mpsc};
 
     use super::{Outcome, deliver};
+
+    #[test]
+    fn an_answer_ends_a_slots_wait_unless_the_worker_was_stopped_for_it() {
+        use super::after_run;
+        // (answered, stopped, condemned) → (ends the wait, replaced)
+        for (answered, stopped, condemned, then) in [
+            (true, false, false, (true, false)),
+            // Answered, then killed as superseded: the binary worked.
+            (true, false, true, (true, true)),
+            // Answered wrongly, and stopped for it.
+            (true, true, false, (false, true)),
+            (true, true, true, (false, true)),
+            // No answer: refused before it was sent, crashed, hung, or superseded first.
+            (false, false, false, (false, false)),
+            (false, false, true, (false, true)),
+            (false, true, false, (false, true)),
+            (false, true, true, (false, true)),
+        ] {
+            assert_eq!(
+                after_run(answered, stopped, condemned),
+                then,
+                "answered {answered} stopped {stopped} condemned {condemned}"
+            );
+        }
+    }
 
     #[test]
     fn an_idle_slot_replaces_a_worker_at_once_only_if_its_end_came_from_outside() {
