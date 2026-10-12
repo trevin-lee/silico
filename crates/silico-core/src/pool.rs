@@ -921,7 +921,9 @@ mod tests {
         let short = thread_error(&io::Error::from_raw_os_error(libc::EAGAIN));
         assert_eq!(short.code(), ErrorCode::ResourceExhausted, "{short}");
         assert_eq!(short.message(), "couldn't start a kernel pool thread");
-        assert!(short.cause().is_some(), "{short}");
+        // The OS's own words for it.
+        let words = |errno| io::Error::from_raw_os_error(errno).to_string();
+        assert_eq!(short.cause(), Some(words(libc::EAGAIN).as_str()), "{short}");
         assert!(
             short
                 .suggestion()
@@ -931,7 +933,7 @@ mod tests {
         let bug = thread_error(&io::Error::from_raw_os_error(libc::EINVAL));
         assert_eq!(bug.code(), ErrorCode::Internal, "{bug}");
         assert_eq!(bug.message(), "couldn't start a kernel pool thread");
-        assert!(bug.cause().is_some(), "{bug}");
+        assert_eq!(bug.cause(), Some(words(libc::EINVAL).as_str()), "{bug}");
         assert_eq!(bug.suggestion(), Some(crate::worker::SILICO_BUG), "{bug}");
     }
 

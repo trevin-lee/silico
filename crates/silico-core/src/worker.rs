@@ -989,7 +989,12 @@ mod tests {
             let error = says(errno).unwrap_or_else(|| panic!("{errno}: not a shortage"));
             assert_eq!(error.code(), ErrorCode::ResourceExhausted, "{error}");
             assert_eq!(error.message(), "couldn't start", "{error}");
-            assert!(error.cause().is_some(), "{error}");
+            // The OS's own words for it.
+            assert_eq!(
+                error.cause(),
+                Some(io::Error::from_raw_os_error(errno).to_string().as_str()),
+                "{error}"
+            );
             assert!(
                 error.suggestion().is_some_and(|s| s.contains(advice)),
                 "{error}"
