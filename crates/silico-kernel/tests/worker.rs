@@ -1004,8 +1004,8 @@ fn every_failure_says_what_to_try() {
     }
     // A crash's advice follows how the worker ended: its own crash is the values'; a kill
     // from outside is worth a retry; an exit of its own is its install. SIGSEGV and SIGBUS
-    // sent from outside don't end the worker (Rust's stack-overflow handler takes them), so
-    // a segfault is the worker's own.
+    // sent from outside don't end a worker once Rust's runtime has started (its handler for
+    // stack overflows takes them, and returns), so a segfault is the worker's own.
     let mid_request = |signal: &'static str| {
         let mut w = KernelWorker::start_worker(Path::new(TEST_WORKER)).unwrap();
         let pid = w.pid();
@@ -1018,12 +1018,26 @@ fn every_failure_says_what_to_try() {
         w.run(KernelRequest::debug(DebugOp::Sleep { millis: 10_000 }))
             .unwrap_err()
     };
+    // Sent, then waited on until the worker has ended (a zombie, or gone), so the request
+    // can't reach it.
     let while_idle = |signal: &str| {
         let mut w = KernelWorker::start_worker(Path::new(TEST_WORKER)).unwrap();
+        let pid = w.pid().to_string();
         let _ = Command::new("kill")
-            .args([format!("-{signal}"), w.pid().to_string()])
+            .args([format!("-{signal}"), pid.clone()])
             .status();
-        std::thread::sleep(Duration::from_millis(200));
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(10) {
+            let ps = Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid])
+                .output()
+                .unwrap();
+            let stat = String::from_utf8_lossy(&ps.stdout).trim().to_owned();
+            if stat.is_empty() || stat.starts_with('Z') {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
         w.make(Primitive::Sphere { radius: 1.0 }).unwrap_err()
     };
     for (what, err, says) in [
@@ -1071,9 +1085,24 @@ fn every_failure_says_what_to_try() {
             "try the request again",
         ),
         (
-            "a worker that crashed while idle, before the request",
-            while_idle("SEGV"),
+            "a worker that faulted while idle, before the request",
+            while_idle("ILL"),
             "try the request again",
+        ),
+        (
+            "a worker killed partway through reading a large request",
+            {
+                // Takes 1 MiB of the 64 MiB request, then is killed, as the system kills
+                // a worker that runs out of memory reading it.
+                let exe = script(
+                    "killed-reading",
+                    "head -c 1048576 <&3 >/dev/null\nkill -KILL $$",
+                );
+                let mut w = KernelWorker::start_worker(&exe).unwrap();
+                let big = ShapeData::unchecked(Blob::inline(vec![b'x'; 64 * 1024 * 1024]));
+                w.summarize(&big).unwrap_err()
+            },
+            "try the request once more",
         ),
         (
             "a worker killed while idle, before the request",

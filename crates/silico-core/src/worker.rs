@@ -271,8 +271,13 @@ impl Worker {
         let mut writer = DeadlineWriter {
             socket: &self.socket,
             deadline,
+            sent: 0,
         };
-        match write_message(&mut writer, &request) {
+        let written = write_message(&mut writer, &request);
+        // A worker that took any of the request may have died of it (reading a large one,
+        // say); one that took none was gone before it.
+        let reached = writer.sent > 0;
+        match written {
             Ok(()) => {}
             // Refused before anything was sent: the request, not the worker, is at fault.
             Err(e @ (FrameError::TooLarge { .. } | FrameError::Encode(_))) => {
@@ -291,7 +296,7 @@ impl Worker {
             {
                 return Err(self.timed_out(name, timeout));
             }
-            Err(e) => return Err(self.crashed(name, Some(e.to_string()))),
+            Err(e) => return Err(self.crashed(name, reached, Some(e.to_string()))),
         }
         tracing::trace!("sent");
 
@@ -320,7 +325,7 @@ impl Worker {
                 .with_suggestion(BROKEN_WORKER),
             )),
             Ok(Err(FrameError::Io(_) | FrameError::Truncated { .. }))
-            | Err(RecvTimeoutError::Disconnected) => Err(self.crashed(name, None)),
+            | Err(RecvTimeoutError::Disconnected) => Err(self.crashed(name, true, None)),
             Ok(Err(e)) => Err(self.stop(
                 Error::new(
                     ErrorCode::ProtocolError,
@@ -344,9 +349,8 @@ impl Worker {
     }
 
     /// The worker's socket closed: report how it ended, with its last log lines.
-    fn crashed(&mut self, name: &str, write_error: Option<String>) -> Error {
+    fn crashed(&mut self, name: &str, reached: bool, write_error: Option<String>) -> Error {
         let status = self.wait_for_exit();
-        let delivered = write_error.is_none();
         // The worker has exited, so its log pipe closes; let the log thread read the last
         // lines before the report is built.
         let _ = self.stderr_done.recv_timeout(EXIT_GRACE);
@@ -372,7 +376,7 @@ impl Worker {
             format!("the kernel worker crashed during {name}"),
         )
         .with_cause(cause)
-        .with_suggestion(crash_advice(status, delivered))
+        .with_suggestion(crash_advice(status, reached))
     }
 
     /// Waits briefly for a worker whose socket closed to exit, then kills it if needed.
@@ -442,6 +446,8 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 struct DeadlineWriter<'a> {
     socket: &'a UnixStream,
     deadline: Option<Instant>,
+    /// Bytes the worker's socket has taken so far.
+    sent: usize,
 }
 
 impl io::Write for DeadlineWriter<'_> {
@@ -449,6 +455,10 @@ impl io::Write for DeadlineWriter<'_> {
         loop {
             match (&*self.socket).write(bytes) {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                Ok(n) => {
+                    self.sent += n;
+                    return Ok(n);
+                }
                 result => return result,
             }
             let left = match self.deadline {
@@ -610,36 +620,36 @@ fn emit_worker_log(line: &str, pid: u32) -> String {
     format!("{level} {message}")
 }
 
-/// What to try after a worker crashed, by how it ended. A fault of its own (SIGSEGV,
-/// SIGBUS, SIGILL, SIGFPE, SIGABRT, SIGTRAP, SIGSYS) while it had the request is the
-/// request's values, which would crash it again. SIGKILL is usually the system's, when it
-/// runs out of memory, and the request may be what used the memory: worth one more try,
-/// if the request reached it.
-/// Any other signal (SIGTERM, SIGINT, SIGHUP: a kill, a Ctrl-C, a shutdown), a worker that
+/// Signals a worker gets from a fault of its own. Each is named in `signal_name` too.
+const FAULTS: [i32; 7] = [
+    libc::SIGSEGV,
+    libc::SIGBUS,
+    libc::SIGILL,
+    libc::SIGFPE,
+    libc::SIGABRT,
+    libc::SIGTRAP,
+    libc::SIGSYS,
+];
+
+/// What to try after a worker crashed, by how it ended, and whether any of the request
+/// reached it. A fault of its own (SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT, SIGTRAP,
+/// SIGSYS) once the request reached it is the request's values, which would crash it again.
+/// SIGKILL is usually the system's, when it runs out of memory, and a request that reached
+/// it may be what used the memory: worth one more try. Any other signal (SIGTERM, SIGINT, SIGHUP: a kill, a Ctrl-C, a shutdown), a worker that
 /// stopped responding, or one gone before the request reached it is from outside, worth
 /// trying again (the next request starts another worker). A worker that exited with a code
 /// ended on its own, which is its install, not the request.
-fn crash_advice(status: Option<ExitStatus>, delivered: bool) -> &'static str {
-    // Each is named in `signal_name` too.
-    const FAULTS: [i32; 7] = [
-        libc::SIGSEGV,
-        libc::SIGBUS,
-        libc::SIGILL,
-        libc::SIGFPE,
-        libc::SIGABRT,
-        libc::SIGTRAP,
-        libc::SIGSYS,
-    ];
+fn crash_advice(status: Option<ExitStatus>, reached: bool) -> &'static str {
     match status.map(|s| (s.code(), s.signal())) {
         Some((Some(_), _)) => {
             "check Silico's install: the kernel worker exited on its own (see its last output), \
              which no change to the request will help; report it if it persists"
         }
-        Some((None, Some(signal))) if delivered && FAULTS.contains(&signal) => {
+        Some((None, Some(signal))) if reached && FAULTS.contains(&signal) => {
             "change the operation's values: these crashed the kernel, and the same request \
              would crash it again"
         }
-        Some((None, Some(libc::SIGKILL))) if delivered => {
+        Some((None, Some(libc::SIGKILL))) if reached => {
             "try the request once more: the kernel worker was killed, most likely by the \
              system for running out of memory; if it's killed again, the request needs too \
              much memory: simplify it"
@@ -745,9 +755,69 @@ mod tests {
     use silico_protocol::{Failure, FailureKind};
 
     use super::{
-        KillOnDrop, MAX_LOG_LINE, STDERR_TAIL_LINES, describe_exit, failure_error, forward_logs,
+        FAULTS, KillOnDrop, MAX_LOG_LINE, STDERR_TAIL_LINES, crash_advice, describe_exit,
+        failure_error, forward_logs, signal_name,
     };
     use crate::ErrorCode;
+
+    #[test]
+    fn crash_advice_follows_how_the_worker_ended() {
+        // From the signals' meanings, not from `FAULTS`: a fault of the worker's own once
+        // the request reached it is the values'.
+        let values = "change the operation's values";
+        let again = "try the request again";
+        let signalled = |signal| Some(ExitStatus::from_raw(signal));
+        for signal in [
+            libc::SIGSEGV,
+            libc::SIGBUS,
+            libc::SIGILL,
+            libc::SIGFPE,
+            libc::SIGABRT,
+            libc::SIGTRAP,
+            libc::SIGSYS,
+        ] {
+            assert!(
+                crash_advice(signalled(signal), true).starts_with(values),
+                "{signal}"
+            );
+            assert!(
+                crash_advice(signalled(signal), false).starts_with(again),
+                "{signal}"
+            );
+        }
+        assert!(crash_advice(signalled(libc::SIGKILL), true).starts_with("try the request once"));
+        assert!(crash_advice(signalled(libc::SIGKILL), false).starts_with(again));
+        for signal in [
+            libc::SIGTERM,
+            libc::SIGINT,
+            libc::SIGHUP,
+            libc::SIGUSR1,
+            libc::SIGPIPE,
+        ] {
+            for reached in [true, false] {
+                assert!(
+                    crash_advice(signalled(signal), reached).starts_with(again),
+                    "{signal}"
+                );
+            }
+        }
+        // Killed after it stopped responding: no status.
+        assert!(crash_advice(None, true).starts_with(again));
+        // An exit code (3, in the status's high byte) is the install's, either way.
+        for reached in [true, false] {
+            assert!(
+                crash_advice(Some(ExitStatus::from_raw(3 << 8)), reached)
+                    .starts_with("check Silico's install")
+            );
+        }
+    }
+
+    #[test]
+    fn every_fault_signal_is_named() {
+        for signal in FAULTS {
+            assert!(signal_name(signal).is_some(), "signal {signal}");
+        }
+    }
 
     #[test]
     fn wait_for_sleeps_until_its_timeout_and_takes_any_timeout() {
