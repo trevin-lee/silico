@@ -106,6 +106,10 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Worker executables named by a relative path, or deleted, rebuilt, or moved under a running pool: every replacement re-resolves the path
 - Worker counts of `usize::MAX`: a `vec![_; n]` sized before the count is checked panics with capacity overflow
 - A worker stopped with SIGSTOP: alive to `try_wait` but silent; its request must time out, and the stopped process be killed and reaped
+- A worker that says it started, then closes its socket and lingers (alive to `try_wait`): idle checks and pre-request checks that look only at the process miss it, and a crash report's grace for it to exit overruns the call's timeout
+- A worker that says it started, then exits on its own while idle: back-off keyed on "started" relaunches it every idle tick forever
+- The app at its descriptor limit (`setrlimit(RLIMIT_NOFILE, open + k)` for k = 0..16) while starting a worker: each k fails at a different step; check code, suggestion, and that no process or descriptor is left
+- Executables that can't be started every way: missing, a directory, mode 0644, a script whose `#!` interpreter is missing, an empty path, and the same named through an environment variable; each error must say what to fix
 - A worker held at launch: macOS holds a newly written executable at `_dyld_start` while it assesses it, at times past a minute, so the first request times out blaming itself (in tests, link worker binaries rather than copy them)
 
 ## Oracles and comparisons

@@ -17,7 +17,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{Child, ChildStderr, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -39,6 +39,8 @@ const MAX_LOG_LINE: usize = 8 * 1024;
 /// How long a worker whose socket closed gets to exit on its own before it's killed, and
 /// how long its log thread then gets to finish.
 const EXIT_GRACE: Duration = Duration::from_secs(2);
+/// The least a crashed call waits for its worker to exit, past the call's deadline.
+const MIN_EXIT_GRACE: Duration = Duration::from_millis(100);
 
 /// The socket buffer size asked for on each end.
 const SOCKET_BUFFER: usize = 4 * 1024 * 1024;
@@ -75,6 +77,8 @@ pub struct Worker {
     /// Set when the worker says it has started (see [`silico_protocol::write_started`]), or
     /// replies.
     started: Arc<AtomicBool>,
+    /// How many requests the worker has answered (with a result or a refusal).
+    answers: u64,
     next_id: u64,
     /// Set once the worker has crashed, hung, or misbehaved and been stopped.
     stopped: bool,
@@ -84,7 +88,7 @@ impl Worker {
     /// Starts the worker executable at `exe`.
     pub fn spawn(exe: &Path) -> Result<Self, Error> {
         let spawning = lock(&SPAWNING);
-        let (ours, theirs) = UnixStream::pair().map_err(|e| internal("socket pair", e))?;
+        let (ours, theirs) = UnixStream::pair().map_err(|e| start_failed("socket pair", &e))?;
         // Larger buffers than the platform default (8 KiB on macOS), so a multi-megabyte
         // shape moves in few system calls. The kernel may cap them; that's fine.
         for end in [&ours, &theirs] {
@@ -111,11 +115,20 @@ impl Worker {
             }])
             .map_err(|e| internal("passing the socket", e))?;
         let child = command.spawn().map_err(|e| {
-            Error::new(
-                ErrorCode::WorkerCrashed,
-                format!("couldn't start the kernel worker {}", exe.display()),
-            )
-            .with_cause(e.to_string())
+            let message = format!("couldn't start the kernel worker {}", exe.display());
+            match shortage_advice(&e) {
+                // This process, or the system, is short of something: the worker never ran.
+                Some(advice) => Error::new(ErrorCode::Internal, message)
+                    .with_cause(e.to_string())
+                    .with_suggestion(advice),
+                None => Error::new(ErrorCode::WorkerCrashed, message)
+                    .with_cause(e.to_string())
+                    .with_suggestion(format!(
+                        "check Silico's install: {} can't be run (missing, not executable, or \
+                         needing an interpreter that's missing): rebuild it",
+                        exe.display()
+                    )),
+            }
         })?;
         // The command (and with it the worker's end of the socket) must go now, or the
         // worker's end stays open here and its exit would never close the socket.
@@ -135,13 +148,15 @@ impl Worker {
                     forward_logs(stderr, pid, &tail);
                     drop(done_tx);
                 })
-                .map_err(|e| internal("starting the log thread", e))?;
+                .map_err(|e| start_failed("starting the log thread", &e))?;
         }
 
         // Non-blocking, so a send can give up at its deadline (see `DeadlineWriter`).
         ours.set_nonblocking(true)
-            .map_err(|e| internal("making the socket non-blocking", e))?;
-        let reader = ours.try_clone().map_err(|e| internal("socket clone", e))?;
+            .map_err(|e| start_failed("making the socket non-blocking", &e))?;
+        let reader = ours
+            .try_clone()
+            .map_err(|e| start_failed("socket clone", &e))?;
         // One reply in flight: a worker sending unrequested replies can't make the core
         // buffer them without limit.
         let (tx, replies) = mpsc::sync_channel(1);
@@ -171,7 +186,7 @@ impl Worker {
                     }
                 }
             })
-            .map_err(|e| internal("starting the reply thread", e))?;
+            .map_err(|e| start_failed("starting the reply thread", &e))?;
 
         let child = guard
             .release()
@@ -184,6 +199,7 @@ impl Worker {
             stderr_tail,
             stderr_done,
             started,
+            answers: 0,
             next_id: 0,
             stopped: false,
         })
@@ -212,11 +228,49 @@ impl Worker {
         lock(&self.child).try_wait().ok().flatten()
     }
 
-    /// Whether the worker has sent something no call asked for (a second reply to an
-    /// earlier request, say), which is read and dropped. Such a worker can't be trusted:
-    /// its next call would fail on that reply, out of turn.
-    pub fn has_stray_reply(&mut self) -> bool {
-        self.replies.try_recv().is_ok()
+    /// Whether the worker has said it started (see [`silico_protocol::write_started`]). A
+    /// worker that has ended may have said so in frames not yet read: [`Self::has_exited`]
+    /// and then [`Self::drain_replies`] first.
+    pub(crate) fn has_started(&self) -> bool {
+        self.started.load(Ordering::Relaxed)
+    }
+
+    /// Blocks until `until`, at the latest, reading and dropping what a worker whose socket
+    /// has closed sent before it ended. Once the socket's end is read (it ends at once,
+    /// unless a process the worker started holds it open), [`Self::has_started`] is final.
+    pub(crate) fn drain_replies(&mut self, until: Instant) {
+        while self
+            .replies
+            .recv_timeout(until.saturating_duration_since(Instant::now()))
+            .is_ok()
+        {}
+    }
+
+    /// How many requests the worker has answered, with a result or a refusal: not counting
+    /// one refused before it was sent.
+    pub(crate) fn answers(&self) -> u64 {
+        self.answers
+    }
+
+    /// Whether the worker can't be given a request: it has sent something no call asked for
+    /// (a second reply to an earlier request, say, which is read and dropped: its next call
+    /// would fail on it, out of turn), or closed its socket, though it may still be running.
+    pub(crate) fn has_hung_up(&mut self) -> bool {
+        !matches!(self.replies.try_recv(), Err(TryRecvError::Empty))
+    }
+
+    /// How the process ended, waiting up to `grace` for it to (reaping it).
+    pub(crate) fn exit_status_within(&mut self, grace: Duration) -> Option<ExitStatus> {
+        let deadline = Instant::now() + grace;
+        loop {
+            if let Some(status) = self.exit_status() {
+                return Some(status);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     /// Stops the worker (kills and reaps it); later calls fail at once. For a worker whose
@@ -306,7 +360,7 @@ impl Worker {
             {
                 return Err(self.timed_out(name, timeout));
             }
-            Err(e) => return Err(self.crashed(name, reached, Some(e.to_string()))),
+            Err(e) => return Err(self.crashed(name, deadline, reached, Some(e.to_string()))),
         }
         tracing::trace!("sent");
 
@@ -320,9 +374,12 @@ impl Worker {
                 .map_err(|_| RecvTimeoutError::Disconnected),
         };
         match reply {
-            Ok(Ok(response)) if response.id == id && response.generation == generation => response
-                .result
-                .map_err(|failure| failure_error(name, failure)),
+            Ok(Ok(response)) if response.id == id && response.generation == generation => {
+                self.answers += 1;
+                response
+                    .result
+                    .map_err(|failure| failure_error(name, failure))
+            }
             Ok(Ok(response)) => Err(self.stop(
                 Error::new(
                     ErrorCode::ProtocolError,
@@ -335,7 +392,7 @@ impl Worker {
                 .with_suggestion(BROKEN_WORKER),
             )),
             Ok(Err(FrameError::Io(_) | FrameError::Truncated { .. }))
-            | Err(RecvTimeoutError::Disconnected) => Err(self.crashed(name, true, None)),
+            | Err(RecvTimeoutError::Disconnected) => Err(self.crashed(name, deadline, true, None)),
             Ok(Err(e)) => Err(self.stop(
                 Error::new(
                     ErrorCode::ProtocolError,
@@ -349,33 +406,55 @@ impl Worker {
     }
 
     fn timed_out(&mut self, name: &str, timeout: Duration) -> Error {
-        self.stop(
-            Error::new(
-                ErrorCode::WorkerTimeout,
-                format!("the kernel worker didn't finish {name} within {timeout:?}"),
-            )
-            .with_suggestion("simplify the operation, or allow it more time"),
-        )
+        let error = Error::new(
+            ErrorCode::WorkerTimeout,
+            format!("the kernel worker didn't finish {name} within {timeout:?}"),
+        );
+        // A worker that hadn't started never had the request to work on.
+        let error = if self.has_started() {
+            error.with_suggestion("simplify the operation, or allow it more time")
+        } else {
+            error
+                .with_cause("the kernel worker hadn't started")
+                .with_suggestion(
+                    "try the request again: the kernel worker hadn't started in the time \
+                     allowed (a new worker binary's first launch can be slow while the system \
+                     checks it); if it never starts, check Silico's install",
+                )
+        };
+        self.stop(error)
     }
 
     /// The worker's socket closed: report how it ended, with its last log lines.
-    fn crashed(&mut self, name: &str, took_request: bool, write_error: Option<String>) -> Error {
-        let status = self.wait_for_exit();
-        // The reply thread reads to the end of what the worker sent, which may say it started.
-        let deadline = Instant::now() + EXIT_GRACE;
-        while self
-            .replies
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .is_ok()
-        {}
-        let reached = match (self.started.load(Ordering::Relaxed), took_request) {
+    fn crashed(
+        &mut self,
+        name: &str,
+        deadline: Option<Instant>,
+        took_request: bool,
+        write_error: Option<String>,
+    ) -> Error {
+        // Within the call's time, if it's sooner, but long enough to reap a worker that's
+        // ending: one that closed its socket and lingers is killed then. Its replies and its
+        // log are read until then too (a process it started may hold them open).
+        let grace = deadline.map_or(EXIT_GRACE, |deadline| {
+            deadline
+                .saturating_duration_since(Instant::now())
+                .clamp(MIN_EXIT_GRACE, EXIT_GRACE)
+        });
+        let until = Instant::now() + grace;
+        let status = self.wait_for_exit(grace);
+        // What the worker sent before it ended may say it started.
+        self.drain_replies(until);
+        let reached = match (self.has_started(), took_request) {
             (false, _) => Reached::NotStarted,
             (true, false) => Reached::Started,
             (true, true) => Reached::Request,
         };
         // The worker has exited, so its log pipe closes; let the log thread read the last
         // lines before the report is built.
-        let _ = self.stderr_done.recv_timeout(EXIT_GRACE);
+        let _ = self
+            .stderr_done
+            .recv_timeout(until.saturating_duration_since(Instant::now()));
         let mut cause = match status {
             Some(status) => describe_exit(status),
             None => "it stopped responding and was killed".to_owned(),
@@ -402,8 +481,8 @@ impl Worker {
     }
 
     /// Waits briefly for a worker whose socket closed to exit, then kills it if needed.
-    fn wait_for_exit(&mut self) -> Option<ExitStatus> {
-        let deadline = Instant::now() + EXIT_GRACE;
+    fn wait_for_exit(&mut self, grace: Duration) -> Option<ExitStatus> {
+        let deadline = Instant::now() + grace;
         while Instant::now() < deadline {
             match lock(&self.child).try_wait() {
                 Ok(Some(status)) => return Some(status),
@@ -669,7 +748,8 @@ enum Reached {
 /// its install (a missing library: dyld aborts it), and once the request reached it is the
 /// request's values, which would crash it again. SIGKILL is usually the system's, when it
 /// runs out of memory, and a request that reached it may be what used the memory: worth
-/// one more try. Any other signal (SIGTERM, SIGINT, SIGHUP: a kill, a Ctrl-C, a
+/// one more try; before it started, it may be the system refusing the binary, if it
+/// happens again. Any other signal (SIGTERM, SIGINT, SIGHUP: a kill, a Ctrl-C, a
 /// shutdown), a worker that stopped responding, or one gone before the request reached it
 /// is from outside, worth trying again (the next request starts another worker). A worker
 /// that exited with a code ended on its own, which is its install, not the request.
@@ -689,6 +769,11 @@ fn crash_advice(status: Option<ExitStatus>, reached: Reached) -> &'static str {
         Some((None, Some(signal))) if request && FAULTS.contains(&signal) => {
             "change the operation's values: these crashed the kernel, and the same request \
              would crash it again"
+        }
+        Some((None, Some(libc::SIGKILL))) if matches!(reached, Reached::NotStarted) => {
+            "try the request again: the kernel worker was killed before it started; if it's \
+             killed before starting again, check Silico's install (macOS kills a worker binary \
+             whose code signature is broken)"
         }
         Some((None, Some(libc::SIGKILL))) if request => {
             "try the request once more: the kernel worker was killed, most likely by the \
@@ -784,6 +869,33 @@ fn internal(what: &str, e: impl std::fmt::Display) -> Error {
         format!("couldn't start the kernel worker: {what} failed"),
     )
     .with_cause(e.to_string())
+    .with_suggestion(SILICO_BUG)
+}
+
+/// A step of starting a worker failed in this process: short of descriptors, threads, or
+/// memory, most likely.
+fn start_failed(what: &str, e: &io::Error) -> Error {
+    let error = internal(what, e);
+    match shortage_advice(e) {
+        Some(advice) => error.with_suggestion(advice),
+        None => error,
+    }
+}
+
+/// What to do if `e` says this process, or the system, is short of something a worker
+/// needs to start: open files, processes or threads, or memory.
+fn shortage_advice(e: &io::Error) -> Option<&'static str> {
+    match e.raw_os_error()? {
+        libc::EMFILE | libc::ENFILE => Some(
+            "Silico has too many files open to start a kernel worker: close some documents or \
+             other programs, or raise the limit on open files (ulimit -n)",
+        ),
+        libc::EAGAIN | libc::ENOMEM => Some(
+            "the system is short of processes or memory to start a kernel worker: close some \
+             documents or other programs, then try again",
+        ),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -832,6 +944,11 @@ mod tests {
             let advice = crash_advice(signalled(libc::SIGKILL), reached);
             assert!(advice.starts_with(says), "{reached:?}: {advice}");
         }
+        // Killed before it started: from outside, or, again and again, the system refusing
+        // the binary.
+        let unstarted = crash_advice(signalled(libc::SIGKILL), NotStarted);
+        assert!(unstarted.contains(install), "{unstarted}");
+        assert!(!crash_advice(signalled(libc::SIGKILL), Started).contains(install));
         for reached in [Request, Started, NotStarted] {
             for signal in [
                 libc::SIGTERM,
@@ -851,6 +968,30 @@ mod tests {
             // An exit code (3, in the status's high byte) is the install's, either way.
             let exited = crash_advice(Some(ExitStatus::from_raw(3 << 8)), reached);
             assert!(exited.starts_with(install), "{reached:?}: {exited}");
+        }
+    }
+
+    #[test]
+    fn a_start_short_of_files_processes_or_memory_is_told_apart_from_a_bad_install() {
+        use std::io;
+
+        use super::shortage_advice;
+        let says = |errno| shortage_advice(&io::Error::from_raw_os_error(errno));
+        for errno in [libc::EMFILE, libc::ENFILE] {
+            assert!(
+                says(errno).is_some_and(|s| s.contains("too many files open")),
+                "{errno}"
+            );
+        }
+        for errno in [libc::EAGAIN, libc::ENOMEM] {
+            assert!(
+                says(errno).is_some_and(|s| s.contains("processes or memory")),
+                "{errno}"
+            );
+        }
+        // The install's: missing, not executable, not a program, a path through a file.
+        for errno in [libc::ENOENT, libc::EACCES, libc::ENOEXEC, libc::ENOTDIR] {
+            assert_eq!(says(errno), None, "{errno}");
         }
     }
 

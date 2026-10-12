@@ -22,6 +22,7 @@
 use std::collections::VecDeque;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -37,9 +38,14 @@ use crate::{Error, ErrorCode};
 /// How often an idle thread checks that its worker is still alive.
 pub const IDLE_CHECK: Duration = Duration::from_secs(1);
 
-/// The longest an idle thread waits before trying again to start a worker that couldn't
-/// be started (the wait doubles from [`IDLE_CHECK`] each time).
+/// The longest an idle thread waits before starting a worker again, after workers that
+/// ended on their own or before they started, or couldn't be started (the wait doubles
+/// from [`IDLE_CHECK`] each time).
 const MAX_RETRY: Duration = Duration::from_secs(60);
+
+/// How long an idle thread gives a worker whose socket closed to exit, to tell one that's
+/// ending (and how) from one that's running on with its socket closed.
+const HUNG_UP_GRACE: Duration = Duration::from_millis(100);
 
 /// How long a superseded request may run, counted from its start, before the pool stops it,
 /// unless [`KernelPool::set_stop_after`] says otherwise. Replacing a stopped worker takes
@@ -166,7 +172,8 @@ impl KernelPool {
             }),
             work: Condvar::new(),
             due: Condvar::new(),
-            answered: AtomicU64::new(0),
+            spawns: AtomicU64::new(1),
+            newest_started: AtomicU64::new(0),
             slots: Mutex::new((0..size).map(|_| Slot::default()).collect()),
         });
         let mut pool = Self {
@@ -346,9 +353,11 @@ struct Shared {
     /// What each slot holds and runs, to kill its worker when the pool stops or its request
     /// is superseded, and to report its process ID.
     slots: Mutex<Vec<Slot>>,
-    /// How many requests workers have answered: once one has, slots waiting to start a
-    /// worker again (its binary missing, say) know it starts now.
-    answered: AtomicU64,
+    /// The next number to give a worker the pool starts (from 1).
+    spawns: AtomicU64,
+    /// The number of the newest worker known to have started (0 for none). Once a worker
+    /// started after a slot's failure has, the binary works: the slot starts one now.
+    newest_started: AtomicU64,
 }
 
 struct State {
@@ -594,7 +603,9 @@ fn serve(slot: usize, exe: &Path, shared: &Shared, ready: &mpsc::Sender<Result<(
         exe: exe.to_owned(),
         shared,
         worker: None,
-        served: false,
+        number: 0,
+        noted: false,
+        killed_unstarted: false,
         retry: None,
     };
     let started = keeper.live_worker().map(|_| ());
@@ -647,13 +658,15 @@ fn serve(slot: usize, exe: &Path, shared: &Shared, ready: &mpsc::Sender<Result<(
             }
             continue;
         }
+        let answers = worker.answers();
         let condemned = task.run(worker, shared, slot);
-        if condemned || worker.is_stopped() {
+        let then = after_run(worker.answers() > answers, worker.is_stopped(), condemned);
+        // In this order: the answer is the worker's, noted before it's replaced.
+        if then.ends_wait {
+            keeper.answered();
+        }
+        if then.replace {
             keeper.replace();
-        } else {
-            keeper.served = true;
-            keeper.retry = None;
-            shared.answered.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -664,29 +677,85 @@ struct Keeper<'a> {
     exe: PathBuf,
     shared: &'a Shared,
     worker: Option<Worker>,
-    /// Whether the worker has answered a request.
-    served: bool,
-    /// After workers ended before answering, or couldn't be started: when to start one
-    /// again, how long that wait was, and how many requests the pool's workers had
-    /// answered then. Cleared when one answers.
+    /// The worker's number (see [`Shared::spawns`]), and whether its start has been noted.
+    number: u64,
+    noted: bool,
+    /// Whether the slot's last worker was killed (SIGKILL) before it started.
+    killed_unstarted: bool,
+    /// After workers ended on their own or before starting, or couldn't be started: when to
+    /// start one again. Cleared when one of the slot's workers answers a request.
     retry: Option<Retry>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Retry {
     at: Instant,
+    /// How long this wait is.
     wait: Duration,
-    answered: u64,
+    /// The number the next worker started would get, when the wait began: a worker with
+    /// this number or higher was started after the failure.
+    after: u64,
+}
+
+impl Retry {
+    /// Whether to start a worker now: the wait is over, or a worker started after the
+    /// failure has started, so the binary works.
+    fn is_due(self, now: Instant, newest_started: u64) -> bool {
+        now >= self.at || self.is_moot(newest_started)
+    }
+
+    /// Whether a worker started after the failure has started: the wait, and how long it
+    /// had grown, no longer apply.
+    fn is_moot(self, newest_started: u64) -> bool {
+        newest_started >= self.after
+    }
+}
+
+/// What a request's run means for its slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AfterRun {
+    /// The slot's wait ends: the binary works.
+    ends_wait: bool,
+    /// The slot's worker is replaced.
+    replace: bool,
+}
+
+/// After a request ran on a slot's worker. `answered`, whether the worker read back an
+/// answer (a result or a refusal); `stopped`, whether the worker was stopped (it crashed,
+/// hung, or answered wrongly); `condemned`, whether its request was superseded and stopped
+/// (its worker killed, or found dead). An answer shows the binary works, even one followed
+/// by a kill; one the worker was stopped for doesn't.
+fn after_run(answered: bool, stopped: bool, condemned: bool) -> AfterRun {
+    AfterRun {
+        ends_wait: answered && !stopped,
+        replace: stopped || condemned,
+    }
+}
+
+/// Whether an idle slot replaces a worker that ended with `status` at once, rather than
+/// after a wait: `started`, whether it had said it started; `killed_before`, whether the
+/// slot's last worker was killed (SIGKILL) before it started too.
+fn replace_at_once(status: ExitStatus, started: bool, killed_before: bool) -> bool {
+    match (status.code(), status.signal()) {
+        // An exit of its own is its install's, started or not.
+        (Some(_), _) => false,
+        // Killed before it started: from outside, unless the last one was too.
+        (None, Some(libc::SIGKILL)) if !started => !killed_before,
+        // Killed or crashed once started: from outside. Any other end before it started is
+        // its install's.
+        _ => started,
+    }
 }
 
 impl Keeper<'_> {
     /// The slot's worker, starting a new one (a process) if it has none, or if its worker
-    /// stopped, died, or sent something unasked (which is then discarded).
+    /// stopped, died, closed its socket, or sent something unasked (which is then
+    /// discarded).
     fn live_worker(&mut self) -> Result<&mut Worker, Error> {
         if self
             .worker
             .as_mut()
-            .is_some_and(|w| w.is_stopped() || w.has_exited() || w.has_stray_reply())
+            .is_some_and(|w| w.is_stopped() || w.has_exited() || w.has_hung_up())
         {
             self.discard();
         }
@@ -700,7 +769,8 @@ impl Keeper<'_> {
                         return Err(e);
                     }
                 };
-                self.served = false;
+                self.number = self.shared.spawns.fetch_add(1, Ordering::Relaxed);
+                self.noted = false;
                 let killer = worker.killer();
                 self.shared
                     .with_slot(self.slot, |s| s.killer = Some(killer));
@@ -718,24 +788,45 @@ impl Keeper<'_> {
         }
     }
 
-    /// While the slot is idle: a worker that died is replaced, so the pool stays full. One
-    /// killed from outside, or that had answered requests, is replaced now. One that
-    /// ended on its own before answering any (a worker binary that can't start: a missing
-    /// library, a refusal at start) is started again after a wait that doubles each time
-    /// from [`IDLE_CHECK`] up to [`MAX_RETRY`], as is one that couldn't be started at all
-    /// (its executable missing while it's rebuilt), rather than every [`IDLE_CHECK`] for as
-    /// long as the pool is idle; or at the next check, once another slot's worker has
-    /// answered a request. A request starts one at once either way, and reports why it
-    /// can't.
+    /// While the slot is idle: keeps its worker running, so the pool stays full. A worker
+    /// that ended, closed its socket, or sent something unasked is replaced:
+    /// - now, if it runs on with its socket closed; or had started (said so: see
+    ///   [`Worker::has_started`]) and was killed or crashed; or was killed (SIGKILL) before
+    ///   it started, unless the slot's last worker was too (a kill from outside);
+    /// - after a wait, if it exited on its own (an exit code), or ended before it started (a
+    ///   worker binary that can't start: a missing library, a refusal at start, or a kill at
+    ///   launch again, as macOS kills a binary whose code signature is broken), or couldn't be
+    ///   started at all (its executable missing while it's rebuilt). The wait doubles each
+    ///   time from [`IDLE_CHECK`] up to [`MAX_RETRY`] until one of the slot's workers answers
+    ///   a request, and ends early once a worker started after the failure is running.
+    ///
+    /// A request starts a worker at once either way, and reports why it can't.
     fn tend(&mut self) {
         let slot = self.slot;
         if let Some(w) = self.worker.as_mut() {
-            let replace_now = if w.is_stopped() || w.has_stray_reply() {
+            let replace_now = if w.is_stopped() {
                 true
             } else {
-                match w.exit_status() {
-                    None => return,
-                    Some(status) => self.served || status.signal() == Some(libc::SIGKILL),
+                let status = match w.exit_status() {
+                    Some(status) => Some(status),
+                    // Its socket closed (or it sent something unasked): it may be ending.
+                    None if w.has_hung_up() => w.exit_status_within(HUNG_UP_GRACE),
+                    None => {
+                        // Running, and of use.
+                        self.note_started();
+                        return;
+                    }
+                };
+                match status {
+                    // Running on, of no use.
+                    None => true,
+                    Some(status) => {
+                        w.drain_replies(Instant::now() + HUNG_UP_GRACE);
+                        let started = w.has_started();
+                        let at_once = replace_at_once(status, started, self.killed_unstarted);
+                        self.killed_unstarted = !started && status.signal() == Some(libc::SIGKILL);
+                        at_once
+                    }
                 }
             };
             self.discard();
@@ -743,15 +834,16 @@ impl Keeper<'_> {
                 self.wait_to_retry();
                 tracing::warn!(
                     slot,
-                    "a kernel worker ended before answering a request; starting another later"
+                    "a kernel worker ended on its own, or before it started; starting another later"
                 );
                 return;
             }
         } else if let Some(retry) = self.retry {
-            // Another slot's worker answering since shows the binary works now.
-            if self.shared.answered.load(Ordering::Relaxed) != retry.answered {
-                self.retry = None;
-            } else if Instant::now() < retry.at {
+            // Due, the wait is kept: if this start fails too, the next wait is longer.
+            if !retry.is_due(
+                Instant::now(),
+                self.shared.newest_started.load(Ordering::Relaxed),
+            ) {
                 return;
             }
         } else {
@@ -759,6 +851,30 @@ impl Keeper<'_> {
         }
         if let Err(e) = self.live_worker() {
             tracing::warn!(slot, error = %e, "can't start a kernel worker");
+        }
+    }
+
+    /// The slot's worker answered a request: the binary works, so the slot's wait ends.
+    fn answered(&mut self) {
+        self.retry = None;
+        self.note_started();
+    }
+
+    /// Notes the slot's worker having started and running, once: the binary works, so other
+    /// slots' waits that began before it was started end. (A worker that starts and exits
+    /// before an idle check proves nothing.)
+    fn note_started(&mut self) {
+        if !self.noted
+            && self
+                .worker
+                .as_mut()
+                .is_some_and(|w| w.has_started() && !w.has_exited())
+        {
+            self.noted = true;
+            self.killed_unstarted = false;
+            self.shared
+                .newest_started
+                .fetch_max(self.number, Ordering::Relaxed);
         }
     }
 
@@ -770,7 +886,7 @@ impl Keeper<'_> {
         self.retry = Some(Retry {
             at: Instant::now() + wait,
             wait,
-            answered: self.shared.answered.load(Ordering::Relaxed),
+            after: self.shared.spawns.load(Ordering::Relaxed),
         });
     }
 
@@ -787,6 +903,85 @@ mod tests {
     use std::sync::{Arc, Mutex, mpsc};
 
     use super::{Outcome, deliver};
+
+    #[test]
+    fn an_answer_ends_a_slots_wait_unless_the_worker_was_stopped_for_it() {
+        use super::{AfterRun, after_run};
+        // (answered, stopped, condemned) → (ends the wait, replaced)
+        for (answered, stopped, condemned, then) in [
+            (true, false, false, (true, false)),
+            // Answered, then killed as superseded: the binary worked.
+            (true, false, true, (true, true)),
+            // Answered wrongly, and stopped for it.
+            (true, true, false, (false, true)),
+            (true, true, true, (false, true)),
+            // No answer: refused before it was sent, crashed, hung, or superseded first.
+            (false, false, false, (false, false)),
+            (false, false, true, (false, true)),
+            (false, true, false, (false, true)),
+            (false, true, true, (false, true)),
+        ] {
+            let (ends_wait, replace) = then;
+            assert_eq!(
+                after_run(answered, stopped, condemned),
+                AfterRun { ends_wait, replace },
+                "answered {answered} stopped {stopped} condemned {condemned}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_idle_slot_replaces_a_worker_at_once_only_if_its_end_came_from_outside() {
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::ExitStatus;
+
+        use super::replace_at_once;
+        let exited = ExitStatus::from_raw(3 << 8);
+        let signalled = ExitStatus::from_raw;
+        // (status, started, the last one killed before it started too) → at once
+        for (status, started, killed_before, at_once) in [
+            // An exit of its own: the install's, started or not.
+            (exited, true, false, false),
+            (exited, false, false, false),
+            (exited, false, true, false),
+            // Killed before it started: from outside the first time, not again.
+            (signalled(libc::SIGKILL), false, false, true),
+            (signalled(libc::SIGKILL), false, true, false),
+            // Killed or crashed once started: from outside.
+            (signalled(libc::SIGKILL), true, true, true),
+            (signalled(libc::SIGTERM), true, false, true),
+            (signalled(libc::SIGSEGV), true, false, true),
+            // Any other end before it started: the install's (dyld aborting it, say).
+            (signalled(libc::SIGABRT), false, false, false),
+            (signalled(libc::SIGTERM), false, false, false),
+        ] {
+            assert_eq!(
+                replace_at_once(status, started, killed_before),
+                at_once,
+                "{status:?} started {started} killed before {killed_before}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_retry_is_due_when_its_wait_ends_or_a_worker_started_since_has_started() {
+        use std::time::{Duration, Instant};
+
+        use super::Retry;
+        let now = Instant::now();
+        let retry = Retry {
+            at: now + Duration::from_secs(8),
+            wait: Duration::from_secs(8),
+            after: 5,
+        };
+        // Workers 1 to 4 were started before the failure: their starting says nothing.
+        assert!(!retry.is_due(now, 0));
+        assert!(!retry.is_due(now, 4));
+        assert!(retry.is_due(now, 5));
+        assert!(retry.is_due(now, 9));
+        assert!(!retry.is_due(now + Duration::from_secs(7), 4));
+        assert!(retry.is_due(now + Duration::from_secs(8), 4));
+    }
 
     #[test]
     fn an_outcome_is_sent_before_the_lock_is_let_go() {

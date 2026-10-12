@@ -446,8 +446,24 @@ fn refused(what: &str, invalid: silico_protocol::InvalidParameter) -> Error {
 /// the running executable. Cargo puts test binaries in a `deps` directory below the
 /// worker's, so from there it looks one directory up.
 pub(crate) fn worker_path() -> Result<PathBuf, Error> {
-    if let Some(path) = std::env::var_os(KERNEL_WORKER_ENV) {
-        return Ok(PathBuf::from(path));
+    if let Some(value) = std::env::var_os(KERNEL_WORKER_ENV) {
+        // Absolute, so the file checked is the one run: a bare name would otherwise be
+        // checked in the working directory and looked up on PATH.
+        let path = std::path::absolute(&value).unwrap_or_else(|_| PathBuf::from(&value));
+        if path.is_file() {
+            return Ok(path);
+        }
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            format!(
+                "{KERNEL_WORKER_ENV} names {:?}, which isn't a file",
+                value.to_string_lossy()
+            ),
+        )
+        .with_suggestion(format!(
+            "point {KERNEL_WORKER_ENV} at the silico-kernel-worker binary, or unset it to use \
+             the one beside Silico"
+        )));
     }
     let exe = std::env::current_exe().map_err(|e| {
         Error::new(ErrorCode::Internal, "can't find the running executable")

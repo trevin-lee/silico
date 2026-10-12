@@ -1,0 +1,38 @@
+//! For the adversarial tests: scratch directories, and this process's descriptors and
+//! threads.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// A fresh directory under the target's scratch space, named for the test binary.
+pub fn scratch_dir(what: &str) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        "{}-{what}-{}-{}",
+        env!("CARGO_CRATE_NAME"),
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Open descriptors in this process (the listing's own included).
+pub fn open_fds() -> usize {
+    std::fs::read_dir("/dev/fd").unwrap().count()
+}
+
+/// Threads in this process.
+pub fn threads() -> usize {
+    if cfg!(target_os = "linux") {
+        return std::fs::read_dir("/proc/self/task").unwrap().count();
+    }
+    let out = Command::new("ps")
+        .args(["-M", "-p", &std::process::id().to_string()])
+        .output()
+        .unwrap();
+    // A header line, then one line per thread.
+    String::from_utf8(out.stdout).unwrap().lines().count() - 1
+}
