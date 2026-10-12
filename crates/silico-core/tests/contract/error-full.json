@@ -2,7 +2,11 @@
   "code": "kernel_failed",
   "message": "fillet failed",
   "feature": "Fillet1",
-  "element": "Edge3",
+  "elements": [
+    "Edge3",
+    "Edge5"
+  ],
+  "parameter": "radius",
   "cause": "StdFail_NotDone: BRepFilletAPI_MakeFillet",
   "suggestion": "reduce the radius below 5 mm",
   "candidates": [

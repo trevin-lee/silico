@@ -1,10 +1,11 @@
 //! Silico's structured error (ARCHITECTURE.md, invariant 9). Every failure that reaches a
 //! user or an agent is one of these: a stable code to match on, a message, and where they
-//! apply, the feature, the sub-element, the underlying cause, a suggestion, and candidate
-//! fixes.
+//! apply, the feature, every sub-element at fault, the parameter at fault, the underlying
+//! cause, a suggestion, and candidate fixes.
 //!
 //! The JSON form is the contract with agents (tests/contract/): every field is always
-//! present, `null` when absent and `[]` for no candidates, so there's one shape to parse.
+//! present, `null` when absent and `[]` for no elements or candidates, so there's one shape
+//! to parse.
 
 use std::fmt;
 
@@ -52,6 +53,9 @@ error_codes! {
     /// The geometry kernel performed an operation, but its result wasn't valid, so it was
     /// refused rather than built on.
     InvalidResult = "invalid_result",
+    /// Silico, or the machine, is short of something the operation needs (open files,
+    /// processes, memory): free some, then try again.
+    ResourceExhausted = "resource_exhausted",
 }
 
 impl Serialize for ErrorCode {
@@ -76,7 +80,8 @@ struct Fields {
     code: ErrorCode,
     message: String,
     feature: Option<String>,
-    element: Option<String>,
+    elements: Vec<String>,
+    parameter: Option<String>,
     cause: Option<String>,
     suggestion: Option<String>,
     candidates: Vec<String>,
@@ -89,7 +94,8 @@ impl Error {
             code,
             message: message.into(),
             feature: None,
-            element: None,
+            elements: Vec::new(),
+            parameter: None,
             cause: None,
             suggestion: None,
             candidates: Vec::new(),
@@ -103,10 +109,29 @@ impl Error {
         self
     }
 
-    /// The sub-element (face, edge, vertex, sketch entity) the error is about.
+    /// A sub-element (face, edge, vertex, sketch entity) the error is about, after any
+    /// named already.
     #[must_use]
     pub fn with_element(mut self, element: impl Into<String>) -> Self {
-        self.0.element = Some(element.into());
+        self.0.elements.push(element.into());
+        self
+    }
+
+    /// Every sub-element the error is about, in place of any named already.
+    #[must_use]
+    pub fn with_elements<I, S>(mut self, elements: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.0.elements = elements.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// The parameter at fault, as the operation spells it (`radius`, `dx`, ...).
+    #[must_use]
+    pub fn with_parameter(mut self, parameter: impl Into<String>) -> Self {
+        self.0.parameter = Some(parameter.into());
         self
     }
 
@@ -147,8 +172,12 @@ impl Error {
         self.0.feature.as_deref()
     }
 
-    pub fn element(&self) -> Option<&str> {
-        self.0.element.as_deref()
+    pub fn elements(&self) -> &[String] {
+        &self.0.elements
+    }
+
+    pub fn parameter(&self) -> Option<&str> {
+        self.0.parameter.as_deref()
     }
 
     pub fn cause(&self) -> Option<&str> {
@@ -164,16 +193,25 @@ impl Error {
     }
 }
 
-/// `code: message (feature F, element E): cause. Suggestion: S. Candidates: A, B.`,
-/// leaving out whatever is absent.
+/// `code: message (feature F, elements E1, E2, parameter P): cause. Suggestion: S.
+/// Candidates: A, B.`, leaving out whatever is absent (`element E` for one).
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}: {}", self.0.code, self.0.message)?;
-        match (&self.0.feature, &self.0.element) {
-            (Some(feature), Some(element)) => write!(f, " (feature {feature}, element {element})")?,
-            (Some(feature), None) => write!(f, " (feature {feature})")?,
-            (None, Some(element)) => write!(f, " (element {element})")?,
-            (None, None) => {}
+        let mut about = Vec::new();
+        if let Some(feature) = &self.0.feature {
+            about.push(format!("feature {feature}"));
+        }
+        match self.0.elements.as_slice() {
+            [] => {}
+            [element] => about.push(format!("element {element}")),
+            elements => about.push(format!("elements {}", elements.join(", "))),
+        }
+        if let Some(parameter) = &self.0.parameter {
+            about.push(format!("parameter {parameter}"));
+        }
+        if !about.is_empty() {
+            write!(f, " ({})", about.join(", "))?;
         }
         // Text that already ends a sentence doesn't get a second period.
         let sentence = |text: &str| text.strip_suffix('.').unwrap_or(text).to_owned();

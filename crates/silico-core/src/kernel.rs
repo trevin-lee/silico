@@ -80,13 +80,13 @@ impl KernelRequest<ShapeData> {
     /// are refused, naming the parameter.
     pub fn make(primitive: Primitive) -> Result<Self, Error> {
         if let Err(invalid) = primitive.check() {
-            return Err(
-                Error::new(ErrorCode::InvalidInput, invalid.message).with_suggestion(format!(
+            return Err(Error::new(ErrorCode::InvalidInput, invalid.message)
+                .with_parameter(invalid.parameter)
+                .with_suggestion(format!(
                     "give the {} a valid {}",
                     primitive.name(),
                     invalid.parameter
-                )),
-            );
+                )));
         }
         Ok(Self::new(Op::MakePrimitive(primitive), read_shape))
     }
@@ -98,7 +98,7 @@ impl KernelRequest<BuiltData> {
     /// radius that can't round an edge is refused, naming it.
     pub fn fillet(shape: &ShapeData, edges: &[u32], radius: f64) -> Result<Self, Error> {
         if let Err(invalid) = silico_protocol::check_fillet_radius(radius) {
-            return Err(refused("fillet", invalid));
+            return Err(refused("fillet", None, invalid));
         }
         let op = Op::Fillet {
             shape: shape.clone(),
@@ -119,7 +119,7 @@ impl KernelRequest<BuiltData> {
         flip: bool,
     ) -> Result<Self, Error> {
         if let Err(invalid) = size.check() {
-            return Err(refused("chamfer", invalid));
+            return Err(refused("chamfer", Some("size"), invalid));
         }
         let op = Op::Chamfer {
             shape: shape.clone(),
@@ -134,11 +134,11 @@ impl KernelRequest<BuiltData> {
     /// self. An offset that isn't finite, or reaches past a kilometre, is refused.
     pub fn translate(shape: &ShapeData, offset: [f64; 3]) -> Result<Self, Error> {
         if let Err(invalid) = silico_protocol::check_offset(offset) {
-            return Err(
-                Error::new(ErrorCode::InvalidInput, invalid.message).with_suggestion(
+            return Err(Error::new(ErrorCode::InvalidInput, invalid.message)
+                .with_parameter(format!("offset.{}", invalid.parameter))
+                .with_suggestion(
                     "move the shape by a finite offset, no more than a kilometre each way",
-                ),
-            );
+                ));
         }
         let op = Op::Translate {
             shape: shape.clone(),
@@ -160,7 +160,7 @@ impl KernelRequest<BuiltData> {
             .check()
             .and_then(|plane| silico_protocol::extrusion_vector(&plane, length, direction));
         if let Err(invalid) = checked {
-            return Err(refused("extrusion", invalid));
+            return Err(refused("extrusion", None, invalid));
         }
         let op = Op::Extrude {
             profile: profile.clone(),
@@ -178,7 +178,7 @@ impl KernelRequest<BuiltData> {
             silico_protocol::check_revolve(&plane, &profile.points, &axis, angle)
         });
         if let Err(invalid) = checked {
-            return Err(refused("revolve", invalid));
+            return Err(refused("revolve", None, invalid));
         }
         let op = Op::Revolve {
             profile: profile.clone(),
@@ -432,14 +432,24 @@ impl KernelWorker {
 }
 
 /// An operation's values refused before sending, naming the parameter.
-fn refused(what: &str, invalid: silico_protocol::InvalidParameter) -> Error {
-    let parameter = match invalid.parameter {
-        "points" => "profile",
-        "other" => "other distance",
-        other => other,
+/// An operation's values refused before sending, naming the parameter, as a path through
+/// the operation's fields (a chamfer's `size.angle`): `under`, the field the check's value
+/// sits in, if any.
+fn refused(what: &str, under: Option<&str>, invalid: silico_protocol::InvalidParameter) -> Error {
+    let (path, words) = match (invalid.parameter, under) {
+        // A profile's corners are the profile.
+        ("points", _) => ("profile".to_owned(), "profile"),
+        (parameter, Some(under)) => (format!("{under}.{parameter}"), parameter),
+        (parameter, None) => (parameter.to_owned(), parameter),
+    };
+    let words = if words == "other" {
+        "other distance"
+    } else {
+        words
     };
     Error::new(ErrorCode::InvalidInput, invalid.message)
-        .with_suggestion(format!("give the {what} a valid {parameter}"))
+        .with_parameter(path)
+        .with_suggestion(format!("give the {what} a valid {words}"))
 }
 
 /// The kernel worker executable: [`KERNEL_WORKER_ENV`], or `silico-kernel-worker` next to

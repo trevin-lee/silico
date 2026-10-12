@@ -244,7 +244,7 @@ fn fillet_too_large_is_structured_error() {
     let err = fillet_through_worker(&mut w, &[1], 11.0).unwrap_err();
     assert_eq!(err.code(), ErrorCode::KernelFailed, "{err}");
     assert_eq!(err.message(), "Fillet failed");
-    assert_eq!(err.element(), Some("Edge1"));
+    assert_eq!(err.elements(), ["Edge1"]);
     assert!(
         err.cause().unwrap().contains("StdFail_NotDone")
             || err.cause().unwrap().contains("couldn't be built"),
@@ -287,7 +287,11 @@ fn bad_fillet_requests_are_invalid_input() {
             "{edges:?} {radius}: {err}"
         );
         assert!(err.message().contains(says), "{edges:?} {radius}: {err}");
-        assert_eq!(err.element(), element, "{edges:?} {radius}: {err}");
+        assert_eq!(
+            err.elements(),
+            element.as_slice(),
+            "{edges:?} {radius}: {err}"
+        );
     }
     assert!(!w.is_stopped());
 }
@@ -421,7 +425,7 @@ fn an_invalid_fillet_result_is_refused() {
         assert_eq!(err.message(), INVALID_RESULT, "r = {radius}: {err}");
         // Several edges: OCCT doesn't say which one is at fault, so the suggestion says
         // how to find it.
-        assert_eq!(err.element(), None, "r = {radius}: {err}");
+        assert!(err.elements().is_empty(), "r = {radius}: {err}");
         assert!(
             err.suggestion().unwrap().contains("one at a time"),
             "r = {radius}: {err}"
@@ -436,11 +440,11 @@ fn a_failed_fillet_names_only_the_edge_at_fault() {
     let mut w = worker();
     // One edge: that edge.
     let err = fillet_through_worker(&mut w, &[3], 11.0).unwrap_err();
-    assert_eq!(err.element(), Some("Edge3"), "{err}");
+    assert_eq!(err.elements(), ["Edge3"], "{err}");
     // Several: OCCT doesn't say which, so none.
     let err = fillet_through_worker(&mut w, &[1, 2], 11.0).unwrap_err();
     assert_eq!(err.code(), ErrorCode::KernelFailed, "{err}");
-    assert_eq!(err.element(), None, "{err}");
+    assert!(err.elements().is_empty(), "{err}");
 }
 
 /// The fillet, through the worker.

@@ -335,9 +335,15 @@ fn spawn_thread(
     std::thread::Builder::new()
         .name(name)
         .spawn(run)
-        .map_err(|e| {
-            Error::new(ErrorCode::Internal, "couldn't start a kernel pool thread")
-                .with_cause(e.to_string())
+        .map_err(|e| match crate::worker::shortage_advice(&e) {
+            Some(advice) => Error::new(
+                ErrorCode::ResourceExhausted,
+                "couldn't start a kernel pool thread",
+            )
+            .with_cause(e.to_string())
+            .with_suggestion(advice),
+            None => Error::new(ErrorCode::Internal, "couldn't start a kernel pool thread")
+                .with_cause(e.to_string()),
         })
 }
 

@@ -32,3 +32,13 @@
 | M2.7 Element map | Port of naming from history (M1.4). A placement or move keeps every element's name, as FreeCAD's `makeElementTransform` does: the kernel's translate reports its elements modified, and those fates must not feed the element map (docs/ports/booleans.md) | Ported FreeCAD `TopoShapeExpansion` tests, with expected names translated to Silico's syntax |
 | M2.8 Reference resolution | References resolved by name after an upstream edit | Ported `TestTopologicalNamingProblem.py` cases; every edit either resolves to the geometrically equivalent element or fails loudly, never silently re-points |
 | M2.9 CLI | `silico check`, `fmt`, `show`, and a git `textconv` driver | Each command is snapshot-tested on golden models; `fmt` is idempotent; the `git diff` output of a one-parameter edit is one readable line |
+
+## As built
+
+### M2.0 – Refusals as data
+
+M2.0 is built in parts, each reviewed on its own:
+- **The error contract** (done). The maintainer chose the shape: `elements`, a list of every sub-element at fault, replaces `element`; `parameter` names the parameter at fault, as a path through the operation's fields (`radius`, `offset.x`, a chamfer's `size.angle`, an extrusion's `profile`); and `resource_exhausted`, appended to the codes, is a shortage of files, processes, or memory, which `internal` (a bug in Silico) had reported. Every request the core refuses before sending names its parameter. The worker still sends one element, by name.
+- **Refusals from the worker as data**: a reason and `ElementRef`s, every element at fault; the core writes the names, the message, and the suggestion.
+- **Unmeshed faces as data**, the core deciding whether to leave them out or refuse.
+- **A multi-edge fillet's failing edges** found by the core, trying the edges across the pool, as `candidates`.

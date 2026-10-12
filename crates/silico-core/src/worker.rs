@@ -118,7 +118,7 @@ impl Worker {
             let message = format!("couldn't start the kernel worker {}", exe.display());
             match shortage_advice(&e) {
                 // This process, or the system, is short of something: the worker never ran.
-                Some(advice) => Error::new(ErrorCode::Internal, message)
+                Some(advice) => Error::new(ErrorCode::ResourceExhausted, message)
                     .with_cause(e.to_string())
                     .with_suggestion(advice),
                 None => Error::new(ErrorCode::WorkerCrashed, message)
@@ -875,16 +875,20 @@ fn internal(what: &str, e: impl std::fmt::Display) -> Error {
 /// A step of starting a worker failed in this process: short of descriptors, threads, or
 /// memory, most likely.
 fn start_failed(what: &str, e: &io::Error) -> Error {
-    let error = internal(what, e);
     match shortage_advice(e) {
-        Some(advice) => error.with_suggestion(advice),
-        None => error,
+        Some(advice) => Error::new(
+            ErrorCode::ResourceExhausted,
+            format!("couldn't start the kernel worker: {what} failed"),
+        )
+        .with_cause(e.to_string())
+        .with_suggestion(advice),
+        None => internal(what, e),
     }
 }
 
 /// What to do if `e` says this process, or the system, is short of something a worker
 /// needs to start: open files, processes or threads, or memory.
-fn shortage_advice(e: &io::Error) -> Option<&'static str> {
+pub(crate) fn shortage_advice(e: &io::Error) -> Option<&'static str> {
     match e.raw_os_error()? {
         libc::EMFILE | libc::ENFILE => Some(
             "Silico has too many files open to start a kernel worker: close some documents or \
@@ -1061,9 +1065,14 @@ mod tests {
                     error.code(),
                     error.message(),
                     error.cause(),
-                    error.element()
+                    error.elements()
                 ),
-                (code, message, Some("the kernel's words"), Some("Edge1"))
+                (
+                    code,
+                    message,
+                    Some("the kernel's words"),
+                    &["Edge1".to_owned()][..]
+                )
             );
             assert_eq!(error.suggestion(), Some(fallback));
             // The worker's own suggestion, when it has one, comes first.
