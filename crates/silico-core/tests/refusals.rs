@@ -1,6 +1,7 @@
 //! M2.0: a request whose values can't make the operation is refused before it's sent,
-//! naming the parameter at fault as data: a path through the operation's fields, as the
-//! protocol spells them (`Op` and its parts), so an agent knows which value to change.
+//! naming the parameter at fault as data: the operation's field, as the protocol spells it
+//! (`Op` and its parts), and the part of it at fault where it has parts (`offset.x`,
+//! `size.angle`), so an agent knows which value to change.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use silico_core::kernel::{Axis, Blob, ChamferSize, KernelRequest, Primitive, Profile, ShapeData};
@@ -18,7 +19,7 @@ fn parameter(refused: Result<impl Sized, Error>) -> String {
 }
 
 #[test]
-fn every_value_refused_before_sending_names_its_parameter() {
+fn every_value_the_request_constructors_check_names_its_parameter() {
     let shape = ShapeData::unchecked(Blob::inline(Vec::new()));
     let square = Profile {
         points: vec![[0.0; 3], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],

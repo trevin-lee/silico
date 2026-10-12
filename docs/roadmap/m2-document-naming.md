@@ -38,7 +38,7 @@
 ### M2.0 – Refusals as data
 
 M2.0 is built in parts, each reviewed on its own:
-- **The error contract** (done). The maintainer chose the shape: `elements`, a list of every sub-element at fault, replaces `element`; `parameter` names the parameter at fault, as a path through the operation's fields (`radius`, `offset.x`, a chamfer's `size.angle`, an extrusion's `profile`); and `resource_exhausted`, appended to the codes, is a shortage of files, processes, or memory, which `internal` (a bug in Silico) had reported. Every request the core refuses before sending names its parameter. The worker still sends one element, by name.
+- **The error contract** (done). The maintainer chose the shape: `elements`, a list of every sub-element at fault, replaces `element`; `parameter` names the parameter at fault as a dotted name: the operation's field, and the part of it at fault where it has parts (`radius`, `offset.x`, a chamfer's `size.angle`, an extrusion's `profile`); and `resource_exhausted`, appended to the codes, is a shortage of files, processes, memory, or buffers, which `internal` (a bug in Silico) had reported. Every value the request constructors check is refused naming its parameter (a request too large to send names none). The worker still sends one element, by name.
 - **Refusals from the worker as data**: a reason and `ElementRef`s, every element at fault; the core writes the names, the message, and the suggestion.
 - **Unmeshed faces as data**, the core deciding whether to leave them out or refuse.
 - **A multi-edge fillet's failing edges** found by the core, trying the edges across the pool, as `candidates`.

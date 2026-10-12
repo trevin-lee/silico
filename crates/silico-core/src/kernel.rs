@@ -80,13 +80,7 @@ impl KernelRequest<ShapeData> {
     /// are refused, naming the parameter.
     pub fn make(primitive: Primitive) -> Result<Self, Error> {
         if let Err(invalid) = primitive.check() {
-            return Err(Error::new(ErrorCode::InvalidInput, invalid.message)
-                .with_parameter(invalid.parameter)
-                .with_suggestion(format!(
-                    "give the {} a valid {}",
-                    primitive.name(),
-                    invalid.parameter
-                )));
+            return Err(refused(primitive.name(), None, invalid));
         }
         Ok(Self::new(Op::MakePrimitive(primitive), read_shape))
     }
@@ -134,11 +128,11 @@ impl KernelRequest<BuiltData> {
     /// self. An offset that isn't finite, or reaches past a kilometre, is refused.
     pub fn translate(shape: &ShapeData, offset: [f64; 3]) -> Result<Self, Error> {
         if let Err(invalid) = silico_protocol::check_offset(offset) {
-            return Err(Error::new(ErrorCode::InvalidInput, invalid.message)
-                .with_parameter(format!("offset.{}", invalid.parameter))
-                .with_suggestion(
+            return Err(
+                refused("translation", Some("offset"), invalid).with_suggestion(
                     "move the shape by a finite offset, no more than a kilometre each way",
-                ));
+                ),
+            );
         }
         let op = Op::Translate {
             shape: shape.clone(),
@@ -431,24 +425,24 @@ impl KernelWorker {
     }
 }
 
-/// An operation's values refused before sending, naming the parameter.
-/// An operation's values refused before sending, naming the parameter, as a path through
-/// the operation's fields (a chamfer's `size.angle`): `under`, the field the check's value
-/// sits in, if any.
+/// An operation's values refused before sending, naming the parameter at fault as a dotted
+/// name: the operation's field, and the part of it at fault where it has parts (a chamfer's
+/// `size.angle`, a translation's `offset.x`). `under`, the field the checked value is a
+/// part of, if any.
 fn refused(what: &str, under: Option<&str>, invalid: silico_protocol::InvalidParameter) -> Error {
-    let (path, words) = match (invalid.parameter, under) {
-        // A profile's corners are the profile.
-        ("points", _) => ("profile".to_owned(), "profile"),
-        (parameter, Some(under)) => (format!("{under}.{parameter}"), parameter),
-        (parameter, None) => (parameter.to_owned(), parameter),
+    // What the checks call a value, if the operation's fields call it something else; and
+    // how the suggestion says it.
+    let (name, words) = match invalid.parameter {
+        "points" => ("profile", "profile"),
+        "other" => ("other", "other distance"),
+        parameter => (parameter, parameter),
     };
-    let words = if words == "other" {
-        "other distance"
-    } else {
-        words
+    let name = match under {
+        Some(under) => format!("{under}.{name}"),
+        None => name.to_owned(),
     };
     Error::new(ErrorCode::InvalidInput, invalid.message)
-        .with_parameter(path)
+        .with_parameter(name)
         .with_suggestion(format!("give the {what} a valid {words}"))
 }
 

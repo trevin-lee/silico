@@ -87,12 +87,15 @@ fn display_without_optional_fields() {
 }
 
 #[test]
-fn elements_add_up_or_are_replaced() {
+fn elements_add_up() {
     let e = Error::new(ErrorCode::InvalidInput, "edges refused")
         .with_element("Edge1")
         .with_element("Edge2");
     assert_eq!(e.elements(), ["Edge1", "Edge2"]);
-    assert_eq!(e.with_elements(["Edge7"]).elements(), ["Edge7"]);
+    assert_eq!(
+        e.with_elements(["Edge7", "Edge9"]).elements(),
+        ["Edge1", "Edge2", "Edge7", "Edge9"]
+    );
     let e = Error::new(ErrorCode::InvalidInput, "dx must be positive").with_parameter("dx");
     assert_eq!(
         e.to_string(),

@@ -117,18 +117,19 @@ impl Error {
         self
     }
 
-    /// Every sub-element the error is about, in place of any named already.
+    /// Sub-elements the error is about, after any named already.
     #[must_use]
     pub fn with_elements<I, S>(mut self, elements: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.0.elements = elements.into_iter().map(Into::into).collect();
+        self.0.elements.extend(elements.into_iter().map(Into::into));
         self
     }
 
-    /// The parameter at fault, as the operation spells it (`radius`, `dx`, ...).
+    /// The parameter at fault, as a dotted name: the operation's field, and the part of it at
+    /// fault where it has parts (`radius`, `offset.x`, a chamfer's `size.angle`).
     #[must_use]
     pub fn with_parameter(mut self, parameter: impl Into<String>) -> Self {
         self.0.parameter = Some(parameter.into());
