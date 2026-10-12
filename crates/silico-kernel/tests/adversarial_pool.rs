@@ -1211,6 +1211,116 @@ fn a_kill_at_launch_after_an_exit_of_its_own_is_taken_as_from_outside() {
 }
 
 #[test]
+fn an_answer_ends_a_slots_wait() {
+    // While `fail` exists, a launch exits on its own before it starts; otherwise it's the
+    // test worker. The slot's wait grows (launches at about 0, 2, and 5 s, the next wait 4
+    // s), then a worker starts and answers a request. Killed after `fail` is back, it's
+    // replaced at once and that one fails: the next launch comes after a fresh wait (about
+    // 2 s later), not after the one grown before the answer (8 s, about 9 s later).
+    let dir = scratch_dir("answer-resets");
+    let fail = dir.join("fail");
+    std::fs::write(&fail, "").unwrap();
+    let (script, log) = launch_logger(
+        &dir,
+        &format!(
+            "if [ -e '{}' ]; then exit 3; fi\nexec '{TEST_WORKER}'",
+            fail.display()
+        ),
+    );
+    let pool = KernelPool::start_workers(&script, 1).unwrap();
+    std::thread::sleep(Duration::from_millis(5_500));
+    std::fs::remove_file(&fail).unwrap();
+    done(pool.submit(Generation(1), sleep(1))).unwrap();
+    std::fs::write(&fail, "").unwrap();
+    let killed_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64();
+    kill9_and_wait(pool.pids()[0]);
+    std::thread::sleep(Duration::from_secs(5));
+    drop(pool);
+    let (times, _) = launches(&log);
+    let after: Vec<f64> = times.iter().copied().filter(|t| *t > killed_at).collect();
+    assert!(
+        after.len() >= 2,
+        "launches at {times:?}, killed at {killed_at}"
+    );
+    assert!(
+        after[1] - after[0] < 3.0,
+        "the wait from before the answer: launches at {times:?}, killed at {killed_at}"
+    );
+}
+
+#[test]
+fn a_wait_ended_early_by_a_newer_worker_still_doubles_on_the_next_failure() {
+    // Two slots, A and B, of a script that runs the test worker as a child (so killing the
+    // child makes the script exit 3, on its own) when `mode` says work, and exits 3 at once
+    // when it says fail. A fails until its wait is 8 s; then B's worker is killed from
+    // outside and replaced by one that works, which ends A's wait early. A's worker then
+    // fails again: its wait doubles to 16 s, not back to 1 s, so no launch follows within
+    // 5 s.
+    let dir = scratch_dir("moot-keeps");
+    let log = dir.join("launches");
+    let mode = dir.join("mode");
+    let children = dir.join("children");
+    let script = dir.join("worker.sh");
+    std::fs::write(&mode, "work").unwrap();
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nm=$(cat '{}')\nperl -MTime::HiRes=time -e 'print time, \"\\n\"' >> '{}'\n\
+             if [ \"$m\" = work ]; then '{TEST_WORKER}' & echo \"$$ $!\" >> '{}'; wait; fi\n\
+             exit 3\n",
+            mode.display(),
+            log.display(),
+            children.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let count = || {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
+    let pool = KernelPool::start_workers(&script, 2).unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    let pids = pool.pids();
+    assert_eq!(pids.len(), 2);
+    let (a, b) = (pids[0], pids[1]);
+    std::fs::write(&mode, "fail").unwrap();
+    let a_child = std::fs::read_to_string(&children)
+        .unwrap()
+        .lines()
+        .find_map(|l| l.strip_prefix(&format!("{a} ")).map(str::to_owned))
+        .unwrap();
+    signal("KILL", a_child.trim().parse().unwrap());
+    // A: its exit seen at about 1 s, launches at about 2, 5, and 10 s, its wait 8 s from
+    // about 11 s (19 next).
+    std::thread::sleep(Duration::from_millis(11_500));
+    assert_eq!(count(), 5, "launches: {}", count());
+    std::fs::write(&mode, "work").unwrap();
+    signal("KILL", b);
+    // B's replacement (launch 6) works; A's next launch (7), early, must fail.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while count() < 6 {
+        assert!(Instant::now() < deadline, "B wasn't replaced");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    std::fs::write(&mode, "fail").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while count() < 7 {
+        assert!(Instant::now() < deadline, "A's wait didn't end early");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    std::thread::sleep(Duration::from_secs(5));
+    drop(pool);
+    let (times, gaps) = launches(&log);
+    assert_eq!(times.len(), 7, "gaps {gaps:?}");
+}
+
+#[test]
 fn a_worker_started_before_a_slots_failure_doesnt_end_its_wait() {
     // Two slots: the first launch is a worker that starts 3 s late; every other ends at
     // once. The failing slot launches at about 0, 2, and 5 s (10 next). The slow worker

@@ -77,6 +77,8 @@ pub struct Worker {
     /// Set when the worker says it has started (see [`silico_protocol::write_started`]), or
     /// replies.
     started: Arc<AtomicBool>,
+    /// How many requests the worker has answered (with a result or a refusal).
+    answers: u64,
     next_id: u64,
     /// Set once the worker has crashed, hung, or misbehaved and been stopped.
     stopped: bool,
@@ -114,7 +116,7 @@ impl Worker {
             .map_err(|e| internal("passing the socket", e))?;
         let child = command.spawn().map_err(|e| {
             let message = format!("couldn't start the kernel worker {}", exe.display());
-            match short_of(&e) {
+            match shortage_advice(&e) {
                 // This process, or the system, is short of something: the worker never ran.
                 Some(advice) => Error::new(ErrorCode::Internal, message)
                     .with_cause(e.to_string())
@@ -197,6 +199,7 @@ impl Worker {
             stderr_tail,
             stderr_done,
             started,
+            answers: 0,
             next_id: 0,
             stopped: false,
         })
@@ -241,6 +244,12 @@ impl Worker {
             .recv_timeout(until.saturating_duration_since(Instant::now()))
             .is_ok()
         {}
+    }
+
+    /// How many requests the worker has answered, with a result or a refusal: not counting
+    /// one refused before it was sent.
+    pub(crate) fn answers(&self) -> u64 {
+        self.answers
     }
 
     /// Whether the worker can't be given a request: it has sent something no call asked for
@@ -365,9 +374,12 @@ impl Worker {
                 .map_err(|_| RecvTimeoutError::Disconnected),
         };
         match reply {
-            Ok(Ok(response)) if response.id == id && response.generation == generation => response
-                .result
-                .map_err(|failure| failure_error(name, failure)),
+            Ok(Ok(response)) if response.id == id && response.generation == generation => {
+                self.answers += 1;
+                response
+                    .result
+                    .map_err(|failure| failure_error(name, failure))
+            }
             Ok(Ok(response)) => Err(self.stop(
                 Error::new(
                     ErrorCode::ProtocolError,
@@ -864,7 +876,7 @@ fn internal(what: &str, e: impl std::fmt::Display) -> Error {
 /// memory, most likely.
 fn start_failed(what: &str, e: &io::Error) -> Error {
     let error = internal(what, e);
-    match short_of(e) {
+    match shortage_advice(e) {
         Some(advice) => error.with_suggestion(advice),
         None => error,
     }
@@ -872,7 +884,7 @@ fn start_failed(what: &str, e: &io::Error) -> Error {
 
 /// What to do if `e` says this process, or the system, is short of something a worker
 /// needs to start: open files, processes or threads, or memory.
-fn short_of(e: &io::Error) -> Option<&'static str> {
+fn shortage_advice(e: &io::Error) -> Option<&'static str> {
     match e.raw_os_error()? {
         libc::EMFILE | libc::ENFILE => Some(
             "Silico has too many files open to start a kernel worker: close some documents or \
@@ -963,8 +975,8 @@ mod tests {
     fn a_start_short_of_files_processes_or_memory_is_told_apart_from_a_bad_install() {
         use std::io;
 
-        use super::short_of;
-        let says = |errno| short_of(&io::Error::from_raw_os_error(errno));
+        use super::shortage_advice;
+        let says = |errno| shortage_advice(&io::Error::from_raw_os_error(errno));
         for errno in [libc::EMFILE, libc::ENFILE] {
             assert!(
                 says(errno).is_some_and(|s| s.contains("too many files open")),

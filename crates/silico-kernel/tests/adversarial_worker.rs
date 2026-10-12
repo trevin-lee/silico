@@ -336,17 +336,33 @@ fn a_started_worker_that_times_out_blames_the_request() {
     assert!(err.cause().is_none(), "{err}");
 }
 
+/// Waits up to ten seconds for a stand-in worker to make `marker`, so a test's timeout
+/// counts from there, not from the script's start, which a loaded machine can slow.
+fn wait_for(marker: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !marker.exists() {
+        assert!(Instant::now() < deadline, "{} never made", marker.display());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 #[test]
 fn a_worker_that_closes_its_socket_mid_request_and_lingers_fails_within_its_timeout() {
     // The worker takes the request, closes its socket, and stays alive. The call's timeout
     // (300 ms) covers the whole call: waiting for the worker to exit, before it's killed,
     // stops at the call's deadline, not after a fixed grace of 2 s.
+    let started = scratch_dir("closes-and-lingers").join("started");
     let exe = script(
         "closes-and-lingers",
-        "printf '\\0\\0\\0\\0' >&3\ndd bs=1 count=1 <&3 >/dev/null 2>&1\nexec 3>&-\nexec sleep 600",
+        &format!(
+            "printf '\\0\\0\\0\\0' >&3\ntouch '{}'\ndd bs=1 count=1 <&3 >/dev/null 2>&1\n\
+             exec 3>&-\nexec sleep 600",
+            started.display()
+        ),
     );
-    let (err, took) = within(Duration::from_secs(10), move || {
+    let (err, took) = within(Duration::from_secs(20), move || {
         let mut w = Worker::spawn(&exe).unwrap();
+        wait_for(&started);
         let start = Instant::now();
         let err = call_echo(&mut w, &[1], Duration::from_millis(300)).unwrap_err();
         (err, start.elapsed())
@@ -371,16 +387,19 @@ fn a_worker_whose_child_holds_its_pipes_fails_within_its_timeout() {
     // socket too would keep the call waiting for a reply, until its timeout.)
     let dir = scratch_dir("child-holds-pipes");
     let pidfile = dir.join("pid");
+    let started = dir.join("started");
     let exe = script(
         "child-holds-pipes",
         &format!(
-            "printf '\\0\\0\\0\\0' >&3\ndd bs=1 count=1 <&3 >/dev/null 2>&1\nexec 3>&-\n\
-             sleep 600 &\necho $! > '{}'\nexit 0",
+            "printf '\\0\\0\\0\\0' >&3\ntouch '{}'\ndd bs=1 count=1 <&3 >/dev/null 2>&1\n\
+             exec 3>&-\nsleep 600 &\necho $! > '{}'\nexit 0",
+            started.display(),
             pidfile.display()
         ),
     );
-    let (err, took) = within(Duration::from_secs(10), move || {
+    let (err, took) = within(Duration::from_secs(20), move || {
         let mut w = Worker::spawn(&exe).unwrap();
+        wait_for(&started);
         let start = Instant::now();
         let err = call_echo(&mut w, &[1], Duration::from_millis(300)).unwrap_err();
         (err, start.elapsed())
@@ -575,27 +594,31 @@ fn an_idle_slot_whose_worker_starts_then_exits_on_its_own_backs_off() {
     wait_no_children("after the drop");
 }
 
-/// A worker whose first launch says it has started, then closes its socket and lingers;
-/// any later launch is the real test worker.
-fn closes_its_socket_once(what: &str) -> PathBuf {
+/// A worker whose first launch says it has started, closes its socket, makes the marker
+/// returned, and lingers; any later launch is the real test worker.
+fn closes_its_socket_once(what: &str) -> (PathBuf, PathBuf) {
     let dir = scratch_dir(what);
-    script(
+    let closed = dir.join("closed");
+    let exe = script(
         what,
         &format!(
-            "if mkdir '{}' 2>/dev/null; then printf '\\0\\0\\0\\0' >&3; exec 3>&-; exec sleep 600; fi\n\
-             exec '{TEST_WORKER}'",
-            dir.join("once").display()
+            "if mkdir '{}' 2>/dev/null; then printf '\\0\\0\\0\\0' >&3; exec 3>&-; \
+             touch '{}'; exec sleep 600; fi\nexec '{TEST_WORKER}'",
+            dir.join("once").display(),
+            closed.display()
         ),
-    )
+    );
+    (exe, closed)
 }
 
 #[test]
 fn a_worker_that_closed_its_socket_is_replaced_before_its_next_request() {
-    // A request 500 ms after the start, before any idle check: the worker, of no use, is
-    // replaced before it's given the request, which runs on the replacement.
-    let pool =
-        KernelPool::start_workers(&closes_its_socket_once("closed-socket-request"), 1).unwrap();
-    std::thread::sleep(Duration::from_millis(500));
+    // A request as soon as the worker has closed its socket, before an idle check (a
+    // second after the start) would replace it: the worker, of no use, is replaced before
+    // it's given the request, which runs on the replacement.
+    let (exe, closed) = closes_its_socket_once("closed-socket-request");
+    let pool = KernelPool::start_workers(&exe, 1).unwrap();
+    wait_for(&closed);
     let result = done(pool.submit(Generation(1), pool::echo(&[1])));
     let held = pool.pids();
     drop(pool);
@@ -606,9 +629,12 @@ fn a_worker_that_closed_its_socket_is_replaced_before_its_next_request() {
 
 #[test]
 fn an_idle_worker_that_closed_its_socket_is_replaced_and_reaped_while_idle() {
-    // No request: the idle check, within a second or so, replaces the worker and reaps it.
-    let pool = KernelPool::start_workers(&closes_its_socket_once("closed-socket-idle"), 1).unwrap();
+    // No request: once the worker has closed its socket, the idle check, within a second or
+    // so, replaces the worker and reaps it.
+    let (exe, closed) = closes_its_socket_once("closed-socket-idle");
+    let pool = KernelPool::start_workers(&exe, 1).unwrap();
     let first = pool.pids();
+    wait_for(&closed);
     let deadline = Instant::now() + Duration::from_secs(3);
     let held = loop {
         let pids = pool.pids();
@@ -866,18 +892,22 @@ fn a_worker_named_by_an_unusable_variable_says_so() {
 /// `a_worker_named_by_a_bare_name_runs_the_one_in_the_working_directory` runs.
 const RELATIVE_CHILD: &str = "SILICO_ADVERSARIAL_WORKER_RELATIVE_CHILD";
 
-/// Not a test of its own: in the copy, starts a worker and a pool from the variable.
+/// Not a test of its own: in the copy, starts a worker and a pool from the variable, and
+/// has each answer a request.
 #[test]
 fn relative_child_entry() {
     use silico_core::kernel::KernelWorker;
     if std::env::var_os(RELATIVE_CHILD).is_none() {
         return;
     }
-    let worker = KernelWorker::start().unwrap();
-    std::thread::sleep(Duration::from_millis(300));
+    // Each answers a request, so its script has run before it's dropped.
+    let mut worker = KernelWorker::start().unwrap();
+    worker
+        .run(KernelRequest::debug(DebugOp::Sleep { millis: 0 }))
+        .unwrap();
     drop(worker);
     let pool = KernelPool::start().unwrap();
-    std::thread::sleep(Duration::from_millis(300));
+    done(pool.submit(Generation(1), sleep(0))).unwrap();
     drop(pool);
 }
 

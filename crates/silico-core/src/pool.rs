@@ -38,8 +38,9 @@ use crate::{Error, ErrorCode};
 /// How often an idle thread checks that its worker is still alive.
 pub const IDLE_CHECK: Duration = Duration::from_secs(1);
 
-/// The longest an idle thread waits before trying again to start a worker that couldn't
-/// be started (the wait doubles from [`IDLE_CHECK`] each time).
+/// The longest an idle thread waits before starting a worker again, after workers that
+/// ended on their own or before they started, or couldn't be started (the wait doubles
+/// from [`IDLE_CHECK`] each time).
 const MAX_RETRY: Duration = Duration::from_secs(60);
 
 /// How long an idle thread gives a worker whose socket closed to exit, to tell one that's
@@ -657,13 +658,12 @@ fn serve(slot: usize, exe: &Path, shared: &Shared, ready: &mpsc::Sender<Result<(
             }
             continue;
         }
+        let answers = worker.answers();
         let condemned = task.run(worker, shared, slot);
         if condemned || worker.is_stopped() {
             keeper.replace();
-        } else {
-            // It answered: the binary works.
-            keeper.retry = None;
-            keeper.note_started();
+        } else if worker.answers() > answers {
+            keeper.answered();
         }
     }
 }
@@ -766,9 +766,9 @@ impl Keeper<'_> {
 
     /// While the slot is idle: keeps its worker running, so the pool stays full. A worker
     /// that ended, closed its socket, or sent something unasked is replaced:
-    /// - now, if it had started (said so: see [`Worker::has_started`]) and was killed or
-    ///   crashed, or runs on with its socket closed, or was killed (SIGKILL) before it
-    ///   started, the first time running (a kill from outside);
+    /// - now, if it runs on with its socket closed; or had started (said so: see
+    ///   [`Worker::has_started`]) and was killed or crashed; or was killed (SIGKILL) before
+    ///   it started, unless the slot's last worker was too (a kill from outside);
     /// - after a wait, if it exited on its own (an exit code), or ended before it started (a
     ///   worker binary that can't start: a missing library, a refusal at start, or a kill at
     ///   launch again, as macOS kills a binary whose code signature is broken), or couldn't be
@@ -799,9 +799,9 @@ impl Keeper<'_> {
                     Some(status) => {
                         w.drain_replies(Instant::now() + HUNG_UP_GRACE);
                         let started = w.has_started();
-                        let now = replace_at_once(status, started, self.killed_unstarted);
+                        let at_once = replace_at_once(status, started, self.killed_unstarted);
                         self.killed_unstarted = !started && status.signal() == Some(libc::SIGKILL);
-                        now
+                        at_once
                     }
                 }
             };
@@ -828,6 +828,12 @@ impl Keeper<'_> {
         if let Err(e) = self.live_worker() {
             tracing::warn!(slot, error = %e, "can't start a kernel worker");
         }
+    }
+
+    /// The slot's worker answered a request: the binary works, so the slot's wait ends.
+    fn answered(&mut self) {
+        self.retry = None;
+        self.note_started();
     }
 
     /// Notes the slot's worker having started and running, once: the binary works, so other
