@@ -7,19 +7,26 @@
 use silico_core::kernel::{Axis, Blob, ChamferSize, KernelRequest, Primitive, Profile, ShapeData};
 use silico_core::{Error, ErrorCode};
 
-fn parameter(refused: Result<impl Sized, Error>) -> String {
+/// The parameter a refusal names, and the suggestion it gives.
+fn refusal(refused: Result<impl Sized, Error>) -> (String, String) {
     let Err(err) = refused else {
         panic!("not refused")
     };
     assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
-    assert!(err.suggestion().is_some(), "{err}");
-    err.parameter()
-        .unwrap_or_else(|| panic!("no parameter: {err}"))
-        .to_owned()
+    let parameter = err
+        .parameter()
+        .unwrap_or_else(|| panic!("no parameter: {err}"));
+    let suggestion = err
+        .suggestion()
+        .unwrap_or_else(|| panic!("no suggestion: {err}"));
+    (parameter.to_owned(), suggestion.to_owned())
 }
 
+/// What a refused translation suggests.
+const OFFSET: &str = "move the shape by a finite offset, no more than a kilometre each way";
+
 #[test]
-fn every_value_the_request_constructors_check_names_its_parameter() {
+fn every_value_the_request_constructors_check_names_its_parameter_and_says_what_to_give() {
     let shape = ShapeData::unchecked(Blob::inline(Vec::new()));
     let square = Profile {
         points: vec![[0.0; 3], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
@@ -31,10 +38,11 @@ fn every_value_the_request_constructors_check_names_its_parameter() {
         origin: [-1.0, 0.0, 0.0],
         direction: [0.0, 1.0, 0.0],
     };
-    let cases: [(&str, String); 16] = [
+    let cases: [(&str, &str, (String, String)); 16] = [
         (
             "dx",
-            parameter(KernelRequest::make(Primitive::Box {
+            "give the box a valid dx",
+            refusal(KernelRequest::make(Primitive::Box {
                 dx: 0.0,
                 dy: 1.0,
                 dz: 1.0,
@@ -42,7 +50,8 @@ fn every_value_the_request_constructors_check_names_its_parameter() {
         ),
         (
             "dz",
-            parameter(KernelRequest::make(Primitive::Box {
+            "give the box a valid dz",
+            refusal(KernelRequest::make(Primitive::Box {
                 dx: 1.0,
                 dy: 1.0,
                 dz: f64::NAN,
@@ -50,11 +59,13 @@ fn every_value_the_request_constructors_check_names_its_parameter() {
         ),
         (
             "radius",
-            parameter(KernelRequest::make(Primitive::Sphere { radius: -1.0 })),
+            "give the sphere a valid radius",
+            refusal(KernelRequest::make(Primitive::Sphere { radius: -1.0 })),
         ),
         (
             "radius1",
-            parameter(KernelRequest::make(Primitive::Cone {
+            "give the cone a valid radius1",
+            refusal(KernelRequest::make(Primitive::Cone {
                 radius1: -1.0,
                 radius2: 1.0,
                 height: 1.0,
@@ -62,26 +73,31 @@ fn every_value_the_request_constructors_check_names_its_parameter() {
         ),
         (
             "minor_radius",
-            parameter(KernelRequest::make(Primitive::Torus {
+            "give the torus a valid minor_radius",
+            refusal(KernelRequest::make(Primitive::Torus {
                 major_radius: 1.0,
                 minor_radius: 0.0,
             })),
         ),
         (
             "offset.x",
-            parameter(KernelRequest::translate(&shape, [f64::NAN, 0.0, 0.0])),
+            OFFSET,
+            refusal(KernelRequest::translate(&shape, [f64::NAN, 0.0, 0.0])),
         ),
         (
             "offset.z",
-            parameter(KernelRequest::translate(&shape, [0.0, 0.0, 1e9])),
+            OFFSET,
+            refusal(KernelRequest::translate(&shape, [0.0, 0.0, 1e9])),
         ),
         (
             "radius",
-            parameter(KernelRequest::fillet(&shape, &[1], 0.0)),
+            "give the fillet a valid radius",
+            refusal(KernelRequest::fillet(&shape, &[1], 0.0)),
         ),
         (
             "size.distance",
-            parameter(KernelRequest::chamfer(
+            "give the chamfer a valid distance",
+            refusal(KernelRequest::chamfer(
                 &shape,
                 &[1],
                 ChamferSize::Equal { distance: 0.0 },
@@ -90,7 +106,8 @@ fn every_value_the_request_constructors_check_names_its_parameter() {
         ),
         (
             "size.other",
-            parameter(KernelRequest::chamfer(
+            "give the chamfer a valid other distance",
+            refusal(KernelRequest::chamfer(
                 &shape,
                 &[1],
                 ChamferSize::TwoDistances {
@@ -102,7 +119,8 @@ fn every_value_the_request_constructors_check_names_its_parameter() {
         ),
         (
             "size.angle",
-            parameter(KernelRequest::chamfer(
+            "give the chamfer a valid angle",
+            refusal(KernelRequest::chamfer(
                 &shape,
                 &[1],
                 ChamferSize::DistanceAngle {
@@ -114,23 +132,28 @@ fn every_value_the_request_constructors_check_names_its_parameter() {
         ),
         (
             "profile",
-            parameter(KernelRequest::extrude(&line, 1.0, None)),
+            "give the extrusion a valid profile",
+            refusal(KernelRequest::extrude(&line, 1.0, None)),
         ),
         (
             "length",
-            parameter(KernelRequest::extrude(&square, f64::NAN, None)),
+            "give the extrusion a valid length",
+            refusal(KernelRequest::extrude(&square, f64::NAN, None)),
         ),
         (
             "direction",
-            parameter(KernelRequest::extrude(&square, 1.0, Some([1.0, 0.0, 0.0]))),
+            "give the extrusion a valid direction",
+            refusal(KernelRequest::extrude(&square, 1.0, Some([1.0, 0.0, 0.0]))),
         ),
         (
             "angle",
-            parameter(KernelRequest::revolve(&square, beside, 0.0)),
+            "give the revolve a valid angle",
+            refusal(KernelRequest::revolve(&square, beside, 0.0)),
         ),
         (
             "axis",
-            parameter(KernelRequest::revolve(
+            "give the revolve a valid axis",
+            refusal(KernelRequest::revolve(
                 &square,
                 Axis {
                     origin: [-1.0, 0.0, 0.0],
@@ -140,7 +163,7 @@ fn every_value_the_request_constructors_check_names_its_parameter() {
             )),
         ),
     ];
-    for (want, got) in cases {
-        assert_eq!(got, want);
+    for (parameter, suggestion, got) in cases {
+        assert_eq!(got, (parameter.to_owned(), suggestion.to_owned()));
     }
 }

@@ -920,10 +920,19 @@ mod tests {
         use crate::ErrorCode;
         let short = thread_error(&io::Error::from_raw_os_error(libc::EAGAIN));
         assert_eq!(short.code(), ErrorCode::ResourceExhausted, "{short}");
-        assert!(short.suggestion().is_some(), "{short}");
+        assert_eq!(short.message(), "couldn't start a kernel pool thread");
+        assert!(short.cause().is_some(), "{short}");
+        assert!(
+            short
+                .suggestion()
+                .is_some_and(|s| s.contains("processes or memory")),
+            "{short}"
+        );
         let bug = thread_error(&io::Error::from_raw_os_error(libc::EINVAL));
         assert_eq!(bug.code(), ErrorCode::Internal, "{bug}");
-        assert!(bug.suggestion().is_some(), "{bug}");
+        assert_eq!(bug.message(), "couldn't start a kernel pool thread");
+        assert!(bug.cause().is_some(), "{bug}");
+        assert_eq!(bug.suggestion(), Some(crate::worker::SILICO_BUG), "{bug}");
     }
 
     #[test]

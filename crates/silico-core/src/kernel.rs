@@ -128,6 +128,7 @@ impl KernelRequest<BuiltData> {
     /// self. An offset that isn't finite, or reaches past a kilometre, is refused.
     pub fn translate(shape: &ShapeData, offset: [f64; 3]) -> Result<Self, Error> {
         if let Err(invalid) = silico_protocol::check_offset(offset) {
+            // Its own suggestion, in place of `refused`'s: how far is the question.
             return Err(
                 refused("translation", Some("offset"), invalid).with_suggestion(
                     "move the shape by a finite offset, no more than a kilometre each way",

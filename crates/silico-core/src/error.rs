@@ -54,7 +54,7 @@ error_codes! {
     /// refused rather than built on.
     InvalidResult = "invalid_result",
     /// Silico, or the machine, is short of something the operation needs (open files,
-    /// processes, memory): free some, then try again.
+    /// processes, memory, buffers): free some, then try again.
     ResourceExhausted = "resource_exhausted",
 }
 
