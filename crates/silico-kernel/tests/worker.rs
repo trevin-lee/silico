@@ -971,6 +971,102 @@ fn every_failure_says_what_to_try() {
     ] {
         assert!(err.suggestion().is_some(), "{what}: {err}");
     }
+    // Each kind of failure gets its own advice: a worker that misbehaved is Silico's bug, not
+    // the request's; a test operation a production worker refuses, Silico's own; a refusal
+    // that says no more, the value it names.
+    let bug = "this is a bug in Silico's kernel worker, not in the request";
+    for (what, err, says) in [
+        ("garbage", test(DebugOp::Garbage), bug),
+        (
+            "out of turn",
+            test(DebugOp::ReplyOutOfTurn(silico_protocol::OutOfTurn::WrongId)),
+            bug,
+        ),
+        (
+            "a test operation on a production worker",
+            {
+                let mut w = KernelWorker::start_worker(Path::new(WORKER)).unwrap();
+                w.run(KernelRequest::debug(DebugOp::Abort)).unwrap_err()
+            },
+            "this is a bug in Silico, not in the request",
+        ),
+        (
+            "a refusal with no advice of its own",
+            {
+                let mut w = KernelWorker::start_worker(Path::new(WORKER)).unwrap();
+                let block = w.make(Primitive::Sphere { radius: 1.0 }).unwrap();
+                w.tessellate(&block, 0.0).unwrap_err()
+            },
+            "change the value the message names",
+        ),
+    ] {
+        assert!(err.suggestion().unwrap().starts_with(says), "{what}: {err}");
+    }
+    // A crash's advice follows how the worker ended: its own crash is the values'; a kill
+    // from outside is worth a retry; an exit of its own is its install.
+    for (what, err, says) in [
+        (
+            "a segfault",
+            test(DebugOp::Segfault),
+            "change the operation's values",
+        ),
+        (
+            "an abort",
+            test(DebugOp::Abort),
+            "change the operation's values",
+        ),
+        (
+            "a kill from outside",
+            {
+                let mut w = KernelWorker::start_worker(Path::new(TEST_WORKER)).unwrap();
+                let pid = w.pid();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(200));
+                    let _ = Command::new("kill")
+                        .args(["-KILL", &pid.to_string()])
+                        .status();
+                });
+                w.run(KernelRequest::debug(DebugOp::Sleep { millis: 10_000 }))
+                    .unwrap_err()
+            },
+            "try the request again",
+        ),
+        (
+            "a kill while idle, before the request",
+            {
+                let mut w = KernelWorker::start_worker(Path::new(TEST_WORKER)).unwrap();
+                let _ = Command::new("kill")
+                    .args(["-SEGV", &w.pid().to_string()])
+                    .status();
+                std::thread::sleep(Duration::from_millis(200));
+                w.make(Primitive::Sphere { radius: 1.0 }).unwrap_err()
+            },
+            "try the request again",
+        ),
+        (
+            "an exit of its own",
+            {
+                let dir = std::env::temp_dir().join(format!("silico-exits-{}", std::process::id()));
+                std::fs::create_dir_all(&dir).unwrap();
+                let exe = dir.join("worker.sh");
+                std::fs::write(
+                    &exe,
+                    "#!/bin/sh\necho 'dyld: Library not loaded' >&2\nexit 3\n",
+                )
+                .unwrap();
+                std::fs::set_permissions(&exe, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+                    .unwrap();
+                let mut w = KernelWorker::start_worker(&exe).unwrap();
+                let err = w.make(Primitive::Sphere { radius: 1.0 }).unwrap_err();
+                std::fs::remove_dir_all(&dir).unwrap();
+                err
+            },
+            "check Silico's install",
+        ),
+    ] {
+        assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{what}: {err}");
+        assert!(err.suggestion().unwrap().starts_with(says), "{what}: {err}");
+    }
     let mut w = KernelWorker::start_worker(Path::new(WORKER)).unwrap();
     let block = w
         .make(Primitive::Box {

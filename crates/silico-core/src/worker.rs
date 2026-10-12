@@ -346,6 +346,7 @@ impl Worker {
     /// The worker's socket closed: report how it ended, with its last log lines.
     fn crashed(&mut self, name: &str, write_error: Option<String>) -> Error {
         let status = self.wait_for_exit();
+        let delivered = write_error.is_none();
         // The worker has exited, so its log pipe closes; let the log thread read the last
         // lines before the report is built.
         let _ = self.stderr_done.recv_timeout(EXIT_GRACE);
@@ -371,10 +372,7 @@ impl Worker {
             format!("the kernel worker crashed during {name}"),
         )
         .with_cause(cause)
-        .with_suggestion(
-            "change the operation's values: these crashed the kernel, and the same request \
-             would crash it again",
-        )
+        .with_suggestion(crash_advice(status, delivered))
     }
 
     /// Waits briefly for a worker whose socket closed to exit, then kills it if needed.
@@ -613,6 +611,30 @@ fn emit_worker_log(line: &str, pid: u32) -> String {
 }
 
 /// How the worker process ended, naming common signals by this platform's numbering.
+/// What to try after a worker crashed, by how it ended: a crash of its own (a signal such
+/// as SIGSEGV or SIGABRT) while it had the request is the request's values, which would
+/// crash it again; a kill from outside (SIGKILL: out of memory, say), a worker that stopped
+/// responding, or one that was gone before the request reached it is worth trying again
+/// (the next request starts another); a worker that exited with a code ended on its own,
+/// which is its install, not the request.
+fn crash_advice(status: Option<ExitStatus>, delivered: bool) -> &'static str {
+    match status.map(|s| (s.code(), s.signal())) {
+        Some((Some(_), _)) => {
+            "check Silico's install: the kernel worker exited on its own (see its last output), \
+             which no change to the request will help; report it if it persists"
+        }
+        Some((None, Some(signal))) if delivered && signal != libc::SIGKILL => {
+            "change the operation's values: these crashed the kernel, and the same request \
+             would crash it again"
+        }
+        _ => {
+            "try the request again: the kernel worker was stopped from outside (out of memory, \
+             say), stopped responding, or was gone before the request reached it, not by these \
+             values"
+        }
+    }
+}
+
 fn describe_exit(status: ExitStatus) -> String {
     match (status.code(), status.signal()) {
         (Some(code), _) => format!("it exited with code {code}"),

@@ -235,7 +235,6 @@ mod ffi {
         fn edge_points(self: &Tessellation) -> &[f64];
         fn edge_points_per_edge(self: &Tessellation) -> &[u32];
         fn unmeshed_faces(self: &Tessellation) -> &[u32];
-        fn unmeshed_areas(self: &Tessellation) -> &[f64];
         fn shape_to_brep(shape: &Shape) -> Result<UniquePtr<CxxString>>;
         fn shape_from_brep(brep: &[u8]) -> Result<UniquePtr<Shape>>;
         fn shape_from_text_brep(brep: &[u8]) -> Result<UniquePtr<Shape>>;
@@ -825,9 +824,7 @@ pub fn boolean(op: BooleanOp, base: &Shape, tool: &Shape) -> Result<Built, Kerne
     })
 }
 
-/// What to try when OCCT's boolean goes wrong: it does where the shapes nearly meet.
-/// A boolean's error, with what to try when its result was refused as invalid: what OCCT
-/// gets wrong is shapes that nearly meet.
+/// A boolean's error, with what to try when its result was refused as invalid.
 fn boolean_advice(e: KernelError) -> KernelError {
     if e.kind() == KernelErrorKind::InvalidResult {
         e.with_suggestion(NEARLY_MEET)
@@ -836,6 +833,7 @@ fn boolean_advice(e: KernelError) -> KernelError {
     }
 }
 
+/// What to try when OCCT's boolean goes wrong: it does where the shapes nearly meet.
 const NEARLY_MEET: &str = "faces or edges of the two shapes nearly meet: move one so they clearly overlap or stay clearly apart";
 
 /// Whether a boolean of solids gave a result with no volume to speak of: no solid at all,
@@ -1115,30 +1113,21 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
     let raw = raw
         .as_ref()
         .ok_or_else(|| KernelError::new("OCCT returned no mesh"))?;
-    // A face OCCT leaves unmeshed has no triangles, as FreeCAD's display leaves it out, if
-    // the shape is valid and the face is smaller than the deflection squared: too small for
-    // a mesh that coarse to show (the sliver faces of a box chamfered nearly through, a few
-    // 1e-7 mm²). Any other would be a hole in the display: refused, naming the face. (On a
-    // shape that isn't valid a face's area says nothing: a self-crossing face's halves
-    // cancel.)
-    let unmeshed: Vec<(u32, f64)> = raw
-        .unmeshed_faces()
-        .iter()
-        .copied()
-        .zip(raw.unmeshed_areas().iter().copied())
-        .collect();
-    if !unmeshed.is_empty() {
-        let valid = shape.is_valid()?;
-        let shows = |area: f64| !(valid && area.abs() <= deflection * deflection);
-        if let Some((face, _)) = unmeshed.into_iter().find(|&(_, area)| shows(area)) {
-            let name = format!("Face{}", face + 1);
-            return Err(KernelError::new(format!("{name} couldn't be meshed"))
-                .with_element(name)
-                .with_suggestion(
-                    "try another deflection; if the face still can't be meshed, its \
-                     geometry is broken: rebuild the shape from its inputs",
-                ));
-        }
+    // A face OCCT leaves unmeshed (a sliver too narrow for its tolerance, as a box chamfered
+    // nearly through has, at any deflection) has no triangles, if the shape is valid: as
+    // FreeCAD gives such a face an empty domain (`TopoShape::getDomains`). On a shape that
+    // isn't valid it's refused, naming the face: there it says something is broken (a face
+    // whose edges cross can't be meshed, and its area, its halves cancelling, says nothing).
+    if let Some(&face) = raw.unmeshed_faces().first()
+        && !shape.is_valid()?
+    {
+        let name = format!("Face{}", face + 1);
+        return Err(KernelError::new(format!("{name} couldn't be meshed"))
+            .with_element(name)
+            .with_suggestion(
+                "the shape isn't valid, and this face of it can't be meshed: rebuild the \
+                 shape from its inputs",
+            ));
     }
     let triples = |values: &[f64]| -> Vec<[f64; 3]> {
         values.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect()
@@ -1396,16 +1385,12 @@ mod tests {
             assert!(err.suggestion().unwrap().contains("bug"), "{err}");
         }
     }
-}
-
-#[cfg(test)]
-mod boolean_advice_tests {
-    use super::{KernelError, KernelErrorKind, NEARLY_MEET, boolean_advice};
 
     #[test]
     fn an_invalid_boolean_result_says_the_shapes_nearly_meet() {
         // No input is known to make OCCT return an invalid boolean result, so the advice is
         // tested on its own: given to an invalid result, and to nothing else.
+        use super::{KernelError, KernelErrorKind, NEARLY_MEET, boolean_advice};
         let invalid = KernelError::of_kind(KernelErrorKind::InvalidResult, "invalid");
         assert_eq!(boolean_advice(invalid).suggestion(), Some(NEARLY_MEET));
         let failed = KernelError::new("failed");

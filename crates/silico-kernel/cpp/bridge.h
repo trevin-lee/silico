@@ -94,7 +94,6 @@ public:
   std::vector<double> edge_points_;      // x, y, z per polyline point, edge after edge
   std::vector<uint32_t> edge_points_per_edge_;
   std::vector<uint32_t> unmeshed_faces_; // faces OCCT left unmeshed (0 triangles), from 0
-  std::vector<double> unmeshed_areas_;   // and each one's area
 
   rust::Slice<const double> positions() const { return {positions_.data(), positions_.size()}; }
   rust::Slice<const float> normals() const { return {normals_.data(), normals_.size()}; }
@@ -110,9 +109,6 @@ public:
   }
   rust::Slice<const uint32_t> unmeshed_faces() const {
     return {unmeshed_faces_.data(), unmeshed_faces_.size()};
-  }
-  rust::Slice<const double> unmeshed_areas() const {
-    return {unmeshed_areas_.data(), unmeshed_areas_.size()};
   }
 };
 

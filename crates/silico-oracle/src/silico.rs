@@ -43,12 +43,12 @@ pub(crate) fn lost(code: ErrorCode) -> bool {
 
 /// `shape`, built through `kernel`.
 pub fn build(kernel: &mut KernelWorker, shape: &Shape) -> Result<ShapeData, Error> {
-    built(kernel, shape).map(|(shape, _)| shape)
+    build_with_history(kernel, shape).map(|(shape, _)| shape)
 }
 
 /// `shape`, built through `kernel`, and what its last operation did to its inputs (none
 /// for a primitive or a part read as it is).
-pub fn built(
+pub fn build_with_history(
     kernel: &mut KernelWorker,
     shape: &Shape,
 ) -> Result<(ShapeData, Option<History>), Error> {

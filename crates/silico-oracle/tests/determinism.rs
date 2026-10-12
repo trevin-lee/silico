@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use silico_core::kernel::KernelWorker;
-use silico_oracle::{Case, generate, load, silico::built};
+use silico_oracle::{Case, generate, load, silico::build_with_history};
 
 const CASES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/oracle");
 const REFERENCE: &str = concat!(
@@ -53,7 +53,7 @@ impl Digest {
 /// the error that refused it.
 fn digests(kernel: &mut KernelWorker, case: &Case) -> BTreeMap<String, String> {
     let mut found = BTreeMap::new();
-    let shape = match built(kernel, &case.shape) {
+    let shape = match build_with_history(kernel, &case.shape) {
         Ok((shape, history)) => {
             if let Some(history) = history {
                 let json = serde_json::to_vec(&history).unwrap();

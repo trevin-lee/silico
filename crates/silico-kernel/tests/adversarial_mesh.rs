@@ -1545,9 +1545,9 @@ fn the_converter_writes_what_the_reader_reads() {
 #[test]
 fn a_valid_solid_with_faces_too_small_to_mesh_is_meshed_without_them() {
     // Every edge of a 10 × 20 × 30 box chamfered at 4.99999999: a valid solid of 26 faces,
-    // 8 of them slivers of a few 1e-7 mm² that OCCT's mesher leaves unmeshed. As FreeCAD's
-    // display does, they get no triangles, and the rest is meshed: the mesh's area is the
-    // solid's, but for the slivers. (Silico refused the whole mesh until the M1 review.)
+    // 8 of them slivers of a few 1e-7 mm² that OCCT's mesher leaves unmeshed. As FreeCAD
+    // gives such faces empty domains, they get no triangles, and the rest is meshed: the
+    // mesh's area is the solid's, but for the slivers.
     let block = silico_kernel::make_box(10.0, 20.0, 30.0).unwrap();
     let all: Vec<u32> = (1..=12).collect();
     let built = silico_kernel::chamfer(
@@ -1564,8 +1564,12 @@ fn a_valid_solid_with_faces_too_small_to_mesh_is_meshed_without_them() {
     let mesh = silico_kernel::tessellate(&built.shape, 0.01).unwrap();
     mesh.validate().unwrap();
     assert_eq!(mesh.face_triangles.len(), summary.faces as usize);
-    let empty = mesh.face_triangles.iter().filter(|&&n| n == 0).count();
-    assert!(empty > 0 && empty < mesh.face_triangles.len(), "{empty}");
+    // Exactly the slivers, as FreeCAD finds them: Face8, 9, 11, 13, 14, 15, 17, and 19.
+    let empty: Vec<usize> = (0..mesh.face_triangles.len())
+        .filter(|&i| mesh.face_triangles[i] == 0)
+        .map(|i| i + 1)
+        .collect();
+    assert_eq!(empty, [8, 9, 11, 13, 14, 15, 17, 19]);
     let area: f64 = mesh
         .triangles
         .iter()
@@ -1583,8 +1587,8 @@ fn a_valid_solid_with_faces_too_small_to_mesh_is_meshed_without_them() {
 
 #[test]
 fn a_face_that_cant_be_meshed_on_a_shape_that_isnt_valid_is_refused_naming_it() {
-    // A face whose edges cross (a bowtie, as FreeCAD writes it): OCCT can't mesh it, and its
-    // area (its halves cancel: 0) says nothing about how much of it the display would miss.
+    // A face whose edges cross (a bowtie, as FreeCAD writes it): OCCT can't mesh it, and on a
+    // shape that isn't valid that's refused, not left out.
     let text: String = serde_json::from_value(oracle::freecad(
         "import json, Part, FreeCAD\nV = FreeCAD.Vector\n\
          w = Part.makePolygon([V(0, 0, 0), V(10, 10, 0), V(10, 0, 0), V(0, 10, 0), V(0, 0, 0)])\n\
@@ -1596,6 +1600,56 @@ fn a_face_that_cant_be_meshed_on_a_shape_that_isnt_valid_is_refused_naming_it() 
         let err = silico_kernel::tessellate(&bowtie, deflection).unwrap_err();
         assert_eq!(err.message(), "Face1 couldn't be meshed", "{err:?}");
         assert_eq!(err.element(), Some("Face1"));
-        assert!(err.suggestion().unwrap().contains("deflection"), "{err:?}");
+        assert!(err.suggestion().unwrap().contains("rebuild"), "{err:?}");
+    }
+}
+
+#[test]
+fn a_valid_solid_with_slivers_meshes_at_every_deflection_silico_allows() {
+    // A 1 × 2 × 3 box chamfered nearly through: slivers of 4e-7 mm², too narrow for OCCT's
+    // tolerance at any deflection. Down to the finest deflection Silico allows, the mesh
+    // leaves them out rather than refusing (whether OCCT can mesh a sliver has nothing to do
+    // with the deflection).
+    let block = silico_kernel::make_box(1.0, 2.0, 3.0).unwrap();
+    let all: Vec<u32> = (1..=12).collect();
+    let built = silico_kernel::chamfer(
+        &block,
+        &all,
+        silico_protocol::ChamferSize::Equal {
+            distance: 0.499_999_9,
+        },
+        false,
+    )
+    .unwrap();
+    assert!(silico_kernel::summarize(&built.shape).unwrap().valid);
+    let floor = 14.0f64.sqrt() * silico_kernel::MIN_RELATIVE_DEFLECTION;
+    for deflection in [0.01, 0.001, floor * 1.001] {
+        let mesh = silico_kernel::tessellate(&built.shape, deflection);
+        assert!(mesh.is_ok(), "deflection {deflection}: {:?}", mesh.err());
+    }
+}
+
+#[test]
+fn a_valid_film_meshes_without_its_side_faces_at_any_deflection() {
+    // A 10 × 20 rectangle extruded 1e-6: valid, and its four side faces (1e-5 and 2e-5 mm²)
+    // too thin for OCCT's tolerance. At any deflection they're left out, not refused; the
+    // faces OCCT meshes are meshed.
+    let profile = Profile {
+        points: vec![
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [10.0, 20.0, 0.0],
+            [0.0, 20.0, 0.0],
+        ],
+    };
+    let film = silico_kernel::extrude(&profile, 1e-6, None).unwrap().shape;
+    assert!(summarize(&film).unwrap().valid);
+    for deflection in [0.003, 0.004, 0.005, 0.1] {
+        let mesh = tessellate(&film, deflection).unwrap();
+        let empty: Vec<usize> = (0..mesh.face_triangles.len())
+            .filter(|&i| mesh.face_triangles[i] == 0)
+            .collect();
+        assert_eq!(empty.len(), 4, "{deflection}: {:?}", mesh.face_triangles);
+        assert_eq!(mesh.face_triangles.len(), 6, "{deflection}");
     }
 }

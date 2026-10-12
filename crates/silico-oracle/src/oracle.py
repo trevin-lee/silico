@@ -108,7 +108,8 @@ def build(doc, spec):
         doc.recompute()
         if ch.Shape.isNull() or not ch.isValid():
             raise RuntimeError(ch.getStatusString())
-        # PartDesign's base feature doesn't carry the shape's placement: put it back.
+        # PartDesign's chamfer drops a placement held in its base's shape (it resets the
+        # shape's transform; fixed after FreeCAD 1.1.3, in 123a1c80e1): put it back.
         r = ch.Shape.copy()
         r.Placement = holder.Placement.multiply(r.Placement)
         return r

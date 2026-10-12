@@ -89,8 +89,7 @@ fn case(name: &str, shape: Shape) -> Case {
 /// Every case Silico can't mesh (deflection a thousandth of the part's largest side), and
 /// why: a mesh Silico refuses is worth a look, and a worker lost meshing is a bug.
 pub fn meshes(cases: &[Case]) -> Result<Vec<String>, String> {
-    let start = || KernelWorker::start().map_err(|e| e.to_string());
-    let mut kernel = start()?;
+    let mut kernel = KernelWorker::start().map_err(|e| e.to_string())?;
     let mut found = Vec::new();
     for case in cases {
         // A worker lost building or measuring a part (the comparison reports that) is
@@ -98,18 +97,14 @@ pub fn meshes(cases: &[Case]) -> Result<Vec<String>, String> {
         let shape = match silico::build(&mut kernel, &case.shape) {
             Ok(shape) => shape,
             Err(e) => {
-                if silico::lost(e.code()) {
-                    kernel = start()?;
-                }
+                replace_if_lost(&mut kernel, &e)?;
                 continue;
             }
         };
         let bounds = match kernel.measure_as_freecad(&shape) {
             Ok(m) => m.bounds,
             Err(e) => {
-                if silico::lost(e.code()) {
-                    kernel = start()?;
-                }
+                replace_if_lost(&mut kernel, &e)?;
                 continue;
             }
         };
@@ -118,17 +113,22 @@ pub fn meshes(cases: &[Case]) -> Result<Vec<String>, String> {
         });
         let deflection = size / 1000.0;
         if let Err(e) = kernel.tessellate(&shape, deflection) {
-            let lost = silico::lost(e.code());
             found.push(format!(
                 "{}: Silico can't mesh it at a deflection of {deflection}: {e}",
                 case.name
             ));
-            if lost {
-                kernel = start()?;
-            }
+            replace_if_lost(&mut kernel, &e)?;
         }
     }
     Ok(found)
+}
+
+/// A new worker in place of `kernel`, if `error` says it was lost.
+fn replace_if_lost(kernel: &mut KernelWorker, error: &silico_core::Error) -> Result<(), String> {
+    if silico::lost(error.code()) {
+        *kernel = KernelWorker::start().map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// Differences the corpus shows that are understood, each with why: reported as known, not

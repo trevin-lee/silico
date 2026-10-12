@@ -961,10 +961,11 @@ fn requests_whose_callers_stopped_waiting_dont_jam_the_pool() {
         done(pool.submit(Generation(1), echo(&[4]))).unwrap(),
         Blob::inline(vec![4])
     );
-    // 40 × 10 ms on two workers: a jammed pool would never answer. (Bounds are against
-    // what they rule out, not how fast a loaded machine is.)
+    // 40 × 10 ms on two workers: a jammed pool would never answer, and one that stalls on
+    // each abandoned request would take seconds. (Bounds are against what they rule out, not
+    // how fast a loaded machine is.)
     assert!(
-        start.elapsed() < Duration::from_secs(30),
+        start.elapsed() < Duration::from_secs(10),
         "{:?}",
         start.elapsed()
     );
@@ -1099,4 +1100,33 @@ fn a_worker_that_dies_as_it_starts_isnt_started_over_while_the_pool_is_idle() {
     );
     drop(pool);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn an_idle_slot_whose_worker_dies_at_start_waits_longer_each_time() {
+    // Doubling from 1 s, with a tick to notice each end: launches at about 0, 2, 5, 10, and
+    // 19 s, so one a slot between 8 s and 16 s idle, where no back-off (a launch every other
+    // tick) would be four.
+    let dir = std::env::temp_dir().join(format!("silico-pool-backoff-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("worker.sh");
+    let log = dir.join("launches");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\necho launched >> '{}'\nexit 3\n", log.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let launches = || std::fs::read_to_string(&log).map_or(0, |l| l.lines().count());
+    let pool = KernelPool::start_workers(&script, 4).unwrap();
+    std::thread::sleep(Duration::from_secs(8));
+    let early = launches();
+    std::thread::sleep(Duration::from_secs(8));
+    let late = launches() - early;
+    drop(pool);
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(
+        late <= 6,
+        "{late} launches in [8 s, 16 s] idle, {early} before"
+    );
 }

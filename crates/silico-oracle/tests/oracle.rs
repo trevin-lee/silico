@@ -263,28 +263,43 @@ fn the_corpus_reads_its_step_files_and_names_those_freecad_cant() {
     assert!(found.differences.is_empty() && found.refused.is_empty());
 }
 
-#[test]
-fn the_corpus_names_a_part_silico_cant_mesh() {
-    // A face whose edges cross (a bowtie, 10 mm across): Silico reads it, but can't mesh it,
-    // and the corpus says so, with the deflection it tried (a thousandth of the part's size).
-    let dir = std::env::temp_dir().join(format!("silico-corpus-mesh-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("bowtie.brep");
+/// A face whose edges cross (a bowtie, 10 mm across, at x and y from 100 to 110), as
+/// FreeCAD writes it, at `path`: Silico reads it but can't mesh it.
+fn write_bowtie(path: &Path) {
     silico_oracle::freecad::script(&format!(
         "import json, Part, FreeCAD\nV = FreeCAD.Vector\n\
-         w = Part.makePolygon([V(0, 0, 0), V(10, 10, 0), V(10, 0, 0), V(0, 10, 0), V(0, 0, 0)])\n\
+         w = Part.makePolygon([V(100, 100, 0), V(110, 110, 0), V(110, 100, 0), V(100, 110, 0), \
+         V(100, 100, 0)])\n\
          Part.Face(Part.Plane(), w).exportBrep({})\nprint('SILICO_ORACLE ' + json.dumps(1))\n",
         serde_json::to_string(path.to_str().unwrap()).unwrap()
     ))
     .unwrap();
-    let cases = [Case {
-        name: "bowtie".to_owned(),
+}
+
+fn part(name: &str, shape: silico_oracle::Shape) -> Case {
+    Case {
+        name: name.to_owned(),
         note: String::new(),
         boundary: None,
-        shape: silico_oracle::Shape::Brep {
+        shape,
+    }
+}
+
+#[test]
+fn the_corpus_names_a_part_silico_cant_mesh() {
+    // The bowtie: the corpus says Silico can't mesh it, with the deflection it tried (a
+    // thousandth of the part's size, 10 mm: away from the origin, so it's the size, not
+    // the distance).
+    let dir = std::env::temp_dir().join(format!("silico-corpus-mesh-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("bowtie.brep");
+    write_bowtie(&path);
+    let cases = [part(
+        "bowtie",
+        silico_oracle::Shape::Brep {
             path: path.to_string_lossy().into_owned(),
         },
-    }];
+    )];
     let found = silico_oracle::corpus::meshes(&cases).unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(found.len(), 1, "{found:?}");
@@ -296,4 +311,46 @@ fn the_corpus_names_a_part_silico_cant_mesh() {
     let deflection: f64 = deflection.parse().unwrap();
     assert!((deflection - 0.01).abs() < 1e-9, "{deflection}");
     assert!(why.contains("Face1 couldn't be meshed"), "{why}");
+}
+
+#[test]
+fn a_worker_lost_on_one_part_doesnt_hide_the_next() {
+    // Filleting a filleted box's Edge1 again at a radius it can't hold crashes OCCT (and the
+    // worker); the bowtie after it is still meshed, on a new worker, and named.
+    let dir = std::env::temp_dir().join(format!("silico-corpus-lost-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("bowtie.brep");
+    write_bowtie(&path);
+    let block = silico_oracle::Shape::Block {
+        dx: 10.0,
+        dy: 20.0,
+        dz: 30.0,
+    };
+    let once = silico_oracle::Shape::Fillet {
+        shape: Box::new(block),
+        edges: vec![1],
+        radius: 4.0,
+    };
+    let twice = silico_oracle::Shape::Fillet {
+        shape: Box::new(once),
+        edges: vec![1],
+        radius: 14.9,
+    };
+    let cases = [
+        part("crash", twice),
+        part(
+            "bowtie",
+            silico_oracle::Shape::Brep {
+                path: path.to_string_lossy().into_owned(),
+            },
+        ),
+    ];
+    let found = silico_oracle::corpus::meshes(&cases).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(
+        found
+            .iter()
+            .any(|f| f.starts_with("bowtie: Silico can't mesh it")),
+        "{found:?}"
+    );
 }
