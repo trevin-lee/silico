@@ -1134,6 +1134,33 @@ fn a_worker_that_dies_as_it_starts_isnt_started_over_while_the_pool_is_idle() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A worker script that logs the time of each launch to a file, then runs `then`.
+fn launch_logger(dir: &Path, then: &str) -> (PathBuf, PathBuf) {
+    let script = dir.join("worker.sh");
+    let log = dir.join("launches");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nperl -MTime::HiRes=time -e 'print time, \"\\n\"' >> '{}'\n{then}\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    (script, log)
+}
+
+/// The launch times a [`launch_logger`] script logged, and the gaps between them.
+fn launches(log: &Path) -> (Vec<f64>, Vec<f64>) {
+    let times: Vec<f64> = std::fs::read_to_string(log)
+        .unwrap()
+        .lines()
+        .map(|l| l.trim().parse().unwrap())
+        .collect();
+    let gaps = times.windows(2).map(|w| w[1] - w[0]).collect();
+    (times, gaps)
+}
+
 #[test]
 fn an_idle_slot_whose_worker_dies_at_start_waits_longer_each_time() {
     // One slot, its worker ending at once each time: it's started again after waits that
@@ -1141,31 +1168,79 @@ fn an_idle_slot_whose_worker_dies_at_start_waits_longer_each_time() {
     // 10, and 19 s. Exactly four in 16 s, each gap longer than the one before: not never,
     // not every tick, not a fixed wait, and not a wait that grows by a tick each time
     // (launches at 0, 2, 5, 9, and 14 s).
-    let dir = std::env::temp_dir().join(format!("silico-pool-backoff-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let script = dir.join("worker.sh");
-    let log = dir.join("launches");
-    std::fs::write(
-        &script,
-        format!(
-            "#!/bin/sh\nperl -MTime::HiRes=time -e 'print time, \"\\n\"' >> '{}'\nexit 3\n",
-            log.display()
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let dir = scratch_dir("backoff");
+    let (script, log) = launch_logger(&dir, "exit 3");
     let pool = KernelPool::start_workers(&script, 1).unwrap();
     std::thread::sleep(Duration::from_secs(16));
     drop(pool);
-    let times: Vec<f64> = std::fs::read_to_string(&log)
-        .unwrap()
-        .lines()
-        .map(|l| l.trim().parse().unwrap())
-        .collect();
-    std::fs::remove_dir_all(&dir).unwrap();
-    let gaps: Vec<f64> = times.windows(2).map(|w| w[1] - w[0]).collect();
+    let (times, gaps) = launches(&log);
     assert_eq!(times.len(), 4, "launches at {times:?}");
     for pair in gaps.windows(2) {
         assert!(pair[1] > pair[0], "gaps {gaps:?} don't grow");
     }
+}
+
+#[test]
+fn an_idle_slot_whose_worker_is_killed_at_launch_backs_off_after_the_second_kill() {
+    // SIGKILL before the worker starts, every time, as macOS kills a binary whose code
+    // signature is broken. The first may be a kill from outside, so it's replaced at once;
+    // after the second in a row the slot waits as for a binary that can't start. Launches
+    // at about 0, 1, 3, 6, and 11 s (20 next): exactly five in 16 s, the gaps growing.
+    // Not every tick (16), and not waiting from the first kill (0, 2, 5, 10).
+    let dir = scratch_dir("killed-at-launch");
+    let (script, log) = launch_logger(&dir, "kill -KILL $$");
+    let pool = KernelPool::start_workers(&script, 1).unwrap();
+    std::thread::sleep(Duration::from_secs(16));
+    drop(pool);
+    let (times, gaps) = launches(&log);
+    assert_eq!(times.len(), 5, "launches at {times:?}");
+    for pair in gaps.windows(2) {
+        assert!(pair[1] > pair[0], "gaps {gaps:?} don't grow");
+    }
+}
+
+#[test]
+fn a_worker_started_before_a_slots_failure_doesnt_end_its_wait() {
+    // Two slots: the first launch is a worker that starts 3 s late; every other ends at
+    // once. The failing slot launches at about 0, 2, and 5 s (10 next). The slow worker
+    // starting at 3 s says nothing about the binary since the failure (it was launched
+    // before it), so it doesn't end the wait: four launches in 8.5 s, not five or more.
+    let dir = scratch_dir("older-start");
+    let (script, log) = launch_logger(
+        &dir,
+        &format!(
+            "if mkdir '{}' 2>/dev/null; then sleep 3; exec '{TEST_WORKER}'; fi\nexit 3",
+            dir.join("slow").display()
+        ),
+    );
+    let pool = KernelPool::start_workers(&script, 2).unwrap();
+    std::thread::sleep(Duration::from_millis(8_500));
+    drop(pool);
+    let (times, _) = launches(&log);
+    assert_eq!(times.len(), 4, "launches at {times:?}");
+}
+
+#[test]
+fn a_slot_waiting_out_a_long_back_off_starts_a_worker_once_a_newer_one_has_started() {
+    // A slot whose worker can't be started (its binary missing) waits longer each time:
+    // failures at about 1, 2, 4, and 8 s, the next at 16. With the binary back at 8.5 s
+    // and the other slot's worker killed then, that slot starts a worker at once (a worker
+    // killed after it started is replaced now); once it has started, the first slot stops
+    // waiting, so the pool is full within 5 s, before its wait would end.
+    let dir = scratch_dir("waits-for-newer");
+    let exe = dir.join("silico-kernel-test-worker");
+    std::os::unix::fs::symlink(TEST_WORKER, &exe).unwrap();
+    let pool = KernelPool::start_workers(&exe, 2).unwrap();
+    // Time for both workers to start (about 25 ms).
+    std::thread::sleep(Duration::from_secs(1));
+    let before = pool.pids();
+    std::fs::remove_file(&exe).unwrap();
+    kill9_and_wait(before[0]);
+    std::thread::sleep(Duration::from_millis(8_500));
+    std::os::unix::fs::symlink(TEST_WORKER, &exe).unwrap();
+    kill9_and_wait(before[1]);
+    let held = wait_full(&pool, 2, &before.iter().copied().collect());
+    drop(pool);
+    assert_reaped(&held, "after the drop");
+    wait_no_children("after the drop");
 }

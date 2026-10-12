@@ -212,6 +212,24 @@ impl Worker {
         lock(&self.child).try_wait().ok().flatten()
     }
 
+    /// Whether the worker has said it started (see [`silico_protocol::write_started`]). A
+    /// worker that has ended may have said so in frames not yet read: [`Self::has_exited`]
+    /// and then [`Self::read_to_end`] first.
+    pub fn has_started(&self) -> bool {
+        self.started.load(Ordering::Relaxed)
+    }
+
+    /// Reads, and drops, what a worker whose socket has closed sent before it ended, waiting
+    /// up to two seconds for the end. Then [`Self::has_started`] is final.
+    pub fn read_to_end(&mut self) {
+        let deadline = Instant::now() + EXIT_GRACE;
+        while self
+            .replies
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .is_ok()
+        {}
+    }
+
     /// Whether the worker has sent something no call asked for (a second reply to an
     /// earlier request, say), which is read and dropped. Such a worker can't be trusted:
     /// its next call would fail on that reply, out of turn.
@@ -361,14 +379,9 @@ impl Worker {
     /// The worker's socket closed: report how it ended, with its last log lines.
     fn crashed(&mut self, name: &str, took_request: bool, write_error: Option<String>) -> Error {
         let status = self.wait_for_exit();
-        // The reply thread reads to the end of what the worker sent, which may say it started.
-        let deadline = Instant::now() + EXIT_GRACE;
-        while self
-            .replies
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .is_ok()
-        {}
-        let reached = match (self.started.load(Ordering::Relaxed), took_request) {
+        // What the worker sent before it ended may say it started.
+        self.read_to_end();
+        let reached = match (self.has_started(), took_request) {
             (false, _) => Reached::NotStarted,
             (true, false) => Reached::Started,
             (true, true) => Reached::Request,
@@ -669,7 +682,8 @@ enum Reached {
 /// its install (a missing library: dyld aborts it), and once the request reached it is the
 /// request's values, which would crash it again. SIGKILL is usually the system's, when it
 /// runs out of memory, and a request that reached it may be what used the memory: worth
-/// one more try. Any other signal (SIGTERM, SIGINT, SIGHUP: a kill, a Ctrl-C, a
+/// one more try; before it started, it may be the system refusing the binary, if it
+/// happens again. Any other signal (SIGTERM, SIGINT, SIGHUP: a kill, a Ctrl-C, a
 /// shutdown), a worker that stopped responding, or one gone before the request reached it
 /// is from outside, worth trying again (the next request starts another worker). A worker
 /// that exited with a code ended on its own, which is its install, not the request.
@@ -689,6 +703,11 @@ fn crash_advice(status: Option<ExitStatus>, reached: Reached) -> &'static str {
         Some((None, Some(signal))) if request && FAULTS.contains(&signal) => {
             "change the operation's values: these crashed the kernel, and the same request \
              would crash it again"
+        }
+        Some((None, Some(libc::SIGKILL))) if matches!(reached, Reached::NotStarted) => {
+            "try the request again: the kernel worker was killed before it started; if it's \
+             killed before starting again, check Silico's install (macOS kills a worker binary \
+             whose code signature is broken)"
         }
         Some((None, Some(libc::SIGKILL))) if request => {
             "try the request once more: the kernel worker was killed, most likely by the \
@@ -832,6 +851,11 @@ mod tests {
             let advice = crash_advice(signalled(libc::SIGKILL), reached);
             assert!(advice.starts_with(says), "{reached:?}: {advice}");
         }
+        // Killed before it started: from outside, or, again and again, the system refusing
+        // the binary.
+        let unstarted = crash_advice(signalled(libc::SIGKILL), NotStarted);
+        assert!(unstarted.contains(install), "{unstarted}");
+        assert!(!crash_advice(signalled(libc::SIGKILL), Started).contains(install));
         for reached in [Request, Started, NotStarted] {
             for signal in [
                 libc::SIGTERM,
