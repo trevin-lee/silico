@@ -14,10 +14,8 @@ use crate::{
 /// they're a set: the order they're listed in doesn't matter. Edges OCCT won't round (a
 /// seam, a degenerate edge) are refused, naming every edge at fault.
 pub fn fillet(shape: &Shape, edges: &[u32], radius: f64) -> Result<Built, KernelError> {
-    if !(radius.is_finite() && radius > 0.0) {
-        return Err(KernelError::invalid_input(format!(
-            "fillet radius must be a positive, finite length, got {radius}"
-        )));
+    if let Err(invalid) = silico_protocol::check_fillet_radius(radius) {
+        return Err(KernelError::invalid_input(invalid.message));
     }
     let inner = shape.get()?;
     let topology = Topology::of(inner)?;

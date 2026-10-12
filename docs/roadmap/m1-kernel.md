@@ -189,7 +189,30 @@ After each expected failure, the next valid operation on the same worker must su
 
 ### Carried over from the M0 milestone review
 
-Raised by the review council and left for M1, where the code they concern is built:
+Raised by the review council and left for M1, where the code they concern is built.
+
+**Where each stands at M1's close** (the milestone review, 2026-10-12):
+- **Done:**
+  - typed core functions (M1.3);
+  - a worker test's bound under load (M1.6);
+  - geometry that isn't finite, now refused when read (M1.9);
+  - a fillet radius below OCCT's tolerance, refused as a chamfer's distance is (the review);
+  - `tessellate` on thin, valid solids: faces too small to show at the deflection are left out, as FreeCAD's display leaves them (the review);
+  - worker start, partly. A worker that ends on its own before answering is started again less and less often while the pool is idle (1 s, doubling to 60 s), where it was started every second. A pool of such workers still starts; its first request reports how the worker ended.
+- **Moved to M2:**
+  - before the feature layer reads refusals: element references (not names) from workers, the parameter at fault as data, every refused edge as data, and finding a multi-edge fillet's failing edge in the core. These change the protocol and the error contract (`tests/contract/`), so they need the maintainer.
+  - with recompute (M2.4):
+    - `summarize`'s cost (in the review, 4 to 9 times the operation it measures, on a plate with 100 holes): measure a shape once and carry or cache the result, at the precision fingerprints are rounded to;
+    - its mismeasure where faces' integrals cancel.
+  - with the pool's clients: one build per pool, queued requests holding copies of their shapes, generations per document with notification, and the worker runtime.
+  - with stable names (M2.7, M2.8): a chamfer stores the face it measures from, by name. Today it measures from the edge's lower-numbered face, so an upstream edit that renumbers the faces moves the cut to the other side without an error, as in FreeCAD (its fix `4d712f44c2` was for this swap).
+- **Open, with no milestone yet:**
+  - OCCT's libraries naming a newer macOS: when Silico first runs on another Mac;
+  - in-process and worker results differing in the last bit: before anything compares the two;
+  - a crash inside OCCT's fillet: it now comes back with a suggestion to change the values;
+  - booleans OCCT gets wrong, and the readers' endless loops on trims that aren't finite: to report to OCCT;
+  - OCCT across threads in one process: before anything calls OCCT from two threads;
+  - the small cleanups.
 
 - **Typed core functions.** Done in M1.3 (`silico_core::kernel::KernelWorker`); each new operation gets its typed function as it's added.
 - **OCCT's libraries name a newer macOS than the binaries.** The linker warns that OCCT's dylibs were built for macOS 27 while Silico's executables say 11, so the executables wouldn't run on an older macOS. Set the deployment target in OCCT's recipe to match (M1.9, or when Silico is first run on another Mac).

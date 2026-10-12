@@ -194,7 +194,12 @@ impl Worker {
     /// Whether the process has exited (killed from outside while idle, say), reaping it if
     /// so. A call to it would fail as a crash.
     pub fn has_exited(&mut self) -> bool {
-        matches!(lock(&self.child).try_wait(), Ok(Some(_)))
+        self.exit_status().is_some()
+    }
+
+    /// How the process ended, if it has (reaping it).
+    pub fn exit_status(&mut self) -> Option<ExitStatus> {
+        lock(&self.child).try_wait().ok().flatten()
     }
 
     /// Whether the worker has sent something no call asked for (a second reply to an
@@ -275,7 +280,8 @@ impl Worker {
                     ErrorCode::InvalidInput,
                     format!("{name} couldn't be sent to the kernel worker"),
                 )
-                .with_cause(e.to_string()));
+                .with_cause(e.to_string())
+                .with_suggestion("make the request smaller: send smaller shapes"));
             }
             Err(FrameError::Io(e))
                 if matches!(
@@ -310,7 +316,8 @@ impl Worker {
                 .with_cause(format!(
                     "reply for request {} (generation {}), expected {} (generation {})",
                     response.id.0, response.generation.0, id.0, generation.0
-                )),
+                ))
+                .with_suggestion(BROKEN_WORKER),
             )),
             Ok(Err(FrameError::Io(_) | FrameError::Truncated { .. }))
             | Err(RecvTimeoutError::Disconnected) => Err(self.crashed(name, None)),
@@ -319,7 +326,8 @@ impl Worker {
                     ErrorCode::ProtocolError,
                     format!("the kernel worker's reply to {name} couldn't be read"),
                 )
-                .with_cause(e.to_string()),
+                .with_cause(e.to_string())
+                .with_suggestion(BROKEN_WORKER),
             )),
             Err(RecvTimeoutError::Timeout) => Err(self.timed_out(name, timeout)),
         }
@@ -363,6 +371,10 @@ impl Worker {
             format!("the kernel worker crashed during {name}"),
         )
         .with_cause(cause)
+        .with_suggestion(
+            "change the operation's values: these crashed the kernel, and the same request \
+             would crash it again",
+        )
     }
 
     /// Waits briefly for a worker whose socket closed to exit, then kills it if needed.
@@ -627,12 +639,22 @@ fn signal_name(signal: i32) -> Option<&'static str> {
     .map(|(_, name)| name)
 }
 
+/// What to try when the worker itself misbehaved: nothing about the request will help.
+const BROKEN_WORKER: &str = "this is a bug in Silico's kernel worker, not in the request: report \
+     it (the worker was stopped, and the next request starts another)";
+
+/// What to try after an internal error: a bug, not the request's values.
+const SILICO_BUG: &str = "this is a bug in Silico, not in the request: report it";
+
 /// A worker's refusal or failure, as a structured error, naming the element at fault and
 /// what to try instead when the worker knew them. A kernel failure always suggests
 /// something.
 fn failure_error(op: &str, failure: Failure) -> Error {
     let (error, fallback) = match failure.kind {
-        FailureKind::InvalidInput => (Error::new(ErrorCode::InvalidInput, failure.message), None),
+        FailureKind::InvalidInput => (
+            Error::new(ErrorCode::InvalidInput, failure.message),
+            Some("change the value the message names"),
+        ),
         FailureKind::KernelFailed => (
             Error::new(ErrorCode::KernelFailed, format!("{op} failed")).with_cause(failure.message),
             Some("change the operation's values: the kernel can't build it from these"),
@@ -651,7 +673,7 @@ fn failure_error(op: &str, failure: Failure) -> Error {
                 format!("the kernel worker couldn't do {op}"),
             )
             .with_cause(failure.message),
-            None,
+            Some(SILICO_BUG),
         ),
     };
     let error = match failure.element {

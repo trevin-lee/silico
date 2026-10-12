@@ -961,22 +961,23 @@ fn requests_whose_callers_stopped_waiting_dont_jam_the_pool() {
         done(pool.submit(Generation(1), echo(&[4]))).unwrap(),
         Blob::inline(vec![4])
     );
-    // 40 × 10 ms on two workers, and some slack.
+    // 40 × 10 ms on two workers: a jammed pool would never answer. (Bounds are against
+    // what they rule out, not how fast a loaded machine is.)
     assert!(
-        start.elapsed() < Duration::from_secs(3),
+        start.elapsed() < Duration::from_secs(30),
         "{:?}",
         start.elapsed()
     );
-    // And `advance` drops what's still queued, so a request after it needn't wait at all.
+    // And `advance` drops what's still queued: a request after it waits at most for the two
+    // sleeps already running, where the queue would take 40 × 500 ms on two workers, 10 s.
     for _ in 0..40 {
-        drop(pool.submit(Generation(1), sleep(200)));
+        drop(pool.submit(Generation(1), sleep(500)));
     }
     pool.advance(Generation(2));
     let start = Instant::now();
     done(pool.submit(Generation(2), echo(&[5]))).unwrap();
-    // At most the two sleeps already running.
     assert!(
-        start.elapsed() < Duration::from_millis(1000),
+        start.elapsed() < Duration::from_secs(5),
         "{:?}",
         start.elapsed()
     );
@@ -1060,4 +1061,42 @@ fn a_pool_started_from_a_relative_path_keeps_its_workers_after_the_directory_cha
     // for at ./worker in the new working directory, and every request after failed).
     let result = done(pool.submit(Generation(1), echo(&[8])));
     assert_eq!(result.unwrap(), Blob::inline(vec![8]));
+}
+
+#[test]
+fn a_worker_that_dies_as_it_starts_isnt_started_over_while_the_pool_is_idle() {
+    // A worker binary that starts and exits at once (a missing library, a refusal at start):
+    // it isn't launched again every second for as long as the pool is idle, but less and
+    // less often; a request starts one at once, and fails saying how it ended.
+    let dir = std::env::temp_dir().join(format!("silico-pool-dies-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("worker.sh");
+    let log = dir.join("launches");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho launched >> '{}'\necho 'no OCCT here' >&2\nexit 3\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let launches = || std::fs::read_to_string(&log).map_or(0, |l| l.lines().count());
+    let pool = KernelPool::start_workers(&script, 4).unwrap();
+    // Each slot waits twice as long each time (1 s, 2 s, 4 s): between 4 s and 8 s idle,
+    // about one launch a slot, where starting one every second would be four.
+    std::thread::sleep(Duration::from_secs(4));
+    let early = launches();
+    std::thread::sleep(Duration::from_secs(4));
+    let late = launches() - early;
+    assert!(late <= 8, "{late} launches in 4 s idle, {early} before");
+    let err = done(pool.submit(Generation(1), echo(&[1]))).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert!(
+        err.cause()
+            .is_some_and(|c| c.contains("exited with code 3") && c.contains("no OCCT here")),
+        "{err}"
+    );
+    drop(pool);
+    std::fs::remove_dir_all(&dir).unwrap();
 }

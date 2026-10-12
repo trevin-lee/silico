@@ -940,3 +940,66 @@ fn a_worker_under_an_empty_silico_log_still_warns() {
     let cause = err.cause().unwrap();
     assert!(cause.contains("aborting, as asked: line 25"), "{cause}");
 }
+
+#[test]
+fn every_failure_says_what_to_try() {
+    // A crash, a reply out of turn or unreadable, and each refusal carry a suggestion; a
+    // fillet radius too small for OCCT is refused before it's sent, not answered with
+    // advice to make it smaller still.
+    use silico_core::kernel::{KernelRequest, KernelWorker, Primitive};
+    use silico_protocol::Misbehavior;
+    let test = |op| {
+        let mut w = KernelWorker::start_worker(Path::new(TEST_WORKER)).unwrap();
+        w.run(KernelRequest::debug(op)).unwrap_err()
+    };
+    for (what, err) in [
+        ("a segfault", test(DebugOp::Segfault)),
+        ("an abort", test(DebugOp::Abort)),
+        ("garbage", test(DebugOp::Garbage)),
+        (
+            "out of turn",
+            test(DebugOp::ReplyOutOfTurn(silico_protocol::OutOfTurn::WrongId)),
+        ),
+        ("a wrong reply", {
+            let mut w = KernelWorker::start_worker(Path::new(TEST_WORKER)).unwrap();
+            w.run(KernelRequest::debug(DebugOp::Misbehave(
+                Misbehavior::WrongReply,
+            )))
+            .unwrap();
+            w.make(Primitive::Sphere { radius: 1.0 }).unwrap_err()
+        }),
+    ] {
+        assert!(err.suggestion().is_some(), "{what}: {err}");
+    }
+    let mut w = KernelWorker::start_worker(Path::new(WORKER)).unwrap();
+    let block = w
+        .make(Primitive::Box {
+            dx: 10.0,
+            dy: 20.0,
+            dz: 30.0,
+        })
+        .unwrap();
+    for err in [
+        w.fillet(&block, &[13], 1.0).unwrap_err(),
+        w.fillet(&block, &[1, 1], 1.0).unwrap_err(),
+        w.fillet(&block, &[], 1.0).unwrap_err(),
+        w.tessellate(&block, 0.0).unwrap_err(),
+    ] {
+        assert!(err.suggestion().is_some(), "{err}");
+    }
+    let sent = w.requests_sent();
+    for radius in [f64::NAN, -1.0, 0.0, 1e-12, 1e-7, 1e7] {
+        let err = w.fillet(&block, &[1], radius).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::InvalidInput, "{radius}: {err}");
+        assert_eq!(
+            err.suggestion(),
+            Some("give the fillet a valid radius"),
+            "{err}"
+        );
+    }
+    assert_eq!(
+        w.requests_sent(),
+        sent,
+        "a refused radius reached the worker"
+    );
+}

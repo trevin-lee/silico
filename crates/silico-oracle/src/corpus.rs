@@ -93,19 +93,36 @@ pub fn meshes(cases: &[Case]) -> Result<Vec<String>, String> {
     let mut kernel = start()?;
     let mut found = Vec::new();
     for case in cases {
-        let Ok(shape) = silico::build(&mut kernel, &case.shape) else {
-            continue;
+        // A worker lost building or measuring a part (the comparison reports that) is
+        // replaced, so the next part isn't blamed for it.
+        let shape = match silico::build(&mut kernel, &case.shape) {
+            Ok(shape) => shape,
+            Err(e) => {
+                if silico::lost(e.code()) {
+                    kernel = start()?;
+                }
+                continue;
+            }
         };
-        let size = kernel
-            .measure_as_freecad(&shape)
-            .ok()
-            .and_then(|m| m.bounds)
-            .map_or(1.0, |[low, high]| {
-                (0..3).map(|k| high[k] - low[k]).fold(0.0, f64::max)
-            });
-        if let Err(e) = kernel.tessellate(&shape, size / 1000.0) {
+        let bounds = match kernel.measure_as_freecad(&shape) {
+            Ok(m) => m.bounds,
+            Err(e) => {
+                if silico::lost(e.code()) {
+                    kernel = start()?;
+                }
+                continue;
+            }
+        };
+        let size = bounds.map_or(1.0, |[low, high]| {
+            (0..3).map(|k| high[k] - low[k]).fold(0.0, f64::max)
+        });
+        let deflection = size / 1000.0;
+        if let Err(e) = kernel.tessellate(&shape, deflection) {
             let lost = silico::lost(e.code());
-            found.push(format!("{}: Silico can't mesh it: {e}", case.name));
+            found.push(format!(
+                "{}: Silico can't mesh it at a deflection of {deflection}: {e}",
+                case.name
+            ));
             if lost {
                 kernel = start()?;
             }

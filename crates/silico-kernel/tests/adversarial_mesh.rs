@@ -17,6 +17,8 @@
 mod geometry;
 #[path = "common/kernel.rs"]
 mod kernel;
+#[path = "common/oracle.rs"]
+mod oracle;
 
 use geometry::{apart, cross, cylinder, dot, faces, norm, sub, wide};
 use kernel::kernel;
@@ -1538,4 +1540,62 @@ fn the_converter_writes_what_the_reader_reads() {
     let out = convert(b"garbage");
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).starts_with("silico-brep-convert: "));
+}
+
+#[test]
+fn a_valid_solid_with_faces_too_small_to_mesh_is_meshed_without_them() {
+    // Every edge of a 10 × 20 × 30 box chamfered at 4.99999999: a valid solid of 26 faces,
+    // 8 of them slivers of a few 1e-7 mm² that OCCT's mesher leaves unmeshed. As FreeCAD's
+    // display does, they get no triangles, and the rest is meshed: the mesh's area is the
+    // solid's, but for the slivers. (Silico refused the whole mesh until the M1 review.)
+    let block = silico_kernel::make_box(10.0, 20.0, 30.0).unwrap();
+    let all: Vec<u32> = (1..=12).collect();
+    let built = silico_kernel::chamfer(
+        &block,
+        &all,
+        silico_protocol::ChamferSize::Equal {
+            distance: 4.999_999_99,
+        },
+        false,
+    )
+    .unwrap();
+    let summary = silico_kernel::summarize(&built.shape).unwrap();
+    assert!(summary.valid);
+    let mesh = silico_kernel::tessellate(&built.shape, 0.01).unwrap();
+    mesh.validate().unwrap();
+    assert_eq!(mesh.face_triangles.len(), summary.faces as usize);
+    let empty = mesh.face_triangles.iter().filter(|&&n| n == 0).count();
+    assert!(empty > 0 && empty < mesh.face_triangles.len(), "{empty}");
+    let area: f64 = mesh
+        .triangles
+        .iter()
+        .map(|t| {
+            let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+            norm(cross(sub(b, a), sub(c, a))) / 2.0
+        })
+        .sum();
+    assert!(
+        (area - summary.area).abs() <= 1e-4,
+        "{area} {}",
+        summary.area
+    );
+}
+
+#[test]
+fn a_face_that_cant_be_meshed_on_a_shape_that_isnt_valid_is_refused_naming_it() {
+    // A face whose edges cross (a bowtie, as FreeCAD writes it): OCCT can't mesh it, and its
+    // area (its halves cancel: 0) says nothing about how much of it the display would miss.
+    let text: String = serde_json::from_value(oracle::freecad(
+        "import json, Part, FreeCAD\nV = FreeCAD.Vector\n\
+         w = Part.makePolygon([V(0, 0, 0), V(10, 10, 0), V(10, 0, 0), V(0, 10, 0), V(0, 0, 0)])\n\
+         print('SILICO_ORACLE ' + json.dumps(Part.Face(Part.Plane(), w).exportBrepToString()))\n",
+    ))
+    .unwrap();
+    let bowtie = silico_kernel::from_text_brep(text.as_bytes()).unwrap();
+    for deflection in [0.01, 1.0] {
+        let err = silico_kernel::tessellate(&bowtie, deflection).unwrap_err();
+        assert_eq!(err.message(), "Face1 couldn't be meshed", "{err:?}");
+        assert_eq!(err.element(), Some("Face1"));
+        assert!(err.suggestion().unwrap().contains("deflection"), "{err:?}");
+    }
 }

@@ -23,7 +23,8 @@ pub use primitive::{
     InvalidParameter, LENGTH_TOLERANCE, MAX_LENGTH, Primitive, check_offset, format_number,
 };
 pub use profile::{
-    Axis, MAX_PROFILE_POINTS, Profile, ProfilePlane, check_revolve, extrusion_vector, radians,
+    Axis, MAX_PROFILE_POINTS, Profile, ProfilePlane, check_fillet_radius, check_revolve,
+    extrusion_vector, radians,
 };
 
 /// The file descriptor a worker inherits its end of the socket pair as.

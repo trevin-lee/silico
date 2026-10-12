@@ -20,6 +20,7 @@
 //! [`Outcome::Superseded`], never a result.
 
 use std::collections::VecDeque;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -34,6 +35,10 @@ use crate::{Error, ErrorCode};
 
 /// How often an idle thread checks that its worker is still alive.
 pub const IDLE_CHECK: Duration = Duration::from_secs(1);
+
+/// The longest an idle thread waits before trying again to start a worker that couldn't
+/// be started (the wait doubles from [`IDLE_CHECK`] each time).
+const MAX_RETRY: Duration = Duration::from_secs(60);
 
 /// How long a superseded request may run, counted from its start, before the pool stops it,
 /// unless [`KernelPool::set_stop_after`] says otherwise. Replacing a stopped worker takes
@@ -584,6 +589,8 @@ fn serve(slot: usize, exe: &Path, shared: &Shared, ready: &mpsc::Sender<Result<(
         exe: exe.to_owned(),
         shared,
         worker: None,
+        served: false,
+        retry: None,
     };
     let started = keeper.live_worker().map(|_| ());
     let failed = started.is_err();
@@ -598,8 +605,7 @@ fn serve(slot: usize, exe: &Path, shared: &Shared, ready: &mpsc::Sender<Result<(
                 if shared.stopping() {
                     return;
                 }
-                // A failure here is retried at the next request, which reports it.
-                let _ = keeper.live_worker();
+                keeper.tend();
                 continue;
             }
             Next::Task(task) => task,
@@ -639,6 +645,9 @@ fn serve(slot: usize, exe: &Path, shared: &Shared, ready: &mpsc::Sender<Result<(
         let condemned = task.run(worker, shared, slot);
         if condemned || worker.is_stopped() {
             keeper.replace();
+        } else {
+            keeper.served = true;
+            keeper.retry = None;
         }
     }
 }
@@ -649,6 +658,11 @@ struct Keeper<'a> {
     exe: PathBuf,
     shared: &'a Shared,
     worker: Option<Worker>,
+    /// Whether the worker has answered a request.
+    served: bool,
+    /// After workers ended before answering, or couldn't be started: when to start one
+    /// again, and how long that wait was. Cleared when one answers.
+    retry: Option<(Instant, Duration)>,
 }
 
 impl Keeper<'_> {
@@ -665,7 +679,14 @@ impl Keeper<'_> {
         match self.worker {
             Some(ref mut worker) => Ok(worker),
             None => {
-                let worker = Worker::spawn(&self.exe)?;
+                let worker = match Worker::spawn(&self.exe) {
+                    Ok(worker) => worker,
+                    Err(e) => {
+                        self.wait_to_retry();
+                        return Err(e);
+                    }
+                };
+                self.served = false;
                 let killer = worker.killer();
                 self.shared
                     .with_slot(self.slot, |s| s.killer = Some(killer));
@@ -681,6 +702,50 @@ impl Keeper<'_> {
         if !self.shared.stopping() {
             let _ = self.live_worker();
         }
+    }
+
+    /// While the slot is idle: a worker that died is replaced, so the pool stays full. One
+    /// killed from outside, or that had answered requests, is replaced now. One that
+    /// ended on its own before answering any (a worker binary that can't start: a missing
+    /// library, a refusal at start) is started again after a wait that doubles each time
+    /// from [`IDLE_CHECK`] up to [`MAX_RETRY`], as is one that couldn't be started at all
+    /// (its executable missing while it's rebuilt), rather than every [`IDLE_CHECK`] for as
+    /// long as the pool is idle. A request starts one at once either way, and reports why
+    /// it can't.
+    fn tend(&mut self) {
+        let slot = self.slot;
+        if let Some(w) = self.worker.as_mut() {
+            let replace_now = if w.is_stopped() || w.has_stray_reply() {
+                true
+            } else {
+                match w.exit_status() {
+                    None => return,
+                    Some(status) => self.served || status.signal() == Some(libc::SIGKILL),
+                }
+            };
+            self.discard();
+            if !replace_now {
+                self.wait_to_retry();
+                tracing::warn!(
+                    slot,
+                    "a kernel worker ended before answering a request; starting another later"
+                );
+                return;
+            }
+        } else if !self.retry.is_some_and(|(at, _)| Instant::now() >= at) {
+            return;
+        }
+        if let Err(e) = self.live_worker() {
+            tracing::warn!(slot, error = %e, "can't start a kernel worker");
+        }
+    }
+
+    /// Puts off the next start, twice as long as the last time (or [`IDLE_CHECK`]).
+    fn wait_to_retry(&mut self) {
+        let wait = self
+            .retry
+            .map_or(IDLE_CHECK, |(_, wait)| (wait * 2).min(MAX_RETRY));
+        self.retry = Some((Instant::now() + wait, wait));
     }
 
     fn discard(&mut self) {

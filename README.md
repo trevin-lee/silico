@@ -2,13 +2,14 @@
 
 A parametric CAD system: a Rust core, an egui/wgpu app, and OpenCascade as the geometry kernel. Agents and people are equal users (through MCP and the app), and models are plain, diffable text: a timeline of features, rebuilt bit for bit on any machine.
 
-**Status:** M0 (foundations). OpenCascade runs in worker processes behind a structured, crash-proof protocol, built deterministically, and checked against FreeCAD. There's no app yet; `pixi run view` shows what the kernel builds.
+**Status:** M1 (the kernel layer). OpenCascade runs in a pool of worker processes behind a structured, crash-proof protocol, built deterministically (bit-identical on macOS and Linux), and checked against FreeCAD case by case: primitives, booleans, extrude and revolve, fillet and chamfer, with history, and display meshes. There's no app yet; `pixi run view` shows what the kernel builds.
 
 ## Try it
 
 ```bash
 pixi run test   # builds OpenCascade (about 3 minutes the first time), then every test
-pixi run view   # a box and two fillets in the Rerun viewer, edges labelled
+pixi run view   # a box, fillets, and the primitives in the Rerun viewer, edges labelled
+pixi run oracle # every oracle case compared with FreeCAD
 pixi run gate   # every check, on the committed code
 ```
 
