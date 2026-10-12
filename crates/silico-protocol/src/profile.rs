@@ -98,6 +98,13 @@ fn invalid(parameter: &'static str, message: String) -> InvalidParameter {
     InvalidParameter { parameter, message }
 }
 
+/// Whether a fillet's radius can round an edge: a length above OCCT's tolerance and at
+/// most a kilometre, as a chamfer's distance must be. (OCCT and FreeCAD build a fillet of
+/// 1e-8, which leaves nothing OCCT can tell from the edge.)
+pub fn check_fillet_radius(radius: f64) -> Result<(), InvalidParameter> {
+    check_length("radius", "fillet's radius", radius)
+}
+
 /// A length's check: finite, above OCCT's tolerance, at most [`MAX_LENGTH`].
 pub(crate) fn check_length(
     parameter: &'static str,

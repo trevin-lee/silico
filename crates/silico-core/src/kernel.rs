@@ -94,14 +94,18 @@ impl KernelRequest<ShapeData> {
 
 impl KernelRequest<BuiltData> {
     /// Rounds `edges` of `shape` (numbered from 1, as FreeCAD's `Edge1`, ...) with a
-    /// constant `radius`, and says what became of the shape's faces, edges, and vertices.
-    pub fn fillet(shape: &ShapeData, edges: &[u32], radius: f64) -> Self {
+    /// constant `radius`, and says what became of the shape's faces, edges, and vertices. A
+    /// radius that can't round an edge is refused, naming it.
+    pub fn fillet(shape: &ShapeData, edges: &[u32], radius: f64) -> Result<Self, Error> {
+        if let Err(invalid) = silico_protocol::check_fillet_radius(radius) {
+            return Err(refused("fillet", invalid));
+        }
         let op = Op::Fillet {
             shape: shape.clone(),
             edges: edges.to_vec(),
             radius,
         };
-        Self::new(op, read_built(1))
+        Ok(Self::new(op, read_built(1)))
     }
 
     /// Cuts `edges` of `shape` (numbered from 1, as FreeCAD's `Edge1`, ...) back by `size`,
@@ -225,7 +229,8 @@ impl KernelRequest<FreecadMeasures> {
 
 impl KernelRequest<Mesh> {
     /// A triangle mesh of `shape` for display, no further than `deflection` from its
-    /// surface. The mesh is checked before it's returned, so it can be indexed safely.
+    /// surface. The mesh is checked before it's returned, so it can be indexed safely. A face
+    /// OCCT can't mesh on a valid shape has no triangles (`Mesh::face_triangles`).
     pub fn tessellate(shape: &ShapeData, deflection: f64) -> Self {
         let op = Op::Tessellate {
             shape: shape.clone(),
@@ -361,7 +366,7 @@ impl KernelWorker {
         edges: &[u32],
         radius: f64,
     ) -> Result<BuiltData, Error> {
-        self.run(KernelRequest::fillet(shape, edges, radius))
+        self.run(KernelRequest::fillet(shape, edges, radius)?)
     }
 
     /// A chamfer ([`KernelRequest::chamfer`]).

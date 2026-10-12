@@ -66,11 +66,9 @@ fn request(i: u32, inputs: &Inputs) -> Request {
             })
             .unwrap(),
         ),
-        1 => Request::Built(KernelRequest::fillet(
-            &inputs.block,
-            &[1 + i % 12],
-            0.5 + f / 25.0,
-        )),
+        1 => Request::Built(
+            KernelRequest::fillet(&inputs.block, &[1 + i % 12], 0.5 + f / 25.0).unwrap(),
+        ),
         2 => Request::Built(
             KernelRequest::chamfer(
                 &inputs.block,
@@ -720,7 +718,7 @@ fn kill9_mid_burst() {
             dz: 30.0,
         })
         .unwrap();
-    let fillet = |i: u32| KernelRequest::fillet(&block, &[1 + i % 12], 1.0);
+    let fillet = |i: u32| KernelRequest::fillet(&block, &[1 + i % 12], 1.0).unwrap();
     let pool = pool(TEST_WORKER, 4);
     let size = pool.size();
     let mut killed = BTreeSet::new();
@@ -952,9 +950,14 @@ fn a_pool_whose_later_workers_cant_start_stops_its_first_ones() {
     // The first worker to start makes the executable unexecutable, then runs as the test
     // worker: later ones can't start, so the pool fails, and the workers that did start are
     // stopped and reaped. Enough slots that some start after the first has run. (A pool
-    // whose slots all started before it ran starts; it's tried again.)
+    // whose slots all started before it ran starts; it's tried again, for up to a minute: on
+    // a loaded machine the first worker can be slow to run, over and over.)
     const SLOTS: usize = 32;
-    for attempt in 0..20 {
+    let start = std::time::Instant::now();
+    for attempt in 0.. {
+        if start.elapsed() > Duration::from_secs(60) {
+            break;
+        }
         let exe = scripts::script(
             &format!("unexecutable-after-first-{attempt}"),
             &format!("/bin/chmod -x \"$0\"\nexec '{TEST_WORKER}'"),

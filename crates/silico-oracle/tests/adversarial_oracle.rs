@@ -721,18 +721,18 @@ fn a_crash_report_keeps_the_last_20_lines_each_cut_to_1000_bytes() {
 
 #[test]
 fn each_answer_restarts_freecads_deadline() {
-    // Three cases, each answered 2 s after the last, with a deadline of 4: the run takes
-    // longer than the deadline, but no case does.
+    // Six cases, each answered 1 s after the last, with a deadline of 4: the run takes
+    // longer than the deadline, but no case comes near it (3 s to spare on a loaded machine).
     let dir = scratch("deadline-restarts");
     let freecad = dir.join("freecadcmd");
-    let answer = "sleep 2; echo 'SILICO_ORACLE_CASE {\"failed\": \"stand-in\"}'\n";
+    let answer = "sleep 1; echo 'SILICO_ORACLE_CASE {\"failed\": \"stand-in\"}'\n";
     executable(
         &freecad,
-        &format!("#!/bin/sh\necho SILICO_ORACLE_READY\n{}", answer.repeat(3)),
+        &format!("#!/bin/sh\necho SILICO_ORACLE_READY\n{}", answer.repeat(6)),
     );
     let cases = dir.join("cases");
     std::fs::create_dir_all(&cases).unwrap();
-    let all: Vec<Case> = (0..3)
+    let all: Vec<Case> = (0..6)
         .map(|n| case(&format!("box_{n}"), block(1.0, 2.0, 3.0)))
         .collect();
     write_cases(&cases, &all);
@@ -745,15 +745,11 @@ fn each_answer_restarts_freecads_deadline() {
         ],
         Duration::from_secs(60),
     );
-    assert_eq!(
-        ran.stdout,
-        "box_0: Silico built it; FreeCAD failed: stand-in\n\
-         box_1: Silico built it; FreeCAD failed: stand-in\n\
-         box_2: Silico built it; FreeCAD failed: stand-in\n\
-         3 of 3 cases differ from FreeCAD\n",
-        "{}",
-        ran.stderr
-    );
+    let want: String = (0..6)
+        .map(|n| format!("box_{n}: Silico built it; FreeCAD failed: stand-in\n"))
+        .chain(["6 of 6 cases differ from FreeCAD\n".to_owned()])
+        .collect();
+    assert_eq!(ran.stdout, want, "{}", ran.stderr);
 }
 
 #[test]
@@ -1571,4 +1567,56 @@ fn the_comparison_is_symmetric_and_never_matches_nan() {
             assert!(differences(&ours, &ours).is_empty(), "{n}: {a:?}");
         }
     }
+}
+
+#[test]
+fn a_chamfer_of_a_moved_shape_matches_freecad_where_it_was_moved() {
+    // FreeCAD's PartDesign chamfer, which the oracle builds through, drops the placement of
+    // the shape it's given: the chamfer of a moved box or cone came back at the origin, so
+    // it couldn't match Silico's, and a Silico that lost the move would have.
+    let chamfer = |shape, edges: Vec<u32>, size, flip| Shape::Chamfer {
+        shape: Box::new(moved(shape, [3.0, -4.0, 5.0])),
+        edges,
+        size,
+        flip,
+    };
+    let cases = [
+        case(
+            "moved_box",
+            chamfer(
+                block(10.0, 20.0, 30.0),
+                vec![1, 6],
+                Chamfer::TwoDistances {
+                    distance: 1.0,
+                    other: 2.0,
+                },
+                true,
+            ),
+        ),
+        case(
+            "moved_cone",
+            chamfer(
+                Shape::Cone {
+                    radius1: 4.0,
+                    radius2: 2.0,
+                    height: 6.0,
+                },
+                vec![1],
+                Chamfer::Equal { distance: 0.5 },
+                true,
+            ),
+        ),
+    ];
+    let found = run(&cases).unwrap();
+    assert!(found.refused.is_empty(), "{:?}", found.refused);
+    assert!(
+        found.differences.is_empty(),
+        "{}",
+        found
+            .differences
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
 }

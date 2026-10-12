@@ -121,7 +121,8 @@ const CASES: &[(&[u32], f64)] = &[
     (&[1], 9.99),
     (&[1], 11.0),
     (&[1], 10.0),
-    // Below OCCT's 1e-7 tolerance, and absurdly small or large: the two agree.
+    // At or below OCCT's 1e-7 tolerance, and absurdly large: Silico refuses the radius as
+    // it refuses a chamfer's distance (FreeCAD builds 1e-8, and refuses the others).
     (&[1], 1e-8),
     (&[1], 1e-12),
     (&[1], 1e300),
@@ -165,10 +166,17 @@ fn box_fillet_through_worker_matches_freecad() {
     let freecad = freecad_results();
     let mut compared = 0;
     let mut refused_invalid = 0;
+    let mut refused_radius = 0;
     for (&(edges, radius), theirs) in CASES.iter().zip(&freecad) {
         let ours = fillet_through_worker(&mut w, edges, radius);
         let case = format!("edges {edges:?}, radius {radius}");
         match (&ours, theirs.get("error")) {
+            // A radius outside Silico's lengths: refused before OCCT sees it, whatever FreeCAD
+            // makes of it.
+            (Err(e), _) if !(radius > 1e-7 && radius <= 1e6) => {
+                assert_eq!(e.code(), ErrorCode::InvalidInput, "{case}: {e}");
+                refused_radius += 1;
+            }
             (Ok(s), None) => {
                 let t = |key: &str| theirs[key].as_f64().unwrap();
                 assert!(
@@ -220,8 +228,9 @@ fn box_fillet_through_worker_matches_freecad() {
     }
     // The comparison isn't vacuous: most cases succeed on both sides, and FreeCAD's
     // invalid results really are refused.
-    assert!(compared >= 8, "only {compared} cases compared");
+    assert_eq!(compared, 7, "cases compared");
     assert_eq!(refused_invalid, 2);
+    assert_eq!(refused_radius, 3);
 }
 
 /// The message for a fillet OCCT built, but whose result was refused as invalid.

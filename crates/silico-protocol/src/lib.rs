@@ -1,8 +1,9 @@
 //! Message types shared by the core and the worker processes, and how they're framed on
 //! the wire (ARCHITECTURE.md, Process model).
 //!
-//! The core sends a [`Request`]; a worker answers with a [`Response`] carrying the same
-//! `id`. Each message travels as one frame: a 4-byte little-endian length, then the message
+//! A worker first sends an empty frame, saying it has started ([`write_started`]). The core
+//! sends a [`Request`]; a worker answers with a [`Response`] carrying the same `id`. Each
+//! message travels as one frame: a 4-byte little-endian length, then the message
 //! encoded with `postcard` ([`frame`]). Both ends are Rust and always ship together, so
 //! there's no version negotiation.
 
@@ -15,7 +16,7 @@ mod profile;
 use serde::{Deserialize, Serialize};
 
 pub use chamfer::ChamferSize;
-pub use frame::{FrameError, FrameReader, MAX_FRAME_LEN, write_message};
+pub use frame::{FrameError, FrameReader, MAX_FRAME_LEN, decode, write_message, write_started};
 pub use history::{
     ElementCounts, ElementFate, ElementKind, ElementRef, Ends, History, InputHistory, Reported,
 };
@@ -23,7 +24,8 @@ pub use primitive::{
     InvalidParameter, LENGTH_TOLERANCE, MAX_LENGTH, Primitive, check_offset, format_number,
 };
 pub use profile::{
-    Axis, MAX_PROFILE_POINTS, Profile, ProfilePlane, check_revolve, extrusion_vector, radians,
+    Axis, MAX_PROFILE_POINTS, Profile, ProfilePlane, check_fillet_radius, check_revolve,
+    extrusion_vector, radians,
 };
 
 /// The file descriptor a worker inherits its end of the socket pair as.
@@ -307,7 +309,9 @@ pub struct Mesh {
     pub normals: Vec<[f32; 3]>,
     /// Vertex indices, three per triangle, wound counterclockwise seen from outside.
     pub triangles: Vec<[u32; 3]>,
-    /// How many triangles belong to each face, in OCCT's face order.
+    /// How many triangles belong to each face, in OCCT's face order. A count of 0 is a face
+    /// OCCT couldn't mesh on a valid shape (a sliver too narrow for its tolerance), missing
+    /// from the display: export and inspection decide what that means for them.
     pub face_triangles: Vec<u32>,
     /// The points of every edge's polyline, one edge after another, split by
     /// `edge_point_counts`. Flat, so every value on the wire costs no more than a few times

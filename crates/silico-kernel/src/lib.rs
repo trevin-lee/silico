@@ -234,6 +234,7 @@ mod ffi {
         fn face_triangles(self: &Tessellation) -> &[u32];
         fn edge_points(self: &Tessellation) -> &[f64];
         fn edge_points_per_edge(self: &Tessellation) -> &[u32];
+        fn unmeshed_faces(self: &Tessellation) -> &[u32];
         fn shape_to_brep(shape: &Shape) -> Result<UniquePtr<CxxString>>;
         fn shape_from_brep(brep: &[u8]) -> Result<UniquePtr<Shape>>;
         fn shape_from_text_brep(brep: &[u8]) -> Result<UniquePtr<Shape>>;
@@ -815,18 +816,21 @@ pub fn boolean(op: BooleanOp, base: &Shape, tool: &Shape) -> Result<Built, Kerne
             KernelError::new(format!("the {name}'s result is empty")).with_suggestion(suggestion)
         );
     }
-    let result = checked_result(&[base, tool], built, &name).map_err(|e| {
-        if e.kind() == KernelErrorKind::InvalidResult {
-            e.with_suggestion(NEARLY_MEET)
-        } else {
-            e
-        }
-    })?;
+    let result = checked_result(&[base, tool], built, &name).map_err(boolean_advice)?;
     let history = history_of(&[base_inner, tool_inner], result.get()?, &entries)?;
     Ok(Built {
         shape: result,
         history,
     })
+}
+
+/// A boolean's error, with what to try when its result was refused as invalid.
+fn boolean_advice(e: KernelError) -> KernelError {
+    if e.kind() == KernelErrorKind::InvalidResult {
+        e.with_suggestion(NEARLY_MEET)
+    } else {
+        e
+    }
 }
 
 /// What to try when OCCT's boolean goes wrong: it does where the shapes nearly meet.
@@ -1103,12 +1107,30 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
             silico_protocol::format_number(floor)
         )));
     }
-    // A face OCCT can't mesh is almost always broken geometry, not the deflection.
+    // A mesher that fails outright is almost always broken geometry, not the deflection.
     let raw = ffi::tessellate(inner, deflection)
         .map_err(|e| KernelError::from(e).with_suggestion(UNUSABLE_GEOMETRY))?;
     let raw = raw
         .as_ref()
         .ok_or_else(|| KernelError::new("OCCT returned no mesh"))?;
+    // A face OCCT leaves unmeshed (a sliver too narrow for its tolerance, as a box chamfered
+    // nearly through has, at any deflection) has no triangles, if the shape is valid: as
+    // FreeCAD gives such a face an empty domain (`TopoShape::getDomains`). On a shape that
+    // isn't valid it's refused, naming the face: there it says something is broken (a face
+    // whose edges cross can't be meshed, and its area, its halves cancelling, says nothing).
+    let unmeshed = raw.unmeshed_faces();
+    if let Some(&face) = unmeshed.first() {
+        if !shape.is_valid()? {
+            let name = format!("Face{}", face + 1);
+            return Err(KernelError::new(format!("{name} couldn't be meshed"))
+                .with_element(name)
+                .with_suggestion(
+                    "the shape isn't valid, and this face of it can't be meshed: rebuild the \
+                     shape from its inputs",
+                ));
+        }
+        tracing::debug!(faces = ?unmeshed, "faces OCCT couldn't mesh, left without triangles");
+    }
     let triples = |values: &[f64]| -> Vec<[f64; 3]> {
         values.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect()
     };
@@ -1364,5 +1386,18 @@ mod tests {
             assert_eq!(err.kind(), KernelErrorKind::Internal);
             assert!(err.suggestion().unwrap().contains("bug"), "{err}");
         }
+    }
+
+    #[test]
+    fn an_invalid_boolean_result_says_the_shapes_nearly_meet() {
+        // No input is known to make OCCT return an invalid boolean result, so the advice is
+        // tested on its own: given to an invalid result, and to nothing else.
+        use super::{KernelError, KernelErrorKind, NEARLY_MEET, boolean_advice};
+        let invalid = KernelError::of_kind(KernelErrorKind::InvalidResult, "invalid");
+        assert_eq!(boolean_advice(invalid).suggestion(), Some(NEARLY_MEET));
+        let failed = KernelError::new("failed");
+        assert_eq!(boolean_advice(failed).suggestion(), None);
+        let refused = KernelError::invalid_input("refused").with_suggestion("other");
+        assert_eq!(boolean_advice(refused).suggestion(), Some("other"));
     }
 }

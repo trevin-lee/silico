@@ -100,7 +100,8 @@ enum Sink {
 }
 
 const USAGE: &str = "usage: silico-view [--viewer <rerun executable>] [--save <file.rrd>]\n\
-                     Shows a box and two fillets, built by the kernel worker, in Rerun.";
+                     Shows a box, two fillets, and the primitives (cylinder, sphere, cone, torus),\n\
+                     built by the kernel worker, in Rerun, edges labelled.";
 
 fn main() -> ExitCode {
     // Logs (the kernel worker's among them) go to stderr, filtered by SILICO_LOG.

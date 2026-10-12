@@ -89,29 +89,46 @@ fn case(name: &str, shape: Shape) -> Case {
 /// Every case Silico can't mesh (deflection a thousandth of the part's largest side), and
 /// why: a mesh Silico refuses is worth a look, and a worker lost meshing is a bug.
 pub fn meshes(cases: &[Case]) -> Result<Vec<String>, String> {
-    let start = || KernelWorker::start().map_err(|e| e.to_string());
-    let mut kernel = start()?;
+    let mut kernel = KernelWorker::start().map_err(|e| e.to_string())?;
     let mut found = Vec::new();
     for case in cases {
-        let Ok(shape) = silico::build(&mut kernel, &case.shape) else {
-            continue;
-        };
-        let size = kernel
-            .measure_as_freecad(&shape)
-            .ok()
-            .and_then(|m| m.bounds)
-            .map_or(1.0, |[low, high]| {
-                (0..3).map(|k| high[k] - low[k]).fold(0.0, f64::max)
-            });
-        if let Err(e) = kernel.tessellate(&shape, size / 1000.0) {
-            let lost = silico::lost(e.code());
-            found.push(format!("{}: Silico can't mesh it: {e}", case.name));
-            if lost {
-                kernel = start()?;
+        // A worker lost building or measuring a part (the comparison reports that) is
+        // replaced, so the next part isn't blamed for it.
+        let shape = match silico::build(&mut kernel, &case.shape) {
+            Ok(shape) => shape,
+            Err(e) => {
+                replace_if_lost(&mut kernel, &e)?;
+                continue;
             }
+        };
+        let bounds = match kernel.measure_as_freecad(&shape) {
+            Ok(m) => m.bounds,
+            Err(e) => {
+                replace_if_lost(&mut kernel, &e)?;
+                continue;
+            }
+        };
+        let size = bounds.map_or(1.0, |[low, high]| {
+            (0..3).map(|k| high[k] - low[k]).fold(0.0, f64::max)
+        });
+        let deflection = size / 1000.0;
+        if let Err(e) = kernel.tessellate(&shape, deflection) {
+            found.push(format!(
+                "{}: Silico can't mesh it at a deflection of {deflection}: {e}",
+                case.name
+            ));
+            replace_if_lost(&mut kernel, &e)?;
         }
     }
     Ok(found)
+}
+
+/// A new worker in place of `kernel`, if `error` says it was lost.
+fn replace_if_lost(kernel: &mut KernelWorker, error: &silico_core::Error) -> Result<(), String> {
+    if silico::lost(error.code()) {
+        *kernel = KernelWorker::start().map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// Differences the corpus shows that are understood, each with why: reported as known, not

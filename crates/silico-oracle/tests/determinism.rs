@@ -1,6 +1,7 @@
 //! determinism_sweep (docs/roadmap/m1-kernel.md, M1.9): every oracle case, and the suite's
 //! generated ones, built twice on fresh kernel workers (the second in reverse order, after
-//! the others) gives byte-identical B-reps, summaries, FreeCAD-style measures, and meshes.
+//! the others) gives byte-identical B-reps, histories, summaries, FreeCAD-style measures,
+//! and meshes.
 //! Their digests match a committed reference, recorded on the Mac, so CI on Linux checks
 //! that both platforms build every case the same, bit for bit. Rerecord (only with the
 //! maintainer's agreement, as for tests/determinism/stress-reference.json) with
@@ -11,7 +12,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use silico_core::kernel::KernelWorker;
-use silico_oracle::{Case, generate, load, silico::build};
+use silico_oracle::{Case, generate, load, silico::build_with_history};
 
 const CASES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/oracle");
 const REFERENCE: &str = concat!(
@@ -46,12 +47,20 @@ impl Digest {
     }
 }
 
-/// What building `case` on `kernel` gives, digested: its B-rep, summary, FreeCAD-style
-/// measures, and mesh (deflection 0.1), each or the code of the error that refused it.
+/// What building `case` on `kernel` gives, digested: its B-rep, the history its last
+/// operation reported (the order of OCCT's lists, which element names are built from, in
+/// M2), its summary, FreeCAD-style measures, and mesh (deflection 0.1), each or the code of
+/// the error that refused it.
 fn digests(kernel: &mut KernelWorker, case: &Case) -> BTreeMap<String, String> {
     let mut found = BTreeMap::new();
-    let shape = match build(kernel, &case.shape) {
-        Ok(shape) => shape,
+    let shape = match build_with_history(kernel, &case.shape) {
+        Ok((shape, history)) => {
+            if let Some(history) = history {
+                let json = serde_json::to_vec(&history).unwrap();
+                found.insert("history".to_owned(), Digest::default().bytes(&json).hex());
+            }
+            shape
+        }
         Err(e) => {
             found.insert("refused".to_owned(), e.code().as_str().to_owned());
             return found;

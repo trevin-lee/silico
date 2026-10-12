@@ -7,7 +7,8 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use silico_core::kernel::{
-    Axis, Blob, BooleanOp, ChamferSize, KernelWorker, Primitive, Profile, ShapeData,
+    Axis, Blob, BooleanOp, BuiltData, ChamferSize, History, KernelWorker, Primitive, Profile,
+    ShapeData,
 };
 use silico_core::{Error, ErrorCode};
 
@@ -42,41 +43,58 @@ pub(crate) fn lost(code: ErrorCode) -> bool {
 
 /// `shape`, built through `kernel`.
 pub fn build(kernel: &mut KernelWorker, shape: &Shape) -> Result<ShapeData, Error> {
+    build_with_history(kernel, shape).map(|(shape, _)| shape)
+}
+
+/// `shape`, built through `kernel`, and what its last operation did to its inputs (none
+/// for a primitive or a part read as it is).
+pub fn build_with_history(
+    kernel: &mut KernelWorker,
+    shape: &Shape,
+) -> Result<(ShapeData, Option<History>), Error> {
+    let made = |b: BuiltData| (b.shape, Some(b.history));
+    let read = |s: ShapeData| (s, None);
     match shape {
-        Shape::Brep { path } => converted(Path::new(path)),
-        &Shape::Block { dx, dy, dz } => kernel.make(Primitive::Box { dx, dy, dz }),
-        &Shape::Cylinder { radius, height } => kernel.make(Primitive::Cylinder { radius, height }),
-        &Shape::Sphere { radius } => kernel.make(Primitive::Sphere { radius }),
+        Shape::Brep { path } => converted(Path::new(path)).map(read),
+        &Shape::Block { dx, dy, dz } => kernel.make(Primitive::Box { dx, dy, dz }).map(read),
+        &Shape::Cylinder { radius, height } => kernel
+            .make(Primitive::Cylinder { radius, height })
+            .map(read),
+        &Shape::Sphere { radius } => kernel.make(Primitive::Sphere { radius }).map(read),
         &Shape::Cone {
             radius1,
             radius2,
             height,
-        } => kernel.make(Primitive::Cone {
-            radius1,
-            radius2,
-            height,
-        }),
+        } => kernel
+            .make(Primitive::Cone {
+                radius1,
+                radius2,
+                height,
+            })
+            .map(read),
         &Shape::Torus {
             major_radius,
             minor_radius,
-        } => kernel.make(Primitive::Torus {
-            major_radius,
-            minor_radius,
-        }),
+        } => kernel
+            .make(Primitive::Torus {
+                major_radius,
+                minor_radius,
+            })
+            .map(read),
         Shape::Translate { shape, by } => {
             let s = build(kernel, shape)?;
-            Ok(kernel.translate(&s, *by)?.shape)
+            kernel.translate(&s, *by).map(made)
         }
-        Shape::Fuse { base, tool } => boolean(kernel, BooleanOp::Fuse, base, tool),
-        Shape::Cut { base, tool } => boolean(kernel, BooleanOp::Cut, base, tool),
-        Shape::Common { base, tool } => boolean(kernel, BooleanOp::Common, base, tool),
+        Shape::Fuse { base, tool } => boolean(kernel, BooleanOp::Fuse, base, tool).map(made),
+        Shape::Cut { base, tool } => boolean(kernel, BooleanOp::Cut, base, tool).map(made),
+        Shape::Common { base, tool } => boolean(kernel, BooleanOp::Common, base, tool).map(made),
         Shape::Fillet {
             shape,
             edges,
             radius,
         } => {
             let s = build(kernel, shape)?;
-            Ok(kernel.fillet(&s, edges, *radius)?.shape)
+            kernel.fillet(&s, edges, *radius).map(made)
         }
         Shape::Chamfer {
             shape,
@@ -94,7 +112,7 @@ pub fn build(kernel: &mut KernelWorker, shape: &Shape) -> Result<ShapeData, Erro
                     ChamferSize::DistanceAngle { distance, angle }
                 }
             };
-            Ok(kernel.chamfer(&s, edges, size, *flip)?.shape)
+            kernel.chamfer(&s, edges, size, *flip).map(made)
         }
         Shape::Extrude {
             profile,
@@ -104,7 +122,7 @@ pub fn build(kernel: &mut KernelWorker, shape: &Shape) -> Result<ShapeData, Erro
             let profile = Profile {
                 points: profile.clone(),
             };
-            Ok(kernel.extrude(&profile, *length, *direction)?.shape)
+            kernel.extrude(&profile, *length, *direction).map(made)
         }
         Shape::Revolve {
             profile,
@@ -119,7 +137,7 @@ pub fn build(kernel: &mut KernelWorker, shape: &Shape) -> Result<ShapeData, Erro
                 origin: *origin,
                 direction: *direction,
             };
-            Ok(kernel.revolve(&profile, axis, *angle)?.shape)
+            kernel.revolve(&profile, axis, *angle).map(made)
         }
     }
 }
@@ -129,10 +147,10 @@ fn boolean(
     op: BooleanOp,
     base: &Shape,
     tool: &Shape,
-) -> Result<ShapeData, Error> {
+) -> Result<BuiltData, Error> {
     let base = build(kernel, base)?;
     let tool = build(kernel, tool)?;
-    Ok(kernel.boolean(op, &base, &tool)?.shape)
+    kernel.boolean(op, &base, &tool)
 }
 
 /// Names a `silico-brep-convert` to use instead of the one beside this executable.

@@ -364,6 +364,29 @@ mod tests {
     }
 
     #[test]
+    fn a_shape_far_from_the_origin_is_allowed_its_size_not_its_distance() {
+        // A 10 × 20 × 30 box moved 1e6 along x: its corners and center are allowed 30 × the
+        // tolerance, not 1e6 × it.
+        let far = |dx: f64, dz: f64| {
+            let mut m = block();
+            m.bounds = Some([[1e6, 0.0, 0.0], [1e6 + 10.0, 20.0, 30.0 + dz]]);
+            m.center = Some([1e6 + 5.0 + dx, 10.0, 15.0]);
+            m
+        };
+        let theirs = Outcome::Built(far(0.0, 0.0));
+        let found = differences(&Outcome::Built(far(1e-4, 0.0)), &theirs, Tolerance::PLANAR);
+        assert!(
+            found.len() == 1 && found[0].starts_with("center"),
+            "{found:?}"
+        );
+        let found = differences(&Outcome::Built(far(0.0, 1e-4)), &theirs, Tolerance::PLANAR);
+        assert!(
+            found.len() == 1 && found[0].starts_with("bounding box"),
+            "{found:?}"
+        );
+    }
+
+    #[test]
     fn a_shape_is_compared_as_what_its_made_of() {
         let block = || Shape::Block {
             dx: 1.0,

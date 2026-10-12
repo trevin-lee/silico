@@ -29,7 +29,7 @@ FreeCAD checks some values, clamps others when Python assigns them, and lets OCC
 | A cone's radii aren't both zero | Accepted; the result is an invalid zero-volume "solid" | Throws "cone with two identic radii" |
 | A torus's minor radius at most its major radius, within 1e-7 | `r > R` fails in the revolve ("BRep_API: command not done"); `r = R` builds a horn torus | `MakeTorus(10, 12)` builds a self-intersecting torus that passes `BRepCheck` |
 
-A result is checked like any operation's (docs/ports/fillet.md): one that isn't a valid solid is refused as `invalid_result`, never returned. A sphere of radius 1e300 is one (`sizes_too_large_to_build_are_refused`).
+A result is checked like any operation's (docs/ports/fillet.md): one that isn't a valid solid is refused as `invalid_result`, never returned. No input within the allowed sizes is known to reach that check: a sphere of radius 1e300, which OCCT builds with three faces, is refused before as `invalid_input`, past the kilometre limit (`tests/bridge.rs`).
 
 ### Where Silico differs on purpose
 

@@ -108,7 +108,13 @@ def build(doc, spec):
         doc.recompute()
         if ch.Shape.isNull() or not ch.isValid():
             raise RuntimeError(ch.getStatusString())
-        return ch.Shape.copy()
+        # PartDesign's base feature drops a placement held in its shape (recompute syncs the
+        # shape to the feature's own identity Placement, PartFeature.cpp:1548): put it back.
+        # FreeCAD's 123a1c80e1 restores it only for a base made through Body.BaseFeature, not
+        # this way, so this stays after an upgrade.
+        r = ch.Shape.copy()
+        r.Placement = holder.Placement.multiply(r.Placement)
+        return r
     if kind == "extrude":
         points = a["profile"]
         normal = newell(points)

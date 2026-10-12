@@ -233,7 +233,6 @@ std::unique_ptr<Tessellation> tessellate(const Shape &shape, double deflection) 
     throw Standard_Failure("the shape couldn't be meshed");
   }
   auto out = std::make_unique<Tessellation>();
-  int unmeshed = 0;
 
   ShapeMap faces;
   TopExp::MapShapes(copy, TopAbs_FACE, faces);
@@ -242,7 +241,9 @@ std::unique_ptr<Tessellation> tessellate(const Shape &shape, double deflection) 
     TopLoc_Location location;
     const Handle(Poly_Triangulation) mesh = BRep_Tool::Triangulation(face, location);
     if (mesh.IsNull()) {
-      ++unmeshed;
+      // Reported, for Rust to decide on.
+      out->unmeshed_faces_.push_back(static_cast<uint32_t>(i - 1));
+      out->face_triangles_.push_back(0);
       continue;
     }
     const gp_Trsf transform = location.Transformation();
@@ -296,10 +297,6 @@ std::unique_ptr<Tessellation> tessellate(const Shape &shape, double deflection) 
       out->edge_points_.insert(out->edge_points_.end(), {p.X(), p.Y(), p.Z()});
     }
     out->edge_points_per_edge_.push_back(static_cast<uint32_t>(points.NbPoints()));
-  }
-  if (unmeshed > 0) {
-    // A display with holes in it would be worse than an error.
-    throw Standard_Failure((std::to_string(unmeshed) + " faces couldn't be meshed").c_str());
   }
   return out;
 }

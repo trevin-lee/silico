@@ -19,42 +19,49 @@
   },
   "chamfer_distance_angle": {
     "brep": "ffc01ca4d702192d",
+    "history": "51e5dc18d32a99fb",
     "measures": "d6c7fd4bb1302f63",
     "mesh": "6a44d5640e90d839",
     "summary": "5df684e97058aeca"
   },
   "chamfer_equal": {
     "brep": "a11f0bf98d3e255a",
+    "history": "788735a9182cfdb5",
     "measures": "b0c105ce50795a17",
     "mesh": "9e9c24c74c58d7ad",
     "summary": "f43268745d333725"
   },
   "chamfer_tiny": {
     "brep": "fa5d46526c567ba9",
+    "history": "788735a9182cfdb5",
     "measures": "d803448469ff4b8c",
-    "mesh": "refused: kernel_failed",
+    "mesh": "127ebfc1189c1a51",
     "summary": "f4c3c987f2290510"
   },
   "chamfer_two_distances_flipped": {
     "brep": "2b3ee674b2c5d323",
+    "history": "b58118bea6a1f672",
     "measures": "9093f81aacd13bf1",
     "mesh": "9c2c22b67bb433fe",
     "summary": "c1da6d0d7d9f0724"
   },
   "common_box_sphere": {
     "brep": "579f170f1520496a",
+    "history": "95499cb170781b95",
     "measures": "0a901ccf8b50e6f4",
     "mesh": "748e67ef56ecb10c",
     "summary": "d95b47beef7dfb28"
   },
   "common_cylinder_bar": {
     "brep": "928cff3904077714",
+    "history": "57f98d67e96699ed",
     "measures": "5256fe102b7b9bc6",
     "mesh": "9a33768cb32dd06d",
     "summary": "eeaf33f2997533e1"
   },
   "common_sliver": {
     "brep": "ed9eb3280964a058",
+    "history": "41c88ecc5a09df76",
     "measures": "273e502f2d1f873c",
     "mesh": "e42b3917bd783b0d",
     "summary": "376df8827dd1fc68"
@@ -79,18 +86,21 @@
   },
   "cut_box_cylinder": {
     "brep": "660968b1a25ff262",
+    "history": "27eafd80022b090d",
     "measures": "a22efc93bcc2843b",
     "mesh": "cada9da8645faef9",
     "summary": "db5d9bc05d0f947f"
   },
   "cut_flush_pocket": {
     "brep": "55cb0c7840561d05",
+    "history": "afd0af5f83d9d511",
     "measures": "504b837059912d06",
     "mesh": "ade2539c7d279400",
     "summary": "3e309d9f0a4645db"
   },
   "cut_sphere_box": {
     "brep": "d28b1d338e156cf5",
+    "history": "a6784f79c0170249",
     "measures": "ea0ecf5bc6059a1d",
     "mesh": "f23b7f8c1edb6ce9",
     "summary": "b3df34d776139688"
@@ -115,66 +125,77 @@
   },
   "extrude_film": {
     "brep": "b074820d55d62d01",
+    "history": "f36bfa942afb614a",
     "measures": "bbb80534c1b9179e",
-    "mesh": "refused: kernel_failed",
+    "mesh": "de9365830fde23d5",
     "summary": "c1131f5e6aabfd23"
   },
   "extrude_l_slanted": {
     "brep": "5c9b535bb10ebeec",
+    "history": "007c370f32b1d601",
     "measures": "3c6e1e4039d80d3c",
     "mesh": "3ce44fca12f91341",
     "summary": "700af77c833f3fe4"
   },
   "extrude_rectangle": {
     "brep": "63fb7331ba5530d4",
+    "history": "f36bfa942afb614a",
     "measures": "c2bfc56fd2f34516",
     "mesh": "9902b0f782cf1ec5",
     "summary": "a8157a46682b2e11"
   },
   "fillet_box_edge1": {
     "brep": "7740454fdbc4e0e2",
+    "history": "788735a9182cfdb5",
     "measures": "54397e92321b3556",
     "mesh": "b79e0c4470f56892",
     "summary": "aa06d54676a7d20d"
   },
   "fillet_box_every_edge": {
     "brep": "e77b144895666771",
+    "history": "619bdb647162d1c5",
     "measures": "6c8f6c8f33c93a87",
     "mesh": "aec88fd4faa2cf9a",
     "summary": "82c2aef77dfa481d"
   },
   "fillet_tiny": {
     "brep": "c8f473e1b0074cfa",
+    "history": "788735a9182cfdb5",
     "measures": "1b34c5436c9af139",
     "mesh": "2768925ef8eeb88e",
     "summary": "d4feb2e18f32a84e"
   },
   "fuse_box_cylinder": {
     "brep": "05bd4a237f15442f",
+    "history": "c687401699597cb1",
     "measures": "5af53b2212a74709",
     "mesh": "22e297714d4b3651",
     "summary": "f9a1f1491b4efad7"
   },
   "fuse_boxes_touching": {
     "brep": "773a71c7d5cfa5e2",
+    "history": "3e3f3a16ff38fb57",
     "measures": "9d0cfd3be6927067",
     "mesh": "2f703016188483d5",
     "summary": "610d6a450acfaa5a"
   },
   "fuse_spheres": {
     "brep": "330920a2f33be584",
+    "history": "9943e78e517d5bd9",
     "measures": "082dc2aff2ecb14c",
     "mesh": "9e448913f82d892d",
     "summary": "ecde6ef3ba49af12"
   },
   "generated_20261010_0": {
     "brep": "81e76b98672bc937",
+    "history": "076635cb95dd44e8",
     "measures": "4f000dfc7f3343b4",
     "mesh": "19453eaa8e6d03d0",
     "summary": "0e6b1c91543f8812"
   },
   "generated_20261010_1": {
     "brep": "9d5201134243ddc2",
+    "history": "f36bfa942afb614a",
     "measures": "dc0c5c611b0b8016",
     "mesh": "e11c2f0d7a86e5e9",
     "summary": "0ee419a629b91e0c"
@@ -193,6 +214,7 @@
   },
   "generated_20261010_12": {
     "brep": "78dbb9724342033b",
+    "history": "ca0c205ac95b9379",
     "measures": "08c8fff0e8632796",
     "mesh": "111494c5a70e8e2d",
     "summary": "88f626205236e7b7"
@@ -205,126 +227,147 @@
   },
   "generated_20261010_14": {
     "brep": "7fe8ca069ce737ec",
+    "history": "98991c6437c25268",
     "measures": "a80d4ded8cffcddf",
     "mesh": "cc0126bbf21ba093",
     "summary": "fbb1efeaa2d0aa44"
   },
   "generated_20261010_15": {
     "brep": "f59fc9f07f03a082",
+    "history": "7522f2c2dc2ce0a4",
     "measures": "39a80b15f37b4f5c",
     "mesh": "87c2f35a4b25b5a5",
     "summary": "2d196e3a24ebbe10"
   },
   "generated_20261010_16": {
     "brep": "b6f90f9783d78824",
+    "history": "7c99a4b299582c3b",
     "measures": "093f9c454aab8408",
     "mesh": "0d7aff4bd95135c2",
     "summary": "5d9a1808e2b57e66"
   },
   "generated_20261010_17": {
     "brep": "58082b1bd876b90f",
+    "history": "f36bfa942afb614a",
     "measures": "bbbe29efd9ff5e61",
     "mesh": "12669b4a53bf4b6d",
     "summary": "36aaab21c6c89301"
   },
   "generated_20261010_18": {
     "brep": "e78155cbcf0e1862",
+    "history": "395cd2a0644106e3",
     "measures": "7e53958b9ba6cf75",
     "mesh": "2bb1eefeff4a42b1",
     "summary": "ed2e888002541d40"
   },
   "generated_20261010_19": {
     "brep": "b4d5ab8313d90c8f",
+    "history": "f36bfa942afb614a",
     "measures": "d914f1dfa3d91dff",
     "mesh": "5d8341d26f0546c4",
     "summary": "1bfd897e8af107e7"
   },
   "generated_20261010_2": {
     "brep": "0ff18bfb6f244cf4",
+    "history": "2c88545a639a6805",
     "measures": "75d823cca83cf52f",
     "mesh": "9affb0b5ecb6a925",
     "summary": "48fa753564cfc9f0"
   },
   "generated_20261010_20": {
     "brep": "9ca9a27f9f0c3d0f",
+    "history": "464ed4df4af85938",
     "measures": "ea1c4c78fc744f9a",
     "mesh": "80ee090ef3171405",
     "summary": "e79a48d1cd78687d"
   },
   "generated_20261010_21": {
     "brep": "ffc274bbd3a6b93f",
+    "history": "c64ea773103f2f14",
     "measures": "b0036f0ff0851c9e",
     "mesh": "edecb6c0f13196c1",
     "summary": "afcd6d6f75d3d805"
   },
   "generated_20261010_22": {
     "brep": "11df25a2a67738cc",
+    "history": "7c99a4b299582c3b",
     "measures": "0a11a76a930284bf",
     "mesh": "7b8e568c0ca10756",
     "summary": "aea58d6ef7121f23"
   },
   "generated_20261010_23": {
     "brep": "4ad4956cc2b76f47",
+    "history": "7c99a4b299582c3b",
     "measures": "cafcb0d994050f9f",
     "mesh": "5d3f3845a11b0a13",
     "summary": "20d6616bdcdbcdfb"
   },
   "generated_20261010_24": {
     "brep": "efc1008335c3d296",
+    "history": "076635cb95dd44e8",
     "measures": "fa17ff4216d23361",
     "mesh": "0bac978df47ae9bc",
     "summary": "50317b82d3c34a71"
   },
   "generated_20261010_25": {
     "brep": "9f5814597adb7aba",
+    "history": "7c99a4b299582c3b",
     "measures": "f4741092636d1af3",
     "mesh": "4df5aa0b05b6b02c",
     "summary": "b62392f6236f5852"
   },
   "generated_20261010_26": {
     "brep": "8d44792def5272ac",
+    "history": "9207d1b9578e5bfc",
     "measures": "7c379e82ed2e887e",
     "mesh": "117e5e50f4f3222a",
     "summary": "8da58190277411e7"
   },
   "generated_20261010_27": {
     "brep": "f722f9ffe5d4c39e",
+    "history": "51e5dc18d32a99fb",
     "measures": "a837423f7f75f993",
     "mesh": "f19057210afa8c5d",
     "summary": "7f04401db125db4f"
   },
   "generated_20261010_28": {
     "brep": "40cf94f1547aaeea",
+    "history": "cefaa9bd359fba84",
     "measures": "ee927c47e8259e4b",
     "mesh": "0ccda5dc32afd87d",
     "summary": "1bcbc70510ebcacc"
   },
   "generated_20261010_29": {
     "brep": "f68493693d61e88b",
+    "history": "3948bca17ad6348b",
     "measures": "5ba7c5d3cdc63bf2",
     "mesh": "48994bfdda552da2",
     "summary": "81c65939acc670e8"
   },
   "generated_20261010_3": {
     "brep": "2c008068ed3fddda",
+    "history": "7c99a4b299582c3b",
     "measures": "3517e89b886ce327",
     "mesh": "6f963806805ca8b7",
     "summary": "32f53dc495c44bbd"
   },
   "generated_20261010_30": {
     "brep": "9c4ea1a8f678889d",
+    "history": "07034c8254abbbfd",
     "measures": "9632a71bc785b766",
     "mesh": "b76e2963d3f31500",
     "summary": "a6d4e813da942410"
   },
   "generated_20261010_31": {
     "brep": "592fba9f9e8398c8",
+    "history": "076635cb95dd44e8",
     "measures": "50f6545ad59aebc2",
     "mesh": "b08adb06aea9d5ad",
     "summary": "f07c0981f7df54f4"
   },
   "generated_20261010_32": {
     "brep": "6adfe74ffa0c722e",
+    "history": "f36bfa942afb614a",
     "measures": "99a049b333191dac",
     "mesh": "f06ba3659df20e36",
     "summary": "9ffdbf40c63547fe"
@@ -337,90 +380,105 @@
   },
   "generated_20261010_34": {
     "brep": "a29ac09f7bdbcaf0",
+    "history": "51e5dc18d32a99fb",
     "measures": "fab95f1a91e7b19f",
     "mesh": "1b65cb56df1d3c54",
     "summary": "c4b037a1b4e08957"
   },
   "generated_20261010_35": {
     "brep": "d6bf9dd6d512e134",
+    "history": "7c99a4b299582c3b",
     "measures": "70b07c8825a16bf1",
     "mesh": "833dd31438314ac0",
     "summary": "fc0c3fa43fe8a7e7"
   },
   "generated_20261010_36": {
     "brep": "826f6012a2167567",
+    "history": "3ada289cf0a4fc6d",
     "measures": "0a56aee874c48d35",
     "mesh": "287b9f8ff34427a3",
     "summary": "c7de612e277b04c4"
   },
   "generated_20261010_37": {
     "brep": "219eb36999e33383",
+    "history": "007c370f32b1d601",
     "measures": "d74f8028889fb7e3",
     "mesh": "20a5fa4a73b0b0e9",
     "summary": "931c6750e738a74e"
   },
   "generated_20261010_38": {
     "brep": "765ecb25f8dd8596",
+    "history": "5f5cfb322855dd7c",
     "measures": "d060ea2c25e7ef8d",
     "mesh": "b2a6bd72f338f09b",
     "summary": "0bf6c11bfd341e74"
   },
   "generated_20261010_39": {
     "brep": "201ec3ef1d23240e",
+    "history": "5f79fefdbff616dd",
     "measures": "9a748e6cf7c51ff0",
     "mesh": "4a921a12fccbed2d",
     "summary": "6e69337040721224"
   },
   "generated_20261010_4": {
     "brep": "7de17309708040b8",
+    "history": "f36bfa942afb614a",
     "measures": "97ec0dc46f0c068e",
     "mesh": "d9826103b7d0a58c",
     "summary": "e3808fe8aac7e30d"
   },
   "generated_20261010_5": {
     "brep": "78e94793abc910ea",
+    "history": "f36bfa942afb614a",
     "measures": "364eab4fcfecb572",
     "mesh": "56d105437be68c99",
     "summary": "41bc43bc9cd25d21"
   },
   "generated_20261010_6": {
     "brep": "69b2ca8bc2e2cb17",
+    "history": "2f40c1168a2cadbd",
     "measures": "47d2074c87ee834b",
     "mesh": "0abbf2d93727c41a",
     "summary": "b7c8f30591c30170"
   },
   "generated_20261010_7": {
     "brep": "0f3802eea475b169",
+    "history": "f36bfa942afb614a",
     "measures": "4dc8729664c03e48",
     "mesh": "12363cf6f0624336",
     "summary": "1963b8f1c0cf4874"
   },
   "generated_20261010_8": {
     "brep": "d7004c97942575a4",
+    "history": "e70423ecb0b94407",
     "measures": "e470aae179bf9528",
     "mesh": "b407c2a3c65aa2fa",
     "summary": "c27ca06f25413305"
   },
   "generated_20261010_9": {
     "brep": "d36004208c7dd564",
+    "history": "09a575b05fcdba4c",
     "measures": "ab31720aa2deb529",
     "mesh": "03a8bb35c1d3a201",
     "summary": "93c1526a61d5a66d"
   },
   "revolve_ring": {
     "brep": "f0cc5f9c47ea15fc",
+    "history": "1d2f99f9631de0e9",
     "measures": "a193148ed374a1e0",
     "mesh": "db782ac8de17b726",
     "summary": "2a125ca852946e6b"
   },
   "revolve_sliver": {
     "brep": "9e5f5fa293e8e7db",
+    "history": "f36bfa942afb614a",
     "measures": "ed727ae211cda685",
     "mesh": "395152fc334bed37",
     "summary": "c3d9f365abc0b525"
   },
   "revolve_triangle_quarter": {
     "brep": "5201948decd06a64",
+    "history": "fe2b800758524906",
     "measures": "0235c0b7291ec3c1",
     "mesh": "0ec65923b6766ed8",
     "summary": "87a23d34d93dcb19"
@@ -463,18 +521,21 @@
   },
   "translate_box": {
     "brep": "46a485f8ca987bb9",
+    "history": "464ed4df4af85938",
     "measures": "94700720cc5ac3e5",
     "mesh": "cb41f0c765007455",
     "summary": "fc8b4651a9f76569"
   },
   "translate_far": {
     "brep": "89b240430eab950d",
+    "history": "464ed4df4af85938",
     "measures": "c04a7a9335c09f08",
     "mesh": "d96526a01c2e80ad",
     "summary": "aa4fac3c5437a5b8"
   },
   "translate_torus_unround": {
     "brep": "64dcedc01fa4b2dc",
+    "history": "3948bca17ad6348b",
     "measures": "40deb1b50b384aee",
     "mesh": "704a0ff1f872afc4",
     "summary": "d257cd2e27932ff4"

@@ -940,3 +940,242 @@ fn a_worker_under_an_empty_silico_log_still_warns() {
     let cause = err.cause().unwrap();
     assert!(cause.contains("aborting, as asked: line 25"), "{cause}");
 }
+
+#[test]
+fn every_failure_says_what_to_try() {
+    // A crash, a reply out of turn or unreadable, and each refusal carry a suggestion; a
+    // fillet radius too small for OCCT is refused before it's sent, not answered with
+    // advice to make it smaller still.
+    use silico_core::kernel::{KernelRequest, KernelWorker, Primitive};
+    use silico_protocol::Misbehavior;
+    let test = |op| {
+        let mut w = KernelWorker::start_worker(Path::new(TEST_WORKER)).unwrap();
+        w.run(KernelRequest::debug(op)).unwrap_err()
+    };
+    for (what, err) in [
+        ("a segfault", test(DebugOp::Segfault)),
+        ("an abort", test(DebugOp::Abort)),
+        ("garbage", test(DebugOp::Garbage)),
+        (
+            "out of turn",
+            test(DebugOp::ReplyOutOfTurn(silico_protocol::OutOfTurn::WrongId)),
+        ),
+        ("a wrong reply", {
+            let mut w = KernelWorker::start_worker(Path::new(TEST_WORKER)).unwrap();
+            w.run(KernelRequest::debug(DebugOp::Misbehave(
+                Misbehavior::WrongReply,
+            )))
+            .unwrap();
+            w.make(Primitive::Sphere { radius: 1.0 }).unwrap_err()
+        }),
+    ] {
+        assert!(err.suggestion().is_some(), "{what}: {err}");
+    }
+    // Each kind of failure gets its own advice: a worker that misbehaved is Silico's bug, not
+    // the request's; a test operation a production worker refuses, Silico's own; a refusal
+    // that says no more, the value it names.
+    let bug = "this is a bug in Silico's kernel worker, not in the request";
+    for (what, err, says) in [
+        ("garbage", test(DebugOp::Garbage), bug),
+        (
+            "out of turn",
+            test(DebugOp::ReplyOutOfTurn(silico_protocol::OutOfTurn::WrongId)),
+            bug,
+        ),
+        (
+            "a test operation on a production worker",
+            {
+                let mut w = KernelWorker::start_worker(Path::new(WORKER)).unwrap();
+                w.run(KernelRequest::debug(DebugOp::Abort)).unwrap_err()
+            },
+            "this is a bug in Silico, not in the request",
+        ),
+        (
+            "a refusal with no advice of its own",
+            {
+                let mut w = KernelWorker::start_worker(Path::new(WORKER)).unwrap();
+                let block = w.make(Primitive::Sphere { radius: 1.0 }).unwrap();
+                w.tessellate(&block, 0.0).unwrap_err()
+            },
+            "change the value the message names",
+        ),
+    ] {
+        assert!(err.suggestion().unwrap().starts_with(says), "{what}: {err}");
+    }
+    // A crash's advice follows how the worker ended: its own crash is the values'; a kill
+    // from outside is worth a retry; an exit of its own is its install. SIGSEGV and SIGBUS
+    // sent from outside don't end a worker once Rust's runtime has started (its handler for
+    // stack overflows takes them, and returns), so a segfault is the worker's own.
+    let mid_request = |signal: &'static str| {
+        let mut w = KernelWorker::start_worker(Path::new(TEST_WORKER)).unwrap();
+        let pid = w.pid();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            let _ = Command::new("kill")
+                .args([format!("-{signal}"), pid.to_string()])
+                .status();
+        });
+        w.run(KernelRequest::debug(DebugOp::Sleep { millis: 10_000 }))
+            .unwrap_err()
+    };
+    // Sent once the worker has started (it has answered), then waited on until the worker
+    // has ended (a zombie, or gone), so the request can't reach it.
+    let while_idle = |signal: &str| {
+        let mut w = KernelWorker::start_worker(Path::new(TEST_WORKER)).unwrap();
+        w.run(KernelRequest::debug(DebugOp::Sleep { millis: 0 }))
+            .unwrap();
+        let pid = w.pid().to_string();
+        let _ = Command::new("kill")
+            .args([format!("-{signal}"), pid.clone()])
+            .status();
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(10) {
+            let ps = Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid])
+                .output()
+                .unwrap();
+            let stat = String::from_utf8_lossy(&ps.stdout).trim().to_owned();
+            if stat.is_empty() || stat.starts_with('Z') {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        w.make(Primitive::Sphere { radius: 1.0 }).unwrap_err()
+    };
+    for (what, err, says) in [
+        (
+            "a segfault",
+            test(DebugOp::Segfault),
+            "change the operation's values",
+        ),
+        (
+            "an abort",
+            test(DebugOp::Abort),
+            "change the operation's values",
+        ),
+        (
+            "a SIGILL",
+            mid_request("ILL"),
+            "change the operation's values",
+        ),
+        (
+            "a SIGFPE",
+            mid_request("FPE"),
+            "change the operation's values",
+        ),
+        (
+            "a SIGTRAP",
+            mid_request("TRAP"),
+            "change the operation's values",
+        ),
+        (
+            "a SIGSYS",
+            mid_request("SYS"),
+            "change the operation's values",
+        ),
+        ("a Ctrl-C", mid_request("INT"), "try the request again"),
+        ("a hangup", mid_request("HUP"), "try the request again"),
+        ("a SIGUSR1", mid_request("USR1"), "try the request again"),
+        (
+            "a kill from outside",
+            mid_request("KILL"),
+            "try the request once more",
+        ),
+        (
+            "a SIGTERM from outside",
+            mid_request("TERM"),
+            "try the request again",
+        ),
+        (
+            "a worker that faulted while idle, before the request",
+            while_idle("ILL"),
+            "try the request again",
+        ),
+        (
+            "a worker killed partway through reading a large request",
+            {
+                // Says it has started (an empty frame), takes 1 MiB of the 64 MiB request,
+                // then is killed, as the system kills a worker that runs out of memory
+                // reading it.
+                let exe = script(
+                    "killed-reading",
+                    "printf '\\0\\0\\0\\0' >&3\nhead -c 1048576 <&3 >/dev/null\nkill -KILL $$",
+                );
+                let mut w = KernelWorker::start_worker(&exe).unwrap();
+                let big = ShapeData::unchecked(Blob::inline(vec![b'x'; 64 * 1024 * 1024]));
+                w.summarize(&big).unwrap_err()
+            },
+            "try the request once more",
+        ),
+        (
+            "a worker killed while idle, before the request",
+            while_idle("KILL"),
+            "try the request again",
+        ),
+        (
+            "a worker that crashed as it started",
+            {
+                // As dyld aborts a worker whose library is missing: before it says it has
+                // started, whatever the request.
+                let exe = script("aborts-at-start", "kill -ABRT $$");
+                let mut w = KernelWorker::start_worker(&exe).unwrap();
+                w.make(Primitive::Sphere { radius: 1.0 }).unwrap_err()
+            },
+            "check Silico's install",
+        ),
+        (
+            "an exit of its own",
+            {
+                let dir = std::env::temp_dir().join(format!("silico-exits-{}", std::process::id()));
+                std::fs::create_dir_all(&dir).unwrap();
+                let exe = dir.join("worker.sh");
+                std::fs::write(
+                    &exe,
+                    "#!/bin/sh\necho 'dyld: Library not loaded' >&2\nexit 3\n",
+                )
+                .unwrap();
+                std::fs::set_permissions(&exe, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+                    .unwrap();
+                let mut w = KernelWorker::start_worker(&exe).unwrap();
+                let err = w.make(Primitive::Sphere { radius: 1.0 }).unwrap_err();
+                std::fs::remove_dir_all(&dir).unwrap();
+                err
+            },
+            "check Silico's install",
+        ),
+    ] {
+        assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{what}: {err}");
+        assert!(err.suggestion().unwrap().starts_with(says), "{what}: {err}");
+    }
+    let mut w = KernelWorker::start_worker(Path::new(WORKER)).unwrap();
+    let block = w
+        .make(Primitive::Box {
+            dx: 10.0,
+            dy: 20.0,
+            dz: 30.0,
+        })
+        .unwrap();
+    for err in [
+        w.fillet(&block, &[13], 1.0).unwrap_err(),
+        w.fillet(&block, &[1, 1], 1.0).unwrap_err(),
+        w.fillet(&block, &[], 1.0).unwrap_err(),
+        w.tessellate(&block, 0.0).unwrap_err(),
+    ] {
+        assert!(err.suggestion().is_some(), "{err}");
+    }
+    let sent = w.requests_sent();
+    for radius in [f64::NAN, -1.0, 0.0, 1e-12, 1e-7, 1e7] {
+        let err = w.fillet(&block, &[1], radius).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::InvalidInput, "{radius}: {err}");
+        assert_eq!(
+            err.suggestion(),
+            Some("give the fillet a valid radius"),
+            "{err}"
+        );
+    }
+    assert_eq!(
+        w.requests_sent(),
+        sent,
+        "a refused radius reached the worker"
+    );
+}

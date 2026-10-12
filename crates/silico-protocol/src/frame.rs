@@ -61,6 +61,25 @@ impl std::error::Error for FrameError {
     }
 }
 
+/// Writes the frame a worker sends once it has started: an empty one, which no message
+/// encodes to, so the core tells it from a reply. A worker that ends before sending it
+/// never ran (a missing library, say), whatever the request was.
+pub fn write_started<W: Write + ?Sized>(writer: &mut W) -> Result<(), FrameError> {
+    writer
+        .write_all(&0u32.to_le_bytes())
+        .map_err(FrameError::Io)?;
+    writer.flush().map_err(FrameError::Io)
+}
+
+/// Decodes one frame's payload as a message, all of it.
+pub fn decode<T: DeserializeOwned>(payload: &[u8]) -> Result<T, FrameError> {
+    let (message, rest) = postcard::take_from_bytes(payload).map_err(FrameError::Decode)?;
+    if !rest.is_empty() {
+        return Err(FrameError::TrailingBytes { extra: rest.len() });
+    }
+    Ok(message)
+}
+
 /// Encodes `message` and writes it as one frame, then flushes.
 pub fn write_message<W: Write + ?Sized, T: Serialize>(
     writer: &mut W,
@@ -144,10 +163,6 @@ impl<R: Read> FrameReader<R> {
         let Some(payload) = self.read_frame()? else {
             return Ok(None);
         };
-        let (message, rest) = postcard::take_from_bytes(&payload).map_err(FrameError::Decode)?;
-        if !rest.is_empty() {
-            return Err(FrameError::TrailingBytes { extra: rest.len() });
-        }
-        Ok(Some(message))
+        decode(&payload).map(Some)
     }
 }

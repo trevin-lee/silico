@@ -373,6 +373,38 @@ fn a_worker_executable_deleted_and_restored_under_a_running_pool() {
     wait_no_children("after the drop");
 }
 
+#[test]
+fn a_pool_whose_binary_comes_back_after_many_failed_starts_fills_at_once() {
+    // While the binary is missing, each failed start doubles its slot's wait, toward a
+    // minute. Once a worker answers, the binary is back: every slot starts one at its next
+    // check, not after its wait.
+    let dir = scratch_dir("restored-late");
+    let exe = dir.join("silico-kernel-test-worker");
+    std::os::unix::fs::symlink(TEST_WORKER, &exe).unwrap();
+    let pool = KernelPool::start_workers(&exe, 2).unwrap();
+    std::fs::remove_file(&exe).unwrap();
+    let before = pool.pids();
+    for &pid in &before {
+        kill9_and_wait(pid);
+    }
+    // In pairs, so both slots fail to start workers.
+    for _ in 0..8 {
+        let pair = [
+            pool.submit(Generation(1), sleep(1)),
+            pool.submit(Generation(1), sleep(1)),
+        ];
+        for pending in pair {
+            assert!(done(pending).is_err());
+        }
+    }
+    std::os::unix::fs::symlink(TEST_WORKER, &exe).unwrap();
+    assert!(done(pool.submit(Generation(1), sleep(1))).is_ok());
+    let held = wait_full(&pool, 2, &before.iter().copied().collect());
+    drop(pool);
+    assert_reaped(&held, "after the drop");
+    wait_no_children("after the drop");
+}
+
 // ---------------------------------------------------------------------------------------
 // Workers stopped, slowed, and talking out of turn
 
@@ -883,8 +915,8 @@ fn every_worker_crashing_at_once_leaves_a_full_pool_every_time() {
             assert_eq!(err.code(), ErrorCode::WorkerCrashed, "round {round}: {err}");
         }
         // The pool may hand a crash to a slot it has already replaced, so a worker can be
-        // missed: that one is killed by hand (SIGKILL: OCCT catches a SIGSEGV sent from
-        // outside on Linux). A worker that crashed and wasn't replaced isn't running, so
+        // missed: that one is killed by hand (SIGKILL: Rust's runtime survives a SIGSEGV
+        // sent from outside). A worker that crashed and wasn't replaced isn't running, so
         // it's left for `wait_full` to find.
         let running: BTreeSet<u32> = children()
             .into_iter()
@@ -961,22 +993,24 @@ fn requests_whose_callers_stopped_waiting_dont_jam_the_pool() {
         done(pool.submit(Generation(1), echo(&[4]))).unwrap(),
         Blob::inline(vec![4])
     );
-    // 40 × 10 ms on two workers, and some slack.
+    // 40 × 10 ms on two workers: a jammed pool would never answer, and one that stalls on
+    // each abandoned request would take seconds. (Bounds are against what they rule out, not
+    // how fast a loaded machine is.)
     assert!(
-        start.elapsed() < Duration::from_secs(3),
+        start.elapsed() < Duration::from_secs(10),
         "{:?}",
         start.elapsed()
     );
-    // And `advance` drops what's still queued, so a request after it needn't wait at all.
+    // And `advance` drops what's still queued: a request after it waits at most for the two
+    // sleeps already running, where the queue would take 40 × 500 ms on two workers, 10 s.
     for _ in 0..40 {
-        drop(pool.submit(Generation(1), sleep(200)));
+        drop(pool.submit(Generation(1), sleep(500)));
     }
     pool.advance(Generation(2));
     let start = Instant::now();
     done(pool.submit(Generation(2), echo(&[5]))).unwrap();
-    // At most the two sleeps already running.
     assert!(
-        start.elapsed() < Duration::from_millis(1000),
+        start.elapsed() < Duration::from_secs(5),
         "{:?}",
         start.elapsed()
     );
@@ -1060,4 +1094,78 @@ fn a_pool_started_from_a_relative_path_keeps_its_workers_after_the_directory_cha
     // for at ./worker in the new working directory, and every request after failed).
     let result = done(pool.submit(Generation(1), echo(&[8])));
     assert_eq!(result.unwrap(), Blob::inline(vec![8]));
+}
+
+#[test]
+fn a_worker_that_dies_as_it_starts_isnt_started_over_while_the_pool_is_idle() {
+    // A worker binary that starts and exits at once (a missing library, a refusal at start):
+    // it isn't launched again every second for as long as the pool is idle, but less and
+    // less often; a request starts one at once, and fails saying how it ended.
+    let dir = std::env::temp_dir().join(format!("silico-pool-dies-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("worker.sh");
+    let log = dir.join("launches");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho launched >> '{}'\necho 'no OCCT here' >&2\nexit 3\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let launches = || std::fs::read_to_string(&log).map_or(0, |l| l.lines().count());
+    let pool = KernelPool::start_workers(&script, 4).unwrap();
+    // Each slot waits twice as long each time (1 s, 2 s, 4 s): between 4 s and 8 s idle,
+    // about one launch a slot, where starting one every second would be four.
+    std::thread::sleep(Duration::from_secs(4));
+    let early = launches();
+    std::thread::sleep(Duration::from_secs(4));
+    let late = launches() - early;
+    assert!(late <= 8, "{late} launches in 4 s idle, {early} before");
+    let err = done(pool.submit(Generation(1), echo(&[1]))).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert!(
+        err.cause()
+            .is_some_and(|c| c.contains("exited with code 3") && c.contains("no OCCT here")),
+        "{err}"
+    );
+    drop(pool);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn an_idle_slot_whose_worker_dies_at_start_waits_longer_each_time() {
+    // One slot, its worker ending at once each time: it's started again after waits that
+    // double from 1 s (each after a tick to notice the end), so launches at about 0, 2, 5,
+    // 10, and 19 s. Exactly four in 16 s, each gap longer than the one before: not never,
+    // not every tick, not a fixed wait, and not a wait that grows by a tick each time
+    // (launches at 0, 2, 5, 9, and 14 s).
+    let dir = std::env::temp_dir().join(format!("silico-pool-backoff-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("worker.sh");
+    let log = dir.join("launches");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nperl -MTime::HiRes=time -e 'print time, \"\\n\"' >> '{}'\nexit 3\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let pool = KernelPool::start_workers(&script, 1).unwrap();
+    std::thread::sleep(Duration::from_secs(16));
+    drop(pool);
+    let times: Vec<f64> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|l| l.trim().parse().unwrap())
+        .collect();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let gaps: Vec<f64> = times.windows(2).map(|w| w[1] - w[0]).collect();
+    assert_eq!(times.len(), 4, "launches at {times:?}");
+    for pair in gaps.windows(2) {
+        assert!(pair[1] > pair[0], "gaps {gaps:?} don't grow");
+    }
 }
