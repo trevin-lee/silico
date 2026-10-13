@@ -139,7 +139,7 @@ fn named(err: &KernelError) -> Option<Vec<u32>> {
 const TOP_RING: ([f64; 3], [u32; 4], f64) = ([5.25, 2.85, 5.0], [2, 6, 10, 12], 1.45);
 
 #[test]
-fn a_top_face_too_narrow_for_two_fillets_never_names_a_bystander() {
+fn a_top_face_too_narrow_for_two_fillets_names_no_edge() {
     let (dims, edges, r) = TOP_RING;
     let b = make_box(dims[0], dims[1], dims[2]).unwrap();
     // The hand calculation, and OCCT agreeing with it: without Edge12 (or Edge10) the rest
@@ -152,12 +152,10 @@ fn a_top_face_too_narrow_for_two_fillets_never_names_a_bystander() {
     assert!(fillet(&b, &[2, 6, 12], r).is_ok());
     assert!(fillet(&b, &[6, 10, 12], r).is_err());
     let err = failed(fillet(&b, &edges, r));
-    // Named [2] once: OCCT's intersection check between two contours
-    // (ChFi3d_Builder::Compute, ChFi3d_StripeEdgeInter) appends only the first contour of
-    // the pair it checks to its faulty list, and Edge2's contour is first. The refusal then
-    // said "OCCT couldn't fillet Edge2 ... leave the edge out", which doesn't help (Edge6,
-    // Edge10, Edge12 still fail) and costs a fillet that builds. Edges at fault, or none.
-    // None, as for any collision, and the suggestion says how to find them.
+    // A collision names no edge: OCCT's faulty list holds only the first contour of the
+    // colliding pair (here Edge2's, which isn't at fault), with no error status. (Naming it
+    // once told the user to leave Edge2 out, which doesn't help.) The suggestion says how
+    // to find them.
     assert_eq!(named(&err), None, "{err:?}");
     assert!(err.elements().is_empty(), "{err:?}");
     assert!(
@@ -281,7 +279,7 @@ proptest! {
         let Some(named) = named(&err) else { return Ok(()); };
         // OCCT's report of a collision names the first contour of the pair, which may be an
         // edge that collides with nothing (see
-        // a_top_face_too_narrow_for_two_fillets_never_names_a_bystander): once
+        // a_top_face_too_narrow_for_two_fillets_names_no_edge): once
         // named, about one failed fillet in a hundred on boxes.
         for &e in &named {
             prop_assert_eq!(

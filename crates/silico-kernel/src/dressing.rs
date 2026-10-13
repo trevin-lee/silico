@@ -345,7 +345,20 @@ fn not_built(
     e: cxx::Exception,
 ) -> KernelError {
     let error = blame_edges(e.into(), edges, kind);
-    match faulty_edges(dressing, topology, edges) {
+    as_reported(error, kind, faulty_edges(dressing, topology, edges))
+}
+
+/// `error`, OCCT's failure on all the edges, as OCCT's `report` has it: naming the edges it
+/// reports at fault, if any. If the report couldn't be read, the failure stands, naming no
+/// edge. No input is known to reach that: in OCCT 7.9.3, only a collision could make a
+/// stripe faulty that isn't a given contour (a corner stripe added while building), whose
+/// status the bridge refuses to read, and a collision names no edge anyway.
+fn as_reported(
+    error: KernelError,
+    kind: DressingKind,
+    report: Result<Vec<u32>, KernelError>,
+) -> KernelError {
+    match report {
         Ok(failed) if failed.is_empty() => error,
         Ok(failed) => KernelError::caused(
             Refusal::EdgesFailed {
@@ -354,10 +367,6 @@ fn not_built(
             },
             error.cause().map(str::to_owned),
         ),
-        // OCCT's report couldn't be read: the failure stands, without naming the edges. As
-        // OCCT 7.9.3 reads, a collision can make a corner stripe it added while building
-        // faulty, past the given contours, whose status the bridge refuses to read; no input
-        // found yet does (a collision names no edge either way).
         Err(e) => {
             tracing::warn!(error = %e, "OCCT's report of a failed fillet couldn't be read");
             error
@@ -384,7 +393,7 @@ fn faulty_edges(
     let faulty = dressing.faulty_contours()?;
     let mut surfaces_failed = false;
     for &contour in &faulty {
-        if contour != 0 && dressing.contour_failed(contour)? {
+        if dressing.contour_failed(contour)? {
             surfaces_failed = true;
             break;
         }
@@ -428,6 +437,42 @@ fn refuse(troubles: &[(u32, Trouble)], dressing: DressingKind) -> KernelError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failure_names_the_edges_occts_report_has_and_stands_without_one() {
+        let fillet = DressingKind::Fillet;
+        let cause = Some("Standard_Failure: the fillet couldn't be built".to_owned());
+        let failure = || {
+            KernelError::caused(
+                Refusal::Occt {
+                    operation: Operation::Dressing { dressing: fillet },
+                    edges: vec![1, 2, 5],
+                },
+                cause.clone(),
+            )
+        };
+        // The edges the report has, with OCCT's words.
+        let named = as_reported(failure(), fillet, Ok(vec![2, 5]));
+        assert_eq!(
+            named.refusal(),
+            &Refusal::EdgesFailed {
+                dressing: fillet,
+                edges: vec![2, 5],
+            }
+        );
+        assert_eq!(named.cause(), cause.as_deref());
+        assert_eq!(named.elements(), ["Edge2", "Edge5"]);
+        // None reported, or the report unreadable: the failure on all the edges, as it was.
+        assert_eq!(as_reported(failure(), fillet, Ok(Vec::new())), failure());
+        let unread = KernelError::caused(
+            Refusal::Occt {
+                operation: Operation::Other,
+                edges: Vec::new(),
+            },
+            Some("Standard_Failure: contour number out of range".to_owned()),
+        );
+        assert_eq!(as_reported(failure(), fillet, Err(unread)), failure());
+    }
 
     /// A topology from `(degenerate, seam, first vertex, last vertex, faces)` per edge.
     fn topology(edges: &[(bool, bool, u32, u32, &[u32])]) -> Topology {
