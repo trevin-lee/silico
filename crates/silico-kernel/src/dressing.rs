@@ -353,7 +353,11 @@ fn not_built(
             },
             error.cause().map(str::to_owned),
         ),
-        Err(e) => e,
+        // OCCT's report couldn't be read: the failure stands, without naming the edges.
+        Err(e) => {
+            tracing::warn!(error = %e, "OCCT's report of a failed fillet couldn't be read");
+            error
+        }
     }
 }
 
@@ -376,7 +380,10 @@ fn faulty_edges(
     let faulty = dressing.faulty_contours()?;
     let mut surfaces_failed = false;
     for &contour in &faulty {
-        surfaces_failed |= contour != 0 && dressing.contour_failed(contour)?;
+        if dressing.contour_failed(contour)? {
+            surfaces_failed = true;
+            break;
+        }
     }
     let mut contours: BTreeSet<u32> = if surfaces_failed {
         faulty.into_iter().collect()

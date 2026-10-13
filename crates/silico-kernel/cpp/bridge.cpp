@@ -409,6 +409,9 @@ struct Dressing::Impl {
   std::unique_ptr<BRepFilletAPI_LocalOperation> maker;
   BRepFilletAPI_MakeFillet *fillet = nullptr;
   BRepFilletAPI_MakeChamfer *chamfer = nullptr;
+  // The contours given, counted before building: building appends OCCT's own corner
+  // stripes, which have no spine (`StripeStatus` reads it) and aren't given contours.
+  int given_contours = 0;
 
   const TopoDS_Edge &edge(uint32_t n) const {
     // Rust checks the numbers; this guards the map itself.
@@ -484,6 +487,7 @@ rust::Vec<uint32_t> Dressing::contour_edges(uint32_t contour) const {
 
 std::unique_ptr<Shape> Dressing::build(rust::Vec<HistoryEntry> &history) {
   BRepFilletAPI_LocalOperation &maker = *impl_->maker;
+  impl_->given_contours = maker.NbContours();
   maker.Build();
   if (!maker.IsDone()) {
     throw Standard_Failure(impl_->fillet != nullptr ? "the fillet couldn't be built"
@@ -498,7 +502,11 @@ rust::Vec<uint32_t> Dressing::faulty_contours() const {
   rust::Vec<uint32_t> out;
   if (impl_->fillet != nullptr) {
     for (int i = 1; i <= impl_->fillet->NbFaultyContours(); ++i) {
-      out.push_back(static_cast<uint32_t>(impl_->fillet->FaultyContour(i)));
+      // A corner stripe OCCT made while building (found colliding) isn't a given contour.
+      const int ic = impl_->fillet->FaultyContour(i);
+      if (ic >= 1 && ic <= impl_->given_contours) {
+        out.push_back(static_cast<uint32_t>(ic));
+      }
     }
   }
   return out;
@@ -520,7 +528,7 @@ bool Dressing::contour_failed(uint32_t contour) const {
     return false;
   }
   const int ic = static_cast<int>(contour);
-  if (ic < 1 || ic > impl_->fillet->NbContours()) {
+  if (ic < 1 || ic > impl_->given_contours) {
     throw Standard_Failure("contour number out of range");
   }
   return impl_->fillet->StripeStatus(ic) != ChFiDS_Ok;
