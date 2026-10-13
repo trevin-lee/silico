@@ -41,7 +41,7 @@ pub fn chamfer(
     flip: bool,
 ) -> Result<Built, KernelError> {
     size.check()
-        .map_err(|invalid| crate::refused(Some("size"), invalid))?;
+        .map_err(|invalid| crate::refused(Some(silico_protocol::SIZE_FIELD), invalid))?;
     let inner = shape.get()?;
     let topology = Topology::of(inner)?;
     let kind = DressingKind::Chamfer {

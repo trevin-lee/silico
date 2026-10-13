@@ -22,8 +22,8 @@ pub use history::{
     ElementCounts, ElementFate, ElementKind, ElementRef, Ends, History, InputHistory, Reported,
 };
 pub use primitive::{
-    InvalidParameter, LENGTH_TOLERANCE, MAX_LENGTH, OFFSET_FIELD, Primitive, check_offset,
-    format_number,
+    InvalidParameter, LENGTH_TOLERANCE, MAX_LENGTH, OFFSET_FIELD, Primitive, SIZE_FIELD,
+    check_offset, format_number,
 };
 pub use profile::{
     Axis, MAX_PROFILE_POINTS, Profile, ProfilePlane, check_fillet_radius, check_revolve,
@@ -201,6 +201,9 @@ pub enum Misbehavior {
     BadHistory,
     /// A history for no inputs at all.
     HistoryForNoInputs,
+    /// A refusal of every fillet as one of edge 7, whichever edges it lists: a refusal
+    /// that doesn't fit its request.
+    ForgedRefusal,
 }
 
 /// How [`DebugOp::ReplyOutOfTurn`]'s extra reply is wrong.
@@ -228,6 +231,7 @@ impl DebugOp {
             DebugOp::Misbehave(Misbehavior::HistoryForNoInputs) => {
                 "DebugMisbehaveHistoryForNoInputs"
             }
+            DebugOp::Misbehave(Misbehavior::ForgedRefusal) => "DebugMisbehaveForgedRefusal",
         }
     }
 }

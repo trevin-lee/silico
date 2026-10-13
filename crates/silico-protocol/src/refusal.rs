@@ -237,19 +237,17 @@ impl Refusal {
         }
     }
 
-    /// Every element at fault, in order: each of the operation's input shape (every refusal
-    /// that names elements has one). A fillet or chamfer OCCT failed on several edges names
-    /// none: OCCT doesn't say which. A profile's merged corners aren't a shape's elements:
-    /// the refusal names the profile as its parameter, and the corners by number.
+    /// Every element at fault, in order, each an element of the operation's one input shape.
+    /// A fillet or chamfer OCCT failed on several edges names none: OCCT doesn't say which.
+    /// An edge the shape doesn't have, and a profile's merged corners, aren't the shape's
+    /// elements: those refusals name their parameter (`edges`, `profile`) and the numbers.
     pub fn elements(&self) -> Vec<ElementRef> {
         match self {
             Refusal::Occt { edges, .. } | Refusal::ResultInvalid { edges, .. } => match edges[..] {
                 [edge] => vec![ElementRef::edge(edge)],
                 _ => Vec::new(),
             },
-            Refusal::EdgeMissing { edge, .. } | Refusal::EdgeTwice { edge } => {
-                vec![ElementRef::edge(*edge)]
-            }
+            Refusal::EdgeTwice { edge } => vec![ElementRef::edge(*edge)],
             Refusal::EdgesRefused { troubles, .. } => {
                 troubles.iter().map(|t| ElementRef::edge(t.edge)).collect()
             }
@@ -271,10 +269,7 @@ impl Refusal {
                 Some("deflection")
             }
             Refusal::CornersMerged { .. } => Some("profile"),
-            Refusal::BooleanInputEmpty { role, .. } => Some(match role {
-                Role::Base => "base",
-                Role::Tool => "tool",
-            }),
+            Refusal::BooleanInputEmpty { role, .. } => Some(role.name()),
             _ => None,
         }
     }
@@ -363,10 +358,7 @@ impl Refusal {
             ),
             Refusal::BooleanInputEmpty { op, role } => {
                 let op = op.name().to_lowercase();
-                let role = match role {
-                    Role::Base => "base",
-                    Role::Tool => "tool",
-                };
+                let role = role.name();
                 (
                     format!("the {op}'s {role} is empty"),
                     Some(format!(
@@ -498,6 +490,16 @@ impl Operation {
             Operation::Dressing { dressing } => dressing.name().to_owned(),
             Operation::Tessellate => "mesh".to_owned(),
             Operation::Other => "operation".to_owned(),
+        }
+    }
+}
+
+impl Role {
+    /// `base` or `tool`, as the boolean's fields are named.
+    pub fn name(self) -> &'static str {
+        match self {
+            Role::Base => "base",
+            Role::Tool => "tool",
         }
     }
 }
@@ -815,8 +817,9 @@ mod tests {
 
     #[test]
     fn every_refusal_is_the_kind_of_failure_it_was_before_it_was_data() {
-        // From each refusal's kind on main, where the kernel built it (invalid_input,
-        // new: failed, of_kind: invalid result or internal), not from `kind()`.
+        // From each refusal's kind before it was data (b4f2524), where the kernel built it
+        // (invalid_input, new: failed, of_kind: invalid result or internal), not from
+        // `kind()`.
         use FailureKind::{Internal, InvalidInput, InvalidResult, KernelFailed, UnknownOp};
         let kinds = [
             KernelFailed,  // NoShape
@@ -856,44 +859,47 @@ mod tests {
 
     #[test]
     fn every_refusal_of_a_value_names_the_parameter_at_fault() {
+        // One for each of `every_refusal`, in its order: the field of the operation a value
+        // was refused for, as the request names it; none for anything else.
+        let parameters = [
+            None,               // NoShape
+            None,               // NothingReturned
+            None,               // Occt
+            None,               // ResultInvalid
+            None,               // BrepTooShort
+            None,               // BrepCorrupted
+            None,               // BrepDefect
+            None,               // UnknownBrepDefect
+            Some("radius"),     // InvalidParameter
+            Some("profile"),    // CornersMerged
+            Some("tool"),       // BooleanInputEmpty
+            None,               // BooleanResultEmpty
+            Some("edges"),      // NoEdges
+            Some("edges"),      // EdgeMissing
+            Some("edges"),      // EdgeTwice
+            Some("edges"),      // EdgesRefused
+            Some("deflection"), // DeflectionInvalid
+            Some("deflection"), // DeflectionTooFine
+            None,               // ExtentNotFinite
+            None,               // FaceUnmeshed
+            None,               // NotFinite
+            None,               // ResultCheckMissing
+            None,               // MalformedHistory
+            None,               // NoEdgeToRefuse
+            None,               // TestOperation
+            None,               // FpTrapsOn
+            None,               // Internal
+        ];
         let refusals = every_refusal();
-        let named: Vec<(String, Option<&str>)> = refusals
-            .iter()
-            .map(|r| (format!("{r:?}"), r.parameter()))
-            .collect();
-        let parameter = |prefix: &str| {
-            named
-                .iter()
-                .find(|(r, _)| r.starts_with(prefix))
-                .and_then(|(_, p)| *p)
+        assert_eq!(refusals.len(), parameters.len());
+        for (refusal, parameter) in refusals.iter().zip(parameters) {
+            assert_eq!(refusal.parameter(), parameter, "{refusal:?}");
+        }
+        let base = Refusal::BooleanInputEmpty {
+            op: BooleanOp::Fuse,
+            role: Role::Base,
         };
-        assert_eq!(parameter("InvalidParameter"), Some("radius"));
-        assert_eq!(parameter("CornersMerged"), Some("profile"));
-        assert_eq!(parameter("BooleanInputEmpty"), Some("tool"));
-        for edges in ["NoEdges", "EdgeMissing", "EdgeTwice", "EdgesRefused"] {
-            assert_eq!(parameter(edges), Some("edges"), "{edges}");
-        }
-        for deflection in ["DeflectionInvalid", "DeflectionTooFine"] {
-            assert_eq!(parameter(deflection), Some("deflection"), "{deflection}");
-        }
-        assert_eq!(
-            Refusal::BooleanInputEmpty {
-                op: BooleanOp::Fuse,
-                role: Role::Base
-            }
-            .parameter(),
-            Some("base")
-        );
-        // Not values: none.
-        for other in [
-            "Occt",
-            "ResultInvalid",
-            "BrepDefect",
-            "ExtentNotFinite",
-            "NotFinite",
-        ] {
-            assert_eq!(parameter(other), None, "{other}");
-        }
+        assert_eq!(base.parameter(), Some("base"));
     }
 
     #[test]

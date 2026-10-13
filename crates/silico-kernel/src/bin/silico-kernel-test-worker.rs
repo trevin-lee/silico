@@ -5,8 +5,8 @@
 
 use silico_kernel::{test_ops, worker};
 use silico_protocol::{
-    DebugOp, Failure, Generation, Mesh, Misbehavior, Op, OutOfTurn, Refusal, Reply, RequestId,
-    Response, write_message,
+    DebugOp, DressingKind, EdgeTrouble, Failure, Generation, Mesh, Misbehavior, Op, OutOfTurn,
+    Refusal, Reply, RequestId, Response, Trouble, write_message,
 };
 
 fn main() -> std::process::ExitCode {
@@ -28,6 +28,15 @@ fn main() -> std::process::ExitCode {
             }))
         }
         _ if misbehavior == Some(Misbehavior::WrongReply) => Ok(Reply::Done),
+        Op::Fillet { .. } if misbehavior == Some(Misbehavior::ForgedRefusal) => {
+            Err(Failure::new(Refusal::EdgesRefused {
+                dressing: DressingKind::Fillet,
+                troubles: vec![EdgeTrouble {
+                    edge: 7,
+                    trouble: Trouble::Smooth,
+                }],
+            }))
+        }
         Op::Fillet { .. }
         | Op::Translate { .. }
         | Op::Boolean { .. }

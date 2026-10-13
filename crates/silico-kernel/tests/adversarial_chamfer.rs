@@ -1226,10 +1226,21 @@ fn a_million_edges_is_refused_quickly_and_the_worker_goes_on() {
     assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
     assert_eq!(err.elements(), ["Edge1"]);
     let counting: Vec<u32> = (1..=1_000_000).collect();
+    // An edge the box doesn't have isn't one of its elements: named by its number, the
+    // edges at fault.
     let err = k.chamfer(&b, &counting, equal(1.0), false).unwrap_err();
-    assert_eq!(err.elements(), ["Edge13"], "{err}");
+    assert!(err.elements().is_empty(), "{err}");
+    assert_eq!(err.parameter(), Some("edges"), "{err}");
+    assert_eq!(
+        err.message(),
+        "Edge13 doesn't exist: the shape has edges 1 to 12"
+    );
     let err = k.chamfer(&b, &[u32::MAX], equal(1.0), false).unwrap_err();
-    assert_eq!(err.elements(), ["Edge4294967295"], "{err}");
+    assert!(err.elements().is_empty(), "{err}");
+    assert_eq!(
+        err.message(),
+        "Edge4294967295 doesn't exist: the shape has edges 1 to 12"
+    );
     assert!(
         start.elapsed() < Duration::from_secs(20),
         "{:?}",

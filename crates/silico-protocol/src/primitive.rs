@@ -51,6 +51,10 @@ pub struct InvalidParameter {
 /// The field of a translation that's its offset, under which a check's `x`, `y`, and `z` sit.
 pub const OFFSET_FIELD: &str = "offset";
 
+/// The field of a chamfer that's its size, under which a check's `distance`, `other`, and
+/// `angle` sit.
+pub const SIZE_FIELD: &str = "size";
+
 impl InvalidParameter {
     /// The parameter at fault as errors name it: a dotted name, the operation's field, and
     /// the part of it at fault where it has parts (`offset.x`, a chamfer's `size.angle`);

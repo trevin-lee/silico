@@ -1196,6 +1196,12 @@ mod tests {
         assert!(fits(&occt(vec![7]), Some(&[1])).is_err());
         assert!(fits(&Refusal::EdgeMissing { edge: 0, count: 12 }, Some(&[1])).is_err());
         assert!(fits(&Refusal::NoEdges { dressing: fillet }, Some(&[1])).is_err());
+        let invalid = Refusal::ResultInvalid {
+            operation: Operation::Dressing { dressing: fillet },
+            edges: vec![7],
+        };
+        assert!(fits(&invalid, Some(&[1])).is_err());
+        assert!(fits(&Refusal::EdgeTwice { edge: 9 }, Some(&[1, 1])).is_err());
         assert!(fits(&Refusal::FaceUnmeshed { face: 0 }, None).is_err());
     }
 

@@ -263,22 +263,31 @@ fn fillet_too_large_is_structured_error() {
 #[test]
 fn bad_fillet_requests_are_invalid_input() {
     let mut w = worker();
-    // The element is named only when an edge is at fault, not for a bad radius.
+    // The element is named only when an edge of the shape is at fault, not for a bad
+    // radius or an edge the shape doesn't have (named by number in the words). Every one
+    // names the parameter at fault.
     let edge = |name: &'static str| Some(name);
-    for (edges, radius, says, element) in [
-        (&[1][..], 0.0, "radius", None),
-        (&[1], -2.0, "radius", None),
-        (&[1], f64::NAN, "radius", None),
-        (&[1], f64::INFINITY, "radius", None),
-        (&[], 2.0, "at least one edge", None),
-        (&[0], 2.0, "Edge0 doesn't exist", edge("Edge0")),
+    for (edges, radius, says, element, parameter) in [
+        (&[1][..], 0.0, "radius", None, "radius"),
+        (&[1], -2.0, "radius", None, "radius"),
+        (&[1], f64::NAN, "radius", None, "radius"),
+        (&[1], f64::INFINITY, "radius", None, "radius"),
+        (&[], 2.0, "at least one edge", None, "edges"),
+        (&[0], 2.0, "Edge0 doesn't exist", None, "edges"),
         (
             &[13],
             2.0,
             "Edge13 doesn't exist: the shape has edges 1 to 12",
-            edge("Edge13"),
+            None,
+            "edges",
         ),
-        (&[1, 1], 2.0, "Edge1 is listed twice", edge("Edge1")),
+        (
+            &[1, 1],
+            2.0,
+            "Edge1 is listed twice",
+            edge("Edge1"),
+            "edges",
+        ),
     ] {
         let err = fillet_through_worker(&mut w, edges, radius).unwrap_err();
         assert_eq!(
@@ -290,6 +299,11 @@ fn bad_fillet_requests_are_invalid_input() {
         assert_eq!(
             err.elements(),
             element.as_slice(),
+            "{edges:?} {radius}: {err}"
+        );
+        assert_eq!(
+            err.parameter(),
+            Some(parameter),
             "{edges:?} {radius}: {err}"
         );
     }
@@ -678,4 +692,47 @@ fn every_edge_refused_reaches_the_core_as_an_element() {
             .ends_with("; OCCT won't fillet Edge2, Edge3 either"),
         "{err}"
     );
+}
+
+#[test]
+fn a_refusal_that_doesnt_fit_the_request_stops_the_worker() {
+    // A broken worker refuses a fillet of Edge1 as one of Edge7: the core checks the
+    // refusal against the request before describing it, so it's a protocol error, the
+    // worker is stopped, and nothing is said about Edge7.
+    use silico_core::kernel::KernelWorker;
+    use silico_protocol::{DebugOp, Misbehavior};
+    let mut w = Worker::spawn(Path::new(env!("CARGO_BIN_EXE_silico-kernel-test-worker"))).unwrap();
+    w.call(
+        Generation(0),
+        Op::Debug(DebugOp::Misbehave(Misbehavior::ForgedRefusal)),
+        TIMEOUT,
+    )
+    .unwrap();
+    let mut k = KernelWorker::from_worker(w);
+    let shape = k
+        .make(Primitive::Box {
+            dx: 10.0,
+            dy: 20.0,
+            dz: 30.0,
+        })
+        .unwrap();
+    let err = k.fillet(&shape, &[1], 2.0).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::ProtocolError, "{err}");
+    assert_eq!(
+        err.message(),
+        "the kernel worker's refusal of Fillet doesn't fit the request"
+    );
+    assert_eq!(
+        err.cause(),
+        Some("it names edge 7, which the request doesn't list"),
+        "{err}"
+    );
+    assert!(err.elements().is_empty(), "{err}");
+    assert!(
+        err.suggestion()
+            .is_some_and(|s| s.starts_with("this is a bug in Silico's kernel worker")),
+        "{err}"
+    );
+    let after = k.summarize(&shape).unwrap_err();
+    assert_eq!(after.code(), ErrorCode::WorkerCrashed, "{after}");
 }

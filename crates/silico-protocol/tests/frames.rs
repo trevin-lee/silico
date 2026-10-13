@@ -125,6 +125,7 @@ fn every_op() -> Vec<Op> {
         Op::Debug(DebugOp::Misbehave(Misbehavior::WrongReply)),
         Op::Debug(DebugOp::Misbehave(Misbehavior::BadHistory)),
         Op::Debug(DebugOp::Misbehave(Misbehavior::HistoryForNoInputs)),
+        Op::Debug(DebugOp::Misbehave(Misbehavior::ForgedRefusal)),
     ];
     let indices: std::collections::BTreeSet<usize> = ops
         .iter()
@@ -176,9 +177,10 @@ fn every_op() -> Vec<Op> {
                 ..
             } => 28,
             Op::MeasureAsFreecad { .. } => 29,
+            Op::Debug(DebugOp::Misbehave(Misbehavior::ForgedRefusal)) => 30,
         })
         .collect();
-    assert_eq!(indices, (0..30).collect(), "an operation has no case");
+    assert_eq!(indices, (0..31).collect(), "an operation has no case");
     ops
 }
 
@@ -704,7 +706,8 @@ fn every_op_has_its_own_name() {
             "DebugMisbehaveBadMesh",
             "DebugMisbehaveWrongReply",
             "DebugMisbehaveBadHistory",
-            "DebugMisbehaveHistoryForNoInputs"
+            "DebugMisbehaveHistoryForNoInputs",
+            "DebugMisbehaveForgedRefusal"
         ]
     );
 }

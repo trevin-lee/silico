@@ -113,7 +113,11 @@ impl KernelRequest<BuiltData> {
         flip: bool,
     ) -> Result<Self, Error> {
         if let Err(invalid) = size.check() {
-            return Err(refused("chamfer", Some("size"), invalid));
+            return Err(refused(
+                "chamfer",
+                Some(silico_protocol::SIZE_FIELD),
+                invalid,
+            ));
         }
         let op = Op::Chamfer {
             shape: shape.clone(),

@@ -23,13 +23,6 @@ pub struct ElementRef {
 }
 
 impl ElementRef {
-    pub fn vertex(index: u32) -> Self {
-        Self {
-            kind: ElementKind::Vertex,
-            index,
-        }
-    }
-
     pub fn edge(index: u32) -> Self {
         Self {
             kind: ElementKind::Edge,

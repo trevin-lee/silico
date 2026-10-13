@@ -425,10 +425,7 @@ impl From<cxx::Exception> for KernelError {
 
 impl From<silico_protocol::InvalidParameter> for KernelError {
     fn from(invalid: silico_protocol::InvalidParameter) -> Self {
-        Self::new(Refusal::InvalidParameter {
-            parameter: invalid.parameter.to_owned(),
-            message: invalid.message,
-        })
+        refused(None, invalid)
     }
 }
 
