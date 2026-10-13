@@ -453,15 +453,132 @@ fn an_invalid_fillet_result_is_refused() {
 }
 
 #[test]
-fn a_failed_fillet_names_only_the_edge_at_fault() {
+fn a_failed_fillet_names_only_the_edges_at_fault() {
     let mut w = worker();
     // One edge: that edge.
     let err = fillet_through_worker(&mut w, &[3], 11.0).unwrap_err();
     assert_eq!(err.elements(), ["Edge3"], "{err}");
-    // Several: OCCT doesn't say which, so none.
+    // Several: those OCCT couldn't build. Edge1 (along z) and Edge2 (along y) of the
+    // 10 × 20 × 30 box each lie beside a face 10 wide, too narrow for r = 11; Edge11 (along
+    // x, on the far side) lies beside faces 20 and 30 wide.
     let err = fillet_through_worker(&mut w, &[1, 2], 11.0).unwrap_err();
     assert_eq!(err.code(), ErrorCode::KernelFailed, "{err}");
-    assert!(err.elements().is_empty(), "{err}");
+    assert_eq!(err.elements(), ["Edge1", "Edge2"], "{err}");
+    let err = fillet_through_worker(&mut w, &[11, 1], 11.0).unwrap_err();
+    assert_eq!(err.elements(), ["Edge1"], "{err}");
+    assert!(fillet_through_worker(&mut w, &[11], 11.0).is_ok());
+}
+
+/// A kernel worker, through the core.
+fn kernel() -> KernelWorker {
+    KernelWorker::start_worker(Path::new(WORKER)).unwrap()
+}
+
+/// FreeCAD's names for the edges of a shape it makes with `make` (Python, `s` the shape)
+/// that pass `test` (Python, of an edge `e`).
+fn freecad_edges(make: &str, test: &str) -> Vec<String> {
+    serde_json::from_value(oracle::freecad(&format!(
+        "import json, Part, FreeCAD\nV = FreeCAD.Vector\ns = {make}\n\
+         print('SILICO_ORACLE ' + json.dumps(['Edge%d' % (i + 1) for i, e in enumerate(s.Edges) if {test}]))\n"
+    )))
+    .unwrap()
+}
+
+#[test]
+fn a_failed_fillet_names_every_edge_occt_couldnt_build() {
+    // A 10 × 10 × 2 slab, every edge at r = 2.5: the horizontal edges lie beside the 2 mm
+    // sides, too narrow for the radius; the vertical ones beside faces 10 wide. OCCT
+    // reports the contours it couldn't build, and the core names exactly those edges.
+    let horizontal = freecad_edges(
+        "Part.makeBox(10, 10, 2)",
+        "abs(e.tangentAt(e.FirstParameter).z) < 0.5",
+    );
+    assert_eq!(horizontal.len(), 8);
+    let mut k = kernel();
+    let slab = k
+        .make(Primitive::Box {
+            dx: 10.0,
+            dy: 10.0,
+            dz: 2.0,
+        })
+        .unwrap();
+    let all: Vec<u32> = (1..=12).collect();
+    let err = k.fillet(&slab, &all, 2.5).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::KernelFailed, "{err}");
+    assert_eq!(err.message(), "Fillet failed", "{err}");
+    assert_eq!(err.elements(), horizontal, "{err}");
+    assert_eq!(err.elements_total(), 8, "{err}");
+    assert_eq!(
+        err.suggestion(),
+        Some(
+            "if the fillet runs past a face beside these edges, try a smaller radius; if not, try another radius, or leave them out: OCCT can't fillet some edges at any size"
+        )
+    );
+    // Each fails alone too, and the rest fillet together: the worker carries on.
+    for edge in &horizontal {
+        let n: u32 = edge.trim_start_matches("Edge").parse().unwrap();
+        let alone = k.fillet(&slab, &[n], 2.5).unwrap_err();
+        assert_eq!(alone.elements(), [edge.as_str()], "{alone}");
+    }
+    let vertical: Vec<u32> = (1..=12)
+        .filter(|n| !horizontal.contains(&format!("Edge{n}")))
+        .collect();
+    assert!(k.fillet(&slab, &vertical, 2.5).is_ok());
+}
+
+#[test]
+fn a_fillet_that_fails_only_where_its_edges_meet_names_what_occt_reports() {
+    // The same slab at r = 1: the top and bottom fillets would meet at mid-height on every
+    // side, and OCCT can't build them together, though each edge fillets alone. OCCT names
+    // the contour of Edge2 (as OCCT 7.9.3 does, which nothing else predicts); trying the
+    // edges one at a time would name none.
+    let mut k = kernel();
+    let slab = k
+        .make(Primitive::Box {
+            dx: 10.0,
+            dy: 10.0,
+            dz: 2.0,
+        })
+        .unwrap();
+    let all: Vec<u32> = (1..=12).collect();
+    let err = k.fillet(&slab, &all, 1.0).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::KernelFailed, "{err}");
+    assert_eq!(err.elements(), ["Edge2"], "{err}");
+    assert_eq!(
+        err.suggestion(),
+        Some(
+            "if the fillet runs past a face beside the edge, try a smaller radius; if not, try another radius, or leave the edge out: OCCT can't fillet some edges at any size"
+        )
+    );
+    for edge in all {
+        assert!(k.fillet(&slab, &[edge], 1.0).is_ok(), "Edge{edge}");
+    }
+}
+
+#[test]
+fn a_fillet_that_fails_at_a_corner_names_the_edges_meeting_there() {
+    // A pyramid on a 4 × 4 base, its apex 20 away, every edge at r = 2: OCCT can't blend the
+    // apex, where the four slanted edges meet, and reports it, and the contour of Edge2.
+    let pyramid = "Part.makeWedge(0, 0, 0, 2, 2, 4, 20, 4, 2, 2)";
+    let at_apex = freecad_edges(
+        pyramid,
+        "any((v.Point - V(2, 20, 2)).Length < 1e-9 for v in e.Vertexes)",
+    );
+    assert_eq!(at_apex.len(), 4);
+    let text: String = serde_json::from_value(oracle::freecad(&format!(
+        "import json, Part\nprint('SILICO_ORACLE ' + json.dumps({pyramid}.exportBrepToString()))\n"
+    )))
+    .unwrap();
+    let shape = silico_kernel::from_text_brep(text.as_bytes()).unwrap();
+    let data = ShapeData::unchecked(Blob::inline(silico_kernel::to_brep(&shape).unwrap()));
+    let all: Vec<u32> = (1..=8).collect();
+    let err = kernel().fillet(&data, &all, 2.0).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::KernelFailed, "{err}");
+    let mut expected = at_apex.clone();
+    expected.push("Edge2".to_owned());
+    expected.sort_by_key(|e| e.trim_start_matches("Edge").parse::<u32>().unwrap());
+    expected.dedup();
+    assert_eq!(err.elements(), expected, "{err}");
 }
 
 /// The fillet, through the worker.

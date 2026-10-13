@@ -140,6 +140,11 @@ public:
   uint32_t contour_of(uint32_t edge) const;
   rust::Vec<uint32_t> contour_edges(uint32_t contour) const;
   std::unique_ptr<Shape> build(rust::Vec<HistoryEntry> &history);
+  // After a build that failed, OCCT's report of where: the contours it couldn't build, and
+  // the corners it couldn't blend (vertices, numbered as `edge_facts` numbers them). A
+  // fillet's only: a chamfer's OCCT keeps private, so for one both are empty.
+  rust::Vec<uint32_t> faulty_contours() const;
+  rust::Vec<uint32_t> faulty_vertices() const;
 
 private:
   struct Impl;

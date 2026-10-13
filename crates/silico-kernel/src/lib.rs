@@ -181,6 +181,8 @@ mod ffi {
             self: Pin<&mut Dressing>,
             history: &mut Vec<HistoryEntry>,
         ) -> Result<UniquePtr<Shape>>;
+        fn faulty_contours(self: &Dressing) -> Result<Vec<u32>>;
+        fn faulty_vertices(self: &Dressing) -> Result<Vec<u32>>;
         fn translate(
             shape: &Shape,
             dx: f64,
@@ -313,7 +315,7 @@ impl KernelError {
         let described = refusal.describe(cause.as_deref(), &|e| e.to_string());
         // OCCT's own words, where it threw; otherwise the refusal's.
         let message = match (&refusal, &cause) {
-            (Refusal::Occt { .. }, Some(cause)) => cause.clone(),
+            (Refusal::Occt { .. } | Refusal::EdgesFailed { .. }, Some(cause)) => cause.clone(),
             _ => described.message,
         };
         let elements = refusal.elements().iter().map(ToString::to_string).collect();
