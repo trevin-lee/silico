@@ -14,14 +14,14 @@ use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
 
 use silico_protocol::{
-    Blob, BuiltData, Failure, FailureKind, FrameError, FrameReader, FreecadMeasures, Generation,
-    Op, Reply, Request, RequestId, Response, ShapeData, ShapeSummary, WORKER_FD, WORKER_FD_ENV,
+    Blob, BuiltData, Failure, FrameError, FrameReader, FreecadMeasures, Generation, Op, Refusal,
+    Reply, Request, RequestId, Response, ShapeData, ShapeSummary, WORKER_FD, WORKER_FD_ENV,
     write_message, write_started,
 };
 
-use crate::{KernelError, KernelErrorKind};
+use crate::KernelError;
 
-/// The production operations. Test operations get [`FailureKind::UnknownOp`].
+/// The production operations. Test operations get [`Refusal::TestOperation`].
 pub fn handle(op: Op) -> Result<Reply, Failure> {
     match op {
         Op::MakePrimitive(primitive) => {
@@ -83,13 +83,9 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
             Ok(Reply::Mesh(mesh))
         }
         Op::Echo { data } => Ok(Reply::Echo { data }),
-        Op::Debug(_) => Err(Failure::new(
-            FailureKind::UnknownOp,
-            format!(
-                "{} is a test operation, not answered by this worker",
-                op.name()
-            ),
-        )),
+        Op::Debug(_) => Err(Failure::new(Refusal::TestOperation {
+            op: op.name().to_owned(),
+        })),
     }
 }
 
@@ -157,24 +153,18 @@ fn check_freecad_finite(m: &FreecadMeasures) -> Result<(), Failure> {
 fn all_finite<const N: usize>(values: [(&str, f64); N]) -> Result<(), Failure> {
     match values.into_iter().find(|(_, value)| !value.is_finite()) {
         None => Ok(()),
-        Some((name, value)) => Err(Failure::new(
-            FailureKind::KernelFailed,
-            format!("the shape's {name} isn't finite ({value})"),
-        )),
+        Some((quantity, value)) => Err(Failure::new(Refusal::NotFinite {
+            quantity: quantity.to_owned(),
+            value,
+        })),
     }
 }
 
+/// What the worker sends for `e`: why, as data, and OCCT's words.
 fn failure(e: KernelError) -> Failure {
     Failure {
-        kind: match e.kind() {
-            KernelErrorKind::InvalidInput => FailureKind::InvalidInput,
-            KernelErrorKind::Failed => FailureKind::KernelFailed,
-            KernelErrorKind::InvalidResult => FailureKind::InvalidResult,
-            KernelErrorKind::Internal => FailureKind::Internal,
-        },
-        message: e.message().to_owned(),
-        element: e.element().map(str::to_owned),
-        suggestion: e.suggestion().map(str::to_owned),
+        refusal: e.refusal().clone(),
+        cause: e.cause().map(str::to_owned),
     }
 }
 
@@ -217,13 +207,14 @@ where
         let mut result = handle(request.id, request.generation, request.op, &mut writer);
         // Traps switched on during a request would make later results platform-
         // dependent, so the request fails, and the traps are switched back off.
+        let mask = crate::fp_trap_mask();
         if let Err(problem) = check_fp_traps() {
             let fixed = crate::disable_fp_traps().is_ok() && check_fp_traps().is_ok();
             tracing::error!("{problem} after {name}; switched off: {fixed}");
-            result = Err(Failure::new(
-                FailureKind::Internal,
-                format!("{problem} after {name}"),
-            ));
+            result = Err(Failure::new(Refusal::FpTrapsOn {
+                mask,
+                op: name.to_owned(),
+            }));
         }
         write_message(
             &mut writer,
@@ -338,22 +329,43 @@ where
 #[cfg(test)]
 mod tests {
     #[test]
-    fn each_kind_of_kernel_error_reaches_the_app_as_its_own_failure() {
-        use silico_protocol::FailureKind;
+    fn a_kernel_error_reaches_the_app_as_its_refusal_and_occts_words_only() {
+        use silico_protocol::{Dressing, EdgeTrouble, Operation, Refusal, Trouble};
 
-        use crate::{KernelError, KernelErrorKind};
-        for (kind, want) in [
-            (KernelErrorKind::InvalidInput, FailureKind::InvalidInput),
-            (KernelErrorKind::Failed, FailureKind::KernelFailed),
-            (KernelErrorKind::InvalidResult, FailureKind::InvalidResult),
-            (KernelErrorKind::Internal, FailureKind::Internal),
-        ] {
-            let e = KernelError::of_kind(kind, "words").with_suggestion("try this");
-            let f = super::failure(e);
-            assert_eq!(f.kind, want, "{kind:?}");
-            assert_eq!(f.message, "words");
-            assert_eq!(f.suggestion.as_deref(), Some("try this"));
+        use crate::KernelError;
+        let refusals = [
+            Refusal::EdgeMissing {
+                edge: 13,
+                count: 12,
+            },
+            Refusal::EdgesRefused {
+                dressing: Dressing::Fillet,
+                troubles: vec![EdgeTrouble {
+                    edge: 3,
+                    trouble: Trouble::Smooth,
+                }],
+            },
+            Refusal::ResultInvalid {
+                operation: Operation::Extrusion,
+                edges: Vec::new(),
+            },
+        ];
+        for refusal in refusals {
+            let f = super::failure(KernelError::new(refusal.clone()));
+            assert_eq!((f.refusal, f.cause), (refusal, None));
         }
+        let occt = Refusal::Occt {
+            operation: Operation::Other,
+            edges: Vec::new(),
+        };
+        let f = super::failure(KernelError::caused(
+            occt.clone(),
+            Some("StdFail_NotDone".to_owned()),
+        ));
+        assert_eq!(
+            (f.refusal, f.cause.as_deref()),
+            (occt, Some("StdFail_NotDone"))
+        );
     }
 
     use silico_protocol::{FailureKind, FreecadMeasures, ShapeSummary};
@@ -389,8 +401,9 @@ mod tests {
             let mut bad = good.clone();
             spoil(&mut bad);
             let failure = check_finite(&bad).unwrap_err();
-            assert_eq!(failure.kind, FailureKind::KernelFailed);
-            assert_eq!(failure.message, format!("the shape's {want}"));
+            assert_eq!(failure.kind(), FailureKind::KernelFailed);
+            let said = failure.refusal.describe(None, &|e| e.to_string());
+            assert_eq!(said.message, format!("the shape's {want}"));
         }
     }
 
@@ -427,8 +440,9 @@ mod tests {
             let mut bad = good.clone();
             spoil(&mut bad);
             let failure = check_freecad_finite(&bad).unwrap_err();
-            assert_eq!(failure.kind, FailureKind::KernelFailed);
-            assert_eq!(failure.message, format!("the shape's {want}"));
+            assert_eq!(failure.kind(), FailureKind::KernelFailed);
+            let said = failure.refusal.describe(None, &|e| e.to_string());
+            assert_eq!(said.message, format!("the shape's {want}"));
         }
     }
 }

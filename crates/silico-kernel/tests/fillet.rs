@@ -656,3 +656,26 @@ fn each_shape_is_checked_as_a_whole_at_most_once() {
     assert!(!twice.is_valid().unwrap());
     assert!(!silico_kernel::summarize(&twice).unwrap().valid);
 }
+
+#[test]
+fn every_edge_refused_reaches_the_core_as_an_element() {
+    // M2.0: a sphere's three edges (FreeCAD's makeSphere: a seam and two degenerate poles)
+    // are all ones OCCT can't fillet; one refusal names every one, as data the worker
+    // sends, with the names and the words written by the core.
+    use silico_core::kernel::KernelWorker;
+    let mut w = KernelWorker::start_worker(Path::new(WORKER)).unwrap();
+    let sphere = w.make(Primitive::Sphere { radius: 5.0 }).unwrap();
+    let err = w.fillet(&sphere, &[1, 2, 3], 1.0).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
+    assert_eq!(err.elements(), ["Edge1", "Edge2", "Edge3"], "{err}");
+    assert_eq!(
+        err.suggestion(),
+        Some("leave Edge1, Edge2, and Edge3 out of the fillet"),
+        "{err}"
+    );
+    assert!(
+        err.message()
+            .ends_with("; OCCT won't fillet Edge2, Edge3 either"),
+        "{err}"
+    );
+}

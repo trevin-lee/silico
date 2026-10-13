@@ -5,7 +5,7 @@
 
 use silico_kernel::{test_ops, worker};
 use silico_protocol::{
-    DebugOp, Failure, FailureKind, Generation, Mesh, Misbehavior, Op, OutOfTurn, Reply, RequestId,
+    DebugOp, Failure, Generation, Mesh, Misbehavior, Op, OutOfTurn, Refusal, Reply, RequestId,
     Response, write_message,
 };
 
@@ -85,12 +85,19 @@ fn debug(
             socket
                 .write_all(&[0xff; 16])
                 .and_then(|()| socket.flush())
-                .map_err(|e| Failure::new(FailureKind::Internal, e.to_string()))?;
+                .map_err(|e| {
+                    Failure::new(Refusal::Internal {
+                        what: e.to_string(),
+                    })
+                })?;
             Ok(Reply::Done)
         }
         Op::Debug(DebugOp::EnableFpTraps) => {
-            test_ops::enable_fp_traps()
-                .map_err(|e| Failure::new(FailureKind::Internal, e.message().to_owned()))?;
+            test_ops::enable_fp_traps().map_err(|e| {
+                Failure::new(Refusal::Internal {
+                    what: e.message().to_owned(),
+                })
+            })?;
             Ok(Reply::Done)
         }
         Op::Debug(DebugOp::ReplyOutOfTurn(out_of_turn)) => {
@@ -105,8 +112,11 @@ fn debug(
                 },
                 result: Ok(Reply::Done),
             };
-            write_message(socket, &stale)
-                .map_err(|e| Failure::new(FailureKind::Internal, e.to_string()))?;
+            write_message(socket, &stale).map_err(|e| {
+                Failure::new(Refusal::Internal {
+                    what: e.to_string(),
+                })
+            })?;
             Ok(Reply::Done)
         }
         other => worker::handle(other),

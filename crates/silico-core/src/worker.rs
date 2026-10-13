@@ -23,8 +23,8 @@ use std::time::{Duration, Instant};
 
 use command_fds::{CommandFdExt, FdMapping};
 use silico_protocol::{
-    Failure, FailureKind, FrameError, FrameReader, Generation, Op, Reply, Request, RequestId,
-    Response, TraceId, WORKER_FD, WORKER_FD_ENV, decode, write_message,
+    ElementRef, Failure, FailureKind, FrameError, FrameReader, Generation, Op, Reply, Request,
+    RequestId, Response, TraceId, WORKER_FD, WORKER_FD_ENV, decode, write_message,
 };
 
 use crate::{Error, ErrorCode};
@@ -820,44 +820,56 @@ const BROKEN_WORKER: &str = "this is a bug in Silico's kernel worker, not in the
 /// What to try after an internal error: a bug, not the request's values.
 pub(crate) const SILICO_BUG: &str = "this is a bug in Silico, not in the request: report it";
 
-/// A worker's refusal or failure, as a structured error, naming the element at fault and
-/// what to try instead when the worker knew them. A kernel failure always suggests
+/// A worker's refusal or failure, as a structured error. The core names the elements at
+/// fault (as FreeCAD does, `Edge3`, until a document's names arrive) and has the refusal
+/// described with those names (`Refusal::describe`). A kernel failure always suggests
 /// something.
 fn failure_error(op: &str, failure: Failure) -> Error {
-    let (error, fallback) = match failure.kind {
-        FailureKind::InvalidInput => (
-            Error::new(ErrorCode::InvalidInput, failure.message),
-            Some("change the value the message names"),
-        ),
+    let name = |element: ElementRef| element.to_string();
+    let described = failure.refusal.describe(failure.cause.as_deref(), &name);
+    // Why it failed: OCCT's words where it threw; otherwise the refusal's.
+    let why = failure
+        .cause
+        .clone()
+        .unwrap_or_else(|| described.message.clone());
+    let (error, fallback) = match failure.kind() {
+        FailureKind::InvalidInput => {
+            let error = Error::new(ErrorCode::InvalidInput, described.message);
+            (
+                match failure.cause {
+                    Some(cause) => error.with_cause(cause),
+                    None => error,
+                },
+                "change the value the message names",
+            )
+        }
         FailureKind::KernelFailed => (
-            Error::new(ErrorCode::KernelFailed, format!("{op} failed")).with_cause(failure.message),
-            Some("change the operation's values: the kernel can't build it from these"),
+            Error::new(ErrorCode::KernelFailed, format!("{op} failed")).with_cause(why),
+            "change the operation's values: the kernel can't build it from these",
         ),
         FailureKind::InvalidResult => (
             Error::new(
                 ErrorCode::InvalidResult,
                 format!("{op} gave an invalid result, which was refused"),
             )
-            .with_cause(failure.message),
-            Some("change the operation's values: the kernel can't build a valid result from these"),
+            .with_cause(described.message),
+            "change the operation's values: the kernel can't build a valid result from these",
         ),
         FailureKind::UnknownOp | FailureKind::Internal => (
             Error::new(
                 ErrorCode::Internal,
                 format!("the kernel worker couldn't do {op}"),
             )
-            .with_cause(failure.message),
-            Some(SILICO_BUG),
+            .with_cause(why),
+            SILICO_BUG,
         ),
     };
-    let error = match failure.element {
-        Some(element) => error.with_element(element),
+    let error = error.with_elements(failure.refusal.elements().into_iter().map(name));
+    let error = match failure.refusal.parameter() {
+        Some(parameter) => error.with_parameter(parameter),
         None => error,
     };
-    match failure.suggestion.as_deref().or(fallback) {
-        Some(suggestion) => error.with_suggestion(suggestion),
-        None => error,
-    }
+    error.with_suggestion(described.suggestion.unwrap_or_else(|| fallback.to_owned()))
 }
 
 fn internal(what: &str, e: impl std::fmt::Display) -> Error {
@@ -907,7 +919,7 @@ mod tests {
     use std::process::ExitStatus;
     use std::sync::Mutex;
 
-    use silico_protocol::{Failure, FailureKind};
+    use silico_protocol::Failure;
 
     use super::{
         FAULTS, KillOnDrop, MAX_LOG_LINE, STDERR_TAIL_LINES, crash_advice, describe_exit,
@@ -1053,47 +1065,107 @@ mod tests {
 
     #[test]
     fn kernel_failures_get_their_own_code_and_always_a_suggestion() {
-        let failure = |kind, suggestion: Option<&str>| Failure {
-            kind,
-            message: "the kernel's words".to_owned(),
-            element: Some("Edge1".to_owned()),
-            suggestion: suggestion.map(str::to_owned),
+        use silico_protocol::{Dressing, EdgeTrouble, Operation, Refusal, Trouble};
+        let occt = |operation, edges| Failure {
+            refusal: Refusal::Occt { operation, edges },
+            cause: Some("StdFail_NotDone".to_owned()),
         };
-        let cases = [
+        // No suggestion of its own: the code's.
+        let e = failure_error("Fillet", occt(Operation::Other, Vec::new()));
+        assert_eq!(
+            (e.code(), e.message(), e.cause(), e.suggestion()),
             (
-                FailureKind::KernelFailed,
                 ErrorCode::KernelFailed,
                 "Fillet failed",
-                "change the operation's values: the kernel can't build it from these",
-            ),
+                Some("StdFail_NotDone"),
+                Some("change the operation's values: the kernel can't build it from these")
+            )
+        );
+        assert!(e.elements().is_empty(), "{e}");
+        let e = failure_error(
+            "Fillet",
+            Failure::new(Refusal::ResultInvalid {
+                operation: Operation::Other,
+                edges: Vec::new(),
+            }),
+        );
+        assert_eq!(
+            (e.code(), e.message(), e.cause(), e.suggestion()),
             (
-                FailureKind::InvalidResult,
                 ErrorCode::InvalidResult,
                 "Fillet gave an invalid result, which was refused",
-                "change the operation's values: the kernel can't build a valid result from these",
-            ),
-        ];
-        for (kind, code, message, fallback) in cases {
-            let error = failure_error("Fillet", failure(kind, None));
-            assert_eq!(
-                (
-                    error.code(),
-                    error.message(),
-                    error.cause(),
-                    error.elements()
-                ),
-                (
-                    code,
-                    message,
-                    Some("the kernel's words"),
-                    &["Edge1".to_owned()][..]
+                Some("the operation's result isn't a valid solid"),
+                Some(
+                    "change the operation's values: the kernel can't build a valid result from these"
                 )
-            );
-            assert_eq!(error.suggestion(), Some(fallback));
-            // The worker's own suggestion, when it has one, comes first.
-            let error = failure_error("Fillet", failure(kind, Some("try a smaller radius")));
-            assert_eq!(error.suggestion(), Some("try a smaller radius"));
-        }
+            )
+        );
+        // Its own suggestion, and the edge at fault, named by the core.
+        let fillet = Operation::Dressing {
+            dressing: Dressing::Fillet,
+        };
+        let e = failure_error("Fillet", occt(fillet, vec![1]));
+        assert_eq!(e.elements(), ["Edge1"], "{e}");
+        assert!(
+            e.suggestion()
+                .is_some_and(|s| s.starts_with("if the fillet runs past a face beside the edge")),
+            "{e}"
+        );
+        // A refusal of edges 3 and 5 names both.
+        let e = failure_error(
+            "Fillet",
+            Failure::new(Refusal::EdgesRefused {
+                dressing: Dressing::Fillet,
+                troubles: vec![
+                    EdgeTrouble {
+                        edge: 3,
+                        trouble: Trouble::Smooth,
+                    },
+                    EdgeTrouble {
+                        edge: 5,
+                        trouble: Trouble::OneFace,
+                    },
+                ],
+            }),
+        );
+        assert_eq!(e.code(), ErrorCode::InvalidInput, "{e}");
+        assert_eq!(e.elements(), ["Edge3", "Edge5"], "{e}");
+        assert!(e.message().starts_with("Edge3 joins faces"), "{e}");
+        assert!(
+            e.message().ends_with("; OCCT won't fillet Edge5 either"),
+            "{e}"
+        );
+        assert_eq!(
+            e.suggestion(),
+            Some("leave Edge3 and Edge5 out of the fillet")
+        );
+        // A value refused, named as data.
+        let e = failure_error(
+            "Fillet",
+            Failure::new(Refusal::InvalidParameter {
+                parameter: "radius".to_owned(),
+                message: "the fillet's radius must be a length above 1e-7 mm".to_owned(),
+            }),
+        );
+        assert_eq!(e.parameter(), Some("radius"), "{e}");
+        assert_eq!(
+            e.message(),
+            "the fillet's radius must be a length above 1e-7 mm"
+        );
+        assert_eq!(e.suggestion(), Some("change the value the message names"));
+        // A test operation on a production worker: Silico's bug.
+        let e = failure_error(
+            "DebugSleep",
+            Failure::new(Refusal::TestOperation {
+                op: "DebugSleep".to_owned(),
+            }),
+        );
+        assert_eq!(e.code(), ErrorCode::Internal, "{e}");
+        assert_eq!(
+            e.cause(),
+            Some("DebugSleep is a test operation, not answered by this worker")
+        );
+        assert_eq!(e.suggestion(), Some(super::SILICO_BUG));
     }
 
     #[test]

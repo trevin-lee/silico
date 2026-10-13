@@ -12,6 +12,7 @@ pub mod frame;
 mod history;
 mod primitive;
 mod profile;
+mod refusal;
 
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +27,10 @@ pub use primitive::{
 pub use profile::{
     Axis, MAX_PROFILE_POINTS, Profile, ProfilePlane, check_fillet_radius, check_revolve,
     extrusion_vector, radians,
+};
+pub use refusal::{
+    BrepDefect, ChamferKind, Described, Dressing, EdgeTrouble, HistoryDefect, Operation, Refusal,
+    Returned, Role, Trouble,
 };
 
 /// The file descriptor a worker inherits its end of the socket pair as.
@@ -403,28 +408,28 @@ impl Mesh {
     }
 }
 
-/// An operation the worker refused or that failed. The core turns this into a structured
-/// error, adding the feature and element it knows about.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// An operation the worker refused or that failed: why, as data, and OCCT's words, if it
+/// gave any. The core names the elements at fault and writes the error from it, adding the
+/// feature it knows about.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Failure {
-    pub kind: FailureKind,
-    /// What went wrong, in the kernel's words where the kernel reported it.
-    pub message: String,
-    /// The sub-element at fault, such as `Edge1`, when the worker knows it.
-    pub element: Option<String>,
-    /// What to try instead, when the worker has a suggestion.
-    pub suggestion: Option<String>,
+    pub refusal: Refusal,
+    /// OCCT's own words, such as `StdFail_NotDone`, when it threw.
+    pub cause: Option<String>,
 }
 
 impl Failure {
-    /// A failure with no element or suggestion; add them with the fields.
-    pub fn new(kind: FailureKind, message: impl Into<String>) -> Self {
+    /// A failure without words from OCCT.
+    pub fn new(refusal: Refusal) -> Self {
         Self {
-            kind,
-            message: message.into(),
-            element: None,
-            suggestion: None,
+            refusal,
+            cause: None,
         }
+    }
+
+    /// What kind of failure it is.
+    pub fn kind(&self) -> FailureKind {
+        self.refusal.kind()
     }
 }
 

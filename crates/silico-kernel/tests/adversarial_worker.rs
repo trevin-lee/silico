@@ -36,7 +36,7 @@ use silico_core::pool::{KernelPool, Outcome};
 use silico_core::worker::Worker;
 use silico_core::{Error, ErrorCode};
 use silico_protocol::{
-    DebugOp, Failure, FailureKind, Generation, MAX_FRAME_LEN, Op, Reply, RequestId, Response,
+    DebugOp, Failure, Generation, MAX_FRAME_LEN, Op, Refusal, Reply, RequestId, Response,
     write_message,
 };
 
@@ -55,8 +55,11 @@ fn fake_worker_entry() {
         return;
     };
     let _ = silico_kernel::worker::run(move |id, generation, op, socket| {
-        misbehave(&mode, id, generation, socket)
-            .map_err(|e| Failure::new(FailureKind::Internal, e.to_string()))?;
+        misbehave(&mode, id, generation, socket).map_err(|e| {
+            Failure::new(Refusal::Internal {
+                what: e.to_string(),
+            })
+        })?;
         silico_kernel::worker::handle(op)
     });
     std::process::exit(0);

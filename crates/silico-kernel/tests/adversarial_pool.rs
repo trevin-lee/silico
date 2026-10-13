@@ -30,9 +30,7 @@ use silico_core::ErrorCode;
 use silico_core::kernel::{Blob, KernelRequest, Primitive};
 use silico_core::pool::{KernelPool, Outcome};
 use silico_core::worker::Worker;
-use silico_protocol::{
-    DebugOp, Failure, FailureKind, Generation, Op, Reply, Response, write_message,
-};
+use silico_protocol::{DebugOp, Failure, Generation, Op, Refusal, Reply, Response, write_message};
 
 fn write_executable(path: &Path, text: &str) {
     let mut file = std::fs::File::create(path).unwrap();
@@ -78,8 +76,11 @@ fn fake_handle(
                 generation,
                 result: Ok(Reply::Echo { data: data.clone() }),
             };
-            write_message(socket, &extra)
-                .map_err(|e| Failure::new(FailureKind::Internal, e.to_string()))?;
+            write_message(socket, &extra).map_err(|e| {
+                Failure::new(Refusal::Internal {
+                    what: e.to_string(),
+                })
+            })?;
             Ok(Reply::Echo { data })
         }
         (_, op) => silico_kernel::worker::handle(op),
