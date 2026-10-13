@@ -527,11 +527,12 @@ fn a_failed_fillet_names_every_edge_occt_couldnt_build() {
 }
 
 #[test]
-fn a_fillet_that_fails_only_where_its_edges_meet_names_what_occt_reports() {
+fn a_fillet_that_fails_only_where_its_edges_meet_names_no_edge() {
     // The same slab at r = 1: the top and bottom fillets would meet at mid-height on every
-    // side, and OCCT can't build them together, though each edge fillets alone. OCCT names
-    // the contour of Edge2 (as OCCT 7.9.3 does, which nothing else predicts); trying the
-    // edges one at a time would name none.
+    // side, and OCCT can't build them together, though each edge fillets alone. OCCT finds
+    // that by checking pairs of contours, and reports only the first of the pair it stopped
+    // at (Edge2's, as OCCT 7.9.3 does), with no error status: not a way to tell which edges
+    // are at fault, so none is named, and the suggestion is to find it one at a time.
     let mut k = kernel();
     let slab = k
         .make(Primitive::Box {
@@ -543,13 +544,8 @@ fn a_fillet_that_fails_only_where_its_edges_meet_names_what_occt_reports() {
     let all: Vec<u32> = (1..=12).collect();
     let err = k.fillet(&slab, &all, 1.0).unwrap_err();
     assert_eq!(err.code(), ErrorCode::KernelFailed, "{err}");
-    assert_eq!(err.elements(), ["Edge2"], "{err}");
-    assert_eq!(
-        err.suggestion(),
-        Some(
-            "if the fillet runs past a face beside the edge, try a smaller radius; if not, try another radius, or leave the edge out: OCCT can't fillet some edges at any size"
-        )
-    );
+    assert!(err.elements().is_empty(), "{err}");
+    assert!(err.suggestion().unwrap().contains("one at a time"), "{err}");
     for edge in all {
         assert!(k.fillet(&slab, &[edge], 1.0).is_ok(), "Edge{edge}");
     }
@@ -558,7 +554,9 @@ fn a_fillet_that_fails_only_where_its_edges_meet_names_what_occt_reports() {
 #[test]
 fn a_fillet_that_fails_at_a_corner_names_the_edges_meeting_there() {
     // A pyramid on a 4 × 4 base, its apex 20 away, every edge at r = 2: OCCT can't blend the
-    // apex, where the four slanted edges meet, and reports it, and the contour of Edge2.
+    // apex, where the four slanted edges meet, and reports it, so those four are named.
+    // (It reports Edge2's contour too, as the first of a pair it found colliding, with no
+    // error status, which names nothing more.)
     let pyramid = "Part.makeWedge(0, 0, 0, 2, 2, 4, 20, 4, 2, 2)";
     let at_apex = freecad_edges(
         pyramid,
@@ -574,11 +572,7 @@ fn a_fillet_that_fails_at_a_corner_names_the_edges_meeting_there() {
     let all: Vec<u32> = (1..=8).collect();
     let err = kernel().fillet(&data, &all, 2.0).unwrap_err();
     assert_eq!(err.code(), ErrorCode::KernelFailed, "{err}");
-    let mut expected = at_apex.clone();
-    expected.push("Edge2".to_owned());
-    expected.sort_by_key(|e| e.trim_start_matches("Edge").parse::<u32>().unwrap());
-    expected.dedup();
-    assert_eq!(err.elements(), expected, "{err}");
+    assert_eq!(err.elements(), at_apex, "{err}");
 }
 
 /// The fillet, through the worker.

@@ -515,6 +515,17 @@ rust::Vec<uint32_t> Dressing::faulty_vertices() const {
   return out;
 }
 
+bool Dressing::contour_failed(uint32_t contour) const {
+  if (impl_->fillet == nullptr) {
+    return false;
+  }
+  const int ic = static_cast<int>(contour);
+  if (ic < 1 || ic > impl_->fillet->NbContours()) {
+    throw Standard_Failure("contour number out of range");
+  }
+  return impl_->fillet->StripeStatus(ic) != ChFiDS_Ok;
+}
+
 std::unique_ptr<Dressing> new_fillet(const Shape &shape) {
   return std::make_unique<Dressing>(shape.shape, Dressing::Of::Fillet);
 }

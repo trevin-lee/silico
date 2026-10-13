@@ -145,6 +145,9 @@ public:
   // fillet's only: a chamfer's OCCT keeps private, so for one both are empty.
   rust::Vec<uint32_t> faulty_contours() const;
   rust::Vec<uint32_t> faulty_vertices() const;
+  // Whether OCCT set an error status on `contour` (`StripeStatus`): its own surfaces failed.
+  // A fillet's only, as above.
+  bool contour_failed(uint32_t contour) const;
 
 private:
   struct Impl;

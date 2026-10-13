@@ -359,12 +359,29 @@ fn not_built(
 
 /// The given `edges` (in increasing order) in the contours OCCT reports it couldn't build,
 /// or reaching a corner it reports it couldn't blend.
+///
+/// OCCT 7.9.3 (`ChFi3d_Builder::Compute`) builds each contour's surfaces, then, only if
+/// all were built, each corner, then, only if those were too, checks each pair of contours
+/// for a collision, stopping at the first. A contour whose own surfaces failed is faulty,
+/// mostly with an error status; a corner that failed is a faulty vertex; a collision makes
+/// the first contour of the pair faulty, with no error status, and not the other, which
+/// may be the only one at fault. So where any faulty contour has an error status, the
+/// surfaces failed and every faulty contour is at fault; where none has, they're named
+/// only through the corners OCCT reports.
 fn faulty_edges(
     dressing: &ffi::Dressing,
     topology: &Topology,
     edges: &[u32],
 ) -> Result<Vec<u32>, KernelError> {
-    let mut contours: BTreeSet<u32> = dressing.faulty_contours()?.into_iter().collect();
+    let faulty = dressing.faulty_contours()?;
+    let mut surfaces_failed = false;
+    for &contour in &faulty {
+        surfaces_failed |= contour != 0 && dressing.contour_failed(contour)?;
+    }
+    let mut contours: BTreeSet<u32> = match surfaces_failed {
+        true => faulty.into_iter().collect(),
+        false => BTreeSet::new(),
+    };
     for corner in dressing.faulty_vertices()? {
         for &edge in topology.at_vertex.get(&corner).into_iter().flatten() {
             contours.insert(dressing.contour_of(edge)?);
