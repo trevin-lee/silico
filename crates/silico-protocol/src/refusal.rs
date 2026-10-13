@@ -72,7 +72,8 @@ pub enum Refusal {
     ExtentNotFinite,
     /// Faces OCCT couldn't mesh, on a shape that isn't valid: the core's decision, from a
     /// mesh that says so (a worker never sends it). `faces`, the first of them, 1-based, in
-    /// order, up to [`FACES_NAMED`]; `count`, how many there are.
+    /// order, up to [`FACES_NAMED`]; `count`, how many there are, at least as many as `faces`
+    /// lists (and more only when it lists [`FACES_NAMED`]).
     FacesUnmeshed { faces: Vec<u32>, count: u64 },
     /// A measure of the shape that isn't finite: which (`volume`, `center x`, ...).
     NotFinite { quantity: String, value: f64 },
@@ -269,6 +270,15 @@ impl Refusal {
         }
     }
 
+    /// How many elements are at fault: as many as [`Refusal::elements`] names, except for
+    /// unmeshed faces, which it names only the first of.
+    pub fn elements_total(&self) -> u64 {
+        match self {
+            Refusal::FacesUnmeshed { count, .. } => *count,
+            _ => self.elements().len() as u64,
+        }
+    }
+
     /// The parameter at fault, as a dotted name (see `InvalidParameter::name`), if a value
     /// was refused.
     pub fn parameter(&self) -> Option<&str> {
@@ -441,8 +451,10 @@ impl Refusal {
                     .map(|&f| name(ElementRef::face(f)))
                     .collect();
                 let unnamed = count.saturating_sub(named.len() as u64);
-                if unnamed > 0 {
-                    named.push(format!("{unnamed} other faces"));
+                match unnamed {
+                    0 => {}
+                    1 => named.push("1 other face".to_owned()),
+                    _ => named.push(format!("{unnamed} other faces")),
                 }
                 let these = match count {
                     1 => "this face",
@@ -1066,6 +1078,15 @@ mod tests {
         );
         assert_eq!(many.elements().len(), FACES_NAMED);
         assert_eq!(many.elements()[99], ElementRef::face(100));
+        // One beyond those named in the words is one face.
+        let nine = Refusal::FacesUnmeshed {
+            faces: (1..=9).collect(),
+            count: 9,
+        };
+        assert_eq!(
+            nine.describe(None, &|e| e.to_string()).message,
+            "Face1, Face2, Face3, Face4, Face5, Face6, Face7, Face8, and 1 other face couldn't be meshed"
+        );
     }
 
     #[test]

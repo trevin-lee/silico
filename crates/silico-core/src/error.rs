@@ -81,6 +81,9 @@ struct Fields {
     message: String,
     feature: Option<String>,
     elements: Vec<String>,
+    /// How many elements are at fault: more than `elements` lists when there are too many
+    /// to name, never fewer.
+    elements_total: u64,
     parameter: Option<String>,
     cause: Option<String>,
     suggestion: Option<String>,
@@ -95,6 +98,7 @@ impl Error {
             message: message.into(),
             feature: None,
             elements: Vec::new(),
+            elements_total: 0,
             parameter: None,
             cause: None,
             suggestion: None,
@@ -114,6 +118,7 @@ impl Error {
     #[must_use]
     pub fn with_element(mut self, element: impl Into<String>) -> Self {
         self.0.elements.push(element.into());
+        self.count_elements();
         self
     }
 
@@ -125,7 +130,22 @@ impl Error {
         S: Into<String>,
     {
         self.0.elements.extend(elements.into_iter().map(Into::into));
+        self.count_elements();
         self
+    }
+
+    /// How many elements are at fault, where `elements` names only the first of them: never
+    /// fewer than it names.
+    #[must_use]
+    pub fn with_elements_total(mut self, total: u64) -> Self {
+        self.0.elements_total = total;
+        self.count_elements();
+        self
+    }
+
+    fn count_elements(&mut self) {
+        let named = self.0.elements.len() as u64;
+        self.0.elements_total = self.0.elements_total.max(named);
     }
 
     /// The parameter at fault, as a dotted name: the operation's field, and the part of it at
@@ -177,6 +197,12 @@ impl Error {
         &self.0.elements
     }
 
+    /// How many elements are at fault: as many as [`Error::elements`] names, or more when
+    /// there are too many to name.
+    pub fn elements_total(&self) -> u64 {
+        self.0.elements_total
+    }
+
     pub fn parameter(&self) -> Option<&str> {
         self.0.parameter.as_deref()
     }
@@ -195,7 +221,8 @@ impl Error {
 }
 
 /// `code: message (feature F, elements E1, E2, parameter P): cause. Suggestion: S.
-/// Candidates: A, B.`, leaving out whatever is absent (`element E` for one).
+/// Candidates: A, B.`, leaving out whatever is absent (`element E` for one; `elements E1, E2,
+/// and 3 more` for five, two named).
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}: {}", self.0.code, self.0.message)?;
@@ -203,10 +230,19 @@ impl fmt::Display for Error {
         if let Some(feature) = &self.0.feature {
             about.push(format!("feature {feature}"));
         }
-        match self.0.elements.as_slice() {
-            [] => {}
-            [element] => about.push(format!("element {element}")),
-            elements => about.push(format!("elements {}", elements.join(", "))),
+        let unnamed = self
+            .0
+            .elements_total
+            .saturating_sub(self.0.elements.len() as u64);
+        match (self.0.elements.as_slice(), unnamed) {
+            ([], 0) => {}
+            ([element], 0) => about.push(format!("element {element}")),
+            (elements, 0) => about.push(format!("elements {}", elements.join(", "))),
+            ([], unnamed) => about.push(format!("{unnamed} elements")),
+            (elements, unnamed) => about.push(format!(
+                "elements {}, and {unnamed} more",
+                elements.join(", ")
+            )),
         }
         if let Some(parameter) = &self.0.parameter {
             about.push(format!("parameter {parameter}"));

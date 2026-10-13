@@ -938,7 +938,9 @@ pub(crate) fn failure_error(op: &str, failure: Failure) -> Error {
             SILICO_BUG,
         ),
     };
-    let error = error.with_elements(failure.refusal.elements().into_iter().map(name));
+    let error = error
+        .with_elements(failure.refusal.elements().into_iter().map(name))
+        .with_elements_total(failure.refusal.elements_total());
     let error = match failure.refusal.parameter() {
         Some(parameter) => error.with_parameter(parameter),
         None => error,

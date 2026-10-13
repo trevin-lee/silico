@@ -104,6 +104,51 @@ fn elements_add_up() {
 }
 
 #[test]
+fn the_total_counts_the_elements_named_and_any_beyond_them() {
+    // Named, the total is how many are named, as elements are added.
+    let e = Error::new(ErrorCode::KernelFailed, "mesh failed").with_element("Face2");
+    assert_eq!(e.elements_total(), 1);
+    let e = e.with_elements(["Face4", "Face6"]);
+    assert_eq!(e.elements_total(), 3);
+    // Too many to name: the total says how many there are.
+    let e = e.with_elements_total(250);
+    assert_eq!(e.elements_total(), 250);
+    assert_eq!(e.elements(), ["Face2", "Face4", "Face6"]);
+    assert_eq!(
+        e.to_string(),
+        "kernel_failed: mesh failed (elements Face2, Face4, Face6, and 247 more)"
+    );
+    assert_eq!(serde_json::to_value(&e).unwrap()["elements_total"], 250);
+    // Never fewer than are named, whichever is set first.
+    let e = Error::new(ErrorCode::KernelFailed, "mesh failed")
+        .with_elements_total(1)
+        .with_elements(["Face1", "Face2"]);
+    assert_eq!(e.elements_total(), 2);
+    let e = e.with_elements_total(0);
+    assert_eq!(e.elements_total(), 2);
+    assert_eq!(
+        e.to_string(),
+        "kernel_failed: mesh failed (elements Face1, Face2)"
+    );
+    // One named of several is still "elements"; none named, only counted.
+    assert_eq!(
+        Error::new(ErrorCode::KernelFailed, "mesh failed")
+            .with_element("Face1")
+            .with_elements_total(2)
+            .to_string(),
+        "kernel_failed: mesh failed (elements Face1, and 1 more)"
+    );
+    assert_eq!(
+        Error::new(ErrorCode::KernelFailed, "mesh failed")
+            .with_feature("Pad1")
+            .with_elements_total(4)
+            .with_parameter("deflection")
+            .to_string(),
+        "kernel_failed: mesh failed (feature Pad1, 4 elements, parameter deflection)"
+    );
+}
+
+#[test]
 fn display_doesnt_double_a_period() {
     assert_eq!(
         Error::new(ErrorCode::KernelFailed, "fillet failed")
@@ -121,6 +166,7 @@ fn accessors_return_what_was_set() {
     assert_eq!(e.message(), "fillet failed");
     assert_eq!(e.feature(), Some("Fillet1"));
     assert_eq!(e.elements(), ["Edge3", "Edge5"]);
+    assert_eq!(e.elements_total(), 2);
     assert_eq!(e.parameter(), Some("radius"));
     assert_eq!(e.cause(), Some("StdFail_NotDone: BRepFilletAPI_MakeFillet"));
     assert_eq!(e.suggestion(), Some("reduce the radius below 5 mm"));

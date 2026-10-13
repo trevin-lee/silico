@@ -137,15 +137,23 @@ fn refusing_a_mesh_of_unmeshed_faces_costs_a_few_times_its_size() {
         panic!("not a mesh")
     };
     assert_eq!(mesh.validate(), Ok(()));
+    let read = region.change().bytes_allocated;
+    let deciding = Region::new(GLOBAL);
     let refusal = mesh.refusal().unwrap();
     let name = |e: silico_protocol::ElementRef| e.to_string();
     let said = refusal.describe(None, &name);
     let elements: Vec<String> = refusal.elements().into_iter().map(name).collect();
+    let decided = deciding.change().bytes_allocated;
     let spent = region.change().bytes_allocated;
     assert!(
         spent <= 8 * wire.len(),
         "{spent} bytes for a {}-byte reply",
         wire.len()
+    );
+    // Deciding costs what naming a hundred faces does, nothing like the million read.
+    assert!(
+        decided <= 16 * 1024,
+        "{decided} bytes to decide, after {read} to read"
     );
     assert_eq!(elements.len(), silico_protocol::FACES_NAMED);
     assert!(

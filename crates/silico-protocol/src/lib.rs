@@ -346,24 +346,23 @@ impl Mesh {
         if self.valid != Some(false) {
             return None;
         }
-        let unmeshed = (1u32..)
-            .zip(&self.face_triangles)
-            .filter(|&(_, &count)| count == 0)
-            .map(|(face, _)| face);
         Some(Refusal::FacesUnmeshed {
-            faces: unmeshed.clone().take(FACES_NAMED).collect(),
-            count: unmeshed.count() as u64,
+            faces: self.unmeshed().take(FACES_NAMED).collect(),
+            count: self.unmeshed().count() as u64,
         })
     }
 
     /// The faces OCCT couldn't mesh, numbered from 1 (`Face1`), in order: those with no
     /// triangles.
     pub fn unmeshed_faces(&self) -> Vec<u32> {
+        self.unmeshed().collect()
+    }
+
+    fn unmeshed(&self) -> impl Iterator<Item = u32> + '_ {
         (1u32..)
             .zip(&self.face_triangles)
             .filter(|&(_, &count)| count == 0)
             .map(|(face, _)| face)
-            .collect()
     }
 
     /// The face of each triangle, from the per-face counts: what a picked triangle belongs

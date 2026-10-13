@@ -241,7 +241,7 @@ std::unique_ptr<Tessellation> tessellate(const Shape &shape, double deflection) 
     TopLoc_Location location;
     const Handle(Poly_Triangulation) mesh = BRep_Tool::Triangulation(face, location);
     if (mesh.IsNull()) {
-      // No triangles: reported, for Rust to decide on.
+      // No triangles: a count of 0, from which Rust finds the faces left unmeshed.
       out->face_triangles_.push_back(0);
       continue;
     }

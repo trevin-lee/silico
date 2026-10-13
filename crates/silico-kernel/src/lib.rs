@@ -1119,9 +1119,9 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
     // nearly through has, at any deflection) has no triangles, as FreeCAD gives such a face
     // an empty domain (`TopoShape::getDomains`). Whether the shape is valid goes with the
     // mesh, checked only then, and the core decides: on a valid shape such faces are left
-    // out; on one that isn't, the mesh is refused, naming them (there a face that can't be
-    // meshed says something is broken: one whose edges cross, its area, its halves
-    // cancelling, saying nothing).
+    // out; on one that isn't, the mesh is refused, naming the first hundred and counting them
+    // all (there a face that can't be meshed says something is broken: one whose edges
+    // cross, its area, its halves cancelling, saying nothing).
     let triples = |values: &[f64]| -> Vec<[f64; 3]> {
         values.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect()
     };
@@ -1146,7 +1146,12 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
     let mesh = match mesh.face_triangles.contains(&0) {
         false => mesh,
         true => {
-            tracing::debug!(faces = ?mesh.unmeshed_faces(), "faces OCCT couldn't mesh, left without triangles");
+            let faces = mesh
+                .face_triangles
+                .iter()
+                .filter(|&&count| count == 0)
+                .count();
+            tracing::debug!(faces, "faces OCCT couldn't mesh, left without triangles");
             Mesh {
                 valid: Some(shape.is_valid()?),
                 ..mesh

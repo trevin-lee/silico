@@ -1603,6 +1603,7 @@ fn a_face_that_cant_be_meshed_on_a_shape_that_isnt_valid_is_refused_naming_it() 
         assert_eq!(err.message(), "Tessellate failed", "{err}");
         assert_eq!(err.cause(), Some("Face1 couldn't be meshed"), "{err}");
         assert_eq!(err.elements(), ["Face1"], "{err}");
+        assert_eq!(err.elements_total(), 1, "{err}");
         assert!(err.suggestion().unwrap().contains("rebuild"), "{err}");
     }
     // The core's refusal, not the worker's misbehaviour: the worker goes on.
@@ -1631,6 +1632,30 @@ fn every_face_that_cant_be_meshed_is_named_by_the_cores_refusal() {
         "{err}"
     );
     assert_eq!(err.elements(), ["Face1", "Face2"], "{err}");
+    assert_eq!(err.elements_total(), 2, "{err}");
+}
+
+#[test]
+fn only_the_faces_that_cant_be_meshed_are_named_beside_ones_that_can() {
+    // A box and a bowtie, as one compound: the box's six faces mesh, the bowtie (Face7)
+    // can't, and the shape isn't valid. The core's refusal names Face7 alone.
+    let text: String = serde_json::from_value(oracle::freecad(
+        "import json, Part, FreeCAD\nV = FreeCAD.Vector\n\
+         w = Part.makePolygon([V(20, 0, 0), V(30, 10, 0), V(30, 0, 0), V(20, 10, 0), V(20, 0, 0)])\n\
+         c = Part.Compound([Part.makeBox(1, 1, 1), Part.Face(Part.Plane(), w)])\n\
+         print('SILICO_ORACLE ' + json.dumps(c.exportBrepToString()))\n",
+    ))
+    .unwrap();
+    let both = silico_kernel::from_text_brep(text.as_bytes()).unwrap();
+    let mesh = silico_kernel::tessellate(&both, 1.0).unwrap();
+    assert_eq!(mesh.face_triangles.len(), 7);
+    assert_eq!(mesh.unmeshed_faces(), [7]);
+    let data = ShapeData::unchecked(Blob::inline(silico_kernel::to_brep(&both).unwrap()));
+    let err = kernel().tessellate(&data, 1.0).unwrap_err();
+    assert_eq!(err.code(), silico_core::ErrorCode::KernelFailed, "{err}");
+    assert_eq!(err.cause(), Some("Face7 couldn't be meshed"), "{err}");
+    assert_eq!(err.elements(), ["Face7"], "{err}");
+    assert_eq!(err.elements_total(), 1, "{err}");
 }
 
 #[test]
@@ -1671,6 +1696,11 @@ fn a_valid_solid_with_slivers_meshes_at_every_deflection_silico_allows() {
             summary.area
         );
     }
+    // Through the core too: it leaves the slivers out of a valid shape's mesh.
+    let data = ShapeData::unchecked(Blob::inline(silico_kernel::to_brep(&built.shape).unwrap()));
+    let mesh = kernel().tessellate(&data, 0.01).unwrap();
+    assert_eq!(mesh.unmeshed_faces(), [8, 13]);
+    assert_eq!(mesh.valid, Some(true));
 }
 
 #[test]
