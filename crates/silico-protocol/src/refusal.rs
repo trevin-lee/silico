@@ -70,9 +70,10 @@ pub enum Refusal {
     DeflectionTooFine { deflection: f64, floor: f64 },
     /// A shape whose extent is too large, or not finite, to mesh.
     ExtentNotFinite,
-    /// Faces OCCT couldn't mesh (1-based, in order), on a shape that isn't valid: the core's
-    /// decision, from a mesh that says so.
-    FacesUnmeshed { faces: Vec<u32> },
+    /// Faces OCCT couldn't mesh, on a shape that isn't valid: the core's decision, from a
+    /// mesh that says so (a worker never sends it). `faces`, the first of them, 1-based, in
+    /// order, up to [`FACES_NAMED`]; `count`, how many there are.
+    FacesUnmeshed { faces: Vec<u32>, count: u64 },
     /// A measure of the shape that isn't finite: which (`volume`, `center x`, ...).
     NotFinite { quantity: String, value: f64 },
     /// Silico's bridge has no result check for an operation on this many shapes.
@@ -195,6 +196,13 @@ pub struct Described {
     pub suggestion: Option<String>,
 }
 
+/// The most faces a refusal of unmeshed faces names as elements: the first, in order. A
+/// mesh can have a face for every byte of it, and the error stays small.
+pub const FACES_NAMED: usize = 100;
+
+/// The most faces a refusal of unmeshed faces names in its words; the rest are counted.
+const FACES_IN_WORDS: usize = 8;
+
 /// What to try when a shape's geometry can't be meshed.
 const UNUSABLE_GEOMETRY: &str = "the shape's geometry is broken (a value too large, or not a number): rebuild it from its inputs";
 /// What to try for a B-rep OCCT can't work on.
@@ -252,9 +260,11 @@ impl Refusal {
             Refusal::EdgesRefused { troubles, .. } => {
                 troubles.iter().map(|t| ElementRef::edge(t.edge)).collect()
             }
-            Refusal::FacesUnmeshed { faces } => {
-                faces.iter().map(|&face| ElementRef::face(face)).collect()
-            }
+            Refusal::FacesUnmeshed { faces, .. } => faces
+                .iter()
+                .take(FACES_NAMED)
+                .map(|&face| ElementRef::face(face))
+                .collect(),
             _ => Vec::new(),
         }
     }
@@ -422,9 +432,19 @@ impl Refusal {
                 "the shape's extent is too large or not finite, so it can't be meshed".to_owned(),
                 Some(UNUSABLE_GEOMETRY.to_owned()),
             ),
-            Refusal::FacesUnmeshed { faces } => {
-                let named: Vec<String> = faces.iter().map(|&f| name(ElementRef::face(f))).collect();
-                let these = match faces.len() {
+            Refusal::FacesUnmeshed { faces, count } => {
+                // Named, a few; the rest counted, so the words stay short however many there
+                // are (the error's elements name more).
+                let mut named: Vec<String> = faces
+                    .iter()
+                    .take(FACES_IN_WORDS)
+                    .map(|&f| name(ElementRef::face(f)))
+                    .collect();
+                let unnamed = count.saturating_sub(named.len() as u64);
+                if unnamed > 0 {
+                    named.push(format!("{unnamed} other faces"));
+                }
+                let these = match count {
                     1 => "this face",
                     _ => "these faces",
                 };
@@ -758,7 +778,10 @@ mod tests {
                 floor: 1e-3,
             },
             Refusal::ExtentNotFinite,
-            Refusal::FacesUnmeshed { faces: vec![7, 9] },
+            Refusal::FacesUnmeshed {
+                faces: vec![7, 9],
+                count: 2,
+            },
             Refusal::NotFinite {
                 quantity: "volume".to_owned(),
                 value: f64::INFINITY,
@@ -1010,7 +1033,8 @@ mod tests {
     #[test]
     fn faces_that_cant_be_meshed_are_each_named() {
         let said = |faces: Vec<u32>| {
-            let refusal = Refusal::FacesUnmeshed { faces };
+            let count = faces.len() as u64;
+            let refusal = Refusal::FacesUnmeshed { faces, count };
             let elements = refusal.elements();
             (refusal.describe(None, &|e| e.to_string()), elements)
         };
@@ -1030,6 +1054,18 @@ mod tests {
                 .is_some_and(|s| s.contains("these faces of it can't be meshed"))
         );
         assert_eq!(elements, [ElementRef::face(3), ElementRef::face(8)]);
+        // Many: a few named in the words, the rest counted; the first hundred are elements.
+        let many = Refusal::FacesUnmeshed {
+            faces: (1..=100).collect(),
+            count: 1_000_000,
+        };
+        let words = many.describe(None, &|e| e.to_string()).message;
+        assert_eq!(
+            words,
+            "Face1, Face2, Face3, Face4, Face5, Face6, Face7, Face8, and 999992 other faces couldn't be meshed"
+        );
+        assert_eq!(many.elements().len(), FACES_NAMED);
+        assert_eq!(many.elements()[99], ElementRef::face(100));
     }
 
     #[test]

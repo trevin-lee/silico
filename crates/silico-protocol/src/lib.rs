@@ -30,8 +30,8 @@ pub use profile::{
     extrusion_vector, radians,
 };
 pub use refusal::{
-    BrepDefect, ChamferKind, Described, DressingKind, EdgeTrouble, HistoryDefect, Operation,
-    Refusal, Returned, Role, Trouble,
+    BrepDefect, ChamferKind, Described, DressingKind, EdgeTrouble, FACES_NAMED, HistoryDefect,
+    Operation, Refusal, Returned, Role, Trouble,
 };
 
 /// The file descriptor a worker inherits its end of the socket pair as.
@@ -338,6 +338,24 @@ pub struct Mesh {
 }
 
 impl Mesh {
+    /// What the core decides from the faces OCCT couldn't mesh: nothing, if there are none
+    /// or the shape is valid (they're left out, slivers too narrow to show); a refusal, if it
+    /// isn't, naming the first [`FACES_NAMED`] and counting them all, so it costs no more
+    /// than a few times the mesh however many there are.
+    pub fn refusal(&self) -> Option<Refusal> {
+        if self.valid != Some(false) {
+            return None;
+        }
+        let unmeshed = (1u32..)
+            .zip(&self.face_triangles)
+            .filter(|&(_, &count)| count == 0)
+            .map(|(face, _)| face);
+        Some(Refusal::FacesUnmeshed {
+            faces: unmeshed.clone().take(FACES_NAMED).collect(),
+            count: unmeshed.count() as u64,
+        })
+    }
+
     /// The faces OCCT couldn't mesh, numbered from 1 (`Face1`), in order: those with no
     /// triangles.
     pub fn unmeshed_faces(&self) -> Vec<u32> {

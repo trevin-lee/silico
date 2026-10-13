@@ -863,8 +863,10 @@ fn refusal_fits(refusal: &Refusal, listed: Option<&[u32]>) -> Result<(), String>
                 _ => Err("it says no edges were listed, but some were".to_owned()),
             };
         }
-        Refusal::FacesUnmeshed { faces } if faces.contains(&0) => {
-            return Err("it names face 0".to_owned());
+        Refusal::FacesUnmeshed { .. } => {
+            return Err(
+                "it refuses a mesh for its unmeshed faces, which only the core decides".to_owned(),
+            );
         }
         _ => &[],
     };
@@ -1174,10 +1176,12 @@ mod tests {
             fits(&Refusal::NoEdges { dressing: fillet }, Some(&[])),
             Ok(())
         );
-        assert_eq!(
-            fits(&Refusal::FacesUnmeshed { faces: vec![1, 4] }, None),
-            Ok(())
-        );
+        // Only the core refuses a mesh for its unmeshed faces.
+        let unmeshed = Refusal::FacesUnmeshed {
+            faces: vec![1, 4],
+            count: 2,
+        };
+        assert!(fits(&unmeshed, None).is_err());
         assert_eq!(fits(&Refusal::BrepCorrupted, None), Ok(()));
         // Not: a forged refusal of a million edges answering a request for one costs
         // nothing to refuse.
@@ -1207,7 +1211,6 @@ mod tests {
         };
         assert!(fits(&invalid, Some(&[1])).is_err());
         assert!(fits(&Refusal::EdgeTwice { edge: 9 }, Some(&[1, 1])).is_err());
-        assert!(fits(&Refusal::FacesUnmeshed { faces: vec![0] }, None).is_err());
     }
 
     #[test]

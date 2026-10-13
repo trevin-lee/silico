@@ -116,3 +116,41 @@ fn a_reply_costs_at_most_a_few_times_its_size_to_read() {
         );
     }
 }
+
+#[test]
+fn refusing_a_mesh_of_unmeshed_faces_costs_a_few_times_its_size() {
+    // A worker's mesh of a million faces, none meshed, on a shape it says isn't valid:
+    // reading it and deciding, as the core does (the refusal, its words, its elements),
+    // costs no more than reading any reply does, however many faces it has.
+    let mesh = Mesh {
+        positions: vec![],
+        normals: vec![],
+        triangles: vec![],
+        face_triangles: vec![0; 1_000_000],
+        edge_points: vec![],
+        edge_point_counts: vec![],
+        valid: Some(false),
+    };
+    let wire = postcard::to_allocvec(&Reply::Mesh(mesh)).unwrap();
+    let region = Region::new(GLOBAL);
+    let Reply::Mesh(mesh) = silico_protocol::decode::<Reply>(&wire).unwrap() else {
+        panic!("not a mesh")
+    };
+    assert_eq!(mesh.validate(), Ok(()));
+    let refusal = mesh.refusal().unwrap();
+    let name = |e: silico_protocol::ElementRef| e.to_string();
+    let said = refusal.describe(None, &name);
+    let elements: Vec<String> = refusal.elements().into_iter().map(name).collect();
+    let spent = region.change().bytes_allocated;
+    assert!(
+        spent <= 8 * wire.len(),
+        "{spent} bytes for a {}-byte reply",
+        wire.len()
+    );
+    assert_eq!(elements.len(), silico_protocol::FACES_NAMED);
+    assert!(
+        said.message
+            .ends_with("and 999992 other faces couldn't be meshed")
+    );
+    drop((mesh, said, elements));
+}

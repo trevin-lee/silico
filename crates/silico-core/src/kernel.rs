@@ -14,7 +14,7 @@ pub use silico_protocol::{
     ElementRef, Ends, FreecadMeasures, History, InputHistory, Mesh, Primitive, Profile, Reported,
     ShapeData, ShapeSummary,
 };
-use silico_protocol::{DebugOp, Failure, Generation, Op, Refusal, Reply};
+use silico_protocol::{DebugOp, Failure, Generation, Op, Reply};
 
 use crate::worker::Worker;
 use crate::{Error, ErrorCode};
@@ -269,14 +269,9 @@ impl KernelRequest<Mesh> {
         // Faces OCCT couldn't mesh: left out of a valid shape's mesh (slivers too narrow to
         // show), and the mesh refused for one that isn't valid, naming them (there they say
         // something is broken).
-        .deciding(|name, mesh: Mesh| match mesh.valid {
-            Some(false) => Err(crate::worker::failure_error(
-                name,
-                Failure::new(Refusal::FacesUnmeshed {
-                    faces: mesh.unmeshed_faces(),
-                }),
-            )),
-            _ => Ok(mesh),
+        .deciding(|name, mesh: Mesh| match mesh.refusal() {
+            Some(refusal) => Err(crate::worker::failure_error(name, Failure::new(refusal))),
+            None => Ok(mesh),
         })
     }
 }

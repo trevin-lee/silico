@@ -234,7 +234,6 @@ mod ffi {
         fn face_triangles(self: &Tessellation) -> &[u32];
         fn edge_points(self: &Tessellation) -> &[f64];
         fn edge_points_per_edge(self: &Tessellation) -> &[u32];
-        fn unmeshed_faces(self: &Tessellation) -> &[u32];
         fn shape_to_brep(shape: &Shape) -> Result<UniquePtr<CxxString>>;
         fn shape_from_brep(brep: &[u8]) -> Result<UniquePtr<Shape>>;
         fn shape_from_text_brep(brep: &[u8]) -> Result<UniquePtr<Shape>>;
@@ -1123,14 +1122,6 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
     // out; on one that isn't, the mesh is refused, naming them (there a face that can't be
     // meshed says something is broken: one whose edges cross, its area, its halves
     // cancelling, saying nothing).
-    let unmeshed = raw.unmeshed_faces();
-    let valid = match unmeshed.is_empty() {
-        true => None,
-        false => {
-            tracing::debug!(faces = ?unmeshed, "faces OCCT couldn't mesh, left without triangles");
-            Some(shape.is_valid()?)
-        }
-    };
     let triples = |values: &[f64]| -> Vec<[f64; 3]> {
         values.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect()
     };
@@ -1149,7 +1140,18 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
         face_triangles: raw.face_triangles().to_vec(),
         edge_points: triples(raw.edge_points()),
         edge_point_counts: raw.edge_points_per_edge().to_vec(),
-        valid,
+        valid: None,
+    };
+    // From the mesh's own counts, so what the core checks and what the worker sends agree.
+    let mesh = match mesh.face_triangles.contains(&0) {
+        false => mesh,
+        true => {
+            tracing::debug!(faces = ?mesh.unmeshed_faces(), "faces OCCT couldn't mesh, left without triangles");
+            Mesh {
+                valid: Some(shape.is_valid()?),
+                ..mesh
+            }
+        }
     };
     // Geometry that isn't finite is refused when it's read, and a shape far enough out to
     // overflow its coordinates overflows its extent first: a mesh's coordinates are finite.
