@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::pin::Pin;
 
-use silico_protocol::{ChamferKind, Dressing, EdgeTrouble, Operation, Refusal, Trouble};
+use silico_protocol::{ChamferKind, DressingKind, EdgeTrouble, Operation, Refusal, Trouble};
 
 use crate::{Built, ChamferSize, KernelError, Shape, checked_result, ffi, history_of};
 
@@ -17,7 +17,7 @@ pub fn fillet(shape: &Shape, edges: &[u32], radius: f64) -> Result<Built, Kernel
     silico_protocol::check_fillet_radius(radius)?;
     let inner = shape.get()?;
     let topology = Topology::of(inner)?;
-    let kind = Dressing::Fillet;
+    let kind = DressingKind::Fillet;
     let edges = checked_edges(&topology, edges, kind)?;
     let mut dressing = ffi::new_fillet(inner)?;
     dress(
@@ -44,8 +44,8 @@ pub fn chamfer(
         .map_err(|invalid| crate::refused(Some("size"), invalid))?;
     let inner = shape.get()?;
     let topology = Topology::of(inner)?;
-    let kind = Dressing::Chamfer {
-        size: match size {
+    let kind = DressingKind::Chamfer {
+        kind: match size {
             ChamferSize::Equal { .. } => ChamferKind::Equal,
             ChamferSize::TwoDistances { .. } => ChamferKind::TwoDistances,
             ChamferSize::DistanceAngle { .. } => ChamferKind::DistanceAngle,
@@ -88,7 +88,7 @@ fn dress(
     shape: &Shape,
     topology: &Topology,
     edges: &[u32],
-    kind: Dressing,
+    kind: DressingKind,
     mut dressing: Pin<&mut ffi::Dressing>,
     mut add: impl FnMut(Pin<&mut ffi::Dressing>, u32, &[u32]) -> Result<(), cxx::Exception>,
 ) -> Result<Built, KernelError> {
@@ -299,7 +299,7 @@ impl Topology {
 fn checked_edges(
     topology: &Topology,
     edges: &[u32],
-    dressing: Dressing,
+    dressing: DressingKind,
 ) -> Result<Vec<u32>, KernelError> {
     if edges.is_empty() {
         return Err(KernelError::new(Refusal::NoEdges { dressing }));
@@ -323,7 +323,7 @@ fn checked_edges(
 /// its size, with OCCT's `Standard_ConstructionError` "ChFi3d_Builder:only 2 faces", which
 /// OCCT 7.9.3 (pinned) throws only while taking that one edge (ChFi3d_Builder_1.cxx,
 /// `FaceTangency`; a test fails if it's reworded): the refusal's suggestion keys on it.
-fn blame_edges(error: KernelError, edges: &[u32], dressing: Dressing) -> KernelError {
+fn blame_edges(error: KernelError, edges: &[u32], dressing: DressingKind) -> KernelError {
     error
         .during(Operation::Dressing { dressing })
         .on_edges(edges)
@@ -331,7 +331,7 @@ fn blame_edges(error: KernelError, edges: &[u32], dressing: Dressing) -> KernelE
 
 /// The refusal of edges OCCT can't fillet or chamfer (`troubles`, in the edges'
 /// increasing order): every one is at fault, and the refusal names them all.
-fn refuse(troubles: &[(u32, Trouble)], dressing: Dressing) -> KernelError {
+fn refuse(troubles: &[(u32, Trouble)], dressing: DressingKind) -> KernelError {
     if troubles.is_empty() {
         return KernelError::new(Refusal::NoEdgeToRefuse { dressing });
     }
@@ -456,8 +456,8 @@ mod tests {
         use silico_protocol::ChamferKind;
 
         use crate::KernelErrorKind;
-        let chamfer = Dressing::Chamfer {
-            size: ChamferKind::Equal,
+        let chamfer = DressingKind::Chamfer {
+            kind: ChamferKind::Equal,
         };
         let one = refuse(&[(3, Trouble::Smooth)], chamfer);
         assert_eq!(one.elements(), ["Edge3"]);
@@ -465,7 +465,7 @@ mod tests {
         assert_eq!(one.kind(), KernelErrorKind::InvalidInput);
         let two = refuse(
             &[(3, Trouble::OneFace), (7, Trouble::Smooth)],
-            Dressing::Fillet,
+            DressingKind::Fillet,
         );
         assert_eq!(two.elements(), ["Edge3", "Edge7"]);
         assert!(two.message().ends_with("; OCCT won't fillet Edge7 either"));

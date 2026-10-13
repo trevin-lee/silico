@@ -22,15 +22,16 @@ pub use history::{
     ElementCounts, ElementFate, ElementKind, ElementRef, Ends, History, InputHistory, Reported,
 };
 pub use primitive::{
-    InvalidParameter, LENGTH_TOLERANCE, MAX_LENGTH, Primitive, check_offset, format_number,
+    InvalidParameter, LENGTH_TOLERANCE, MAX_LENGTH, OFFSET_FIELD, Primitive, check_offset,
+    format_number,
 };
 pub use profile::{
     Axis, MAX_PROFILE_POINTS, Profile, ProfilePlane, check_fillet_radius, check_revolve,
     extrusion_vector, radians,
 };
 pub use refusal::{
-    BrepDefect, ChamferKind, Described, Dressing, EdgeTrouble, HistoryDefect, Operation, Refusal,
-    Returned, Role, Trouble,
+    BrepDefect, ChamferKind, Described, DressingKind, EdgeTrouble, HistoryDefect, Operation,
+    Refusal, Returned, Role, Trouble,
 };
 
 /// The file descriptor a worker inherits its end of the socket pair as.

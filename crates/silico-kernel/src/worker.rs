@@ -330,7 +330,7 @@ where
 mod tests {
     #[test]
     fn a_kernel_error_reaches_the_app_as_its_refusal_and_occts_words_only() {
-        use silico_protocol::{Dressing, EdgeTrouble, Operation, Refusal, Trouble};
+        use silico_protocol::{DressingKind, EdgeTrouble, Operation, Refusal, Trouble};
 
         use crate::KernelError;
         let refusals = [
@@ -339,7 +339,7 @@ mod tests {
                 count: 12,
             },
             Refusal::EdgesRefused {
-                dressing: Dressing::Fillet,
+                dressing: DressingKind::Fillet,
                 troubles: vec![EdgeTrouble {
                     edge: 3,
                     trouble: Trouble::Smooth,

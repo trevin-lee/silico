@@ -279,11 +279,11 @@ pub use dressing::{chamfer, fillet};
 /// core names the elements and writes its structured `Error` from them. In-process, it reads
 /// as the core would write it, naming elements as FreeCAD does (`Edge3`).
 #[derive(Debug, Clone, PartialEq)]
-pub struct KernelError(Box<Described>);
+pub struct KernelError(Box<Parts>);
 
 /// A [`KernelError`]'s parts: boxed, so a `Result` carrying one stays small.
 #[derive(Debug, Clone, PartialEq)]
-struct Described {
+struct Parts {
     refusal: Refusal,
     cause: Option<String>,
     /// The refusal described, with FreeCAD's names.
@@ -318,7 +318,7 @@ impl KernelError {
             _ => described.message,
         };
         let elements = refusal.elements().iter().map(ToString::to_string).collect();
-        Self(Box::new(Described {
+        Self(Box::new(Parts {
             refusal,
             cause,
             message,
@@ -330,7 +330,7 @@ impl KernelError {
     /// The same failure, as OCCT's doing `operation` (for what to suggest): an exception
     /// or an invalid result not yet attributed to an operation.
     fn during(self, operation: Operation) -> Self {
-        let Described { refusal, cause, .. } = *self.0;
+        let Parts { refusal, cause, .. } = *self.0;
         let refusal = match refusal {
             Refusal::Occt {
                 operation: Operation::Other,
@@ -347,7 +347,7 @@ impl KernelError {
 
     /// The same failure of a fillet or chamfer, given `edges`.
     fn on_edges(self, given: &[u32]) -> Self {
-        let Described { refusal, cause, .. } = *self.0;
+        let Parts { refusal, cause, .. } = *self.0;
         let refusal = match refusal {
             Refusal::Occt { operation, .. } => Refusal::Occt {
                 operation,
@@ -651,7 +651,8 @@ pub fn measure_as_freecad(shape: &Shape) -> Result<silico_protocol::FreecadMeasu
 /// self, numbered the same (or kept, for an offset of zero). An offset must be finite and,
 /// in each direction, at most [`MAX_LENGTH`].
 pub fn translate(shape: &Shape, offset: [f64; 3]) -> Result<Built, KernelError> {
-    silico_protocol::check_offset(offset).map_err(|invalid| refused(Some("offset"), invalid))?;
+    silico_protocol::check_offset(offset)
+        .map_err(|invalid| refused(Some(silico_protocol::OFFSET_FIELD), invalid))?;
     let inner = shape.get()?;
     let [dx, dy, dz] = offset;
     let mut entries = Vec::new();
@@ -672,19 +673,11 @@ pub fn translate(shape: &Shape, offset: [f64; 3]) -> Result<Built, KernelError> 
     })
 }
 
-/// A value refused by the protocol's check, named as the core names it: a dotted name
-/// under `under`, the field the value is a part of, if any; a profile's corners, as the
-/// profile.
+/// A value refused by the protocol's check, named as the core names it
+/// (`InvalidParameter::name`): `under`, the field the value is a part of, if any.
 fn refused(under: Option<&str>, invalid: silico_protocol::InvalidParameter) -> KernelError {
-    let name = match invalid.parameter {
-        "points" => "profile",
-        parameter => parameter,
-    };
     KernelError::new(Refusal::InvalidParameter {
-        parameter: match under {
-            Some(under) => format!("{under}.{name}"),
-            None => name.to_owned(),
-        },
+        parameter: invalid.name(under),
         message: invalid.message,
     })
 }

@@ -508,6 +508,13 @@ fn a_shape_too_large_to_mesh_says_so() {
     let shape = silico_kernel::from_text_brep(far.as_bytes()).unwrap();
     let err = silico_kernel::tessellate(&shape, 1.0).unwrap_err();
     assert!(err.message().contains("extent is too large"), "{err:?}");
+    // The shape's fault: a failure, not a value refused.
+    assert_eq!(
+        err.kind(),
+        silico_kernel::KernelErrorKind::Failed,
+        "{err:?}"
+    );
+    assert_eq!(err.refusal(), &silico_kernel::Refusal::ExtentNotFinite);
 }
 
 #[test]

@@ -4,11 +4,11 @@
 
 use proptest::prelude::*;
 use silico_protocol::{
-    Axis, Blob, BooleanOp, BuiltData, ChamferSize, DebugOp, Dressing, ElementCounts, ElementFate,
-    ElementKind, ElementRef, Ends, Failure, FailureKind, FrameError, FrameReader, FreecadMeasures,
-    Generation, History, InputHistory, MAX_FRAME_LEN, Mesh, Misbehavior, Op, Operation, OutOfTurn,
-    Primitive, Profile, Refusal, Reply, Reported, Request, RequestId, Response, ShapeData,
-    ShapeSummary, TraceId, write_message,
+    Axis, Blob, BooleanOp, BuiltData, ChamferSize, DebugOp, DressingKind, ElementCounts,
+    ElementFate, ElementKind, ElementRef, Ends, Failure, FailureKind, FrameError, FrameReader,
+    FreecadMeasures, Generation, History, InputHistory, MAX_FRAME_LEN, Mesh, Misbehavior, Op,
+    Operation, OutOfTurn, Primitive, Profile, Refusal, Reply, Reported, Request, RequestId,
+    Response, ShapeData, ShapeSummary, TraceId, write_message,
 };
 
 /// One request per operation. The match gives each variant its own index and every
@@ -271,7 +271,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         Err(Failure {
             refusal: Refusal::Occt {
                 operation: Operation::Dressing {
-                    dressing: Dressing::Fillet,
+                    dressing: DressingKind::Fillet,
                 },
                 edges: vec![3],
             },
@@ -279,7 +279,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         }),
         Err(Failure::new(Refusal::ResultInvalid {
             operation: Operation::Dressing {
-                dressing: Dressing::Fillet,
+                dressing: DressingKind::Fillet,
             },
             edges: vec![1, 2],
         })),

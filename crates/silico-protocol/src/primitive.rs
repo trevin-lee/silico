@@ -42,10 +42,30 @@ pub enum Primitive {
 /// A primitive value that can't make a solid, naming the parameter at fault.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvalidParameter {
-    /// The parameter's name, as the operation spells it (`radius`, `dx`, ...).
+    /// The parameter's name, as the check spells it (`radius`, `dx`, `points`, ...).
     pub parameter: &'static str,
     /// What's wrong, naming the parameter and the value.
     pub message: String,
+}
+
+/// The field of a translation that's its offset, under which a check's `x`, `y`, and `z` sit.
+pub const OFFSET_FIELD: &str = "offset";
+
+impl InvalidParameter {
+    /// The parameter at fault as errors name it: a dotted name, the operation's field, and
+    /// the part of it at fault where it has parts (`offset.x`, a chamfer's `size.angle`);
+    /// `under`, the field the checked value is a part of, if any. A profile's corners are
+    /// the profile. The core and the worker both name parameters this way.
+    pub fn name(&self, under: Option<&str>) -> String {
+        let name = match self.parameter {
+            "points" => "profile",
+            parameter => parameter,
+        };
+        match under {
+            Some(under) => format!("{under}.{name}"),
+            None => name.to_owned(),
+        }
+    }
 }
 
 impl Primitive {

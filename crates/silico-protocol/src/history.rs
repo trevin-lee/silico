@@ -13,12 +13,49 @@ pub enum ElementKind {
     Solid,
 }
 
-/// A sub-shape of a result, by kind and 1-based number in OCCT's `TopExp::MapShapes` order
-/// (FreeCAD's `Face1`, `Edge1`, ...).
+/// A sub-shape of a shape, by kind and 1-based number in OCCT's `TopExp::MapShapes` order
+/// (FreeCAD's `Face1`, `Edge1`, ...): of a result, in a history; of the operation's input,
+/// in a refusal (`Refusal::elements`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ElementRef {
     pub kind: ElementKind,
     pub index: u32,
+}
+
+impl ElementRef {
+    pub fn vertex(index: u32) -> Self {
+        Self {
+            kind: ElementKind::Vertex,
+            index,
+        }
+    }
+
+    pub fn edge(index: u32) -> Self {
+        Self {
+            kind: ElementKind::Edge,
+            index,
+        }
+    }
+
+    pub fn face(index: u32) -> Self {
+        Self {
+            kind: ElementKind::Face,
+            index,
+        }
+    }
+}
+
+/// FreeCAD's name for an element: `Face1`, `Edge3`, `Vertex2`, `Solid1`.
+impl std::fmt::Display for ElementRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let kind = match self.kind {
+            ElementKind::Vertex => "Vertex",
+            ElementKind::Edge => "Edge",
+            ElementKind::Face => "Face",
+            ElementKind::Solid => "Solid",
+        };
+        write!(f, "{kind}{}", self.index)
+    }
 }
 
 /// A result element OCCT reported for an input element, and where in OCCT's list it was:

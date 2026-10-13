@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{BooleanOp, ElementKind, ElementRef, FailureKind, LENGTH_TOLERANCE, format_number};
+use crate::{BooleanOp, ElementRef, FailureKind, LENGTH_TOLERANCE, OFFSET_FIELD, format_number};
 
 /// Why a request was refused or failed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -54,14 +54,14 @@ pub enum Refusal {
     /// A boolean whose result has nothing in it, or no volume.
     BooleanResultEmpty { op: BooleanOp },
     /// A fillet or chamfer given no edges.
-    NoEdges { dressing: Dressing },
+    NoEdges { dressing: DressingKind },
     /// An edge number the shape doesn't have; it has `count` edges.
     EdgeMissing { edge: u32, count: u32 },
     /// An edge listed more than once.
     EdgeTwice { edge: u32 },
     /// Edges OCCT can't fillet or chamfer, in increasing order, and why.
     EdgesRefused {
-        dressing: Dressing,
+        dressing: DressingKind,
         troubles: Vec<EdgeTrouble>,
     },
     /// A mesh deflection that isn't a positive, finite length.
@@ -79,7 +79,7 @@ pub enum Refusal {
     /// Silico's bridge reported a history it shouldn't have.
     MalformedHistory { defect: HistoryDefect },
     /// Silico's own fillet or chamfer code had no edge to refuse.
-    NoEdgeToRefuse { dressing: Dressing },
+    NoEdgeToRefuse { dressing: DressingKind },
     /// A test operation sent to a production worker.
     TestOperation { op: String },
     /// Floating-point traps found on after `op` (trap-enable bits `mask`).
@@ -111,7 +111,7 @@ pub enum Operation {
         op: BooleanOp,
     },
     Dressing {
-        dressing: Dressing,
+        dressing: DressingKind,
     },
     Tessellate,
     /// Anything else: reading or writing B-reps, measuring.
@@ -127,9 +127,9 @@ pub enum Role {
 
 /// A fillet, or a chamfer of one of the size kinds (for what to suggest).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Dressing {
+pub enum DressingKind {
     Fillet,
-    Chamfer { size: ChamferKind },
+    Chamfer { kind: ChamferKind },
 }
 
 /// The kind of a [`ChamferSize`](crate::ChamferSize).
@@ -194,29 +194,6 @@ pub struct Described {
     pub suggestion: Option<String>,
 }
 
-impl ElementRef {
-    /// An edge, by its 1-based number.
-    pub fn edge(index: u32) -> Self {
-        Self {
-            kind: ElementKind::Edge,
-            index,
-        }
-    }
-}
-
-/// FreeCAD's name for an element: `Face1`, `Edge3`, `Vertex2`, `Solid1`.
-impl std::fmt::Display for ElementRef {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let kind = match self.kind {
-            ElementKind::Vertex => "Vertex",
-            ElementKind::Edge => "Edge",
-            ElementKind::Face => "Face",
-            ElementKind::Solid => "Solid",
-        };
-        write!(f, "{kind}{}", self.index)
-    }
-}
-
 /// What to try when a shape's geometry can't be meshed.
 const UNUSABLE_GEOMETRY: &str = "the shape's geometry is broken (a value too large, or not a number): rebuild it from its inputs";
 /// What to try for a B-rep OCCT can't work on.
@@ -260,36 +237,44 @@ impl Refusal {
         }
     }
 
-    /// Every element at fault, in order. A fillet or chamfer OCCT failed on several edges
-    /// names none: OCCT doesn't say which.
+    /// Every element at fault, in order: each of the operation's input shape (every refusal
+    /// that names elements has one). A fillet or chamfer OCCT failed on several edges names
+    /// none: OCCT doesn't say which. A profile's merged corners aren't a shape's elements:
+    /// the refusal names the profile as its parameter, and the corners by number.
     pub fn elements(&self) -> Vec<ElementRef> {
         match self {
             Refusal::Occt { edges, .. } | Refusal::ResultInvalid { edges, .. } => match edges[..] {
                 [edge] => vec![ElementRef::edge(edge)],
                 _ => Vec::new(),
             },
-            Refusal::CornersMerged { first, .. } => vec![ElementRef {
-                kind: ElementKind::Vertex,
-                index: *first,
-            }],
             Refusal::EdgeMissing { edge, .. } | Refusal::EdgeTwice { edge } => {
                 vec![ElementRef::edge(*edge)]
             }
             Refusal::EdgesRefused { troubles, .. } => {
                 troubles.iter().map(|t| ElementRef::edge(t.edge)).collect()
             }
-            Refusal::FaceUnmeshed { face } => vec![ElementRef {
-                kind: ElementKind::Face,
-                index: *face,
-            }],
+            Refusal::FaceUnmeshed { face } => vec![ElementRef::face(*face)],
             _ => Vec::new(),
         }
     }
 
-    /// The parameter at fault, as a dotted name, if a value was refused.
+    /// The parameter at fault, as a dotted name (see `InvalidParameter::name`), if a value
+    /// was refused.
     pub fn parameter(&self) -> Option<&str> {
         match self {
             Refusal::InvalidParameter { parameter, .. } => Some(parameter),
+            Refusal::NoEdges { .. }
+            | Refusal::EdgeMissing { .. }
+            | Refusal::EdgeTwice { .. }
+            | Refusal::EdgesRefused { .. } => Some("edges"),
+            Refusal::DeflectionInvalid { .. } | Refusal::DeflectionTooFine { .. } => {
+                Some("deflection")
+            }
+            Refusal::CornersMerged { .. } => Some("profile"),
+            Refusal::BooleanInputEmpty { role, .. } => Some(match role {
+                Role::Base => "base",
+                Role::Tool => "tool",
+            }),
             _ => None,
         }
     }
@@ -359,7 +344,10 @@ impl Refusal {
             ),
             Refusal::InvalidParameter { parameter, message } => (
                 message.clone(),
-                parameter.starts_with("offset.").then(|| OFFSET.to_owned()),
+                parameter
+                    .strip_prefix(OFFSET_FIELD)
+                    .is_some_and(|rest| rest.starts_with('.'))
+                    .then(|| OFFSET.to_owned()),
             ),
             Refusal::CornersMerged {
                 corners,
@@ -438,13 +426,7 @@ impl Refusal {
                 Some(UNUSABLE_GEOMETRY.to_owned()),
             ),
             Refusal::FaceUnmeshed { face } => (
-                format!(
-                    "{} couldn't be meshed",
-                    name(ElementRef {
-                        kind: ElementKind::Face,
-                        index: *face
-                    })
-                ),
+                format!("{} couldn't be meshed", name(ElementRef::face(*face))),
                 Some(
                     "the shape isn't valid, and this face of it can't be meshed: rebuild the shape from its inputs"
                         .to_owned(),
@@ -520,27 +502,27 @@ impl Operation {
     }
 }
 
-impl Dressing {
+impl DressingKind {
     /// `fillet` or `chamfer`.
     pub fn name(self) -> &'static str {
         match self {
-            Dressing::Fillet => "fillet",
-            Dressing::Chamfer { .. } => "chamfer",
+            DressingKind::Fillet => "fillet",
+            DressingKind::Chamfer { .. } => "chamfer",
         }
     }
 
     /// What to suggest trying: a smaller size, or another.
     fn sizes(self) -> (&'static str, &'static str) {
         match self {
-            Dressing::Fillet => ("a smaller radius", "another radius"),
-            Dressing::Chamfer {
-                size: ChamferKind::Equal,
+            DressingKind::Fillet => ("a smaller radius", "another radius"),
+            DressingKind::Chamfer {
+                kind: ChamferKind::Equal,
             } => ("a smaller size", "another size"),
-            Dressing::Chamfer {
-                size: ChamferKind::TwoDistances,
+            DressingKind::Chamfer {
+                kind: ChamferKind::TwoDistances,
             } => ("smaller distances", "other distances"),
-            Dressing::Chamfer {
-                size: ChamferKind::DistanceAngle,
+            DressingKind::Chamfer {
+                kind: ChamferKind::DistanceAngle,
             } => ("a smaller distance or angle", "another distance or angle"),
         }
     }
@@ -607,7 +589,7 @@ fn sweep_advice(operation: &Operation) -> Option<String> {
 /// at every size, so the suggestion offers a smaller size, another, and leaving the edge
 /// out; or, for an edge `touching` where more than two faces meet, leaving it out.
 fn blame(
-    dressing: Dressing,
+    dressing: DressingKind,
     edges: &[u32],
     touching: bool,
     edge: &dyn Fn(u32) -> String,
@@ -631,7 +613,7 @@ fn blame(
 /// The refusal of edges OCCT can't fillet or chamfer: why for the first, and every one
 /// named, in the message and in the suggestion, so one refusal says everything to leave out.
 fn refused_edges(
-    dressing: Dressing,
+    dressing: DressingKind,
     troubles: &[EdgeTrouble],
     edge: &dyn Fn(u32) -> String,
 ) -> Described {
@@ -698,9 +680,9 @@ mod tests {
 
     /// One of every refusal, with elements where it has them.
     fn every_refusal() -> Vec<Refusal> {
-        let fillet = Dressing::Fillet;
-        let chamfer = Dressing::Chamfer {
-            size: ChamferKind::DistanceAngle,
+        let fillet = DressingKind::Fillet;
+        let chamfer = DressingKind::Chamfer {
+            kind: ChamferKind::DistanceAngle,
         };
         vec![
             Refusal::NoShape,
@@ -832,9 +814,162 @@ mod tests {
     }
 
     #[test]
+    fn every_refusal_is_the_kind_of_failure_it_was_before_it_was_data() {
+        // From each refusal's kind on main, where the kernel built it (invalid_input,
+        // new: failed, of_kind: invalid result or internal), not from `kind()`.
+        use FailureKind::{Internal, InvalidInput, InvalidResult, KernelFailed, UnknownOp};
+        let kinds = [
+            KernelFailed,  // NoShape
+            KernelFailed,  // NothingReturned
+            KernelFailed,  // Occt
+            InvalidResult, // ResultInvalid
+            InvalidInput,  // BrepTooShort
+            InvalidInput,  // BrepCorrupted
+            InvalidInput,  // BrepDefect
+            KernelFailed,  // UnknownBrepDefect
+            InvalidInput,  // InvalidParameter
+            InvalidInput,  // CornersMerged
+            InvalidInput,  // BooleanInputEmpty
+            KernelFailed,  // BooleanResultEmpty
+            InvalidInput,  // NoEdges
+            InvalidInput,  // EdgeMissing
+            InvalidInput,  // EdgeTwice
+            InvalidInput,  // EdgesRefused
+            InvalidInput,  // DeflectionInvalid
+            InvalidInput,  // DeflectionTooFine
+            KernelFailed,  // ExtentNotFinite
+            KernelFailed,  // FaceUnmeshed
+            KernelFailed,  // NotFinite
+            Internal,      // ResultCheckMissing
+            Internal,      // MalformedHistory
+            Internal,      // NoEdgeToRefuse
+            UnknownOp,     // TestOperation
+            Internal,      // FpTrapsOn
+            Internal,      // Internal
+        ];
+        let refusals = every_refusal();
+        assert_eq!(refusals.len(), kinds.len());
+        for (refusal, kind) in refusals.iter().zip(kinds) {
+            assert_eq!(refusal.kind(), kind, "{refusal:?}");
+        }
+    }
+
+    #[test]
+    fn every_refusal_of_a_value_names_the_parameter_at_fault() {
+        let refusals = every_refusal();
+        let named: Vec<(String, Option<&str>)> = refusals
+            .iter()
+            .map(|r| (format!("{r:?}"), r.parameter()))
+            .collect();
+        let parameter = |prefix: &str| {
+            named
+                .iter()
+                .find(|(r, _)| r.starts_with(prefix))
+                .and_then(|(_, p)| *p)
+        };
+        assert_eq!(parameter("InvalidParameter"), Some("radius"));
+        assert_eq!(parameter("CornersMerged"), Some("profile"));
+        assert_eq!(parameter("BooleanInputEmpty"), Some("tool"));
+        for edges in ["NoEdges", "EdgeMissing", "EdgeTwice", "EdgesRefused"] {
+            assert_eq!(parameter(edges), Some("edges"), "{edges}");
+        }
+        for deflection in ["DeflectionInvalid", "DeflectionTooFine"] {
+            assert_eq!(parameter(deflection), Some("deflection"), "{deflection}");
+        }
+        assert_eq!(
+            Refusal::BooleanInputEmpty {
+                op: BooleanOp::Fuse,
+                role: Role::Base
+            }
+            .parameter(),
+            Some("base")
+        );
+        // Not values: none.
+        for other in [
+            "Occt",
+            "ResultInvalid",
+            "BrepDefect",
+            "ExtentNotFinite",
+            "NotFinite",
+        ] {
+            assert_eq!(parameter(other), None, "{other}");
+        }
+    }
+
+    #[test]
+    fn a_failed_operation_suggests_what_fits_it() {
+        let said = |refusal: Refusal| {
+            refusal
+                .describe(None, &|e| e.to_string())
+                .suggestion
+                .unwrap_or_default()
+        };
+        let occt = |operation| Refusal::Occt {
+            operation,
+            edges: Vec::new(),
+        };
+        let invalid = |operation| Refusal::ResultInvalid {
+            operation,
+            edges: Vec::new(),
+        };
+        let extrude = "OCCT couldn't extrude this profile: change its length or direction slightly";
+        let revolve = "OCCT couldn't revolve this profile: move it slightly further from the axis, or onto it";
+        assert_eq!(said(occt(Operation::Extrusion)), extrude);
+        assert_eq!(said(invalid(Operation::Extrusion)), extrude);
+        assert_eq!(said(occt(Operation::Revolve)), revolve);
+        assert_eq!(said(invalid(Operation::Revolve)), revolve);
+        assert_eq!(said(occt(Operation::Tessellate)), UNUSABLE_GEOMETRY);
+        assert_eq!(
+            said(occt(Operation::Boolean { op: BooleanOp::Cut })),
+            "check that the shapes are solids that overlap"
+        );
+        assert_eq!(
+            said(invalid(Operation::Boolean { op: BooleanOp::Cut })),
+            NEARLY_MEET
+        );
+        assert_eq!(
+            said(invalid(Operation::Primitive {
+                name: "sphere".to_owned()
+            })),
+            "give the sphere sizes nearer the model's scale"
+        );
+        // An offset refused: how far.
+        assert_eq!(
+            said(Refusal::InvalidParameter {
+                parameter: "offset.y".to_owned(),
+                message: String::new(),
+            }),
+            OFFSET
+        );
+        assert_eq!(
+            said(Refusal::InvalidParameter {
+                parameter: "offsets".to_owned(),
+                message: String::new(),
+            }),
+            ""
+        );
+        // OCCT failing, with no words of its own: what it couldn't do.
+        let message = |operation| occt(operation).describe(None, &|e| e.to_string()).message;
+        assert_eq!(
+            message(Operation::Extrusion),
+            "OCCT couldn't extrude the profile"
+        );
+        assert_eq!(
+            message(Operation::Dressing {
+                dressing: DressingKind::Fillet
+            }),
+            "OCCT couldn't build the fillet"
+        );
+        assert_eq!(
+            message(Operation::Tessellate),
+            "OCCT couldn't mesh the shape"
+        );
+    }
+
+    #[test]
     fn every_edge_refused_is_an_element_at_fault() {
         let refused = Refusal::EdgesRefused {
-            dressing: Dressing::Fillet,
+            dressing: DressingKind::Fillet,
             troubles: vec![
                 EdgeTrouble {
                     edge: 3,
@@ -853,7 +988,7 @@ mod tests {
         // OCCT failing on one edge blames it; on several, it doesn't say which.
         let on = |edges: Vec<u32>| Refusal::Occt {
             operation: Operation::Dressing {
-                dressing: Dressing::Fillet,
+                dressing: DressingKind::Fillet,
             },
             edges,
         };
