@@ -1117,17 +1117,20 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
         })
     })?;
     // A face OCCT leaves unmeshed (a sliver too narrow for its tolerance, as a box chamfered
-    // nearly through has, at any deflection) has no triangles, if the shape is valid: as
-    // FreeCAD gives such a face an empty domain (`TopoShape::getDomains`). On a shape that
-    // isn't valid it's refused, naming the face: there it says something is broken (a face
-    // whose edges cross can't be meshed, and its area, its halves cancelling, says nothing).
+    // nearly through has, at any deflection) has no triangles, as FreeCAD gives such a face
+    // an empty domain (`TopoShape::getDomains`). Whether the shape is valid goes with the
+    // mesh, checked only then, and the core decides: on a valid shape such faces are left
+    // out; on one that isn't, the mesh is refused, naming them (there a face that can't be
+    // meshed says something is broken: one whose edges cross, its area, its halves
+    // cancelling, saying nothing).
     let unmeshed = raw.unmeshed_faces();
-    if let Some(&face) = unmeshed.first() {
-        if !shape.is_valid()? {
-            return Err(KernelError::new(Refusal::FaceUnmeshed { face: face + 1 }));
+    let valid = match unmeshed.is_empty() {
+        true => None,
+        false => {
+            tracing::debug!(faces = ?unmeshed, "faces OCCT couldn't mesh, left without triangles");
+            Some(shape.is_valid()?)
         }
-        tracing::debug!(faces = ?unmeshed, "faces OCCT couldn't mesh, left without triangles");
-    }
+    };
     let triples = |values: &[f64]| -> Vec<[f64; 3]> {
         values.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect()
     };
@@ -1146,6 +1149,7 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
         face_triangles: raw.face_triangles().to_vec(),
         edge_points: triples(raw.edge_points()),
         edge_point_counts: raw.edge_points_per_edge().to_vec(),
+        valid,
     };
     // Geometry that isn't finite is refused when it's read, and a shape far enough out to
     // overflow its coordinates overflows its extent first: a mesh's coordinates are finite.

@@ -70,8 +70,9 @@ pub enum Refusal {
     DeflectionTooFine { deflection: f64, floor: f64 },
     /// A shape whose extent is too large, or not finite, to mesh.
     ExtentNotFinite,
-    /// A face OCCT couldn't mesh, on a shape that isn't valid.
-    FaceUnmeshed { face: u32 },
+    /// Faces OCCT couldn't mesh (1-based, in order), on a shape that isn't valid: the core's
+    /// decision, from a mesh that says so.
+    FacesUnmeshed { faces: Vec<u32> },
     /// A measure of the shape that isn't finite: which (`volume`, `center x`, ...).
     NotFinite { quantity: String, value: f64 },
     /// Silico's bridge has no result check for an operation on this many shapes.
@@ -226,7 +227,7 @@ impl Refusal {
             | Refusal::UnknownBrepDefect { .. }
             | Refusal::BooleanResultEmpty { .. }
             | Refusal::ExtentNotFinite
-            | Refusal::FaceUnmeshed { .. }
+            | Refusal::FacesUnmeshed { .. }
             | Refusal::NotFinite { .. } => FailureKind::KernelFailed,
             Refusal::TestOperation { .. } => FailureKind::UnknownOp,
             Refusal::ResultCheckMissing { .. }
@@ -251,7 +252,9 @@ impl Refusal {
             Refusal::EdgesRefused { troubles, .. } => {
                 troubles.iter().map(|t| ElementRef::edge(t.edge)).collect()
             }
-            Refusal::FaceUnmeshed { face } => vec![ElementRef::face(*face)],
+            Refusal::FacesUnmeshed { faces } => {
+                faces.iter().map(|&face| ElementRef::face(face)).collect()
+            }
             _ => Vec::new(),
         }
     }
@@ -419,13 +422,19 @@ impl Refusal {
                 "the shape's extent is too large or not finite, so it can't be meshed".to_owned(),
                 Some(UNUSABLE_GEOMETRY.to_owned()),
             ),
-            Refusal::FaceUnmeshed { face } => (
-                format!("{} couldn't be meshed", name(ElementRef::face(*face))),
-                Some(
-                    "the shape isn't valid, and this face of it can't be meshed: rebuild the shape from its inputs"
-                        .to_owned(),
-                ),
-            ),
+            Refusal::FacesUnmeshed { faces } => {
+                let named: Vec<String> = faces.iter().map(|&f| name(ElementRef::face(f))).collect();
+                let these = match faces.len() {
+                    1 => "this face",
+                    _ => "these faces",
+                };
+                (
+                    format!("{} couldn't be meshed", listed(&named)),
+                    Some(format!(
+                        "the shape isn't valid, and {these} of it can't be meshed: rebuild the shape from its inputs"
+                    )),
+                )
+            }
             Refusal::NotFinite { quantity, value } => {
                 (format!("the shape's {quantity} isn't finite ({value})"), None)
             }
@@ -749,7 +758,7 @@ mod tests {
                 floor: 1e-3,
             },
             Refusal::ExtentNotFinite,
-            Refusal::FaceUnmeshed { face: 7 },
+            Refusal::FacesUnmeshed { faces: vec![7, 9] },
             Refusal::NotFinite {
                 quantity: "volume".to_owned(),
                 value: f64::INFINITY,
@@ -843,7 +852,7 @@ mod tests {
             InvalidInput,  // DeflectionInvalid
             InvalidInput,  // DeflectionTooFine
             KernelFailed,  // ExtentNotFinite
-            KernelFailed,  // FaceUnmeshed
+            KernelFailed,  // FacesUnmeshed
             KernelFailed,  // NotFinite
             Internal,      // ResultCheckMissing
             Internal,      // MalformedHistory
@@ -883,7 +892,7 @@ mod tests {
             Some("deflection"), // DeflectionInvalid
             Some("deflection"), // DeflectionTooFine
             None,               // ExtentNotFinite
-            None,               // FaceUnmeshed
+            None,               // FacesUnmeshed
             None,               // NotFinite
             None,               // ResultCheckMissing
             None,               // MalformedHistory
@@ -996,6 +1005,31 @@ mod tests {
             assert_eq!(said.suggestion, None);
         }
         assert!(asked.borrow().is_empty(), "named {:?}", asked.borrow());
+    }
+
+    #[test]
+    fn faces_that_cant_be_meshed_are_each_named() {
+        let said = |faces: Vec<u32>| {
+            let refusal = Refusal::FacesUnmeshed { faces };
+            let elements = refusal.elements();
+            (refusal.describe(None, &|e| e.to_string()), elements)
+        };
+        let (one, elements) = said(vec![3]);
+        assert_eq!(one.message, "Face3 couldn't be meshed");
+        assert_eq!(
+            one.suggestion.as_deref(),
+            Some(
+                "the shape isn't valid, and this face of it can't be meshed: rebuild the shape from its inputs"
+            )
+        );
+        assert_eq!(elements, [ElementRef::face(3)]);
+        let (two, elements) = said(vec![3, 8]);
+        assert_eq!(two.message, "Face3 and Face8 couldn't be meshed");
+        assert!(
+            two.suggestion
+                .is_some_and(|s| s.contains("these faces of it can't be meshed"))
+        );
+        assert_eq!(elements, [ElementRef::face(3), ElementRef::face(8)]);
     }
 
     #[test]

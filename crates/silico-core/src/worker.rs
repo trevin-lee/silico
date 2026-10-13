@@ -863,7 +863,9 @@ fn refusal_fits(refusal: &Refusal, listed: Option<&[u32]>) -> Result<(), String>
                 _ => Err("it says no edges were listed, but some were".to_owned()),
             };
         }
-        Refusal::FaceUnmeshed { face: 0 } => return Err("it names face 0".to_owned()),
+        Refusal::FacesUnmeshed { faces } if faces.contains(&0) => {
+            return Err("it names face 0".to_owned());
+        }
         _ => &[],
     };
     edges_fit(named, listed)
@@ -894,7 +896,7 @@ fn edges_fit(named: &[u32], listed: Option<&[u32]>) -> Result<(), String> {
 /// fault (as FreeCAD does, `Edge3`, until a document's names arrive) and has the refusal
 /// described with those names (`Refusal::describe`). A kernel failure always suggests
 /// something.
-fn failure_error(op: &str, failure: Failure) -> Error {
+pub(crate) fn failure_error(op: &str, failure: Failure) -> Error {
     let name = |element: ElementRef| element.to_string();
     let described = failure.refusal.describe(failure.cause.as_deref(), &name);
     // Why it failed: OCCT's words where it threw; otherwise the refusal's.
@@ -1172,7 +1174,10 @@ mod tests {
             fits(&Refusal::NoEdges { dressing: fillet }, Some(&[])),
             Ok(())
         );
-        assert_eq!(fits(&Refusal::FaceUnmeshed { face: 1 }, None), Ok(()));
+        assert_eq!(
+            fits(&Refusal::FacesUnmeshed { faces: vec![1, 4] }, None),
+            Ok(())
+        );
         assert_eq!(fits(&Refusal::BrepCorrupted, None), Ok(()));
         // Not: a forged refusal of a million edges answering a request for one costs
         // nothing to refuse.
@@ -1202,7 +1207,7 @@ mod tests {
         };
         assert!(fits(&invalid, Some(&[1])).is_err());
         assert!(fits(&Refusal::EdgeTwice { edge: 9 }, Some(&[1, 1])).is_err());
-        assert!(fits(&Refusal::FaceUnmeshed { face: 0 }, None).is_err());
+        assert!(fits(&Refusal::FacesUnmeshed { faces: vec![0] }, None).is_err());
     }
 
     #[test]

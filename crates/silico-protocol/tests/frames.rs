@@ -264,6 +264,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             face_triangles: vec![1],
             edge_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
             edge_point_counts: vec![2, 0],
+            valid: None,
         })),
         Ok(Reply::Done),
         Err(Failure::new(Refusal::InvalidParameter {
@@ -721,6 +722,7 @@ fn each_triangle_belongs_to_the_face_its_counts_say() {
         face_triangles,
         edge_points: vec![],
         edge_point_counts: vec![],
+        valid: None,
     };
     // Two triangles on face 0, none on face 1, three on face 2.
     assert_eq!(mesh(5, vec![2, 0, 3]).triangle_faces(), [0, 0, 2, 2, 2]);
@@ -740,6 +742,7 @@ fn a_mesh_is_validated_before_use() {
         face_triangles: vec![1],
         edge_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]],
         edge_point_counts: vec![2, 0, 1],
+        valid: None,
     };
     assert_eq!(
         good.edges().collect::<Vec<_>>(),
@@ -756,6 +759,24 @@ fn a_mesh_is_validated_before_use() {
     let mut bad_counts = good.clone();
     bad_counts.face_triangles = vec![2];
     assert!(bad_counts.validate().unwrap_err().contains("account for 2"));
+    // A face with no triangles comes with the shape's validity, and only then.
+    let mut unmeshed = good.clone();
+    unmeshed.face_triangles = vec![1, 0];
+    assert!(unmeshed.validate().unwrap_err().contains("wasn't checked"));
+    for valid in [true, false] {
+        unmeshed.valid = Some(valid);
+        assert_eq!(unmeshed.validate(), Ok(()), "{valid}");
+        assert_eq!(unmeshed.unmeshed_faces(), [2]);
+    }
+    let mut checked = good.clone();
+    checked.valid = Some(true);
+    assert!(
+        checked
+            .validate()
+            .unwrap_err()
+            .contains("every face has triangles")
+    );
+    assert!(good.unmeshed_faces().is_empty());
     let mut not_finite = good.clone();
     not_finite.edge_points[1][2] = f64::NAN;
     assert!(not_finite.validate().unwrap_err().contains("finite"));

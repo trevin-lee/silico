@@ -92,6 +92,7 @@ fn a_reply_costs_at_most_a_few_times_its_size_to_read() {
             face_triangles: vec![],
             edge_points: vec![],
             edge_point_counts: vec![],
+            valid: None,
         };
         f(&mut mesh);
         Response {

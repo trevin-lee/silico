@@ -320,9 +320,14 @@ pub struct Mesh {
     /// Vertex indices, three per triangle, wound counterclockwise seen from outside.
     pub triangles: Vec<[u32; 3]>,
     /// How many triangles belong to each face, in OCCT's face order. A count of 0 is a face
-    /// OCCT couldn't mesh on a valid shape (a sliver too narrow for its tolerance), missing
-    /// from the display: export and inspection decide what that means for them.
+    /// OCCT couldn't mesh: on a valid shape, a sliver too narrow for its tolerance, missing
+    /// from the display (export and inspection decide what that means for them).
     pub face_triangles: Vec<u32>,
+    /// Whether the shape is valid, checked when a face couldn't be meshed (a count of 0),
+    /// and only then: the core decides from it whether to leave such faces out (a valid
+    /// shape's sliver) or refuse the mesh (on a shape that isn't valid, a face that can't be
+    /// meshed says something is broken).
+    pub valid: Option<bool>,
     /// The points of every edge's polyline, one edge after another, split by
     /// `edge_point_counts`. Flat, so every value on the wire costs no more than a few times
     /// its size to read (a list of lists would let a few bytes cost a whole empty list).
@@ -333,6 +338,16 @@ pub struct Mesh {
 }
 
 impl Mesh {
+    /// The faces OCCT couldn't mesh, numbered from 1 (`Face1`), in order: those with no
+    /// triangles.
+    pub fn unmeshed_faces(&self) -> Vec<u32> {
+        (1u32..)
+            .zip(&self.face_triangles)
+            .filter(|&(_, &count)| count == 0)
+            .map(|(face, _)| face)
+            .collect()
+    }
+
     /// The face of each triangle, from the per-face counts: what a picked triangle belongs
     /// to. Counted from 0, so face 0 is the element `Face1`. Triangles the counts don't
     /// account for (in a mesh that fails [`Mesh::validate`]) are left out.
@@ -362,6 +377,15 @@ impl Mesh {
     /// and every normal is a unit vector (to [`NORMAL_LENGTH_TOLERANCE`]). Run it before
     /// indexing a mesh that came from another process.
     pub fn validate(&self) -> Result<(), String> {
+        match (self.face_triangles.contains(&0), self.valid) {
+            (true, None) => {
+                return Err("a face has no triangles, but the shape wasn't checked".to_owned());
+            }
+            (false, Some(_)) => {
+                return Err("the shape was checked, but every face has triangles".to_owned());
+            }
+            _ => {}
+        }
         let vertices = self.positions.len();
         if self.normals.len() != vertices {
             return Err(format!(
