@@ -358,7 +358,9 @@ impl Mesh {
         self.unmeshed().collect()
     }
 
-    fn unmeshed(&self) -> impl Iterator<Item = u32> + '_ {
+    /// The faces OCCT couldn't mesh, as [`Mesh::unmeshed_faces`] lists them, without
+    /// collecting them.
+    pub fn unmeshed(&self) -> impl Iterator<Item = u32> + '_ {
         (1u32..)
             .zip(&self.face_triangles)
             .filter(|&(_, &count)| count == 0)

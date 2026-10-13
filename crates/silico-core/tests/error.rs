@@ -146,6 +146,12 @@ fn the_total_counts_the_elements_named_and_any_beyond_them() {
             .to_string(),
         "kernel_failed: mesh failed (feature Pad1, 4 elements, parameter deflection)"
     );
+    assert_eq!(
+        Error::new(ErrorCode::KernelFailed, "mesh failed")
+            .with_elements_total(1)
+            .to_string(),
+        "kernel_failed: mesh failed (1 element)"
+    );
 }
 
 #[test]

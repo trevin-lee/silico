@@ -1146,11 +1146,7 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
     let mesh = match mesh.face_triangles.contains(&0) {
         false => mesh,
         true => {
-            let faces = mesh
-                .face_triangles
-                .iter()
-                .filter(|&&count| count == 0)
-                .count();
+            let faces = mesh.unmeshed().count();
             tracing::debug!(faces, "faces OCCT couldn't mesh, left without triangles");
             Mesh {
                 valid: Some(shape.is_valid()?),

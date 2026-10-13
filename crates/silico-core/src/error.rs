@@ -1,11 +1,13 @@
 //! Silico's structured error (ARCHITECTURE.md, invariant 9). Every failure that reaches a
 //! user or an agent is one of these: a stable code to match on, a message, and where they
-//! apply, the feature, every sub-element at fault, the parameter at fault, the underlying
-//! cause, a suggestion, and candidate fixes.
+//! apply, the feature, the sub-elements at fault (every one, or the first of them where
+//! there are too many to list, and how many there are), the parameter at fault, the
+//! underlying cause, a suggestion, and candidate fixes.
 //!
 //! The JSON form is the contract with agents (tests/contract/): every field is always
 //! present, `null` when absent and `[]` for no elements or candidates, so there's one shape
-//! to parse.
+//! to parse. `elements_total` is how many elements are at fault, `0` for none: more than
+//! `elements` lists only when the list is cut short.
 
 use std::fmt;
 
@@ -238,6 +240,7 @@ impl fmt::Display for Error {
             ([], 0) => {}
             ([element], 0) => about.push(format!("element {element}")),
             (elements, 0) => about.push(format!("elements {}", elements.join(", "))),
+            ([], 1) => about.push("1 element".to_owned()),
             ([], unnamed) => about.push(format!("{unnamed} elements")),
             (elements, unnamed) => about.push(format!(
                 "elements {}, and {unnamed} more",
