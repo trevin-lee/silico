@@ -1598,6 +1598,8 @@ fn a_face_that_cant_be_meshed_on_a_shape_that_isnt_valid_is_refused_naming_it() 
         assert_eq!(mesh.face_triangles, [0], "deflection {deflection}");
         assert_eq!(mesh.valid, Some(false), "deflection {deflection}");
         let err = k.tessellate(&data, deflection).unwrap_err();
+        // The core's refusal (a kernel failure), not a worker it can't trust.
+        assert_eq!(err.code(), silico_core::ErrorCode::KernelFailed, "{err}");
         assert_eq!(err.message(), "Tessellate failed", "{err}");
         assert_eq!(err.cause(), Some("Face1 couldn't be meshed"), "{err}");
         assert_eq!(err.elements(), ["Face1"], "{err}");
@@ -1605,6 +1607,30 @@ fn a_face_that_cant_be_meshed_on_a_shape_that_isnt_valid_is_refused_naming_it() 
     }
     // The core's refusal, not the worker's misbehaviour: the worker goes on.
     assert!(k.summarize(&data).is_ok());
+}
+
+#[test]
+fn every_face_that_cant_be_meshed_is_named_by_the_cores_refusal() {
+    // Two bowties, side by side, as one compound: neither can be meshed and the shape isn't
+    // valid, so the core's refusal names both faces, not just the first.
+    let text: String = serde_json::from_value(oracle::freecad(
+        "import json, Part, FreeCAD\nV = FreeCAD.Vector\n\
+         w = Part.makePolygon([V(0, 0, 0), V(10, 10, 0), V(10, 0, 0), V(0, 10, 0), V(0, 0, 0)])\n\
+         f = Part.Face(Part.Plane(), w)\n\
+         g = f.copy(); g.translate(V(20, 0, 0))\n\
+         print('SILICO_ORACLE ' + json.dumps(Part.Compound([f, g]).exportBrepToString()))\n",
+    ))
+    .unwrap();
+    let pair = silico_kernel::from_text_brep(text.as_bytes()).unwrap();
+    let data = ShapeData::unchecked(Blob::inline(silico_kernel::to_brep(&pair).unwrap()));
+    let err = kernel().tessellate(&data, 1.0).unwrap_err();
+    assert_eq!(err.code(), silico_core::ErrorCode::KernelFailed, "{err}");
+    assert_eq!(
+        err.cause(),
+        Some("Face1 and Face2 couldn't be meshed"),
+        "{err}"
+    );
+    assert_eq!(err.elements(), ["Face1", "Face2"], "{err}");
 }
 
 #[test]
