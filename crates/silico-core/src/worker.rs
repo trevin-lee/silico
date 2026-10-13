@@ -857,6 +857,12 @@ fn refusal_fits(refusal: &Refusal, listed: Option<&[u32]>) -> Result<(), String>
             let edges: Vec<u32> = troubles.iter().map(|t| t.edge).collect();
             return edges_fit(&edges, listed);
         }
+        Refusal::EdgesFailed { edges, .. } => {
+            if edges.is_empty() {
+                return Err("it says OCCT couldn't build edges, but names none".to_owned());
+            }
+            edges
+        }
         Refusal::NoEdges { .. } => {
             return match listed {
                 Some([]) => Ok(()),
@@ -1213,6 +1219,17 @@ mod tests {
         };
         assert!(fits(&invalid, Some(&[1])).is_err());
         assert!(fits(&Refusal::EdgeTwice { edge: 9 }, Some(&[1, 1])).is_err());
+        // The edges OCCT couldn't fillet: some, each listed, once, in order.
+        let failed = |edges: Vec<u32>| Refusal::EdgesFailed {
+            dressing: fillet,
+            edges,
+        };
+        assert_eq!(fits(&failed(vec![2, 10]), Some(&[10, 1, 2])), Ok(()));
+        assert!(fits(&failed(vec![]), Some(&[1])).is_err());
+        assert!(fits(&failed(vec![10, 2]), Some(&[2, 10])).is_err());
+        assert!(fits(&failed(vec![2, 2]), Some(&[2])).is_err());
+        assert!(fits(&failed(vec![3]), Some(&[2])).is_err());
+        assert!(fits(&failed(vec![2]), None).is_err());
     }
 
     #[test]

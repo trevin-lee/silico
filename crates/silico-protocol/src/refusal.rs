@@ -29,6 +29,15 @@ pub enum Refusal {
         operation: Operation,
         edges: Vec<u32>,
     },
+    /// OCCT couldn't build a fillet, and said where: `edges`, the given edges, in increasing
+    /// order, in the contours whose surfaces it couldn't build and in those reaching a corner
+    /// it couldn't blend. Its words, where it threw, are the cause, which errors prefer to
+    /// the message naming the edges (the edges are the error's elements either way).
+    /// `dressing` is a fillet: a chamfer's report Silico doesn't read (docs/ports/fillet.md).
+    EdgesFailed {
+        dressing: DressingKind,
+        edges: Vec<u32>,
+    },
     /// Bytes too few to hold a B-rep and its checksum.
     BrepTooShort,
     /// A B-rep whose checksum doesn't match.
@@ -233,6 +242,7 @@ impl Refusal {
             Refusal::NoShape
             | Refusal::NothingReturned { .. }
             | Refusal::Occt { .. }
+            | Refusal::EdgesFailed { .. }
             | Refusal::UnknownBrepDefect { .. }
             | Refusal::BooleanResultEmpty { .. }
             | Refusal::ExtentNotFinite
@@ -248,7 +258,8 @@ impl Refusal {
     }
 
     /// Every element at fault, in order, each an element of the operation's one input shape.
-    /// A fillet or chamfer OCCT failed on several edges names none: OCCT doesn't say which.
+    /// A fillet or chamfer OCCT failed on several edges names none, unless OCCT said which
+    /// (`EdgesFailed`).
     /// An edge the shape doesn't have, and a profile's merged corners, aren't the shape's
     /// elements: those refusals name their parameter (`edges`, `profile`) and the numbers.
     pub fn elements(&self) -> Vec<ElementRef> {
@@ -258,6 +269,9 @@ impl Refusal {
                 _ => Vec::new(),
             },
             Refusal::EdgeTwice { edge } => vec![ElementRef::edge(*edge)],
+            Refusal::EdgesFailed { edges, .. } => {
+                edges.iter().map(|&e| ElementRef::edge(e)).collect()
+            }
             Refusal::EdgesRefused { troubles, .. } => {
                 troubles.iter().map(|t| ElementRef::edge(t.edge)).collect()
             }
@@ -316,6 +330,13 @@ impl Refusal {
                 format!("OCCT couldn't {}", operation.verb()),
                 occt_advice(operation, edges, cause, &edge),
             ),
+            Refusal::EdgesFailed { dressing, edges } => {
+                let named: Vec<String> = edges.iter().map(|&e| edge(e)).collect();
+                (
+                    format!("OCCT couldn't {} {}", dressing.name(), listed(&named)),
+                    Some(failed_advice(*dressing, edges)),
+                )
+            }
             Refusal::ResultInvalid { operation, edges } => (
                 match operation {
                     Operation::Primitive { name } => format!("the {name} isn't a valid solid"),
@@ -646,13 +667,24 @@ fn blame(
             "{}, or an edge it continues smoothly into, ends where more than two faces meet (where solids touch along an edge), and OCCT can't {operation} it there: leave it out",
             edge(*one)
         ),
-        [_] => format!(
-            "if the {operation} runs past a face beside the edge, try {smaller}; if not, try {instead}, or leave the edge out: OCCT can't {operation} some edges at any size"
-        ),
+        [_] => failed_advice(dressing, edges),
         _ => format!(
             "{operation} the edges one at a time to find the one that fails; then, if its {operation} runs past a face beside it, try {smaller}, and if not, {instead}, or leave it out"
         ),
     }
+}
+
+/// What to try when OCCT named the edges it couldn't fillet or chamfer.
+fn failed_advice(dressing: DressingKind, edges: &[u32]) -> String {
+    let operation = dressing.name();
+    let (smaller, instead) = dressing.sizes();
+    let (beside, out) = match edges {
+        [_] => ("the edge", "the edge"),
+        _ => ("these edges", "them"),
+    };
+    format!(
+        "if the {operation} runs past a face beside {beside}, try {smaller}; if not, try {instead}, or leave {out} out: OCCT can't {operation} some edges at any size"
+    )
 }
 
 /// The refusal of edges OCCT can't fillet or chamfer: why for the first, and every one
@@ -741,6 +773,10 @@ mod tests {
             Refusal::ResultInvalid {
                 operation: Operation::Dressing { dressing: chamfer },
                 edges: vec![4],
+            },
+            Refusal::EdgesFailed {
+                dressing: fillet,
+                edges: vec![2, 10],
             },
             Refusal::BrepTooShort,
             Refusal::BrepCorrupted,
@@ -872,6 +908,7 @@ mod tests {
             KernelFailed,  // NothingReturned
             KernelFailed,  // Occt
             InvalidResult, // ResultInvalid
+            KernelFailed,  // EdgesFailed (OCCT's failure, as Occt)
             InvalidInput,  // BrepTooShort
             InvalidInput,  // BrepCorrupted
             InvalidInput,  // BrepDefect
@@ -912,6 +949,7 @@ mod tests {
             None,               // NothingReturned
             None,               // Occt
             None,               // ResultInvalid
+            None,               // EdgesFailed
             None,               // BrepTooShort
             None,               // BrepCorrupted
             None,               // BrepDefect
@@ -1086,6 +1124,48 @@ mod tests {
         assert_eq!(
             nine.describe(None, &|e| e.to_string()).message,
             "Face1, Face2, Face3, Face4, Face5, Face6, Face7, Face8, and 1 other face couldn't be meshed"
+        );
+    }
+
+    #[test]
+    fn the_edges_occt_couldnt_fillet_are_each_named() {
+        let said = |edges: Vec<u32>| {
+            let refusal = Refusal::EdgesFailed {
+                dressing: DressingKind::Fillet,
+                edges,
+            };
+            (
+                refusal.describe(None, &|e| e.to_string()),
+                refusal.elements(),
+            )
+        };
+        let (one, elements) = said(vec![2]);
+        assert_eq!(one.message, "OCCT couldn't fillet Edge2");
+        assert_eq!(
+            one.suggestion.as_deref(),
+            Some(
+                "if the fillet runs past a face beside the edge, try a smaller radius; if not, try another radius, or leave the edge out: OCCT can't fillet some edges at any size"
+            )
+        );
+        assert_eq!(elements, [ElementRef::edge(2)]);
+        let (three, elements) = said(vec![2, 4, 10]);
+        assert_eq!(
+            three.message,
+            "OCCT couldn't fillet Edge2, Edge4, and Edge10"
+        );
+        assert_eq!(
+            three.suggestion.as_deref(),
+            Some(
+                "if the fillet runs past a face beside these edges, try a smaller radius; if not, try another radius, or leave them out: OCCT can't fillet some edges at any size"
+            )
+        );
+        assert_eq!(
+            elements,
+            [
+                ElementRef::edge(2),
+                ElementRef::edge(4),
+                ElementRef::edge(10)
+            ]
         );
     }
 

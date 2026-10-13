@@ -402,6 +402,7 @@ EdgeFacts edge_facts(const Shape &shape) {
 struct Dressing::Impl {
   TopoDS_Shape shape;
   ShapeMap edges;
+  ShapeMap vertices;
   ShapeMap faces;
   // The fillet or the chamfer: `maker` owns it, never null, and exactly one of `fillet` and
   // `chamfer` points to it too.
@@ -433,6 +434,7 @@ struct Dressing::Impl {
 Dressing::Dressing(const TopoDS_Shape &shape, Of of) : impl_(std::make_unique<Impl>()) {
   impl_->shape = shape;
   TopExp::MapShapes(shape, TopAbs_EDGE, impl_->edges);
+  TopExp::MapShapes(shape, TopAbs_VERTEX, impl_->vertices);
   TopExp::MapShapes(shape, TopAbs_FACE, impl_->faces);
   if (of == Of::Chamfer) {
     auto chamfer = std::make_unique<BRepFilletAPI_MakeChamfer>(shape);
@@ -490,6 +492,40 @@ std::unique_ptr<Shape> Dressing::build(rust::Vec<HistoryEntry> &history) {
   const TopoDS_Shape result = maker.Shape();
   capture_history(maker, 0, impl_->shape, result, history);
   return std::make_unique<Shape>(Shape{result});
+}
+
+rust::Vec<uint32_t> Dressing::faulty_contours() const {
+  rust::Vec<uint32_t> out;
+  if (impl_->fillet != nullptr) {
+    for (int i = 1; i <= impl_->fillet->NbFaultyContours(); ++i) {
+      out.push_back(static_cast<uint32_t>(impl_->fillet->FaultyContour(i)));
+    }
+  }
+  return out;
+}
+
+rust::Vec<uint32_t> Dressing::faulty_vertices() const {
+  rust::Vec<uint32_t> out;
+  if (impl_->fillet != nullptr) {
+    for (int i = 1; i <= impl_->fillet->NbFaultyVertices(); ++i) {
+      // 0 for a vertex not of the shape, at which no edge ends.
+      out.push_back(static_cast<uint32_t>(impl_->vertices.FindIndex(impl_->fillet->FaultyVertex(i))));
+    }
+  }
+  return out;
+}
+
+bool Dressing::contour_failed(uint32_t contour) const {
+  if (impl_->fillet == nullptr) {
+    return false;
+  }
+  const int ic = static_cast<int>(contour);
+  // `NbContours` counts the given contours only: it stops at the first stripe without a
+  // spine, as are the corner stripes building appends, whose status can't be read.
+  if (ic < 1 || ic > impl_->fillet->NbContours()) {
+    throw Standard_Failure("contour number out of range");
+  }
+  return impl_->fillet->StripeStatus(ic) != ChFiDS_Ok;
 }
 
 std::unique_ptr<Dressing> new_fillet(const Shape &shape) {

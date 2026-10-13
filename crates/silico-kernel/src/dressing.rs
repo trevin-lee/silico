@@ -142,7 +142,10 @@ fn dress(
         return Err(refuse(&troubles, kind));
     }
     let mut entries = Vec::new();
-    let built = dressing.build(&mut entries).map_err(|e| blame(e.into()))?;
+    let built = match dressing.as_mut().build(&mut entries) {
+        Ok(built) => built,
+        Err(e) => return Err(not_built(&dressing, topology, edges, kind, e)),
+    };
     let result =
         checked_result(&[shape], built, Operation::Dressing { dressing: kind }).map_err(blame)?;
     let history = history_of(&[shape.get()?], result.get()?, &entries)?;
@@ -317,16 +320,102 @@ fn checked_edges(
     Ok(seen.into_iter().collect())
 }
 
-/// A failed fillet or chamfer, as OCCT's failure on `edges`. OCCT doesn't say which of
-/// several edges it was, or why; the refusal says what to try (`Refusal::describe`). An
-/// edge that ends, or whose chain ends, on one joining more than two faces fails whatever
-/// its size, with OCCT's `Standard_ConstructionError` "ChFi3d_Builder:only 2 faces", which
-/// OCCT 7.9.3 (pinned) throws only while taking that one edge (ChFi3d_Builder_1.cxx,
-/// `FaceTangency`; a test fails if it's reworded): the refusal's suggestion keys on it.
+/// A failed fillet or chamfer, as OCCT's failure on `edges`, where OCCT doesn't say which
+/// of several edges it was (see `not_built`). Nor does it say why; the refusal says what to
+/// try (`Refusal::describe`). An edge that ends, or whose chain ends, on one joining more
+/// than two faces fails whatever its size, with OCCT's `Standard_ConstructionError`
+/// "ChFi3d_Builder:only 2 faces", which OCCT 7.9.3 (pinned) throws only while taking that
+/// one edge (ChFi3d_Builder_1.cxx, `FaceTangency`; a test fails if it's reworded): the
+/// refusal's suggestion keys on it.
 fn blame_edges(error: KernelError, edges: &[u32], dressing: DressingKind) -> KernelError {
     error
         .during(Operation::Dressing { dressing })
         .on_edges(edges)
+}
+
+/// A fillet or chamfer OCCT couldn't build, as OCCT reports it where it says where: the
+/// given `edges` in the contours whose surfaces it couldn't build, and in those reaching a
+/// corner it couldn't blend (docs/ports/fillet.md). Where it names none, as for a chamfer
+/// (whose report Silico doesn't read), the failure is on all the edges, as OCCT's words say.
+fn not_built(
+    dressing: &ffi::Dressing,
+    topology: &Topology,
+    edges: &[u32],
+    kind: DressingKind,
+    e: cxx::Exception,
+) -> KernelError {
+    let error = blame_edges(e.into(), edges, kind);
+    as_reported(error, kind, faulty_edges(dressing, topology, edges))
+}
+
+/// `error`, OCCT's failure on all the edges, narrowed to the edges OCCT's `report` names,
+/// or unchanged if it names none or couldn't be read. No input is known to leave it unread
+/// (see the bridge's `contour_failed`), and a collision, the only way there, names no edge
+/// anyway.
+fn as_reported(
+    error: KernelError,
+    kind: DressingKind,
+    report: Result<Vec<u32>, KernelError>,
+) -> KernelError {
+    match report {
+        Ok(failed) if failed.is_empty() => error,
+        Ok(failed) => KernelError::caused(
+            Refusal::EdgesFailed {
+                dressing: kind,
+                edges: failed,
+            },
+            error.cause().map(str::to_owned),
+        ),
+        Err(e) => {
+            tracing::warn!(error = %e, dressing = kind.name(), "OCCT's report of a failed build couldn't be read");
+            error
+        }
+    }
+}
+
+/// The given `edges` (in increasing order) in the contours OCCT reports it couldn't build,
+/// or reaching a corner it reports it couldn't blend.
+///
+/// OCCT 7.9.3 (`ChFi3d_Builder::Compute`) builds each contour's surfaces, then, only if
+/// all were built, each corner, then, only if those were too, checks each pair of contours
+/// for a collision, stopping at the first. A contour whose own surfaces failed is faulty,
+/// mostly with an error status; a corner that failed is a faulty vertex; a collision makes
+/// the first contour of the pair faulty, with no error status, and not the other, which
+/// may be the only one at fault. So where any faulty contour has an error status, the
+/// surfaces failed and every faulty contour is at fault; where none has, they're named
+/// only through the corners OCCT reports.
+fn faulty_edges(
+    dressing: &ffi::Dressing,
+    topology: &Topology,
+    edges: &[u32],
+) -> Result<Vec<u32>, KernelError> {
+    let faulty = dressing.faulty_contours()?;
+    let mut surfaces_failed = false;
+    for &contour in &faulty {
+        if dressing.contour_failed(contour)? {
+            surfaces_failed = true;
+            break;
+        }
+    }
+    let mut contours: BTreeSet<u32> = if surfaces_failed {
+        faulty.into_iter().collect()
+    } else {
+        BTreeSet::new()
+    };
+    for corner in dressing.faulty_vertices()? {
+        for &edge in topology.at_vertex.get(&corner).into_iter().flatten() {
+            contours.insert(dressing.contour_of(edge)?);
+        }
+    }
+    // An edge in no contour is in contour 0, which no faulty contour is.
+    contours.remove(&0);
+    let mut failed = Vec::new();
+    for &edge in edges {
+        if contours.contains(&dressing.contour_of(edge)?) {
+            failed.push(edge);
+        }
+    }
+    Ok(failed)
 }
 
 /// The refusal of edges OCCT can't fillet or chamfer (`troubles`, in the edges'
@@ -347,6 +436,42 @@ fn refuse(troubles: &[(u32, Trouble)], dressing: DressingKind) -> KernelError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failure_names_the_edges_occts_report_has_and_stands_without_one() {
+        let fillet = DressingKind::Fillet;
+        let cause = Some("Standard_Failure: the fillet couldn't be built".to_owned());
+        let failure = || {
+            KernelError::caused(
+                Refusal::Occt {
+                    operation: Operation::Dressing { dressing: fillet },
+                    edges: vec![1, 2, 5],
+                },
+                cause.clone(),
+            )
+        };
+        // The edges the report has, with OCCT's words.
+        let named = as_reported(failure(), fillet, Ok(vec![2, 5]));
+        assert_eq!(
+            named.refusal(),
+            &Refusal::EdgesFailed {
+                dressing: fillet,
+                edges: vec![2, 5],
+            }
+        );
+        assert_eq!(named.cause(), cause.as_deref());
+        assert_eq!(named.elements(), ["Edge2", "Edge5"]);
+        // None reported, or the report unreadable: the failure on all the edges, as it was.
+        assert_eq!(as_reported(failure(), fillet, Ok(Vec::new())), failure());
+        let unread = KernelError::caused(
+            Refusal::Occt {
+                operation: Operation::Other,
+                edges: Vec::new(),
+            },
+            Some("Standard_Failure: contour number out of range".to_owned()),
+        );
+        assert_eq!(as_reported(failure(), fillet, Err(unread)), failure());
+    }
 
     /// A topology from `(degenerate, seam, first vertex, last vertex, faces)` per edge.
     fn topology(edges: &[(bool, bool, u32, u32, &[u32])]) -> Topology {
