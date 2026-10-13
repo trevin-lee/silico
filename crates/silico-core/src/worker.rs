@@ -863,7 +863,11 @@ fn refusal_fits(refusal: &Refusal, listed: Option<&[u32]>) -> Result<(), String>
                 _ => Err("it says no edges were listed, but some were".to_owned()),
             };
         }
-        Refusal::FaceUnmeshed { face: 0 } => return Err("it names face 0".to_owned()),
+        Refusal::FacesUnmeshed { .. } => {
+            return Err(
+                "it refuses a mesh for its unmeshed faces, which only the core decides".to_owned(),
+            );
+        }
         _ => &[],
     };
     edges_fit(named, listed)
@@ -894,7 +898,7 @@ fn edges_fit(named: &[u32], listed: Option<&[u32]>) -> Result<(), String> {
 /// fault (as FreeCAD does, `Edge3`, until a document's names arrive) and has the refusal
 /// described with those names (`Refusal::describe`). A kernel failure always suggests
 /// something.
-fn failure_error(op: &str, failure: Failure) -> Error {
+pub(crate) fn failure_error(op: &str, failure: Failure) -> Error {
     let name = |element: ElementRef| element.to_string();
     let described = failure.refusal.describe(failure.cause.as_deref(), &name);
     // Why it failed: OCCT's words where it threw; otherwise the refusal's.
@@ -934,7 +938,9 @@ fn failure_error(op: &str, failure: Failure) -> Error {
             SILICO_BUG,
         ),
     };
-    let error = error.with_elements(failure.refusal.elements().into_iter().map(name));
+    let error = error
+        .with_elements(failure.refusal.elements().into_iter().map(name))
+        .with_elements_total(failure.refusal.elements_total());
     let error = match failure.refusal.parameter() {
         Some(parameter) => error.with_parameter(parameter),
         None => error,
@@ -1172,7 +1178,12 @@ mod tests {
             fits(&Refusal::NoEdges { dressing: fillet }, Some(&[])),
             Ok(())
         );
-        assert_eq!(fits(&Refusal::FaceUnmeshed { face: 1 }, None), Ok(()));
+        // Only the core refuses a mesh for its unmeshed faces.
+        let unmeshed = Refusal::FacesUnmeshed {
+            faces: vec![1, 4],
+            count: 2,
+        };
+        assert!(fits(&unmeshed, None).is_err());
         assert_eq!(fits(&Refusal::BrepCorrupted, None), Ok(()));
         // Not: a forged refusal of a million edges answering a request for one costs
         // nothing to refuse.
@@ -1202,7 +1213,6 @@ mod tests {
         };
         assert!(fits(&invalid, Some(&[1])).is_err());
         assert!(fits(&Refusal::EdgeTwice { edge: 9 }, Some(&[1, 1])).is_err());
-        assert!(fits(&Refusal::FaceUnmeshed { face: 0 }, None).is_err());
     }
 
     #[test]
@@ -1308,6 +1318,19 @@ mod tests {
             Some("DebugSleep is a test operation, not answered by this worker")
         );
         assert_eq!(e.suggestion(), Some(super::SILICO_BUG));
+    }
+
+    #[test]
+    fn a_refusal_of_more_faces_than_it_names_counts_them_all() {
+        let refusal = silico_protocol::Refusal::FacesUnmeshed {
+            faces: (1..=100).collect(),
+            count: 250,
+        };
+        let e = failure_error("Tessellate", Failure::new(refusal));
+        assert_eq!(e.elements().len(), 100, "{e}");
+        assert_eq!(e.elements()[99], "Face100", "{e}");
+        assert_eq!(e.elements_total(), 250, "{e}");
+        assert!(e.to_string().contains("Face100, and 150 more"), "{e}");
     }
 
     #[test]

@@ -70,8 +70,11 @@ pub enum Refusal {
     DeflectionTooFine { deflection: f64, floor: f64 },
     /// A shape whose extent is too large, or not finite, to mesh.
     ExtentNotFinite,
-    /// A face OCCT couldn't mesh, on a shape that isn't valid.
-    FaceUnmeshed { face: u32 },
+    /// Faces OCCT couldn't mesh, on a shape that isn't valid: the core's decision, from a
+    /// mesh that says so (a worker never sends it). `faces`, the first of them, 1-based, in
+    /// order, up to [`FACES_NAMED`]; `count`, how many there are, at least as many as `faces`
+    /// lists (and more only when it lists [`FACES_NAMED`]).
+    FacesUnmeshed { faces: Vec<u32>, count: u64 },
     /// A measure of the shape that isn't finite: which (`volume`, `center x`, ...).
     NotFinite { quantity: String, value: f64 },
     /// Silico's bridge has no result check for an operation on this many shapes.
@@ -194,6 +197,13 @@ pub struct Described {
     pub suggestion: Option<String>,
 }
 
+/// The most faces a refusal of unmeshed faces names as elements: the first, in order. A
+/// mesh can have a face for every byte of it, and the error stays small.
+pub const FACES_NAMED: usize = 100;
+
+/// The most faces a refusal of unmeshed faces names in its words; the rest are counted.
+const FACES_IN_WORDS: usize = 8;
+
 /// What to try when a shape's geometry can't be meshed.
 const UNUSABLE_GEOMETRY: &str = "the shape's geometry is broken (a value too large, or not a number): rebuild it from its inputs";
 /// What to try for a B-rep OCCT can't work on.
@@ -226,7 +236,7 @@ impl Refusal {
             | Refusal::UnknownBrepDefect { .. }
             | Refusal::BooleanResultEmpty { .. }
             | Refusal::ExtentNotFinite
-            | Refusal::FaceUnmeshed { .. }
+            | Refusal::FacesUnmeshed { .. }
             | Refusal::NotFinite { .. } => FailureKind::KernelFailed,
             Refusal::TestOperation { .. } => FailureKind::UnknownOp,
             Refusal::ResultCheckMissing { .. }
@@ -251,8 +261,21 @@ impl Refusal {
             Refusal::EdgesRefused { troubles, .. } => {
                 troubles.iter().map(|t| ElementRef::edge(t.edge)).collect()
             }
-            Refusal::FaceUnmeshed { face } => vec![ElementRef::face(*face)],
+            Refusal::FacesUnmeshed { faces, .. } => faces
+                .iter()
+                .take(FACES_NAMED)
+                .map(|&face| ElementRef::face(face))
+                .collect(),
             _ => Vec::new(),
+        }
+    }
+
+    /// How many elements are at fault: as many as [`Refusal::elements`] names, except for
+    /// unmeshed faces, which it names only the first of.
+    pub fn elements_total(&self) -> u64 {
+        match self {
+            Refusal::FacesUnmeshed { count, .. } => *count,
+            _ => self.elements().len() as u64,
         }
     }
 
@@ -419,13 +442,31 @@ impl Refusal {
                 "the shape's extent is too large or not finite, so it can't be meshed".to_owned(),
                 Some(UNUSABLE_GEOMETRY.to_owned()),
             ),
-            Refusal::FaceUnmeshed { face } => (
-                format!("{} couldn't be meshed", name(ElementRef::face(*face))),
-                Some(
-                    "the shape isn't valid, and this face of it can't be meshed: rebuild the shape from its inputs"
-                        .to_owned(),
-                ),
-            ),
+            Refusal::FacesUnmeshed { faces, count } => {
+                // Named, a few; the rest counted, so the words stay short however many there
+                // are (the error's elements name more).
+                let mut named: Vec<String> = faces
+                    .iter()
+                    .take(FACES_IN_WORDS)
+                    .map(|&f| name(ElementRef::face(f)))
+                    .collect();
+                let unnamed = count.saturating_sub(named.len() as u64);
+                match unnamed {
+                    0 => {}
+                    1 => named.push("1 other face".to_owned()),
+                    _ => named.push(format!("{unnamed} other faces")),
+                }
+                let these = match count {
+                    1 => "this face",
+                    _ => "these faces",
+                };
+                (
+                    format!("{} couldn't be meshed", listed(&named)),
+                    Some(format!(
+                        "the shape isn't valid, and {these} of it can't be meshed: rebuild the shape from its inputs"
+                    )),
+                )
+            }
             Refusal::NotFinite { quantity, value } => {
                 (format!("the shape's {quantity} isn't finite ({value})"), None)
             }
@@ -749,7 +790,10 @@ mod tests {
                 floor: 1e-3,
             },
             Refusal::ExtentNotFinite,
-            Refusal::FaceUnmeshed { face: 7 },
+            Refusal::FacesUnmeshed {
+                faces: vec![7, 9],
+                count: 2,
+            },
             Refusal::NotFinite {
                 quantity: "volume".to_owned(),
                 value: f64::INFINITY,
@@ -843,7 +887,7 @@ mod tests {
             InvalidInput,  // DeflectionInvalid
             InvalidInput,  // DeflectionTooFine
             KernelFailed,  // ExtentNotFinite
-            KernelFailed,  // FaceUnmeshed
+            KernelFailed,  // FacesUnmeshed
             KernelFailed,  // NotFinite
             Internal,      // ResultCheckMissing
             Internal,      // MalformedHistory
@@ -883,7 +927,7 @@ mod tests {
             Some("deflection"), // DeflectionInvalid
             Some("deflection"), // DeflectionTooFine
             None,               // ExtentNotFinite
-            None,               // FaceUnmeshed
+            None,               // FacesUnmeshed
             None,               // NotFinite
             None,               // ResultCheckMissing
             None,               // MalformedHistory
@@ -996,6 +1040,53 @@ mod tests {
             assert_eq!(said.suggestion, None);
         }
         assert!(asked.borrow().is_empty(), "named {:?}", asked.borrow());
+    }
+
+    #[test]
+    fn faces_that_cant_be_meshed_are_each_named() {
+        let said = |faces: Vec<u32>| {
+            let count = faces.len() as u64;
+            let refusal = Refusal::FacesUnmeshed { faces, count };
+            let elements = refusal.elements();
+            (refusal.describe(None, &|e| e.to_string()), elements)
+        };
+        let (one, elements) = said(vec![3]);
+        assert_eq!(one.message, "Face3 couldn't be meshed");
+        assert_eq!(
+            one.suggestion.as_deref(),
+            Some(
+                "the shape isn't valid, and this face of it can't be meshed: rebuild the shape from its inputs"
+            )
+        );
+        assert_eq!(elements, [ElementRef::face(3)]);
+        let (two, elements) = said(vec![3, 8]);
+        assert_eq!(two.message, "Face3 and Face8 couldn't be meshed");
+        assert!(
+            two.suggestion
+                .is_some_and(|s| s.contains("these faces of it can't be meshed"))
+        );
+        assert_eq!(elements, [ElementRef::face(3), ElementRef::face(8)]);
+        // Many: a few named in the words, the rest counted; the first hundred are elements.
+        let many = Refusal::FacesUnmeshed {
+            faces: (1..=100).collect(),
+            count: 1_000_000,
+        };
+        let words = many.describe(None, &|e| e.to_string()).message;
+        assert_eq!(
+            words,
+            "Face1, Face2, Face3, Face4, Face5, Face6, Face7, Face8, and 999992 other faces couldn't be meshed"
+        );
+        assert_eq!(many.elements().len(), FACES_NAMED);
+        assert_eq!(many.elements()[99], ElementRef::face(100));
+        // One beyond those named in the words is one face.
+        let nine = Refusal::FacesUnmeshed {
+            faces: (1..=9).collect(),
+            count: 9,
+        };
+        assert_eq!(
+            nine.describe(None, &|e| e.to_string()).message,
+            "Face1, Face2, Face3, Face4, Face5, Face6, Face7, Face8, and 1 other face couldn't be meshed"
+        );
     }
 
     #[test]

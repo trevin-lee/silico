@@ -264,6 +264,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             face_triangles: vec![1],
             edge_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
             edge_point_counts: vec![2, 0],
+            valid: None,
         })),
         Ok(Reply::Done),
         Err(Failure::new(Refusal::InvalidParameter {
@@ -721,6 +722,7 @@ fn each_triangle_belongs_to_the_face_its_counts_say() {
         face_triangles,
         edge_points: vec![],
         edge_point_counts: vec![],
+        valid: None,
     };
     // Two triangles on face 0, none on face 1, three on face 2.
     assert_eq!(mesh(5, vec![2, 0, 3]).triangle_faces(), [0, 0, 2, 2, 2]);
@@ -740,6 +742,7 @@ fn a_mesh_is_validated_before_use() {
         face_triangles: vec![1],
         edge_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]],
         edge_point_counts: vec![2, 0, 1],
+        valid: None,
     };
     assert_eq!(
         good.edges().collect::<Vec<_>>(),
@@ -756,6 +759,24 @@ fn a_mesh_is_validated_before_use() {
     let mut bad_counts = good.clone();
     bad_counts.face_triangles = vec![2];
     assert!(bad_counts.validate().unwrap_err().contains("account for 2"));
+    // A face with no triangles comes with the shape's validity, and only then.
+    let mut unmeshed = good.clone();
+    unmeshed.face_triangles = vec![1, 0];
+    assert!(unmeshed.validate().unwrap_err().contains("wasn't checked"));
+    for valid in [true, false] {
+        unmeshed.valid = Some(valid);
+        assert_eq!(unmeshed.validate(), Ok(()), "{valid}");
+        assert_eq!(unmeshed.unmeshed_faces(), [2]);
+    }
+    let mut checked = good.clone();
+    checked.valid = Some(true);
+    assert!(
+        checked
+            .validate()
+            .unwrap_err()
+            .contains("every face has triangles")
+    );
+    assert!(good.unmeshed_faces().is_empty());
     let mut not_finite = good.clone();
     not_finite.edge_points[1][2] = f64::NAN;
     assert!(not_finite.validate().unwrap_err().contains("finite"));
@@ -810,4 +831,63 @@ fn a_mesh_is_validated_before_use() {
     let mut huge_counts = good;
     huge_counts.face_triangles = vec![u32::MAX, u32::MAX];
     assert!(huge_counts.validate().is_err());
+}
+
+/// A mesh with these faces' triangle counts (no triangles drawn: only the counts matter here).
+fn counted(face_triangles: Vec<u32>, valid: Option<bool>) -> Mesh {
+    Mesh {
+        positions: vec![],
+        normals: vec![],
+        triangles: vec![],
+        face_triangles,
+        edge_points: vec![],
+        edge_point_counts: vec![],
+        valid,
+    }
+}
+
+#[test]
+fn only_the_faces_without_triangles_are_named_and_counted() {
+    // Faces 2 and 4 have no triangles; 1 and 3 do.
+    assert_eq!(
+        counted(vec![2, 0, 1, 0], Some(false)).refusal(),
+        Some(Refusal::FacesUnmeshed {
+            faces: vec![2, 4],
+            count: 2
+        })
+    );
+    assert_eq!(
+        counted(vec![2, 0, 1, 0], Some(false)).unmeshed_faces(),
+        [2, 4]
+    );
+    // A valid shape's are left out, and a mesh of every face refuses nothing.
+    assert_eq!(counted(vec![2, 0, 1, 0], Some(true)).refusal(), None);
+    assert_eq!(counted(vec![2, 1], None).refusal(), None);
+}
+
+#[test]
+fn a_refusal_of_many_unmeshed_faces_names_the_first_hundred_in_order() {
+    // 500 faces, every other one empty: faces 2, 4, ..., 1000 are unmeshed, 500 of them.
+    let counts = (0..1000).map(|i| if i % 2 == 0 { 3 } else { 0 }).collect();
+    let refusal = counted(counts, Some(false)).refusal().unwrap();
+    let Refusal::FacesUnmeshed { faces, count } = &refusal else {
+        panic!("{refusal:?}")
+    };
+    assert_eq!(*faces, (1..=100).map(|i| 2 * i).collect::<Vec<u32>>());
+    assert_eq!(*count, 500);
+    assert_eq!(refusal.elements_total(), 500);
+    assert_eq!(refusal.elements().len(), 100);
+    assert_eq!(refusal.elements()[99], ElementRef::face(200));
+}
+
+#[test]
+fn every_failure_counts_the_elements_it_names() {
+    let refusal = Refusal::EdgeTwice { edge: 4 };
+    assert_eq!(refusal.elements_total(), 1);
+    assert_eq!(Refusal::NoShape.elements_total(), 0);
+    let few = Refusal::FacesUnmeshed {
+        faces: vec![1, 9],
+        count: 2,
+    };
+    assert_eq!(few.elements_total(), 2);
 }

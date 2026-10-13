@@ -6,6 +6,7 @@
     "Edge3",
     "Edge5"
   ],
+  "elements_total": 2,
   "parameter": "radius",
   "cause": "StdFail_NotDone: BRepFilletAPI_MakeFillet",
   "suggestion": "reduce the radius below 5 mm",

@@ -115,6 +115,7 @@ mod tests {
                 [7.0, 8.0, 9.0],
             ],
             edge_point_counts: vec![2, 0, 3],
+            valid: None,
         }
     }
 

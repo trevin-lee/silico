@@ -14,7 +14,7 @@ pub use silico_protocol::{
     ElementRef, Ends, FreecadMeasures, History, InputHistory, Mesh, Primitive, Profile, Reported,
     ShapeData, ShapeSummary,
 };
-use silico_protocol::{DebugOp, Generation, Op, Reply};
+use silico_protocol::{DebugOp, Failure, Generation, Op, Reply};
 
 use crate::worker::Worker;
 use crate::{Error, ErrorCode};
@@ -35,6 +35,9 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 pub struct KernelRequest<T> {
     op: Op,
     read: Box<dyn FnOnce(&'static str, Reply) -> Result<T, Error> + Send>,
+    /// What the core decides from a reply it trusts (a mesh's faces OCCT couldn't mesh):
+    /// its refusals leave the worker running.
+    decide: Box<dyn FnOnce(&'static str, T) -> Result<T, Error> + Send>,
     timeout: Option<Duration>,
 }
 
@@ -48,8 +51,19 @@ impl<T> KernelRequest<T> {
         Self {
             op,
             read: Box::new(read),
+            decide: Box::new(|_, value| Ok(value)),
             timeout: None,
         }
+    }
+
+    /// The same request, deciding from the reply `read` trusted with `decide`, whose errors
+    /// are the core's refusals, not the worker's misbehavior: the worker goes on.
+    fn deciding(
+        mut self,
+        decide: impl FnOnce(&'static str, T) -> Result<T, Error> + Send + 'static,
+    ) -> Self {
+        self.decide = Box::new(decide);
+        self
     }
 
     /// The same request, allowed `timeout` before its worker is stopped, rather than the
@@ -67,11 +81,13 @@ impl<T> KernelRequest<T> {
 
     /// Sends the request to `worker` for `generation` and reads the reply, stopping the
     /// worker if the reader finds the reply untrustworthy (every error a reader returns
-    /// means that). The worker itself stops on a crash, a hang, or a reply out of turn.
+    /// means that), then decides from it. The worker itself stops on a crash, a hang, or a
+    /// reply out of turn.
     pub(crate) fn run_on(self, worker: &mut Worker, generation: Generation) -> Result<T, Error> {
         let name = self.op.name();
         let reply = worker.call(generation, self.op, self.timeout.unwrap_or(DEFAULT_TIMEOUT))?;
-        (self.read)(name, reply).inspect_err(|_| worker.shut_down())
+        let value = (self.read)(name, reply).inspect_err(|_| worker.shut_down())?;
+        (self.decide)(name, value)
     }
 }
 
@@ -249,6 +265,13 @@ impl KernelRequest<Mesh> {
                 .with_suggestion("start a new kernel worker")),
             },
             other => Err(unexpected(name, &other)),
+        })
+        // Faces OCCT couldn't mesh: left out of a valid shape's mesh (slivers too narrow to
+        // show), and the mesh refused for one that isn't valid, naming them (there they say
+        // something is broken).
+        .deciding(|name, mesh: Mesh| match mesh.refusal() {
+            Some(refusal) => Err(crate::worker::failure_error(name, Failure::new(refusal))),
+            None => Ok(mesh),
         })
     }
 }
