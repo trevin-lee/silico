@@ -348,11 +348,10 @@ fn not_built(
     as_reported(error, kind, faulty_edges(dressing, topology, edges))
 }
 
-/// `error`, OCCT's failure on all the edges, as OCCT's `report` has it: naming the edges it
-/// reports at fault, if any. If the report couldn't be read, the failure stands, naming no
-/// edge. No input is known to reach that: in OCCT 7.9.3, only a collision could make a
-/// stripe faulty that isn't a given contour (a corner stripe added while building), whose
-/// status the bridge refuses to read, and a collision names no edge anyway.
+/// `error`, OCCT's failure on all the edges, narrowed to the edges OCCT's `report` names,
+/// or unchanged if it names none or couldn't be read. No input is known to leave it unread
+/// (see the bridge's `contour_failed`), and a collision, the only way there, names no edge
+/// anyway.
 fn as_reported(
     error: KernelError,
     kind: DressingKind,
@@ -368,7 +367,7 @@ fn as_reported(
             error.cause().map(str::to_owned),
         ),
         Err(e) => {
-            tracing::warn!(error = %e, "OCCT's report of a failed fillet couldn't be read");
+            tracing::warn!(error = %e, dressing = kind.name(), "OCCT's report of a failed build couldn't be read");
             error
         }
     }
