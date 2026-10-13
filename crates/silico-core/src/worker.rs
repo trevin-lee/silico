@@ -1321,6 +1321,19 @@ mod tests {
     }
 
     #[test]
+    fn a_refusal_of_more_faces_than_it_names_counts_them_all() {
+        let refusal = silico_protocol::Refusal::FacesUnmeshed {
+            faces: (1..=100).collect(),
+            count: 250,
+        };
+        let e = failure_error("Tessellate", Failure::new(refusal));
+        assert_eq!(e.elements().len(), 100, "{e}");
+        assert_eq!(e.elements()[99], "Face100", "{e}");
+        assert_eq!(e.elements_total(), 250, "{e}");
+        assert!(e.to_string().contains("Face100, and 150 more"), "{e}");
+    }
+
+    #[test]
     fn exits_and_signals_are_named_by_this_platforms_numbers() {
         // A raw wait status: a signal number in the low 7 bits, or an exit code shifted up.
         let named = |signal: i32, name: &str| format!("it was killed by signal {signal} ({name})");

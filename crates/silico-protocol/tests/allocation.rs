@@ -1,6 +1,8 @@
 //! A frame's length is never trusted: reading allocates only for bytes that actually
 //! arrive. Measured with a counting allocator, in its own test binary so it counts nothing
-//! else. (On macOS a large allocation is lazy, so time or memory alone can't show this.)
+//! else. The allocator counts every thread, so each test needs a process of its own, as
+//! nextest (`pixi run test`) gives it; under `cargo test` they share one and count each
+//! other's. (On macOS a large allocation is lazy, so time or memory alone can't show this.)
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::alloc::System;
