@@ -279,7 +279,11 @@ pub use dressing::{chamfer, fillet};
 /// core names the elements and writes its structured `Error` from them. In-process, it reads
 /// as the core would write it, naming elements as FreeCAD does (`Edge3`).
 #[derive(Debug, Clone, PartialEq)]
-pub struct KernelError {
+pub struct KernelError(Box<Described>);
+
+/// A [`KernelError`]'s parts: boxed, so a `Result` carrying one stays small.
+#[derive(Debug, Clone, PartialEq)]
+struct Described {
     refusal: Refusal,
     cause: Option<String>,
     /// The refusal described, with FreeCAD's names.
@@ -314,19 +318,20 @@ impl KernelError {
             _ => described.message,
         };
         let elements = refusal.elements().iter().map(ToString::to_string).collect();
-        Self {
+        Self(Box::new(Described {
             refusal,
             cause,
             message,
             suggestion: described.suggestion,
             elements,
-        }
+        }))
     }
 
     /// The same failure, as OCCT's doing `operation` (for what to suggest): an exception
     /// or an invalid result not yet attributed to an operation.
     fn during(self, operation: Operation) -> Self {
-        let refusal = match self.refusal {
+        let Described { refusal, cause, .. } = *self.0;
+        let refusal = match refusal {
             Refusal::Occt {
                 operation: Operation::Other,
                 edges,
@@ -337,12 +342,13 @@ impl KernelError {
             } => Refusal::ResultInvalid { operation, edges },
             other => other,
         };
-        Self::caused(refusal, self.cause)
+        Self::caused(refusal, cause)
     }
 
     /// The same failure of a fillet or chamfer, given `edges`.
     fn on_edges(self, given: &[u32]) -> Self {
-        let refusal = match self.refusal {
+        let Described { refusal, cause, .. } = *self.0;
+        let refusal = match refusal {
             Refusal::Occt { operation, .. } => Refusal::Occt {
                 operation,
                 edges: given.to_vec(),
@@ -353,12 +359,12 @@ impl KernelError {
             },
             other => other,
         };
-        Self::caused(refusal, self.cause)
+        Self::caused(refusal, cause)
     }
 
     /// Whether the values were refused, OCCT failed, or OCCT's result was refused.
     pub fn kind(&self) -> KernelErrorKind {
-        match self.refusal.kind() {
+        match self.0.refusal.kind() {
             FailureKind::InvalidInput => KernelErrorKind::InvalidInput,
             FailureKind::KernelFailed => KernelErrorKind::Failed,
             FailureKind::InvalidResult => KernelErrorKind::InvalidResult,
@@ -368,38 +374,38 @@ impl KernelError {
 
     /// Why, as data: what the worker sends.
     pub fn refusal(&self) -> &Refusal {
-        &self.refusal
+        &self.0.refusal
     }
 
     /// OCCT's own words, where it threw.
     pub fn cause(&self) -> Option<&str> {
-        self.cause.as_deref()
+        self.0.cause.as_deref()
     }
 
     /// What to try instead, when there's something to suggest.
     pub fn suggestion(&self) -> Option<&str> {
-        self.suggestion.as_deref()
+        self.0.suggestion.as_deref()
     }
 
     /// The first sub-element at fault (such as `Edge3`), when known.
     pub fn element(&self) -> Option<&str> {
-        self.elements.first().map(String::as_str)
+        self.0.elements.first().map(String::as_str)
     }
 
     /// Every sub-element at fault, in order.
     pub fn elements(&self) -> &[String] {
-        &self.elements
+        &self.0.elements
     }
 
     /// What went wrong, in OCCT's words where OCCT threw.
     pub fn message(&self) -> &str {
-        &self.message
+        &self.0.message
     }
 }
 
 impl fmt::Display for KernelError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "kernel error: {}", self.message)
+        write!(f, "kernel error: {}", self.0.message)
     }
 }
 
