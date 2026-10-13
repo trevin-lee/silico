@@ -321,8 +321,8 @@ fn checked_edges(
 }
 
 /// A failed fillet or chamfer, as OCCT's failure on `edges`, where OCCT doesn't say which of
-/// several edges it was (see `not_built`). Nor does it say why; the refusal says what to try (`Refusal::describe`). An
-/// edge that ends, or whose chain ends, on one joining more than two faces fails whatever
+/// several edges it was (see `not_built`). Nor does it say why; the refusal says what to
+/// try (`Refusal::describe`). An edge that ends, or whose chain ends, on one joining more than two faces fails whatever
 /// its size, with OCCT's `Standard_ConstructionError` "ChFi3d_Builder:only 2 faces", which
 /// OCCT 7.9.3 (pinned) throws only while taking that one edge (ChFi3d_Builder_1.cxx,
 /// `FaceTangency`; a test fails if it's reworded): the refusal's suggestion keys on it.
@@ -333,9 +333,9 @@ fn blame_edges(error: KernelError, edges: &[u32], dressing: DressingKind) -> Ker
 }
 
 /// A fillet or chamfer OCCT couldn't build, as OCCT reports it where it says where: the
-/// given `edges` in the contours it couldn't build, and in those reaching a corner it
-/// couldn't blend (docs/ports/fillet.md). Where it names none, as for a chamfer (whose
-/// report OCCT keeps private), the failure is on all the edges, as OCCT's words say.
+/// given `edges` in the contours whose surfaces it couldn't build, and in those reaching a
+/// corner it couldn't blend (docs/ports/fillet.md). Where it names none, as for a chamfer
+/// (whose report Silico doesn't read), the failure is on all the edges, as OCCT's words say.
 fn not_built(
     dressing: &ffi::Dressing,
     topology: &Topology,
@@ -378,9 +378,10 @@ fn faulty_edges(
     for &contour in &faulty {
         surfaces_failed |= contour != 0 && dressing.contour_failed(contour)?;
     }
-    let mut contours: BTreeSet<u32> = match surfaces_failed {
-        true => faulty.into_iter().collect(),
-        false => BTreeSet::new(),
+    let mut contours: BTreeSet<u32> = if surfaces_failed {
+        faulty.into_iter().collect()
+    } else {
+        BTreeSet::new()
     };
     for corner in dressing.faulty_vertices()? {
         for &edge in topology.at_vertex.get(&corner).into_iter().flatten() {

@@ -5,11 +5,14 @@
 
 #[path = "common/imports.rs"]
 mod imports;
+#[path = "common/kernel.rs"]
+mod kernel;
 #[path = "common/numbers.rs"]
 mod numbers;
 #[path = "common/oracle.rs"]
 mod oracle;
 
+use kernel::kernel;
 use numbers::relative_error;
 use std::f64::consts::PI;
 use std::path::Path;
@@ -467,11 +470,6 @@ fn a_failed_fillet_names_only_the_edges_at_fault() {
     let err = fillet_through_worker(&mut w, &[11, 1], 11.0).unwrap_err();
     assert_eq!(err.elements(), ["Edge1"], "{err}");
     assert!(fillet_through_worker(&mut w, &[11], 11.0).is_ok());
-}
-
-/// A kernel worker, through the core.
-fn kernel() -> KernelWorker {
-    KernelWorker::start_worker(Path::new(WORKER)).unwrap()
 }
 
 /// FreeCAD's names for the edges of a shape it makes with `make` (Python, `s` the shape)

@@ -30,8 +30,10 @@ pub enum Refusal {
         edges: Vec<u32>,
     },
     /// OCCT couldn't build a fillet, and said where: `edges`, the given edges, in increasing
-    /// order, in the contours it couldn't build and in those reaching a corner it couldn't
-    /// blend. Its words, where it threw, are the cause.
+    /// order, in the contours whose surfaces it couldn't build and in those reaching a corner
+    /// it couldn't blend. Its words, where it threw, are the cause, which errors prefer to
+    /// the message naming the edges (the edges are the error's elements either way).
+    /// `dressing` is a fillet: a chamfer's report Silico doesn't read (docs/ports/fillet.md).
     EdgesFailed {
         dressing: DressingKind,
         edges: Vec<u32>,
@@ -665,9 +667,7 @@ fn blame(
             "{}, or an edge it continues smoothly into, ends where more than two faces meet (where solids touch along an edge), and OCCT can't {operation} it there: leave it out",
             edge(*one)
         ),
-        [_] => format!(
-            "if the {operation} runs past a face beside the edge, try {smaller}; if not, try {instead}, or leave the edge out: OCCT can't {operation} some edges at any size"
-        ),
+        [_] => failed_advice(dressing, edges),
         _ => format!(
             "{operation} the edges one at a time to find the one that fails; then, if its {operation} runs past a face beside it, try {smaller}, and if not, {instead}, or leave it out"
         ),
@@ -908,7 +908,7 @@ mod tests {
             KernelFailed,  // NothingReturned
             KernelFailed,  // Occt
             InvalidResult, // ResultInvalid
-            KernelFailed,  // EdgesFailed (new: OCCT's failure, as Occt)
+            KernelFailed,  // EdgesFailed (OCCT's failure, as Occt)
             InvalidInput,  // BrepTooShort
             InvalidInput,  // BrepCorrupted
             InvalidInput,  // BrepDefect

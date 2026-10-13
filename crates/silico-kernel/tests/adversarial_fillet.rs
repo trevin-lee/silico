@@ -1,4 +1,5 @@
-//! break-it: the edges a failed fillet names (M2.0d, `Refusal::EdgesFailed`), read from
+//! break-it: the edges a failed fillet names (M2.0, a multi-edge fillet's failing edges:
+//! `Refusal::EdgesFailed`), read from
 //! OCCT's faulty contours and corners. Every expectation is a hand calculation on an
 //! axis-aligned box: a fillet of radius r on an edge cuts into the r × r strip along it, so
 //! it runs past one of its faces when r is over that face's width, and two fillets that
@@ -138,7 +139,7 @@ fn named(err: &KernelError) -> Option<Vec<u32>> {
 const TOP_RING: ([f64; 3], [u32; 4], f64) = ([5.25, 2.85, 5.0], [2, 6, 10, 12], 1.45);
 
 #[test]
-fn a_top_face_too_narrow_for_two_fillets_names_one_of_them_not_a_bystander() {
+fn a_top_face_too_narrow_for_two_fillets_never_names_a_bystander() {
     let (dims, edges, r) = TOP_RING;
     let b = make_box(dims[0], dims[1], dims[2]).unwrap();
     // The hand calculation, and OCCT agreeing with it: without Edge12 (or Edge10) the rest
@@ -156,12 +157,19 @@ fn a_top_face_too_narrow_for_two_fillets_names_one_of_them_not_a_bystander() {
     // the pair it checks to its faulty list, and Edge2's contour is first. The refusal then
     // said "OCCT couldn't fillet Edge2 ... leave the edge out", which doesn't help (Edge6,
     // Edge10, Edge12 still fail) and costs a fillet that builds. Edges at fault, or none.
-    let named = named(&err).unwrap_or_default();
-    assert!(
-        named.iter().all(|e| [10, 12].contains(e)),
-        "names {named:?}, of which only Edge10 and Edge12 are at fault: {}",
-        err.message()
-    );
+    match named(&err) {
+        Some(named) => assert!(
+            named.iter().all(|e| [10, 12].contains(e)),
+            "names {named:?}, of which only Edge10 and Edge12 are at fault: {}",
+            err.message()
+        ),
+        // None named: the suggestion says how to find them.
+        None => assert!(
+            err.suggestion()
+                .is_some_and(|s| s.contains("one at a time")),
+            "{err:?}"
+        ),
+    }
 }
 
 #[test]
@@ -246,8 +254,14 @@ proptest! {
         let m = 1e-3;
         prop_assume!(edges.iter().all(|&e| at_fault(dims, &edges, e, r, m).is_some()));
         let b = make_box(dims[0], dims[1], dims[2]).unwrap();
-        let Err(err) = fillet(&b, &edges, r) else { return Ok(()); };
-        let Some(named) = named(&err) else { return Ok(()); };
+        let past = edges.iter().any(|&e| runs_past(dims, e, r, m) == Some(true));
+        let result = fillet(&b, &edges, r);
+        // An edge that runs past its face fails the surfaces step, which OCCT reports.
+        prop_assert!(!past || result.is_err(), "{:?} at r = {} built", edges, r);
+        let Err(err) = result else { return Ok(()); };
+        let named = named(&err);
+        prop_assert!(!past || named.is_some(), "names none: {:?}", err);
+        let Some(named) = named else { return Ok(()); };
         prop_assert!(!named.is_empty());
         prop_assert!(named.windows(2).all(|p| p[0] < p[1]), "{:?}", named);
         prop_assert!(named.iter().all(|e| edges.contains(e)), "{:?} of {:?}", named, edges);
@@ -272,7 +286,7 @@ proptest! {
         let Some(named) = named(&err) else { return Ok(()); };
         // OCCT's report of a collision names the first contour of the pair, which may be an
         // edge that collides with nothing (see
-        // a_top_face_too_narrow_for_two_fillets_names_one_of_them_not_a_bystander): once
+        // a_top_face_too_narrow_for_two_fillets_never_names_a_bystander): once
         // named, about one failed fillet in a hundred on boxes.
         for &e in &named {
             prop_assert_eq!(
@@ -333,8 +347,9 @@ fn a_chamfer_too_wide_for_its_face_names_no_edge() {
 #[test]
 fn a_fillet_past_its_face_by_any_margin_names_that_edge_alone() {
     // Edge1 of the 10 × 20 × 30 box lies beside a face 10 wide; Edge11, beside faces 20 and
-    // 30 wide, shares no face with it and their strips don't meet (2r < 20). Past 10, by
-    // one ULP or by a millimetre, only Edge1 is at fault.
+    // 30 wide, fillets alone. Past 10, by one ULP or by a millimetre, Edge1's surfaces fail,
+    // so OCCT stops before it checks pairs, and only Edge1 is named (though past 10 the two
+    // strips overlap across y, 2r > 20, which the pair check would find).
     let b = make_box(10.0, 20.0, 30.0).unwrap();
     for r in [10.0f64.next_up(), 10.000_000_1, 10.001, 11.0, 19.9] {
         let err = failed(fillet(&b, &[1, 11], r));
@@ -393,4 +408,29 @@ fn a_fillet_too_large_for_a_cylinder_names_both_rims() {
         assert_eq!(err.elements(), ["Edge2", "Edge3"], "r = {r}: {err:?}");
     }
     assert!(fillet(&cylinder, &[2, 3], 1.9).is_ok());
+}
+
+#[test]
+fn a_failed_tangent_chain_names_every_given_edge_of_it() {
+    // A 10 × 20 × 30 box with Edge1 rounded at r = 2: on the top face the line along y, the
+    // arc, and the line along x continue each other smoothly, one contour. At r = 11 it runs
+    // past the faces 10 wide, and every given edge of it is named.
+    let out: serde_json::Value = oracle::freecad(
+        "import json, Part\n\
+         b = Part.makeBox(10, 20, 30)\n\
+         s = b.makeFillet(2, [b.Edges[0]])\n\
+         top = [i for i, e in enumerate(s.Edges) if all(abs(v.Point.z - 30) < 1e-9 for v in e.Vertexes)]\n\
+         arc = [i for i in top if s.Edges[i].Curve.TypeId == 'Part::GeomCircle'][0]\n\
+         av = [v.Point for v in s.Edges[arc].Vertexes]\n\
+         chain = sorted([arc] + [i for i in top if i != arc and any((v.Point - p).Length < 1e-9 for v in s.Edges[i].Vertexes for p in av)])\n\
+         print('SILICO_ORACLE ' + json.dumps({'brep': s.exportBrepToString(), 'chain': [i + 1 for i in chain]}))\n",
+    );
+    let chain: Vec<u32> = serde_json::from_value(out["chain"].clone()).unwrap();
+    assert_eq!(chain.len(), 3, "{chain:?}");
+    let shape = from_text_brep(out["brep"].as_str().unwrap().as_bytes()).unwrap();
+    let err = failed(fillet(&shape, &chain, 11.0));
+    assert_eq!(named(&err), Some(chain.clone()), "{err:?}");
+    // Two of the three given: those two, the chain's third followed by OCCT but not given.
+    let err = failed(fillet(&shape, &chain[..2], 11.0));
+    assert_eq!(named(&err), Some(chain[..2].to_vec()), "{err:?}");
 }
