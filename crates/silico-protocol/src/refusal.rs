@@ -392,7 +392,8 @@ impl Refusal {
                     0 => "the shape has no edges".to_owned(),
                     _ => format!("the shape has edges 1 to {count}"),
                 };
-                (format!("{} doesn't exist: {has}", edge(*n)), None)
+                // Not one of the shape's elements: by its number, not through the namer.
+                (format!("edge {n} doesn't exist: {has}"), None)
             }
             Refusal::EdgeTwice { edge: n } => (format!("{} is listed twice", edge(*n)), None),
             Refusal::EdgesRefused { dressing, troubles } => {

@@ -1233,13 +1233,13 @@ fn a_million_edges_is_refused_quickly_and_the_worker_goes_on() {
     assert_eq!(err.parameter(), Some("edges"), "{err}");
     assert_eq!(
         err.message(),
-        "Edge13 doesn't exist: the shape has edges 1 to 12"
+        "edge 13 doesn't exist: the shape has edges 1 to 12"
     );
     let err = k.chamfer(&b, &[u32::MAX], equal(1.0), false).unwrap_err();
     assert!(err.elements().is_empty(), "{err}");
     assert_eq!(
         err.message(),
-        "Edge4294967295 doesn't exist: the shape has edges 1 to 12"
+        "edge 4294967295 doesn't exist: the shape has edges 1 to 12"
     );
     assert!(
         start.elapsed() < Duration::from_secs(20),

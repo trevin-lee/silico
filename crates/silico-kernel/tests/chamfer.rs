@@ -992,7 +992,7 @@ fn the_worker_refuses_what_the_core_would_and_goes_on() {
             None,
             "edges",
         ),
-        (&[0], equal(1.0), "Edge0 doesn't exist", None, "edges"),
+        (&[0], equal(1.0), "edge 0 doesn't exist", None, "edges"),
         (
             &[13],
             equal(1.0),

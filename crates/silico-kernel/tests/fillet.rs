@@ -16,8 +16,11 @@ use std::path::Path;
 use std::time::Duration;
 
 use silico_core::ErrorCode;
+use silico_core::kernel::KernelWorker;
 use silico_core::worker::Worker;
-use silico_protocol::{Blob, Generation, Op, Primitive, Reply, ShapeData, ShapeSummary};
+use silico_protocol::{
+    Blob, DebugOp, Generation, Misbehavior, Op, Primitive, Reply, ShapeData, ShapeSummary,
+};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-worker");
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -273,11 +276,11 @@ fn bad_fillet_requests_are_invalid_input() {
         (&[1], f64::NAN, "radius", None, "radius"),
         (&[1], f64::INFINITY, "radius", None, "radius"),
         (&[], 2.0, "at least one edge", None, "edges"),
-        (&[0], 2.0, "Edge0 doesn't exist", None, "edges"),
+        (&[0], 2.0, "edge 0 doesn't exist", None, "edges"),
         (
             &[13],
             2.0,
-            "Edge13 doesn't exist: the shape has edges 1 to 12",
+            "edge 13 doesn't exist: the shape has edges 1 to 12",
             None,
             "edges",
         ),
@@ -676,7 +679,6 @@ fn every_edge_refused_reaches_the_core_as_an_element() {
     // M2.0: a sphere's three edges (FreeCAD's makeSphere: a seam and two degenerate poles)
     // are all ones OCCT can't fillet; one refusal names every one, as data the worker
     // sends, with the names and the words written by the core.
-    use silico_core::kernel::KernelWorker;
     let mut w = KernelWorker::start_worker(Path::new(WORKER)).unwrap();
     let sphere = w.make(Primitive::Sphere { radius: 5.0 }).unwrap();
     let err = w.fillet(&sphere, &[1, 2, 3], 1.0).unwrap_err();
@@ -699,8 +701,6 @@ fn a_refusal_that_doesnt_fit_the_request_stops_the_worker() {
     // A broken worker refuses a fillet of Edge1 as one of Edge7: the core checks the
     // refusal against the request before describing it, so it's a protocol error, the
     // worker is stopped, and nothing is said about Edge7.
-    use silico_core::kernel::KernelWorker;
-    use silico_protocol::{DebugOp, Misbehavior};
     let mut w = Worker::spawn(Path::new(env!("CARGO_BIN_EXE_silico-kernel-test-worker"))).unwrap();
     w.call(
         Generation(0),
