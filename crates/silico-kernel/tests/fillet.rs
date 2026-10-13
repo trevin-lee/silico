@@ -788,7 +788,7 @@ fn every_edge_refused_reaches_the_core_as_an_element() {
     // M2.0: a sphere's three edges (FreeCAD's makeSphere: a seam and two degenerate poles)
     // are all ones OCCT can't fillet; one refusal names every one, as data the worker
     // sends, with the names and the words written by the core.
-    let mut w = KernelWorker::start_worker(Path::new(WORKER)).unwrap();
+    let mut w = kernel();
     let sphere = w.make(Primitive::Sphere { radius: 5.0 }).unwrap();
     let err = w.fillet(&sphere, &[1, 2, 3], 1.0).unwrap_err();
     assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
@@ -844,4 +844,33 @@ fn a_refusal_that_doesnt_fit_the_request_stops_the_worker() {
     );
     let after = k.summarize(&shape).unwrap_err();
     assert_eq!(after.code(), ErrorCode::WorkerCrashed, "{after}");
+}
+
+#[test]
+fn a_fillet_that_fails_where_a_boss_meets_its_plate_names_no_edge() {
+    // A 10 × 10 × 2 plate with a boss of radius 3 and height 1 on its top, every edge but
+    // the boss's seam (which is refused before building) at r = 0.5: OCCT can't build it
+    // and names no contour it couldn't build, so no edge is named, and the suggestion is to
+    // find it one at a time. Each edge fillets alone, so trying them alone finds none
+    // either (docs/ports/fillet.md).
+    let out: serde_json::Value = oracle::freecad(
+        "import json, Part, FreeCAD\n\
+         s = Part.makeBox(10, 10, 2).fuse(Part.makeCylinder(3, 1, FreeCAD.Vector(5, 5, 2)))\n\
+         seams = [i + 1 for i, e in enumerate(s.Edges) if any(e.isSeam(f) for f in s.Faces if any(e.isSame(x) for x in f.Edges))]\n\
+         print('SILICO_ORACLE ' + json.dumps({'brep': s.exportBrepToString(), 'edges': len(s.Edges), 'seams': seams}))\n",
+    );
+    let seams: Vec<u32> = serde_json::from_value(out["seams"].clone()).unwrap();
+    let count: u32 = serde_json::from_value(out["edges"].clone()).unwrap();
+    assert_eq!(seams.len(), 1, "{seams:?}");
+    let shape = silico_kernel::from_text_brep(out["brep"].as_str().unwrap().as_bytes()).unwrap();
+    let data = ShapeData::unchecked(Blob::inline(silico_kernel::to_brep(&shape).unwrap()));
+    let edges: Vec<u32> = (1..=count).filter(|e| !seams.contains(e)).collect();
+    let mut k = kernel();
+    let err = k.fillet(&data, &edges, 0.5).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::KernelFailed, "{err}");
+    assert!(err.elements().is_empty(), "{err}");
+    assert!(err.suggestion().unwrap().contains("one at a time"), "{err}");
+    for edge in edges {
+        assert!(k.fillet(&data, &[edge], 0.5).is_ok(), "Edge{edge}");
+    }
 }

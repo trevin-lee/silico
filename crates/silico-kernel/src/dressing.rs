@@ -320,12 +320,13 @@ fn checked_edges(
     Ok(seen.into_iter().collect())
 }
 
-/// A failed fillet or chamfer, as OCCT's failure on `edges`, where OCCT doesn't say which of
-/// several edges it was (see `not_built`). Nor does it say why; the refusal says what to
-/// try (`Refusal::describe`). An edge that ends, or whose chain ends, on one joining more than two faces fails whatever
-/// its size, with OCCT's `Standard_ConstructionError` "ChFi3d_Builder:only 2 faces", which
-/// OCCT 7.9.3 (pinned) throws only while taking that one edge (ChFi3d_Builder_1.cxx,
-/// `FaceTangency`; a test fails if it's reworded): the refusal's suggestion keys on it.
+/// A failed fillet or chamfer, as OCCT's failure on `edges`, where OCCT doesn't say which
+/// of several edges it was (see `not_built`). Nor does it say why; the refusal says what to
+/// try (`Refusal::describe`). An edge that ends, or whose chain ends, on one joining more
+/// than two faces fails whatever its size, with OCCT's `Standard_ConstructionError`
+/// "ChFi3d_Builder:only 2 faces", which OCCT 7.9.3 (pinned) throws only while taking that
+/// one edge (ChFi3d_Builder_1.cxx, `FaceTangency`; a test fails if it's reworded): the
+/// refusal's suggestion keys on it.
 fn blame_edges(error: KernelError, edges: &[u32], dressing: DressingKind) -> KernelError {
     error
         .during(Operation::Dressing { dressing })
@@ -353,7 +354,10 @@ fn not_built(
             },
             error.cause().map(str::to_owned),
         ),
-        // OCCT's report couldn't be read: the failure stands, without naming the edges.
+        // OCCT's report couldn't be read: the failure stands, without naming the edges. As
+        // OCCT 7.9.3 reads, a collision can make a corner stripe it added while building
+        // faulty, past the given contours, whose status the bridge refuses to read; no input
+        // found yet does (a collision names no edge either way).
         Err(e) => {
             tracing::warn!(error = %e, "OCCT's report of a failed fillet couldn't be read");
             error
@@ -380,7 +384,7 @@ fn faulty_edges(
     let faulty = dressing.faulty_contours()?;
     let mut surfaces_failed = false;
     for &contour in &faulty {
-        if dressing.contour_failed(contour)? {
+        if contour != 0 && dressing.contour_failed(contour)? {
             surfaces_failed = true;
             break;
         }

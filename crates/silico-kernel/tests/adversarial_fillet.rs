@@ -1,12 +1,12 @@
 //! break-it: the edges a failed fillet names (M2.0, a multi-edge fillet's failing edges:
-//! `Refusal::EdgesFailed`), read from
-//! OCCT's faulty contours and corners. Every expectation is a hand calculation on an
-//! axis-aligned box: a fillet of radius r on an edge cuts into the r × r strip along it, so
-//! it runs past one of its faces when r is over that face's width, and two fillets that
-//! share no corner collide when their strips overlap (two parallel edges on a face w wide
-//! when 2r > w). An edge is at fault when one of those holds for it; the refusal's
-//! suggestion is to leave the edges it names out, so it must name only edges at fault.
-//! Box edges are numbered as FreeCAD 1.1.3 numbers `Part.makeBox(a, b, c).Edges`.
+//! `Refusal::EdgesFailed`), read from OCCT's faulty contours and corners. Every expectation
+//! is a hand calculation on an axis-aligned box: a fillet of radius r on an edge cuts into
+//! the r × r strip along it, so it runs past one of its faces when r is over that face's
+//! width, and two fillets that share no corner collide when their strips overlap (two
+//! parallel edges on a face w wide when 2r > w). An edge is at fault when one of those
+//! holds for it; the refusal's suggestion is to leave the edges it names out, so it must
+//! name only edges at fault. Box edges are numbered as FreeCAD 1.1.3 numbers
+//! `Part.makeBox(a, b, c).Edges`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 #[path = "common/kernel.rs"]
@@ -157,19 +157,14 @@ fn a_top_face_too_narrow_for_two_fillets_never_names_a_bystander() {
     // the pair it checks to its faulty list, and Edge2's contour is first. The refusal then
     // said "OCCT couldn't fillet Edge2 ... leave the edge out", which doesn't help (Edge6,
     // Edge10, Edge12 still fail) and costs a fillet that builds. Edges at fault, or none.
-    match named(&err) {
-        Some(named) => assert!(
-            named.iter().all(|e| [10, 12].contains(e)),
-            "names {named:?}, of which only Edge10 and Edge12 are at fault: {}",
-            err.message()
-        ),
-        // None named: the suggestion says how to find them.
-        None => assert!(
-            err.suggestion()
-                .is_some_and(|s| s.contains("one at a time")),
-            "{err:?}"
-        ),
-    }
+    // None, as for any collision, and the suggestion says how to find them.
+    assert_eq!(named(&err), None, "{err:?}");
+    assert!(err.elements().is_empty(), "{err:?}");
+    assert!(
+        err.suggestion()
+            .is_some_and(|s| s.contains("one at a time")),
+        "{err:?}"
+    );
 }
 
 #[test]
