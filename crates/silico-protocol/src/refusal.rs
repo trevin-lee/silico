@@ -392,7 +392,8 @@ impl Refusal {
                     0 => "the shape has no edges".to_owned(),
                     _ => format!("the shape has edges 1 to {count}"),
                 };
-                // Not one of the shape's elements: by its number, not through the namer.
+                // Not one of the shape's elements, so a name from the shape (the namer's)
+                // would be wrong: by its number, as the request gave it.
                 (format!("edge {n} doesn't exist: {has}"), None)
             }
             Refusal::EdgeTwice { edge: n } => (format!("{} is listed twice", edge(*n)), None),
@@ -971,6 +972,30 @@ mod tests {
             message(Operation::Tessellate),
             "OCCT couldn't mesh the shape"
         );
+    }
+
+    #[test]
+    fn an_edge_the_shape_doesnt_have_is_written_by_its_number_without_the_namer() {
+        let asked = std::cell::RefCell::new(Vec::new());
+        let name = |e: ElementRef| {
+            asked.borrow_mut().push(e);
+            format!("<{e}>")
+        };
+        for (edge, count, words) in [
+            (13, 12, "edge 13 doesn't exist: the shape has edges 1 to 12"),
+            (0, 12, "edge 0 doesn't exist: the shape has edges 1 to 12"),
+            (1, 0, "edge 1 doesn't exist: the shape has no edges"),
+            (
+                u32::MAX,
+                1,
+                "edge 4294967295 doesn't exist: the shape has edges 1 to 1",
+            ),
+        ] {
+            let said = Refusal::EdgeMissing { edge, count }.describe(None, &name);
+            assert_eq!(said.message, words);
+            assert_eq!(said.suggestion, None);
+        }
+        assert!(asked.borrow().is_empty(), "named {:?}", asked.borrow());
     }
 
     #[test]
