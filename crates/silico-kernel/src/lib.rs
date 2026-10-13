@@ -263,26 +263,33 @@ mod ffi {
 
 pub use silico_protocol::{
     Axis, BooleanOp, ChamferSize, ElementCounts, ElementFate, ElementKind, ElementRef, Ends,
-    History, InputHistory, LENGTH_TOLERANCE, MAX_LENGTH, Mesh, Primitive, Profile, Reported,
-    ShapeSummary,
+    History, InputHistory, LENGTH_TOLERANCE, MAX_LENGTH, Mesh, Primitive, Profile, Refusal,
+    Reported, ShapeSummary,
 };
+use silico_protocol::{BrepDefect, FailureKind, HistoryDefect, Operation, Returned, Role};
 
 mod dressing;
 pub mod worker;
 
 pub use dressing::{chamfer, fillet};
 
-/// An operation refused or failed, with OCCT's own message where OCCT reported it (for
-/// example `Standard_DomainError: ...`). It stays inside the worker: the worker reports it
-/// as a protocol `Failure`, and the core turns that into its structured `Error`, with a
-/// code for each [`KernelErrorKind`] (`invalid_input`, `kernel_failed`, `invalid_result`)
-/// and this message as the cause, adding the feature it knows about.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KernelError {
-    kind: KernelErrorKind,
+/// An operation refused or failed: why, as data (a protocol [`Refusal`]), and OCCT's own
+/// words where OCCT threw (for example `Standard_DomainError: ...`). It stays inside the
+/// worker: the worker sends the refusal and those words as a protocol `Failure`, and the
+/// core names the elements and writes its structured `Error` from them. In-process, it reads
+/// as the core would write it, naming elements as FreeCAD does (`Edge3`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct KernelError(Box<Parts>);
+
+/// A [`KernelError`]'s parts: boxed, so a `Result` carrying one stays small.
+#[derive(Debug, Clone, PartialEq)]
+struct Parts {
+    refusal: Refusal,
+    cause: Option<String>,
+    /// The refusal described, with FreeCAD's names.
     message: String,
-    element: Option<String>,
     suggestion: Option<String>,
+    elements: Vec<String>,
 }
 
 /// What kind of failure a [`KernelError`] is.
@@ -299,58 +306,106 @@ pub enum KernelErrorKind {
 }
 
 impl KernelError {
-    fn of_kind(kind: KernelErrorKind, message: impl Into<String>) -> Self {
-        Self {
-            kind,
-            message: message.into(),
-            element: None,
-            suggestion: None,
-        }
+    fn new(refusal: Refusal) -> Self {
+        Self::caused(refusal, None)
     }
 
-    fn new(message: impl Into<String>) -> Self {
-        Self::of_kind(KernelErrorKind::Failed, message)
+    fn caused(refusal: Refusal, cause: Option<String>) -> Self {
+        let described = refusal.describe(cause.as_deref(), &|e| e.to_string());
+        // OCCT's own words, where it threw; otherwise the refusal's.
+        let message = match (&refusal, &cause) {
+            (Refusal::Occt { .. }, Some(cause)) => cause.clone(),
+            _ => described.message,
+        };
+        let elements = refusal.elements().iter().map(ToString::to_string).collect();
+        Self(Box::new(Parts {
+            refusal,
+            cause,
+            message,
+            suggestion: described.suggestion,
+            elements,
+        }))
     }
 
-    /// The bridge refused the request's values before calling OCCT.
-    fn invalid_input(message: impl Into<String>) -> Self {
-        Self::of_kind(KernelErrorKind::InvalidInput, message)
+    /// The same failure, as OCCT's doing `operation` (for what to suggest): an exception
+    /// or an invalid result not yet attributed to an operation.
+    fn during(self, operation: Operation) -> Self {
+        let Parts { refusal, cause, .. } = *self.0;
+        let refusal = match refusal {
+            Refusal::Occt {
+                operation: Operation::Other,
+                edges,
+            } => Refusal::Occt { operation, edges },
+            Refusal::ResultInvalid {
+                operation: Operation::Other,
+                edges,
+            } => Refusal::ResultInvalid { operation, edges },
+            other => other,
+        };
+        Self::caused(refusal, cause)
     }
 
-    fn with_element(mut self, element: impl Into<String>) -> Self {
-        self.element = Some(element.into());
-        self
-    }
-
-    fn with_suggestion(mut self, suggestion: impl Into<String>) -> Self {
-        self.suggestion = Some(suggestion.into());
-        self
+    /// The same failure of a fillet or chamfer, given `edges`.
+    fn on_edges(self, given: &[u32]) -> Self {
+        let Parts { refusal, cause, .. } = *self.0;
+        let refusal = match refusal {
+            Refusal::Occt { operation, .. } => Refusal::Occt {
+                operation,
+                edges: given.to_vec(),
+            },
+            Refusal::ResultInvalid { operation, .. } => Refusal::ResultInvalid {
+                operation,
+                edges: given.to_vec(),
+            },
+            other => other,
+        };
+        Self::caused(refusal, cause)
     }
 
     /// Whether the values were refused, OCCT failed, or OCCT's result was refused.
     pub fn kind(&self) -> KernelErrorKind {
-        self.kind
+        match self.0.refusal.kind() {
+            FailureKind::InvalidInput => KernelErrorKind::InvalidInput,
+            FailureKind::KernelFailed => KernelErrorKind::Failed,
+            FailureKind::InvalidResult => KernelErrorKind::InvalidResult,
+            FailureKind::UnknownOp | FailureKind::Internal => KernelErrorKind::Internal,
+        }
+    }
+
+    /// Why, as data: what the worker sends.
+    pub fn refusal(&self) -> &Refusal {
+        &self.0.refusal
+    }
+
+    /// OCCT's own words, where it threw.
+    pub fn cause(&self) -> Option<&str> {
+        self.0.cause.as_deref()
     }
 
     /// What to try instead, when there's something to suggest.
     pub fn suggestion(&self) -> Option<&str> {
-        self.suggestion.as_deref()
+        self.0.suggestion.as_deref()
     }
 
-    /// The sub-element at fault (such as `Edge3`), when known.
+    /// The first sub-element at fault (such as `Edge3`), when known.
     pub fn element(&self) -> Option<&str> {
-        self.element.as_deref()
+        self.0.elements.first().map(String::as_str)
     }
 
-    /// What went wrong, in OCCT's words where OCCT reported it.
+    /// Every sub-element at fault, in order.
+    pub fn elements(&self) -> &[String] {
+        &self.0.elements
+    }
+
+    /// What went wrong, in OCCT's words where OCCT threw.
     pub fn message(&self) -> &str {
-        &self.message
+        &self.0.message
     }
 }
 
 impl fmt::Display for KernelError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "kernel error: {}", self.message)
+        write!(f, "kernel error: {}", self.0.message)
     }
 }
 
@@ -358,7 +413,19 @@ impl std::error::Error for KernelError {}
 
 impl From<cxx::Exception> for KernelError {
     fn from(e: cxx::Exception) -> Self {
-        Self::new(e.what())
+        Self::caused(
+            Refusal::Occt {
+                operation: Operation::Other,
+                edges: Vec::new(),
+            },
+            Some(e.what().to_owned()),
+        )
+    }
+}
+
+impl From<silico_protocol::InvalidParameter> for KernelError {
+    fn from(invalid: silico_protocol::InvalidParameter) -> Self {
+        refused(None, invalid)
     }
 }
 
@@ -399,7 +466,7 @@ impl Shape {
     fn get(&self) -> Result<&ffi::Shape, KernelError> {
         self.inner
             .as_ref()
-            .ok_or_else(|| KernelError::new("shape is empty"))
+            .ok_or_else(|| KernelError::new(Refusal::NoShape))
     }
 }
 
@@ -409,13 +476,18 @@ impl Shape {
 /// the origin, lets NaN past its checks, and rejects lengths at or below its tolerance
 /// without saying which.
 pub fn make(primitive: &Primitive) -> Result<Shape, KernelError> {
-    primitive
-        .check()
-        .map_err(|invalid| KernelError::invalid_input(invalid.message))?;
+    primitive.check()?;
+    let made = |e: KernelError| {
+        e.during(Operation::Primitive {
+            name: primitive.name().to_owned(),
+        })
+    };
     let shape = match *primitive {
-        Primitive::Box { dx, dy, dz } => ffi::make_box(dx, dy, dz)?,
-        Primitive::Cylinder { radius, height } => ffi::make_cylinder(radius, height)?,
-        Primitive::Sphere { radius } => ffi::make_sphere(radius)?,
+        Primitive::Box { dx, dy, dz } => ffi::make_box(dx, dy, dz).map_err(|e| made(e.into()))?,
+        Primitive::Cylinder { radius, height } => {
+            ffi::make_cylinder(radius, height).map_err(|e| made(e.into()))?
+        }
+        Primitive::Sphere { radius } => ffi::make_sphere(radius).map_err(|e| made(e.into()))?,
         Primitive::Cone {
             radius1,
             radius2,
@@ -425,38 +497,34 @@ pub fn make(primitive: &Primitive) -> Result<Shape, KernelError> {
             // (so numbered like OCCT's cylinder, not like the cylinder primitive), as
             // FreeCAD's Part::Cone does. OCCT's cone would refuse them.
             if (radius1 - radius2).abs() < LENGTH_TOLERANCE {
-                ffi::make_cylinder_directly(radius1, height)?
+                ffi::make_cylinder_directly(radius1, height).map_err(|e| made(e.into()))?
             } else {
                 // A radius of -0.0 is zero; written as 0.0, so the B-rep's bytes don't
                 // depend on the sign of a zero.
                 let unsigned_zero = |r: f64| if r == 0.0 { 0.0 } else { r };
-                ffi::make_cone(unsigned_zero(radius1), unsigned_zero(radius2), height)?
+                ffi::make_cone(unsigned_zero(radius1), unsigned_zero(radius2), height)
+                    .map_err(|e| made(e.into()))?
             }
         }
         Primitive::Torus {
             major_radius,
             minor_radius,
-        } => ffi::make_torus(major_radius, minor_radius)?,
+        } => ffi::make_torus(major_radius, minor_radius).map_err(|e| made(e.into()))?,
     };
     if shape.is_null() {
-        return Err(KernelError::new(format!(
-            "OCCT returned no {}",
-            primitive.name()
-        )));
+        return Err(KernelError::new(Refusal::NothingReturned {
+            what: Returned::Shape,
+        }));
     }
     // A result OCCT builds isn't always valid (a sphere of radius 1e300 comes back with
     // three faces), refused as an operation's invalid result is. Within the allowed sizes
     // no input is known to reach this; it guards against one that does.
     let shape = Shape::new(shape);
     if !shape.is_valid()? {
-        return Err(KernelError::of_kind(
-            KernelErrorKind::InvalidResult,
-            format!("the {} isn't a valid solid", primitive.name()),
-        )
-        .with_suggestion(format!(
-            "give the {} sizes nearer the model's scale",
-            primitive.name()
-        )));
+        return Err(made(KernelError::new(Refusal::ResultInvalid {
+            operation: Operation::Other,
+            edges: Vec::new(),
+        })));
     }
     Ok(shape)
 }
@@ -474,7 +542,11 @@ pub fn to_brep(shape: &Shape) -> Result<Vec<u8>, KernelError> {
     let bytes = ffi::shape_to_brep(shape.get()?)?;
     let bytes = bytes
         .as_ref()
-        .ok_or_else(|| KernelError::new("OCCT returned no B-rep"))?
+        .ok_or_else(|| {
+            KernelError::new(Refusal::NothingReturned {
+                what: Returned::Brep,
+            })
+        })?
         .as_bytes();
     let mut brep = Vec::with_capacity(bytes.len() + 4);
     brep.extend_from_slice(bytes);
@@ -494,11 +566,9 @@ pub fn to_brep(shape: &Shape) -> Result<Vec<u8>, KernelError> {
 pub fn from_brep(brep: &[u8]) -> Result<Shape, KernelError> {
     let (body, crc) = brep
         .split_last_chunk::<4>()
-        .ok_or_else(|| KernelError::invalid_input("B-rep is too short to be one"))?;
+        .ok_or_else(|| KernelError::new(Refusal::BrepTooShort))?;
     if crc32fast::hash(body) != u32::from_le_bytes(*crc) {
-        return Err(KernelError::invalid_input(
-            "B-rep is corrupted: its checksum doesn't match",
-        ));
+        return Err(KernelError::new(Refusal::BrepCorrupted));
     }
     checked(ffi::shape_from_brep(body)?)
 }
@@ -516,43 +586,25 @@ pub fn from_text_brep(brep: &[u8]) -> Result<Shape, KernelError> {
 /// A shape just read, unless OCCT can't work on it correctly.
 fn checked(shape: cxx::UniquePtr<ffi::Shape>) -> Result<Shape, KernelError> {
     let Some(read) = shape.as_ref() else {
-        return Err(KernelError::new("OCCT returned no shape"));
+        return Err(KernelError::new(Refusal::NothingReturned {
+            what: Returned::Shape,
+        }));
     };
-    const REBUILD: &str = "rebuild the shape from its inputs";
-    let refused = |what: &str, suggestion: &str| {
-        Err(KernelError::invalid_input(format!("B-rep {what}")).with_suggestion(suggestion))
+    let defect = match ffi::brep_defect(read)? {
+        ffi::BrepDefect::None => return Ok(Shape::new(shape)),
+        ffi::BrepDefect::MirrorOrScale => BrepDefect::MirrorOrScale,
+        ffi::BrepDefect::NotFinite => BrepDefect::LocationNotFinite,
+        ffi::BrepDefect::FaceWithoutSurface => BrepDefect::FaceWithoutSurface,
+        ffi::BrepDefect::PointNotFinite => BrepDefect::PointNotFinite,
+        ffi::BrepDefect::CurveNotFinite => BrepDefect::CurveNotFinite,
+        ffi::BrepDefect::SurfaceNotFinite => BrepDefect::SurfaceNotFinite,
+        other => {
+            return Err(KernelError::new(Refusal::UnknownBrepDefect {
+                code: u32::from(other.repr),
+            }));
+        }
     };
-    match ffi::brep_defect(read)? {
-        ffi::BrepDefect::None => Ok(Shape::new(shape)),
-        ffi::BrepDefect::MirrorOrScale => refused(
-            "places a shape by a transformation that mirrors or scales, which OCCT can't model consistently",
-            REBUILD,
-        ),
-        ffi::BrepDefect::NotFinite => refused(
-            "places a shape by a transformation whose values aren't finite",
-            REBUILD,
-        ),
-        ffi::BrepDefect::FaceWithoutSurface => refused(
-            "has a face with no surface, which OCCT can't operate on",
-            "rebuild the shape from its inputs; a mesh (a face of only triangles, as STEP or glTF import makes) can't be used as a solid yet",
-        ),
-        ffi::BrepDefect::PointNotFinite => refused(
-            "has a vertex whose point or tolerance isn't finite",
-            REBUILD,
-        ),
-        ffi::BrepDefect::CurveNotFinite => refused(
-            "has an edge whose curve, parameter range, or tolerance isn't finite",
-            REBUILD,
-        ),
-        ffi::BrepDefect::SurfaceNotFinite => refused(
-            "has a face whose surface, mesh, or tolerance isn't finite",
-            REBUILD,
-        ),
-        other => Err(KernelError::new(format!(
-            "the bridge reported an unknown B-rep defect {}",
-            other.repr
-        ))),
-    }
+    Err(KernelError::new(Refusal::BrepDefect { defect }))
 }
 
 /// The floating-point trap-enable bits that are set, 0 when none is. Workers must run
@@ -596,15 +648,17 @@ pub fn measure_as_freecad(shape: &Shape) -> Result<silico_protocol::FreecadMeasu
 /// self, numbered the same (or kept, for an offset of zero). An offset must be finite and,
 /// in each direction, at most [`MAX_LENGTH`].
 pub fn translate(shape: &Shape, offset: [f64; 3]) -> Result<Built, KernelError> {
-    silico_protocol::check_offset(offset).map_err(|invalid| {
-        KernelError::invalid_input(invalid.message).with_suggestion(OFFSET_SUGGESTION)
-    })?;
+    silico_protocol::check_offset(offset)
+        .map_err(|invalid| refused(Some(silico_protocol::OFFSET_FIELD), invalid))?;
     let inner = shape.get()?;
     let [dx, dy, dz] = offset;
     let mut entries = Vec::new();
-    let moved = ffi::translate(inner, dx, dy, dz, &mut entries)?;
+    let moved = ffi::translate(inner, dx, dy, dz, &mut entries)
+        .map_err(|e| KernelError::from(e).during(Operation::Translate))?;
     if moved.is_null() {
-        return Err(KernelError::new("OCCT returned no shape"));
+        return Err(KernelError::new(Refusal::NothingReturned {
+            what: Returned::Shape,
+        }));
     }
     // Moving a shape doesn't change whether it's valid: it has the input's validity, which
     // is checked now if no one had.
@@ -616,16 +670,19 @@ pub fn translate(shape: &Shape, offset: [f64; 3]) -> Result<Built, KernelError> 
     })
 }
 
-/// What to try when an offset is refused.
-const OFFSET_SUGGESTION: &str =
-    "move the shape by a finite offset, no more than a kilometre each way";
+/// A value refused by the protocol's check, named as the core names it
+/// (`InvalidParameter::name`): `under`, the field the value is a part of, if any.
+fn refused(under: Option<&str>, invalid: silico_protocol::InvalidParameter) -> KernelError {
+    KernelError::new(Refusal::InvalidParameter {
+        parameter: invalid.name(under),
+        message: invalid.message,
+    })
+}
 
 /// The face a profile bounds, its edges and vertices in its points' order. The profile is
 /// checked first ([`Profile::check`]), and its plane returned with it.
 fn profile_face(profile: &Profile) -> Result<(Shape, silico_protocol::ProfilePlane), KernelError> {
-    let plane = profile
-        .check()
-        .map_err(|invalid| KernelError::invalid_input(invalid.message))?;
+    let plane = profile.check().map_err(|invalid| refused(None, invalid))?;
     let points: Vec<ffi::Point3> = profile
         .points
         .iter()
@@ -633,7 +690,9 @@ fn profile_face(profile: &Profile) -> Result<(Shape, silico_protocol::ProfilePla
         .collect();
     let face = ffi::make_polygon_face(&points)?;
     let Some(made) = face.as_ref() else {
-        return Err(KernelError::new("OCCT returned no face"));
+        return Err(KernelError::new(Refusal::NothingReturned {
+            what: Returned::Face,
+        }));
     };
     // OCCT drops a corner it finds within its tolerance of the one before, measuring the
     // distance its own way: a side the rules measure as a hair over 1e-7 can be exactly
@@ -644,15 +703,13 @@ fn profile_face(profile: &Profile) -> Result<(Shape, silico_protocol::ProfilePla
     if c.edges as usize != n || c.vertices as usize != n {
         // The pair OCCT merged is the closest consecutive pair.
         let i = profile.shortest_side();
-        return Err(KernelError::invalid_input(format!(
-            "OCCT made the profile's {n} corners into {} sides: corners {} and {} are within its tolerance ({} mm) of each other as it measures them",
-            c.edges,
-            i + 1,
-            (i + 1) % n + 1,
-            silico_protocol::format_number(LENGTH_TOLERANCE)
-        ))
-        .with_element(format!("Vertex{}", i + 1))
-        .with_suggestion("move those corners further apart, or make them one corner"));
+        let corner = |i: usize| u32::try_from(i + 1).unwrap_or(u32::MAX);
+        return Err(KernelError::new(Refusal::CornersMerged {
+            corners: corner(n - 1),
+            sides: c.edges,
+            first: corner(i),
+            second: corner((i + 1) % n),
+        }));
     }
     Ok((Shape::new(face), plane))
 }
@@ -684,19 +741,14 @@ pub fn extrude(
 ) -> Result<Built, KernelError> {
     let (face, plane) = profile_face(profile)?;
     let [dx, dy, dz] = silico_protocol::extrusion_vector(&plane, length, direction)
-        .map_err(|invalid| KernelError::invalid_input(invalid.message))?;
+        .map_err(|invalid| refused(None, invalid))?;
     let inner = face.get()?;
     let (mut entries, mut start, mut end) = (Vec::new(), Vec::new(), Vec::new());
-    // OCCT has built every extrusion of a valid profile tried; should one fail, say what
-    // to change.
-    let advise = |e: KernelError| {
-        e.with_suggestion(
-            "OCCT couldn't extrude this profile: change its length or direction slightly",
-        )
-    };
+    // OCCT has built every extrusion of a valid profile tried; should one fail, the
+    // refusal says what to change.
     let solid = ffi::extrude(inner, dx, dy, dz, &mut entries, &mut start, &mut end)
-        .map_err(|e| advise(e.into()))?;
-    let result = checked_result(&[&face], solid, "extrusion").map_err(advise)?;
+        .map_err(|e| KernelError::from(e).during(Operation::Extrusion))?;
+    let result = checked_result(&[&face], solid, Operation::Extrusion)?;
     let mut history = history_of(&[inner], result.get()?, &entries)?;
     history.ends = ends(start, end);
     Ok(Built {
@@ -711,18 +763,13 @@ pub fn extrude(
 pub fn revolve(profile: &Profile, axis: &Axis, angle: f64) -> Result<Built, KernelError> {
     let (face, plane) = profile_face(profile)?;
     let [dx, dy, dz] = silico_protocol::check_revolve(&plane, &profile.points, axis, angle)
-        .map_err(|invalid| KernelError::invalid_input(invalid.message))?;
+        .map_err(|invalid| refused(None, invalid))?;
     let [ox, oy, oz] = axis.origin;
     let inner = face.get()?;
     let (mut entries, mut start, mut end) = (Vec::new(), Vec::new(), Vec::new());
     let radians = silico_protocol::radians(angle);
     // OCCT fails on some profiles the rules accept, a side exactly 1e-7 from the axis
-    // among them (FreeCAD's OCCT too): say what to change.
-    let advise = |e: KernelError| {
-        e.with_suggestion(
-            "OCCT couldn't revolve this profile: move it slightly further from the axis, or onto it",
-        )
-    };
+    // among them (FreeCAD's OCCT too): the refusal says what to change.
     let solid = ffi::revolve(
         inner,
         ffi::Point3 {
@@ -740,8 +787,8 @@ pub fn revolve(profile: &Profile, axis: &Axis, angle: f64) -> Result<Built, Kern
         &mut start,
         &mut end,
     )
-    .map_err(|e| advise(e.into()))?;
-    let result = checked_result(&[&face], solid, "revolve").map_err(advise)?;
+    .map_err(|e| KernelError::from(e).during(Operation::Revolve))?;
+    let result = checked_result(&[&face], solid, Operation::Revolve)?;
     let mut history = history_of(&[inner], result.get()?, &entries)?;
     history.ends = ends(start, end);
     Ok(Built {
@@ -759,20 +806,16 @@ pub fn revolve(profile: &Profile, axis: &Axis, angle: f64) -> Result<Built, Kern
 /// though OCCT gets some wrong (the port note lists them).
 pub fn boolean(op: BooleanOp, base: &Shape, tool: &Shape) -> Result<Built, KernelError> {
     let name = op.name().to_lowercase();
+    let operation = Operation::Boolean { op };
     let bridge_op = match op {
         BooleanOp::Fuse => ffi::BooleanOp::Fuse,
         BooleanOp::Cut => ffi::BooleanOp::Cut,
         BooleanOp::Common => ffi::BooleanOp::Common,
     };
     let (base_inner, tool_inner) = (base.get()?, tool.get()?);
-    for (role, input) in [("base", base_inner), ("tool", tool_inner)] {
+    for (role, input) in [(Role::Base, base_inner), (Role::Tool, tool_inner)] {
         if is_empty(input)? {
-            return Err(KernelError::invalid_input(format!(
-                "the {name}'s {role} is empty"
-            ))
-            .with_suggestion(format!(
-                "give the {name} a {role} with something in it: the operation that made it made nothing"
-            )));
+            return Err(KernelError::new(Refusal::BooleanInputEmpty { op, role }));
         }
     }
     let mut entries = Vec::new();
@@ -784,9 +827,7 @@ pub fn boolean(op: BooleanOp, base: &Shape, tool: &Shape) -> Result<Built, Kerne
         &mut entries,
         &mut warnings,
     )
-    .map_err(|e| {
-        KernelError::from(e).with_suggestion("check that the shapes are solids that overlap")
-    })?;
+    .map_err(|e| KernelError::from(e).during(operation.clone()))?;
     // FreeCAD accepts whatever valid result OCCT gives, warnings or not, and so does
     // Silico (docs/ports/booleans.md, Known wrong results). The warnings are logged.
     if !warnings.is_empty() {
@@ -801,40 +842,17 @@ pub fn boolean(op: BooleanOp, base: &Shape, tool: &Shape) -> Result<Built, Kerne
         && (is_empty(result)? || has_no_volume(result, &[base_inner, tool_inner])?)
     {
         // OCCT found nothing (or a result with no volume), which it can do for shapes that
-        // do overlap (where faces or edges nearly meet, or across a torus's seam), so the
-        // suggestion doesn't claim more than that.
-        let suggestion = match op {
-            BooleanOp::Fuse => "OCCT lost both shapes: rebuild them, or move one slightly",
-            BooleanOp::Cut => {
-                "OCCT found the tool removes all of the base: move or shrink the tool (if it doesn't, move it slightly)"
-            }
-            BooleanOp::Common => {
-                "OCCT found no overlap: move the shapes so they overlap (if they already do, move one slightly)"
-            }
-        };
-        return Err(
-            KernelError::new(format!("the {name}'s result is empty")).with_suggestion(suggestion)
-        );
+        // do overlap (where faces or edges nearly meet, or across a torus's seam): the
+        // refusal's suggestion doesn't claim more than that.
+        return Err(KernelError::new(Refusal::BooleanResultEmpty { op }));
     }
-    let result = checked_result(&[base, tool], built, &name).map_err(boolean_advice)?;
+    let result = checked_result(&[base, tool], built, operation)?;
     let history = history_of(&[base_inner, tool_inner], result.get()?, &entries)?;
     Ok(Built {
         shape: result,
         history,
     })
 }
-
-/// A boolean's error, with what to try when its result was refused as invalid.
-fn boolean_advice(e: KernelError) -> KernelError {
-    if e.kind() == KernelErrorKind::InvalidResult {
-        e.with_suggestion(NEARLY_MEET)
-    } else {
-        e
-    }
-}
-
-/// What to try when OCCT's boolean goes wrong: it does where the shapes nearly meet.
-const NEARLY_MEET: &str = "faces or edges of the two shapes nearly meet: move one so they clearly overlap or stay clearly apart";
 
 /// Whether a boolean of solids gave a result with no volume to speak of: no solid at all,
 /// or a mean thickness (volume over area) of at most OCCT's length tolerance, or less
@@ -924,29 +942,23 @@ fn assemble_history(
         result,
         ends: Ends::default(),
     };
-    let malformed = |what: &str| {
-        KernelError::of_kind(
-            KernelErrorKind::Internal,
-            format!("the bridge reported a history {what}"),
-        )
-        .with_suggestion("this is a bug in Silico's kernel bridge: report it")
-    };
+    let malformed = |defect| KernelError::new(Refusal::MalformedHistory { defect });
     for e in entries {
         let input = history
             .inputs
             .get_mut(e.input as usize)
-            .ok_or_else(|| malformed("for an input the operation doesn't have"))?;
+            .ok_or_else(|| malformed(HistoryDefect::UnknownInput))?;
         let input_kind = element_kind(e.input_kind);
         let fates = match input_kind {
             Some(ElementKind::Face) => &mut input.faces,
             Some(ElementKind::Edge) => &mut input.edges,
             Some(ElementKind::Vertex) => &mut input.vertices,
-            _ => return Err(malformed("for an element of the wrong kind")),
+            _ => return Err(malformed(HistoryDefect::WrongKind)),
         };
         let fate = (e.input_index as usize)
             .checked_sub(1)
             .and_then(|i| fates.get_mut(i))
-            .ok_or_else(|| malformed("for an element the input doesn't have"))?;
+            .ok_or_else(|| malformed(HistoryDefect::UnknownElement))?;
         // A wire or a shell, or something the result doesn't have (OCCT names those, as
         // for a revolve's vertices): not part of the history.
         let Some(kind) = element_kind(e.output_kind) else {
@@ -977,7 +989,7 @@ fn assemble_history(
                     fate.generated.push(output);
                 }
             }
-            _ => return Err(malformed("with an unknown relation")),
+            _ => return Err(malformed(HistoryDefect::UnknownRelation)),
         }
     }
     for input in &mut history.inputs {
@@ -1022,30 +1034,28 @@ fn element_kind(kind: ffi::Kind) -> Option<ElementKind> {
 fn checked_result(
     inputs: &[&Shape],
     result: cxx::UniquePtr<ffi::Shape>,
-    operation: &str,
+    operation: Operation,
 ) -> Result<Shape, KernelError> {
     let refused = || {
-        KernelError::of_kind(
-            KernelErrorKind::InvalidResult,
-            format!("the {operation}'s result isn't a valid solid"),
-        )
+        KernelError::new(Refusal::ResultInvalid {
+            operation: operation.clone(),
+            edges: Vec::new(),
+        })
     };
-    let checked = result
-        .as_ref()
-        .ok_or_else(|| KernelError::new("OCCT returned no shape"))?;
+    let checked = result.as_ref().ok_or_else(|| {
+        KernelError::new(Refusal::NothingReturned {
+            what: Returned::Shape,
+        })
+    })?;
     let valid_where_changed = match inputs {
         [input] => ffi::is_valid_where_changed(input.get()?, checked)?,
         [first, second] => {
             ffi::is_valid_where_changed_from_two(first.get()?, second.get()?, checked)?
         }
         _ => {
-            return Err(KernelError::of_kind(
-                KernelErrorKind::Internal,
-                format!(
-                    "no result check for an operation on {} shapes",
-                    inputs.len()
-                ),
-            ));
+            return Err(KernelError::new(Refusal::ResultCheckMissing {
+                inputs: u32::try_from(inputs.len()).unwrap_or(u32::MAX),
+            }));
         }
     };
     if !valid_where_changed {
@@ -1070,9 +1080,6 @@ fn every_input_valid(inputs: &[&Shape]) -> Result<bool, KernelError> {
     Ok(true)
 }
 
-/// What to try when a shape's geometry can't be meshed.
-const UNUSABLE_GEOMETRY: &str = "the shape's geometry is broken (a value too large, or not a number): rebuild it from its inputs";
-
 /// The smallest mesh deflection allowed, as a fraction of the shape's size. Finer meshes
 /// cost far more than they're worth for display: every tenth of the deflection is about
 /// ten times the triangles and seventy times the time.
@@ -1086,33 +1093,29 @@ pub const MIN_RELATIVE_DEFLECTION: f64 = 1e-4;
 /// (docs/ports/tessellation.md).
 pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
     if !(deflection.is_finite() && deflection > 0.0) {
-        return Err(KernelError::invalid_input(format!(
-            "mesh deflection must be a positive, finite length, got {}",
-            silico_protocol::format_number(deflection)
-        )));
+        return Err(KernelError::new(Refusal::DeflectionInvalid { deflection }));
     }
     let inner = shape.get()?;
     let diagonal = ffi::bounding_diagonal(inner)?;
     if !diagonal.is_finite() {
-        return Err(KernelError::new(
-            "the shape's extent is too large or not finite, so it can't be meshed",
-        )
-        .with_suggestion(UNUSABLE_GEOMETRY));
+        return Err(KernelError::new(Refusal::ExtentNotFinite));
     }
     let floor = (diagonal * MIN_RELATIVE_DEFLECTION).max(LENGTH_TOLERANCE);
     if deflection < floor {
-        return Err(KernelError::invalid_input(format!(
-            "mesh deflection {} is too fine for this shape: use at least {}",
-            silico_protocol::format_number(deflection),
-            silico_protocol::format_number(floor)
-        )));
+        return Err(KernelError::new(Refusal::DeflectionTooFine {
+            deflection,
+            floor,
+        }));
     }
-    // A mesher that fails outright is almost always broken geometry, not the deflection.
+    // A mesher that fails outright is almost always broken geometry, not the deflection:
+    // the refusal says so.
     let raw = ffi::tessellate(inner, deflection)
-        .map_err(|e| KernelError::from(e).with_suggestion(UNUSABLE_GEOMETRY))?;
-    let raw = raw
-        .as_ref()
-        .ok_or_else(|| KernelError::new("OCCT returned no mesh"))?;
+        .map_err(|e| KernelError::from(e).during(Operation::Tessellate))?;
+    let raw = raw.as_ref().ok_or_else(|| {
+        KernelError::new(Refusal::NothingReturned {
+            what: Returned::Mesh,
+        })
+    })?;
     // A face OCCT leaves unmeshed (a sliver too narrow for its tolerance, as a box chamfered
     // nearly through has, at any deflection) has no triangles, if the shape is valid: as
     // FreeCAD gives such a face an empty domain (`TopoShape::getDomains`). On a shape that
@@ -1121,13 +1124,7 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
     let unmeshed = raw.unmeshed_faces();
     if let Some(&face) = unmeshed.first() {
         if !shape.is_valid()? {
-            let name = format!("Face{}", face + 1);
-            return Err(KernelError::new(format!("{name} couldn't be meshed"))
-                .with_element(name)
-                .with_suggestion(
-                    "the shape isn't valid, and this face of it can't be meshed: rebuild the \
-                     shape from its inputs",
-                ));
+            return Err(KernelError::new(Refusal::FaceUnmeshed { face: face + 1 }));
         }
         tracing::debug!(faces = ?unmeshed, "faces OCCT couldn't mesh, left without triangles");
     }
@@ -1391,13 +1388,28 @@ mod tests {
     #[test]
     fn an_invalid_boolean_result_says_the_shapes_nearly_meet() {
         // No input is known to make OCCT return an invalid boolean result, so the advice is
-        // tested on its own: given to an invalid result, and to nothing else.
-        use super::{KernelError, KernelErrorKind, NEARLY_MEET, boolean_advice};
-        let invalid = KernelError::of_kind(KernelErrorKind::InvalidResult, "invalid");
-        assert_eq!(boolean_advice(invalid).suggestion(), Some(NEARLY_MEET));
-        let failed = KernelError::new("failed");
-        assert_eq!(boolean_advice(failed).suggestion(), None);
-        let refused = KernelError::invalid_input("refused").with_suggestion("other");
-        assert_eq!(boolean_advice(refused).suggestion(), Some("other"));
+        // tested on its own: for an invalid result, and something else for OCCT failing.
+        use silico_protocol::{BooleanOp, Operation, Refusal};
+
+        use super::KernelError;
+        let cut = Operation::Boolean { op: BooleanOp::Cut };
+        let invalid = KernelError::new(Refusal::ResultInvalid {
+            operation: cut.clone(),
+            edges: Vec::new(),
+        });
+        assert_eq!(
+            invalid.suggestion(),
+            Some(
+                "faces or edges of the two shapes nearly meet: move one so they clearly overlap or stay clearly apart"
+            )
+        );
+        let failed = KernelError::new(Refusal::Occt {
+            operation: cut,
+            edges: Vec::new(),
+        });
+        assert_eq!(
+            failed.suggestion(),
+            Some("check that the shapes are solids that overlap")
+        );
     }
 }

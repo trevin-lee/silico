@@ -980,18 +980,33 @@ fn the_worker_refuses_what_the_core_would_and_goes_on() {
             TIMEOUT,
         )
     };
-    for (edges, size, says, element) in [
-        (&[1][..], equal(-1.0), "distance", None),
-        (&[1], angled(1.0, 200.0), "angle", None),
-        (&[], equal(1.0), "a chamfer needs at least one edge", None),
-        (&[0], equal(1.0), "Edge0 doesn't exist", Some("Edge0")),
+    // An edge listed twice is at fault; one the shape doesn't have isn't one of its
+    // elements, named by number in the words. Every one names the parameter at fault.
+    for (edges, size, says, element, parameter) in [
+        (&[1][..], equal(-1.0), "distance", None, "size.distance"),
+        (&[1], angled(1.0, 200.0), "angle", None, "size.angle"),
+        (
+            &[],
+            equal(1.0),
+            "a chamfer needs at least one edge",
+            None,
+            "edges",
+        ),
+        (&[0], equal(1.0), "edge 0 doesn't exist", None, "edges"),
         (
             &[13],
             equal(1.0),
             "the shape has edges 1 to 12",
-            Some("Edge13"),
+            None,
+            "edges",
         ),
-        (&[2, 2], equal(1.0), "Edge2 is listed twice", Some("Edge2")),
+        (
+            &[2, 2],
+            equal(1.0),
+            "Edge2 is listed twice",
+            Some("Edge2"),
+            "edges",
+        ),
     ] {
         let err = call(edges, size).unwrap_err();
         assert_eq!(
@@ -1003,6 +1018,11 @@ fn the_worker_refuses_what_the_core_would_and_goes_on() {
         assert_eq!(
             err.elements(),
             element.as_slice(),
+            "{edges:?} {size:?}: {err}"
+        );
+        assert_eq!(
+            err.parameter(),
+            Some(parameter),
             "{edges:?} {size:?}: {err}"
         );
     }

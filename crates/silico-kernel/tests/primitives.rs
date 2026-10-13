@@ -293,9 +293,75 @@ fn the_worker_refuses_invalid_params_itself() {
                 .unwrap_err();
             assert_eq!(err.code(), ErrorCode::InvalidInput, "{p:?}: {err}");
             assert!(err.message().contains(parameter), "{p:?}: {err}");
+            assert_eq!(err.parameter(), Some(parameter), "{p:?}: {err}");
         }
     }
     assert!(!w.is_stopped());
+}
+
+#[test]
+fn the_worker_names_each_value_it_refuses_as_the_core_does() {
+    // Past the core's own checks, the worker's refusal names the parameter at fault as
+    // the core would: a dotted name for a part of a field, a profile for its corners, with
+    // the suggestion the core gives a refused offset.
+    use silico_protocol::{ChamferSize, Profile};
+    let mut w = Worker::spawn(Path::new(WORKER)).unwrap();
+    let call = |w: &mut Worker, op| {
+        w.call(Generation(0), op, Duration::from_secs(30))
+            .unwrap_err()
+    };
+    let shape = match w
+        .call(
+            Generation(0),
+            Op::MakePrimitive(Primitive::Box {
+                dx: 1.0,
+                dy: 1.0,
+                dz: 1.0,
+            }),
+            Duration::from_secs(30),
+        )
+        .unwrap()
+    {
+        silico_protocol::Reply::Shape(shape) => shape,
+        other => panic!("{other:?}"),
+    };
+    let err = call(
+        &mut w,
+        Op::Chamfer {
+            shape: shape.clone(),
+            edges: vec![1],
+            size: ChamferSize::DistanceAngle {
+                distance: 0.1,
+                angle: 200.0,
+            },
+            flip: false,
+        },
+    );
+    assert_eq!(err.parameter(), Some("size.angle"), "{err}");
+    let err = call(
+        &mut w,
+        Op::Extrude {
+            profile: Profile {
+                points: vec![[0.0; 3], [1.0, 0.0, 0.0]],
+            },
+            length: 1.0,
+            direction: None,
+        },
+    );
+    assert_eq!(err.parameter(), Some("profile"), "{err}");
+    let err = call(
+        &mut w,
+        Op::Translate {
+            shape,
+            offset: [0.0, f64::NAN, 0.0],
+        },
+    );
+    assert_eq!(err.parameter(), Some("offset.y"), "{err}");
+    assert_eq!(
+        err.suggestion(),
+        Some("move the shape by a finite offset, no more than a kilometre each way"),
+        "{err}"
+    );
 }
 
 #[test]

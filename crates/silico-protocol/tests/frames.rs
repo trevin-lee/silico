@@ -4,11 +4,11 @@
 
 use proptest::prelude::*;
 use silico_protocol::{
-    Axis, Blob, BooleanOp, BuiltData, ChamferSize, DebugOp, ElementCounts, ElementFate,
-    ElementKind, ElementRef, Ends, Failure, FailureKind, FrameError, FrameReader, FreecadMeasures,
-    Generation, History, InputHistory, MAX_FRAME_LEN, Mesh, Misbehavior, Op, OutOfTurn, Primitive,
-    Profile, Reply, Reported, Request, RequestId, Response, ShapeData, ShapeSummary, TraceId,
-    write_message,
+    Axis, Blob, BooleanOp, BuiltData, ChamferSize, DebugOp, DressingKind, ElementCounts,
+    ElementFate, ElementKind, ElementRef, Ends, Failure, FailureKind, FrameError, FrameReader,
+    FreecadMeasures, Generation, History, InputHistory, MAX_FRAME_LEN, Mesh, Misbehavior, Op,
+    Operation, OutOfTurn, Primitive, Profile, Refusal, Reply, Reported, Request, RequestId,
+    Response, ShapeData, ShapeSummary, TraceId, write_message,
 };
 
 /// One request per operation. The match gives each variant its own index and every
@@ -125,6 +125,7 @@ fn every_op() -> Vec<Op> {
         Op::Debug(DebugOp::Misbehave(Misbehavior::WrongReply)),
         Op::Debug(DebugOp::Misbehave(Misbehavior::BadHistory)),
         Op::Debug(DebugOp::Misbehave(Misbehavior::HistoryForNoInputs)),
+        Op::Debug(DebugOp::Misbehave(Misbehavior::ForgedRefusal)),
     ];
     let indices: std::collections::BTreeSet<usize> = ops
         .iter()
@@ -176,9 +177,10 @@ fn every_op() -> Vec<Op> {
                 ..
             } => 28,
             Op::MeasureAsFreecad { .. } => 29,
+            Op::Debug(DebugOp::Misbehave(Misbehavior::ForgedRefusal)) => 30,
         })
         .collect();
-    assert_eq!(indices, (0..30).collect(), "an operation has no case");
+    assert_eq!(indices, (0..31).collect(), "an operation has no case");
     ops
 }
 
@@ -264,25 +266,30 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             edge_point_counts: vec![2, 0],
         })),
         Ok(Reply::Done),
-        Err(Failure::new(
-            FailureKind::InvalidInput,
-            "box dx must be a finite length above 1e-7, got -1".to_owned(),
-        )),
+        Err(Failure::new(Refusal::InvalidParameter {
+            parameter: "dx".to_owned(),
+            message: "box dx must be a finite length above 1e-7, got -1".to_owned(),
+        })),
         Err(Failure {
-            kind: FailureKind::KernelFailed,
-            message: "Standard_DomainError".to_owned(),
-            element: Some("Edge3".to_owned()),
-            suggestion: Some("try a smaller radius".to_owned()),
+            refusal: Refusal::Occt {
+                operation: Operation::Dressing {
+                    dressing: DressingKind::Fillet,
+                },
+                edges: vec![3],
+            },
+            cause: Some("Standard_DomainError".to_owned()),
         }),
-        Err(Failure::new(
-            FailureKind::InvalidResult,
-            "the fillet's result isn't a valid solid".to_owned(),
-        )),
-        Err(Failure::new(FailureKind::UnknownOp, String::new())),
-        Err(Failure::new(
-            FailureKind::Internal,
-            "floating-point traps were on".to_owned(),
-        )),
+        Err(Failure::new(Refusal::ResultInvalid {
+            operation: Operation::Dressing {
+                dressing: DressingKind::Fillet,
+            },
+            edges: vec![1, 2],
+        })),
+        Err(Failure::new(Refusal::TestOperation { op: String::new() })),
+        Err(Failure::new(Refusal::FpTrapsOn {
+            mask: 0x200,
+            op: "Fillet".to_owned(),
+        })),
     ];
     let indices: std::collections::BTreeSet<usize> = results
         .iter()
@@ -294,7 +301,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             Ok(Reply::Done) => 4,
             Ok(Reply::Built(_)) => 10,
             Ok(Reply::FreecadMeasures(_)) => 11,
-            Err(Failure { kind, .. }) => match kind {
+            Err(failure) => match failure.kind() {
                 FailureKind::InvalidInput => 5,
                 FailureKind::KernelFailed => 6,
                 FailureKind::InvalidResult => 7,
@@ -470,7 +477,9 @@ fn a_frame_of_the_wrong_message_is_a_decode_error() {
     let frame = frame_of(&Response {
         id: RequestId(1),
         generation: Generation(0),
-        result: Err(Failure::new(FailureKind::UnknownOp, "x".repeat(300))),
+        result: Err(Failure::new(Refusal::Internal {
+            what: "x".repeat(300),
+        })),
     });
     assert!(matches!(
         FrameReader::new(frame.as_slice()).read_message::<Request>(),
@@ -697,7 +706,8 @@ fn every_op_has_its_own_name() {
             "DebugMisbehaveBadMesh",
             "DebugMisbehaveWrongReply",
             "DebugMisbehaveBadHistory",
-            "DebugMisbehaveHistoryForNoInputs"
+            "DebugMisbehaveHistoryForNoInputs",
+            "DebugMisbehaveForgedRefusal"
         ]
     );
 }

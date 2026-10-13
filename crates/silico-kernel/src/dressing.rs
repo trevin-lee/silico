@@ -5,32 +5,26 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::pin::Pin;
 
-use crate::{
-    Built, ChamferSize, KernelError, KernelErrorKind, Shape, checked_result, ffi, history_of,
-};
+use silico_protocol::{ChamferKind, DressingKind, EdgeTrouble, Operation, Refusal, Trouble};
+
+use crate::{Built, ChamferSize, KernelError, Shape, checked_result, ffi, history_of};
 
 /// Rounds `edges` of `shape` with a constant `radius`. Edges are numbered from 1 in OCCT's
 /// `TopExp::MapShapes` order, which is also FreeCAD's `Edge1`, `Edge2`, and so on, and
 /// they're a set: the order they're listed in doesn't matter. Edges OCCT won't round (a
 /// seam, a degenerate edge) are refused, naming every edge at fault.
 pub fn fillet(shape: &Shape, edges: &[u32], radius: f64) -> Result<Built, KernelError> {
-    if let Err(invalid) = silico_protocol::check_fillet_radius(radius) {
-        return Err(KernelError::invalid_input(invalid.message));
-    }
+    silico_protocol::check_fillet_radius(radius)?;
     let inner = shape.get()?;
     let topology = Topology::of(inner)?;
-    let edges = checked_edges(&topology, edges, "fillet")?;
-    let advice = Advice {
-        operation: "fillet",
-        smaller: "a smaller radius",
-        instead: "another radius",
-    };
+    let kind = DressingKind::Fillet;
+    let edges = checked_edges(&topology, edges, kind)?;
     let mut dressing = ffi::new_fillet(inner)?;
     dress(
         shape,
         &topology,
         &edges,
-        &advice,
+        kind,
         dressing.pin_mut(),
         |d, edge, _| d.add_fillet(edge, radius),
     )
@@ -47,28 +41,23 @@ pub fn chamfer(
     flip: bool,
 ) -> Result<Built, KernelError> {
     size.check()
-        .map_err(|invalid| KernelError::invalid_input(invalid.message))?;
+        .map_err(|invalid| crate::refused(Some(silico_protocol::SIZE_FIELD), invalid))?;
     let inner = shape.get()?;
     let topology = Topology::of(inner)?;
-    let edges = checked_edges(&topology, edges, "chamfer")?;
-    let (smaller, instead) = match size {
-        ChamferSize::Equal { .. } => ("a smaller size", "another size"),
-        ChamferSize::TwoDistances { .. } => ("smaller distances", "other distances"),
-        ChamferSize::DistanceAngle { .. } => {
-            ("a smaller distance or angle", "another distance or angle")
-        }
+    let kind = DressingKind::Chamfer {
+        kind: match size {
+            ChamferSize::Equal { .. } => ChamferKind::Equal,
+            ChamferSize::TwoDistances { .. } => ChamferKind::TwoDistances,
+            ChamferSize::DistanceAngle { .. } => ChamferKind::DistanceAngle,
+        },
     };
-    let advice = Advice {
-        operation: "chamfer",
-        smaller,
-        instead,
-    };
+    let edges = checked_edges(&topology, edges, kind)?;
     let mut dressing = ffi::new_chamfer(inner)?;
     dress(
         shape,
         &topology,
         &edges,
-        &advice,
+        kind,
         dressing.pin_mut(),
         |d, edge, faces| {
             // FreeCAD's reference face: the first face OCCT lists for the edge (on a solid, the
@@ -90,13 +79,6 @@ pub fn chamfer(
     )
 }
 
-/// What a failed fillet or chamfer suggests trying: a `smaller` size, or one `instead`.
-struct Advice {
-    operation: &'static str,
-    smaller: &'static str,
-    instead: &'static str,
-}
-
 /// Gives OCCT `edges` through `add` (each edge and the faces it lies on), refuses them all
 /// if any is one OCCT can't take, and builds the result, checked and with its history.
 /// One refusal names every edge OCCT mustn't be given, skips, or follows into a shared
@@ -106,11 +88,11 @@ fn dress(
     shape: &Shape,
     topology: &Topology,
     edges: &[u32],
-    advice: &Advice,
+    kind: DressingKind,
     mut dressing: Pin<&mut ffi::Dressing>,
     mut add: impl FnMut(Pin<&mut ffi::Dressing>, u32, &[u32]) -> Result<(), cxx::Exception>,
 ) -> Result<Built, KernelError> {
-    let blame = |error: KernelError| blame_edges(error, edges, advice);
+    let blame = |error: KernelError| blame_edges(error, edges, kind);
     // Every edge OCCT mustn't be given, decided before it's given any.
     let mut troubles: Vec<(u32, Trouble)> = edges
         .iter()
@@ -126,8 +108,8 @@ fn dress(
             // The edges already refused are said first; otherwise the edge OCCT threw on is
             // the one at fault.
             return Err(match troubles.is_empty() {
-                true => blame_edges(e.into(), &[edge], advice),
-                false => refuse(&troubles, advice.operation),
+                true => blame_edges(e.into(), &[edge], kind),
+                false => refuse(&troubles, kind),
             });
         }
     }
@@ -152,39 +134,22 @@ fn dress(
             }
         };
         if let Some(far) = reach {
-            troubles.push((edge, Trouble::ChainToSharedCorner(far)));
+            troubles.push((edge, Trouble::ChainToSharedCorner { far }));
         }
     }
     if !troubles.is_empty() {
         troubles.sort_by_key(|&(edge, _)| edge);
-        return Err(refuse(&troubles, advice.operation));
+        return Err(refuse(&troubles, kind));
     }
     let mut entries = Vec::new();
     let built = dressing.build(&mut entries).map_err(|e| blame(e.into()))?;
-    let result = checked_result(&[shape], built, advice.operation).map_err(blame)?;
+    let result =
+        checked_result(&[shape], built, Operation::Dressing { dressing: kind }).map_err(blame)?;
     let history = history_of(&[shape.get()?], result.get()?, &entries)?;
     Ok(Built {
         shape: result,
         history,
     })
-}
-
-/// Why OCCT can't fillet or chamfer an edge.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Trouble {
-    /// A point where a surface closes (a sphere's pole, a cone's tip).
-    Degenerate,
-    NoFace,
-    /// The shape is open there.
-    OneFace,
-    /// Solids touch along it.
-    ManyFaces,
-    /// It ends where the shape touches itself or another solid at a point.
-    SharedCorner,
-    /// It continues smoothly into this edge, which ends at such a point.
-    ChainToSharedCorner(u32),
-    /// Its faces are tangent there to OCCT, or it's a seam.
-    Smooth,
 }
 
 /// A shape's edges, as the bridge reports them, and what follows from them.
@@ -334,126 +299,49 @@ impl Topology {
 fn checked_edges(
     topology: &Topology,
     edges: &[u32],
-    operation: &str,
+    dressing: DressingKind,
 ) -> Result<Vec<u32>, KernelError> {
     if edges.is_empty() {
-        return Err(KernelError::invalid_input(format!(
-            "a {operation} needs at least one edge"
-        )));
+        return Err(KernelError::new(Refusal::NoEdges { dressing }));
     }
     let count = topology.count();
     let mut seen = BTreeSet::new();
-    for &n in edges {
-        if n == 0 || n > count {
-            let has = match count {
-                0 => "the shape has no edges".to_owned(),
-                _ => format!("the shape has edges 1 to {count}"),
-            };
-            return Err(
-                KernelError::invalid_input(format!("Edge{n} doesn't exist: {has}"))
-                    .with_element(format!("Edge{n}")),
-            );
+    for &edge in edges {
+        if edge == 0 || edge > count {
+            return Err(KernelError::new(Refusal::EdgeMissing { edge, count }));
         }
-        if !seen.insert(n) {
-            return Err(
-                KernelError::invalid_input(format!("Edge{n} is listed twice"))
-                    .with_element(format!("Edge{n}")),
-            );
+        if !seen.insert(edge) {
+            return Err(KernelError::new(Refusal::EdgeTwice { edge }));
         }
     }
     Ok(seen.into_iter().collect())
 }
 
-/// What a failed fillet or chamfer says about its edges: when there's one, it's the one at
-/// fault; OCCT doesn't say which of several it was. OCCT doesn't say why, either: a size
-/// too large for the faces beside the edge fails, but so do some small ones (on a cone's
-/// side) and some edges at every size, so the suggestion offers a smaller size, another,
-/// and leaving the edge out. An edge that ends, or whose chain ends, on one joining more
-/// than two faces (where solids touch along an edge) fails whatever its size, with OCCT's
-/// `Standard_ConstructionError` "ChFi3d_Builder:only 2 faces", which OCCT 7.9.3 (pinned)
-/// throws only while taking that one edge (ChFi3d_Builder_1.cxx, `FaceTangency`; a test
-/// fails if it's reworded), and the suggestion says so.
-fn blame_edges(error: KernelError, edges: &[u32], advice: &Advice) -> KernelError {
-    let Advice {
-        operation,
-        smaller,
-        instead,
-    } = advice;
-    let touching = error.message().contains("only 2 faces");
-    let suggestion = match edges {
-        [edge] if touching => format!(
-            "Edge{edge}, or an edge it continues smoothly into, ends where more than two faces meet (where solids touch along an edge), and OCCT can't {operation} it there: leave it out"
-        ),
-        [_] => format!(
-            "if the {operation} runs past a face beside the edge, try {smaller}; if not, try {instead}, or leave the edge out: OCCT can't {operation} some edges at any size"
-        ),
-        _ => format!(
-            "{operation} the edges one at a time to find the one that fails; then, if its {operation} runs past a face beside it, try {smaller}, and if not, {instead}, or leave it out"
-        ),
-    };
-    let error = match edges {
-        [edge] => error.with_element(format!("Edge{edge}")),
-        _ => error,
-    };
-    error.with_suggestion(suggestion)
+/// A failed fillet or chamfer, as OCCT's failure on `edges`. OCCT doesn't say which of
+/// several edges it was, or why; the refusal says what to try (`Refusal::describe`). An
+/// edge that ends, or whose chain ends, on one joining more than two faces fails whatever
+/// its size, with OCCT's `Standard_ConstructionError` "ChFi3d_Builder:only 2 faces", which
+/// OCCT 7.9.3 (pinned) throws only while taking that one edge (ChFi3d_Builder_1.cxx,
+/// `FaceTangency`; a test fails if it's reworded): the refusal's suggestion keys on it.
+fn blame_edges(error: KernelError, edges: &[u32], dressing: DressingKind) -> KernelError {
+    error
+        .during(Operation::Dressing { dressing })
+        .on_edges(edges)
 }
 
-/// The refusal of edges OCCT can't fillet or chamfer (`troubles`, in the edges' increasing
-/// order):
-/// why for the first, and every one named, in the message and in the suggestion, so one
-/// refusal says everything to leave out.
-fn refuse(troubles: &[(u32, Trouble)], operation: &str) -> KernelError {
-    let Some(&(first, trouble)) = troubles.first() else {
-        return KernelError::of_kind(
-            KernelErrorKind::Internal,
-            format!("no edge to refuse the {operation} for"),
-        );
-    };
-    let edge = format!("Edge{first}");
-    let at_a_point = "where the shape touches itself or another solid at a point";
-    let mut message = match trouble {
-        Trouble::Degenerate => format!(
-            "{edge} is degenerate (a point where a surface closes, such as a sphere's pole or a cone's tip), so there's no corner to {operation}"
-        ),
-        Trouble::NoFace => format!("{edge} is on no face, so there's no corner to {operation}"),
-        Trouble::OneFace => format!(
-            "{edge} is on only one face (the shape is open there), so there's no corner to {operation}"
-        ),
-        Trouble::ManyFaces => format!(
-            "{edge} joins more than two faces (where solids touch along an edge), and OCCT can't {operation} it"
-        ),
-        Trouble::SharedCorner => {
-            format!("{edge} ends at a corner {at_a_point}, and OCCT can't {operation} it there")
-        }
-        Trouble::ChainToSharedCorner(far) => format!(
-            "{edge} continues smoothly into Edge{far}, which ends at a corner {at_a_point}, and OCCT can't {operation} there"
-        ),
-        Trouble::Smooth => format!(
-            "{edge} joins faces OCCT treats as tangent there (recorded as tangent, or turning by less than 0.1 radian, 5.7°), or a face to itself at a seam: too shallow a corner for OCCT to {operation}"
-        ),
-    };
-    let named: Vec<String> = troubles.iter().map(|(e, _)| format!("Edge{e}")).collect();
-    if let Some(others) = named.get(1..)
-        && !others.is_empty()
-    {
-        message.push_str(&format!(
-            "; OCCT won't {operation} {} either",
-            others.join(", ")
-        ));
+/// The refusal of edges OCCT can't fillet or chamfer (`troubles`, in the edges'
+/// increasing order): every one is at fault, and the refusal names them all.
+fn refuse(troubles: &[(u32, Trouble)], dressing: DressingKind) -> KernelError {
+    if troubles.is_empty() {
+        return KernelError::new(Refusal::NoEdgeToRefuse { dressing });
     }
-    KernelError::invalid_input(message)
-        .with_element(edge)
-        .with_suggestion(format!("leave {} out of the {operation}", listed(&named)))
-}
-
-/// `a`, `a and b`, or `a, b, and c`.
-fn listed(items: &[String]) -> String {
-    match items {
-        [] => String::new(),
-        [one] => one.clone(),
-        [a, b] => format!("{a} and {b}"),
-        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
-    }
+    KernelError::new(Refusal::EdgesRefused {
+        dressing,
+        troubles: troubles
+            .iter()
+            .map(|&(edge, trouble)| EdgeTrouble { edge, trouble })
+            .collect(),
+    })
 }
 
 #[cfg(test)]
@@ -565,11 +453,21 @@ mod tests {
 
     #[test]
     fn a_refusal_names_every_edge() {
-        let one = refuse(&[(3, Trouble::Smooth)], "chamfer");
-        assert_eq!(one.element(), Some("Edge3"));
+        use silico_protocol::ChamferKind;
+
+        use crate::KernelErrorKind;
+        let chamfer = DressingKind::Chamfer {
+            kind: ChamferKind::Equal,
+        };
+        let one = refuse(&[(3, Trouble::Smooth)], chamfer);
+        assert_eq!(one.elements(), ["Edge3"]);
         assert_eq!(one.suggestion(), Some("leave Edge3 out of the chamfer"));
         assert_eq!(one.kind(), KernelErrorKind::InvalidInput);
-        let two = refuse(&[(3, Trouble::OneFace), (7, Trouble::Smooth)], "fillet");
+        let two = refuse(
+            &[(3, Trouble::OneFace), (7, Trouble::Smooth)],
+            DressingKind::Fillet,
+        );
+        assert_eq!(two.elements(), ["Edge3", "Edge7"]);
         assert!(two.message().ends_with("; OCCT won't fillet Edge7 either"));
         assert_eq!(
             two.suggestion(),
@@ -577,12 +475,14 @@ mod tests {
         );
         let three = refuse(
             &[
-                (1, Trouble::ChainToSharedCorner(9)),
+                (1, Trouble::ChainToSharedCorner { far: 9 }),
                 (2, Trouble::Degenerate),
                 (5, Trouble::NoFace),
             ],
-            "chamfer",
+            chamfer,
         );
+        // Every edge at fault, not the one it continues into.
+        assert_eq!(three.elements(), ["Edge1", "Edge2", "Edge5"]);
         assert!(
             three
                 .message()
@@ -597,6 +497,6 @@ mod tests {
             three.suggestion(),
             Some("leave Edge1, Edge2, and Edge5 out of the chamfer")
         );
-        assert_eq!(refuse(&[], "chamfer").kind(), KernelErrorKind::Internal);
+        assert_eq!(refuse(&[], chamfer).kind(), KernelErrorKind::Internal);
     }
 }

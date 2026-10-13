@@ -557,7 +557,17 @@ fn merged_corners_are_named_off_the_origin_and_off_the_xy_plane() {
         let err = extrude(&p, 1.0, None).err().unwrap();
         assert!(err.message().contains("5 corners into 4 sides"), "{err}");
         assert!(err.message().contains("corners 1 and 2"), "{err}");
-        assert_eq!(err.element(), Some("Vertex1"));
+        // The profile's corners, as data; not a shape's elements.
+        assert_eq!(
+            err.refusal(),
+            &silico_kernel::Refusal::CornersMerged {
+                corners: 5,
+                sides: 4,
+                first: 1,
+                second: 2
+            }
+        );
+        assert!(err.elements().is_empty(), "{err}");
     }
 }
 
@@ -611,9 +621,9 @@ fn corners_occt_measures_as_one_are_refused_rather_than_misnumbered() {
     let v = [9.415_276_395_598_258e-8, 3.369_357_564_060_285_6e-8, 0.0];
     let first = profile(&[[0.0; 3], v, [1.0, 1.0, 0.0], [-1.0, 1.0, 0.0]]);
     let closing = profile(&[v, [1.0, 1.0, 0.0], [-1.0, 1.0, 0.0], [0.0; 3]]);
-    for (p, corners, vertex) in [
-        (first, "corners 1 and 2", "Vertex1"),
-        (closing, "corners 4 and 1", "Vertex4"),
+    for (p, corners, merged) in [
+        (first, "corners 1 and 2", (1, 2)),
+        (closing, "corners 4 and 1", (4, 1)),
     ] {
         assert!(p.check().is_ok(), "the rules pass it");
         let err = extrude(&p, 1.0, None).err().unwrap();
@@ -624,7 +634,16 @@ fn corners_occt_measures_as_one_are_refused_rather_than_misnumbered() {
             "{err}"
         );
         assert!(err.message().contains(corners), "{err}");
-        assert_eq!(err.element(), Some(vertex));
+        assert_eq!(
+            err.refusal(),
+            &silico_kernel::Refusal::CornersMerged {
+                corners: 4,
+                sides: 3,
+                first: merged.0,
+                second: merged.1
+            }
+        );
+        assert!(err.elements().is_empty(), "{err}");
         assert!(err.suggestion().is_some());
     }
 }

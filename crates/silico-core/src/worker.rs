@@ -23,8 +23,8 @@ use std::time::{Duration, Instant};
 
 use command_fds::{CommandFdExt, FdMapping};
 use silico_protocol::{
-    Failure, FailureKind, FrameError, FrameReader, Generation, Op, Reply, Request, RequestId,
-    Response, TraceId, WORKER_FD, WORKER_FD_ENV, decode, write_message,
+    ElementRef, Failure, FailureKind, FrameError, FrameReader, Generation, Op, Refusal, Reply,
+    Request, RequestId, Response, TraceId, WORKER_FD, WORKER_FD_ENV, decode, write_message,
 };
 
 use crate::{Error, ErrorCode};
@@ -297,6 +297,11 @@ impl Worker {
         timeout: Duration,
     ) -> Result<Reply, Error> {
         let name = op.name();
+        // The edges a refusal may name: those the request lists.
+        let listed = match &op {
+            Op::Fillet { edges, .. } | Op::Chamfer { edges, .. } => Some(edges.clone()),
+            _ => None,
+        };
         if self.stopped {
             return Err(Error::new(
                 ErrorCode::WorkerCrashed,
@@ -373,9 +378,24 @@ impl Worker {
         match reply {
             Ok(Ok(response)) if response.id == id && response.generation == generation => {
                 self.answers += 1;
-                response
-                    .result
-                    .map_err(|failure| failure_error(name, failure))
+                match response.result {
+                    Ok(reply) => Ok(reply),
+                    // Checked before it's described, so a refusal the request can't explain
+                    // (a broken worker's) costs no more than the request does.
+                    Err(failure) => match refusal_fits(&failure.refusal, listed.as_deref()) {
+                        Ok(()) => Err(failure_error(name, failure)),
+                        Err(misfit) => Err(self.stop(
+                            Error::new(
+                                ErrorCode::ProtocolError,
+                                format!(
+                                    "the kernel worker's refusal of {name} doesn't fit the request"
+                                ),
+                            )
+                            .with_cause(misfit)
+                            .with_suggestion(BROKEN_WORKER),
+                        )),
+                    },
+                }
             }
             Ok(Ok(response)) => Err(self.stop(
                 Error::new(
@@ -820,44 +840,106 @@ const BROKEN_WORKER: &str = "this is a bug in Silico's kernel worker, not in the
 /// What to try after an internal error: a bug, not the request's values.
 pub(crate) const SILICO_BUG: &str = "this is a bug in Silico, not in the request: report it";
 
-/// A worker's refusal or failure, as a structured error, naming the element at fault and
-/// what to try instead when the worker knew them. A kernel failure always suggests
+/// Whether a refusal fits the request it answers (`listed`, the edges a fillet or chamfer
+/// lists): every edge it names is one the request lists, each once and in increasing
+/// order, so it names no more than the request does; a refusal of edges names some; a
+/// request that lists none has none named; a face is numbered from 1. Why not, if not.
+fn refusal_fits(refusal: &Refusal, listed: Option<&[u32]>) -> Result<(), String> {
+    let named: &[u32] = match refusal {
+        Refusal::Occt { edges, .. } | Refusal::ResultInvalid { edges, .. } => edges,
+        Refusal::EdgeMissing { edge, .. } | Refusal::EdgeTwice { edge } => {
+            std::slice::from_ref(edge)
+        }
+        Refusal::EdgesRefused { troubles, .. } => {
+            if troubles.is_empty() {
+                return Err("it refuses edges, but names none".to_owned());
+            }
+            let edges: Vec<u32> = troubles.iter().map(|t| t.edge).collect();
+            return edges_fit(&edges, listed);
+        }
+        Refusal::NoEdges { .. } => {
+            return match listed {
+                Some([]) => Ok(()),
+                _ => Err("it says no edges were listed, but some were".to_owned()),
+            };
+        }
+        Refusal::FaceUnmeshed { face: 0 } => return Err("it names face 0".to_owned()),
+        _ => &[],
+    };
+    edges_fit(named, listed)
+}
+
+/// Whether `named` edges are among those `listed`, each once, in increasing order. An
+/// edge the request lists twice, or one it lists that doesn't exist, may be named once.
+fn edges_fit(named: &[u32], listed: Option<&[u32]>) -> Result<(), String> {
+    if named.is_empty() {
+        return Ok(());
+    }
+    let Some(listed) = listed else {
+        return Err("it names edges, but the request lists none".to_owned());
+    };
+    if !named.windows(2).all(|pair| pair[0] < pair[1]) {
+        return Err("it names an edge twice, or out of order".to_owned());
+    }
+    let listed: std::collections::BTreeSet<u32> = listed.iter().copied().collect();
+    match named.iter().find(|edge| !listed.contains(edge)) {
+        Some(edge) => Err(format!(
+            "it names edge {edge}, which the request doesn't list"
+        )),
+        None => Ok(()),
+    }
+}
+
+/// A worker's refusal or failure, as a structured error. The core names the elements at
+/// fault (as FreeCAD does, `Edge3`, until a document's names arrive) and has the refusal
+/// described with those names (`Refusal::describe`). A kernel failure always suggests
 /// something.
 fn failure_error(op: &str, failure: Failure) -> Error {
-    let (error, fallback) = match failure.kind {
-        FailureKind::InvalidInput => (
-            Error::new(ErrorCode::InvalidInput, failure.message),
-            Some("change the value the message names"),
-        ),
+    let name = |element: ElementRef| element.to_string();
+    let described = failure.refusal.describe(failure.cause.as_deref(), &name);
+    // Why it failed: OCCT's words where it threw; otherwise the refusal's.
+    let why = failure
+        .cause
+        .clone()
+        .unwrap_or_else(|| described.message.clone());
+    let (error, fallback) = match failure.kind() {
+        FailureKind::InvalidInput => {
+            let error = Error::new(ErrorCode::InvalidInput, described.message);
+            (
+                match failure.cause {
+                    Some(cause) => error.with_cause(cause),
+                    None => error,
+                },
+                "change the value the message names",
+            )
+        }
         FailureKind::KernelFailed => (
-            Error::new(ErrorCode::KernelFailed, format!("{op} failed")).with_cause(failure.message),
-            Some("change the operation's values: the kernel can't build it from these"),
+            Error::new(ErrorCode::KernelFailed, format!("{op} failed")).with_cause(why),
+            "change the operation's values: the kernel can't build it from these",
         ),
         FailureKind::InvalidResult => (
             Error::new(
                 ErrorCode::InvalidResult,
                 format!("{op} gave an invalid result, which was refused"),
             )
-            .with_cause(failure.message),
-            Some("change the operation's values: the kernel can't build a valid result from these"),
+            .with_cause(described.message),
+            "change the operation's values: the kernel can't build a valid result from these",
         ),
         FailureKind::UnknownOp | FailureKind::Internal => (
             Error::new(
                 ErrorCode::Internal,
                 format!("the kernel worker couldn't do {op}"),
             )
-            .with_cause(failure.message),
-            Some(SILICO_BUG),
+            .with_cause(why),
+            SILICO_BUG,
         ),
     };
-    let error = match failure.element {
-        Some(element) => error.with_element(element),
+    let error = error.with_elements(failure.refusal.elements().into_iter().map(name));
+    let error = match failure.refusal.parameter() {
+        Some(parameter) => error.with_parameter(parameter),
         None => error,
     };
-    match failure.suggestion.as_deref().or(fallback) {
-        Some(suggestion) => error.with_suggestion(suggestion),
-        None => error,
-    }
+    error.with_suggestion(described.suggestion.unwrap_or_else(|| fallback.to_owned()))
 }
 
 fn internal(what: &str, e: impl std::fmt::Display) -> Error {
@@ -907,7 +989,7 @@ mod tests {
     use std::process::ExitStatus;
     use std::sync::Mutex;
 
-    use silico_protocol::{Failure, FailureKind};
+    use silico_protocol::Failure;
 
     use super::{
         FAULTS, KillOnDrop, MAX_LOG_LINE, STDERR_TAIL_LINES, crash_advice, describe_exit,
@@ -1052,48 +1134,180 @@ mod tests {
     }
 
     #[test]
-    fn kernel_failures_get_their_own_code_and_always_a_suggestion() {
-        let failure = |kind, suggestion: Option<&str>| Failure {
-            kind,
-            message: "the kernel's words".to_owned(),
-            element: Some("Edge1".to_owned()),
-            suggestion: suggestion.map(str::to_owned),
+    fn a_refusal_must_fit_the_request_it_answers() {
+        use silico_protocol::{DressingKind, EdgeTrouble, Operation, Refusal, Trouble};
+
+        use super::refusal_fits;
+        let fillet = DressingKind::Fillet;
+        let refused = |edges: &[u32]| Refusal::EdgesRefused {
+            dressing: fillet,
+            troubles: edges
+                .iter()
+                .map(|&edge| EdgeTrouble {
+                    edge,
+                    trouble: Trouble::Smooth,
+                })
+                .collect(),
         };
-        let cases = [
+        let occt = |edges: Vec<u32>| Refusal::Occt {
+            operation: Operation::Dressing { dressing: fillet },
+            edges,
+        };
+        let fits = |refusal: &Refusal, listed: Option<&[u32]>| refusal_fits(refusal, listed);
+        // Edges the request lists, each once, in order.
+        assert_eq!(fits(&refused(&[3, 5]), Some(&[5, 3, 9])), Ok(()));
+        assert_eq!(fits(&occt(vec![2]), Some(&[2])), Ok(()));
+        assert_eq!(
+            fits(
+                &Refusal::EdgeMissing {
+                    edge: 13,
+                    count: 12
+                },
+                Some(&[13])
+            ),
+            Ok(())
+        );
+        assert_eq!(fits(&Refusal::EdgeTwice { edge: 1 }, Some(&[1, 1])), Ok(()));
+        assert_eq!(
+            fits(&Refusal::NoEdges { dressing: fillet }, Some(&[])),
+            Ok(())
+        );
+        assert_eq!(fits(&Refusal::FaceUnmeshed { face: 1 }, None), Ok(()));
+        assert_eq!(fits(&Refusal::BrepCorrupted, None), Ok(()));
+        // Not: a forged refusal of a million edges answering a request for one costs
+        // nothing to refuse.
+        let forged = Refusal::EdgesRefused {
+            dressing: fillet,
+            troubles: vec![
+                EdgeTrouble {
+                    edge: 1,
+                    trouble: Trouble::Smooth,
+                };
+                1 << 20
+            ],
+        };
+        assert!(fits(&forged, Some(&[1])).is_err());
+        let counting: Vec<u32> = (1..=1 << 20).collect();
+        assert!(fits(&refused(&counting), Some(&[1])).is_err());
+        assert!(fits(&refused(&[]), Some(&[1])).is_err());
+        assert!(fits(&refused(&[5, 3]), Some(&[3, 5])).is_err());
+        assert!(fits(&refused(&[4]), Some(&[3, 5])).is_err());
+        assert!(fits(&refused(&[3]), None).is_err());
+        assert!(fits(&occt(vec![7]), Some(&[1])).is_err());
+        assert!(fits(&Refusal::EdgeMissing { edge: 0, count: 12 }, Some(&[1])).is_err());
+        assert!(fits(&Refusal::NoEdges { dressing: fillet }, Some(&[1])).is_err());
+        let invalid = Refusal::ResultInvalid {
+            operation: Operation::Dressing { dressing: fillet },
+            edges: vec![7],
+        };
+        assert!(fits(&invalid, Some(&[1])).is_err());
+        assert!(fits(&Refusal::EdgeTwice { edge: 9 }, Some(&[1, 1])).is_err());
+        assert!(fits(&Refusal::FaceUnmeshed { face: 0 }, None).is_err());
+    }
+
+    #[test]
+    fn kernel_failures_get_their_own_code_and_always_a_suggestion() {
+        use silico_protocol::{DressingKind, EdgeTrouble, Operation, Refusal, Trouble};
+        let occt = |operation, edges| Failure {
+            refusal: Refusal::Occt { operation, edges },
+            cause: Some("StdFail_NotDone".to_owned()),
+        };
+        // No suggestion of its own: the code's.
+        let e = failure_error("Fillet", occt(Operation::Other, Vec::new()));
+        assert_eq!(
+            (e.code(), e.message(), e.cause(), e.suggestion()),
             (
-                FailureKind::KernelFailed,
                 ErrorCode::KernelFailed,
                 "Fillet failed",
-                "change the operation's values: the kernel can't build it from these",
-            ),
+                Some("StdFail_NotDone"),
+                Some("change the operation's values: the kernel can't build it from these")
+            )
+        );
+        assert!(e.elements().is_empty(), "{e}");
+        let e = failure_error(
+            "Fillet",
+            Failure::new(Refusal::ResultInvalid {
+                operation: Operation::Other,
+                edges: Vec::new(),
+            }),
+        );
+        assert_eq!(
+            (e.code(), e.message(), e.cause(), e.suggestion()),
             (
-                FailureKind::InvalidResult,
                 ErrorCode::InvalidResult,
                 "Fillet gave an invalid result, which was refused",
-                "change the operation's values: the kernel can't build a valid result from these",
-            ),
-        ];
-        for (kind, code, message, fallback) in cases {
-            let error = failure_error("Fillet", failure(kind, None));
-            assert_eq!(
-                (
-                    error.code(),
-                    error.message(),
-                    error.cause(),
-                    error.elements()
-                ),
-                (
-                    code,
-                    message,
-                    Some("the kernel's words"),
-                    &["Edge1".to_owned()][..]
+                Some("the operation's result isn't a valid solid"),
+                Some(
+                    "change the operation's values: the kernel can't build a valid result from these"
                 )
-            );
-            assert_eq!(error.suggestion(), Some(fallback));
-            // The worker's own suggestion, when it has one, comes first.
-            let error = failure_error("Fillet", failure(kind, Some("try a smaller radius")));
-            assert_eq!(error.suggestion(), Some("try a smaller radius"));
-        }
+            )
+        );
+        // Its own suggestion, and the edge at fault, named by the core.
+        let fillet = Operation::Dressing {
+            dressing: DressingKind::Fillet,
+        };
+        let e = failure_error("Fillet", occt(fillet, vec![1]));
+        assert_eq!(e.elements(), ["Edge1"], "{e}");
+        assert!(
+            e.suggestion()
+                .is_some_and(|s| s.starts_with("if the fillet runs past a face beside the edge")),
+            "{e}"
+        );
+        // A refusal of edges 3 and 5 names both.
+        let e = failure_error(
+            "Fillet",
+            Failure::new(Refusal::EdgesRefused {
+                dressing: DressingKind::Fillet,
+                troubles: vec![
+                    EdgeTrouble {
+                        edge: 3,
+                        trouble: Trouble::Smooth,
+                    },
+                    EdgeTrouble {
+                        edge: 5,
+                        trouble: Trouble::OneFace,
+                    },
+                ],
+            }),
+        );
+        assert_eq!(e.code(), ErrorCode::InvalidInput, "{e}");
+        assert_eq!(e.elements(), ["Edge3", "Edge5"], "{e}");
+        assert!(e.message().starts_with("Edge3 joins faces"), "{e}");
+        assert!(
+            e.message().ends_with("; OCCT won't fillet Edge5 either"),
+            "{e}"
+        );
+        assert_eq!(
+            e.suggestion(),
+            Some("leave Edge3 and Edge5 out of the fillet")
+        );
+        // A value refused, named as data.
+        let e = failure_error(
+            "Fillet",
+            Failure::new(Refusal::InvalidParameter {
+                parameter: "radius".to_owned(),
+                message: "the fillet's radius must be a length above 1e-7 mm".to_owned(),
+            }),
+        );
+        assert_eq!(e.parameter(), Some("radius"), "{e}");
+        assert_eq!(
+            e.message(),
+            "the fillet's radius must be a length above 1e-7 mm"
+        );
+        assert_eq!(e.suggestion(), Some("change the value the message names"));
+        // A test operation on a production worker: Silico's bug.
+        let e = failure_error(
+            "DebugSleep",
+            Failure::new(Refusal::TestOperation {
+                op: "DebugSleep".to_owned(),
+            }),
+        );
+        assert_eq!(e.code(), ErrorCode::Internal, "{e}");
+        assert_eq!(
+            e.cause(),
+            Some("DebugSleep is a test operation, not answered by this worker")
+        );
+        assert_eq!(e.suggestion(), Some(super::SILICO_BUG));
     }
 
     #[test]

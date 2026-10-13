@@ -426,7 +426,7 @@ fn the_oracle_verdict_doesnt_depend_on_the_users_freecad_settings() {
 
 #[test]
 fn fillet_of_edge_0_is_refused_on_both_sides() {
-    // Edges are numbered from 1, and Silico refuses Edge0 ("Edge0 doesn't exist"), as
+    // Edges are numbered from 1, and Silico refuses Edge0 ("edge 0 doesn't exist"), as
     // FreeCAD itself does ("Invalid edge link"). oracle.py filleted `s.Edges[i - 1]`, and
     // Python reads index −1 as the last edge, so FreeCAD's side rounded Edge12 until
     // /break-it found it.
