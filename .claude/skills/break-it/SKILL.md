@@ -38,7 +38,7 @@ A test passes only if the target either returns a **correct result**, checked in
 | Nondeterminism | Two runs of the same input give different shapes, names, or bytes |
 | Corruption | A failed operation leaves the document, undo stack, or worker in a broken state. After every expected failure, check that the next valid operation still works. |
 
-When the correct behavior is unclear (should a 0° revolve be an error?), run the same input in FreeCAD with `/Applications/FreeCAD.app/Contents/Resources/bin/freecadcmd` and a script under `/tmp`. If FreeCAD's answer is also bad, list it as a **spec question** in the report instead of guessing.
+When the correct behavior is unclear (should a 0° revolve be an error?), run the same input in FreeCAD with `.pixi/envs/oracle/bin/freecadcmd` (FreeCAD 1.1.3 on Silico's OCCT 7.9.3; `pixi run install-oracle` installs it) and a script under `/tmp`. If FreeCAD's answer is also bad, list it as a **spec question** in the report instead of guessing.
 
 ## 4. Write and run the tests
 
