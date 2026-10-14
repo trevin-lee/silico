@@ -872,14 +872,128 @@ fn a_chamfer_too_large_names_the_edge_and_what_to_try() {
         err.message(),
         "Standard_Failure: the fillet couldn't be built"
     );
+    // Several: those OCCT couldn't build. Edge1 and Edge3 each lie beside a face 10 wide,
+    // which a chamfer of 10 takes all of.
     let err = chamfer(&b, &[1, 3], equal(10.0), false).err().unwrap();
-    assert_eq!(err.element(), None, "{err}");
+    assert_eq!(err.elements(), ["Edge1", "Edge3"], "{err}");
     assert_eq!(
         err.suggestion(),
         Some(
-            "chamfer the edges one at a time to find the one that fails; then, if its chamfer runs past a face beside it, try a smaller size, and if not, another size, or leave it out"
+            "if the chamfer runs past a face beside these edges, try a smaller size; if not, try another size, or leave them out: OCCT can't chamfer some edges at any size"
         )
     );
+}
+
+/// FreeCAD's names for the edges of `Part.makeBox(dx, dy, dz)` that don't run along z.
+fn horizontal_edges(dx: f64, dy: f64, dz: f64) -> Vec<String> {
+    serde_json::from_value(oracle::freecad(&format!(
+        "import json, Part\nb = Part.makeBox({dx}, {dy}, {dz})\n\
+         print('SILICO_ORACLE ' + json.dumps(['Edge%d' % (i + 1) for i, e in enumerate(b.Edges) if abs(e.tangentAt(e.FirstParameter).z) < 0.5]))\n"
+    )))
+    .unwrap()
+}
+
+#[test]
+fn a_failed_chamfer_names_every_edge_occt_couldnt_build() {
+    // A 10 × 10 × 2 slab, every edge at 2.5: the horizontal edges lie beside the 2 mm sides,
+    // which a chamfer of 2.5 runs past; the vertical ones beside faces 10 wide. OCCT reports
+    // the contours it couldn't build (through Silico's OCCT patch 0002), and the core names
+    // exactly those edges.
+    let horizontal = horizontal_edges(10.0, 10.0, 2.0);
+    assert_eq!(horizontal.len(), 8);
+    let mut k = kernel();
+    let slab = k
+        .make(silico_protocol::Primitive::Box {
+            dx: 10.0,
+            dy: 10.0,
+            dz: 2.0,
+        })
+        .unwrap();
+    let all: Vec<u32> = (1..=12).collect();
+    let err = k.chamfer(&slab, &all, equal(2.5), false).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::KernelFailed, "{err}");
+    assert_eq!(err.message(), "Chamfer failed", "{err}");
+    assert_eq!(err.elements(), horizontal, "{err}");
+    let vertical: Vec<u32> = (1..=12)
+        .filter(|n| !horizontal.contains(&format!("Edge{n}")))
+        .collect();
+    assert!(k.chamfer(&slab, &vertical, equal(2.5), false).is_ok());
+}
+
+#[test]
+fn a_chamfer_that_fails_where_its_corners_meet_names_no_edge() {
+    // The same slab at 1.5: the chamfers of the top and bottom edges, 1.5 each, overlap
+    // across each 2 mm side, so the horizontal edges collide; the vertical ones are fine.
+    // OCCT reports four corners, which reach all twelve edges, so they name none; nor does
+    // a collision. The suggestion is to find them one at a time.
+    let slab = make_box(10.0, 10.0, 2.0).unwrap();
+    let all: Vec<u32> = (1..=12).collect();
+    let err = chamfer(&slab, &all, equal(1.5), false).err().unwrap();
+    assert_eq!(err.kind(), KernelErrorKind::Failed, "{err}");
+    assert!(err.elements().is_empty(), "{err}");
+    assert!(err.suggestion().unwrap().contains("one at a time"), "{err}");
+    let vertical: Vec<u32> = (1..=12)
+        .filter(|n| !horizontal_edges(10.0, 10.0, 2.0).contains(&format!("Edge{n}")))
+        .collect();
+    assert!(chamfer(&slab, &vertical, equal(1.5), false).is_ok());
+    for edge in all {
+        assert!(
+            chamfer(&slab, &[edge], equal(1.5), false).is_ok(),
+            "Edge{edge}"
+        );
+    }
+}
+
+/// What a test's subscriber writes, kept to read back.
+#[derive(Clone, Default)]
+struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Captured {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_chamfer_whose_collision_is_at_a_corner_stripe_names_no_edge() {
+    // A 10 mm cube, every edge at 5: each face's two chamfers take exactly its width. OCCT
+    // reports as faulty a corner stripe it added while building, not one of the twelve given
+    // contours. `faulty_edges` leaves it out, as it should: no edge is named, and the report is
+    // read (no warning that it couldn't be, which would mean a stripe's status was asked for).
+    let logs = Captured::default();
+    let writer = logs.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_ansi(false)
+        .with_writer(move || writer.clone())
+        .finish();
+    let cube = make_box(10.0, 10.0, 10.0).unwrap();
+    let all: Vec<u32> = (1..=12).collect();
+    let err = tracing::subscriber::with_default(subscriber, || {
+        chamfer(&cube, &all, equal(5.0), false).err().unwrap()
+    });
+    assert_eq!(err.kind(), KernelErrorKind::Failed, "{err}");
+    assert!(err.elements().is_empty(), "{err}");
+    assert!(err.suggestion().unwrap().contains("one at a time"), "{err}");
+    let text = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+    assert!(!text.contains("couldn't be read"), "{text}");
+    assert!(chamfer(&cube, &all, equal(4.9), false).is_ok());
+    // Through the core, the same.
+    let mut k = kernel();
+    let shape = k
+        .make(silico_protocol::Primitive::Box {
+            dx: 10.0,
+            dy: 10.0,
+            dz: 10.0,
+        })
+        .unwrap();
+    let err = k.chamfer(&shape, &all, equal(5.0), false).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::KernelFailed, "{err}");
+    assert!(err.elements().is_empty(), "{err}");
 }
 
 #[test]

@@ -14,7 +14,7 @@ pixi run stress        # 605-case stress test, byte-identical to the reference
 
 ## Patch policy
 
-- A patch must fix determinism or a crash that Silico can't work around. No features.
+- A patch must fix determinism or a crash that Silico can't work around, or expose what OCCT already computes as accessors that change no result (`pixi run stress` stays byte-identical). No other features.
 - Every patch must exist upstream as a pull request or issue, and its header says where.
 - Each patch header states why Silico carries it and when to drop it.
 - When OCCT is upgraded, drop patches the new release includes, re-apply the rest, and run `pixi run test` and `pixi run stress` on macOS and Linux.
@@ -24,6 +24,7 @@ pixi run stress        # 605-case stress test, byte-identical to the reference
 | Patch | Upstream | What it fixes |
 |---|---|---|
 | [0001](patches/0001-offset-deterministic-face-order.patch) | [PR #1600](https://github.com/Open-Cascade-SAS/OCCT/pull/1600), backported to 7.9.3 | Arc-join offsets returned their faces in an order that depended on memory addresses, so results changed from run to run. |
+| [0002](patches/0002-chamfer-faulty-report.patch) | [issue #1632](https://github.com/Open-Cascade-SAS/OCCT/issues/1632) | `BRepFilletAPI_MakeChamfer` didn't pass on its builder's report of where a failed build failed, as `BRepFilletAPI_MakeFillet` does. Accessors only. |
 
 ## Applying the patches by hand (inspection only)
 

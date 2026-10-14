@@ -29,11 +29,11 @@ pub enum Refusal {
         operation: Operation,
         edges: Vec<u32>,
     },
-    /// OCCT couldn't build a fillet, and said where: `edges`, the given edges, in increasing
-    /// order, in the contours whose surfaces it couldn't build and in those reaching a corner
-    /// it couldn't blend. Its words, where it threw, are the cause, which errors prefer to
-    /// the message naming the edges (the edges are the error's elements either way).
-    /// `dressing` is a fillet: a chamfer's report Silico doesn't read (docs/ports/fillet.md).
+    /// OCCT couldn't build a fillet or chamfer, and said where: `edges`, the given edges, in
+    /// increasing order, in the contours whose surfaces it couldn't build and (a fillet's) in
+    /// those reaching a corner it couldn't blend. Its words, where it threw, are the cause,
+    /// which errors prefer to the message naming the edges (the edges are the error's
+    /// elements either way).
     EdgesFailed {
         dressing: DressingKind,
         edges: Vec<u32>,
