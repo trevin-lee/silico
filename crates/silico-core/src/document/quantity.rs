@@ -11,7 +11,7 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 
 /// Why a number's text isn't a value of a quantity.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DecimalError {
+pub enum NumberError {
     /// More precise than the quantity holds: a non-zero digit past its decimals.
     TooPrecise { decimals: u32 },
     /// Larger than an `i64` of the quantity's units holds.
@@ -23,15 +23,15 @@ pub enum DecimalError {
     Malformed,
 }
 
-impl fmt::Display for DecimalError {
+impl fmt::Display for NumberError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            DecimalError::TooPrecise { decimals } => {
+            NumberError::TooPrecise { decimals } => {
                 write!(f, "has more than {decimals} decimals")
             }
-            DecimalError::OutOfRange => f.write_str("is too large"),
-            DecimalError::NegativeZero => f.write_str("is zero written with a minus sign"),
-            DecimalError::Malformed => f.write_str("isn't a number"),
+            NumberError::OutOfRange => f.write_str("is too large"),
+            NumberError::NegativeZero => f.write_str("is zero written with a minus sign"),
+            NumberError::Malformed => f.write_str("isn't a number"),
         }
     }
 }
@@ -43,7 +43,7 @@ const EXPONENT_CAP: i128 = 1 << 40;
 /// The value of `text`, a JSON number (a decimal, with or without an exponent: `0.1`,
 /// `1e-05`, `1.05E1`), in units of 10^-`decimals`: `0.1` with 6 decimals is 100,000. Read
 /// from its digits, never through a float. Digits past `decimals` must be zeros.
-pub fn parse_decimal(text: &str, decimals: u32) -> Result<i64, DecimalError> {
+pub fn parse_number(text: &str, decimals: u32) -> Result<i64, NumberError> {
     let (negative, unsigned) = match text.strip_prefix('-') {
         Some(rest) => (true, rest),
         None => (false, text),
@@ -61,7 +61,7 @@ pub fn parse_decimal(text: &str, decimals: u32) -> Result<i64, DecimalError> {
     };
     let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
     if !digits(whole) || (mantissa.contains('.') && !digits(fraction)) {
-        return Err(DecimalError::Malformed);
+        return Err(NumberError::Malformed);
     }
     let exponent = match exponent {
         None => 0,
@@ -71,7 +71,7 @@ pub fn parse_decimal(text: &str, decimals: u32) -> Result<i64, DecimalError> {
                 None => (1, e.strip_prefix('+').unwrap_or(e)),
             };
             if !digits(magnitude) {
-                return Err(DecimalError::Malformed);
+                return Err(NumberError::Malformed);
             }
             let held = magnitude.bytes().fold(0i128, |m, b| {
                 (m * 10 + i128::from(b - b'0')).min(EXPONENT_CAP)
@@ -89,7 +89,7 @@ pub fn parse_decimal(text: &str, decimals: u32) -> Result<i64, DecimalError> {
         .collect();
     if significant.is_empty() {
         return if negative {
-            Err(DecimalError::NegativeZero)
+            Err(NumberError::NegativeZero)
         } else {
             Ok(0)
         };
@@ -98,14 +98,14 @@ pub fn parse_decimal(text: &str, decimals: u32) -> Result<i64, DecimalError> {
         // Digits past the resolution: dropped if they're zeros, refused if not.
         let cut = usize::try_from(-shift).unwrap_or(usize::MAX);
         if cut >= significant.len() {
-            return Err(DecimalError::TooPrecise { decimals });
+            return Err(NumberError::TooPrecise { decimals });
         }
         let kept = significant.len() - cut;
         if significant
             .get(kept..)
             .is_some_and(|d| d.iter().any(|&b| b != b'0'))
         {
-            return Err(DecimalError::TooPrecise { decimals });
+            return Err(NumberError::TooPrecise { decimals });
         }
         significant.truncate(kept);
     }
@@ -115,21 +115,19 @@ pub fn parse_decimal(text: &str, decimals: u32) -> Result<i64, DecimalError> {
         m.checked_mul(10)
             .and_then(|m| m.checked_add(i128::from(b - b'0')))
             .filter(|&m| m <= i128::from(i64::MAX) + 1)
-            .ok_or(DecimalError::OutOfRange)
+            .ok_or(NumberError::OutOfRange)
     };
     let mut magnitude: i128 = 0;
     for &b in &significant {
         magnitude = push(magnitude, b)?;
     }
-    // Zeros after: a non-zero value with 20 of them is past i64 already.
+    // Zeros after: a non-zero value with 20 of them is past i64, so `push` refuses it by
+    // then, however large the shift.
     for _ in 0..shift.clamp(0, 20) {
         magnitude = push(magnitude, b'0')?;
     }
-    if shift > 20 {
-        return Err(DecimalError::OutOfRange);
-    }
     let value = if negative { -magnitude } else { magnitude };
-    i64::try_from(value).map_err(|_| DecimalError::OutOfRange)
+    i64::try_from(value).map_err(|_| NumberError::OutOfRange)
 }
 
 /// `value`, in units of 10^-`decimals`, as the shortest plain decimal that reads back as it:
@@ -168,9 +166,9 @@ impl Length {
         self.0 as f64 / 1e6
     }
 
-    /// The length a decimal's text (in millimetres) writes.
-    pub fn parse(text: &str) -> Result<Self, DecimalError> {
-        parse_decimal(text, LENGTH_DECIMALS).map(Length)
+    /// The length a number's text (in millimetres) writes.
+    pub fn parse(text: &str) -> Result<Self, NumberError> {
+        parse_number(text, LENGTH_DECIMALS).map(Length)
     }
 }
 
@@ -191,7 +189,7 @@ impl JsonSchema for Length {
     /// authority on decimals.
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         json_schema!({
-            "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are kept for expressions.)",
+            "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
             "type": "number"
         })
     }
@@ -218,9 +216,9 @@ impl Angle {
         self.0 as f64 / 1e9
     }
 
-    /// The angle a decimal's text (in degrees) writes.
-    pub fn parse(text: &str) -> Result<Self, DecimalError> {
-        parse_decimal(text, ANGLE_DECIMALS).map(Angle)
+    /// The angle a number's text (in degrees) writes.
+    pub fn parse(text: &str) -> Result<Self, NumberError> {
+        parse_number(text, ANGLE_DECIMALS).map(Angle)
     }
 }
 
@@ -238,7 +236,7 @@ impl JsonSchema for Angle {
 
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         json_schema!({
-            "description": "An angle in degrees: a number, to at most 9 decimals (nanodegrees). An exponent is read exactly; Silico writes plain decimals. (Strings are kept for expressions.)",
+            "description": "An angle in degrees: a number, to at most 9 decimals (nanodegrees). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
             "type": "number"
         })
     }
@@ -296,46 +294,63 @@ mod tests {
         assert_eq!(Angle::parse("1e-9"), Ok(Angle::from_ndeg(1)));
         assert_eq!(
             Length::parse("9.223372036854775808e12"),
-            Err(DecimalError::OutOfRange)
+            Err(NumberError::OutOfRange)
         );
+    }
+
+    #[test]
+    fn an_exponent_past_i128_is_held_not_overflowed() {
+        // 40 digits of exponent: past i128 unless held at the cap.
+        let big = format!("1e{}", "9".repeat(40));
+        assert_eq!(Length::parse(&big), Err(NumberError::OutOfRange));
+        let small = format!("1e-{}", "9".repeat(40));
+        assert_eq!(
+            Length::parse(&small),
+            Err(NumberError::TooPrecise { decimals: 6 })
+        );
+        // A mantissa as long as a document may be, brought back by its exponent: exact (a
+        // cap below the document's size would refuse it).
+        let n = 15_000_000;
+        let text = format!("1{}e-{n}", "0".repeat(n));
+        assert_eq!(Length::parse(&text), Ok(Length::from_nm(1_000_000)));
     }
 
     #[test]
     fn decimals_that_dont_fit_are_refused_saying_why() {
         assert_eq!(
             Length::parse("0.0000001"),
-            Err(DecimalError::TooPrecise { decimals: 6 })
+            Err(NumberError::TooPrecise { decimals: 6 })
         );
         assert_eq!(
             Length::parse("1.0000005"),
-            Err(DecimalError::TooPrecise { decimals: 6 })
+            Err(NumberError::TooPrecise { decimals: 6 })
         );
         assert_eq!(
             Angle::parse("0.0000000001"),
-            Err(DecimalError::TooPrecise { decimals: 9 })
+            Err(NumberError::TooPrecise { decimals: 9 })
         );
         // An exponent past the resolution, or past i64, the same.
         assert_eq!(
             Length::parse("1e-7"),
-            Err(DecimalError::TooPrecise { decimals: 6 })
+            Err(NumberError::TooPrecise { decimals: 6 })
         );
         assert_eq!(
             Length::parse("1.5e-6"),
-            Err(DecimalError::TooPrecise { decimals: 6 })
+            Err(NumberError::TooPrecise { decimals: 6 })
         );
         assert_eq!(
             Length::parse("1e-99999999999999999999"),
-            Err(DecimalError::TooPrecise { decimals: 6 })
+            Err(NumberError::TooPrecise { decimals: 6 })
         );
-        assert_eq!(Length::parse("1e13"), Err(DecimalError::OutOfRange));
+        assert_eq!(Length::parse("1e13"), Err(NumberError::OutOfRange));
         assert_eq!(
             Length::parse("1e99999999999999999999"),
-            Err(DecimalError::OutOfRange)
+            Err(NumberError::OutOfRange)
         );
-        assert_eq!(Length::parse("-0e5"), Err(DecimalError::NegativeZero));
-        assert_eq!(Length::parse("-0.0E-3"), Err(DecimalError::NegativeZero));
-        assert_eq!(Length::parse("-0"), Err(DecimalError::NegativeZero));
-        assert_eq!(Length::parse("-0.000"), Err(DecimalError::NegativeZero));
+        assert_eq!(Length::parse("-0e5"), Err(NumberError::NegativeZero));
+        assert_eq!(Length::parse("-0.0E-3"), Err(NumberError::NegativeZero));
+        assert_eq!(Length::parse("-0"), Err(NumberError::NegativeZero));
+        assert_eq!(Length::parse("-0.000"), Err(NumberError::NegativeZero));
         // i64 nanometres: ±9,223,372,036,854.775807 mm.
         assert_eq!(
             Length::parse("9223372036854.775807"),
@@ -347,20 +362,20 @@ mod tests {
         );
         assert_eq!(
             Length::parse("9223372036854.775808"),
-            Err(DecimalError::OutOfRange)
+            Err(NumberError::OutOfRange)
         );
         assert_eq!(
             Length::parse("-9223372036854.775809"),
-            Err(DecimalError::OutOfRange)
+            Err(NumberError::OutOfRange)
         );
         assert_eq!(
             Length::parse(&"9".repeat(10_000)),
-            Err(DecimalError::OutOfRange)
+            Err(NumberError::OutOfRange)
         );
         for bad in [
             "", "-", ".5", "5.", "+5", "1.2.3", "0x10", " 1", "1e", "1e+", "e5", "1e1.5",
         ] {
-            assert_eq!(Length::parse(bad), Err(DecimalError::Malformed), "{bad:?}");
+            assert_eq!(Length::parse(bad), Err(NumberError::Malformed), "{bad:?}");
         }
     }
 

@@ -264,6 +264,14 @@ fn a_value_that_doesnt_fit_is_refused_naming_its_feature_field_and_place() {
         ),
         (
             "[20, 10, -1]",
+            "[20, 10, -1.0000001]",
+            Some("a91cw0de"),
+            Some("position.2"),
+            "position.2 -1.0000001 has more than 6 decimals",
+            "line 6, column 88",
+        ),
+        (
+            "[20, 10, -1]",
             "[20, 10]",
             Some("a91cw0de"),
             Some("position"),
@@ -420,13 +428,14 @@ fn text_that_isnt_a_documents_json_is_refused_saying_where() {
 
 #[test]
 fn a_document_past_the_size_or_memory_limits_is_refused_before_it_costs_much() {
+    use silico_core::document::json::MAX_INPUT_LEN;
     use silico_core::document::json::{MAX_DOCUMENT_LEN, MAX_TREE_BYTES};
-    // One byte past the size: refused before anything is read.
-    let big = vec![b' '; MAX_DOCUMENT_LEN + 1];
+    // One byte past what Silico reads: refused before anything is read.
+    let big = vec![b' '; MAX_INPUT_LEN + 1];
     let err = read(&big).unwrap_err();
     assert!(
         err.message()
-            .contains(&format!("more than the {MAX_DOCUMENT_LEN}")),
+            .contains(&format!("more than the {MAX_INPUT_LEN}")),
         "{err}"
     );
     // Said as too large, not as bad JSON: there's nothing to fix in the text.
@@ -439,7 +448,7 @@ fn a_document_past_the_size_or_memory_limits_is_refused_before_it_costs_much() {
         err.suggestion().unwrap().contains("make it smaller"),
         "{err}"
     );
-    // At the size, read (here, refused as JSON for being only spaces).
+    // At it, read (here, refused as JSON for being only spaces).
     let err = read(&big[1..]).unwrap_err();
     assert!(err.message().contains("expected a value"), "{err}");
     // The text that costs most for its size: a one-member object per 8 bytes. Within the
@@ -448,7 +457,7 @@ fn a_document_past_the_size_or_memory_limits_is_refused_before_it_costs_much() {
         "{{\"x\": [{}{{\"a\":0}}]}}",
         "{\"a\":0},".repeat((MAX_DOCUMENT_LEN - 64) / 8)
     );
-    assert!(objects.len() <= MAX_DOCUMENT_LEN);
+    assert!(objects.len() <= MAX_INPUT_LEN);
     let err = read(objects.as_bytes()).unwrap_err();
     assert!(
         err.message()
@@ -740,10 +749,10 @@ fn the_first_duplicate_in_written_order_is_the_one_reported() {
 }
 
 #[test]
-fn a_document_whose_text_would_be_too_large_isnt_written() {
-    // Whatever `write` writes, `read` reads: a document whose canonical text would pass
-    // the size `read` takes is refused, not written as a file that won't open. Compact
-    // text near the size reads, and its canonical text (with its spacing) would be larger.
+fn a_document_opens_exactly_when_it_can_be_saved() {
+    // The size is measured on canonical text, by `read` and `write` alike: compact text
+    // within the size whose canonical text (with its spacing) would pass it is refused by
+    // both, so no document opens that can't be saved, and none is saved that won't open.
     use silico_core::document::json::MAX_DOCUMENT_LEN;
     let f =
         r#"{"id":"00000000","type":"fuse","v":1,"name":"a","base":"00000001","tool":"00000002"}"#;
@@ -752,22 +761,62 @@ fn a_document_whose_text_would_be_too_large_isnt_written() {
         "{{\"silico\":1,\"units\":{{\"length\":\"mm\",\"resolution\":\"1nm\"}},\"features\":[{}]}}",
         vec![f; count].join(",")
     );
-    let document = read(compact.as_bytes()).unwrap();
-    let err = write(&document).unwrap_err();
+    assert!(compact.len() <= MAX_DOCUMENT_LEN);
+    let err = read(compact.as_bytes()).unwrap_err();
     assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
+    assert!(
+        err.message().contains("too large for Silico to read"),
+        "{err}"
+    );
     assert!(err.message().contains("more than the 16777216"), "{err}");
     assert!(
         err.suggestion().unwrap().contains("make it smaller"),
         "{err}"
     );
-    // A note escaped to six times its size, the same.
+    // Fewer features, whose canonical text fits: opened, and saved.
+    let fits = (MAX_DOCUMENT_LEN - 200) / (f.len() + 30);
+    let compact = format!(
+        "{{\"silico\":1,\"units\":{{\"length\":\"mm\",\"resolution\":\"1nm\"}},\"features\":[{}]}}",
+        vec![f; fits].join(",")
+    );
+    let document = read(compact.as_bytes()).unwrap();
+    let text = write(&document).unwrap();
+    assert!(text.len() <= MAX_DOCUMENT_LEN);
+    assert_eq!(read(text.as_bytes()).unwrap(), document);
+    // A note escaped to six times its size: refused, naming the feature that holds it.
     let mut document = read(EXAMPLE.as_bytes()).unwrap();
-    document.features[0].note = Some("\u{1}".repeat(3 << 20));
-    assert!(write(&document).is_err());
+    document.features[2].note = Some("\u{1}".repeat(3 << 20));
+    let err = write(&document).unwrap_err();
+    assert!(err.message().contains("too large to write"), "{err}");
+    assert_eq!(err.feature(), Some("m3tq8v0z"), "{err}");
+    assert!(
+        err.suggestion()
+            .unwrap()
+            .contains("this feature's name or note"),
+        "{err}"
+    );
     // Under the size, written and read back.
-    document.features[0].note = Some("\u{1}".repeat(1 << 20));
+    document.features[2].note = Some("\u{1}".repeat(1 << 20));
     let text = write(&document).unwrap();
     assert_eq!(read(text.as_bytes()).unwrap(), document);
+}
+
+#[test]
+fn a_document_whose_text_is_exactly_the_size_is_written_and_read() {
+    use silico_core::document::json::MAX_DOCUMENT_LEN;
+    let mut document = read(EXAMPLE.as_bytes()).unwrap();
+    document.features[0].note = Some(String::new());
+    let base = write(&document).unwrap().len();
+    document.features[0].note = Some("a".repeat(MAX_DOCUMENT_LEN - base));
+    let text = write(&document).unwrap();
+    assert_eq!(text.len(), MAX_DOCUMENT_LEN);
+    assert_eq!(read(text.as_bytes()).unwrap(), document);
+    // One byte more: refused by both.
+    document.features[0].note = Some("a".repeat(MAX_DOCUMENT_LEN - base + 1));
+    assert!(write(&document).is_err());
+    let mut text = text;
+    text.insert(text.find("\"note\": \"").unwrap() + 9, 'a');
+    assert!(read(text.as_bytes()).is_err());
 }
 
 #[test]
@@ -889,6 +938,34 @@ proptest! {
         prop_assert_eq!(write(&back).unwrap(), text.clone());
         // And the published schema accepts it, as an agent's validator would.
         prop_assert!(valid(&VALIDATOR, &text), "{}", text);
+    }
+
+    /// Any length written with its point moved and an exponent to match (`1.5e-5`,
+    /// `150e-7`, with zeros after or not) reads as the same length.
+    #[test]
+    fn any_exponent_spelling_reads_as_the_length_it_writes(
+        nm in any::<i64>(),
+        moved in -30i32..30,
+        zeros in 0usize..4,
+    ) {
+        let plain = Length::from_nm(nm).to_string();
+        let negative = plain.starts_with('-');
+        let digits_and_point = plain.trim_start_matches('-');
+        let (whole, fraction) = digits_and_point.split_once('.').unwrap_or((digits_and_point, ""));
+        // The digits with the point after `whole.len() + moved` of them, and e{-moved}.
+        let digits = format!("{whole}{fraction}{}", "0".repeat(zeros));
+        let point = whole.len() as i32 + moved;
+        let (mantissa, exponent) = if point <= 0 {
+            (format!("0.{}{digits}", "0".repeat((-point) as usize)), -moved)
+        } else if point as usize >= digits.len() {
+            (format!("{digits}{}", "0".repeat(point as usize - digits.len())), -moved)
+        } else {
+            let (a, b) = digits.split_at(point as usize);
+            (format!("{a}.{b}"), -moved)
+        };
+        let sign = if negative { "-" } else { "" };
+        let text = format!("{sign}{mantissa}e{exponent}");
+        prop_assert_eq!(Length::parse(&text), Ok(Length::from_nm(nm)), "{}", text);
     }
 
     /// Bytes of any kind are read or refused, never panicked on.

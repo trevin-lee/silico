@@ -15,7 +15,7 @@ use proptest::prelude::*;
 use silico_core::ErrorCode;
 use silico_core::document::json::{self, Value};
 use silico_core::document::{
-    Angle, DecimalError, Document, Feature, FeatureId, FeatureVersion, FormatVersion, Length, Name,
+    Angle, Document, Feature, FeatureId, FeatureVersion, FormatVersion, Length, Name, NumberError,
     Operation, Units, read, write,
 };
 
@@ -781,7 +781,7 @@ fn edge_i64() -> impl Strategy<Value = i64> {
 }
 
 /// The value of a plain decimal in units of 10^-`decimals`, computed by padding the text
-/// (independent of `parse_decimal`'s digit-by-digit accumulation), or `None` when the
+/// (independent of `parse_number`'s digit-by-digit accumulation), or `None` when the
 /// text has a non-zero digit past the resolution or the value doesn't fit an i64.
 fn reference_value(negative: bool, whole: &str, fraction: &str, decimals: usize) -> Option<i64> {
     let (kept, dropped) = if fraction.len() > decimals {
@@ -1005,9 +1005,9 @@ proptest! {
         ] {
             let want = reference_value(negative, &whole, &fraction, decimals);
             match (want, parsed) {
-                (Some(0), Err(DecimalError::NegativeZero)) => prop_assert!(negative),
+                (Some(0), Err(NumberError::NegativeZero)) => prop_assert!(negative),
                 (Some(v), Ok(got)) => prop_assert_eq!(v, got, "{}", text),
-                (None, Err(DecimalError::TooPrecise { .. } | DecimalError::OutOfRange)) => {}
+                (None, Err(NumberError::TooPrecise { .. } | NumberError::OutOfRange)) => {}
                 (want, got) => prop_assert!(false, "{} at {}: want {:?}, got {:?}", text, decimals, want, got),
             }
         }

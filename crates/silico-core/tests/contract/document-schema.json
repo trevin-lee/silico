@@ -258,7 +258,7 @@
       "description": "The format's version: 1."
     },
     "Length": {
-      "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are kept for expressions.)",
+      "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
       "type": "number"
     },
     "Name": {

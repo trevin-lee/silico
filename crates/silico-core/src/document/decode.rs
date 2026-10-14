@@ -10,7 +10,7 @@ use super::model::{
     Document, FEATURE_TYPES, Feature, FeatureId, FeatureVersion, FormatVersion, ID_LENGTH, Name,
     Operation, Position, Units,
 };
-use super::quantity::{DecimalError, LENGTH_DECIMALS, Length};
+use super::quantity::{LENGTH_DECIMALS, Length, NumberError};
 use crate::{Error, ErrorCode};
 
 /// The document `bytes` hold, or why they don't hold one.
@@ -59,14 +59,14 @@ pub fn decode(bytes: &[u8]) -> Result<Document, Error> {
 
 /// The reader's refusal, as an error.
 fn syntax(e: SyntaxError) -> Error {
-    if e.too_large {
+    if e.cause == super::json::Cause::Size {
         return Error::new(
             ErrorCode::InvalidInput,
             format!("the document is too large for Silico to read: {}", e.message),
         )
         .with_suggestion(format!(
-            "make it smaller: a document is at most {} bytes, and its values take at most about {} bytes to hold",
-            super::json::MAX_DOCUMENT_LEN,
+            "make it smaller: Silico reads at most {} bytes, and a document's values take at most about {} bytes to hold",
+            super::json::MAX_INPUT_LEN,
             super::json::MAX_TREE_BYTES
         ));
     }
@@ -442,15 +442,15 @@ fn length_value(node: &Node, feature: Option<&str>, parameter: &str) -> Result<L
     };
     Length::parse(text).map_err(|e| {
         let suggestion = match e {
-            DecimalError::TooPrecise { decimals } => {
+            NumberError::TooPrecise { decimals } => {
                 format!("round it to {decimals} decimals: lengths are whole nanometres")
             }
-            DecimalError::OutOfRange => format!(
+            NumberError::OutOfRange => format!(
                 "a length is at most {} mm either way",
                 Length::from_nm(i64::MAX)
             ),
-            DecimalError::NegativeZero => "write 0".to_owned(),
-            DecimalError::Malformed => {
+            NumberError::NegativeZero => "write 0".to_owned(),
+            NumberError::Malformed => {
                 format!("write a number, to at most {LENGTH_DECIMALS} decimals")
             }
         };

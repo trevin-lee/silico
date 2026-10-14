@@ -1,6 +1,6 @@
 //! A strict JSON reader for `.silico` documents. It reads standard JSON (RFC 8259), more
 //! strictly: no byte-order mark, no duplicate keys, nesting no deeper than [`MAX_DEPTH`],
-//! at most [`MAX_DOCUMENT_LEN`] bytes read into a tree of at most [`MAX_TREE_BYTES`], and
+//! at most [`MAX_INPUT_LEN`] bytes read into a tree of at most [`MAX_TREE_BYTES`], and
 //! every number kept as the text it was written as, so lengths and angles are read from
 //! their decimals, never through a float. Every value keeps its line and column, for
 //! errors that say where.
@@ -12,9 +12,14 @@ use std::mem::size_of;
 /// position); the limit keeps hostile input from exhausting the stack.
 pub const MAX_DEPTH: usize = 64;
 
-/// The most bytes a document may be: 16 MiB, past any part's timeline (a hundred thousand
-/// features).
+/// The most bytes a document's canonical text may be: 16 MiB, past any part's timeline (a
+/// hundred thousand features). Measured on the canonical text, not the bytes read, so a
+/// document either opens and saves or does neither (`document::read`, `document::write`).
 pub const MAX_DOCUMENT_LEN: usize = 16 << 20;
+
+/// The most bytes read: four times [`MAX_DOCUMENT_LEN`], room for a document spelled more
+/// tightly or loosely than canonical form, and a bound on the time reading takes.
+pub const MAX_INPUT_LEN: usize = 4 * MAX_DOCUMENT_LEN;
 
 /// The most memory the tree of a document's values may take: 256 MiB, counted as it's
 /// built (each value, key, and text, and each array's and object's room), so reading any
@@ -104,21 +109,30 @@ impl Value {
 pub struct SyntaxError {
     pub at: At,
     pub message: String,
-    /// Whether the text was refused for its size, or its tree's, not for its JSON.
-    pub too_large: bool,
+    /// Why: the text's JSON, or its size.
+    pub cause: Cause,
+}
+
+/// Why the reader refused a text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cause {
+    /// Its JSON: not JSON, or more than Silico takes (a key twice, a byte-order mark).
+    Text,
+    /// Its size, or its tree's: more than Silico reads, though it may be valid JSON.
+    Size,
 }
 
 /// Reads `bytes` as one JSON value, with nothing but whitespace after it.
 pub fn read(bytes: &[u8]) -> Result<Node, SyntaxError> {
-    if bytes.len() > MAX_DOCUMENT_LEN {
+    if bytes.len() > MAX_INPUT_LEN {
         return Err(SyntaxError {
             at: At { line: 1, column: 1 },
             message: format!(
-                "the document is {} bytes, more than the {} a document may be",
+                "the text is {} bytes, more than the {} Silico reads",
                 bytes.len(),
-                MAX_DOCUMENT_LEN
+                MAX_INPUT_LEN
             ),
-            too_large: true,
+            cause: Cause::Size,
         });
     }
     let text = match std::str::from_utf8(bytes) {
@@ -130,7 +144,7 @@ pub fn read(bytes: &[u8]) -> Result<Node, SyntaxError> {
             return Err(SyntaxError {
                 at,
                 message: "the text isn't UTF-8".to_owned(),
-                too_large: false,
+                cause: Cause::Text,
             });
         }
     };
@@ -205,7 +219,7 @@ impl Reader<'_> {
         SyntaxError {
             at: self.at(),
             message: message.into(),
-            too_large: false,
+            cause: Cause::Text,
         }
     }
 
@@ -244,7 +258,7 @@ impl Reader<'_> {
         self.spent = self.spent.saturating_add(bytes);
         if self.spent > MAX_TREE_BYTES {
             return Err(SyntaxError {
-                too_large: true,
+                cause: Cause::Size,
                 ..self.error(format!(
                     "reading the document would take more than the {MAX_TREE_BYTES} bytes of memory a document may"
                 ))
@@ -313,7 +327,7 @@ impl Reader<'_> {
                 return Err(SyntaxError {
                     at: start,
                     message: format!("expected a value, found {}", self.found()),
-                    too_large: false,
+                    cause: Cause::Text,
                 });
             }
             self.bump();
@@ -564,7 +578,7 @@ fn refuse_repeated_key(members: &[Member]) -> Result<(), SyntaxError> {
                 "the key {} is written twice in one object",
                 shown(&member.key)
             ),
-            too_large: false,
+            cause: Cause::Text,
         }),
         None => Ok(()),
     }
@@ -580,22 +594,21 @@ pub(crate) fn bidi_control(c: char) -> bool {
     )
 }
 
-/// Whether `c` is a format or other invisible character Unicode draws as nothing: soft
-/// hyphen, combining grapheme joiner, the zero-width and direction marks and controls,
-/// word joiners and invisible operators, variation selectors, the byte-order mark, the
-/// Hangul fillers, and the tag characters.
+/// Whether `c` is a format or other invisible character Unicode draws as nothing: the
+/// bidirectional controls, soft hyphen, combining grapheme joiner, the zero-width
+/// characters, word joiners and invisible operators, variation selectors, the byte-order
+/// mark, the Hangul fillers, and the tag characters.
 fn invisible(c: char) -> bool {
     bidi_control(c)
         || matches!(
             c as u32,
             0xad | 0x34f
-                | 0x61c
                 | 0x115f..=0x1160
                 | 0x17b4..=0x17b5
                 | 0x180b..=0x180f
-                | 0x200b..=0x200f
-                | 0x202a..=0x202e
-                | 0x2060..=0x206f
+                | 0x200b..=0x200d
+                | 0x2060..=0x2065
+                | 0x206a..=0x206f
                 | 0x3164
                 | 0xfe00..=0xfe0f
                 | 0xfeff
