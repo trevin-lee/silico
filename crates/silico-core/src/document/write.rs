@@ -5,7 +5,8 @@
 //! separators, and the bidirectional controls; LF, and a trailing newline.
 //! Nothing comes from the bytes a document was read from, so every save writes the same
 //! bytes for the same document. Writing stops as soon as the text passes a limit, and
-//! borrows the document's strings, so a document too large costs no more than the limit.
+//! borrows the document's strings: a document too large costs no more text than the limit
+//! (a small tree of its values, one per feature, is built first, in proportion to it).
 
 use std::fmt::Write as _;
 
@@ -26,20 +27,18 @@ pub fn write(document: &Document, limit: usize) -> Result<String, TooLong> {
     Ok(writer.out)
 }
 
-/// The bytes of the document's canonical text, if they're at most `limit`: counted as it
-/// would be written, without keeping it.
-pub fn len(document: &Document, limit: usize) -> Result<usize, TooLong> {
+/// Whether the document's canonical text is at most `limit` bytes: counted as it would be
+/// written, without keeping it.
+pub fn fits(document: &Document, limit: usize) -> bool {
     let mut writer = Writer::new(limit, false);
-    writer.put(&tree(document), 0)?;
-    writer.push("\n")?;
-    Ok(writer.len)
+    writer.put(&tree(document), 0).is_ok() && writer.push("\n").is_ok()
 }
 
-/// The bytes of `feature`'s canonical text, if they're at most `limit`.
-pub fn feature_len(feature: &Feature, limit: usize) -> Option<usize> {
-    let mut writer = Writer::new(limit, false);
-    writer.put(&self::feature(feature), 0).ok()?;
-    Some(writer.len)
+/// Whether `feature`'s canonical text is at most `limit` bytes.
+pub fn feature_fits(feature: &Feature, limit: usize) -> bool {
+    Writer::new(limit, false)
+        .put(&self::feature(feature), 0)
+        .is_ok()
 }
 
 /// A value to write: a number's or literal's text, a string, an array, or an object.

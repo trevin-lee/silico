@@ -421,7 +421,7 @@ fn length(fields: &mut Fields, key: &str) -> Result<Length, Error> {
 
 fn length_value(node: &Node, feature: Option<&str>, parameter: &str) -> Result<Length, Error> {
     let Value::Number(text) = &node.value else {
-        // Strings are kept for expressions (`"=width * 2"`), which arrive later.
+        // Strings are reserved for expressions (`"=width * 2"`), which arrive later.
         if let Value::String(_) = &node.value {
             return Err(refuse(
                 feature,
@@ -429,7 +429,7 @@ fn length_value(node: &Node, feature: Option<&str>, parameter: &str) -> Result<L
                 node.at,
                 format!("{parameter} is a string, not a length in millimetres"),
                 format!(
-                    "write {parameter} as a number, such as 10.5: strings are kept for expressions, which this Silico doesn't read yet"
+                    "write {parameter} as a number, such as 10.5: strings are reserved for expressions, which this Silico doesn't read yet"
                 ),
             ));
         }

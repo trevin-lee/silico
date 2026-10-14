@@ -58,13 +58,15 @@ fn the_length(text: &str) -> Length {
 }
 
 /// Runs `f` on another thread, failing if it takes longer than `limit`.
-fn within<T: Send + 'static>(limit: Duration, f: impl FnOnce() -> T + Send + 'static) -> T {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(f());
-    });
-    rx.recv_timeout(limit)
-        .unwrap_or_else(|_| panic!("didn't finish within {limit:?}"))
+/// `f`'s result, if it took at most `limit` of this thread's CPU time: what reading
+/// costs, which a loaded machine doesn't change (other processes take wall time, not
+/// this thread's CPU). A hang is nextest's slow-timeout's to catch.
+fn within<T>(limit: Duration, f: impl FnOnce() -> T) -> T {
+    let start = cpu_time::ThreadTime::now();
+    let out = f();
+    let spent = start.elapsed();
+    assert!(spent <= limit, "took {spent:?} of CPU, more than {limit:?}");
+    out
 }
 
 fn has_control(s: &str) -> bool {
@@ -128,7 +130,7 @@ fn negative_zero_every_spelling_is_refused_and_signed_zero_never_reads() {
 }
 
 #[test]
-fn every_exponent_spelling_reads_exactly_as_its_decimal() {
+fn every_exponent_spelling_reads_exactly_as_its_decimal_promptly() {
     // The maintainer's choice (2026-10-14): a number with an exponent is read exactly, as
     // files saved by Python (`1e-05`) and JavaScript write them; Silico writes plain
     // decimals. Values worked out by hand.
@@ -724,7 +726,7 @@ fn an_object_with_a_hundred_thousand_keys_is_refused_promptly() {
 }
 
 #[test]
-fn duplicate_keys_that_differ_only_after_a_long_shared_prefix_are_found() {
+fn duplicate_keys_that_differ_only_after_a_long_shared_prefix_are_found_promptly() {
     let prefix = "p".repeat(100_000);
     let text = format!("{{\"{prefix}a\": 0, \"{prefix}b\": 0, \"{prefix}a\": 0}}");
     let err = within(Duration::from_secs(10), move || {

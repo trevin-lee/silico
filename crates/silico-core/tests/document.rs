@@ -147,7 +147,7 @@ fn a_length_written_with_an_exponent_is_written_back_plain() {
         written,
         EXAMPLE.replacen("[20, 10, -1]", "[20, 0.00001, -1]", 1)
     );
-    // A string is kept for expressions, which aren't read yet: refused, saying so.
+    // A string is reserved for expressions, which aren't read yet: refused, saying so.
     let err = read(
         EXAMPLE
             .replacen("\"length\": 40", "\"length\": \"40\"", 1)
@@ -155,7 +155,9 @@ fn a_length_written_with_an_exponent_is_written_back_plain() {
     )
     .unwrap_err();
     assert!(
-        err.suggestion().unwrap().contains("kept for expressions"),
+        err.suggestion()
+            .unwrap()
+            .contains("reserved for expressions"),
         "{err}"
     );
 }
@@ -428,8 +430,7 @@ fn text_that_isnt_a_documents_json_is_refused_saying_where() {
 
 #[test]
 fn a_document_past_the_size_or_memory_limits_is_refused_before_it_costs_much() {
-    use silico_core::document::json::MAX_INPUT_LEN;
-    use silico_core::document::json::{MAX_DOCUMENT_LEN, MAX_TREE_BYTES};
+    use silico_core::document::json::{MAX_DOCUMENT_LEN, MAX_INPUT_LEN, MAX_TREE_BYTES};
     // One byte past what Silico reads: refused before anything is read.
     let big = vec![b' '; MAX_INPUT_LEN + 1];
     let err = read(&big).unwrap_err();
@@ -773,6 +774,8 @@ fn a_document_opens_exactly_when_it_can_be_saved() {
         err.suggestion().unwrap().contains("make it smaller"),
         "{err}"
     );
+    // Many small features: none takes most of the text, so none is named.
+    assert_eq!(err.feature(), None, "{err}");
     // Fewer features, whose canonical text fits: opened, and saved.
     let fits = (MAX_DOCUMENT_LEN - 200) / (f.len() + 30);
     let compact = format!(
@@ -783,12 +786,27 @@ fn a_document_opens_exactly_when_it_can_be_saved() {
     let text = write(&document).unwrap();
     assert!(text.len() <= MAX_DOCUMENT_LEN);
     assert_eq!(read(text.as_bytes()).unwrap(), document);
-    // A note escaped to six times its size: refused, naming the feature that holds it.
+    // A note escaped to six times its size, on a feature not the last: refused, naming the
+    // feature that holds it, by `write` and by `read` alike.
     let mut document = read(EXAMPLE.as_bytes()).unwrap();
-    document.features[2].note = Some("\u{1}".repeat(3 << 20));
+    document.features[1].note = Some("\u{1}".repeat(3 << 20));
     let err = write(&document).unwrap_err();
     assert!(err.message().contains("too large to write"), "{err}");
-    assert_eq!(err.feature(), Some("m3tq8v0z"), "{err}");
+    assert_eq!(err.feature(), Some("a91cw0de"), "{err}");
+    let raw = EXAMPLE.replacen(
+        "\"height\": 12}",
+        &format!(
+            "\"height\": 12, \"note\": \"{}\"}}",
+            "\\u0001".repeat(3 << 20)
+        ),
+        1,
+    );
+    let err = read(raw.as_bytes()).unwrap_err();
+    assert!(
+        err.message().contains("too large for Silico to read"),
+        "{err}"
+    );
+    assert_eq!(err.feature(), Some("a91cw0de"), "{err}");
     assert!(
         err.suggestion()
             .unwrap()
@@ -796,7 +814,7 @@ fn a_document_opens_exactly_when_it_can_be_saved() {
         "{err}"
     );
     // Under the size, written and read back.
-    document.features[2].note = Some("\u{1}".repeat(1 << 20));
+    document.features[1].note = Some("\u{1}".repeat(1 << 20));
     let text = write(&document).unwrap();
     assert_eq!(read(text.as_bytes()).unwrap(), document);
 }
@@ -811,12 +829,37 @@ fn a_document_whose_text_is_exactly_the_size_is_written_and_read() {
     let text = write(&document).unwrap();
     assert_eq!(text.len(), MAX_DOCUMENT_LEN);
     assert_eq!(read(text.as_bytes()).unwrap(), document);
-    // One byte more: refused by both.
+    // One byte more: refused by both, for its size.
     document.features[0].note = Some("a".repeat(MAX_DOCUMENT_LEN - base + 1));
-    assert!(write(&document).is_err());
+    let err = write(&document).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
+    assert!(err.message().contains("too large to write"), "{err}");
     let mut text = text;
     text.insert(text.find("\"note\": \"").unwrap() + 9, 'a');
-    assert!(read(text.as_bytes()).is_err());
+    let err = read(text.as_bytes()).unwrap_err();
+    assert!(
+        err.message().contains("too large for Silico to read"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_loosely_spelled_document_past_the_canonical_size_opens() {
+    // Silico reads up to four times the size, so a document spelled more loosely than
+    // canonical form (here, 20 MiB of spacing) opens if its canonical text fits.
+    use silico_core::document::json::{MAX_DOCUMENT_LEN, MAX_INPUT_LEN};
+    assert_eq!(MAX_DOCUMENT_LEN, 16 << 20);
+    assert_eq!(MAX_INPUT_LEN, 64 << 20);
+    let at = EXAMPLE.rfind('}').unwrap();
+    let loose = format!(
+        "{}{}{}",
+        &EXAMPLE[..at],
+        " ".repeat(20 << 20),
+        &EXAMPLE[at..]
+    );
+    assert!(loose.len() > MAX_DOCUMENT_LEN);
+    let document = read(loose.as_bytes()).unwrap();
+    assert_eq!(write(&document).unwrap(), EXAMPLE);
 }
 
 #[test]
@@ -944,7 +987,11 @@ proptest! {
     /// `150e-7`, with zeros after or not) reads as the same length.
     #[test]
     fn any_exponent_spelling_reads_as_the_length_it_writes(
-        nm in any::<i64>(),
+        nm in prop_oneof![
+            any::<i64>(),
+            -10_000_000i64..10_000_000,
+            prop::sample::select(vec![i64::MIN, i64::MAX, 0, 1, -1, 10, 999_999, 1_000_000]),
+        ],
         moved in -30i32..30,
         zeros in 0usize..4,
     ) {
@@ -966,6 +1013,16 @@ proptest! {
         let sign = if negative { "-" } else { "" };
         let text = format!("{sign}{mantissa}e{exponent}");
         prop_assert_eq!(Length::parse(&text), Ok(Length::from_nm(nm)), "{}", text);
+        // A tenth of a nanometre more, spelled with an exponent: the digits of nm and a 1,
+        // times 10^-(7 + zeros), refused as too precise however the zeros fall.
+        let tenths = format!("{}1{}", nm.unsigned_abs(), "0".repeat(zeros));
+        let finer = format!("{sign}{tenths}e-{}", 7 + zeros);
+        prop_assert_eq!(
+            Length::parse(&finer),
+            Err(silico_core::document::NumberError::TooPrecise { decimals: 6 }),
+            "{}",
+            finer
+        );
     }
 
     /// Bytes of any kind are read or refused, never panicked on.

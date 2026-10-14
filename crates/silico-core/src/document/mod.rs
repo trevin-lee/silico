@@ -25,12 +25,13 @@ use crate::{Error, ErrorCode};
 pub fn read(bytes: &[u8]) -> Result<Document, Error> {
     let _span = tracing::debug_span!("document_read", bytes = bytes.len()).entered();
     let document = decode::decode(bytes)?;
-    match write::len(&document, json::MAX_DOCUMENT_LEN) {
-        Ok(_) => Ok(document),
-        Err(write::TooLong) => Err(too_long(
+    if write::fits(&document, json::MAX_DOCUMENT_LEN) {
+        Ok(document)
+    } else {
+        Err(too_long(
             &document,
             "the document is too large for Silico to read",
-        )),
+        ))
     }
 }
 
@@ -56,7 +57,7 @@ fn too_long(document: &Document, what: &str) -> Error {
     let large = document
         .features
         .iter()
-        .find(|f| write::feature_len(f, limit / 2).is_none());
+        .find(|f| !write::feature_fits(f, limit / 2));
     match large {
         Some(feature) => error
             .with_feature(feature.id.as_str())

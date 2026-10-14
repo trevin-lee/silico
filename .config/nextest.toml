@@ -17,24 +17,19 @@ filter = 'test(/stress|oracle/)'
 slow-timeout = { period = "60s", terminate-after = 10 }
 
 
-# The document reader's timed tests (a deadline, to catch reading that grows faster than
-# its input) run alone, every core theirs: on a loaded machine, other tests would take the
-# time they measure. Its memory-heavy tests run one at a time.
+# The document reader's timed tests (named `..._promptly`) measure their own thread's CPU
+# time, so load doesn't fail them; they and its memory-heavy tests (named here: renaming
+# one means renaming it here) run one at a time, with room for a loaded machine's wall
+# time.
 [test-groups]
 document-heavy = { max-threads = 1 }
 
 [[profile.default.overrides]]
-filter = 'package(silico-core) & test(/promptly|long_shared_prefix|every_exponent_spelling/)'
-threads-required = "num-cpus"
-
-[[profile.default.overrides]]
-filter = 'package(silico-core) & test(/size_or_memory_limits|opens_exactly_when|exactly_the_size|exponent_past_i128/)'
+filter = 'package(silico-core) & test(/_promptly$|size_or_memory_limits|opens_exactly_when|exactly_the_size|exponent_past_i128|loosely_spelled/)'
 test-group = 'document-heavy'
+slow-timeout = { period = "60s", terminate-after = 10 }
 
 [[profile.ci.overrides]]
-filter = 'package(silico-core) & test(/promptly|long_shared_prefix|every_exponent_spelling/)'
-threads-required = "num-cpus"
-
-[[profile.ci.overrides]]
-filter = 'package(silico-core) & test(/size_or_memory_limits|opens_exactly_when|exactly_the_size|exponent_past_i128/)'
+filter = 'package(silico-core) & test(/_promptly$|size_or_memory_limits|opens_exactly_when|exactly_the_size|exponent_past_i128|loosely_spelled/)'
 test-group = 'document-heavy'
+slow-timeout = { period = "60s", terminate-after = 10 }
