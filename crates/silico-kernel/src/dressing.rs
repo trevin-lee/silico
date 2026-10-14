@@ -334,9 +334,9 @@ fn blame_edges(error: KernelError, edges: &[u32], dressing: DressingKind) -> Ker
 }
 
 /// A fillet or chamfer OCCT couldn't build, as OCCT reports it where it says where: the
-/// given `edges` in the contours whose surfaces it couldn't build, and in those reaching a
-/// corner it couldn't blend (docs/ports/fillet.md). Where it names none, as for a chamfer
-/// (whose report Silico doesn't read), the failure is on all the edges, as OCCT's words say.
+/// given `edges` in the contours whose surfaces it couldn't build, and (a fillet's) in those
+/// reaching a corner it couldn't blend (docs/ports/fillet.md, docs/ports/chamfer.md). Where
+/// it names none, the failure is on all the edges, as OCCT's words say.
 fn not_built(
     dressing: &ffi::Dressing,
     topology: &Topology,
@@ -345,13 +345,13 @@ fn not_built(
     e: cxx::Exception,
 ) -> KernelError {
     let error = blame_edges(e.into(), edges, kind);
-    as_reported(error, kind, faulty_edges(dressing, topology, edges))
+    as_reported(error, kind, faulty_edges(dressing, topology, edges, kind))
 }
 
 /// `error`, OCCT's failure on all the edges, narrowed to the edges OCCT's `report` names,
-/// or unchanged if it names none or couldn't be read. No input is known to leave it unread
-/// (see the bridge's `contour_failed`), and a collision, the only way there, names no edge
-/// anyway.
+/// or unchanged if it names none or couldn't be read. No input is known to leave it unread:
+/// the bridge leaves out the stripes whose status it can't read (see its
+/// `faulty_contours`).
 fn as_reported(
     error: KernelError,
     kind: DressingKind,
@@ -382,12 +382,15 @@ fn as_reported(
 /// mostly with an error status; a corner that failed is a faulty vertex; a collision makes
 /// the first contour of the pair faulty, with no error status, and not the other, which
 /// may be the only one at fault. So where any faulty contour has an error status, the
-/// surfaces failed and every faulty contour is at fault; where none has, they're named
-/// only through the corners OCCT reports.
+/// surfaces failed and every faulty contour is at fault; where none has, a fillet's are
+/// named only through the corners OCCT reports. A chamfer's corners mislead (a 10 × 10 × 2
+/// box chamfered all round at 1.5 reports corners reaching its vertical edges, which are
+/// fine: docs/ports/chamfer.md), so a chamfer names none through them.
 fn faulty_edges(
     dressing: &ffi::Dressing,
     topology: &Topology,
     edges: &[u32],
+    kind: DressingKind,
 ) -> Result<Vec<u32>, KernelError> {
     let faulty = dressing.faulty_contours()?;
     let mut surfaces_failed = false;
@@ -402,7 +405,11 @@ fn faulty_edges(
     } else {
         BTreeSet::new()
     };
-    for corner in dressing.faulty_vertices()? {
+    let corners = match kind {
+        DressingKind::Fillet => dressing.faulty_vertices()?,
+        DressingKind::Chamfer { .. } => Vec::new(),
+    };
+    for corner in corners {
         for &edge in topology.at_vertex.get(&corner).into_iter().flatten() {
             contours.insert(dressing.contour_of(edge)?);
         }

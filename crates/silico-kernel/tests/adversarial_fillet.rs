@@ -233,61 +233,130 @@ fn config() -> ProptestConfig {
     }
 }
 
+/// A fillet of radius `r`, or a chamfer of equal distances `r`: each cuts into the r × r
+/// strip along the edge, so the same hand calculation says which edges are at fault.
+fn dress(
+    chamfered: bool,
+    b: &silico_kernel::Shape,
+    edges: &[u32],
+    r: f64,
+) -> Result<silico_kernel::Built, KernelError> {
+    match chamfered {
+        true => chamfer(b, edges, ChamferSize::Equal { distance: r }, false),
+        false => fillet(b, edges, r),
+    }
+}
+
+/// A refusal naming edges names some, each given, once, in increasing order (what the
+/// core's `refusal_fits` demands, or the worker is stopped), and among them every edge
+/// whose fillet or chamfer runs past a face whatever else is given. The listed order
+/// doesn't change it.
+fn names_every_edge_that_runs_past_its_face(
+    chamfered: bool,
+    (dims, edges, r): ([f64; 3], Vec<u32>, f64),
+) -> Result<(), TestCaseError> {
+    let m = 1e-3;
+    prop_assume!(
+        edges
+            .iter()
+            .all(|&e| at_fault(dims, &edges, e, r, m).is_some())
+    );
+    let b = make_box(dims[0], dims[1], dims[2]).unwrap();
+    let past = edges
+        .iter()
+        .any(|&e| runs_past(dims, e, r, m) == Some(true));
+    let result = dress(chamfered, &b, &edges, r);
+    // An edge that runs past its face fails the surfaces step, which OCCT reports.
+    prop_assert!(!past || result.is_err(), "{:?} at r = {} built", edges, r);
+    let Err(err) = result else {
+        return Ok(());
+    };
+    let named = named(&err);
+    prop_assert!(!past || named.is_some(), "names none: {:?}", err);
+    let Some(named) = named else {
+        return Ok(());
+    };
+    prop_assert!(!named.is_empty());
+    prop_assert!(named.windows(2).all(|p| p[0] < p[1]), "{:?}", named);
+    prop_assert!(
+        named.iter().all(|e| edges.contains(e)),
+        "{:?} of {:?}",
+        named,
+        edges
+    );
+    for &e in &edges {
+        if runs_past(dims, e, r, m) == Some(true) {
+            prop_assert!(
+                named.contains(&e),
+                "Edge{} runs past its face; names {:?}",
+                e,
+                named
+            );
+        }
+    }
+    let reversed: Vec<u32> = edges.iter().rev().copied().collect();
+    let again = failed(dress(chamfered, &b, &reversed, r));
+    prop_assert_eq!(again.refusal(), err.refusal());
+    Ok(())
+}
+
+/// Every edge a failed fillet or chamfer names is at fault: it runs past a face, or
+/// collides with another given edge's.
+fn names_only_edges_at_fault(
+    chamfered: bool,
+    (dims, edges, r): ([f64; 3], Vec<u32>, f64),
+) -> Result<(), TestCaseError> {
+    let m = 1e-3;
+    prop_assume!(
+        edges
+            .iter()
+            .all(|&e| at_fault(dims, &edges, e, r, m).is_some())
+    );
+    let b = make_box(dims[0], dims[1], dims[2]).unwrap();
+    let Err(err) = dress(chamfered, &b, &edges, r) else {
+        return Ok(());
+    };
+    let Some(named) = named(&err) else {
+        return Ok(());
+    };
+    // OCCT's report of a collision names the first contour of the pair, which may be an
+    // edge that collides with nothing (see
+    // a_top_face_too_narrow_for_two_fillets_names_no_edge): once named, about one failed
+    // fillet in a hundred on boxes. A chamfer's corners would name bystanders too.
+    for &e in &named {
+        prop_assert_eq!(
+            at_fault(dims, &edges, e, r, m),
+            Some(true),
+            "names Edge{} among {:?} (named {:?}), which neither runs past a face nor collides",
+            e,
+            edges,
+            named
+        );
+    }
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(config())]
 
-    /// A refusal naming edges names some, each given, once, in increasing order (what the
-    /// core's `refusal_fits` demands, or the worker is stopped), and among them every edge
-    /// whose fillet runs past a face whatever else is given. The listed order doesn't
-    /// change it.
     #[test]
-    fn a_failed_fillet_names_every_edge_that_runs_past_its_face(
-        (dims, edges, r) in box_case()
-    ) {
-        let m = 1e-3;
-        prop_assume!(edges.iter().all(|&e| at_fault(dims, &edges, e, r, m).is_some()));
-        let b = make_box(dims[0], dims[1], dims[2]).unwrap();
-        let past = edges.iter().any(|&e| runs_past(dims, e, r, m) == Some(true));
-        let result = fillet(&b, &edges, r);
-        // An edge that runs past its face fails the surfaces step, which OCCT reports.
-        prop_assert!(!past || result.is_err(), "{:?} at r = {} built", edges, r);
-        let Err(err) = result else { return Ok(()); };
-        let named = named(&err);
-        prop_assert!(!past || named.is_some(), "names none: {:?}", err);
-        let Some(named) = named else { return Ok(()); };
-        prop_assert!(!named.is_empty());
-        prop_assert!(named.windows(2).all(|p| p[0] < p[1]), "{:?}", named);
-        prop_assert!(named.iter().all(|e| edges.contains(e)), "{:?} of {:?}", named, edges);
-        for &e in &edges {
-            if runs_past(dims, e, r, m) == Some(true) {
-                prop_assert!(named.contains(&e), "Edge{} runs past its face; names {:?}", e, named);
-            }
-        }
-        let reversed: Vec<u32> = edges.iter().rev().copied().collect();
-        let again = failed(fillet(&b, &reversed, r));
-        prop_assert_eq!(again.refusal(), err.refusal());
+    fn a_failed_fillet_names_every_edge_that_runs_past_its_face(case in box_case()) {
+        names_every_edge_that_runs_past_its_face(false, case)?;
     }
 
-    /// Every edge a failed fillet names is at fault: its fillet runs past a face, or
-    /// collides with another given edge's.
     #[test]
-    fn a_failed_fillet_names_only_edges_at_fault((dims, edges, r) in box_case()) {
-        let m = 1e-3;
-        prop_assume!(edges.iter().all(|&e| at_fault(dims, &edges, e, r, m).is_some()));
-        let b = make_box(dims[0], dims[1], dims[2]).unwrap();
-        let Err(err) = fillet(&b, &edges, r) else { return Ok(()); };
-        let Some(named) = named(&err) else { return Ok(()); };
-        // OCCT's report of a collision names the first contour of the pair, which may be an
-        // edge that collides with nothing (see
-        // a_top_face_too_narrow_for_two_fillets_names_no_edge): once
-        // named, about one failed fillet in a hundred on boxes.
-        for &e in &named {
-            prop_assert_eq!(
-                at_fault(dims, &edges, e, r, m), Some(true),
-                "names Edge{} among {:?} (named {:?}), which neither runs past a face nor collides",
-                e, edges, named
-            );
-        }
+    fn a_failed_fillet_names_only_edges_at_fault(case in box_case()) {
+        names_only_edges_at_fault(false, case)?;
+    }
+
+    #[test]
+    fn a_failed_chamfer_names_every_edge_that_runs_past_its_face(case in box_case()) {
+        names_every_edge_that_runs_past_its_face(true, case)?;
+    }
+
+    #[test]
+    fn a_failed_chamfer_names_only_edges_at_fault(case in box_case()) {
+        names_only_edges_at_fault(true, case)?;
     }
 }
 

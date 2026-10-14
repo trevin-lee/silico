@@ -1,0 +1,79 @@
+Subject: Modeling Algorithms - BRepFilletAPI_MakeChamfer reports the contours and vertices where it failed
+Upstream: not yet filed (Silico files it before carrying this patch on main, then names it here)
+Applies to: OCCT V7_9_3.
+Why: BRepFilletAPI_MakeFillet passes on its builder's report of where a failed build failed
+     (NbFaultyContours, FaultyContour, NbFaultyVertices, FaultyVertex, StripeStatus);
+     BRepFilletAPI_MakeChamfer keeps the same report in its private ChFi3d_ChBuilder and doesn't.
+     Silico reads it to name the edges of a failed chamfer, as it does a fillet's. Accessors only,
+     forwarding to the builder as MakeFillet's do: no result changes.
+Drop when: Silico upgrades to an OCCT release with these accessors (or upstream's equivalent).
+
+--- a/src/BRepFilletAPI/BRepFilletAPI_MakeChamfer.hxx
++++ b/src/BRepFilletAPI/BRepFilletAPI_MakeChamfer.hxx
+@@ -296,7 +296,24 @@
+ 
+   Standard_EXPORT Handle(ChFiDS_SecHArray1) Sect(const Standard_Integer IC,
+                                                  const Standard_Integer IS) const Standard_OVERRIDE;
++
++  //! Returns the number of contours where the computation failed.
++  Standard_EXPORT Standard_Integer NbFaultyContours() const;
++
++  //! For each I in [1.. NbFaultyContours] returns the index IC of
++  //! the contour where the computation failed.
++  Standard_EXPORT Standard_Integer FaultyContour(const Standard_Integer I) const;
+ 
++  //! Returns the number of vertices where the computation failed.
++  Standard_EXPORT Standard_Integer NbFaultyVertices() const;
++
++  //! Returns the vertex where the computation failed.
++  Standard_EXPORT TopoDS_Vertex FaultyVertex(const Standard_Integer IV) const;
++
++  //! Returns the status of the computation of the contour IC
++  //! (see ChFiDS_ErrorStatus).
++  Standard_EXPORT ChFiDS_ErrorStatus StripeStatus(const Standard_Integer IC) const;
++
+ protected:
+ private:
+   ChFi3d_ChBuilder    myBuilder;
+--- a/src/BRepFilletAPI/BRepFilletAPI_MakeChamfer.cxx
++++ b/src/BRepFilletAPI/BRepFilletAPI_MakeChamfer.cxx
+@@ -372,4 +372,39 @@
+                                                           const Standard_Integer IS) const
+ {
+   return myBuilder.Sect(IC, IS);
++}
++
++//=================================================================================================
++
++Standard_Integer BRepFilletAPI_MakeChamfer::NbFaultyContours() const
++{
++  return myBuilder.NbFaultyContours();
+ }
++
++//=================================================================================================
++
++Standard_Integer BRepFilletAPI_MakeChamfer::FaultyContour(const Standard_Integer I) const
++{
++  return myBuilder.FaultyContour(I);
++}
++
++//=================================================================================================
++
++Standard_Integer BRepFilletAPI_MakeChamfer::NbFaultyVertices() const
++{
++  return myBuilder.NbFaultyVertices();
++}
++
++//=================================================================================================
++
++TopoDS_Vertex BRepFilletAPI_MakeChamfer::FaultyVertex(const Standard_Integer IV) const
++{
++  return myBuilder.FaultyVertex(IV);
++}
++
++//=================================================================================================
++
++ChFiDS_ErrorStatus BRepFilletAPI_MakeChamfer::StripeStatus(const Standard_Integer IC) const
++{
++  return myBuilder.StripeStatus(IC);
++}
