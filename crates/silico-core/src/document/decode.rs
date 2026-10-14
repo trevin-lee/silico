@@ -59,6 +59,17 @@ pub fn decode(bytes: &[u8]) -> Result<Document, Error> {
 
 /// The reader's refusal, as an error.
 fn syntax(e: SyntaxError) -> Error {
+    if e.too_large {
+        return Error::new(
+            ErrorCode::InvalidInput,
+            format!("the document is too large for Silico to read: {}", e.message),
+        )
+        .with_suggestion(format!(
+            "make it smaller: a document is at most {} bytes, and its values take at most about {} bytes to hold",
+            super::json::MAX_DOCUMENT_LEN,
+            super::json::MAX_TREE_BYTES
+        ));
+    }
     Error::new(
         ErrorCode::InvalidInput,
         format!("the document isn't valid JSON: {}, at {}", e.message, e.at),

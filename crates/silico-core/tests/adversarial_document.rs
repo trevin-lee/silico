@@ -299,7 +299,7 @@ fn invisible_characters_are_named_by_code_point_in_errors() {
         // Named by its code point alone: the character itself isn't in the message.
         assert!(!err.message().contains(c), "{text:?}: {}", err.message());
     }
-    // A visible character but ASCII's is shown, with its code point.
+    // A visible character outside ASCII is shown, with its code point.
     let err = refused("{\"silico\":\u{e9}1}");
     assert!(
         err.message().contains("`\u{e9}` (U+00E9)"),
@@ -371,7 +371,7 @@ fn names_of_every_awkward_character_round_trip_byte_for_byte() {
     ];
     for name in names {
         let document = one_feature(a_box("k7f2qx3m", name));
-        let text = write(&document);
+        let text = write(&document).unwrap();
         assert!(!text.contains('\r'), "{name:?}: {text}");
         assert_eq!(
             text.lines().count(),
@@ -380,7 +380,7 @@ fn names_of_every_awkward_character_round_trip_byte_for_byte() {
         );
         let back = read(text.as_bytes()).unwrap_or_else(|e| panic!("{name:?}: {e}"));
         assert_eq!(back, document, "{name:?}");
-        assert_eq!(write(&back), text, "{name:?}");
+        assert_eq!(write(&back).unwrap(), text, "{name:?}");
     }
 }
 
@@ -643,7 +643,7 @@ fn a_feature_written_with_its_fields_out_of_order_and_respaced_is_canonical() {
                 \"v\":1,\"type\":\"box\",\"id\":\"k7f2qx3m\"}],\"units\":{\"resolution\":\"1nm\",\"length\":\"mm\"},\"silico\":1}";
     let want = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"features\": [\n    \
                 {\"id\": \"k7f2qx3m\", \"type\": \"box\", \"v\": 1, \"name\": \"B\", \"position\": [0, 0, 0], \"length\": 1, \"width\": 1, \"height\": 1}\n  ]\n}\n";
-    assert_eq!(write(&read(text.as_bytes()).unwrap()), want);
+    assert_eq!(write(&read(text.as_bytes()).unwrap()).unwrap(), want);
 }
 
 #[test]
@@ -657,7 +657,7 @@ fn whitespace_json_doesnt_allow_is_refused() {
     let spaced = EXAMPLE
         .replace(", ", " \t\r\n,\r\n\t ")
         .replace(": ", "\r\n:\t");
-    assert_eq!(write(&read(spaced.as_bytes()).unwrap()), EXAMPLE);
+    assert_eq!(write(&read(spaced.as_bytes()).unwrap()).unwrap(), EXAMPLE);
 }
 
 #[test]
@@ -683,7 +683,7 @@ fn a_hundred_thousand_features_read_and_write_promptly() {
     let text = doc(&features);
     let (n, written) = within(Duration::from_secs(20), move || {
         let document = read(text.as_bytes()).unwrap();
-        (document.features.len(), write(&document))
+        (document.features.len(), write(&document).unwrap())
     });
     assert_eq!(n, 100_000);
     assert_eq!(written.lines().count(), 100_000 + 6);
@@ -736,7 +736,7 @@ fn a_feature_with_an_empty_name_cant_be_made_to_be_saved() {
         Some(" ".to_owned())
     );
     let document = one_feature(a_box("k7f2qx3m", "B"));
-    let text = write(&document);
+    let text = write(&document).unwrap();
     assert_eq!(read(text.as_bytes()).ok(), Some(document), "{text}");
 }
 
@@ -744,7 +744,7 @@ fn a_feature_with_an_empty_name_cant_be_made_to_be_saved() {
 fn a_features_version_is_written_as_the_one_the_reader_reads() {
     // Once: `Feature::version` was any u32, and `write` wrote it; `read` refuses every
     // version but 1. Now it's `FeatureVersion`, which holds only 1 until a type has more.
-    let text = write(&one_feature(a_box("k7f2qx3m", "B")));
+    let text = write(&one_feature(a_box("k7f2qx3m", "B"))).unwrap();
     assert!(text.contains("\"v\": 1,"), "{text}");
 }
 
@@ -1020,12 +1020,12 @@ proptest! {
     /// as itself, and writes the same bytes again.
     #[test]
     fn any_hostile_document_round_trips_byte_for_byte(document in any_document()) {
-        let text = write(&document);
+        let text = write(&document).unwrap();
         let back = read(text.as_bytes());
         prop_assert!(back.is_ok(), "{:?}\n{}", back, text);
         let back = back.unwrap();
         prop_assert_eq!(&back, &document);
-        prop_assert_eq!(write(&back), text.clone());
+        prop_assert_eq!(write(&back).unwrap(), text.clone());
         // One feature per line, LF only, a trailing newline.
         let n = document.features.len();
         prop_assert_eq!(text.lines().count(), if n == 0 { 5 } else { 6 + n });
@@ -1070,10 +1070,10 @@ proptest! {
         let end = (start + cut).min(text.len());
         text.splice(start..end, insert.into_bytes());
         if let Ok(document) = read(&text) {
-            let once = write(&document);
+            let once = write(&document).unwrap();
             let back = read(once.as_bytes()).unwrap();
             prop_assert_eq!(&back, &document);
-            prop_assert_eq!(write(&back), once);
+            prop_assert_eq!(write(&back).unwrap(), once);
         }
     }
 }

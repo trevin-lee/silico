@@ -18,13 +18,16 @@ pub const MAX_DOCUMENT_LEN: usize = 16 << 20;
 
 /// The most memory the tree of a document's values may take: 256 MiB, counted as it's
 /// built (each value, key, and text, and each array's and object's room), so reading any
-/// text costs at most that. A real document takes about 7 times its size (a feature's 150
+/// text costs about that at most (each allocation is charged [`ALLOCATION`] bytes more
+/// than it holds; an allocator whose smallest block is larger, as glibc's 32, costs a
+/// little more). A real document takes about 7 times its size (a feature's 150
 /// bytes are about a kilobyte of tree), so every document within [`MAX_DOCUMENT_LEN`]
 /// fits; the text that costs most for its size (`[{"a":0},...]`) doesn't, and is refused
 /// when the tree would pass it.
 pub const MAX_TREE_BYTES: usize = 256 << 20;
 
-/// The most characters of a string or key an error repeats: enough to recognize it.
+/// The most characters of a string, key, or number an error repeats: enough to recognize
+/// it.
 pub(crate) const SHOWN_CHARS: usize = 40;
 
 /// What a heap allocation costs beyond its bytes, as charged: an allocator's smallest
@@ -101,6 +104,8 @@ impl Value {
 pub struct SyntaxError {
     pub at: At,
     pub message: String,
+    /// Whether the text was refused for its size, or its tree's, not for its JSON.
+    pub too_large: bool,
 }
 
 /// Reads `bytes` as one JSON value, with nothing but whitespace after it.
@@ -113,6 +118,7 @@ pub fn read(bytes: &[u8]) -> Result<Node, SyntaxError> {
                 bytes.len(),
                 MAX_DOCUMENT_LEN
             ),
+            too_large: true,
         });
     }
     let text = match std::str::from_utf8(bytes) {
@@ -124,6 +130,7 @@ pub fn read(bytes: &[u8]) -> Result<Node, SyntaxError> {
             return Err(SyntaxError {
                 at,
                 message: "the text isn't UTF-8".to_owned(),
+                too_large: false,
             });
         }
     };
@@ -198,6 +205,7 @@ impl Reader<'_> {
         SyntaxError {
             at: self.at(),
             message: message.into(),
+            too_large: false,
         }
     }
 
@@ -235,15 +243,18 @@ impl Reader<'_> {
     fn charge(&mut self, bytes: usize) -> Result<(), SyntaxError> {
         self.spent = self.spent.saturating_add(bytes);
         if self.spent > MAX_TREE_BYTES {
-            return Err(self.error(format!(
-                "reading the document would take more than the {MAX_TREE_BYTES} bytes of memory a document may"
-            )));
+            return Err(SyntaxError {
+                too_large: true,
+                ..self.error(format!(
+                    "reading the document would take more than the {MAX_TREE_BYTES} bytes of memory a document may"
+                ))
+            });
         }
         Ok(())
     }
 
     /// Room in `items` for one more, charged as it's made.
-    fn room<T>(&mut self, items: &mut Vec<T>) -> Result<(), SyntaxError> {
+    fn reserve_one<T>(&mut self, items: &mut Vec<T>) -> Result<(), SyntaxError> {
         if items.len() == items.capacity() {
             let more = items.capacity().max(4);
             let charge = if items.capacity() == 0 {
@@ -258,7 +269,7 @@ impl Reader<'_> {
     }
 
     /// `items` with no room to spare, its spare room given back to the charge.
-    fn close<T>(&mut self, mut items: Vec<T>) -> Vec<T> {
+    fn shrink_charged<T>(&mut self, mut items: Vec<T>) -> Vec<T> {
         let spare = items.capacity() - items.len();
         self.spent = self.spent.saturating_sub(spare * size_of::<T>());
         items.shrink_to_fit();
@@ -266,7 +277,7 @@ impl Reader<'_> {
     }
 
     /// `text` with no room to spare, charged.
-    fn text(&mut self, mut text: String) -> Result<String, SyntaxError> {
+    fn charge_text(&mut self, mut text: String) -> Result<String, SyntaxError> {
         text.shrink_to_fit();
         if !text.is_empty() {
             self.charge(text.len() + ALLOCATION)?;
@@ -281,11 +292,11 @@ impl Reader<'_> {
             Some('[') => self.array(depth)?,
             Some('"') => {
                 let text = self.string()?;
-                Value::String(self.text(text)?)
+                Value::String(self.charge_text(text)?)
             }
             Some('-' | '0'..='9') => {
                 let text = self.number()?;
-                Value::Number(self.text(text)?)
+                Value::Number(self.charge_text(text)?)
             }
             Some('t') => self.word("true", Value::Bool(true))?,
             Some('f') => self.word("false", Value::Bool(false))?,
@@ -302,6 +313,7 @@ impl Reader<'_> {
                 return Err(SyntaxError {
                     at: start,
                     message: format!("expected a value, found {}", self.found()),
+                    too_large: false,
                 });
             }
             self.bump();
@@ -334,12 +346,12 @@ impl Reader<'_> {
                 return Err(self.error(format!("expected a key, found {}", self.found())));
             }
             let key = self.string()?;
-            let key = self.text(key)?;
+            let key = self.charge_text(key)?;
             self.skip_whitespace();
             self.expect(':')?;
             self.skip_whitespace();
             let value = self.value(depth)?;
-            self.room(&mut members)?;
+            self.reserve_one(&mut members)?;
             members.push(Member { key, at, value });
             self.skip_whitespace();
             match self.peek() {
@@ -348,8 +360,8 @@ impl Reader<'_> {
                 }
                 Some('}') => {
                     self.bump();
-                    twice(&members)?;
-                    return Ok(Value::Object(self.close(members)));
+                    refuse_repeated_key(&members)?;
+                    return Ok(Value::Object(self.shrink_charged(members)));
                 }
                 _ => {
                     return Err(self.error(format!("expected `,` or `}}`, found {}", self.found())));
@@ -370,7 +382,7 @@ impl Reader<'_> {
         loop {
             self.skip_whitespace();
             let item = self.value(depth)?;
-            self.room(&mut items)?;
+            self.reserve_one(&mut items)?;
             items.push(item);
             self.skip_whitespace();
             match self.peek() {
@@ -379,7 +391,7 @@ impl Reader<'_> {
                 }
                 Some(']') => {
                     self.bump();
-                    return Ok(Value::Array(self.close(items)));
+                    return Ok(Value::Array(self.shrink_charged(items)));
                 }
                 _ => {
                     return Err(self.error(format!("expected `,` or `]`, found {}", self.found())));
@@ -532,7 +544,7 @@ impl Reader<'_> {
 
 /// Refuses an object with a key written twice, at the second writing of the first key to
 /// be (in the order written). Found by sorting, so the keys aren't kept twice.
-fn twice(members: &[Member]) -> Result<(), SyntaxError> {
+fn refuse_repeated_key(members: &[Member]) -> Result<(), SyntaxError> {
     let mut order: Vec<usize> = (0..members.len()).collect();
     order.sort_by(|&a, &b| {
         let key = |i: usize| members.get(i).map(|m| m.key.as_str());
@@ -552,9 +564,20 @@ fn twice(members: &[Member]) -> Result<(), SyntaxError> {
                 "the key {} is written twice in one object",
                 shown(&member.key)
             ),
+            too_large: false,
         }),
         None => Ok(()),
     }
+}
+
+/// Whether `c` is a bidirectional control: the marks, embeddings, overrides, and isolates,
+/// which reorder how the text around them shows (Trojan Source, CVE-2021-42574). The
+/// writer escapes them; errors name them by code point.
+pub(crate) fn bidi_control(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x61c | 0x200e | 0x200f | 0x202a..=0x202e | 0x2066..=0x2069
+    )
 }
 
 /// Whether `c` is a format or other invisible character Unicode draws as nothing: soft
@@ -562,23 +585,24 @@ fn twice(members: &[Member]) -> Result<(), SyntaxError> {
 /// word joiners and invisible operators, variation selectors, the byte-order mark, the
 /// Hangul fillers, and the tag characters.
 fn invisible(c: char) -> bool {
-    matches!(
-        c as u32,
-        0xad | 0x34f
-            | 0x61c
-            | 0x115f..=0x1160
-            | 0x17b4..=0x17b5
-            | 0x180b..=0x180f
-            | 0x200b..=0x200f
-            | 0x202a..=0x202e
-            | 0x2060..=0x206f
-            | 0x3164
-            | 0xfe00..=0xfe0f
-            | 0xfeff
-            | 0xffa0
-            | 0xfff0..=0xfffb
-            | 0xe0000..=0xe0fff
-    )
+    bidi_control(c)
+        || matches!(
+            c as u32,
+            0xad | 0x34f
+                | 0x61c
+                | 0x115f..=0x1160
+                | 0x17b4..=0x17b5
+                | 0x180b..=0x180f
+                | 0x200b..=0x200f
+                | 0x202a..=0x202e
+                | 0x2060..=0x206f
+                | 0x3164
+                | 0xfe00..=0xfe0f
+                | 0xfeff
+                | 0xffa0
+                | 0xfff0..=0xfffb
+                | 0xe0000..=0xe0fff
+        )
 }
 
 #[cfg(test)]

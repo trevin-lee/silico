@@ -19,8 +19,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
-# Checks documents against the published schema, as an agent's validator would.
-jsonschema = { version = "0.58", default-features = false }
+jsonschema.workspace = true
 proptest.workspace = true
 
 [lints]

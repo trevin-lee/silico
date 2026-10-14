@@ -10,15 +10,16 @@ use silico_core::document::{read, write};
 fuzz_target!(|data: &[u8]| {
     match read(data) {
         Ok(document) => {
-            let text = write(&document);
+            let text = write(&document).expect("a document read is written");
             let back = read(text.as_bytes()).expect("canonical text reads back");
             assert_eq!(back, document);
-            assert_eq!(write(&back), text);
+            assert_eq!(write(&back).unwrap(), text);
         }
         Err(e) => {
             assert_eq!(e.code(), ErrorCode::InvalidInput);
             assert!(e.suggestion().is_some());
-            assert!(e.message().contains("line "));
+            // Where, unless it was refused for its size.
+            assert!(e.message().contains("line ") || e.message().contains("too large"));
         }
     }
 });

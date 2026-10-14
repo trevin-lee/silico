@@ -248,8 +248,5 @@ fn quote(out: &mut String, text: &str) {
 
 /// Whether `c` is written as an escape though JSON doesn't require it (see `quote`).
 fn escaped(c: char) -> bool {
-    matches!(
-        c as u32,
-        0x7f..=0x9f | 0x2028 | 0x2029 | 0x61c | 0x200e | 0x200f | 0x202a..=0x202e | 0x2066..=0x2069
-    )
+    matches!(c as u32, 0x7f..=0x9f | 0x2028 | 0x2029) || super::json::bidi_control(c)
 }

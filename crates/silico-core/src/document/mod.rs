@@ -24,11 +24,25 @@ pub fn read(bytes: &[u8]) -> Result<Document, Error> {
     decode::decode(bytes)
 }
 
-/// The document's canonical text: the same document always writes the same bytes.
-pub fn write(document: &Document) -> String {
+/// The document's canonical text: the same document always writes the same bytes. Refused
+/// if the text would be more than [`json::MAX_DOCUMENT_LEN`], which `read` would refuse:
+/// whatever is written reads back as the same document.
+pub fn write(document: &Document) -> Result<String, Error> {
     let _span =
         tracing::debug_span!("document_write", features = document.features.len()).entered();
-    write::write(document)
+    let text = write::write(document);
+    if text.len() > json::MAX_DOCUMENT_LEN {
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            format!(
+                "the document's text would be {} bytes, more than the {} a document may be",
+                text.len(),
+                json::MAX_DOCUMENT_LEN
+            ),
+        )
+        .with_suggestion("make it smaller: fewer features, or shorter names and notes"));
+    }
+    Ok(text)
 }
 
 /// The JSON Schema of a document (draft 2020-12), as agents get it. The reader is the

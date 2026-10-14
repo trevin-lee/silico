@@ -71,7 +71,7 @@ fn the_example_reads_as_its_values_and_writes_back_byte_for_byte() {
         ],
     };
     assert_eq!(document, want);
-    assert_eq!(write(&document), EXAMPLE);
+    assert_eq!(write(&document).unwrap(), EXAMPLE);
 }
 
 #[test]
@@ -118,7 +118,7 @@ fn every_feature_type_reads_and_writes_on_one_line() {
             },
         ]
     );
-    assert_eq!(write(&document), text);
+    assert_eq!(write(&document).unwrap(), text);
 }
 
 #[test]
@@ -126,7 +126,7 @@ fn a_document_with_no_features_writes_an_empty_array() {
     let text = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"features\": []\n}\n";
     let document = read(text.as_bytes()).unwrap();
     assert!(document.features.is_empty());
-    assert_eq!(write(&document), text);
+    assert_eq!(write(&document).unwrap(), text);
 }
 
 #[test]
@@ -144,11 +144,11 @@ fn any_spelling_of_the_same_document_writes_the_same_canonical_bytes() {
   ]
 }
 "#;
-    assert_eq!(write(&read(messy.as_bytes()).unwrap()), tidy);
+    assert_eq!(write(&read(messy.as_bytes()).unwrap()).unwrap(), tidy);
     let numbers = EXAMPLE
         .replace("\"length\": 40", "\"length\": 40.000")
         .replace("\"radius\": 2.5", "\"radius\": 2.5000000000");
-    assert_eq!(write(&read(numbers.as_bytes()).unwrap()), EXAMPLE);
+    assert_eq!(write(&read(numbers.as_bytes()).unwrap()).unwrap(), EXAMPLE);
 }
 
 #[test]
@@ -157,7 +157,7 @@ fn strings_keep_every_character_and_escape_only_what_json_requires() {
     let name = "Quote \" back\\slash\ttab\nline \u{1} é 😀 \u{2028} </tag>";
     document.features[0].name = Name::new(name).unwrap();
     document.features[0].note = Some(String::new());
-    let text = write(&document);
+    let text = write(&document).unwrap();
     // Quote, backslash, control characters, and the line separator escaped; the rest as
     // written.
     let want = "\"name\": \"Quote \\\" back\\\\slash\\ttab\\nline \\u0001 é 😀 \\u2028 </tag>\"";
@@ -166,7 +166,7 @@ fn strings_keep_every_character_and_escape_only_what_json_requires() {
     assert!(text.contains(r#""note": """#), "{text}");
     let back = read(text.as_bytes()).unwrap();
     assert_eq!(back, document);
-    assert_eq!(write(&back), text);
+    assert_eq!(write(&back).unwrap(), text);
 }
 
 /// The error reading `text` gives, which must be `invalid_input`.
@@ -414,6 +414,16 @@ fn a_document_past_the_size_or_memory_limits_is_refused_before_it_costs_much() {
             .contains(&format!("more than the {MAX_DOCUMENT_LEN}")),
         "{err}"
     );
+    // Said as too large, not as bad JSON: there's nothing to fix in the text.
+    assert!(
+        err.message().contains("too large for Silico to read"),
+        "{err}"
+    );
+    assert!(!err.message().contains("valid JSON"), "{err}");
+    assert!(
+        err.suggestion().unwrap().contains("make it smaller"),
+        "{err}"
+    );
     // At the size, read (here, refused as JSON for being only spaces).
     let err = read(&big[1..]).unwrap_err();
     assert!(err.message().contains("expected a value"), "{err}");
@@ -430,6 +440,11 @@ fn a_document_past_the_size_or_memory_limits_is_refused_before_it_costs_much() {
             .contains(&format!("more than the {MAX_TREE_BYTES} bytes of memory")),
         "{err}"
     );
+    assert!(
+        err.message().contains("too large for Silico to read"),
+        "{err}"
+    );
+    assert!(!err.message().contains("valid JSON"), "{err}");
     // A real document near the size reads: about seven times its size in tree.
     let feature = r#"{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}"#;
     let count = (MAX_DOCUMENT_LEN - 200) / (feature.len() + 6);
@@ -457,30 +472,31 @@ fn the_schema_accepts_what_the_reader_reads() {
     // Once, the schema said lengths were a `multipleOf` 1e-6, and validators, dividing in
     // floating point, refused 0.1 mm (0.1 / 1e-6 isn't whole to them) and 27 more of
     // 0.1 to 9.9: a published schema that refuses documents Silico reads.
-    // This validator computes `multipleOf` exactly, so it wouldn't see that; python's
-    // jsonschema and ajv do as most do. So: no number in the schema says a multiple.
+    // This validator computes `multipleOf` exactly, so it wouldn't see that bug; python's
+    // jsonschema and ajv, like most, divide in floating point. So: no number in the schema
+    // says a multiple.
     let schema: serde_json::Value = serde_json::from_str(&schema().unwrap()).unwrap();
     assert!(schema["$defs"]["Length"].is_object(), "{schema}");
     assert!(!schema.to_string().contains("multipleOf"), "{schema}");
-    let validator = validator();
-    assert!(valid(&validator, EXAMPLE));
+    let validator = &*VALIDATOR;
+    assert!(valid(validator, EXAMPLE));
     for tenths in 1..100 {
         let radius = format!("{}.{}", tenths / 10, tenths % 10);
         let text = EXAMPLE.replacen("\"radius\": 2.5", &format!("\"radius\": {radius}"), 1);
         read(text.as_bytes()).unwrap();
-        assert!(valid(&validator, &text), "{radius}");
+        assert!(valid(validator, &text), "{radius}");
     }
     for value in ["100.123456", "0.000001", "-9223372036854.775808", "1.1"] {
         let text = EXAMPLE.replacen("\"length\": 40", &format!("\"length\": {value}"), 1);
         read(text.as_bytes()).unwrap();
-        assert!(valid(&validator, &text), "{value}");
+        assert!(valid(validator, &text), "{value}");
     }
 }
 
 #[test]
 fn the_schema_refuses_what_the_reader_refuses_by_shape() {
     // So the validator above is checking something: each of these the reader refuses too.
-    let validator = validator();
+    let validator = &*VALIDATOR;
     for (from, to) in [
         ("\"height\": 12}", "\"height\": 12, \"depth\": 3}"),
         ("\"radius\": 2.5, ", ""),
@@ -495,7 +511,7 @@ fn the_schema_refuses_what_the_reader_refuses_by_shape() {
     ] {
         let text = EXAMPLE.replacen(from, to, 1);
         assert!(read(text.as_bytes()).is_err(), "{to}");
-        assert!(!valid(&validator, &text), "{to}");
+        assert!(!valid(validator, &text), "{to}");
     }
 }
 
@@ -548,16 +564,16 @@ fn every_feature_type_is_read_written_and_in_the_schema() {
     ];
     let names: Vec<&str> = samples.iter().map(Operation::type_name).collect();
     assert_eq!(names, FEATURE_TYPES);
-    let validator = validator();
+    let validator = &*VALIDATOR;
     for operation in samples {
         let document = Document {
             silico: FormatVersion,
             units: Units,
             features: vec![feature("22222222", "F", operation)],
         };
-        let text = write(&document);
+        let text = write(&document).unwrap();
         assert_eq!(read(text.as_bytes()).unwrap(), document, "{text}");
-        assert!(valid(&validator, &text), "{text}");
+        assert!(valid(validator, &text), "{text}");
     }
 }
 
@@ -568,7 +584,7 @@ fn bidirectional_controls_are_written_as_escapes() {
     let mut document = read(EXAMPLE.as_bytes()).unwrap();
     let name = "A\u{202e}\u{2066}\u{2069}\u{200e}\u{200f}\u{61c}\u{202a}";
     document.features[0].name = Name::new(name).unwrap();
-    let text = write(&document);
+    let text = write(&document).unwrap();
     for c in name.chars().skip(1) {
         assert!(!text.contains(c), "U+{:04X} written raw: {text}", c as u32);
     }
@@ -587,10 +603,10 @@ fn strings_escape_exactly_what_canonical_form_names() {
     // hand.
     let mut document = read(EXAMPLE.as_bytes()).unwrap();
     let name = "\u{1f} \u{8}\u{c}\u{7e}\u{7f}\u{80}\u{85}\u{9f}\u{a0}\u{2027}\u{2028}\u{2029}\u{202a}\
-                \u{61b}\u{61c}\u{200d}\u{200e}\u{200f}\u{2010}\u{2029}\u{202a}\u{202e}\u{202f}\
+                \u{61b}\u{61c}\u{200d}\u{200e}\u{200f}\u{2010}\u{202e}\u{202f}\
                 \u{2065}\u{2066}\u{2069}\u{206a}";
     document.features[0].name = Name::new(name).unwrap();
-    let text = write(&document);
+    let text = write(&document).unwrap();
     // Escaped where `\\` is written; the characters either side of each range raw.
     let want = [
         "\"name\": \"",
@@ -602,7 +618,7 @@ fn strings_escape_exactly_what_canonical_form_names() {
         "\u{200d}",
         "\\u200e\\u200f",
         "\u{2010}",
-        "\\u2029\\u202a\\u202e",
+        "\\u202e",
         "\u{202f}\u{2065}",
         "\\u2066\\u2069",
         "\u{206a}",
@@ -661,7 +677,7 @@ fn a_number_is_shown_whole_up_to_forty_characters_then_cut() {
 fn what_the_schema_cant_say_the_reader_refuses() {
     // JSON Schema has no way to refuse an exponent or a whole number written with a
     // fraction: the schema accepts these, and the reader, the authority, refuses them.
-    let validator = validator();
+    let validator = &*VALIDATOR;
     for (from, to) in [
         ("\"length\": 40", "\"length\": 4e1"),
         ("\"silico\": 1", "\"silico\": 1.0"),
@@ -671,9 +687,71 @@ fn what_the_schema_cant_say_the_reader_refuses() {
         ),
     ] {
         let text = EXAMPLE.replacen(from, to, 1);
-        assert!(valid(&validator, &text), "{to}");
+        assert!(valid(validator, &text), "{to}");
         assert!(read(text.as_bytes()).is_err(), "{to}");
     }
+}
+
+#[test]
+fn every_bidirectional_control_is_escaped() {
+    // Every code point of each range, not only its ends: a writer missing any one passes
+    // a test of the ends (RLE, PDF, LRO, RLI, and FSI are inside them).
+    let mut document = read(EXAMPLE.as_bytes()).unwrap();
+    for cp in [
+        0x61c, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068,
+        0x2069,
+    ] {
+        let c = char::from_u32(cp).unwrap();
+        document.features[0].name = Name::new(format!("A{c}")).unwrap();
+        let text = write(&document).unwrap();
+        assert!(!text.contains(c), "U+{cp:04X} written raw");
+        assert!(text.contains(&format!("\"A\\u{cp:04x}\"")), "{text}");
+    }
+}
+
+#[test]
+fn the_first_duplicate_in_written_order_is_the_one_reported() {
+    // "b" is written again (column 18) before "a" is (column 26): "b" is reported, though
+    // "a" sorts first.
+    let err =
+        silico_core::document::json::read(br#"{"b": 0, "a": 0, "b": 0, "a": 0}"#).unwrap_err();
+    assert!(
+        err.message.contains("\"b\" is written twice"),
+        "{}",
+        err.message
+    );
+    assert_eq!((err.at.line, err.at.column), (1, 18), "{}", err.message);
+}
+
+#[test]
+fn a_document_whose_text_would_be_too_large_isnt_written() {
+    // Whatever `write` writes, `read` reads: a document whose canonical text would pass
+    // the size `read` takes is refused, not written as a file that won't open. Compact
+    // text near the size reads, and its canonical text (with its spacing) would be larger.
+    use silico_core::document::json::MAX_DOCUMENT_LEN;
+    let f =
+        r#"{"id":"00000000","type":"fuse","v":1,"name":"a","base":"00000001","tool":"00000002"}"#;
+    let count = (MAX_DOCUMENT_LEN - 100) / (f.len() + 1);
+    let compact = format!(
+        "{{\"silico\":1,\"units\":{{\"length\":\"mm\",\"resolution\":\"1nm\"}},\"features\":[{}]}}",
+        vec![f; count].join(",")
+    );
+    let document = read(compact.as_bytes()).unwrap();
+    let err = write(&document).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
+    assert!(err.message().contains("more than the 16777216"), "{err}");
+    assert!(
+        err.suggestion().unwrap().contains("make it smaller"),
+        "{err}"
+    );
+    // A note escaped to six times its size, the same.
+    let mut document = read(EXAMPLE.as_bytes()).unwrap();
+    document.features[0].note = Some("\u{1}".repeat(3 << 20));
+    assert!(write(&document).is_err());
+    // Under the size, written and read back.
+    document.features[0].note = Some("\u{1}".repeat(1 << 20));
+    let text = write(&document).unwrap();
+    assert_eq!(read(text.as_bytes()).unwrap(), document);
 }
 
 #[test]
@@ -784,7 +862,7 @@ proptest! {
     /// Any document written reads back as itself, and writes the same bytes again.
     #[test]
     fn any_document_round_trips_byte_for_byte(document in any_document()) {
-        let text = write(&document);
+        let text = write(&document).unwrap();
         let closed = text.ends_with("}\n");
         prop_assert!(closed);
         prop_assert!(!text.contains('\r'));
@@ -792,7 +870,7 @@ proptest! {
         prop_assert!(back.is_ok(), "{:?}\n{}", back, text);
         let back = back.unwrap();
         prop_assert_eq!(&back, &document);
-        prop_assert_eq!(write(&back), text.clone());
+        prop_assert_eq!(write(&back).unwrap(), text.clone());
         // And the published schema accepts it, as an agent's validator would.
         prop_assert!(valid(&VALIDATOR, &text), "{}", text);
     }
@@ -815,7 +893,7 @@ proptest! {
         let end = (start + cut).min(bytes.len());
         bytes.splice(start..end, insert);
         if let Ok(document) = read(&bytes) {
-            let text = write(&document);
+            let text = write(&document).unwrap();
             prop_assert_eq!(read(text.as_bytes()).unwrap(), document);
         }
     }
