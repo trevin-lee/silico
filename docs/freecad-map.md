@@ -38,5 +38,7 @@ git -C ~/Git/FreeCAD show <hash>                                            # re
 ## Running FreeCAD headless
 
 ```bash
-/Applications/FreeCAD.app/Contents/Resources/bin/freecadcmd /tmp/script.py
+.pixi/envs/oracle/bin/freecadcmd /tmp/script.py   # pixi run install-oracle, if it's missing
 ```
+
+This is the FreeCAD the oracle tests use: 1.1.3, on OCCT 7.9.3, the release Silico pins. A FreeCAD app installed separately may link another OCCT release (the FreeCAD app in `/Applications` on the maintainer's Mac links 7.8.1), so a comparison with it can differ for OCCT's reasons.
