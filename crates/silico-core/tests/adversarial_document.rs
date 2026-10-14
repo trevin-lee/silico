@@ -282,15 +282,30 @@ fn invisible_characters_are_named_by_code_point_in_errors() {
     // go is reported as found ` ` or found `` (the character itself, invisible), so the
     // error points at what looks like an ordinary space or at nothing. Control characters
     // are already named as U+XXXX; these aren't, as `found` checks only `is_control`.
-    for (text, code) in [
-        ("{\"silico\":\u{a0}1}", "U+00A0"),
-        ("{\"silico\":\u{200b}1}", "U+200B"),
-        ("{\"silico\": 1,\u{feff}\"units\": {}}", "U+FEFF"),
-        ("{\"silico\": 1\u{2028}}", "U+2028"),
+    for (text, code, c) in [
+        ("{\"silico\":\u{a0}1}", "U+00A0", '\u{a0}'),
+        ("{\"silico\":\u{200b}1}", "U+200B", '\u{200b}'),
+        (
+            "{\"silico\": 1,\u{feff}\"units\": {}}",
+            "U+FEFF",
+            '\u{feff}',
+        ),
+        ("{\"silico\": 1\u{2028}}", "U+2028", '\u{2028}'),
+        ("{\"silico\":\u{202e}1}", "U+202E", '\u{202e}'),
+        ("{\"silico\":\u{ad}1}", "U+00AD", '\u{ad}'),
     ] {
         let err = refused(text);
         assert!(err.message().contains(code), "{text:?}: {}", err.message());
+        // Named by its code point alone: the character itself isn't in the message.
+        assert!(!err.message().contains(c), "{text:?}: {}", err.message());
     }
+    // A visible character but ASCII's is shown, with its code point.
+    let err = refused("{\"silico\":\u{e9}1}");
+    assert!(
+        err.message().contains("`\u{e9}` (U+00E9)"),
+        "{}",
+        err.message()
+    );
 }
 
 // ------------------------------------------------------------- unicode and escapes

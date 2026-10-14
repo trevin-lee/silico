@@ -580,6 +580,103 @@ fn bidirectional_controls_are_written_as_escapes() {
 }
 
 #[test]
+fn strings_escape_exactly_what_canonical_form_names() {
+    // D7: `"`, `\`, C0 (short escapes where JSON has them), DEL and C1, the line and
+    // paragraph separators, and the bidirectional controls are escaped; the characters
+    // either side of each range are written as they are. The text here is written out by
+    // hand.
+    let mut document = read(EXAMPLE.as_bytes()).unwrap();
+    let name = "\u{1f} \u{8}\u{c}\u{7e}\u{7f}\u{80}\u{85}\u{9f}\u{a0}\u{2027}\u{2028}\u{2029}\u{202a}\
+                \u{61b}\u{61c}\u{200d}\u{200e}\u{200f}\u{2010}\u{2029}\u{202a}\u{202e}\u{202f}\
+                \u{2065}\u{2066}\u{2069}\u{206a}";
+    document.features[0].name = Name::new(name).unwrap();
+    let text = write(&document);
+    // Escaped where `\\` is written; the characters either side of each range raw.
+    let want = [
+        "\"name\": \"",
+        "\\u001f \\b\\f~\\u007f\\u0080\\u0085\\u009f",
+        "\u{a0}\u{2027}",
+        "\\u2028\\u2029\\u202a",
+        "\u{61b}",
+        "\\u061c",
+        "\u{200d}",
+        "\\u200e\\u200f",
+        "\u{2010}",
+        "\\u2029\\u202a\\u202e",
+        "\u{202f}\u{2065}",
+        "\\u2066\\u2069",
+        "\u{206a}",
+        "\"",
+    ]
+    .concat();
+    assert!(text.contains(&want), "{text}");
+    assert_eq!(read(text.as_bytes()).unwrap(), document);
+}
+
+#[test]
+fn ids_with_the_letters_crockford_leaves_out_are_refused() {
+    // Crockford's base32, lower case, written out here, not taken from the code.
+    assert_eq!(ID_ALPHABET, "0123456789abcdefghjkmnpqrstvwxyz");
+    for bad in [
+        "iiiiiiii", "oooooooo", "uuuuuuuu", "llllllll", "k7f2qx3I", "k7f2qx3",
+    ] {
+        assert_eq!(FeatureId::new(bad), None, "{bad}");
+        let text = EXAMPLE.replace("k7f2qx3m", bad);
+        let err = read(text.as_bytes()).unwrap_err();
+        assert!(err.message().contains("isn't a feature ID"), "{bad}: {err}");
+    }
+    for good in ["00000000", "zzzzzzzz", "abcdefgh", "jkmnpqrs"] {
+        assert!(FeatureId::new(good).is_some(), "{good}");
+    }
+}
+
+#[test]
+fn a_number_is_shown_whole_up_to_forty_characters_then_cut() {
+    // 40 digits: shown whole. 41: cut, with `…`. (Version numbers are compared as text.)
+    let forty = "9".repeat(40);
+    let err = read(
+        EXAMPLE
+            .replacen("\"silico\": 1", &format!("\"silico\": {forty}"), 1)
+            .as_bytes(),
+    )
+    .unwrap_err();
+    assert!(
+        err.message().contains(&format!("version {forty},")),
+        "{err}"
+    );
+    let more = "9".repeat(41);
+    let err = read(
+        EXAMPLE
+            .replacen("\"silico\": 1", &format!("\"silico\": {more}"), 1)
+            .as_bytes(),
+    )
+    .unwrap_err();
+    assert!(
+        err.message().contains(&format!("version {forty}…,")),
+        "{err}"
+    );
+}
+
+#[test]
+fn what_the_schema_cant_say_the_reader_refuses() {
+    // JSON Schema has no way to refuse an exponent or a whole number written with a
+    // fraction: the schema accepts these, and the reader, the authority, refuses them.
+    let validator = validator();
+    for (from, to) in [
+        ("\"length\": 40", "\"length\": 4e1"),
+        ("\"silico\": 1", "\"silico\": 1.0"),
+        (
+            "\"type\": \"box\", \"v\": 1",
+            "\"type\": \"box\", \"v\": 1.0",
+        ),
+    ] {
+        let text = EXAMPLE.replacen(from, to, 1);
+        assert!(valid(&validator, &text), "{to}");
+        assert!(read(text.as_bytes()).is_err(), "{to}");
+    }
+}
+
+#[test]
 fn the_schema_is_the_committed_contract() {
     // Agents rely on this shape: changing it means changing the committed file, with the
     // maintainer (tests/contract/ is protected).
