@@ -1,5 +1,5 @@
 Subject: Modeling Algorithms - BRepFilletAPI_MakeChamfer reports the contours and vertices where it failed
-Upstream: not yet filed (Silico files it before carrying this patch on main, then names it here)
+Upstream: https://github.com/Open-Cascade-SAS/OCCT/issues/1632 (feature request; a PR needs OCCT's CLA)
 Applies to: OCCT V7_9_3.
 Why: BRepFilletAPI_MakeFillet passes on its builder's report of where a failed build failed
      (NbFaultyContours, FaultyContour, NbFaultyVertices, FaultyVertex, StripeStatus);

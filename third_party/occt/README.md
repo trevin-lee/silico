@@ -24,7 +24,7 @@ pixi run stress        # 605-case stress test, byte-identical to the reference
 | Patch | Upstream | What it fixes |
 |---|---|---|
 | [0001](patches/0001-offset-deterministic-face-order.patch) | [PR #1600](https://github.com/Open-Cascade-SAS/OCCT/pull/1600), backported to 7.9.3 | Arc-join offsets returned their faces in an order that depended on memory addresses, so results changed from run to run. |
-| [0002](patches/0002-chamfer-faulty-report.patch) | not yet filed | `BRepFilletAPI_MakeChamfer` didn't pass on its builder's report of where a failed build failed, as `BRepFilletAPI_MakeFillet` does. Accessors only. |
+| [0002](patches/0002-chamfer-faulty-report.patch) | [issue #1632](https://github.com/Open-Cascade-SAS/OCCT/issues/1632) | `BRepFilletAPI_MakeChamfer` didn't pass on its builder's report of where a failed build failed, as `BRepFilletAPI_MakeFillet` does. Accessors only. |
 
 ## Applying the patches by hand (inspection only)
 
