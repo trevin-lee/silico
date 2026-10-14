@@ -962,7 +962,7 @@ impl std::io::Write for Captured {
 fn a_chamfer_whose_collision_is_at_a_corner_stripe_names_no_edge() {
     // A 10 mm cube, every edge at 5: each face's two chamfers take exactly its width. OCCT
     // reports as faulty a corner stripe it added while building, not one of the twelve given
-    // contours. The bridge leaves it out, as it should: no edge is named, and the report is
+    // contours. `faulty_edges` leaves it out, as it should: no edge is named, and the report is
     // read (no warning that it couldn't be, which would mean a stripe's status was asked for).
     let logs = Captured::default();
     let writer = logs.clone();
