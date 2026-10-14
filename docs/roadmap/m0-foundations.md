@@ -219,6 +219,7 @@ The sections above describe each step as it was built. The milestone review and 
 - `Failure::new(kind, message)` builds a failure with no element or suggestion.
 - App-side logging (`SILICO_LOG`, `SILICO_LOG_FORMAT`) is `silico_core::logging::init`, used by the CLI and `silico-view`; workers keep their own JSON logging, with the same default for an empty or unusable `SILICO_LOG`.
 - `tests/determinism/probe.cpp` and `compare.py`, superseded by the stress test, are removed (in git history).
+- The oracle environment is the only FreeCAD Silico uses, with no fallback to `/Applications/FreeCAD.app` (`silico-oracle` finds no other), and its OCCT is pinned with Silico's: FreeCAD 1.1.3 on OCCT 7.9.3 (pixi.toml). The FreeCAD app on the maintainer's Mac links 7.8.1, so a comparison with it could differ for OCCT's reasons; the skills and docs/freecad-map.md point at `.pixi/envs/oracle/bin/freecadcmd`.
 - Since M2.0, the error names every sub-element at fault (`elements`, a list, in place of `element`; where there are too many, the first hundred, with how many there are in `elements_total`) and the parameter at fault (`parameter`), and a shortage of files, processes, memory, or buffers has its own code, `resource_exhausted` (the maintainer agreed the contract change).
 - Since the M1 milestone review, a worker's first frame is an empty one saying it has started. A fault before it (a library that won't load: dyld aborts the worker) is put down to the install rather than the request.
 
