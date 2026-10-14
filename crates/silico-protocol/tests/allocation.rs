@@ -1,8 +1,8 @@
 //! A frame's length is never trusted: reading allocates only for bytes that actually
 //! arrive. Measured with a counting allocator, in its own test binary so it counts nothing
-//! else. The allocator counts every thread, so each test needs a process of its own, as
-//! nextest (`pixi run test`) gives it; under `cargo test` they share one and count each
-//! other's. (On macOS a large allocation is lazy, so time or memory alone can't show this.)
+//! else. The allocator counts every thread, so the cases run in turn in one test: no other
+//! test shares the process, under `cargo test` as under nextest, to allocate while one
+//! measures. (On macOS a large allocation is lazy, so time or memory alone can't show this.)
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::alloc::System;
@@ -23,7 +23,6 @@ fn bytes_allocated_reading(stream: &[u8]) -> (Result<Option<Vec<u8>>, FrameError
     (result, region.change().bytes_allocated)
 }
 
-#[test]
 fn a_lying_length_allocates_only_what_arrives() {
     // The header claims the maximum (512 MiB); 10 bytes follow.
     let mut stream = MAX_FRAME_LEN.to_le_bytes().to_vec();
@@ -39,7 +38,6 @@ fn a_lying_length_allocates_only_what_arrives() {
     );
 }
 
-#[test]
 fn an_oversized_length_allocates_nothing_for_the_payload() {
     let (result, allocated) = bytes_allocated_reading(&u32::MAX.to_le_bytes());
     assert!(
@@ -49,7 +47,6 @@ fn an_oversized_length_allocates_nothing_for_the_payload() {
     assert!(allocated < 1024, "allocated {allocated} bytes");
 }
 
-#[test]
 fn a_real_frame_allocates_about_its_size() {
     // The bound above isn't vacuous: reading a 1 MiB frame allocates at least 1 MiB.
     let len = 1024 * 1024u32;
@@ -79,7 +76,6 @@ fn bytes_held_after_decoding(response: &Response) -> (usize, usize) {
     )
 }
 
-#[test]
 fn a_reply_costs_at_most_a_few_times_its_size_to_read() {
     // A worker's reply can't make the core hold much more memory than the reply's size.
     // The worst case is a number: one byte on the wire, four in memory, in a list that may
@@ -119,7 +115,6 @@ fn a_reply_costs_at_most_a_few_times_its_size_to_read() {
     }
 }
 
-#[test]
 fn refusing_a_mesh_of_unmeshed_faces_costs_a_few_times_its_size() {
     // A worker's mesh of a million faces, none meshed, on a shape it says isn't valid:
     // reading it and deciding, as the core does (the refusal, its words, its elements),
@@ -163,4 +158,13 @@ fn refusing_a_mesh_of_unmeshed_faces_costs_a_few_times_its_size() {
             .ends_with("and 999992 other faces couldn't be meshed")
     );
     drop((mesh, said, elements));
+}
+
+#[test]
+fn reading_allocates_only_for_what_arrives() {
+    a_lying_length_allocates_only_what_arrives();
+    an_oversized_length_allocates_nothing_for_the_payload();
+    a_real_frame_allocates_about_its_size();
+    a_reply_costs_at_most_a_few_times_its_size_to_read();
+    refusing_a_mesh_of_unmeshed_faces_costs_a_few_times_its_size();
 }
