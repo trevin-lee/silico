@@ -421,6 +421,18 @@ fn length(fields: &mut Fields, key: &str) -> Result<Length, Error> {
 
 fn length_value(node: &Node, feature: Option<&str>, parameter: &str) -> Result<Length, Error> {
     let Value::Number(text) = &node.value else {
+        // Strings are kept for expressions (`"=width * 2"`), which arrive later.
+        if let Value::String(_) = &node.value {
+            return Err(refuse(
+                feature,
+                parameter,
+                node.at,
+                format!("{parameter} is a string, not a length in millimetres"),
+                format!(
+                    "write {parameter} as a number, such as 10.5: strings are kept for expressions, which this Silico doesn't read yet"
+                ),
+            ));
+        }
         return Err(wrong_kind(
             feature,
             parameter,
@@ -430,9 +442,6 @@ fn length_value(node: &Node, feature: Option<&str>, parameter: &str) -> Result<L
     };
     Length::parse(text).map_err(|e| {
         let suggestion = match e {
-            DecimalError::Exponent => {
-                "write it as a plain decimal, such as 0.001 for 1e-3".to_owned()
-            }
             DecimalError::TooPrecise { decimals } => {
                 format!("round it to {decimals} decimals: lengths are whole nanometres")
             }
@@ -442,7 +451,7 @@ fn length_value(node: &Node, feature: Option<&str>, parameter: &str) -> Result<L
             ),
             DecimalError::NegativeZero => "write 0".to_owned(),
             DecimalError::Malformed => {
-                format!("write a plain decimal, to at most {LENGTH_DECIMALS} decimals")
+                format!("write a number, to at most {LENGTH_DECIMALS} decimals")
             }
         };
         refuse(

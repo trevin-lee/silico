@@ -130,6 +130,37 @@ fn a_document_with_no_features_writes_an_empty_array() {
 }
 
 #[test]
+fn a_length_written_with_an_exponent_is_written_back_plain() {
+    // As a script's JSON library may write it (Python: `1e-05`; JavaScript: `1e-7`):
+    // read exactly, written as the plain decimal.
+    let text = EXAMPLE
+        .replacen("\"length\": 40", "\"length\": 4e1", 1)
+        .replacen("\"radius\": 2.5", "\"radius\": 25E-1", 1)
+        .replacen("[20, 10, -1]", "[2e1, 1e-05, -1e0]", 1);
+    let document = read(text.as_bytes()).unwrap();
+    let Operation::Cylinder { position, .. } = &document.features[1].operation else {
+        panic!()
+    };
+    assert_eq!(*position, [mm(20_000_000), mm(10), mm(-1_000_000)]);
+    let written = write(&document).unwrap();
+    assert_eq!(
+        written,
+        EXAMPLE.replacen("[20, 10, -1]", "[20, 0.00001, -1]", 1)
+    );
+    // A string is kept for expressions, which aren't read yet: refused, saying so.
+    let err = read(
+        EXAMPLE
+            .replacen("\"length\": 40", "\"length\": \"40\"", 1)
+            .as_bytes(),
+    )
+    .unwrap_err();
+    assert!(
+        err.suggestion().unwrap().contains("kept for expressions"),
+        "{err}"
+    );
+}
+
+#[test]
 fn any_spelling_of_the_same_document_writes_the_same_canonical_bytes() {
     // Keys in another order, other whitespace, CRLF, trailing zeros, `\/`, and a note
     // escaped every way JSON allows: the same document.
@@ -201,14 +232,6 @@ fn a_value_that_doesnt_fit_is_refused_naming_its_feature_field_and_place() {
     let cases: &[Refusal] = &[
         (
             "\"length\": 40",
-            "\"length\": 1e-3",
-            Some("k7f2qx3m"),
-            Some("length"),
-            "length 1e-3 is written with an exponent",
-            "line 5, column 97",
-        ),
-        (
-            "\"length\": 40",
             "\"length\": 0.0000001",
             Some("k7f2qx3m"),
             Some("length"),
@@ -238,14 +261,6 @@ fn a_value_that_doesnt_fit_is_refused_naming_its_feature_field_and_place() {
             Some("length"),
             "length is a string, not a length in millimetres",
             "line 5",
-        ),
-        (
-            "[20, 10, -1]",
-            "[20, 10, -1e0]",
-            Some("a91cw0de"),
-            Some("position.2"),
-            "position.2 -1e0 is written with an exponent",
-            "line 6, column 88",
         ),
         (
             "[20, 10, -1]",
@@ -675,11 +690,12 @@ fn a_number_is_shown_whole_up_to_forty_characters_then_cut() {
 
 #[test]
 fn what_the_schema_cant_say_the_reader_refuses() {
-    // JSON Schema has no way to refuse an exponent or a whole number written with a
-    // fraction: the schema accepts these, and the reader, the authority, refuses them.
+    // JSON Schema has no way to refuse a whole number written with a fraction, or a
+    // length past the resolution: the schema accepts these, and the reader, the authority,
+    // refuses them.
     let validator = &*VALIDATOR;
     for (from, to) in [
-        ("\"length\": 40", "\"length\": 4e1"),
+        ("\"length\": 40", "\"length\": 40.0000001"),
         ("\"silico\": 1", "\"silico\": 1.0"),
         (
             "\"type\": \"box\", \"v\": 1",

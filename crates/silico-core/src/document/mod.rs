@@ -46,8 +46,7 @@ pub fn write(document: &Document) -> Result<String, Error> {
 }
 
 /// The JSON Schema of a document (draft 2020-12), as agents get it. The reader is the
-/// authority where a schema can't say enough: a number written with an exponent, a key
-/// written twice.
+/// authority where a schema can't say enough: a seventh decimal, a key written twice.
 pub fn schema() -> Result<String, Error> {
     let schema = SchemaSettings::draft2020_12()
         .into_generator()

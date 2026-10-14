@@ -128,19 +128,30 @@ fn negative_zero_every_spelling_is_refused_and_signed_zero_never_reads() {
 }
 
 #[test]
-fn every_exponent_spelling_is_refused_even_when_exact() {
-    for text in [
-        "0e0",
-        "0E-0",
-        "1e+0",
-        "1E0",
-        "1.5e1",
-        "-2e-6",
-        "1e999999999999",
+fn every_exponent_spelling_reads_exactly_as_its_decimal() {
+    // The maintainer's choice (2026-10-14): a number with an exponent is read exactly, as
+    // files saved by Python (`1e-05`) and JavaScript write them; Silico writes plain
+    // decimals. Values worked out by hand.
+    for (text, nm) in [
+        ("0e0", 0),
+        ("0E-0", 0),
+        ("1e+0", 1_000_000),
+        ("1E0", 1_000_000),
+        ("1.5e1", 15_000_000),
+        ("-2e-6", -2),
+        ("1e-05", 10),
     ] {
-        let err = refused(&box_with_length(text));
-        assert!(err.message().contains("exponent"), "{text}: {err}");
+        assert_eq!(the_length(text), Length::from_nm(nm), "{text}");
     }
+    // Past i64, or past the resolution, refused saying so.
+    let err = refused(&box_with_length("1e999999999999"));
+    assert!(err.message().contains("is too large"), "{err}");
+    let err = refused(&box_with_length("1e-999999999999"));
+    assert!(err.message().contains("more than 6 decimals"), "{err}");
+    // A million-digit mantissa and an exponent that brings it back: exact, promptly.
+    let text = format!("1{}e-1000000", "0".repeat(1_000_000));
+    let length = within(Duration::from_secs(10), move || the_length(&text));
+    assert_eq!(length, Length::from_nm(1_000_000));
 }
 
 #[test]
