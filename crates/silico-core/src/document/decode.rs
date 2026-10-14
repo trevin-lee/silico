@@ -5,10 +5,10 @@
 
 use std::fmt;
 
-use super::json::{At, Member, Node, SyntaxError, Value};
+use super::json::{At, Member, Node, SyntaxError, Value, shown};
 use super::model::{
-    Document, FEATURE_TYPES, Feature, FeatureId, FormatVersion, ID_LENGTH, Operation, Position,
-    Units,
+    Document, FEATURE_TYPES, Feature, FeatureId, FeatureVersion, FormatVersion, ID_LENGTH, Name,
+    Operation, Position, Units,
 };
 use super::quantity::{DecimalError, LENGTH_DECIMALS, Length};
 use crate::{Error, ErrorCode};
@@ -16,15 +16,18 @@ use crate::{Error, ErrorCode};
 /// The document `bytes` hold, or why they don't hold one.
 pub fn decode(bytes: &[u8]) -> Result<Document, Error> {
     let root = super::json::read(bytes).map_err(syntax)?;
-    let mut top = Fields::of(root, None, "the document")?;
+    let mut top = Fields::of(root, None, None, "the document")?;
     let silico = top.take("silico")?;
-    let version = integer(&silico, None, "silico")?;
-    if version != u64::from(FormatVersion::NUMBER) {
+    let version = whole_number(&silico, None, "silico")?;
+    if version != FormatVersion::NUMBER.to_string() {
         return Err(refuse(
             None,
             "silico",
             silico.at,
-            format!("the document is format version {version}, which this Silico doesn't read"),
+            format!(
+                "the document is format version {}, which this Silico doesn't read",
+                shown_number(&version)
+            ),
             "this Silico reads format version 1: open it in the Silico that wrote it",
         ));
     }
@@ -102,7 +105,14 @@ struct Fields {
 }
 
 impl Fields {
-    fn of(node: Node, feature: Option<&str>, what: &str) -> Result<Self, Error> {
+    /// The members of `node`, an object: `what` it is for messages, and its field
+    /// (`parameter`), if it's one.
+    fn of(
+        node: Node,
+        feature: Option<&str>,
+        parameter: Option<&str>,
+        what: &str,
+    ) -> Result<Self, Error> {
         let Value::Object(members) = node.value else {
             let error = Error::new(
                 ErrorCode::InvalidInput,
@@ -113,6 +123,10 @@ impl Fields {
                 ),
             )
             .with_suggestion(format!("write {what} as an object"));
+            let error = match parameter {
+                Some(parameter) => error.with_parameter(parameter),
+                None => error,
+            };
             return Err(match feature {
                 Some(feature) => error.with_feature(feature),
                 None => error,
@@ -159,35 +173,62 @@ impl Fields {
         Some(self.members.remove(index).value)
     }
 
-    /// Refuses any member not taken: the first, as written.
+    /// Refuses any member not taken: the first, as written. The key is quoted, and cut
+    /// short if it's long, wherever the error shows it.
     fn finish(self) -> Result<(), Error> {
         match self.members.first() {
             None => Ok(()),
-            Some(extra) => Err(refuse(
-                self.feature(),
-                &self.name(&extra.key),
-                extra.at,
-                format!("{} has a key it can't have: {}", self.what, extra.key),
-                format!("remove {} (or check its spelling)", extra.key),
-            )),
+            Some(extra) => {
+                let key = shown(&extra.key);
+                Err(refuse(
+                    self.feature(),
+                    &self.name(&field_name(&extra.key)),
+                    extra.at,
+                    format!("{} has a key it can't have: {key}", self.what),
+                    format!("remove {key} (or check its spelling)"),
+                ))
+            }
         }
     }
 }
 
-/// A non-negative whole number, as `silico` and `v` are written.
-fn integer(node: &Node, feature: Option<&str>, parameter: &str) -> Result<u64, Error> {
+/// An unknown key as `parameter` names it: as written if it's a plain name (letters,
+/// digits, and `_`, at most 40), quoted as messages show it otherwise.
+fn field_name(key: &str) -> String {
+    let plain = !key.is_empty()
+        && key.len() <= 40
+        && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+    if plain { key.to_owned() } else { shown(key) }
+}
+
+/// A non-negative whole number's digits, as `silico` and `v` are written: compared as text,
+/// so no number is too large to say which it is.
+fn whole_number(node: &Node, feature: Option<&str>, parameter: &str) -> Result<String, Error> {
     let Value::Number(text) = &node.value else {
         return Err(wrong_kind(feature, parameter, node, "a whole number"));
     };
-    text.parse::<u64>().map_err(|_| {
-        refuse(
-            feature,
-            parameter,
-            node.at,
-            format!("{parameter} is {text}, not a whole number"),
-            format!("write {parameter} as a whole number, such as 1"),
-        )
-    })
+    if text.bytes().all(|b| b.is_ascii_digit()) {
+        return Ok(text.clone());
+    }
+    Err(refuse(
+        feature,
+        parameter,
+        node.at,
+        format!("{parameter} is {}, not a whole number", shown_number(text)),
+        format!("write {parameter} as a whole number, such as 1"),
+    ))
+}
+
+/// The most of a number's text an error repeats: enough to recognize it, not a megabyte.
+const SHOWN_DIGITS: usize = 40;
+
+/// A number's text as an error shows it, cut short if it's long. (The reader has checked
+/// its characters: digits, `-`, `.`, `e`, `+`.)
+fn shown_number(text: &str) -> String {
+    match text.get(..SHOWN_DIGITS) {
+        Some(start) if start.len() < text.len() => format!("{start}…"),
+        _ => text.to_owned(),
+    }
 }
 
 fn string(node: Node, feature: Option<&str>, parameter: &str) -> Result<String, Error> {
@@ -198,7 +239,7 @@ fn string(node: Node, feature: Option<&str>, parameter: &str) -> Result<String, 
 }
 
 fn units(node: Node) -> Result<(), Error> {
-    let mut fields = Fields::of(node, None, "units")?.under("units");
+    let mut fields = Fields::of(node, None, Some("units"), "units")?.under("units");
     for (key, want) in [("length", Units::LENGTH), ("resolution", Units::RESOLUTION)] {
         let value = fields.take(key)?;
         let at = value.at;
@@ -209,7 +250,10 @@ fn units(node: Node) -> Result<(), Error> {
                 None,
                 &name,
                 at,
-                format!("the document's {key} is {got:?}, which format version 1 doesn't read"),
+                format!(
+                    "the document's {key} is {}, which format version 1 doesn't read",
+                    shown(&got)
+                ),
                 "version 1 reads only {\"length\": \"mm\", \"resolution\": \"1nm\"}",
             ));
         }
@@ -225,7 +269,7 @@ fn id(node: Node, feature: Option<&str>, parameter: &str) -> Result<FeatureId, E
             feature,
             parameter,
             at,
-            format!("{parameter} {text:?} isn't a feature ID"),
+            format!("{parameter} {} isn't a feature ID", shown(&text)),
             format!(
                 "an ID is {ID_LENGTH} characters of digits and lower-case letters but i, l, o, and u"
             ),
@@ -235,7 +279,7 @@ fn id(node: Node, feature: Option<&str>, parameter: &str) -> Result<FeatureId, E
 
 fn feature(index: usize, node: Node) -> Result<Feature, Error> {
     let place = format!("features[{index}]");
-    let mut fields = Fields::of(node, Some(&place), &place)?;
+    let mut fields = Fields::of(node, Some(&place), None, &place)?;
     let id = id(fields.take("id")?, Some(&place), "id")?;
     // From here on, the feature is named by its ID.
     let label = id.to_string();
@@ -246,37 +290,39 @@ fn feature(index: usize, node: Node) -> Result<Feature, Error> {
     let type_at = type_node.at;
     let type_name = string(type_node, feature, "type")?;
     let version_node = fields.take("v")?;
-    let version = integer(&version_node, feature, "v")?;
+    let version = whole_number(&version_node, feature, "v")?;
     if !FEATURE_TYPES.contains(&type_name.as_str()) {
         return Err(refuse(
             feature,
             "type",
             type_at,
-            format!("{type_name:?} isn't a feature type"),
+            format!("{} isn't a feature type", shown(&type_name)),
             format!("the types are {}", FEATURE_TYPES.join(", ")),
         ));
     }
-    if version != 1 {
+    if version != FeatureVersion::NUMBER.to_string() {
         return Err(refuse(
             feature,
             "v",
             version_node.at,
-            format!("this Silico has no {type_name} of version {version}"),
+            format!(
+                "this Silico has no {type_name} of version {}",
+                shown_number(&version)
+            ),
             format!("this Silico reads {type_name} version 1"),
         ));
     }
     let name_node = fields.take("name")?;
     let name_at = name_node.at;
-    let name = string(name_node, feature, "name")?;
-    if name.is_empty() {
-        return Err(refuse(
+    let name = Name::new(string(name_node, feature, "name")?).ok_or_else(|| {
+        refuse(
             feature,
             "name",
             name_at,
             "name is empty",
             "give the feature a name",
-        ));
-    }
+        )
+    })?;
     let operation = operation(&type_name, &mut fields)?;
     let note = match fields.optional("note") {
         Some(node) => Some(string(node, fields.feature(), "note")?),
@@ -286,7 +332,7 @@ fn feature(index: usize, node: Node) -> Result<Feature, Error> {
     Ok(Feature {
         id,
         operation,
-        version: 1,
+        version: FeatureVersion,
         name,
         note,
     })
@@ -376,7 +422,7 @@ fn length_value(node: &Node, feature: Option<&str>, parameter: &str) -> Result<L
             feature,
             parameter,
             node.at,
-            format!("{parameter} {text} {e}"),
+            format!("{parameter} {} {e}", shown_number(text)),
             suggestion,
         )
     })

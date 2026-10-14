@@ -226,20 +226,14 @@
           "$ref": "#/$defs/FeatureId"
         },
         "name": {
-          "description": "A display name, which needn't be unique.",
-          "minLength": 1,
-          "type": "string"
+          "$ref": "#/$defs/Name"
         },
         "note": {
           "description": "A note about the feature, kept with it (left out when there's none).",
           "type": "string"
         },
         "v": {
-          "description": "The feature's version: changing a feature type's behaviour bumps it, and a document\nkeeps the behaviour it was made with. 1 for every type so far.",
-          "format": "uint32",
-          "maximum": 1,
-          "minimum": 1,
-          "type": "integer"
+          "$ref": "#/$defs/FeatureVersion"
         }
       },
       "required": [
@@ -255,6 +249,10 @@
       "pattern": "^[0-9a-hjkmnp-tv-z]{8}$",
       "type": "string"
     },
+    "FeatureVersion": {
+      "const": 1,
+      "description": "The feature's version: changing a feature type's behaviour bumps it, and a document keeps the behaviour it was made with. 1 for every type so far."
+    },
     "FormatVersion": {
       "const": 1,
       "description": "The format's version: 1."
@@ -263,6 +261,11 @@
       "description": "A length in millimetres, written as a plain decimal (no exponent), to at most 6 decimals (nanometres).",
       "multipleOf": 1e-6,
       "type": "number"
+    },
+    "Name": {
+      "description": "A display name, which needn't be unique.",
+      "minLength": 1,
+      "type": "string"
     },
     "Units": {
       "additionalProperties": false,

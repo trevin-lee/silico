@@ -6,8 +6,8 @@
 use proptest::prelude::*;
 use silico_core::ErrorCode;
 use silico_core::document::{
-    Document, Feature, FeatureId, FormatVersion, ID_ALPHABET, Length, Operation, Units, read,
-    schema, write,
+    Document, Feature, FeatureId, FeatureVersion, FormatVersion, ID_ALPHABET, Length, Name,
+    Operation, Units, read, schema, write,
 };
 
 /// The design's example, in canonical form.
@@ -34,8 +34,8 @@ fn feature(id_text: &str, name: &str, operation: Operation) -> Feature {
     Feature {
         id: id(id_text),
         operation,
-        version: 1,
-        name: name.to_owned(),
+        version: FeatureVersion,
+        name: Name::new(name).unwrap(),
         note: None,
     }
 }
@@ -163,11 +163,12 @@ fn any_spelling_of_the_same_document_writes_the_same_canonical_bytes() {
 fn strings_keep_every_character_and_escape_only_what_json_requires() {
     let mut document = read(EXAMPLE.as_bytes()).unwrap();
     let name = "Quote \" back\\slash\ttab\nline \u{1} é 😀 \u{2028} </tag>";
-    document.features[0].name = name.to_owned();
+    document.features[0].name = Name::new(name).unwrap();
     document.features[0].note = Some(String::new());
     let text = write(&document);
-    // Quote, backslash, and control characters escaped; the rest, U+2028 too, as written.
-    let want = "\"name\": \"Quote \\\" back\\\\slash\\ttab\\nline \\u0001 é 😀 \u{2028} </tag>\"";
+    // Quote, backslash, control characters, and the line separator escaped; the rest as
+    // written.
+    let want = "\"name\": \"Quote \\\" back\\\\slash\\ttab\\nline \\u0001 é 😀 \\u2028 </tag>\"";
     assert!(text.contains(want), "{text}");
     // An empty note is a note, kept.
     assert!(text.contains(r#""note": """#), "{text}");
@@ -275,7 +276,7 @@ fn a_value_that_doesnt_fit_is_refused_naming_its_feature_field_and_place() {
             "\"height\": 12, \"depth\": 3}",
             Some("a91cw0de"),
             Some("depth"),
-            "feature a91cw0de has a key it can't have: depth",
+            "feature a91cw0de has a key it can't have: \"depth\"",
             "line 6",
         ),
         (
@@ -355,7 +356,7 @@ fn a_value_that_doesnt_fit_is_refused_naming_its_feature_field_and_place() {
             "\"resolution\": \"1nm\", \"angle\": \"rad\"",
             None,
             Some("units.angle"),
-            "units has a key it can't have: angle",
+            "units has a key it can't have: \"angle\"",
             "line 3",
         ),
         (
@@ -363,7 +364,7 @@ fn a_value_that_doesnt_fit_is_refused_naming_its_feature_field_and_place() {
             "\"silico\": 1, \"comment\": \"x\",",
             None,
             Some("comment"),
-            "the document has a key it can't have: comment",
+            "the document has a key it can't have: \"comment\"",
             "line 2, column 16",
         ),
         (
@@ -408,6 +409,30 @@ fn text_that_isnt_a_documents_json_is_refused_saying_where() {
     let deep = format!("{}{}", "[".repeat(100_000), "]".repeat(100_000));
     let err = read(deep.as_bytes()).unwrap_err();
     assert!(err.message().contains("nest more than 64"), "{err}");
+}
+
+#[test]
+fn a_document_past_the_size_or_value_limits_is_refused_before_it_costs_much() {
+    use silico_core::document::json::{MAX_DOCUMENT_LEN, MAX_VALUES};
+    // One byte past the size: refused before anything is read.
+    let big = vec![b' '; MAX_DOCUMENT_LEN + 1];
+    let err = read(&big).unwrap_err();
+    assert!(err.message().contains("more than the 33554432"), "{err}");
+    // At the size, read (here, refused as JSON for being only spaces).
+    let err = read(&big[1..]).unwrap_err();
+    assert!(err.message().contains("expected a value"), "{err}");
+    // One value past the count (the array and its items): refused, as the reader counts.
+    let zeros = |n: usize| format!("[{}0]", "0,".repeat(n - 1));
+    let err = read(zeros(MAX_VALUES).as_bytes()).unwrap_err();
+    assert!(
+        err.message().contains("more than the 4000000 values"),
+        "{err}"
+    );
+    let err = read(zeros(MAX_VALUES - 1).as_bytes()).unwrap_err();
+    assert!(
+        err.message().contains("is an array, not an object"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -486,8 +511,8 @@ fn any_feature() -> impl Strategy<Value = Feature> {
         |(id, operation, name, note)| Feature {
             id,
             operation,
-            version: 1,
-            name,
+            version: FeatureVersion,
+            name: Name::new(name).unwrap(),
             note,
         },
     )

@@ -86,6 +86,11 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Very deep nesting, 100 MB documents
 - External references that use path traversal (`../../etc/passwd`) or point to missing files
 - B-reps whose locations mirror or scale (OCCT forbids setting them since 7.6, but BinTools reads them): rewrite the 12 doubles of a `translate`'s location in `to_brep`'s bytes and fix the CRC. A mirrored box reads as valid with volume -6000, and its mesh's normals and triangles disagree
+- Values the in-memory type holds but the reader refuses (an empty name, a feature version other than 1): `write` saves a file that won't open; test `read(write(d)) == d` over every constructible value, not only generated valid ones
+- Version numbers past the reading type (2^32 + 1 read into a u32 wraps to 1, FreeCAD 913e409b24; 2^64 fails u64 parsing and is called "not a whole number"): refuse as an unknown version
+- Errors that quote the input: a 1 MB number, key, or string echoed into the message, parameter, and suggestion makes a multi-MB error; keys holding ESC sequences or newlines reach terminals and logs raw, and an empty key reads as nothing
+- Invisible characters where whitespace may go (U+00A0, U+200B, U+FEFF after the start, U+2028): errors that print the character itself show ` ` or nothing; check they name it by code point
+- Memory amplification of a parsed tree: a 100 MB array of `0` under an unknown key, measured with `/usr/bin/time -l` (a tree of nodes and a `Vec<char>` cost 33x here), and no size cap to refuse it with
 
 ## MCP and agent input
 

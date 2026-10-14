@@ -125,17 +125,71 @@ pub struct Feature {
     pub id: FeatureId,
     #[serde(flatten)]
     pub operation: Operation,
-    /// The feature's version: changing a feature type's behaviour bumps it, and a document
-    /// keeps the behaviour it was made with. 1 for every type so far.
     #[serde(rename = "v")]
-    #[schemars(range(min = 1, max = 1))]
-    pub version: u32,
-    /// A display name, which needn't be unique.
-    #[schemars(length(min = 1))]
-    pub name: String,
+    pub version: FeatureVersion,
+    pub name: Name,
     /// A note about the feature, kept with it (left out when there's none).
     #[schemars(extend("type" = "string"))]
     pub note: Option<String>,
+}
+
+/// A feature's version: changing a feature type's behaviour bumps it, and a document keeps
+/// the behaviour it was made with. 1 for every type so far, so it holds no other value: a
+/// document in memory can hold only what the file can.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FeatureVersion;
+
+impl FeatureVersion {
+    pub const NUMBER: u32 = 1;
+}
+
+impl JsonSchema for FeatureVersion {
+    fn schema_name() -> Cow<'static, str> {
+        "FeatureVersion".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "description": "The feature's version: changing a feature type's behaviour bumps it, and a document keeps the behaviour it was made with. 1 for every type so far.",
+            "const": 1
+        })
+    }
+}
+
+/// A feature's display name: any text but none, and needn't be unique.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Name(String);
+
+impl Name {
+    /// The name `text` is, if it isn't empty.
+    pub fn new(text: impl Into<String>) -> Option<Self> {
+        let text = text.into();
+        (!text.is_empty()).then_some(Name(text))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Name {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl JsonSchema for Name {
+    fn schema_name() -> Cow<'static, str> {
+        "Name".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "description": "A display name, which needn't be unique.",
+            "type": "string",
+            "minLength": 1
+        })
+    }
 }
 
 /// What a feature makes. A primitive makes a solid; a boolean makes one from two earlier

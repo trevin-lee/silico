@@ -1,11 +1,14 @@
 //! A document in canonical form (docs/design/m2.1-document-format.md, D7): keys in schema
 //! order; an object or array on one line when it holds no object, otherwise one member per
 //! line, indented two spaces; `, ` between members on a line and `: ` after keys; strings
-//! as written, escaping only `"`, `\`, and control characters; LF, and a trailing newline.
+//! as written, escaping only `"`, `\`, control characters, and the line and paragraph
+//! separators; LF, and a trailing newline.
 //! Nothing comes from the bytes a document was read from, so every save writes the same
 //! bytes for the same document.
 
-use super::model::{Document, Feature, FeatureId, FormatVersion, Operation, Position, Units};
+use super::model::{
+    Document, Feature, FeatureId, FeatureVersion, FormatVersion, Operation, Position, Units,
+};
 use super::quantity::Length;
 
 /// The document's canonical text.
@@ -71,15 +74,15 @@ fn feature(feature: &Feature) -> Out {
     let Feature {
         id,
         operation,
-        version,
+        version: FeatureVersion,
         name,
         note,
     } = feature;
     let mut members = vec![
         ("id", reference(id)),
         ("type", Out::Str(operation.type_name().to_owned())),
-        ("v", Out::Raw(version.to_string())),
-        ("name", Out::Str(name.clone())),
+        ("v", Out::Raw(FeatureVersion::NUMBER.to_string())),
+        ("name", Out::Str(name.as_str().to_owned())),
     ];
     members.extend(fields(operation));
     if let Some(note) = note {
@@ -217,8 +220,10 @@ fn pad(out: &mut String, indent: usize) {
     }
 }
 
-/// `text` as a JSON string, escaping only what JSON requires: `"`, `\`, and the control
-/// characters (the short escapes where JSON has them, `\u00xx` otherwise).
+/// `text` as a JSON string, escaping `"`, `\`, and the control characters (C0, DEL, and C1:
+/// the short escapes where JSON has them, `\u00xx` otherwise), and the line and paragraph
+/// separators U+2028 and U+2029, so no character in a string breaks a line for any tool
+/// that reads the file by lines.
 fn quote(out: &mut String, text: &str) {
     out.push('"');
     for c in text.chars() {
@@ -230,7 +235,9 @@ fn quote(out: &mut String, text: &str) {
             '\t' => out.push_str("\\t"),
             '\u{8}' => out.push_str("\\b"),
             '\u{c}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c if (c as u32) < 0x20 || matches!(c as u32, 0x7f..=0x9f | 0x2028 | 0x2029) => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
             c => out.push(c),
         }
     }

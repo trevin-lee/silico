@@ -9,8 +9,8 @@ mod quantity;
 mod write;
 
 pub use model::{
-    Document, FEATURE_TYPES, Feature, FeatureId, FormatVersion, ID_ALPHABET, ID_LENGTH, Operation,
-    Position, Units,
+    Document, FEATURE_TYPES, Feature, FeatureId, FeatureVersion, FormatVersion, ID_ALPHABET,
+    ID_LENGTH, Name, Operation, Position, Units,
 };
 pub use quantity::{ANGLE_DECIMALS, Angle, DecimalError, LENGTH_DECIMALS, Length};
 

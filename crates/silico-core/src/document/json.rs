@@ -1,8 +1,8 @@
 //! A strict JSON reader for `.silico` documents. It reads standard JSON (RFC 8259), more
 //! strictly: no byte-order mark, no duplicate keys, nesting no deeper than [`MAX_DEPTH`],
-//! and every number kept as the text it was written as, so lengths and angles are read
-//! from their decimals, never through a float. Every value keeps its line and column, for
-//! errors that say where.
+//! at most [`MAX_DOCUMENT_LEN`] bytes and [`MAX_VALUES`] values, and every number kept as
+//! the text it was written as, so lengths and angles are read from their decimals, never
+//! through a float. Every value keeps its line and column, for errors that say where.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -10,6 +10,31 @@ use std::fmt;
 /// The deepest arrays and objects may nest. A document nests three deep; the limit keeps
 /// hostile input from exhausting the stack.
 pub const MAX_DEPTH: usize = 64;
+
+/// The most bytes a document may be: 32 MiB, far past any part's timeline. Reading holds
+/// a tree of the values, so a document's size bounds what reading it costs.
+pub const MAX_DOCUMENT_LEN: usize = 32 << 20;
+
+/// The most values (numbers, strings, arrays, objects, and literals) a document may hold:
+/// 4 million, more than any document within [`MAX_DOCUMENT_LEN`] of real features holds
+/// (about 13 values in 150 bytes for a feature, so 32 MiB of them is 3 million). It bounds
+/// the tree's size whatever the text is: 32 MiB of `0,` would otherwise be 16 million.
+pub const MAX_VALUES: usize = 4_000_000;
+
+/// The most characters of a string or key an error repeats: enough to recognize it.
+const SHOWN_CHARS: usize = 40;
+
+/// `text` as an error shows it: quoted, with control and invisible characters escaped, and
+/// cut short (`…`) if it's long, so no string in a document makes its error unreadable or
+/// unsafe to print.
+pub fn shown(text: &str) -> String {
+    let mut chars = text.chars();
+    let start: String = chars.by_ref().take(SHOWN_CHARS).collect();
+    match chars.next() {
+        Some(_) => format!("{start:?}…"),
+        None => format!("{start:?}"),
+    }
+}
 
 /// Where a value starts: a line and a column, both from 1, the column in characters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +98,16 @@ pub struct SyntaxError {
 
 /// Reads `bytes` as one JSON value, with nothing but whitespace after it.
 pub fn read(bytes: &[u8]) -> Result<Node, SyntaxError> {
+    if bytes.len() > MAX_DOCUMENT_LEN {
+        return Err(SyntaxError {
+            at: At { line: 1, column: 1 },
+            message: format!(
+                "the document is {} bytes, more than the {} a document may be",
+                bytes.len(),
+                MAX_DOCUMENT_LEN
+            ),
+        });
+    }
     let text = match std::str::from_utf8(bytes) {
         Ok(text) => text,
         Err(e) => {
@@ -86,10 +121,11 @@ pub fn read(bytes: &[u8]) -> Result<Node, SyntaxError> {
         }
     };
     let mut reader = Reader {
-        chars: text.chars().collect(),
+        text,
         pos: 0,
         line: 1,
         column: 1,
+        values: 0,
     };
     if reader.peek() == Some('\u{feff}') {
         return Err(reader.error("the text starts with a byte-order mark"));
@@ -117,16 +153,19 @@ fn end_of(text: &str) -> At {
     at
 }
 
-struct Reader {
-    chars: Vec<char>,
+struct Reader<'a> {
+    text: &'a str,
+    /// The byte offset of the next character.
     pos: usize,
     line: u32,
     column: u32,
+    /// How many values have been read.
+    values: usize,
 }
 
-impl Reader {
+impl Reader<'_> {
     fn peek(&self) -> Option<char> {
-        self.chars.get(self.pos).copied()
+        self.text.get(self.pos..)?.chars().next()
     }
 
     fn at(&self) -> At {
@@ -138,7 +177,7 @@ impl Reader {
 
     fn bump(&mut self) -> Option<char> {
         let c = self.peek()?;
-        self.pos += 1;
+        self.pos += c.len_utf8();
         if c == '\n' {
             self.line = self.line.saturating_add(1);
             self.column = 1;
@@ -155,12 +194,18 @@ impl Reader {
         }
     }
 
-    /// What's here, for messages: the character, or the end of the text.
+    /// What's here, for messages: the character, or the end of the text. A character
+    /// that can't be seen (a control, a space other than ASCII's, a format character such
+    /// as a zero-width space or a byte-order mark) is named by its code point alone, and
+    /// any other but ASCII's with its code point too.
     fn found(&self) -> String {
         match self.peek() {
-            Some(c) if c.is_control() => format!("the character U+{:04X}", c as u32),
-            Some(c) => format!("`{c}`"),
             None => "the end of the text".to_owned(),
+            Some(c) if c.is_ascii_graphic() => format!("`{c}`"),
+            Some(c) if c.is_control() || c.is_whitespace() || invisible(c) => {
+                format!("the character U+{:04X}", c as u32)
+            }
+            Some(c) => format!("`{c}` (U+{:04X})", c as u32),
         }
     }
 
@@ -180,6 +225,12 @@ impl Reader {
     }
 
     fn value(&mut self, depth: usize) -> Result<Node, SyntaxError> {
+        self.values += 1;
+        if self.values > MAX_VALUES {
+            return Err(self.error(format!(
+                "the document holds more than the {MAX_VALUES} values a document may"
+            )));
+        }
         let at = self.at();
         let value = match self.peek() {
             Some('{') => self.object(depth)?,
@@ -237,7 +288,7 @@ impl Reader {
             if !seen.insert(key.clone()) {
                 return Err(SyntaxError {
                     at,
-                    message: format!("the key `{key}` is written twice in one object"),
+                    message: format!("the key {} is written twice in one object", shown(&key)),
                 });
             }
             self.skip_whitespace();
@@ -431,6 +482,30 @@ impl Reader {
     }
 }
 
+/// Whether `c` is a format or other invisible character Unicode draws as nothing: soft
+/// hyphen, combining grapheme joiner, the zero-width and direction marks and controls,
+/// word joiners and invisible operators, variation selectors, the byte-order mark, the
+/// Hangul fillers, and the tag characters.
+fn invisible(c: char) -> bool {
+    matches!(
+        c as u32,
+        0xad | 0x34f
+            | 0x61c
+            | 0x115f..=0x1160
+            | 0x17b4..=0x17b5
+            | 0x180b..=0x180f
+            | 0x200b..=0x200f
+            | 0x202a..=0x202e
+            | 0x2060..=0x206f
+            | 0x3164
+            | 0xfe00..=0xfe0f
+            | 0xfeff
+            | 0xffa0
+            | 0xfff0..=0xfffb
+            | 0xe0000..=0xe0fff
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -493,7 +568,11 @@ mod tests {
             ("", "expected a value, found the end", (1, 1)),
             ("\u{feff}{}", "byte-order mark", (1, 1)),
             ("{} {}", "more after", (1, 4)),
-            ("{\"a\": 1, \"a\": 2}", "`a` is written twice", (1, 10)),
+            (
+                "{\"a\": 1, \"a\": 2}",
+                "key \"a\" is written twice",
+                (1, 10),
+            ),
             ("[1, 2,]", "expected a value, found `]`", (1, 7)),
             ("{\"a\": 1,}", "expected a key, found `}`", (1, 9)),
             ("[01]", "start with 0", (1, 3)),
