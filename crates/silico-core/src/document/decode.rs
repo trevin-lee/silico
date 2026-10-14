@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-use super::json::{At, Member, Node, SyntaxError, Value, shown};
+use super::json::{At, Member, Node, SHOWN_CHARS, SyntaxError, Value, shown};
 use super::model::{
     Document, FEATURE_TYPES, Feature, FeatureId, FeatureVersion, FormatVersion, ID_LENGTH, Name,
     Operation, Position, Units,
@@ -28,7 +28,10 @@ pub fn decode(bytes: &[u8]) -> Result<Document, Error> {
                 "the document is format version {}, which this Silico doesn't read",
                 shown_number(&version)
             ),
-            "this Silico reads format version 1: open it in the Silico that wrote it",
+            format!(
+                "this Silico reads format version {}: open it in the Silico that wrote it",
+                FormatVersion::NUMBER
+            ),
         ));
     }
     units(top.take("units")?)?;
@@ -193,10 +196,10 @@ impl Fields {
 }
 
 /// An unknown key as `parameter` names it: as written if it's a plain name (letters,
-/// digits, and `_`, at most 40), quoted as messages show it otherwise.
+/// digits, and `_`, at most [`SHOWN_CHARS`]), quoted as messages show it otherwise.
 fn field_name(key: &str) -> String {
     let plain = !key.is_empty()
-        && key.len() <= 40
+        && key.len() <= SHOWN_CHARS
         && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
     if plain { key.to_owned() } else { shown(key) }
 }
@@ -219,13 +222,10 @@ fn whole_number(node: &Node, feature: Option<&str>, parameter: &str) -> Result<S
     ))
 }
 
-/// The most of a number's text an error repeats: enough to recognize it, not a megabyte.
-const SHOWN_DIGITS: usize = 40;
-
 /// A number's text as an error shows it, cut short if it's long. (The reader has checked
 /// its characters: digits, `-`, `.`, `e`, `+`.)
 fn shown_number(text: &str) -> String {
-    match text.get(..SHOWN_DIGITS) {
+    match text.get(..SHOWN_CHARS) {
         Some(start) if start.len() < text.len() => format!("{start}…"),
         _ => text.to_owned(),
     }
@@ -251,10 +251,16 @@ fn units(node: Node) -> Result<(), Error> {
                 &name,
                 at,
                 format!(
-                    "the document's {key} is {}, which format version 1 doesn't read",
-                    shown(&got)
+                    "the document's {key} is {}, which format version {} doesn't read",
+                    shown(&got),
+                    FormatVersion::NUMBER
                 ),
-                "version 1 reads only {\"length\": \"mm\", \"resolution\": \"1nm\"}",
+                format!(
+                    "version {} reads only {{\"length\": \"{}\", \"resolution\": \"{}\"}}",
+                    FormatVersion::NUMBER,
+                    Units::LENGTH,
+                    Units::RESOLUTION
+                ),
             ));
         }
     }
@@ -309,7 +315,10 @@ fn feature(index: usize, node: Node) -> Result<Feature, Error> {
                 "this Silico has no {type_name} of version {}",
                 shown_number(&version)
             ),
-            format!("this Silico reads {type_name} version 1"),
+            format!(
+                "this Silico reads {type_name} version {}",
+                FeatureVersion::NUMBER
+            ),
         ));
     }
     let name_node = fields.take("name")?;
@@ -374,11 +383,18 @@ fn operation(type_name: &str, fields: &mut Fields) -> Result<Operation, Error> {
             base: reference(fields, "base")?,
             tool: reference(fields, "tool")?,
         },
-        // FEATURE_TYPES was checked: the last is `common`.
-        _ => Operation::Common {
+        "common" => Operation::Common {
             base: reference(fields, "base")?,
             tool: reference(fields, "tool")?,
         },
+        // A type in FEATURE_TYPES with no arm here: Silico's bug, not the document's.
+        other => {
+            return Err(Error::new(
+                ErrorCode::Internal,
+                format!("the feature type {} has no reader", shown(other)),
+            )
+            .with_suggestion(crate::worker::SILICO_BUG));
+        }
     })
 }
 

@@ -1,8 +1,8 @@
 //! A document in canonical form (docs/design/m2.1-document-format.md, D7): keys in schema
 //! order; an object or array on one line when it holds no object, otherwise one member per
 //! line, indented two spaces; `, ` between members on a line and `: ` after keys; strings
-//! as written, escaping only `"`, `\`, control characters, and the line and paragraph
-//! separators; LF, and a trailing newline.
+//! as written, escaping only `"`, `\`, control characters, the line and paragraph
+//! separators, and the bidirectional controls; LF, and a trailing newline.
 //! Nothing comes from the bytes a document was read from, so every save writes the same
 //! bytes for the same document.
 
@@ -221,9 +221,11 @@ fn pad(out: &mut String, indent: usize) {
 }
 
 /// `text` as a JSON string, escaping `"`, `\`, and the control characters (C0, DEL, and C1:
-/// the short escapes where JSON has them, `\u00xx` otherwise), and the line and paragraph
+/// the short escapes where JSON has them, `\u00xx` otherwise), the line and paragraph
 /// separators U+2028 and U+2029, so no character in a string breaks a line for any tool
-/// that reads the file by lines.
+/// that reads the file by lines, and the bidirectional marks, embeddings, overrides, and
+/// isolates, so no string reorders how the rest of its line shows in a diff (Trojan
+/// Source, CVE-2021-42574).
 fn quote(out: &mut String, text: &str) {
     out.push('"');
     for c in text.chars() {
@@ -235,11 +237,19 @@ fn quote(out: &mut String, text: &str) {
             '\t' => out.push_str("\\t"),
             '\u{8}' => out.push_str("\\b"),
             '\u{c}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 || matches!(c as u32, 0x7f..=0x9f | 0x2028 | 0x2029) => {
+            c if (c as u32) < 0x20 || escaped(c) => {
                 out.push_str(&format!("\\u{:04x}", c as u32));
             }
             c => out.push(c),
         }
     }
     out.push('"');
+}
+
+/// Whether `c` is written as an escape though JSON doesn't require it (see `quote`).
+fn escaped(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x7f..=0x9f | 0x2028 | 0x2029 | 0x61c | 0x200e | 0x200f | 0x202a..=0x202e | 0x2066..=0x2069
+    )
 }

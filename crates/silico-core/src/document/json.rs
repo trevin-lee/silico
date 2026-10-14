@@ -1,28 +1,35 @@
 //! A strict JSON reader for `.silico` documents. It reads standard JSON (RFC 8259), more
 //! strictly: no byte-order mark, no duplicate keys, nesting no deeper than [`MAX_DEPTH`],
-//! at most [`MAX_DOCUMENT_LEN`] bytes and [`MAX_VALUES`] values, and every number kept as
-//! the text it was written as, so lengths and angles are read from their decimals, never
-//! through a float. Every value keeps its line and column, for errors that say where.
+//! at most [`MAX_DOCUMENT_LEN`] bytes read into a tree of at most [`MAX_TREE_BYTES`], and
+//! every number kept as the text it was written as, so lengths and angles are read from
+//! their decimals, never through a float. Every value keeps its line and column, for
+//! errors that say where.
 
-use std::collections::BTreeSet;
 use std::fmt;
+use std::mem::size_of;
 
-/// The deepest arrays and objects may nest. A document nests three deep; the limit keeps
-/// hostile input from exhausting the stack.
+/// The deepest arrays and objects may nest. A document nests four deep (a feature's
+/// position); the limit keeps hostile input from exhausting the stack.
 pub const MAX_DEPTH: usize = 64;
 
-/// The most bytes a document may be: 32 MiB, far past any part's timeline. Reading holds
-/// a tree of the values, so a document's size bounds what reading it costs.
-pub const MAX_DOCUMENT_LEN: usize = 32 << 20;
+/// The most bytes a document may be: 16 MiB, past any part's timeline (a hundred thousand
+/// features).
+pub const MAX_DOCUMENT_LEN: usize = 16 << 20;
 
-/// The most values (numbers, strings, arrays, objects, and literals) a document may hold:
-/// 4 million, more than any document within [`MAX_DOCUMENT_LEN`] of real features holds
-/// (about 13 values in 150 bytes for a feature, so 32 MiB of them is 3 million). It bounds
-/// the tree's size whatever the text is: 32 MiB of `0,` would otherwise be 16 million.
-pub const MAX_VALUES: usize = 4_000_000;
+/// The most memory the tree of a document's values may take: 256 MiB, counted as it's
+/// built (each value, key, and text, and each array's and object's room), so reading any
+/// text costs at most that. A real document takes about 7 times its size (a feature's 150
+/// bytes are about a kilobyte of tree), so every document within [`MAX_DOCUMENT_LEN`]
+/// fits; the text that costs most for its size (`[{"a":0},...]`) doesn't, and is refused
+/// when the tree would pass it.
+pub const MAX_TREE_BYTES: usize = 256 << 20;
 
 /// The most characters of a string or key an error repeats: enough to recognize it.
-const SHOWN_CHARS: usize = 40;
+pub(crate) const SHOWN_CHARS: usize = 40;
+
+/// What a heap allocation costs beyond its bytes, as charged: an allocator's smallest
+/// block and its bookkeeping.
+const ALLOCATION: usize = 16;
 
 /// `text` as an error shows it: quoted, with control and invisible characters escaped, and
 /// cut short (`…`) if it's long, so no string in a document makes its error unreadable or
@@ -125,7 +132,7 @@ pub fn read(bytes: &[u8]) -> Result<Node, SyntaxError> {
         pos: 0,
         line: 1,
         column: 1,
-        values: 0,
+        spent: size_of::<Node>(),
     };
     if reader.peek() == Some('\u{feff}') {
         return Err(reader.error("the text starts with a byte-order mark"));
@@ -159,8 +166,8 @@ struct Reader<'a> {
     pos: usize,
     line: u32,
     column: u32,
-    /// How many values have been read.
-    values: usize,
+    /// The tree's bytes so far, as charged against [`MAX_TREE_BYTES`].
+    spent: usize,
 }
 
 impl Reader<'_> {
@@ -224,19 +231,62 @@ impl Reader<'_> {
         }
     }
 
-    fn value(&mut self, depth: usize) -> Result<Node, SyntaxError> {
-        self.values += 1;
-        if self.values > MAX_VALUES {
+    /// Charges `bytes` of the tree, or refuses the document if they'd pass the limit.
+    fn charge(&mut self, bytes: usize) -> Result<(), SyntaxError> {
+        self.spent = self.spent.saturating_add(bytes);
+        if self.spent > MAX_TREE_BYTES {
             return Err(self.error(format!(
-                "the document holds more than the {MAX_VALUES} values a document may"
+                "reading the document would take more than the {MAX_TREE_BYTES} bytes of memory a document may"
             )));
         }
+        Ok(())
+    }
+
+    /// Room in `items` for one more, charged as it's made.
+    fn room<T>(&mut self, items: &mut Vec<T>) -> Result<(), SyntaxError> {
+        if items.len() == items.capacity() {
+            let more = items.capacity().max(4);
+            let charge = if items.capacity() == 0 {
+                more * size_of::<T>() + ALLOCATION
+            } else {
+                more * size_of::<T>()
+            };
+            self.charge(charge)?;
+            items.reserve_exact(more);
+        }
+        Ok(())
+    }
+
+    /// `items` with no room to spare, its spare room given back to the charge.
+    fn close<T>(&mut self, mut items: Vec<T>) -> Vec<T> {
+        let spare = items.capacity() - items.len();
+        self.spent = self.spent.saturating_sub(spare * size_of::<T>());
+        items.shrink_to_fit();
+        items
+    }
+
+    /// `text` with no room to spare, charged.
+    fn text(&mut self, mut text: String) -> Result<String, SyntaxError> {
+        text.shrink_to_fit();
+        if !text.is_empty() {
+            self.charge(text.len() + ALLOCATION)?;
+        }
+        Ok(text)
+    }
+
+    fn value(&mut self, depth: usize) -> Result<Node, SyntaxError> {
         let at = self.at();
         let value = match self.peek() {
             Some('{') => self.object(depth)?,
             Some('[') => self.array(depth)?,
-            Some('"') => Value::String(self.string()?),
-            Some('-' | '0'..='9') => Value::Number(self.number()?),
+            Some('"') => {
+                let text = self.string()?;
+                Value::String(self.text(text)?)
+            }
+            Some('-' | '0'..='9') => {
+                let text = self.number()?;
+                Value::Number(self.text(text)?)
+            }
             Some('t') => self.word("true", Value::Bool(true))?,
             Some('f') => self.word("false", Value::Bool(false))?,
             Some('n') => self.word("null", Value::Null)?,
@@ -273,7 +323,6 @@ impl Reader<'_> {
         self.expect('{')?;
         self.skip_whitespace();
         let mut members = Vec::new();
-        let mut seen = BTreeSet::new();
         if self.peek() == Some('}') {
             self.bump();
             return Ok(Value::Object(members));
@@ -285,16 +334,12 @@ impl Reader<'_> {
                 return Err(self.error(format!("expected a key, found {}", self.found())));
             }
             let key = self.string()?;
-            if !seen.insert(key.clone()) {
-                return Err(SyntaxError {
-                    at,
-                    message: format!("the key {} is written twice in one object", shown(&key)),
-                });
-            }
+            let key = self.text(key)?;
             self.skip_whitespace();
             self.expect(':')?;
             self.skip_whitespace();
             let value = self.value(depth)?;
+            self.room(&mut members)?;
             members.push(Member { key, at, value });
             self.skip_whitespace();
             match self.peek() {
@@ -303,7 +348,8 @@ impl Reader<'_> {
                 }
                 Some('}') => {
                     self.bump();
-                    return Ok(Value::Object(members));
+                    twice(&members)?;
+                    return Ok(Value::Object(self.close(members)));
                 }
                 _ => {
                     return Err(self.error(format!("expected `,` or `}}`, found {}", self.found())));
@@ -323,7 +369,9 @@ impl Reader<'_> {
         }
         loop {
             self.skip_whitespace();
-            items.push(self.value(depth)?);
+            let item = self.value(depth)?;
+            self.room(&mut items)?;
+            items.push(item);
             self.skip_whitespace();
             match self.peek() {
                 Some(',') => {
@@ -331,7 +379,7 @@ impl Reader<'_> {
                 }
                 Some(']') => {
                     self.bump();
-                    return Ok(Value::Array(items));
+                    return Ok(Value::Array(self.close(items)));
                 }
                 _ => {
                     return Err(self.error(format!("expected `,` or `]`, found {}", self.found())));
@@ -479,6 +527,33 @@ impl Reader<'_> {
             code = code * 16 + digit;
         }
         Ok(code)
+    }
+}
+
+/// Refuses an object with a key written twice, at the second writing of the first key to
+/// be (in the order written). Found by sorting, so the keys aren't kept twice.
+fn twice(members: &[Member]) -> Result<(), SyntaxError> {
+    let mut order: Vec<usize> = (0..members.len()).collect();
+    order.sort_by(|&a, &b| {
+        let key = |i: usize| members.get(i).map(|m| m.key.as_str());
+        key(a).cmp(&key(b)).then(a.cmp(&b))
+    });
+    let again = order
+        .windows(2)
+        .filter_map(|pair| {
+            let (first, second) = (members.get(pair[0])?, members.get(pair[1])?);
+            (first.key == second.key).then_some(pair[1])
+        })
+        .min();
+    match again.and_then(|i| members.get(i)) {
+        Some(member) => Err(SyntaxError {
+            at: member.at,
+            message: format!(
+                "the key {} is written twice in one object",
+                shown(&member.key)
+            ),
+        }),
+        None => Ok(()),
     }
 }
 

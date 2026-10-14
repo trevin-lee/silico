@@ -3,24 +3,16 @@
 //! nanometres as integers, canonical text as text.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/example.rs"]
+mod example;
+
+use example::EXAMPLE;
 use proptest::prelude::*;
 use silico_core::ErrorCode;
 use silico_core::document::{
     Document, Feature, FeatureId, FeatureVersion, FormatVersion, ID_ALPHABET, Length, Name,
     Operation, Units, read, schema, write,
 };
-
-/// The design's example, in canonical form.
-const EXAMPLE: &str = r#"{
-  "silico": 1,
-  "units": {"length": "mm", "resolution": "1nm"},
-  "features": [
-    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
-    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
-    {"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de", "note": "Clearance for an M5 bolt"}
-  ]
-}
-"#;
 
 fn mm(nm: i64) -> Length {
     Length::from_nm(nm)
@@ -412,27 +404,179 @@ fn text_that_isnt_a_documents_json_is_refused_saying_where() {
 }
 
 #[test]
-fn a_document_past_the_size_or_value_limits_is_refused_before_it_costs_much() {
-    use silico_core::document::json::{MAX_DOCUMENT_LEN, MAX_VALUES};
+fn a_document_past_the_size_or_memory_limits_is_refused_before_it_costs_much() {
+    use silico_core::document::json::{MAX_DOCUMENT_LEN, MAX_TREE_BYTES};
     // One byte past the size: refused before anything is read.
     let big = vec![b' '; MAX_DOCUMENT_LEN + 1];
     let err = read(&big).unwrap_err();
-    assert!(err.message().contains("more than the 33554432"), "{err}");
+    assert!(
+        err.message()
+            .contains(&format!("more than the {MAX_DOCUMENT_LEN}")),
+        "{err}"
+    );
     // At the size, read (here, refused as JSON for being only spaces).
     let err = read(&big[1..]).unwrap_err();
     assert!(err.message().contains("expected a value"), "{err}");
-    // One value past the count (the array and its items): refused, as the reader counts.
-    let zeros = |n: usize| format!("[{}0]", "0,".repeat(n - 1));
-    let err = read(zeros(MAX_VALUES).as_bytes()).unwrap_err();
+    // The text that costs most for its size: a one-member object per 8 bytes. Within the
+    // size, but its tree would pass the memory limit: refused when it would.
+    let objects = format!(
+        "{{\"x\": [{}{{\"a\":0}}]}}",
+        "{\"a\":0},".repeat((MAX_DOCUMENT_LEN - 64) / 8)
+    );
+    assert!(objects.len() <= MAX_DOCUMENT_LEN);
+    let err = read(objects.as_bytes()).unwrap_err();
     assert!(
-        err.message().contains("more than the 4000000 values"),
+        err.message()
+            .contains(&format!("more than the {MAX_TREE_BYTES} bytes of memory")),
         "{err}"
     );
-    let err = read(zeros(MAX_VALUES - 1).as_bytes()).unwrap_err();
-    assert!(
-        err.message().contains("is an array, not an object"),
-        "{err}"
+    // A real document near the size reads: about seven times its size in tree.
+    let feature = r#"{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}"#;
+    let count = (MAX_DOCUMENT_LEN - 200) / (feature.len() + 6);
+    let many = format!(
+        "{{\"silico\": 1, \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}}, \"features\": [{}]}}",
+        vec![feature; count].join(",\n    ")
     );
+    assert!(many.len() <= MAX_DOCUMENT_LEN, "{}", many.len());
+    assert_eq!(read(many.as_bytes()).unwrap().features.len(), count);
+}
+
+/// The published schema, as an agent's validator compiles it.
+fn validator() -> jsonschema::Validator {
+    let schema: serde_json::Value = serde_json::from_str(&schema().unwrap()).unwrap();
+    jsonschema::validator_for(&schema).unwrap()
+}
+
+/// Whether the validator accepts `text`, as JSON.
+fn valid(validator: &jsonschema::Validator, text: &str) -> bool {
+    validator.is_valid(&serde_json::from_str(text).unwrap())
+}
+
+#[test]
+fn the_schema_accepts_what_the_reader_reads() {
+    // Once, the schema said lengths were a `multipleOf` 1e-6, and validators, dividing in
+    // floating point, refused 0.1 mm (0.1 / 1e-6 isn't whole to them) and 27 more of
+    // 0.1 to 9.9: a published schema that refuses documents Silico reads.
+    // This validator computes `multipleOf` exactly, so it wouldn't see that; python's
+    // jsonschema and ajv do as most do. So: no number in the schema says a multiple.
+    let schema: serde_json::Value = serde_json::from_str(&schema().unwrap()).unwrap();
+    assert!(schema["$defs"]["Length"].is_object(), "{schema}");
+    assert!(!schema.to_string().contains("multipleOf"), "{schema}");
+    let validator = validator();
+    assert!(valid(&validator, EXAMPLE));
+    for tenths in 1..100 {
+        let radius = format!("{}.{}", tenths / 10, tenths % 10);
+        let text = EXAMPLE.replacen("\"radius\": 2.5", &format!("\"radius\": {radius}"), 1);
+        read(text.as_bytes()).unwrap();
+        assert!(valid(&validator, &text), "{radius}");
+    }
+    for value in ["100.123456", "0.000001", "-9223372036854.775808", "1.1"] {
+        let text = EXAMPLE.replacen("\"length\": 40", &format!("\"length\": {value}"), 1);
+        read(text.as_bytes()).unwrap();
+        assert!(valid(&validator, &text), "{value}");
+    }
+}
+
+#[test]
+fn the_schema_refuses_what_the_reader_refuses_by_shape() {
+    // So the validator above is checking something: each of these the reader refuses too.
+    let validator = validator();
+    for (from, to) in [
+        ("\"height\": 12}", "\"height\": 12, \"depth\": 3}"),
+        ("\"radius\": 2.5, ", ""),
+        ("\"type\": \"cut\"", "\"type\": \"pocket\""),
+        ("\"type\": \"box\", \"v\": 1", "\"type\": \"box\", \"v\": 2"),
+        ("\"name\": \"Pin\"", "\"name\": \"\""),
+        ("\"id\": \"k7f2qx3m\"", "\"id\": \"k7f2qx3l\""),
+        ("[20, 10, -1]", "[20, 10]"),
+        ("\"length\": 40", "\"length\": \"40\""),
+        ("\"silico\": 1", "\"silico\": 2"),
+        ("\"length\": \"mm\"", "\"length\": \"in\""),
+    ] {
+        let text = EXAMPLE.replacen(from, to, 1);
+        assert!(read(text.as_bytes()).is_err(), "{to}");
+        assert!(!valid(&validator, &text), "{to}");
+    }
+}
+
+#[test]
+fn every_feature_type_is_read_written_and_in_the_schema() {
+    // FEATURE_TYPES, the writer's `type`, the reader's arms, and the schema all agree: a
+    // type in one but not another fails here.
+    use silico_core::document::FEATURE_TYPES;
+    let zero = [mm(0), mm(0), mm(0)];
+    let one = mm(1_000_000);
+    let samples = [
+        Operation::Box {
+            position: zero,
+            length: one,
+            width: one,
+            height: one,
+        },
+        Operation::Cylinder {
+            position: zero,
+            radius: one,
+            height: one,
+        },
+        Operation::Sphere {
+            position: zero,
+            radius: one,
+        },
+        Operation::Cone {
+            position: zero,
+            radius1: one,
+            radius2: one,
+            height: one,
+        },
+        Operation::Torus {
+            position: zero,
+            radius1: one,
+            radius2: one,
+        },
+        Operation::Fuse {
+            base: id("00000000"),
+            tool: id("11111111"),
+        },
+        Operation::Cut {
+            base: id("00000000"),
+            tool: id("11111111"),
+        },
+        Operation::Common {
+            base: id("00000000"),
+            tool: id("11111111"),
+        },
+    ];
+    let names: Vec<&str> = samples.iter().map(Operation::type_name).collect();
+    assert_eq!(names, FEATURE_TYPES);
+    let validator = validator();
+    for operation in samples {
+        let document = Document {
+            silico: FormatVersion,
+            units: Units,
+            features: vec![feature("22222222", "F", operation)],
+        };
+        let text = write(&document);
+        assert_eq!(read(text.as_bytes()).unwrap(), document, "{text}");
+        assert!(valid(&validator, &text), "{text}");
+    }
+}
+
+#[test]
+fn bidirectional_controls_are_written_as_escapes() {
+    // A name holding U+202E would reorder the rest of its feature's line in a diff (Trojan
+    // Source): escaped, it can't, and reads back as the same name.
+    let mut document = read(EXAMPLE.as_bytes()).unwrap();
+    let name = "A\u{202e}\u{2066}\u{2069}\u{200e}\u{200f}\u{61c}\u{202a}";
+    document.features[0].name = Name::new(name).unwrap();
+    let text = write(&document);
+    for c in name.chars().skip(1) {
+        assert!(!text.contains(c), "U+{:04X} written raw: {text}", c as u32);
+    }
+    assert!(
+        text.contains(r#""name": "A\u202e\u2066\u2069\u200e\u200f\u061c\u202a""#),
+        "{text}"
+    );
+    assert_eq!(read(text.as_bytes()).unwrap(), document);
 }
 
 #[test]
@@ -526,6 +670,8 @@ fn any_document() -> impl Strategy<Value = Document> {
     })
 }
 
+static VALIDATOR: std::sync::LazyLock<jsonschema::Validator> = std::sync::LazyLock::new(validator);
+
 fn config() -> ProptestConfig {
     ProptestConfig {
         cases: 500,
@@ -549,7 +695,9 @@ proptest! {
         prop_assert!(back.is_ok(), "{:?}\n{}", back, text);
         let back = back.unwrap();
         prop_assert_eq!(&back, &document);
-        prop_assert_eq!(write(&back), text);
+        prop_assert_eq!(write(&back), text.clone());
+        // And the published schema accepts it, as an agent's validator would.
+        prop_assert!(valid(&VALIDATOR, &text), "{}", text);
     }
 
     /// Bytes of any kind are read or refused, never panicked on.

@@ -246,7 +246,7 @@
     },
     "FeatureId": {
       "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
-      "pattern": "^[0-9a-hjkmnp-tv-z]{8}$",
+      "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
       "type": "string"
     },
     "FeatureVersion": {
@@ -259,7 +259,6 @@
     },
     "Length": {
       "description": "A length in millimetres, written as a plain decimal (no exponent), to at most 6 decimals (nanometres).",
-      "multipleOf": 1e-6,
       "type": "number"
     },
     "Name": {

@@ -20,11 +20,14 @@ use crate::{Error, ErrorCode};
 
 /// The document `bytes` hold, or an `invalid_input` error saying what's wrong and where.
 pub fn read(bytes: &[u8]) -> Result<Document, Error> {
+    let _span = tracing::debug_span!("document_read", bytes = bytes.len()).entered();
     decode::decode(bytes)
 }
 
 /// The document's canonical text: the same document always writes the same bytes.
 pub fn write(document: &Document) -> String {
+    let _span =
+        tracing::debug_span!("document_write", features = document.features.len()).entered();
     write::write(document)
 }
 

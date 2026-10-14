@@ -107,10 +107,11 @@ impl JsonSchema for FeatureId {
     }
 
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        let pattern = format!("^[{ID_ALPHABET}]{{{ID_LENGTH}}}$");
         json_schema!({
             "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
             "type": "string",
-            "pattern": "^[0-9a-hjkmnp-tv-z]{8}$"
+            "pattern": pattern
         })
     }
 }

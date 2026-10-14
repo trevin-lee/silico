@@ -137,11 +137,13 @@ impl JsonSchema for Length {
         "Length".into()
     }
 
+    /// No `multipleOf` for the resolution: validators divide in floating point, so
+    /// `0.1 / 1e-6` isn't whole to them and they'd refuse 0.1 mm. The reader is the
+    /// authority on decimals, as on exponents.
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         json_schema!({
             "description": "A length in millimetres, written as a plain decimal (no exponent), to at most 6 decimals (nanometres).",
-            "type": "number",
-            "multipleOf": 0.000001
+            "type": "number"
         })
     }
 }
@@ -188,8 +190,7 @@ impl JsonSchema for Angle {
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         json_schema!({
             "description": "An angle in degrees, written as a plain decimal (no exponent), to at most 9 decimals (nanodegrees).",
-            "type": "number",
-            "multipleOf": 0.000000001
+            "type": "number"
         })
     }
 }
