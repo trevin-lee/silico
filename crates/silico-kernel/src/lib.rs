@@ -183,6 +183,7 @@ mod ffi {
         ) -> Result<UniquePtr<Shape>>;
         fn faulty_contours(self: &Dressing) -> Result<Vec<u32>>;
         fn faulty_vertices(self: &Dressing) -> Result<Vec<u32>>;
+        fn contour_count(self: &Dressing) -> Result<u32>;
         fn contour_failed(self: &Dressing, contour: u32) -> Result<bool>;
         fn translate(
             shape: &Shape,

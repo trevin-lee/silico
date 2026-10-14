@@ -501,13 +501,7 @@ template <class Maker>
 rust::Vec<uint32_t> faulty_contours_of(const Maker &maker) {
   rust::Vec<uint32_t> out;
   for (int i = 1; i <= maker.NbFaultyContours(); ++i) {
-    // `NbContours` counts the given contours only: it stops at the first stripe without a
-    // spine, as are the corner stripes building appends. A collision can make one faulty;
-    // it isn't a given contour, and its status can't be read, so it's left out.
-    const int ic = maker.FaultyContour(i);
-    if (ic >= 1 && ic <= maker.NbContours()) {
-      out.push_back(static_cast<uint32_t>(ic));
-    }
+    out.push_back(static_cast<uint32_t>(maker.FaultyContour(i)));
   }
   return out;
 }
@@ -524,6 +518,8 @@ rust::Vec<uint32_t> faulty_vertices_of(const Maker &maker, const ShapeMap &verti
 
 template <class Maker> bool contour_failed_of(const Maker &maker, uint32_t contour) {
   const int ic = static_cast<int>(contour);
+  // `NbContours` counts the given contours only: it stops at the first stripe without a
+  // spine, as are the corner stripes building appends, whose status can't be read.
   if (ic < 1 || ic > maker.NbContours()) {
     throw Standard_Failure("contour number out of range");
   }
@@ -539,6 +535,10 @@ rust::Vec<uint32_t> Dressing::faulty_contours() const {
 rust::Vec<uint32_t> Dressing::faulty_vertices() const {
   return impl_->fillet != nullptr ? faulty_vertices_of(*impl_->fillet, impl_->vertices)
                                   : faulty_vertices_of(impl_->chamfer_maker(), impl_->vertices);
+}
+
+uint32_t Dressing::contour_count() const {
+  return static_cast<uint32_t>(impl_->maker->NbContours());
 }
 
 bool Dressing::contour_failed(uint32_t contour) const {

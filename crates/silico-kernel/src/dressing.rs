@@ -350,8 +350,7 @@ fn not_built(
 
 /// `error`, OCCT's failure on all the edges, narrowed to the edges OCCT's `report` names,
 /// or unchanged if it names none or couldn't be read. No input is known to leave it unread:
-/// the bridge leaves out the stripes whose status it can't read (see its
-/// `faulty_contours`).
+/// `faulty_edges` leaves out the stripes whose status the bridge can't read.
 fn as_reported(
     error: KernelError,
     kind: DressingKind,
@@ -392,7 +391,19 @@ fn faulty_edges(
     edges: &[u32],
     kind: DressingKind,
 ) -> Result<Vec<u32>, KernelError> {
-    let faulty = dressing.faulty_contours()?;
+    // A corner stripe OCCT added while building isn't a given contour: a collision can make
+    // one faulty (a 10 mm cube chamfered all round at 5), and it names nothing.
+    let given = 1..=dressing.contour_count()?;
+    let (faulty, stripes): (Vec<u32>, Vec<u32>) = dressing
+        .faulty_contours()?
+        .into_iter()
+        .partition(|contour| given.contains(contour));
+    if !stripes.is_empty() {
+        tracing::debug!(
+            ?stripes,
+            "faulty stripes that aren't given contours, left out"
+        );
+    }
     let mut surfaces_failed = false;
     for &contour in &faulty {
         if dressing.contour_failed(contour)? {

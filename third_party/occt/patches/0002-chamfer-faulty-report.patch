@@ -5,7 +5,9 @@ Why: BRepFilletAPI_MakeFillet passes on its builder's report of where a failed b
      (NbFaultyContours, FaultyContour, NbFaultyVertices, FaultyVertex, StripeStatus);
      BRepFilletAPI_MakeChamfer keeps the same report in its private ChFi3d_ChBuilder and doesn't.
      Silico reads it to name the edges of a failed chamfer, as it does a fillet's. Accessors only,
-     forwarding to the builder as MakeFillet's do: no result changes.
+     forwarding to the builder as MakeFillet's do: no result changes. All five, as MakeFillet
+     has, though Silico reads no chamfer's faulty vertices (they mislead: docs/ports/chamfer.md),
+     so the class matches MakeFillet's upstream.
 Drop when: Silico upgrades to an OCCT release with these accessors (or upstream's equivalent).
 
 --- a/src/BRepFilletAPI/BRepFilletAPI_MakeChamfer.hxx

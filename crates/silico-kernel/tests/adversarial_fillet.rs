@@ -1,19 +1,21 @@
 //! break-it: the edges a failed fillet names (M2.0, a multi-edge fillet's failing edges:
 //! `Refusal::EdgesFailed`), read from OCCT's faulty contours and corners. Every expectation
-//! is a hand calculation on an axis-aligned box: a fillet of radius r on an edge cuts into
-//! the r × r strip along it, so it runs past one of its faces when r is over that face's
-//! width, and two fillets that share no corner collide when their strips overlap (two
-//! parallel edges on a face w wide when 2r > w). An edge is at fault when one of those
-//! holds for it; the refusal's suggestion is to leave the edges it names out, so it must
-//! name only edges at fault. Box edges are numbered as FreeCAD 1.1.3 numbers
-//! `Part.makeBox(a, b, c).Edges`.
+//! is a hand calculation on an axis-aligned box (common/box_edges.rs): a fillet of radius r
+//! on an edge cuts into the r × r strip along it, so it runs past one of its faces when r is
+//! over that face's width, and two fillets that share no corner collide when their strips
+//! overlap (two parallel edges on a face w wide when 2r > w). An edge is at fault when one
+//! of those holds for it; the refusal's suggestion is to leave the edges it names out, so
+//! it must name only edges at fault.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/box_edges.rs"]
+mod box_edges;
 #[path = "common/kernel.rs"]
 mod kernel;
 #[path = "common/oracle.rs"]
 mod oracle;
 
+use box_edges::{failed, named};
 use kernel::kernel;
 use proptest::prelude::*;
 use silico_core::ErrorCode;
@@ -23,113 +25,17 @@ use silico_kernel::{
     from_text_brep, make, make_box, to_brep, translate,
 };
 
-/// Each box edge: the axis it runs along, and its place across the other two axes (in
-/// increasing axis order), 0 at the low face and 1 at the high. From FreeCAD 1.1.3:
-/// `Part.makeBox(10, 20, 30).Edges[0]` runs from (0, 0, 30) to (0, 0, 0), and so on.
-const EDGES: [(usize, [u8; 2]); 12] = [
-    (2, [0, 0]), // Edge1: along z, x = 0, y = 0
-    (1, [0, 1]), // Edge2: along y, x = 0, z = c
-    (2, [0, 1]), // Edge3: along z, x = 0, y = b
-    (1, [0, 0]), // Edge4: along y, x = 0, z = 0
-    (2, [1, 0]), // Edge5: along z, x = a, y = 0
-    (1, [1, 1]), // Edge6: along y, x = a, z = c
-    (2, [1, 1]), // Edge7: along z, x = a, y = b
-    (1, [1, 0]), // Edge8: along y, x = a, z = 0
-    (0, [0, 0]), // Edge9: along x, y = 0, z = 0
-    (0, [0, 1]), // Edge10: along x, y = 0, z = c
-    (0, [1, 0]), // Edge11: along x, y = b, z = 0
-    (0, [1, 1]), // Edge12: along x, y = b, z = c
-];
-
-/// The strip a fillet of radius `r` on box edge `e` cuts into: an interval on each axis.
-fn strip(dims: [f64; 3], e: u32, r: f64) -> [(f64, f64); 3] {
-    let (along, sides) = EDGES[(e - 1) as usize];
-    let mut sides = sides.iter();
-    let mut out = [(0.0, 0.0); 3];
-    for (axis, slot) in out.iter_mut().enumerate() {
-        *slot = if axis == along {
-            (0.0, dims[axis])
-        } else if *sides.next().unwrap() == 0 {
-            (0.0, r)
-        } else {
-            (dims[axis] - r, dims[axis])
-        };
-    }
-    out
-}
-
-/// The box corners (0 or 1 on each axis) edge `e` ends at.
-fn ends(e: u32) -> [[u8; 3]; 2] {
-    let (along, sides) = EDGES[(e - 1) as usize];
-    let mut sides = sides.iter();
-    let mut low = [0u8; 3];
-    for (axis, slot) in low.iter_mut().enumerate() {
-        if axis != along {
-            *slot = *sides.next().unwrap();
-        }
-    }
-    let mut high = low;
-    high[along] = 1;
-    [low, high]
-}
-
-/// Whether the fillet of `e` alone runs past one of its faces (by more than `m`); None
-/// within `m` of the boundary.
+/// Whether a fillet of radius `r` on box edge `e` runs past one of its faces (by more than
+/// `m`): the r × r strip it cuts is a chamfer's of equal distances r. None within `m`.
 fn runs_past(dims: [f64; 3], e: u32, r: f64, m: f64) -> Option<bool> {
-    let along = EDGES[(e - 1) as usize].0;
-    let mut near = false;
-    for (axis, &w) in dims.iter().enumerate() {
-        if axis == along {
-            continue;
-        }
-        if r > w + m {
-            return Some(true);
-        }
-        near |= (r - w).abs() <= m;
-    }
-    if near { None } else { Some(false) }
+    box_edges::runs_past(dims, e, ChamferSize::Equal { distance: r }, false, m)
 }
 
-/// Whether `e` is at fault among `given` at radius `r`: its fillet runs past one of its
-/// faces, or its strip overlaps (by more than `m`) that of another given edge it shares no
-/// corner with. None within `m` of either boundary.
+/// Whether `e` is at fault among `given`, filleted at `r`: it runs past a face, or its strip
+/// overlaps (by more than `m`) that of another given edge it shares no corner with. None
+/// near either.
 fn at_fault(dims: [f64; 3], given: &[u32], e: u32, r: f64, m: f64) -> Option<bool> {
-    let mut near = match runs_past(dims, e, r, m) {
-        Some(true) => return Some(true),
-        Some(false) => false,
-        None => true,
-    };
-    let mine = strip(dims, e, r);
-    for &other in given {
-        if other == e || ends(other).iter().any(|c| ends(e).contains(c)) {
-            continue;
-        }
-        let theirs = strip(dims, other, r);
-        let depth = (0..3)
-            .map(|a| mine[a].1.min(theirs[a].1) - mine[a].0.max(theirs[a].0))
-            .fold(f64::INFINITY, f64::min);
-        if depth > m {
-            return Some(true);
-        }
-        near |= depth.abs() <= m;
-    }
-    if near { None } else { Some(false) }
-}
-
-/// The refusal of an operation expected to fail.
-fn failed(result: Result<silico_kernel::Built, KernelError>) -> KernelError {
-    match result {
-        Ok(_) => panic!("built"),
-        Err(e) => e,
-    }
-}
-
-/// The edges a failed fillet names, if it failed naming some.
-fn named(err: &KernelError) -> Option<Vec<u32>> {
-    match err.refusal() {
-        Refusal::EdgesFailed { edges, .. } => Some(edges.clone()),
-        _ => None,
-    }
+    box_edges::at_fault(dims, given, e, ChamferSize::Equal { distance: r }, false, m)
 }
 
 /// The box 5.25 × 2.85 × 5. Its top face (z = 5) is 2.85 wide across y, so at r = 1.45 the
@@ -388,9 +294,10 @@ fn the_same_failed_fillet_names_the_same_edges_in_process_and_through_workers() 
 }
 
 #[test]
-fn a_chamfer_too_wide_for_its_face_names_no_edge() {
-    // The same collision chamfered (2 × 1.45 of the 2.85 top face): OCCT keeps a chamfer's
-    // report private, so the refusal names none of several edges, never a guess.
+fn a_chamfer_colliding_on_the_narrow_top_face_names_no_edge() {
+    // The same collision chamfered (2 × 1.45 of the 2.85 top face): as for the fillet, OCCT
+    // lists only the first contour of the colliding pair, with no error status, so the
+    // refusal names none of several edges, never a guess.
     let (dims, edges, _) = TOP_RING;
     let b = make_box(dims[0], dims[1], dims[2]).unwrap();
     let size = ChamferSize::Equal { distance: 1.45 };

@@ -11,6 +11,8 @@
 mod chamfer_sizes;
 #[path = "common/close.rs"]
 mod close;
+#[path = "common/face_where.rs"]
+mod face_where;
 #[path = "common/kernel.rs"]
 mod kernel;
 #[path = "common/numbers.rs"]
@@ -21,6 +23,7 @@ use std::time::{Duration, Instant};
 
 use chamfer_sizes::{angled, equal, two};
 use close::assert_close;
+use face_where::face_where;
 use kernel::kernel;
 use numbers::relative_error;
 use proptest::prelude::*;
@@ -128,24 +131,6 @@ fn edges_ending_at(mesh: &silico_kernel::Mesh, point: [f64; 3]) -> Vec<u32> {
         })
         .map(|(i, _)| i as u32 + 1)
         .collect()
-}
-
-/// The number of the one face whose mesh points all satisfy `on`.
-fn face_where(shape: &Shape, on: impl Fn([f64; 3]) -> bool) -> u32 {
-    let mesh = tessellate(shape, 0.05).unwrap();
-    let mut triangles = mesh.triangles.iter();
-    let mut found = Vec::new();
-    for (i, &count) in mesh.face_triangles.iter().enumerate() {
-        let mut all = true;
-        for t in triangles.by_ref().take(count as usize) {
-            all &= t.iter().all(|&v| on(mesh.positions[v as usize]));
-        }
-        if all {
-            found.push(i as u32 + 1);
-        }
-    }
-    assert_eq!(found.len(), 1, "faces matching: {found:?}");
-    found[0]
 }
 
 /// The points of face `face`'s mesh: on a flat face, its corners (and any points along its
