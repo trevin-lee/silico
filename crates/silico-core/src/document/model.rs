@@ -296,14 +296,26 @@ impl Operation {
 
     /// The field a [`primitive`](Self::primitive)'s parameter is in the file: a box's `dx`
     /// is its `length`, a torus's `major_radius` its `radius1`.
-    pub fn field(parameter: &'static str) -> &'static str {
-        match parameter {
-            "dx" => "length",
-            "dy" => "width",
-            "dz" => "height",
-            "major_radius" => "radius1",
-            "minor_radius" => "radius2",
-            other => other,
+    pub fn document_field(&self, parameter: &'static str) -> &'static str {
+        match self {
+            Operation::Box { .. } => match parameter {
+                "dx" => "length",
+                "dy" => "width",
+                "dz" => "height",
+                other => other,
+            },
+            Operation::Torus { .. } => match parameter {
+                "major_radius" => "radius1",
+                "minor_radius" => "radius2",
+                other => other,
+            },
+            // The kernel's names are the file's.
+            Operation::Cylinder { .. }
+            | Operation::Sphere { .. }
+            | Operation::Cone { .. }
+            | Operation::Fuse { .. }
+            | Operation::Cut { .. }
+            | Operation::Common { .. } => parameter,
         }
     }
 

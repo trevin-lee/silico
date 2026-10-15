@@ -185,15 +185,57 @@ fn each_primitive_maps_its_fields_to_the_kernels_parameters_by_hand() {
 
 #[test]
 fn every_kernel_parameter_of_every_primitive_is_named_as_a_field_its_type_has() {
-    let kernel: [(&str, &[&str]); 5] = [
-        ("box", &["dx", "dy", "dz"]),
-        ("cylinder", &["radius", "height"]),
-        ("sphere", &["radius"]),
-        ("cone", &["radius1", "radius2", "height"]),
-        ("torus", &["major_radius", "minor_radius"]),
+    let origin = [nm(0); 3];
+    let one = nm(1);
+    let kernel: [(Operation, &[&str]); 5] = [
+        (
+            Operation::Box {
+                position: origin,
+                length: one,
+                width: one,
+                height: one,
+            },
+            &["dx", "dy", "dz"],
+        ),
+        (
+            Operation::Cylinder {
+                position: origin,
+                radius: one,
+                height: one,
+            },
+            &["radius", "height"],
+        ),
+        (
+            Operation::Sphere {
+                position: origin,
+                radius: one,
+            },
+            &["radius"],
+        ),
+        (
+            Operation::Cone {
+                position: origin,
+                radius1: one,
+                radius2: one,
+                height: one,
+            },
+            &["radius1", "radius2", "height"],
+        ),
+        (
+            Operation::Torus {
+                position: origin,
+                radius1: one,
+                radius2: one,
+            },
+            &["major_radius", "minor_radius"],
+        ),
     ];
-    for (type_name, parameters) in kernel {
-        let named: Vec<&str> = parameters.iter().map(|p| Operation::field(p)).collect();
+    for (operation, parameters) in kernel {
+        let type_name = operation.type_name();
+        let named: Vec<&str> = parameters
+            .iter()
+            .map(|p| operation.document_field(p))
+            .collect();
         assert_eq!(named, fields_of(type_name), "{type_name}");
     }
 }

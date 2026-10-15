@@ -107,8 +107,8 @@ impl Primitive {
 
     /// Every value at fault by [`check`](Self::check)'s rule, in the order of the fields,
     /// each parameter called `name(parameter)` in its error and message: a document calls
-    /// a box's `dx` its `length`. A cone's radii both zero, and a torus's tube wider than
-    /// its ring, are faults only where each radius alone is valid.
+    /// a box's `dx` its `length`. A torus's tube wider than its ring is a fault only where
+    /// each radius alone is valid.
     pub fn faults(&self, name: impl Fn(&'static str) -> &'static str) -> Vec<InvalidParameter> {
         let what = self.name();
         let mut faults = Vec::new();
