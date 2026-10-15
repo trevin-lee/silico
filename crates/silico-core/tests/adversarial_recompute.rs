@@ -133,6 +133,11 @@ impl Kernel for Panicky {
         if request.name() == "MakeSphere" {
             panic!("a bug under a recompute step");
         }
+        if request.name() == "MakeCylinder" {
+            // A formatted message: a `String` payload, not a `&str`.
+            let n = 2;
+            panic!("bug number {n} under a recompute step");
+        }
         self.0.submit(generation, request)
     }
 }
@@ -149,10 +154,31 @@ fn a_panic_under_one_step_ends_the_recompute_with_an_error_not_a_hang() {
         sphere("bbbbbbbb", [0.0; 3], 1.0),
     ]));
     match run.wait_timeout(Duration::from_secs(5)) {
-        Ok(Err(error)) => assert_eq!(error.code(), ErrorCode::Internal, "{error}"),
+        Ok(Err(error)) => {
+            assert_eq!(error.code(), ErrorCode::Internal, "{error}");
+            // Which feature's step, and the panic's own words.
+            assert_eq!(error.feature(), Some("bbbbbbbb"));
+            assert_eq!(error.cause(), Some("a bug under a recompute step"));
+        }
         Ok(Ok(outcome)) => panic!("a panicking step came to {outcome:?}"),
         Err(_) => panic!("the recompute hung after a step panicked"),
     }
+}
+
+#[test]
+fn a_panic_with_a_formatted_message_is_named_with_it() {
+    let engine = Recompute::new(Panicky(FakeKernel::new(2).unwrap()));
+    let run = engine.start(document(&[
+        r#"{"id": "cccccccc", "type": "cylinder", "v": 1, "name": "C", "position": [0, 0, 0], "radius": 1, "height": 1}"#.to_owned(),
+    ]));
+    let error = run
+        .wait_timeout(Duration::from_secs(5))
+        .ok()
+        .expect("hung")
+        .unwrap_err();
+    assert_eq!(error.code(), ErrorCode::Internal);
+    assert_eq!(error.feature(), Some("cccccccc"));
+    assert_eq!(error.cause(), Some("bug number 2 under a recompute step"));
 }
 
 #[test]

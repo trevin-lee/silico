@@ -1,36 +1,86 @@
-//! M2.4: at the default log level (warnings), a warning from the kernel during a recompute
-//! is under its step's span (which names the feature), its recompute's, and the edit that
-//! started it (ARCHITECTURE.md, invariant 9). Its own file: it sets the process's tracing subscriber.
+//! M2.4: at the default log level (warnings), a warning raised on a step's thread during a
+//! recompute is under its step's span, naming the feature, its recompute's, naming the
+//! generation, and the edit that started it (ARCHITECTURE.md, invariant 9). Its own file:
+//! it sets the process's tracing subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+#[path = "common/example.rs"]
+mod example;
 
 use std::sync::{Arc, Mutex};
 
+use example::EXAMPLE;
 use silico_core::document::{Checked, read};
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::{Generation, Kernel, KernelRequest};
 use silico_core::pool::Pending;
 use silico_core::recompute::{Recompute, RunOutcome};
 use tracing::Subscriber;
+use tracing::field::{Field, Visit};
 use tracing::level_filters::LevelFilter;
+use tracing::span::{Attributes, Id};
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 
-/// Each event's spans, nearest first.
-type Seen = Arc<Mutex<Vec<Vec<&'static str>>>>;
+/// A span's `feature` and `generation`, if it has them.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Fields {
+    feature: Option<String>,
+    generation: Option<u64>,
+}
+
+impl Visit for Fields {
+    fn record_str(&mut self, field: &Field, value: &str) {
+        if field.name() == "feature" {
+            self.feature = Some(value.to_owned());
+        }
+    }
+
+    fn record_u64(&mut self, field: &Field, value: u64) {
+        if field.name() == "generation" {
+            self.generation = Some(value);
+        }
+    }
+
+    fn record_debug(&mut self, _: &Field, _: &dyn std::fmt::Debug) {}
+}
+
+/// Each event's spans, nearest first, with their fields.
+type Seen = Arc<Mutex<Vec<Vec<(&'static str, Fields)>>>>;
 
 struct Events(Seen);
 
 impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Events {
+    fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
+        let mut fields = Fields::default();
+        attrs.record(&mut fields);
+        if let Some(span) = ctx.span(id) {
+            span.extensions_mut().insert(fields);
+        }
+    }
+
     fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
         let scope = ctx
             .event_scope(event)
-            .map(|spans| spans.map(|span| span.name()).collect())
+            .map(|spans| {
+                spans
+                    .map(|span| {
+                        let fields = span
+                            .extensions()
+                            .get::<Fields>()
+                            .cloned()
+                            .unwrap_or_default();
+                        (span.name(), fields)
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
         self.0.lock().unwrap().push(scope);
     }
 }
 
-/// Stands in for the pool: warns on each request, as it does when a worker crashes.
+/// A synthetic warning, raised on the step's thread as each step is asked of the kernel:
+/// what any warning there (the pool's of a request it doesn't deliver, say) is under.
 struct Warns(FakeKernel);
 
 impl Kernel for Warns {
@@ -47,30 +97,37 @@ impl Kernel for Warns {
         generation: Generation,
         request: KernelRequest<T>,
     ) -> Pending<T> {
-        tracing::warn!("kernel worker crashed; replacing it");
+        tracing::warn!("a warning during the step");
         self.0.submit(generation, request)
     }
 }
 
 #[test]
-fn at_the_default_level_a_kernel_warning_still_traces_back_to_the_edit() {
+fn at_the_default_level_a_warning_in_a_step_names_its_feature_generation_and_edit() {
     let seen: Seen = Arc::default();
     tracing::subscriber::set_global_default(
         tracing_subscriber::registry()
             .with(Events(Arc::clone(&seen)).with_filter(LevelFilter::WARN)),
     )
     .unwrap();
-    let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}]}"#;
-    let document = Checked::new(read(text.as_bytes()).unwrap()).unwrap();
-    let engine = Recompute::new(Warns(FakeKernel::new(1).unwrap()));
+    // The design's example: the block made, the pin made and moved, the cut: four steps.
+    let document = Checked::new(read(EXAMPLE.as_bytes()).unwrap()).unwrap();
+    let engine = Recompute::new(Warns(FakeKernel::new(2).unwrap()));
     let edit = tracing::warn_span!("user_edit");
     let run = edit.in_scope(|| engine.start(document));
     assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
     let events = seen.lock().unwrap().clone();
-    assert_eq!(events.len(), 1, "{events:?}");
-    assert_eq!(
-        events[0],
-        ["recompute_step", "recompute", "user_edit"],
-        "the warning's spans, nearest first"
-    );
+    assert_eq!(events.len(), 4, "{events:?}");
+    let mut features = Vec::new();
+    for scope in &events {
+        let names: Vec<&str> = scope.iter().map(|(name, _)| *name).collect();
+        assert_eq!(names, ["recompute_step", "recompute", "user_edit"]);
+        features.push(scope[0].1.feature.clone().unwrap());
+        // The first recompute on a new kernel is generation 1.
+        assert_eq!(scope[1].1.generation, Some(1));
+    }
+    features.sort_unstable();
+    // The pin's make and move are the pin's; the block's make, the block's; the cut, the
+    // hole's.
+    assert_eq!(features, ["a91cw0de", "a91cw0de", "k7f2qx3m", "m3tq8v0z"]);
 }

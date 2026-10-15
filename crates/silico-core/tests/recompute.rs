@@ -537,6 +537,8 @@ fn editing_any_value_of_a_cone_or_a_torus_rebuilds_it() {
 struct Gate {
     inner: FakeKernel,
     held: Generation,
+    /// Set once the fake has sent the held step's result.
+    delivered: std::sync::atomic::AtomicBool,
     open: std::sync::Mutex<bool>,
     opened: std::sync::Condvar,
 }
@@ -568,6 +570,12 @@ impl Kernel for Gate {
             {
                 std::thread::sleep(Duration::from_millis(1));
             }
+            assert!(
+                !self.inner.wait_running(1, Duration::ZERO),
+                "the step wasn't delivered in time"
+            );
+            self.delivered
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             let mut open = self.open.lock().unwrap();
             while !*open {
                 open = self.opened.wait(open).unwrap();
@@ -584,18 +592,27 @@ fn a_recompute_superseded_after_its_last_step_ran_doesnt_publish_over_the_newer_
     let engine = Recompute::new(Gate {
         inner,
         held,
+        delivered: std::sync::atomic::AtomicBool::new(false),
         open: std::sync::Mutex::new(false),
         opened: std::sync::Condvar::new(),
     });
     let older = engine.start(document(&[
         r#"{"id": "aaaaaaaa", "type": "sphere", "v": 1, "name": "A", "position": [0, 0, 0], "radius": 7}"#,
     ]));
+    // Until the fake has delivered the older recompute's step: only then does the newer
+    // one start, so the older one is superseded after its last step ran.
     let deadline = std::time::Instant::now() + WAIT;
-    while engine.kernel().inner.calls().is_empty() {
-        assert!(std::time::Instant::now() < deadline);
+    while !engine
+        .kernel()
+        .delivered
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the step was never held"
+        );
         std::thread::sleep(Duration::from_millis(1));
     }
-    std::thread::sleep(Duration::from_millis(200));
     // The newer recompute runs and publishes while the older one holds its finished step.
     let newer = published(&engine, checked(EXAMPLE));
     *engine.kernel().open.lock().unwrap() = true;
@@ -662,4 +679,137 @@ fn a_recompute_waits_on_at_most_sixty_four_steps_at_once() {
     drop(hold);
     assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
     assert_eq!(engine.kernel().names.lock().unwrap().len(), 64);
+}
+
+#[test]
+fn superseded_recomputes_hold_no_more_than_the_newest_ones_results_before_any_publish() {
+    let engine = engine(2);
+    let pin =
+        |radius: u32| format!(r#""position": [20, 10, -1], "radius": {radius}, "height": 12"#);
+    published(&engine, example_with(BLOCK, &pin(1)));
+    let hold = engine.kernel().hold(|op| matches!(op, Op::Boolean { .. }));
+    for radius in [2, 3] {
+        let before = engine.kernel().calls().len();
+        let run = engine.start(example_with(BLOCK, &pin(radius)));
+        let deadline = std::time::Instant::now() + WAIT;
+        while !calls_since(&engine, before).contains(&"Cut") {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        engine.cancel();
+        assert_eq!(run.wait().unwrap(), RunOutcome::Superseded);
+    }
+    drop(hold);
+    // The older superseded one's steps went when the newer one kept its own, before any
+    // publish.
+    let before = engine.kernel().calls().len();
+    published(&engine, example_with(BLOCK, &pin(2)));
+    assert_eq!(
+        calls_since(&engine, before),
+        ["MakeCylinder", "Translate", "Cut"]
+    );
+}
+
+#[test]
+fn steps_one_result_makes_ready_run_at_once() {
+    // One make (two identical boxes), used by two moves: when it's made, both moves are
+    // ready, and both run at once.
+    let engine = engine(4);
+    let hold = engine
+        .kernel()
+        .hold(|op| matches!(op, Op::Translate { .. }));
+    let run = engine.start(document(&[
+        r#"{"id": "aaaaaaaa", "type": "box", "v": 1, "name": "A", "position": [1, 0, 0], "length": 1, "width": 1, "height": 1}"#,
+        r#"{"id": "bbbbbbbb", "type": "box", "v": 1, "name": "B", "position": [0, 1, 0], "length": 1, "width": 1, "height": 1}"#,
+    ]));
+    let together = engine.kernel().wait_running(2, WAIT);
+    hold.release();
+    assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
+    assert!(together, "the two moves didn't run at once");
+}
+
+/// The fake kernel, with the first recompute's `advance` held until let go: so a newer
+/// recompute can start, and get ahead, before the older one has.
+struct SlowAdvance {
+    fake: FakeKernel,
+    /// Set when the first recompute's `advance` is entered.
+    entered: std::sync::atomic::AtomicBool,
+    open: std::sync::Mutex<bool>,
+    opened: std::sync::Condvar,
+}
+
+impl Kernel for SlowAdvance {
+    fn generation(&self) -> Generation {
+        self.fake.generation()
+    }
+
+    fn advance(&self, generation: Generation) {
+        if generation == Generation(1) {
+            self.entered
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let mut open = self.open.lock().unwrap();
+            while !*open {
+                open = self.opened.wait(open).unwrap();
+            }
+        }
+        self.fake.advance(generation);
+    }
+
+    fn submit<T: Send + 'static>(
+        &self,
+        generation: Generation,
+        request: KernelRequest<T>,
+    ) -> Pending<T> {
+        self.fake.submit(generation, request)
+    }
+}
+
+#[test]
+fn an_older_recompute_finishing_late_doesnt_make_the_newer_ones_results_forgotten() {
+    let engine = Arc::new(Recompute::new(SlowAdvance {
+        fake: FakeKernel::new(2).unwrap(),
+        entered: std::sync::atomic::AtomicBool::new(false),
+        open: std::sync::Mutex::new(false),
+        opened: std::sync::Condvar::new(),
+    }));
+    let one_box = |size: u32| {
+        document(&[&format!(
+            r#"{{"id": "aaaaaaaa", "type": "box", "v": 1, "name": "A", "position": [0, 0, 0], "length": {size}, "width": 1, "height": 1}}"#
+        )])
+    };
+    // The older one starts, and waits in its `advance`.
+    let older = {
+        let engine = Arc::clone(&engine);
+        std::thread::spawn(move || engine.start(one_box(1)).wait())
+    };
+    // Until the older one has taken its generation and waits in its `advance`.
+    let deadline = std::time::Instant::now() + WAIT;
+    while !engine
+        .kernel()
+        .entered
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the older recompute never started"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // The newer one starts and runs, its make held.
+    let hold = engine
+        .kernel()
+        .fake
+        .hold(|op| matches!(op, Op::MakePrimitive(_)));
+    let newer = engine.start(one_box(2));
+    assert!(engine.kernel().fake.wait_running(1, WAIT));
+    // Now the older one goes on, and finds itself superseded.
+    *engine.kernel().open.lock().unwrap() = true;
+    engine.kernel().opened.notify_all();
+    assert_eq!(older.join().unwrap().unwrap(), RunOutcome::Superseded);
+    drop(hold);
+    assert!(matches!(newer.wait().unwrap(), RunOutcome::Published(_)));
+    // The newer one's results are kept: its document again runs nothing.
+    let before = engine.kernel().fake.calls().len();
+    published(&engine, one_box(2));
+    assert_eq!(engine.kernel().fake.calls().len(), before);
 }

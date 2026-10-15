@@ -72,6 +72,9 @@ pub struct Worker {
     socket: UnixStream,
     replies: Receiver<Result<Response, FrameError>>,
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
+    /// The request in flight (or the last one): its trace, and the span it was asked in,
+    /// under which the log thread puts the worker's lines for it.
+    caller: Arc<Mutex<Option<(u64, tracing::Span)>>>,
     /// Closes when the log thread has read everything the worker wrote.
     stderr_done: Receiver<()>,
     /// Set when the worker says it has started (see [`silico_protocol::write_started`]), or
@@ -136,13 +139,15 @@ impl Worker {
         let pid = guard.id();
 
         let stderr_tail = Arc::new(Mutex::new(VecDeque::new()));
+        let caller = Arc::new(Mutex::new(None));
         let (done_tx, stderr_done) = mpsc::channel::<()>();
         if let Some(stderr) = guard.take_stderr() {
             let tail = Arc::clone(&stderr_tail);
+            let caller = Arc::clone(&caller);
             std::thread::Builder::new()
                 .name(format!("worker-{pid}-logs"))
                 .spawn(move || {
-                    forward_logs(stderr, pid, &tail);
+                    forward_logs(stderr, pid, &tail, &caller);
                     drop(done_tx);
                 })
                 .map_err(|e| start_failed("starting the log thread", &e))?;
@@ -194,6 +199,7 @@ impl Worker {
             socket: ours,
             replies,
             stderr_tail,
+            caller,
             stderr_done,
             started,
             answers: 0,
@@ -316,6 +322,9 @@ impl Worker {
         let id = RequestId(self.next_id);
         self.next_id += 1;
         let trace = TraceId(NEXT_TRACE.fetch_add(1, Ordering::Relaxed));
+        // The worker's log lines for this request go under the span it was asked in, so at
+        // any level they trace back to it (ARCHITECTURE.md, invariant 9).
+        *lock(&self.caller) = Some((trace.0, tracing::Span::current()));
         let span = tracing::debug_span!(
             "worker_call",
             trace = trace.0,
@@ -686,7 +695,12 @@ impl Drop for KillOnDrop {
 /// Re-emits each of the worker's log lines into `tracing` at its own level, and keeps the
 /// last [`STDERR_TAIL_LINES`] for crash reports. Lines are read as bytes, so text that
 /// isn't UTF-8 can't stop the reading, and cut at [`MAX_LOG_LINE`].
-fn forward_logs(stderr: impl Read, pid: u32, tail: &Mutex<VecDeque<String>>) {
+fn forward_logs(
+    stderr: impl Read,
+    pid: u32,
+    tail: &Mutex<VecDeque<String>>,
+    caller: &Mutex<Option<(u64, tracing::Span)>>,
+) {
     let mut reader = BufReader::new(stderr);
     let mut line = Vec::new();
     loop {
@@ -707,7 +721,7 @@ fn forward_logs(stderr: impl Read, pid: u32, tail: &Mutex<VecDeque<String>>) {
         if text.is_empty() {
             continue;
         }
-        let summary = emit_worker_log(text, pid);
+        let summary = emit_worker_log(text, pid, caller);
         let mut tail = tail.lock().unwrap_or_else(PoisonError::into_inner);
         if tail.len() == STDERR_TAIL_LINES {
             tail.pop_front();
@@ -717,9 +731,10 @@ fn forward_logs(stderr: impl Read, pid: u32, tail: &Mutex<VecDeque<String>>) {
 }
 
 /// Emits one worker log line (JSON, from `tracing_subscriber`'s json format) at its own
-/// level, and returns it as `LEVEL message` for crash reports. Anything that isn't such a
-/// line (a crash message from the C runtime, say) is kept as is, at warn.
-fn emit_worker_log(line: &str, pid: u32) -> String {
+/// level, under the span its request was asked in (`caller`, if the line's trace is its),
+/// and returns it as `LEVEL message` for crash reports. Anything that isn't such a line (a
+/// crash message from the C runtime, say) is kept as is, at warn.
+fn emit_worker_log(line: &str, pid: u32, caller: &Mutex<Option<(u64, tracing::Span)>>) -> String {
     let parsed: Option<serde_json::Value> = serde_json::from_str(line).ok();
     let Some(event) = parsed.filter(serde_json::Value::is_object) else {
         tracing::warn!(target: "silico::worker", pid, "{line}");
@@ -728,12 +743,20 @@ fn emit_worker_log(line: &str, pid: u32) -> String {
     let level = event["level"].as_str().unwrap_or("INFO");
     let message = event["fields"]["message"].as_str().unwrap_or(line);
     let trace = event["span"]["trace"].as_u64();
+    let parent = lock(caller)
+        .as_ref()
+        .filter(|(asked, _)| Some(*asked) == trace)
+        .and_then(|(_, span)| span.id());
     match level {
-        "ERROR" => tracing::error!(target: "silico::worker", pid, trace, "{message}"),
-        "WARN" => tracing::warn!(target: "silico::worker", pid, trace, "{message}"),
-        "INFO" => tracing::info!(target: "silico::worker", pid, trace, "{message}"),
-        "DEBUG" => tracing::debug!(target: "silico::worker", pid, trace, "{message}"),
-        _ => tracing::trace!(target: "silico::worker", pid, trace, "{message}"),
+        "ERROR" => {
+            tracing::error!(target: "silico::worker", parent: parent, pid, trace, "{message}");
+        }
+        "WARN" => tracing::warn!(target: "silico::worker", parent: parent, pid, trace, "{message}"),
+        "INFO" => tracing::info!(target: "silico::worker", parent: parent, pid, trace, "{message}"),
+        "DEBUG" => {
+            tracing::debug!(target: "silico::worker", parent: parent, pid, trace, "{message}");
+        }
+        _ => tracing::trace!(target: "silico::worker", parent: parent, pid, trace, "{message}"),
     }
     format!("{level} {message}")
 }
@@ -1416,8 +1439,48 @@ mod tests {
 
     fn logs_of(bytes: &[u8]) -> Vec<String> {
         let tail = Mutex::new(VecDeque::new());
-        forward_logs(bytes, 1, &tail);
+        forward_logs(bytes, 1, &tail, &Mutex::new(None));
         tail.into_inner().unwrap().into_iter().collect()
+    }
+
+    #[test]
+    fn a_worker_line_goes_under_the_span_its_request_was_asked_in() {
+        use std::sync::{Arc, Mutex};
+        use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+        use tracing_subscriber::registry::LookupSpan;
+        type Seen = Arc<Mutex<Vec<Vec<&'static str>>>>;
+        struct Events(Seen);
+        impl<S: tracing::Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Events {
+            fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
+                let scope = ctx
+                    .event_scope(event)
+                    .map(|spans| spans.map(|span| span.name()).collect())
+                    .unwrap_or_default();
+                self.0.lock().unwrap().push(scope);
+            }
+        }
+        let seen: Seen = Arc::default();
+        let subscriber = tracing_subscriber::registry()
+            .with(Events(Arc::clone(&seen)).with_filter(tracing::level_filters::LevelFilter::WARN));
+        tracing::subscriber::with_default(subscriber, || {
+            let step = tracing::warn_span!("recompute_step");
+            let caller = Mutex::new(Some((7, step)));
+            let line = |trace: u64| {
+                format!(
+                    "{{\"level\":\"WARN\",\"fields\":{{\"message\":\"OCCT warned\"}},\"span\":{{\"trace\":{trace}}}}}"
+                )
+            };
+            super::emit_worker_log(&line(7), 1, &caller);
+            // A line of another request, or none, isn't put under it.
+            super::emit_worker_log(&line(8), 1, &caller);
+            super::emit_worker_log(
+                "{\"level\":\"WARN\",\"fields\":{\"message\":\"no request\"}}",
+                1,
+                &caller,
+            );
+        });
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen, [vec!["recompute_step"], vec![], vec![]]);
     }
 
     #[test]
@@ -1443,7 +1506,9 @@ mod tests {
                 .with_writer(move || writer.clone())
                 .finish();
             let line = format!("{{\"level\":\"{level}\",\"fields\":{{\"message\":\"hello\"}}}}");
-            tracing::subscriber::with_default(subscriber, || super::emit_worker_log(&line, 1));
+            tracing::subscriber::with_default(subscriber, || {
+                super::emit_worker_log(&line, 1, &Mutex::new(None))
+            });
             let out = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
             assert!(
                 out.contains(&format!("{level:>5} silico::worker")),
