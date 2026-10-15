@@ -189,7 +189,8 @@ fn which_primitives_the_real_kernel_rewrites_on_their_first_pass_is_a_known_diff
             // Once through, settled: a further move by nothing changes nothing.
             assert_eq!(
                 kernel.translate(&still, [0.0; 3]).shape.brep(),
-                still.brep()
+                still.brep(),
+                "{kernel_name} {name}: settled"
             );
         }
     }

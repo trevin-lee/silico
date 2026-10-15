@@ -57,7 +57,8 @@ const HUNG_UP_GRACE: Duration = Duration::from_millis(100);
 /// then replaced.
 pub const STOP_AFTER: Duration = Duration::from_millis(50);
 
-/// What a [`Pending`] from the pool calls its kernel, should it stop first.
+/// What the pool calls itself in its errors: a [`Pending`] stopped early, a thread that
+/// couldn't start.
 const KERNEL: &str = "kernel pool";
 
 /// The most workers a pool may have: far more than any machine's cores, and few enough
@@ -974,6 +975,9 @@ mod tests {
         let bug = thread_error(super::KERNEL, &io::Error::from_raw_os_error(libc::EINVAL));
         assert_eq!(bug.code(), ErrorCode::Internal, "{bug}");
         assert_eq!(bug.message(), "couldn't start a kernel pool thread");
+        // Each kernel names itself.
+        let fake = thread_error("fake kernel", &io::Error::from_raw_os_error(libc::EINVAL));
+        assert_eq!(fake.message(), "couldn't start a fake kernel thread");
         assert_eq!(bug.cause(), Some(words(libc::EINVAL).as_str()), "{bug}");
         assert_eq!(bug.suggestion(), Some(crate::worker::SILICO_BUG), "{bug}");
     }

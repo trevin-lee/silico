@@ -420,6 +420,58 @@ fn a_boolean_of_booleans_reads_back_as_built() {
 }
 
 #[test]
+fn a_boolean_of_booleans_counts_every_input() {
+    // A box (6, 12, 8), a sphere (1, 3, 2), a cylinder (3, 3, 2): every boolean has both
+    // inputs' elements, so the counts are sums of those, by hand.
+    let kernel = FakeKernel::new(1).unwrap();
+    let a = run(&kernel, KernelRequest::make(block(1.0, 2.0, 3.0)).unwrap());
+    let b = run(
+        &kernel,
+        KernelRequest::make(Primitive::Sphere { radius: 1.0 }).unwrap(),
+    );
+    let c = run(
+        &kernel,
+        KernelRequest::make(Primitive::Cylinder {
+            radius: 1.0,
+            height: 2.0,
+        })
+        .unwrap(),
+    );
+    let inner = run(&kernel, KernelRequest::boolean(BooleanOp::Cut, &b, &c));
+    assert_eq!(inner.history.result, counts(4, 6, 4, 2));
+    let outer = run(
+        &kernel,
+        KernelRequest::boolean(BooleanOp::Fuse, &a, &inner.shape),
+    );
+    assert_eq!(outer.history.result, counts(10, 18, 12, 3));
+    let again = run(
+        &kernel,
+        KernelRequest::boolean(BooleanOp::Common, &outer.shape, &outer.shape),
+    );
+    assert_eq!(again.history.result, counts(20, 36, 24, 6));
+    assert_eq!(
+        FakeKernel::counts(&again.shape),
+        Some(counts(20, 36, 24, 6))
+    );
+    let [base, tool] = &again.history.inputs[..] else {
+        panic!("{:?}", again.history)
+    };
+    assert_eq!(base.faces.len(), 10);
+    assert_eq!(tool.faces.len(), 10);
+    assert_eq!(tool.faces[0].kept, Some(11));
+    assert_eq!(tool.faces[9].kept, Some(20));
+    let moved = run(
+        &kernel,
+        KernelRequest::translate(&outer.shape, [1.0, 0.0, 0.0]).unwrap(),
+    );
+    let last = run(
+        &kernel,
+        KernelRequest::boolean(BooleanOp::Cut, &moved.shape, &a),
+    );
+    assert_eq!(last.history.result, counts(16, 30, 20, 4));
+}
+
+#[test]
 fn a_shapes_bytes_are_its_steps_one_to_a_line() {
     let kernel = FakeKernel::new(1).unwrap();
     let hole = holed_block(&kernel);

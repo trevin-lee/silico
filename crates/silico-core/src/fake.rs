@@ -47,7 +47,8 @@ use crate::pool::{MAX_WORKERS, Outcome, Pending, deliver, thread_error};
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
-/// What a [`Pending`] from the fake calls its kernel, should it stop first.
+/// What the fake calls itself in its errors: a [`Pending`] stopped early, a thread that
+/// couldn't start.
 const KERNEL: &str = "fake kernel";
 
 /// A request the fake kernel started: the generation it was for, and its operation.
@@ -837,7 +838,7 @@ fn primitive_text(primitive: &Primitive) -> String {
 }
 
 /// The boolean `name` names, by [`boolean_name`]'s table.
-fn boolean(name: &str) -> Option<BooleanOp> {
+fn parse_boolean(name: &str) -> Option<BooleanOp> {
     [BooleanOp::Fuse, BooleanOp::Cut, BooleanOp::Common]
         .into_iter()
         .find(|&op| boolean_name(op) == name)
@@ -860,23 +861,25 @@ fn parse_step(line: &str) -> Option<Step> {
     let number = |w: &str| w.parse::<f64>().ok().filter(|v| v.is_finite());
     let numbers = || -> Option<Vec<f64>> { words.iter().map(|w| number(w)).collect() };
     let index = |w: &str| w.parse::<usize>().ok();
+    if let (Some(op), [base, tool]) = (parse_boolean(name), words.as_slice()) {
+        return Some(Step::Boolean {
+            op,
+            base: index(base)?,
+            tool: index(tool)?,
+        });
+    }
     Some(match (name, words.as_slice()) {
         ("translate", [input, x, y, z]) => Step::Translate {
             input: index(input)?,
             offset: [number(x)?, number(y)?, number(z)?],
         },
-        (_, [base, tool]) if boolean(name).is_some() => Step::Boolean {
-            op: boolean(name)?,
-            base: index(base)?,
-            tool: index(tool)?,
-        },
-        _ => Step::Primitive(primitive(name, &numbers()?)?),
+        _ => Step::Primitive(parse_primitive(name, &numbers()?)?),
     })
 }
 
 /// The primitive a line names with these values, if the protocol's check accepts it: the
 /// fake reads only what a request could have made.
-fn primitive(name: &str, values: &[f64]) -> Option<Primitive> {
+fn parse_primitive(name: &str, values: &[f64]) -> Option<Primitive> {
     let primitive = match (name, values) {
         ("box", &[dx, dy, dz]) => Primitive::Box { dx, dy, dz },
         ("cylinder", &[radius, height]) => Primitive::Cylinder { radius, height },
