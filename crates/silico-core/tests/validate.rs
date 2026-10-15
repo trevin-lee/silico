@@ -302,7 +302,9 @@ fn past_a_hundred_problems_the_rest_are_counted() {
 
 /// A document of one feature with these fields, valid or not.
 fn one(fields: String) -> Result<(), Invalid> {
-    checked(&[&format!(r#"{{"id": "aaaaaaaa", "name": "N", "v": 1, {fields}}}"#)])
+    checked(&[&format!(
+        r#"{{"id": "aaaaaaaa", "name": "N", "v": 1, {fields}}}"#
+    )])
 }
 
 /// Written as a length: nanometres as millimetres to 6 decimals.
@@ -315,12 +317,7 @@ fn written(nm: i64) -> String {
 const KM: i64 = 1_000_000_000_000;
 
 fn near_limits() -> impl Strategy<Value = i64> {
-    prop_oneof![
-        -3..3i64,
-        KM - 3..KM + 3,
-        -KM - 3..-KM + 3,
-        -2 * KM..2 * KM,
-    ]
+    prop_oneof![-3..3i64, KM - 3..KM + 3, -KM - 3..-KM + 3, -2 * KM..2 * KM,]
 }
 
 proptest! {

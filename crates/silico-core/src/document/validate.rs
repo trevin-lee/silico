@@ -114,16 +114,16 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
                 });
             }
         }
-        if let Some(primitive) = feature.operation.primitive()
-            && let Err(invalid) = primitive.check_named(Operation::field)
-        {
-            problems.add(|| {
-                refuse(
-                    invalid.parameter,
-                    invalid.message.clone(),
-                    format!("give the {what} a valid {}", invalid.parameter),
-                )
-            });
+        if let Some(primitive) = feature.operation.primitive() {
+            for invalid in primitive.faults(Operation::field) {
+                problems.add(|| {
+                    refuse(
+                        invalid.parameter,
+                        invalid.message.clone(),
+                        format!("give the {what} a valid {}", invalid.parameter),
+                    )
+                });
+            }
         }
 
         for (field, target) in feature.operation.inputs().into_iter().flatten() {
