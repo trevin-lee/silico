@@ -10,11 +10,11 @@
 //!
 //! Steps run as soon as their inputs are built, several at once, so independent branches
 //! overlap on the kernel; nothing depends on the order they finish in. A step the kernel
-//! refuses fails its feature, and each feature using a failed (or blocked) one is blocked on
-//! the failure at the root, as in SolidWorks; every other feature builds. A refusal that
-//! follows from the step's values (`invalid_input`, `kernel_failed`, `invalid_result`) is kept with its key, so it
-//! isn't asked again until something changes; anything else (a crash, a timeout, a
-//! shortage) is tried again by the next recompute.
+//! refuses fails its feature, and each feature using a failed (or blocked) one is blocked
+//! on the failure at the root, as in SolidWorks; every other feature builds. A refusal that
+//! follows from the step's values (`invalid_input`, `kernel_failed`, `invalid_result`) is
+//! kept with its key, so it isn't asked again until something changes; anything else (a
+//! crash, a timeout, a shortage) is tried again by the next recompute.
 //!
 //! Every recompute is a new generation of the kernel's ([`Kernel::advance`]), which
 //! supersedes the one before: its steps waiting are dropped and those running stopped. A
@@ -191,7 +191,7 @@ struct EngineState {
     /// The newest recompute's generation, or a cancel's after it.
     generation: Generation,
     /// The newest recompute's generation, whether or not it was cancelled since.
-    started: Generation,
+    newest_started: Generation,
     /// Whether the newest recompute was cancelled when no newer generation was left to
     /// supersede it with: it publishes nothing.
     cancelled: bool,
@@ -236,7 +236,7 @@ impl<K: Kernel + 'static> Recompute<K> {
                 kernel,
                 state: Mutex::new(EngineState {
                     generation,
-                    started: generation,
+                    newest_started: generation,
                     cancelled: false,
                     results: BTreeMap::new(),
                     published_plans: VecDeque::new(),
@@ -272,16 +272,20 @@ impl<K: Kernel + 'static> Recompute<K> {
                 return Run { outcome };
             };
             state.generation = Generation(next);
-            state.started = Generation(next);
+            state.newest_started = Generation(next);
             state.cancelled = false;
             state.generation
         };
         self.engine.kernel.advance(generation);
         let engine = Arc::clone(&self.engine);
+        // The caller's span, then the recompute's: when debug spans are off (the default
+        // level), the recompute's is disabled, and its work still traces back to the caller.
+        let caller = tracing::Span::current();
         let span = tracing::debug_span!("recompute", generation = generation.0);
         let started = std::thread::Builder::new()
             .name(format!("recompute-{}", generation.0))
             .spawn(move || {
+                let _caller = caller.enter();
                 let _entered = span.enter();
                 let outcome = engine.run(&document, generation);
                 let _ = reply.send(outcome);
@@ -366,7 +370,7 @@ struct Plan {
     order: Vec<Key>,
     /// The first feature, in timeline order, each step is one of, to name in spans and
     /// errors.
-    first_user: BTreeMap<Key, FeatureId>,
+    first_feature: BTreeMap<Key, FeatureId>,
     features: Vec<Planned>,
 }
 
@@ -395,7 +399,7 @@ impl Plan {
         let mut plan = Plan {
             steps: BTreeMap::new(),
             order: Vec::new(),
-            first_user: BTreeMap::new(),
+            first_feature: BTreeMap::new(),
             features: Vec::with_capacity(features.len()),
         };
         for feature in features {
@@ -444,14 +448,14 @@ impl Plan {
         let key = step.key();
         if self.steps.insert(key, step).is_none() {
             self.order.push(key);
-            self.first_user.insert(key, feature.clone());
+            self.first_feature.insert(key, feature.clone());
         }
         key
     }
 
     /// The feature to name for step `key`.
     fn feature(&self, key: &Key) -> &str {
-        self.first_user.get(key).map_or("", FeatureId::as_str)
+        self.first_feature.get(key).map_or("", FeatureId::as_str)
     }
 }
 
@@ -499,7 +503,7 @@ impl<K: Kernel + 'static> Engine<K> {
             let mut state = lock(&self.state);
             // The newest recompute's plan is worth keeping results for, whether or not it
             // finishes: an older one finishing later keeps what this one will use.
-            if state.started == generation {
+            if state.newest_started == generation {
                 state.newest_plan = Some(Arc::clone(&keys));
             }
             plan.order
@@ -881,5 +885,53 @@ mod tests {
             cut.to_string(),
             "d863527bc7862614802a5ffd30e2e8823da09e1791712803fac2111dd8048fe8"
         );
+        // Every other primitive's and boolean's spelling, and its values' order.
+        let pinned = [
+            (
+                Step::Make(Primitive::Cylinder {
+                    radius: 2.5,
+                    height: 12.0,
+                }),
+                "f0450ad96cbae6a87593abd22d4c343eb1d47883872603dc74ffcd68988908e6",
+            ),
+            (
+                Step::Make(Primitive::Sphere { radius: 4.0 }),
+                "8b714bde158cd45fc304d69ae5d95bdb193d9fbb0d1e61285e3d927facee4c9f",
+            ),
+            (
+                Step::Make(Primitive::Cone {
+                    radius1: 3.0,
+                    radius2: 1.0,
+                    height: 5.0,
+                }),
+                "accae08c48878692d0b897ce82088d897b9cb5d14991512161887b084faf3a47",
+            ),
+            (
+                Step::Make(Primitive::Torus {
+                    major_radius: 10.0,
+                    minor_radius: 2.0,
+                }),
+                "b86b95e8bc83a6aa81808375a9e4b38519ed5d40e1fba42225b0dfef34b77d86",
+            ),
+            (
+                Step::Boolean {
+                    op: BooleanOp::Fuse,
+                    base: made,
+                    tool: made,
+                },
+                "49ea5738883c5cf746ad01391d1d996f9bc6c8cf5c4ff74288c4e6b6a83d4e12",
+            ),
+            (
+                Step::Boolean {
+                    op: BooleanOp::Common,
+                    base: made,
+                    tool: made,
+                },
+                "647ea820758b11dd1e81e732956d1af7490ffdb8cff3fd96f554327488614069",
+            ),
+        ];
+        for (step, key) in pinned {
+            assert_eq!(step.key().to_string(), key, "{step:?}");
+        }
     }
 }

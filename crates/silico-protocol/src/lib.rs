@@ -31,7 +31,7 @@ pub use profile::{
 };
 pub use refusal::{
     BrepDefect, ChamferKind, Described, DressingKind, EdgeTrouble, FACES_NAMED, HistoryDefect,
-    Operation, Refusal, Returned, Role, Trouble,
+    OUT_OF_MEMORY, Operation, Refusal, Returned, Role, Trouble,
 };
 
 /// The file descriptor a worker inherits its end of the socket pair as.
@@ -163,8 +163,9 @@ impl BooleanOp {
     /// Every boolean.
     pub const ALL: [BooleanOp; 3] = [BooleanOp::Fuse, BooleanOp::Cut, BooleanOp::Common];
 
-    /// Its name in lower case, as a document's `type` and a value-keyed record of it (a
-    /// recompute key, a fake kernel's shape) spell it: `fuse`, `cut`, `common`.
+    /// Its name in lower case, `fuse`, `cut`, `common`: what a recompute key (M2.5 keeps
+    /// them on disk) and a fake kernel's shape spell it with, so changing it changes every
+    /// key (see recompute's `Step::key`).
     pub fn word(self) -> &'static str {
         match self {
             BooleanOp::Fuse => "fuse",
@@ -172,9 +173,7 @@ impl BooleanOp {
             BooleanOp::Common => "common",
         }
     }
-}
 
-impl BooleanOp {
     /// The operation's name, for logs and errors.
     pub fn name(&self) -> &'static str {
         match self {

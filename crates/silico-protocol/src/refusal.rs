@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{BooleanOp, ElementRef, FailureKind, LENGTH_TOLERANCE, OFFSET_FIELD, format_number};
 
+/// What to do when the kernel runs out of memory.
+pub const OUT_OF_MEMORY: &str = "free some memory, or make the part simpler, and try again";
+
 /// Why a request was refused or failed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Refusal {
@@ -527,7 +530,7 @@ impl Refusal {
             Refusal::Internal { what } => (what.clone(), None),
             Refusal::OutOfMemory => (
                 "the kernel ran out of memory".to_owned(),
-                Some("free some memory, or make the part simpler, and try again".to_owned()),
+                Some(OUT_OF_MEMORY.to_owned()),
             ),
         };
         Described {

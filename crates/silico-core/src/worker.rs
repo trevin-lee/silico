@@ -941,7 +941,7 @@ pub(crate) fn failure_error(op: &str, failure: Failure) -> Error {
                 format!("{op} ran out of memory"),
             )
             .with_cause(why),
-            "free some memory, or make the part simpler, and try again",
+            silico_protocol::OUT_OF_MEMORY,
         ),
         FailureKind::UnknownOp | FailureKind::Internal => (
             Error::new(
