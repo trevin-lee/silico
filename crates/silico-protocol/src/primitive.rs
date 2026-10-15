@@ -84,6 +84,25 @@ impl Primitive {
         }
     }
 
+    /// The primitive's values, in the order its fields are declared: what a value-keyed
+    /// record of it (a recompute key, a fake kernel's shape) writes after its name.
+    pub fn values(&self) -> Vec<f64> {
+        match *self {
+            Primitive::Box { dx, dy, dz } => vec![dx, dy, dz],
+            Primitive::Cylinder { radius, height } => vec![radius, height],
+            Primitive::Sphere { radius } => vec![radius],
+            Primitive::Cone {
+                radius1,
+                radius2,
+                height,
+            } => vec![radius1, radius2, height],
+            Primitive::Torus {
+                major_radius,
+                minor_radius,
+            } => vec![major_radius, minor_radius],
+        }
+    }
+
     /// The primitive's name, for messages: `box`, `cylinder`, ...
     pub fn name(&self) -> &'static str {
         match self {

@@ -935,6 +935,14 @@ pub(crate) fn failure_error(op: &str, failure: Failure) -> Error {
             .with_cause(described.message),
             "change the operation's values: the kernel can't build a valid result from these",
         ),
+        FailureKind::ResourceExhausted => (
+            Error::new(
+                ErrorCode::ResourceExhausted,
+                format!("{op} ran out of memory"),
+            )
+            .with_cause(why),
+            "free some memory, or make the part simpler, and try again",
+        ),
         FailureKind::UnknownOp | FailureKind::Internal => (
             Error::new(
                 ErrorCode::Internal,
@@ -1230,6 +1238,27 @@ mod tests {
         assert!(fits(&failed(vec![2, 2]), Some(&[2])).is_err());
         assert!(fits(&failed(vec![3]), Some(&[2])).is_err());
         assert!(fits(&failed(vec![2]), None).is_err());
+    }
+
+    #[test]
+    fn running_out_of_memory_is_a_shortage_not_the_values_fault() {
+        use silico_protocol::Refusal;
+        let e = failure_error(
+            "Fuse",
+            Failure {
+                refusal: Refusal::OutOfMemory,
+                cause: Some("Standard_OutOfMemory".to_owned()),
+            },
+        );
+        assert_eq!(
+            (e.code(), e.message(), e.cause(), e.suggestion()),
+            (
+                ErrorCode::ResourceExhausted,
+                "Fuse ran out of memory",
+                Some("Standard_OutOfMemory"),
+                Some("free some memory, or make the part simpler, and try again")
+            )
+        );
     }
 
     #[test]

@@ -5,61 +5,19 @@
 
 #[path = "common/example.rs"]
 mod example;
+#[path = "common/recompute.rs"]
+mod recompute;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use example::EXAMPLE;
-use silico_core::document::{Checked, FeatureId, read};
+use recompute::{WAIT, calls_since, checked, described, document, engine, id, published};
+use silico_core::document::{Checked, FeatureId};
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::{Kernel, Op, Primitive};
 use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 use silico_core::{Error, ErrorCode};
-
-const WAIT: Duration = Duration::from_secs(10);
-
-fn checked(text: &str) -> Checked {
-    Checked::new(read(text.as_bytes()).unwrap()).unwrap()
-}
-
-/// A document of these features, each a JSON object's text.
-fn document(features: &[&str]) -> Checked {
-    checked(&format!(
-        "{{\"silico\": 1, \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}}, \"features\": [{}]}}",
-        features.join(", ")
-    ))
-}
-
-fn id(text: &str) -> FeatureId {
-    FeatureId::new(text).unwrap()
-}
-
-fn engine(size: usize) -> Recompute<FakeKernel> {
-    Recompute::new(FakeKernel::new(size).unwrap())
-}
-
-/// Recomputes `document` and returns the model it published.
-fn published(engine: &Recompute<FakeKernel>, document: Checked) -> Arc<Model> {
-    match engine.start(document).wait().unwrap() {
-        RunOutcome::Published(model) => model,
-        RunOutcome::Superseded => panic!("superseded"),
-    }
-}
-
-/// The names of the kernel calls made since `from`.
-fn calls_since(engine: &Recompute<FakeKernel>, from: usize) -> Vec<&'static str> {
-    engine.kernel().calls()[from..]
-        .iter()
-        .map(|call| call.op.name())
-        .collect()
-}
-
-fn described(model: &Model, feature: &str) -> String {
-    match model.outcome(&id(feature)) {
-        Some(FeatureOutcome::Built { built, .. }) => FakeKernel::describe(&built.shape).unwrap(),
-        other => panic!("{feature}: {other:?}"),
-    }
-}
 
 fn ids(texts: &[&str]) -> Vec<FeatureId> {
     texts.iter().map(|t| id(t)).collect()
@@ -367,4 +325,127 @@ fn the_same_document_makes_the_same_model_on_any_kernel_size() {
         assert_eq!(model.bodies(), models[0].bodies());
     }
     assert_eq!(models[0].bodies(), ids(&["f0000002"]));
+}
+
+#[test]
+fn a_step_two_features_share_runs_once_and_each_feature_above_it_runs_once() {
+    // FreeCAD's testRecompute's diamond: one input used along two paths. Two identical
+    // spheres are one step, used by two booleans.
+    let engine = engine(4);
+    let doc = |radius: &str| {
+        let ball = |id: &str| {
+            format!(
+                r#"{{"id": "{id}", "type": "sphere", "v": 1, "name": "Ball", "position": [0, 0, 0], "radius": {radius}}}"#
+            )
+        };
+        document(&[
+            &ball("s0000001"),
+            &ball("s0000002"),
+            r#"{"id": "b0000001", "type": "box", "v": 1, "name": "A", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1}"#,
+            r#"{"id": "b0000002", "type": "box", "v": 1, "name": "B", "position": [0, 0, 0], "length": 2, "width": 2, "height": 2}"#,
+            r#"{"id": "c0000001", "type": "cut", "v": 1, "name": "One", "base": "b0000001", "tool": "s0000001"}"#,
+            r#"{"id": "c0000002", "type": "cut", "v": 1, "name": "Two", "base": "b0000002", "tool": "s0000002"}"#,
+        ])
+    };
+    published(&engine, doc("1"));
+    let mut calls = calls_since(&engine, 0);
+    calls.sort_unstable();
+    assert_eq!(calls, ["Cut", "Cut", "MakeBox", "MakeBox", "MakeSphere"]);
+    let before = engine.kernel().calls().len();
+    published(&engine, doc("2"));
+    let mut calls = calls_since(&engine, before);
+    calls.sort_unstable();
+    assert_eq!(calls, ["Cut", "Cut", "MakeSphere"]);
+}
+
+#[test]
+fn the_order_steps_finish_in_changes_nothing() {
+    let doc = || {
+        document(&[
+            &format!(r#"{{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", {BLOCK}}}"#),
+            &format!(r#"{{"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", {PIN}}}"#),
+            r#"{"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de"}"#,
+            r#"{"id": "s0000001", "type": "sphere", "v": 1, "name": "Ball", "position": [3, 0, 0], "radius": 1}"#,
+            r#"{"id": "f0000001", "type": "fuse", "v": 1, "name": "Both", "base": "m3tq8v0z", "tool": "s0000001"}"#,
+        ])
+    };
+    // Each primitive held on its own, then released in one order and in the reverse.
+    let kinds: [fn(&Op) -> bool; 3] = [
+        |op| matches!(op, Op::MakePrimitive(Primitive::Box { .. })),
+        |op| matches!(op, Op::MakePrimitive(Primitive::Cylinder { .. })),
+        |op| matches!(op, Op::MakePrimitive(Primitive::Sphere { .. })),
+    ];
+    let mut models = Vec::new();
+    for reverse in [false, true] {
+        let engine = engine(4);
+        let holds: Vec<_> = kinds
+            .iter()
+            .map(|picks| engine.kernel().hold(*picks))
+            .collect();
+        let run = engine.start(doc());
+        assert!(engine.kernel().wait_running(3, WAIT));
+        let order: Vec<usize> = if reverse {
+            vec![2, 1, 0]
+        } else {
+            vec![0, 1, 2]
+        };
+        for i in order {
+            holds[i].release();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let RunOutcome::Published(model) = run.wait().unwrap() else {
+            panic!("superseded")
+        };
+        models.push(model);
+    }
+    assert_eq!(models[0].features(), models[1].features());
+    assert_eq!(models[0].bodies(), models[1].bodies());
+}
+
+#[test]
+fn superseded_recomputes_keep_only_the_newest_ones_steps_and_an_undo_runs_nothing() {
+    let engine = engine(2);
+    let pin =
+        |radius: u32| format!(r#""position": [20, 10, -1], "radius": {radius}, "height": 12"#);
+    published(&engine, example_with(BLOCK, &pin(1)));
+    // Three edits, each superseded with its cut held: each makes its cylinder first.
+    let hold = engine.kernel().hold(|op| matches!(op, Op::Boolean { .. }));
+    for radius in [2, 3, 4] {
+        let cuts = engine
+            .kernel()
+            .calls()
+            .iter()
+            .filter(|c| c.op.name() == "Cut")
+            .count();
+        let run = engine.start(example_with(BLOCK, &pin(radius)));
+        let deadline = std::time::Instant::now() + WAIT;
+        while engine
+            .kernel()
+            .calls()
+            .iter()
+            .filter(|c| c.op.name() == "Cut")
+            .count()
+            == cuts
+        {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        engine.cancel();
+        assert_eq!(run.wait().unwrap(), RunOutcome::Superseded);
+    }
+    drop(hold);
+    // The newest superseded one's steps are kept; the older ones' aren't.
+    let before = engine.kernel().calls().len();
+    published(&engine, example_with(BLOCK, &pin(4)));
+    assert_eq!(calls_since(&engine, before), ["Cut"]);
+    let before = engine.kernel().calls().len();
+    published(&engine, example_with(BLOCK, &pin(2)));
+    assert_eq!(
+        calls_since(&engine, before),
+        ["MakeCylinder", "Translate", "Cut"]
+    );
+    // Back to the model published before: an undo runs nothing.
+    let before = engine.kernel().calls().len();
+    published(&engine, example_with(BLOCK, &pin(4)));
+    assert!(calls_since(&engine, before).is_empty());
 }

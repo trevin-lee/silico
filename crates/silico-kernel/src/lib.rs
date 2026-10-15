@@ -306,6 +306,8 @@ pub enum KernelErrorKind {
     InvalidResult,
     /// Silico's bridge did something it shouldn't: a bug.
     Internal,
+    /// OCCT ran out of memory: a shortage, not the values' fault.
+    ResourceExhausted,
 }
 
 impl KernelError {
@@ -372,6 +374,7 @@ impl KernelError {
             FailureKind::KernelFailed => KernelErrorKind::Failed,
             FailureKind::InvalidResult => KernelErrorKind::InvalidResult,
             FailureKind::UnknownOp | FailureKind::Internal => KernelErrorKind::Internal,
+            FailureKind::ResourceExhausted => KernelErrorKind::ResourceExhausted,
         }
     }
 
@@ -416,13 +419,23 @@ impl std::error::Error for KernelError {}
 
 impl From<cxx::Exception> for KernelError {
     fn from(e: cxx::Exception) -> Self {
-        Self::caused(
-            Refusal::Occt {
-                operation: Operation::Other,
-                edges: Vec::new(),
-            },
-            Some(e.what().to_owned()),
-        )
+        Self::caused(thrown(e.what()), Some(e.what().to_owned()))
+    }
+}
+
+/// What OCCT's exception, in the bridge's words (its type first, as `bridge.h` writes it),
+/// says went wrong: running out of memory is a shortage; anything else, OCCT's failure.
+fn thrown(what: &str) -> Refusal {
+    let out_of_memory = what == "std::bad_alloc"
+        || what == "Standard_OutOfMemory"
+        || what.starts_with("Standard_OutOfMemory:");
+    if out_of_memory {
+        Refusal::OutOfMemory
+    } else {
+        Refusal::Occt {
+            operation: Operation::Other,
+            edges: Vec::new(),
+        }
     }
 }
 
@@ -1224,6 +1237,29 @@ mod tests {
     #[test]
     fn unit_test_binary_imports_no_platform_math() {
         super::imports::assert_this_binary_imports_no_platform_math();
+    }
+
+    #[test]
+    fn occt_running_out_of_memory_is_a_shortage_and_anything_else_its_failure() {
+        use silico_protocol::Refusal;
+        for what in [
+            "std::bad_alloc",
+            "Standard_OutOfMemory",
+            "Standard_OutOfMemory: Standard_MMgrRaw::Allocate(): malloc failed",
+        ] {
+            assert_eq!(super::thrown(what), Refusal::OutOfMemory, "{what}");
+        }
+        for what in [
+            "StdFail_NotDone",
+            "Standard_DomainError: gp_Dir() - input vector has zero norm",
+            "Standard_OutOfMemoryish",
+            "unknown C++ exception",
+        ] {
+            assert!(
+                matches!(super::thrown(what), Refusal::Occt { .. }),
+                "{what}"
+            );
+        }
     }
 
     use super::ffi::{HistoryEntry, Kind, Relation};

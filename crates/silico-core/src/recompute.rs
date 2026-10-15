@@ -11,8 +11,8 @@
 //! Steps run as soon as their inputs are built, several at once, so independent branches
 //! overlap on the kernel; nothing depends on the order they finish in. A step the kernel
 //! refuses fails its feature, and each feature using a failed (or blocked) one is blocked on
-//! it, as in SolidWorks; every other feature builds. A refusal that follows from the step's
-//! values (`invalid_input`, `kernel_failed`, `invalid_result`) is kept with its key, so it
+//! the failure at the root, as in SolidWorks; every other feature builds. A refusal that
+//! follows from the step's values (`invalid_input`, `kernel_failed`, `invalid_result`) is kept with its key, so it
 //! isn't asked again until something changes; anything else (a crash, a timeout, a
 //! shortage) is tried again by the next recompute.
 //!
@@ -21,7 +21,7 @@
 //! recompute builds its [`Model`] aside and publishes it whole, only if no newer one has
 //! started, so a superseded recompute leaves the published model as it was.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -188,15 +188,42 @@ struct Engine<K> {
 }
 
 struct EngineState {
-    /// The newest recompute's generation.
+    /// The newest recompute's generation, or a cancel's after it.
     generation: Generation,
+    /// The newest recompute's generation, whether or not it was cancelled since.
+    started: Generation,
     /// Whether the newest recompute was cancelled when no newer generation was left to
     /// supersede it with: it publishes nothing.
     cancelled: bool,
-    /// Every step result kept, by key: the published model's, and any a recompute finished
-    /// since.
+    /// Every step result kept, by key: those the last [`PUBLISHED_KEPT`] published models'
+    /// plans use, so going back to one (an undo) runs nothing, and those the newest
+    /// recompute's uses, so a superseded one's work isn't lost to the next; nothing more, so
+    /// a run of superseded recomputes holds no more than one's.
     results: BTreeMap<Key, StepResult>,
+    published_plans: VecDeque<Arc<BTreeSet<Key>>>,
+    newest_plan: Option<Arc<BTreeSet<Key>>>,
     published: Option<Arc<Model>>,
+}
+
+/// How many published models' results are kept.
+const PUBLISHED_KEPT: usize = 2;
+
+impl EngineState {
+    /// Lets go of every result no plan worth keeping uses.
+    fn trim(&mut self) {
+        let EngineState {
+            results,
+            published_plans,
+            newest_plan,
+            ..
+        } = self;
+        results.retain(|key, _| {
+            published_plans
+                .iter()
+                .chain(newest_plan.iter())
+                .any(|plan| plan.contains(key))
+        });
+    }
 }
 
 type StepResult = Result<Arc<Built>, Error>;
@@ -209,8 +236,11 @@ impl<K: Kernel + 'static> Recompute<K> {
                 kernel,
                 state: Mutex::new(EngineState {
                     generation,
+                    started: generation,
                     cancelled: false,
                     results: BTreeMap::new(),
+                    published_plans: VecDeque::new(),
+                    newest_plan: None,
                     published: None,
                 }),
             }),
@@ -242,6 +272,7 @@ impl<K: Kernel + 'static> Recompute<K> {
                 return Run { outcome };
             };
             state.generation = Generation(next);
+            state.started = Generation(next);
             state.cancelled = false;
             state.generation
         };
@@ -294,7 +325,10 @@ enum Step {
 }
 
 impl Step {
-    /// The key: SHA-256 of a line saying what the step computes, every number by its bits.
+    /// The key: SHA-256 of a domain line (`silico recompute 1`) and a line saying what the
+    /// step asks of the kernel, every number by its bits. Keys outlive a run (M2.5's cache
+    /// keeps them on disk), so any change to what a step sends the kernel for the same
+    /// values, or to this spelling, must change the domain line's number.
     fn key(&self) -> Key {
         let bits = |values: &[f64]| -> String {
             values
@@ -304,24 +338,10 @@ impl Step {
         };
         let line = match *self {
             Step::Make(primitive) => {
-                let values: Vec<f64> = match primitive {
-                    Primitive::Box { dx, dy, dz } => vec![dx, dy, dz],
-                    Primitive::Cylinder { radius, height } => vec![radius, height],
-                    Primitive::Sphere { radius } => vec![radius],
-                    Primitive::Cone {
-                        radius1,
-                        radius2,
-                        height,
-                    } => vec![radius1, radius2, height],
-                    Primitive::Torus {
-                        major_radius,
-                        minor_radius,
-                    } => vec![major_radius, minor_radius],
-                };
-                format!("make {}{}", primitive.name(), bits(&values))
+                format!("make {}{}", primitive.name(), bits(&primitive.values()))
             }
             Step::Translate { input, offset } => format!("translate {input}{}", bits(&offset)),
-            Step::Boolean { op, base, tool } => format!("{} {base} {tool}", boolean_name(op)),
+            Step::Boolean { op, base, tool } => format!("{} {base} {tool}", op.word()),
         };
         let mut hash = Sha256::new();
         hash.update(b"silico recompute 1\n");
@@ -338,20 +358,15 @@ impl Step {
     }
 }
 
-fn boolean_name(op: BooleanOp) -> &'static str {
-    match op {
-        BooleanOp::Fuse => "fuse",
-        BooleanOp::Cut => "cut",
-        BooleanOp::Common => "common",
-    }
-}
-
 /// A document's steps, all keyed before anything runs.
 struct Plan {
     /// Every step, by key: identical steps are one.
     steps: BTreeMap<Key, Step>,
     /// The steps in the order the timeline first uses them.
     order: Vec<Key>,
+    /// The first feature, in timeline order, each step is one of, to name in spans and
+    /// errors.
+    first_user: BTreeMap<Key, FeatureId>,
     features: Vec<Planned>,
 }
 
@@ -380,22 +395,27 @@ impl Plan {
         let mut plan = Plan {
             steps: BTreeMap::new(),
             order: Vec::new(),
+            first_user: BTreeMap::new(),
             features: Vec::with_capacity(features.len()),
         };
         for feature in features {
             let mut own = Vec::new();
             let mut uses = Vec::new();
             if let Some(primitive) = feature.operation.primitive() {
-                let made = plan.add(Step::Make(primitive));
+                let made = plan.add(Step::Make(primitive), &feature.id);
                 own.push(made);
                 // A primitive at the origin isn't moved.
                 if let Some(position) = feature.operation.position()
                     && position.iter().any(|length| length.nm() != 0)
                 {
-                    own.push(plan.add(Step::Translate {
-                        input: made,
-                        offset: position.map(crate::document::Length::mm),
-                    }));
+                    let offset = position.map(crate::document::Length::mm);
+                    own.push(plan.add(
+                        Step::Translate {
+                            input: made,
+                            offset,
+                        },
+                        &feature.id,
+                    ));
                 }
             }
             if let (Some(op), Some([(_, base), (_, tool)])) =
@@ -407,7 +427,7 @@ impl Plan {
                     uses = vec![b, t];
                     let key = |i: usize| plan.features.get(i).and_then(Planned::key);
                     if let (Some(base), Some(tool)) = (key(b), key(t)) {
-                        own.push(plan.add(Step::Boolean { op, base, tool }));
+                        own.push(plan.add(Step::Boolean { op, base, tool }, &feature.id));
                     }
                 }
             }
@@ -420,12 +440,18 @@ impl Plan {
         plan
     }
 
-    fn add(&mut self, step: Step) -> Key {
+    fn add(&mut self, step: Step, feature: &FeatureId) -> Key {
         let key = step.key();
         if self.steps.insert(key, step).is_none() {
             self.order.push(key);
+            self.first_user.insert(key, feature.clone());
         }
         key
+    }
+
+    /// The feature to name for step `key`.
+    fn feature(&self, key: &Key) -> &str {
+        self.first_user.get(key).map_or("", FeatureId::as_str)
     }
 }
 
@@ -468,8 +494,14 @@ struct Schedule {
 impl<K: Kernel + 'static> Engine<K> {
     fn run(&self, document: &Checked, generation: Generation) -> Result<RunOutcome, Error> {
         let plan = Plan::of(document);
+        let keys: Arc<BTreeSet<Key>> = Arc::new(plan.steps.keys().copied().collect());
         let done: BTreeMap<Key, StepResult> = {
-            let state = lock(&self.state);
+            let mut state = lock(&self.state);
+            // The newest recompute's plan is worth keeping results for, whether or not it
+            // finishes: an older one finishing later keeps what this one will use.
+            if state.started == generation {
+                state.newest_plan = Some(Arc::clone(&keys));
+            }
             plan.order
                 .iter()
                 .filter_map(|key| state.results.get(key).map(|r| (*key, r.clone())))
@@ -484,21 +516,26 @@ impl<K: Kernel + 'static> Engine<K> {
             superseded: false,
             broken: None,
         };
+        // Steps that can't run, since an input failed in an earlier recompute (and its
+        // failure was kept): left out, and decided blocked or failed from `done`.
+        let mut doomed: BTreeSet<Key> = BTreeSet::new();
         for key in &plan.order {
             if schedule.done.contains_key(key) {
                 continue;
             }
             let inputs = plan.steps.get(key).map(Step::inputs).unwrap_or_default();
+            let cant = inputs.iter().any(|input| {
+                doomed.contains(input) || matches!(schedule.done.get(input), Some(Err(_)))
+            });
+            if cant {
+                doomed.insert(*key);
+                continue;
+            }
             let mut unbuilt = 0;
             for input in inputs {
-                match schedule.done.get(&input) {
-                    Some(Ok(_)) => {}
-                    // An input that failed: this step never runs.
-                    Some(Err(_)) => unbuilt = usize::MAX,
-                    None => {
-                        unbuilt = unbuilt.saturating_add(1);
-                        schedule.users.entry(input).or_default().push(*key);
-                    }
+                if !schedule.done.contains_key(&input) {
+                    unbuilt += 1;
+                    schedule.users.entry(input).or_default().push(*key);
                 }
             }
             if unbuilt == 0 {
@@ -512,12 +549,16 @@ impl<K: Kernel + 'static> Engine<K> {
         let schedule = Mutex::new(schedule);
         let changed = Condvar::new();
         let threads = to_run.min(MOST_AT_ONCE);
+        // The recompute's span, for its threads' steps: so a worker's call traces back to
+        // the recompute, and the edit that started it (ARCHITECTURE.md, invariant 9).
+        let parent = tracing::Span::current();
         std::thread::scope(|scope| -> Result<(), Error> {
             let mut started = 0;
             for n in 0..threads {
                 let spawned = std::thread::Builder::new()
                     .name(format!("recompute-{}-{n}", generation.0))
                     .spawn_scoped(scope, || {
+                        let _entered = parent.enter();
                         self.serve(&plan, &schedule, &changed, generation);
                     });
                 match spawned {
@@ -546,13 +587,16 @@ impl<K: Kernel + 'static> Engine<K> {
         if state.generation != generation || state.cancelled {
             return Ok(RunOutcome::Superseded);
         }
-        // Keep only what this document uses.
-        state.results.retain(|key, _| plan.steps.contains_key(key));
         state.published = Some(Arc::clone(&model));
+        state.published_plans.push_front(keys);
+        state.published_plans.truncate(PUBLISHED_KEPT);
+        state.trim();
         Ok(RunOutcome::Published(model))
     }
 
-    /// Keeps a recompute's results by key, but for failures that might not happen again.
+    /// Keeps a recompute's results by key, but for failures that might not happen again,
+    /// and only what the plans worth keeping use: a superseded recompute's, if it's the
+    /// newest, and the published ones'.
     fn keep(&self, done: &BTreeMap<Key, StepResult>) {
         let mut state = lock(&self.state);
         for (key, result) in done {
@@ -564,6 +608,7 @@ impl<K: Kernel + 'static> Engine<K> {
                 state.results.insert(*key, result.clone());
             }
         }
+        state.trim();
     }
 
     /// One of a recompute's threads: runs ready steps until none are left to run.
@@ -607,7 +652,12 @@ impl<K: Kernel + 'static> Engine<K> {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 match plan.steps.get(&key) {
                     Some(step) => {
-                        let _span = tracing::debug_span!("recompute_step", key = %key).entered();
+                        let _span = tracing::debug_span!(
+                            "recompute_step",
+                            feature = plan.feature(&key),
+                            key = %key
+                        )
+                        .entered();
                         self.step(*step, &inputs, generation)
                     }
                     None => Outcome::Done(Err(Error::new(
@@ -619,15 +669,26 @@ impl<K: Kernel + 'static> Engine<K> {
             }));
             let mut s = lock(schedule);
             s.running -= 1;
-            let Ok(outcome) = outcome else {
-                s.broken = Some(
-                    Error::new(ErrorCode::Internal, "a recompute step panicked")
-                        .with_suggestion(crate::worker::SILICO_BUG),
-                );
-                drop(s);
-                changed.notify_all();
-                return;
+            let outcome = match outcome {
+                Ok(outcome) => outcome,
+                Err(panic) => {
+                    let said = panic
+                        .downcast_ref::<&str>()
+                        .map(|said| (*said).to_owned())
+                        .or_else(|| panic.downcast_ref::<String>().cloned())
+                        .unwrap_or_else(|| "a panic with no message".to_owned());
+                    s.broken = Some(
+                        Error::new(ErrorCode::Internal, "a recompute step panicked")
+                            .with_feature(plan.feature(&key))
+                            .with_cause(said)
+                            .with_suggestion(crate::worker::SILICO_BUG),
+                    );
+                    drop(s);
+                    changed.notify_all();
+                    return;
+                }
             };
+            let mut woken = 0;
             match outcome {
                 Outcome::Superseded => s.superseded = true,
                 Outcome::Done(result) => {
@@ -640,14 +701,23 @@ impl<K: Kernel + 'static> Engine<K> {
                             if now_ready {
                                 s.waiting.remove(&user);
                                 s.ready.push_back(user);
+                                woken += 1;
                             }
                         }
                     }
                     s.done.insert(key, result.map(Arc::new));
                 }
             }
+            // Wake a thread for each step made ready; every thread, once nothing is left.
+            let finished = s.superseded || (s.ready.is_empty() && s.running == 0);
             drop(s);
-            changed.notify_all();
+            if finished {
+                changed.notify_all();
+            } else {
+                for _ in 0..woken {
+                    changed.notify_one();
+                }
+            }
         }
     }
 
@@ -771,5 +841,45 @@ fn feature_outcome(planned: &Planned, done: &BTreeMap<Key, StepResult>) -> Featu
     }) {
         Some((key, built)) => FeatureOutcome::Built { key, built },
         None => unbuilt(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Keys outlive a run, so their spelling is pinned: computed by hand with Python's
+    /// hashlib from the lines the key doc describes (`make box`, then each value's bits).
+    #[test]
+    fn keys_are_the_sha256_of_the_lines_their_doc_describes() {
+        let made = Step::Make(Primitive::Box {
+            dx: 10.0,
+            dy: 20.0,
+            dz: 30.0,
+        })
+        .key();
+        assert_eq!(
+            made.to_string(),
+            "2edae721daaca5b7e817c5038272f1e7a5a452e44971016e6c8946955742ab50"
+        );
+        let moved = Step::Translate {
+            input: made,
+            offset: [1.0, 0.0, 0.0],
+        }
+        .key();
+        assert_eq!(
+            moved.to_string(),
+            "c703a0763043020655e2a22aac0d718ef001700d1ffa6a95c99d755c5212ecfd"
+        );
+        let cut = Step::Boolean {
+            op: BooleanOp::Cut,
+            base: made,
+            tool: moved,
+        }
+        .key();
+        assert_eq!(
+            cut.to_string(),
+            "d863527bc7862614802a5ffd30e2e8823da09e1791712803fac2111dd8048fe8"
+        );
     }
 }

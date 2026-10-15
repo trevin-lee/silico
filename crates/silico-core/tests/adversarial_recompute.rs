@@ -6,6 +6,8 @@
 
 #[path = "common/example.rs"]
 mod example;
+#[path = "common/recompute.rs"]
+mod recompute;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::AssertUnwindSafe;
@@ -15,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use example::EXAMPLE;
 use proptest::prelude::*;
+use recompute::{WAIT, calls_since, checked, described, engine, id, published};
 use silico_core::document::{Checked, FeatureId, read};
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::{BooleanOp, Generation, Kernel, KernelRequest, Op, Primitive, ShapeData};
@@ -22,51 +25,14 @@ use silico_core::pool::Pending;
 use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 use silico_core::{Error, ErrorCode};
 
-const WAIT: Duration = Duration::from_secs(10);
-
-fn checked(text: &str) -> Checked {
-    Checked::new(read(text.as_bytes()).unwrap()).unwrap()
-}
-
+/// A document of these features, each a JSON object's text.
 fn document(features: &[String]) -> Checked {
-    checked(&format!(
-        "{{\"silico\": 1, \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}}, \"features\": [{}]}}",
-        features.join(", ")
-    ))
-}
-
-fn id(text: &str) -> FeatureId {
-    FeatureId::new(text).unwrap()
+    let features: Vec<&str> = features.iter().map(String::as_str).collect();
+    recompute::document(&features)
 }
 
 fn fid(i: usize) -> String {
     format!("f{i:07}")
-}
-
-fn engine(size: usize) -> Recompute<FakeKernel> {
-    Recompute::new(FakeKernel::new(size).unwrap())
-}
-
-fn published<K: Kernel + 'static>(engine: &Recompute<K>, document: Checked) -> Arc<Model> {
-    match engine.start(document).wait_timeout(WAIT) {
-        Ok(Ok(RunOutcome::Published(model))) => model,
-        Ok(other) => panic!("not published: {other:?}"),
-        Err(_) => panic!("the recompute didn't finish in {WAIT:?}"),
-    }
-}
-
-fn calls_since(engine: &Recompute<FakeKernel>, from: usize) -> Vec<&'static str> {
-    engine.kernel().calls()[from..]
-        .iter()
-        .map(|call| call.op.name())
-        .collect()
-}
-
-fn described(model: &Model, feature: &str) -> String {
-    match model.outcome(&id(feature)) {
-        Some(FeatureOutcome::Built { built, .. }) => FakeKernel::describe(&built.shape).unwrap(),
-        other => panic!("{feature}: {other:?}"),
-    }
 }
 
 fn boxed(i: &str, position: [f64; 3], size: [f64; 3]) -> String {
@@ -547,9 +513,16 @@ fn a_refused_move_fails_its_feature_and_the_make_is_kept_for_a_move_to_the_origi
         described(&model, "cccccccc"),
         "cut(box(1, 1, 1), sphere(1))"
     );
+    // Back to the document before, one publish later: its results, the move's refusal too,
+    // are kept (undo runs nothing)...
     let before = engine.kernel().calls().len();
     published(&engine, doc([5.0, 0.0, 0.0]));
-    // The move's refusal was dropped when the document stopped using it: asked again.
+    assert!(calls_since(&engine, before).is_empty());
+    // ...until two other documents have been published since: then asked again.
+    published(&engine, doc([0.0; 3]));
+    published(&engine, doc([0.0, 0.0, 7.0]));
+    let before = engine.kernel().calls().len();
+    published(&engine, doc([5.0, 0.0, 0.0]));
     assert_eq!(calls_since(&engine, before), ["Translate"]);
 }
 
@@ -1096,8 +1069,10 @@ proptest! {
         let engine = engine(size);
         refusals(engine.kernel());
         let mut reference = Reference::new();
-        // The steps with a result kept after the last publish.
+        // The steps with a result kept after the last publish: those kept since, while the
+        // last two published plans use them.
         let mut known: BTreeSet<String> = BTreeSet::new();
+        let mut previous_plan: BTreeSet<String> = BTreeSet::new();
         for values in &edits {
             let values = &values[..kinds.len()];
             let (expected, steps) = reference.evaluate(&kinds, values);
@@ -1116,11 +1091,15 @@ proptest! {
             let mut got = calls_since(&engine, before);
             got.sort_unstable();
             prop_assert_eq!(&got, &want, "calls");
-            known = steps
-                .iter()
-                .filter(|(_, runs, code)| *runs && kept_code(*code))
-                .map(|(s, _, _)| s.identity.clone())
-                .collect();
+            let plan: BTreeSet<String> = steps.iter().map(|(s, _, _)| s.identity.clone()).collect();
+            known.extend(
+                steps
+                    .iter()
+                    .filter(|(_, runs, code)| *runs && kept_code(*code))
+                    .map(|(s, _, _)| s.identity.clone()),
+            );
+            known.retain(|identity| plan.contains(identity) || previous_plan.contains(identity));
+            previous_plan = plan;
         }
     }
 }

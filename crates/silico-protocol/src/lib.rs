@@ -160,6 +160,21 @@ pub enum BooleanOp {
 }
 
 impl BooleanOp {
+    /// Every boolean.
+    pub const ALL: [BooleanOp; 3] = [BooleanOp::Fuse, BooleanOp::Cut, BooleanOp::Common];
+
+    /// Its name in lower case, as a document's `type` and a value-keyed record of it (a
+    /// recompute key, a fake kernel's shape) spell it: `fuse`, `cut`, `common`.
+    pub fn word(self) -> &'static str {
+        match self {
+            BooleanOp::Fuse => "fuse",
+            BooleanOp::Cut => "cut",
+            BooleanOp::Common => "common",
+        }
+    }
+}
+
+impl BooleanOp {
     /// The operation's name, for logs and errors.
     pub fn name(&self) -> &'static str {
         match self {
@@ -495,6 +510,9 @@ pub enum FailureKind {
     /// Something went wrong in the worker itself, such as floating-point traps found
     /// switched on after the request.
     Internal,
+    /// The worker ran short of something (memory): not the values' fault, so the same
+    /// request may succeed later.
+    ResourceExhausted,
 }
 
 /// A shape as it crosses the worker boundary: OCCT's binary B-rep (with its checksum), and
