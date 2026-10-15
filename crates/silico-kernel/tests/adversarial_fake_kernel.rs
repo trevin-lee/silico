@@ -113,6 +113,88 @@ impl<K: Kernel> Run for K {
     }
 }
 
+// A known difference, pinned both ways: OCCT writes a freshly made cylinder or torus
+// differently once it has read it back, so its bytes change once, on the first operation it
+// passes through, even a move by nothing or there and back; a box, a sphere, and a cone's
+// don't. The fake's never change. Probed for each primitive; a change on either side shows.
+#[test]
+fn which_primitives_the_real_kernel_rewrites_on_their_first_pass_is_a_known_difference() {
+    let real = pool();
+    let fake = FakeKernel::new(1).unwrap();
+    let primitives = [
+        (
+            "box",
+            Primitive::Box {
+                dx: 1.0,
+                dy: 2.0,
+                dz: 3.0,
+            },
+            false,
+        ),
+        (
+            "cylinder",
+            Primitive::Cylinder {
+                radius: 1.0,
+                height: 2.0,
+            },
+            true,
+        ),
+        ("sphere", Primitive::Sphere { radius: 1.0 }, false),
+        (
+            "cone",
+            Primitive::Cone {
+                radius1: 3.0,
+                radius2: 1.0,
+                height: 5.0,
+            },
+            false,
+        ),
+        (
+            "pointed cone",
+            Primitive::Cone {
+                radius1: 3.0,
+                radius2: 0.0,
+                height: 5.0,
+            },
+            false,
+        ),
+        (
+            "torus",
+            Primitive::Torus {
+                major_radius: 5.0,
+                minor_radius: 1.0,
+            },
+            true,
+        ),
+    ];
+    for (name, primitive, rewritten) in primitives {
+        for (kernel_name, kernel, changes) in [
+            ("real", &real as &dyn Run, rewritten),
+            ("fake", &fake as &dyn Run, false),
+        ] {
+            let shape = kernel.make(primitive);
+            let still = kernel.translate(&shape, [0.0; 3]).shape;
+            let there = kernel.translate(&shape, [1.0, 0.0, 0.0]).shape;
+            let back = kernel.translate(&there, [-1.0, 0.0, 0.0]).shape;
+            assert_eq!(
+                still.brep() != shape.brep(),
+                changes,
+                "{kernel_name} {name}: by nothing"
+            );
+            assert_eq!(
+                back.brep() != shape.brep(),
+                changes,
+                "{kernel_name} {name}: there and back"
+            );
+            // Once through, settled: a further move by nothing changes nothing.
+            assert_eq!(
+                kernel.translate(&still, [0.0; 3]).shape.brep(),
+                still.brep()
+            );
+        }
+    }
+}
+
 #[test]
 fn a_move_and_its_inverse_is_the_shape_itself_on_both_kernels() {
     let real = pool();
@@ -299,10 +381,11 @@ fn compare_at_the_edges() {
                         )));
                     }
                 };
-                // The real kernel writes some primitives (a cylinder, a cone) differently when
+                // The real kernel writes some primitives (a cylinder, a torus) differently when
                 // it makes them than once it has read them back, so a shape's bytes settle
                 // after its first pass through an operation (a move by nothing); compare which
-                // shapes are the same from there.
+                // shapes are the same from there. That difference is pinned by
+                // `which_primitives_the_real_kernel_rewrites_on_their_first_pass_is_a_known_difference`.
                 let real_shape = translate(&real, &real_shape, [0.0; 3]).unwrap().shape;
                 let summary: ShapeSummary =
                     result(real.submit(real.generation(), KernelRequest::summarize(&real_shape)))

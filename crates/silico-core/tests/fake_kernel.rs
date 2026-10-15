@@ -240,14 +240,21 @@ fn a_newer_generation_supersedes_requests_waiting_and_held() {
 
 #[test]
 fn a_held_request_superseded_ends_before_it_stops_counting_as_running() {
+    // A race, so run many times: a kernel that stopped counting a request before sending
+    // its outcome fails in most runs of this.
     let kernel = FakeKernel::new(1).unwrap();
     let _hold = kernel.hold(|_| true);
-    let held = kernel.submit(Generation(0), KernelRequest::echo(Blob::inline(vec![])));
-    assert!(kernel.wait_running(1, WAIT));
-    kernel.advance(Generation(1));
-    // Once it isn't running, its outcome has been sent: no wait for it.
-    while kernel.wait_running(1, Duration::ZERO) {}
-    assert!(matches!(held.try_take(), Ok(Outcome::Superseded)));
+    for round in 0..1000u64 {
+        let held = kernel.submit(Generation(round), KernelRequest::echo(Blob::inline(vec![])));
+        assert!(kernel.wait_running(1, WAIT));
+        kernel.advance(Generation(round + 1));
+        // Once it isn't running, its outcome has been sent: no wait for it.
+        while kernel.wait_running(1, Duration::ZERO) {}
+        assert!(
+            matches!(held.try_take(), Ok(Outcome::Superseded)),
+            "round {round}"
+        );
+    }
     assert!(!kernel.wait_running(1, Duration::from_millis(100)));
 }
 
@@ -357,6 +364,62 @@ fn a_shape_whose_bytes_are_another_kernels_is_refused() {
 }
 
 #[test]
+fn a_boolean_of_booleans_reads_back_as_built() {
+    let kernel = FakeKernel::new(1).unwrap();
+    let a = run(&kernel, KernelRequest::make(block(1.0, 2.0, 3.0)).unwrap());
+    let b = run(
+        &kernel,
+        KernelRequest::make(Primitive::Sphere { radius: 1.0 }).unwrap(),
+    );
+    let c = run(
+        &kernel,
+        KernelRequest::make(Primitive::Cylinder {
+            radius: 1.0,
+            height: 2.0,
+        })
+        .unwrap(),
+    );
+    let moved = run(
+        &kernel,
+        KernelRequest::translate(&c, [1.0, 0.0, 0.0]).unwrap(),
+    )
+    .shape;
+    let inner = run(&kernel, KernelRequest::boolean(BooleanOp::Cut, &b, &moved)).shape;
+    let base = run(
+        &kernel,
+        KernelRequest::translate(&a, [0.0, 1.0, 0.0]).unwrap(),
+    )
+    .shape;
+    let outer = run(
+        &kernel,
+        KernelRequest::boolean(BooleanOp::Fuse, &base, &inner),
+    )
+    .shape;
+    assert_eq!(
+        std::str::from_utf8(outer.brep().as_bytes()).unwrap(),
+        "silico fake shape 1\nbox 1 2 3\ntranslate 0 0 1 0\nsphere 1\ncylinder 1 2\ntranslate 3 1 0 0\ncut 2 4\nfuse 1 5\n"
+    );
+    assert_eq!(
+        FakeKernel::describe(&outer).as_deref(),
+        Some(
+            "fuse(translate(box(1, 2, 3), 0, 1, 0), cut(sphere(1), translate(cylinder(1, 2), 1, 0, 0)))"
+        )
+    );
+    // And a boolean of that with itself, each input's steps shifted after the base's.
+    let again = run(
+        &kernel,
+        KernelRequest::boolean(BooleanOp::Common, &outer, &outer),
+    )
+    .shape;
+    assert_eq!(
+        FakeKernel::describe(&again).as_deref(),
+        Some(
+            "common(fuse(translate(box(1, 2, 3), 0, 1, 0), cut(sphere(1), translate(cylinder(1, 2), 1, 0, 0))), fuse(translate(box(1, 2, 3), 0, 1, 0), cut(sphere(1), translate(cylinder(1, 2), 1, 0, 0))))"
+        )
+    );
+}
+
+#[test]
 fn a_shapes_bytes_are_its_steps_one_to_a_line() {
     let kernel = FakeKernel::new(1).unwrap();
     let hole = holed_block(&kernel);
@@ -379,6 +442,14 @@ fn dropping_the_kernel_ends_requests_waiting_and_held() {
             panic!("expected the stop's error")
         };
         assert_eq!(error.code(), ErrorCode::Internal);
+        assert_eq!(
+            error.message(),
+            "the fake kernel stopped before Echo was done"
+        );
+        assert_eq!(
+            error.suggestion(),
+            Some("submit the request to a running fake kernel")
+        );
     }
     drop(hold);
 }

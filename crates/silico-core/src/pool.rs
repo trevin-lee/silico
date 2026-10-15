@@ -57,6 +57,9 @@ const HUNG_UP_GRACE: Duration = Duration::from_millis(100);
 /// then replaced.
 pub const STOP_AFTER: Duration = Duration::from_millis(50);
 
+/// What a [`Pending`] from the pool calls its kernel, should it stop first.
+const KERNEL: &str = "kernel pool";
+
 /// The most workers a pool may have: far more than any machine's cores, and few enough
 /// that a size from a setting can't make the pool try to start without end.
 pub const MAX_WORKERS: usize = 1024;
@@ -312,15 +315,15 @@ impl KernelPool {
                 state.queue.push_back(task);
                 drop(state);
                 self.shared.work.notify_one();
-                return Pending::new(name, "kernel pool", outcome);
+                return Pending::new(name, KERNEL, outcome);
             }
             if state.stopping {
                 // Dropping the task tells the caller the pool stopped.
-                return Pending::new(name, "kernel pool", outcome);
+                return Pending::new(name, KERNEL, outcome);
             }
         }
         task.supersede();
-        Pending::new(name, "kernel pool", outcome)
+        Pending::new(name, KERNEL, outcome)
     }
 }
 
@@ -373,15 +376,15 @@ fn spawn_thread(
     std::thread::Builder::new()
         .name(name)
         .spawn(run)
-        .map_err(|e| thread_error(&e))
+        .map_err(|e| thread_error(KERNEL, &e))
 }
 
-/// A pool thread that couldn't start: the system short of threads (`resource_exhausted`),
-/// or a bug.
-pub(crate) fn thread_error(e: &std::io::Error) -> Error {
-    const MESSAGE: &str = "couldn't start a kernel pool thread";
-    crate::worker::shortage(e, MESSAGE).unwrap_or_else(|| {
-        Error::new(ErrorCode::Internal, MESSAGE)
+/// A thread of `kernel` (`kernel pool`, `fake kernel`) that couldn't start: the system short
+/// of threads (`resource_exhausted`), or a bug.
+pub(crate) fn thread_error(kernel: &str, e: &std::io::Error) -> Error {
+    let message = format!("couldn't start a {kernel} thread");
+    crate::worker::shortage(e, &message).unwrap_or_else(|| {
+        Error::new(ErrorCode::Internal, message)
             .with_cause(e.to_string())
             .with_suggestion(crate::worker::SILICO_BUG)
     })
@@ -956,7 +959,7 @@ mod tests {
 
         use super::thread_error;
         use crate::ErrorCode;
-        let short = thread_error(&io::Error::from_raw_os_error(libc::EAGAIN));
+        let short = thread_error(super::KERNEL, &io::Error::from_raw_os_error(libc::EAGAIN));
         assert_eq!(short.code(), ErrorCode::ResourceExhausted, "{short}");
         assert_eq!(short.message(), "couldn't start a kernel pool thread");
         // The OS's own words for it.
@@ -968,7 +971,7 @@ mod tests {
                 .is_some_and(|s| s.contains("processes or memory")),
             "{short}"
         );
-        let bug = thread_error(&io::Error::from_raw_os_error(libc::EINVAL));
+        let bug = thread_error(super::KERNEL, &io::Error::from_raw_os_error(libc::EINVAL));
         assert_eq!(bug.code(), ErrorCode::Internal, "{bug}");
         assert_eq!(bug.message(), "couldn't start a kernel pool thread");
         assert_eq!(bug.cause(), Some(words(libc::EINVAL).as_str()), "{bug}");

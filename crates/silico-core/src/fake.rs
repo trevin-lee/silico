@@ -19,7 +19,7 @@
 //! keeps them all. It answers making primitives, moving shapes, booleans, and echoes;
 //! anything else is refused as an internal error.
 //!
-//! The real kernel writes some primitives (a cylinder, a cone) differently when it makes
+//! The real kernel writes some primitives (a cylinder, a torus) differently when it makes
 //! them than once it has read them back, so their bytes change once, on the first operation
 //! they pass through, even a move by nothing; the fake's never do.
 //!
@@ -128,7 +128,7 @@ impl FakeKernel {
                 .name(format!("fake-kernel-{n}"))
                 .spawn(move || serve(&shared))
                 // Dropping the kernel stops and joins the threads already started.
-                .map_err(|e| thread_error(&e))?;
+                .map_err(|e| thread_error(KERNEL, &e))?;
             kernel.threads.push(thread);
         }
         Ok(kernel)
@@ -335,11 +335,11 @@ impl<T: Send + 'static> Task for Submitted<T> {
             span,
         } = *self;
         let result = span.in_scope(|| {
-            let answer = match refusal {
+            let reply = match refusal {
                 Some(error) => Err(error),
                 None => answer(request.op()),
             };
-            request.answer(answer)
+            request.answer(reply)
         });
         let mut state = lock(&shared.state);
         state.running -= 1;
@@ -615,23 +615,27 @@ impl Made {
         if nothing(&offset) {
             return self;
         }
-        let input = self.0.len() - 1;
+        let last = self.0.len() - 1;
         match self.0.pop() {
+            // A move of a move: one move, of what that moved, by the sum.
             Some(Step::Translate {
-                input,
+                input: moved,
                 offset: before,
             }) => {
                 let total = [0, 1, 2].map(|i| before[i] + offset[i]);
                 if !nothing(&total) {
                     self.0.push(Step::Translate {
-                        input,
+                        input: moved,
                         offset: total,
                     });
                 }
             }
-            Some(last) => {
-                self.0.push(last);
-                self.0.push(Step::Translate { input, offset });
+            Some(step) => {
+                self.0.push(step);
+                self.0.push(Step::Translate {
+                    input: last,
+                    offset,
+                });
             }
             None => {}
         }
@@ -832,6 +836,13 @@ fn primitive_text(primitive: &Primitive) -> String {
     format!("{name}({})", values.join(", "))
 }
 
+/// The boolean `name` names, by [`boolean_name`]'s table.
+fn boolean(name: &str) -> Option<BooleanOp> {
+    [BooleanOp::Fuse, BooleanOp::Cut, BooleanOp::Common]
+        .into_iter()
+        .find(|&op| boolean_name(op) == name)
+}
+
 fn boolean_name(op: BooleanOp) -> &'static str {
     match op {
         BooleanOp::Fuse => "fuse",
@@ -854,31 +865,34 @@ fn parse_step(line: &str) -> Option<Step> {
             input: index(input)?,
             offset: [number(x)?, number(y)?, number(z)?],
         },
-        ("fuse" | "cut" | "common", [base, tool]) => Step::Boolean {
-            op: match name {
-                "fuse" => BooleanOp::Fuse,
-                "cut" => BooleanOp::Cut,
-                _ => BooleanOp::Common,
-            },
+        (_, [base, tool]) if boolean(name).is_some() => Step::Boolean {
+            op: boolean(name)?,
             base: index(base)?,
             tool: index(tool)?,
         },
-        _ => Step::Primitive(match (name, numbers()?.as_slice()) {
-            ("box", &[dx, dy, dz]) => Primitive::Box { dx, dy, dz },
-            ("cylinder", &[radius, height]) => Primitive::Cylinder { radius, height },
-            ("sphere", &[radius]) => Primitive::Sphere { radius },
-            ("cone", &[radius1, radius2, height]) => Primitive::Cone {
-                radius1,
-                radius2,
-                height,
-            },
-            ("torus", &[major_radius, minor_radius]) => Primitive::Torus {
-                major_radius,
-                minor_radius,
-            },
-            _ => return None,
-        }),
+        _ => Step::Primitive(primitive(name, &numbers()?)?),
     })
+}
+
+/// The primitive a line names with these values, if the protocol's check accepts it: the
+/// fake reads only what a request could have made.
+fn primitive(name: &str, values: &[f64]) -> Option<Primitive> {
+    let primitive = match (name, values) {
+        ("box", &[dx, dy, dz]) => Primitive::Box { dx, dy, dz },
+        ("cylinder", &[radius, height]) => Primitive::Cylinder { radius, height },
+        ("sphere", &[radius]) => Primitive::Sphere { radius },
+        ("cone", &[radius1, radius2, height]) => Primitive::Cone {
+            radius1,
+            radius2,
+            height,
+        },
+        ("torus", &[major_radius, minor_radius]) => Primitive::Torus {
+            major_radius,
+            minor_radius,
+        },
+        _ => return None,
+    };
+    primitive.check().is_ok().then_some(primitive)
 }
 
 #[cfg(test)]

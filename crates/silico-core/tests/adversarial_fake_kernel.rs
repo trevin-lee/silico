@@ -118,7 +118,7 @@ fn waiting_for_no_running_requests_is_at_once() {
     assert!(!kernel.wait_running(1, Duration::ZERO));
 }
 
-// Once: `FakeKernel::new(usize::MAX).unwrap()` collects `(0..usize::MAX).map(spawn)` into a Vec,
+// Once: `FakeKernel::new(usize::MAX)` collected `(0..usize::MAX).map(spawn)` into a Vec,
 // which sizes itself up front: a capacity-overflow panic. The pool refuses a size past
 // MAX_WORKERS (1024) with InvalidInput; the fake that stands in for it panics.
 #[test]
@@ -126,10 +126,7 @@ fn a_fake_kernel_of_absurd_size_does_not_panic() {
     let made = std::panic::catch_unwind(|| {
         drop(FakeKernel::new(usize::MAX).unwrap());
     });
-    assert!(
-        made.is_ok(),
-        "FakeKernel::new(usize::MAX).unwrap() panicked"
-    );
+    assert!(made.is_ok(), "FakeKernel::new(usize::MAX) panicked");
 }
 
 #[test]
@@ -240,9 +237,17 @@ fn every_other_spelling_of_a_shapes_steps_is_refused() {
         "silico fake shape 1\nbox 1 2 3\nsphere 1\ntranslate 0 1 0 0\n",
         "silico fake shape 1\nbox 1 2 3\nsphere 1\n",
         "silico fake shape 1\nbox 1 2 3\nsphere 1\nfuse 1 0\n",
+        "silico fake shape 1\nbox 1 2 3\nsphere 1\nfuse 1 1\n",
+        "silico fake shape 1\nfuse 0 0\n",
+        "silico fake shape 1\nsphere 1\nbox 1 2 3\nfuse 0 0\n",
         "silico fake shape 1\ntranslate 1 1 0 0\nbox 1 2 3\n",
         "silico fake shape 1\n",
         "",
+        // Values the protocol's check refuses, which no request can carry.
+        "silico fake shape 1\nbox -1 0 1\n",
+        "silico fake shape 1\ncone 0 0 0\n",
+        "silico fake shape 1\ncone 1 2 0\n",
+        "silico fake shape 1\nsphere 1000000000000000000000000000000\n",
         // Not finite, which no request can carry.
         "silico fake shape 1\nsphere inf\n",
         "silico fake shape 1\nbox 1 2 3\ntranslate 0 NaN 0 0\n",
