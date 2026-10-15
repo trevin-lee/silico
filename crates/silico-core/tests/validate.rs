@@ -105,6 +105,22 @@ fn a_reference_to_no_feature_is_refused() {
 }
 
 #[test]
+fn a_missing_id_sorting_between_present_ones_is_refused_not_matched_to_a_neighbour() {
+    let error = problem(&[
+        &block("aaaaaaaa", "A"),
+        &block("cccccccc", "C"),
+        &boolean("dddddddd", "cut", "Hole", "aaaaaaaa", "bbbbbbbb"),
+    ]);
+    assert_refused(
+        &error,
+        "dddddddd",
+        "tool",
+        "tool bbbbbbbb isn't the ID of any feature",
+        "use the ID of a feature before this one",
+    );
+}
+
+#[test]
 fn a_feature_using_itself_is_refused() {
     let error = problem(&[
         &block("aaaaaaaa", "A"),
