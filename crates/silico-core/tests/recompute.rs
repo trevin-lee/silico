@@ -562,7 +562,12 @@ impl Kernel for Gate {
             while self.inner.calls().len() == before && std::time::Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(1));
             }
-            std::thread::sleep(Duration::from_millis(100));
+            // Until the fake has sent the step's result: it stops counting a step as running
+            // only once its outcome is sent.
+            while self.inner.wait_running(1, Duration::ZERO) && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
             let mut open = self.open.lock().unwrap();
             while !*open {
                 open = self.opened.wait(open).unwrap();
