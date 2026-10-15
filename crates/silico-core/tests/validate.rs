@@ -201,6 +201,35 @@ fn a_consumer_sharing_its_id_is_named_by_place_and_not_offered_by_id() {
 }
 
 #[test]
+fn a_consumer_first_with_its_id_is_offered_by_that_id() {
+    // A later box shares the consumer's ID, but the ID names the consumer: the box is the
+    // one to rename, as its own error says, so the advice for the consumer agrees.
+    let invalid = problems(&[
+        &block("aaaaaaaa", "Block"),
+        &block("bbbbbbbb", "Pin"),
+        &boolean("dddddddd", "fuse", "Join", "aaaaaaaa", "bbbbbbbb"),
+        &block("dddddddd", "Spacer"),
+        &block("cccccccc", "Peg"),
+        &boolean("eeeeeeee", "cut", "Slot", "aaaaaaaa", "cccccccc"),
+    ]);
+    assert_eq!(invalid.total(), 2, "{:#?}", invalid.errors());
+    assert_refused(
+        &invalid.errors()[0],
+        "features[3]",
+        "id",
+        "id dddddddd is already the ID of features[2] (\"Join\")",
+        "give this feature an ID of its own",
+    );
+    assert_refused(
+        &invalid.errors()[1],
+        "eeeeeeee",
+        "base",
+        "base aaaaaaaa's solid was already consumed by features[2] (\"Join\"): a solid can be used once",
+        "use dddddddd's result, or another feature's",
+    );
+}
+
+#[test]
 fn a_boolean_of_a_solid_with_itself_is_refused() {
     let error = problem(&[
         &block("aaaaaaaa", "A"),

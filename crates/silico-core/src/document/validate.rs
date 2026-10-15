@@ -8,7 +8,7 @@
 use silico_protocol::{MAX_LENGTH, check_offset, format_number};
 
 use super::json::shown;
-use super::model::{Document, FeatureId, ID_LENGTH, Operation};
+use super::model::{Document, FeatureId, ID_LENGTH};
 use crate::{Error, ErrorCode};
 
 /// How many of a document's problems [`Invalid`] lists; it counts the rest.
@@ -132,7 +132,7 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
             }
         }
         if let Some(primitive) = feature.operation.primitive() {
-            for invalid in primitive.faults(Operation::field) {
+            for invalid in primitive.faults(|p| feature.operation.document_field(p)) {
                 problems.add(|| {
                     refuse(
                         invalid.parameter,
@@ -191,14 +191,18 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
                                 "{field} {target}'s solid was already consumed by {}: a solid can be used once",
                                 described(earlier)
                             ),
-                            if shared[earlier] {
-                                // Its ID names another feature, so it can't be used by ID.
+                            if first[earlier] != earlier {
+                                // Its ID names an earlier feature, so it can't be used by ID.
                                 format!(
                                     "give {} an ID of its own and use its result, or use another feature",
                                     label(earlier)
                                 )
                             } else {
-                                format!("use {}'s result, or another feature's", label(earlier))
+                                // Its ID names it, even where a later feature has it too.
+                                format!(
+                                    "use {}'s result, or another feature's",
+                                    features[earlier].id
+                                )
                             },
                         )
                     }),
