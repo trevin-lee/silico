@@ -15,7 +15,7 @@ pub use model::{
     ID_LENGTH, Name, Operation, Position, Units,
 };
 pub use quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
-pub use validate::{Invalid, PROBLEMS_LISTED, validate};
+pub use validate::{Checked, Invalid, PROBLEMS_LISTED, validate};
 
 use schemars::generate::SchemaSettings;
 

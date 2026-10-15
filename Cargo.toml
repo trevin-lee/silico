@@ -35,6 +35,8 @@ command-fds = "0.3"
 socket2 = "0.6"
 rustix = { version = "1.1", features = ["event", "net"] }
 crc32fast = "1.4"
+# Recompute's keys (and the cache's, from M2.5): a hash with no collisions to plan around.
+sha2 = "0.10"
 # The math OCCT uses (its libm shim's, pinned alike), where Silico must compute as it does.
 libm = { version = "=0.2.16", default-features = false }
 libc = "0.2"
