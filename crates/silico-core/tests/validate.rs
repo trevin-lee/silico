@@ -464,3 +464,16 @@ proptest! {
         prop_assert_eq!(result.is_ok(), valid, "{:?}", result);
     }
 }
+
+#[test]
+fn the_checked_type_refuses_what_the_gate_refuses_and_holds_what_it_passes() {
+    let text = document(&[&boolean("cccccccc", "cut", "C", "aaaaaaaa", "bbbbbbbb")]);
+    let refused = read(text.as_bytes()).unwrap();
+    let invalid = silico_core::document::Checked::new(refused.clone()).unwrap_err();
+    assert_eq!(invalid, validate(&refused).unwrap_err());
+    assert_eq!(invalid.total(), 2);
+    let passed = read(EXAMPLE.as_bytes()).unwrap();
+    let checked = silico_core::document::Checked::new(passed.clone()).unwrap();
+    assert_eq!(checked.document(), &passed);
+    assert_eq!(checked.into_document(), passed);
+}

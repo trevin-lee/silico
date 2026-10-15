@@ -15,7 +15,8 @@ use example::EXAMPLE;
 use recompute::{WAIT, calls_since, checked, described, document, engine, id, published};
 use silico_core::document::{Checked, FeatureId};
 use silico_core::fake::FakeKernel;
-use silico_core::kernel::{Kernel, Op, Primitive};
+use silico_core::kernel::{Generation, Kernel, KernelRequest, Op, Primitive};
+use silico_core::pool::Pending;
 use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 use silico_core::{Error, ErrorCode};
 
@@ -448,4 +449,212 @@ fn superseded_recomputes_keep_only_the_newest_ones_steps_and_an_undo_runs_nothin
     let before = engine.kernel().calls().len();
     published(&engine, example_with(BLOCK, &pin(4)));
     assert!(calls_since(&engine, before).is_empty());
+}
+
+// The key's contents: each part of a step changes it, so an edit to it never reuses
+// another step's result.
+
+const A_BOX: &str = r#"{"id": "aaaaaaaa", "type": "box", "v": 1, "name": "A", "position": [0, 0, 0], "length": 4, "width": 4, "height": 4}"#;
+const A_SPHERE: &str = r#"{"id": "bbbbbbbb", "type": "sphere", "v": 1, "name": "B", "position": [0, 0, 0], "radius": 1}"#;
+
+#[test]
+fn changing_a_cut_to_a_fuse_fuses() {
+    let engine = engine(2);
+    let cut = r#"{"id": "cccccccc", "type": "cut", "v": 1, "name": "C", "base": "aaaaaaaa", "tool": "bbbbbbbb"}"#;
+    published(&engine, document(&[A_BOX, A_SPHERE, cut]));
+    let fuse = cut.replace("\"cut\"", "\"fuse\"");
+    let model = published(&engine, document(&[A_BOX, A_SPHERE, &fuse]));
+    assert_eq!(
+        described(&model, "cccccccc"),
+        "fuse(box(4, 4, 4), sphere(1))"
+    );
+}
+
+#[test]
+fn swapping_a_cuts_base_and_tool_cuts_the_other_way() {
+    let engine = engine(2);
+    let cut = |base: &str, tool: &str| {
+        format!(
+            r#"{{"id": "cccccccc", "type": "cut", "v": 1, "name": "C", "base": "{base}", "tool": "{tool}"}}"#
+        )
+    };
+    published(
+        &engine,
+        document(&[A_BOX, A_SPHERE, &cut("aaaaaaaa", "bbbbbbbb")]),
+    );
+    let model = published(
+        &engine,
+        document(&[A_BOX, A_SPHERE, &cut("bbbbbbbb", "aaaaaaaa")]),
+    );
+    assert_eq!(
+        described(&model, "cccccccc"),
+        "cut(sphere(1), box(4, 4, 4))"
+    );
+}
+
+#[test]
+fn a_box_and_a_cone_of_the_same_numbers_are_different_steps() {
+    let model = published(
+        &engine(2),
+        document(&[
+            r#"{"id": "aaaaaaaa", "type": "box", "v": 1, "name": "A", "position": [0, 0, 0], "length": 3, "width": 2, "height": 5}"#,
+            r#"{"id": "bbbbbbbb", "type": "cone", "v": 1, "name": "B", "position": [0, 0, 0], "radius1": 3, "radius2": 2, "height": 5}"#,
+        ]),
+    );
+    assert_eq!(described(&model, "aaaaaaaa"), "box(3, 2, 5)");
+    assert_eq!(described(&model, "bbbbbbbb"), "cone(3, 2, 5)");
+}
+
+#[test]
+fn editing_any_value_of_a_cone_or_a_torus_rebuilds_it() {
+    let engine = engine(2);
+    let doc = |cone: [u32; 3], torus: [u32; 2]| {
+        let cone = format!(
+            r#"{{"id": "aaaaaaaa", "type": "cone", "v": 1, "name": "A", "position": [0, 0, 0], "radius1": {}, "radius2": {}, "height": {}}}"#,
+            cone[0], cone[1], cone[2]
+        );
+        let torus = format!(
+            r#"{{"id": "bbbbbbbb", "type": "torus", "v": 1, "name": "B", "position": [0, 0, 0], "radius1": {}, "radius2": {}}}"#,
+            torus[0], torus[1]
+        );
+        document(&[&cone, &torus])
+    };
+    published(&engine, doc([3, 1, 5], [3, 1]));
+    for (cone, torus, want) in [
+        ([4, 1, 5], [3, 1], ("cone(4, 1, 5)", "torus(3, 1)")),
+        ([4, 2, 5], [3, 1], ("cone(4, 2, 5)", "torus(3, 1)")),
+        ([4, 2, 6], [4, 1], ("cone(4, 2, 6)", "torus(4, 1)")),
+        ([4, 2, 6], [4, 2], ("cone(4, 2, 6)", "torus(4, 2)")),
+    ] {
+        let model = published(&engine, doc(cone, torus));
+        assert_eq!(described(&model, "aaaaaaaa"), want.0);
+        assert_eq!(described(&model, "bbbbbbbb"), want.1);
+    }
+}
+
+/// A fake kernel that, for one generation, holds each step after the fake has run it and
+/// before handing it back, until let go: a recompute superseded after its last step ran.
+struct Gate {
+    inner: FakeKernel,
+    held: Generation,
+    open: std::sync::Mutex<bool>,
+    opened: std::sync::Condvar,
+}
+
+impl Kernel for Gate {
+    fn generation(&self) -> Generation {
+        self.inner.generation()
+    }
+
+    fn advance(&self, generation: Generation) {
+        self.inner.advance(generation);
+    }
+
+    fn submit<T: Send + 'static>(
+        &self,
+        generation: Generation,
+        request: KernelRequest<T>,
+    ) -> Pending<T> {
+        let before = self.inner.calls().len();
+        let pending = self.inner.submit(generation, request);
+        if generation == self.held {
+            let deadline = std::time::Instant::now() + WAIT;
+            while self.inner.calls().len() == before && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            let mut open = self.open.lock().unwrap();
+            while !*open {
+                open = self.opened.wait(open).unwrap();
+            }
+        }
+        pending
+    }
+}
+
+#[test]
+fn a_recompute_superseded_after_its_last_step_ran_doesnt_publish_over_the_newer_one() {
+    let inner = FakeKernel::new(2).unwrap();
+    let held = Generation(inner.generation().0 + 1);
+    let engine = Recompute::new(Gate {
+        inner,
+        held,
+        open: std::sync::Mutex::new(false),
+        opened: std::sync::Condvar::new(),
+    });
+    let older = engine.start(document(&[
+        r#"{"id": "aaaaaaaa", "type": "sphere", "v": 1, "name": "A", "position": [0, 0, 0], "radius": 7}"#,
+    ]));
+    let deadline = std::time::Instant::now() + WAIT;
+    while engine.kernel().inner.calls().is_empty() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    // The newer recompute runs and publishes while the older one holds its finished step.
+    let newer = published(&engine, checked(EXAMPLE));
+    *engine.kernel().open.lock().unwrap() = true;
+    engine.kernel().opened.notify_all();
+    let older = older.wait_timeout(WAIT).ok().expect("hung").unwrap();
+    assert_eq!(older, RunOutcome::Superseded);
+    assert_eq!(engine.published(), Some(newer));
+}
+
+/// The fake kernel, noting the thread each step is asked from.
+struct Threads {
+    inner: FakeKernel,
+    names: std::sync::Mutex<std::collections::BTreeSet<String>>,
+}
+
+impl Kernel for Threads {
+    fn generation(&self) -> Generation {
+        self.inner.generation()
+    }
+
+    fn advance(&self, generation: Generation) {
+        self.inner.advance(generation);
+    }
+
+    fn submit<T: Send + 'static>(
+        &self,
+        generation: Generation,
+        request: KernelRequest<T>,
+    ) -> Pending<T> {
+        let name = std::thread::current().name().unwrap_or("").to_owned();
+        self.names.lock().unwrap().insert(name);
+        self.inner.submit(generation, request)
+    }
+}
+
+#[test]
+fn a_recompute_waits_on_at_most_sixty_four_steps_at_once() {
+    let engine = Recompute::new(Threads {
+        inner: FakeKernel::new(4).unwrap(),
+        names: std::sync::Mutex::default(),
+    });
+    let hold = engine.kernel().inner.hold(|_| true);
+    // 200 primitives at the origin: 200 steps, none waiting on another.
+    let features: Vec<String> = (0..200)
+        .map(|n| {
+            format!(
+                r#"{{"id": "a{n:07}", "type": "sphere", "v": 1, "name": "S", "position": [0, 0, 0], "radius": {}}}"#,
+                n + 1
+            )
+        })
+        .collect();
+    let features: Vec<&str> = features.iter().map(String::as_str).collect();
+    let run = engine.start(document(&features));
+    let deadline = std::time::Instant::now() + WAIT;
+    while engine.kernel().names.lock().unwrap().len() < 64 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "fewer than 64 threads asked"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(engine.kernel().names.lock().unwrap().len(), 64);
+    drop(hold);
+    assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
+    assert_eq!(engine.kernel().names.lock().unwrap().len(), 64);
 }

@@ -93,7 +93,9 @@ fn after_a_storm_of_superseded_edits_the_last_builds_to_a_fresh_builds_bytes() {
 }
 
 #[test]
-fn dropping_the_engine_mid_recompute_returns_promptly_and_supersedes_it() {
+fn dropping_the_engine_mid_recompute_returns_promptly() {
+    // The run may have finished by the drop, so either outcome; what's tested is that the
+    // drop doesn't wait on it.
     let engine = Recompute::new(pool(2));
     let run = engine.start(part(2.5));
     let at = Instant::now();

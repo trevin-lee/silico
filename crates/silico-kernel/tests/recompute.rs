@@ -38,3 +38,37 @@ fn the_example_builds_on_occt_to_the_same_bytes_every_time() {
     let second = built();
     assert_eq!(second.features(), first.features());
 }
+
+#[test]
+fn the_example_on_occt_is_the_block_with_the_pin_cut_through_it() {
+    // By hand: a 40 x 20 x 10 block less a cylinder of radius 2.5 through its full height
+    // (the pin runs from z = -1 to 11): volume 8000 - 62.5 pi; area the block's 2800, less
+    // the two discs (12.5 pi), plus the hole's wall (50 pi); seven faces, the hole's one.
+    let pool = KernelPool::start_workers(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")), 2)
+        .unwrap();
+    let engine = Recompute::new(pool);
+    let model = match engine.start(example()).wait().unwrap() {
+        RunOutcome::Published(model) => model,
+        RunOutcome::Superseded => panic!("superseded"),
+    };
+    let hole = FeatureId::new("m3tq8v0z").unwrap();
+    let Some(FeatureOutcome::Built { built, .. }) = model.outcome(&hole) else {
+        panic!("{model:?}")
+    };
+    let summary = engine
+        .kernel()
+        .submit(
+            engine.kernel().generation(),
+            silico_core::kernel::KernelRequest::summarize(&built.shape),
+        )
+        .wait()
+        .done()
+        .unwrap()
+        .unwrap();
+    let pi = std::f64::consts::PI;
+    let close = |got: f64, want: f64| (got - want).abs() <= want * 1e-7;
+    assert!(close(summary.volume, 8000.0 - 62.5 * pi), "{summary:?}");
+    assert!(close(summary.area, 2800.0 + 37.5 * pi), "{summary:?}");
+    assert_eq!(summary.faces, 7, "{summary:?}");
+    assert!(summary.valid);
+}
