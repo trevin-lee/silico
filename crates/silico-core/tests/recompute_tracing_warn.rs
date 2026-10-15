@@ -1,6 +1,6 @@
-//! M2.4: at the default log level (warnings), where recompute's own debug spans are off, a
-//! warning from the kernel during a recompute still traces back to the edit that started
-//! it (ARCHITECTURE.md, invariant 9). Its own file: it sets the process's tracing subscriber.
+//! M2.4: at the default log level (warnings), a warning from the kernel during a recompute
+//! is under its step's span (which names the feature), its recompute's, and the edit that
+//! started it (ARCHITECTURE.md, invariant 9). Its own file: it sets the process's tracing subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::{Arc, Mutex};
@@ -68,9 +68,9 @@ fn at_the_default_level_a_kernel_warning_still_traces_back_to_the_edit() {
     assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
     let events = seen.lock().unwrap().clone();
     assert_eq!(events.len(), 1, "{events:?}");
-    assert!(
-        events[0].contains(&"user_edit"),
-        "the warning's spans: {:?}",
-        events[0]
+    assert_eq!(
+        events[0],
+        ["recompute_step", "recompute", "user_edit"],
+        "the warning's spans, nearest first"
     );
 }

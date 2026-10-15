@@ -278,10 +278,12 @@ impl<K: Kernel + 'static> Recompute<K> {
         };
         self.engine.kernel.advance(generation);
         let engine = Arc::clone(&self.engine);
-        // The caller's span, then the recompute's: when debug spans are off (the default
-        // level), the recompute's is disabled, and its work still traces back to the caller.
+        // The caller's span, then the recompute's: should the recompute's be filtered out,
+        // its work still traces back to the caller.
         let caller = tracing::Span::current();
-        let span = tracing::debug_span!("recompute", generation = generation.0);
+        // At warning level, as the worker's request span is: a warning during a recompute,
+        // at the default level, says which generation and step it was.
+        let span = tracing::warn_span!("recompute", generation = generation.0);
         let started = std::thread::Builder::new()
             .name(format!("recompute-{}", generation.0))
             .spawn(move || {
@@ -656,7 +658,7 @@ impl<K: Kernel + 'static> Engine<K> {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 match plan.steps.get(&key) {
                     Some(step) => {
-                        let _span = tracing::debug_span!(
+                        let _span = tracing::warn_span!(
                             "recompute_step",
                             feature = plan.feature(&key),
                             key = %key
