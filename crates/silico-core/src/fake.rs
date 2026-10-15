@@ -6,11 +6,15 @@
 //! how much, a boolean its operation and inputs (`cut(box(40, 20, 10), translate(cylinder(
 //! 2.5, 12), 20, 10, -1))`, as [`FakeKernel::describe`] writes it). Each is named by a hash
 //! of what made it, so the same request makes the same bytes whichever thread runs it and
-//! whenever. A primitive has the faces, edges, and vertices OCCT gives it; a move reports
-//! its elements as the kernel does (each modified into its own number, or kept by a move of
-//! nothing); a boolean has both inputs' elements, as if they didn't touch, and keeps
+//! whenever, and a zero of either sign is the same. A primitive has the faces, edges, and
+//! vertices OCCT gives it. A move reports its elements as the kernel does (each modified
+//! into its own number, or kept by a move of nothing), and composes as the kernel's
+//! locations do: a moved shape moved again is the original moved by the sum, and a move by
+//! nothing, or back to where it was, is the shape it moved. A boolean has both inputs' elements, as if they didn't touch, and keeps
 //! them all. It answers making primitives, moving shapes, booleans, and echoes; anything
-//! else is refused as an internal error.
+//! else is refused as an internal error. It doesn't refuse what OCCT can't build from values
+//! the protocol's check accepts (a torus a tenth of a micrometre across whose tube reaches
+//! the axis): a test of such a refusal gives it with [`FakeKernel::refuse`].
 //!
 //! Tests can hold requests until they're released ([`FakeKernel::hold`]), to see what runs
 //! at once or to supersede a request while it runs, and have requests refused
@@ -22,13 +26,13 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use silico_protocol::Reply;
+use silico_protocol::{LENGTH_TOLERANCE, Reply};
 
 use crate::kernel::{
     Blob, BooleanOp, BuiltData, ElementCounts, ElementFate, ElementKind, ElementRef, Ends,
     Generation, History, InputHistory, Kernel, KernelRequest, Op, Primitive, Reported, ShapeData,
 };
-use crate::pool::{Outcome, Pending};
+use crate::pool::{MAX_WORKERS, Outcome, Pending};
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
@@ -105,7 +109,8 @@ enum Made {
 }
 
 impl FakeKernel {
-    /// A fake kernel running up to `size` requests at once (at least one).
+    /// A fake kernel running up to `size` requests at once: at least one, and at most the
+    /// pool's [`MAX_WORKERS`].
     pub fn new(size: usize) -> Self {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
@@ -122,7 +127,7 @@ impl FakeKernel {
             work: Condvar::new(),
             changed: Condvar::new(),
         });
-        let threads = (0..size.max(1))
+        let threads = (0..size.clamp(1, MAX_WORKERS))
             .map(|_| {
                 let shared = Arc::clone(&shared);
                 std::thread::spawn(move || serve(&shared))
@@ -144,18 +149,27 @@ impl FakeKernel {
     /// Waits up to `timeout` until at least `count` requests are running at once: whether
     /// they were.
     pub fn wait_running(&self, count: usize, timeout: Duration) -> bool {
-        let deadline = Instant::now() + timeout;
+        // No deadline: a timeout too long to add to now is forever.
+        let deadline = Instant::now().checked_add(timeout);
         let mut state = lock(&self.shared.state);
         while state.running < count {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return false;
-            }
-            state = self
-                .shared
-                .changed
-                .wait_timeout(state, left)
-                .map_or_else(|e| e.into_inner().0, |(state, _)| state);
+            state = match deadline {
+                Some(deadline) => {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        return false;
+                    }
+                    self.shared
+                        .changed
+                        .wait_timeout(state, left)
+                        .map_or_else(|e| e.into_inner().0, |(state, _)| state)
+                }
+                None => self
+                    .shared
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            };
         }
         true
     }
@@ -311,18 +325,19 @@ impl<T: Send + 'static> Task for Submitted<T> {
 
     fn finish(self: Box<Self>, reply: Result<Reply, Error>, shared: &Shared) {
         let result = self.request.answer(reply);
-        let superseded = {
-            let mut state = lock(&shared.state);
-            state.running -= 1;
-            self.generation < state.generation
-        };
-        shared.changed.notify_all();
-        let outcome = if superseded {
+        // Decided and sent under the lock `advance` takes, as the pool does: once `advance`
+        // returns, no result of an older generation can still arrive.
+        let mut state = lock(&shared.state);
+        state.running -= 1;
+        let outcome = if self.generation < state.generation {
             Outcome::Superseded
         } else {
             Outcome::Done(result)
         };
+        // The channel holds one outcome, and this is the only one sent, so this never waits.
         let _ = self.reply.send(outcome);
+        drop(state);
+        shared.changed.notify_all();
     }
 
     fn supersede(self: Box<Self>) {
@@ -353,12 +368,23 @@ fn serve(shared: &Shared) {
             op: task.op().clone(),
         });
         shared.changed.notify_all();
-        while !state.stopping
+        // The rules are a test's code: one that panics fails its request, naming it, and
+        // leaves the kernel running.
+        let mut holding = Vec::new();
+        let mut broken = None;
+        for (index, rule) in state.holds.iter().enumerate() {
+            match caught(|| (rule.picks)(task.op())) {
+                Some(true) => holding.push(index),
+                Some(false) => {}
+                None => broken = Some(rule_panicked("hold", task.op())),
+            }
+        }
+        while broken.is_none()
+            && !state.stopping
             && task.generation() >= state.generation
-            && state
-                .holds
+            && holding
                 .iter()
-                .any(|rule| !rule.released && (rule.picks)(task.op()))
+                .any(|&index| state.holds.get(index).is_some_and(|rule| !rule.released))
         {
             state = shared
                 .changed
@@ -375,7 +401,12 @@ fn serve(shared: &Shared) {
             }
             continue;
         }
-        let refusal = state.refusals.iter().find_map(|refuses| refuses(task.op()));
+        let refusal = broken.or_else(|| {
+            state.refusals.iter().find_map(|refuses| {
+                caught(|| refuses(task.op()))
+                    .unwrap_or_else(|| Some(rule_panicked("refusal", task.op())))
+            })
+        });
         let reply = match refusal {
             Some(error) => Err(error),
             None => answer(&mut state.shapes, task.op()),
@@ -383,6 +414,19 @@ fn serve(shared: &Shared) {
         drop(state);
         task.finish(reply, shared);
     }
+}
+
+/// `rule`'s answer, or `None` if it panicked.
+fn caught<T>(rule: impl FnOnce() -> T) -> Option<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(rule)).ok()
+}
+
+fn rule_panicked(kind: &str, op: &Op) -> Error {
+    Error::new(
+        ErrorCode::Internal,
+        format!("the fake kernel's {kind} rule panicked on {}", op.name()),
+    )
+    .with_suggestion("fix the test's rule")
 }
 
 /// The fake's reply to `op`, recording the shapes it makes in `shapes`.
@@ -397,26 +441,40 @@ fn answer(shapes: &mut BTreeMap<u128, Node>, op: &Op) -> Result<Reply, Error> {
         }
         Op::Translate { shape, offset } => {
             let (id, input) = find(shapes, shape)?;
-            let node = Node {
-                made: Made::Translated {
-                    shape: id,
-                    offset: *offset,
-                },
-                counts: input.counts,
+            let counts = input.counts;
+            // As the kernel composes locations: a moved shape moved again is its original
+            // moved by the sum, and a sum of nothing is the original itself.
+            let (base, total) = match input.made {
+                Made::Translated {
+                    shape: inner,
+                    offset: before,
+                } => (inner, [0, 1, 2].map(|i| zeroed(before[i] + offset[i]))),
+                Made::Primitive(_) | Made::Boolean { .. } => (id, offset.map(zeroed)),
             };
             // As the kernel reports a move: each element modified into its own number (a
             // moved element isn't the same sub-shape), or kept by a move of nothing.
             let fates = if offset.iter().all(|&d| d == 0.0) {
-                kept(input.counts, ElementCounts::default())
+                kept(counts, ElementCounts::default())
             } else {
-                moved(input.counts)
+                moved(counts)
             };
             let history = History {
                 inputs: vec![fates],
-                result: input.counts,
+                result: counts,
                 ends: Ends::default(),
             };
-            let shape = store(shapes, node);
+            let shape = if total.iter().all(|&d| d == 0.0) {
+                named(base)
+            } else {
+                let node = Node {
+                    made: Made::Translated {
+                        shape: base,
+                        offset: total,
+                    },
+                    counts,
+                };
+                store(shapes, node)
+            };
             Ok(Reply::Built(BuiltData { shape, history }))
         }
         Op::Boolean { op, base, tool } => {
@@ -461,12 +519,28 @@ fn primitive_counts(primitive: &Primitive) -> ElementCounts {
         Primitive::Cylinder { .. } => (3, 3, 2),
         Primitive::Sphere { .. } => (1, 3, 2),
         Primitive::Cone {
-            radius1, radius2, ..
+            radius1,
+            radius2,
+            height,
         } => {
-            if radius1 == 0.0 || radius2 == 0.0 {
-                (2, 3, 2)
-            } else {
-                (3, 3, 2)
+            // OCCT leaves out a cap where the cone's meridian meets the axis, within its
+            // tolerance (BRepPrim_OneAxis::MeridianOnAxis): at the base, radius1 from it; at
+            // the top, the meridian's end, computed as BRepPrim_Cone and ElCLib::LineValue
+            // compute it (its direction normalized by gp_Dir2d, no fused multiply-add), with
+            // the math OCCT uses, so the edge cases fall as they do in OCCT.
+            let rise = radius2 - radius1;
+            let half_angle = libm::atan(rise / height);
+            let (sin, cos) = (libm::sin(half_angle), libm::cos(half_angle));
+            let along = sin / (sin * sin + cos * cos).sqrt();
+            let length = (height * height + rise * rise).sqrt();
+            let top = length * along + radius1;
+            let caps = [radius1, top]
+                .iter()
+                .filter(|x| x.abs() >= LENGTH_TOLERANCE)
+                .count();
+            match caps {
+                2 => (3, 3, 2),
+                _ => (2, 3, 2),
             }
         }
         Primitive::Torus { .. } => (1, 2, 1),
@@ -537,15 +611,28 @@ fn find<'a>(
 fn store(shapes: &mut BTreeMap<u128, Node>, node: Node) -> ShapeData {
     let id = hash(&made_key(&node.made));
     shapes.entry(id).or_insert(node);
+    named(id)
+}
+
+/// The shape the fake names `id`: always the same bytes for it.
+fn named(id: u128) -> ShapeData {
     ShapeData::checked(Blob::inline(format!("fake:{id:032x}").into_bytes()), true)
 }
 
+/// The ID `shape`'s bytes name, if they're exactly as [`named`] writes one.
 fn id_of(shape: &ShapeData) -> Option<u128> {
-    let text = std::str::from_utf8(shape.brep().as_bytes()).ok()?;
-    let hex = text.strip_prefix("fake:")?;
-    (hex.len() == 32)
-        .then(|| u128::from_str_radix(hex, 16).ok())
-        .flatten()
+    let hex = shape.brep().as_bytes().strip_prefix(b"fake:")?;
+    let lower_hex = |b: &u8| b.is_ascii_digit() || (b'a'..=b'f').contains(b);
+    if hex.len() != 32 || !hex.iter().all(lower_hex) {
+        return None;
+    }
+    u128::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()
+}
+
+/// `value`, with a zero of either sign as 0: the kernel writes -0 as 0, so a shape's bytes
+/// don't depend on the sign of a zero.
+fn zeroed(value: f64) -> f64 {
+    if value == 0.0 { 0.0 } else { value }
 }
 
 /// What made a shape, as text naming its inputs by their IDs: what its ID is a hash of.
@@ -564,19 +651,22 @@ fn made_key(made: &Made) -> String {
 }
 
 fn primitive_text(primitive: &Primitive) -> String {
+    let z = zeroed;
     match *primitive {
-        Primitive::Box { dx, dy, dz } => format!("box({dx}, {dy}, {dz})"),
-        Primitive::Cylinder { radius, height } => format!("cylinder({radius}, {height})"),
-        Primitive::Sphere { radius } => format!("sphere({radius})"),
+        Primitive::Box { dx, dy, dz } => format!("box({}, {}, {})", z(dx), z(dy), z(dz)),
+        Primitive::Cylinder { radius, height } => {
+            format!("cylinder({}, {})", z(radius), z(height))
+        }
+        Primitive::Sphere { radius } => format!("sphere({})", z(radius)),
         Primitive::Cone {
             radius1,
             radius2,
             height,
-        } => format!("cone({radius1}, {radius2}, {height})"),
+        } => format!("cone({}, {}, {})", z(radius1), z(radius2), z(height)),
         Primitive::Torus {
             major_radius,
             minor_radius,
-        } => format!("torus({major_radius}, {minor_radius})"),
+        } => format!("torus({}, {})", z(major_radius), z(minor_radius)),
     }
 }
 
@@ -633,4 +723,43 @@ fn hash(text: &str) -> u128 {
     text.bytes().fold(OFFSET, |hash, byte| {
         (hash ^ u128::from(byte)).wrapping_mul(PRIME)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_deep_chain_of_booleans_is_written_without_overflowing_the_stack() {
+        // Built directly: through the kernel, each boolean's history lists its base's
+        // elements, so a chain this deep would take quadratic time to make.
+        let mut shapes = BTreeMap::new();
+        let unit = Node {
+            made: Made::Primitive(Primitive::Sphere { radius: 1.0 }),
+            counts: ElementCounts::default(),
+        };
+        let mut id = hash(&made_key(&unit.made));
+        shapes.insert(id, unit);
+        let leaf = id;
+        let depth = 200_000;
+        for _ in 0..depth {
+            let made = Made::Boolean {
+                op: BooleanOp::Fuse,
+                base: id,
+                tool: leaf,
+            };
+            id = hash(&made_key(&made));
+            shapes.insert(
+                id,
+                Node {
+                    made,
+                    counts: ElementCounts::default(),
+                },
+            );
+        }
+        let mut out = String::new();
+        assert!(write_shape(&shapes, id, &mut out));
+        assert!(out.starts_with("fuse(fuse(fuse("));
+        assert_eq!(out.matches("sphere(1)").count(), depth + 1);
+    }
 }

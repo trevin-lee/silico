@@ -4177,6 +4177,7 @@ dependencies = [
  "cpu-time",
  "jsonschema",
  "libc",
+ "libm",
  "proptest",
  "rustix",
  "schemars",

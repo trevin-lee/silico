@@ -33,3 +33,13 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 filter = 'package(silico-core) & test(/_promptly$|size_or_memory_limits|opens_exactly_when|exactly_the_size|exponent_past_i128|loosely_spelled|exactly_when_it_takes_more|exactly_when_they_take_more/)'
 test-group = 'document-heavy'
 slow-timeout = { period = "60s", terminate-after = 10 }
+
+# The fake kernel compared with the real one over 2,000 generated primitives: a minute
+# alone, longer on a loaded machine.
+[[profile.default.overrides]]
+filter = 'package(silico-kernel) & test(the_fake_answers_as_the_real_kernel_does_at_the_edges)'
+slow-timeout = { period = "60s", terminate-after = 10 }
+
+[[profile.ci.overrides]]
+filter = 'package(silico-kernel) & test(the_fake_answers_as_the_real_kernel_does_at_the_edges)'
+slow-timeout = { period = "60s", terminate-after = 10 }

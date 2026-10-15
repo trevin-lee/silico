@@ -150,10 +150,8 @@ fn a_move_reports_each_element_modified_into_its_own_number_or_kept_by_nothing()
         assert_eq!(fate.kept, Some(n as u32 + 1));
         assert!(fate.modified.is_empty());
     }
-    assert_eq!(
-        kernel.describe(&still.shape).as_deref(),
-        Some("translate(box(1, 1, 1), 0, 0, 0)")
-    );
+    // A move by nothing is the shape it moved, as the kernel gives it back.
+    assert_eq!(still.shape, shape);
 }
 
 #[test]
@@ -353,21 +351,26 @@ fn dropping_the_kernel_ends_requests_waiting_and_held() {
 }
 
 #[test]
-fn a_long_chain_of_moves_is_described_without_overflowing_the_stack() {
-    // Moves, not booleans: a boolean's history lists every element of its base, which grows
-    // along a chain, where a move's stays a box's.
+fn moves_compose_as_the_kernels_locations_do() {
     let kernel = FakeKernel::new(1);
-    let mut shape = run(&kernel, KernelRequest::make(block(1.0, 1.0, 1.0)).unwrap());
-    let links = 100_000;
-    for _ in 0..links {
-        shape = run(
-            &kernel,
-            KernelRequest::translate(&shape, [1.0, 0.0, 0.0]).unwrap(),
-        )
-        .shape;
+    let unit = run(&kernel, KernelRequest::make(block(1.0, 1.0, 1.0)).unwrap());
+    let moved = |shape: &ShapeData, offset| {
+        run(&kernel, KernelRequest::translate(shape, offset).unwrap()).shape
+    };
+    // 0.1 then 0.2 is one move by 0.1 + 0.2 (0.30000000000000004), not by 0.3.
+    let twice = moved(&moved(&unit, [0.1, 0.0, 0.0]), [0.2, 0.0, 0.0]);
+    assert_eq!(twice, moved(&unit, [0.1 + 0.2, 0.0, 0.0]));
+    assert_ne!(twice, moved(&unit, [0.3, 0.0, 0.0]));
+    // Moved and moved back is the shape itself.
+    let there = moved(&unit, [1.0, -2.0, 3.0]);
+    assert_eq!(moved(&there, [-1.0, 2.0, -3.0]), unit);
+    // A long chain is one move.
+    let mut shape = unit.clone();
+    for _ in 0..10_000 {
+        shape = moved(&shape, [1.0, 0.0, 0.0]);
     }
-    let text = kernel.describe(&shape).unwrap();
-    assert!(text.starts_with("translate(translate(translate("));
-    assert_eq!(text.matches("translate(").count(), links);
-    assert!(text.contains("(box(1, 1, 1), 1, 0, 0)"));
+    assert_eq!(
+        kernel.describe(&shape).as_deref(),
+        Some("translate(box(1, 1, 1), 10000, 0, 0)")
+    );
 }
