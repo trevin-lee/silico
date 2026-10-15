@@ -2,27 +2,38 @@
 //! OCCT and can see what was asked of the kernel. It runs requests on threads as the pool
 //! runs them on workers, with the same generations, and keeps a record of every call.
 //!
-//! Its shapes are symbolic: a primitive is its values, a moved shape what was moved and by
-//! how much, a boolean its operation and inputs (`cut(box(40, 20, 10), translate(cylinder(
-//! 2.5, 12), 20, 10, -1))`, as [`FakeKernel::describe`] writes it). Each is named by a hash
-//! of what made it, so the same request makes the same bytes whichever thread runs it and
-//! whenever, and a zero of either sign is the same. A primitive has the faces, edges, and
-//! vertices OCCT gives it. A move reports its elements as the kernel does (each modified
-//! into its own number, or kept by a move of nothing), and composes as the kernel's
-//! locations do: a moved shape moved again is the original moved by the sum, and a move by
-//! nothing, or back to where it was, is the shape it moved. A boolean has both inputs' elements, as if they didn't touch, and keeps
-//! them all. It answers making primitives, moving shapes, booleans, and echoes; anything
-//! else is refused as an internal error. It doesn't refuse what OCCT can't build from values
-//! the protocol's check accepts (a torus a tenth of a micrometre across whose tube reaches
-//! the axis): a test of such a refusal gives it with [`FakeKernel::refuse`].
+//! Its shapes are symbolic, and their bytes say all there is to them, as a B-rep's do: any
+//! fake kernel reads a shape any other made. A shape is the steps that made it, one to a
+//! line, each operation naming its inputs by their lines (a primitive's values, a move's
+//! offset, a boolean's two inputs), written in one canonical way, so the same request makes
+//! the same bytes on any kernel, on any thread, in any run, and a shape has one spelling.
+//! [`FakeKernel::describe`] writes a shape out as an expression: `cut(box(40, 20, 10),
+//! translate(cylinder(2.5, 12), 20, 10, -1))`.
+//!
+//! As the real kernel: a primitive has the faces, edges, and vertices OCCT gives it, and a
+//! zero of either sign is the same value; a move reports its elements as the kernel does
+//! (each modified into its own number, or kept by a move of nothing), and composes as the
+//! kernel's locations do (a moved shape moved again is the original moved by the sum, keeping
+//! the sign of a zero; a move by nothing, or back to where it was, is the shape itself). A
+//! boolean is the fake's own: it has both inputs' elements, as if they didn't touch, and
+//! keeps them all. It answers making primitives, moving shapes, booleans, and echoes;
+//! anything else is refused as an internal error.
+//!
+//! The real kernel writes some primitives (a cylinder, a cone) differently when it makes
+//! them than once it has read them back, so their bytes change once, on the first operation
+//! they pass through, even a move by nothing; the fake's never do.
+//!
+//! It doesn't refuse what OCCT can't build from values the protocol's check accepts: a torus
+//! whose tube is wider than its ring (by no more than OCCT's tolerance, which the check
+//! allows) is one OCCT may refuse, by the floating point of its revolve, and the fake builds
+//! it. A test of such a refusal gives it with [`FakeKernel::refuse`].
 //!
 //! Tests can hold requests until they're released ([`FakeKernel::hold`]), to see what runs
-//! at once or to supersede a request while it runs, and have requests refused
-//! ([`FakeKernel::refuse`]).
+//! at once or to supersede a request while it runs, and have requests refused.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::mpsc::{self, SyncSender};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -32,9 +43,12 @@ use crate::kernel::{
     Blob, BooleanOp, BuiltData, ElementCounts, ElementFate, ElementKind, ElementRef, Ends,
     Generation, History, InputHistory, Kernel, KernelRequest, Op, Primitive, Reported, ShapeData,
 };
-use crate::pool::{MAX_WORKERS, Outcome, Pending};
+use crate::pool::{MAX_WORKERS, Outcome, Pending, deliver, thread_error};
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
+
+/// What a [`Pending`] from the fake calls its kernel, should it stop first.
+const KERNEL: &str = "fake kernel";
 
 /// A request the fake kernel started: the generation it was for, and its operation.
 #[derive(Debug, Clone, PartialEq)]
@@ -77,7 +91,6 @@ struct State {
     calls: Vec<Call>,
     running: usize,
     most_running: usize,
-    shapes: BTreeMap<u128, Node>,
     holds: Vec<HoldRule>,
     refusals: Vec<Arc<Refuses>>,
 }
@@ -87,31 +100,10 @@ struct HoldRule {
     released: bool,
 }
 
-/// A shape the fake made: how, and its element counts.
-#[derive(Debug, Clone)]
-struct Node {
-    made: Made,
-    counts: ElementCounts,
-}
-
-#[derive(Debug, Clone)]
-enum Made {
-    Primitive(Primitive),
-    Translated {
-        shape: u128,
-        offset: [f64; 3],
-    },
-    Boolean {
-        op: BooleanOp,
-        base: u128,
-        tool: u128,
-    },
-}
-
 impl FakeKernel {
     /// A fake kernel running up to `size` requests at once: at least one, and at most the
-    /// pool's [`MAX_WORKERS`].
-    pub fn new(size: usize) -> Self {
+    /// pool's [`MAX_WORKERS`]. Fails as the pool does if the system can't start its threads.
+    pub fn new(size: usize) -> Result<Self, Error> {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 generation: Generation(0),
@@ -120,20 +112,26 @@ impl FakeKernel {
                 calls: Vec::new(),
                 running: 0,
                 most_running: 0,
-                shapes: BTreeMap::new(),
                 holds: Vec::new(),
                 refusals: Vec::new(),
             }),
             work: Condvar::new(),
             changed: Condvar::new(),
         });
-        let threads = (0..size.clamp(1, MAX_WORKERS))
-            .map(|_| {
-                let shared = Arc::clone(&shared);
-                std::thread::spawn(move || serve(&shared))
-            })
-            .collect();
-        Self { shared, threads }
+        let mut kernel = Self {
+            shared,
+            threads: Vec::new(),
+        };
+        for n in 0..size.clamp(1, MAX_WORKERS) {
+            let shared = Arc::clone(&kernel.shared);
+            let thread = std::thread::Builder::new()
+                .name(format!("fake-kernel-{n}"))
+                .spawn(move || serve(&shared))
+                // Dropping the kernel stops and joins the threads already started.
+                .map_err(|e| thread_error(&e))?;
+            kernel.threads.push(thread);
+        }
+        Ok(kernel)
     }
 
     /// Every request started so far, in the order they started.
@@ -147,7 +145,7 @@ impl FakeKernel {
     }
 
     /// Waits up to `timeout` until at least `count` requests are running at once: whether
-    /// they were.
+    /// they were. A request has stopped running once its outcome is sent.
     pub fn wait_running(&self, count: usize, timeout: Duration) -> bool {
         // No deadline: a timeout too long to add to now is forever.
         let deadline = Instant::now().checked_add(timeout);
@@ -168,14 +166,14 @@ impl FakeKernel {
                     .shared
                     .changed
                     .wait(state)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                    .unwrap_or_else(PoisonError::into_inner),
             };
         }
         true
     }
 
-    /// Holds every request `picks` (called with the kernel's state locked, so it mustn't
-    /// call the kernel) once it has started, until the hold is released.
+    /// Holds every request `picks` (called once for each request as it starts, with the
+    /// kernel's state locked, so it mustn't call the kernel) until the hold is released.
     pub fn hold(&self, picks: impl Fn(&Op) -> bool + Send + Sync + 'static) -> Hold {
         let mut state = lock(&self.shared.state);
         state.holds.push(HoldRule {
@@ -194,18 +192,15 @@ impl FakeKernel {
         lock(&self.shared.state).refusals.push(Arc::new(refuses));
     }
 
-    /// How the fake made `shape`, written out (`cut(box(40, 20, 10), sphere(5))`), if it
-    /// made it.
-    pub fn describe(&self, shape: &ShapeData) -> Option<String> {
-        let state = lock(&self.shared.state);
-        let mut out = String::new();
-        write_shape(&state.shapes, id_of(shape)?, &mut out).then_some(out)
+    /// How a fake kernel made `shape`, written out (`cut(box(40, 20, 10), sphere(5))`), if
+    /// it's a fake kernel's shape.
+    pub fn describe(shape: &ShapeData) -> Option<String> {
+        Made::read(shape).ok().map(|made| made.describe())
     }
 
-    /// The faces, edges, vertices, and solids of `shape`, if the fake made it.
-    pub fn counts(&self, shape: &ShapeData) -> Option<ElementCounts> {
-        let state = lock(&self.shared.state);
-        state.shapes.get(&id_of(shape)?).map(|node| node.counts)
+    /// The faces, edges, vertices, and solids of `shape`, if it's a fake kernel's shape.
+    pub fn counts(shape: &ShapeData) -> Option<ElementCounts> {
+        Made::read(shape).ok().map(|made| made.counts())
     }
 }
 
@@ -241,11 +236,12 @@ impl Kernel for FakeKernel {
         request: KernelRequest<T>,
     ) -> Pending<T> {
         let (reply, outcome) = mpsc::sync_channel(1);
-        let pending = Pending::new(request.op().name(), outcome);
+        let pending = Pending::new(request.name(), KERNEL, outcome);
         let task = Box::new(Submitted {
             generation,
             request,
             reply,
+            span: tracing::Span::current(),
         });
         let mut state = lock(&self.shared.state);
         if state.stopping {
@@ -302,9 +298,15 @@ impl Drop for Hold {
 trait Task: Send {
     fn generation(&self) -> Generation;
     fn op(&self) -> &Op;
-    /// Reads `reply` as a worker's is read, and sends the outcome: superseded, if a newer
-    /// generation has started by then.
-    fn finish(self: Box<Self>, reply: Result<Reply, Error>, shared: &Shared);
+    /// Answers the request (with `refusal`, if a rule gave one), reads the answer as a
+    /// worker's is read, in the span it was submitted in, and ends it: under the lock
+    /// `advance` takes, as the pool does, it stops counting as running and its outcome is
+    /// sent, superseded if a newer generation has started. Once `advance` returns, no result
+    /// of an older generation can still arrive.
+    fn run(self: Box<Self>, refusal: Option<Error>, shared: &Shared);
+    /// Ends a request that started without running it, under the lock, as `run` does.
+    fn stop(self: Box<Self>, shared: &Shared);
+    /// Sends [`Outcome::Superseded`] for a request that never started.
     fn supersede(self: Box<Self>);
 }
 
@@ -312,6 +314,8 @@ struct Submitted<T> {
     generation: Generation,
     request: KernelRequest<T>,
     reply: SyncSender<Outcome<T>>,
+    /// The span current where the request was submitted.
+    span: tracing::Span,
 }
 
 impl<T: Send + 'static> Task for Submitted<T> {
@@ -323,20 +327,41 @@ impl<T: Send + 'static> Task for Submitted<T> {
         self.request.op()
     }
 
-    fn finish(self: Box<Self>, reply: Result<Reply, Error>, shared: &Shared) {
-        let result = self.request.answer(reply);
-        // Decided and sent under the lock `advance` takes, as the pool does: once `advance`
-        // returns, no result of an older generation can still arrive.
+    fn run(self: Box<Self>, refusal: Option<Error>, shared: &Shared) {
+        let Submitted {
+            generation,
+            request,
+            reply,
+            span,
+        } = *self;
+        let result = span.in_scope(|| {
+            let answer = match refusal {
+                Some(error) => Err(error),
+                None => answer(request.op()),
+            };
+            request.answer(answer)
+        });
         let mut state = lock(&shared.state);
         state.running -= 1;
-        let outcome = if self.generation < state.generation {
+        let outcome = if generation < state.generation {
             Outcome::Superseded
         } else {
             Outcome::Done(result)
         };
-        // The channel holds one outcome, and this is the only one sent, so this never waits.
-        let _ = self.reply.send(outcome);
-        drop(state);
+        deliver(state, &reply, outcome);
+        shared.changed.notify_all();
+    }
+
+    fn stop(self: Box<Self>, shared: &Shared) {
+        let mut state = lock(&shared.state);
+        state.running -= 1;
+        if state.stopping {
+            // The kernel stopped: no outcome, which tells the caller so.
+            drop(state);
+            drop(self);
+        } else {
+            deliver(state, &self.reply, Outcome::Superseded);
+        }
         shared.changed.notify_all();
     }
 
@@ -359,7 +384,7 @@ fn serve(shared: &Shared) {
             state = shared
                 .work
                 .wait(state)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                .unwrap_or_else(PoisonError::into_inner);
         };
         state.running += 1;
         state.most_running = state.most_running.max(state.running);
@@ -389,16 +414,11 @@ fn serve(shared: &Shared) {
             state = shared
                 .changed
                 .wait(state)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                .unwrap_or_else(PoisonError::into_inner);
         }
         if state.stopping || task.generation() < state.generation {
-            state.running -= 1;
-            let stopping = state.stopping;
             drop(state);
-            shared.changed.notify_all();
-            if !stopping {
-                task.supersede();
-            }
+            task.stop(shared);
             continue;
         }
         let refusal = broken.or_else(|| {
@@ -407,12 +427,8 @@ fn serve(shared: &Shared) {
                     .unwrap_or_else(|| Some(rule_panicked("refusal", task.op())))
             })
         });
-        let reply = match refusal {
-            Some(error) => Err(error),
-            None => answer(&mut state.shapes, task.op()),
-        };
         drop(state);
-        task.finish(reply, shared);
+        task.run(refusal, shared);
     }
 }
 
@@ -429,31 +445,16 @@ fn rule_panicked(kind: &str, op: &Op) -> Error {
     .with_suggestion("fix the test's rule")
 }
 
-/// The fake's reply to `op`, recording the shapes it makes in `shapes`.
-fn answer(shapes: &mut BTreeMap<u128, Node>, op: &Op) -> Result<Reply, Error> {
+/// The fake's reply to `op`.
+fn answer(op: &Op) -> Result<Reply, Error> {
     match op {
-        Op::MakePrimitive(primitive) => {
-            let node = Node {
-                made: Made::Primitive(*primitive),
-                counts: primitive_counts(primitive),
-            };
-            Ok(Reply::Shape(store(shapes, node)))
-        }
+        Op::MakePrimitive(primitive) => Ok(Reply::Shape(Made::primitive(*primitive).shape())),
         Op::Translate { shape, offset } => {
-            let (id, input) = find(shapes, shape)?;
-            let counts = input.counts;
-            // As the kernel composes locations: a moved shape moved again is its original
-            // moved by the sum, and a sum of nothing is the original itself.
-            let (base, total) = match input.made {
-                Made::Translated {
-                    shape: inner,
-                    offset: before,
-                } => (inner, [0, 1, 2].map(|i| zeroed(before[i] + offset[i]))),
-                Made::Primitive(_) | Made::Boolean { .. } => (id, offset.map(zeroed)),
-            };
+            let made = Made::read(shape)?;
+            let counts = made.counts();
             // As the kernel reports a move: each element modified into its own number (a
             // moved element isn't the same sub-shape), or kept by a move of nothing.
-            let fates = if offset.iter().all(|&d| d == 0.0) {
+            let fates = if nothing(offset) {
                 kept(counts, ElementCounts::default())
             } else {
                 moved(counts)
@@ -463,44 +464,18 @@ fn answer(shapes: &mut BTreeMap<u128, Node>, op: &Op) -> Result<Reply, Error> {
                 result: counts,
                 ends: Ends::default(),
             };
-            let shape = if total.iter().all(|&d| d == 0.0) {
-                named(base)
-            } else {
-                let node = Node {
-                    made: Made::Translated {
-                        shape: base,
-                        offset: total,
-                    },
-                    counts,
-                };
-                store(shapes, node)
-            };
+            let shape = made.moved(*offset).shape();
             Ok(Reply::Built(BuiltData { shape, history }))
         }
         Op::Boolean { op, base, tool } => {
-            let (base_id, base) = find(shapes, base)?;
-            let (tool_id, tool) = find(shapes, tool)?;
-            let (a, b) = (base.counts, tool.counts);
-            let counts = ElementCounts {
-                faces: a.faces.saturating_add(b.faces),
-                edges: a.edges.saturating_add(b.edges),
-                vertices: a.vertices.saturating_add(b.vertices),
-                solids: a.solids.saturating_add(b.solids),
-            };
+            let (base, tool) = (Made::read(base)?, Made::read(tool)?);
+            let (a, b) = (base.counts(), tool.counts());
             let history = History {
                 inputs: vec![kept(a, ElementCounts::default()), kept(b, a)],
-                result: counts,
+                result: sum(a, b),
                 ends: Ends::default(),
             };
-            let node = Node {
-                made: Made::Boolean {
-                    op: *op,
-                    base: base_id,
-                    tool: tool_id,
-                },
-                counts,
-            };
-            let shape = store(shapes, node);
+            let shape = Made::boolean(*op, base, tool).shape();
             Ok(Reply::Built(BuiltData { shape, history }))
         }
         Op::Echo { data } => Ok(Reply::Echo { data: data.clone() }),
@@ -509,6 +484,20 @@ fn answer(shapes: &mut BTreeMap<u128, Node>, op: &Op) -> Result<Reply, Error> {
             format!("the fake kernel doesn't do {}", other.name()),
         )
         .with_suggestion("run this test on a real kernel worker")),
+    }
+}
+
+/// Whether a move by `offset` is a move by nothing: every component zero, of either sign.
+fn nothing(offset: &[f64; 3]) -> bool {
+    offset.iter().all(|&d| d == 0.0)
+}
+
+fn sum(a: ElementCounts, b: ElementCounts) -> ElementCounts {
+    ElementCounts {
+        faces: a.faces.saturating_add(b.faces),
+        edges: a.edges.saturating_add(b.edges),
+        vertices: a.vertices.saturating_add(b.vertices),
+        solids: a.solids.saturating_add(b.solids),
     }
 }
 
@@ -591,83 +580,256 @@ fn moved(counts: ElementCounts) -> InputHistory {
     }
 }
 
-/// The shape `shape` names, if the fake made it.
-fn find<'a>(
-    shapes: &'a BTreeMap<u128, Node>,
-    shape: &ShapeData,
-) -> Result<(u128, &'a Node), Error> {
-    id_of(shape)
-        .and_then(|id| shapes.get(&id).map(|node| (id, node)))
-        .ok_or_else(|| {
+/// The first line of a fake shape's bytes.
+const HEADER: &str = "silico fake shape 1";
+
+/// One step of making a shape: a primitive, or an operation on earlier steps, by index.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Step {
+    Primitive(Primitive),
+    Translate {
+        input: usize,
+        offset: [f64; 3],
+    },
+    Boolean {
+        op: BooleanOp,
+        base: usize,
+        tool: usize,
+    },
+}
+
+/// A fake shape: the steps that made it, the shape the last, in canonical order. Each
+/// step's inputs come just before it: a move's input is the step before it, and a boolean's
+/// base's steps come before its tool's, which end just before it. A move's input is never a
+/// move (moves compose), and no move is by nothing.
+#[derive(Debug, Clone, PartialEq)]
+struct Made(Vec<Step>);
+
+impl Made {
+    fn primitive(primitive: Primitive) -> Self {
+        Made(vec![Step::Primitive(primitive)])
+    }
+
+    /// This shape moved by `offset`, as the kernel composes locations.
+    fn moved(mut self, offset: [f64; 3]) -> Self {
+        if nothing(&offset) {
+            return self;
+        }
+        let input = self.0.len() - 1;
+        match self.0.pop() {
+            Some(Step::Translate {
+                input,
+                offset: before,
+            }) => {
+                let total = [0, 1, 2].map(|i| before[i] + offset[i]);
+                if !nothing(&total) {
+                    self.0.push(Step::Translate {
+                        input,
+                        offset: total,
+                    });
+                }
+            }
+            Some(last) => {
+                self.0.push(last);
+                self.0.push(Step::Translate { input, offset });
+            }
+            None => {}
+        }
+        self
+    }
+
+    fn boolean(op: BooleanOp, base: Made, tool: Made) -> Self {
+        let Made(mut steps) = base;
+        let shift = steps.len();
+        steps.extend(tool.0.into_iter().map(|step| match step {
+            Step::Primitive(_) => step,
+            Step::Translate { input, offset } => Step::Translate {
+                input: input + shift,
+                offset,
+            },
+            Step::Boolean { op, base, tool } => Step::Boolean {
+                op,
+                base: base + shift,
+                tool: tool + shift,
+            },
+        }));
+        let tool = steps.len() - 1;
+        steps.push(Step::Boolean {
+            op,
+            base: shift - 1,
+            tool,
+        });
+        Made(steps)
+    }
+
+    /// The shape's bytes: the header, then a line for each step.
+    fn shape(&self) -> ShapeData {
+        ShapeData::checked(Blob::inline(self.text().into_bytes()), true)
+    }
+
+    fn text(&self) -> String {
+        let mut text = format!("{HEADER}\n");
+        for step in &self.0 {
+            match step {
+                Step::Primitive(primitive) => text.push_str(&primitive_line(primitive)),
+                Step::Translate {
+                    input,
+                    offset: [x, y, z],
+                } => text.push_str(&format!("translate {input} {x} {y} {z}")),
+                Step::Boolean { op, base, tool } => {
+                    text.push_str(&format!("{} {base} {tool}", boolean_name(*op)));
+                }
+            }
+            text.push('\n');
+        }
+        text
+    }
+
+    /// The shape `shape`'s bytes say, if they're a fake shape exactly as [`shape`] writes
+    /// one.
+    ///
+    /// [`shape`]: Self::shape
+    fn read(shape: &ShapeData) -> Result<Self, Error> {
+        let refused = || {
             Error::new(
                 ErrorCode::InvalidInput,
-                "the fake kernel was given a shape it didn't make",
+                "the fake kernel was given a shape that isn't a fake kernel's",
             )
-            .with_suggestion("give the fake kernel only shapes it made")
-        })
-}
-
-/// Records `node`, and the shape that names it.
-fn store(shapes: &mut BTreeMap<u128, Node>, node: Node) -> ShapeData {
-    let id = hash(&made_key(&node.made));
-    shapes.entry(id).or_insert(node);
-    named(id)
-}
-
-/// The shape the fake names `id`: always the same bytes for it.
-fn named(id: u128) -> ShapeData {
-    ShapeData::checked(Blob::inline(format!("fake:{id:032x}").into_bytes()), true)
-}
-
-/// The ID `shape`'s bytes name, if they're exactly as [`named`] writes one.
-fn id_of(shape: &ShapeData) -> Option<u128> {
-    let hex = shape.brep().as_bytes().strip_prefix(b"fake:")?;
-    let lower_hex = |b: &u8| b.is_ascii_digit() || (b'a'..=b'f').contains(b);
-    if hex.len() != 32 || !hex.iter().all(lower_hex) {
-        return None;
+            .with_suggestion("give the fake kernel only shapes a fake kernel made")
+        };
+        let bytes = shape.brep().as_bytes();
+        let text = std::str::from_utf8(bytes).map_err(|_| refused())?;
+        let mut lines = text.strip_suffix('\n').ok_or_else(refused)?.split('\n');
+        if lines.next() != Some(HEADER) {
+            return Err(refused());
+        }
+        let mut steps = Vec::new();
+        // How many steps each step's shape is made of, to check the order is canonical.
+        let mut sizes: Vec<usize> = Vec::new();
+        for line in lines {
+            let index = steps.len();
+            let step = parse_step(line).ok_or_else(refused)?;
+            let size = match step {
+                Step::Primitive(_) => Some(1),
+                Step::Translate { input, offset } => (index > 0
+                    && input == index - 1
+                    && !nothing(&offset)
+                    && !matches!(steps.get(input), Some(Step::Translate { .. })))
+                .then(|| sizes.get(input).map(|s| s + 1))
+                .flatten(),
+                Step::Boolean { base, tool, .. } => (index > 0 && tool == index - 1)
+                    .then(|| {
+                        let tool_size = *sizes.get(tool)?;
+                        let base_size = *sizes.get(base)?;
+                        (index.checked_sub(1 + tool_size) == Some(base))
+                            .then_some(base_size + tool_size + 1)
+                    })
+                    .flatten(),
+            };
+            sizes.push(size.ok_or_else(refused)?);
+            steps.push(step);
+        }
+        let made = Made(steps);
+        // One shape, every step part of it, and every number as `text` writes it.
+        if sizes.last() != Some(&made.0.len()) || made.text().as_bytes() != bytes {
+            return Err(refused());
+        }
+        Ok(made)
     }
-    u128::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()
+
+    fn counts(&self) -> ElementCounts {
+        let mut counts: Vec<ElementCounts> = Vec::with_capacity(self.0.len());
+        for step in &self.0 {
+            let of = |i: usize| counts.get(i).copied().unwrap_or_default();
+            let made = match step {
+                Step::Primitive(primitive) => primitive_counts(primitive),
+                Step::Translate { input, .. } => of(*input),
+                Step::Boolean { base, tool, .. } => sum(of(*base), of(*tool)),
+            };
+            counts.push(made);
+        }
+        counts.last().copied().unwrap_or_default()
+    }
+
+    /// The shape as an expression. Written from the last step down, with a stack, so a long
+    /// chain of booleans can't overflow the thread's.
+    fn describe(&self) -> String {
+        enum Part {
+            Step(usize),
+            Text(String),
+        }
+        let mut out = String::new();
+        let mut parts = vec![Part::Step(self.0.len().saturating_sub(1))];
+        while let Some(part) = parts.pop() {
+            match part {
+                Part::Text(text) => out.push_str(&text),
+                Part::Step(index) => match self.0.get(index) {
+                    Some(Step::Primitive(primitive)) => out.push_str(&primitive_text(primitive)),
+                    Some(Step::Translate {
+                        input,
+                        offset: [x, y, z],
+                    }) => {
+                        out.push_str("translate(");
+                        parts.push(Part::Text(format!(", {x}, {y}, {z})")));
+                        parts.push(Part::Step(*input));
+                    }
+                    Some(Step::Boolean { op, base, tool }) => {
+                        out.push_str(boolean_name(*op));
+                        out.push('(');
+                        parts.push(Part::Text(")".to_owned()));
+                        parts.push(Part::Step(*tool));
+                        parts.push(Part::Text(", ".to_owned()));
+                        parts.push(Part::Step(*base));
+                    }
+                    None => {}
+                },
+            }
+        }
+        out
+    }
 }
 
-/// `value`, with a zero of either sign as 0: the kernel writes -0 as 0, so a shape's bytes
-/// don't depend on the sign of a zero.
+/// `value`, with a zero of either sign as 0: the kernel makes a primitive the same whatever
+/// the sign of a zero in its values.
 fn zeroed(value: f64) -> f64 {
     if value == 0.0 { 0.0 } else { value }
 }
 
-/// What made a shape, as text naming its inputs by their IDs: what its ID is a hash of.
-/// Numbers are written as Rust writes them, which reads back as the same number.
-fn made_key(made: &Made) -> String {
-    match made {
-        Made::Primitive(primitive) => primitive_text(primitive),
-        Made::Translated { shape, offset } => {
-            let [x, y, z] = offset;
-            format!("translate({shape:032x}, {x}, {y}, {z})")
-        }
-        Made::Boolean { op, base, tool } => {
-            format!("{}({base:032x}, {tool:032x})", boolean_name(*op))
-        }
-    }
-}
-
-fn primitive_text(primitive: &Primitive) -> String {
-    let z = zeroed;
-    match *primitive {
-        Primitive::Box { dx, dy, dz } => format!("box({}, {}, {})", z(dx), z(dy), z(dz)),
-        Primitive::Cylinder { radius, height } => {
-            format!("cylinder({}, {})", z(radius), z(height))
-        }
-        Primitive::Sphere { radius } => format!("sphere({})", z(radius)),
+/// A primitive's name and values, as `[name, values...]`, its zeros unsigned.
+fn primitive_parts(primitive: &Primitive) -> (&'static str, Vec<f64>) {
+    let (name, values) = match *primitive {
+        Primitive::Box { dx, dy, dz } => ("box", vec![dx, dy, dz]),
+        Primitive::Cylinder { radius, height } => ("cylinder", vec![radius, height]),
+        Primitive::Sphere { radius } => ("sphere", vec![radius]),
         Primitive::Cone {
             radius1,
             radius2,
             height,
-        } => format!("cone({}, {}, {})", z(radius1), z(radius2), z(height)),
+        } => ("cone", vec![radius1, radius2, height]),
         Primitive::Torus {
             major_radius,
             minor_radius,
-        } => format!("torus({}, {})", z(major_radius), z(minor_radius)),
+        } => ("torus", vec![major_radius, minor_radius]),
+    };
+    (name, values.into_iter().map(zeroed).collect())
+}
+
+/// A primitive as a line of a shape's bytes: `box 40 20 10`. Numbers are written as Rust
+/// writes them, which reads back as the same number.
+fn primitive_line(primitive: &Primitive) -> String {
+    let (name, values) = primitive_parts(primitive);
+    let mut line = name.to_owned();
+    for value in values {
+        line.push_str(&format!(" {value}"));
     }
+    line
+}
+
+/// A primitive in an expression: `box(40, 20, 10)`.
+fn primitive_text(primitive: &Primitive) -> String {
+    let (name, values) = primitive_parts(primitive);
+    let values: Vec<String> = values.iter().map(f64::to_string).collect();
+    format!("{name}({})", values.join(", "))
 }
 
 fn boolean_name(op: BooleanOp) -> &'static str {
@@ -678,50 +840,44 @@ fn boolean_name(op: BooleanOp) -> &'static str {
     }
 }
 
-/// Writes shape `id` out in full into `out`: whether the fake has it and every shape it was
-/// made from. Iterative, so a long chain of booleans can't overflow the stack.
-fn write_shape(shapes: &BTreeMap<u128, Node>, id: u128, out: &mut String) -> bool {
-    enum Step {
-        Shape(u128),
-        Text(String),
-    }
-    let mut steps = vec![Step::Shape(id)];
-    while let Some(step) = steps.pop() {
-        match step {
-            Step::Text(text) => out.push_str(&text),
-            Step::Shape(id) => {
-                let Some(node) = shapes.get(&id) else {
-                    return false;
-                };
-                match &node.made {
-                    Made::Primitive(primitive) => out.push_str(&primitive_text(primitive)),
-                    Made::Translated { shape, offset } => {
-                        let [x, y, z] = offset;
-                        out.push_str("translate(");
-                        steps.push(Step::Text(format!(", {x}, {y}, {z})")));
-                        steps.push(Step::Shape(*shape));
-                    }
-                    Made::Boolean { op, base, tool } => {
-                        out.push_str(boolean_name(*op));
-                        out.push('(');
-                        steps.push(Step::Text(")".to_owned()));
-                        steps.push(Step::Shape(*tool));
-                        steps.push(Step::Text(", ".to_owned()));
-                        steps.push(Step::Shape(*base));
-                    }
-                }
-            }
-        }
-    }
-    true
-}
-
-/// FNV-1a, 128 bits: a stable hash, the same on every platform and in every run.
-fn hash(text: &str) -> u128 {
-    const OFFSET: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
-    const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
-    text.bytes().fold(OFFSET, |hash, byte| {
-        (hash ^ u128::from(byte)).wrapping_mul(PRIME)
+/// The step a line of a shape's bytes says, if it's one. Whether it's written canonically
+/// is [`Made::read`]'s to check.
+fn parse_step(line: &str) -> Option<Step> {
+    let mut words = line.split(' ');
+    let name = words.next()?;
+    let words: Vec<&str> = words.collect();
+    let number = |w: &str| w.parse::<f64>().ok().filter(|v| v.is_finite());
+    let numbers = || -> Option<Vec<f64>> { words.iter().map(|w| number(w)).collect() };
+    let index = |w: &str| w.parse::<usize>().ok();
+    Some(match (name, words.as_slice()) {
+        ("translate", [input, x, y, z]) => Step::Translate {
+            input: index(input)?,
+            offset: [number(x)?, number(y)?, number(z)?],
+        },
+        ("fuse" | "cut" | "common", [base, tool]) => Step::Boolean {
+            op: match name {
+                "fuse" => BooleanOp::Fuse,
+                "cut" => BooleanOp::Cut,
+                _ => BooleanOp::Common,
+            },
+            base: index(base)?,
+            tool: index(tool)?,
+        },
+        _ => Step::Primitive(match (name, numbers()?.as_slice()) {
+            ("box", &[dx, dy, dz]) => Primitive::Box { dx, dy, dz },
+            ("cylinder", &[radius, height]) => Primitive::Cylinder { radius, height },
+            ("sphere", &[radius]) => Primitive::Sphere { radius },
+            ("cone", &[radius1, radius2, height]) => Primitive::Cone {
+                radius1,
+                radius2,
+                height,
+            },
+            ("torus", &[major_radius, minor_radius]) => Primitive::Torus {
+                major_radius,
+                minor_radius,
+            },
+            _ => return None,
+        }),
     })
 }
 
@@ -730,36 +886,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_deep_chain_of_booleans_is_written_without_overflowing_the_stack() {
+    fn a_deep_chain_of_booleans_is_read_and_described_without_overflowing_the_stack() {
         // Built directly: through the kernel, each boolean's history lists its base's
         // elements, so a chain this deep would take quadratic time to make.
-        let mut shapes = BTreeMap::new();
-        let unit = Node {
-            made: Made::Primitive(Primitive::Sphere { radius: 1.0 }),
-            counts: ElementCounts::default(),
-        };
-        let mut id = hash(&made_key(&unit.made));
-        shapes.insert(id, unit);
-        let leaf = id;
-        let depth = 200_000;
+        let unit = Made::primitive(Primitive::Sphere { radius: 1.0 });
+        let depth = 100_000;
+        let mut steps = unit.0.clone();
         for _ in 0..depth {
-            let made = Made::Boolean {
+            let base = steps.len() - 1;
+            steps.push(Step::Primitive(Primitive::Sphere { radius: 1.0 }));
+            steps.push(Step::Boolean {
                 op: BooleanOp::Fuse,
-                base: id,
-                tool: leaf,
-            };
-            id = hash(&made_key(&made));
-            shapes.insert(
-                id,
-                Node {
-                    made,
-                    counts: ElementCounts::default(),
-                },
-            );
+                base,
+                tool: base + 1,
+            });
         }
-        let mut out = String::new();
-        assert!(write_shape(&shapes, id, &mut out));
-        assert!(out.starts_with("fuse(fuse(fuse("));
-        assert_eq!(out.matches("sphere(1)").count(), depth + 1);
+        let made = Made(steps);
+        let read = Made::read(&made.shape()).unwrap();
+        assert_eq!(read, made);
+        let text = read.describe();
+        assert!(text.starts_with("fuse(fuse(fuse("));
+        assert_eq!(text.matches("sphere(1)").count(), depth + 1);
     }
 }

@@ -66,20 +66,20 @@ fn counts(faces: u32, edges: u32, vertices: u32, solids: u32) -> ElementCounts {
 
 #[test]
 fn a_part_is_built_symbolically_and_described_as_built() {
-    let kernel = FakeKernel::new(2);
+    let kernel = FakeKernel::new(2).unwrap();
     let hole = holed_block(&kernel);
     assert_eq!(
-        kernel.describe(&hole.shape).as_deref(),
+        FakeKernel::describe(&hole.shape).as_deref(),
         Some("cut(box(40, 20, 10), translate(cylinder(2.5, 12), 20, 10, -1))")
     );
     assert_eq!(hole.shape.valid(), Some(true));
     // A box's 6, 12, 8 and a cylinder's 3, 3, 2, side by side.
-    assert_eq!(kernel.counts(&hole.shape), Some(counts(9, 15, 10, 2)));
+    assert_eq!(FakeKernel::counts(&hole.shape), Some(counts(9, 15, 10, 2)));
 }
 
 #[test]
 fn each_primitive_has_occts_element_counts() {
-    let kernel = FakeKernel::new(1);
+    let kernel = FakeKernel::new(1).unwrap();
     let cases = [
         (block(1.0, 2.0, 3.0), counts(6, 12, 8, 1)),
         (
@@ -116,13 +116,13 @@ fn each_primitive_has_occts_element_counts() {
     ];
     for (primitive, expected) in cases {
         let shape = run(&kernel, KernelRequest::make(primitive).unwrap());
-        assert_eq!(kernel.counts(&shape), Some(expected), "{primitive:?}");
+        assert_eq!(FakeKernel::counts(&shape), Some(expected), "{primitive:?}");
     }
 }
 
 #[test]
 fn a_move_reports_each_element_modified_into_its_own_number_or_kept_by_nothing() {
-    let kernel = FakeKernel::new(1);
+    let kernel = FakeKernel::new(1).unwrap();
     let shape = run(&kernel, KernelRequest::make(block(1.0, 1.0, 1.0)).unwrap());
     let moved = run(
         &kernel,
@@ -156,7 +156,7 @@ fn a_move_reports_each_element_modified_into_its_own_number_or_kept_by_nothing()
 
 #[test]
 fn a_boolean_keeps_the_base_then_numbers_the_tools_elements_after_it() {
-    let kernel = FakeKernel::new(1);
+    let kernel = FakeKernel::new(1).unwrap();
     let hole = holed_block(&kernel);
     let [base, tool] = &hole.history.inputs[..] else {
         panic!("{:?}", hole.history)
@@ -170,8 +170,8 @@ fn a_boolean_keeps_the_base_then_numbers_the_tools_elements_after_it() {
 
 #[test]
 fn the_same_request_makes_the_same_bytes_on_any_fake_kernel() {
-    let one = FakeKernel::new(1);
-    let other = FakeKernel::new(4);
+    let one = FakeKernel::new(1).unwrap();
+    let other = FakeKernel::new(4).unwrap();
     let a = holed_block(&one);
     let b = holed_block(&other);
     assert_eq!(a.shape, b.shape);
@@ -186,7 +186,7 @@ fn the_same_request_makes_the_same_bytes_on_any_fake_kernel() {
 
 #[test]
 fn every_call_is_recorded_with_its_generation_and_operation() {
-    let kernel = FakeKernel::new(1);
+    let kernel = FakeKernel::new(1).unwrap();
     kernel.advance(Generation(3));
     holed_block(&kernel);
     let calls = kernel.calls();
@@ -205,7 +205,7 @@ fn every_call_is_recorded_with_its_generation_and_operation() {
 
 #[test]
 fn a_value_the_request_refuses_never_reaches_the_kernel() {
-    let kernel = FakeKernel::new(1);
+    let kernel = FakeKernel::new(1).unwrap();
     let error = KernelRequest::make(block(0.0, 1.0, 1.0)).err().unwrap();
     assert_eq!(error.code(), ErrorCode::InvalidInput);
     assert!(kernel.calls().is_empty());
@@ -213,7 +213,7 @@ fn a_value_the_request_refuses_never_reaches_the_kernel() {
 
 #[test]
 fn a_newer_generation_supersedes_requests_waiting_and_held() {
-    let kernel = FakeKernel::new(1);
+    let kernel = FakeKernel::new(1).unwrap();
     let hold = kernel.hold(|_| true);
     let first = kernel.submit(
         Generation(0),
@@ -239,21 +239,34 @@ fn a_newer_generation_supersedes_requests_waiting_and_held() {
 }
 
 #[test]
-fn a_result_finished_after_its_generation_is_superseded_is_discarded() {
-    let kernel = FakeKernel::new(1);
-    // Superseding a held request stops it, so finish it first: refuse nothing, but let the
-    // generation advance between its start and its reply by holding the next request.
-    let hold = kernel.hold(|op| matches!(op, Op::Echo { .. }));
-    let running = kernel.submit(Generation(0), KernelRequest::echo(Blob::inline(vec![])));
+fn a_held_request_superseded_ends_before_it_stops_counting_as_running() {
+    let kernel = FakeKernel::new(1).unwrap();
+    let _hold = kernel.hold(|_| true);
+    let held = kernel.submit(Generation(0), KernelRequest::echo(Blob::inline(vec![])));
     assert!(kernel.wait_running(1, WAIT));
     kernel.advance(Generation(1));
+    // Once it isn't running, its outcome has been sent: no wait for it.
+    while kernel.wait_running(1, Duration::ZERO) {}
+    assert!(matches!(held.try_take(), Ok(Outcome::Superseded)));
+    assert!(!kernel.wait_running(1, Duration::from_millis(100)));
+}
+
+#[test]
+fn a_request_queued_for_the_generation_advance_starts_survives_it() {
+    let kernel = FakeKernel::new(1).unwrap();
+    let hold = kernel.hold(|op| matches!(op, Op::Echo { data } if data.as_bytes() == [0]));
+    let blocker = kernel.submit(Generation(1), KernelRequest::echo(Blob::inline(vec![0])));
+    assert!(kernel.wait_running(1, WAIT));
+    let queued = kernel.submit(Generation(1), KernelRequest::echo(Blob::inline(vec![1])));
+    kernel.advance(Generation(1));
     hold.release();
-    assert!(matches!(running.wait(), Outcome::Superseded));
+    assert_eq!(done(blocker.wait()), Blob::inline(vec![0]));
+    assert_eq!(done(queued.wait()), Blob::inline(vec![1]));
 }
 
 #[test]
 fn requests_run_at_once_up_to_the_kernels_size() {
-    let kernel = FakeKernel::new(2);
+    let kernel = FakeKernel::new(2).unwrap();
     let hold = kernel.hold(|_| true);
     let pending: Vec<_> = (1..=3)
         .map(|n| {
@@ -274,7 +287,7 @@ fn requests_run_at_once_up_to_the_kernels_size() {
 
 #[test]
 fn a_refused_request_comes_back_with_the_error_given() {
-    let kernel = FakeKernel::new(1);
+    let kernel = FakeKernel::new(1).unwrap();
     kernel.refuse(|op| {
         matches!(op, Op::MakePrimitive(Primitive::Sphere { .. })).then(|| {
             silico_core::Error::new(ErrorCode::KernelFailed, "MakeSphere failed")
@@ -298,7 +311,7 @@ fn a_refused_request_comes_back_with_the_error_given() {
 
 #[test]
 fn an_operation_the_fake_doesnt_do_is_an_internal_error() {
-    let kernel = FakeKernel::new(1);
+    let kernel = FakeKernel::new(1).unwrap();
     let shape = run(&kernel, KernelRequest::make(block(1.0, 1.0, 1.0)).unwrap());
     let outcome = kernel
         .submit(Generation(0), KernelRequest::summarize(&shape))
@@ -311,31 +324,51 @@ fn an_operation_the_fake_doesnt_do_is_an_internal_error() {
 }
 
 #[test]
-fn a_shape_the_fake_didnt_make_is_refused() {
-    let kernel = FakeKernel::new(1);
-    let other = FakeKernel::new(1);
-    let foreign = run(&other, KernelRequest::make(block(1.0, 1.0, 1.0)).unwrap());
-    for shape in [
-        foreign,
-        ShapeData::checked(Blob::inline(b"not a shape".to_vec()), true),
-    ] {
-        let outcome = kernel
-            .submit(
-                Generation(0),
-                KernelRequest::translate(&shape, [1.0, 0.0, 0.0]).unwrap(),
-            )
-            .wait();
-        let Outcome::Done(Err(error)) = outcome else {
-            panic!("{outcome:?}")
-        };
-        assert_eq!(error.code(), ErrorCode::InvalidInput);
-        assert_eq!(kernel.describe(&shape), None);
-    }
+fn a_shape_one_fake_kernel_made_is_read_by_another_as_a_worker_reads_any_brep() {
+    let first = FakeKernel::new(1).unwrap();
+    let made = run(&first, KernelRequest::make(block(1.0, 1.0, 1.0)).unwrap());
+    drop(first);
+    let second = FakeKernel::new(1).unwrap();
+    let moved = run(
+        &second,
+        KernelRequest::translate(&made, [1.0, 0.0, 0.0]).unwrap(),
+    );
+    assert_eq!(
+        FakeKernel::describe(&moved.shape).as_deref(),
+        Some("translate(box(1, 1, 1), 1, 0, 0)")
+    );
+}
+
+#[test]
+fn a_shape_whose_bytes_are_another_kernels_is_refused() {
+    let kernel = FakeKernel::new(1).unwrap();
+    let shape = ShapeData::checked(Blob::inline(b"not a shape".to_vec()), true);
+    let outcome = kernel
+        .submit(
+            Generation(0),
+            KernelRequest::translate(&shape, [1.0, 0.0, 0.0]).unwrap(),
+        )
+        .wait();
+    let Outcome::Done(Err(error)) = outcome else {
+        panic!("{outcome:?}")
+    };
+    assert_eq!(error.code(), ErrorCode::InvalidInput);
+    assert_eq!(FakeKernel::describe(&shape), None);
+}
+
+#[test]
+fn a_shapes_bytes_are_its_steps_one_to_a_line() {
+    let kernel = FakeKernel::new(1).unwrap();
+    let hole = holed_block(&kernel);
+    assert_eq!(
+        std::str::from_utf8(hole.shape.brep().as_bytes()).unwrap(),
+        "silico fake shape 1\nbox 40 20 10\ncylinder 2.5 12\ntranslate 1 20 10 -1\ncut 0 2\n"
+    );
 }
 
 #[test]
 fn dropping_the_kernel_ends_requests_waiting_and_held() {
-    let kernel = FakeKernel::new(1);
+    let kernel = FakeKernel::new(1).unwrap();
     let hold = kernel.hold(|_| true);
     let held = kernel.submit(Generation(0), KernelRequest::echo(Blob::inline(vec![])));
     assert!(kernel.wait_running(1, WAIT));
@@ -352,7 +385,7 @@ fn dropping_the_kernel_ends_requests_waiting_and_held() {
 
 #[test]
 fn moves_compose_as_the_kernels_locations_do() {
-    let kernel = FakeKernel::new(1);
+    let kernel = FakeKernel::new(1).unwrap();
     let unit = run(&kernel, KernelRequest::make(block(1.0, 1.0, 1.0)).unwrap());
     let moved = |shape: &ShapeData, offset| {
         run(&kernel, KernelRequest::translate(shape, offset).unwrap()).shape
@@ -370,7 +403,7 @@ fn moves_compose_as_the_kernels_locations_do() {
         shape = moved(&shape, [1.0, 0.0, 0.0]);
     }
     assert_eq!(
-        kernel.describe(&shape).as_deref(),
+        FakeKernel::describe(&shape).as_deref(),
         Some("translate(box(1, 1, 1), 10000, 0, 0)")
     );
 }

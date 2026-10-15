@@ -58,7 +58,7 @@ const ABOVE_TOLERANCE: f64 = 1.0000000000000002e-7;
 #[test]
 fn a_negative_zero_radius_makes_the_same_bytes_as_zero_on_both_kernels() {
     let real = pool();
-    let fake = FakeKernel::new(1);
+    let fake = FakeKernel::new(1).unwrap();
     let cone = |radius1: f64| Primitive::Cone {
         radius1,
         radius2: 3.0,
@@ -79,7 +79,7 @@ fn a_negative_zero_radius_makes_the_same_bytes_as_zero_on_both_kernels() {
 #[test]
 fn a_move_by_nothing_is_its_input_on_both_kernels() {
     let real = pool();
-    let fake = FakeKernel::new(1);
+    let fake = FakeKernel::new(1).unwrap();
     let block = Primitive::Box {
         dx: 1.0,
         dy: 2.0,
@@ -114,25 +114,50 @@ impl<K: Kernel> Run for K {
 }
 
 #[test]
-fn a_move_and_its_inverse_compared_on_both_kernels() {
-    // Recorded, not asserted for the fake (its shapes are what made them, by design): the
-    // real kernel gives back the original bytes; see the report's spec question.
+fn a_move_and_its_inverse_is_the_shape_itself_on_both_kernels() {
     let real = pool();
+    let fake = FakeKernel::new(1).unwrap();
     let block = Primitive::Box {
         dx: 1.0,
         dy: 2.0,
         dz: 3.0,
     };
-    let shape = real.make(block);
-    let there = real.translate(&shape, [1.0, 0.0, 0.0]);
-    let back = real.translate(&there.shape, [-1.0, 0.0, 0.0]);
-    assert_eq!(back.shape.brep(), shape.brep(), "the real kernel's bytes");
+    for (name, kernel) in [("real", &real as &dyn Run), ("fake", &fake as &dyn Run)] {
+        let shape = kernel.make(block);
+        let there = kernel.translate(&shape, [1.0, 0.0, 0.0]);
+        let back = kernel.translate(&there.shape, [-1.0, 0.0, 0.0]);
+        assert_eq!(back.shape.brep(), shape.brep(), "{name}");
+    }
+}
+
+#[test]
+fn a_move_with_a_signed_zero_is_its_own_shape_on_both_kernels() {
+    // Only a move by nothing at all ignores the sign of its zeros: the kernel keeps a
+    // location's -0, so (-0, 1, 0) and (0, 1, 0) are different shapes on both.
+    let real = pool();
+    let fake = FakeKernel::new(1).unwrap();
+    let block = Primitive::Box {
+        dx: 1.0,
+        dy: 2.0,
+        dz: 3.0,
+    };
+    for (signed, plain) in [
+        ([-0.0, 1.0, 0.0], [0.0, 1.0, 0.0]),
+        ([1.0, -0.0, -0.0], [1.0, 0.0, 0.0]),
+    ] {
+        for (name, kernel) in [("real", &real as &dyn Run), ("fake", &fake as &dyn Run)] {
+            let shape = kernel.make(block);
+            let a = kernel.translate(&shape, signed).shape;
+            let b = kernel.translate(&shape, plain).shape;
+            assert_ne!(a.brep(), b.brep(), "{name}: {signed:?} against {plain:?}");
+        }
+    }
 }
 
 #[test]
 fn shapes_made_are_checked_valid_on_both_kernels() {
     let real = pool();
-    let fake = FakeKernel::new(1);
+    let fake = FakeKernel::new(1).unwrap();
     let block = Primitive::Box {
         dx: 1.0,
         dy: 2.0,
@@ -225,9 +250,11 @@ fn offset_part() -> impl Strategy<Value = f64> {
     ]
 }
 
-/// Every primitive both kernels make has the same counts on each, every one the real
-/// kernel refuses the fake refuses too, and a move of it (and a move of that) reports the
-/// same history on each.
+/// Every primitive both kernels make has the same counts on each; every one the real kernel
+/// refuses, the fake refuses too, but for the documented difference ([`tube_wider`]); a
+/// move of it, and a move of that, reports the same history on each; and which of those are
+/// the same shape (moved against unmoved, moved twice against moved once by the sum) is the
+/// same on each.
 #[test]
 fn the_fake_answers_as_the_real_kernel_does_at_the_edges() {
     // The strategy is deep enough to overflow a test thread's stack in a debug build.
@@ -241,7 +268,7 @@ fn the_fake_answers_as_the_real_kernel_does_at_the_edges() {
 
 fn compare_at_the_edges() {
     let real = pool();
-    let fake = FakeKernel::new(2);
+    let fake = FakeKernel::new(2).unwrap();
     let mut runner = TestRunner::new(Config {
         cases: 2000,
         failure_persistence: None,
@@ -261,9 +288,9 @@ fn compare_at_the_edges() {
                 let (real_shape, fake_shape) = match (real_shape, fake_shape) {
                     (Ok(r), Ok(f)) => (r, f),
                     (Err(_), Err(_)) => return Ok(()),
-                    // The fake doesn't model OCCT's refusals: those are
-                    // `a_torus_the_real_kernel_refuses_is_refused_by_the_fake`'s.
-                    (Err(_), Ok(_)) => return Ok(()),
+                    // The fake's documented difference: see
+                    // `a_torus_with_a_tube_wider_than_its_ring_is_a_known_difference`.
+                    (Err(_), Ok(_)) if tube_wider(&primitive) => return Ok(()),
                     (r, f) => {
                         return Err(TestCaseError::fail(format!(
                             "{primitive:?}: real {:?}, fake {:?}",
@@ -272,10 +299,15 @@ fn compare_at_the_edges() {
                         )));
                     }
                 };
+                // The real kernel writes some primitives (a cylinder, a cone) differently when
+                // it makes them than once it has read them back, so a shape's bytes settle
+                // after its first pass through an operation (a move by nothing); compare which
+                // shapes are the same from there.
+                let real_shape = translate(&real, &real_shape, [0.0; 3]).unwrap().shape;
                 let summary: ShapeSummary =
                     result(real.submit(real.generation(), KernelRequest::summarize(&real_shape)))
                         .unwrap();
-                let counts = fake.counts(&fake_shape).unwrap();
+                let counts = FakeKernel::counts(&fake_shape).unwrap();
                 prop_assert_eq!(
                     (counts.faces, counts.edges, counts.vertices),
                     (summary.faces, summary.edges, summary.vertices),
@@ -301,6 +333,41 @@ fn compare_at_the_edges() {
                     first,
                     second
                 );
+                // Which shapes are the same shape, on each: moved against unmoved, and
+                // moved twice against moved once by the sum, where that's a move the
+                // protocol allows.
+                let same = |what: &str, real_pair: [&ShapeData; 2], fake_pair: [&ShapeData; 2]| {
+                    prop_assert_eq!(
+                        fake_pair[0] == fake_pair[1],
+                        real_pair[0].brep() == real_pair[1].brep(),
+                        "{}: {:?} by {:?} then {:?}",
+                        what,
+                        primitive,
+                        first,
+                        second
+                    );
+                    Ok(())
+                };
+                same(
+                    "moved",
+                    [&real_moved.shape, &real_shape],
+                    [&fake_moved.shape, &fake_shape],
+                )?;
+                same(
+                    "again",
+                    [&real_again.shape, &real_shape],
+                    [&fake_again.shape, &fake_shape],
+                )?;
+                let sum = [0, 1, 2].map(|i| first[i] + second[i]);
+                if silico_protocol::check_offset(sum).is_ok() {
+                    let real_once = translate(&real, &real_shape, sum).unwrap().shape;
+                    let fake_once = translate(&fake, &fake_shape, sum).unwrap().shape;
+                    same(
+                        "again, once",
+                        [&real_again.shape, &real_once],
+                        [&fake_again.shape, &fake_once],
+                    )?;
+                }
                 Ok(())
             },
         )
@@ -339,32 +406,59 @@ fn script<K: Kernel>(kernel: &K) -> Vec<&'static str> {
 #[test]
 fn both_kernels_keep_the_same_generation_rules() {
     let real = pool();
-    let fake = FakeKernel::new(2);
+    let fake = FakeKernel::new(2).unwrap();
     let expected = ["superseded", "done", "done", "done", "superseded", "done"];
     assert_eq!(script(&real), expected, "the pool");
     assert_eq!(script(&fake), expected, "the fake");
     assert_eq!(real.generation(), fake.generation());
 }
 
-// Once a break, now a documented difference (fake.rs, the module's doc): `Primitive::check`
-// lets a torus's tube be up to 1e-7 wider than its ring, so a ring of just over 1e-7 with a
-// tube twice that passes, and the real kernel refuses it (KernelFailed, "MakeTorus failed",
-// StdFail_NotDone), from inside OCCT's revolve, with no rule the fake could copy. The fake
-// makes it; a test of that refusal gives it with `FakeKernel::refuse`. Pinned both ways, so
-// a change on either side is seen.
+/// A torus whose tube is wider than its ring, by no more than OCCT's tolerance, which the
+/// protocol's check allows: OCCT may refuse it, by the floating point of its revolve, with
+/// no rule the fake could copy, and the fake builds it (fake.rs, the module's doc).
+fn tube_wider(primitive: &Primitive) -> bool {
+    matches!(primitive, Primitive::Torus { major_radius, minor_radius } if minor_radius > major_radius)
+}
+
+// Once a break, now a documented difference: the real kernel refuses some tori whose tube is
+// wider than their ring (KernelFailed, "MakeTorus failed", StdFail_NotDone), tiny and full
+// size alike, and builds others; the fake builds them all. A test of that refusal gives it
+// with `FakeKernel::refuse`. Pinned both ways, so a change on either side is seen.
 #[test]
-fn a_torus_the_real_kernel_refuses_is_a_known_difference() {
+fn a_torus_with_a_tube_wider_than_its_ring_is_a_known_difference() {
     let real = pool();
-    let fake = FakeKernel::new(1);
-    let torus = Primitive::Torus {
-        major_radius: ABOVE_TOLERANCE,
-        minor_radius: 2.0000000000000002e-7,
+    let fake = FakeKernel::new(1).unwrap();
+    let refused = [
+        (ABOVE_TOLERANCE, 2.0000000000000002e-7),
+        (15.264435234694666, 15.264435334694666),
+    ];
+    for (major_radius, minor_radius) in refused {
+        let torus = Primitive::Torus {
+            major_radius,
+            minor_radius,
+        };
+        assert!(torus.check().is_ok() && tube_wider(&torus));
+        let real_error = make(&real, torus).unwrap_err();
+        assert_eq!(
+            real_error.code(),
+            silico_core::ErrorCode::KernelFailed,
+            "{torus:?}"
+        );
+        assert!(make(&fake, torus).is_ok(), "{torus:?}");
+    }
+    // And one the real kernel builds.
+    let built = Primitive::Torus {
+        major_radius: 50.0,
+        minor_radius: 50.0 + 5e-8,
     };
-    assert!(torus.check().is_ok());
-    let real_error = make(&real, torus).unwrap_err();
-    assert_eq!(real_error.code(), silico_core::ErrorCode::KernelFailed);
-    assert!(make(&fake, torus).is_ok());
+    assert!(tube_wider(&built));
+    assert!(make(&real, built).is_ok());
+    assert!(make(&fake, built).is_ok());
     // Refused on request, as the real kernel refuses it.
+    let torus = Primitive::Torus {
+        major_radius: refused[1].0,
+        minor_radius: refused[1].1,
+    };
     fake.refuse(move |op| {
         (*op == Op::MakePrimitive(torus)).then(|| {
             silico_core::Error::new(silico_core::ErrorCode::KernelFailed, "MakeTorus failed")
@@ -376,43 +470,6 @@ fn a_torus_the_real_kernel_refuses_is_a_known_difference() {
     );
 }
 
-/// The pool's half of silico-core's
-/// `no_result_of_an_older_generation_arrives_after_advance_returns`, which once failed on
-/// the fake: the same race, run on the pool, which decides and sends under the lock `advance`
-/// takes. Once `advance` has returned with no outcome in the channel, the outcome is
-/// `Superseded`.
-#[test]
-fn on_the_pool_no_result_of_an_older_generation_arrives_after_advance_returns() {
-    let real = KernelPool::start_workers(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")), 1)
-        .unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    let mut generation = 0u64;
-    let mut spin = 0u32;
-    let mut late = None;
-    while std::time::Instant::now() < deadline && late.is_none() {
-        let pending = real.submit(
-            Generation(generation),
-            KernelRequest::echo(Blob::inline(vec![])),
-        );
-        spin = (spin + 37) % 40_000;
-        for _ in 0..spin {
-            std::hint::spin_loop();
-        }
-        generation += 1;
-        real.advance(Generation(generation));
-        if let Err(pending) = pending.try_take()
-            && let Outcome::Done(_) = outcome(pending)
-        {
-            late = Some(generation - 1);
-        }
-    }
-    assert!(
-        generation > 100,
-        "too few rounds to mean anything: {generation}"
-    );
-    assert_eq!(late, None);
-}
-
 // Once (found by the property test above): the fake counted a cone with a top radius of
 // zero as an apex (2 faces) and any other as a frustum (3 faces). OCCT decides by the
 // geometry, not by zero: a cone whose small radius is just over 1e-7 (allowed by
@@ -421,7 +478,7 @@ fn on_the_pool_no_result_of_an_older_generation_arrives_after_advance_returns() 
 #[test]
 fn a_cone_with_a_small_radius_just_above_tolerance_has_the_real_kernels_counts() {
     let real = pool();
-    let fake = FakeKernel::new(1);
+    let fake = FakeKernel::new(1).unwrap();
     let mut mismatches = Vec::new();
     for small in [ABOVE_TOLERANCE, 1.5e-7, 2e-7, 1e-6, 1e-5] {
         for height in [ABOVE_TOLERANCE, 1e-6, 1e-3, 1.0, 1e3] {
@@ -448,7 +505,7 @@ fn a_cone_with_a_small_radius_just_above_tolerance_has_the_real_kernels_counts()
                         real.submit(real.generation(), KernelRequest::summarize(&real_shape)),
                     )
                     .unwrap();
-                    let counts = fake.counts(&fake.make(cone)).unwrap();
+                    let counts = FakeKernel::counts(&fake.make(cone)).unwrap();
                     let real_counts = (summary.faces, summary.edges, summary.vertices);
                     let fake_counts = (counts.faces, counts.edges, counts.vertices);
                     if real_counts != fake_counts {

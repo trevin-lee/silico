@@ -4183,6 +4183,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "silico-core",
  "silico-protocol",
  "socket2",
  "tracing",

@@ -91,24 +91,35 @@ impl<T> Outcome<T> {
     }
 }
 
-/// A request submitted to a [`KernelPool`], whose outcome comes when a worker has run it.
+/// A request submitted to a [`Kernel`](crate::kernel::Kernel), whose outcome comes when the
+/// kernel has run it.
 #[must_use = "a request's outcome is only had by waiting for it"]
 pub struct Pending<T> {
     name: &'static str,
+    /// What ran it, for the error if it stops first: `kernel pool`, `fake kernel`.
+    kernel: &'static str,
     outcome: Receiver<Outcome<T>>,
 }
 
 impl<T> Pending<T> {
-    /// A request named `name`, whose outcome comes on `outcome`.
-    pub(crate) fn new(name: &'static str, outcome: Receiver<Outcome<T>>) -> Self {
-        Self { name, outcome }
+    /// A request named `name`, whose outcome comes on `outcome` from `kernel`.
+    pub(crate) fn new(
+        name: &'static str,
+        kernel: &'static str,
+        outcome: Receiver<Outcome<T>>,
+    ) -> Self {
+        Self {
+            name,
+            kernel,
+            outcome,
+        }
     }
 
     /// Waits for the outcome.
     pub fn wait(self) -> Outcome<T> {
         match self.outcome.recv() {
             Ok(outcome) => outcome,
-            Err(_) => Outcome::Done(Err(stopped(self.name))),
+            Err(_) => Outcome::Done(Err(stopped(self.kernel, self.name))),
         }
     }
 
@@ -117,7 +128,9 @@ impl<T> Pending<T> {
         match self.outcome.recv_timeout(timeout) {
             Ok(outcome) => Ok(outcome),
             Err(RecvTimeoutError::Timeout) => Err(self),
-            Err(RecvTimeoutError::Disconnected) => Ok(Outcome::Done(Err(stopped(self.name)))),
+            Err(RecvTimeoutError::Disconnected) => {
+                Ok(Outcome::Done(Err(stopped(self.kernel, self.name))))
+            }
         }
     }
 
@@ -126,18 +139,20 @@ impl<T> Pending<T> {
         match self.outcome.try_recv() {
             Ok(outcome) => Ok(outcome),
             Err(TryRecvError::Empty) => Err(self),
-            Err(TryRecvError::Disconnected) => Ok(Outcome::Done(Err(stopped(self.name)))),
+            Err(TryRecvError::Disconnected) => {
+                Ok(Outcome::Done(Err(stopped(self.kernel, self.name))))
+            }
         }
     }
 }
 
-/// The outcome of a request whose pool stopped before running it.
-fn stopped(name: &str) -> Error {
+/// The outcome of a request whose kernel stopped before running it.
+fn stopped(kernel: &str, name: &str) -> Error {
     Error::new(
         ErrorCode::Internal,
-        format!("the kernel pool stopped before {name} was done"),
+        format!("the {kernel} stopped before {name} was done"),
     )
-    .with_suggestion("submit the request to a running pool")
+    .with_suggestion(format!("submit the request to a running {kernel}"))
 }
 
 impl KernelPool {
@@ -297,15 +312,15 @@ impl KernelPool {
                 state.queue.push_back(task);
                 drop(state);
                 self.shared.work.notify_one();
-                return Pending { name, outcome };
+                return Pending::new(name, "kernel pool", outcome);
             }
             if state.stopping {
                 // Dropping the task tells the caller the pool stopped.
-                return Pending { name, outcome };
+                return Pending::new(name, "kernel pool", outcome);
             }
         }
         task.supersede();
-        Pending { name, outcome }
+        Pending::new(name, "kernel pool", outcome)
     }
 }
 
@@ -363,7 +378,7 @@ fn spawn_thread(
 
 /// A pool thread that couldn't start: the system short of threads (`resource_exhausted`),
 /// or a bug.
-fn thread_error(e: &std::io::Error) -> Error {
+pub(crate) fn thread_error(e: &std::io::Error) -> Error {
     const MESSAGE: &str = "couldn't start a kernel pool thread";
     crate::worker::shortage(e, MESSAGE).unwrap_or_else(|| {
         Error::new(ErrorCode::Internal, MESSAGE)
@@ -617,7 +632,7 @@ impl<T: Send + 'static> Task for Submitted<T> {
 /// Sends `outcome` while `state` (the pool's lock) is held, then lets the lock go. The
 /// caller may have stopped waiting; nothing more to do then, but to free the outcome, after
 /// the lock (a large result takes milliseconds to free).
-fn deliver<G, T>(state: G, reply: &SyncSender<Outcome<T>>, outcome: Outcome<T>) {
+pub(crate) fn deliver<G, T>(state: G, reply: &SyncSender<Outcome<T>>, outcome: Outcome<T>) {
     let unsent = reply.send(outcome).err();
     drop(state);
     drop(unsent);

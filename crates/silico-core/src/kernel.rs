@@ -2,8 +2,8 @@
 //! [`KernelRequest`], which refuses values that can't work before anything is sent, matches
 //! the worker's reply to the operation, and checks what comes back, so nothing above it
 //! handles a worker's raw reply. A [`KernelWorker`] runs requests on one worker, and a
-//! [`KernelPool`](crate::pool::KernelPool) on many; recompute builds on the pool, and debug
-//! tools use either directly. Clients reach geometry through the command API
+//! [`KernelPool`](crate::pool::KernelPool) on many; recompute runs on a [`Kernel`] (the pool,
+//! or in tests the in-memory fake), and debug tools use a worker or the pool directly. Clients reach geometry through the command API
 //! (ARCHITECTURE.md, invariant 3) once there is one.
 
 use std::path::{Path, PathBuf};
@@ -22,7 +22,7 @@ use crate::{Error, ErrorCode};
 
 /// What runs kernel requests for recompute: the worker pool
 /// ([`KernelPool`](crate::pool::KernelPool)), or, in tests, the in-memory fake
-/// ([`FakeKernel`](crate::fake::FakeKernel)). Every request is for a document generation;
+/// (`fake::FakeKernel`, with the `fake` feature). Every request is for a document generation;
 /// starting a newer one supersedes the older ones' requests, which come to
 /// [`Outcome::Superseded`](crate::pool::Outcome::Superseded), never a result.
 pub trait Kernel: Send + Sync {
@@ -103,12 +103,14 @@ impl<T> KernelRequest<T> {
     }
 
     /// The operation the request sends.
+    #[cfg(feature = "fake")]
     pub(crate) fn op(&self) -> &Op {
         &self.op
     }
 
     /// Reads and decides from `reply`, as from a worker's, for a kernel that isn't a worker
     /// (the fake): the same checks, so a reply it gets wrong is refused as a worker's is.
+    #[cfg(feature = "fake")]
     pub(crate) fn answer(self, reply: Result<Reply, Error>) -> Result<T, Error> {
         let name = self.op.name();
         let value = (self.read)(name, reply?)?;

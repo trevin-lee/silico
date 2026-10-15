@@ -48,7 +48,7 @@ fn run<T: Send + std::fmt::Debug + 'static>(kernel: &FakeKernel, request: Kernel
 // left to run it, and nothing reports why.
 #[test]
 fn a_panicking_refusal_rule_leaves_the_kernel_able_to_answer() {
-    let kernel = FakeKernel::new(1);
+    let kernel = FakeKernel::new(1).unwrap();
     kernel.refuse(|op| match op {
         Op::Echo { data } if data.as_bytes() == [0xff] => panic!("a test's rule has a bug"),
         _ => None,
@@ -73,7 +73,7 @@ fn a_panicking_refusal_rule_leaves_the_kernel_able_to_answer() {
 // next request hangs.
 #[test]
 fn a_panicking_hold_rule_leaves_the_kernel_able_to_answer() {
-    let kernel = FakeKernel::new(1);
+    let kernel = FakeKernel::new(1).unwrap();
     let _hold = kernel.hold(|op| match op {
         Op::Echo { data } if data.as_bytes() == [0xff] => panic!("a test's rule has a bug"),
         _ => false,
@@ -96,7 +96,7 @@ fn a_panicking_hold_rule_leaves_the_kernel_able_to_answer() {
 // when the count is already reached.
 #[test]
 fn waiting_for_running_requests_without_a_time_limit() {
-    let kernel = FakeKernel::new(1);
+    let kernel = FakeKernel::new(1).unwrap();
     let hold = kernel.hold(|_| true);
     let pending = kernel.submit(Generation(0), KernelRequest::echo(Blob::inline(vec![])));
     assert!(kernel.wait_running(1, WAIT));
@@ -113,25 +113,28 @@ fn waiting_for_running_requests_without_a_time_limit() {
 
 #[test]
 fn waiting_for_no_running_requests_is_at_once() {
-    let kernel = FakeKernel::new(1);
+    let kernel = FakeKernel::new(1).unwrap();
     assert!(kernel.wait_running(0, Duration::ZERO));
     assert!(!kernel.wait_running(1, Duration::ZERO));
 }
 
-// Once: `FakeKernel::new(usize::MAX)` collects `(0..usize::MAX).map(spawn)` into a Vec,
+// Once: `FakeKernel::new(usize::MAX).unwrap()` collects `(0..usize::MAX).map(spawn)` into a Vec,
 // which sizes itself up front: a capacity-overflow panic. The pool refuses a size past
 // MAX_WORKERS (1024) with InvalidInput; the fake that stands in for it panics.
 #[test]
 fn a_fake_kernel_of_absurd_size_does_not_panic() {
     let made = std::panic::catch_unwind(|| {
-        drop(FakeKernel::new(usize::MAX));
+        drop(FakeKernel::new(usize::MAX).unwrap());
     });
-    assert!(made.is_ok(), "FakeKernel::new(usize::MAX) panicked");
+    assert!(
+        made.is_ok(),
+        "FakeKernel::new(usize::MAX).unwrap() panicked"
+    );
 }
 
 #[test]
 fn a_fake_kernel_of_size_zero_still_runs_requests() {
-    let kernel = FakeKernel::new(0);
+    let kernel = FakeKernel::new(0).unwrap();
     run(&kernel, KernelRequest::make(block(1.0, 1.0, 1.0)).unwrap());
 }
 
@@ -143,7 +146,7 @@ fn a_fake_kernel_of_size_zero_still_runs_requests() {
 // another hash, so the same cone has different bytes by the sign of a zero.
 #[test]
 fn a_cone_with_a_negative_zero_radius_is_the_same_shape_as_with_zero() {
-    let kernel = FakeKernel::new(1);
+    let kernel = FakeKernel::new(1).unwrap();
     let cone = |radius2: f64| Primitive::Cone {
         radius1: 3.0,
         radius2,
@@ -151,7 +154,7 @@ fn a_cone_with_a_negative_zero_radius_is_the_same_shape_as_with_zero() {
     };
     let zero = run(&kernel, KernelRequest::make(cone(0.0)).unwrap());
     let negative = run(&kernel, KernelRequest::make(cone(-0.0)).unwrap());
-    assert_eq!(kernel.counts(&negative), kernel.counts(&zero));
+    assert_eq!(FakeKernel::counts(&negative), FakeKernel::counts(&zero));
     assert_eq!(
         negative, zero,
         "the sign of a zero radius changed the shape's bytes"
@@ -162,7 +165,7 @@ fn a_cone_with_a_negative_zero_radius_is_the_same_shape_as_with_zero() {
 // itself for both, the same bytes. The fake's key writes "-0", so the two differ.
 #[test]
 fn a_move_by_negative_zero_is_the_same_shape_as_a_move_by_zero() {
-    let kernel = FakeKernel::new(1);
+    let kernel = FakeKernel::new(1).unwrap();
     let shape = run(&kernel, KernelRequest::make(block(1.0, 2.0, 3.0)).unwrap());
     let zero = run(
         &kernel,
@@ -181,7 +184,7 @@ fn a_move_by_negative_zero_is_the_same_shape_as_a_move_by_zero() {
 
 #[test]
 fn shapes_differing_by_one_ulp_are_different_shapes() {
-    let kernel = FakeKernel::new(1);
+    let kernel = FakeKernel::new(1).unwrap();
     let a = run(&kernel, KernelRequest::make(block(1.0, 1.0, 1.0)).unwrap());
     let b = run(
         &kernel,
@@ -206,38 +209,52 @@ fn shapes_differing_by_one_ulp_are_different_shapes() {
     );
 }
 
-// Once: the fake reads a shape's ID with `u128::from_str_radix`, which takes upper-case
-// digits and a leading '+'. Bytes the fake never made ("fake:+0…", "FAKE"-cased hex) are
-// taken as one of its shapes, though it promises to refuse a shape it didn't make.
+// Once: the fake read a shape's ID with `u128::from_str_radix`, which takes upper-case
+// digits and a leading '+', so bytes it never made were taken as one of its shapes. Its
+// shapes are now the steps that made them, and only their one canonical spelling is read:
+// any other spelling of the same steps is refused, so a shape's bytes are one shape's.
 #[test]
-fn forged_spellings_of_a_shapes_id_are_refused() {
-    let kernel = FakeKernel::new(1);
-    let made = run(&kernel, KernelRequest::make(block(1.0, 1.0, 1.0)).unwrap());
-    let bytes = std::str::from_utf8(made.brep().as_bytes())
-        .unwrap()
-        .to_owned();
-    let hex = bytes.strip_prefix("fake:").unwrap();
-    let upper = format!("fake:{}", hex.to_uppercase());
-    let mut forged = vec![upper];
-    // Every ID that starts with a 0 digit has a '+' spelling of the same length.
-    if let Some(rest) = hex.strip_prefix('0') {
-        forged.push(format!("fake:+{rest}"));
-    }
-    forged.retain(|text| *text != bytes);
-    assert!(!forged.is_empty());
+fn every_other_spelling_of_a_shapes_steps_is_refused() {
+    let canonical = "silico fake shape 1\nbox 1 2 3\ntranslate 0 1 0 0\n";
+    let shape = |text: &str| ShapeData::checked(Blob::inline(text.as_bytes().to_vec()), true);
+    assert_eq!(
+        FakeKernel::describe(&shape(canonical)).as_deref(),
+        Some("translate(box(1, 2, 3), 1, 0, 0)")
+    );
+    let forged = [
+        "silico fake shape 1\nbox 1.0 2 3\ntranslate 0 1 0 0\n",
+        "silico fake shape 1\nbox +1 2 3\ntranslate 0 1 0 0\n",
+        "silico fake shape 1\nbox 1 2 3\ntranslate 00 1 0 0\n",
+        "silico fake shape 1\nbox 1 2 3\ntranslate 0 1e0 0 0\n",
+        "silico fake shape 1\nbox  1 2 3\ntranslate 0 1 0 0\n",
+        "silico fake shape 1\r\nbox 1 2 3\r\ntranslate 0 1 0 0\r\n",
+        "silico fake shape 1\nbox 1 2 3\ntranslate 0 1 0 0",
+        "silico fake shape 1\nbox 1 2 3\ntranslate 0 1 0 0\n\n",
+        "silico fake shape 2\nbox 1 2 3\ntranslate 0 1 0 0\n",
+        // A primitive's zero is unsigned.
+        "silico fake shape 1\ncone -0 2 3\n",
+        // A move by nothing is the shape itself; a move of a move is one move.
+        "silico fake shape 1\nbox 1 2 3\ntranslate 0 0 0 0\n",
+        "silico fake shape 1\nbox 1 2 3\ntranslate 0 1 0 0\ntranslate 1 1 0 0\n",
+        // Inputs out of place, a step no other uses, a reference forward.
+        "silico fake shape 1\nbox 1 2 3\nsphere 1\ntranslate 0 1 0 0\n",
+        "silico fake shape 1\nbox 1 2 3\nsphere 1\n",
+        "silico fake shape 1\nbox 1 2 3\nsphere 1\nfuse 1 0\n",
+        "silico fake shape 1\ntranslate 1 1 0 0\nbox 1 2 3\n",
+        "silico fake shape 1\n",
+        "",
+        // Not finite, which no request can carry.
+        "silico fake shape 1\nsphere inf\n",
+        "silico fake shape 1\nbox 1 2 3\ntranslate 0 NaN 0 0\n",
+    ];
     for text in forged {
-        let shape = ShapeData::checked(Blob::inline(text.clone().into_bytes()), true);
-        assert_eq!(
-            kernel.describe(&shape),
-            None,
-            "{text} isn't a shape the fake made, but it describes it"
-        );
+        assert_eq!(FakeKernel::describe(&shape(text)), None, "{text:?}");
     }
 }
 
 #[test]
 fn malformed_shape_bytes_are_refused_not_panicked_on() {
-    let kernel = FakeKernel::new(1);
+    let kernel = FakeKernel::new(1).unwrap();
     let made = run(&kernel, KernelRequest::make(block(1.0, 1.0, 1.0)).unwrap());
     let real = made.brep().as_bytes().to_vec();
     let mut cases: Vec<Vec<u8>> = vec![
@@ -264,8 +281,8 @@ fn malformed_shape_bytes_are_refused_not_panicked_on() {
     cases.push(multi);
     for bytes in cases {
         let shape = ShapeData::checked(Blob::inline(bytes.clone()), true);
-        assert_eq!(kernel.describe(&shape), None, "{bytes:?}");
-        assert_eq!(kernel.counts(&shape), None, "{bytes:?}");
+        assert_eq!(FakeKernel::describe(&shape), None, "{bytes:?}");
+        assert_eq!(FakeKernel::counts(&shape), None, "{bytes:?}");
         let outcome = within(
             kernel.submit(
                 Generation(0),
@@ -286,7 +303,7 @@ fn malformed_shape_bytes_are_refused_not_panicked_on() {
 fn a_boolean_of_a_shape_with_itself_keeps_a_consistent_history() {
     // The fake's model: inputs side by side. Its history must still pass the core's checks
     // (read_built validates every reply).
-    let kernel = FakeKernel::new(1);
+    let kernel = FakeKernel::new(1).unwrap();
     let shape = run(&kernel, KernelRequest::make(block(1.0, 1.0, 1.0)).unwrap());
     for op in [BooleanOp::Fuse, BooleanOp::Cut, BooleanOp::Common] {
         let built = run(&kernel, KernelRequest::boolean(op, &shape, &shape));
@@ -300,7 +317,7 @@ fn a_boolean_of_a_shape_with_itself_keeps_a_consistent_history() {
 #[test]
 fn a_request_for_a_future_generation_survives_an_advance_short_of_it() {
     // As the pool: advance drops only requests of generations older than the new one.
-    let kernel = FakeKernel::new(1);
+    let kernel = FakeKernel::new(1).unwrap();
     let hold = kernel.hold(|op| matches!(op, Op::Echo { data } if data.as_bytes() == [0]));
     let blocker = kernel.submit(Generation(5), KernelRequest::echo(Blob::inline(vec![0])));
     assert!(kernel.wait_running(1, WAIT));
@@ -319,7 +336,7 @@ fn a_request_for_a_future_generation_survives_an_advance_short_of_it() {
 
 #[test]
 fn the_last_generation_there_is() {
-    let kernel = FakeKernel::new(1);
+    let kernel = FakeKernel::new(1).unwrap();
     kernel.advance(Generation(u64::MAX));
     let late = kernel.submit(
         Generation(u64::MAX - 1),
@@ -335,7 +352,7 @@ fn the_last_generation_there_is() {
 
 #[test]
 fn a_refused_request_superseded_while_held_is_superseded_not_refused() {
-    let kernel = FakeKernel::new(1);
+    let kernel = FakeKernel::new(1).unwrap();
     kernel.refuse(|_| Some(silico_core::Error::new(ErrorCode::KernelFailed, "no")));
     let _hold = kernel.hold(|_| true);
     let pending = kernel.submit(Generation(0), KernelRequest::echo(Blob::inline(vec![])));
@@ -354,7 +371,7 @@ fn a_refused_request_superseded_while_held_is_superseded_not_refused() {
 // `notify_all` between the decision and the send must wake them.
 #[test]
 fn no_result_of_an_older_generation_arrives_after_advance_returns() {
-    let kernel = Arc::new(FakeKernel::new(1));
+    let kernel = Arc::new(FakeKernel::new(1).unwrap());
     let stop = Arc::new(AtomicBool::new(false));
     let waiters: Vec<_> = (0..8)
         .map(|_| {
@@ -418,7 +435,7 @@ impl Lcg {
 #[test]
 fn a_storm_of_submits_advances_and_holds_never_hangs_and_never_delivers_stale_results() {
     for seed in 0..40u64 {
-        let kernel = Arc::new(FakeKernel::new(1 + (seed as usize % 4)));
+        let kernel = Arc::new(FakeKernel::new(1 + (seed as usize % 4)).unwrap());
         let holds: Arc<Mutex<Vec<silico_core::fake::Hold>>> = Arc::new(Mutex::new(Vec::new()));
         let threads: Vec<_> = (0..4u64)
             .map(|t| {
@@ -488,7 +505,7 @@ fn a_storm_of_submits_advances_and_holds_never_hangs_and_never_delivers_stale_re
             }
         }
         // Done: no thread is left holding a request.
-        assert!(kernel.wait_running(0, Duration::ZERO));
+        assert!(!kernel.wait_running(1, Duration::ZERO));
         let kernel = Arc::try_unwrap(kernel).ok().unwrap();
         let started = Instant::now();
         drop(kernel);
@@ -501,7 +518,7 @@ fn a_storm_of_submits_advances_and_holds_never_hangs_and_never_delivers_stale_re
 
 #[test]
 fn dropping_the_kernel_with_requests_held_from_many_threads_ends_them_all() {
-    let kernel = FakeKernel::new(4);
+    let kernel = FakeKernel::new(4).unwrap();
     let hold = kernel.hold(|_| true);
     let pendings: Vec<_> = (0..64u8)
         .map(|n| kernel.submit(Generation(0), KernelRequest::echo(Blob::inline(vec![n]))))
@@ -523,7 +540,7 @@ fn dropping_the_kernel_with_requests_held_from_many_threads_ends_them_all() {
 
 #[test]
 fn a_caller_that_stops_waiting_does_not_wedge_the_kernel() {
-    let kernel = FakeKernel::new(1);
+    let kernel = FakeKernel::new(1).unwrap();
     for n in 0..1000u32 {
         // Dropped at once: the reply has nowhere to go.
         drop(kernel.submit(
@@ -537,7 +554,7 @@ fn a_caller_that_stops_waiting_does_not_wedge_the_kernel() {
 
 #[test]
 fn every_operation_the_fake_does_not_do_is_a_structured_internal_error() {
-    let kernel = FakeKernel::new(1);
+    let kernel = FakeKernel::new(1).unwrap();
     let shape = run(&kernel, KernelRequest::make(block(1.0, 1.0, 1.0)).unwrap());
     let outcomes = [
         within(

@@ -1430,3 +1430,38 @@ fn a_slot_waiting_out_a_long_back_off_starts_a_worker_once_a_newer_one_has_start
     assert_reaped(&held, "after the drop");
     wait_no_children("after the drop");
 }
+
+/// The race silico-core's `no_result_of_an_older_generation_arrives_after_advance_returns`
+/// runs on the fake kernel, run on the pool, which decides and sends under the lock
+/// `advance` takes: once `advance` has returned with no outcome in the channel, the outcome
+/// is `Superseded`.
+#[test]
+fn on_the_pool_no_result_of_an_older_generation_arrives_after_advance_returns() {
+    let real = KernelPool::start_workers(Path::new(WORKER), 1).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut generation = 0u64;
+    let mut spin = 0u32;
+    let mut late = None;
+    while Instant::now() < deadline && late.is_none() {
+        let pending = real.submit(
+            Generation(generation),
+            KernelRequest::echo(Blob::inline(vec![])),
+        );
+        spin = (spin + 37) % 40_000;
+        for _ in 0..spin {
+            std::hint::spin_loop();
+        }
+        generation += 1;
+        real.advance(Generation(generation));
+        if let Err(pending) = pending.try_take()
+            && let Outcome::Done(_) = pool::outcome(pending)
+        {
+            late = Some(generation - 1);
+        }
+    }
+    assert!(
+        generation > 100,
+        "too few rounds to mean anything: {generation}"
+    );
+    assert_eq!(late, None);
+}

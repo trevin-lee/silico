@@ -69,13 +69,13 @@ fn made<K: Kernel>(kernel: &K, primitive: Primitive, offset: [f64; 3]) -> (Shape
 #[test]
 fn each_primitive_has_the_real_kernels_element_counts() {
     let real = pool();
-    let fake = FakeKernel::new(2);
+    let fake = FakeKernel::new(2).unwrap();
     for primitive in PRIMITIVES {
         let (shape, _) = made(&real, primitive, [0.0; 3]);
         let summary: ShapeSummary =
             done(real.submit(real.generation(), KernelRequest::summarize(&shape)));
         let (faked, _) = made(&fake, primitive, [0.0; 3]);
-        let counts = fake.counts(&faked).unwrap();
+        let counts = FakeKernel::counts(&faked).unwrap();
         assert_eq!(
             (counts.faces, counts.edges, counts.vertices),
             (summary.faces, summary.edges, summary.vertices),
@@ -88,7 +88,7 @@ fn each_primitive_has_the_real_kernels_element_counts() {
 #[test]
 fn a_move_has_the_real_kernels_history() {
     let real = pool();
-    let fake = FakeKernel::new(2);
+    let fake = FakeKernel::new(2).unwrap();
     for primitive in PRIMITIVES {
         for offset in [[1.0, -2.0, 3.5], [0.0, 0.0, 0.0]] {
             let (_, real_moved) = made(&real, primitive, offset);
