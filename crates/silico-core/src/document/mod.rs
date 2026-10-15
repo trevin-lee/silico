@@ -44,8 +44,9 @@ pub fn write(document: &Document) -> Result<String, Error> {
         .map_err(|write::TooLong| too_long(document, "the document is too large to write"))
 }
 
-/// A document whose canonical text would pass the limit, naming the feature that takes
-/// most of it if one takes more than half.
+/// A document whose canonical text would pass the limit, naming the first feature (in
+/// timeline order) whose own text is more than half the limit, if one is: it alone is
+/// most of the text.
 fn too_long(document: &Document, what: &str) -> Error {
     let limit = json::MAX_DOCUMENT_LEN;
     let error = Error::new(
