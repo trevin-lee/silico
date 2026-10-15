@@ -13,12 +13,14 @@ You coordinate the council. You don't review. You probably share context with wh
 
 | Lens | Persona | Runs | Model |
 |---|---|---|---|
-| `tests` | Test skeptic | always | default |
-| `robustness` | Reliability and security engineer | always | default |
-| `quality` | Maintainer | always | `sonnet` |
-| `architecture` | Architect and performance engineer | crates, `Cargo.toml`, kernel shim, workers or IPC, the recompute scheduler, rendering, hot paths, the MCP server or command API, new feature types | default |
-| `port` | FreeCAD porter | changed code has a FreeCAD counterpart | default |
-| `format` | Format steward | naming, element maps, serialization, document schema, recompute order | default |
+| `tests` | Test skeptic | always | `opus` |
+| `robustness` | Reliability and security engineer | always | `opus` |
+| `quality` | Maintainer | always | `opus` |
+| `architecture` | Architect and performance engineer | crates, `Cargo.toml`, kernel shim, workers or IPC, the recompute scheduler, rendering, hot paths, the MCP server or command API, new feature types | `opus` |
+| `port` | FreeCAD porter | changed code has a FreeCAD counterpart | `opus` |
+| `format` | Format steward | naming, element maps, serialization, document schema, recompute order | `opus` |
+
+Every reviewer, generalist, and skeptic runs on `opus`. Never use the `fable` model, and don't leave the model to the default, which follows the session's.
 
 Each persona's instructions are in `.claude/skills/review-<lens>/SKILL.md`.
 
