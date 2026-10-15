@@ -975,8 +975,11 @@ mod tests {
         let bug = thread_error(super::KERNEL, &io::Error::from_raw_os_error(libc::EINVAL));
         assert_eq!(bug.code(), ErrorCode::Internal, "{bug}");
         assert_eq!(bug.message(), "couldn't start a kernel pool thread");
-        // Each kernel names itself.
-        let fake = thread_error("fake kernel", &io::Error::from_raw_os_error(libc::EINVAL));
+        // The fake names itself, not the pool.
+        let fake = thread_error(
+            crate::fake::KERNEL,
+            &io::Error::from_raw_os_error(libc::EINVAL),
+        );
         assert_eq!(fake.message(), "couldn't start a fake kernel thread");
         assert_eq!(bug.cause(), Some(words(libc::EINVAL).as_str()), "{bug}");
         assert_eq!(bug.suggestion(), Some(crate::worker::SILICO_BUG), "{bug}");

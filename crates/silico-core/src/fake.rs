@@ -49,7 +49,7 @@ use crate::{Error, ErrorCode};
 
 /// What the fake calls itself in its errors: a [`Pending`] stopped early, a thread that
 /// couldn't start.
-const KERNEL: &str = "fake kernel";
+pub(crate) const KERNEL: &str = "fake kernel";
 
 /// A request the fake kernel started: the generation it was for, and its operation.
 #[derive(Debug, Clone, PartialEq)]
