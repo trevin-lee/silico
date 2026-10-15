@@ -1,11 +1,13 @@
 //! A `.silico` document: its types, read exactly from strict JSON and written back in
 //! canonical form (ARCHITECTURE.md, Document model; docs/design/m2.1-document-format.md).
-//! Reading checks each value on its own; what features refer to is the validation gate's.
+//! Reading checks each value on its own; whether features fit together, and the kernel can
+//! make each, is the validation gate's ([`validate`]).
 
 mod decode;
 pub mod json;
 mod model;
 mod quantity;
+mod validate;
 mod write;
 
 pub use model::{
@@ -13,6 +15,7 @@ pub use model::{
     ID_LENGTH, Name, Operation, Position, Units,
 };
 pub use quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
+pub use validate::{Invalid, PROBLEMS_LISTED, validate};
 
 use schemars::generate::SchemaSettings;
 

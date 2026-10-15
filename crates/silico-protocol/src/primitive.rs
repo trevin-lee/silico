@@ -97,41 +97,51 @@ impl Primitive {
 
     /// Whether these values make a solid: every length above [`LENGTH_TOLERANCE`] and at
     /// most [`MAX_LENGTH`], except that one of a cone's radii may be zero; and a torus's
-    /// tube no wider than its ring.
+    /// tube no wider than its ring. Refused naming the first value at fault.
     pub fn check(&self) -> Result<(), InvalidParameter> {
+        match self.faults(|parameter| parameter).into_iter().next() {
+            Some(invalid) => Err(invalid),
+            None => Ok(()),
+        }
+    }
+
+    /// Every value at fault by [`check`](Self::check)'s rule, in the order of the fields,
+    /// each parameter called `name(parameter)` in its error and message: a document calls
+    /// a box's `dx` its `length`. A torus's tube wider than its ring is a fault only where
+    /// each radius alone is valid.
+    pub fn faults(&self, name: impl Fn(&'static str) -> &'static str) -> Vec<InvalidParameter> {
         let what = self.name();
+        let mut faults = Vec::new();
         let length = |parameter: &'static str, value: f64| {
-            if value > LENGTH_TOLERANCE && value <= MAX_LENGTH {
-                Ok(())
-            } else {
-                Err(InvalidParameter {
-                    parameter,
-                    message: format!(
-                        "{what} {parameter} must be a length above 1e-7 mm and at most 1e6 mm (a kilometre), got {}",
-                        format_number(value)
-                    ),
-                })
-            }
+            let parameter = name(parameter);
+            (!(value > LENGTH_TOLERANCE && value <= MAX_LENGTH)).then(|| InvalidParameter {
+                parameter,
+                message: format!(
+                    "{what} {parameter} must be a length above 1e-7 mm and at most 1e6 mm (a kilometre), got {}",
+                    format_number(value)
+                ),
+            })
         };
         match *self {
             Primitive::Box { dx, dy, dz } => {
-                length("dx", dx)?;
-                length("dy", dy)?;
-                length("dz", dz)
+                faults.extend(length("dx", dx));
+                faults.extend(length("dy", dy));
+                faults.extend(length("dz", dz));
             }
             Primitive::Cylinder { radius, height } => {
-                length("radius", radius)?;
-                length("height", height)
+                faults.extend(length("radius", radius));
+                faults.extend(length("height", height));
             }
-            Primitive::Sphere { radius } => length("radius", radius),
+            Primitive::Sphere { radius } => faults.extend(length("radius", radius)),
             Primitive::Cone {
                 radius1,
                 radius2,
                 height,
             } => {
                 for (parameter, value) in [("radius1", radius1), ("radius2", radius2)] {
+                    let parameter = name(parameter);
                     if !(value == 0.0 || (value > LENGTH_TOLERANCE && value <= MAX_LENGTH)) {
-                        return Err(InvalidParameter {
+                        faults.push(InvalidParameter {
                             parameter,
                             message: format!(
                                 "cone {parameter} must be zero, or a length above 1e-7 mm and at most 1e6 mm (a kilometre), got {}",
@@ -141,32 +151,39 @@ impl Primitive {
                     }
                 }
                 if radius1 == 0.0 && radius2 == 0.0 {
-                    return Err(InvalidParameter {
-                        parameter: "radius1",
-                        message: "cone radius1 must be above zero where radius2 is zero: a cone with no radius has no volume".to_owned(),
+                    let (radius1, radius2) = (name("radius1"), name("radius2"));
+                    faults.push(InvalidParameter {
+                        parameter: radius1,
+                        message: format!(
+                            "cone {radius1} must be above zero where {radius2} is zero: a cone with no radius has no volume"
+                        ),
                     });
                 }
-                length("height", height)
+                faults.extend(length("height", height));
             }
             Primitive::Torus {
                 major_radius,
                 minor_radius,
             } => {
-                length("major_radius", major_radius)?;
-                length("minor_radius", minor_radius)?;
-                if minor_radius - major_radius > LENGTH_TOLERANCE {
-                    return Err(InvalidParameter {
-                        parameter: "minor_radius",
+                let major = length("major_radius", major_radius);
+                let minor = length("minor_radius", minor_radius);
+                let both = major.is_none() && minor.is_none();
+                faults.extend(major);
+                faults.extend(minor);
+                if both && minor_radius - major_radius > LENGTH_TOLERANCE {
+                    let (major, minor) = (name("major_radius"), name("minor_radius"));
+                    faults.push(InvalidParameter {
+                        parameter: minor,
                         message: format!(
-                            "torus minor_radius must be at most major_radius ({}), got {}: the tube would cross the axis",
+                            "torus {minor} must be at most {major} ({}), got {}: the tube would cross the axis",
                             format_number(major_radius),
                             format_number(minor_radius)
                         ),
                     });
                 }
-                Ok(())
             }
         }
+        faults
     }
 }
 
