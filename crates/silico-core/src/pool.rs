@@ -99,6 +99,11 @@ pub struct Pending<T> {
 }
 
 impl<T> Pending<T> {
+    /// A request named `name`, whose outcome comes on `outcome`.
+    pub(crate) fn new(name: &'static str, outcome: Receiver<Outcome<T>>) -> Self {
+        Self { name, outcome }
+    }
+
     /// Waits for the outcome.
     pub fn wait(self) -> Outcome<T> {
         match self.outcome.recv() {
@@ -301,6 +306,24 @@ impl KernelPool {
         }
         task.supersede();
         Pending { name, outcome }
+    }
+}
+
+impl crate::kernel::Kernel for KernelPool {
+    fn generation(&self) -> Generation {
+        KernelPool::generation(self)
+    }
+
+    fn advance(&self, generation: Generation) {
+        KernelPool::advance(self, generation);
+    }
+
+    fn submit<T: Send + 'static>(
+        &self,
+        generation: Generation,
+        request: KernelRequest<T>,
+    ) -> Pending<T> {
+        KernelPool::submit(self, generation, request)
     }
 }
 

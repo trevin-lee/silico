@@ -1,11 +1,13 @@
 //! Silico's headless core. So far it holds the structured [`Error`] every client sees, the
 //! worker client ([`worker::Worker`]), typed kernel requests on one worker
-//! ([`kernel::KernelWorker`]) or a pool of them ([`pool::KernelPool`]), and the document's
+//! ([`kernel::KernelWorker`]) or, through the [`kernel::Kernel`] trait, a pool of them
+//! ([`pool::KernelPool`]) or an in-memory fake for tests ([`fake::FakeKernel`]), and the document's
 //! types, read and written exactly ([`document`]); the feature graph, recompute,
 //! topological naming, and the command API every client uses arrive later in M2.
 
 pub mod document;
 mod error;
+pub mod fake;
 pub mod kernel;
 pub mod logging;
 pub mod pool;

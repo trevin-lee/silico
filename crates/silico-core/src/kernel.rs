@@ -11,13 +11,36 @@ use std::time::Duration;
 
 pub use silico_protocol::{
     Axis, Blob, BooleanOp, BuiltData, ChamferSize, ElementCounts, ElementFate, ElementKind,
-    ElementRef, Ends, FreecadMeasures, History, InputHistory, Mesh, Primitive, Profile, Reported,
-    ShapeData, ShapeSummary,
+    ElementRef, Ends, FreecadMeasures, Generation, History, InputHistory, Mesh, Op, Primitive,
+    Profile, Reported, ShapeData, ShapeSummary,
 };
-use silico_protocol::{DebugOp, Failure, Generation, Op, Reply};
+use silico_protocol::{DebugOp, Failure, Reply};
 
+use crate::pool::Pending;
 use crate::worker::Worker;
 use crate::{Error, ErrorCode};
+
+/// What runs kernel requests for recompute: the worker pool
+/// ([`KernelPool`](crate::pool::KernelPool)), or, in tests, the in-memory fake
+/// ([`FakeKernel`](crate::fake::FakeKernel)). Every request is for a document generation;
+/// starting a newer one supersedes the older ones' requests, which come to
+/// [`Outcome::Superseded`](crate::pool::Outcome::Superseded), never a result.
+pub trait Kernel: Send + Sync {
+    /// The generation requests are for: the newest [`advance`](Self::advance) started.
+    fn generation(&self) -> Generation;
+
+    /// Starts `generation`, superseding every older one. A generation no newer than the
+    /// current one changes nothing.
+    fn advance(&self, generation: Generation);
+
+    /// Queues `request` for `generation`, to run when the kernel is free. A request for a
+    /// generation older than the current one is superseded at once.
+    fn submit<T: Send + 'static>(
+        &self,
+        generation: Generation,
+        request: KernelRequest<T>,
+    ) -> Pending<T>;
+}
 
 /// The environment variable naming the kernel worker executable, for when it isn't next
 /// to the running one.
@@ -77,6 +100,19 @@ impl<T> KernelRequest<T> {
     /// The operation's name, for logs and errors.
     pub fn name(&self) -> &'static str {
         self.op.name()
+    }
+
+    /// The operation the request sends.
+    pub(crate) fn op(&self) -> &Op {
+        &self.op
+    }
+
+    /// Reads and decides from `reply`, as from a worker's, for a kernel that isn't a worker
+    /// (the fake): the same checks, so a reply it gets wrong is refused as a worker's is.
+    pub(crate) fn answer(self, reply: Result<Reply, Error>) -> Result<T, Error> {
+        let name = self.op.name();
+        let value = (self.read)(name, reply?)?;
+        (self.decide)(name, value)
     }
 
     /// Sends the request to `worker` for `generation` and reads the reply, stopping the
