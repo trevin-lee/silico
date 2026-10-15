@@ -134,3 +134,12 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 
 - Malformed STEP, STL, or 3MF: truncated files, wrong units, inverted normals, non-manifold meshes, zero-area triangles
 - Valid STEP files with features OCCT handles badly: very large assemblies, tiny sliver faces, self-intersecting surfaces
+
+## Fakes and test doubles
+
+- Inputs one ULP inside a check's edge that the real component decides by computed geometry and the fake by `== 0` (a cone's small radius of 1.0000000000000002e-7 under a radius of 1: OCCT drops the cap and makes an apex, 2 faces; the fake says 3): run the same edge-biased cases through both and compare
+- The same shape spelled two ways (a radius or offset of -0.0 against 0.0, a move by nothing, which the real kernel returns as its input): the real kernel gives one set of bytes, a fake keyed on the values' text gives several
+- A result decided under a lock but sent after it's released: an `advance` landing between the two returns with nothing delivered, and the superseded generation's result arrives after it; sweep the advance across the request with a spin loop, with threads waiting on the condvar the finisher signals to widen the window
+- Callbacks a test hands the fake (hold and refusal rules) that panic: the serving thread dies with the lock held and its request counted as running, its caller is told the kernel stopped, and every later request hangs
+- Waits of "forever" (`Duration::MAX`) added to `Instant::now()` unchecked, and sizes of `usize::MAX` collected into a Vec: panics where the real component returns an error
+- IDs parsed with `from_str_radix`, which takes upper-case digits and a leading '+': bytes the component never made are taken as one of its own

@@ -57,6 +57,10 @@ const HUNG_UP_GRACE: Duration = Duration::from_millis(100);
 /// then replaced.
 pub const STOP_AFTER: Duration = Duration::from_millis(50);
 
+/// What the pool calls itself in its errors: a [`Pending`] stopped early, a thread that
+/// couldn't start.
+const KERNEL: &str = "kernel pool";
+
 /// The most workers a pool may have: far more than any machine's cores, and few enough
 /// that a size from a setting can't make the pool try to start without end.
 pub const MAX_WORKERS: usize = 1024;
@@ -91,19 +95,35 @@ impl<T> Outcome<T> {
     }
 }
 
-/// A request submitted to a [`KernelPool`], whose outcome comes when a worker has run it.
+/// A request submitted to a [`Kernel`](crate::kernel::Kernel), whose outcome comes when the
+/// kernel has run it.
 #[must_use = "a request's outcome is only had by waiting for it"]
 pub struct Pending<T> {
     name: &'static str,
+    /// What ran it, for the error if it stops first: `kernel pool`, `fake kernel`.
+    kernel: &'static str,
     outcome: Receiver<Outcome<T>>,
 }
 
 impl<T> Pending<T> {
+    /// A request named `name`, whose outcome comes on `outcome` from `kernel`.
+    pub(crate) fn new(
+        name: &'static str,
+        kernel: &'static str,
+        outcome: Receiver<Outcome<T>>,
+    ) -> Self {
+        Self {
+            name,
+            kernel,
+            outcome,
+        }
+    }
+
     /// Waits for the outcome.
     pub fn wait(self) -> Outcome<T> {
         match self.outcome.recv() {
             Ok(outcome) => outcome,
-            Err(_) => Outcome::Done(Err(stopped(self.name))),
+            Err(_) => Outcome::Done(Err(stopped(self.kernel, self.name))),
         }
     }
 
@@ -112,7 +132,9 @@ impl<T> Pending<T> {
         match self.outcome.recv_timeout(timeout) {
             Ok(outcome) => Ok(outcome),
             Err(RecvTimeoutError::Timeout) => Err(self),
-            Err(RecvTimeoutError::Disconnected) => Ok(Outcome::Done(Err(stopped(self.name)))),
+            Err(RecvTimeoutError::Disconnected) => {
+                Ok(Outcome::Done(Err(stopped(self.kernel, self.name))))
+            }
         }
     }
 
@@ -121,18 +143,20 @@ impl<T> Pending<T> {
         match self.outcome.try_recv() {
             Ok(outcome) => Ok(outcome),
             Err(TryRecvError::Empty) => Err(self),
-            Err(TryRecvError::Disconnected) => Ok(Outcome::Done(Err(stopped(self.name)))),
+            Err(TryRecvError::Disconnected) => {
+                Ok(Outcome::Done(Err(stopped(self.kernel, self.name))))
+            }
         }
     }
 }
 
-/// The outcome of a request whose pool stopped before running it.
-fn stopped(name: &str) -> Error {
+/// The outcome of a request whose kernel stopped before running it.
+fn stopped(kernel: &str, name: &str) -> Error {
     Error::new(
         ErrorCode::Internal,
-        format!("the kernel pool stopped before {name} was done"),
+        format!("the {kernel} stopped before {name} was done"),
     )
-    .with_suggestion("submit the request to a running pool")
+    .with_suggestion(format!("submit the request to a running {kernel}"))
 }
 
 impl KernelPool {
@@ -292,15 +316,33 @@ impl KernelPool {
                 state.queue.push_back(task);
                 drop(state);
                 self.shared.work.notify_one();
-                return Pending { name, outcome };
+                return Pending::new(name, KERNEL, outcome);
             }
             if state.stopping {
                 // Dropping the task tells the caller the pool stopped.
-                return Pending { name, outcome };
+                return Pending::new(name, KERNEL, outcome);
             }
         }
         task.supersede();
-        Pending { name, outcome }
+        Pending::new(name, KERNEL, outcome)
+    }
+}
+
+impl crate::kernel::Kernel for KernelPool {
+    fn generation(&self) -> Generation {
+        KernelPool::generation(self)
+    }
+
+    fn advance(&self, generation: Generation) {
+        KernelPool::advance(self, generation);
+    }
+
+    fn submit<T: Send + 'static>(
+        &self,
+        generation: Generation,
+        request: KernelRequest<T>,
+    ) -> Pending<T> {
+        KernelPool::submit(self, generation, request)
     }
 }
 
@@ -335,15 +377,15 @@ fn spawn_thread(
     std::thread::Builder::new()
         .name(name)
         .spawn(run)
-        .map_err(|e| thread_error(&e))
+        .map_err(|e| thread_error(KERNEL, &e))
 }
 
-/// A pool thread that couldn't start: the system short of threads (`resource_exhausted`),
-/// or a bug.
-fn thread_error(e: &std::io::Error) -> Error {
-    const MESSAGE: &str = "couldn't start a kernel pool thread";
-    crate::worker::shortage(e, MESSAGE).unwrap_or_else(|| {
-        Error::new(ErrorCode::Internal, MESSAGE)
+/// A thread of `kernel` (`kernel pool`, `fake kernel`) that couldn't start: the system short
+/// of threads (`resource_exhausted`), or a bug.
+pub(crate) fn thread_error(kernel: &str, e: &std::io::Error) -> Error {
+    let message = format!("couldn't start a {kernel} thread");
+    crate::worker::shortage(e, &message).unwrap_or_else(|| {
+        Error::new(ErrorCode::Internal, message)
             .with_cause(e.to_string())
             .with_suggestion(crate::worker::SILICO_BUG)
     })
@@ -594,7 +636,7 @@ impl<T: Send + 'static> Task for Submitted<T> {
 /// Sends `outcome` while `state` (the pool's lock) is held, then lets the lock go. The
 /// caller may have stopped waiting; nothing more to do then, but to free the outcome, after
 /// the lock (a large result takes milliseconds to free).
-fn deliver<G, T>(state: G, reply: &SyncSender<Outcome<T>>, outcome: Outcome<T>) {
+pub(crate) fn deliver<G, T>(state: G, reply: &SyncSender<Outcome<T>>, outcome: Outcome<T>) {
     let unsent = reply.send(outcome).err();
     drop(state);
     drop(unsent);
@@ -918,7 +960,7 @@ mod tests {
 
         use super::thread_error;
         use crate::ErrorCode;
-        let short = thread_error(&io::Error::from_raw_os_error(libc::EAGAIN));
+        let short = thread_error(super::KERNEL, &io::Error::from_raw_os_error(libc::EAGAIN));
         assert_eq!(short.code(), ErrorCode::ResourceExhausted, "{short}");
         assert_eq!(short.message(), "couldn't start a kernel pool thread");
         // The OS's own words for it.
@@ -930,9 +972,15 @@ mod tests {
                 .is_some_and(|s| s.contains("processes or memory")),
             "{short}"
         );
-        let bug = thread_error(&io::Error::from_raw_os_error(libc::EINVAL));
+        let bug = thread_error(super::KERNEL, &io::Error::from_raw_os_error(libc::EINVAL));
         assert_eq!(bug.code(), ErrorCode::Internal, "{bug}");
         assert_eq!(bug.message(), "couldn't start a kernel pool thread");
+        // The fake names itself, not the pool.
+        let fake = thread_error(
+            crate::fake::KERNEL,
+            &io::Error::from_raw_os_error(libc::EINVAL),
+        );
+        assert_eq!(fake.message(), "couldn't start a fake kernel thread");
         assert_eq!(bug.cause(), Some(words(libc::EINVAL).as_str()), "{bug}");
         assert_eq!(bug.suggestion(), Some(crate::worker::SILICO_BUG), "{bug}");
     }
