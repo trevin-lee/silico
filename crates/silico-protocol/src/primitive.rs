@@ -99,8 +99,18 @@ impl Primitive {
     /// most [`MAX_LENGTH`], except that one of a cone's radii may be zero; and a torus's
     /// tube no wider than its ring.
     pub fn check(&self) -> Result<(), InvalidParameter> {
+        self.check_named(|parameter| parameter)
+    }
+
+    /// As [`check`](Self::check), with each parameter called `name(parameter)` in the
+    /// error and its message: a document calls a box's `dx` its `length`.
+    pub fn check_named(
+        &self,
+        name: impl Fn(&'static str) -> &'static str,
+    ) -> Result<(), InvalidParameter> {
         let what = self.name();
         let length = |parameter: &'static str, value: f64| {
+            let parameter = name(parameter);
             if value > LENGTH_TOLERANCE && value <= MAX_LENGTH {
                 Ok(())
             } else {
@@ -130,6 +140,7 @@ impl Primitive {
                 height,
             } => {
                 for (parameter, value) in [("radius1", radius1), ("radius2", radius2)] {
+                    let parameter = name(parameter);
                     if !(value == 0.0 || (value > LENGTH_TOLERANCE && value <= MAX_LENGTH)) {
                         return Err(InvalidParameter {
                             parameter,
@@ -141,9 +152,12 @@ impl Primitive {
                     }
                 }
                 if radius1 == 0.0 && radius2 == 0.0 {
+                    let (radius1, radius2) = (name("radius1"), name("radius2"));
                     return Err(InvalidParameter {
-                        parameter: "radius1",
-                        message: "cone radius1 must be above zero where radius2 is zero: a cone with no radius has no volume".to_owned(),
+                        parameter: radius1,
+                        message: format!(
+                            "cone {radius1} must be above zero where {radius2} is zero: a cone with no radius has no volume"
+                        ),
                     });
                 }
                 length("height", height)
@@ -155,10 +169,11 @@ impl Primitive {
                 length("major_radius", major_radius)?;
                 length("minor_radius", minor_radius)?;
                 if minor_radius - major_radius > LENGTH_TOLERANCE {
+                    let (major, minor) = (name("major_radius"), name("minor_radius"));
                     return Err(InvalidParameter {
-                        parameter: "minor_radius",
+                        parameter: minor,
                         message: format!(
-                            "torus minor_radius must be at most major_radius ({}), got {}: the tube would cross the axis",
+                            "torus {minor} must be at most {major} ({}), got {}: the tube would cross the axis",
                             format_number(major_radius),
                             format_number(minor_radius)
                         ),

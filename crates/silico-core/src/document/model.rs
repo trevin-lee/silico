@@ -6,6 +6,7 @@ use std::borrow::Cow;
 use std::fmt;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
+use silico_protocol::Primitive;
 
 use super::quantity::Length;
 
@@ -238,6 +239,88 @@ pub enum Operation {
 }
 
 impl Operation {
+    /// The primitive the kernel makes for this feature, at the origin, before it's moved to
+    /// its [`position`](Self::position); `None` for a boolean.
+    pub fn primitive(&self) -> Option<Primitive> {
+        Some(match *self {
+            Operation::Box {
+                length,
+                width,
+                height,
+                ..
+            } => Primitive::Box {
+                dx: length.mm(),
+                dy: width.mm(),
+                dz: height.mm(),
+            },
+            Operation::Cylinder { radius, height, .. } => Primitive::Cylinder {
+                radius: radius.mm(),
+                height: height.mm(),
+            },
+            Operation::Sphere { radius, .. } => Primitive::Sphere {
+                radius: radius.mm(),
+            },
+            Operation::Cone {
+                radius1,
+                radius2,
+                height,
+                ..
+            } => Primitive::Cone {
+                radius1: radius1.mm(),
+                radius2: radius2.mm(),
+                height: height.mm(),
+            },
+            Operation::Torus {
+                radius1, radius2, ..
+            } => Primitive::Torus {
+                major_radius: radius1.mm(),
+                minor_radius: radius2.mm(),
+            },
+            Operation::Fuse { .. } | Operation::Cut { .. } | Operation::Common { .. } => {
+                return None;
+            }
+        })
+    }
+
+    /// Where a primitive sits; `None` for a boolean.
+    pub fn position(&self) -> Option<&Position> {
+        match self {
+            Operation::Box { position, .. }
+            | Operation::Cylinder { position, .. }
+            | Operation::Sphere { position, .. }
+            | Operation::Cone { position, .. }
+            | Operation::Torus { position, .. } => Some(position),
+            Operation::Fuse { .. } | Operation::Cut { .. } | Operation::Common { .. } => None,
+        }
+    }
+
+    /// The field a [`primitive`](Self::primitive)'s parameter is in the file: a box's `dx`
+    /// is its `length`, a torus's `major_radius` its `radius1`.
+    pub fn field(parameter: &'static str) -> &'static str {
+        match parameter {
+            "dx" => "length",
+            "dy" => "width",
+            "dz" => "height",
+            "major_radius" => "radius1",
+            "minor_radius" => "radius2",
+            other => other,
+        }
+    }
+
+    /// The features this one consumes, `base` then `tool`, by field; none for a primitive.
+    pub fn inputs(&self) -> Option<[(&'static str, &FeatureId); 2]> {
+        match self {
+            Operation::Fuse { base, tool }
+            | Operation::Cut { base, tool }
+            | Operation::Common { base, tool } => Some([("base", base), ("tool", tool)]),
+            Operation::Box { .. }
+            | Operation::Cylinder { .. }
+            | Operation::Sphere { .. }
+            | Operation::Cone { .. }
+            | Operation::Torus { .. } => None,
+        }
+    }
+
     /// The `type` the file writes.
     pub fn type_name(&self) -> &'static str {
         match self {
