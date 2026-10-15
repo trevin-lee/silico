@@ -5,12 +5,10 @@
 //! cycles), every solid is consumed at most once, and every primitive's values are ones
 //! the kernel accepts, by the kernel's own rules.
 
-use std::collections::BTreeMap;
-
 use silico_protocol::{MAX_LENGTH, check_offset, format_number};
 
 use super::json::shown;
-use super::model::{Document, FeatureId, Operation};
+use super::model::{Document, FeatureId, ID_LENGTH, Operation};
 use crate::{Error, ErrorCode};
 
 /// How many of a document's problems [`Invalid`] lists; it counts the rest.
@@ -44,17 +42,38 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
     let features = &document.features;
     let _span = tracing::debug_span!("document_validate", features = features.len()).entered();
 
-    // Each ID's first feature, and how many features have it.
-    let mut ids: BTreeMap<&FeatureId, (usize, usize)> = BTreeMap::new();
-    for (index, feature) in features.iter().enumerate() {
-        ids.entry(&feature.id).or_insert((index, 0)).1 += 1;
+    // Every feature by ID, then by place: each ID's first feature heads its run.
+    let mut by_id: Vec<(u64, usize)> = features
+        .iter()
+        .enumerate()
+        .map(|(index, feature)| (key(&feature.id), index))
+        .collect();
+    by_id.sort_unstable();
+    // The first feature with an ID, if any has it.
+    let holder = |id: &FeatureId| {
+        let key = key(id);
+        let at = by_id.partition_point(|&(k, _)| k < key);
+        by_id
+            .get(at)
+            .filter(|&&(k, _)| k == key)
+            .map(|&(_, index)| index)
+    };
+    // Each feature's ID's first feature, and whether another feature has its ID too.
+    let mut first = vec![0; features.len()];
+    let mut shared = vec![false; features.len()];
+    for run in by_id.chunk_by(|a, b| a.0 == b.0) {
+        let head = run[0].1;
+        for &(_, index) in run {
+            first[index] = head;
+            shared[index] = run.len() > 1;
+        }
     }
     // A feature is named by its ID, or by its place where another feature has the ID too.
     let label = |index: usize| {
-        let id = &features[index].id;
-        match ids.get(id) {
-            Some(&(_, 1)) => id.to_string(),
-            _ => format!("features[{index}]"),
+        if shared[index] {
+            format!("features[{index}]")
+        } else {
+            features[index].id.to_string()
         }
     };
     let described = |index: usize| {
@@ -76,16 +95,14 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
                 .with_suggestion(suggestion)
         };
 
-        if let Some(&(first, _)) = ids.get(&feature.id)
-            && first != index
-        {
+        if first[index] != index {
             problems.add(|| {
                 refuse(
                     "id",
                     format!(
                         "id {} is already the ID of {}",
                         feature.id,
-                        described(first)
+                        described(first[index])
                     ),
                     "give this feature an ID of its own".to_owned(),
                 )
@@ -127,7 +144,7 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
         }
 
         for (field, target) in feature.operation.inputs().into_iter().flatten() {
-            let Some(&(used, _)) = ids.get(target) else {
+            let Some(used) = holder(target) else {
                 problems.add(|| {
                     refuse(
                         field,
@@ -174,10 +191,15 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
                                 "{field} {target}'s solid was already consumed by {}: a solid can be used once",
                                 described(earlier)
                             ),
-                            format!(
-                                "use {}'s result, or another feature's",
-                                label(earlier)
-                            ),
+                            if shared[earlier] {
+                                // Its ID names another feature, so it can't be used by ID.
+                                format!(
+                                    "give {} an ID of its own and use its result, or use another feature",
+                                    label(earlier)
+                                )
+                            } else {
+                                format!("use {}'s result, or another feature's", label(earlier))
+                            },
                         )
                     }),
                     None => consumer[used] = Some(index),
@@ -186,6 +208,16 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
         }
     }
     problems.into_result()
+}
+
+// An ID's key is its characters' bytes as one number, so no two IDs share a key and keys
+// sort as IDs do. Every character is ASCII, so an ID of up to 8 characters fits.
+const _: () = assert!(ID_LENGTH <= 8);
+
+fn key(id: &FeatureId) -> u64 {
+    id.as_str()
+        .bytes()
+        .fold(0, |key, byte| (key << 8) | u64::from(byte))
 }
 
 /// Problems as they're found: the first [`PROBLEMS_LISTED`] made into errors, the rest
