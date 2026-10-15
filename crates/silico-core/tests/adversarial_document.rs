@@ -57,14 +57,20 @@ fn the_length(text: &str) -> Length {
     }
 }
 
-/// Runs `f` on another thread, failing if it takes longer than `limit`.
-/// `f`'s result, if it took at most `limit` of this thread's CPU time: what reading
-/// costs, which a loaded machine doesn't change (other processes take wall time, not
-/// this thread's CPU). A hang is nextest's slow-timeout's to catch.
-fn within<T>(limit: Duration, f: impl FnOnce() -> T) -> T {
-    let start = cpu_time::ThreadTime::now();
-    let out = f();
-    let spent = start.elapsed();
+/// `f`'s result, if it took at most `limit` of its thread's CPU time: what reading costs,
+/// which a loaded machine doesn't change (other processes take wall time, not the thread's
+/// CPU). A hang fails at ten times `limit` of wall time. A test using this is named
+/// `..._promptly`, so `.config/nextest.toml` runs it apart from the heavy tests.
+fn within<T: Send + 'static>(limit: Duration, f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let start = cpu_time::ThreadTime::now();
+        let out = f();
+        let _ = tx.send((out, start.elapsed()));
+    });
+    let (out, spent) = rx
+        .recv_timeout(limit * 10)
+        .unwrap_or_else(|_| panic!("didn't finish within {:?} of wall time", limit * 10));
     assert!(spent <= limit, "took {spent:?} of CPU, more than {limit:?}");
     out
 }

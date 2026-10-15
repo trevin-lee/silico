@@ -819,6 +819,47 @@ fn a_document_opens_exactly_when_it_can_be_saved() {
     assert_eq!(read(text.as_bytes()).unwrap(), document);
 }
 
+/// `id`'s feature as a refusal for size measures it: its line at indent 0, without the
+/// comma. (Counted from the written text, not by the code under test.)
+fn feature_len(text: &str, id: &str) -> usize {
+    let line = text
+        .lines()
+        .find(|l| l.contains(&format!("\"id\": \"{id}\"")))
+        .unwrap();
+    line.trim_start().trim_end_matches(',').len()
+}
+
+#[test]
+fn a_feature_is_named_exactly_when_it_takes_more_than_half_the_size() {
+    use silico_core::document::json::MAX_DOCUMENT_LEN;
+    let half = MAX_DOCUMENT_LEN / 2;
+    let mut document = read(EXAMPLE.as_bytes()).unwrap();
+    document.features[0].note = Some(String::new());
+    document.features[1].note = Some(String::new());
+    let text = write(&document).unwrap();
+    let base0 = feature_len(&text, "k7f2qx3m");
+    let base1 = feature_len(&text, "a91cw0de");
+    // Two features of exactly half each: too large, but neither takes more than half.
+    document.features[0].note = Some("a".repeat(half - base0));
+    document.features[1].note = Some("a".repeat(half - base1));
+    assert_eq!(write(&document).unwrap_err().feature(), None);
+    // One byte more on the second: it takes more than half, and is named, by `write` and
+    // by `read` alike.
+    document.features[1].note = Some("a".repeat(half - base1 + 1));
+    assert_eq!(write(&document).unwrap_err().feature(), Some("a91cw0de"));
+    let mut fits = document.clone();
+    fits.features[0].note = Some(String::new());
+    let mut text = write(&fits).unwrap();
+    let at = text.find("\"note\": \"\"").unwrap() + 9;
+    text.insert_str(at, &"a".repeat(half - base0));
+    let err = read(text.as_bytes()).unwrap_err();
+    assert!(
+        err.message().contains("too large for Silico to read"),
+        "{err}"
+    );
+    assert_eq!(err.feature(), Some("a91cw0de"), "{err}");
+}
+
 #[test]
 fn a_document_whose_text_is_exactly_the_size_is_written_and_read() {
     use silico_core::document::json::MAX_DOCUMENT_LEN;

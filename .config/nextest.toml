@@ -25,11 +25,11 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 document-heavy = { max-threads = 1 }
 
 [[profile.default.overrides]]
-filter = 'package(silico-core) & test(/_promptly$|size_or_memory_limits|opens_exactly_when|exactly_the_size|exponent_past_i128|loosely_spelled/)'
+filter = 'package(silico-core) & test(/_promptly$|size_or_memory_limits|opens_exactly_when|exactly_the_size|exponent_past_i128|loosely_spelled|exactly_when_it_takes_more/)'
 test-group = 'document-heavy'
 slow-timeout = { period = "60s", terminate-after = 10 }
 
 [[profile.ci.overrides]]
-filter = 'package(silico-core) & test(/_promptly$|size_or_memory_limits|opens_exactly_when|exactly_the_size|exponent_past_i128|loosely_spelled/)'
+filter = 'package(silico-core) & test(/_promptly$|size_or_memory_limits|opens_exactly_when|exactly_the_size|exponent_past_i128|loosely_spelled|exactly_when_it_takes_more/)'
 test-group = 'document-heavy'
 slow-timeout = { period = "60s", terminate-after = 10 }
