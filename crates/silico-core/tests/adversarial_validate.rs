@@ -734,17 +734,6 @@ proptest! {
 
 // ---------------------------------------------------------------- scale
 
-/// `f`'s CPU time on its own thread, and its result.
-fn timed<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> (T, Duration) {
-    std::thread::spawn(move || {
-        let start = cpu_time::ThreadTime::now();
-        let out = f();
-        (out, start.elapsed())
-    })
-    .join()
-    .unwrap()
-}
-
 #[test]
 fn a_million_features_all_refused_validate_promptly() {
     // Every feature a boolean of the first box with a missing tool, all sharing one ID:
@@ -792,7 +781,6 @@ fn a_million_valid_features_validate_promptly() {
         })
         .collect();
     let doc = document(features);
-    let (result, spent) = timed(move || validate(&doc));
+    let result = within(Duration::from_secs(5), move || validate(&doc));
     assert_eq!(result, Ok(()));
-    assert!(spent <= Duration::from_secs(5), "took {spent:?} of CPU");
 }
