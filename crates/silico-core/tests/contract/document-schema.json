@@ -1,0 +1,314 @@
+{
+  "$defs": {
+    "Feature": {
+      "description": "One feature of the timeline: what it is, its version, and its name.",
+      "oneOf": [
+        {
+          "description": "A box from `position` (its lowest corner), `length` along x, `width` along y, and\n`height` along z.",
+          "properties": {
+            "height": {
+              "$ref": "#/$defs/Length"
+            },
+            "length": {
+              "$ref": "#/$defs/Length"
+            },
+            "position": {
+              "items": {
+                "$ref": "#/$defs/Length"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": "array"
+            },
+            "type": {
+              "const": "box",
+              "type": "string"
+            },
+            "width": {
+              "$ref": "#/$defs/Length"
+            }
+          },
+          "required": [
+            "type",
+            "position",
+            "length",
+            "width",
+            "height"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A cylinder along z, its base centred on `position`.",
+          "properties": {
+            "height": {
+              "$ref": "#/$defs/Length"
+            },
+            "position": {
+              "items": {
+                "$ref": "#/$defs/Length"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": "array"
+            },
+            "radius": {
+              "$ref": "#/$defs/Length"
+            },
+            "type": {
+              "const": "cylinder",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "position",
+            "radius",
+            "height"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A sphere centred on `position`.",
+          "properties": {
+            "position": {
+              "items": {
+                "$ref": "#/$defs/Length"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": "array"
+            },
+            "radius": {
+              "$ref": "#/$defs/Length"
+            },
+            "type": {
+              "const": "sphere",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "position",
+            "radius"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A cone along z, its base (`radius1`) centred on `position`, `radius2` at `height`.\nEither radius may be zero, not both.",
+          "properties": {
+            "height": {
+              "$ref": "#/$defs/Length"
+            },
+            "position": {
+              "items": {
+                "$ref": "#/$defs/Length"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": "array"
+            },
+            "radius1": {
+              "$ref": "#/$defs/Length"
+            },
+            "radius2": {
+              "$ref": "#/$defs/Length"
+            },
+            "type": {
+              "const": "cone",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "position",
+            "radius1",
+            "radius2",
+            "height"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A torus around z, centred on `position`: `radius1` from the axis to the tube's\ncentre, `radius2` the tube's.",
+          "properties": {
+            "position": {
+              "items": {
+                "$ref": "#/$defs/Length"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": "array"
+            },
+            "radius1": {
+              "$ref": "#/$defs/Length"
+            },
+            "radius2": {
+              "$ref": "#/$defs/Length"
+            },
+            "type": {
+              "const": "torus",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "position",
+            "radius1",
+            "radius2"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Everything in either of two features' solids.",
+          "properties": {
+            "base": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "tool": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "type": {
+              "const": "fuse",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "base",
+            "tool"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "`base`'s solid less what's in `tool`'s.",
+          "properties": {
+            "base": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "tool": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "type": {
+              "const": "cut",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "base",
+            "tool"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "What's in both of two features' solids.",
+          "properties": {
+            "base": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "tool": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "type": {
+              "const": "common",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "base",
+            "tool"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/FeatureId"
+        },
+        "name": {
+          "$ref": "#/$defs/Name"
+        },
+        "note": {
+          "description": "A note about the feature, kept with it (left out when there's none).",
+          "type": "string"
+        },
+        "v": {
+          "$ref": "#/$defs/FeatureVersion"
+        }
+      },
+      "required": [
+        "id",
+        "v",
+        "name"
+      ],
+      "type": "object",
+      "unevaluatedProperties": false
+    },
+    "FeatureId": {
+      "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+      "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+      "type": "string"
+    },
+    "FeatureVersion": {
+      "const": 1,
+      "description": "The feature's version: changing a feature type's behaviour bumps it, and a document keeps the behaviour it was made with. 1 for every type so far."
+    },
+    "FormatVersion": {
+      "const": 1,
+      "description": "The format's version: 1."
+    },
+    "Length": {
+      "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+      "type": "number"
+    },
+    "Name": {
+      "description": "A display name, which needn't be unique.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "Units": {
+      "additionalProperties": false,
+      "description": "The units lengths and angles are written in. Version 1 reads only millimetres at 1 nm (angles in degrees at 1 nanodegree).",
+      "properties": {
+        "length": {
+          "const": "mm"
+        },
+        "resolution": {
+          "const": "1nm"
+        }
+      },
+      "required": [
+        "length",
+        "resolution"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A Silico document: a part's feature timeline, rebuilt from this text.",
+  "properties": {
+    "features": {
+      "description": "The features, in timeline order: each may use only features before it.",
+      "items": {
+        "$ref": "#/$defs/Feature"
+      },
+      "type": "array"
+    },
+    "silico": {
+      "$ref": "#/$defs/FormatVersion",
+      "description": "The format's version."
+    },
+    "units": {
+      "$ref": "#/$defs/Units",
+      "description": "The units every length and angle is written in."
+    }
+  },
+  "required": [
+    "silico",
+    "units",
+    "features"
+  ],
+  "title": "Silico document",
+  "type": "object"
+}

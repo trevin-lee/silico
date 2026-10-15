@@ -1,0 +1,31 @@
+# Fuzzing for silico-core's document reader and writer. Its own workspace, built with
+# nightly by cargo-fuzz: cargo +nightly fuzz run document -- -max_total_time=300
+[package]
+name = "silico-core-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+silico-core = { path = ".." }
+
+[[bin]]
+name = "document"
+path = "fuzz_targets/document.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decimal"
+path = "fuzz_targets/decimal.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]
