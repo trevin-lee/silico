@@ -240,6 +240,23 @@ fn every_kernel_parameter_of_every_primitive_is_named_as_a_field_its_type_has() 
     }
 }
 
+#[test]
+fn each_type_renames_only_its_own_kernel_parameters() {
+    let torus = Operation::Torus {
+        position: [nm(0); 3],
+        radius1: nm(2),
+        radius2: nm(1),
+    };
+    let cylinder = Operation::Cylinder {
+        position: [nm(0); 3],
+        radius: nm(1),
+        height: nm(1),
+    };
+    assert_eq!(unit_box().document_field("major_radius"), "major_radius");
+    assert_eq!(torus.document_field("dz"), "dz");
+    assert_eq!(cylinder.document_field("dx"), "dx");
+}
+
 // ---------------------------------------------------------------- every problem at once
 
 #[test]
