@@ -66,32 +66,43 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for WorkerLines {
 }
 
 #[test]
-fn an_occt_warning_in_a_worker_traces_back_to_the_step_and_the_edit() {
+fn an_occt_warning_in_a_worker_traces_back_to_the_step_and_the_edit_with_more_work_after_it() {
     let seen: Seen = Arc::default();
     tracing::subscriber::set_global_default(
         tracing_subscriber::registry()
             .with(WorkerLines(Arc::clone(&seen)).with_filter(LevelFilter::WARN)),
     )
     .unwrap();
-    // A sphere fused with a cylinder of its radius: OCCT warns about the touching surfaces.
-    let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "features": [
-        {"id": "s0000001", "type": "sphere", "v": 1, "name": "Ball", "position": [0, 0, 0], "radius": 5},
-        {"id": "c0000001", "type": "cylinder", "v": 1, "name": "Post", "position": [0, 0, 0], "radius": 5, "height": 5},
-        {"id": "f0000001", "type": "fuse", "v": 1, "name": "Both", "base": "s0000001", "tool": "c0000001"}
-    ]}"#;
-    let document = Checked::new(read(text.as_bytes()).unwrap()).unwrap();
+    // One worker, so each warning's step is followed on it by the next step (the cut on the
+    // fuse), which may be asked before the warning's line is read.
     let pool = KernelPool::start_workers(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")), 1)
         .unwrap();
     let engine = Recompute::new(pool);
-    let edit = tracing::warn_span!("user_edit");
-    let run = edit.in_scope(|| engine.start(document));
-    assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
+    let rounds = 200;
+    for i in 0..rounds {
+        // A sphere fused with a cylinder of its radius: OCCT warns about the touching
+        // surfaces (only at that tangency, so it's the position that varies).
+        let text = format!(
+            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "features": [
+            {{"id": "s0000001", "type": "sphere", "v": 1, "name": "Ball", "position": [{i}, 0, 0], "radius": 5}},
+            {{"id": "c0000001", "type": "cylinder", "v": 1, "name": "Post", "position": [{i}, 0, 0], "radius": 5, "height": 5}},
+            {{"id": "f0000001", "type": "fuse", "v": 1, "name": "Both", "base": "s0000001", "tool": "c0000001"}},
+            {{"id": "b0000001", "type": "box", "v": 1, "name": "Bit", "position": [-1, -1, -20], "length": 2, "width": 2, "height": 2}},
+            {{"id": "k0000001", "type": "cut", "v": 1, "name": "Cut", "base": "f0000001", "tool": "b0000001"}}
+        ]}}"#
+        );
+        let document = Checked::new(read(text.as_bytes()).unwrap()).unwrap();
+        let edit = tracing::warn_span!("user_edit");
+        let run = edit.in_scope(|| engine.start(document));
+        assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
+    }
     // The log thread forwards the worker's lines as it reads them.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while seen.lock().unwrap().is_empty() {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while seen.lock().unwrap().len() < rounds {
         assert!(
             std::time::Instant::now() < deadline,
-            "no warning from the worker"
+            "fewer warnings than rounds: {}",
+            seen.lock().unwrap().len()
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }

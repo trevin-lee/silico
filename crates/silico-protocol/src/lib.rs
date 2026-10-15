@@ -41,6 +41,11 @@ pub const WORKER_FD: i32 = 3;
 /// started without it wasn't started by the core, and refuses to run.
 pub const WORKER_FD_ENV: &str = "SILICO_WORKER_FD";
 
+/// The key of the line a worker writes to its log (stderr) after each request's own lines
+/// and before its reply, `{"silico_request_done": <trace>}`: the core keeps the span the
+/// request was asked in until it reads it, so every log line of the request goes under it.
+pub const REQUEST_DONE: &str = "silico_request_done";
+
 /// Identifies a request to a worker. Chosen by the core; the response carries it back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct RequestId(pub u64);

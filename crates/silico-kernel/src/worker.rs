@@ -14,9 +14,9 @@ use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
 
 use silico_protocol::{
-    Blob, BuiltData, Failure, FrameError, FrameReader, FreecadMeasures, Generation, Op, Refusal,
-    Reply, Request, RequestId, Response, ShapeData, ShapeSummary, WORKER_FD, WORKER_FD_ENV,
-    write_message, write_started,
+    Blob, BuiltData, Failure, FrameError, FrameReader, FreecadMeasures, Generation, Op,
+    REQUEST_DONE, Refusal, Reply, Request, RequestId, Response, ShapeData, ShapeSummary, WORKER_FD,
+    WORKER_FD_ENV, write_message, write_started,
 };
 
 use crate::KernelError;
@@ -215,6 +215,13 @@ where
                 mask,
                 op: name.to_owned(),
             }));
+        }
+        // The request's last log line, after any it logged and before its reply: the core
+        // keeps the span the request was asked in until it has read this, so every line of
+        // the request goes under it, and then lets it go.
+        {
+            let mut log = std::io::stderr().lock();
+            let _ = writeln!(log, "{{\"{REQUEST_DONE}\":{}}}", request.trace.0);
         }
         write_message(
             &mut writer,

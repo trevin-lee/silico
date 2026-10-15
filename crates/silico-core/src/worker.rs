@@ -72,9 +72,10 @@ pub struct Worker {
     socket: UnixStream,
     replies: Receiver<Result<Response, FrameError>>,
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
-    /// The request in flight (or the last one): its trace, and the span it was asked in,
-    /// under which the log thread puts the worker's lines for it.
-    caller: Arc<Mutex<Option<(u64, tracing::Span)>>>,
+    /// The requests whose log lines the log thread may still read: each one's trace, and
+    /// the span it was asked in, under which its lines go, until the worker's line saying
+    /// the request is done ([`silico_protocol::REQUEST_DONE`]) is read.
+    callers: Arc<Mutex<Callers>>,
     /// Closes when the log thread has read everything the worker wrote.
     stderr_done: Receiver<()>,
     /// Set when the worker says it has started (see [`silico_protocol::write_started`]), or
@@ -139,15 +140,15 @@ impl Worker {
         let pid = guard.id();
 
         let stderr_tail = Arc::new(Mutex::new(VecDeque::new()));
-        let caller = Arc::new(Mutex::new(None));
+        let callers = Arc::new(Mutex::new(Callers::default()));
         let (done_tx, stderr_done) = mpsc::channel::<()>();
         if let Some(stderr) = guard.take_stderr() {
             let tail = Arc::clone(&stderr_tail);
-            let caller = Arc::clone(&caller);
+            let callers = Arc::clone(&callers);
             std::thread::Builder::new()
                 .name(format!("worker-{pid}-logs"))
                 .spawn(move || {
-                    forward_logs(stderr, pid, &tail, &caller);
+                    forward_logs(stderr, pid, &tail, &callers);
                     drop(done_tx);
                 })
                 .map_err(|e| start_failed("starting the log thread", &e))?;
@@ -199,7 +200,7 @@ impl Worker {
             socket: ours,
             replies,
             stderr_tail,
-            caller,
+            callers,
             stderr_done,
             started,
             answers: 0,
@@ -324,7 +325,7 @@ impl Worker {
         let trace = TraceId(NEXT_TRACE.fetch_add(1, Ordering::Relaxed));
         // The worker's log lines for this request go under the span it was asked in, so at
         // any level they trace back to it (ARCHITECTURE.md, invariant 9).
-        *lock(&self.caller) = Some((trace.0, tracing::Span::current()));
+        lock(&self.callers).push(trace.0, tracing::Span::current());
         let span = tracing::debug_span!(
             "worker_call",
             trace = trace.0,
@@ -695,11 +696,42 @@ impl Drop for KillOnDrop {
 /// Re-emits each of the worker's log lines into `tracing` at its own level, and keeps the
 /// last [`STDERR_TAIL_LINES`] for crash reports. Lines are read as bytes, so text that
 /// isn't UTF-8 can't stop the reading, and cut at [`MAX_LOG_LINE`].
+/// The spans of a worker's requests whose log lines may still be read, by trace, oldest
+/// first. A worker that never says a request is done (an old or broken one) can hold no
+/// more than [`Callers::MOST`].
+#[derive(Default)]
+struct Callers(VecDeque<(u64, tracing::Span)>);
+
+impl Callers {
+    const MOST: usize = 16;
+
+    fn push(&mut self, trace: u64, span: tracing::Span) {
+        if self.0.len() == Self::MOST {
+            self.0.pop_front();
+        }
+        self.0.push_back((trace, span));
+    }
+
+    fn parent(&self, trace: Option<u64>) -> Option<tracing::Id> {
+        self.0
+            .iter()
+            .find(|(asked, _)| Some(*asked) == trace)
+            .and_then(|(_, span)| span.id())
+    }
+
+    /// Lets the span of request `trace` go, and any older (whose lines came before).
+    fn done(&mut self, trace: u64) {
+        if let Some(at) = self.0.iter().position(|(asked, _)| *asked == trace) {
+            self.0.drain(..=at);
+        }
+    }
+}
+
 fn forward_logs(
     stderr: impl Read,
     pid: u32,
     tail: &Mutex<VecDeque<String>>,
-    caller: &Mutex<Option<(u64, tracing::Span)>>,
+    callers: &Mutex<Callers>,
 ) {
     let mut reader = BufReader::new(stderr);
     let mut line = Vec::new();
@@ -721,7 +753,9 @@ fn forward_logs(
         if text.is_empty() {
             continue;
         }
-        let summary = emit_worker_log(text, pid, caller);
+        let Some(summary) = emit_worker_log(text, pid, callers) else {
+            continue;
+        };
         let mut tail = tail.lock().unwrap_or_else(PoisonError::into_inner);
         if tail.len() == STDERR_TAIL_LINES {
             tail.pop_front();
@@ -731,22 +765,24 @@ fn forward_logs(
 }
 
 /// Emits one worker log line (JSON, from `tracing_subscriber`'s json format) at its own
-/// level, under the span its request was asked in (`caller`, if the line's trace is its),
-/// and returns it as `LEVEL message` for crash reports. Anything that isn't such a line (a
-/// crash message from the C runtime, say) is kept as is, at warn.
-fn emit_worker_log(line: &str, pid: u32, caller: &Mutex<Option<(u64, tracing::Span)>>) -> String {
+/// level, under the span its request was asked in (in `callers`, by the line's trace), and
+/// returns it as `LEVEL message` for crash reports. Anything that isn't such a line (a
+/// crash message from the C runtime, say) is kept as is, at warn. The line saying a request
+/// is done lets its span go, and isn't a log line: `None`.
+fn emit_worker_log(line: &str, pid: u32, callers: &Mutex<Callers>) -> Option<String> {
     let parsed: Option<serde_json::Value> = serde_json::from_str(line).ok();
     let Some(event) = parsed.filter(serde_json::Value::is_object) else {
         tracing::warn!(target: "silico::worker", pid, "{line}");
-        return line.to_owned();
+        return Some(line.to_owned());
     };
+    if let Some(trace) = event[silico_protocol::REQUEST_DONE].as_u64() {
+        lock(callers).done(trace);
+        return None;
+    }
     let level = event["level"].as_str().unwrap_or("INFO");
     let message = event["fields"]["message"].as_str().unwrap_or(line);
     let trace = event["span"]["trace"].as_u64();
-    let parent = lock(caller)
-        .as_ref()
-        .filter(|(asked, _)| Some(*asked) == trace)
-        .and_then(|(_, span)| span.id());
+    let parent = lock(callers).parent(trace);
     match level {
         "ERROR" => {
             tracing::error!(target: "silico::worker", parent: parent, pid, trace, "{message}");
@@ -758,7 +794,7 @@ fn emit_worker_log(line: &str, pid: u32, caller: &Mutex<Option<(u64, tracing::Sp
         }
         _ => tracing::trace!(target: "silico::worker", parent: parent, pid, trace, "{message}"),
     }
-    format!("{level} {message}")
+    Some(format!("{level} {message}"))
 }
 
 /// Signals a worker gets from a fault of its own. Each is named in `signal_name` too.
@@ -1439,12 +1475,12 @@ mod tests {
 
     fn logs_of(bytes: &[u8]) -> Vec<String> {
         let tail = Mutex::new(VecDeque::new());
-        forward_logs(bytes, 1, &tail, &Mutex::new(None));
+        forward_logs(bytes, 1, &tail, &Mutex::new(super::Callers::default()));
         tail.into_inner().unwrap().into_iter().collect()
     }
 
     #[test]
-    fn a_worker_line_goes_under_the_span_its_request_was_asked_in() {
+    fn a_worker_line_goes_under_the_span_its_request_was_asked_in_at_every_level() {
         use std::sync::{Arc, Mutex};
         use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
         use tracing_subscriber::registry::LookupSpan;
@@ -1459,28 +1495,56 @@ mod tests {
                 self.0.lock().unwrap().push(scope);
             }
         }
-        let seen: Seen = Arc::default();
-        let subscriber = tracing_subscriber::registry()
-            .with(Events(Arc::clone(&seen)).with_filter(tracing::level_filters::LevelFilter::WARN));
-        tracing::subscriber::with_default(subscriber, || {
-            let step = tracing::warn_span!("recompute_step");
-            let caller = Mutex::new(Some((7, step)));
-            let line = |trace: u64| {
-                format!(
-                    "{{\"level\":\"WARN\",\"fields\":{{\"message\":\"OCCT warned\"}},\"span\":{{\"trace\":{trace}}}}}"
-                )
-            };
-            super::emit_worker_log(&line(7), 1, &caller);
-            // A line of another request, or none, isn't put under it.
-            super::emit_worker_log(&line(8), 1, &caller);
-            super::emit_worker_log(
-                "{\"level\":\"WARN\",\"fields\":{\"message\":\"no request\"}}",
-                1,
-                &caller,
+        for level in ["ERROR", "WARN", "INFO", "DEBUG", "TRACE"] {
+            let seen: Seen = Arc::default();
+            let subscriber = tracing_subscriber::registry().with(
+                Events(Arc::clone(&seen)).with_filter(tracing::level_filters::LevelFilter::TRACE),
             );
-        });
-        let seen = seen.lock().unwrap().clone();
-        assert_eq!(seen, [vec!["recompute_step"], vec![], vec![]]);
+            tracing::subscriber::with_default(subscriber, || {
+                let mut callers = super::Callers::default();
+                callers.push(7, tracing::error_span!("first_step"));
+                callers.push(8, tracing::error_span!("second_step"));
+                let callers = Mutex::new(callers);
+                let line = |trace: u64| {
+                    format!(
+                        "{{\"level\":\"{level}\",\"fields\":{{\"message\":\"OCCT said\"}},\"span\":{{\"trace\":{trace}}}}}"
+                    )
+                };
+                // The second request was asked before the first's line was read: each line
+                // still goes under its own request's span.
+                super::emit_worker_log(&line(7), 1, &callers);
+                super::emit_worker_log(&line(8), 1, &callers);
+                // A line of no request goes under none.
+                super::emit_worker_log(
+                    &format!("{{\"level\":\"{level}\",\"fields\":{{\"message\":\"no request\"}}}}"),
+                    1,
+                    &callers,
+                );
+                // The done line lets the first request's span go, and isn't a log line.
+                assert_eq!(
+                    super::emit_worker_log("{\"silico_request_done\":7}", 1, &callers),
+                    None
+                );
+                super::emit_worker_log(&line(7), 1, &callers);
+                assert_eq!(callers.lock().unwrap().0.len(), 1);
+            });
+            let seen = seen.lock().unwrap().clone();
+            assert_eq!(
+                seen,
+                [vec!["first_step"], vec!["second_step"], vec![], vec![]],
+                "{level}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_worker_that_never_says_a_request_is_done_holds_no_more_than_sixteen_spans() {
+        let mut callers = super::Callers::default();
+        for trace in 0..100 {
+            callers.push(trace, tracing::Span::none());
+        }
+        assert_eq!(callers.0.len(), super::Callers::MOST);
+        assert_eq!(callers.0.front().map(|(trace, _)| *trace), Some(84));
     }
 
     #[test]
@@ -1507,7 +1571,7 @@ mod tests {
                 .finish();
             let line = format!("{{\"level\":\"{level}\",\"fields\":{{\"message\":\"hello\"}}}}");
             tracing::subscriber::with_default(subscriber, || {
-                super::emit_worker_log(&line, 1, &Mutex::new(None))
+                super::emit_worker_log(&line, 1, &Mutex::new(super::Callers::default()))
             });
             let out = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
             assert!(

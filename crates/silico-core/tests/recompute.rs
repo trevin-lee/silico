@@ -813,3 +813,29 @@ fn an_older_recompute_finishing_late_doesnt_make_the_newer_ones_results_forgotte
     published(&engine, one_box(2));
     assert_eq!(engine.kernel().fake.calls().len(), before);
 }
+
+#[test]
+fn three_moves_on_one_make_all_run_at_once() {
+    // Waking one thread for a make's three moves would leave two waiting for it.
+    let engine = engine(4);
+    let hold = engine
+        .kernel()
+        .hold(|op| matches!(op, Op::Translate { .. }));
+    let make = engine
+        .kernel()
+        .hold(|op| matches!(op, Op::MakePrimitive(_)));
+    let run = engine.start(document(&[
+        r#"{"id": "aaaaaaaa", "type": "box", "v": 1, "name": "A", "position": [1, 0, 0], "length": 1, "width": 1, "height": 1}"#,
+        r#"{"id": "bbbbbbbb", "type": "box", "v": 1, "name": "B", "position": [0, 1, 0], "length": 1, "width": 1, "height": 1}"#,
+        r#"{"id": "cccccccc", "type": "box", "v": 1, "name": "C", "position": [0, 0, 1], "length": 1, "width": 1, "height": 1}"#,
+    ]));
+    assert!(engine.kernel().wait_running(1, WAIT));
+    // Let the recompute's other threads find nothing ready and wait, while the make is
+    // held (a pause can only let a wrong wake-up pass, never fail a right one).
+    std::thread::sleep(Duration::from_millis(100));
+    make.release();
+    let together = engine.kernel().wait_running(3, WAIT);
+    hold.release();
+    assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
+    assert!(together, "the three moves didn't run at once");
+}
