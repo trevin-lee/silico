@@ -190,6 +190,9 @@ struct Engine<K> {
 struct EngineState {
     /// The newest recompute's generation.
     generation: Generation,
+    /// Whether the newest recompute was cancelled when no newer generation was left to
+    /// supersede it with: it publishes nothing.
+    cancelled: bool,
     /// Every step result kept, by key: the published model's, and any a recompute finished
     /// since.
     results: BTreeMap<Key, StepResult>,
@@ -206,6 +209,7 @@ impl<K: Kernel + 'static> Recompute<K> {
                 kernel,
                 state: Mutex::new(EngineState {
                     generation,
+                    cancelled: false,
                     results: BTreeMap::new(),
                     published: None,
                 }),
@@ -228,9 +232,18 @@ impl<K: Kernel + 'static> Recompute<K> {
         let (reply, outcome) = mpsc::sync_channel(1);
         let generation = {
             let mut state = lock(&self.engine.state);
-            let next = Generation(state.generation.0.max(self.engine.kernel.generation().0) + 1);
-            state.generation = next;
-            next
+            let newest = state.generation.0.max(self.engine.kernel.generation().0);
+            let Some(next) = newest.checked_add(1) else {
+                let _ = reply.send(Err(Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "the kernel has no generations left to recompute with",
+                )
+                .with_suggestion("start a new kernel")));
+                return Run { outcome };
+            };
+            state.generation = Generation(next);
+            state.cancelled = false;
+            state.generation
         };
         self.engine.kernel.advance(generation);
         let engine = Arc::clone(&self.engine);
@@ -253,10 +266,16 @@ impl<K: Kernel + 'static> Recompute<K> {
     /// Supersedes the recompute running, if any: nothing of it is published.
     pub fn cancel(&self) {
         let mut state = lock(&self.engine.state);
-        state.generation = Generation(state.generation.0.saturating_add(1));
-        let generation = state.generation;
-        drop(state);
-        self.engine.kernel.advance(generation);
+        match state.generation.0.checked_add(1) {
+            Some(next) => {
+                state.generation = Generation(next);
+                drop(state);
+                self.engine.kernel.advance(Generation(next));
+            }
+            // No newer generation to stop its steps with: they run on, but it publishes
+            // nothing.
+            None => state.cancelled = true,
+        }
     }
 }
 
@@ -442,6 +461,8 @@ struct Schedule {
     ready: VecDeque<Key>,
     running: usize,
     superseded: bool,
+    /// A step that panicked, a bug in Silico: the recompute stops, and fails with this.
+    broken: Option<Error>,
 }
 
 impl<K: Kernel + 'static> Engine<K> {
@@ -461,6 +482,7 @@ impl<K: Kernel + 'static> Engine<K> {
             ready: VecDeque::new(),
             running: 0,
             superseded: false,
+            broken: None,
         };
         for key in &plan.order {
             if schedule.done.contains_key(key) {
@@ -512,13 +534,16 @@ impl<K: Kernel + 'static> Engine<K> {
         let schedule = schedule
             .into_inner()
             .unwrap_or_else(PoisonError::into_inner);
+        if let Some(error) = schedule.broken {
+            return Err(error);
+        }
         self.keep(&schedule.done);
         if schedule.superseded {
             return Ok(RunOutcome::Superseded);
         }
         let model = Arc::new(model(&plan, &schedule.done, generation));
         let mut state = lock(&self.state);
-        if state.generation != generation {
+        if state.generation != generation || state.cancelled {
             return Ok(RunOutcome::Superseded);
         }
         // Keep only what this document uses.
@@ -553,7 +578,8 @@ impl<K: Kernel + 'static> Engine<K> {
             let (key, inputs) = {
                 let mut s = lock(schedule);
                 let key = loop {
-                    if s.superseded || (s.ready.is_empty() && s.running == 0) {
+                    if s.superseded || s.broken.is_some() || (s.ready.is_empty() && s.running == 0)
+                    {
                         changed.notify_all();
                         return;
                     }
@@ -576,19 +602,32 @@ impl<K: Kernel + 'static> Engine<K> {
                     .collect();
                 (key, inputs)
             };
-            let outcome = match plan.steps.get(&key) {
-                Some(step) => {
-                    let _span = tracing::debug_span!("recompute_step", key = %key).entered();
-                    self.step(*step, &inputs, generation)
+            // A panic under a step is a bug in Silico: caught, so the recompute ends with an
+            // error rather than waiting forever on a step that will never finish.
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                match plan.steps.get(&key) {
+                    Some(step) => {
+                        let _span = tracing::debug_span!("recompute_step", key = %key).entered();
+                        self.step(*step, &inputs, generation)
+                    }
+                    None => Outcome::Done(Err(Error::new(
+                        ErrorCode::Internal,
+                        "a recompute step wasn't planned",
+                    )
+                    .with_suggestion(crate::worker::SILICO_BUG))),
                 }
-                None => Outcome::Done(Err(Error::new(
-                    ErrorCode::Internal,
-                    "a recompute step wasn't planned",
-                )
-                .with_suggestion(crate::worker::SILICO_BUG))),
-            };
+            }));
             let mut s = lock(schedule);
             s.running -= 1;
+            let Ok(outcome) = outcome else {
+                s.broken = Some(
+                    Error::new(ErrorCode::Internal, "a recompute step panicked")
+                        .with_suggestion(crate::worker::SILICO_BUG),
+                );
+                drop(s);
+                changed.notify_all();
+                return;
+            };
             match outcome {
                 Outcome::Superseded => s.superseded = true,
                 Outcome::Done(result) => {
