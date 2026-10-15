@@ -63,14 +63,22 @@ fn the_length(text: &str) -> Length {
 /// `..._promptly`, so `.config/nextest.toml` runs it apart from the heavy tests.
 fn within<T: Send + 'static>(limit: Duration, f: impl FnOnce() -> T + Send + 'static) -> T {
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    let thread = std::thread::spawn(move || {
         let start = cpu_time::ThreadTime::now();
         let out = f();
         let _ = tx.send((out, start.elapsed()));
     });
-    let (out, spent) = rx
-        .recv_timeout(limit * 10)
-        .unwrap_or_else(|_| panic!("didn't finish within {:?} of wall time", limit * 10));
+    let (out, spent) = match rx.recv_timeout(limit * 10) {
+        Ok(done) => done,
+        // `f` panicked: its panic, not a timeout.
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => match thread.join() {
+            Err(panic) => std::panic::resume_unwind(panic),
+            Ok(()) => panic!("the thread ended without a result"),
+        },
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            panic!("didn't finish within {:?} of wall time", limit * 10)
+        }
+    };
     assert!(spent <= limit, "took {spent:?} of CPU, more than {limit:?}");
     out
 }

@@ -861,6 +861,27 @@ fn a_feature_is_named_exactly_when_it_takes_more_than_half_the_size() {
 }
 
 #[test]
+fn the_first_and_last_features_are_named_exactly_when_they_take_more_than_half_too() {
+    use silico_core::document::json::MAX_DOCUMENT_LEN;
+    let half = MAX_DOCUMENT_LEN / 2;
+    let ids = ["k7f2qx3m", "a91cw0de", "m3tq8v0z"];
+    let mut empty = read(EXAMPLE.as_bytes()).unwrap();
+    for feature in &mut empty.features {
+        feature.note = Some(String::new());
+    }
+    let text = write(&empty).unwrap();
+    let base: Vec<usize> = ids.iter().map(|id| feature_len(&text, id)).collect();
+    // Each end in turn takes one byte more than half, the middle exactly half.
+    for (large, other) in [(0, 1), (2, 1)] {
+        let mut document = empty.clone();
+        document.features[large].note = Some("a".repeat(half - base[large] + 1));
+        document.features[other].note = Some("a".repeat(half - base[other]));
+        let err = write(&document).unwrap_err();
+        assert_eq!(err.feature(), Some(ids[large]), "{}", ids[large]);
+    }
+}
+
+#[test]
 fn a_document_whose_text_is_exactly_the_size_is_written_and_read() {
     use silico_core::document::json::MAX_DOCUMENT_LEN;
     let mut document = read(EXAMPLE.as_bytes()).unwrap();
