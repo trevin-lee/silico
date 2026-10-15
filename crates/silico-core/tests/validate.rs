@@ -121,6 +121,24 @@ fn a_missing_id_sorting_between_present_ones_is_refused_not_matched_to_a_neighbo
 }
 
 #[test]
+fn ids_differing_in_one_character_anywhere_are_different_features() {
+    for at in 0..8 {
+        let mut other = *b"aaaaaaaa";
+        other[at] = b'b';
+        let other = std::str::from_utf8(&other).unwrap();
+        assert_eq!(
+            checked(&[
+                &block("aaaaaaaa", "A"),
+                &block(other, "B"),
+                &boolean("zzzzzzzz", "fuse", "F", "aaaaaaaa", other),
+            ]),
+            Ok(()),
+            "{other}"
+        );
+    }
+}
+
+#[test]
 fn a_feature_using_itself_is_refused() {
     let error = problem(&[
         &block("aaaaaaaa", "A"),
