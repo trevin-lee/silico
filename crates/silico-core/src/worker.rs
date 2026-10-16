@@ -357,6 +357,8 @@ impl Worker {
             Ok(()) => {}
             // Refused before anything was sent: the request, not the worker, is at fault.
             Err(e @ (FrameError::TooLarge { .. } | FrameError::Encode(_))) => {
+                // The worker will never say it's done: its span goes now.
+                lock(&self.callers).forget(trace.0);
                 return Err(Error::new(
                     ErrorCode::InvalidInput,
                     format!("{name} couldn't be sent to the kernel worker"),
@@ -697,19 +699,31 @@ impl Drop for KillOnDrop {
 /// last [`STDERR_TAIL_LINES`] for crash reports. Lines are read as bytes, so text that
 /// isn't UTF-8 can't stop the reading, and cut at [`MAX_LOG_LINE`].
 /// The spans of a worker's requests whose log lines may still be read, by trace, oldest
-/// first. A worker that never says a request is done (an old or broken one) can hold no
-/// more than [`Callers::MOST`].
+/// first. How many it holds is how far the log thread is behind the worker: a slow log
+/// sink can put it behind, and the pipe's backpressure (the worker blocks once tens of
+/// kilobytes are unread) keeps that far below [`Callers::MOST`], which bounds only a worker
+/// that never says a request is done (a broken one).
 #[derive(Default)]
 struct Callers(VecDeque<(u64, tracing::Span)>);
 
 impl Callers {
-    const MOST: usize = 16;
+    const MOST: usize = 4096;
 
     fn push(&mut self, trace: u64, span: tracing::Span) {
         if self.0.len() == Self::MOST {
             self.0.pop_front();
+            tracing::warn!(
+                "a kernel worker hasn't said {} requests were done: its log lines for the \
+                 oldest no longer trace back to them",
+                Self::MOST
+            );
         }
         self.0.push_back((trace, span));
+    }
+
+    /// Lets the span of request `trace` go, the worker never having been sent it.
+    fn forget(&mut self, trace: u64) {
+        self.0.retain(|(asked, _)| *asked != trace);
     }
 
     fn parent(&self, trace: Option<u64>) -> Option<tracing::Id> {
@@ -1538,13 +1552,18 @@ mod tests {
     }
 
     #[test]
-    fn a_worker_that_never_says_a_request_is_done_holds_no_more_than_sixteen_spans() {
+    fn a_worker_that_never_says_a_request_is_done_holds_no_more_than_the_bound() {
         let mut callers = super::Callers::default();
-        for trace in 0..100 {
+        let most = super::Callers::MOST as u64;
+        for trace in 0..most + 10 {
             callers.push(trace, tracing::Span::none());
         }
         assert_eq!(callers.0.len(), super::Callers::MOST);
-        assert_eq!(callers.0.front().map(|(trace, _)| *trace), Some(84));
+        assert_eq!(callers.0.front().map(|(trace, _)| *trace), Some(10));
+        // A request never sent is let go at once.
+        callers.forget(most + 5);
+        assert_eq!(callers.0.len(), super::Callers::MOST - 1);
+        assert!(callers.0.iter().all(|(trace, _)| *trace != most + 5));
     }
 
     #[test]
