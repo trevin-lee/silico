@@ -1,6 +1,7 @@
-//! M2.4: a request the core refuses before sending it (too large to send) lets go of the
-//! span it was asked in at once: the worker will never say it's done. Alone in its binary:
-//! it installs the process's global subscriber.
+//! M2.4: a request whose worker will never say it's done lets go of the span it was asked
+//! in all the same: one the core refuses before sending it (too large to send), one whose
+//! worker crashes, and one superseded and stopped. Alone in its binary: it installs the
+//! process's global subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::Path;
@@ -10,7 +11,7 @@ use std::time::{Duration, Instant};
 use silico_core::ErrorCode;
 use silico_core::kernel::{Blob, KernelRequest};
 use silico_core::pool::KernelPool;
-use silico_protocol::Generation;
+use silico_protocol::{DebugOp, Generation};
 use tracing::Subscriber;
 use tracing::span::Id;
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
@@ -52,13 +53,46 @@ fn a_request_refused_before_it_was_sent_lets_its_span_go() {
         assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
     }
     // The pool stays, and asks its worker nothing more: the span closes all the same.
+    wait_closed(&closed, "refused_edit");
+    // A request whose worker crashes on it.
+    {
+        let edit = tracing::warn_span!("crashed_edit");
+        let pending =
+            edit.in_scope(|| pool.submit(Generation(1), KernelRequest::debug(DebugOp::Abort)));
+        let err = pending
+            .wait_timeout(Duration::from_secs(60))
+            .unwrap_or_else(|_| panic!("no outcome"))
+            .done()
+            .expect("superseded")
+            .unwrap_err();
+        assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    }
+    wait_closed(&closed, "crashed_edit");
+    // A request superseded while it runs, and stopped.
+    pool.set_stop_after(Duration::from_millis(500));
+    {
+        let edit = tracing::warn_span!("hung_edit");
+        let pending = edit.in_scope(|| {
+            pool.submit(
+                Generation(1),
+                KernelRequest::debug(DebugOp::Sleep { millis: 30_000 }),
+            )
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        pool.advance(Generation(2));
+        let outcome = pending
+            .wait_timeout(Duration::from_secs(60))
+            .unwrap_or_else(|_| panic!("no outcome"));
+        assert!(outcome.done().is_none(), "not superseded");
+    }
+    wait_closed(&closed, "hung_edit");
+    drop(pool);
+}
+
+fn wait_closed(closed: &Mutex<Vec<&'static str>>, name: &str) {
     let deadline = Instant::now() + Duration::from_secs(10);
-    while !closed.lock().unwrap().contains(&"refused_edit") {
-        assert!(
-            Instant::now() < deadline,
-            "the refused request's span is still held"
-        );
+    while !closed.lock().unwrap().contains(&name) {
+        assert!(Instant::now() < deadline, "{name}'s span is still held");
         std::thread::sleep(Duration::from_millis(10));
     }
-    drop(pool);
 }

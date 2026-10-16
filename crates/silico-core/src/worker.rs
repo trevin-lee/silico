@@ -701,10 +701,11 @@ impl Drop for KillOnDrop {
 /// The spans of a worker's requests whose log lines may still be read, by trace, oldest
 /// first. How many it holds is how far the log thread is behind the worker: a slow log
 /// sink can put it behind, as far as the pipe holds done lines (its size over a done line's
-/// 30 bytes or so: about 900 on macOS, 2,700 on Linux with 4 KiB pages, more with larger
-/// pages), before the worker blocks writing one. [`Callers::MOST`] is above that on the
-/// platforms Silico is checked on; past it, the oldest span goes (with a warning), and its
-/// late lines go under none. It also bounds a worker that never says a request is done.
+/// 28 bytes or so: about 2,300 for a 64 KiB pipe, on macOS and on Linux with 4 KiB pages;
+/// more with larger pages), before the worker blocks writing one. [`Callers::MOST`] is
+/// above that on the platforms Silico is checked on (a test measures each one's pipe); past
+/// it, the oldest span goes (with a warning), and its late lines go under none. It also
+/// bounds a worker that never says a request is done.
 #[derive(Default)]
 struct Callers(VecDeque<(u64, tracing::Span)>);
 
@@ -1575,6 +1576,41 @@ mod tests {
     fn done_lines_stay_out_of_the_crash_tail() {
         let lines = logs_of(b"{\"silico_request_done\":7}\nLAST WORDS\n");
         assert_eq!(lines, ["LAST WORDS"]);
+    }
+
+    #[test]
+    fn the_pipe_holds_fewer_done_lines_than_the_core_remembers() {
+        // Filled until a write blocks: what a worker can write before the log thread reads
+        // any, on this platform.
+        use std::io::Write;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let written = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&written);
+        std::thread::spawn(move || {
+            for trace in 1_000_000u64.. {
+                let line = format!("{{\"{}\":{trace}}}\n", silico_protocol::REQUEST_DONE);
+                if writer.write_all(line.as_bytes()).is_err() {
+                    break;
+                }
+                count.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        let mut last = usize::MAX;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let now = written.load(Ordering::SeqCst);
+            if now == last {
+                break;
+            }
+            last = now;
+        }
+        assert!(
+            last < super::Callers::MOST,
+            "the pipe held {last} done lines"
+        );
+        drop(reader);
     }
 
     #[test]
