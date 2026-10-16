@@ -291,6 +291,10 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             mask: 0x200,
             op: "Fillet".to_owned(),
         })),
+        Err(Failure {
+            refusal: Refusal::OutOfMemory,
+            cause: Some("Standard_OutOfMemory".to_owned()),
+        }),
     ];
     let indices: std::collections::BTreeSet<usize> = results
         .iter()
@@ -308,12 +312,13 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
                 FailureKind::InvalidResult => 7,
                 FailureKind::UnknownOp => 8,
                 FailureKind::Internal => 9,
+                FailureKind::ResourceExhausted => 12,
             },
         })
         .collect();
     assert_eq!(
         indices,
-        (0..12).collect(),
+        (0..13).collect(),
         "a reply or failure kind has no case"
     );
     results

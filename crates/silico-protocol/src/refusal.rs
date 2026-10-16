@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{BooleanOp, ElementRef, FailureKind, LENGTH_TOLERANCE, OFFSET_FIELD, format_number};
 
+/// What to do when the kernel runs out of memory.
+pub const OUT_OF_MEMORY: &str = "free some memory, or make the part simpler, and try again";
+
 /// Why a request was refused or failed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Refusal {
@@ -98,6 +101,10 @@ pub enum Refusal {
     FpTrapsOn { mask: u32, op: String },
     /// Something went wrong in the worker itself, in a test worker's words.
     Internal { what: String },
+    /// OCCT ran out of memory (`Standard_OutOfMemory`, `std::bad_alloc`): a shortage, not the
+    /// values' fault, so the same request may succeed once memory is free. Its words are the
+    /// cause.
+    OutOfMemory,
 }
 
 /// What OCCT gave back nothing of.
@@ -254,6 +261,7 @@ impl Refusal {
             | Refusal::NoEdgeToRefuse { .. }
             | Refusal::FpTrapsOn { .. }
             | Refusal::Internal { .. } => FailureKind::Internal,
+            Refusal::OutOfMemory => FailureKind::ResourceExhausted,
         }
     }
 
@@ -520,6 +528,10 @@ impl Refusal {
                 None,
             ),
             Refusal::Internal { what } => (what.clone(), None),
+            Refusal::OutOfMemory => (
+                "the kernel ran out of memory".to_owned(),
+                Some(OUT_OF_MEMORY.to_owned()),
+            ),
         };
         Described {
             message,
@@ -849,6 +861,7 @@ mod tests {
             Refusal::Internal {
                 what: "socket closed".to_owned(),
             },
+            Refusal::OutOfMemory,
         ]
     }
 
@@ -902,36 +915,39 @@ mod tests {
         // From each refusal's kind before it was data (b4f2524), where the kernel built it
         // (invalid_input, new: failed, of_kind: invalid result or internal), not from
         // `kind()`.
-        use FailureKind::{Internal, InvalidInput, InvalidResult, KernelFailed, UnknownOp};
+        use FailureKind::{
+            Internal, InvalidInput, InvalidResult, KernelFailed, ResourceExhausted, UnknownOp,
+        };
         let kinds = [
-            KernelFailed,  // NoShape
-            KernelFailed,  // NothingReturned
-            KernelFailed,  // Occt
-            InvalidResult, // ResultInvalid
-            KernelFailed,  // EdgesFailed (OCCT's failure, as Occt)
-            InvalidInput,  // BrepTooShort
-            InvalidInput,  // BrepCorrupted
-            InvalidInput,  // BrepDefect
-            KernelFailed,  // UnknownBrepDefect
-            InvalidInput,  // InvalidParameter
-            InvalidInput,  // CornersMerged
-            InvalidInput,  // BooleanInputEmpty
-            KernelFailed,  // BooleanResultEmpty
-            InvalidInput,  // NoEdges
-            InvalidInput,  // EdgeMissing
-            InvalidInput,  // EdgeTwice
-            InvalidInput,  // EdgesRefused
-            InvalidInput,  // DeflectionInvalid
-            InvalidInput,  // DeflectionTooFine
-            KernelFailed,  // ExtentNotFinite
-            KernelFailed,  // FacesUnmeshed
-            KernelFailed,  // NotFinite
-            Internal,      // ResultCheckMissing
-            Internal,      // MalformedHistory
-            Internal,      // NoEdgeToRefuse
-            UnknownOp,     // TestOperation
-            Internal,      // FpTrapsOn
-            Internal,      // Internal
+            KernelFailed,      // NoShape
+            KernelFailed,      // NothingReturned
+            KernelFailed,      // Occt
+            InvalidResult,     // ResultInvalid
+            KernelFailed,      // EdgesFailed (OCCT's failure, as Occt)
+            InvalidInput,      // BrepTooShort
+            InvalidInput,      // BrepCorrupted
+            InvalidInput,      // BrepDefect
+            KernelFailed,      // UnknownBrepDefect
+            InvalidInput,      // InvalidParameter
+            InvalidInput,      // CornersMerged
+            InvalidInput,      // BooleanInputEmpty
+            KernelFailed,      // BooleanResultEmpty
+            InvalidInput,      // NoEdges
+            InvalidInput,      // EdgeMissing
+            InvalidInput,      // EdgeTwice
+            InvalidInput,      // EdgesRefused
+            InvalidInput,      // DeflectionInvalid
+            InvalidInput,      // DeflectionTooFine
+            KernelFailed,      // ExtentNotFinite
+            KernelFailed,      // FacesUnmeshed
+            KernelFailed,      // NotFinite
+            Internal,          // ResultCheckMissing
+            Internal,          // MalformedHistory
+            Internal,          // NoEdgeToRefuse
+            UnknownOp,         // TestOperation
+            Internal,          // FpTrapsOn
+            Internal,          // Internal
+            ResourceExhausted, // OutOfMemory
         ];
         let refusals = every_refusal();
         assert_eq!(refusals.len(), kinds.len());
@@ -973,6 +989,7 @@ mod tests {
             None,               // TestOperation
             None,               // FpTrapsOn
             None,               // Internal
+            None,               // OutOfMemory
         ];
         let refusals = every_refusal();
         assert_eq!(refusals.len(), parameters.len());

@@ -682,7 +682,7 @@ impl Made {
                     offset: [x, y, z],
                 } => text.push_str(&format!("translate {input} {x} {y} {z}")),
                 Step::Boolean { op, base, tool } => {
-                    text.push_str(&format!("{} {base} {tool}", boolean_name(*op)));
+                    text.push_str(&format!("{} {base} {tool}", op.word()));
                 }
             }
             text.push('\n');
@@ -779,7 +779,7 @@ impl Made {
                         parts.push(Part::Step(*input));
                     }
                     Some(Step::Boolean { op, base, tool }) => {
-                        out.push_str(boolean_name(*op));
+                        out.push_str(op.word());
                         out.push('(');
                         parts.push(Part::Text(")".to_owned()));
                         parts.push(Part::Step(*tool));
@@ -800,23 +800,10 @@ fn zeroed(value: f64) -> f64 {
     if value == 0.0 { 0.0 } else { value }
 }
 
-/// A primitive's name and values, as `[name, values...]`, its zeros unsigned.
+/// A primitive's name and values, its zeros unsigned.
 fn primitive_parts(primitive: &Primitive) -> (&'static str, Vec<f64>) {
-    let (name, values) = match *primitive {
-        Primitive::Box { dx, dy, dz } => ("box", vec![dx, dy, dz]),
-        Primitive::Cylinder { radius, height } => ("cylinder", vec![radius, height]),
-        Primitive::Sphere { radius } => ("sphere", vec![radius]),
-        Primitive::Cone {
-            radius1,
-            radius2,
-            height,
-        } => ("cone", vec![radius1, radius2, height]),
-        Primitive::Torus {
-            major_radius,
-            minor_radius,
-        } => ("torus", vec![major_radius, minor_radius]),
-    };
-    (name, values.into_iter().map(zeroed).collect())
+    let values = primitive.values().into_iter().map(zeroed).collect();
+    (primitive.name(), values)
 }
 
 /// A primitive as a line of a shape's bytes: `box 40 20 10`. Numbers are written as Rust
@@ -837,19 +824,9 @@ fn primitive_text(primitive: &Primitive) -> String {
     format!("{name}({})", values.join(", "))
 }
 
-/// The boolean `name` names, by [`boolean_name`]'s table.
+/// The boolean `name` names.
 fn parse_boolean(name: &str) -> Option<BooleanOp> {
-    [BooleanOp::Fuse, BooleanOp::Cut, BooleanOp::Common]
-        .into_iter()
-        .find(|&op| boolean_name(op) == name)
-}
-
-fn boolean_name(op: BooleanOp) -> &'static str {
-    match op {
-        BooleanOp::Fuse => "fuse",
-        BooleanOp::Cut => "cut",
-        BooleanOp::Common => "common",
-    }
+    BooleanOp::ALL.into_iter().find(|op| op.word() == name)
 }
 
 /// The step a line of a shape's bytes says, if it's one. Whether it's written canonically

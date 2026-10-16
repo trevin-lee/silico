@@ -84,7 +84,28 @@ impl Primitive {
         }
     }
 
-    /// The primitive's name, for messages: `box`, `cylinder`, ...
+    /// The primitive's values, in the order its fields are declared: what a recompute key
+    /// (M2.5 keeps them on disk) and a fake kernel's shape write after its name, so changing
+    /// the order changes every key (see recompute's `Step::key`).
+    pub fn values(&self) -> Vec<f64> {
+        match *self {
+            Primitive::Box { dx, dy, dz } => vec![dx, dy, dz],
+            Primitive::Cylinder { radius, height } => vec![radius, height],
+            Primitive::Sphere { radius } => vec![radius],
+            Primitive::Cone {
+                radius1,
+                radius2,
+                height,
+            } => vec![radius1, radius2, height],
+            Primitive::Torus {
+                major_radius,
+                minor_radius,
+            } => vec![major_radius, minor_radius],
+        }
+    }
+
+    /// The primitive's name, for messages: `box`, `cylinder`, ... A recompute key spells the
+    /// primitive with it too, so changing it changes every key (see recompute's `Step::key`).
     pub fn name(&self) -> &'static str {
         match self {
             Primitive::Box { .. } => "box",

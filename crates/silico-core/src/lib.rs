@@ -12,6 +12,7 @@ pub mod fake;
 pub mod kernel;
 pub mod logging;
 pub mod pool;
+pub mod recompute;
 pub mod worker;
 
 pub use error::{Error, ErrorCode};

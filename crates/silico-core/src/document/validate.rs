@@ -224,6 +224,27 @@ fn key(id: &FeatureId) -> u64 {
         .fold(0, |key, byte| (key << 8) | u64::from(byte))
 }
 
+/// A document the validation gate passed: the only kind recompute takes, so nothing is
+/// rebuilt from a document whose references haven't been checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checked(Document);
+
+impl Checked {
+    /// `document`, if it passes the gate ([`validate`]); every problem with it if not.
+    pub fn new(document: Document) -> Result<Self, Invalid> {
+        validate(&document)?;
+        Ok(Checked(document))
+    }
+
+    pub fn document(&self) -> &Document {
+        &self.0
+    }
+
+    pub fn into_document(self) -> Document {
+        self.0
+    }
+}
+
 /// Problems as they're found: the first [`PROBLEMS_LISTED`] made into errors, the rest
 /// only counted, so a document with a problem in every feature costs no more to refuse
 /// than to read.

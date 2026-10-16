@@ -31,7 +31,7 @@ pub use profile::{
 };
 pub use refusal::{
     BrepDefect, ChamferKind, Described, DressingKind, EdgeTrouble, FACES_NAMED, HistoryDefect,
-    Operation, Refusal, Returned, Role, Trouble,
+    OUT_OF_MEMORY, Operation, Refusal, Returned, Role, Trouble,
 };
 
 /// The file descriptor a worker inherits its end of the socket pair as.
@@ -40,6 +40,11 @@ pub const WORKER_FD: i32 = 3;
 /// The environment variable that tells a worker which descriptor its socket is. A worker
 /// started without it wasn't started by the core, and refuses to run.
 pub const WORKER_FD_ENV: &str = "SILICO_WORKER_FD";
+
+/// The key of the line a worker writes to its log (stderr) after each request's own lines
+/// and before its reply, `{"silico_request_done": <trace>}`: the core keeps the span the
+/// request was asked in until it reads it, so every log line of the request goes under it.
+pub const REQUEST_DONE: &str = "silico_request_done";
 
 /// Identifies a request to a worker. Chosen by the core; the response carries it back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -160,6 +165,20 @@ pub enum BooleanOp {
 }
 
 impl BooleanOp {
+    /// Every boolean.
+    pub const ALL: [BooleanOp; 3] = [BooleanOp::Fuse, BooleanOp::Cut, BooleanOp::Common];
+
+    /// Its name in lower case, `fuse`, `cut`, `common`: what a recompute key (M2.5 keeps
+    /// them on disk) and a fake kernel's shape spell it with, so changing it changes every
+    /// key (see recompute's `Step::key`).
+    pub fn word(self) -> &'static str {
+        match self {
+            BooleanOp::Fuse => "fuse",
+            BooleanOp::Cut => "cut",
+            BooleanOp::Common => "common",
+        }
+    }
+
     /// The operation's name, for logs and errors.
     pub fn name(&self) -> &'static str {
         match self {
@@ -495,6 +514,9 @@ pub enum FailureKind {
     /// Something went wrong in the worker itself, such as floating-point traps found
     /// switched on after the request.
     Internal,
+    /// The worker ran short of something (memory): not the values' fault, so the same
+    /// request may succeed later.
+    ResourceExhausted,
 }
 
 /// A shape as it crosses the worker boundary: OCCT's binary B-rep (with its checksum), and
