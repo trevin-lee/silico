@@ -11,28 +11,29 @@ use std::fmt;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use silico_protocol::ShapeSummary;
 
-use super::quantity::{Length, NumberError, parse_number, write_decimal};
+use super::quantity::{Length, NumberError, parse_wide, write_decimal};
 
-/// A volume (mm³) or area (mm²), to 6 decimals.
+/// A volume (mm³) or area (mm²), to 6 decimals: millionths in an `i128`, so any solid the
+/// validation gate admits (a kilometre each way) is measured, with room to spare.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
-pub struct Measure(i64);
+pub struct Measure(i128);
 
 /// A measure's decimals.
 pub const MEASURE_DECIMALS: u32 = 6;
 
 impl Measure {
     /// The measure in millionths of its unit.
-    pub const fn from_millionths(millionths: i64) -> Self {
+    pub const fn from_millionths(millionths: i128) -> Self {
         Measure(millionths)
     }
 
-    pub const fn millionths(self) -> i64 {
+    pub const fn millionths(self) -> i128 {
         self.0
     }
 
     /// The measure a number's text writes.
     pub fn parse(text: &str) -> Result<Self, NumberError> {
-        parse_number(text, MEASURE_DECIMALS).map(Measure)
+        parse_wide(text, MEASURE_DECIMALS).map(Measure)
     }
 
     /// `value` rounded to 6 decimals; none if it isn't finite, or is too large to hold.
@@ -63,12 +64,12 @@ impl JsonSchema for Measure {
 /// `value` in millionths, rounded to the nearest, ties to even, from its exact value (Rust
 /// writes a float to a number of decimals exactly); none if it isn't finite or doesn't fit.
 /// A value that rounds to zero is zero, whatever its sign.
-fn rounded(value: f64) -> Option<i64> {
+fn rounded(value: f64) -> Option<i128> {
     if !value.is_finite() {
         return None;
     }
     let text = format!("{value:.6}");
-    match parse_number(&text, MEASURE_DECIMALS) {
+    match parse_wide(&text, MEASURE_DECIMALS) {
         Ok(millionths) => Some(millionths),
         Err(NumberError::NegativeZero) => Some(0),
         Err(_) => None,
@@ -88,21 +89,25 @@ pub struct Fingerprint {
     #[serde(default)]
     #[schemars(with = "[Length; 6]")]
     pub bbox: Option<[Length; 6]>,
+    #[schemars(range(max = 4_294_967_295u32))]
     pub faces: u32,
+    #[schemars(range(max = 4_294_967_295u32))]
     pub edges: u32,
+    #[schemars(range(max = 4_294_967_295u32))]
     pub vertices: u32,
 }
 
 impl Fingerprint {
-    /// The fingerprint of a solid with `summary`; none if a measure isn't finite or is too
-    /// large to write (a volume past about 9.2 million m³).
+    /// The fingerprint of a solid with `summary`; none if a measure isn't finite, or past
+    /// what it can hold (a box corner past about 9,200 km, or a volume past about 1.7e29 m³:
+    /// far past anything the validation gate admits).
     pub fn of(summary: &ShapeSummary) -> Option<Self> {
         let bbox = match summary.bounds {
             None => None,
             Some([low, high]) => {
                 let mut corners = [Length::default(); 6];
                 for (corner, value) in corners.iter_mut().zip(low.into_iter().chain(high)) {
-                    *corner = Length::from_nm(rounded(value)?);
+                    *corner = Length::from_nm(i64::try_from(rounded(value)?).ok()?);
                 }
                 Some(corners)
             }
@@ -204,13 +209,19 @@ mod tests {
         assert_eq!(Measure::rounded(f64::NAN), None);
         assert_eq!(Measure::rounded(f64::INFINITY), None);
         assert_eq!(Measure::rounded(f64::NEG_INFINITY), None);
-        // i64::MAX millionths is about 9.22e12.
-        assert_eq!(Measure::rounded(1e13), None);
-        assert_eq!(Measure::rounded(-1e13), None);
-        // Exactly 9223372036854.775390625: 9223372036854.775391.
+        // i128::MAX millionths is about 1.7014e32: 1e32 (exactly
+        // 100000000000000005366162204393472) fits, 1.7e32 too, 2e32 doesn't.
         assert_eq!(
-            Measure::rounded(9_223_372_036_854.775),
-            Some(Measure(9_223_372_036_854_775_391))
+            Measure::rounded(1e32),
+            Some(Measure(100_000_000_000_000_005_366_162_204_393_472_000_000))
+        );
+        assert!(Measure::rounded(1.7e32).is_some());
+        assert_eq!(Measure::rounded(2e32), None);
+        assert_eq!(Measure::rounded(-2e32), None);
+        // Past i64 now: a 2 km cube's volume, 8e18 mm³, and its millionths.
+        assert_eq!(
+            Measure::rounded(8e18),
+            Some(Measure(8_000_000_000_000_000_000_000_000))
         );
     }
 

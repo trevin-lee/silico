@@ -42,7 +42,7 @@ fn fingerprint(model: &Model, id: &str) -> Fingerprint {
 }
 
 /// Whether a measure, in millionths, is within `slack` millionths of `want`.
-fn near(millionths: i64, want: f64, slack: f64) -> bool {
+fn near(millionths: i128, want: f64, slack: f64) -> bool {
     (millionths as f64 - want * 1e6).abs() <= slack
 }
 

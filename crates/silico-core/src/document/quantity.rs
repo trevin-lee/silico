@@ -14,7 +14,7 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 pub enum NumberError {
     /// More precise than the quantity holds: a non-zero digit past its decimals.
     TooPrecise { decimals: u32 },
-    /// Larger than an `i64` of the quantity's units holds.
+    /// Larger, either way, than the quantity holds.
     OutOfRange,
     /// Zero written with a minus sign.
     NegativeZero,
@@ -44,6 +44,12 @@ const EXPONENT_CAP: i128 = 1 << 40;
 /// `1e-05`, `1.05E1`), in units of 10^-`decimals`: `0.1` with 6 decimals is 100,000. Read
 /// from its digits, never through a float. Digits past `decimals` must be zeros.
 pub fn parse_number(text: &str, decimals: u32) -> Result<i64, NumberError> {
+    parse_wide(text, decimals)
+        .and_then(|value| i64::try_from(value).map_err(|_| NumberError::OutOfRange))
+}
+
+/// As [`parse_number`], to an `i128`: as large as one holds, either way.
+pub fn parse_wide(text: &str, decimals: u32) -> Result<i128, NumberError> {
     let (negative, unsigned) = match text.strip_prefix('-') {
         Some(rest) => (true, rest),
         None => (false, text),
@@ -109,31 +115,29 @@ pub fn parse_number(text: &str, decimals: u32) -> Result<i64, NumberError> {
         }
         significant.truncate(kept);
     }
-    // The magnitude, in i128 so that i64::MIN's is held; checked at every step, so a
-    // thousand-digit number stops at the first digit that overflows.
+    // The magnitude, checked at every step, so a thousand-digit number stops at the first
+    // digit that overflows.
     let push = |m: i128, b: u8| {
         m.checked_mul(10)
             .and_then(|m| m.checked_add(i128::from(b - b'0')))
-            .filter(|&m| m <= i128::from(i64::MAX) + 1)
             .ok_or(NumberError::OutOfRange)
     };
     let mut magnitude: i128 = 0;
     for &b in &significant {
         magnitude = push(magnitude, b)?;
     }
-    // Zeros after: a non-zero value with 20 of them is past i64, so `push` refuses it by
+    // Zeros after: a non-zero value with 40 of them is past i128, so `push` refuses it by
     // then, however large the shift.
-    for _ in 0..shift.clamp(0, 20) {
+    for _ in 0..shift.clamp(0, 40) {
         magnitude = push(magnitude, b'0')?;
     }
-    let value = if negative { -magnitude } else { magnitude };
-    i64::try_from(value).map_err(|_| NumberError::OutOfRange)
+    Ok(if negative { -magnitude } else { magnitude })
 }
 
 /// `value`, in units of 10^-`decimals`, as the shortest plain decimal that reads back as it:
 /// `100000` with 6 decimals is `0.1`, `10000000` is `10`.
-pub fn write_decimal(value: i64, decimals: u32) -> String {
-    let scale = 10u64.pow(decimals);
+pub fn write_decimal(value: i128, decimals: u32) -> String {
+    let scale = 10u128.pow(decimals);
     let magnitude = value.unsigned_abs();
     let (whole, fraction) = (magnitude / scale, magnitude % scale);
     let sign = if value < 0 { "-" } else { "" };
@@ -175,7 +179,7 @@ impl Length {
 impl fmt::Display for Length {
     /// In millimetres, as the file writes it.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&write_decimal(self.0, LENGTH_DECIMALS))
+        f.write_str(&write_decimal(i128::from(self.0), LENGTH_DECIMALS))
     }
 }
 
@@ -225,7 +229,7 @@ impl Angle {
 impl fmt::Display for Angle {
     /// In degrees, as the file writes it.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&write_decimal(self.0, ANGLE_DECIMALS))
+        f.write_str(&write_decimal(i128::from(self.0), ANGLE_DECIMALS))
     }
 }
 

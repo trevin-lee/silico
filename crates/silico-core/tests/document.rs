@@ -1178,9 +1178,9 @@ fn a_fingerprint_that_doesnt_fit_is_refused_naming_its_field() {
         ),
         (
             r#""area": 2800"#,
-            r#""area": 9223372036854.775808"#,
+            r#""area": 170141183460469231731687303715884.105728"#,
             "fingerprint.area",
-            "fingerprint.area 9223372036854.775808 is too large",
+            "fingerprint.area 170141183460469231731687303715884.105728 is too large",
         ),
         (
             r#""faces": 6"#,

@@ -398,8 +398,8 @@ fn measure(fields: &mut Fields, key: &str) -> Result<Measure, Error> {
         let suggestion = match e {
             NumberError::TooPrecise { decimals } => format!("round it to {decimals} decimals"),
             NumberError::OutOfRange => format!(
-                "a fingerprint's {key} is at most {}",
-                Measure::from_millionths(i64::MAX)
+                "a fingerprint's {key} is at most {} either way",
+                Measure::from_millionths(i128::MAX)
             ),
             NumberError::NegativeZero => "write 0".to_owned(),
             NumberError::Malformed => {
