@@ -113,6 +113,15 @@ fn main() -> BuildResult<()> {
     }
     writeln!(out, "cargo:rerun-if-changed={}", recipe_path.display())?;
     writeln!(out, "cargo:rerun-if-changed={shim}")?;
+    // Which OCCT build the worker links (the build cache's entry, named by a hash of its
+    // inputs, patches included), compiled into the worker so another build of OCCT makes
+    // another worker: the core's cache keys results by the worker's bytes, and OCCT is
+    // linked dynamically, so its own bytes aren't the worker's.
+    let install = occt.join("install");
+    let build = fs::canonicalize(&install)
+        .map_err(|e| format!("can't resolve {}: {e}", install.display()))?;
+    writeln!(out, "cargo:rustc-env=SILICO_OCCT_BUILD={}", build.display())?;
+    writeln!(out, "cargo:rerun-if-changed={}", install.display())?;
     Ok(())
 }
 

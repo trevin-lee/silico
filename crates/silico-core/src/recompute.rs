@@ -488,6 +488,17 @@ fn boolean_op(operation: &Operation) -> Option<BooleanOp> {
     }
 }
 
+/// Whether `built` could be what `step` makes: no history for a primitive, and a history of
+/// one input for a move, of two for a boolean, that holds together.
+fn fits(step: &Step, built: &Built) -> bool {
+    match (step, &built.history) {
+        (Step::Make(_), None) => true,
+        (Step::Translate { .. }, Some(history)) => history.validate(1).is_ok(),
+        (Step::Boolean { .. }, Some(history)) => history.validate(2).is_ok(),
+        _ => false,
+    }
+}
+
 /// Whether a step's failure follows from its values, so asking again would fail again.
 fn kept(error: &Error) -> bool {
     matches!(
@@ -535,7 +546,14 @@ impl<K: Kernel + 'static> Engine<K> {
                 if !done.contains_key(key)
                     && let Some(built) = cache.get(kernel, key)
                 {
-                    done.insert(*key, Ok(Arc::new(built)));
+                    // A checksum says the bytes are as written, not that what was written
+                    // fits the step: a history that doesn't is a miss, as a worker's reply
+                    // with one would be refused.
+                    if plan.steps.get(key).is_some_and(|step| fits(step, &built)) {
+                        done.insert(*key, Ok(Arc::new(built)));
+                    } else {
+                        tracing::warn!(key = %key, "a cache entry doesn't fit its step: rebuilding it");
+                    }
                 }
             }
         }

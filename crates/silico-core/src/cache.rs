@@ -67,10 +67,15 @@ impl Cache {
     pub(crate) fn get(&self, kernel: &str, step: &Key) -> Option<Built> {
         let key = self.key(kernel, step);
         let path = self.path(&key);
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-            Err(e) => {
+        let bytes = match read_file(&path) {
+            Read::Bytes(bytes) => bytes,
+            Read::Missing => return None,
+            Read::Unusable(why) => {
+                tracing::warn!(path = %path.display(), "a cache entry {why}: rebuilding it");
+                let _ = std::fs::remove_file(&path);
+                return None;
+            }
+            Read::Failed(e) => {
                 tracing::warn!(path = %path.display(), "couldn't read a cache entry: {e}");
                 return None;
             }
@@ -114,13 +119,15 @@ impl Cache {
         }
     }
 
-    /// An entry's key: SHA-256 of the format, the kernel, the platform, and the step.
+    /// An entry's key: SHA-256 of the format's magic, then the kernel's identity, the
+    /// platform, and the step's key (in hex), each after its length (8 bytes, little-endian).
     fn key(&self, kernel: &str, step: &Key) -> [u8; 32] {
         let mut hash = Sha256::new();
         hash.update(MAGIC);
+        // Each part after its length, so no two different sets of parts hash alike.
         for part in [kernel, &self.platform, &step.to_string()] {
+            hash.update((part.len() as u64).to_le_bytes());
             hash.update(part.as_bytes());
-            hash.update(b"\n");
         }
         hash.finalize().into()
     }
@@ -130,6 +137,51 @@ impl Cache {
     fn path(&self, key: &[u8; 32]) -> PathBuf {
         let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
         self.dir.join(&hex[..2]).join(&hex[2..])
+    }
+}
+
+/// The most bytes an entry may have: a shape as large as a worker may send, twice over for
+/// its history. Anything larger isn't an entry this cache wrote.
+const MAX_ENTRY: u64 = 2 * silico_protocol::MAX_FRAME_LEN as u64;
+
+/// What reading an entry's file came to.
+enum Read {
+    Bytes(Vec<u8>),
+    Missing,
+    /// Not a file this cache could have written: a symbolic link, a pipe, a device, a
+    /// directory, or too large. Read no further (a pipe would never end).
+    Unusable(&'static str),
+    Failed(std::io::Error),
+}
+
+/// The bytes of the regular file at `path`, read without following a symbolic link or
+/// waiting on a pipe, and no more than [`MAX_ENTRY`] of them.
+fn read_file(path: &Path) -> Read {
+    use std::io::Read as _;
+    use std::os::unix::fs::OpenOptionsExt;
+    let opened = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path);
+    let file = match opened {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Read::Missing,
+        Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
+            return Read::Unusable("is a symbolic link");
+        }
+        Err(e) => return Read::Failed(e),
+    };
+    match file.metadata() {
+        Ok(meta) if !meta.is_file() => return Read::Unusable("isn't a file"),
+        Ok(meta) if meta.len() > MAX_ENTRY => return Read::Unusable("is too large"),
+        Ok(_) => {}
+        Err(e) => return Read::Failed(e),
+    }
+    let mut bytes = Vec::new();
+    match file.take(MAX_ENTRY + 1).read_to_end(&mut bytes) {
+        Ok(_) if bytes.len() as u64 > MAX_ENTRY => Read::Unusable("is too large"),
+        Ok(_) => Read::Bytes(bytes),
+        Err(e) => Read::Failed(e),
     }
 }
 
@@ -159,13 +211,32 @@ fn write_entry(path: &Path, payload: &[u8]) -> std::io::Result<()> {
         .parent()
         .ok_or_else(|| std::io::Error::other("no directory"))?;
     std::fs::create_dir_all(dir)?;
-    let partial = dir.join(format!(
-        ".partial-{}-{}",
-        std::process::id(),
-        WRITES.fetch_add(1, Ordering::Relaxed)
-    ));
+    // A new file of its own, never one already there (a link planted at the name would
+    // otherwise be followed, and what it points at written over).
+    let (partial, mut file) = {
+        let mut attempt = 0;
+        loop {
+            use std::os::unix::fs::OpenOptionsExt;
+            let partial = dir.join(format!(
+                ".partial-{}-{}",
+                std::process::id(),
+                WRITES.fetch_add(1, Ordering::Relaxed)
+            ));
+            let created = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(&partial);
+            match created {
+                Ok(file) => break (partial, file),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && attempt < 8 => {
+                    attempt += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    };
     let written = (|| {
-        let mut file = std::fs::File::create(&partial)?;
         file.write_all(MAGIC)?;
         file.write_all(&Sha256::digest(payload))?;
         file.write_all(payload)?;

@@ -89,3 +89,54 @@ fn a_document_built_on_occt_is_rebuilt_from_the_cache_to_the_same_bytes() {
     assert_eq!(again.features(), built.features());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_worker_carries_the_occt_build_it_links_so_another_occt_is_another_kernel() {
+    // OCCT is linked dynamically: its bytes aren't the worker's, so the build it links is
+    // compiled into the worker, and the pool's identity (the worker's bytes) covers it.
+    assert!(!silico_kernel::OCCT_BUILD.is_empty());
+    let bytes = std::fs::read(WORKER).unwrap();
+    let needle = silico_kernel::OCCT_BUILD.as_bytes();
+    assert!(
+        bytes.windows(needle.len()).any(|w| w == needle),
+        "the worker doesn't carry {}",
+        silico_kernel::OCCT_BUILD
+    );
+}
+
+#[test]
+fn a_worker_rebuilt_while_the_pool_runs_isnt_started_under_its_identity() {
+    // A pool of a copy of the worker; the copy then replaced by another build (the test
+    // worker), and the worker killed: its replacement would be the other build.
+    let dir = std::env::temp_dir().join(format!("silico-cache-rebuilt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let exe = dir.join("silico-kernel-worker");
+    std::fs::copy(WORKER, &exe).unwrap();
+    let pool = KernelPool::start_workers(&exe, 1).unwrap();
+    let identity = pool.identity().to_owned();
+    // Replaced, not rewritten in place: a new file under the name, as a rebuild leaves it.
+    let other = dir.join("other");
+    std::fs::copy(TEST_WORKER, &other).unwrap();
+    std::fs::rename(&other, &exe).unwrap();
+    for pid in pool.pids() {
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .status();
+    }
+    let request = KernelRequest::echo(silico_core::kernel::Blob::inline(vec![1]));
+    let error = pool
+        .submit(pool.generation(), request)
+        .wait_timeout(std::time::Duration::from_secs(60))
+        .unwrap_or_else(|_| panic!("no outcome"))
+        .done()
+        .expect("superseded")
+        .unwrap_err();
+    assert!(
+        error.message().contains("changed since the pool started"),
+        "{error}"
+    );
+    assert_eq!(pool.identity(), identity);
+    drop(pool);
+    let _ = std::fs::remove_dir_all(&dir);
+}

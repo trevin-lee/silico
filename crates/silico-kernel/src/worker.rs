@@ -323,7 +323,7 @@ where
             return ExitCode::from(2);
         }
     };
-    tracing::debug!("worker ready");
+    tracing::debug!(occt = crate::OCCT_BUILD, "worker ready");
     match serve(socket, handle) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
