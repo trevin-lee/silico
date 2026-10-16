@@ -100,6 +100,26 @@ fn the_worker_loads_the_occt_build_its_identity_names_not_the_checkouts_link() {
     );
 }
 
+/// An echo on `pool` once its workers were killed: a request that reaches a killed worker
+/// before the pool sees it die reports the kill (on Linux, often), so it's asked again, of
+/// the worker that replaces it.
+fn echo_after_kill(pool: &KernelPool) -> Result<Vec<u8>, silico_core::Error> {
+    for _ in 0..3 {
+        let request = KernelRequest::echo(silico_core::kernel::Blob::inline(vec![1]));
+        let reply = pool
+            .submit(pool.generation(), request)
+            .wait_timeout(std::time::Duration::from_secs(60))
+            .unwrap_or_else(|_| panic!("no outcome"))
+            .done()
+            .expect("superseded");
+        match reply {
+            Err(e) if e.cause().is_some_and(|cause| cause.contains("SIGKILL")) => continue,
+            reply => return reply.map(|blob| blob.as_bytes().to_vec()),
+        }
+    }
+    panic!("every echo reached a killed worker")
+}
+
 #[test]
 fn a_worker_rebuilt_while_the_pool_runs_isnt_started_under_its_identity() {
     // A pool of a copy of the worker; the copy then replaced by another build (the test
@@ -120,14 +140,7 @@ fn a_worker_rebuilt_while_the_pool_runs_isnt_started_under_its_identity() {
             .args(["-KILL", &pid.to_string()])
             .status();
     }
-    let request = KernelRequest::echo(silico_core::kernel::Blob::inline(vec![1]));
-    let error = pool
-        .submit(pool.generation(), request)
-        .wait_timeout(std::time::Duration::from_secs(60))
-        .unwrap_or_else(|_| panic!("no outcome"))
-        .done()
-        .expect("superseded")
-        .unwrap_err();
+    let error = echo_after_kill(&pool).unwrap_err();
     assert_eq!(
         error.code(),
         silico_core::ErrorCode::WorkerCrashed,
@@ -160,13 +173,7 @@ fn a_worker_reinstalled_with_the_same_bytes_is_still_started() {
             .args(["-KILL", &pid.to_string()])
             .status();
     }
-    let request = KernelRequest::echo(silico_core::kernel::Blob::inline(vec![1]));
-    let reply = pool
-        .submit(pool.generation(), request)
-        .wait_timeout(std::time::Duration::from_secs(60))
-        .unwrap_or_else(|_| panic!("no outcome"))
-        .done()
-        .expect("superseded");
+    let reply = echo_after_kill(&pool);
     assert!(reply.is_ok(), "{:?}", reply.err());
     drop(pool);
     let _ = std::fs::remove_dir_all(&dir);
