@@ -8,8 +8,11 @@
 //! The seal is an HMAC-SHA-256 under a secret of the user's, kept outside any document (in
 //! Silico's directory in the user's cache), so an entry is taken only if this user's Silico
 //! wrote it: a cache that comes with a document (committed, or copied with it) can't put
-//! its own shapes in the model. The directory ignores itself (a `.gitignore` of `*`), so it
-//! isn't committed with a document in any repository.
+//! its own shapes in the model. The entry's key is an HMAC under the secret too, so caches
+//! of two secrets in one directory (one synced between two machines, say) keep their
+//! entries side by side, never in each other's place. The directory ignores itself (a
+//! `.gitignore` of `*`, put back if it's anything else), so it isn't committed with a
+//! document in any repository.
 //!
 //! Only results are kept, never failures: a failure's cause may not last (memory, say), and
 //! recompute keeps those that follow from the values in memory. Nothing here fails a
@@ -25,7 +28,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 
 use crate::kernel::{Blob, History, ShapeData};
 use crate::recompute::{Built, Key};
@@ -42,9 +45,9 @@ const GITIGNORE: &[u8] =
 pub struct Cache {
     dir: PathBuf,
     platform: String,
-    /// The secret entries are sealed with: none if it couldn't be had, and then nothing is
-    /// kept.
-    secret: Option<[u8; 32]>,
+    /// The secret entries are keyed and sealed with: none if it couldn't be had, and then
+    /// nothing is kept.
+    secret: Option<Secret>,
 }
 
 impl std::fmt::Debug for Cache {
@@ -57,8 +60,49 @@ impl std::fmt::Debug for Cache {
     }
 }
 
+/// A user's secret: entries' keys and seals are HMAC-SHA-256 under it.
+#[derive(Clone)]
+struct Secret([u8; 32]);
+
 /// An entry's own key: where it lives, and what it says it's for.
-type EntryKey = [u8; 32];
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct EntryKey([u8; 32]);
+
+/// An entry's seal: the HMAC of its payload.
+struct Seal([u8; 32]);
+
+impl Secret {
+    fn mac(&self) -> Option<Hmac<Sha256>> {
+        <Hmac<Sha256> as Mac>::new_from_slice(&self.0).ok()
+    }
+
+    /// The key of the entry for `parts` (the kernel's identity, the platform, and the step's
+    /// key, in hex): the HMAC of the format's magic, then each part after its length (8
+    /// bytes, little-endian), so no two different sets of parts key alike.
+    fn entry_key(&self, parts: [&str; 3]) -> Option<EntryKey> {
+        let mut mac = self.mac()?;
+        mac.update(MAGIC);
+        for part in parts {
+            mac.update(&(part.len() as u64).to_le_bytes());
+            mac.update(part.as_bytes());
+        }
+        Some(EntryKey(mac.finalize().into_bytes().into()))
+    }
+
+    fn seal(&self, payload: &[u8]) -> Option<Seal> {
+        let mut mac = self.mac()?;
+        mac.update(payload);
+        Some(Seal(mac.finalize().into_bytes().into()))
+    }
+
+    /// Whether `seal` is `payload`'s, compared in constant time.
+    fn sealed(&self, payload: &[u8], seal: &[u8]) -> bool {
+        self.mac().is_some_and(|mut mac| {
+            mac.update(payload);
+            mac.verify_slice(seal).is_ok()
+        })
+    }
+}
 
 /// An entry's payload: what the seal covers.
 #[derive(Serialize, Deserialize)]
@@ -92,9 +136,14 @@ impl Cache {
         }
     }
 
+    /// The cache in `dir`, for this platform, sealed with the secret in `secret_file` (made
+    /// if there's none): for tests and tools; a session uses [`open`](Self::open).
+    pub fn with_secret(dir: impl Into<PathBuf>, secret_file: &Path) -> Self {
+        Self::for_platform(dir, &this_platform(), secret_file)
+    }
+
     /// The cache in `dir`, for `platform` (`macos-aarch64`, `linux-x86_64`), sealed with the
-    /// secret in `secret_file` (made if there's none): for tests and tools; a session uses
-    /// [`open`](Self::open).
+    /// secret in `secret_file` (made if there's none): for tests of other platforms.
     pub fn for_platform(dir: impl Into<PathBuf>, platform: &str, secret_file: &Path) -> Self {
         Self {
             dir: dir.into(),
@@ -107,7 +156,7 @@ impl Cache {
     /// if there's a sound one.
     pub(crate) fn get(&self, kernel: &str, step: &Key) -> Option<Built> {
         let secret = self.secret.as_ref()?;
-        let key = self.entry_key(kernel, step);
+        let key = secret.entry_key([kernel, &self.platform, &step.to_string()])?;
         let path = self.path(&key);
         let bytes = match read_file(&path) {
             FileRead::Bytes(bytes) => bytes,
@@ -141,7 +190,9 @@ impl Cache {
         let (Some(secret), Some(valid)) = (&self.secret, built.shape.valid()) else {
             return;
         };
-        let key = self.entry_key(kernel, step);
+        let Some(key) = secret.entry_key([kernel, &self.platform, &step.to_string()]) else {
+            return;
+        };
         let entry = Entry {
             key,
             brep: built.shape.brep().as_bytes().to_vec(),
@@ -155,7 +206,7 @@ impl Cache {
                 return;
             }
         };
-        let Some(seal) = seal(secret, &payload) else {
+        let Some(seal) = secret.seal(&payload) else {
             return;
         };
         let path = self.path(&key);
@@ -164,23 +215,10 @@ impl Cache {
         }
     }
 
-    /// An entry's key: SHA-256 of the format's magic, then the kernel's identity, the
-    /// platform, and the step's key (in hex), each after its length (8 bytes, little-endian).
-    fn entry_key(&self, kernel: &str, step: &Key) -> EntryKey {
-        let mut hash = Sha256::new();
-        hash.update(MAGIC);
-        // Each part after its length, so no two different sets of parts hash alike.
-        for part in [kernel, &self.platform, &step.to_string()] {
-            hash.update((part.len() as u64).to_le_bytes());
-            hash.update(part.as_bytes());
-        }
-        hash.finalize().into()
-    }
-
     /// Where an entry lives: under the first two hex digits of its key, so no directory
     /// holds every entry.
     fn path(&self, key: &EntryKey) -> PathBuf {
-        let hex = crate::hex(key);
+        let hex = crate::hex(&key.0);
         self.dir.join(&hex[..2]).join(&hex[2..])
     }
 }
@@ -201,9 +239,9 @@ fn user_secret_file() -> Option<PathBuf> {
 }
 
 /// The secret in `file`, made if there's none, or none (with a warning) if it can't be had.
-fn secret_in(file: &Path) -> Option<[u8; 32]> {
+fn secret_in(file: &Path) -> Option<Secret> {
     match read_or_make_secret(file) {
-        Ok(secret) => Some(secret),
+        Ok(secret) => Some(Secret(secret)),
         Err(e) => {
             tracing::warn!(
                 file = %file.display(),
@@ -248,13 +286,6 @@ fn read_or_make_secret(file: &Path) -> std::io::Result<[u8; 32]> {
         }
     }
     Err(std::io::Error::other("it keeps changing"))
-}
-
-/// The seal of `payload` under `secret`: its HMAC-SHA-256.
-fn seal(secret: &[u8; 32], payload: &[u8]) -> Option<[u8; 32]> {
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(secret).ok()?;
-    mac.update(payload);
-    Some(mac.finalize().into_bytes().into())
 }
 
 /// The most bytes an entry may have: a shape as large as a worker may send, twice over for
@@ -308,12 +339,12 @@ fn this_platform() -> String {
 /// The entry `bytes` hold for `key`, if they hold together: the format's magic, a seal
 /// under `secret` that matches the payload, a payload that parses, and the key it was
 /// written for.
-fn read_entry(bytes: &[u8], secret: &[u8; 32], key: &EntryKey) -> Option<Entry> {
+fn read_entry(bytes: &[u8], secret: &Secret, key: &EntryKey) -> Option<Entry> {
     let rest = bytes.strip_prefix(MAGIC)?;
-    let (sealed, payload) = rest.split_at_checked(32)?;
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(secret).ok()?;
-    mac.update(payload);
-    mac.verify_slice(sealed).ok()?;
+    let (seal, payload) = rest.split_at_checked(32)?;
+    if !secret.sealed(payload, seal) {
+        return None;
+    }
     let entry: Entry = postcard::from_bytes(payload).ok()?;
     (entry.key == *key).then_some(entry)
 }
@@ -322,7 +353,7 @@ fn read_entry(bytes: &[u8], secret: &[u8; 32], key: &EntryKey) -> Option<Entry> 
 /// own beside it, then renamed over it, so a reader never sees a part of one, and two
 /// writers of the same entry (two sessions) leave one or the other. Not synced to the disk:
 /// an entry a crash cuts short or empties doesn't hold together, so it's a miss.
-fn write_entry(root: &Path, path: &Path, seal: &[u8; 32], payload: &[u8]) -> std::io::Result<()> {
+fn write_entry(root: &Path, path: &Path, seal: &Seal, payload: &[u8]) -> std::io::Result<()> {
     let dir = path
         .parent()
         .ok_or_else(|| std::io::Error::other("no directory"))?;
@@ -331,7 +362,7 @@ fn write_entry(root: &Path, path: &Path, seal: &[u8; 32], payload: &[u8]) -> std
     let (partial, mut file) = new_file(dir, 0o644)?;
     let written = file
         .write_all(MAGIC)
-        .and_then(|()| file.write_all(seal))
+        .and_then(|()| file.write_all(&seal.0))
         .and_then(|()| file.write_all(payload));
     let renamed = written.and_then(|()| std::fs::rename(&partial, path));
     if renamed.is_err() {
@@ -340,21 +371,31 @@ fn write_entry(root: &Path, path: &Path, seal: &[u8; 32], payload: &[u8]) -> std
     renamed
 }
 
-/// Gives the cache at `root` its `.gitignore`, unless it has one.
+/// Gives the cache at `root` its `.gitignore`, unless it has it: written whole, over
+/// anything else at its name (a file emptied by a failed write, or one that came with a
+/// clone), as an entry is. Not through a link at `root` (git keeps a link, not what it
+/// points at, and the directory it points at may be anyone's).
 fn ignore_itself(root: &Path) {
     let path = root.join(".gitignore");
-    let made = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&path)
-        .and_then(|mut file| file.write_all(GITIGNORE));
-    match made {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(e) => {
-            tracing::warn!(path = %path.display(), "couldn't write the cache's .gitignore: {e}");
+    if let FileRead::Bytes(bytes) = read_file(&path)
+        && bytes == GITIGNORE
+    {
+        return;
+    }
+    if std::fs::symlink_metadata(root).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return;
+    }
+    let written = new_file(root, 0o644).and_then(|(partial, mut file)| {
+        let renamed = file
+            .write_all(GITIGNORE)
+            .and_then(|()| std::fs::rename(&partial, &path));
+        if renamed.is_err() {
+            let _ = std::fs::remove_file(&partial);
         }
+        renamed
+    });
+    if let Err(e) = written {
+        tracing::warn!(path = %path.display(), "couldn't write the cache's .gitignore: {e}");
     }
 }
 

@@ -1,9 +1,8 @@
 //! break-it: the M2.5 rebuild cache under hostile disks. Entries replaced by FIFOs,
 //! directories, unreadable files, forged bytes with a sound seal, and entries planted under
-//! another's seal; symlinks planted
-//! where the cache writes its partial files; a cache directory removed mid-run, made
-//! read-only, or with a file where a subdirectory goes; sessions racing on one cache; and
-//! keys whose parts run together. Expected values are written by hand: which kernel calls a
+//! another's seal; symlinks planted where the cache writes its partial files; a cache
+//! directory removed mid-run, made read-only, or with a file where a subdirectory goes;
+//! sessions racing on one cache; and keys whose parts run together. Expected values are written by hand: which kernel calls a
 //! session makes, and the fake's description of each shape.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -19,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use cache::{HOLE, Scratch, calls, example_with_pin, files, hole, platform, secret_of, session};
+use cache::{HOLE, Scratch, calls, example_with_pin, files, hole, secret_of, session};
 use example::EXAMPLE;
 use hmac::{Hmac, Mac};
 use model::{checked, published};
@@ -42,19 +41,30 @@ fn built(model: &Model, id: &str) -> (String, Arc<silico_core::recompute::Built>
     }
 }
 
-/// Where the fake kernel's entry for step `key` lives, derived by hand from the format the
-/// module documents: SHA-256 of the magic, then the kernel, the platform, and the step,
-/// each after its length (8 bytes, little-endian); the first two hex digits are the
-/// subdirectory.
+/// This platform's name, as the cache spells it.
+fn platform() -> String {
+    format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
+}
+
+/// Where the fake kernel's entry for step `key` lives in the cache in `dir`, derived by hand
+/// from the format the module documents: HMAC-SHA-256, under the cache's secret, of the
+/// magic, then the kernel, the platform, and the step, each after its length (8 bytes,
+/// little-endian); the first two hex digits are the subdirectory.
 fn entry_path(dir: &Path, step: &str) -> PathBuf {
     let platform = platform();
-    let mut hash = Sha256::new();
-    hash.update(MAGIC);
+    let secret = std::fs::read(secret_of(dir)).unwrap();
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&secret).unwrap();
+    mac.update(MAGIC);
     for part in ["silico fake kernel 1", &platform, step] {
-        hash.update((part.len() as u64).to_le_bytes());
-        hash.update(part.as_bytes());
+        mac.update(&(part.len() as u64).to_le_bytes());
+        mac.update(part.as_bytes());
     }
-    let hex: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    let hex: String = mac
+        .finalize()
+        .into_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     dir.join(&hex[..2]).join(&hex[2..])
 }
 
@@ -248,10 +258,17 @@ fn entry_symlinked_to_another_keys_entry_is_a_miss() {
 // exclusively (O_CREAT | O_EXCL, which doesn't follow a link), so the victim is untouched.
 #[test]
 fn a_planted_partial_file_symlink_doesnt_clobber_a_file_outside_the_cache() {
-    // Learn the entries' subdirectories from a probe cache: keys depend only on the kernel,
-    // the platform, and the steps.
+    // Learn the entries' subdirectories from a probe cache with the same secret: keys depend
+    // only on the secret, the kernel, the platform, and the steps.
+    let dir = Scratch::new("partial-symlink");
     let probe = Scratch::new("partial-probe");
-    seed(&probe.0);
+    published(
+        &Recompute::with_cache(
+            FakeKernel::new(2).unwrap(),
+            Cache::with_secret(&probe.0, &dir.secret()),
+        ),
+        checked(EXAMPLE),
+    );
     let subdirs: Vec<String> = std::fs::read_dir(&probe.0)
         .unwrap()
         .flatten()
@@ -259,7 +276,6 @@ fn a_planted_partial_file_symlink_doesnt_clobber_a_file_outside_the_cache() {
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
     assert!(!subdirs.is_empty());
-    let dir = Scratch::new("partial-symlink");
     let outside = Scratch::new("partial-victim");
     std::fs::create_dir_all(&outside.0).unwrap();
     let victim = outside.0.join("precious.txt");
@@ -338,10 +354,16 @@ fn a_cache_directory_removed_while_a_step_runs_is_made_again() {
     let engine = session(&dir.0);
     let hold = engine.kernel().hold(|op| op.name() == "Cut");
     let run = engine.start(checked(EXAMPLE));
-    // Wait until the box, the pin, and its move are written; the cut is held.
+    // Wait until the box, the pin, and its move are written, and no write is under way (the
+    // cut, held, runs while its input's entry is written); the cut is held.
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while files(&dir.0).len() < 3 {
-        assert!(std::time::Instant::now() < deadline, "{:?}", files(&dir.0));
+    loop {
+        let all = files(&dir.0);
+        let partial = |p: &PathBuf| p.to_string_lossy().contains(".partial-");
+        if all.iter().filter(|p| !partial(p)).count() == 3 && !all.iter().any(partial) {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "{all:?}");
         std::thread::yield_now();
     }
     assert!(engine.kernel().wait_running(1, Duration::from_secs(10)));

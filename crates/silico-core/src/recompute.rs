@@ -758,9 +758,9 @@ impl<K: Kernel + 'static> Engine<K> {
                     s.done.insert(key, result);
                 }
             }
-            // The steps made ready run while this one is written to the cache, which it's
-            // still running until it's written: a recompute's results are on disk when it
-            // ends.
+            // A step counts as running until its result is written to the cache, so a
+            // recompute doesn't end before its results are on disk; the steps it made ready
+            // start meanwhile.
             drop(s);
             for _ in 0..woken {
                 changed.notify_one();

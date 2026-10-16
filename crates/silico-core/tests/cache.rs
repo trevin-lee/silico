@@ -15,8 +15,9 @@ mod model;
 
 use std::path::Path;
 use std::process::Command;
+use std::sync::{Arc, Barrier};
 
-use cache::{HOLE, Scratch, calls, example_with_pin, files, hole, platform, session};
+use cache::{HOLE, Scratch, calls, example_with_pin, files, hole, session};
 use example::EXAMPLE;
 use model::{checked, published};
 use silico_core::cache::Cache;
@@ -229,7 +230,7 @@ fn the_cache_ignores_itself_in_any_repository() {
     let secret = Scratch::new("repository-secret");
     let engine = Recompute::with_cache(
         FakeKernel::new(2).unwrap(),
-        Cache::for_platform(&dir, &platform(), &secret.secret()),
+        Cache::with_secret(&dir, &secret.secret()),
     );
     published(&engine, checked(EXAMPLE));
     assert_eq!(files(&dir).len(), 4);
@@ -257,7 +258,7 @@ fn entries_are_sealed_with_their_caches_secret_which_is_made_once() {
     let other = Scratch::new("secret-other");
     let stranger = Recompute::with_cache(
         FakeKernel::new(2).unwrap(),
-        Cache::for_platform(&dir.0, &platform(), &other.secret()),
+        Cache::with_secret(&dir.0, &other.secret()),
     );
     published(&stranger, checked(EXAMPLE));
     assert_eq!(
@@ -268,7 +269,11 @@ fn entries_are_sealed_with_their_caches_secret_which_is_made_once() {
 
 #[test]
 fn a_damaged_secret_keeps_nothing_and_fails_nothing() {
-    for (damage, bytes) in [("short", &b"too short"[..]), ("empty", &b""[..])] {
+    for (damage, bytes) in [
+        ("short", &b"too short"[..]),
+        ("empty", &b""[..]),
+        ("long", &[7; 33][..]),
+    ] {
         let dir = Scratch::new(&format!("damaged-secret-{damage}"));
         std::fs::write(dir.secret(), bytes).unwrap();
         let first = session(&dir.0);
@@ -279,42 +284,218 @@ fn a_damaged_secret_keeps_nothing_and_fails_nothing() {
     }
 }
 
-/// The variable that makes [`a_session_seals_with_the_users_secret`] the session itself.
+/// The variable that makes [`a_session_in_a_process_of_its_own`] a session over the cache
+/// it names.
 const AS_SESSION: &str = "SILICO_TEST_CACHE_SESSION";
 
 #[test]
-fn a_session_seals_with_the_users_secret() {
-    // `Cache::open` in a process of its own (this test, again), with the user's cache
-    // directory set: its secret is `silico/cache-secret` there.
+fn a_session_in_a_process_of_its_own() {
+    // A session with `Cache::open`, when run by [`session_with`]; nothing otherwise.
     if let Some(dir) = std::env::var_os(AS_SESSION) {
         let engine = Recompute::with_cache(FakeKernel::new(2).unwrap(), Cache::open(dir));
-        published(&engine, checked(EXAMPLE));
-        return;
+        assert_eq!(hole(&published(&engine, checked(EXAMPLE))), HOLE);
     }
-    let dir = Scratch::new("user");
-    let home = Scratch::new("user-home");
-    let out = Command::new(std::env::current_exe().unwrap())
+}
+
+/// Runs a session with `Cache::open` over the cache in `dir`, in a process of its own (this
+/// test binary, again), in `cwd`, with no `HOME` or `XDG_CACHE_HOME` but those in `env`.
+fn session_with(dir: &Path, cwd: &Path, env: &[(&str, &Path)]) {
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
         .args([
             "--exact",
-            "a_session_seals_with_the_users_secret",
+            "a_session_in_a_process_of_its_own",
             "--nocapture",
         ])
-        .env(AS_SESSION, &dir.0)
-        .env("XDG_CACHE_HOME", &home.0)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stdout)
+        .current_dir(cwd)
+        .env(AS_SESSION, dir)
+        .env_remove("HOME")
+        .env_remove("XDG_CACHE_HOME");
+    for (name, value) in env {
+        command.env(name, value);
+    }
+    let out = command.output().unwrap();
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{said}");
+    assert!(said.contains("1 passed"), "{said}");
+}
+
+/// Whether a session over the cache in `dir`, with the secret in `secret`, hits every step.
+fn hits_everything_with(dir: &Path, secret: &Path) -> bool {
+    let engine =
+        Recompute::with_cache(FakeKernel::new(2).unwrap(), Cache::with_secret(dir, secret));
+    published(&engine, checked(EXAMPLE));
+    calls(&engine).is_empty()
+}
+
+#[test]
+fn a_session_seals_with_the_secret_in_the_users_cache_directory() {
+    let dir = Scratch::new("user");
+    let home = Scratch::new("user-home");
+    let xdg = Scratch::new("user-xdg");
+    std::fs::create_dir_all(&home.0).unwrap();
+    std::fs::create_dir_all(&xdg.0).unwrap();
+    session_with(
+        &dir.0,
+        &home.0,
+        &[("HOME", &home.0), ("XDG_CACHE_HOME", &xdg.0)],
     );
-    let secret: &Path = &home.0.join("silico/cache-secret");
-    assert_eq!(std::fs::read(secret).unwrap().len(), 32);
+    let secret = xdg.0.join("silico/cache-secret");
+    assert_eq!(std::fs::read(&secret).unwrap().len(), 32);
+    assert!(!home.0.join(".cache").exists());
     // The session's entries are sealed with it: a cache with that secret hits them all.
-    let again = Recompute::with_cache(
-        FakeKernel::new(2).unwrap(),
-        Cache::for_platform(&dir.0, &platform(), secret),
+    assert!(hits_everything_with(&dir.0, &secret));
+}
+
+#[test]
+fn with_no_xdg_cache_home_the_secret_is_in_the_homes_cache() {
+    let dir = Scratch::new("home-only");
+    let home = Scratch::new("home-only-home");
+    std::fs::create_dir_all(&home.0).unwrap();
+    session_with(&dir.0, &home.0, &[("HOME", &home.0)]);
+    let secret = home.0.join(".cache/silico/cache-secret");
+    assert_eq!(std::fs::read(&secret).unwrap().len(), 32);
+    assert!(hits_everything_with(&dir.0, &secret));
+}
+
+#[test]
+fn a_relative_xdg_cache_home_is_ignored() {
+    // Relative to wherever the session runs, it would put the secret anywhere.
+    let dir = Scratch::new("relative-xdg");
+    let home = Scratch::new("relative-xdg-home");
+    std::fs::create_dir_all(&home.0).unwrap();
+    session_with(
+        &dir.0,
+        &home.0,
+        &[("HOME", &home.0), ("XDG_CACHE_HOME", Path::new("relative"))],
     );
+    assert!(!home.0.join("relative").exists());
+    let secret = home.0.join(".cache/silico/cache-secret");
+    assert!(hits_everything_with(&dir.0, &secret));
+}
+
+#[test]
+fn with_no_home_a_session_keeps_nothing() {
+    // No secret outside the document to seal with: nothing is kept, in the cache or beside
+    // it, and nothing fails.
+    let dir = Scratch::new("no-home");
+    let cwd = Scratch::new("no-home-cwd");
+    std::fs::create_dir_all(&cwd.0).unwrap();
+    session_with(&dir.0, &cwd.0, &[]);
+    assert!(!dir.0.exists(), "{:?}", files(&dir.0));
+    assert_eq!(std::fs::read_dir(&cwd.0).unwrap().count(), 0);
+}
+
+#[test]
+fn sessions_making_the_secret_at_once_agree_on_it() {
+    // Eight sessions start on a cache with no secret yet: each makes one, and all must end
+    // with the one on disk, or their entries are sealed with secrets no one has.
+    for round in 0..20 {
+        let dir = Scratch::new(&format!("secret-race-{round}"));
+        let radii = ["1", "2", "3", "4", "5", "6", "7", "8"];
+        let barrier = Arc::new(Barrier::new(radii.len()));
+        let threads: Vec<_> = radii
+            .iter()
+            .map(|radius| {
+                let (dir, barrier) = (dir.0.clone(), Arc::clone(&barrier));
+                let radius = (*radius).to_owned();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    published(&session(&dir), example_with_pin(&radius));
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let last = session(&dir.0);
+        for radius in radii {
+            published(&last, example_with_pin(radius));
+        }
+        assert!(calls(&last).is_empty(), "round {round}: {:?}", calls(&last));
+    }
+}
+
+#[test]
+fn caches_of_two_secrets_in_one_directory_keep_each_others_entries() {
+    // One document folder, synced between two machines (or used by two accounts): each
+    // side's entries stay, side by side.
+    let dir = Scratch::new("two-secrets");
+    let theirs = Scratch::new("two-secrets-theirs");
+    published(&session(&dir.0), checked(EXAMPLE));
+    let other = || {
+        Recompute::with_cache(
+            FakeKernel::new(2).unwrap(),
+            Cache::with_secret(&dir.0, &theirs.secret()),
+        )
+    };
+    let first = other();
+    published(&first, checked(EXAMPLE));
+    assert_eq!(
+        calls(&first),
+        ["Cut", "MakeBox", "MakeCylinder", "Translate"]
+    );
+    assert_eq!(files(&dir.0).len(), 8);
+    let mine = session(&dir.0);
+    published(&mine, checked(EXAMPLE));
+    assert!(calls(&mine).is_empty(), "{:?}", calls(&mine));
+    let again = other();
     published(&again, checked(EXAMPLE));
-    assert!(calls(&again).is_empty());
+    assert!(calls(&again).is_empty(), "{:?}", calls(&again));
+}
+
+#[test]
+fn a_gitignore_that_isnt_the_caches_is_put_back() {
+    // Empty (a write cut short), un-ignoring, or a link: each is replaced whole, and the
+    // link's target is left alone.
+    let elsewhere = Scratch::new("gitignore-elsewhere");
+    std::fs::create_dir_all(&elsewhere.0).unwrap();
+    let target = elsewhere.0.join("theirs");
+    std::fs::write(&target, b"their own\n").unwrap();
+    type Plant<'a> = Box<dyn Fn(&Path) + 'a>;
+    let plant: [(&str, Plant); 3] = [
+        ("empty", Box::new(|path| std::fs::write(path, b"").unwrap())),
+        (
+            "unignoring",
+            Box::new(|path| std::fs::write(path, b"!*\n").unwrap()),
+        ),
+        (
+            "link",
+            Box::new(|path| std::os::unix::fs::symlink(&target, path).unwrap()),
+        ),
+    ];
+    for (what, plant) in plant {
+        let dir = Scratch::new(&format!("gitignore-{what}"));
+        std::fs::create_dir_all(&dir.0).unwrap();
+        let path = dir.0.join(".gitignore");
+        plant(&path);
+        published(&session(&dir.0), checked(EXAMPLE));
+        assert!(!path.is_symlink(), "{what}");
+        let ignore = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(ignore.lines().last(), Some("*"), "{what}: {ignore:?}");
+        assert!(
+            ignore
+                .lines()
+                .all(|line| line == "*" || line.starts_with('#')),
+            "{what}: {ignore:?}"
+        );
+    }
+    assert_eq!(std::fs::read(&target).unwrap(), b"their own\n");
+}
+
+#[test]
+fn a_cache_reached_through_a_link_writes_no_gitignore_where_it_points() {
+    // A `.silico-cache` that links elsewhere (planted, or set up by hand): git keeps the
+    // link, not what it points at, and the directory it points at may be anyone's.
+    let base = Scratch::new("linked-root");
+    std::fs::create_dir_all(base.0.join("target")).unwrap();
+    let link = base.0.join(".silico-cache");
+    std::os::unix::fs::symlink("target", &link).unwrap();
+    let secret = Scratch::new("linked-root-secret");
+    let engine = Recompute::with_cache(
+        FakeKernel::new(2).unwrap(),
+        Cache::with_secret(&link, &secret.secret()),
+    );
+    assert_eq!(hole(&published(&engine, checked(EXAMPLE))), HOLE);
+    assert!(!base.0.join("target/.gitignore").exists());
 }

@@ -66,8 +66,7 @@ impl Scratch {
 
     /// The cache in this directory, for this platform, with its own secret.
     pub fn cache(&self) -> Cache {
-        let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
-        Cache::for_platform(&self.0, &platform, &self.secret())
+        Cache::with_secret(&self.0, &self.secret())
     }
 
     fn secret(&self) -> PathBuf {

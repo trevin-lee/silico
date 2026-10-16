@@ -65,14 +65,9 @@ pub fn secret_of(dir: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// This platform's name, as the cache spells it.
-pub fn platform() -> String {
-    format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
-}
-
 /// The cache in `dir`, for this platform, with its own secret.
 pub fn cache(dir: &Path) -> Cache {
-    Cache::for_platform(dir, &platform(), &secret_of(dir))
+    Cache::with_secret(dir, &secret_of(dir))
 }
 
 /// A fresh session: a new fake kernel, over the cache in `dir`.
