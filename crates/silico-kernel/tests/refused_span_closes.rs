@@ -68,10 +68,20 @@ fn a_request_refused_before_it_was_sent_lets_its_span_go() {
         assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
     }
     wait_closed(&closed, "crashed_edit");
-    // A request superseded while it runs, and stopped.
-    pool.set_stop_after(Duration::from_millis(500));
+    // A request superseded while it runs, and stopped. First the crashed worker's
+    // replacement answers, so the request is sent to a running worker, not dropped from the
+    // queue before it's sent.
+    pool.submit(Generation(1), KernelRequest::echo(Blob::inline(vec![1])))
+        .wait_timeout(Duration::from_secs(60))
+        .unwrap_or_else(|_| panic!("no outcome"))
+        .done()
+        .expect("superseded")
+        .unwrap();
+    let stop_after = Duration::from_millis(500);
+    pool.set_stop_after(stop_after);
     {
         let edit = tracing::warn_span!("hung_edit");
+        let sent = Instant::now();
         let pending = edit.in_scope(|| {
             pool.submit(
                 Generation(1),
@@ -84,6 +94,11 @@ fn a_request_refused_before_it_was_sent_lets_its_span_go() {
             .wait_timeout(Duration::from_secs(60))
             .unwrap_or_else(|_| panic!("no outcome"));
         assert!(outcome.done().is_none(), "not superseded");
+        // It ran until it was stopped: superseded in the queue, it would end at once.
+        assert!(
+            sent.elapsed() >= stop_after,
+            "superseded before it was sent: never stopped"
+        );
     }
     wait_closed(&closed, "hung_edit");
     drop(pool);

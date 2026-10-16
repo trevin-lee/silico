@@ -1588,12 +1588,11 @@ mod tests {
         let (reader, mut writer) = std::io::pipe().unwrap();
         let written = Arc::new(AtomicUsize::new(0));
         let count = Arc::clone(&written);
+        // The shortest done line a worker writes (the first trace), so the most fit.
+        let line = format!("{{\"{}\":1}}\n", silico_protocol::REQUEST_DONE);
+        let length = line.len();
         std::thread::spawn(move || {
-            for trace in 1_000_000u64.. {
-                let line = format!("{{\"{}\":{trace}}}\n", silico_protocol::REQUEST_DONE);
-                if writer.write_all(line.as_bytes()).is_err() {
-                    break;
-                }
+            while writer.write_all(line.as_bytes()).is_ok() {
                 count.fetch_add(1, Ordering::SeqCst);
             }
         });
@@ -1609,6 +1608,12 @@ mod tests {
         assert!(
             last < super::Callers::MOST,
             "the pipe held {last} done lines"
+        );
+        // No supported pipe holds less than 16 KiB: fewer lines would mean the count stopped
+        // early (the writer not yet run), not that the pipe is full.
+        assert!(
+            last >= 16 * 1024 / length,
+            "only {last} counted: the writer didn't fill the pipe"
         );
         drop(reader);
     }
