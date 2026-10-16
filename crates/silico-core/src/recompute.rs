@@ -29,6 +29,7 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
+use crate::cache::Cache;
 use crate::document::{Checked, FeatureId, Operation};
 use crate::kernel::{
     BooleanOp, BuiltData, Generation, History, Kernel, KernelRequest, Primitive, ShapeData,
@@ -49,10 +50,7 @@ pub struct Key([u8; 32]);
 
 impl fmt::Display for Key {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for byte in self.0 {
-            write!(f, "{byte:02x}")?;
-        }
-        Ok(())
+        f.write_str(&crate::hex(&self.0))
     }
 }
 
@@ -184,6 +182,8 @@ pub struct Recompute<K: Kernel + 'static> {
 
 struct Engine<K> {
     kernel: K,
+    /// Where results are kept on disk, if anywhere.
+    cache: Option<Cache>,
     state: Mutex<EngineState>,
 }
 
@@ -230,10 +230,21 @@ type StepResult = Result<Arc<Built>, Error>;
 
 impl<K: Kernel + 'static> Recompute<K> {
     pub fn new(kernel: K) -> Self {
+        Self::build(kernel, None)
+    }
+
+    /// Rebuilds on `kernel`, keeping each step's result in `cache` too, and taking it from
+    /// there when it's kept: a document opened again rebuilds without the kernel.
+    pub fn with_cache(kernel: K, cache: Cache) -> Self {
+        Self::build(kernel, Some(cache))
+    }
+
+    fn build(kernel: K, cache: Option<Cache>) -> Self {
         let generation = kernel.generation();
         Self {
             engine: Arc::new(Engine {
                 kernel,
+                cache,
                 state: Mutex::new(EngineState {
                     generation,
                     newest_started: generation,
@@ -474,6 +485,16 @@ fn boolean_op(operation: &Operation) -> Option<BooleanOp> {
     }
 }
 
+/// Whether `built` could be what `step` makes: no history for a step with no inputs (a
+/// primitive), and for one with inputs, a history of that many that holds together.
+fn fits(step: &Step, built: &Built) -> bool {
+    let inputs = step.inputs().len();
+    match &built.history {
+        None => inputs == 0,
+        Some(history) => inputs > 0 && history.validate(inputs).is_ok(),
+    }
+}
+
 /// Whether a step's failure follows from its values, so asking again would fail again.
 fn kept(error: &Error) -> bool {
     matches!(
@@ -501,7 +522,7 @@ impl<K: Kernel + 'static> Engine<K> {
     fn run(&self, document: &Checked, generation: Generation) -> Result<RunOutcome, Error> {
         let plan = Plan::of(document);
         let keys: Arc<BTreeSet<Key>> = Arc::new(plan.steps.keys().copied().collect());
-        let done: BTreeMap<Key, StepResult> = {
+        let mut done: BTreeMap<Key, StepResult> = {
             let mut state = lock(&self.state);
             // The newest recompute's plan is worth keeping results for, whether or not it
             // finishes: an older one finishing later keeps what this one will use.
@@ -513,6 +534,24 @@ impl<K: Kernel + 'static> Engine<K> {
                 .filter_map(|key| state.results.get(key).map(|r| (*key, r.clone())))
                 .collect()
         };
+        // What's kept on disk for this kernel, for the steps not kept in memory.
+        if let Some(cache) = &self.cache {
+            let kernel = self.kernel.identity();
+            for key in &plan.order {
+                if !done.contains_key(key)
+                    && let Some(built) = cache.get(kernel, key)
+                {
+                    // A seal says this user's Silico wrote the bytes, not that what it wrote
+                    // fits the step: a history that doesn't is a miss, as a worker's reply
+                    // with one would be refused.
+                    if plan.steps.get(key).is_some_and(|step| fits(step, &built)) {
+                        done.insert(*key, Ok(Arc::new(built)));
+                    } else {
+                        tracing::warn!(key = %key, "a cache entry doesn't fit its step: rebuilding it");
+                    }
+                }
+            }
+        }
         let mut schedule = Schedule {
             done,
             waiting: BTreeMap::new(),
@@ -674,10 +713,10 @@ impl<K: Kernel + 'static> Engine<K> {
                 }
             }));
             let mut s = lock(schedule);
-            s.running -= 1;
             let outcome = match outcome {
                 Ok(outcome) => outcome,
                 Err(panic) => {
+                    s.running -= 1;
                     let said = panic
                         .downcast_ref::<&str>()
                         .map(|said| (*said).to_owned())
@@ -695,6 +734,7 @@ impl<K: Kernel + 'static> Engine<K> {
                 }
             };
             let mut woken = 0;
+            let mut to_keep = None;
             match outcome {
                 Outcome::Superseded => s.superseded = true,
                 Outcome::Done(result) => {
@@ -711,18 +751,30 @@ impl<K: Kernel + 'static> Engine<K> {
                             }
                         }
                     }
-                    s.done.insert(key, result.map(Arc::new));
+                    let result = result.map(Arc::new);
+                    if let Ok(built) = &result {
+                        to_keep = Some(Arc::clone(built));
+                    }
+                    s.done.insert(key, result);
                 }
             }
-            // Wake a thread for each step made ready; every thread, once nothing is left.
+            // A step counts as running until its result is written to the cache, so a
+            // recompute doesn't end before its results are on disk; the steps it made ready
+            // start meanwhile.
+            drop(s);
+            for _ in 0..woken {
+                changed.notify_one();
+            }
+            if let (Some(cache), Some(built)) = (&self.cache, to_keep) {
+                cache.put(self.kernel.identity(), &key, &built);
+            }
+            let mut s = lock(schedule);
+            s.running -= 1;
+            // Every thread, once nothing is left.
             let finished = s.superseded || (s.ready.is_empty() && s.running == 0);
             drop(s);
             if finished {
                 changed.notify_all();
-            } else {
-                for _ in 0..woken {
-                    changed.notify_one();
-                }
             }
         }
     }

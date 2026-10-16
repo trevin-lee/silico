@@ -206,6 +206,10 @@ impl FakeKernel {
 }
 
 impl Kernel for FakeKernel {
+    fn identity(&self) -> &str {
+        "silico fake kernel 1"
+    }
+
     fn generation(&self) -> Generation {
         lock(&self.shared.state).generation
     }

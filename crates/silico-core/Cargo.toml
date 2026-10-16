@@ -8,8 +8,10 @@ publish.workspace = true
 
 [dependencies]
 command-fds.workspace = true
+hmac.workspace = true
 libc.workspace = true
 libm = { workspace = true, optional = true }
+postcard.workspace = true
 rustix.workspace = true
 schemars.workspace = true
 serde.workspace = true

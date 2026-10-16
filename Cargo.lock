@@ -4175,9 +4175,11 @@ version = "0.0.0"
 dependencies = [
  "command-fds",
  "cpu-time",
+ "hmac",
  "jsonschema",
  "libc",
  "libm",
+ "postcard",
  "proptest",
  "rustix",
  "schemars",

@@ -445,6 +445,12 @@ impl From<silico_protocol::InvalidParameter> for KernelError {
     }
 }
 
+/// The OCCT build this crate links: its build cache entry, `<cache>/<hash of the recipe's
+/// inputs, patches included>/install`. Executables load OCCT from its `lib` (their run
+/// path), so the path is in a worker's bytes, and a worker built against another OCCT has
+/// another identity to the core (`Kernel::identity`).
+pub const OCCT_BUILD: &str = env!("SILICO_OCCT_BUILD");
+
 /// A shape owned by OCCT.
 pub struct Shape {
     inner: cxx::UniquePtr<ffi::Shape>,

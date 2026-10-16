@@ -37,6 +37,8 @@ rustix = { version = "1.1", features = ["event", "net"] }
 crc32fast = "1.4"
 # Recompute's keys (and the cache's, from M2.5): a hash with no collisions to plan around.
 sha2 = "0.10"
+# The cache seals its entries with a secret of the user's, so only they could have written one.
+hmac = "0.12"
 # The math OCCT uses (its libm shim's, pinned alike), where Silico must compute as it does.
 libm = { version = "=0.2.16", default-features = false }
 libc = "0.2"
@@ -62,3 +64,8 @@ unimplemented = "deny"
 dbg_macro = "deny"
 print_stdout = "deny"
 print_stderr = "deny"
+
+# The pool hashes its worker executable when it starts (its identity, for the cache):
+# unoptimized, that takes half a second on a debug worker, for every pool a test starts.
+[profile.dev.package.sha2]
+opt-level = 3

@@ -187,7 +187,11 @@ impl KernelPool {
             .with_cause(e.to_string())
         })?;
         let exe = exe.as_path();
+        let exe_stamp = Stamp::of(exe);
+        let identity = identity_of(exe)?;
         let shared = Arc::new(Shared {
+            identity,
+            exe_stamp,
             state: Mutex::new(State {
                 queue: VecDeque::new(),
                 generation: Generation(0),
@@ -329,6 +333,10 @@ impl KernelPool {
 }
 
 impl crate::kernel::Kernel for KernelPool {
+    fn identity(&self) -> &str {
+        &self.shared.identity
+    }
+
     fn generation(&self) -> Generation {
         KernelPool::generation(self)
     }
@@ -369,6 +377,44 @@ impl Drop for KernelPool {
     }
 }
 
+/// A file's size, modification time, and inode: what changes when it's rebuilt or replaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Stamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    inode: u64,
+}
+
+impl Stamp {
+    fn of(path: &Path) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(path).ok()?;
+        Some(Self {
+            len: meta.len(),
+            modified: meta.modified().ok(),
+            inode: meta.ino(),
+        })
+    }
+}
+
+/// The identity of the kernel the worker executable at `exe` is: `kernel worker sha256:`
+/// and its bytes' SHA-256, so a rebuilt or replaced worker is another kernel.
+fn identity_of(exe: &Path) -> Result<String, Error> {
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(exe).map_err(|e| {
+        Error::new(
+            ErrorCode::WorkerCrashed,
+            format!("couldn't read the kernel worker {}", exe.display()),
+        )
+        .with_cause(e.to_string())
+        .with_suggestion("check Silico's install: rebuild the kernel worker")
+    })?;
+    Ok(format!(
+        "kernel worker sha256:{}",
+        crate::hex(&Sha256::digest(&bytes))
+    ))
+}
+
 /// Starts a pool thread.
 fn spawn_thread(
     name: String,
@@ -394,6 +440,10 @@ pub(crate) fn thread_error(kernel: &str, e: &std::io::Error) -> Error {
 /// What the pool's threads share. Its locks are taken in the order `state`, then `slots`
 /// (then a worker's process lock), never the other way.
 struct Shared {
+    /// The pool's identity: its worker executable's, as the pool started.
+    identity: String,
+    /// The executable as it was then: a worker started later from another is refused.
+    exe_stamp: Option<Stamp>,
     state: Mutex<State>,
     /// Signalled when a request is queued or the pool stops.
     work: Condvar,
@@ -812,6 +862,10 @@ impl Keeper<'_> {
         match self.worker {
             Some(ref mut worker) => Ok(worker),
             None => {
+                if let Err(e) = self.same_executable() {
+                    self.wait_to_retry();
+                    return Err(e);
+                }
                 let worker = match Worker::spawn(&self.exe) {
                     Ok(worker) => worker,
                     Err(e) => {
@@ -926,6 +980,28 @@ impl Keeper<'_> {
                 .newest_started
                 .fetch_max(self.number, Ordering::Relaxed);
         }
+    }
+
+    /// Whether the worker executable is still the one the pool started with: a worker
+    /// started from another build would answer under the pool's identity with another
+    /// kernel's results, so it isn't started. Cheap when the file is as it was (its size,
+    /// time, and inode); hashed again only when they've changed.
+    fn same_executable(&self) -> Result<(), Error> {
+        if self.shared.exe_stamp.is_some() && Stamp::of(&self.exe) == self.shared.exe_stamp {
+            return Ok(());
+        }
+        if identity_of(&self.exe)? == self.shared.identity {
+            return Ok(());
+        }
+        Err(Error::new(
+            ErrorCode::WorkerCrashed,
+            format!(
+                "the kernel worker {} changed since the pool started: another build of it \
+                 isn't started under this pool's identity",
+                self.exe.display()
+            ),
+        )
+        .with_suggestion("restart Silico, so the new worker's results are kept as its own"))
     }
 
     /// Puts off the next start, twice as long as the last time (or [`IDLE_CHECK`]).

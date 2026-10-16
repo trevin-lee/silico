@@ -149,3 +149,11 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Callbacks a test hands the fake (hold and refusal rules) that panic: the serving thread dies with the lock held and its request counted as running, its caller is told the kernel stopped, and every later request hangs
 - Waits of "forever" (`Duration::MAX`) added to `Instant::now()` unchecked, and sizes of `usize::MAX` collected into a Vec: panics where the real component returns an error
 - IDs parsed with `from_str_radix`, which takes upper-case digits and a leading '+': bytes the component never made are taken as one of its own
+
+## Caches and files the core writes
+
+- An entry replaced by a FIFO, or a symlink to one or to `/dev/zero`: `std::fs::read` blocks in open(2) forever or reads until memory runs out; a non-regular file must be a miss
+- Partial or temporary files at predictable names (`.partial-<pid>-<n>`) planted beforehand as symlinks: `File::create` follows them and overwrites the link's target outside the cache; check a victim file is untouched
+- A sound entry re-encoded with an inconsistent payload and its checksum fixed (a checksum isn't a signature): whatever the core validates from a worker (a history's inputs and element numbers) must be validated when read back from disk
+- Keys hashing parts joined by a separator the parts may contain (a newline in a kernel identity or platform): two different keys hash the same bytes
+- A kernel identity that hashes only the executable: libraries it loads at run time (OCCT's dylibs through an rpath symlink) change results without changing the identity; a worker binary replaced under a running pool is relaunched under the old identity
