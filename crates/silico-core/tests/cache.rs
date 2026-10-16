@@ -560,17 +560,60 @@ fn a_linked_cache_takes_nothing_kept_where_it_points() {
 
 #[test]
 fn a_linked_cache_named_with_a_trailing_slash_keeps_nothing() {
-    // `link/` resolves the link: named so, it must still be seen as one.
-    let base = Scratch::new("linked-slash");
-    std::fs::create_dir_all(base.0.join("target")).unwrap();
-    std::os::unix::fs::symlink("target", base.0.join(".silico-cache")).unwrap();
-    let secret = Scratch::new("linked-slash-secret");
+    // `link/` and `link/.` resolve the link: named so, it must still be seen as one.
+    for (n, name) in [".silico-cache/", ".silico-cache/."]
+        .into_iter()
+        .enumerate()
+    {
+        let base = Scratch::new(&format!("linked-slash-{n}"));
+        std::fs::create_dir_all(base.0.join("target")).unwrap();
+        std::os::unix::fs::symlink("target", base.0.join(".silico-cache")).unwrap();
+        let secret = Scratch::new(&format!("linked-slash-{n}-secret"));
+        let engine = Recompute::with_cache(
+            FakeKernel::new(2).unwrap(),
+            Cache::with_secret(base.0.join(name), &secret.secret()),
+        );
+        assert_eq!(hole(&published(&engine, checked(EXAMPLE))), HOLE, "{name}");
+        let written = std::fs::read_dir(base.0.join("target")).unwrap().count();
+        assert_eq!(written, 0, "{name}");
+    }
+}
+
+#[test]
+fn a_cache_takes_nothing_kept_behind_subdirectories_that_are_links() {
+    // This user's entries, in a cache elsewhere; a cache whose subdirectories link to that
+    // one's reads none of them.
+    let base = Scratch::new("linked-shards-read");
+    let kept = base.0.join("kept");
+    let secret = Scratch::new("linked-shards-read-secret");
+    published(
+        &Recompute::with_cache(
+            FakeKernel::new(2).unwrap(),
+            Cache::with_secret(&kept, &secret.secret()),
+        ),
+        checked(EXAMPLE),
+    );
+    let root = base.0.join(".silico-cache");
+    std::fs::create_dir_all(&root).unwrap();
+    for sub in std::fs::read_dir(&kept).unwrap().flatten() {
+        if sub.path().is_dir() {
+            std::os::unix::fs::symlink(
+                Path::new("../kept").join(sub.file_name()),
+                root.join(sub.file_name()),
+            )
+            .unwrap();
+        }
+    }
     let engine = Recompute::with_cache(
         FakeKernel::new(2).unwrap(),
-        Cache::with_secret(base.0.join(".silico-cache/"), &secret.secret()),
+        Cache::with_secret(&root, &secret.secret()),
     );
     assert_eq!(hole(&published(&engine, checked(EXAMPLE))), HOLE);
-    assert_eq!(std::fs::read_dir(base.0.join("target")).unwrap().count(), 0);
+    assert_eq!(
+        calls(&engine),
+        ["Cut", "MakeBox", "MakeCylinder", "Translate"]
+    );
+    assert_eq!(files(&kept).len(), 4);
 }
 
 #[test]

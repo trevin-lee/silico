@@ -133,12 +133,7 @@ impl Cache {
                 None
             }
         };
-        Self {
-            dir: plain(dir.into()),
-            platform: this_platform(),
-            secret,
-            said_linked: Arc::default(),
-        }
+        Self::new(dir.into(), this_platform(), secret)
     }
 
     /// The cache in `dir`, for this platform, sealed with the secret in `secret_file` (made
@@ -150,10 +145,14 @@ impl Cache {
     /// The cache in `dir`, for `platform` (`macos-aarch64`, `linux-x86_64`), sealed with the
     /// secret in `secret_file` (made if there's none): for tests of other platforms.
     pub fn for_platform(dir: impl Into<PathBuf>, platform: &str, secret_file: &Path) -> Self {
+        Self::new(dir.into(), platform.to_owned(), secret_in(secret_file))
+    }
+
+    fn new(dir: PathBuf, platform: String, secret: Option<Secret>) -> Self {
         Self {
-            dir: plain(dir.into()),
-            platform: platform.to_owned(),
-            secret: secret_in(secret_file),
+            dir: plain(dir),
+            platform,
+            secret,
             said_linked: Arc::default(),
         }
     }
@@ -164,8 +163,7 @@ impl Cache {
         let secret = self.secret()?;
         let key = secret.entry_key([kernel, &self.platform, &step.to_string()])?;
         let path = self.path(&key);
-        if path.parent().is_some_and(is_link) {
-            self.say_linked(&path);
+        if self.linked_below(&path) {
             return None;
         }
         let bytes = match read_file(&path) {
@@ -220,6 +218,9 @@ impl Cache {
             return;
         };
         let path = self.path(&key);
+        if self.linked_below(&path) {
+            return;
+        }
         if let Err(e) = write_entry(&self.dir, &path, &seal, &payload) {
             tracing::warn!(path = %path.display(), "couldn't write a cache entry: {e}");
         }
@@ -236,6 +237,17 @@ impl Cache {
             return None;
         }
         Some(secret)
+    }
+
+    /// Whether the subdirectory an entry at `path` lives in is a link, said once.
+    fn linked_below(&self, path: &Path) -> bool {
+        match path.parent().filter(|dir| is_link(dir)) {
+            Some(dir) => {
+                self.say_linked(dir);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Says, once, that a directory of the cache is a link, which it doesn't use.
