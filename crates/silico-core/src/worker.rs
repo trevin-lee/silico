@@ -700,9 +700,11 @@ impl Drop for KillOnDrop {
 /// isn't UTF-8 can't stop the reading, and cut at [`MAX_LOG_LINE`].
 /// The spans of a worker's requests whose log lines may still be read, by trace, oldest
 /// first. How many it holds is how far the log thread is behind the worker: a slow log
-/// sink can put it behind, and the pipe's backpressure (the worker blocks once tens of
-/// kilobytes are unread) keeps that far below [`Callers::MOST`], which bounds only a worker
-/// that never says a request is done (a broken one).
+/// sink can put it behind, as far as the pipe holds done lines (its size over a done line's
+/// 30 bytes or so: about 900 on macOS, 2,700 on Linux with 4 KiB pages, more with larger
+/// pages), before the worker blocks writing one. [`Callers::MOST`] is above that on the
+/// platforms Silico is checked on; past it, the oldest span goes (with a warning), and its
+/// late lines go under none. It also bounds a worker that never says a request is done.
 #[derive(Default)]
 struct Callers(VecDeque<(u64, tracing::Span)>);
 
