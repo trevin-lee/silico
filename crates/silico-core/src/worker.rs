@@ -1580,55 +1580,31 @@ mod tests {
 
     #[test]
     fn the_pipe_holds_fewer_done_lines_than_the_core_remembers() {
-        // Filled until a write blocks: what a worker can write before the log thread reads
-        // any, on this platform.
+        // What a worker can write before the log thread reads any, on this platform: a
+        // non-blocking pipe filled until the system says it's full. A write this short is
+        // atomic (at most PIPE_BUF), so each goes in whole or not at all.
         use std::io::Write;
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
         let (reader, mut writer) = std::io::pipe().unwrap();
-        let written = Arc::new(AtomicUsize::new(0));
-        let count = Arc::clone(&written);
+        rustix::io::ioctl_fionbio(&writer, true).unwrap();
         // The shortest done line a worker writes (the first trace), so the most fit.
         let line = format!("{{\"{}\":1}}\n", silico_protocol::REQUEST_DONE);
-        let length = line.len();
-        std::thread::spawn(move || {
-            while writer.write_all(line.as_bytes()).is_ok() {
-                count.fetch_add(1, Ordering::SeqCst);
-            }
-        });
-        let mut last = usize::MAX;
+        let mut held = 0usize;
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            let now = written.load(Ordering::SeqCst);
-            if now == last {
-                break;
+            match writer.write(line.as_bytes()) {
+                Ok(n) => {
+                    assert_eq!(n, line.len(), "a short write to a pipe is whole");
+                    held += 1;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) => panic!("{e}"),
             }
-            last = now;
         }
         assert!(
-            last < super::Callers::MOST,
-            "the pipe held {last} done lines"
+            held < super::Callers::MOST,
+            "the pipe held {held} done lines"
         );
-        // The writer is blocked on a full pipe, not paused: reading one line lets exactly
-        // one more in.
-        let mut one = vec![0; length];
-        std::io::Read::read_exact(&mut &reader, &mut one).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while written.load(Ordering::SeqCst) == last {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the writer never went on"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        assert_eq!(written.load(Ordering::SeqCst), last + 1);
-        // No supported pipe holds less than 16 KiB: fewer lines would mean the count stopped
-        // early (the writer not yet run), not that the pipe is full.
-        assert!(
-            last >= 16 * 1024 / length,
-            "only {last} counted: the writer didn't fill the pipe"
-        );
+        // No supported pipe holds less than 16 KiB.
+        assert!(held >= 16 * 1024 / line.len(), "the pipe held only {held}");
         drop(reader);
     }
 
