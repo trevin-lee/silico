@@ -44,7 +44,7 @@ The **generalist** is one Agent with this prompt:
 
 Spawn one `general-purpose` Agent per selected persona, all in a single message. Use the model from the council table, and this prompt, filled in, and nothing else:
 
-> You are the `<lens>` reviewer on Silico's council, for the repository at `<repo root>`. Read `.claude/skills/review-<lens>/SKILL.md` and follow it exactly. Review target: `<target string>`. Return the report in the format it specifies.
+> You are the `<lens>` reviewer on Silico's council, for the repository at `<repo root>`. Read `.claude/skills/review-<lens>/SKILL.md` and follow it exactly. Review target: `<target string>`. This is round `<n>`. Return the report in the format it specifies.
 
 Don't add a summary of the change, its purpose, or which parts look fine. Reviewers must not inherit the author's framing, and they never see earlier rounds' reports.
 
@@ -72,9 +72,11 @@ For each blocking finding, in order of severity:
 3. Commit on the branch as `fix(<scope>): <what the fix gains>`. The branch is squash-merged later.
 
 Then run the next round:
-- **Target:** the diff of this round's fix commits only.
-- **Personas:** those whose findings were fixed, plus `tests`.
+- **Target:** the diff of this round's fix commits only, never the whole branch again.
+- **Personas:** those whose medium-or-higher findings were fixed, plus `tests`. A persona whose remaining findings are all low is closed: it doesn't run again, and its lows go to the open list.
 - Steps 2–4 again.
+
+Low findings never open a round. Fix the cheap ones on the branch if you like (tests, docs, a few lines), without another round, and record the rest as open.
 
 Rounds go on until the council approves: there's no cap. Stop and escalate to the maintainer with the ledger only when one of these happens:
 - a finding that was already fixed comes back;
@@ -84,7 +86,7 @@ Rounds go on until the council approves: there's no cap. Stop and escalate to th
 
 ## Ledger
 
-Keep the ledger at `/tmp/silico-review/<branch>/ledger.md`. For each round, record the target, the personas run, every finding with its verdict, and the fix commit for each fixed finding. Use it for the refuted list in step 3 and to spot findings that come back after a fix.
+Keep the ledger at `~/.cache/silico-review/<branch>/ledger.md` (not `/tmp`, which a restart clears). For each round, record the target, the personas run, every finding with its verdict, and the fix commit for each fixed finding. Use it for the refuted list in step 3 and to spot findings that come back after a fix.
 
 ## 6. Report
 
