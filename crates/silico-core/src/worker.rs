@@ -1552,6 +1552,30 @@ mod tests {
     }
 
     #[test]
+    fn a_done_line_lets_older_unanswered_requests_go_too() {
+        // A request refused before it was sent never gets a done line of its own.
+        let mut callers = super::Callers::default();
+        callers.push(7, tracing::Span::none());
+        callers.push(8, tracing::Span::none());
+        callers.push(9, tracing::Span::none());
+        callers.done(8);
+        assert_eq!(
+            callers
+                .0
+                .iter()
+                .map(|(trace, _)| *trace)
+                .collect::<Vec<_>>(),
+            [9]
+        );
+    }
+
+    #[test]
+    fn done_lines_stay_out_of_the_crash_tail() {
+        let lines = logs_of(b"{\"silico_request_done\":7}\nLAST WORDS\n");
+        assert_eq!(lines, ["LAST WORDS"]);
+    }
+
+    #[test]
     fn a_worker_that_never_says_a_request_is_done_holds_no_more_than_the_bound() {
         let mut callers = super::Callers::default();
         let most = super::Callers::MOST as u64;
