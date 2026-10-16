@@ -12,7 +12,8 @@
 //! of two secrets in one directory (one synced between two machines, say) keep their
 //! entries side by side, never in each other's place. The directory ignores itself (a
 //! `.gitignore` of `*`, put back if it's anything else), so it isn't committed with a
-//! document in any repository.
+//! document in any repository; a directory that's a link, which may point anywhere, keeps
+//! nothing.
 //!
 //! Only results are kept, never failures: a failure's cause may not last (memory, say), and
 //! recompute keeps those that follow from the values in memory. Nothing here fails a
@@ -24,7 +25,8 @@
 use std::io::{Read as _, Write as _};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
@@ -48,6 +50,8 @@ pub struct Cache {
     /// The secret entries are keyed and sealed with: none if it couldn't be had, and then
     /// nothing is kept.
     secret: Option<Secret>,
+    /// Whether this cache (or a clone) has said its directory is a link it won't use.
+    said_linked: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for Cache {
@@ -133,6 +137,7 @@ impl Cache {
             dir: dir.into(),
             platform: this_platform(),
             secret,
+            said_linked: Arc::default(),
         }
     }
 
@@ -149,13 +154,14 @@ impl Cache {
             dir: dir.into(),
             platform: platform.to_owned(),
             secret: secret_in(secret_file),
+            said_linked: Arc::default(),
         }
     }
 
     /// The result kept for `step` on `kernel` (its [`identity`](crate::kernel::Kernel::identity)),
     /// if there's a sound one.
     pub(crate) fn get(&self, kernel: &str, step: &Key) -> Option<Built> {
-        let secret = self.secret.as_ref()?;
+        let secret = self.secret()?;
         let key = secret.entry_key([kernel, &self.platform, &step.to_string()])?;
         let path = self.path(&key);
         let bytes = match read_file(&path) {
@@ -187,7 +193,7 @@ impl Cache {
     /// Keeps `built`, the result of `step` on `kernel`, if the worker said whether its shape
     /// is valid (a shape it hasn't checked isn't kept, so a hit is always checked).
     pub(crate) fn put(&self, kernel: &str, step: &Key, built: &Built) {
-        let (Some(secret), Some(valid)) = (&self.secret, built.shape.valid()) else {
+        let (Some(secret), Some(valid)) = (self.secret(), built.shape.valid()) else {
             return;
         };
         let Some(key) = secret.entry_key([kernel, &self.platform, &step.to_string()]) else {
@@ -213,6 +219,26 @@ impl Cache {
         if let Err(e) = write_entry(&self.dir, &path, &seal, &payload) {
             tracing::warn!(path = %path.display(), "couldn't write a cache entry: {e}");
         }
+    }
+
+    /// The secret to key and seal entries with, if the cache keeps any: not when its
+    /// directory is a link (one that came with a document may point anywhere: inside the
+    /// repository, where its entries would be committed, or at anyone's files), which it
+    /// says once.
+    fn secret(&self) -> Option<&Secret> {
+        let secret = self.secret.as_ref()?;
+        let linked =
+            std::fs::symlink_metadata(&self.dir).is_ok_and(|meta| meta.file_type().is_symlink());
+        if linked {
+            if !self.said_linked.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    dir = %self.dir.display(),
+                    "the cache's directory is a link: keeping no results on disk"
+                );
+            }
+            return None;
+        }
+        Some(secret)
     }
 
     /// Where an entry lives: under the first two hex digits of its key, so no directory
@@ -373,16 +399,12 @@ fn write_entry(root: &Path, path: &Path, seal: &Seal, payload: &[u8]) -> std::io
 
 /// Gives the cache at `root` its `.gitignore`, unless it has it: written whole, over
 /// anything else at its name (a file emptied by a failed write, or one that came with a
-/// clone), as an entry is. Not through a link at `root` (git keeps a link, not what it
-/// points at, and the directory it points at may be anyone's).
+/// clone), as an entry is.
 fn ignore_itself(root: &Path) {
     let path = root.join(".gitignore");
     if let FileRead::Bytes(bytes) = read_file(&path)
         && bytes == GITIGNORE
     {
-        return;
-    }
-    if std::fs::symlink_metadata(root).is_ok_and(|meta| meta.file_type().is_symlink()) {
         return;
     }
     let written = new_file(root, 0o644).and_then(|(partial, mut file)| {

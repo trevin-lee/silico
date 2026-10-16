@@ -235,6 +235,13 @@ fn the_cache_ignores_itself_in_any_repository() {
     published(&engine, checked(EXAMPLE));
     assert_eq!(files(&dir).len(), 4);
     assert_eq!(git(&["status", "--porcelain", "--untracked-files=all"]), "");
+    // A sound one is left as it is when more entries are written: not written again.
+    let ignore =
+        || std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(dir.join(".gitignore")).unwrap());
+    let first = ignore();
+    published(&engine, example_with_pin("3"));
+    assert_eq!(files(&dir).len(), 7);
+    assert_eq!(ignore(), first);
 }
 
 #[test]
@@ -375,6 +382,16 @@ fn a_relative_xdg_cache_home_is_ignored() {
 }
 
 #[test]
+fn a_relative_home_is_ignored() {
+    let dir = Scratch::new("relative-home");
+    let cwd = Scratch::new("relative-home-cwd");
+    std::fs::create_dir_all(&cwd.0).unwrap();
+    session_with(&dir.0, &cwd.0, &[("HOME", Path::new("relative"))]);
+    assert!(!dir.0.exists(), "{:?}", files(&dir.0));
+    assert_eq!(std::fs::read_dir(&cwd.0).unwrap().count(), 0);
+}
+
+#[test]
 fn with_no_home_a_session_keeps_nothing() {
     // No secret outside the document to seal with: nothing is kept, in the cache or beside
     // it, and nothing fails.
@@ -484,18 +501,26 @@ fn a_gitignore_that_isnt_the_caches_is_put_back() {
 }
 
 #[test]
-fn a_cache_reached_through_a_link_writes_no_gitignore_where_it_points() {
-    // A `.silico-cache` that links elsewhere (planted, or set up by hand): git keeps the
-    // link, not what it points at, and the directory it points at may be anyone's.
+fn a_cache_whose_directory_is_a_link_keeps_nothing_where_it_points() {
+    // A `.silico-cache` that links elsewhere (one that came with a document): into the
+    // repository, entries there would be committed, git keeping only the link's
+    // `.gitignore`-less target; elsewhere, the directory may be anyone's. Nothing is
+    // written, and nothing fails.
     let base = Scratch::new("linked-root");
     std::fs::create_dir_all(base.0.join("target")).unwrap();
     let link = base.0.join(".silico-cache");
     std::os::unix::fs::symlink("target", &link).unwrap();
     let secret = Scratch::new("linked-root-secret");
-    let engine = Recompute::with_cache(
-        FakeKernel::new(2).unwrap(),
-        Cache::with_secret(&link, &secret.secret()),
-    );
-    assert_eq!(hole(&published(&engine, checked(EXAMPLE))), HOLE);
-    assert!(!base.0.join("target/.gitignore").exists());
+    for _ in 0..2 {
+        let engine = Recompute::with_cache(
+            FakeKernel::new(2).unwrap(),
+            Cache::with_secret(&link, &secret.secret()),
+        );
+        assert_eq!(hole(&published(&engine, checked(EXAMPLE))), HOLE);
+        assert_eq!(
+            calls(&engine),
+            ["Cut", "MakeBox", "MakeCylinder", "Translate"]
+        );
+    }
+    assert_eq!(std::fs::read_dir(base.0.join("target")).unwrap().count(), 0);
 }
