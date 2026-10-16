@@ -134,7 +134,7 @@ impl Cache {
             }
         };
         Self {
-            dir: dir.into(),
+            dir: plain(dir.into()),
             platform: this_platform(),
             secret,
             said_linked: Arc::default(),
@@ -151,7 +151,7 @@ impl Cache {
     /// secret in `secret_file` (made if there's none): for tests of other platforms.
     pub fn for_platform(dir: impl Into<PathBuf>, platform: &str, secret_file: &Path) -> Self {
         Self {
-            dir: dir.into(),
+            dir: plain(dir.into()),
             platform: platform.to_owned(),
             secret: secret_in(secret_file),
             said_linked: Arc::default(),
@@ -164,6 +164,10 @@ impl Cache {
         let secret = self.secret()?;
         let key = secret.entry_key([kernel, &self.platform, &step.to_string()])?;
         let path = self.path(&key);
+        if path.parent().is_some_and(is_link) {
+            self.say_linked(&path);
+            return None;
+        }
         let bytes = match read_file(&path) {
             FileRead::Bytes(bytes) => bytes,
             FileRead::Missing => return None,
@@ -224,21 +228,24 @@ impl Cache {
     /// The secret to key and seal entries with, if the cache keeps any: not when its
     /// directory is a link (one that came with a document may point anywhere: inside the
     /// repository, where its entries would be committed, or at anyone's files), which it
-    /// says once.
+    /// says once. Nor is a subdirectory that's a link used, for the same reason.
     fn secret(&self) -> Option<&Secret> {
         let secret = self.secret.as_ref()?;
-        let linked =
-            std::fs::symlink_metadata(&self.dir).is_ok_and(|meta| meta.file_type().is_symlink());
-        if linked {
-            if !self.said_linked.swap(true, Ordering::Relaxed) {
-                tracing::warn!(
-                    dir = %self.dir.display(),
-                    "the cache's directory is a link: keeping no results on disk"
-                );
-            }
+        if is_link(&self.dir) {
+            self.say_linked(&self.dir);
             return None;
         }
         Some(secret)
+    }
+
+    /// Says, once, that a directory of the cache is a link, which it doesn't use.
+    fn say_linked(&self, dir: &Path) {
+        if !self.said_linked.swap(true, Ordering::Relaxed) {
+            tracing::warn!(
+                dir = %dir.display(),
+                "a directory of the cache is a link: keeping no results through it"
+            );
+        }
     }
 
     /// Where an entry lives: under the first two hex digits of its key, so no directory
@@ -247,6 +254,17 @@ impl Cache {
         let hex = crate::hex(&key.0);
         self.dir.join(&hex[..2]).join(&hex[2..])
     }
+}
+
+/// Whether `path` is a symbolic link (not followed).
+fn is_link(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
+}
+
+/// `path` with no trailing slash (through which a link would be followed, not seen) and no
+/// `.` components.
+fn plain(path: PathBuf) -> PathBuf {
+    path.components().collect()
 }
 
 /// The user's secret file: `silico/cache-secret` in `$XDG_CACHE_HOME`, if that's an absolute
@@ -383,7 +401,15 @@ fn write_entry(root: &Path, path: &Path, seal: &Seal, payload: &[u8]) -> std::io
     let dir = path
         .parent()
         .ok_or_else(|| std::io::Error::other("no directory"))?;
-    std::fs::create_dir_all(dir)?;
+    std::fs::create_dir_all(root)?;
+    match std::fs::create_dir(dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
+    if is_link(dir) {
+        return Err(std::io::Error::other("its directory is a link"));
+    }
     ignore_itself(root);
     let (partial, mut file) = new_file(dir, 0o644)?;
     let written = file

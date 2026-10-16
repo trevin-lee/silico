@@ -236,8 +236,13 @@ fn the_cache_ignores_itself_in_any_repository() {
     assert_eq!(files(&dir).len(), 4);
     assert_eq!(git(&["status", "--porcelain", "--untracked-files=all"]), "");
     // A sound one is left as it is when more entries are written: not written again.
-    let ignore =
-        || std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(dir.join(".gitignore")).unwrap());
+    let ignore = || {
+        let meta = std::fs::metadata(dir.join(".gitignore")).unwrap();
+        (
+            std::os::unix::fs::MetadataExt::ino(&meta),
+            meta.modified().unwrap(),
+        )
+    };
     let first = ignore();
     published(&engine, example_with_pin("3"));
     assert_eq!(files(&dir).len(), 7);
@@ -523,4 +528,80 @@ fn a_cache_whose_directory_is_a_link_keeps_nothing_where_it_points() {
         );
     }
     assert_eq!(std::fs::read_dir(base.0.join("target")).unwrap().count(), 0);
+}
+
+#[test]
+fn a_linked_cache_takes_nothing_kept_where_it_points() {
+    // Entries of this user's, kept in a directory a link then points at: not read
+    // through the link either.
+    let base = Scratch::new("linked-read");
+    let target = base.0.join("target");
+    let secret = Scratch::new("linked-read-secret");
+    published(
+        &Recompute::with_cache(
+            FakeKernel::new(2).unwrap(),
+            Cache::with_secret(&target, &secret.secret()),
+        ),
+        checked(EXAMPLE),
+    );
+    assert_eq!(files(&target).len(), 4);
+    let link = base.0.join(".silico-cache");
+    std::os::unix::fs::symlink("target", &link).unwrap();
+    let engine = Recompute::with_cache(
+        FakeKernel::new(2).unwrap(),
+        Cache::with_secret(&link, &secret.secret()),
+    );
+    assert_eq!(hole(&published(&engine, checked(EXAMPLE))), HOLE);
+    assert_eq!(
+        calls(&engine),
+        ["Cut", "MakeBox", "MakeCylinder", "Translate"]
+    );
+}
+
+#[test]
+fn a_linked_cache_named_with_a_trailing_slash_keeps_nothing() {
+    // `link/` resolves the link: named so, it must still be seen as one.
+    let base = Scratch::new("linked-slash");
+    std::fs::create_dir_all(base.0.join("target")).unwrap();
+    std::os::unix::fs::symlink("target", base.0.join(".silico-cache")).unwrap();
+    let secret = Scratch::new("linked-slash-secret");
+    let engine = Recompute::with_cache(
+        FakeKernel::new(2).unwrap(),
+        Cache::with_secret(base.0.join(".silico-cache/"), &secret.secret()),
+    );
+    assert_eq!(hole(&published(&engine, checked(EXAMPLE))), HOLE);
+    assert_eq!(std::fs::read_dir(base.0.join("target")).unwrap().count(), 0);
+}
+
+#[test]
+fn a_cache_whose_subdirectories_are_links_keeps_nothing_where_they_point() {
+    // A real `.silico-cache` with a link in place of every subdirectory (force-added to a
+    // repository: git keeps tracked links whatever `.gitignore` says).
+    let base = Scratch::new("linked-shards");
+    let target = base.0.join("target");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("theirs"), b"their own").unwrap();
+    let root = base.0.join(".silico-cache");
+    std::fs::create_dir_all(&root).unwrap();
+    for i in 0..256 {
+        std::os::unix::fs::symlink("../target", root.join(format!("{i:02x}"))).unwrap();
+    }
+    let secret = Scratch::new("linked-shards-secret");
+    for _ in 0..2 {
+        let engine = Recompute::with_cache(
+            FakeKernel::new(2).unwrap(),
+            Cache::with_secret(&root, &secret.secret()),
+        );
+        assert_eq!(hole(&published(&engine, checked(EXAMPLE))), HOLE);
+        assert_eq!(
+            calls(&engine),
+            ["Cut", "MakeBox", "MakeCylinder", "Translate"]
+        );
+    }
+    let written: Vec<_> = std::fs::read_dir(&target)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name())
+        .collect();
+    assert_eq!(written, ["theirs"], "written through the links");
 }
