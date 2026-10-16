@@ -168,6 +168,22 @@ std::unique_ptr<Shape> make_torus(double major_radius, double minor_radius) {
   return std::make_unique<Shape>(Shape{revolve.Shape()});
 }
 
+namespace {
+// The tight box of the shape's geometry, as Shape.optimalBoundingBox(False, False), into
+// `low` and `high`; false for a shape with nothing in it. OCCT's quick box (Shape.BoundBox)
+// bounds each surface's control points, so it moves with how a surface is parametrized,
+// which two OCCT builds can do differently.
+bool tight_box(const TopoDS_Shape &shape, Point3 &low, Point3 &high) {
+  Bnd_Box box;
+  BRepBndLib::AddOptimal(shape, box, false, false);
+  if (box.IsVoid()) {
+    return false;
+  }
+  box.Get(low.x, low.y, low.z, high.x, high.y, high.z);
+  return true;
+}
+}  // namespace
+
 Measures measure(const Shape &shape) {
   // Integrated adaptively to a relative precision of 1e-9. OCCT's default, a fixed order
   // of Gauss points per face (FreeCAD's Shape.Volume), misjudges faces trimmed by curves:
@@ -178,12 +194,18 @@ Measures measure(const Shape &shape) {
   GProp_GProps surface;
   BRepGProp::SurfaceProperties(shape.shape, surface, precision);
   const gp_Pnt c = volume.CentreOfMass();
+  Point3 low{0.0, 0.0, 0.0};
+  Point3 high{0.0, 0.0, 0.0};
+  const bool bounded = tight_box(shape.shape, low, high);
   return Measures{volume.Mass(),
                   surface.Mass(),
                   Point3{c.X(), c.Y(), c.Z()},
                   count_distinct(shape.shape, TopAbs_FACE),
                   count_distinct(shape.shape, TopAbs_EDGE),
-                  count_distinct(shape.shape, TopAbs_VERTEX)};
+                  count_distinct(shape.shape, TopAbs_VERTEX),
+                  bounded,
+                  low,
+                  high};
 }
 
 Amounts rough_amounts(const Shape &shape) {
@@ -201,17 +223,9 @@ FreecadMeasures measure_as_freecad(const Shape &shape) {
   GProp_GProps surface;
   BRepGProp::SurfaceProperties(shape.shape, surface);
   const gp_Pnt c = volume.CentreOfMass();
-  // The tight box of the shape's geometry, as Shape.optimalBoundingBox(False, False).
-  // OCCT's quick box (Shape.BoundBox) bounds each surface's control points, so it moves
-  // with how a surface is parametrized, which two OCCT builds can do differently.
-  Bnd_Box box;
-  BRepBndLib::AddOptimal(shape.shape, box, false, false);
   Point3 low{0.0, 0.0, 0.0};
   Point3 high{0.0, 0.0, 0.0};
-  const bool bounded = !box.IsVoid();
-  if (bounded) {
-    box.Get(low.x, low.y, low.z, high.x, high.y, high.z);
-  }
+  const bool bounded = tight_box(shape.shape, low, high);
   return FreecadMeasures{volume.Mass(), surface.Mass(), Point3{c.X(), c.Y(), c.Z()},
                          bounded,       low,           high};
 }

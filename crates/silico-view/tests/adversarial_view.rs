@@ -60,6 +60,7 @@ fn any_entity_path_is_logged_without_a_panic() {
                 faces: 0,
                 edges: 0,
                 vertices: 0,
+                bounds: None,
                 valid: false,
             },
         )
@@ -158,6 +159,7 @@ fn the_summary_is_logged() {
         faces: 6,
         edges: 12,
         vertices: 8,
+        bounds: None,
         valid: true,
     };
     log_summary(&rec, "part", &summary).unwrap();

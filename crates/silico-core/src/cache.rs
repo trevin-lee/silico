@@ -1,7 +1,7 @@
 //! The rebuild cache (`.silico-cache/`, ARCHITECTURE.md): each kernel step's result kept on
 //! disk, so a document opened again, or by another session, rebuilds without the kernel. An
-//! entry is a step's shape (its B-rep and the worker's word on its validity) and history,
-//! under one seal, keyed by the step's recompute key, the kernel's identity, and the
+//! entry is a step's shape (its B-rep and the worker's word on its validity), history, and
+//! summary, under one seal, keyed by the step's recompute key, the kernel's identity, and the
 //! platform: a result is used only by the same kernel, for the same request, on the same
 //! kind of machine, and a hit is a shape whose validity the worker has already checked.
 //!
@@ -32,11 +32,11 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
-use crate::kernel::{Blob, History, ShapeData};
+use crate::kernel::{Blob, History, ShapeData, ShapeSummary};
 use crate::recompute::{Built, Key};
 
 /// The first bytes of every entry, naming its format: a change to the format changes it.
-const MAGIC: &[u8] = b"silico cache 1\n";
+const MAGIC: &[u8] = b"silico cache 2\n";
 
 /// What the cache's directory holds besides its entries: it ignores itself.
 const GITIGNORE: &[u8] =
@@ -116,6 +116,7 @@ struct Entry {
     brep: Vec<u8>,
     valid: bool,
     history: Option<History>,
+    summary: ShapeSummary,
 }
 
 impl Cache {
@@ -183,6 +184,7 @@ impl Cache {
             Some(entry) => Some(Built {
                 shape: ShapeData::checked(Blob::inline(entry.brep), entry.valid),
                 history: entry.history,
+                summary: entry.summary,
             }),
             None => {
                 tracing::warn!(path = %path.display(), "a cache entry doesn't hold together: rebuilding it");
@@ -206,6 +208,7 @@ impl Cache {
             brep: built.shape.brep().as_bytes().to_vec(),
             valid,
             history: built.history.clone(),
+            summary: built.summary.clone(),
         };
         let payload = match postcard::to_allocvec(&entry) {
             Ok(payload) => payload,

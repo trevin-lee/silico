@@ -321,13 +321,16 @@ fn an_operation_the_fake_doesnt_do_is_an_internal_error() {
     let kernel = FakeKernel::new(1).unwrap();
     let shape = run(&kernel, KernelRequest::make(block(1.0, 1.0, 1.0)).unwrap());
     let outcome = kernel
-        .submit(Generation(0), KernelRequest::summarize(&shape))
+        .submit(Generation(0), KernelRequest::measure_as_freecad(&shape))
         .wait();
     let Outcome::Done(Err(error)) = outcome else {
         panic!("{outcome:?}")
     };
     assert_eq!(error.code(), ErrorCode::Internal);
-    assert_eq!(error.message(), "the fake kernel doesn't do Summarize");
+    assert_eq!(
+        error.message(),
+        "the fake kernel doesn't do MeasureAsFreecad"
+    );
 }
 
 #[test]
@@ -529,4 +532,87 @@ fn moves_compose_as_the_kernels_locations_do() {
         FakeKernel::describe(&shape).as_deref(),
         Some("translate(box(1, 1, 1), 10000, 0, 0)")
     );
+}
+
+#[test]
+fn the_fake_summarizes_a_shape_by_formula() {
+    // Expected values worked in Python, from the formulas: πr²h, 2πrh + 2πr²; a cone's
+    // πh(a² + ab + b²)/3 and π(a + b)·slant + πa² + πb², its centroid at
+    // h(a² + 2ab + 3b²)/(4(a² + ab + b²)); 4πr³/3 and 4πr²; 2π²Rr² and 4π²Rr.
+    let kernel = FakeKernel::new(1).unwrap();
+    let close = |a: f64, b: f64| (a - b).abs() <= 1e-12 * b.abs().max(1.0);
+    let summary = |primitive: Primitive, offset: [f64; 3]| {
+        let shape = run(&kernel, KernelRequest::make(primitive).unwrap());
+        let shape = run(&kernel, KernelRequest::translate(&shape, offset).unwrap()).shape;
+        (run(&kernel, KernelRequest::summarize(&shape)), shape)
+    };
+    let (boxed, box_shape) = summary(block(2.0, 3.0, 4.0), [0.0; 3]);
+    assert_eq!((boxed.volume, boxed.area), (24.0, 52.0));
+    assert_eq!(boxed.center, [1.0, 1.5, 2.0]);
+    assert_eq!(boxed.bounds, Some([[0.0; 3], [2.0, 3.0, 4.0]]));
+    assert_eq!((boxed.faces, boxed.edges, boxed.vertices), (6, 12, 8));
+    assert!(boxed.valid);
+    let (cylinder, cylinder_shape) = summary(
+        Primitive::Cylinder {
+            radius: 1.0,
+            height: 2.0,
+        },
+        [10.0, 0.0, 0.0],
+    );
+    assert!(
+        close(cylinder.volume, std::f64::consts::TAU),
+        "{cylinder:?}"
+    );
+    assert!(close(cylinder.area, 18.84955592153876), "{cylinder:?}");
+    assert_eq!(cylinder.center, [10.0, 0.0, 1.0]);
+    assert_eq!(cylinder.bounds, Some([[9.0, -1.0, 0.0], [11.0, 1.0, 2.0]]));
+    assert_eq!(
+        (cylinder.faces, cylinder.edges, cylinder.vertices),
+        (3, 3, 2)
+    );
+    let (cone, _) = summary(
+        Primitive::Cone {
+            radius1: 2.0,
+            radius2: 1.0,
+            height: 3.0,
+        },
+        [0.0; 3],
+    );
+    assert!(close(cone.volume, 21.991148575128552), "{cone:?}");
+    assert!(close(cone.area, 45.511728065337266), "{cone:?}");
+    assert!(close(cone.center[2], 1.1785714285714286), "{cone:?}");
+    assert_eq!(cone.bounds, Some([[-2.0, -2.0, 0.0], [2.0, 2.0, 3.0]]));
+    let (sphere, _) = summary(Primitive::Sphere { radius: 2.0 }, [0.0; 3]);
+    assert!(close(sphere.volume, 33.510321638291124), "{sphere:?}");
+    assert!(close(sphere.area, 50.26548245743669), "{sphere:?}");
+    assert_eq!(sphere.bounds, Some([[-2.0; 3], [2.0; 3]]));
+    let (torus, _) = summary(
+        Primitive::Torus {
+            major_radius: 3.0,
+            minor_radius: 1.0,
+        },
+        [0.0; 3],
+    );
+    assert!(close(torus.volume, 59.21762640653615), "{torus:?}");
+    assert!(close(torus.area, 118.4352528130723), "{torus:?}");
+    assert_eq!(torus.bounds, Some([[-4.0, -4.0, -1.0], [4.0, 4.0, 1.0]]));
+    // The fake's boolean: both inputs, as if they didn't touch.
+    let fused = run(
+        &kernel,
+        KernelRequest::boolean(BooleanOp::Fuse, &box_shape, &cylinder_shape),
+    )
+    .shape;
+    let fused = run(&kernel, KernelRequest::summarize(&fused));
+    assert!(close(fused.volume, 30.283185307179586), "{fused:?}");
+    assert!(close(fused.area, 70.84955592153875), "{fused:?}");
+    for (got, want) in
+        fused
+            .center
+            .into_iter()
+            .zip([2.8673289216775233, 1.188778513053746, 1.7925190087024974])
+    {
+        assert!(close(got, want), "{fused:?}");
+    }
+    assert_eq!(fused.bounds, Some([[0.0, -1.0, 0.0], [11.0, 3.0, 4.0]]));
+    assert_eq!((fused.faces, fused.edges, fused.vertices), (9, 15, 10));
 }

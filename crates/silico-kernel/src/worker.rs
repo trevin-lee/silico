@@ -122,12 +122,19 @@ fn built_reply(built: crate::Built) -> Result<Reply, Failure> {
 /// A shape OCCT read but can't integrate gives NaN or infinity: never a result.
 fn check_finite(summary: &ShapeSummary) -> Result<(), Failure> {
     let [x, y, z] = summary.center;
+    let [low, high] = summary.bounds.unwrap_or_default();
     all_finite([
         ("volume", summary.volume),
         ("area", summary.area),
         ("center x", x),
         ("center y", y),
         ("center z", z),
+        ("bounding box's lowest x", low[0]),
+        ("bounding box's lowest y", low[1]),
+        ("bounding box's lowest z", low[2]),
+        ("bounding box's highest x", high[0]),
+        ("bounding box's highest y", high[1]),
+        ("bounding box's highest z", high[2]),
     ])
 }
 
@@ -388,11 +395,19 @@ mod tests {
             faces: 6,
             edges: 12,
             vertices: 8,
+            bounds: Some([[0.0; 3], [10.0, 20.0, 30.0]]),
             valid: true,
         };
         assert!(check_finite(&good).is_ok());
+        assert!(
+            check_finite(&ShapeSummary {
+                bounds: None,
+                ..good.clone()
+            })
+            .is_ok()
+        );
         type Spoil = fn(&mut ShapeSummary);
-        let cases: [(&str, Spoil); 6] = [
+        let cases: [(&str, Spoil); 8] = [
             ("volume isn't finite (NaN)", |s| s.volume = f64::NAN),
             ("volume isn't finite (inf)", |s| s.volume = f64::INFINITY),
             ("area isn't finite (NaN)", |s| s.area = f64::NAN),
@@ -402,6 +417,12 @@ mod tests {
             }),
             ("center z isn't finite (inf)", |s| {
                 s.center[2] = f64::INFINITY
+            }),
+            ("bounding box's lowest y isn't finite (NaN)", |s| {
+                s.bounds = Some([[0.0, f64::NAN, 0.0], [10.0, 20.0, 30.0]]);
+            }),
+            ("bounding box's highest z isn't finite (inf)", |s| {
+                s.bounds = Some([[0.0; 3], [10.0, 20.0, f64::INFINITY]]);
             }),
         ];
         for (want, spoil) in cases {

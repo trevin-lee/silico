@@ -4,12 +4,14 @@
 //! make each, is the validation gate's ([`validate`]).
 
 mod decode;
+mod fingerprint;
 pub mod json;
 mod model;
 mod quantity;
 mod validate;
 mod write;
 
+pub use fingerprint::{Difference, Fingerprint, MEASURE_DECIMALS, Measure};
 pub use model::{
     Document, FEATURE_TYPES, Feature, FeatureId, FeatureVersion, FormatVersion, ID_ALPHABET,
     ID_LENGTH, Name, Operation, Position, Units,

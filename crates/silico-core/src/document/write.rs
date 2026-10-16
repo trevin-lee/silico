@@ -10,6 +10,7 @@
 
 use std::fmt::Write as _;
 
+use super::fingerprint::Fingerprint;
 use super::model::{
     Document, Feature, FeatureId, FeatureVersion, FormatVersion, Operation, Position, Units,
 };
@@ -99,6 +100,7 @@ fn feature(feature: &Feature) -> Out<'_> {
         version: FeatureVersion,
         name,
         note,
+        fingerprint,
     } = feature;
     let mut members = vec![
         ("id", reference(id)),
@@ -110,6 +112,38 @@ fn feature(feature: &Feature) -> Out<'_> {
     if let Some(note) = note {
         members.push(("note", Out::Str(note)));
     }
+    if let Some(fingerprint) = fingerprint {
+        members.push(("fingerprint", self::fingerprint(fingerprint)));
+    }
+    Out::Object(members)
+}
+
+/// A fingerprint's fields, in schema order: an object of scalars and one array, so on one
+/// line.
+fn fingerprint(fingerprint: &Fingerprint) -> Out<'static> {
+    let Fingerprint {
+        volume,
+        area,
+        bbox,
+        faces,
+        edges,
+        vertices,
+    } = fingerprint;
+    let mut members = vec![
+        ("volume", Out::Raw(volume.to_string())),
+        ("area", Out::Raw(area.to_string())),
+    ];
+    if let Some(bbox) = bbox {
+        members.push((
+            "bbox",
+            Out::Array(bbox.iter().map(|&l| number(l)).collect()),
+        ));
+    }
+    members.extend([
+        ("faces", Out::Raw(faces.to_string())),
+        ("edges", Out::Raw(edges.to_string())),
+        ("vertices", Out::Raw(vertices.to_string())),
+    ]);
     Out::Object(members)
 }
 

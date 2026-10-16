@@ -5,6 +5,7 @@
 
 use std::fmt;
 
+use super::fingerprint::{Fingerprint, MEASURE_DECIMALS, Measure};
 use super::json::{At, Member, Node, SHOWN_CHARS, SyntaxError, Value, shown};
 use super::model::{
     Document, FEATURE_TYPES, Feature, FeatureId, FeatureVersion, FormatVersion, ID_LENGTH, Name,
@@ -348,6 +349,10 @@ fn feature(index: usize, node: Node) -> Result<Feature, Error> {
         Some(node) => Some(string(node, fields.feature(), "note")?),
         None => None,
     };
+    let fingerprint = match fields.optional("fingerprint") {
+        Some(node) => Some(fingerprint(node, fields.feature())?),
+        None => None,
+    };
     fields.finish()?;
     Ok(Feature {
         id,
@@ -355,7 +360,97 @@ fn feature(index: usize, node: Node) -> Result<Feature, Error> {
         version: FeatureVersion,
         name,
         note,
+        fingerprint,
     })
+}
+
+fn fingerprint(node: Node, feature: Option<&str>) -> Result<Fingerprint, Error> {
+    let mut fields =
+        Fields::of(node, feature, Some("fingerprint"), "fingerprint")?.under("fingerprint");
+    let volume = measure(&mut fields, "volume")?;
+    let area = measure(&mut fields, "area")?;
+    let bbox = match fields.optional("bbox") {
+        Some(node) => Some(bbox(&node, fields.feature())?),
+        None => None,
+    };
+    let faces = count(&mut fields, "faces")?;
+    let edges = count(&mut fields, "edges")?;
+    let vertices = count(&mut fields, "vertices")?;
+    fields.finish()?;
+    Ok(Fingerprint {
+        volume,
+        area,
+        bbox,
+        faces,
+        edges,
+        vertices,
+    })
+}
+
+fn measure(fields: &mut Fields, key: &str) -> Result<Measure, Error> {
+    let node = fields.take(key)?;
+    let name = fields.name(key);
+    let feature = fields.feature();
+    let Value::Number(text) = &node.value else {
+        return Err(wrong_kind(feature, &name, &node, "a number"));
+    };
+    Measure::parse(text).map_err(|e| {
+        let suggestion = match e {
+            NumberError::TooPrecise { decimals } => format!("round it to {decimals} decimals"),
+            NumberError::OutOfRange => format!(
+                "a fingerprint's {key} is at most {}",
+                Measure::from_millionths(i64::MAX)
+            ),
+            NumberError::NegativeZero => "write 0".to_owned(),
+            NumberError::Malformed => {
+                format!("write a number, to at most {MEASURE_DECIMALS} decimals")
+            }
+        };
+        refuse(
+            feature,
+            &name,
+            node.at,
+            format!("{name} {} {e}", shown_number(text)),
+            suggestion,
+        )
+    })
+}
+
+fn count(fields: &mut Fields, key: &str) -> Result<u32, Error> {
+    let node = fields.take(key)?;
+    let name = fields.name(key);
+    let feature = fields.feature();
+    let digits = whole_number(&node, feature, &name)?;
+    digits.parse::<u32>().map_err(|_| {
+        refuse(
+            feature,
+            &name,
+            node.at,
+            format!("{name} {} is too large", shown_number(&digits)),
+            format!("a fingerprint's {key} is at most {}", u32::MAX),
+        )
+    })
+}
+
+fn bbox(node: &Node, feature: Option<&str>) -> Result<[Length; 6], Error> {
+    let want = "an array of six lengths, [x, y, z, x, y, z]";
+    let Value::Array(items) = &node.value else {
+        return Err(wrong_kind(feature, "fingerprint.bbox", node, want));
+    };
+    let [a, b, c, d, e, f] = items.as_slice() else {
+        return Err(refuse(
+            feature,
+            "fingerprint.bbox",
+            node.at,
+            format!("fingerprint.bbox has {} values, not 6", items.len()),
+            format!("write fingerprint.bbox as {want}"),
+        ));
+    };
+    let mut corners = [Length::default(); 6];
+    for (i, (corner, item)) in corners.iter_mut().zip([a, b, c, d, e, f]).enumerate() {
+        *corner = length_value(item, feature, &format!("fingerprint.bbox.{i}"))?;
+    }
+    Ok(corners)
 }
 
 fn operation(type_name: &str, fields: &mut Fields) -> Result<Operation, Error> {

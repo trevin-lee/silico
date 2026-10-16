@@ -29,6 +29,7 @@ fn feature(id_text: &str, name: &str, operation: Operation) -> Feature {
         version: FeatureVersion,
         name: Name::new(name).unwrap(),
         note: None,
+        fingerprint: None,
     }
 }
 
@@ -1003,6 +1004,7 @@ fn any_feature() -> impl Strategy<Value = Feature> {
             version: FeatureVersion,
             name: Name::new(name).unwrap(),
             note,
+            fingerprint: None,
         },
     )
 }
@@ -1108,5 +1110,167 @@ proptest! {
             let text = write(&document).unwrap();
             prop_assert_eq!(read(text.as_bytes()).unwrap(), document);
         }
+    }
+}
+
+/// The block's fingerprint, as a save writes it.
+const BLOCK_FINGERPRINT: &str = r#""fingerprint": {"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}"#;
+
+/// The example with the block carrying a fingerprint, its `from` replaced by `to`.
+fn fingerprinted(from: &str, to: &str) -> String {
+    let fingerprint = BLOCK_FINGERPRINT.replacen(from, to, 1);
+    assert!(
+        from.is_empty() || fingerprint != BLOCK_FINGERPRINT,
+        "{from}"
+    );
+    example_with(
+        r#""height": 10}"#,
+        &format!(r#""height": 10, {fingerprint}}}"#),
+    )
+}
+
+#[test]
+fn a_fingerprint_reads_as_its_values_and_writes_back_canonically() {
+    let document = read(fingerprinted("", "").as_bytes()).unwrap();
+    let text = write(&document).unwrap();
+    // A feature holding an object is written a member to a line.
+    assert!(
+        text.contains(&format!(
+            "      \"height\": 10,\n      {BLOCK_FINGERPRINT}\n    }},\n"
+        )),
+        "{text}"
+    );
+    assert_eq!(write(&read(text.as_bytes()).unwrap()).unwrap(), text);
+    // Without a box (a solid with nothing in it), and spelled loosely.
+    let loose = fingerprinted(r#", "bbox": [0, 0, 0, 40, 20, 10]"#, "").replacen(
+        r#""volume": 8000"#,
+        r#""volume": 8.0e3"#,
+        1,
+    );
+    let text = write(&read(loose.as_bytes()).unwrap()).unwrap();
+    assert!(
+        text.contains(r#""fingerprint": {"volume": 8000, "area": 2800, "faces": 6, "edges": 12, "vertices": 8}"#),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_fingerprint_that_doesnt_fit_is_refused_naming_its_field() {
+    // (replace, with, parameter, says)
+    let cases = [
+        (
+            r#""volume": 8000"#,
+            r#""volume": 8000.0000001"#,
+            "fingerprint.volume",
+            "fingerprint.volume 8000.0000001 has more than 6 decimals",
+        ),
+        (
+            r#""volume": 8000"#,
+            r#""volume": -0"#,
+            "fingerprint.volume",
+            "fingerprint.volume -0 is zero written with a minus sign",
+        ),
+        (
+            r#""area": 2800"#,
+            r#""area": "2800""#,
+            "fingerprint.area",
+            "fingerprint.area is a string, not a number",
+        ),
+        (
+            r#""area": 2800"#,
+            r#""area": 9223372036854.775808"#,
+            "fingerprint.area",
+            "fingerprint.area 9223372036854.775808 is too large",
+        ),
+        (
+            r#""faces": 6"#,
+            r#""faces": 4294967296"#,
+            "fingerprint.faces",
+            "fingerprint.faces 4294967296 is too large",
+        ),
+        (
+            r#""edges": 12"#,
+            r#""edges": -1"#,
+            "fingerprint.edges",
+            "fingerprint.edges is -1, not a whole number",
+        ),
+        (
+            r#""vertices": 8"#,
+            r#""vertices": 8.0"#,
+            "fingerprint.vertices",
+            "fingerprint.vertices is 8.0, not a whole number",
+        ),
+        (
+            r#""bbox": [0, 0, 0, 40, 20, 10]"#,
+            r#""bbox": [0, 0, 0, 40, 20]"#,
+            "fingerprint.bbox",
+            "fingerprint.bbox has 5 values, not 6",
+        ),
+        (
+            r#""bbox": [0, 0, 0, 40, 20, 10]"#,
+            r#""bbox": [0, 0, 0, 40.0000001, 20, 10]"#,
+            "fingerprint.bbox.3",
+            "fingerprint.bbox.3 40.0000001 has more than 6 decimals",
+        ),
+        (
+            r#""bbox": [0, 0, 0, 40, 20, 10]"#,
+            r#""bbox": {"low": 0}"#,
+            "fingerprint.bbox",
+            "fingerprint.bbox is an object, not an array of six lengths",
+        ),
+        (
+            r#", "edges": 12"#,
+            "",
+            "fingerprint.edges",
+            "fingerprint has no edges",
+        ),
+        (
+            r#""vertices": 8}"#,
+            r#""vertices": 8, "mass": 1}"#,
+            "fingerprint.mass",
+            "fingerprint has a key it can't have: \"mass\"",
+        ),
+    ];
+    for (from, to, parameter, says) in cases {
+        let err = refused(&fingerprinted(from, to));
+        assert_eq!(err.feature(), Some("k7f2qx3m"), "{to}: {err}");
+        assert_eq!(err.parameter(), Some(parameter), "{to}: {err}");
+        assert!(err.message().starts_with(says), "{to}: {err}");
+    }
+    let err = refused(&example_with(
+        r#""height": 10}"#,
+        r#""height": 10, "fingerprint": [8000]}"#,
+    ));
+    assert_eq!(err.parameter(), Some("fingerprint"), "{err}");
+    assert!(
+        err.message()
+            .starts_with("fingerprint is an array, not an object"),
+        "{err}"
+    );
+}
+
+#[test]
+fn the_schema_takes_fingerprints_as_the_reader_does() {
+    let validator = &*VALIDATOR;
+    let full = fingerprinted("", "");
+    read(full.as_bytes()).unwrap();
+    assert!(valid(validator, &full));
+    let boxless = fingerprinted(r#", "bbox": [0, 0, 0, 40, 20, 10]"#, "");
+    read(boxless.as_bytes()).unwrap();
+    assert!(valid(validator, &boxless));
+    for (from, to) in [
+        (r#""vertices": 8}"#, r#""vertices": 8, "mass": 1}"#),
+        (r#", "faces": 6"#, ""),
+        (
+            r#""bbox": [0, 0, 0, 40, 20, 10]"#,
+            r#""bbox": [0, 0, 0, 40, 20]"#,
+        ),
+        (r#""edges": 12"#, r#""edges": -1"#),
+        (r#""vertices": 8"#, r#""vertices": 8.5"#),
+        (r#""area": 2800"#, r#""area": "2800""#),
+    ] {
+        let text = fingerprinted(from, to);
+        assert!(read(text.as_bytes()).is_err(), "{to}");
+        assert!(!valid(validator, &text), "{to}");
     }
 }

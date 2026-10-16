@@ -30,9 +30,10 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 
 use crate::cache::Cache;
-use crate::document::{Checked, FeatureId, Operation};
+use crate::document::{Checked, Document, FeatureId, Fingerprint, Operation};
 use crate::kernel::{
     BooleanOp, BuiltData, Generation, History, Kernel, KernelRequest, Primitive, ShapeData,
+    ShapeSummary,
 };
 use crate::pool::Outcome;
 use crate::worker::lock;
@@ -60,12 +61,13 @@ impl fmt::Debug for Key {
     }
 }
 
-/// What a kernel step made: its shape, and, for an operation on other shapes, what it did
-/// to them.
+/// What a kernel step made: its shape, for an operation on other shapes what it did to
+/// them, and the shape's summary (its measures, from which a feature's fingerprint comes).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Built {
     pub shape: ShapeData,
     pub history: Option<History>,
+    pub summary: ShapeSummary,
 }
 
 /// What became of a feature in a recompute.
@@ -124,7 +126,80 @@ impl Model {
                 FeatureOutcome::Built { .. } | FeatureOutcome::Blocked { .. } => None,
             })
     }
+
+    /// The fingerprint of the feature `id`'s solid, if it built: none if it didn't (or the
+    /// document has no such feature), or if a measure is too large to write.
+    pub fn fingerprint(&self, id: &FeatureId) -> Option<Fingerprint> {
+        match self.outcome(id)? {
+            FeatureOutcome::Built { built, .. } => Fingerprint::of(&built.summary),
+            FeatureOutcome::Failed(_) | FeatureOutcome::Blocked { .. } => None,
+        }
+    }
+
+    /// Each feature of `document` (the one this model was built from) whose rebuild
+    /// doesn't match the fingerprint stored with it, as a `drift` error naming the feature
+    /// and what moved, in timeline order. A feature with no fingerprint stored isn't drift
+    /// (the next save writes one), nor is one that didn't build (its failure says why).
+    pub fn drift(&self, document: &Document) -> Vec<Error> {
+        let mut errors = Vec::new();
+        for feature in &document.features {
+            let Some(stored) = &feature.fingerprint else {
+                continue;
+            };
+            let Some(FeatureOutcome::Built { built, .. }) = self.outcome(&feature.id) else {
+                continue;
+            };
+            let error = match Fingerprint::of(&built.summary) {
+                Some(rebuilt) => {
+                    let differences = stored.differences(&rebuilt);
+                    let Some(first) = differences.first() else {
+                        continue;
+                    };
+                    let moved: Vec<String> = differences
+                        .iter()
+                        .map(|d| format!("{} {} → {}", d.field, d.stored, d.rebuilt))
+                        .collect();
+                    Error::new(
+                        ErrorCode::Drift,
+                        format!(
+                            "feature {} rebuilt to other measures than its fingerprint: {}",
+                            feature.id,
+                            moved.join(", ")
+                        ),
+                    )
+                    .with_parameter(format!("fingerprint.{}", first.field))
+                }
+                None => Error::new(
+                    ErrorCode::Drift,
+                    format!(
+                        "feature {} rebuilt to measures a fingerprint can't hold (not finite, or too large)",
+                        feature.id
+                    ),
+                )
+                .with_parameter("fingerprint"),
+            };
+            errors.push(
+                error
+                    .with_feature(feature.id.as_str())
+                    .with_suggestion(DRIFT),
+            );
+        }
+        errors
+    }
+
+    /// `document` (the one this model was built from) with each feature's fingerprint as it
+    /// rebuilt: none for a feature that didn't build. Nothing is kept from what was stored.
+    pub fn fingerprinted(&self, document: &Document) -> Document {
+        let mut document = document.clone();
+        for feature in &mut document.features {
+            feature.fingerprint = self.fingerprint(&feature.id);
+        }
+        document
+    }
 }
+
+/// What to do about drift.
+const DRIFT: &str = "a rebuild should measure as the last one did: this is a determinism bug or a change in the kernel; find which, and once the new measures are right, save the document to write them";
 
 /// What a recompute came to.
 #[derive(Debug, Clone, PartialEq)]
@@ -779,13 +854,34 @@ impl<K: Kernel + 'static> Engine<K> {
         }
     }
 
-    /// Runs one step on the kernel, for `generation`.
+    /// Runs one step on the kernel, for `generation`, and summarizes what it made: a step
+    /// whose shape can't be summarized fails, as one the kernel can't make does.
     fn step(&self, step: Step, inputs: &[Arc<Built>], generation: Generation) -> Outcome<Built> {
+        match self.make(step, inputs, generation) {
+            Outcome::Done(Ok((shape, history))) => map(
+                self.kernel
+                    .submit(generation, KernelRequest::summarize(&shape))
+                    .wait(),
+                |summary| Built {
+                    shape,
+                    history,
+                    summary,
+                },
+            ),
+            Outcome::Done(Err(e)) => Outcome::Done(Err(e)),
+            Outcome::Superseded => Outcome::Superseded,
+        }
+    }
+
+    /// What one step makes on the kernel, for `generation`: its shape, and its history.
+    fn make(
+        &self,
+        step: Step,
+        inputs: &[Arc<Built>],
+        generation: Generation,
+    ) -> Outcome<(ShapeData, Option<History>)> {
         let shape = |i: usize| inputs.get(i).map(|built| &built.shape);
-        let built = |data: BuiltData| Built {
-            shape: data.shape,
-            history: Some(data.history),
-        };
+        let built = |data: BuiltData| (data.shape, Some(data.history));
         let missing = || {
             Outcome::Done(Err(Error::new(
                 ErrorCode::Internal,
@@ -796,10 +892,7 @@ impl<K: Kernel + 'static> Engine<K> {
         match step {
             Step::Make(primitive) => match KernelRequest::make(primitive) {
                 Ok(request) => map(self.kernel.submit(generation, request).wait(), |shape| {
-                    Built {
-                        shape,
-                        history: None,
-                    }
+                    (shape, None)
                 }),
                 Err(e) => Outcome::Done(Err(e)),
             },

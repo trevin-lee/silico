@@ -19,7 +19,7 @@ use std::sync::{Arc, Barrier};
 
 use cache::{HOLE, Scratch, calls, example_with_pin, files, hole, session};
 use example::EXAMPLE;
-use model::{checked, published};
+use model::{checked, made, published};
 use silico_core::cache::Cache;
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::{Generation, Kernel, KernelRequest, Op, Primitive};
@@ -97,7 +97,7 @@ fn another_kernel_misses_everything() {
     published(&session(&dir.0), checked(EXAMPLE));
     let rebuilt = Recompute::with_cache(Rebuilt(FakeKernel::new(2).unwrap()), cache::cache(&dir.0));
     published(&rebuilt, checked(EXAMPLE));
-    assert_eq!(rebuilt.kernel().0.calls().len(), 4);
+    assert_eq!(made(&rebuilt.kernel().0.calls()).len(), 4);
 }
 
 #[test]
@@ -155,7 +155,7 @@ fn an_entry_that_doesnt_hold_together_is_rebuilt_and_written_over() {
         let second = session(&dir.0);
         let model = published(&second, checked(EXAMPLE));
         // One step rebuilt, the rest kept; the same result.
-        assert_eq!(second.kernel().calls().len(), 1, "{damage}");
+        assert_eq!(made(&second.kernel().calls()).len(), 1, "{damage}");
         assert_eq!(hole(&model), HOLE, "{damage}");
         // Written over, sound again.
         assert_eq!(std::fs::read(victim).unwrap(), sound, "{damage}");
