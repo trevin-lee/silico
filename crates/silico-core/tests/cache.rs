@@ -6,95 +6,25 @@
 //! kernel calls each session makes, and the shapes, as the fake describes what made them.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/cache.rs"]
+mod cache;
 #[path = "common/example.rs"]
 mod example;
+#[path = "common/model.rs"]
+mod model;
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::Path;
+use std::process::Command;
 
+use cache::{HOLE, Scratch, calls, example_with_pin, files, hole, platform, session};
 use example::EXAMPLE;
+use model::{checked, published};
 use silico_core::cache::Cache;
-use silico_core::document::{Checked, FeatureId, read};
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::{Generation, Kernel, KernelRequest, Op, Primitive};
 use silico_core::pool::Pending;
-use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
+use silico_core::recompute::{FeatureOutcome, Recompute};
 use silico_core::{Error, ErrorCode};
-
-/// A directory of its own for one test, removed when dropped.
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("silico-cache-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        Self(dir)
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-fn checked(text: &str) -> Checked {
-    Checked::new(read(text.as_bytes()).unwrap()).unwrap()
-}
-
-/// The example with the pin's radius `radius`.
-fn example_with_pin(radius: &str) -> Checked {
-    checked(&EXAMPLE.replace(r#""radius": 2.5"#, &format!(r#""radius": {radius}"#)))
-}
-
-fn published<K: Kernel + 'static>(engine: &Recompute<K>, document: Checked) -> Arc<Model> {
-    match engine
-        .start(document)
-        .wait_timeout(std::time::Duration::from_secs(10))
-    {
-        Ok(Ok(RunOutcome::Published(model))) => model,
-        other => panic!("not published: {:?}", other.map(|r| r.map(|_| ())).ok()),
-    }
-}
-
-/// A fresh session: a new fake kernel, over the cache in `dir`.
-fn session(dir: &Path) -> Recompute<FakeKernel> {
-    Recompute::with_cache(FakeKernel::new(2).unwrap(), Cache::open(dir))
-}
-
-fn calls(engine: &Recompute<FakeKernel>) -> Vec<&'static str> {
-    let mut calls: Vec<_> = engine
-        .kernel()
-        .calls()
-        .iter()
-        .map(|c| c.op.name())
-        .collect();
-    calls.sort_unstable();
-    calls
-}
-
-fn hole(model: &Model) -> String {
-    match model.outcome(&FeatureId::new("m3tq8v0z").unwrap()) {
-        Some(FeatureOutcome::Built { built, .. }) => FakeKernel::describe(&built.shape).unwrap(),
-        other => panic!("{other:?}"),
-    }
-}
-
-/// The cache's entries' files, in order.
-fn entries(dir: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    for sub in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        for file in std::fs::read_dir(sub.path())
-            .into_iter()
-            .flatten()
-            .flatten()
-        {
-            files.push(file.path());
-        }
-    }
-    files.sort();
-    files
-}
 
 #[test]
 fn a_document_built_once_is_rebuilt_from_the_cache_with_no_kernel_call() {
@@ -106,17 +36,14 @@ fn a_document_built_once_is_rebuilt_from_the_cache_with_no_kernel_call() {
         ["Cut", "MakeBox", "MakeCylinder", "Translate"]
     );
     // One entry per step.
-    assert_eq!(entries(&dir.0).len(), 4);
+    assert_eq!(files(&dir.0).len(), 4);
     drop(first);
     let second = session(&dir.0);
     let again = published(&second, checked(EXAMPLE));
     assert!(calls(&second).is_empty(), "{:?}", calls(&second));
     // Identical geometry: the same shapes, histories, and validity, feature for feature.
     assert_eq!(again.features(), built.features());
-    assert_eq!(
-        hole(&again),
-        "cut(box(40, 20, 10), translate(cylinder(2.5, 12), 20, 10, -1))"
-    );
+    assert_eq!(hole(&again), HOLE);
 }
 
 #[test]
@@ -167,7 +94,7 @@ impl Kernel for Rebuilt {
 fn another_kernel_misses_everything() {
     let dir = Scratch::new("kernel");
     published(&session(&dir.0), checked(EXAMPLE));
-    let rebuilt = Recompute::with_cache(Rebuilt(FakeKernel::new(2).unwrap()), Cache::open(&dir.0));
+    let rebuilt = Recompute::with_cache(Rebuilt(FakeKernel::new(2).unwrap()), cache::cache(&dir.0));
     published(&rebuilt, checked(EXAMPLE));
     assert_eq!(rebuilt.kernel().0.calls().len(), 4);
 }
@@ -178,7 +105,7 @@ fn another_platform_misses_everything() {
     published(&session(&dir.0), checked(EXAMPLE));
     let elsewhere = Recompute::with_cache(
         FakeKernel::new(2).unwrap(),
-        Cache::for_platform(&dir.0, "elsewhere-riscv64"),
+        Cache::for_platform(&dir.0, "elsewhere-riscv64", &dir.secret()),
     );
     published(&elsewhere, checked(EXAMPLE));
     assert_eq!(
@@ -186,7 +113,7 @@ fn another_platform_misses_everything() {
         ["Cut", "MakeBox", "MakeCylinder", "Translate"]
     );
     // Both platforms' entries are kept, side by side.
-    assert_eq!(entries(&dir.0).len(), 8);
+    assert_eq!(files(&dir.0).len(), 8);
 }
 
 /// Damages an entry's bytes, given another entry's.
@@ -194,7 +121,7 @@ type Damage = fn(&[u8], &[u8]) -> Vec<u8>;
 
 #[test]
 fn an_entry_that_doesnt_hold_together_is_rebuilt_and_written_over() {
-    // Each way an entry can be damaged: a byte flipped in its payload, in its checksum, or
+    // Each way an entry can be damaged: a byte flipped in its payload, in its seal, or
     // in its magic; cut short; empty; another entry's bytes under its name.
     let damages: [(&str, Damage); 6] = [
         ("payload", |bytes, _| {
@@ -203,7 +130,7 @@ fn an_entry_that_doesnt_hold_together_is_rebuilt_and_written_over() {
             bytes[last] ^= 1;
             bytes
         }),
-        ("checksum", |bytes, _| {
+        ("seal", |bytes, _| {
             let mut bytes = bytes.to_vec();
             bytes[20] ^= 1;
             bytes
@@ -220,7 +147,7 @@ fn an_entry_that_doesnt_hold_together_is_rebuilt_and_written_over() {
     for (damage, damaged) in damages {
         let dir = Scratch::new(&format!("corrupt-{damage}"));
         published(&session(&dir.0), checked(EXAMPLE));
-        let files = entries(&dir.0);
+        let files = files(&dir.0);
         let (victim, other) = (&files[0], &files[1]);
         let sound = std::fs::read(victim).unwrap();
         std::fs::write(victim, damaged(&sound, &std::fs::read(other).unwrap())).unwrap();
@@ -228,11 +155,7 @@ fn an_entry_that_doesnt_hold_together_is_rebuilt_and_written_over() {
         let model = published(&second, checked(EXAMPLE));
         // One step rebuilt, the rest kept; the same result.
         assert_eq!(second.kernel().calls().len(), 1, "{damage}");
-        assert_eq!(
-            hole(&model),
-            "cut(box(40, 20, 10), translate(cylinder(2.5, 12), 20, 10, -1))",
-            "{damage}"
-        );
+        assert_eq!(hole(&model), HOLE, "{damage}");
         // Written over, sound again.
         assert_eq!(std::fs::read(victim).unwrap(), sound, "{damage}");
     }
@@ -248,15 +171,12 @@ fn failures_arent_kept_on_disk() {
     });
     published(&first, checked(EXAMPLE));
     // The block's make only: the pin failed, and the cut was blocked.
-    assert_eq!(entries(&dir.0).len(), 1);
+    assert_eq!(files(&dir.0).len(), 1);
     // Another session asks the kernel again, and builds.
     let second = session(&dir.0);
     let model = published(&second, checked(EXAMPLE));
     assert_eq!(calls(&second), ["Cut", "MakeCylinder", "Translate"]);
-    assert_eq!(
-        hole(&model),
-        "cut(box(40, 20, 10), translate(cylinder(2.5, 12), 20, 10, -1))"
-    );
+    assert_eq!(hole(&model), HOLE);
 }
 
 #[test]
@@ -266,10 +186,7 @@ fn a_cache_that_cant_be_written_fails_nothing() {
     std::fs::write(&dir.0, b"not a directory").unwrap();
     let engine = session(&dir.0);
     let model = published(&engine, checked(EXAMPLE));
-    assert_eq!(
-        hole(&model),
-        "cut(box(40, 20, 10), translate(cylinder(2.5, 12), 20, 10, -1))"
-    );
+    assert_eq!(hole(&model), HOLE);
     let _ = std::fs::remove_file(&dir.0);
 }
 
@@ -284,4 +201,120 @@ fn a_hit_is_a_shape_the_worker_checked() {
         };
         assert_eq!(built.shape.valid(), Some(true));
     }
+}
+
+#[test]
+fn the_cache_ignores_itself_in_any_repository() {
+    // A document in a repository of its own, with no ignore rules: after a recompute, git
+    // has nothing to add.
+    let repo = Scratch::new("repository");
+    std::fs::create_dir_all(&repo.0).unwrap();
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&repo.0)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    };
+    git(&["init", "--quiet"]);
+    let dir = repo.0.join(".silico-cache");
+    // The secret outside the repository, as a user's is.
+    let secret = Scratch::new("repository-secret");
+    let engine = Recompute::with_cache(
+        FakeKernel::new(2).unwrap(),
+        Cache::for_platform(&dir, &platform(), &secret.secret()),
+    );
+    published(&engine, checked(EXAMPLE));
+    assert_eq!(files(&dir).len(), 4);
+    assert_eq!(git(&["status", "--porcelain", "--untracked-files=all"]), "");
+}
+
+#[test]
+fn entries_are_sealed_with_their_caches_secret_which_is_made_once() {
+    let dir = Scratch::new("secret");
+    published(&session(&dir.0), checked(EXAMPLE));
+    // Made by the first session: 32 bytes, readable by the user alone.
+    let secret = std::fs::read(dir.secret()).unwrap();
+    assert_eq!(secret.len(), 32);
+    let mode = std::fs::metadata(dir.secret()).unwrap().permissions();
+    assert_eq!(
+        std::os::unix::fs::PermissionsExt::mode(&mode) & 0o777,
+        0o600
+    );
+    // Kept: another session reads it, and hits everything.
+    let second = session(&dir.0);
+    published(&second, checked(EXAMPLE));
+    assert!(calls(&second).is_empty());
+    assert_eq!(std::fs::read(dir.secret()).unwrap(), secret);
+    // Under another secret, nothing is taken.
+    let other = Scratch::new("secret-other");
+    let stranger = Recompute::with_cache(
+        FakeKernel::new(2).unwrap(),
+        Cache::for_platform(&dir.0, &platform(), &other.secret()),
+    );
+    published(&stranger, checked(EXAMPLE));
+    assert_eq!(
+        calls(&stranger),
+        ["Cut", "MakeBox", "MakeCylinder", "Translate"]
+    );
+}
+
+#[test]
+fn a_damaged_secret_keeps_nothing_and_fails_nothing() {
+    for (damage, bytes) in [("short", &b"too short"[..]), ("empty", &b""[..])] {
+        let dir = Scratch::new(&format!("damaged-secret-{damage}"));
+        std::fs::write(dir.secret(), bytes).unwrap();
+        let first = session(&dir.0);
+        assert_eq!(hole(&published(&first, checked(EXAMPLE))), HOLE, "{damage}");
+        assert!(files(&dir.0).is_empty(), "{damage}");
+        // Left as it was, for the user to look at: not replaced under entries sealed with it.
+        assert_eq!(std::fs::read(dir.secret()).unwrap(), bytes, "{damage}");
+    }
+}
+
+/// The variable that makes [`a_session_seals_with_the_users_secret`] the session itself.
+const AS_SESSION: &str = "SILICO_TEST_CACHE_SESSION";
+
+#[test]
+fn a_session_seals_with_the_users_secret() {
+    // `Cache::open` in a process of its own (this test, again), with the user's cache
+    // directory set: its secret is `silico/cache-secret` there.
+    if let Some(dir) = std::env::var_os(AS_SESSION) {
+        let engine = Recompute::with_cache(FakeKernel::new(2).unwrap(), Cache::open(dir));
+        published(&engine, checked(EXAMPLE));
+        return;
+    }
+    let dir = Scratch::new("user");
+    let home = Scratch::new("user-home");
+    let out = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "a_session_seals_with_the_users_secret",
+            "--nocapture",
+        ])
+        .env(AS_SESSION, &dir.0)
+        .env("XDG_CACHE_HOME", &home.0)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let secret: &Path = &home.0.join("silico/cache-secret");
+    assert_eq!(std::fs::read(secret).unwrap().len(), 32);
+    // The session's entries are sealed with it: a cache with that secret hits them all.
+    let again = Recompute::with_cache(
+        FakeKernel::new(2).unwrap(),
+        Cache::for_platform(&dir.0, &platform(), secret),
+    );
+    published(&again, checked(EXAMPLE));
+    assert!(calls(&again).is_empty());
 }

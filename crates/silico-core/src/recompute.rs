@@ -50,10 +50,7 @@ pub struct Key([u8; 32]);
 
 impl fmt::Display for Key {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for byte in self.0 {
-            write!(f, "{byte:02x}")?;
-        }
-        Ok(())
+        f.write_str(&crate::hex(&self.0))
     }
 }
 
@@ -488,14 +485,13 @@ fn boolean_op(operation: &Operation) -> Option<BooleanOp> {
     }
 }
 
-/// Whether `built` could be what `step` makes: no history for a primitive, and a history of
-/// one input for a move, of two for a boolean, that holds together.
+/// Whether `built` could be what `step` makes: no history for a step with no inputs (a
+/// primitive), and for one with inputs, a history of that many that holds together.
 fn fits(step: &Step, built: &Built) -> bool {
-    match (step, &built.history) {
-        (Step::Make(_), None) => true,
-        (Step::Translate { .. }, Some(history)) => history.validate(1).is_ok(),
-        (Step::Boolean { .. }, Some(history)) => history.validate(2).is_ok(),
-        _ => false,
+    let inputs = step.inputs().len();
+    match &built.history {
+        None => inputs == 0,
+        Some(history) => inputs > 0 && history.validate(inputs).is_ok(),
     }
 }
 
@@ -526,7 +522,7 @@ impl<K: Kernel + 'static> Engine<K> {
     fn run(&self, document: &Checked, generation: Generation) -> Result<RunOutcome, Error> {
         let plan = Plan::of(document);
         let keys: Arc<BTreeSet<Key>> = Arc::new(plan.steps.keys().copied().collect());
-        let done: BTreeMap<Key, StepResult> = {
+        let mut done: BTreeMap<Key, StepResult> = {
             let mut state = lock(&self.state);
             // The newest recompute's plan is worth keeping results for, whether or not it
             // finishes: an older one finishing later keeps what this one will use.
@@ -539,14 +535,13 @@ impl<K: Kernel + 'static> Engine<K> {
                 .collect()
         };
         // What's kept on disk for this kernel, for the steps not kept in memory.
-        let mut done = done;
         if let Some(cache) = &self.cache {
             let kernel = self.kernel.identity();
             for key in &plan.order {
                 if !done.contains_key(key)
                     && let Some(built) = cache.get(kernel, key)
                 {
-                    // A checksum says the bytes are as written, not that what was written
+                    // A seal says this user's Silico wrote the bytes, not that what it wrote
                     // fits the step: a history that doesn't is a miss, as a worker's reply
                     // with one would be refused.
                     if plan.steps.get(key).is_some_and(|step| fits(step, &built)) {
@@ -717,14 +712,11 @@ impl<K: Kernel + 'static> Engine<K> {
                     .with_suggestion(crate::worker::SILICO_BUG))),
                 }
             }));
-            if let (Some(cache), Ok(Outcome::Done(Ok(built)))) = (&self.cache, &outcome) {
-                cache.put(self.kernel.identity(), &key, built);
-            }
             let mut s = lock(schedule);
-            s.running -= 1;
             let outcome = match outcome {
                 Ok(outcome) => outcome,
                 Err(panic) => {
+                    s.running -= 1;
                     let said = panic
                         .downcast_ref::<&str>()
                         .map(|said| (*said).to_owned())
@@ -742,6 +734,7 @@ impl<K: Kernel + 'static> Engine<K> {
                 }
             };
             let mut woken = 0;
+            let mut to_keep = None;
             match outcome {
                 Outcome::Superseded => s.superseded = true,
                 Outcome::Done(result) => {
@@ -758,18 +751,30 @@ impl<K: Kernel + 'static> Engine<K> {
                             }
                         }
                     }
-                    s.done.insert(key, result.map(Arc::new));
+                    let result = result.map(Arc::new);
+                    if let Ok(built) = &result {
+                        to_keep = Some(Arc::clone(built));
+                    }
+                    s.done.insert(key, result);
                 }
             }
-            // Wake a thread for each step made ready; every thread, once nothing is left.
+            // The steps made ready run while this one is written to the cache, which it's
+            // still running until it's written: a recompute's results are on disk when it
+            // ends.
+            drop(s);
+            for _ in 0..woken {
+                changed.notify_one();
+            }
+            if let (Some(cache), Some(built)) = (&self.cache, to_keep) {
+                cache.put(self.kernel.identity(), &key, &built);
+            }
+            let mut s = lock(schedule);
+            s.running -= 1;
+            // Every thread, once nothing is left.
             let finished = s.superseded || (s.ready.is_empty() && s.running == 0);
             drop(s);
             if finished {
                 changed.notify_all();
-            } else {
-                for _ in 0..woken {
-                    changed.notify_one();
-                }
             }
         }
     }

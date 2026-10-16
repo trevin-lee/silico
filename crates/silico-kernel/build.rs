@@ -57,9 +57,17 @@ fn main() -> BuildResult<()> {
     };
     let cxx = get("SILICO_CXX")?;
     let shim = get("SILICO_LIBM_SHIM")?;
-    // Through the checkout's own link into the build cache, so a rebuilt entry is picked up.
-    let occt_lib = occt.join("install/lib");
-    let occt_include = occt.join("install/include/opencascade");
+    // The build cache's entry the checkout's link points at (`<cache>/<hash of OCCT's
+    // inputs>/install`), not the link itself: the worker loads OCCT from where it was
+    // linked, so pointing the checkout at another build (`pixi run occt`, here or in another
+    // checkout sharing target/occt) can't change the OCCT a built worker runs on. That
+    // entry's name is compiled into the worker too: the core's cache keys results by the
+    // worker's bytes, and OCCT is linked dynamically, so its own bytes aren't the worker's.
+    let link = occt.join("install");
+    let install =
+        fs::read_link(&link).map_err(|e| format!("can't read the link {}: {e}", link.display()))?;
+    let occt_lib = install.join("lib");
+    let occt_include = install.join("include/opencascade");
     // libc++ comes from the pinned toolchain, next to its compiler.
     let toolchain_lib = Path::new(cxx)
         .parent()
@@ -113,15 +121,12 @@ fn main() -> BuildResult<()> {
     }
     writeln!(out, "cargo:rerun-if-changed={}", recipe_path.display())?;
     writeln!(out, "cargo:rerun-if-changed={shim}")?;
-    // Which OCCT build the worker links (the build cache's entry, named by a hash of its
-    // inputs, patches included), compiled into the worker so another build of OCCT makes
-    // another worker: the core's cache keys results by the worker's bytes, and OCCT is
-    // linked dynamically, so its own bytes aren't the worker's.
-    let install = occt.join("install");
-    let build = fs::canonicalize(&install)
-        .map_err(|e| format!("can't resolve {}: {e}", install.display()))?;
-    writeln!(out, "cargo:rustc-env=SILICO_OCCT_BUILD={}", build.display())?;
-    writeln!(out, "cargo:rerun-if-changed={}", install.display())?;
+    writeln!(
+        out,
+        "cargo:rustc-env=SILICO_OCCT_BUILD={}",
+        install.display()
+    )?;
+    writeln!(out, "cargo:rerun-if-changed={}", link.display())?;
     Ok(())
 }
 

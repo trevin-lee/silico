@@ -4,51 +4,22 @@
 //! source is a session with no cache at all, on its own pool.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/cached.rs"]
+mod cached;
 #[path = "../../silico-core/tests/common/example.rs"]
 mod example;
 
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
-use silico_core::cache::Cache;
+use cached::{Counted, Scratch};
 use silico_core::document::{Checked, read};
-use silico_core::kernel::{Generation, Kernel, KernelRequest};
-use silico_core::pool::{KernelPool, Pending};
+use silico_core::kernel::Kernel;
 use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-worker");
 
-struct Counted(KernelPool, AtomicUsize);
-
-impl Kernel for Counted {
-    fn identity(&self) -> &str {
-        self.0.identity()
-    }
-
-    fn generation(&self) -> Generation {
-        self.0.generation()
-    }
-
-    fn advance(&self, generation: Generation) {
-        self.0.advance(generation);
-    }
-
-    fn submit<T: Send + 'static>(
-        &self,
-        generation: Generation,
-        request: KernelRequest<T>,
-    ) -> Pending<T> {
-        self.1.fetch_add(1, Ordering::SeqCst);
-        self.0.submit(generation, request)
-    }
-}
-
 fn counted() -> Counted {
-    Counted(
-        KernelPool::start_workers(Path::new(WORKER), 2).unwrap(),
-        AtomicUsize::new(0),
-    )
+    Counted::new(WORKER, 2)
 }
 
 fn published<K: Kernel + 'static>(engine: &Recompute<K>, text: &str) -> Arc<Model> {
@@ -57,23 +28,6 @@ fn published<K: Kernel + 'static>(engine: &Recompute<K>, text: &str) -> Arc<Mode
         RunOutcome::Published(model) => model,
         RunOutcome::Superseded => panic!("superseded"),
     }
-}
-
-struct Scratch(PathBuf);
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-fn scratch(name: &str) -> Scratch {
-    let dir = std::env::temp_dir().join(format!(
-        "silico-adv-cache-occt-{name}-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    Scratch(dir)
 }
 
 /// Every primitive, positioned and not, and every boolean, with a chain of booleans on
@@ -111,14 +65,14 @@ fn shapes(model: &Model) -> Vec<(String, Vec<u8>, Option<bool>)> {
 
 #[test]
 fn every_kind_of_step_is_rebuilt_from_the_cache_byte_for_byte() {
-    let dir = scratch("every-kind");
+    let dir = Scratch::new("every-kind");
     let fresh = published(&Recompute::new(counted()), EVERY_KIND);
-    let first = Recompute::with_cache(counted(), Cache::open(&dir.0));
+    let first = Recompute::with_cache(counted(), dir.cache());
     let built = published(&first, EVERY_KIND);
     drop(first);
-    let second = Recompute::with_cache(counted(), Cache::open(&dir.0));
+    let second = Recompute::with_cache(counted(), dir.cache());
     let again = published(&second, EVERY_KIND);
-    assert_eq!(second.kernel().1.load(Ordering::SeqCst), 0);
+    assert_eq!(second.kernel().asked(), 0);
     assert_eq!(shapes(&built), shapes(&fresh));
     assert_eq!(shapes(&again), shapes(&fresh));
     assert_eq!(again.features(), fresh.features());
@@ -127,22 +81,22 @@ fn every_kind_of_step_is_rebuilt_from_the_cache_byte_for_byte() {
 
 #[test]
 fn an_edit_built_on_hits_is_byte_identical_to_one_built_fresh() {
-    let dir = scratch("edit-on-hits");
+    let dir = Scratch::new("edit-on-hits");
     let edited = example::EXAMPLE.replace(r#""radius": 2.5"#, r#""radius": 3.25"#);
     let fresh = published(&Recompute::new(counted()), &edited);
     published(
-        &Recompute::with_cache(counted(), Cache::open(&dir.0)),
+        &Recompute::with_cache(counted(), dir.cache()),
         example::EXAMPLE,
     );
     // The block comes from the cache, as bytes read from disk; the cut is OCCT's, on them.
-    let second = Recompute::with_cache(counted(), Cache::open(&dir.0));
+    let second = Recompute::with_cache(counted(), dir.cache());
     let model = published(&second, &edited);
-    assert_eq!(second.kernel().1.load(Ordering::SeqCst), 3);
+    assert_eq!(second.kernel().asked(), 3);
     assert_eq!(shapes(&model), shapes(&fresh));
     assert_eq!(model.features(), fresh.features());
     // And again from the cache, now entirely.
-    let third = Recompute::with_cache(counted(), Cache::open(&dir.0));
+    let third = Recompute::with_cache(counted(), dir.cache());
     let model = published(&third, &edited);
-    assert_eq!(third.kernel().1.load(Ordering::SeqCst), 0);
+    assert_eq!(third.kernel().asked(), 0);
     assert_eq!(model.features(), fresh.features());
 }

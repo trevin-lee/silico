@@ -1,100 +1,39 @@
 //! break-it: the M2.5 rebuild cache under hostile disks. Entries replaced by FIFOs,
-//! directories, unreadable files, and forged bytes with a sound checksum; symlinks planted
+//! directories, unreadable files, forged bytes with a sound seal, and entries planted under
+//! another's seal; symlinks planted
 //! where the cache writes its partial files; a cache directory removed mid-run, made
 //! read-only, or with a file where a subdirectory goes; sessions racing on one cache; and
 //! keys whose parts run together. Expected values are written by hand: which kernel calls a
 //! session makes, and the fake's description of each shape.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/cache.rs"]
+mod cache;
 #[path = "common/example.rs"]
 mod example;
+#[path = "common/model.rs"]
+mod model;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use cache::{HOLE, Scratch, calls, example_with_pin, files, hole, platform, secret_of, session};
 use example::EXAMPLE;
+use hmac::{Hmac, Mac};
+use model::{checked, published};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use silico_core::cache::Cache;
-use silico_core::document::{Checked, FeatureId, read};
+use silico_core::document::FeatureId;
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::{Generation, History, InputHistory, Kernel, KernelRequest};
 use silico_core::pool::Pending;
 use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 use silico_core::{Error, ErrorCode};
 
-const HOLE: &str = "cut(box(40, 20, 10), translate(cylinder(2.5, 12), 20, 10, -1))";
 const MAGIC: &[u8] = b"silico cache 1\n";
-
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new(name: &str) -> Self {
-        let dir =
-            std::env::temp_dir().join(format!("silico-adv-cache-{name}-{}", std::process::id()));
-        let _ = make_writable(&dir);
-        let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::remove_file(&dir);
-        Self(dir)
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = make_writable(&self.0);
-        let _ = std::fs::remove_dir_all(&self.0);
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
-
-fn make_writable(dir: &Path) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(dir)?.flatten() {
-        let _ = std::fs::set_permissions(entry.path(), std::fs::Permissions::from_mode(0o755));
-        let _ = make_writable(&entry.path());
-    }
-    Ok(())
-}
-
-fn checked(text: &str) -> Checked {
-    Checked::new(read(text.as_bytes()).unwrap()).unwrap()
-}
-
-fn example_with_pin(radius: &str) -> Checked {
-    checked(&EXAMPLE.replace(r#""radius": 2.5"#, &format!(r#""radius": {radius}"#)))
-}
-
-fn try_published<K: Kernel + 'static>(
-    engine: &Recompute<K>,
-    document: Checked,
-    timeout: Duration,
-) -> Option<Arc<Model>> {
-    match engine.start(document).wait_timeout(timeout) {
-        Ok(Ok(RunOutcome::Published(model))) => Some(model),
-        Ok(other) => panic!("not published: {:?}", other.map(|_| ())),
-        Err(_) => None,
-    }
-}
-
-fn published<K: Kernel + 'static>(engine: &Recompute<K>, document: Checked) -> Arc<Model> {
-    try_published(engine, document, Duration::from_secs(20)).expect("recompute hung")
-}
-
-fn session(dir: &Path) -> Recompute<FakeKernel> {
-    Recompute::with_cache(FakeKernel::new(2).unwrap(), Cache::open(dir))
-}
-
-fn calls(engine: &Recompute<FakeKernel>) -> Vec<&'static str> {
-    let mut calls: Vec<_> = engine
-        .kernel()
-        .calls()
-        .iter()
-        .map(|c| c.op.name())
-        .collect();
-    calls.sort_unstable();
-    calls
-}
 
 fn built(model: &Model, id: &str) -> (String, Arc<silico_core::recompute::Built>) {
     match model.outcome(&FeatureId::new(id).unwrap()) {
@@ -103,32 +42,12 @@ fn built(model: &Model, id: &str) -> (String, Arc<silico_core::recompute::Built>
     }
 }
 
-fn hole(model: &Model) -> String {
-    FakeKernel::describe(&built(model, "m3tq8v0z").1.shape).unwrap()
-}
-
-/// Every file under the cache, partial files included, in order.
-fn files(dir: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    for sub in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        for file in std::fs::read_dir(sub.path())
-            .into_iter()
-            .flatten()
-            .flatten()
-        {
-            files.push(file.path());
-        }
-    }
-    files.sort();
-    files
-}
-
 /// Where the fake kernel's entry for step `key` lives, derived by hand from the format the
 /// module documents: SHA-256 of the magic, then the kernel, the platform, and the step,
 /// each after its length (8 bytes, little-endian); the first two hex digits are the
 /// subdirectory.
 fn entry_path(dir: &Path, step: &str) -> PathBuf {
-    let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+    let platform = platform();
     let mut hash = Sha256::new();
     hash.update(MAGIC);
     for part in ["silico fake kernel 1", &platform, step] {
@@ -153,12 +72,21 @@ fn decode(bytes: &[u8]) -> Entry {
     postcard::from_bytes(payload).unwrap()
 }
 
-fn encode(entry: &Entry) -> Vec<u8> {
+/// An entry's bytes, as the module documents them: the magic, the payload's HMAC-SHA-256
+/// under `secret`, and the payload.
+fn encode_with(secret: &[u8], entry: &Entry) -> Vec<u8> {
     let payload = postcard::to_allocvec(entry).unwrap();
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(secret).unwrap();
+    mac.update(&payload);
     let mut bytes = MAGIC.to_vec();
-    bytes.extend_from_slice(&Sha256::digest(&payload));
+    bytes.extend_from_slice(&mac.finalize().into_bytes());
     bytes.extend_from_slice(&payload);
     bytes
+}
+
+/// An entry's bytes, sealed with the secret of the cache in `dir`, as its own writer would.
+fn encode(dir: &Path, entry: &Entry) -> Vec<u8> {
+    encode_with(&std::fs::read(secret_of(dir)).unwrap(), entry)
 }
 
 /// The first session's model, built into `dir`.
@@ -236,6 +164,33 @@ fn entry_that_is_a_directory_is_a_miss_and_every_recompute_still_builds() {
     }
     // The directory is left as it was: never removed, never written into.
     assert!(path.join("inside").is_file());
+    // And the partial files whose renames it refused were removed.
+    let left: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.to_string_lossy().contains(".partial-"))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+#[test]
+fn an_entry_larger_than_any_entry_is_a_miss_without_reading_it() {
+    // A sparse file of 64 GiB at the block's entry: read whole, it would exhaust memory.
+    let dir = Scratch::new("huge");
+    let model = seed(&dir.0);
+    let (box_key, _) = built(&model, "k7f2qx3m");
+    let path = entry_path(&dir.0, &box_key);
+    let sound = std::fs::read(&path).unwrap();
+    std::fs::File::create(&path)
+        .unwrap()
+        .set_len(64 << 30)
+        .unwrap();
+    let next = session(&dir.0);
+    let model = published(&next, checked(EXAMPLE));
+    assert_eq!(calls(&next), ["MakeBox"]);
+    assert_eq!(hole(&model), HOLE);
+    assert_eq!(std::fs::read(&path).unwrap(), sound);
 }
 
 #[test]
@@ -300,6 +255,7 @@ fn a_planted_partial_file_symlink_doesnt_clobber_a_file_outside_the_cache() {
     let subdirs: Vec<String> = std::fs::read_dir(&probe.0)
         .unwrap()
         .flatten()
+        .filter(|e| e.path().is_dir())
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
     assert!(!subdirs.is_empty());
@@ -452,12 +408,12 @@ fn an_entry_cut_at_every_length_or_with_any_byte_flipped_is_a_miss() {
 // sends (`History::validate`, kernel.rs `read_built`: it must be for the operation's
 // inputs and name only elements the result has) and calls one that isn't a protocol error;
 // a history read back from disk skips that, though it crossed a process boundary just as a
-// worker's did. An entry with a sound checksum (written by another build of the core, a
-// tool, or by hand: the checksum isn't a signature) holding a cut's history for five inputs,
-// naming Face999, is published as the cut's history. Expected: an entry whose history
-// doesn't validate for its step is a miss, rebuilt.
+// worker's did. An entry with a sound seal (written by another build of the core, or a
+// tool, of the same user's) holding a cut's history for five inputs, naming Face999, is
+// published as the cut's history. Expected: an entry whose history doesn't validate for its
+// step is a miss, rebuilt.
 #[test]
-fn an_entry_with_a_sound_checksum_but_an_inconsistent_history_is_a_miss() {
+fn an_entry_with_a_sound_seal_but_an_inconsistent_history_is_a_miss() {
     let dir = Scratch::new("forged-history");
     let model = seed(&dir.0);
     let (hole_key, hole_built) = built(&model, "m3tq8v0z");
@@ -469,7 +425,7 @@ fn an_entry_with_a_sound_checksum_but_an_inconsistent_history_is_a_miss() {
         .inputs
         .extend((0..3).map(|_| InputHistory::default()));
     history.ends.start = vec![999];
-    std::fs::write(&path, encode(&entry)).unwrap();
+    std::fs::write(&path, encode(&dir.0, &entry)).unwrap();
     let next = session(&dir.0);
     let model = published(&next, checked(EXAMPLE));
     let (_, got) = built(&model, "m3tq8v0z");
@@ -495,7 +451,7 @@ fn an_operations_entry_with_no_history_is_a_miss() {
     let path = entry_path(&dir.0, &hole_key);
     let mut entry = decode(&std::fs::read(&path).unwrap());
     entry.history = None;
-    std::fs::write(&path, encode(&entry)).unwrap();
+    std::fs::write(&path, encode(&dir.0, &entry)).unwrap();
     let next = session(&dir.0);
     let model = published(&next, checked(EXAMPLE));
     let (_, got) = built(&model, "m3tq8v0z");
@@ -503,6 +459,137 @@ fn an_operations_entry_with_no_history_is_a_miss() {
         got.history, hole_built.history,
         "a cut published from the cache with no history"
     );
+}
+
+/// The example rebuilt by a new session after `edit` was made to `feature`'s entry (sealed
+/// as its writer would), and the session's calls.
+fn forged(
+    name: &str,
+    feature: &str,
+    edit: impl FnOnce(&mut Entry),
+) -> (Vec<&'static str>, Arc<Model>) {
+    let dir = Scratch::new(name);
+    let model = seed(&dir.0);
+    let (key, _) = built(&model, feature);
+    let path = entry_path(&dir.0, &key);
+    let mut entry = decode(&std::fs::read(&path).unwrap());
+    edit(&mut entry);
+    std::fs::write(&path, encode(&dir.0, &entry)).unwrap();
+    let next = session(&dir.0);
+    let model = published(&next, checked(EXAMPLE));
+    (calls(&next), model)
+}
+
+#[test]
+fn a_hit_keeps_the_validity_the_worker_reported() {
+    // The fake makes only valid shapes: an entry saying the block isn't valid is a hit, and
+    // says so, rather than vouching for a shape the worker refused to.
+    let (calls, model) = forged("invalid", "k7f2qx3m", |entry| entry.valid = false);
+    assert!(calls.is_empty(), "{calls:?}");
+    assert_eq!(built(&model, "k7f2qx3m").1.shape.valid(), Some(false));
+}
+
+#[test]
+fn each_way_a_hits_history_can_misfit_its_step_is_a_miss() {
+    // Feature, the step its entry is for, and one fault each.
+    type Fault = fn(&mut Entry);
+    let faults: [(&str, &str, &str, Fault); 5] = [
+        ("cut-extra-input", "m3tq8v0z", "Cut", |e| {
+            e.history
+                .as_mut()
+                .unwrap()
+                .inputs
+                .push(InputHistory::default());
+        }),
+        ("cut-unknown-end", "m3tq8v0z", "Cut", |e| {
+            e.history.as_mut().unwrap().ends.start = vec![999];
+        }),
+        ("move-extra-input", "a91cw0de", "Translate", |e| {
+            e.history
+                .as_mut()
+                .unwrap()
+                .inputs
+                .push(InputHistory::default());
+        }),
+        ("move-no-history", "a91cw0de", "Translate", |e| {
+            e.history = None
+        }),
+        ("make-empty-history", "k7f2qx3m", "MakeBox", |e| {
+            e.history = Some(History::default());
+        }),
+    ];
+    for (name, feature, step, fault) in faults {
+        let fresh = seed(&Scratch::new(&format!("{name}-fresh")).0);
+        let (calls, model) = forged(name, feature, fault);
+        assert_eq!(calls, [step], "{name}");
+        assert_eq!(
+            built(&model, feature).1.history,
+            built(&fresh, feature).1.history,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_makes_entry_with_a_history_is_a_miss() {
+    let dir = Scratch::new("forged-make-history");
+    let model = seed(&dir.0);
+    let (box_key, _) = built(&model, "k7f2qx3m");
+    let (_, hole_built) = built(&model, "m3tq8v0z");
+    let path = entry_path(&dir.0, &box_key);
+    let mut entry = decode(&std::fs::read(&path).unwrap());
+    assert!(entry.history.is_none());
+    entry.history = hole_built.history.clone();
+    std::fs::write(&path, encode(&dir.0, &entry)).unwrap();
+    let next = session(&dir.0);
+    let model = published(&next, checked(EXAMPLE));
+    assert_eq!(calls(&next), ["MakeBox"]);
+    assert_eq!(built(&model, "k7f2qx3m").1.history, None);
+}
+
+// Once: an entry's checksum was a bare SHA-256, and its key a hash of public parts (the
+// kernel's identity, the same for every user of a release, the platform, and the document's
+// steps), so anyone could write an entry every check passes. A `.silico-cache/` committed
+// or copied with a document, holding another shape under a step's key, was published as
+// that feature's result, and vouched valid, with no kernel call; nothing in the document's
+// text shows it. Expected: an entry sealed with any secret but this user's is a miss.
+#[test]
+fn a_planted_entry_with_another_shape_isnt_taken_for_the_features_result() {
+    let dir = Scratch::new("planted-shape");
+    let model = seed(&dir.0);
+    let (hole_key, _) = built(&model, "m3tq8v0z");
+    let (_, block) = built(&model, "k7f2qx3m");
+    let path = entry_path(&dir.0, &hole_key);
+    let mut entry = decode(&std::fs::read(&path).unwrap());
+    entry.brep = block.shape.brep().as_bytes().to_vec();
+    // Sealed by someone else: the old format's bare checksum, or another secret.
+    let unsealed = {
+        let payload = postcard::to_allocvec(&entry).unwrap();
+        let mut bytes = MAGIC.to_vec();
+        bytes.extend_from_slice(&Sha256::digest(&payload));
+        bytes.extend_from_slice(&payload);
+        bytes
+    };
+    for (who, planted) in [
+        ("a bare checksum", unsealed),
+        ("another secret", encode_with(&[7; 32], &entry)),
+    ] {
+        std::fs::write(&path, planted).unwrap();
+        let next = session(&dir.0);
+        let model = published(&next, checked(EXAMPLE));
+        assert_eq!(
+            hole(&model),
+            HOLE,
+            "{who}: a planted entry replaced the cut"
+        );
+        assert_eq!(calls(&next), ["Cut"], "{who}");
+    }
+    // The same entry sealed with the user's own secret is taken (so the planted ones
+    // above were refused for their seal alone).
+    std::fs::write(&path, encode(&dir.0, &entry)).unwrap();
+    let next = session(&dir.0);
+    assert_eq!(hole(&published(&next, checked(EXAMPLE))), "box(40, 20, 10)");
+    assert!(calls(&next).is_empty());
 }
 
 // ---------------------------------------------------------------------------------------
@@ -544,12 +631,12 @@ fn identity_and_platform_with_newlines_dont_share_entries() {
     let dir = Scratch::new("newline-key");
     let first = Recompute::with_cache(
         Named(FakeKernel::new(2).unwrap(), "k\np".to_owned()),
-        Cache::for_platform(&dir.0, "q"),
+        Cache::for_platform(&dir.0, "q", &dir.secret()),
     );
     published(&first, checked(EXAMPLE));
     let second = Recompute::with_cache(
         Named(FakeKernel::new(2).unwrap(), "k".to_owned()),
-        Cache::for_platform(&dir.0, "p\nq"),
+        Cache::for_platform(&dir.0, "p\nq", &dir.secret()),
     );
     published(&second, checked(EXAMPLE));
     assert_eq!(
@@ -564,7 +651,7 @@ fn an_empty_identity_and_platform_still_key_by_step() {
     let dir = Scratch::new("empty-key");
     let engine = Recompute::with_cache(
         Named(FakeKernel::new(2).unwrap(), String::new()),
-        Cache::for_platform(&dir.0, ""),
+        Cache::for_platform(&dir.0, "", &dir.secret()),
     );
     let model = published(&engine, checked(EXAMPLE));
     assert_eq!(hole(&model), HOLE);

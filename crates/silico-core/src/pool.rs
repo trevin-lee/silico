@@ -409,9 +409,10 @@ fn identity_of(exe: &Path) -> Result<String, Error> {
         .with_cause(e.to_string())
         .with_suggestion("check Silico's install: rebuild the kernel worker")
     })?;
-    let digest = Sha256::digest(&bytes);
-    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
-    Ok(format!("kernel worker sha256:{hex}"))
+    Ok(format!(
+        "kernel worker sha256:{}",
+        crate::hex(&Sha256::digest(&bytes))
+    ))
 }
 
 /// Starts a pool thread.

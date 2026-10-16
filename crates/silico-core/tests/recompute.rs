@@ -5,6 +5,8 @@
 
 #[path = "common/example.rs"]
 mod example;
+#[path = "common/model.rs"]
+mod model;
 #[path = "common/recompute.rs"]
 mod recompute;
 
@@ -12,7 +14,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use example::EXAMPLE;
-use recompute::{WAIT, calls_since, checked, described, document, engine, id, published};
+use model::{WAIT, checked, described, id, published};
+use recompute::{calls_since, document, engine};
 use silico_core::document::{Checked, FeatureId};
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::{Generation, Kernel, KernelRequest, Op, Primitive};
