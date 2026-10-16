@@ -4178,6 +4178,7 @@ dependencies = [
  "jsonschema",
  "libc",
  "libm",
+ "postcard",
  "proptest",
  "rustix",
  "schemars",

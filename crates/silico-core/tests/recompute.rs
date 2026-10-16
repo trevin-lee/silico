@@ -544,6 +544,10 @@ struct Gate {
 }
 
 impl Kernel for Gate {
+    fn identity(&self) -> &str {
+        self.inner.identity()
+    }
+
     fn generation(&self) -> Generation {
         self.inner.generation()
     }
@@ -629,6 +633,10 @@ struct Threads {
 }
 
 impl Kernel for Threads {
+    fn identity(&self) -> &str {
+        self.inner.identity()
+    }
+
     fn generation(&self) -> Generation {
         self.inner.generation()
     }
@@ -739,6 +747,10 @@ struct SlowAdvance {
 }
 
 impl Kernel for SlowAdvance {
+    fn identity(&self) -> &str {
+        self.fake.identity()
+    }
+
     fn generation(&self) -> Generation {
         self.fake.generation()
     }

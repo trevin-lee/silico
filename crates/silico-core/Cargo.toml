@@ -10,6 +10,7 @@ publish.workspace = true
 command-fds.workspace = true
 libc.workspace = true
 libm = { workspace = true, optional = true }
+postcard.workspace = true
 rustix.workspace = true
 schemars.workspace = true
 serde.workspace = true

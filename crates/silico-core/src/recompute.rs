@@ -29,6 +29,7 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
+use crate::cache::Cache;
 use crate::document::{Checked, FeatureId, Operation};
 use crate::kernel::{
     BooleanOp, BuiltData, Generation, History, Kernel, KernelRequest, Primitive, ShapeData,
@@ -184,6 +185,8 @@ pub struct Recompute<K: Kernel + 'static> {
 
 struct Engine<K> {
     kernel: K,
+    /// Where results are kept on disk, if anywhere.
+    cache: Option<Cache>,
     state: Mutex<EngineState>,
 }
 
@@ -230,10 +233,21 @@ type StepResult = Result<Arc<Built>, Error>;
 
 impl<K: Kernel + 'static> Recompute<K> {
     pub fn new(kernel: K) -> Self {
+        Self::build(kernel, None)
+    }
+
+    /// Rebuilds on `kernel`, keeping each step's result in `cache` too, and taking it from
+    /// there when it's kept: a document opened again rebuilds without the kernel.
+    pub fn with_cache(kernel: K, cache: Cache) -> Self {
+        Self::build(kernel, Some(cache))
+    }
+
+    fn build(kernel: K, cache: Option<Cache>) -> Self {
         let generation = kernel.generation();
         Self {
             engine: Arc::new(Engine {
                 kernel,
+                cache,
                 state: Mutex::new(EngineState {
                     generation,
                     newest_started: generation,
@@ -513,6 +527,18 @@ impl<K: Kernel + 'static> Engine<K> {
                 .filter_map(|key| state.results.get(key).map(|r| (*key, r.clone())))
                 .collect()
         };
+        // What's kept on disk for this kernel, for the steps not kept in memory.
+        let mut done = done;
+        if let Some(cache) = &self.cache {
+            let kernel = self.kernel.identity();
+            for key in &plan.order {
+                if !done.contains_key(key)
+                    && let Some(built) = cache.get(kernel, key)
+                {
+                    done.insert(*key, Ok(Arc::new(built)));
+                }
+            }
+        }
         let mut schedule = Schedule {
             done,
             waiting: BTreeMap::new(),
@@ -673,6 +699,9 @@ impl<K: Kernel + 'static> Engine<K> {
                     .with_suggestion(crate::worker::SILICO_BUG))),
                 }
             }));
+            if let (Some(cache), Ok(Outcome::Done(Ok(built)))) = (&self.cache, &outcome) {
+                cache.put(self.kernel.identity(), &key, built);
+            }
             let mut s = lock(schedule);
             s.running -= 1;
             let outcome = match outcome {

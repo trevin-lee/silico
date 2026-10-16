@@ -84,6 +84,10 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Events {
 struct Warns(FakeKernel);
 
 impl Kernel for Warns {
+    fn identity(&self) -> &str {
+        self.0.identity()
+    }
+
     fn generation(&self) -> Generation {
         self.0.generation()
     }

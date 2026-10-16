@@ -5,6 +5,7 @@
 //! types, read and written exactly ([`document`]); the feature graph, recompute,
 //! topological naming, and the command API every client uses arrive later in M2.
 
+pub mod cache;
 pub mod document;
 mod error;
 #[cfg(feature = "fake")]

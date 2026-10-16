@@ -26,6 +26,11 @@ use crate::{Error, ErrorCode};
 /// starting a newer one supersedes the older ones' requests, which come to
 /// [`Outcome::Superseded`](crate::pool::Outcome::Superseded), never a result.
 pub trait Kernel: Send + Sync {
+    /// What the kernel is, for keying results kept on disk ([`crate::cache`]): two kernels
+    /// with the same identity give the same result for the same request, and a kernel that
+    /// might not (another build of the worker) has another identity.
+    fn identity(&self) -> &str;
+
     /// The generation requests are for: the newest [`advance`](Self::advance) started.
     fn generation(&self) -> Generation;
 

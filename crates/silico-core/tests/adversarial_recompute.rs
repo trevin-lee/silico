@@ -117,6 +117,10 @@ fn cancelling_at_the_last_generation_still_supersedes_the_running_recompute() {
 struct Panicky(FakeKernel);
 
 impl Kernel for Panicky {
+    fn identity(&self) -> &str {
+        self.0.identity()
+    }
+
     fn generation(&self) -> Generation {
         self.0.generation()
     }

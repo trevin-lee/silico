@@ -68,6 +68,8 @@ pub const MAX_WORKERS: usize = 1024;
 /// Kernel workers, and a queue of requests for them. Dropping the pool stops its workers at
 /// once (requests still waiting or running end without a result) and joins its threads.
 pub struct KernelPool {
+    /// The worker executable's SHA-256: any other build of it is another kernel.
+    identity: String,
     shared: Arc<Shared>,
     /// One per slot.
     threads: Vec<JoinHandle<()>>,
@@ -187,6 +189,7 @@ impl KernelPool {
             .with_cause(e.to_string())
         })?;
         let exe = exe.as_path();
+        let identity = identity_of(exe)?;
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 queue: VecDeque::new(),
@@ -201,6 +204,7 @@ impl KernelPool {
             slots: Mutex::new((0..size).map(|_| Slot::default()).collect()),
         });
         let mut pool = Self {
+            identity,
             shared,
             threads: Vec::with_capacity(size),
             stopper: None,
@@ -329,6 +333,10 @@ impl KernelPool {
 }
 
 impl crate::kernel::Kernel for KernelPool {
+    fn identity(&self) -> &str {
+        &self.identity
+    }
+
     fn generation(&self) -> Generation {
         KernelPool::generation(self)
     }
@@ -367,6 +375,23 @@ impl Drop for KernelPool {
             let _ = thread.join();
         }
     }
+}
+
+/// The identity of the kernel the worker executable at `exe` is: `kernel worker sha256:`
+/// and its bytes' SHA-256, so a rebuilt or replaced worker is another kernel.
+fn identity_of(exe: &Path) -> Result<String, Error> {
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(exe).map_err(|e| {
+        Error::new(
+            ErrorCode::WorkerCrashed,
+            format!("couldn't read the kernel worker {}", exe.display()),
+        )
+        .with_cause(e.to_string())
+        .with_suggestion("check Silico's install: rebuild the kernel worker")
+    })?;
+    let digest = Sha256::digest(&bytes);
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    Ok(format!("kernel worker sha256:{hex}"))
 }
 
 /// Starts a pool thread.
