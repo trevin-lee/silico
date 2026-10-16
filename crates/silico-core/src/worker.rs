@@ -1579,11 +1579,30 @@ mod tests {
 
     #[test]
     fn a_worker_that_never_says_a_request_is_done_holds_no_more_than_the_bound() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+        // Above the pipe's hold of done lines on the platforms Silico is checked on.
+        assert_eq!(super::Callers::MOST, 4096);
+        struct Warnings(Arc<AtomicUsize>);
+        impl<S: tracing::Subscriber> Layer<S> for Warnings {
+            fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
+                if *event.metadata().level() == tracing::Level::WARN {
+                    self.0.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        }
+        let warnings = Arc::new(AtomicUsize::new(0));
+        let subscriber = tracing_subscriber::registry().with(Warnings(Arc::clone(&warnings)));
         let mut callers = super::Callers::default();
         let most = super::Callers::MOST as u64;
-        for trace in 0..most + 10 {
-            callers.push(trace, tracing::Span::none());
-        }
+        tracing::subscriber::with_default(subscriber, || {
+            for trace in 0..most + 10 {
+                callers.push(trace, tracing::Span::none());
+            }
+        });
+        // One warning for each span pushed out, none before.
+        assert_eq!(warnings.load(Ordering::SeqCst), 10);
         assert_eq!(callers.0.len(), super::Callers::MOST);
         assert_eq!(callers.0.front().map(|(trace, _)| *trace), Some(10));
         // A request never sent is let go at once.
