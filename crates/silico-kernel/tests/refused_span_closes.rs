@@ -99,6 +99,11 @@ fn a_request_refused_before_it_was_sent_lets_its_span_go() {
             sent.elapsed() >= stop_after,
             "superseded before it was sent: never stopped"
         );
+        // And it was stopped, not left to finish its sleep.
+        assert!(
+            sent.elapsed() < Duration::from_secs(10),
+            "it ran to the end: never stopped"
+        );
     }
     wait_closed(&closed, "hung_edit");
     drop(pool);

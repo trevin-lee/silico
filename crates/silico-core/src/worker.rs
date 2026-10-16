@@ -1609,6 +1609,20 @@ mod tests {
             last < super::Callers::MOST,
             "the pipe held {last} done lines"
         );
+        // The writer is blocked on a full pipe, not paused: reading one line lets exactly
+        // one more in.
+        let mut one = vec![0; length];
+        std::io::Read::read_exact(&mut &reader, &mut one).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while written.load(Ordering::SeqCst) == last {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the writer never went on"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert_eq!(written.load(Ordering::SeqCst), last + 1);
         // No supported pipe holds less than 16 KiB: fewer lines would mean the count stopped
         // early (the writer not yet run), not that the pipe is full.
         assert!(
