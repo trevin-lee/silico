@@ -115,14 +115,15 @@ fn at_the_default_level_a_warning_in_a_step_names_its_feature_generation_and_edi
     )
     .unwrap();
     // The design's example: the block made, the pin made and moved, the cut: four steps,
-    // each a request to make and one to summarize, each warning once.
+    // and three features' solids measured (the block's, the pin's move's, the cut's), each
+    // request warning once.
     let document = Checked::new(read(EXAMPLE.as_bytes()).unwrap()).unwrap();
     let engine = Recompute::new(Warns(FakeKernel::new(2).unwrap()));
     let edit = tracing::warn_span!("user_edit");
     let run = edit.in_scope(|| engine.start(document));
     assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
     let events = seen.lock().unwrap().clone();
-    assert_eq!(events.len(), 8, "{events:?}");
+    assert_eq!(events.len(), 7, "{events:?}");
     let mut features = Vec::new();
     for scope in &events {
         let names: Vec<&str> = scope.iter().map(|(name, _)| *name).collect();
@@ -133,12 +134,11 @@ fn at_the_default_level_a_warning_in_a_step_names_its_feature_generation_and_edi
     }
     features.sort_unstable();
     // The pin's make and move are the pin's; the block's make, the block's; the cut, the
-    // hole's: each step's two requests.
+    // hole's; and each solid's measure its feature's.
     assert_eq!(
         features,
         [
-            "a91cw0de", "a91cw0de", "a91cw0de", "a91cw0de", "k7f2qx3m", "k7f2qx3m", "m3tq8v0z",
-            "m3tq8v0z"
+            "a91cw0de", "a91cw0de", "a91cw0de", "k7f2qx3m", "k7f2qx3m", "m3tq8v0z", "m3tq8v0z"
         ]
     );
 }

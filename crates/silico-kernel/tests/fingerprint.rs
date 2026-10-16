@@ -102,23 +102,20 @@ fn the_examples_features_measure_as_their_formulas() {
 fn a_saved_document_rebuilds_to_the_same_bytes_with_a_cache_or_without() {
     let document = read(example::EXAMPLE.as_bytes()).unwrap();
     let first = published(&Recompute::new(pool()), &document);
-    let saved = write(&first.fingerprinted(&document)).unwrap();
+    let saved = write(&first.fingerprinted()).unwrap();
     let saved_document = read(saved.as_bytes()).unwrap();
     // Another session, on another pool.
     let again = published(&Recompute::new(pool()), &saved_document);
-    assert!(again.drift(&saved_document).is_empty());
-    assert_eq!(write(&again.fingerprinted(&saved_document)).unwrap(), saved);
+    assert!(again.drift().is_empty());
+    assert_eq!(write(&again.fingerprinted()).unwrap(), saved);
     // Through a cache: built into it, then taken from it.
     let dir = Scratch::new("fingerprint");
-    for (pass, asks) in [(1, 8), (2, 0)] {
+    for (pass, asks) in [(1, 7), (2, 0)] {
         let engine = Recompute::with_cache(Counted::new(WORKER, 2), dir.cache());
         let cached = published(&engine, &saved_document);
-        // Four steps, each made and summarized; then none.
+        // Four steps made, three features' solids measured; then nothing.
         assert_eq!(engine.kernel().asked(), asks, "pass {pass}");
-        assert!(cached.drift(&saved_document).is_empty());
-        assert_eq!(
-            write(&cached.fingerprinted(&saved_document)).unwrap(),
-            saved
-        );
+        assert!(cached.drift().is_empty());
+        assert_eq!(write(&cached.fingerprinted()).unwrap(), saved);
     }
 }

@@ -116,7 +116,8 @@ struct Entry {
     brep: Vec<u8>,
     valid: bool,
     history: Option<History>,
-    summary: ShapeSummary,
+    /// The shape's summary, if it was measured (a feature's solid is, once it's made).
+    summary: Option<ShapeSummary>,
 }
 
 impl Cache {
@@ -181,11 +182,11 @@ impl Cache {
             }
         };
         match read_entry(&bytes, secret, &key) {
-            Some(entry) => Some(Built {
-                shape: ShapeData::checked(Blob::inline(entry.brep), entry.valid),
-                history: entry.history,
-                summary: entry.summary,
-            }),
+            Some(entry) => Some(Built::new(
+                ShapeData::checked(Blob::inline(entry.brep), entry.valid),
+                entry.history,
+                entry.summary,
+            )),
             None => {
                 tracing::warn!(path = %path.display(), "a cache entry doesn't hold together: rebuilding it");
                 let _ = std::fs::remove_file(&path);
@@ -208,7 +209,7 @@ impl Cache {
             brep: built.shape.brep().as_bytes().to_vec(),
             valid,
             history: built.history.clone(),
-            summary: built.summary.clone(),
+            summary: built.summary().cloned(),
         };
         let payload = match postcard::to_allocvec(&entry) {
             Ok(payload) => payload,

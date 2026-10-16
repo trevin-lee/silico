@@ -266,10 +266,47 @@ impl KernelRequest<ShapeSummary> {
             shape: shape.clone(),
         };
         Self::new(op, |name, reply| match reply {
-            Reply::Summary(summary) => Ok(summary),
+            Reply::Summary(summary) => match summary_fault(&summary) {
+                None => Ok(summary),
+                Some(fault) => Err(Error::new(
+                    ErrorCode::ProtocolError,
+                    format!("the kernel worker answered {name} with a summary no shape has"),
+                )
+                .with_cause(fault)
+                .with_suggestion("start a new kernel worker")),
+            },
             other => Err(unexpected(name, &other)),
         })
     }
+}
+
+/// What's wrong with `summary`, if it's not one a shape could have: a measure that isn't
+/// finite, or a box whose lowest corner is past its highest. (The worker refuses the first
+/// itself; the core checks what it's given, as it checks any reply.)
+fn summary_fault(summary: &ShapeSummary) -> Option<String> {
+    let [x, y, z] = summary.center;
+    let mut values = vec![
+        ("volume", summary.volume),
+        ("area", summary.area),
+        ("center x", x),
+        ("center y", y),
+        ("center z", z),
+    ];
+    if let Some([low, high]) = summary.bounds {
+        for (axis, (l, h)) in ["x", "y", "z"].into_iter().zip(low.into_iter().zip(high)) {
+            values.push(("box", l));
+            values.push(("box", h));
+            if l > h {
+                return Some(format!(
+                    "its box's lowest {axis}, {l}, is past its highest, {h}"
+                ));
+            }
+        }
+    }
+    values
+        .into_iter()
+        .find(|(_, value)| !value.is_finite())
+        .map(|(what, value)| format!("its {what} has {value}"))
 }
 
 impl KernelRequest<FreecadMeasures> {

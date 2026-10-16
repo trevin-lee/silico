@@ -80,7 +80,8 @@ pub fn example_with_pin(radius: &str) -> Checked {
     checked(&EXAMPLE.replace(r#""radius": 2.5"#, &format!(r#""radius": {radius}"#)))
 }
 
-/// The names of the kernel calls a session made, in order of name.
+/// The names of the kernel calls a session made shapes with (no summaries, [`made`]), in
+/// order of name.
 pub fn calls(engine: &Recompute<FakeKernel>) -> Vec<&'static str> {
     let mut calls = made(&engine.kernel().calls());
     calls.sort_unstable();

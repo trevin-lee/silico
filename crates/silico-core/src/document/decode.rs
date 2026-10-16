@@ -216,7 +216,8 @@ fn field_name(key: &str) -> String {
     if plain { key.to_owned() } else { shown(key) }
 }
 
-/// A non-negative whole number's digits, as `silico` and `v` are written: compared as text,
+/// A non-negative whole number's digits, as `silico`, `v`, and a fingerprint's counts are
+/// written: compared as text,
 /// so no number is too large to say which it is.
 fn whole_number(node: &Node, feature: Option<&str>, parameter: &str) -> Result<String, Error> {
     let Value::Number(text) = &node.value else {
@@ -395,23 +396,20 @@ fn measure(fields: &mut Fields, key: &str) -> Result<Measure, Error> {
         return Err(wrong_kind(feature, &name, &node, "a number"));
     };
     Measure::parse(text).map_err(|e| {
-        let suggestion = match e {
-            NumberError::TooPrecise { decimals } => format!("round it to {decimals} decimals"),
-            NumberError::OutOfRange => format!(
-                "a fingerprint's {key} is at most {} either way",
-                Measure::from_millionths(i128::MAX)
-            ),
-            NumberError::NegativeZero => "write 0".to_owned(),
-            NumberError::Malformed => {
-                format!("write a number, to at most {MEASURE_DECIMALS} decimals")
-            }
-        };
-        refuse(
+        number_refused(
             feature,
             &name,
-            node.at,
-            format!("{name} {} {e}", shown_number(text)),
-            suggestion,
+            &node,
+            text,
+            &e,
+            Refused {
+                precise: String::new(),
+                range: format!(
+                    "a fingerprint's {key} is at most {} either way",
+                    Measure::from_millionths(i128::MAX)
+                ),
+                decimals: MEASURE_DECIMALS,
+            },
         )
     })
 }
@@ -536,27 +534,58 @@ fn length_value(node: &Node, feature: Option<&str>, parameter: &str) -> Result<L
         ));
     };
     Length::parse(text).map_err(|e| {
-        let suggestion = match e {
-            NumberError::TooPrecise { decimals } => {
-                format!("round it to {decimals} decimals: lengths are whole nanometres")
-            }
-            NumberError::OutOfRange => format!(
-                "a length is at most {} mm either way",
-                Length::from_nm(i64::MAX)
-            ),
-            NumberError::NegativeZero => "write 0".to_owned(),
-            NumberError::Malformed => {
-                format!("write a number, to at most {LENGTH_DECIMALS} decimals")
-            }
-        };
-        refuse(
+        number_refused(
             feature,
             parameter,
-            node.at,
-            format!("{parameter} {} {e}", shown_number(text)),
-            suggestion,
+            node,
+            text,
+            &e,
+            Refused {
+                precise: ": lengths are whole nanometres".to_owned(),
+                range: format!(
+                    "a length is at most {} mm either way",
+                    Length::from_nm(i64::MAX)
+                ),
+                decimals: LENGTH_DECIMALS,
+            },
         )
     })
+}
+
+/// What to say of a number a quantity refused: after "round it to N decimals" (`precise`),
+/// how large it may be (`range`), and its decimals.
+struct Refused {
+    precise: String,
+    range: String,
+    decimals: u32,
+}
+
+/// The refusal of `text`, the number at `node` in `parameter`, for `e`.
+fn number_refused(
+    feature: Option<&str>,
+    parameter: &str,
+    node: &Node,
+    text: &str,
+    e: &NumberError,
+    said: Refused,
+) -> Error {
+    let suggestion = match e {
+        NumberError::TooPrecise { decimals } => {
+            format!("round it to {decimals} decimals{}", said.precise)
+        }
+        NumberError::OutOfRange => said.range,
+        NumberError::NegativeZero => "write 0".to_owned(),
+        NumberError::Malformed => {
+            format!("write a number, to at most {} decimals", said.decimals)
+        }
+    };
+    refuse(
+        feature,
+        parameter,
+        node.at,
+        format!("{parameter} {} {e}", shown_number(text)),
+        suggestion,
+    )
 }
 
 fn position(fields: &mut Fields) -> Result<Position, Error> {

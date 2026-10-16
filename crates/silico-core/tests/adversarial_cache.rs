@@ -75,7 +75,7 @@ struct Entry {
     brep: Vec<u8>,
     valid: bool,
     history: Option<History>,
-    summary: ShapeSummary,
+    summary: Option<ShapeSummary>,
 }
 
 fn decode(bytes: &[u8]) -> Entry {

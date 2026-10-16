@@ -283,11 +283,7 @@ fn a_fingerprint_spelled_loosely_reads_as_the_canonical_one_and_isnt_drift() {
     assert_eq!(err.parameter(), Some("fingerprint.edges"), "{err}");
     let loose = loose.replace("1.2e1", "12");
     let (document, model) = rebuilt(&block_with(&loose));
-    assert!(
-        model.drift(&document).is_empty(),
-        "{:?}",
-        model.drift(&document)
-    );
+    assert!(model.drift().is_empty(), "{:?}", model.drift());
     let canonical = write(&document).unwrap();
     assert!(canonical.contains(GOOD), "{canonical}");
 }
@@ -482,9 +478,9 @@ fn a_box_the_gate_admits_has_a_fingerprint_whatever_its_size() {
     let text = doc(&[
         r#"{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Hall", "position": [0, 0, 0], "length": 200000, "width": 200000, "height": 200000}"#,
     ]);
-    let (document, model) = rebuilt(&text);
+    let (_, model) = rebuilt(&text);
     let fingerprint = model.fingerprint(&id("k7f2qx3m"));
-    let fingerprinted = model.fingerprinted(&document);
+    let fingerprinted = model.fingerprinted();
     assert!(
         fingerprinted.features[0].fingerprint.is_some(),
         "no fingerprint for a valid 200 m box: {fingerprint:?}"
@@ -509,8 +505,8 @@ fn a_stored_fingerprint_on_a_200_metre_part_is_checked_like_any_other() {
     let text = doc(&[&format!(
         r#"{{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Hall", "position": [0, 0, 0], "length": 200000, "width": 200000, "height": 200000, "fingerprint": {{{GOOD}}}}}"#
     )]);
-    let (document, model) = rebuilt(&text);
-    let errors = model.drift(&document);
+    let (_, model) = rebuilt(&text);
+    let errors = model.drift();
     assert_eq!(errors.len(), 1, "{errors:?}");
     let e = &errors[0];
     assert_eq!(e.code(), ErrorCode::Drift);
@@ -671,29 +667,32 @@ fn a_document_that_opens_near_the_size_limit_and_gains_fingerprints_is_refused_a
     let text = doc(&[&format!(r#"{BLOCK}, "note": "{}"}}"#, "n".repeat(pad))]);
     let (document, model) = rebuilt(&text);
     write(&document).unwrap();
-    let e = write(&model.fingerprinted(&document)).unwrap_err();
+    let e = write(&model.fingerprinted()).unwrap_err();
     assert_eq!(e.code(), ErrorCode::InvalidInput);
     assert_eq!(e.feature(), Some("k7f2qx3m"));
     assert!(e.suggestion().is_some());
 }
 
 #[test]
-fn drift_against_a_document_other_than_the_models_compares_only_shared_features() {
-    // The model of the block; a document with another feature and the block's fingerprint
-    // tampered: the block is drift, the stranger isn't (it wasn't built).
-    let (_, model) = rebuilt(&doc(&[&format!("{BLOCK}}}")]));
-    let other = doc(&[
-        &format!(
-            r#"{BLOCK}, "fingerprint": {{{}}}}}"#,
-            GOOD.replace("8000", "8001")
-        ),
-        &format!(
-            r#"{{"id": "zzzzzzzz", "type": "sphere", "v": 1, "name": "S", "position": [0, 0, 0], "radius": 1, "fingerprint": {{{GOOD}}}}}"#
-        ),
-    ]);
-    let other = read(other.as_bytes()).unwrap();
-    let errors = model.drift(&other);
+fn drift_is_checked_against_the_document_the_model_was_built_from() {
+    // Once drift and fingerprinted took any document, and matched features by ID alone: a
+    // model of one document stamped its measures onto another. Now a model checks and
+    // writes only its own.
+    let tampered = doc(&[&format!(
+        r#"{BLOCK}, "fingerprint": {{{}}}}}"#,
+        GOOD.replace("8000", "8001")
+    )]);
+    let (document, model) = rebuilt(&tampered);
+    assert_eq!(model.document(), &document);
+    let errors = model.drift();
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert_eq!(errors[0].feature(), Some("k7f2qx3m"));
     assert_eq!(errors[0].parameter(), Some("fingerprint.volume"));
+    // Its fingerprints written onto its own document: the block's, rebuilt.
+    let written = model.fingerprinted();
+    assert_eq!(written.features.len(), 1);
+    assert_eq!(
+        written.features[0].fingerprint.unwrap().volume.to_string(),
+        "8000"
+    );
 }

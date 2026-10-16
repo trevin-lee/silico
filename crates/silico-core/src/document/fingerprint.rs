@@ -11,7 +11,7 @@ use std::fmt;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use silico_protocol::ShapeSummary;
 
-use super::quantity::{Length, NumberError, parse_wide, write_decimal};
+use super::quantity::{Length, NumberError, parse_wide, round_to, write_decimal};
 
 /// A volume (mm³) or area (mm²), to 6 decimals: millionths in an `i128`, so any solid the
 /// validation gate admits (a kilometre each way) is measured, with room to spare.
@@ -38,7 +38,7 @@ impl Measure {
 
     /// `value` rounded to 6 decimals; none if it isn't finite, or is too large to hold.
     pub fn rounded(value: f64) -> Option<Self> {
-        rounded(value).map(Measure)
+        round_to(value, MEASURE_DECIMALS).map(Measure)
     }
 }
 
@@ -58,21 +58,6 @@ impl JsonSchema for Measure {
             "description": "A volume (mm³) or area (mm²): a number, to at most 6 decimals.",
             "type": "number"
         })
-    }
-}
-
-/// `value` in millionths, rounded to the nearest, ties to even, from its exact value (Rust
-/// writes a float to a number of decimals exactly); none if it isn't finite or doesn't fit.
-/// A value that rounds to zero is zero, whatever its sign.
-fn rounded(value: f64) -> Option<i128> {
-    if !value.is_finite() {
-        return None;
-    }
-    let text = format!("{value:.6}");
-    match parse_wide(&text, MEASURE_DECIMALS) {
-        Ok(millionths) => Some(millionths),
-        Err(NumberError::NegativeZero) => Some(0),
-        Err(_) => None,
     }
 }
 
@@ -99,15 +84,16 @@ pub struct Fingerprint {
 
 impl Fingerprint {
     /// The fingerprint of a solid with `summary`; none if a measure isn't finite, or past
-    /// what it can hold (a box corner past about 9,200 km, or a volume past about 1.7e29 m³:
-    /// far past anything the validation gate admits).
+    /// what it can hold (a box corner past i64 nanometres, about 9.2 million km, or a volume
+    /// past i128 millionths of a mm³, about 1.7e32 mm³: far past anything the validation
+    /// gate admits).
     pub fn of(summary: &ShapeSummary) -> Option<Self> {
         let bbox = match summary.bounds {
             None => None,
             Some([low, high]) => {
                 let mut corners = [Length::default(); 6];
                 for (corner, value) in corners.iter_mut().zip(low.into_iter().chain(high)) {
-                    *corner = Length::from_nm(i64::try_from(rounded(value)?).ok()?);
+                    *corner = Length::rounded(value)?;
                 }
                 Some(corners)
             }

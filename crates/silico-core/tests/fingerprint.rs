@@ -33,7 +33,7 @@ fn engine() -> Recompute<FakeKernel> {
 fn saved(text: &str) -> String {
     let document = read(text.as_bytes()).unwrap();
     let model = published(&engine(), Checked::new(document.clone()).unwrap());
-    write(&model.fingerprinted(&document)).unwrap()
+    write(&model.fingerprinted()).unwrap()
 }
 
 /// The line of `text` holding the feature `feature`'s fingerprint.
@@ -94,7 +94,7 @@ fn a_rebuild_of_an_unchanged_document_leaves_its_bytes_as_they_were() {
     // And it isn't drift.
     let document = read(first.as_bytes()).unwrap();
     let model = published(&engine(), Checked::new(document.clone()).unwrap());
-    assert!(model.drift(&document).is_empty());
+    assert!(model.drift().is_empty());
 }
 
 #[test]
@@ -130,7 +130,8 @@ fn tampered(from: &str, to: &str) -> Document {
 
 fn drift(document: &Document) -> Vec<Error> {
     let model = published(&engine(), Checked::new(document.clone()).unwrap());
-    model.drift(document)
+    assert_eq!(model.document(), document);
+    model.drift()
 }
 
 #[test]
@@ -206,57 +207,118 @@ fn a_feature_with_no_fingerprint_isnt_drift_and_the_next_save_writes_one() {
 }
 
 #[test]
-fn a_feature_that_doesnt_build_isnt_drift_and_loses_its_fingerprint() {
-    let document = read(saved(EXAMPLE).as_bytes()).unwrap();
-    let engine = engine();
-    engine.kernel().refuse(|op| {
-        matches!(op, Op::MakePrimitive(Primitive::Cylinder { .. }))
-            .then(|| Error::new(ErrorCode::KernelFailed, "MakeCylinder failed"))
-    });
-    let model = published(&engine, Checked::new(document.clone()).unwrap());
-    assert!(matches!(
-        model.outcome(&id("a91cw0de")),
-        Some(FeatureOutcome::Failed(_))
-    ));
-    assert!(matches!(
-        model.outcome(&id("m3tq8v0z")),
-        Some(FeatureOutcome::Blocked { .. })
-    ));
-    // The pin failed and the hole was blocked: no drift, the failure says why.
-    assert!(model.drift(&document).is_empty());
-    // Written as rebuilt: the block's kept, the others' gone (nothing is kept from a
-    // previous save).
-    let fingerprints: Vec<_> = model
-        .fingerprinted(&document)
-        .features
-        .iter()
-        .map(|f| f.fingerprint.is_some())
-        .collect();
-    assert_eq!(fingerprints, [true, false, false]);
+fn a_feature_that_doesnt_build_isnt_drift_and_keeps_its_fingerprint() {
+    // However it failed: for its values, or because a worker hung or crashed. A save then
+    // keeps the record a later rebuild is checked against; there's nothing to replace it.
+    for code in [
+        ErrorCode::KernelFailed,
+        ErrorCode::WorkerTimeout,
+        ErrorCode::WorkerCrashed,
+    ] {
+        let document = read(saved(EXAMPLE).as_bytes()).unwrap();
+        let engine = engine();
+        engine.kernel().refuse(move |op| {
+            matches!(op, Op::MakePrimitive(Primitive::Cylinder { .. }))
+                .then(|| Error::new(code, "MakeCylinder failed"))
+        });
+        let model = published(&engine, Checked::new(document.clone()).unwrap());
+        assert!(
+            matches!(
+                model.outcome(&id("a91cw0de")),
+                Some(FeatureOutcome::Failed(_))
+            ),
+            "{code}"
+        );
+        assert!(
+            matches!(
+                model.outcome(&id("m3tq8v0z")),
+                Some(FeatureOutcome::Blocked { .. })
+            ),
+            "{code}"
+        );
+        // The pin failed and the hole was blocked: no drift, the failure says why.
+        assert!(model.drift().is_empty(), "{code}");
+        // Written back: the block's as rebuilt, the others' as stored, the same bytes.
+        let written = model.fingerprinted();
+        assert_eq!(written, document, "{code}");
+        assert_eq!(write(&written).unwrap(), saved(EXAMPLE), "{code}");
+    }
 }
 
 #[test]
-fn a_shape_that_cant_be_summarized_fails_its_feature() {
+fn a_solid_that_cant_be_measured_is_built_but_says_why_and_keeps_its_fingerprint() {
+    let document = read(saved(EXAMPLE).as_bytes()).unwrap();
     let engine = engine();
     engine.kernel().refuse(|op| {
         matches!(op, Op::Summarize { .. })
             .then(|| Error::new(ErrorCode::KernelFailed, "Summarize failed"))
     });
-    let run = engine.start(checked(EXAMPLE)).wait_timeout(WAIT);
+    let run = engine
+        .start(Checked::new(document.clone()).unwrap())
+        .wait_timeout(WAIT);
     let Ok(Ok(RunOutcome::Published(model))) = run else {
         panic!("not published");
     };
-    let block = model.outcome(&id("k7f2qx3m"));
-    let Some(FeatureOutcome::Failed(error)) = block else {
-        panic!("{block:?}");
-    };
-    assert_eq!(error.code(), ErrorCode::KernelFailed);
-    assert_eq!(error.feature(), Some("k7f2qx3m"));
-    assert_eq!(model.fingerprint(&id("k7f2qx3m")), None);
+    // Every feature built (measuring isn't making: what uses a solid needs its shape), none
+    // measured.
+    for feature in ["k7f2qx3m", "a91cw0de", "m3tq8v0z"] {
+        assert!(
+            matches!(
+                model.outcome(&id(feature)),
+                Some(FeatureOutcome::Built { .. })
+            ),
+            "{feature}"
+        );
+        assert_eq!(model.fingerprint(&id(feature)), None, "{feature}");
+    }
+    assert_eq!(
+        described(&model, "m3tq8v0z"),
+        "cut(box(40, 20, 10), translate(cylinder(2.5, 12), 20, 10, -1))"
+    );
+    // The check says why each couldn't be measured, naming it.
+    let said: Vec<_> = model
+        .drift()
+        .iter()
+        .map(|e| (e.code(), e.feature().unwrap().to_owned()))
+        .collect();
+    assert_eq!(
+        said,
+        ["k7f2qx3m", "a91cw0de", "m3tq8v0z"].map(|f| (ErrorCode::KernelFailed, f.to_owned()))
+    );
+    // And a save keeps what was stored.
+    assert_eq!(model.fingerprinted(), document);
+    // Asked again (the failure isn't kept), it's measured.
+    let again = Recompute::new(FakeKernel::new(2).unwrap());
+    let model = published(&again, Checked::new(document.clone()).unwrap());
+    assert!(model.drift().is_empty());
 }
 
 #[test]
-fn each_step_is_summarized_once_and_a_kept_one_not_again() {
+fn what_uses_a_solid_doesnt_wait_for_it_to_be_measured() {
+    // Every measure held: the cut still runs, on the block and the moved pin.
+    let engine = engine();
+    let hold = engine
+        .kernel()
+        .hold(|op| matches!(op, Op::Summarize { .. }));
+    let run = engine.start(checked(EXAMPLE));
+    let deadline = std::time::Instant::now() + WAIT;
+    while !engine.kernel().calls().iter().any(|c| c.op.name() == "Cut") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the cut waited for the measures: {:?}",
+            made(&engine.kernel().calls())
+        );
+        std::thread::yield_now();
+    }
+    hold.release();
+    let Ok(Ok(RunOutcome::Published(model))) = run.wait_timeout(WAIT) else {
+        panic!("not published");
+    };
+    assert!(model.fingerprint(&id("m3tq8v0z")).is_some());
+}
+
+#[test]
+fn each_features_solid_is_measured_once_and_a_kept_one_not_again() {
     let engine = engine();
     let model = published(&engine, checked(EXAMPLE));
     assert_eq!(
@@ -270,14 +332,14 @@ fn each_step_is_summarized_once_and_a_kept_one_not_again() {
         .map(|c| c.op.name())
         .collect();
     names.sort_unstable();
-    // Four steps (the block, the pin and its move, the cut), each made and summarized.
+    // Four steps (the block, the pin and its move, the cut); three features' solids
+    // measured (the pin's is its move's, not its make's).
     assert_eq!(
         names,
         [
             "Cut",
             "MakeBox",
             "MakeCylinder",
-            "Summarize",
             "Summarize",
             "Summarize",
             "Summarize",

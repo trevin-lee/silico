@@ -121,30 +121,25 @@ fn built_reply(built: crate::Built) -> Result<Reply, Failure> {
 
 /// A shape OCCT read but can't integrate gives NaN or infinity: never a result.
 fn check_finite(summary: &ShapeSummary) -> Result<(), Failure> {
-    let [x, y, z] = summary.center;
-    let [low, high] = summary.bounds.unwrap_or_default();
-    all_finite([
-        ("volume", summary.volume),
-        ("area", summary.area),
-        ("center x", x),
-        ("center y", y),
-        ("center z", z),
-        ("bounding box's lowest x", low[0]),
-        ("bounding box's lowest y", low[1]),
-        ("bounding box's lowest z", low[2]),
-        ("bounding box's highest x", high[0]),
-        ("bounding box's highest y", high[1]),
-        ("bounding box's highest z", high[2]),
-    ])
+    measures_finite(summary.volume, summary.area, summary.center, summary.bounds)
 }
 
-/// As [`check_finite`], for a shape measured as FreeCAD measures it, with its box.
+/// As [`check_finite`], for a shape measured as FreeCAD measures it.
 fn check_freecad_finite(m: &FreecadMeasures) -> Result<(), Failure> {
-    let [x, y, z] = m.center;
-    let [low, high] = m.bounds.unwrap_or_default();
+    measures_finite(m.volume, m.area, m.center, m.bounds)
+}
+
+/// Whether a shape's measures are all finite, naming the first that isn't.
+fn measures_finite(
+    volume: f64,
+    area: f64,
+    [x, y, z]: [f64; 3],
+    bounds: Option<[[f64; 3]; 2]>,
+) -> Result<(), Failure> {
+    let [low, high] = bounds.unwrap_or_default();
     all_finite([
-        ("volume", m.volume),
-        ("area", m.area),
+        ("volume", volume),
+        ("area", area),
         ("center x", x),
         ("center y", y),
         ("center z", z),

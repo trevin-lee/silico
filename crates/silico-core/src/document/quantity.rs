@@ -134,6 +134,21 @@ pub fn parse_wide(text: &str, decimals: u32) -> Result<i128, NumberError> {
     Ok(if negative { -magnitude } else { magnitude })
 }
 
+/// `value` in units of 10^-`decimals`, rounded to the nearest, ties to even, from its exact
+/// value (Rust writes a float to a number of decimals exactly); none if it isn't finite or
+/// doesn't fit an `i128`. A value that rounds to zero is zero, whatever its sign.
+pub fn round_to(value: f64, decimals: u32) -> Option<i128> {
+    if !value.is_finite() {
+        return None;
+    }
+    let text = format!("{value:.*}", decimals as usize);
+    match parse_wide(&text, decimals) {
+        Ok(units) => Some(units),
+        Err(NumberError::NegativeZero) => Some(0),
+        Err(_) => None,
+    }
+}
+
 /// `value`, in units of 10^-`decimals`, as the shortest plain decimal that reads back as it:
 /// `100000` with 6 decimals is `0.1`, `10000000` is `10`.
 pub fn write_decimal(value: i128, decimals: u32) -> String {
@@ -173,6 +188,14 @@ impl Length {
     /// The length a number's text (in millimetres) writes.
     pub fn parse(text: &str) -> Result<Self, NumberError> {
         parse_number(text, LENGTH_DECIMALS).map(Length)
+    }
+
+    /// `mm` millimetres, rounded to the nanometre ([`round_to`]); none if it isn't finite
+    /// or doesn't fit.
+    pub fn rounded(mm: f64) -> Option<Self> {
+        i64::try_from(round_to(mm, LENGTH_DECIMALS)?)
+            .ok()
+            .map(Length)
     }
 }
 
