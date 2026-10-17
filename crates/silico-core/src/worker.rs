@@ -1603,8 +1603,10 @@ mod tests {
             held < super::Callers::MOST,
             "the pipe held {held} done lines"
         );
-        // No supported pipe holds less than 16 KiB.
-        assert!(held >= 16 * 1024 / line.len(), "the pipe held only {held}");
+        // No supported pipe holds less than 8 KiB: Linux's least, two pages
+        // (PIPE_MIN_DEF_BUFFERS), which is all a new pipe gets once its user's pipes pass
+        // fs.pipe-user-pages-soft (as on a CI machine running several runners as one user).
+        assert!(held >= 2 * 4096 / line.len(), "the pipe held only {held}");
         drop(reader);
     }
 
