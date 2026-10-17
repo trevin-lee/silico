@@ -181,11 +181,10 @@ fn failures_arent_kept_on_disk() {
 }
 
 #[test]
-fn a_solid_that_wont_measure_is_kept_on_disk_unmeasured_and_measures_a_transient_failure_again() {
-    // A measure refused for its values (asked again, the same) keeps the solid on disk all
-    // the same, so it isn't made again; one refused by a hung worker doesn't, since the next
-    // session measures it when it's made anyway.
-    for (code, entries) in [(ErrorCode::KernelFailed, 4), (ErrorCode::WorkerTimeout, 1)] {
+fn a_solid_that_couldnt_be_measured_is_kept_on_disk_unmeasured_and_measured_next_time() {
+    // Refused for its values or by a hung worker, a measure keeps the solid on disk all the
+    // same, so the next session measures it without making it again.
+    for code in [ErrorCode::KernelFailed, ErrorCode::WorkerTimeout] {
         let dir = Scratch::new("unmeasured");
         let first = session(&dir.0);
         first.kernel().refuse(move |op| {
@@ -193,17 +192,11 @@ fn a_solid_that_wont_measure_is_kept_on_disk_unmeasured_and_measures_a_transient
         });
         let model = published(&first, checked(EXAMPLE));
         assert_eq!(model.drift().len(), 3, "{code:?}");
-        // The pin's make is written at once, the features' solids only once measured or
-        // refused for good.
-        assert_eq!(files(&dir.0).len(), entries, "{code:?}");
+        // Every step, the features' solids unmeasured.
+        assert_eq!(files(&dir.0).len(), 4, "{code:?}");
         let second = session(&dir.0);
         let model = published(&second, checked(EXAMPLE));
-        let made_again = if entries == 4 {
-            vec![]
-        } else {
-            vec!["Cut", "MakeBox", "Translate"]
-        };
-        assert_eq!(calls(&second), made_again, "{code:?}");
+        assert!(calls(&second).is_empty(), "{code:?}: {:?}", calls(&second));
         // Measured now, and written measured: a third session asks the kernel nothing.
         assert!(model.drift().is_empty(), "{code:?}");
         let third = session(&dir.0);

@@ -656,7 +656,8 @@ impl Job {
 /// What a job came to.
 enum Ran {
     Made(Outcome<Built>),
-    Measured(Outcome<ShapeSummary>),
+    /// The solid, measured: a copy, made outside the schedule's lock.
+    Measured(Outcome<Built>),
 }
 
 /// An error that's a bug in Silico.
@@ -948,21 +949,17 @@ impl<K: Kernel + 'static> Engine<K> {
                     }
                     s.done.insert(key, result);
                 }
-                Ran::Measured(Outcome::Done(Ok(summary))) => {
-                    // A measured copy takes the result's place, here and once kept; the
+                Ran::Measured(Outcome::Done(Ok(measured))) => {
+                    // The measured copy takes the result's place, here and once kept; the
                     // result itself is never changed, since a published model may hold it.
-                    if let Some(Ok(built)) = s.done.get(&key) {
-                        let built = Arc::new(built.measured(summary));
-                        to_keep = Some(Arc::clone(&built));
-                        s.done.insert(key, Ok(built));
-                    }
+                    let measured = Arc::new(measured);
+                    to_keep = Some(Arc::clone(&measured));
+                    s.done.insert(key, Ok(measured));
                 }
                 Ran::Measured(Outcome::Done(Err(error))) => {
-                    // A solid that won't measure however often it's asked is kept on disk
-                    // unmeasured, so it isn't made again each time the document opens.
-                    if kept(&error)
-                        && let Some(Ok(built)) = s.done.get(&key)
-                    {
+                    // A solid that couldn't be measured is kept on disk unmeasured, so the
+                    // next open measures it without making it again.
+                    if let Some(Ok(built)) = s.done.get(&key) {
                         to_keep = Some(Arc::clone(built));
                     }
                     s.unmeasured.insert(key, error);
@@ -996,11 +993,15 @@ impl<K: Kernel + 'static> Engine<K> {
         })
     }
 
-    /// Measures `built`, a feature's solid, on the kernel, for `generation`: its summary.
-    fn measure(&self, built: &Built, generation: Generation) -> Outcome<ShapeSummary> {
-        self.kernel
-            .submit(generation, KernelRequest::summarize(&built.shape))
-            .wait()
+    /// Measures `built`, a feature's solid, on the kernel, for `generation`: a copy of it
+    /// with its summary.
+    fn measure(&self, built: &Built, generation: Generation) -> Outcome<Built> {
+        map(
+            self.kernel
+                .submit(generation, KernelRequest::summarize(&built.shape))
+                .wait(),
+            |summary| built.measured(summary),
+        )
     }
 
     /// What one step makes on the kernel, for `generation`: its shape, and its history.
