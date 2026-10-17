@@ -97,8 +97,9 @@ struct Builder {
     sizes: BTreeMap<usize, (Arc<Name>, u32, u64)>,
     /// The input each element named so far came from, as FreeCAD's tag on its name says: a
     /// kept element its input's, a derived one its first source's, one from above or below
-    /// its upper's or first lower's. Two names FreeCAD's comparator can't tell apart without their tags
-    /// (Silico's form has none: the base's `Face1` and the tool's) are ordered by it.
+    /// its upper's or first lower's. Two names FreeCAD's comparator can't tell apart
+    /// without their tags (Silico's form has none: the base's `Face1` and the tool's) are
+    /// ordered by it.
     inputs: BTreeMap<ElementRef, usize>,
 }
 
@@ -210,8 +211,7 @@ impl Builder {
                                 self.set(kept, Arc::clone(name));
                             }
                         }
-                        // Every map names every element; by its number, if not.
-                        None => self.set(kept, Arc::new(map.element_name(source))),
+                        None => self.set(kept, input_name(map, source)),
                     }
                 }
             }

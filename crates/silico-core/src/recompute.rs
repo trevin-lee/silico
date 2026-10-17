@@ -30,7 +30,7 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 
 use crate::cache::Cache;
-use crate::document::{Checked, Document, FeatureId, Fingerprint, Operation};
+use crate::document::{Checked, Document, FeatureId, Fingerprint, Made, Operation};
 use crate::kernel::{
     BooleanOp, BuiltData, Generation, History, Kernel, KernelRequest, Primitive, ShapeData,
     ShapeSummary,
@@ -135,8 +135,12 @@ pub struct Model {
     maps: Vec<OnceLock<Option<Arc<ElementMap>>>>,
     /// Maps named so far, by naming key, shared with the engine and the models it published
     /// before, so a feature named alike in an earlier model isn't named again.
-    known: Arc<Mutex<BTreeMap<NamingKey, Arc<ElementMap>>>>,
+    known: NamedMaps,
 }
+
+/// Element maps named so far, by naming key: shared by the engine and the models it
+/// publishes, so a feature named alike in an earlier model isn't named again.
+type NamedMaps = Arc<Mutex<BTreeMap<NamingKey, Arc<ElementMap>>>>;
 
 /// How a feature's solid's elements are named, and what from.
 #[derive(Debug, Clone)]
@@ -205,17 +209,13 @@ impl Model {
             .features
             .iter()
             .position(|(feature, _)| feature == id)?;
-        let slot = self.maps.get(i)?;
-        if slot.get().is_none() {
-            for j in 0..=i {
-                if let Some(slot) = self.maps.get(j)
-                    && slot.get().is_none()
-                {
-                    let _ = slot.set(self.name(j));
-                }
+        // In timeline order, so each is named after those it's made from.
+        for j in 0..i {
+            if let Some(slot) = self.maps.get(j) {
+                slot.get_or_init(|| self.name(j));
             }
         }
-        slot.get()?.as_deref()
+        self.maps.get(i)?.get_or_init(|| self.name(i)).as_deref()
     }
 
     /// The `j`th feature's element names, those it's made from named already: from the maps
@@ -429,7 +429,7 @@ struct EngineState {
     published: Option<Arc<Model>>,
     /// Element maps named so far, by naming key: those the last [`PUBLISHED_KEPT`] published
     /// models name (`published_names`), shared with them.
-    names: Arc<Mutex<BTreeMap<NamingKey, Arc<ElementMap>>>>,
+    known: NamedMaps,
     published_names: VecDeque<BTreeSet<NamingKey>>,
 }
 
@@ -481,7 +481,7 @@ impl<K: Kernel + 'static> Recompute<K> {
                     published_plans: VecDeque::new(),
                     newest_plan: None,
                     published: None,
-                    names: Arc::default(),
+                    known: Arc::default(),
                     published_names: VecDeque::new(),
                 }),
             }),
@@ -625,7 +625,7 @@ struct Planned {
     steps: Vec<Key>,
     /// The earlier features it uses, base then tool, by index.
     uses: Vec<usize>,
-    /// How its solid's elements are named (every feature the gate admits is one of these).
+    /// How its solid's elements are named; `None` for a sketch, which makes no solid.
     naming: Option<Naming>,
 }
 
@@ -698,13 +698,10 @@ impl Plan {
                 id: feature.id.clone(),
                 steps: own,
                 uses,
-                naming: match (
-                    feature.operation.primitive(),
-                    boolean_op(&feature.operation),
-                ) {
-                    (Some(primitive), _) => Some(Naming::Primitive(primitive)),
-                    (None, Some(op)) => Some(Naming::Operation(op.into())),
-                    (None, None) => None,
+                naming: match feature.operation.made() {
+                    Made::Primitive(primitive) => Some(Naming::Primitive(primitive)),
+                    Made::Boolean(op) => Some(Naming::Operation(op.into())),
+                    Made::Sketch => None,
                 },
             });
         }
@@ -726,17 +723,11 @@ impl Plan {
     }
 }
 
+/// The boolean `operation` is, if it's one.
 fn boolean_op(operation: &Operation) -> Option<BooleanOp> {
-    match operation {
-        Operation::Fuse { .. } => Some(BooleanOp::Fuse),
-        Operation::Cut { .. } => Some(BooleanOp::Cut),
-        Operation::Common { .. } => Some(BooleanOp::Common),
-        Operation::Box { .. }
-        | Operation::Cylinder { .. }
-        | Operation::Sphere { .. }
-        | Operation::Cone { .. }
-        | Operation::Torus { .. }
-        | Operation::Sketch(_) => None,
+    match operation.made() {
+        Made::Boolean(op) => Some(op),
+        Made::Primitive(_) | Made::Sketch => None,
     }
 }
 
@@ -928,7 +919,7 @@ impl<K: Kernel + 'static> Engine<K> {
         if schedule.superseded {
             return Ok(RunOutcome::Superseded);
         }
-        let known = Arc::clone(&lock(&self.state).names);
+        let known = Arc::clone(&lock(&self.state).known);
         let model = Arc::new(model(document, &plan, &schedule, generation, known));
         let mut state = lock(&self.state);
         if state.generation != generation || state.cancelled {
@@ -939,7 +930,7 @@ impl<K: Kernel + 'static> Engine<K> {
         state.published_names.push_front(named);
         state.published_names.truncate(PUBLISHED_KEPT);
         let kept: BTreeSet<NamingKey> = state.published_names.iter().flatten().copied().collect();
-        lock(&state.names).retain(|key, _| kept.contains(key));
+        lock(&state.known).retain(|key, _| kept.contains(key));
         state.published = Some(Arc::clone(&model));
         state.published_plans.push_front(keys);
         state.published_plans.truncate(PUBLISHED_KEPT);
@@ -1196,7 +1187,7 @@ fn model(
     plan: &Plan,
     schedule: &Schedule,
     generation: Generation,
-    known: Arc<Mutex<BTreeMap<NamingKey, Arc<ElementMap>>>>,
+    known: NamedMaps,
 ) -> Model {
     let done = &schedule.done;
     let mut features: Vec<(FeatureId, FeatureOutcome)> = Vec::with_capacity(plan.features.len());

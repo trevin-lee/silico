@@ -169,9 +169,10 @@ impl History {
     /// the input element's kind, every position is from 1, each list is sorted by element
     /// without repeats, and the topology has a list for each face and edge, each without
     /// repeats, a face's outer edges sorted and among its edges. Run it before using a
-    /// history that came from another process. Two things it can't check: how many elements each input has (read fates
-    /// with [`History::fate`]), and that `result` counts the shape that came with it (the
-    /// core can't count without OCCT, so look result elements up with `get`).
+    /// history that came from another process. Two things it can't check: how many
+    /// elements each input has (read fates with [`History::fate`]), and that `result`
+    /// counts the shape that came with it (the core can't count without OCCT, so look
+    /// result elements up with `get`).
     pub fn validate(&self, inputs: usize) -> Result<(), String> {
         if self.inputs.len() != inputs {
             return Err(format!(

@@ -596,8 +596,9 @@ pub(crate) fn worker_path() -> Result<PathBuf, Error> {
     }
 }
 
-/// The faces, edges, vertices, and solids OCCT gives a primitive (the fake's, checked
-/// against OCCT's by silico-kernel's `fake_kernel` tests).
+/// The faces, edges, vertices, and solids OCCT gives a primitive: a primitive's element map
+/// names them, and the fake makes them (checked against OCCT's by silico-kernel's
+/// `fake_kernel` and `naming` tests).
 pub fn primitive_counts(primitive: &Primitive) -> ElementCounts {
     let (faces, edges, vertices) = match *primitive {
         Primitive::Box { .. } => (6, 12, 8),

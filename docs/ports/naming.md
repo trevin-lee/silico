@@ -77,11 +77,15 @@ A kept element keeps its name exactly, through any number of features (N2): Free
 
 ### The map
 
-`naming::ElementMap`: each element's names (its own first) and each name's element, every name unique. A primitive's map names each element by its number without listing them (`ElementMap::primitive`). An operation's is built by `ElementMap::operation` from its inputs' maps and its history, in FreeCAD's steps 1 to 5 above: kept, derived, from above, from below, and then, where FreeCAD leaves an element unnamed, by its number. A move keeps its input's map. Two elements that come about alike are numbered in FreeCAD's element order (`~1`, `~2`), as FreeCAD's debug builds number them, and the name is marked duplicated: a reference to it is refused (N3, M2.8).
+`naming::ElementMap`: each element's names (its own first) and each name's element, every name unique, every face, edge, and vertex named. A primitive's map lists its elements, each by its number (`ElementMap::primitive`, from the counts OCCT gives each primitive, `kernel::primitive_counts`). An operation's is built by `ElementMap::operation` from its inputs' maps and its history, in FreeCAD's steps 1 to 5 above: kept, derived, from above, from below, and then, where FreeCAD leaves an element unnamed, by its number. A move keeps its input's map.
+
+Some names don't say which element they name independently of numbering, and a reference to one is refused (N3, M2.8): `ElementMap::is_unstable` says which. Two elements that come about alike are numbered in FreeCAD's element order (`~1`, `~2`), as FreeCAD's debug builds number them; an operation's element named by its number is unstable too; and so is any name derived from one of those, in the solid it's in or any made from it.
+
+Every name is bounded: at most 256 levels deep, and at most 4,096 names written out (a name used twice counts twice). Every walk over a name (writing it, comparing it) is as long as the name written out, and the review found a worker history that doubled a name with every feature and a timeline deep enough to overflow the stack. Past a bound, an element is named by its number, so it's unstable. FreeCAD bounds the same growth with its string table, which Silico doesn't have.
 
 The kernel reports with each history the result's topology (`History::topology`: each face's edges and outer-wire edges, each edge's vertices, in OCCT's order), which the upper and lower passes read: workers report raw facts, and the core decides.
 
-Recompute builds each built feature's map when it publishes a model (`Model::element_map`), from the plan, so a renamed feature renames its elements without a kernel call.
+A model names a feature's elements the first time they're asked for (`Model::element_map`, naming every feature before it not yet named): only references and queries need names, and naming every feature at publishing doubled the cost of a long timeline on the fake. Each feature has a naming key, of its step, its ID, how it names, and its inputs' naming keys; the engine keeps the maps named so far by key, for the last two published models, so a feature named alike isn't named again, and an edit names only what it changes. A renamed feature renames its elements without a kernel call. Maps aren't written to the cache; the histories they're built from are.
 
 ### Not yet
 
