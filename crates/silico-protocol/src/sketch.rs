@@ -337,6 +337,66 @@ pub struct Solved {
     pub residuals: Vec<(Tag, Option<f64>)>,
 }
 
+/// A drag's start (docs/ports/sketcher.md, Dragging): the sketch where the drag starts, and
+/// the point the cursor holds. The sketch worker diagnoses the sketch once and, unless it
+/// finds constraints in conflict, keeps a session: the sketch, and the point pinned to the
+/// cursor by rows of lower priority than the sketch's own constraints (FreeCAD's
+/// `Sketch::initMove`, for one point, moved to where the cursor is). Dragging an arc's
+/// start or end pins its centre too, where it starts, a hundred times more weakly, so the
+/// end moves before the centre does (FreeCAD `4d7a9435c1`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DragBegin {
+    /// The sketch, its values where the drag starts: every move solves from them. Its
+    /// algorithms aren't used (but are checked, as a solve's are): a drag solves with
+    /// DogLeg alone, as FreeCAD's does.
+    pub system: SketchSystem,
+    /// The point dragged.
+    pub point: PointOf,
+}
+
+impl DragBegin {
+    /// Whether the worker can start this drag: the system passes
+    /// [`SketchSystem::check`], and the point is one its geometry has, as a constraint's
+    /// points must be.
+    pub fn check(&self) -> Result<(), InvalidParameter> {
+        self.system.check()?;
+        self.system.check_point(self.point, "point", "the drag")
+    }
+}
+
+/// Whether a drag's target, the cursor (`to` of a drag move), is a place a sketch may hold
+/// a point: both coordinates finite and within reach ([`within_reach`]).
+pub fn check_drag_target(to: [f64; 2]) -> Result<(), InvalidParameter> {
+    for (axis, v) in ["x", "y"].into_iter().zip(to) {
+        if !within_reach(v) {
+            return Err(invalid(
+                "to",
+                format!(
+                    "the drag's target's {axis} must be finite and within {} of 0, got {}",
+                    format_number(MAX_LENGTH),
+                    format_number(v)
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Where a drag's move left the sketch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Moved {
+    /// PlaneGCS's status, as it gave it: `Success`, `Converged`, or `Failed`, never
+    /// `SolvedExceptRedundant`. A solve's reading of redundancy doesn't apply: the pin is
+    /// of lower priority, so the part of the sketch it's in is solved by SQP, which can end
+    /// `Converged` on its own (the cursor somewhere the constraints don't let the point
+    /// reach), and FreeCAD's drag takes only `Success`.
+    pub status: SolveStatus,
+    /// Every value, in the system's order, when the status is `Success`; otherwise none, and
+    /// the sketch stays where the last move that succeeded left it (FreeCAD's view keeps
+    /// showing that).
+    pub values: Option<Vec<f64>>,
+}
+
 impl SketchSystem {
     /// Whether the worker can solve this: sizes within the limits, every value finite and
     /// within reach, every reference in range and of the right kind, unknowns in
@@ -531,28 +591,7 @@ impl SketchSystem {
                 ))
             }
         };
-        let point = |p: PointOf| -> Result<(), InvalidParameter> {
-            let k = kind(p.geometry())?;
-            let fits = match p {
-                PointOf::Point(_) => k == GeometryKind::Point,
-                PointOf::Start(_) | PointOf::End(_) => {
-                    matches!(k, GeometryKind::Line | GeometryKind::Arc)
-                }
-                PointOf::Center(_) => matches!(k, GeometryKind::Circle | GeometryKind::Arc),
-            };
-            if fits {
-                Ok(())
-            } else {
-                Err(invalid(
-                    "constraints",
-                    format!(
-                        "{what} names {p}, but geometry {} is {}",
-                        p.geometry().0,
-                        k.word()
-                    ),
-                ))
-            }
-        };
+        let point = |p: PointOf| self.check_point(p, "constraints", what);
         // A dimension's value is fixed: reference dimensions, whose value is evaluated after
         // the solve, come with the document's sketches (M3.3).
         let dimension = |v: Value| -> Result<(), InvalidParameter> {
@@ -631,6 +670,42 @@ impl SketchSystem {
 }
 
 impl SketchSystem {
+    /// That `p` names geometry there is, at a point that kind has: a point is only itself,
+    /// a line has ends, a circle a centre, an arc all three. `what` names what names it.
+    fn check_point(
+        &self,
+        p: PointOf,
+        parameter: &'static str,
+        what: &str,
+    ) -> Result<(), InvalidParameter> {
+        let g = p.geometry();
+        let Some(k) = self.geometry.get(g.0 as usize).map(SketchGeometry::kind) else {
+            return Err(invalid(
+                parameter,
+                format!(
+                    "{what} names geometry {}, but there are {}",
+                    g.0,
+                    self.geometry.len()
+                ),
+            ));
+        };
+        let fits = match p {
+            PointOf::Point(_) => k == GeometryKind::Point,
+            PointOf::Start(_) | PointOf::End(_) => {
+                matches!(k, GeometryKind::Line | GeometryKind::Arc)
+            }
+            PointOf::Center(_) => matches!(k, GeometryKind::Circle | GeometryKind::Arc),
+        };
+        if fits {
+            Ok(())
+        } else {
+            Err(invalid(
+                parameter,
+                format!("{what} names {p}, but geometry {} is {}", g.0, k.word()),
+            ))
+        }
+    }
+
     /// An arc's rules are four equations, the start's x and y and the end's from the
     /// centre, radius, and angle: each must involve an unknown (FreeCAD `c6de527391`).
     fn check_arc_rules(&self, arc: Geometry) -> Result<(), InvalidParameter> {
@@ -1229,6 +1304,122 @@ mod tests {
         // 1e-150 squared is 1e-300: a length.
         s.values[2] = 1e-150;
         s.check().unwrap();
+    }
+
+    fn drag(point: PointOf) -> DragBegin {
+        DragBegin {
+            system: system(),
+            point,
+        }
+    }
+
+    #[test]
+    fn a_drag_of_a_point_the_geometry_has_passes() {
+        // The line's ends, the circle's centre, and the arc's ends and centre.
+        for point in [
+            PointOf::Start(Geometry(0)),
+            PointOf::End(Geometry(0)),
+            PointOf::Center(Geometry(1)),
+            PointOf::Start(Geometry(2)),
+            PointOf::End(Geometry(2)),
+            PointOf::Center(Geometry(2)),
+        ] {
+            drag(point).check().unwrap();
+        }
+        let mut with_point = drag(PointOf::Point(Geometry(3)));
+        with_point
+            .system
+            .geometry
+            .push(SketchGeometry::Point(PointValues {
+                x: Value(0),
+                y: Value(1),
+            }));
+        with_point.check().unwrap();
+    }
+
+    #[test]
+    fn a_drag_of_geometry_there_isnt_or_a_point_it_lacks_is_refused_naming_the_point() {
+        for (point, words) in [
+            (
+                PointOf::Start(Geometry(3)),
+                "the drag names geometry 3, but there are 3",
+            ),
+            (
+                PointOf::Point(Geometry(u32::MAX)),
+                "the drag names geometry 4294967295, but there are 3",
+            ),
+            (
+                PointOf::Center(Geometry(0)),
+                "the drag names the centre of geometry 0, but geometry 0 is a line",
+            ),
+            (
+                PointOf::Point(Geometry(0)),
+                "the drag names point 0, but geometry 0 is a line",
+            ),
+            (
+                PointOf::Start(Geometry(1)),
+                "the drag names the start of geometry 1, but geometry 1 is a circle",
+            ),
+            (
+                PointOf::End(Geometry(1)),
+                "the drag names the end of geometry 1, but geometry 1 is a circle",
+            ),
+            (
+                PointOf::Point(Geometry(2)),
+                "the drag names point 2, but geometry 2 is an arc",
+            ),
+        ] {
+            let e = drag(point).check().unwrap_err();
+            assert_eq!((e.parameter, e.message.as_str()), ("point", words));
+        }
+    }
+
+    #[test]
+    fn a_drag_checks_its_system_first() {
+        // A system that fails its check is refused as a solve's would be, whatever the
+        // point.
+        for point in [PointOf::Start(Geometry(0)), PointOf::Start(Geometry(9))] {
+            let mut d = drag(point);
+            d.system.values[5] = f64::NAN;
+            let e = d.check().unwrap_err();
+            assert_eq!(e.parameter, "values");
+            assert_eq!(
+                e.message,
+                "value 5 must be finite and within 1000000 of 0, got NaN"
+            );
+        }
+    }
+
+    #[test]
+    fn a_drag_target_must_be_finite_and_within_reach() {
+        for to in [[0.0, 0.0], [-1e6, 1e6], [f64::MIN_POSITIVE, -0.0]] {
+            check_drag_target(to).unwrap();
+        }
+        for (to, words) in [
+            (
+                [f64::NAN, 0.0],
+                "the drag's target's x must be finite and within 1000000 of 0, got NaN",
+            ),
+            (
+                [0.0, f64::INFINITY],
+                "the drag's target's y must be finite and within 1000000 of 0, got inf",
+            ),
+            (
+                [1.0, f64::NEG_INFINITY],
+                "the drag's target's y must be finite and within 1000000 of 0, got -inf",
+            ),
+            (
+                [-1.000_000_1e6, 0.0],
+                "the drag's target's x must be finite and within 1000000 of 0, got -1000000.1",
+            ),
+            (
+                [f64::NAN, f64::NAN],
+                "the drag's target's x must be finite and within 1000000 of 0, got NaN",
+            ),
+        ] {
+            let e = check_drag_target(to).unwrap_err();
+            assert_eq!((e.parameter, e.message.as_str()), ("to", words), "{to:?}");
+        }
     }
 
     #[test]

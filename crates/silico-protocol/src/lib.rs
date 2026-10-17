@@ -36,10 +36,10 @@ pub use refusal::{
     OUT_OF_MEMORY, Operation, Refusal, Returned, Role, Trouble,
 };
 pub use sketch::{
-    Algorithm, Geometry, MAX_JACOBIAN_ENTRIES, MAX_SKETCH_CONSTRAINTS, MAX_SKETCH_GEOMETRY,
-    MAX_SKETCH_UNKNOWNS, MAX_SKETCH_VALUES, MAX_TAG, PointOf, PointValues, SketchGeometry,
-    SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value, no_distance, squared_distance,
-    within_reach,
+    Algorithm, DragBegin, Geometry, MAX_JACOBIAN_ENTRIES, MAX_SKETCH_CONSTRAINTS,
+    MAX_SKETCH_GEOMETRY, MAX_SKETCH_UNKNOWNS, MAX_SKETCH_VALUES, MAX_TAG, Moved, PointOf,
+    PointValues, SketchGeometry, SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value,
+    check_drag_target, no_distance, squared_distance, within_reach,
 };
 
 /// The file descriptor a worker inherits its end of the socket pair as.
@@ -139,9 +139,20 @@ pub enum Op {
     /// Operations only the test worker answers, for tests of how the core treats a worker
     /// that crashes, hangs, or misbehaves. The production worker refuses them all.
     Debug(DebugOp),
-    /// A sketch diagnosed and solved by PlaneGCS: the sketch worker's operation (it answers
-    /// `Echo` too, and nothing else). Replies with [`Reply::Solved`].
+    /// A sketch diagnosed and solved by PlaneGCS: the sketch worker's operation, with the
+    /// drag's three (it answers `Echo` too, and nothing else). It ends any drag under way,
+    /// as FreeCAD's solve does. Replies with [`Reply::Solved`].
     Solve(SketchSystem),
+    /// Starts a drag in the sketch worker, ending any under way: the sketch diagnosed once
+    /// and kept, with the point pinned to the cursor. Replies with [`Reply::DragStarted`].
+    DragBegin(DragBegin),
+    /// Moves the drag's cursor to `to`, and solves from where the drag started (never from
+    /// the last move, so a move's result depends on the start and `to` alone). Replies with
+    /// [`Reply::Moved`].
+    DragMove { to: [f64; 2] },
+    /// Ends the drag; the core then solves the sketch where the last move left it, as a
+    /// normal solve. Replies with [`Reply::Done`].
+    DragEnd,
 }
 
 impl Op {
@@ -159,6 +170,9 @@ impl Op {
             Op::Boolean { op, .. } => op.name(),
             Op::Tessellate { .. } => "Tessellate",
             Op::Solve(_) => "Solve",
+            Op::DragBegin(_) => "DragBegin",
+            Op::DragMove { .. } => "DragMove",
+            Op::DragEnd => "DragEnd",
             Op::Echo { .. } => "Echo",
             Op::Debug(op) => op.name(),
         }
@@ -292,6 +306,15 @@ pub enum Reply {
     Done,
     /// What the sketch worker found ([`Op::Solve`]).
     Solved(Solved),
+    /// A drag's diagnosis ([`Op::DragBegin`]): the degrees of freedom left, and the
+    /// constraints in conflict, by tag, in increasing order. Constraints in conflict mean no
+    /// drag was started, as FreeCAD refuses to drag such a sketch.
+    DragStarted {
+        dofs: i32,
+        conflicting: Vec<Tag>,
+    },
+    /// Where a drag's move left the sketch ([`Op::DragMove`]).
+    Moved(Moved),
 }
 
 impl Reply {
@@ -304,6 +327,8 @@ impl Reply {
             Reply::FreecadMeasures(_) => "FreecadMeasures",
             Reply::Mesh(_) => "Mesh",
             Reply::Solved(_) => "Solved",
+            Reply::DragStarted { .. } => "DragStarted",
+            Reply::Moved(_) => "Moved",
             Reply::Echo { .. } => "Echo",
             Reply::Done => "Done",
         }

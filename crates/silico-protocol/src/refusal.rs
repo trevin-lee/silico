@@ -116,6 +116,10 @@ pub enum Refusal {
     /// either worker's C++): a shortage, not the values' fault, so the same request may
     /// succeed once memory is free. Its words are the cause.
     OutOfMemory,
+    /// A drag's move or end (`op`) with no drag under way in the sketch worker: none was
+    /// begun, or one ended (by its end, a solve, a begin that found conflicts, or the
+    /// worker's restart).
+    NoDragSession { op: String },
 }
 
 /// What OCCT gave back nothing of.
@@ -258,7 +262,8 @@ impl Refusal {
             | Refusal::EdgeTwice { .. }
             | Refusal::EdgesRefused { .. }
             | Refusal::DeflectionInvalid { .. }
-            | Refusal::DeflectionTooFine { .. } => FailureKind::InvalidInput,
+            | Refusal::DeflectionTooFine { .. }
+            | Refusal::NoDragSession { .. } => FailureKind::InvalidInput,
             Refusal::ResultInvalid { .. } => FailureKind::InvalidResult,
             Refusal::NoShape
             | Refusal::NothingReturned { .. }
@@ -568,6 +573,13 @@ impl Refusal {
             Refusal::OutOfMemory => (
                 "the worker ran out of memory".to_owned(),
                 Some(OUT_OF_MEMORY.to_owned()),
+            ),
+            Refusal::NoDragSession { op } => (
+                format!("{op} needs a drag under way, and there's none"),
+                Some(
+                    "begin the drag again: a drag ends at its end, at a solve, or when the sketch worker restarts"
+                        .to_owned(),
+                ),
             ),
         };
         Described {
@@ -904,6 +916,9 @@ mod tests {
                 what: "socket closed".to_owned(),
             },
             Refusal::OutOfMemory,
+            Refusal::NoDragSession {
+                op: "DragMove".to_owned(),
+            },
         ]
     }
 
@@ -993,6 +1008,7 @@ mod tests {
             Internal,          // FpTrapsOn
             Internal,          // Internal
             ResourceExhausted, // OutOfMemory
+            InvalidInput,      // NoDragSession (new with M3.7: a request out of sequence)
         ];
         let refusals = every_refusal();
         assert_eq!(refusals.len(), kinds.len());
@@ -1038,6 +1054,7 @@ mod tests {
             None,               // FpTrapsOn
             None,               // Internal
             None,               // OutOfMemory
+            None,               // NoDragSession
         ];
         let refusals = every_refusal();
         assert_eq!(refusals.len(), parameters.len());
