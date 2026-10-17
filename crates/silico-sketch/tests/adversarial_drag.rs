@@ -9,12 +9,15 @@
 //! Tests marked BREAKS were bug reports, each since fixed: they say what broke.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/generate.rs"]
+mod generate;
 #[path = "common/systems.rs"]
 mod systems;
 
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use generate::{dir, generate, points_of, residuals, xy};
 use proptest::prelude::*;
 use silico_core::ErrorCode;
 use silico_core::worker::{Worker, WorkerKind};
@@ -707,56 +710,37 @@ fn a_worker_killed_mid_drag_is_reported_and_its_successor_has_no_drag() {
 // ---------------------------------------------------------------------------------------
 // Size: what the check admits must be answered, one frame at a time.
 
-/// `n` free lines, each parallel to the next, drawn off parallel: 4n unknowns in one
-/// component, n - 1 equations (adversarial_planegcs.rs's largest admitted system).
-fn parallel_chain(n: usize) -> (SketchSystem, Geometry) {
-    let mut b = Builder::default();
-    let lines: Vec<Geometry> = (0..n)
-        .map(|i| b.line((i as f64, 0.0), (i as f64 + 10.0, 1.0 + (i % 3) as f64)))
-        .collect();
-    for w in lines.windows(2) {
-        let (a, c) = (w[0], w[1]);
-        b.constrain(|tag| SolverConstraint::Parallel { tag, a, b: c });
-    }
-    (b.system(Algorithm::DogLeg), lines[0])
-}
-
 #[test]
 fn a_move_of_the_largest_system_the_check_admits_is_answered_in_time() {
-    // Was a BREAK: the largest system a solve admits (2,048 unknowns, one component),
-    // dragged by its first line's end, puts the whole component under SQP (GCS.cpp 4502),
-    // whose matrices are dense, unknowns × unknowns, factored every iteration. Measured here
-    // (debug Rust, the C++ built by the recipe), one move from the drag's start: 256
-    // unknowns 52 ms, 512 0.5 s, 1,024 3.4 s, 2,048 45 s, past the request's time, which
-    // killed the worker mid-drag. Fixed: a drag takes at most MAX_DRAG_UNKNOWNS (1,024), and
-    // a move of the largest one it takes comes back in time.
-    let refused = parallel_chain(silico_protocol::MAX_SKETCH_UNKNOWNS / 4).0;
-    let err = DragBegin {
-        system: refused,
-        point: PointOf::End(Geometry(0)),
-    }
-    .check()
-    .unwrap_err();
-    assert_eq!(err.parameter, "unknowns");
-    let lines = silico_protocol::MAX_DRAG_UNKNOWNS / 4;
-    let (system, first) = parallel_chain(lines);
-    system.check().unwrap();
+    // Was a BREAK (twice): a pinned part goes to SQP (GCS.cpp 4502), dense, up to 100
+    // iterations, so a move costs more than a solve. A chain linked end to end and pulled
+    // far from where it began is the worst found (the review's): a move takes 0.76 s at 256
+    // unknowns on a loaded machine, 6 s at 512, 64 s at 1,024, past the request's time,
+    // which killed the worker mid-drag. Fixed: a drag takes at most MAX_DRAG_UNKNOWNS (256)
+    // in the part it moves, and a move of that worst case at the limit comes back in time.
+    let links = silico_protocol::MAX_DRAG_UNKNOWNS / 4;
+    let (system, last) = linked_chain(links);
+    assert_eq!(system.part_unknowns(PointOf::End(last)), 256);
     let mut w = Worker::spawn_as(Path::new(WORKER), WorkerKind::Sketch).unwrap();
     match w.call(
         Generation(1),
         Op::DragBegin(DragBegin {
             system,
-            point: PointOf::End(first),
+            point: PointOf::End(last),
         }),
         TIMEOUT,
     ) {
-        Ok(Reply::DragStarted { dofs, conflicting }) => {
-            assert_eq!((dofs, conflicting.as_slice()), (1024 - 255, &[][..]));
-        }
+        Ok(Reply::DragStarted { conflicting, .. }) => assert!(conflicting.is_empty()),
         other => panic!("begin: {other:?}"),
     }
     let t = Instant::now();
-    let moved = w.call(Generation(1), Op::DragMove { to: [12.0, 3.0] }, TIMEOUT);
+    let moved = w.call(
+        Generation(1),
+        Op::DragMove {
+            to: [-(links as f64) / 2.0, 10.0],
+        },
+        TIMEOUT,
+    );
     let took = t.elapsed();
     match moved {
         Ok(Reply::Moved(_)) => {}
@@ -764,191 +748,163 @@ fn a_move_of_the_largest_system_the_check_admits_is_answered_in_time() {
     }
 }
 
+/// `n` unit links joined end to end in a zigzag, the first start held at the origin: one
+/// part of 4n unknowns, n degrees of freedom.
+fn linked_chain(n: usize) -> (SketchSystem, Geometry) {
+    let mut b = Builder::default();
+    let (zero, one) = (b.fixed(0.0), b.fixed(1.0));
+    let origin = b.fixed_point(0.0, 0.0);
+    let (mut x, mut y) = (0.0f64, 0.0f64);
+    let mut lines = Vec::new();
+    for i in 0..n {
+        let rise = if i % 2 == 0 { 1.0 } else { -1.0 } * 0.75f64.sqrt();
+        let (nx, ny) = (x + 0.5, y + rise);
+        lines.push(b.line((x, y), (nx, ny)));
+        (x, y) = (nx, ny);
+    }
+    let start = PointOf::Start(lines[0]);
+    b.constrain(|tag| SolverConstraint::DistanceX {
+        tag,
+        a: PointOf::Point(origin),
+        b: start,
+        value: zero,
+    });
+    b.constrain(|tag| SolverConstraint::DistanceY {
+        tag,
+        a: PointOf::Point(origin),
+        b: start,
+        value: zero,
+    });
+    for &l in &lines {
+        b.constrain(|tag| SolverConstraint::Distance {
+            tag,
+            a: PointOf::Start(l),
+            b: PointOf::End(l),
+            value: one,
+        });
+    }
+    for w in lines.windows(2) {
+        let (a, c) = (PointOf::End(w[0]), PointOf::Start(w[1]));
+        b.constrain(|tag| SolverConstraint::DistanceX {
+            tag,
+            a,
+            b: c,
+            value: zero,
+        });
+        b.constrain(|tag| SolverConstraint::DistanceY {
+            tag,
+            a,
+            b: c,
+            value: zero,
+        });
+    }
+    (b.system(Algorithm::DogLeg), lines[n - 1])
+}
+
+#[test]
+fn a_drag_is_bounded_by_the_part_it_moves_not_the_whole_sketch() {
+    // 257 unknowns in the dragged part: one past the limit, named.
+    let (system, last) = linked_chain(64);
+    let mut b = system.clone();
+    let extra = b.values.len() as u32;
+    b.values.push(0.5);
+    b.unknowns.push(Value(extra));
+    // The extra unknown joined to the chain's last end through a DistanceX.
+    let value = Value(b.values.len() as u32);
+    b.values.push(0.0);
+    let spare = Geometry(b.geometry.len() as u32);
+    let p = PointValues {
+        x: Value(extra),
+        y: Value(0),
+    };
+    b.geometry.push(SketchGeometry::Point(p));
+    let tag = Tag(b.constraints.len() as u32 + 1);
+    b.constraints.push(SolverConstraint::DistanceX {
+        tag,
+        a: PointOf::End(last),
+        b: PointOf::Point(spare),
+        value,
+    });
+    b.check().unwrap();
+    assert_eq!(b.part_unknowns(PointOf::End(last)), 257);
+    let err = DragBegin {
+        system: b,
+        point: PointOf::End(last),
+    }
+    .check()
+    .unwrap_err();
+    assert_eq!(err.parameter, "point");
+    assert_eq!(
+        err.message,
+        "the part of the sketch the drag moves has 257 unknowns, and a drag takes at most 256 there: each move of a larger part takes too long"
+    );
+    // At the limit: admitted.
+    DragBegin {
+        system,
+        point: PointOf::End(last),
+    }
+    .check()
+    .unwrap();
+    // A small part of a large sketch: a free point beside a chain of 1,024 unknowns.
+    let (mut big, _) = linked_chain(256);
+    let at = big.values.len() as u32;
+    big.values.extend([3.0, 4.0]);
+    big.unknowns.extend([Value(at), Value(at + 1)]);
+    let lone = Geometry(big.geometry.len() as u32);
+    big.geometry.push(SketchGeometry::Point(PointValues {
+        x: Value(at),
+        y: Value(at + 1),
+    }));
+    assert_eq!(big.part_unknowns(PointOf::Point(lone)), 2);
+    DragBegin {
+        system: big,
+        point: PointOf::Point(lone),
+    }
+    .check()
+    .unwrap();
+}
+
+#[test]
+fn a_circle_of_negative_or_no_radius_or_a_line_too_short_to_measure_is_no_frame() {
+    // A circle held at a radius of -1 or 0, its centre dragged: solved, but not a circle.
+    for r in [-1.0, 0.0] {
+        let mut b = Builder::default();
+        let center = b.point_values(0.0, 0.0);
+        let radius = b.unknown(2.0);
+        let circle = b.add(SketchGeometry::Circle { center, radius });
+        let value = b.fixed(r);
+        b.constrain(|tag| SolverConstraint::Radius { tag, circle, value });
+        let system = b.system(Algorithm::DogLeg);
+        system.check().unwrap();
+        let mut drag = begin(system, PointOf::Center(circle));
+        let m = drag.move_to([3.0, 4.0]).unwrap();
+        assert_eq!(
+            (m.status, &m.values),
+            (SolveStatus::SolvedInvalid, &None),
+            "radius {r}"
+        );
+    }
+    // A line whose end lands 1e-200 from its start: no length to the solver.
+    let mut b = Builder::default();
+    let start = PointValues {
+        x: b.fixed(0.0),
+        y: b.fixed(0.0),
+    };
+    let end = b.point_values(1e-200, 1.0);
+    let line = b.add(SketchGeometry::Line { start, end });
+    let system = b.system(Algorithm::DogLeg);
+    system.check().unwrap();
+    let mut drag = begin(system, PointOf::End(line));
+    let m = drag.move_to([1e-200, 0.0]).unwrap();
+    assert_eq!(
+        (m.status, &m.values),
+        (SolveStatus::SolvedInvalid, &None),
+        "{m:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------------------
 // Generated sketches: every promise of every move.
-
-struct Gen {
-    rng: Rng,
-    b: Builder,
-    coords: Vec<f64>,
-}
-
-impl Gen {
-    fn coord(&mut self) -> f64 {
-        let v = match self.rng.below(10) {
-            0 | 1 if !self.coords.is_empty() => {
-                self.coords[self.rng.below(self.coords.len() as u64) as usize]
-            }
-            2 => self.rng.below(5) as f64 - 2.0,
-            _ => self.rng.range(-50.0, 50.0),
-        };
-        self.coords.push(v);
-        v
-    }
-    fn value(&mut self, v: f64) -> Value {
-        if self.rng.below(5) == 0 {
-            self.b.fixed(v)
-        } else {
-            self.b.unknown(v)
-        }
-    }
-    fn point(&mut self) -> PointValues {
-        let (x, y) = (self.coord(), self.coord());
-        PointValues {
-            x: self.value(x),
-            y: self.value(y),
-        }
-    }
-    fn length(&mut self) -> f64 {
-        match self.rng.below(12) {
-            0 => 0.0,
-            1 => -self.rng.range(0.0, 5.0),
-            _ => self.rng.range(0.0, 60.0),
-        }
-    }
-    fn geometry(&mut self) {
-        match self.rng.below(4) {
-            0 => {
-                let p = self.point();
-                self.b.add(SketchGeometry::Point(p));
-            }
-            1 => {
-                let (start, end) = (self.point(), self.point());
-                self.b.add(SketchGeometry::Line { start, end });
-            }
-            2 => {
-                let center = self.point();
-                let r = self.length().abs();
-                let radius = self.value(r);
-                self.b.add(SketchGeometry::Circle { center, radius });
-            }
-            _ => {
-                let center = self.point();
-                let r = self.length().abs();
-                let radius = self.value(r);
-                let sa = self.rng.range(-1.0, 7.0);
-                let ea = self.rng.range(-1.0, 7.0);
-                let start_angle = self.value(sa);
-                let end_angle = self.value(ea);
-                let (start, end) = (self.point(), self.point());
-                let arc = self.b.add(SketchGeometry::Arc {
-                    center,
-                    radius,
-                    start_angle,
-                    end_angle,
-                    start,
-                    end,
-                });
-                if self.rng.below(10) > 0 {
-                    self.b.constraints.push(SolverConstraint::ArcRules { arc });
-                }
-            }
-        }
-    }
-    fn kind(&self, g: Geometry) -> u8 {
-        match self.b.geometry[g.0 as usize] {
-            SketchGeometry::Point(_) => 0,
-            SketchGeometry::Line { .. } => 1,
-            SketchGeometry::Circle { .. } => 2,
-            SketchGeometry::Arc { .. } => 3,
-        }
-    }
-    fn pick(&mut self, kinds: &[u8]) -> Option<Geometry> {
-        let n = self.b.geometry.len() as u32;
-        let fits: Vec<Geometry> = (0..n)
-            .map(Geometry)
-            .filter(|&g| kinds.contains(&self.kind(g)))
-            .collect();
-        if fits.is_empty() {
-            None
-        } else {
-            Some(fits[self.rng.below(fits.len() as u64) as usize])
-        }
-    }
-    fn point_of(&mut self) -> Option<PointOf> {
-        let g = self.pick(&[0, 1, 2, 3])?;
-        let choices = points_of(self.b.geometry[g.0 as usize], g);
-        Some(choices[self.rng.below(choices.len() as u64) as usize])
-    }
-    fn constraint(&mut self) {
-        let tag = self.b.tag();
-        let c = match self.rng.below(12) {
-            0 => {
-                let (a, b) = (self.point_of(), self.point_of());
-                a.zip(b)
-                    .map(|(a, b)| SolverConstraint::Coincident { tag, a, b })
-            }
-            1 => self
-                .pick(&[1])
-                .map(|line| SolverConstraint::Horizontal { tag, line }),
-            2 => self
-                .pick(&[1])
-                .map(|line| SolverConstraint::Vertical { tag, line }),
-            k @ 3..=5 => {
-                let (a, b) = (self.point_of(), self.point_of());
-                let d = self.length();
-                let value = self.b.fixed(d);
-                a.zip(b).map(|(a, b)| match k {
-                    3 => SolverConstraint::DistanceX { tag, a, b, value },
-                    4 => SolverConstraint::DistanceY { tag, a, b, value },
-                    _ => SolverConstraint::Distance { tag, a, b, value },
-                })
-            }
-            6 => {
-                let (p, l) = (self.point_of(), self.pick(&[1]));
-                p.zip(l)
-                    .map(|(point, line)| SolverConstraint::PointOnLine { tag, point, line })
-            }
-            k @ 7..=10 => {
-                let (a, b) = (self.pick(&[1]), self.pick(&[1]));
-                let angle = self.rng.range(-3.5, 3.5);
-                let value = self.b.fixed(angle);
-                a.zip(b).map(|(a, b)| match k {
-                    7 => SolverConstraint::Parallel { tag, a, b },
-                    8 => SolverConstraint::Perpendicular { tag, a, b },
-                    9 => SolverConstraint::EqualLength { tag, a, b },
-                    _ => SolverConstraint::Angle { tag, a, b, value },
-                })
-            }
-            _ => {
-                let c = self.pick(&[2, 3]);
-                let r = self.length();
-                let value = self.b.fixed(r);
-                c.map(|circle| SolverConstraint::Radius { tag, circle, value })
-            }
-        };
-        if let Some(c) = c {
-            self.b.constraints.push(c);
-        }
-    }
-}
-
-fn generate(seed: u64) -> SketchSystem {
-    let mut g = Gen {
-        rng: Rng(seed),
-        b: Builder::default(),
-        coords: Vec::new(),
-    };
-    for _ in 0..1 + g.rng.below(5) {
-        g.geometry();
-    }
-    for _ in 0..g.rng.below(9) {
-        g.constraint();
-    }
-    g.b.system(Algorithm::DogLeg)
-}
-
-/// Every point a piece of geometry has, as a drag or a constraint names it.
-fn points_of(g: SketchGeometry, at: Geometry) -> Vec<PointOf> {
-    match g {
-        SketchGeometry::Point(_) => vec![PointOf::Point(at)],
-        SketchGeometry::Line { .. } => vec![PointOf::Start(at), PointOf::End(at)],
-        SketchGeometry::Circle { .. } => vec![PointOf::Center(at)],
-        SketchGeometry::Arc { .. } => {
-            vec![PointOf::Start(at), PointOf::End(at), PointOf::Center(at)]
-        }
-    }
-}
 
 fn point_values(s: &SketchSystem, p: PointOf) -> PointValues {
     let (g, which) = match p {
@@ -963,104 +919,6 @@ fn point_values(s: &SketchSystem, p: PointOf) -> PointValues {
         (SketchGeometry::Line { end, .. } | SketchGeometry::Arc { end, .. }, 2) => end,
         (SketchGeometry::Circle { center, .. } | SketchGeometry::Arc { center, .. }, 3) => center,
         other => panic!("{other:?}"),
-    }
-}
-
-fn xy(s: &SketchSystem, v: &[f64], p: PointOf) -> (f64, f64) {
-    let pv = point_values(s, p);
-    (v[pv.x.0 as usize], v[pv.y.0 as usize])
-}
-
-fn dir(s: &SketchSystem, v: &[f64], l: Geometry) -> (f64, f64) {
-    let (a, b) = (xy(s, v, PointOf::Start(l)), xy(s, v, PointOf::End(l)));
-    (b.0 - a.0, b.1 - a.1)
-}
-
-/// Each equation's residual at `v`, as PlaneGCS defines it, written out here (as
-/// adversarial_planegcs.rs does; parallel and perpendicular scaled by the lengths drawn).
-fn residuals(s: &SketchSystem, v: &[f64], c: &SolverConstraint) -> Vec<f64> {
-    let len = |d: (f64, f64)| libm::hypot(d.0, d.1);
-    match *c {
-        SolverConstraint::ArcRules { arc } => {
-            let SketchGeometry::Arc {
-                center,
-                radius,
-                start_angle,
-                end_angle,
-                start,
-                end,
-            } = s.geometry[arc.0 as usize]
-            else {
-                panic!("arc rules on {arc:?}")
-            };
-            let (cx, cy, r) = (
-                v[center.x.0 as usize],
-                v[center.y.0 as usize],
-                v[radius.0 as usize],
-            );
-            let on = |p: PointValues, a: Value| {
-                let a = v[a.0 as usize];
-                vec![
-                    v[p.x.0 as usize] - (cx + r * libm::cos(a)),
-                    v[p.y.0 as usize] - (cy + r * libm::sin(a)),
-                ]
-            };
-            [on(start, start_angle), on(end, end_angle)].concat()
-        }
-        SolverConstraint::Coincident { a, b, .. } => {
-            let (a, b) = (xy(s, v, a), xy(s, v, b));
-            vec![a.0 - b.0, a.1 - b.1]
-        }
-        SolverConstraint::Horizontal { line, .. } => vec![dir(s, v, line).1],
-        SolverConstraint::Vertical { line, .. } => vec![dir(s, v, line).0],
-        SolverConstraint::DistanceX { a, b, value, .. } => {
-            vec![xy(s, v, b).0 - xy(s, v, a).0 - v[value.0 as usize]]
-        }
-        SolverConstraint::DistanceY { a, b, value, .. } => {
-            vec![xy(s, v, b).1 - xy(s, v, a).1 - v[value.0 as usize]]
-        }
-        SolverConstraint::Distance { a, b, value, .. } => {
-            let (a, b) = (xy(s, v, a), xy(s, v, b));
-            vec![libm::hypot(a.0 - b.0, a.1 - b.1) - v[value.0 as usize]]
-        }
-        SolverConstraint::PointOnLine { point, line, .. } => {
-            let (x0, y0) = xy(s, v, point);
-            let (x1, y1) = xy(s, v, PointOf::Start(line));
-            let (x2, y2) = xy(s, v, PointOf::End(line));
-            let (dx, dy) = (x2 - x1, y2 - y1);
-            vec![(-x0 * dy + y0 * dx + x1 * y2 - x2 * y1) / libm::hypot(dx, dy)]
-        }
-        SolverConstraint::Parallel { a, b, .. } | SolverConstraint::Perpendicular { a, b, .. } => {
-            let (d1, d2) = (dir(s, v, a), dir(s, v, b));
-            let scale = len(dir(s, &s.values, a)) * len(dir(s, &s.values, b));
-            let e = if matches!(c, SolverConstraint::Parallel { .. }) {
-                d1.0 * d2.1 - d1.1 * d2.0
-            } else {
-                d1.0 * d2.0 + d1.1 * d2.1
-            };
-            vec![e / scale]
-        }
-        SolverConstraint::Angle { a, b, value, .. } => {
-            let (d1, d2) = (dir(s, v, a), dir(s, v, b));
-            let t = libm::atan2(d1.1, d1.0) + v[value.0 as usize];
-            let (x2, y2) = (
-                d2.0 * libm::cos(t) + d2.1 * libm::sin(t),
-                -d2.0 * libm::sin(t) + d2.1 * libm::cos(t),
-            );
-            vec![libm::atan2(y2, x2)]
-        }
-        SolverConstraint::EqualLength { a, b, .. } => {
-            vec![len(dir(s, v, b)) - len(dir(s, v, a))]
-        }
-        SolverConstraint::Radius { circle, value, .. } => {
-            let r = match s.geometry[circle.0 as usize] {
-                SketchGeometry::Circle { radius, .. } | SketchGeometry::Arc { radius, .. } => {
-                    v[radius.0 as usize]
-                }
-                g => panic!("{g:?}"),
-            };
-            vec![r - v[value.0 as usize]]
-        }
     }
 }
 
@@ -1132,7 +990,7 @@ enum Broken {
 }
 
 fn check_drag(seed: u64) -> Result<(), (Broken, String)> {
-    let mut system = generate(seed);
+    let mut system = generate(seed, false, Some(Algorithm::DogLeg));
     if system.check().is_err() {
         return Ok(());
     }
@@ -1280,7 +1138,7 @@ proptest! {
     #[test]
     fn generated_drags_keep_every_promise(seed in any::<u64>()) {
         if let Err((kind, problem)) = check_drag(seed) {
-            prop_assert!(false, "seed {seed:#x}: {kind:?}: {problem}\n{:?}", generate(seed));
+            prop_assert!(false, "seed {seed:#x}: {kind:?}: {problem}\n{:?}", generate(seed, false, Some(Algorithm::DogLeg)));
         }
     }
 }

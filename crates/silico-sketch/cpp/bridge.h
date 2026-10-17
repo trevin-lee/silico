@@ -12,7 +12,7 @@ namespace silico_sketch {
 
 struct SolveInput;
 struct SolveOutput;
-struct DragPoint;
+struct Pin;
 struct DragDiagnosis;
 struct MoveOutput;
 
@@ -24,7 +24,7 @@ SolveOutput solve(const SolveInput &input);
 class DragSession {
  public:
   struct State;
-  explicit DragSession(const SolveInput &input);
+  DragSession(const SolveInput &input, size_t pins);
   ~DragSession();
   DragSession(const DragSession &) = delete;
   DragSession &operator=(const DragSession &) = delete;
@@ -34,7 +34,7 @@ class DragSession {
 
 // Builds and diagnoses `input` and, unless constraints conflict, pins `point` where it
 // is: a drag's start.
-std::unique_ptr<DragSession> drag_begin(const SolveInput &input, const DragPoint &point);
+std::unique_ptr<DragSession> drag_begin(const SolveInput &input, rust::Slice<const Pin> pins);
 // What the start's diagnosis found.
 DragDiagnosis drag_diagnosis(const DragSession &session);
 // Moves the pin's target to (x, y) and solves from the drag's start.

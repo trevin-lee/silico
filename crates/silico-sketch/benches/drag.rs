@@ -6,7 +6,9 @@
 //! Each sketch is under-constrained so a drag moves something: a chain of links whose
 //! lengths and every other angle are fixed, its last end free; and a grid of rectangles,
 //! the last one's size left free. Sizes run from the stress corpus's (tens of constraints)
-//! to the worker's limit (2,048 unknowns). The dragged point follows a smooth path, 300
+//! to the worker's limit (2,048 unknowns). A drag takes at most `MAX_DRAG_UNKNOWNS` (256)
+//! in the part it moves (chain-64; a grid's parts are small), so past that only the full
+//! solve is timed, and the table says the drag was refused. The dragged point follows a smooth path, 300
 //! steps of 0.05 mm along a circle of radius 10 mm, each frame timed four ways:
 //!
 //! - `solve`, today's path: a full solve through the worker each frame (built and
@@ -440,7 +442,7 @@ fn ms(d: Duration) -> f64 {
 
 fn main() -> Result<()> {
     let mut cases = Vec::new();
-    for links in [4, 40, 120, 500] {
+    for links in [4, 40, 64, 120, 500] {
         let (system, point) = chain(links);
         cases.push(Case {
             name: format!("chain-{links}"),
@@ -488,12 +490,22 @@ fn main() -> Result<()> {
         let path = path(from);
         // Warmed up, untimed: the worker's first request pays for its pages and symbols.
         warm_up(&mut worker, &case.system)?;
-        let modes = [
-            ("solve", solve_through(&mut worker, case, &path)?),
-            ("drag", drag_through(&mut worker, case, &path)?),
-            ("solve-here", solve_here(case, &path)?),
-            ("drag-here", drag_here(case, &path)?),
-        ];
+        // A drag takes at most MAX_DRAG_UNKNOWNS in the part it moves: past that, only the
+        // full solve is timed.
+        let refused = silico_protocol::DragBegin {
+            system: case.system.clone(),
+            point: case.point,
+        }
+        .check()
+        .err();
+        let mut modes = vec![("solve", solve_through(&mut worker, case, &path)?)];
+        if refused.is_none() {
+            modes.push(("drag", drag_through(&mut worker, case, &path)?));
+        }
+        modes.push(("solve-here", solve_here(case, &path)?));
+        if refused.is_none() {
+            modes.push(("drag-here", drag_here(case, &path)?));
+        }
         let unknowns = case.system.unknowns.len();
         let constraints = case.system.constraints.len();
         for (mode, frames) in &modes {
@@ -531,18 +543,45 @@ fn main() -> Result<()> {
         // What IPC adds to a frame, and how much of a full solve is the diagnosis (a drag's
         // begin is the system built and diagnosed, so the rest of a frame's full solve is the
         // solving).
-        let p50 = |i: usize| ms(modes[i].1.percentile(50));
-        let begin_here = modes[3].1.begin.map_or(0.0, ms);
-        writeln!(
-            out,
-            "{:<12} ipc per frame: solve {:+.3}, drag {:+.3}; full solve p50 {:.3} = diagnosis (begin) {:.3} + solving {:.3}",
-            case.name,
-            p50(0) - p50(2),
-            p50(1) - p50(3),
-            p50(2),
-            begin_here,
-            p50(2) - begin_here,
-        )?;
+        let p50 = |mode: &str| {
+            modes
+                .iter()
+                .find(|(m, _)| *m == mode)
+                .map(|(_, f)| ms(f.percentile(50)))
+        };
+        let (Some(solve), Some(solve_here)) = (p50("solve"), p50("solve-here")) else {
+            return Err("a case without its full solve".into());
+        };
+        match (&refused, p50("drag"), p50("drag-here")) {
+            (None, Some(drag), Some(drag_here)) => {
+                let begin_here = modes
+                    .iter()
+                    .find(|(m, _)| *m == "drag-here")
+                    .and_then(|(_, f)| f.begin)
+                    .map_or(0.0, ms);
+                writeln!(
+                    out,
+                    "{:<12} ipc per frame: solve {:+.3}, drag {:+.3}; full solve p50 {:.3} = diagnosis (begin) {:.3} + solving {:.3}",
+                    case.name,
+                    solve - solve_here,
+                    drag - drag_here,
+                    solve_here,
+                    begin_here,
+                    solve_here - begin_here,
+                )?;
+            }
+            (refused, ..) => {
+                let why = refused
+                    .as_ref()
+                    .map_or_else(String::new, |e| e.message.clone());
+                writeln!(
+                    out,
+                    "{:<12} ipc per frame: solve {:+.3}; no drag: {why}",
+                    case.name,
+                    solve - solve_here,
+                )?;
+            }
+        }
         out.flush()?;
     }
     writeln!(out, "--- json")?;

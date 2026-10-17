@@ -317,51 +317,50 @@ SolveOutput solve(const SolveInput &input) {
   return out;
 }
 
-// A drag's state (FreeCAD's Sketch::initMove and moveGeometries, one point, absolute
-// moves): the sketch, diagnosed once, and the targets the dragged point is pinned to.
+// A drag's state (FreeCAD's Sketch::initMove and moveGeometries, absolute moves): the
+// sketch, diagnosed once, and the targets its pins hold points to. Which points to pin, and
+// how strongly, is Rust's to say (silico_sketch::Drag::begin); the first pin's target is
+// the cursor.
 struct DragSession::State {
   Sketch sketch;
-  // The targets: the dragged point's, then, for an arc's end, its centre's. Plain values,
-  // not unknowns, held here for the session's life, so the pins' pointers to them stay
-  // good (FreeCAD reserves its MoveParameters for the same reason).
-  std::array<double, 4> targets{};
+  // Two values per pin: plain values, not unknowns, sized once before any pin points into
+  // them and never resized, so the pins' pointers stay good (FreeCAD reserves its
+  // MoveParameters for the same reason).
+  std::vector<double> targets;
   int dofs = 0;
   rust::Vec<int32_t> conflicting;
 
-  explicit State(const SolveInput &input) : sketch(input) {}
+  State(const SolveInput &input, size_t pins) : sketch(input), targets(2 * pins) {}
 };
 
-DragSession::DragSession(const SolveInput &input) : state(std::make_unique<State>(input)) {}
+DragSession::DragSession(const SolveInput &input, size_t pins)
+    : state(std::make_unique<State>(input, pins)) {}
 DragSession::~DragSession() = default;
 
-std::unique_ptr<DragSession> drag_begin(const SolveInput &input, const DragPoint &point) {
-  auto session = std::make_unique<DragSession>(input);
+std::unique_ptr<DragSession> drag_begin(const SolveInput &input, rust::Slice<const Pin> pins) {
+  if (pins.empty()) bug("a drag with nothing to pin");
+  auto session = std::make_unique<DragSession>(input, pins.size());
   DragSession::State &s = *session->state;
   s.sketch.diagnose(s.dofs, s.conflicting);
   // FreeCAD doesn't drag a sketch with constraints in conflict: no pins, no session.
   if (!s.conflicting.empty()) return session;
 
   GCS::System &system = s.sketch.system;
-  GCS::Point &dragged = s.sketch.point_of(point.position, point.geometry);
-  // Each pin starts where its point is, as FreeCAD's do; tagged -1
-  // (GCS::DefaultTemporaryConstraint), so they stay out of the diagnosis and go to the
-  // lower-priority subsystem.
-  auto pin = [&](GCS::Point &p, size_t at) {
-    s.targets[at] = *p.x;
-    s.targets[at + 1] = *p.y;
-    GCS::Point target(&s.targets[at], &s.targets[at + 1]);
-    return system.addConstraintP2PCoincident(target, p, GCS::DefaultTemporaryConstraint);
-  };
-  pin(dragged, 0);
-  const Geo &geo = s.sketch.geometry[point.geometry];
-  if (geo.kind == GeometryKind::Arc &&
-      (point.position == Position::Start || point.position == Position::End)) {
-    // The arc's centre pinned where it is, a hundred times more weakly, so the end moves
-    // before the centre does (FreeCAD 4d7a9435c1). Its two rows are the last two added.
-    GCS::Point &center = s.sketch.geometry[point.geometry].arc.center;
-    const int last = pin(center, 2);
-    system.rescaleConstraint(last - 1, 0.01);
-    system.rescaleConstraint(last, 0.01);
+  for (size_t i = 0; i < pins.size(); ++i) {
+    GCS::Point &p = s.sketch.point_of(pins[i].position, pins[i].geometry);
+    // Each pin starts where its point is, as FreeCAD's do; tagged -1
+    // (GCS::DefaultTemporaryConstraint), so it stays out of the diagnosis and goes to the
+    // lower-priority subsystem.
+    s.targets[2 * i] = *p.x;
+    s.targets[2 * i + 1] = *p.y;
+    GCS::Point target(&s.targets[2 * i], &s.targets[2 * i + 1]);
+    const int last =
+        system.addConstraintP2PCoincident(target, p, GCS::DefaultTemporaryConstraint);
+    // Its two rows are the last two added.
+    if (pins[i].scale != 1.0) {
+      system.rescaleConstraint(last - 1, pins[i].scale);
+      system.rescaleConstraint(last, pins[i].scale);
+    }
   }
   // Keeps the diagnosis (rows tagged below 0 don't touch it), splits the system again with
   // the pins, and makes these values the ones every move starts from.
@@ -376,36 +375,6 @@ DragDiagnosis drag_diagnosis(const DragSession &session) {
   return out;
 }
 
-namespace {
-
-// Whether the solved geometry can be built, as FreeCAD's Sketch::updateGeometry finds when
-// it makes its curves: a line has length to the solver (dx² + dy² isn't 0; FreeCAD's
-// "Both points are equal"), and a circle or an arc a radius above 0 (gp_Circ refuses one
-// below 0; Silico draws nothing of no size).
-bool buildable(const Sketch &sketch) {
-  for (const Geo &g : sketch.geometry) {
-    switch (g.kind) {
-      case GeometryKind::Line: {
-        const double dx = *g.line.p2.x - *g.line.p1.x;
-        const double dy = *g.line.p2.y - *g.line.p1.y;
-        if (dx * dx + dy * dy == 0.0) return false;
-        break;
-      }
-      case GeometryKind::Circle:
-        if (!(*g.circle.rad > 0.0)) return false;
-        break;
-      case GeometryKind::Arc:
-        if (!(*g.arc.rad > 0.0)) return false;
-        break;
-      default:
-        break;
-    }
-  }
-  return true;
-}
-
-}  // namespace
-
 MoveOutput drag_move(DragSession &session, double x, double y) {
   DragSession::State &s = *session.state;
   if (!s.conflicting.empty()) bug("a move in a drag that never started");
@@ -419,14 +388,7 @@ MoveOutput drag_move(DragSession &session, double x, double y) {
   out.status = status_of(status);
   if (status == GCS::Success) {
     system.applySolution();
-    // FreeCAD keeps a solution only if its geometry can be made, and undoes it otherwise
-    // (Sketch::internalSolve, "Invalid solution").
-    if (buildable(s.sketch)) {
-      for (double v : s.sketch.values) out.values.push_back(v);
-    } else {
-      system.undoSolution();
-      out.status = Status::SolvedInvalid;
-    }
+    for (double v : s.sketch.values) out.values.push_back(v);
   } else {
     system.undoSolution();
   }

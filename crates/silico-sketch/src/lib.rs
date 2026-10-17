@@ -97,8 +97,6 @@ mod ffi {
         Failed,
         /// See [`SolveStatus::SolvedExceptRedundant`](super::SolveStatus).
         SolvedExceptRedundant,
-        /// See [`SolveStatus::SolvedInvalid`](super::SolveStatus).
-        SolvedInvalid,
     }
 
     struct SolveInput {
@@ -127,11 +125,13 @@ mod ffi {
         residuals: Vec<f64>,
     }
 
-    /// The point a drag holds: which of its geometry's points (never `None` or
-    /// `Geometry`), and the geometry.
-    struct DragPoint {
+    /// A point a drag pins (never `None` or `Geometry`), its geometry, and the weight of its
+    /// pin's two rows (1, or less to let it give way first). The first pin is the dragged
+    /// point, held to the cursor; the rest are held where they start.
+    struct Pin {
         position: Position,
         geometry: u32,
+        scale: f64,
     }
 
     /// What a drag's start found: the degrees of freedom, and the tags of the constraints
@@ -155,7 +155,7 @@ mod ffi {
 
         /// A drag under way: the sketch's PlaneGCS system, kept between moves.
         type DragSession;
-        fn drag_begin(input: &SolveInput, point: &DragPoint) -> Result<UniquePtr<DragSession>>;
+        fn drag_begin(input: &SolveInput, pins: &[Pin]) -> Result<UniquePtr<DragSession>>;
         fn drag_diagnosis(session: &DragSession) -> Result<DragDiagnosis>;
         fn drag_move(session: Pin<&mut DragSession>, x: f64, y: f64) -> Result<MoveOutput>;
 
@@ -241,6 +241,8 @@ pub fn solve(system: &SketchSystem) -> Result<Solved, Failure> {
 /// on earlier drags; Silico doesn't port that.
 pub struct Drag {
     session: cxx::UniquePtr<ffi::DragSession>,
+    /// The sketch's geometry, to check each move's against.
+    geometry: Vec<SketchGeometry>,
 }
 
 /// What a drag's start found: the diagnosis, and the drag, unless constraints conflict.
@@ -259,18 +261,27 @@ impl Drag {
     pub fn begin(begin: &DragBegin) -> Result<DragStart, Failure> {
         begin.check().map_err(invalid)?;
         prepare_eigen();
-        let (position, geometry) = point(begin.point);
-        let session = ffi::drag_begin(
-            &encode(&begin.system),
-            &ffi::DragPoint { position, geometry },
-        )
-        .map_err(bridge_threw)?;
+        let pins: Vec<ffi::Pin> = pins(&begin.system, begin.point)
+            .into_iter()
+            .map(|(p, scale)| {
+                let (position, geometry) = point(p);
+                ffi::Pin {
+                    position,
+                    geometry,
+                    scale,
+                }
+            })
+            .collect();
+        let session = ffi::drag_begin(&encode(&begin.system), &pins).map_err(bridge_threw)?;
         let diagnosis = match session.as_ref() {
             Some(s) => ffi::drag_diagnosis(s).map_err(bridge_threw)?,
             None => return Err(internal("the bridge started no drag")),
         };
         let conflicting = tags(&diagnosis.conflicting)?;
-        let drag = conflicting.is_empty().then_some(Drag { session });
+        let drag = conflicting.is_empty().then(|| Drag {
+            session,
+            geometry: begin.system.geometry.clone(),
+        });
         Ok(DragStart {
             dofs: diagnosis.dofs,
             conflicting,
@@ -290,8 +301,13 @@ impl Drag {
             ffi::Status::Success => SolveStatus::Success,
             ffi::Status::Converged => SolveStatus::Converged,
             ffi::Status::Failed => SolveStatus::Failed,
-            ffi::Status::SolvedInvalid => SolveStatus::SolvedInvalid,
             _ => return Err(internal("the bridge returned a status a move can't have")),
+        };
+        // A solution stands only if its geometry can be built.
+        let status = if status == SolveStatus::Success && !buildable(&self.geometry, &out.values) {
+            SolveStatus::SolvedInvalid
+        } else {
+            status
         };
         let values = if status == SolveStatus::Success {
             check_reach(&out.values)?;
@@ -301,6 +317,39 @@ impl Drag {
         };
         Ok(Moved { status, values })
     }
+}
+
+/// The pins a drag of `p` holds, with their weights, as FreeCAD's `Sketch::initMove` pins
+/// one point: the point itself; and for an arc's start or end, the arc's centre too, where
+/// it starts, a hundred times more weakly, so the end moves before the centre does
+/// (`4d7a9435c1`). `p` must name a point its geometry has.
+fn pins(system: &SketchSystem, p: PointOf) -> Vec<(PointOf, f64)> {
+    let mut pins = vec![(p, 1.0)];
+    if let (Some(SketchGeometry::Arc { .. }), PointOf::Start(g) | PointOf::End(g)) =
+        (system.geometry.get(p.geometry().0 as usize), p)
+    {
+        pins.push((PointOf::Center(g), 0.01));
+    }
+    pins
+}
+
+/// Whether geometry solved to `values` can be built, as FreeCAD's `Sketch::updateGeometry`
+/// finds when it makes its curves: a line has length to the solver (dx² + dy² isn't 0, the
+/// sketch worker's check; FreeCAD's `GeomLineSegment::setPoints`, "Both points are equal"),
+/// and a circle or an arc a radius above 0 (FreeCAD's `gp_Circ` refuses one below 0 and
+/// keeps 0; Silico draws nothing of no size).
+fn buildable(geometry: &[SketchGeometry], values: &[f64]) -> bool {
+    let at = |v: Value| values.get(v.0 as usize).copied().unwrap_or(f64::NAN);
+    geometry.iter().all(|g| match *g {
+        SketchGeometry::Line { start, end } => {
+            let (dx, dy) = (at(end.x) - at(start.x), at(end.y) - at(start.y));
+            dx * dx + dy * dy != 0.0
+        }
+        SketchGeometry::Circle { radius, .. } | SketchGeometry::Arc { radius, .. } => {
+            at(radius) > 0.0
+        }
+        SketchGeometry::Point(_) => true,
+    })
 }
 
 /// What the bridge threw, as a refusal.

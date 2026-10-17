@@ -25,11 +25,14 @@ pub const MAX_SKETCH_GEOMETRY: usize = 10_000;
 /// the cube: about 13 s for 2,000 unknowns, 100 s for 4,000.
 pub const MAX_SKETCH_UNKNOWNS: usize = 2048;
 
-/// At most this many unknowns in a drag: while the cursor holds a point, PlaneGCS solves the
-/// part of the sketch it's in with SQP, on dense matrices, so one move costs more than a
-/// solve (on an M4 Pro, 0.5 s at 512 unknowns in one part, 3.4 s at 1024, 45 s at 2048,
-/// past a request's time). Larger sketches solve, but don't drag.
-pub const MAX_DRAG_UNKNOWNS: usize = 1024;
+/// At most this many unknowns in the part of a sketch a drag moves (the unknowns its
+/// constraints join to the dragged point's): while the cursor holds a point, PlaneGCS
+/// solves that part with SQP, on dense matrices, up to 100 iterations, so one move can cost
+/// far more than a solve. A chain the cursor pulls far from where it began, linked end to
+/// end: 0.76 s a move at 256 unknowns on a loaded M4 Pro, 6 s at 512, 64 s at 1024, past a
+/// request's time. A larger part solves, but doesn't drag; parts the point isn't in don't
+/// count (a 1,936-unknown grid of rectangles drags in 0.2 ms a move).
+pub const MAX_DRAG_UNKNOWNS: usize = 256;
 
 /// At most this many entries in the solver's Jacobian (rows × unknowns): PlaneGCS's
 /// diagnosis builds it dense, so this bounds it to 256 MiB.
@@ -147,7 +150,8 @@ pub enum PointOf {
 }
 
 impl PointOf {
-    fn geometry(self) -> Geometry {
+    /// The geometry the point is of.
+    pub fn geometry(self) -> Geometry {
         match self {
             PointOf::Point(g) | PointOf::Start(g) | PointOf::End(g) | PointOf::Center(g) => g,
         }
@@ -307,8 +311,11 @@ pub enum SolveStatus {
     Failed,
     /// The solver met the constraints, but on geometry that can't be built: a line of no
     /// length (dx² + dy² is 0), or a circle or arc whose radius isn't above 0. Nothing is
-    /// kept, as FreeCAD undoes such a solution (`Sketch::internalSolve`, "Invalid solution";
-    /// its `SuccessfulSolutionInvalid`). A drag's move gives it; a solve's comes with M3.3.
+    /// kept. FreeCAD undoes such a solution too (`Sketch::internalSolve`, "Invalid
+    /// solution"), but during a drag still reports it as a success and draws the drag's
+    /// start for that frame; Silico reports it, and the client keeps its last good frame. A
+    /// radius of exactly 0 FreeCAD keeps; Silico draws nothing of no size. A drag's move
+    /// gives it; a solve's comes with M3.3.
     SolvedInvalid,
 }
 
@@ -367,20 +374,22 @@ pub struct DragBegin {
 
 impl DragBegin {
     /// Whether the worker can start this drag: the system passes
-    /// [`SketchSystem::check`], has at most [`MAX_DRAG_UNKNOWNS`] unknowns, and the point
-    /// is one its geometry has, as a constraint's points must be.
+    /// [`SketchSystem::check`], the point is one its geometry has, as a constraint's points
+    /// must be, and the part of the sketch it moves has at most [`MAX_DRAG_UNKNOWNS`]
+    /// unknowns ([`SketchSystem::part_unknowns`]).
     pub fn check(&self) -> Result<(), InvalidParameter> {
         self.system.check()?;
-        let n = self.system.unknowns.len();
+        self.system.check_point(self.point, "point", "the drag")?;
+        let n = self.system.part_unknowns(self.point);
         if n > MAX_DRAG_UNKNOWNS {
             return Err(invalid(
-                "unknowns",
+                "point",
                 format!(
-                    "a sketch dragged may have at most {MAX_DRAG_UNKNOWNS} unknowns, got {n}: each move of a larger one takes too long"
+                    "the part of the sketch the drag moves has {n} unknowns, and a drag takes at most {MAX_DRAG_UNKNOWNS} there: each move of a larger part takes too long"
                 ),
             ));
         }
-        self.system.check_point(self.point, "point", "the drag")
+        Ok(())
     }
 }
 
@@ -691,6 +700,104 @@ impl SketchSystem {
 }
 
 impl SketchSystem {
+    /// How many unknowns the constraints join to `p`'s: the part of the system PlaneGCS
+    /// solves `p` in, as it splits a system into parts that share no unknown (each
+    /// constraint joining the unknowns it reads). At least that part: PlaneGCS drops
+    /// redundant equations first, so its parts can be smaller. `p` must name a point its
+    /// geometry has ([`DragBegin::check`] checks first); 0 if it doesn't.
+    pub fn part_unknowns(&self, p: PointOf) -> usize {
+        let n = self.unknowns.len();
+        let index = |v: Value| self.unknowns.binary_search(&v).ok();
+        let mut parent: Vec<usize> = (0..n).collect();
+        fn root(parent: &mut [usize], mut i: usize) -> usize {
+            while parent[i] != i {
+                parent[i] = parent[parent[i]];
+                i = parent[i];
+            }
+            i
+        }
+        let geometry = |g: Geometry| {
+            self.geometry
+                .get(g.0 as usize)
+                .map(SketchGeometry::values)
+                .unwrap_or_default()
+        };
+        let point = |p: PointOf| {
+            self.point_values(p)
+                .map(|v| vec![v.x, v.y])
+                .unwrap_or_default()
+        };
+        for c in &self.constraints {
+            let read: Vec<Value> = match *c {
+                SolverConstraint::ArcRules { arc } => geometry(arc),
+                SolverConstraint::Coincident { a, b, .. } => [point(a), point(b)].concat(),
+                SolverConstraint::DistanceX { a, b, value, .. }
+                | SolverConstraint::DistanceY { a, b, value, .. }
+                | SolverConstraint::Distance { a, b, value, .. } => {
+                    [point(a), point(b), vec![value]].concat()
+                }
+                SolverConstraint::PointOnLine { point: q, line, .. } => {
+                    [point(q), geometry(line)].concat()
+                }
+                SolverConstraint::Horizontal { line, .. }
+                | SolverConstraint::Vertical { line, .. } => geometry(line),
+                SolverConstraint::Parallel { a, b, .. }
+                | SolverConstraint::Perpendicular { a, b, .. }
+                | SolverConstraint::EqualLength { a, b, .. } => [geometry(a), geometry(b)].concat(),
+                SolverConstraint::Angle { a, b, value, .. } => {
+                    [geometry(a), geometry(b), vec![value]].concat()
+                }
+                SolverConstraint::Radius { circle, value, .. } => {
+                    let radius = match self.geometry.get(circle.0 as usize) {
+                        Some(
+                            SketchGeometry::Circle { radius, .. }
+                            | SketchGeometry::Arc { radius, .. },
+                        ) => vec![*radius],
+                        _ => Vec::new(),
+                    };
+                    [radius, vec![value]].concat()
+                }
+            };
+            let mut joined = read.into_iter().filter_map(index);
+            if let Some(first) = joined.next() {
+                for other in joined {
+                    let (a, b) = (root(&mut parent, first), root(&mut parent, other));
+                    parent[a] = b;
+                }
+            }
+        }
+        let mut roots: Vec<usize> = point(p)
+            .into_iter()
+            .filter_map(index)
+            .map(|i| root(&mut parent, i))
+            .collect();
+        roots.sort_unstable();
+        roots.dedup();
+        (0..n)
+            .filter(|&i| roots.binary_search(&root(&mut parent, i)).is_ok())
+            .count()
+    }
+
+    /// The values of the point `p` names, if its geometry has it.
+    fn point_values(&self, p: PointOf) -> Option<PointValues> {
+        match (self.geometry.get(p.geometry().0 as usize)?, p) {
+            (SketchGeometry::Point(v), PointOf::Point(_)) => Some(*v),
+            (
+                SketchGeometry::Line { start, .. } | SketchGeometry::Arc { start, .. },
+                PointOf::Start(_),
+            ) => Some(*start),
+            (
+                SketchGeometry::Line { end, .. } | SketchGeometry::Arc { end, .. },
+                PointOf::End(_),
+            ) => Some(*end),
+            (
+                SketchGeometry::Circle { center, .. } | SketchGeometry::Arc { center, .. },
+                PointOf::Center(_),
+            ) => Some(*center),
+            _ => None,
+        }
+    }
+
     /// That `p` names geometry there is, at a point that kind has: a point is only itself,
     /// a line has ends, a circle a centre, an arc all three. `what` names what names it.
     fn check_point(
