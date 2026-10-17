@@ -1052,3 +1052,29 @@ fn fmt_of_a_single_named_document_refused_by_a_size_limit_says_so() {
     assert!(stderr.contains("ulimit -f"), "{stderr}");
     assert_eq!(ls(&scratch.0), [".silico-cache", "a.silico", "cache-home"]);
 }
+
+#[test]
+fn fmt_of_a_single_named_document_killed_by_a_size_limit_leaves_no_part_of_the_new_text() {
+    // Killed by the limit (SIGXFSZ at its default), no cleanup runs: the new file beside the
+    // document was grown first, so it's empty, never a part of the new text (found by the
+    // review: dropping the grow left 1,024 bytes of it, with every test green).
+    let scratch = Scratch::new("single-killed");
+    let pad = 2000 - EXAMPLE.len();
+    let before = EXAMPLE.replace(
+        r#""name": "Block""#,
+        &format!(r#""name": "Block{}""#, "x".repeat(pad)),
+    );
+    let a = scratch.file("a.silico", &before);
+    let warm = run(&scratch, &[os("fmt"), os("--check"), os("a.silico")]);
+    assert_eq!(warm.code(), Some(1), "{}", warm.stderr);
+    let (pid, out) = fmt_under_one_block(&scratch, "");
+    use std::os::unix::process::ExitStatusExt as _;
+    assert_eq!(out.status.signal(), Some(25), "{:?}", out.status);
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), before);
+    let partial = std::fs::read(scratch.0.join(format!(".a.silico.fmt-{pid}"))).unwrap();
+    assert!(
+        partial.is_empty(),
+        "{} bytes of the new text left beside it",
+        partial.len()
+    );
+}
