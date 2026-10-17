@@ -1,5 +1,26 @@
 {
   "$defs": {
+    "Angle": {
+      "description": "An angle in degrees: a number, to at most 9 decimals (nanodegrees). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+      "type": "number"
+    },
+    "Coordinate": {
+      "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
+      "type": "number"
+    },
+    "Direction": {
+      "description": "How two curves meeting at a point run there: on in the `same` direction (a smooth\njoin), or back the `opposite` way (a cusp).",
+      "enum": [
+        "same",
+        "opposite"
+      ],
+      "type": "string"
+    },
+    "ElementId": {
+      "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+      "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+      "type": "string"
+    },
     "Feature": {
       "description": "One feature of the timeline: what it is, its version, and its name.",
       "oneOf": [
@@ -219,6 +240,59 @@
             "tool"
           ],
           "type": "object"
+        },
+        {
+          "description": "A constrained 2D sketch (docs/design/m3.2-sketch-format.md).",
+          "properties": {
+            "arcs": {
+              "items": {
+                "$ref": "#/$defs/SketchArc"
+              },
+              "type": "array"
+            },
+            "circles": {
+              "items": {
+                "$ref": "#/$defs/SketchCircle"
+              },
+              "type": "array"
+            },
+            "constraints": {
+              "items": {
+                "$ref": "#/$defs/SketchConstraint"
+              },
+              "type": "array"
+            },
+            "lines": {
+              "items": {
+                "$ref": "#/$defs/SketchLine"
+              },
+              "type": "array"
+            },
+            "plane": {
+              "$ref": "#/$defs/Plane"
+            },
+            "points": {
+              "description": "The sketch's points, which its curves share: two curves that meet name the same\npoint.",
+              "items": {
+                "$ref": "#/$defs/SketchPoint"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "sketch",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "plane",
+            "points",
+            "lines",
+            "circles",
+            "arcs",
+            "constraints"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -312,6 +386,14 @@
       "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
       "type": "number"
     },
+    "LineSide": {
+      "description": "Which side of a line, facing from its start (`from`) to its end (`to`).",
+      "enum": [
+        "left",
+        "right"
+      ],
+      "type": "string"
+    },
     "Measure": {
       "description": "A volume (mm³) or area (mm²): a number, to at most 6 decimals.",
       "type": "number"
@@ -319,6 +401,633 @@
     "Name": {
       "description": "A display name, which needn't be unique.",
       "minLength": 1,
+      "type": "string"
+    },
+    "Plane": {
+      "description": "The plane a sketch is drawn on: one of the origin's, oriented as FreeCAD's (D6). On\n`xy`, the sketch's x is +X and its y +Y (normal +Z); on `xz`, x is +X and y +Z (normal\n−Y); on `yz`, x is +Y and y +Z (normal +X).",
+      "enum": [
+        "xy",
+        "xz",
+        "yz"
+      ],
+      "type": "string"
+    },
+    "SketchArc": {
+      "additionalProperties": false,
+      "description": "An arc about `center`, counter-clockwise from `start` to `end`. Its points are its\ndefinition: its radius and angles are the solver's, worked out from them, and the\nsolve holds its ends on it (D2, arcs).",
+      "properties": {
+        "center": {
+          "$ref": "#/$defs/ElementId"
+        },
+        "construction": {
+          "type": "boolean"
+        },
+        "end": {
+          "$ref": "#/$defs/ElementId"
+        },
+        "id": {
+          "$ref": "#/$defs/ElementId"
+        },
+        "start": {
+          "$ref": "#/$defs/ElementId"
+        }
+      },
+      "required": [
+        "id",
+        "center",
+        "start",
+        "end",
+        "construction"
+      ],
+      "type": "object"
+    },
+    "SketchCircle": {
+      "additionalProperties": false,
+      "description": "A circle about a point.",
+      "properties": {
+        "center": {
+          "$ref": "#/$defs/ElementId"
+        },
+        "construction": {
+          "type": "boolean"
+        },
+        "id": {
+          "$ref": "#/$defs/ElementId"
+        },
+        "radius": {
+          "$ref": "#/$defs/Coordinate",
+          "description": "Worked out by the solver, as coordinates are."
+        }
+      },
+      "required": [
+        "id",
+        "center",
+        "radius",
+        "construction"
+      ],
+      "type": "object"
+    },
+    "SketchConstraint": {
+      "description": "One constraint: its ID and its form.",
+      "oneOf": [
+        {
+          "description": "The line parallel to x.",
+          "properties": {
+            "line": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "type": {
+              "const": "horizontal",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "line"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The line parallel to y.",
+          "properties": {
+            "line": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "type": {
+              "const": "vertical",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "line"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The two points level.",
+          "properties": {
+            "a": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "b": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "type": {
+              "const": "horizontal_points",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "a",
+            "b"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "One point above the other.",
+          "properties": {
+            "a": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "b": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "type": {
+              "const": "vertical_points",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "a",
+            "b"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The line's length.",
+          "properties": {
+            "driving": {
+              "type": "boolean"
+            },
+            "line": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "type": {
+              "const": "length",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Length"
+            }
+          },
+          "required": [
+            "type",
+            "line",
+            "value",
+            "driving"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The distance between two points.",
+          "properties": {
+            "a": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "b": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "driving": {
+              "type": "boolean"
+            },
+            "type": {
+              "const": "distance",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Length"
+            }
+          },
+          "required": [
+            "type",
+            "a",
+            "b",
+            "value",
+            "driving"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "x(b) − x(a), signed.",
+          "properties": {
+            "a": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "b": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "driving": {
+              "type": "boolean"
+            },
+            "type": {
+              "const": "distance_x",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Length"
+            }
+          },
+          "required": [
+            "type",
+            "a",
+            "b",
+            "value",
+            "driving"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "y(b) − y(a), signed.",
+          "properties": {
+            "a": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "b": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "driving": {
+              "type": "boolean"
+            },
+            "type": {
+              "const": "distance_y",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Length"
+            }
+          },
+          "required": [
+            "type",
+            "a",
+            "b",
+            "value",
+            "driving"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The point's distance from the line (extended), on the given side of it.",
+          "properties": {
+            "driving": {
+              "type": "boolean"
+            },
+            "line": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "point": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "side": {
+              "$ref": "#/$defs/LineSide"
+            },
+            "type": {
+              "const": "point_line_distance",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Length"
+            }
+          },
+          "required": [
+            "type",
+            "point",
+            "line",
+            "value",
+            "side",
+            "driving"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The point on the curve: a line extended, or an arc's whole circle, as FreeCAD's.",
+          "properties": {
+            "curve": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "point": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "type": {
+              "const": "on",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "point",
+            "curve"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "a": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "b": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "type": {
+              "const": "parallel",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "a",
+            "b"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "a": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "b": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "type": {
+              "const": "perpendicular",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "a",
+            "b"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The angle from `a`'s direction to `b`'s, counter-clockwise, signed.",
+          "properties": {
+            "a": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "b": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "driving": {
+              "type": "boolean"
+            },
+            "type": {
+              "const": "angle",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Angle"
+            }
+          },
+          "required": [
+            "type",
+            "a",
+            "b",
+            "value",
+            "driving"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A circle's or arc's radius.",
+          "properties": {
+            "curve": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "driving": {
+              "type": "boolean"
+            },
+            "type": {
+              "const": "radius",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Length"
+            }
+          },
+          "required": [
+            "type",
+            "curve",
+            "value",
+            "driving"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A circle's or arc's diameter.",
+          "properties": {
+            "curve": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "driving": {
+              "type": "boolean"
+            },
+            "type": {
+              "const": "diameter",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Length"
+            }
+          },
+          "required": [
+            "type",
+            "curve",
+            "value",
+            "driving"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Two lines of equal length, or two circles or arcs of equal radius.",
+          "properties": {
+            "a": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "b": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "type": {
+              "const": "equal",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "a",
+            "b"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Tangent along their edges: a line and a circle or arc, or two circles or arcs.",
+          "properties": {
+            "a": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "b": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "side": {
+              "$ref": "#/$defs/TangentSide"
+            },
+            "type": {
+              "const": "tangent",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "a",
+            "b",
+            "side"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Tangent where two curves meet, at the point `at` they share.",
+          "properties": {
+            "a": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "at": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "b": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "direction": {
+              "$ref": "#/$defs/Direction"
+            },
+            "type": {
+              "const": "tangent_at",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "a",
+            "b",
+            "at",
+            "direction"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "`a` and `b` mirror each other about a line or a point.",
+          "properties": {
+            "a": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "about": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "b": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "type": {
+              "const": "symmetric",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "a",
+            "b",
+            "about"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The point midway along the line.",
+          "properties": {
+            "line": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "point": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "type": {
+              "const": "midpoint",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "point",
+            "line"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ElementId"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object",
+      "unevaluatedProperties": false
+    },
+    "SketchLine": {
+      "additionalProperties": false,
+      "description": "A line from one point to another.",
+      "properties": {
+        "construction": {
+          "type": "boolean"
+        },
+        "from": {
+          "$ref": "#/$defs/ElementId"
+        },
+        "id": {
+          "$ref": "#/$defs/ElementId"
+        },
+        "to": {
+          "$ref": "#/$defs/ElementId"
+        }
+      },
+      "required": [
+        "id",
+        "from",
+        "to",
+        "construction"
+      ],
+      "type": "object"
+    },
+    "SketchPoint": {
+      "additionalProperties": false,
+      "description": "A point of the sketch, which curves share.",
+      "properties": {
+        "construction": {
+          "description": "Construction geometry is solved like any other and left out of the profile (D7).",
+          "type": "boolean"
+        },
+        "id": {
+          "$ref": "#/$defs/ElementId"
+        },
+        "x": {
+          "$ref": "#/$defs/Coordinate"
+        },
+        "y": {
+          "$ref": "#/$defs/Coordinate"
+        }
+      },
+      "required": [
+        "id",
+        "x",
+        "y",
+        "construction"
+      ],
+      "type": "object"
+    },
+    "SketchReference": {
+      "description": "An element of this sketch, by its ID, or one of the fixed references every sketch has: origin, x_axis, y_axis.",
+      "pattern": "^([0123456789abcdefghjkmnpqrstvwxyz]{8}|origin|x_axis|y_axis)$",
+      "type": "string"
+    },
+    "TangentSide": {
+      "description": "Where a tangent curve lies: for a line and a circle or arc, the side of the line the\ncurve is on (facing from its start to its end); for two circles or arcs, each outside\nthe other, or one inside the other.",
+      "enum": [
+        "left",
+        "right",
+        "outside",
+        "inside"
+      ],
       "type": "string"
     },
     "Units": {

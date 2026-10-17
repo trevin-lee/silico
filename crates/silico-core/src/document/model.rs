@@ -10,6 +10,7 @@ use silico_protocol::Primitive;
 
 use super::fingerprint::Fingerprint;
 use super::quantity::Length;
+use super::sketch::Sketch;
 
 /// A Silico document: a part's feature timeline, rebuilt from this text.
 #[derive(Debug, Clone, PartialEq, Eq, JsonSchema)]
@@ -201,7 +202,8 @@ impl JsonSchema for Name {
 }
 
 /// What a feature makes. A primitive makes a solid; a boolean makes one from two earlier
-/// features' solids, consuming them.
+/// features' solids, consuming them; a sketch makes no solid (pad, pocket, and revolve,
+/// which make solids from sketches, come in M3.6).
 #[derive(Debug, Clone, PartialEq, Eq, JsonSchema)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Operation {
@@ -242,6 +244,8 @@ pub enum Operation {
     Cut { base: FeatureId, tool: FeatureId },
     /// What's in both of two features' solids.
     Common { base: FeatureId, tool: FeatureId },
+    /// A constrained 2D sketch (docs/design/m3.2-sketch-format.md).
+    Sketch(Sketch),
 }
 
 impl Operation {
@@ -282,7 +286,10 @@ impl Operation {
                 major_radius: radius1.mm(),
                 minor_radius: radius2.mm(),
             },
-            Operation::Fuse { .. } | Operation::Cut { .. } | Operation::Common { .. } => {
+            Operation::Fuse { .. }
+            | Operation::Cut { .. }
+            | Operation::Common { .. }
+            | Operation::Sketch(_) => {
                 return None;
             }
         })
@@ -296,7 +303,10 @@ impl Operation {
             | Operation::Sphere { position, .. }
             | Operation::Cone { position, .. }
             | Operation::Torus { position, .. } => Some(position),
-            Operation::Fuse { .. } | Operation::Cut { .. } | Operation::Common { .. } => None,
+            Operation::Fuse { .. }
+            | Operation::Cut { .. }
+            | Operation::Common { .. }
+            | Operation::Sketch(_) => None,
         }
     }
 
@@ -321,7 +331,8 @@ impl Operation {
             | Operation::Cone { .. }
             | Operation::Fuse { .. }
             | Operation::Cut { .. }
-            | Operation::Common { .. } => parameter,
+            | Operation::Common { .. }
+            | Operation::Sketch(_) => parameter,
         }
     }
 
@@ -335,8 +346,14 @@ impl Operation {
             | Operation::Cylinder { .. }
             | Operation::Sphere { .. }
             | Operation::Cone { .. }
-            | Operation::Torus { .. } => None,
+            | Operation::Torus { .. }
+            | Operation::Sketch(_) => None,
         }
+    }
+
+    /// Whether the feature makes a solid: every type but a sketch.
+    pub fn makes_solid(&self) -> bool {
+        !matches!(self, Operation::Sketch(_))
     }
 
     /// The `type` the file writes.
@@ -350,11 +367,12 @@ impl Operation {
             Operation::Fuse { .. } => "fuse",
             Operation::Cut { .. } => "cut",
             Operation::Common { .. } => "common",
+            Operation::Sketch(_) => "sketch",
         }
     }
 }
 
 /// Every feature type, as the file writes it.
-pub const FEATURE_TYPES: [&str; 8] = [
-    "box", "cylinder", "sphere", "cone", "torus", "fuse", "cut", "common",
+pub const FEATURE_TYPES: [&str; 9] = [
+    "box", "cylinder", "sphere", "cone", "torus", "fuse", "cut", "common", "sketch",
 ];

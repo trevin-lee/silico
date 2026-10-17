@@ -8,6 +8,8 @@ mod fingerprint;
 pub mod json;
 mod model;
 mod quantity;
+mod sketch;
+mod sketch_gate;
 mod validate;
 mod write;
 
@@ -17,6 +19,12 @@ pub use model::{
     ID_LENGTH, Name, Operation, Position, Units,
 };
 pub use quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
+pub use sketch::{
+    CONSTRAINT_TYPES, Coordinate, Direction, ElementId, ElementKind, Form, LineSide, Plane,
+    Reference, Sketch, SketchArc, SketchCircle, SketchConstraint, SketchLine, SketchPoint, Takes,
+    TangentSide,
+};
+pub use sketch_gate::MAX_ANGLE_DEGREES;
 pub use validate::{Checked, Invalid, PROBLEMS_LISTED, validate};
 
 use schemars::generate::SchemaSettings;
