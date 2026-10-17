@@ -1,0 +1,39 @@
+[package]
+name = "silico-sketch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# Operations that exist only to test the bridge and the worker. This crate's own tests turn
+# it on (the dev-dependency on itself below); nothing else should.
+test_ops = ["silico-worker/test_ops"]
+
+[dependencies]
+cxx.workspace = true
+silico-protocol.workspace = true
+silico-worker.workspace = true
+
+[[bin]]
+name = "silico-sketch-worker"
+path = "src/bin/silico-sketch-worker.rs"
+
+[[bin]]
+name = "silico-sketch-test-worker"
+path = "src/bin/silico-sketch-test-worker.rs"
+required-features = ["test_ops"]
+
+[dev-dependencies]
+libm.workspace = true
+proptest.workspace = true
+sha2.workspace = true
+silico-core.workspace = true
+silico-sketch = { path = ".", features = ["test_ops"] }
+
+[build-dependencies]
+cxx-build.workspace = true
+
+[lints]
+workspace = true

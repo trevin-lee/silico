@@ -16,6 +16,10 @@ ninja = "*"
 perl = "5.*"
 # Banned dependencies, licenses, and sources, checked by the gate.
 cargo-deny = "0.20.*"
+# Headers PlaneGCS builds against (silico-sketch), the versions FreeCAD 1.1.3, the oracle,
+# bundles: Eigen for its algebra, and Boost.Graph for one connected-components call.
+eigen = "==3.4.0"
+libboost-headers = "==1.86.0"
 
 # On macOS, linking uses Apple's ld: lld 21 can't read the macOS 27 SDK.
 [target.linux-64.dependencies]
@@ -39,7 +43,8 @@ build = { cmd = "cargo build --workspace", depends-on = ["occt"] }
 install-oracle = { cmd = "pixi install -e oracle", description = "Install the FreeCAD oracle environment" }
 install-viewer = { cmd = "pixi install -e viewer", description = "Install the Rerun viewer" }
 view = { cmd = "cargo build -p silico-kernel --bin silico-kernel-worker && cargo run -p silico-view -- --viewer .pixi/envs/viewer/bin/rerun", depends-on = ["occt", "install-viewer"], description = "Show the kernel's parts (a box, fillets, the primitives) in the Rerun viewer" }
-test = { cmd = "cargo nextest run --workspace", depends-on = ["occt", "install-oracle", "shim-test", "test-guards", "test-cache"] }
+planegcs-verify = { cmd = "bash third_party/planegcs/scripts/verify.sh", description = "Prove third_party/planegcs is FreeCAD 1.1.3's PlaneGCS with exactly its patch series" }
+test = { cmd = "cargo nextest run --workspace", depends-on = ["occt", "install-oracle", "shim-test", "test-guards", "test-cache", "planegcs-verify"] }
 oracle = { cmd = "cargo build -p silico-kernel --bin silico-kernel-worker && cargo run -p silico-oracle -- run tests/oracle", depends-on = ["occt", "install-oracle"], description = "Compare every case in tests/oracle with FreeCAD" }
 oracle-sweep = { cmd = "cargo build -p silico-kernel --bin silico-kernel-worker && cargo run -p silico-oracle -- sweep --count 500", depends-on = ["occt", "install-oracle"], description = "Compare 500 generated cases with FreeCAD (pass --seed S to vary them)" }
 corpus = { cmd = "bash tests/corpus/run.sh", depends-on = ["occt", "install-oracle"], description = "Download real parts (NIST's STEP files) once, and compare them with FreeCAD" }

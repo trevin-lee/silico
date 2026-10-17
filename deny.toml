@@ -6,14 +6,16 @@ all-features = true
 
 [bans]
 multiple-versions = "allow"
-# No C++ in the app process (ARCHITECTURE.md, invariant 1): only silico-kernel may reach
-# OCCT and the cxx bridge machinery. A crate depending on silico-kernel would also get OCCT
-# without the libm shim, breaking determinism. (silico-kernel lists itself: its tests
-# depend on it with the test_ops feature.)
+# No C++ in the app process (ARCHITECTURE.md, invariant 1): only the worker crates,
+# silico-kernel (OCCT) and silico-sketch (PlaneGCS), may reach C++ and the cxx bridge
+# machinery. A crate depending on either would also get its C++ without the libm shim,
+# breaking determinism. (Each lists itself: its tests depend on it with the test_ops
+# feature.)
 deny = [
     { crate = "silico-kernel", wrappers = ["silico-kernel"], reason = "only the kernel links OCCT; other crates reach it through the worker" },
-    { crate = "cxx", wrappers = ["silico-kernel"], reason = "C++ belongs in worker crates only" },
-    { crate = "cxx-build", wrappers = ["silico-kernel"], reason = "C++ belongs in worker crates only" },
+    { crate = "silico-sketch", wrappers = ["silico-sketch"], reason = "only the sketch worker links PlaneGCS; other crates reach it through the worker" },
+    { crate = "cxx", wrappers = ["silico-kernel", "silico-sketch"], reason = "C++ belongs in worker crates only" },
+    { crate = "cxx-build", wrappers = ["silico-kernel", "silico-sketch"], reason = "C++ belongs in worker crates only" },
     { crate = "link-cplusplus", wrappers = ["cxx"], reason = "C++ belongs in worker crates only" },
 ]
 

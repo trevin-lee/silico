@@ -4202,7 +4202,6 @@ dependencies = [
  "crc32fast",
  "cxx",
  "cxx-build",
- "libc",
  "proptest",
  "rustix",
  "serde_json",
@@ -4210,6 +4209,7 @@ dependencies = [
  "silico-kernel",
  "silico-oracle",
  "silico-protocol",
+ "silico-worker",
  "tracing",
  "tracing-subscriber",
 ]
@@ -4235,11 +4235,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "silico-sketch"
+version = "0.0.0"
+dependencies = [
+ "cxx",
+ "cxx-build",
+ "libm",
+ "proptest",
+ "sha2",
+ "silico-core",
+ "silico-protocol",
+ "silico-sketch",
+ "silico-worker",
+]
+
+[[package]]
 name = "silico-view"
 version = "0.0.0"
 dependencies = [
  "rerun",
  "silico-core",
+]
+
+[[package]]
+name = "silico-worker"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "silico-protocol",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

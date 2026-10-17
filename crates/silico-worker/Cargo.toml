@@ -1,0 +1,21 @@
+[package]
+name = "silico-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# The test operations every worker's test binary answers alike (sleeping, aborting,
+# garbage, replies out of turn). Only test workers turn it on.
+test_ops = []
+
+[dependencies]
+libc.workspace = true
+silico-protocol.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

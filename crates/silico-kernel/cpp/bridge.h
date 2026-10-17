@@ -225,8 +225,8 @@ void disable_fp_traps();
 void debug_throw_standard_failure(rust::Str message);
 void debug_throw_std_runtime_error(rust::Str message);
 void debug_throw_non_exception();
-// Turns floating-point traps on through OCCT. Only Linux can: Apple silicon ignores the
-// trap-enable bits.
+// Turns floating-point traps on through OCCT. Linux keeps them on; some Apple silicon
+// ignores the trap-enable bits (they read back as 0), and some keeps them.
 void debug_enable_fp_traps();
 // Crashes the process with SIGSEGV, as a fault inside OCCT would.
 void debug_raise_sigsegv();

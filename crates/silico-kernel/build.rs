@@ -5,16 +5,16 @@
 //! benches, examples) as a link argument, so the bridge's math and Rust's own come from
 //! it, never from the platform's math library (ARCHITECTURE.md, Deterministic kernel).
 
-use std::collections::BTreeMap;
-use std::error::Error;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 
 #[path = "cxx_env.rs"]
 mod cxx_env;
+#[path = "recipe.rs"]
+mod recipe;
 
-type BuildResult<T> = Result<T, Box<dyn Error>>;
+use recipe::{BuildResult, check_cxx_env, read_recipe};
 
 /// The OCCT libraries the bridge calls into directly. Their own dependencies are found
 /// through the libraries themselves.
@@ -116,7 +116,13 @@ fn main() -> BuildResult<()> {
     )?;
     writeln!(out, "cargo:rustc-link-arg={shim}")?;
 
-    for path in ["src/lib.rs", "cpp/bridge.h", "cpp/bridge.cpp", "cxx_env.rs"] {
+    for path in [
+        "src/lib.rs",
+        "cpp/bridge.h",
+        "cpp/bridge.cpp",
+        "cxx_env.rs",
+        "recipe.rs",
+    ] {
         writeln!(out, "cargo:rerun-if-changed={path}")?;
     }
     writeln!(out, "cargo:rerun-if-changed={}", recipe_path.display())?;
@@ -128,51 +134,4 @@ fn main() -> BuildResult<()> {
     )?;
     writeln!(out, "cargo:rerun-if-changed={}", link.display())?;
     Ok(())
-}
-
-/// Refuses C++ compiler variables that would change how Silico's C++ is compiled
-/// (cxx_env.rs). The C++ settings themselves are forced in .cargo/config.toml, not here:
-/// the cxx crate's own runtime is compiled by its build script, before this one runs.
-fn check_cxx_env() -> BuildResult<()> {
-    let mut out = std::io::stdout().lock();
-    for (key, _) in env::vars() {
-        if cxx_env::is_cxx_var(&key) {
-            writeln!(out, "cargo:rerun-if-env-changed={key}")?;
-        }
-    }
-    for name in cxx_env::CXX_VARS {
-        for prefix in ["", "HOST_", "TARGET_"] {
-            writeln!(out, "cargo:rerun-if-env-changed={prefix}{name}")?;
-        }
-    }
-    let rejected = cxx_env::rejected_cxx_vars(env::vars());
-    if !rejected.is_empty() {
-        return Err(format!(
-            "{} would change how Silico's C++ is compiled; unset it (.cargo/config.toml sets \
-             the C++ compiler and flags)",
-            rejected.join(", ")
-        )
-        .into());
-    }
-    Ok(())
-}
-
-/// Reads `KEY="value"` lines, skipping comments and blank lines.
-fn read_recipe(path: &Path) -> BuildResult<BTreeMap<String, String>> {
-    let mut recipe = BTreeMap::new();
-    for line in fs::read_to_string(path)?.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let (key, value) = line
-            .split_once('=')
-            .ok_or_else(|| format!("not KEY=\"value\": {line}"))?;
-        let value = value
-            .strip_prefix('"')
-            .and_then(|v| v.strip_suffix('"'))
-            .ok_or_else(|| format!("value isn't quoted: {line}"))?;
-        recipe.insert(key.to_owned(), value.to_owned());
-    }
-    Ok(recipe)
 }

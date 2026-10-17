@@ -13,6 +13,7 @@ mod history;
 mod primitive;
 mod profile;
 mod refusal;
+mod sketch;
 
 use serde::{Deserialize, Serialize};
 
@@ -32,6 +33,11 @@ pub use profile::{
 pub use refusal::{
     BrepDefect, ChamferKind, Described, DressingKind, EdgeTrouble, FACES_NAMED, HistoryDefect,
     OUT_OF_MEMORY, Operation, Refusal, Returned, Role, Trouble,
+};
+pub use sketch::{
+    Algorithm, Geometry, MAX_JACOBIAN_ENTRIES, MAX_SKETCH_CONSTRAINTS, MAX_SKETCH_GEOMETRY,
+    MAX_SKETCH_UNKNOWNS, MAX_SKETCH_VALUES, MAX_TAG, PointOf, PointValues, SketchGeometry,
+    SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value, within_reach,
 };
 
 /// The file descriptor a worker inherits its end of the socket pair as.
@@ -131,6 +137,9 @@ pub enum Op {
     /// Operations only the test worker answers, for tests of how the core treats a worker
     /// that crashes, hangs, or misbehaves. The production worker refuses them all.
     Debug(DebugOp),
+    /// A sketch diagnosed and solved by PlaneGCS: the sketch worker's operation (it answers
+    /// `Echo` too, and nothing else). Replies with [`Reply::Solved`].
+    Solve(SketchSystem),
 }
 
 impl Op {
@@ -147,6 +156,7 @@ impl Op {
             Op::Revolve { .. } => "Revolve",
             Op::Boolean { op, .. } => op.name(),
             Op::Tessellate { .. } => "Tessellate",
+            Op::Solve(_) => "Solve",
             Op::Echo { .. } => "Echo",
             Op::Debug(op) => op.name(),
         }
@@ -278,6 +288,8 @@ pub enum Reply {
     },
     /// The operation succeeded and has nothing to return.
     Done,
+    /// What the sketch worker found ([`Op::Solve`]).
+    Solved(Solved),
 }
 
 impl Reply {
@@ -289,6 +301,7 @@ impl Reply {
             Reply::Summary(_) => "Summary",
             Reply::FreecadMeasures(_) => "FreecadMeasures",
             Reply::Mesh(_) => "Mesh",
+            Reply::Solved(_) => "Solved",
             Reply::Echo { .. } => "Echo",
             Reply::Done => "Done",
         }

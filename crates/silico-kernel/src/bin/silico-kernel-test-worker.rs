@@ -5,8 +5,8 @@
 
 use silico_kernel::{test_ops, worker};
 use silico_protocol::{
-    DebugOp, DressingKind, EdgeTrouble, Failure, Generation, Mesh, Misbehavior, Op, OutOfTurn,
-    Refusal, Reply, RequestId, Response, Trouble, write_message,
+    DebugOp, DressingKind, EdgeTrouble, Failure, Generation, Mesh, Misbehavior, Op, Refusal, Reply,
+    RequestId, Trouble,
 };
 
 fn main() -> std::process::ExitCode {
@@ -67,42 +67,24 @@ fn main() -> std::process::ExitCode {
     })
 }
 
-/// The test operations other than `Misbehave`.
+/// The test operations other than `Misbehave`: those every test worker shares, then the
+/// ones that go through OCCT.
 fn debug(
     id: RequestId,
     generation: Generation,
     op: Op,
     socket: &mut dyn std::io::Write,
 ) -> Result<Reply, Failure> {
-    match op {
-        Op::Debug(DebugOp::Sleep { millis }) => {
-            std::thread::sleep(std::time::Duration::from_millis(millis));
-            Ok(Reply::Done)
-        }
-        Op::Debug(DebugOp::Abort) => {
-            // More lines than a crash report keeps, so the client's cap shows.
-            for line in 1..=25 {
-                tracing::warn!("aborting, as asked: line {line}");
-            }
-            std::process::abort()
-        }
-        Op::Debug(DebugOp::Segfault) => {
+    let Op::Debug(op) = op else {
+        return worker::handle(op);
+    };
+    match silico_worker::test_ops::answer(id, generation, op, socket) {
+        Ok(result) => result,
+        Err(DebugOp::Segfault) => {
             test_ops::raise_sigsegv();
             Ok(Reply::Done)
         }
-        Op::Debug(DebugOp::Garbage) => {
-            // A header claiming the largest possible frame: never a valid reply.
-            socket
-                .write_all(&[0xff; 16])
-                .and_then(|()| socket.flush())
-                .map_err(|e| {
-                    Failure::new(Refusal::Internal {
-                        what: e.to_string(),
-                    })
-                })?;
-            Ok(Reply::Done)
-        }
-        Op::Debug(DebugOp::EnableFpTraps) => {
+        Err(DebugOp::EnableFpTraps) => {
             test_ops::enable_fp_traps().map_err(|e| {
                 Failure::new(Refusal::Internal {
                     what: e.message().to_owned(),
@@ -110,25 +92,6 @@ fn debug(
             })?;
             Ok(Reply::Done)
         }
-        Op::Debug(DebugOp::ReplyOutOfTurn(out_of_turn)) => {
-            let stale = Response {
-                id: match out_of_turn {
-                    OutOfTurn::WrongId => RequestId(id.0.wrapping_sub(1)),
-                    OutOfTurn::WrongGeneration => id,
-                },
-                generation: match out_of_turn {
-                    OutOfTurn::WrongId => generation,
-                    OutOfTurn::WrongGeneration => Generation(generation.0.wrapping_add(1)),
-                },
-                result: Ok(Reply::Done),
-            };
-            write_message(socket, &stale).map_err(|e| {
-                Failure::new(Refusal::Internal {
-                    what: e.to_string(),
-                })
-            })?;
-            Ok(Reply::Done)
-        }
-        other => worker::handle(other),
+        Err(other) => worker::handle(Op::Debug(other)),
     }
 }

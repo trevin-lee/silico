@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use crate::{BooleanOp, ElementRef, FailureKind, LENGTH_TOLERANCE, OFFSET_FIELD, format_number};
 
 /// What to do when the kernel runs out of memory.
-pub const OUT_OF_MEMORY: &str = "free some memory, or make the part simpler, and try again";
+pub const OUT_OF_MEMORY: &str =
+    "free some memory, or make the part or sketch simpler, and try again";
 
 /// Why a request was refused or failed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -97,13 +98,23 @@ pub enum Refusal {
     NoEdgeToRefuse { dressing: DressingKind },
     /// A test operation sent to a production worker.
     TestOperation { op: String },
+    /// An operation another kind of worker answers (a sketch solve sent to the kernel
+    /// worker, or a kernel operation to the sketch worker).
+    OtherWorkersOp { op: String },
+    /// The sketch worker's bridge threw (PlaneGCS itself never does): a bug in Silico; its
+    /// words are the cause.
+    SolverThrew,
+    /// PlaneGCS's solution has a value that isn't finite, or is beyond a kilometre (or as
+    /// many radians) from 0, so the next solve couldn't start from it: `value`, its place in
+    /// the system.
+    SolutionOutOfReach { value: u32 },
     /// Floating-point traps found on after `op` (trap-enable bits `mask`).
     FpTrapsOn { mask: u32, op: String },
     /// Something went wrong in the worker itself, in a test worker's words.
     Internal { what: String },
-    /// OCCT ran out of memory (`Standard_OutOfMemory`, `std::bad_alloc`): a shortage, not the
-    /// values' fault, so the same request may succeed once memory is free. Its words are the
-    /// cause.
+    /// A worker ran out of memory (OCCT's `Standard_OutOfMemory`, or `std::bad_alloc` in
+    /// either worker's C++): a shortage, not the values' fault, so the same request may
+    /// succeed once memory is free. Its words are the cause.
     OutOfMemory,
 }
 
@@ -254,12 +265,16 @@ impl Refusal {
             | Refusal::BooleanResultEmpty { .. }
             | Refusal::ExtentNotFinite
             | Refusal::FacesUnmeshed { .. }
-            | Refusal::NotFinite { .. } => FailureKind::KernelFailed,
-            Refusal::TestOperation { .. } => FailureKind::UnknownOp,
+            | Refusal::NotFinite { .. }
+            | Refusal::SolutionOutOfReach { .. } => FailureKind::KernelFailed,
+            Refusal::TestOperation { .. } | Refusal::OtherWorkersOp { .. } => {
+                FailureKind::UnknownOp
+            }
             Refusal::ResultCheckMissing { .. }
             | Refusal::MalformedHistory { .. }
             | Refusal::NoEdgeToRefuse { .. }
             | Refusal::FpTrapsOn { .. }
+            | Refusal::SolverThrew
             | Refusal::Internal { .. } => FailureKind::Internal,
             Refusal::OutOfMemory => FailureKind::ResourceExhausted,
         }
@@ -523,13 +538,31 @@ impl Refusal {
                 format!("{op} is a test operation, not answered by this worker"),
                 None,
             ),
+            Refusal::OtherWorkersOp { op } => (
+                format!("{op} is answered by another kind of worker, not this one"),
+                Some("this is a bug in Silico: report it".to_owned()),
+            ),
+            Refusal::SolverThrew => (
+                "the sketch worker's bridge to its solver failed".to_owned(),
+                Some("this is a bug in Silico's sketch worker: report it".to_owned()),
+            ),
+            Refusal::SolutionOutOfReach { value } => (
+                format!(
+                    "the sketch solver's solution has a value that isn't finite or is more than {} from 0 (value {value})",
+                    format_number(crate::MAX_LENGTH)
+                ),
+                Some(
+                    "check the sketch's dimensions: they place geometry past a kilometre, or give it no size"
+                        .to_owned(),
+                ),
+            ),
             Refusal::FpTrapsOn { mask, op } => (
                 format!("floating-point traps are on (trap-enable bits {mask:#x}) after {op}"),
                 None,
             ),
             Refusal::Internal { what } => (what.clone(), None),
             Refusal::OutOfMemory => (
-                "the kernel ran out of memory".to_owned(),
+                "the worker ran out of memory".to_owned(),
                 Some(OUT_OF_MEMORY.to_owned()),
             ),
         };
@@ -854,6 +887,11 @@ mod tests {
             Refusal::TestOperation {
                 op: "DebugSleep".to_owned(),
             },
+            Refusal::OtherWorkersOp {
+                op: "Solve".to_owned(),
+            },
+            Refusal::SolverThrew,
+            Refusal::SolutionOutOfReach { value: 7 },
             Refusal::FpTrapsOn {
                 mask: 0x200,
                 op: "Fillet".to_owned(),
@@ -945,6 +983,9 @@ mod tests {
             Internal,          // MalformedHistory
             Internal,          // NoEdgeToRefuse
             UnknownOp,         // TestOperation
+            UnknownOp,         // OtherWorkersOp
+            Internal,          // SolverThrew
+            KernelFailed,      // SolutionOutOfReach
             Internal,          // FpTrapsOn
             Internal,          // Internal
             ResourceExhausted, // OutOfMemory
@@ -987,6 +1028,9 @@ mod tests {
             None,               // MalformedHistory
             None,               // NoEdgeToRefuse
             None,               // TestOperation
+            None,               // OtherWorkersOp
+            None,               // SolverThrew
+            None,               // SolutionOutOfReach
             None,               // FpTrapsOn
             None,               // Internal
             None,               // OutOfMemory

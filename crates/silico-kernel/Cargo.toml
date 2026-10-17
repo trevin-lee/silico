@@ -9,15 +9,14 @@ publish.workspace = true
 [features]
 # Operations that exist only to test the bridge. This crate's own tests turn it on
 # (the dev-dependency on itself below); nothing else should.
-test_ops = []
+test_ops = ["silico-worker/test_ops"]
 
 [dependencies]
 crc32fast.workspace = true
 cxx.workspace = true
-libc.workspace = true
 silico-protocol.workspace = true
+silico-worker.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 
 [[bin]]
 name = "silico-kernel-worker"
@@ -50,6 +49,7 @@ silico-protocol.workspace = true
 silico-core = { workspace = true, features = ["fake"] }
 silico-kernel = { path = ".", features = ["test_ops"] }
 silico-oracle.workspace = true
+tracing-subscriber.workspace = true
 
 [build-dependencies]
 cxx-build.workspace = true

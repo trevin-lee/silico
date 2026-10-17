@@ -146,6 +146,31 @@ fn kernel_and_input_errors_are_structured_and_the_worker_lives_on() {
 }
 
 #[test]
+fn a_sketch_solve_is_refused_as_another_workers() {
+    let mut w = worker();
+    let err = w
+        .call(
+            Generation(1),
+            Op::Solve(silico_protocol::SketchSystem {
+                values: vec![],
+                unknowns: vec![],
+                geometry: vec![],
+                constraints: vec![],
+                algorithms: vec![silico_protocol::Algorithm::DogLeg],
+            }),
+            TIMEOUT,
+        )
+        .unwrap_err();
+    assert_eq!(err.code(), ErrorCode::Internal, "{err}");
+    assert_eq!(err.message(), "the kernel worker couldn't do Solve");
+    assert_eq!(
+        err.cause(),
+        Some("Solve is answered by another kind of worker, not this one")
+    );
+    assert!(make_box(&mut w, 1.0, 1.0, 1.0).is_ok());
+}
+
+#[test]
 fn production_worker_refuses_debug_ops() {
     let mut w = worker();
     for op in [
@@ -327,8 +352,10 @@ fn fp_traps_switched_on_by_a_request_fail_it() {
 
 #[test]
 #[cfg(target_os = "macos")]
-fn fp_traps_cant_be_switched_on_on_apple_silicon() {
-    // The hardware ignores the trap-enable bits, so the request succeeds and traps stay off.
+fn occt_doesnt_switch_fp_traps_on_on_macos() {
+    // OCCT's OSD::SetFloatingSignal(true) doesn't set the trap-enable bits on macOS (it
+    // doesn't write FPCR, which some Apple silicon would keep: the sketch worker's tests
+    // write it directly), so the request succeeds and traps stay off.
     let mut w = test_worker();
     assert!(matches!(
         w.call(Generation(1), Op::Debug(DebugOp::EnableFpTraps), TIMEOUT)
@@ -347,7 +374,7 @@ fn fp_trap_check_fails_when_traps_are_on() {
     if cfg!(target_os = "linux") {
         assert!(on.unwrap_err().contains("floating-point traps are on"));
     } else {
-        assert!(on.is_ok(), "Apple silicon can't enable traps");
+        assert!(on.is_ok(), "OCCT doesn't switch traps on on macOS");
     }
     assert!(silico_kernel::worker::check_fp_traps().is_ok());
 }
@@ -743,7 +770,7 @@ fn a_request_to_a_worker_that_has_exited_is_a_crash() {
 
 #[test]
 fn the_trap_check_rejects_any_trap_bit() {
-    // The decision itself, on every platform (Apple silicon can't switch traps on).
+    // The decision itself, on every platform (some Apple silicon can't switch traps on).
     use silico_kernel::worker::check_fp_trap_mask;
     assert!(check_fp_trap_mask(0).is_ok());
     for bit in [0x100, 0x200, 0x400, 0x800, 0x1000, 0x8000, 0x1, 0x20] {
