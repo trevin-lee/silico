@@ -62,6 +62,17 @@ fn unreadable(why: impl std::fmt::Display) -> Error {
 }
 
 /// A file that couldn't be written, `why`, and what to try.
+/// `error`, advising to raise the limit if `cause` is a file-size limit's (EFBIG).
+fn limited(error: Error, cause: &std::io::Error) -> Error {
+    if cause.kind() == std::io::ErrorKind::FileTooLarge {
+        error.with_suggestion(
+            "a limit on a file's size stopped the write (a shell's `ulimit -f`): raise it, then save",
+        )
+    } else {
+        error
+    }
+}
+
 fn unwritable(why: impl std::fmt::Display) -> Error {
     Error::new(ErrorCode::IoFailed, format!("couldn't be written: {why}")).with_suggestion(
         "check that this user may write the file and its directory, and that the disk has room",
@@ -133,12 +144,18 @@ fn in_place(
 ) -> Result<(), Error> {
     use std::io::{Seek as _, SeekFrom};
     let (kept, mut copy) = beside(target, metadata)?;
-    if let Err(e) = copy.write_all(before).and_then(|()| copy.sync_all()) {
+    // Grown to its length first, as the document is below: a size limit stops the copy
+    // before any of it is written, so a copy left beside the file is all of the old text.
+    if let Err(e) = copy
+        .set_len(before.len() as u64)
+        .and_then(|()| copy.write_all(before))
+        .and_then(|()| copy.sync_all())
+    {
         let _ = std::fs::remove_file(&kept);
-        return Err(unwritable(format!(
-            "couldn't keep its text in {}: {e}",
-            kept.display()
-        )));
+        return Err(limited(
+            unwritable(format!("couldn't keep its text in {}: {e}", kept.display())),
+            &e,
+        ));
     }
     let over = |file: &mut std::fs::File, text: &[u8]| {
         // Grown to its new length before a byte is written: a limit on a file's size (a
@@ -160,12 +177,12 @@ fn in_place(
         Err(e) => match over(file, before) {
             Ok(()) => {
                 let _ = std::fs::remove_file(&kept);
-                Err(unwritable(format!("{e}; it's as it was")))
+                Err(limited(unwritable(format!("{e}; it's as it was")), &e))
             }
-            Err(_) => Err(unwritable(format!(
-                "{e}; its text before is in {}",
-                kept.display()
-            ))),
+            Err(_) => Err(limited(
+                unwritable(format!("{e}; its text before is in {}", kept.display())),
+                &e,
+            )),
         },
     }
 }

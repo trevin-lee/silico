@@ -828,6 +828,8 @@ fn fmt_of_a_hard_linked_document_whose_write_fails_puts_its_text_back() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(2), "{stderr}");
     assert!(stderr.contains("it's as it was"), "{stderr}");
+    // The limit's advice, not permissions' or a full disk's.
+    assert!(stderr.contains("ulimit -f"), "{stderr}");
     for name in [&a, &b] {
         assert_eq!(
             std::fs::read_to_string(name).unwrap(),
@@ -926,8 +928,20 @@ fn fmt_of_a_hard_linked_document_killed_by_a_size_limit_mid_write_leaves_it_as_i
             None => limited.env_remove(key),
         };
     }
-    let out = limited.output().unwrap();
-    assert!(!out.status.success());
+    // `exec`, so the shell's process is silico's: its number names the copy it keeps.
+    let child = limited
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let out = child.wait_with_output().unwrap();
+    // Killed by the limit (SIGXFSZ, 25), in the in-place write: the copy of the old text
+    // beside the file says it got that far.
+    use std::os::unix::process::ExitStatusExt as _;
+    assert_eq!(out.status.signal(), Some(25), "{:?}", out.status);
+    let kept = scratch.0.join(format!(".a.silico.fmt-{pid}"));
+    assert_eq!(std::fs::read_to_string(&kept).unwrap(), before);
     for name in [&a, &b] {
         assert_eq!(
             std::fs::read_to_string(name).unwrap(),
@@ -936,4 +950,8 @@ fn fmt_of_a_hard_linked_document_killed_by_a_size_limit_mid_write_leaves_it_as_i
             name.display()
         );
     }
+    assert_eq!(
+        std::fs::metadata(&a).unwrap().ino(),
+        std::fs::metadata(&b).unwrap().ino()
+    );
 }

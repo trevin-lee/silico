@@ -102,3 +102,39 @@ fn a_save_with_every_name_beside_the_file_taken_says_so_and_writes_nothing() {
     silico_core::file::save(&file, b"as read", b"formatted").unwrap();
     assert_eq!(std::fs::read(&file).unwrap(), b"formatted");
 }
+
+#[test]
+fn a_save_over_a_file_swapped_for_a_pipe_is_refused_not_waited_on() {
+    // A pipe put where the document was while it was rebuilt: with no reader, a write's
+    // open that waits would wait forever; with one, it's no document. Found by the review.
+    let dir = Scratch::new("save-fifo");
+    let fifo = dir.0.join("part.silico");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    let f = fifo.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(silico_core::file::save(&f, b"", b"x"));
+    });
+    let error = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("save waited on a pipe")
+        .unwrap_err();
+    assert_eq!(error.code(), ErrorCode::IoFailed);
+    // With a reader: opened, and refused for what it is.
+    let _reader = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&fifo)
+        .unwrap();
+    let error = silico_core::file::save(&fifo, b"", b"x").unwrap_err();
+    assert!(
+        error.to_string().contains("isn't a regular file now"),
+        "{error}"
+    );
+}
