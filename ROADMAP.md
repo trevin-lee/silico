@@ -41,7 +41,7 @@ The JSON timeline, the canonical writer, and the single parse → validate → r
 **Done when** golden models save and rebuild byte-identically on every platform, and references survive upstream edits or fail loudly.
 
 ### M3 – Sketcher
-Can run in parallel with M2. PlaneGCS in a worker, sketch entities and constraints, profile-to-face conversion, and pad, pocket, and revolve driven by sketches.
+Can run in parallel with M2, except M3.6, which needs M2.7–M2.8. PlaneGCS in a worker, sketch entities and constraints, profile-to-face conversion, and pad, pocket, and revolve driven by sketches.
 
 **Done when** the ported FreeCAD sketcher tests pass, and the latency of interactive drags through the worker has been measured. That measurement settles the IPC transport question.
 

@@ -21,7 +21,7 @@ Sources: FreeCAD at `876271d660` (main, 2026-10-04) and the oracle's release, Fr
 
 ### Building it
 
-Six `.cpp` files (`GCS`, `Constraints`, `Geo`, `SubSystem`, `qp_eq`, and `Util.h`'s typedefs). It needs:
+Five `.cpp` files (`GCS`, `Constraints`, `Geo`, `SubSystem`, `qp_eq`), and `Util.h`'s typedefs. It needs:
 
 - **Eigen 3.4** (FreeCAD requires ≥ 3.4.0; the oracle's FreeCAD 1.1.3 bundles exactly 3.4.0). `Eigen/Core`, `QR`, `Dense`, `Sparse`, `OrderingMethods`. The `FullPivLU::compute` override in `GCS.cpp` only compiles for Eigen < 3.3 and is dead with 3.4.
 - **Boost, headers only**, for one call: `boost::connected_components` over an `adjacency_list`, splitting the system into independent parts (`GCS.cpp` `initSolution`). Two other Boost includes are unused. The oracle bundles Boost 1.86.
@@ -38,7 +38,7 @@ Six `.cpp` files (`GCS`, `Constraints`, `Geo`, `SubSystem`, `qp_eq`, and `Util.h
 
 ### Diagnosis: degrees of freedom, conflicting, redundant
 
-`diagnose()` (GCS.cpp) builds the dense Jacobian of the driving rows with tag ≥ 1 and takes a full-pivot Householder QR of its transpose: degrees of freedom = unknowns − rank. When there are more rows than the rank, it groups the dependent rows, and a **popularity contest** removes, from each group, the constraint in the most groups (ties: the one with fewer rows, then the higher tag; every row of a removed tag goes together, `b626caffdc`; tag 0 and internal-alignment rows are never removed, `bffb82d531`, `aa67808f24`). It solves the rest. A removed constraint whose error is then below 1e-10 is **redundant**; the groups without one are **conflicting**, every tag in them reported. A constraint with several rows (a coincidence is two) of which only some were redundant is **partially redundant** (`65fb44df6c`). When over-constrained, degrees of freedom = unknowns − non-redundant rows (negative). No unknowns gives −1; no driving rows gives 0.
+`diagnose()` (GCS.cpp) builds the dense Jacobian of the driving rows with tag ≥ 0 (tag-0 rows, an arc's rules, count toward the rank, which is why an arc has 5 degrees of freedom; they're only never removed or reported) and takes a full-pivot Householder QR of its transpose: degrees of freedom = unknowns − rank. When there are more rows than the rank, it groups the dependent rows, and a **popularity contest** removes, from each group, the constraint in the most groups (ties: the one with fewer rows, then the higher tag; every row of a removed tag goes together, `b626caffdc`; tag 0 and internal-alignment rows are never removed, `bffb82d531`, `aa67808f24`). It solves the rest. A removed constraint whose squared error is then below 1e-10, so whose error is below **1e-5**, is **redundant** (`GCS.cpp:5588` in 1.1.3, `convergenceRedundant`); the groups without one are **conflicting**, every tag in them reported. If that solve itself fails, nothing is redundant and every group is conflicting. So FreeCAD calls two dimensions that disagree by under 1e-5 (a length of 10 and a horizontal distance of 10.000005 on a horizontal line) redundant, not conflicting. A constraint with several rows (a coincidence is two) of which only some were redundant is **partially redundant** (`65fb44df6c`). When over-constrained, degrees of freedom = unknowns − non-redundant rows (negative). No unknowns gives −1; no driving rows gives 0.
 
 A second QR, of the untransposed Jacobian, finds the **dependent parameters** (which coordinates the constraints don't fix): FreeCAD colours geometry "fully constrained" from them. FreeCAD runs it on a `std::async` thread, joined before its result is read.
 
@@ -50,7 +50,7 @@ Recompute must be bit-identical on macOS ARM and Linux x86 (ARCHITECTURE.md, inv
 |---|---|---|
 | **The order of unknowns is the order of their addresses.** `SubSystem::initialize` intersects two `std::set<double*>`, and the SQP solver sorts its parameters by pointer. That order is the Jacobian's column order, which decides pivoting ties. FreeCAD allocates each parameter with its own `new double`, so its own order depends on the allocator. | `SubSystem.cpp:59-70`, `GCS.cpp:4542` | The worker allocates every parameter (geometry, constraint values, the SQP copies) from one array, reserved once, in Silico's canonical order. Address order is then index order everywhere. |
 | **Eigen's matrix-product blocking depends on the CPU.** Eigen 3.4 reads cache sizes by CPUID on x86 and uses fixed defaults on ARM, so a product deeper than about 336 (Levenberg–Marquardt's `JᵀJ` on a sketch with that many constraints) sums in a different order. The `EIGEN_DEFAULT_L*` macros only change the fallback. | `Eigen/src/Core/products/GeneralBlockPanelKernel.h` | `Eigen::setCpuCacheSizes` with fixed values when the worker starts, and a stress case large enough to cross the threshold. |
-| `diagnose()` starts a thread (`std::async`, default policy) for the dependent parameters. It's joined before its result is read, so results don't depend on scheduling, but ARCHITECTURE.md wants workers single-threaded. | `GCS.cpp:4938, 5015` | Patch to `std::launch::deferred` (a determinism patch, under the OCCT patch policy's rules). |
+| `diagnose()` starts a thread (`std::async`, default policy) for the dependent parameters. It's joined before its result is read, so results don't depend on scheduling, but ARCHITECTURE.md wants workers single-threaded. | `GCS.cpp:4938, 5015` | Patch to `std::launch::deferred`: a single-threading patch, not a determinism one. OCCT's patch policy doesn't cover PlaneGCS; extending it is open decision 7. |
 | Pointer-keyed sets and maps elsewhere (`redundant`, `conflictingMap`, `pIndex`, `c2p`) | `GCS.h` | Only looked up, or their output is re-sorted by tag: no effect. Checked by the stress corpus, not assumed. |
 
 No randomness, time, `unordered_*`, or OpenMP. The oracle's FreeCAD.app is built with NEON and fused multiply-add, so Silico's results differ from the oracle's in the last bits: oracle comparisons use tolerances, as for OCCT.
@@ -76,7 +76,7 @@ No randomness, time, `unordered_*`, or OpenMP. The oracle's FreeCAD.app is built
 | Ellipse | centre; focus 1; minor radius | | 5 |
 | Arc of ellipse, of hyperbola | start; end; centre; focus 1; minor radius; two angles | arc rules (4) | 7 |
 | Arc of parabola | start; end; vertex; focus 1; two angles | arc rules (4) | 6 |
-| B-spline | poles; weights; start; end. **Knots aren't unknowns.** | start and end coincide with the first and last poles when the end multiplicities exceed the degree | 3 per pole |
+| B-spline | poles; weights; start; end. **Knots aren't unknowns.** | start and end coincide with the first and last poles only for a non-periodic spline whose end multiplicities exceed the degree (`Sketch.cpp:1584` in 1.1.3) | 3 per pole, plus 2 for each end that isn't tied (so 3n + 4 for a periodic spline: its end points are always unknowns, `Sketch.cpp:1529, 1542`) |
 
 - **Arcs reach the solver counter-clockwise** in the sketch plane (`getStartPoint(emulateCCW)`, `getRange(emulateCCW)`, from `0767cd35f8` after reversed arcs broke), angles in radians with end > start. **The solver never normalizes angles:** if a solve leaves the end angle below the start angle, writing it back gives the complementary arc, and equal angles give a full circle. Nothing in FreeCAD detects this "arc flip".
 - **Ellipses** are (centre, focus, minor radius): the major radius is written back as √(|focus − centre|² + b²). A solution whose minor radius passes the major one makes OCCT refuse the ellipse, and the solution is rolled back (`e423c308af` fixed the order of the setters).
@@ -101,7 +101,7 @@ Values: lengths in mm, angles in radians (Silico's file stores degrees, converte
 
 ### Reference constraints, inactive constraints
 
-A reference (driven) constraint's value is an output: in 1.1.3 its value is an unknown, and any independent part containing one is solved by SQP (`647877384a`); on main it's evaluated from the solved geometry (`92894ea3a8`). It never counts toward degrees of freedom or conflicts (`96f6c46949`, `7055b5ef0f`). A driven angle is written back reduced with `fmod(v, 2π)` (`ba78b194b3`, after two other reductions). An inactive constraint, and a `Block`, adds no rows.
+A reference (driven) constraint's value is an output: in 1.1.3 its value is an unknown, and any independent part containing one is solved by SQP (`bc85670ce9`, 2015); on main it's evaluated from the solved geometry (`92894ea3a8`). It never counts toward degrees of freedom or conflicts (`96f6c46949`, `7055b5ef0f`). A driven angle is written back reduced with `fmod(v, 2π)` (`ba78b194b3`, after two other reductions). An inactive constraint, and a `Block`, adds no rows.
 
 ### Tags
 
@@ -123,7 +123,7 @@ FreeCAD's `SketchObject::solve` (`SketchObjectConstraints.cpp:78-183`) diagnoses
 
 Partially redundant is a warning only (`b01313c0d8`). On an error FreeCAD keeps the previous shape; Silico's recompute fails the feature (SolidWorks' behavior, and recompute's since M2.4). Every attempt starts from the stored coordinates, and a failure leaves them as they were. Redundant constraints are never deleted on recompute; FreeCAD's auto-removal is an editor preference, off by default.
 
-**Silico differs on redundancy:** SolidWorks solves an over-defined sketch whose extra dimensions agree and marks them, and FreeCAD's refusal to write back a solve it did makes a model's result depend on whether a constraint is spelled twice. Silico follows SolidWorks: a sketch whose only problem is redundancy solves and keeps its result, and the redundant constraints come back as data (a warning naming them). Recorded for the maintainer in the open items.
+**Silico differs on redundancy:** SolidWorks solves an over-defined sketch whose extra dimensions agree and marks them, and FreeCAD's refusal to write back a solve it did makes a model's result depend on whether a constraint is spelled twice. Silico follows SolidWorks: a sketch whose only problem is redundancy solves and keeps its result, and the redundant constraints come back as data (a warning naming them). Since PlaneGCS calls constraints redundant when they disagree by up to 1e-5, keeping its result would quietly take one of two dimensions that disagree: Silico's own tolerance for "agree" is open decision 5 (docs/roadmap/m3-sketcher.md).
 
 ### Dragging
 
@@ -146,7 +146,7 @@ PartDesign makes faces with **FaceMakerBullseye** (`AllowMultiFace`, set for eve
 1. Every wire must be closed: OCCT's `BRep_Tool::IsClosed`, a **vertex-parity** test, so a T-junction or two loops sharing an edge (one wire after the greedy assembly) is "Wire is not closed.", and a figure-8 passes.
 2. The plane is fitted (`BRepLib_FindSurface`), "Wires are not coplanar" if none fits; its normal's sign is arbitrary. PartDesign takes the extrusion direction from the sketch's placement, never from the face.
 3. Wires are sorted largest first by the squared diagonal of their bounding box, with a tolerance (1e-7) that isn't a strict weak order (`std::stable_sort` keeps tied wires in input order).
-4. Each wire, in that order, is classified against the faces made so far, newest first, by **one vertex** (`FaceDriller::hitTest`): on a face's material it becomes a hole there; inside a hole it becomes a new face (an island); otherwise a new face. That's even–odd nesting to any depth. A wire sharing a vertex with a face is "no hit" and becomes an overlapping face (`2161725848`).
+4. Each wire, in that order, is classified against the faces made so far by **one vertex** (`FaceDriller::hitTest`): on a face's material it becomes a hole there; inside a hole it becomes a new face (an island); otherwise a new face. That's even–odd nesting to any depth. The loop runs newest first without stopping at a hit, so the oldest face that hits wins. A wire sharing a vertex with a face's outer boundary is "no hit" and becomes an overlapping face; one sharing a vertex with a hole is a hit, another hole of that face (`2161725848`; 1.1.3 `FaceMakerBullseye.cpp:132-147, 206-218`).
 5. Outer wires are made counter-clockwise about the plane and holes clockwise, whatever the input's orientation (`getWireDirection`; `9c17fe359b` fixed a crash when its face failed).
 6. Stand-alone points are ignored (`26ebefd651`). An empty result is "Cannot make face from profile". Several disjoint regions give several faces, and a pad then makes several solids.
 
@@ -159,6 +159,7 @@ FreeCAD's tests (`tests/src/Mod/Part/App/FaceMakerBullseye.cpp`, added in `88c80
 - **Direction:** pad along the sketch's normal, pocket along its negation; `Reversed` flips the final direction once (`1da079b34b`). Length must not total zero (`|L + L2| < 1e-7`, "Cannot create a pad with a total length of zero.", `6167e9f77a`); negative lengths extrude backwards (the per-side minimum was removed in `b2520d489a`). SolidWorks refuses a depth ≤ 0 and offers reverse; Silico follows SolidWorks.
 - **Modes:** one side; symmetric (**one** prism from −L/2 to +L/2, not two fused, `c384a52fa5`); two sides (one prism from +L back to −L2, `a01cab21cc`); through all for pocket (2.02 × the diagonal of the base and the profile's box, `43de589732`); up to face and up to first later.
 - **Pocket with no base** silently becomes its tool. Silico refuses it.
+- **Revolve modes in 1.1.3:** `Angle`, `UpToLast`, `UpToFirst`, `UpToFace`, `TwoAngles` ("Angles of revolution nullify each other" when they sum to zero), and for groove also `ThroughAll`; 1.1.3 refuses revolving up to first or last ("not yet supported"). M3.6 builds `Angle` and symmetric; the rest wait. Main's two-sided revolve with signed angles is newer.
 - **Revolve:** angle in (0°, 360°] ("too large", "too small" below 1e-12 rad, `3694da3102`, `c0de42335b`); right-handed about the axis, which `Reversed` reverses (a profile at +X about +Y turns toward −Z); symmetric turns the profile by −angle/2 first. The axis is a sketch axis (`H_Axis`, `V_Axis`), the n-th construction line, an origin axis, or a line or circle edge; it must not be parallel to the sketch's normal (|cos| at 1e-12, both senses, `501c3dc657`, `fdf66b3e88`); it may touch the profile or run along an edge, but not cross it ("Revolve axis intersects the sketch", `8371982dfc` and the 2012 refinements). Groove is a revolve that cuts.
 - **The result** fuses with or cuts the base; the result must hold a solid, every solid counted (`eb52dd4a9a`).
 - **Refine** has been on by default since `e490531510` (2024): oracle comparisons of face and edge counts set it explicitly.
@@ -169,7 +170,7 @@ FreeCAD's tests (`tests/src/Mod/Part/App/FaceMakerBullseye.cpp`, added in `88c80
 - Constraint forms explicit in the file, refused at the gate when they don't fit; never "malformed" at solve time; never a hidden, unconstrained solve.
 - Every choice FreeCAD makes from the current geometry (tangency direction, sides) stored in the constraint.
 - Tags from constraint positions, never a counter.
-- Redundant-only sketches solve and keep their result, the redundancy reported (SolidWorks), where FreeCAD fails the feature.
+- Redundant-only sketches solve and keep their result, the redundancy reported (SolidWorks), where FreeCAD fails the feature, with Silico's own tolerance for constraints that agree (open decision 5).
 - Crossing, overlapping, and touching profile wires refused, naming the elements.
 - Pad and pocket depth > 0, with `reversed`; pocket without a base refused.
 - No heuristics: no weight nudge, no geometry-id reuse by endpoint matching, no auto-removal, no fix-up of faces.
@@ -180,27 +181,27 @@ FreeCAD's own tests barely test solving: there are two PlaneGCS tests, none of t
 
 | FreeCAD | What | Silico |
 |---|---|---|
-| `tests/src/Mod/Sketcher/App/planegcs/Constraints.cpp` `tangentBSplineAndArc` | Arc and B-spline tangent through a point | M3.1, through the worker, with the angle fixed (FreeCAD's lists it as an unknown, so it isn't imposed) and tangency checked against a derivative computed independently, not at FreeCAD's 0.005 |
+| `tests/src/Mod/Sketcher/App/planegcs/Constraints.cpp` `tangentBSplineAndArc` | Arc and B-spline tangent through a point | M3.3 (B-splines aren't in M3.1's requests), through the worker, with the angle fixed (FreeCAD's lists it as an unknown, so it isn't imposed) and tangency checked against a derivative computed independently, not at FreeCAD's 0.005 |
 | `SketcherTests/TestSketcherSolver.py` `CreateRectangleSketch` | Rectangle: 4 lines, 4 coincidences, 2 horizontal, 2 vertical, a corner's x and y, 2 distances | M3.1 (solves; corners analytic), M3.3 (degrees of freedom 0) |
-| `TestSketcherSolver.py` `testBoxCase`, `testSlotCase` | The box's corners after two datums ((90, −50), (−97.573036, 31.370787)); the slot's apex (67.1279195, 80) | M3.3, values from the oracle |
+| `TestSketcherSolver.py` `testBoxCase`, `testSlotCase` | `testBoxCase` asserts nothing: its corners after two datums, (90, −50) and (−97.573036, 31.370787), are derived by hand. `testSlotCase` asserts 4 edges, then 9; its apex (67.1279195, 80) is derived | M3.3, the derived values confirmed by the oracle |
 | `TestSketcherSolver.py` `testIssue3245`, `_2`; `SketchObject.cpp` `testConstraintAfterDeletingGeo` | Deleting geometry drops its constraints and keeps the rest | M3.2's gate (stable IDs), the command API later |
 | `TestSketchValidateCoincidents.py` `testValidateConstraintsCase` | A constraint naming missing geometry | M3.2: the gate refuses it, naming it |
 | `TestCoincidentCommandGui.py` fixtures (`cb2780e2fa`, 2026-09) | A coincidence that conflicts (conflicting 1, 2, 3; degrees of freedom 5), a horizontal stated twice (redundant: the later), coincidences collapsing a line (solved, then refused as invalid geometry) | M3.3: the solver's outcomes, pure solver fixtures despite the file's name |
 | `TestSketcherSolver.py` circle–line distance (`:530`, `:561`, `:589`) | A driving distance of 10 measures 10 ± 1e-7; a reference distance reads back +10 | M3.3 |
 | `TestSketcherSolver.py` oriented and signed distances and tangents (`:618`, `:675`, `:715`, `:793`) | Sides kept through a 10× change | M3.3, if signed constraints come (main's, not 1.1.3's: the decision below) |
 | `TestSketcherSolver.py` `testBlockConstraintEllipse` | Block | Later; FreeCAD's test re-checks a stale status four times |
+| `TestSketcherSolver.py` `testConstructionToggleTNP` (bug 15484) | Toggling construction lines changes a pad's faces; a sketch attached to `Face6` must follow to `Face9` | M3.6, with M2.7–M2.8's names |
+| `tests/src/Mod/Sketcher/App/SketchObject.cpp` `testGetPointFromGeom*` (13 tests) | What `start`, `end`, and `mid` are for each kind of geometry, including arcs of conics and periodic and non-periodic B-splines | M3.2: what a point reference means, for each kind M3.2 has |
+| `SketchObject.cpp` `testGeoIdFromShapeType*` (6 tests), `testGetElementName` | The names `Edge<n>`, `Vertex<n>`, `ExternalEdge<n>`, `H_Axis`, `V_Axis`, `RootPoint` | Not ported: Silico names elements by stable ID (M2.7), and imports FreeCAD's names only in the FreeCAD importer |
 | `tests/src/Mod/Part/App/FaceMakerBullseye.cpp` (16 tests) | Areas with holes and islands, many holes, a tilted plane, reversed wires | M3.5, every one |
 | `PartDesignTests/TestPocket.py` `testPocketDimensionCase`; `testPocketThroughAllCase` | 75; 62.5 | M3.6, oracle cases with analytic volumes |
 | `TestPad.py` `testPadTwoDimensionsCase`; `tests/src/Mod/PartDesign/App/Pad.cpp` `TestMidPlaneTwoLength` | 4; 3000π | M3.6 |
 | `TestPad.py` `testPadToConcaveCase` | 700π + ½√80 + 40.5·asin(1/9) = 2208.0963: also fixes the revolve's sense | M3.6 (once up-to-first exists) |
-| `tests/src/Mod/PartDesign/App/Revolution.cpp` | Torus segments, 2π²·R·r²·θ/360 | M3.6, with 1.1's single-angle and symmetric modes |
+| `tests/src/Mod/PartDesign/App/Revolution.cpp` (main only, `b2da06bfe0`, 2026-08: it tests main's `SideType`) | Torus segments, 2π²·R·r²·θ/360 | M3.6: new oracle cases modelled on it, in 1.1.3's single-angle and symmetric modes |
+| `PartDesignTests/TestRevolve.py` `testRevolveFace`, `testGrooveFace` | Face counts after revolving a box's face | Not ported: they revolve a face, not a sketch, and count faces only (refine-dependent) |
 
 Cases FreeCAD lacks, which Silico adds: a free line (4 degrees of freedom); an extra constraint on a fully constrained sketch (over-constrained, naming it); a vertical line, a horizontal line, and a 90° angle between them (redundant); an 80° angle against a horizontal and a vertical (conflicting); a radius of 0 and −1 and a distance of 0 (refused by the gate); construction geometry left out of the profile; the arc flip; an ellipse whose radii cross; for M3.5, open, crossing, overlapping, and touching profiles, a T-junction, a figure-8, and lone points.
 
 ## Decisions this note leaves open
 
-Recorded in the M3 open items for the maintainer:
-
-1. **Signed constraints.** 1.1.3's PlaneGCS has no signed distances or oriented tangents, so a side holds only while the solver doesn't cross over. Main's commits (`3c8a254356`, `f432d1c6a7`, `5a6be36bc3`) could be carried as patches, but then the 1.1.3 oracle can't check those cases. Recommended: 1.1.3 as it is for M3, the sides stored in the format from the start (so a later patch changes no file), and the patches considered when the oracle moves to a FreeCAD that has them.
-2. **Where nesting is decided (M3.5).** Bullseye's classification runs on OCCT faces. Doing it in the core needs exact point-in-region tests on arcs, ellipses, and B-splines; doing it in the worker puts logic below the boundary ARCHITECTURE.md draws. Recommended: the core decides nesting and refusals from the solved 2D geometry (it has it exactly), and the worker only builds the faces it's told to.
-3. **Several solids from one sketch.** FreeCAD allows a pad of disjoint regions (several solids, `AllowCompound`); M2.1's D2 says every feature makes one solid. Recommended: refuse disjoint regions in a pad for now, naming them, until multi-body features exist.
+The decisions this study leaves to the maintainer are in docs/roadmap/m3-sketcher.md, *Open decisions*, with the steps that depend on each.
