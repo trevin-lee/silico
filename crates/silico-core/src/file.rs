@@ -82,10 +82,16 @@ pub fn save(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Error> {
     // Whether this process may write it, as the system says, whatever its mode bits say
     // (a file its owner can't write but its group can, another user's): opened to write,
     // not truncated.
+    // Opened without waiting, and checked to be a regular file still: one swapped for a
+    // pipe while it was rebuilt would block an open forever.
     let mut writable = std::fs::OpenOptions::new()
         .write(true)
+        .custom_flags(libc::O_NONBLOCK)
         .open(&target)
         .map_err(unwritable)?;
+    if !writable.metadata().map_err(unwritable)?.is_file() {
+        return Err(unwritable("it isn't a regular file now"));
+    }
     // Changed while it was rebuilt (another editor saved it): left to them.
     if read(&target)? != before {
         return Err(Error::new(
@@ -135,6 +141,11 @@ fn in_place(
         )));
     }
     let over = |file: &mut std::fs::File, text: &[u8]| {
+        // Grown to its new length before a byte is written: a limit on a file's size (a
+        // shell's `ulimit -f`) stops it here, with its text as it was, not part way.
+        if text.len() > before.len() {
+            file.set_len(text.len() as u64)?;
+        }
         file.seek(SeekFrom::Start(0))?;
         file.write_all(text)?;
         file.set_len(text.len() as u64)?;

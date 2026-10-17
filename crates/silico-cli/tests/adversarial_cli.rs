@@ -873,3 +873,67 @@ fn the_cache_of_a_linked_document_is_beside_the_file_it_names() {
     );
     assert_eq!(ls(&scratch.0), ["cache-home", "library", "link.silico"]);
 }
+
+#[test]
+fn fmt_of_a_hard_linked_document_killed_by_a_size_limit_mid_write_leaves_it_as_it_was() {
+    // Found by the review: a limit on a file's size between the old text's and the new's
+    // killed the write part way, leaving both names a prefix of the new text, not a
+    // document. The file is grown to its new length first, so the limit stops it before a
+    // byte of it changes.
+    let scratch = Scratch::new("hardlink-limit-mid");
+    let box_of = |id: &str, length: u32| {
+        format!(
+            r#"{{"id": "k7f2qx3{id}", "type": "box", "v": 1, "name": "{id}", "position": [0, 0, 0], "length": {length}, "width": 2, "height": 1}}"#
+        )
+    };
+    let before = format!(
+        "{{\"silico\": 1, \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}}, \"features\": [{}, {}, {}, {}]}}\n",
+        box_of("a", 4),
+        box_of("b", 5),
+        box_of("c", 6),
+        box_of("d", 7)
+    );
+    assert!(before.len() < 1000, "{}", before.len());
+    let a = scratch.file("a.silico", &before);
+    let b = scratch.0.join("b.silico");
+    std::fs::hard_link(&a, &b).unwrap();
+    let warm = run(&scratch, &[os("fmt"), os("--check"), os("a.silico")]);
+    assert_eq!(warm.code(), Some(1), "{}", warm.stderr);
+    // ulimit -f's block (512 or 1024 bytes, by shell), measured: a limit of 1024 bytes,
+    // above the old text, below the new (with four fingerprints).
+    let probe = scratch.0.join("probe");
+    let _ = Command::new("sh")
+        .arg("-c")
+        .arg("trap '' XFSZ; ulimit -f 1; head -c 4096 /dev/zero > \"$0\"")
+        .arg(&probe)
+        .status();
+    let block = std::fs::metadata(&probe).unwrap().len();
+    std::fs::remove_file(&probe).unwrap();
+    let silico = command(&scratch, &worker(), &[]);
+    let mut limited = Command::new("sh");
+    limited
+        .arg("-c")
+        .arg(format!(
+            "ulimit -f {}; exec \"$0\" fmt a.silico",
+            1024 / block
+        ))
+        .arg(silico.get_program())
+        .current_dir(&scratch.0)
+        .stdin(Stdio::null());
+    for (key, value) in silico.get_envs() {
+        match value {
+            Some(value) => limited.env(key, value),
+            None => limited.env_remove(key),
+        };
+    }
+    let out = limited.output().unwrap();
+    assert!(!out.status.success());
+    for name in [&a, &b] {
+        assert_eq!(
+            std::fs::read_to_string(name).unwrap(),
+            before,
+            "{}",
+            name.display()
+        );
+    }
+}
