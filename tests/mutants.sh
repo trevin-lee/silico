@@ -30,8 +30,9 @@ echo "mutants: testing $commit"
 # handling (silico-core's pool.rs: killed_unstarted, back-off reset, a newer worker waking
 # a slot), a superseded request's stop, and dropping a pool of workers; in silico-core,
 # how fast recompute gets through long chains and wide timelines (and through them again
-# unchanged), that dropping the engine mid-recompute returns at once, and that naming
-# stays linear in the features and the elements named.
+# unchanged), that dropping the engine mid-recompute returns at once, and that a name
+# reported for many elements is written once and stays within its size bound
+# (silico-core's naming/build.rs, MOST_WEIGHT, which names_that_would_double_... tests too).
 kernel_wall_clock=(
   dropping_the_pool_amid_crashes_kills_floods_and_advances_leaves_nothing
   superseded_work_too_young_to_stop_at_advance_is_stopped_once_it_has_run_stop_after
@@ -44,8 +45,6 @@ core_wall_clock=(
   a_chain_of_four_hundred_booleans_finishes_promptly
   five_thousand_independent_features_finish_promptly
   dropping_the_engine_mid_recompute_returns_at_once_and_the_run_is_superseded
-  a_thousand_holes_drilled_one_by_one_name_in_linear_time
-  names_that_would_double_with_every_feature_stay_bounded
   a_name_reported_for_many_elements_is_written_once
 )
 # package(p) & (test(=a) | test(=b) | ...), for a package and its tests.
