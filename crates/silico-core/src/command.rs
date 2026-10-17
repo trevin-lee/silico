@@ -18,7 +18,7 @@ use crate::{Error, ErrorCode};
 /// the gate, then each failed feature and each fingerprint that doesn't hold, in timeline
 /// order), and how many there are, more than [`Problems::errors`] lists only when the gate
 /// found too many to list.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Problems {
     errors: Vec<Error>,
     total: u64,
@@ -30,7 +30,8 @@ impl Problems {
         Problems { errors, total }
     }
 
-    /// The problems listed: every one, or the first hundred the gate found.
+    /// The problems listed: every one, or the first [`document::PROBLEMS_LISTED`] the gate
+    /// found.
     pub fn errors(&self) -> &[Error] {
         &self.errors
     }
@@ -51,10 +52,16 @@ impl Problems {
 /// rebuild.
 pub fn gate(bytes: &[u8]) -> Result<Checked, Problems> {
     let document = document::read(bytes).map_err(|error| Problems::of(vec![error]))?;
-    Checked::new(document).map_err(|invalid| Problems {
-        errors: invalid.errors().to_vec(),
-        total: invalid.total(),
-    })
+    Checked::new(document).map_err(Problems::from)
+}
+
+impl From<document::Invalid> for Problems {
+    fn from(invalid: document::Invalid) -> Self {
+        Problems {
+            errors: invalid.errors().to_vec(),
+            total: invalid.total(),
+        }
+    }
 }
 
 /// A gated document rebuilt on `engine`, waited for: its model; or none, if a later

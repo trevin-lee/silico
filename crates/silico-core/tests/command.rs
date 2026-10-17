@@ -12,7 +12,9 @@ use commands::{check_bytes, engine, format_bytes};
 use example::EXAMPLE;
 use silico_core::command::{self, Formatted};
 use silico_core::document::{FeatureId, read};
+use silico_core::fake::FakeKernel;
 use silico_core::kernel::{Op, Primitive};
+use silico_core::recompute::Recompute;
 use silico_core::{Error, ErrorCode};
 
 fn id(text: &str) -> FeatureId {
@@ -102,20 +104,23 @@ fn an_outline_escapes_what_could_break_or_hide_in_its_lines() {
         "{outline}"
     );
     assert_eq!(outline.lines().count(), 5);
-    // Spaces that look like the plain one, written so they don't (found by the review).
-    for (space, written) in [
-        ('\u{a0}', r"\u{a0}"),
-        ('\u{2002}', r"\u{2002}"),
-        ('\u{3000}', r"\u{3000}"),
-    ] {
+    // Every space but the plain one, which would look like it, written so it doesn't
+    // (found by the review).
+    let spaces: Vec<char> = (0..=0x10ffff_u32)
+        .filter_map(char::from_u32)
+        .filter(|c| c.is_whitespace() && *c != ' ' && !c.is_control())
+        .collect();
+    assert!(spaces.contains(&'\u{a0}') && spaces.contains(&'\u{3000}'));
+    for space in spaces {
         let text = EXAMPLE.replace(
             r#""name": "Block""#,
             &format!(r#""name": "Top{space}Plate""#),
         );
         let outline = command::outline(&read(text.as_bytes()).unwrap());
+        let written = format!("\\u{{{:x}}}", space as u32);
         assert!(
             outline.starts_with(&format!(r#"k7f2qx3m "Top{written}Plate" box"#)),
-            "{outline}"
+            "{space:?}: {outline}"
         );
     }
     let text = EXAMPLE.replace(r#""name": "Block""#, r#""name": "Top Plate""#);
@@ -401,4 +406,22 @@ fn a_rebuild_superseded_by_another_is_none_not_an_error() {
         assert!(older.join().unwrap().unwrap().is_none());
         assert_eq!(engine.published().as_ref(), Some(&newer));
     });
+}
+
+#[test]
+fn engines_sharing_a_kernel_in_turn_dont_supersede_each_other() {
+    // The CLI's files in several directories: an engine (a cache) each, one kernel, run
+    // one after another. Each starts a generation newer than the kernel's, so each
+    // publishes, though the other advanced the kernel past its own last generation.
+    let kernel = std::sync::Arc::new(FakeKernel::new(2).unwrap());
+    let first = Recompute::new(std::sync::Arc::clone(&kernel));
+    let second = Recompute::new(std::sync::Arc::clone(&kernel));
+    for _ in 0..3 {
+        for engine in [&first, &second] {
+            let model = command::rebuild(engine, command::gate(EXAMPLE.as_bytes()).unwrap())
+                .unwrap()
+                .expect("superseded");
+            assert!(command::check(&model).unwrap().is_empty());
+        }
+    }
 }

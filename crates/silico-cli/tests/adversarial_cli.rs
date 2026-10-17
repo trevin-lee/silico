@@ -748,3 +748,110 @@ fn show_of_bytes_that_arent_utf8_is_exit_1_saying_so() {
     assert!(out.stderr.contains("UTF-8"), "{}", out.stderr);
     assert!(out.stdout.is_empty());
 }
+
+// --- Found by the review's second round ------------------------------------------------
+
+/// The names in `dir`, sorted.
+fn ls(dir: &Path) -> Vec<String> {
+    let mut left: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    left.sort();
+    left
+}
+
+#[test]
+fn fmt_of_a_hard_linked_document_whose_write_fails_puts_its_text_back() {
+    // The in-place write's failure path: the write fails (EFBIG, under a file-size limit
+    // with SIGXFSZ ignored) after the old text was kept beside it, and the old text goes
+    // back, under both names, with nothing left beside them.
+    let scratch = Scratch::new("hardlink-write-fails");
+    // Padded to 1000 bytes: under a 1024-byte file-size limit the old text fits, the new
+    // (with a fingerprint) doesn't.
+    let pad = 1000 - EXAMPLE.len();
+    let before = EXAMPLE.replace(
+        r#""name": "Block""#,
+        &format!(r#""name": "Block{}""#, "x".repeat(pad)),
+    );
+    assert_eq!(before.len(), 1000);
+    let a = scratch.file("a.silico", &before);
+    let b = scratch.0.join("b.silico");
+    std::fs::hard_link(&a, &b).unwrap();
+    let warm = run(&scratch, &[os("fmt"), os("--check"), os("a.silico")]);
+    assert_eq!(warm.code(), Some(1), "{}", warm.stderr);
+    // ulimit -f's block (512 or 1024 bytes, by shell), measured.
+    let probe = scratch.0.join("probe");
+    let _ = Command::new("sh")
+        .arg("-c")
+        .arg("trap '' XFSZ; ulimit -f 1; head -c 4096 /dev/zero > \"$0\"")
+        .arg(&probe)
+        .status();
+    let block = std::fs::metadata(&probe).unwrap().len();
+    std::fs::remove_file(&probe).unwrap();
+    let silico = command(&scratch, &worker(), &[]);
+    let mut limited = Command::new("sh");
+    limited
+        .arg("-c")
+        .arg(format!(
+            "trap '' XFSZ; ulimit -f {}; exec \"$0\" fmt a.silico",
+            1024 / block
+        ))
+        .arg(silico.get_program())
+        .current_dir(&scratch.0)
+        .stdin(Stdio::null());
+    for (key, value) in silico.get_envs() {
+        match value {
+            Some(value) => limited.env(key, value),
+            None => limited.env_remove(key),
+        };
+    }
+    let out = limited.output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("it's as it was"), "{stderr}");
+    for name in [&a, &b] {
+        assert_eq!(
+            std::fs::read_to_string(name).unwrap(),
+            before,
+            "{}",
+            name.display()
+        );
+    }
+    assert_eq!(
+        ls(&scratch.0),
+        [".silico-cache", "a.silico", "b.silico", "cache-home"]
+    );
+}
+
+#[test]
+fn files_in_two_directories_each_have_their_own_cache() {
+    // One pool, but an engine for each directory, its cache beside its files.
+    let scratch = Scratch::new("two-dirs");
+    std::fs::create_dir(scratch.0.join("one")).unwrap();
+    std::fs::create_dir(scratch.0.join("two")).unwrap();
+    scratch.file("one/a.silico", EXAMPLE);
+    scratch.file("two/b.silico", EXAMPLE);
+    let out = run(
+        &scratch,
+        &[os("check"), os("one/a.silico"), os("two/b.silico")],
+    );
+    assert_eq!(out.code(), Some(0), "{}", out.stderr);
+    assert_eq!(ls(&scratch.0.join("one")), [".silico-cache", "a.silico"]);
+    assert_eq!(ls(&scratch.0.join("two")), [".silico-cache", "b.silico"]);
+}
+
+#[test]
+fn the_cache_of_a_linked_document_is_beside_the_file_it_names() {
+    let scratch = Scratch::new("link-cache");
+    std::fs::create_dir(scratch.0.join("library")).unwrap();
+    scratch.file("library/real.silico", EXAMPLE);
+    std::os::unix::fs::symlink("library/real.silico", scratch.0.join("link.silico")).unwrap();
+    let out = run(&scratch, &[os("check"), os("link.silico")]);
+    assert_eq!(out.code(), Some(0), "{}", out.stderr);
+    assert_eq!(
+        ls(&scratch.0.join("library")),
+        [".silico-cache", "real.silico"]
+    );
+    assert_eq!(ls(&scratch.0), ["cache-home", "library", "link.silico"]);
+}

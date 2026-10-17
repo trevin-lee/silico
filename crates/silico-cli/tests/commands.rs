@@ -345,7 +345,7 @@ fn fmt_of_a_drifted_file_rewrites_it_and_is_clean() {
 }
 
 #[test]
-fn checking_several_files_in_a_directory_starts_its_workers_once() {
+fn checking_several_files_starts_its_workers_once_whatever_their_directories() {
     // Found by the review: each file started a pool of its own, files × cores workers
     // with nothing to build. Counted from the workers' start log.
     let scratch = Scratch::new("one-pool");
@@ -366,12 +366,23 @@ fn checking_several_files_in_a_directory_starts_its_workers_once() {
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         stderr(&out).matches("started kernel worker").count()
     };
-    for name in ["a.silico", "b.silico", "c.silico"] {
+    std::fs::create_dir(scratch.0.join("x")).unwrap();
+    std::fs::create_dir(scratch.0.join("y")).unwrap();
+    for name in ["x/a.silico", "x/b.silico", "y/c.silico", "y/d.silico"] {
         std::fs::write(scratch.0.join(name), EXAMPLE).unwrap();
     }
-    let one = started(&["a.silico"]);
+    let one = started(&["x/a.silico"]);
     assert!(one > 0);
-    assert_eq!(started(&["a.silico", "b.silico", "c.silico"]), one);
+    assert_eq!(started(&["x/a.silico", "x/b.silico"]), one);
+    // Directories in turn, each with its own cache, on the one pool (the review found a
+    // pool started at every change of directory).
+    assert_eq!(
+        started(&["x/a.silico", "y/c.silico", "x/b.silico", "y/d.silico"]),
+        one
+    );
+    for dir in ["x", "y"] {
+        assert!(scratch.0.join(dir).join(".silico-cache").is_dir(), "{dir}");
+    }
 }
 
 /// What `tests/contract/check-line.json` pins: the line `silico check --json` writes for

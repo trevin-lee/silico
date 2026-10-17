@@ -8,8 +8,7 @@
 //! document's).
 
 use std::ffi::OsString;
-use std::io::{Read as _, Write as _};
-use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -17,7 +16,7 @@ use std::sync::Arc;
 use silico_core::cache::Cache;
 use silico_core::command::{self, Problems};
 use silico_core::document::Checked;
-use silico_core::document::json::MAX_INPUT_LEN;
+use silico_core::file::{self, directory, opened_and_read, read};
 use silico_core::pool::KernelPool;
 use silico_core::recompute::Model;
 use silico_core::recompute::Recompute;
@@ -249,7 +248,7 @@ fn fmt(engines: &mut Engines, file: &Path, check_only: bool) -> Ended {
         );
         return Ended::Problems;
     }
-    if !same && let Err(error) = write_whole(file, &bytes, formatted.text.as_bytes()) {
+    if !same && let Err(error) = file::save(file, &bytes, formatted.text.as_bytes()) {
         say!("{}: {error}", shown(file));
         return Ended::Failed;
     }
@@ -260,12 +259,15 @@ fn fmt(engines: &mut Engines, file: &Path, check_only: bool) -> Ended {
     problems
 }
 
-/// The engine the last file was rebuilt on, and the directory of its cache: the next file
-/// whose cache is there is rebuilt on it too, so `silico check *.silico` starts its kernel
-/// workers once, not once a file.
+/// The kernel pool every file is rebuilt on, started for the first file that needs one,
+/// and the engine of the last file's cache directory: a file whose cache is elsewhere gets
+/// an engine of its own over the same pool (the files are rebuilt in turn, each recompute a
+/// generation newer than the last, so none supersedes another's), so `silico check` starts
+/// its kernel workers once, whatever directories its files are in.
 #[derive(Default)]
 struct Engines {
-    current: Option<(PathBuf, Recompute<KernelPool>)>,
+    pool: Option<Arc<KernelPool>>,
+    current: Option<(PathBuf, Recompute<Arc<KernelPool>>)>,
 }
 
 impl Engines {
@@ -273,15 +275,15 @@ impl Engines {
     /// beside the file (`.silico-cache/`, beside the file a link names).
     fn rebuild(&mut self, file: &Path, checked: Checked) -> Result<Arc<Model>, Error> {
         let dir = cache_directory(file);
-        // Another directory's engine is stopped before this one's starts.
         let kept = self.current.take().filter(|(of, _)| *of == dir);
         let (dir, engine) = match kept {
             Some(current) => current,
             None => {
-                let engine = Recompute::with_cache(
-                    KernelPool::start()?,
-                    Cache::open(dir.join(".silico-cache")),
-                );
+                let pool = match &self.pool {
+                    Some(pool) => Arc::clone(pool),
+                    None => Arc::clone(self.pool.insert(Arc::new(KernelPool::start()?))),
+                };
+                let engine = Recompute::with_cache(pool, Cache::open(dir.join(".silico-cache")));
                 (dir, engine)
             }
         };
@@ -355,7 +357,10 @@ fn textconv(file: &Path) -> Ended {
     };
     match written.and_then(|()| out.flush()) {
         Ok(()) => Ended::Clean,
-        Err(e) => fail(io_failed(format!("couldn't be converted: {e}"))),
+        Err(e) => fail(
+            Error::new(ErrorCode::IoFailed, format!("couldn't be converted: {e}"))
+                .with_suggestion("check that the output can be written (a closed pipe stops it)"),
+        ),
     }
 }
 
@@ -366,43 +371,6 @@ fn shown(file: &Path) -> String {
 
 fn line(value: serde_json::Value) {
     let _ = writeln!(std::io::stdout().lock(), "{value}");
-}
-
-/// `file`'s bytes, if it's a regular file (a document is one: a pipe or a device, which
-/// could hang or never end, isn't), at most one more than a document may be (the reader
-/// refuses it then, saying so); or why not.
-fn read(file: &Path) -> Result<Vec<u8>, Error> {
-    opened_and_read(file).map(|(_, bytes)| bytes)
-}
-
-/// `file`, opened, and as much of it as [`read`] reads, the rest left to read.
-fn opened_and_read(file: &Path) -> Result<(std::fs::File, Vec<u8>), Error> {
-    let couldnt = |e: std::io::Error| io_failed(format!("couldn't be read: {e}"));
-    // Opened without waiting (a pipe with no writer would block an open), then checked.
-    let opened = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK)
-        .open(file)
-        .map_err(couldnt)?;
-    let metadata = opened.metadata().map_err(couldnt)?;
-    if !metadata.is_file() {
-        return Err(io_failed(
-            "couldn't be read: it isn't a regular file".to_owned(),
-        ));
-    }
-    let mut opened = opened;
-    let mut bytes = Vec::new();
-    (&mut opened)
-        .take(MAX_INPUT_LEN as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(couldnt)?;
-    Ok((opened, bytes))
-}
-
-fn directory(file: &Path) -> &Path {
-    file.parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."))
 }
 
 /// Each problem on stderr, after the file it's about: its code and words, then the
@@ -420,151 +388,4 @@ fn print_problems(file: &Path, problems: &Problems) {
             problems.total() - listed
         );
     }
-}
-
-/// A file that couldn't be read or written, as `why` says.
-fn io_failed(why: String) -> Error {
-    let suggestion = if why.starts_with("couldn't be read") {
-        "check the file's name, and that it's a regular file this user may read"
-    } else if why.starts_with("couldn't be written") {
-        "check that this user may write the file and its directory, and that the disk has room"
-    } else {
-        "check that the output can be written (a closed pipe stops it)"
-    };
-    Error::new(ErrorCode::IoFailed, why).with_suggestion(suggestion)
-}
-
-/// Writes `bytes` over `file`, which held `before` when it was read: the file it names
-/// (through a symbolic link, which stays), keeping its permissions. Whole, to a new file
-/// beside it renamed over it, so a reader never sees a part of it and a write cut short
-/// leaves the old file; or, if it has other names (hard links), which a rename would part
-/// from it, in place, with the old text kept beside it until the new is on disk, and put
-/// back if the write fails (a full disk), so a write cut short never loses the document
-/// (killed mid-write, the old text is in the file beside it, `.NAME.fmt-PID`). Refused if
-/// this process may not write it, or it changed since it was read.
-fn write_whole(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Error> {
-    let target =
-        std::fs::canonicalize(file).map_err(|e| io_failed(format!("couldn't be written: {e}")))?;
-    let metadata =
-        std::fs::metadata(&target).map_err(|e| io_failed(format!("couldn't be written: {e}")))?;
-    // Whether this process may write it, whatever its mode says (a file its owner can't
-    // write but others can, another user's): opened to write, not truncated.
-    let writable = std::fs::OpenOptions::new().write(true).open(&target);
-    let mut writable = match writable {
-        Ok(_) if metadata.permissions().readonly() => None,
-        Ok(writable) => Some(writable),
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => None,
-        Err(e) => return Err(io_failed(format!("couldn't be written: {e}"))),
-    }
-    .ok_or_else(|| io_failed("couldn't be written: it's read-only".to_owned()))?;
-    // Changed while it was rebuilt (another editor saved it): left to them.
-    if read(&target)? != before {
-        return Err(io_failed(
-            "couldn't be written: it changed while it was rebuilt; run `silico fmt` again"
-                .to_owned(),
-        ));
-    }
-    if metadata.nlink() > 1 {
-        return in_place(&target, &mut writable, &metadata, before, bytes);
-    }
-    let (partial, mut f) = beside(&target, &metadata)?;
-    let written = f
-        .write_all(bytes)
-        .and_then(|()| f.set_permissions(metadata.permissions()))
-        .and_then(|()| f.sync_all())
-        .map_err(|e| format!("couldn't write {}: {e}", partial.display()))
-        .and_then(|()| {
-            std::fs::rename(&partial, &target)
-                .map_err(|e| format!("couldn't rename {} over it: {e}", partial.display()))
-        });
-    written.map_err(|why| {
-        let _ = std::fs::remove_file(&partial);
-        io_failed(format!("couldn't be written: {why}"))
-    })
-}
-
-/// `bytes` written over `target`, open in `file`, which held `before`: the old text kept
-/// in a file beside it until the new is on disk, and put back if the write fails.
-fn in_place(
-    target: &Path,
-    file: &mut std::fs::File,
-    metadata: &std::fs::Metadata,
-    before: &[u8],
-    bytes: &[u8],
-) -> Result<(), Error> {
-    use std::io::{Seek as _, SeekFrom};
-    let (kept, mut copy) = beside(target, metadata)?;
-    if let Err(e) = copy.write_all(before).and_then(|()| copy.sync_all()) {
-        let _ = std::fs::remove_file(&kept);
-        return Err(io_failed(format!(
-            "couldn't be written: couldn't keep its text in {}: {e}",
-            kept.display()
-        )));
-    }
-    let over = |file: &mut std::fs::File, text: &[u8]| {
-        file.seek(SeekFrom::Start(0))?;
-        file.write_all(text)?;
-        file.set_len(text.len() as u64)?;
-        file.sync_all()
-    };
-    match over(file, bytes) {
-        Ok(()) => {
-            let _ = std::fs::remove_file(&kept);
-            Ok(())
-        }
-        // It fits back in the room it had.
-        Err(e) => match over(file, before) {
-            Ok(()) => {
-                let _ = std::fs::remove_file(&kept);
-                Err(io_failed(format!(
-                    "couldn't be written: {e}; it's as it was"
-                )))
-            }
-            Err(_) => Err(io_failed(format!(
-                "couldn't be written: {e}; its text before is in {}",
-                kept.display()
-            ))),
-        },
-    }
-}
-
-/// A new file beside `target` (`.NAME.fmt-PID`, or `-1`, `-2`, ... after it if one is
-/// left from a run killed with the same process number), no more open to others than
-/// `target` is.
-fn beside(target: &Path, metadata: &std::fs::Metadata) -> Result<(PathBuf, std::fs::File), Error> {
-    use std::os::unix::fs::PermissionsExt as _;
-    let dir = directory(target);
-    let name = target
-        .file_name()
-        .ok_or_else(|| io_failed("couldn't be written: it has no file name".to_owned()))?;
-    let mut last = None;
-    for n in 0..64 {
-        let mut partial_name = OsString::from(".");
-        partial_name.push(name);
-        partial_name.push(format!(".fmt-{}", std::process::id()));
-        if n > 0 {
-            partial_name.push(format!("-{n}"));
-        }
-        let partial = dir.join(partial_name);
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(metadata.permissions().mode() & 0o777)
-            .open(&partial)
-        {
-            Ok(f) => return Ok((partial, f)),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last = Some(e),
-            Err(e) => {
-                return Err(io_failed(format!(
-                    "couldn't be written: couldn't create a file in {}: {e}",
-                    dir.display()
-                )));
-            }
-        }
-    }
-    Err(io_failed(format!(
-        "couldn't be written: couldn't create a file in {}: {}",
-        dir.display(),
-        last.map_or_else(String::new, |e| e.to_string())
-    )))
 }

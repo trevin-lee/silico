@@ -7,6 +7,7 @@
 //! (ARCHITECTURE.md, invariant 3) once there is one.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 pub use silico_protocol::{
@@ -45,6 +46,31 @@ pub trait Kernel: Send + Sync {
         generation: Generation,
         request: KernelRequest<T>,
     ) -> Pending<T>;
+}
+
+/// A kernel shared, by the recomputes of several documents run one after another (the CLI's
+/// files): each starts a generation newer than the kernel's, so none supersedes another's
+/// finished work. Run at once, the newest supersedes the others, as on one engine.
+impl<K: Kernel> Kernel for Arc<K> {
+    fn identity(&self) -> &str {
+        (**self).identity()
+    }
+
+    fn generation(&self) -> Generation {
+        (**self).generation()
+    }
+
+    fn advance(&self, generation: Generation) {
+        (**self).advance(generation);
+    }
+
+    fn submit<T: Send + 'static>(
+        &self,
+        generation: Generation,
+        request: KernelRequest<T>,
+    ) -> Pending<T> {
+        (**self).submit(generation, request)
+    }
 }
 
 /// The environment variable naming the kernel worker executable, for when it isn't next
