@@ -696,3 +696,34 @@ fn a_tangent_on_whose_end_is_bs_own_point_or_whose_curves_are_one_is_refused() {
         "constraints.0.at ca000000 is a circle, but a tangent_on's at is a point of this sketch where a ends, on b",
     );
 }
+
+#[test]
+fn a_tangent_at_is_a_fixed_angle_too() {
+    // POINTS (6 unknowns) and ARC (3): 9 unknowns, and the origin's 2: 9,989 values to
+    // spare. As many tangent_ats, each with its fixed angle, are admitted; one more, refused.
+    let tangents = |n: usize| {
+        let all: Vec<String> = (0..n)
+            .map(|i| format!(r#"{{"id": "k{i:07}", "type": "tangent_at", "a": "na000000", "b": "aa000000", "at": "pb000000", "direction": "same"}}"#))
+            .collect();
+        document(&fields(POINTS, LINE, "", ARC, &all.join(", ")))
+    };
+    none(&tangents(9989));
+    only(
+        &tangents(9990),
+        "points",
+        "the sketch has 10001 values, more than the 10000 the sketch solver takes",
+    );
+}
+
+#[test]
+fn a_tangent_on_at_another_circles_centre_stands() {
+    // pa is na's start and ca's centre, and lies on cb (about pc, radius 10): not cb's own.
+    let cb = r#"{"id": "cb000000", "center": "pc000000", "radius": 10, "construction": false}"#;
+    none(&document(&fields(
+        POINTS,
+        LINE,
+        &format!("{CIRCLE}, {cb}"),
+        ARC,
+        r#"{"id": "k0000000", "type": "tangent_on", "a": "na000000", "at": "pa000000", "b": "cb000000", "direction": "same"}"#,
+    )));
+}
