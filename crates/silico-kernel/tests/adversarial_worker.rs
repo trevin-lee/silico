@@ -974,7 +974,11 @@ fn a_pool_of_the_most_workers_starts_and_stops_cleanly() {
     // machine other work saturates, the wall clock measures the machine (1024 starts took
     // 35–76 s on CI under mutants shards, against 6 s alone), while what starting and
     // dropping cost here is the pool's. Measured on an M-series Mac: about 4 s to start and
-    // 0.5 s to drop, 5 s and 0.4 s with the machine at a load of 43. The wall clock bounds
+    // 0.5 s to drop, 5 s and 0.4 s with the machine at a load of 43. On Linux each start
+    // forks this whole process (the socket's descriptor is passed in the child before exec),
+    // growing by three threads a worker, so it costs far more: 32 s on the CI runner with
+    // six mutants shards running. The bounds are about four times what was measured, per
+    // platform. The wall clock bounds
     // only a hang, at 9 minutes (nextest allows this test 10: .config/nextest.toml): so a
     // start or drop that waits on each worker is caught once the wait is about half a
     // second (a handshake's timeout, say), not a brief sleep, which the CPU time doesn't see.
@@ -996,8 +1000,9 @@ fn a_pool_of_the_most_workers_starts_and_stops_cleanly() {
         (started, pids, start.elapsed())
     });
     assert_eq!(pids.len(), silico_core::pool::MAX_WORKERS);
+    let most = if cfg!(target_os = "linux") { 120 } else { 30 };
     assert!(
-        started < Duration::from_secs(30),
+        started < Duration::from_secs(most),
         "the start took {started:?} of CPU"
     );
     assert!(
