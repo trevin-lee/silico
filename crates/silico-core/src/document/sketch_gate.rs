@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 
 use silico_protocol::{
     MAX_JACOBIAN_ENTRIES, MAX_LENGTH, MAX_SKETCH_CONSTRAINTS, MAX_SKETCH_GEOMETRY,
-    MAX_SKETCH_UNKNOWNS, MAX_SKETCH_VALUES, format_number,
+    MAX_SKETCH_UNKNOWNS, MAX_SKETCH_VALUES, format_number, no_distance, squared_distance,
 };
 
 use super::sketch::{ElementId, ElementKind, Form, Reference, Sketch, Takes, TangentSide};
@@ -32,12 +32,6 @@ pub const MAX_ANGLE_DEGREES: i64 = 360;
 /// The largest value a reference dimension may hold, in millimetres: more than the
 /// farthest two points within a kilometre of the origin can be apart (2√2 km).
 pub const MAX_REFERENCE_LENGTH: f64 = 3e6;
-
-/// The square of the distance between two places, as the solver works it out.
-fn squared(a: (f64, f64), b: (f64, f64)) -> f64 {
-    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-    dx * dx + dy * dy
-}
 
 /// A refusal of a sketch field: its dotted name, the message, and the suggestion.
 pub(super) type Refuse<'a> = &'a dyn Fn(&str, String, String) -> Error;
@@ -160,7 +154,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                 "end the line at another point".to_owned(),
             ));
         } else if let (Some(a), Some(b)) = (at_of(&line.from), at_of(&line.to))
-            && squared(a, b) == 0.0
+            && no_distance([a.0, a.1], [b.0, b.1])
         {
             // The solver works out the length as the square root of dx² + dy², so ends
             // that close (or at one place) are a line of no length to it, which the sketch
@@ -169,7 +163,13 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                 &format!("{at}.to"),
                 format!(
                     "line {}'s ends, points {} at ({}, {}) and {} at ({}, {}), are too close for its length to be anything but 0 to the solver",
-                    line.id, line.from, a.0, a.1, line.to, b.0, b.1
+                    line.id,
+                    line.from,
+                    format_number(a.0),
+                    format_number(a.1),
+                    line.to,
+                    format_number(b.0),
+                    format_number(b.1)
                 ),
                 "draw the line's ends apart".to_owned(),
             ));
@@ -221,20 +221,24 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
             for (key, id) in [("start", &arc.start), ("end", &arc.end)] {
                 if *id != arc.center
                     && let Some(p) = at_of(id)
-                    && squared(c, p) == 0.0
+                    && no_distance([c.0, c.1], [p.0, p.1])
                 {
                     add(refuse(
                         &format!("{at}.{key}"),
                         format!(
                             "arc {}'s {key}, point {id} at ({}, {}), is too close to its center at ({}, {}) for its radius to be anything but 0 to the solver",
-                            arc.id, p.0, p.1, c.0, c.1
+                            arc.id,
+                            format_number(p.0),
+                            format_number(p.1),
+                            format_number(c.0),
+                            format_number(c.1)
                         ),
                         format!("draw the arc's {key} away from its center"),
                     ));
                 }
             }
             if let Some(p) = at_of(&arc.start) {
-                let radius = squared(c, p).sqrt();
+                let radius = squared_distance([c.0, c.1], [p.0, p.1]).sqrt();
                 if radius > MAX_LENGTH {
                     add(refuse(
                         &format!("{at}.start"),
@@ -256,7 +260,11 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                 &format!("{at}.end"),
                 format!(
                     "arc {}'s start and end, points {} and {}, are both drawn at ({}, {}), so its sweep is 0 or a whole turn (a whole circle is a circle)",
-                    arc.id, arc.start, arc.end, a.0, a.1
+                    arc.id,
+                    arc.start,
+                    arc.end,
+                    format_number(a.0),
+                    format_number(a.1)
                 ),
                 "draw the arc's end away from its start, or draw a circle".to_owned(),
             ));
@@ -272,6 +280,16 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
             ));
         }
     }
+
+    // Every `on`, by its point and curve, for the tangent rule below.
+    let ons: Vec<(&Reference, &Reference, &ElementId)> = sketch
+        .constraints
+        .iter()
+        .filter_map(|c| match &c.form {
+            Form::On { point, curve } => Some((point, curve, &c.id)),
+            _ => None,
+        })
+        .collect();
 
     for (i, constraint) in sketch.constraints.iter().enumerate() {
         let at = format!("constraints.{i}");
@@ -364,7 +382,8 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                 // tangent command makes that a tangent_at (180d722a53), since an edge
                 // tangency with the shared point is redundant where it holds.
                 let shared = match (a.element(), b.element()) {
-                    (Some(a), Some(b)) => {
+                    // A curve tangent to itself is refused above, as needing two elements.
+                    (Some(a), Some(b)) if a != b => {
                         let theirs = ends_of(sketch, b, lookup);
                         ends_of(sketch, a, lookup)
                             .into_iter()
@@ -379,6 +398,28 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                             "a tangent's {a} and {b} share an end, point {point}: curves that meet are tangent where they meet"
                         ),
                         format!("make it a tangent_at, at point {point}"),
+                    ));
+                } else if let Some((point, ending, other, on)) =
+                    [(a, b), (b, a)].into_iter().find_map(|(x, y)| {
+                        let ends = x.element().map(|x| ends_of(sketch, x, lookup))?;
+                        ons.iter()
+                            .find(|(p, c, _)| {
+                                *c == y && p.element().is_some_and(|p| ends.contains(&p))
+                            })
+                            .map(|(p, _, id)| (*p, x, y, *id))
+                    })
+                {
+                    // A curve that ends on another is tangent there or not at all: FreeCAD
+                    // makes an `on` and an edge tangency one endpoint-to-edge tangency
+                    // (3a656d8597), since the pair is redundant where it holds.
+                    add(refuse(
+                        &format!("{at}.b"),
+                        format!(
+                            "a tangent's {ending} ends at point {point}, which constraint {on} puts on {other}: a curve ending on another is tangent where it ends"
+                        ),
+                        format!(
+                            "make the two one tangent_on, with a {ending}, at {point}, and b {other}"
+                        ),
                     ));
                 }
                 let is_line = |n: usize| match resolved.get(n).copied().flatten() {
@@ -407,6 +448,40 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                         &format!("{at}.side"),
                         format!("a tangent's side for these curves is {want}"),
                         format!("write side as {want}"),
+                    ));
+                }
+            }
+            Form::TangentOn { a, at: end, b, .. } => {
+                let is_line = |n: usize| match resolved.get(n).copied().flatten() {
+                    Some(Target::Axis) => true,
+                    Some(Target::Element(p)) => p.kind == ElementKind::Line,
+                    _ => false,
+                };
+                if let Some(point) = end.element() {
+                    let ends = a.element().map(|a| ends_of(sketch, a, lookup));
+                    let ends_b = b.element().map(|b| ends_of(sketch, b, lookup));
+                    if !ends.is_some_and(|e| e.contains(&point)) {
+                        add(refuse(
+                            &format!("{at}.at"),
+                            format!("a tangent_on's at, point {point}, isn't an end of its a, {a}"),
+                            format!("name the end of {a} that lies on {b}"),
+                        ));
+                    } else if ends_b.is_some_and(|e| e.contains(&point)) {
+                        add(refuse(
+                            &format!("{at}.at"),
+                            format!(
+                                "a tangent_on's at, point {point}, is an end of its b, {b}, too: the curves meet there"
+                            ),
+                            format!("make it a tangent_at, at point {point}"),
+                        ));
+                    }
+                }
+                // Index 0 is a, 2 is b.
+                if is_line(0) && is_line(2) {
+                    add(refuse(
+                        &format!("{at}.b"),
+                        "a tangent_on takes a curve ending on a circle or arc, or an arc ending on a line: two lines can't be tangent".to_owned(),
+                        "make one of them a circle or arc, or use parallel and on".to_owned(),
                     ));
                 }
             }
@@ -475,8 +550,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
         // A driving dimension is one the solver holds: above 0 (unless signed) and within
         // what it takes. A reference one is what the last solve measured, so it may be 0,
         // and as long as the farthest two points within a kilometre can be apart.
-        if let Some((value, signed)) = form.length() {
-            let driving = form.driving().unwrap_or(true);
+        if let (Some((value, signed)), Some(driving)) = (form.length(), form.driving()) {
             let most = match form {
                 _ if !driving => MAX_REFERENCE_LENGTH,
                 Form::Diameter { .. } => 2.0 * MAX_LENGTH,
@@ -645,8 +719,10 @@ fn ends_of<'a>(
 /// The sketch as the sketch worker will take it, at most (M3.3's translation stays within
 /// these): each limit's field, the count, the limit, and what's counted. Every point's x
 /// and y, a circle's radius, and an arc's radius and two angles are unknowns; each
-/// constraint is one or two equations (a symmetry and a midpoint two), and an arc's rules
-/// four; the values are the unknowns, the dimensions', and the origin's.
+/// constraint is one or two equations (a symmetry, a midpoint, and a tangent_on two), and an arc's rules
+/// four; the values are the unknowns, the driving dimensions', and the origin's. A
+/// reference dimension's value is never the solver's: the core measures it after the solve
+/// (as FreeCAD's main does), so it may be past what the worker takes.
 pub(super) fn size(sketch: &Sketch) -> [(&'static str, usize, usize, &'static str); 5] {
     let unknowns = 2 * sketch.points.len() + sketch.circles.len() + 3 * sketch.arcs.len();
     let geometry =
@@ -655,14 +731,14 @@ pub(super) fn size(sketch: &Sketch) -> [(&'static str, usize, usize, &'static st
     let dimensions = sketch
         .constraints
         .iter()
-        .filter(|c| c.form.is_dimension())
+        .filter(|c| c.form.driving() == Some(true))
         .count();
     let values = unknowns + dimensions + 2;
     let equations: usize = sketch
         .constraints
         .iter()
         .map(|c| match c.form {
-            Form::Symmetric { .. } | Form::Midpoint { .. } => 2,
+            Form::Symmetric { .. } | Form::Midpoint { .. } | Form::TangentOn { .. } => 2,
             _ => 1,
         })
         .sum::<usize>()

@@ -808,6 +808,16 @@ fn constraint(fields: &mut Fields) -> Result<SketchConstraint, Error> {
             b: r(fields, "b")?,
             side: word(fields, "side", &TangentSide::ALL.map(|w| (w.as_str(), w)))?,
         },
+        "tangent_on" => Form::TangentOn {
+            a: r(fields, "a")?,
+            at: r(fields, "at")?,
+            b: r(fields, "b")?,
+            direction: word(
+                fields,
+                "direction",
+                &Direction::ALL.map(|w| (w.as_str(), w)),
+            )?,
+        },
         "tangent_at" => Form::TangentAt {
             a: r(fields, "a")?,
             b: r(fields, "b")?,

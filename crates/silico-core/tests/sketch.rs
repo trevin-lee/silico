@@ -4,6 +4,10 @@
 //! against floats written as literals.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/sketch.rs"]
+mod fixture;
+
+use fixture::{ARC, CIRCLE, FEATURE, LINE, POINTS, constrained, document, fields, problems};
 use proptest::prelude::*;
 use silico_core::document::{
     Coordinate, Direction, ElementId, Form, Operation, Plane, Reference, Sketch, TangentSide, read,
@@ -66,44 +70,8 @@ fn el(text: &str) -> ElementId {
     ElementId::new(text).unwrap()
 }
 
-/// A document of one sketch with these fields (the JSON after `"name": "S"`).
-fn document(fields: &str) -> String {
-    format!(
-        "{{\"silico\": 1, \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}}, \"features\": [{{\"id\": \"k7f2qx3m\", \"type\": \"sketch\", \"v\": 1, \"name\": \"S\", {fields}}}]}}"
-    )
-}
-
-/// A sketch's fields: plane xy, these lists (each the JSON inside its brackets).
-fn fields(points: &str, lines: &str, circles: &str, arcs: &str, constraints: &str) -> String {
-    format!(
-        "\"plane\": \"xy\", \"points\": [{points}], \"lines\": [{lines}], \"circles\": [{circles}], \"arcs\": [{arcs}], \"constraints\": [{constraints}]"
-    )
-}
-
-/// Three points, a line from the first to the second, a circle about the first, and an arc
-/// about the first from the second to the third: what the gate's tests constrain.
-const POINTS: &str = r#"{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 10, "y": 0, "construction": false}, {"id": "pc000000", "x": 0, "y": 10, "construction": false}"#;
-const LINE: &str =
-    r#"{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}"#;
-const CIRCLE: &str =
-    r#"{"id": "ca000000", "center": "pa000000", "radius": 5, "construction": false}"#;
-const ARC: &str = r#"{"id": "aa000000", "center": "pa000000", "start": "pb000000", "end": "pc000000", "construction": false}"#;
-
-/// The base sketch with these constraints.
-fn constrained(constraints: &str) -> String {
-    document(&fields(POINTS, LINE, CIRCLE, ARC, constraints))
-}
-
 fn read_error(text: &str) -> Error {
     read(text.as_bytes()).unwrap_err()
-}
-
-/// The gate's problems with `text`, which reads.
-fn problems(text: &str) -> Vec<Error> {
-    match validate(&read(text.as_bytes()).unwrap()) {
-        Ok(()) => Vec::new(),
-        Err(invalid) => invalid.errors().to_vec(),
-    }
 }
 
 /// The one problem the gate finds in `text`.
@@ -117,7 +85,7 @@ fn problem(text: &str) -> Error {
 #[track_caller]
 fn assert_error(error: &Error, parameter: &str, message: &str) {
     assert_eq!(error.code(), ErrorCode::InvalidInput, "{error:?}");
-    assert_eq!(error.feature(), Some("k7f2qx3m"), "{error:?}");
+    assert_eq!(error.feature(), Some(FEATURE), "{error:?}");
     assert_eq!(error.parameter(), Some(parameter), "{error:?}");
     assert!(
         error.message().starts_with(message),
@@ -199,9 +167,10 @@ fn every_constraint_form_reads_and_writes_back_in_schema_order() {
         r#"{"id": "k000000e", "type": "diameter", "curve": "aa000000", "value": 20, "driving": false}"#,
         r#"{"id": "k000000f", "type": "equal", "a": "ca000000", "b": "aa000000"}"#,
         r#"{"id": "k000000g", "type": "tangent", "a": "na000000", "b": "ca000000", "side": "right"}"#,
-        r#"{"id": "k000000h", "type": "tangent_at", "a": "na000000", "b": "aa000000", "at": "pb000000", "direction": "opposite"}"#,
-        r#"{"id": "k000000j", "type": "symmetric", "a": "pb000000", "b": "pc000000", "about": "origin"}"#,
-        r#"{"id": "k000000k", "type": "midpoint", "point": "pc000000", "line": "na000000"}"#,
+        r#"{"id": "k000000h", "type": "tangent_on", "a": "na000000", "at": "pb000000", "b": "ca000000", "direction": "same"}"#,
+        r#"{"id": "k000000j", "type": "tangent_at", "a": "na000000", "b": "aa000000", "at": "pb000000", "direction": "opposite"}"#,
+        r#"{"id": "k000000k", "type": "symmetric", "a": "pb000000", "b": "pc000000", "about": "origin"}"#,
+        r#"{"id": "k000000m", "type": "midpoint", "point": "pc000000", "line": "na000000"}"#,
     ];
     let text = format!(
         r#"{{
@@ -259,6 +228,20 @@ fn every_constraint_form_reads_and_writes_back_in_schema_order() {
     );
     assert_eq!(
         sketch.constraints[17].form,
+        Form::TangentOn {
+            a: Reference::Element(el("na000000")),
+            at: Reference::Element(el("pb000000")),
+            b: Reference::Element(el("ca000000")),
+            direction: Direction::Same,
+        }
+    );
+    // Each word reads as its own value.
+    let Form::PointLineDistance { side, .. } = sketch.constraints[8].form else {
+        panic!("{:?}", sketch.constraints[8].form)
+    };
+    assert_eq!(side, silico_core::document::LineSide::Left);
+    assert_eq!(
+        sketch.constraints[18].form,
         Form::TangentAt {
             a: Reference::Element(el("na000000")),
             b: Reference::Element(el("aa000000")),

@@ -431,8 +431,7 @@ impl SketchSystem {
             // apart, say) are no length to it either.
             if let SketchGeometry::Line { start, end } = *g {
                 let at = |v: Value| self.values[v.0 as usize];
-                let (dx, dy) = (at(end.x) - at(start.x), at(end.y) - at(start.y));
-                if dx * dx + dy * dy == 0.0 {
+                if no_distance([at(start.x), at(start.y)], [at(end.x), at(end.y)]) {
                     return Err(invalid(
                         "geometry",
                         format!(
@@ -671,6 +670,21 @@ impl SketchSystem {
 /// radians) of 0. A solution must be too, so the next solve can start from it.
 pub fn within_reach(v: f64) -> bool {
     v.is_finite() && v.abs() <= MAX_LENGTH
+}
+
+/// The square of the distance from `a` to `b`, as PlaneGCS works it out (dx² + dy², whose
+/// square root is a line's length or an arc's radius to it). The rule lives here so the
+/// core's gate and the sketch worker's check measure alike.
+pub fn squared_distance(a: [f64; 2], b: [f64; 2]) -> f64 {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    dx * dx + dy * dy
+}
+
+/// Whether `a` and `b` are no distance apart to the solver: at one place, or close enough
+/// that their [`squared_distance`] is 0 (1e-200 apart, say), so a line between them has no
+/// length and an arc about one through the other no radius.
+pub fn no_distance(a: [f64; 2], b: [f64; 2]) -> bool {
+    squared_distance(a, b) == 0.0
 }
 
 impl SolverConstraint {

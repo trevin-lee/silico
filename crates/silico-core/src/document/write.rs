@@ -369,6 +369,17 @@ fn constraint(constraint: &SketchConstraint) -> Out<'_> {
         Form::Tangent { a, b, side } => {
             vec![("a", r(a)), ("b", r(b)), ("side", Out::Str(side.as_str()))]
         }
+        Form::TangentOn {
+            a,
+            at,
+            b,
+            direction,
+        } => vec![
+            ("a", r(a)),
+            ("at", r(at)),
+            ("b", r(b)),
+            ("direction", Out::Str(direction.as_str())),
+        ],
         Form::TangentAt {
             a,
             b,

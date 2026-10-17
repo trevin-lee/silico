@@ -490,6 +490,15 @@ pub enum Form {
         b: Reference,
         side: TangentSide,
     },
+    /// Tangent where `a` ends on `b`: the point `at`, an end of `a`, lies on `b`, and `a`
+    /// runs there along `b`, its direction leaving `at` the `same` as `b`'s or `opposite`
+    /// (FreeCAD's endpoint-to-edge `Tangent`).
+    TangentOn {
+        a: Reference,
+        at: Reference,
+        b: Reference,
+        direction: Direction,
+    },
     /// Tangent where two curves meet, at the point `at` they share.
     TangentAt {
         a: Reference,
@@ -554,6 +563,7 @@ impl Form {
             Form::Diameter { .. } => "diameter",
             Form::Equal { .. } => "equal",
             Form::Tangent { .. } => "tangent",
+            Form::TangentOn { .. } => "tangent_on",
             Form::TangentAt { .. } => "tangent_at",
             Form::Symmetric { .. } => "symmetric",
             Form::Midpoint { .. } => "midpoint",
@@ -583,6 +593,9 @@ impl Form {
             }
             Form::Equal { a, b } => vec![("a", a, Equal), ("b", b, Equal)],
             Form::Tangent { a, b, .. } => vec![("a", a, Curve), ("b", b, Curve)],
+            Form::TangentOn { a, at, b, .. } => {
+                vec![("a", a, EndedCurve), ("at", at, SharedEnd), ("b", b, Curve)]
+            }
             Form::TangentAt { a, b, at, .. } => vec![
                 ("a", a, EndedCurve),
                 ("b", b, EndedCurve),
@@ -627,12 +640,12 @@ impl Form {
 
     /// Whether the form is a dimension (it has a `value` and `driving`).
     pub fn is_dimension(&self) -> bool {
-        self.length().is_some() || matches!(self, Form::Angle { .. })
+        self.driving().is_some()
     }
 }
 
 /// Every constraint type, as the file writes it.
-pub const CONSTRAINT_TYPES: [&str; 20] = [
+pub const CONSTRAINT_TYPES: [&str; 21] = [
     "horizontal",
     "vertical",
     "horizontal_points",
@@ -650,6 +663,7 @@ pub const CONSTRAINT_TYPES: [&str; 20] = [
     "diameter",
     "equal",
     "tangent",
+    "tangent_on",
     "tangent_at",
     "symmetric",
     "midpoint",

@@ -878,6 +878,35 @@
           "type": "object"
         },
         {
+          "description": "Tangent where `a` ends on `b`: the point `at`, an end of `a`, lies on `b`, and `a`\nruns there along `b`, its direction leaving `at` the `same` as `b`'s or `opposite`\n(FreeCAD's endpoint-to-edge `Tangent`).",
+          "properties": {
+            "a": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "at": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "b": {
+              "$ref": "#/$defs/SketchReference"
+            },
+            "direction": {
+              "$ref": "#/$defs/Direction"
+            },
+            "type": {
+              "const": "tangent_on",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "a",
+            "at",
+            "b",
+            "direction"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Tangent where two curves meet, at the point `at` they share.",
           "properties": {
             "a": {

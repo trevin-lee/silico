@@ -7,12 +7,16 @@
 //! calculation. Tests marked `BREAKS:` were bug reports, each since fixed.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/sketch.rs"]
+mod fixture;
+
 #[path = "common/within.rs"]
 mod within;
 
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use fixture::{ARC, CIRCLE, FEATURE, LINE, POINTS, constrained, document, fields, problems};
 use proptest::prelude::*;
 use silico_core::document::{
     Checked, FeatureId, Operation, PROBLEMS_LISTED, Sketch, read, schema, validate, write,
@@ -20,46 +24,8 @@ use silico_core::document::{
 use silico_core::{Error, ErrorCode};
 use within::within;
 
-const FEATURE: &str = "k7f2qx3m";
-
-/// A document of one sketch with these fields (the JSON after `"name": "S"`).
-fn document(fields: &str) -> String {
-    format!(
-        "{{\"silico\": 1, \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}}, \"features\": [{{\"id\": \"{FEATURE}\", \"type\": \"sketch\", \"v\": 1, \"name\": \"S\", {fields}}}]}}"
-    )
-}
-
-/// A sketch's fields: plane xy, these lists (each the JSON inside its brackets).
-fn fields(points: &str, lines: &str, circles: &str, arcs: &str, constraints: &str) -> String {
-    format!(
-        "\"plane\": \"xy\", \"points\": [{points}], \"lines\": [{lines}], \"circles\": [{circles}], \"arcs\": [{arcs}], \"constraints\": [{constraints}]"
-    )
-}
-
-/// pa (0, 0), pb (10, 0), pc (0, 10); line na from pa to pb; circle ca about pa, radius 5;
-/// arc aa about pa from pb to pc.
-const POINTS: &str = r#"{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 10, "y": 0, "construction": false}, {"id": "pc000000", "x": 0, "y": 10, "construction": false}"#;
-const LINE: &str =
-    r#"{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}"#;
-const CIRCLE: &str =
-    r#"{"id": "ca000000", "center": "pa000000", "radius": 5, "construction": false}"#;
-const ARC: &str = r#"{"id": "aa000000", "center": "pa000000", "start": "pb000000", "end": "pc000000", "construction": false}"#;
-
-/// The base sketch with these constraints.
-fn constrained(constraints: &str) -> String {
-    document(&fields(POINTS, LINE, CIRCLE, ARC, constraints))
-}
-
 fn read_error(text: &str) -> Error {
     read(text.as_bytes()).unwrap_err()
-}
-
-/// The gate's problems with `text`, which reads.
-fn problems(text: &str) -> Vec<Error> {
-    match validate(&read(text.as_bytes()).unwrap()) {
-        Ok(()) => Vec::new(),
-        Err(invalid) => invalid.errors().to_vec(),
-    }
 }
 
 #[track_caller]
@@ -773,6 +739,14 @@ fn forms() -> Vec<(&'static str, Vec<Place>)> {
             vec![("a", "y_axis", CURVE), ("b", "ca000000", CURVE)],
         ),
         (
+            r#"{"id": "ka000000", "type": "tangent_on", "a": "{a}", "at": "{at}", "b": "{b}", "direction": "same"}"#,
+            vec![
+                ("a", "na000000", ENDED),
+                ("at", "pb000000", SHARED),
+                ("b", "ca000000", CURVE),
+            ],
+        ),
+        (
             r#"{"id": "ka000000", "type": "tangent_at", "a": "{a}", "b": "{b}", "at": "{at}", "direction": "same"}"#,
             vec![
                 ("a", "na000000", ENDED),
@@ -1162,7 +1136,7 @@ fn boolean() -> impl Strategy<Value = &'static str> {
 fn constraint() -> impl Strategy<Value = String> {
     (
         id(),
-        0usize..20,
+        0usize..21,
         [reference(), reference(), reference()],
         length(),
         angle(),
@@ -1194,10 +1168,13 @@ fn constraint() -> impl Strategy<Value = String> {
                 13 | 14 => format!(r#""curve": "{a}", "value": {length}, "driving": {driving}"#),
                 16 => format!(r#""a": "{a}", "b": "{b}", "side": "{side}""#),
                 17 => format!(
+                    r#""a": "{a}", "at": "{c}", "b": "{b}", "direction": "{direction}""#
+                ),
+                18 => format!(
                     r#""a": "{a}", "b": "{b}", "at": "{c}", "direction": "{direction}""#
                 ),
-                18 => format!(r#""a": "{a}", "b": "{b}", "about": "{c}""#),
-                19 => format!(r#""point": "{a}", "line": "{b}""#),
+                19 => format!(r#""a": "{a}", "b": "{b}", "about": "{c}""#),
+                20 => format!(r#""point": "{a}", "line": "{b}""#),
                 _ => unreachable!(),
             };
             format!("{head}, {rest}}}")
