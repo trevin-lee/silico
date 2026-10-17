@@ -501,6 +501,36 @@ fn a_name_derived_from_an_ambiguous_name_is_ambiguous() {
 }
 
 #[test]
+fn a_cancel_after_publishing_doesnt_stop_the_published_models_names() {
+    // Found by the review: a cancel (with nothing running) moved the generation on, and the
+    // published model's background naming stopped for good, so `named_element_map` said
+    // `None` for its later features forever. Naming stops only for a newer model.
+    let mut features = vec![
+        r#"{"id": "b0000000", "type": "box", "v": 1, "name": "b", "position": [0, 0, 0], "length": 400, "width": 20, "height": 5}"#.to_owned(),
+    ];
+    let mut base = "b0000000".to_owned();
+    for k in 1..=300 {
+        features.push(format!(r#"{{"id": "y{k:07}", "type": "cylinder", "v": 1, "name": "p", "position": [{k}, 10, -1], "radius": 0.25, "height": 7}}"#));
+        features.push(format!(r#"{{"id": "c{k:07}", "type": "cut", "v": 1, "name": "h", "base": "{base}", "tool": "y{k:07}"}}"#));
+        base = format!("c{k:07}");
+    }
+    let text = format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "features": [{}]}}"#,
+        features.join(", ")
+    );
+    let engine = Recompute::new(FakeKernel::new(2).unwrap());
+    let model = published(&engine, checked(&text));
+    engine.cancel();
+    let last = id(&base);
+    let deadline = std::time::Instant::now() + 6 * model::WAIT;
+    while model.named_element_map(&last).is_none() {
+        assert!(std::time::Instant::now() < deadline, "never named");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(engine.published().as_ref(), Some(&model));
+}
+
+#[test]
 fn a_published_models_names_are_made_in_the_background() {
     // Nothing asks for them, yet they come: a caller that mustn't wait (the UI's thread)
     // finds them with `named_element_map`, which never names anything itself.

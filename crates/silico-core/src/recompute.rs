@@ -127,11 +127,12 @@ pub struct Model {
     /// How each feature's solid's elements are named, in timeline order: none for one that
     /// didn't build.
     naming: Vec<Option<FeatureNaming>>,
-    /// Each feature's element names, named the first time they're asked for (or any
-    /// feature's after it): only references and queries need them, so a recompute doesn't
-    /// name what nothing asks about (naming every element of every feature at publishing
-    /// doubled the cost of a long timeline on the fake). They're a function of the model's
-    /// own data alone, so they're the same whenever they're named.
+    /// Each feature's element names: named in the background once the model is published
+    /// (after its recompute has replied, so publishing doesn't wait for them: naming every
+    /// element of every feature before replying doubled the cost of a long timeline on the
+    /// fake), or, asked for sooner, then, with those of the features it's made from. They're
+    /// a function of the model's own data alone, so they're the same whenever they're
+    /// named.
     maps: Vec<OnceLock<Option<Arc<ElementMap>>>>,
     /// The engine's maps named so far.
     known: NamedMaps,
@@ -449,6 +450,8 @@ struct EngineState {
     /// Whether the newest recompute was cancelled when no newer generation was left to
     /// supersede it with: it publishes nothing.
     cancelled: bool,
+    /// Whether the engine has been dropped: the published model's background naming stops.
+    dropped: bool,
     /// Every step result kept, by key: those the last [`PUBLISHED_KEPT`] published models'
     /// plans use, so going back to one (an undo) runs nothing, and those the newest
     /// recompute's uses, so a superseded one's work isn't lost to the next; nothing more, so
@@ -507,6 +510,7 @@ impl<K: Kernel + 'static> Recompute<K> {
                     generation,
                     newest_started: generation,
                     cancelled: false,
+                    dropped: false,
                     results: BTreeMap::new(),
                     published_plans: VecDeque::new(),
                     newest_plan: None,
@@ -567,11 +571,19 @@ impl<K: Kernel + 'static> Recompute<K> {
                 };
                 let _ = reply.send(outcome);
                 // The model's names, in the background, so a client asking for them later
-                // doesn't wait (and stopping once a newer recompute starts: its model is
-                // the one to name).
+                // doesn't wait; stopping once a newer model is published (it's the one to
+                // name) or the engine is dropped, but not for a cancel or a newer recompute
+                // that publishes nothing, which leave this model the one clients have.
                 if let Some(model) = published {
                     let _naming = tracing::debug_span!("name_elements").entered();
-                    model.name_all(|| lock(&engine.state).generation == generation);
+                    model.name_all(|| {
+                        let state = lock(&engine.state);
+                        !state.dropped
+                            && state
+                                .published
+                                .as_ref()
+                                .is_some_and(|newest| Arc::ptr_eq(newest, &model))
+                    });
                 }
             });
         if let Err(e) = started {
@@ -600,6 +612,7 @@ impl<K: Kernel + 'static> Recompute<K> {
 
 impl<K: Kernel + 'static> Drop for Recompute<K> {
     fn drop(&mut self) {
+        lock(&self.engine.state).dropped = true;
         self.cancel();
     }
 }
