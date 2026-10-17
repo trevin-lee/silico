@@ -465,7 +465,7 @@ fn an_ambiguous_name_kept_by_the_next_feature_is_still_marked_ambiguous() {
     // have been accepted, though which edge `X` names still turns on the numbering.
     let (_, first) = ambiguous();
     let x = first.name(element(ElementKind::Edge, 1)).unwrap();
-    assert!(first.is_duplicated(&x));
+    assert!(first.is_unstable(&x));
     // A cut by a tool that misses: the base's edges and vertices kept as they were; the
     // tool's (none) nothing.
     let history = History {
@@ -498,7 +498,7 @@ fn an_ambiguous_name_kept_by_the_next_feature_is_still_marked_ambiguous() {
         Some(Arc::clone(&x))
     );
     assert!(
-        next.is_duplicated(&x),
+        next.is_unstable(&x),
         "{x} names one of two edges that came about alike, in the next feature too"
     );
 }
@@ -692,9 +692,10 @@ fn drilled() -> History {
 #[test]
 fn a_thousand_holes_drilled_one_by_one_name_in_linear_time() {
     // A perforated plate built as 1,000 cut features: each modifies the top face, so its
-    // name nests one level deeper per feature. Every map is built from scratch on every
-    // publish, so the cost per map must stay small, and the name's two forms must grow by
-    // a constant per feature, not compound.
+    // name nests one level deeper per feature, up to the bound on a name's depth, where
+    // the face is named by its number and nests from there again. The cost per map must
+    // stay small, and the name's two forms grow by a constant per feature between those
+    // points, never compounding, and never past the bound.
     let history = drilled();
     history.validate(2).unwrap();
     let tool = ElementMap::primitive(id("tttttttt"));
@@ -711,15 +712,122 @@ fn a_thousand_holes_drilled_one_by_one_name_in_linear_time() {
     }
     let elapsed = started.elapsed();
     assert!(elapsed < Duration::from_secs(10), "{elapsed:?}");
-    // Linear: each 100 features add the same length.
-    let steps: BTreeSet<(usize, usize)> = lengths
-        .windows(2)
-        .map(|w| (w[1].0 - w[0].0, w[1].1 - w[0].1))
-        .collect();
-    assert_eq!(steps.len(), 1, "{lengths:?}");
+    // Linear while it nests: the first two hundreds add the same length.
+    let step = |i: usize| {
+        (
+            lengths[i + 1].0 - lengths[i].0,
+            lengths[i + 1].1 - lengths[i].1,
+        )
+    };
+    // A level is `f0000001.Face(M ...)` in Silico's form, `;:M;CUT` in FreeCAD's.
+    assert_eq!(step(0), (100 * 17, 100 * 7), "{lengths:?}");
+    // And bounded: 256 levels of at most 18 characters each.
+    assert!(
+        lengths
+            .iter()
+            .all(|&(silico, freecad)| silico < 256 * 18 && freecad < 256 * 18),
+        "{lengths:?}"
+    );
+    let top = map.name(element(ElementKind::Face, 6)).unwrap();
+    assert!(map.is_unstable(&top));
     // A bystander keeps its primitive name through all of it (N2).
     assert_eq!(
         map.name(element(ElementKind::Face, 1)).unwrap().to_string(),
         "pppppppp.Face1"
     );
+}
+
+/// `drilled()`, but the input's Face1 and Face2 each modified into both of the result's
+/// Face1 and Face2: two names each made of the same two, so written out, a name doubles
+/// with every feature (a history every check passes).
+fn crossed() -> History {
+    let mut h = drilled();
+    let both = |p: u32| ElementFate {
+        modified: vec![
+            Reported {
+                element: element(ElementKind::Face, 1),
+                position: p,
+            },
+            Reported {
+                element: element(ElementKind::Face, 2),
+                position: p + 1,
+            },
+        ],
+        ..ElementFate::default()
+    };
+    h.inputs[0].faces[0] = both(1);
+    h.inputs[0].faces[1] = both(1);
+    h.inputs[0].faces[5] = kept(6);
+    h
+}
+
+#[test]
+fn names_that_would_double_with_every_feature_stay_bounded() {
+    // Found by the review: 21 features of this made one name 67 MB in FreeCAD's form, and
+    // each feature doubled the time and memory. Past the bounds, an element is named by
+    // its number, and the name says it's unstable.
+    let history = crossed();
+    history.validate(2).unwrap();
+    let tool = ElementMap::primitive(id("tttttttt"));
+    let mut map = ElementMap::primitive(id("pppppppp"));
+    let started = Instant::now();
+    for n in 0..40 {
+        map = ElementMap::operation(
+            id(&format!("f{n:07}")),
+            Operation::Cut,
+            &[&map, &tool],
+            &history,
+        );
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    let face1 = map.name(element(ElementKind::Face, 1)).unwrap();
+    assert!(freecad::text(&face1).len() < 200_000);
+    assert!(face1.to_string().len() < 200_000);
+    // Named by its number where it passed the bounds (and modified from that since), so
+    // unstable.
+    assert!(map.is_unstable(&face1));
+    // The kept faces aren't touched by it.
+    let face3 = map.name(element(ElementKind::Face, 3)).unwrap();
+    assert_eq!(face3.to_string(), "pppppppp.Face3");
+    assert!(!map.is_unstable(&face3));
+}
+
+#[test]
+fn a_deep_timeline_names_and_writes_its_names_on_a_default_thread() {
+    // Found by the review: a plate drilled 6,000 times, a feature a hole, nested its top
+    // face's name 6,000 deep, and writing it overflowed a 2 MB stack (an abort). Past the
+    // bounds the face is named by its number, so every walk is short.
+    let joined = std::thread::Builder::new()
+        .stack_size(2 << 20)
+        .spawn(|| {
+            let history = drilled();
+            let tool = ElementMap::primitive(id("tttttttt"));
+            let mut map = ElementMap::primitive(id("pppppppp"));
+            for n in 0..6000 {
+                map = ElementMap::operation(
+                    id(&format!("f{n:07}")),
+                    Operation::Cut,
+                    &[&map, &tool],
+                    &history,
+                );
+            }
+            let top = map.name(element(ElementKind::Face, 6)).unwrap();
+            (
+                freecad::text(&top).len(),
+                top.to_string(),
+                map.is_unstable(&top),
+            )
+        })
+        .unwrap()
+        .join();
+    let (text, top, unstable) = joined.unwrap();
+    assert!(text < 200_000);
+    // The last time its name passed the bounds, the face was named by number; each cut
+    // since modified that.
+    assert!(top.contains(".Face6"), "{top}");
+    assert!(unstable);
 }

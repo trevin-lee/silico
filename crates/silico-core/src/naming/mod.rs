@@ -121,7 +121,7 @@ impl Name {
     }
 
     /// The names it's made of, one level down.
-    fn parts(&self) -> Vec<&Arc<Name>> {
+    pub(crate) fn parts(&self) -> Vec<&Arc<Name>> {
         match self {
             Name::Element { .. } => Vec::new(),
             Name::Derived { first, more, .. } => std::iter::once(first)
@@ -233,6 +233,10 @@ pub struct ElementMap {
     /// Names two or more elements came about by (each but the first then `~1`, `~2`, ...),
     /// here or in the solids this one was made from.
     duplicated: BTreeSet<Arc<Name>>,
+    /// Operations, this one or those it was made from, that named an element by its number
+    /// because nothing else named it, or its name would have been past the bounds: such a
+    /// name is unstable, as an upstream edit can renumber the element.
+    numbered: BTreeSet<FeatureId>,
 }
 
 impl ElementMap {
@@ -245,6 +249,7 @@ impl ElementMap {
             names: BTreeMap::new(),
             elements: BTreeMap::new(),
             duplicated: BTreeSet::new(),
+            numbered: BTreeSet::new(),
         }
     }
 
@@ -286,17 +291,19 @@ impl ElementMap {
         self.elements.get(name).copied()
     }
 
-    /// Whether `name` is ambiguous: it came about for more than one element (here, or in a
-    /// solid this one was made from: a kept element keeps its ambiguity), it's one of those
-    /// elements' `~n`, or it was derived from such a name. Which element it names depends on
-    /// how they're numbered, which an upstream edit can change (N3).
-    pub fn is_duplicated(&self, name: &Name) -> bool {
-        self.duplicated.contains(name)
+    /// Whether `name` is unstable, so a reference to it would be refused (N3): it came about
+    /// for more than one element (here, or in a solid this one was made from: a kept
+    /// element keeps it), it's one of those elements' `~n`, it's an operation's element by
+    /// its number (nothing else named it), or it was derived from such a name. Which
+    /// element it names depends on how elements are numbered, which an upstream edit can
+    /// change.
+    pub fn is_unstable(&self, name: &Name) -> bool {
+        let numbered =
+            matches!(name, Name::Element { feature, .. } if self.numbered.contains(feature));
+        numbered
+            || self.duplicated.contains(name)
             || matches!(name, Name::Duplicate { .. })
-            || name
-                .parts()
-                .into_iter()
-                .any(|part| self.is_duplicated(part))
+            || name.parts().into_iter().any(|part| self.is_unstable(part))
     }
 
     /// Every named element and its names, in element order. Empty for a primitive's map,

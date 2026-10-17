@@ -30,6 +30,17 @@ use crate::kernel::{ElementKind, ElementRef, History};
 /// The most sources a name lists, the first and four more, as FreeCAD's do.
 const MOST_SOURCES: usize = 5;
 
+/// The deepest a name may nest, and the most names it may be made of, counted as written
+/// out (a name used twice counts twice). Every walk over a name (writing it, comparing it)
+/// recurses and is as long as the name written out, so these bound them all: a timeline
+/// thousands of features deep overflowed the recompute thread's stack, and a worker's
+/// history that names two faces from the same two doubled a name with every feature (the
+/// review found both). FreeCAD bounds the same growth with its string table, which Silico
+/// doesn't have (N1). An element whose name would be past either is named by its number,
+/// and that name is unstable.
+const MOST_DEPTH: u32 = 256;
+const MOST_WEIGHT: u64 = 4096;
+
 /// The kinds of element named, from the lowest: FreeCAD walks sources in this order.
 const KINDS: [ElementKind; 3] = [ElementKind::Vertex, ElementKind::Edge, ElementKind::Face];
 
@@ -47,6 +58,10 @@ impl ElementMap {
             .iter()
             .flat_map(|input| input.duplicated.iter().cloned())
             .collect();
+        let numbered: BTreeSet<FeatureId> = inputs
+            .iter()
+            .flat_map(|input| input.numbered.iter().cloned())
+            .collect();
         let mut builder = Builder {
             map: ElementMap {
                 feature,
@@ -54,8 +69,10 @@ impl ElementMap {
                 names: BTreeMap::new(),
                 elements: BTreeMap::new(),
                 duplicated,
+                numbered,
             },
             operation,
+            sizes: BTreeMap::new(),
         };
         builder.kept(inputs, history);
         builder.derived(inputs, history);
@@ -75,9 +92,45 @@ type SourceKey = (u8, usize, String, Arc<Name>);
 struct Builder {
     map: ElementMap,
     operation: Operation,
+    /// Each name measured so far, by its address (the name held, so the address is never
+    /// another's): how deep it nests and how many names it's made of.
+    sizes: BTreeMap<usize, (Arc<Name>, u32, u64)>,
 }
 
 impl Builder {
+    /// How deep `name` nests and how many names it's made of, written out.
+    fn size(&mut self, name: &Arc<Name>) -> (u32, u64) {
+        let address = Arc::as_ptr(name) as usize;
+        if let Some((_, depth, weight)) = self.sizes.get(&address) {
+            return (*depth, *weight);
+        }
+        let (depth, weight) = self.parts_size(name);
+        self.sizes
+            .insert(address, (Arc::clone(name), depth, weight));
+        (depth, weight)
+    }
+
+    /// How deep a name made of `name`'s parts nests, and how many names it's made of.
+    fn parts_size(&mut self, name: &Name) -> (u32, u64) {
+        let (mut depth, mut weight) = (0u32, 1u64);
+        for part in name.parts() {
+            let (d, w) = self.size(part);
+            depth = depth.max(d);
+            weight = weight.saturating_add(w);
+        }
+        (depth.saturating_add(1), weight)
+    }
+
+    /// `name` for `element`, or, if it would be past the bounds, the element's number.
+    fn bounded(&mut self, element: ElementRef, name: Name) -> Arc<Name> {
+        let (depth, weight) = self.parts_size(&name);
+        if depth > MOST_DEPTH || weight > MOST_WEIGHT {
+            self.map.numbered.insert(self.map.feature.clone());
+            return Arc::new(self.map.element_name(element));
+        }
+        Arc::new(name)
+    }
+
     fn is_named(&self, element: ElementRef) -> bool {
         self.map.names.get(&element).is_some_and(|n| !n.is_empty())
     }
@@ -189,7 +242,8 @@ impl Builder {
                 first,
                 more: sources.collect(),
             };
-            self.set(element, Arc::new(name));
+            let name = self.bounded(element, name);
+            self.set(element, name);
         }
     }
 
@@ -235,7 +289,8 @@ impl Builder {
                     upper,
                     nth,
                 };
-                self.set(lower, Arc::new(name));
+                let name = self.bounded(lower, name);
+                self.set(lower, name);
             }
         }
     }
@@ -276,7 +331,8 @@ impl Builder {
                     first,
                     more: lowers.collect(),
                 };
-                self.set(this, Arc::new(name));
+                let name = self.bounded(this, name);
+                self.set(this, name);
             }
         }
     }
@@ -288,6 +344,7 @@ impl Builder {
             for index in 1..=counts.of(kind) {
                 let this = element_ref(kind, index);
                 if !self.is_named(this) {
+                    self.map.numbered.insert(self.map.feature.clone());
                     let name = self.map.element_name(this);
                     self.set(this, Arc::new(name));
                 }

@@ -73,8 +73,8 @@ fn two_elements_that_come_about_alike_are_numbered_and_marked() {
         ]
     );
     let first = map.name(element(ElementKind::Edge, 1)).unwrap();
-    assert!(map.is_duplicated(&first));
-    assert!(!map.is_duplicated(&map.name(element(ElementKind::Vertex, 1)).unwrap()));
+    assert!(map.is_unstable(&first));
+    assert!(!map.is_unstable(&map.name(element(ElementKind::Vertex, 1)).unwrap()));
     // FreeCAD's form: `;D1`, as its debug builds number them.
     assert_eq!(
         freecad::text(&map.name(element(ElementKind::Edge, 2)).unwrap()),
