@@ -11,7 +11,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestRunner};
@@ -20,6 +20,11 @@ use silico_core::kernel::{
     ElementCounts, ElementFate, ElementKind, ElementRef, History, InputHistory, Reported, Topology,
 };
 use silico_core::naming::{ElementMap, Name, OpCode, Place, Raw, Relation, Source, freecad};
+
+#[path = "common/within.rs"]
+mod within;
+
+use within::within;
 
 /// A box's faces, edges, and vertices, as OCCT makes it.
 const BOX: ElementCounts = ElementCounts {
@@ -713,7 +718,7 @@ fn drilled() -> History {
 }
 
 #[test]
-fn a_thousand_holes_drilled_one_by_one_leave_the_top_face_its_name() {
+fn a_thousand_holes_drilled_one_by_one_leave_the_top_face_its_name_promptly() {
     // A perforated plate built as 1,000 cut features, each modifying the top face (and
     // nothing else) as OCCT's first result of it: the face is the plate's Face6 as later
     // features have modified it (N7: its own name), whatever the number of holes, stable.
@@ -722,20 +727,17 @@ fn a_thousand_holes_drilled_one_by_one_leave_the_top_face_its_name() {
     let history = drilled();
     history.validate(2).unwrap();
     let tool = ElementMap::primitive(id("tttttttt"), BOX);
-    let mut map = ElementMap::primitive(id("pppppppp"), BOX);
-    let started = Instant::now();
-    for n in 0..1000 {
-        let feature = id(&format!("f{n:07}"));
-        map = ElementMap::operation(feature, OpCode::Cut, &[&map, &tool], &history);
-        let top = map.name(element(ElementKind::Face, 6)).unwrap();
-        assert_eq!(top.to_string(), "pppppppp.Face6", "after {n}");
-        assert!(!map.is_unstable(&top));
-    }
-    assert!(
-        started.elapsed() < Duration::from_secs(10),
-        "{:?}",
-        started.elapsed()
-    );
+    let map = within(Duration::from_secs(10), move || {
+        let mut map = ElementMap::primitive(id("pppppppp"), BOX);
+        for n in 0..1000 {
+            let feature = id(&format!("f{n:07}"));
+            map = ElementMap::operation(feature, OpCode::Cut, &[&map, &tool], &history);
+            let top = map.name(element(ElementKind::Face, 6)).unwrap();
+            assert_eq!(top.to_string(), "pppppppp.Face6", "after {n}");
+            assert!(!map.is_unstable(&top));
+        }
+        map
+    });
     // FreeCAD's form, one level: FreeCAD would write a thousand.
     let top = map.name(element(ElementKind::Face, 6)).unwrap();
     assert_eq!(freecad::text(&top), "Face6;:M;CUT");
@@ -771,28 +773,25 @@ fn crossed() -> History {
 }
 
 #[test]
-fn names_that_would_double_with_every_feature_stay_bounded() {
+fn names_that_would_double_with_every_feature_are_bounded_promptly() {
     // Found by the review: 21 features of this made one name 67 MB in FreeCAD's form, and
     // each feature doubled the time and memory. Past the bounds, an element is named by
     // its number, and the name says it's unstable.
     let history = crossed();
     history.validate(2).unwrap();
     let tool = ElementMap::primitive(id("tttttttt"), BOX);
-    let mut map = ElementMap::primitive(id("pppppppp"), BOX);
-    let started = Instant::now();
-    for n in 0..40 {
-        map = ElementMap::operation(
-            id(&format!("f{n:07}")),
-            OpCode::Cut,
-            &[&map, &tool],
-            &history,
-        );
-    }
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "{:?}",
-        started.elapsed()
-    );
+    let map = within(Duration::from_secs(5), move || {
+        let mut map = ElementMap::primitive(id("pppppppp"), BOX);
+        for n in 0..40 {
+            map = ElementMap::operation(
+                id(&format!("f{n:07}")),
+                OpCode::Cut,
+                &[&map, &tool],
+                &history,
+            );
+        }
+        map
+    });
     let face1 = map.name(element(ElementKind::Face, 1)).unwrap();
     assert!(freecad::text(&face1).len() < 200_000);
     assert!(face1.to_string().len() < 200_000);
@@ -841,7 +840,7 @@ fn a_deep_timeline_names_and_writes_its_names_on_a_default_thread() {
 }
 
 #[test]
-fn a_name_reported_for_many_elements_is_written_once() {
+fn a_name_reported_for_many_elements_is_written_once_promptly() {
     // Found by the review: a source's name, near the bound in size (32 KB written out),
     // reported for 100,000 result faces made the core copy its text for each, 5 GB from a
     // history of about a megabyte. Written once and shared, it's the history's size.
@@ -894,13 +893,9 @@ fn a_name_reported_for_many_elements_is_written_once() {
         },
     };
     many.validate(2).unwrap();
-    let started = Instant::now();
-    let named = ElementMap::operation(id("zzzzzzzz"), OpCode::Cut, &[&map, &tool], &many);
-    assert!(
-        started.elapsed() < Duration::from_secs(10),
-        "{:?}",
-        started.elapsed()
-    );
+    let named = within(Duration::from_secs(10), move || {
+        ElementMap::operation(id("zzzzzzzz"), OpCode::Cut, &[&map, &tool], &many)
+    });
     assert_eq!(named.iter().count(), r as usize);
 }
 

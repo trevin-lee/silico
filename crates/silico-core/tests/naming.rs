@@ -94,6 +94,162 @@ fn two_elements_that_come_about_alike_are_numbered_and_marked() {
     assert_eq!(map.element(&second), Some(element(ElementKind::Edge, 2)));
 }
 
+fn reported(kind: ElementKind, index: u32, position: u32) -> Reported {
+    Reported {
+        element: element(kind, index),
+        position,
+    }
+}
+
+/// A one-input history: what became of the box's faces and edges (the rest gone), the
+/// result's counts, and its topology.
+fn one_input(
+    faces: Vec<ElementFate>,
+    edges: Vec<ElementFate>,
+    result: (u32, u32),
+    face_edges: Vec<Vec<u32>>,
+    outer_edges: Vec<Vec<u32>>,
+) -> History {
+    let history = History {
+        inputs: vec![InputHistory {
+            faces,
+            edges,
+            vertices: vec![],
+        }],
+        result: ElementCounts {
+            faces: result.0,
+            edges: result.1,
+            vertices: 0,
+            solids: 1,
+        },
+        ends: Default::default(),
+        topology: Topology {
+            face_edges,
+            outer_edges,
+            edge_vertices: vec![vec![]; result.1 as usize],
+        },
+    };
+    history.validate(1).unwrap();
+    history
+}
+
+fn cut_of_box(history: &History) -> ElementMap {
+    let input = ElementMap::primitive(id("aaaaaaaa"), BOX);
+    ElementMap::operation(id("rrrrrrrr"), OpCode::Cut, &[&input], history)
+}
+
+#[test]
+fn an_edge_named_from_above_counts_only_the_unnamed_edges_before_it() {
+    // Face1 modified into the result's Face1, bounded by Edge1 (the box's Edge1, kept) and
+    // Edge2 (named by nothing): Edge2 is Face1's first unnamed edge, `U`, not its second
+    // edge, `U2`, as FreeCAD counts only unnamed ones (TopoShapeExpansion.cpp:1869-1880,
+    // its counter past `if (getMappedName(indexedName)) continue;`). Found by the review.
+    let history = one_input(
+        vec![ElementFate {
+            modified: vec![reported(ElementKind::Face, 1, 1)],
+            ..ElementFate::default()
+        }],
+        vec![kept(1)],
+        (1, 2),
+        vec![vec![1, 2]],
+        vec![vec![1, 2]],
+    );
+    let edge2 = cut_of_box(&history)
+        .name(element(ElementKind::Edge, 2))
+        .unwrap();
+    assert_eq!(freecad::text(&edge2), "Face1;:M;CUT;:U;CUT");
+    assert_eq!(edge2.to_string(), "rrrrrrrr.Edge(U aaaaaaaa.Face1)");
+}
+
+#[test]
+fn each_sources_place_is_its_rank_in_that_sources_own_list() {
+    // Face1 generates Edges 1 and 2, in that order; Face2 generates them the other way
+    // round. The two come about alike (generated from both faces), so each holds its place
+    // in each source's list: Edge1 is first in Face1's and second in Face2's. Found by the
+    // review: a place copied from the first source to the others passed every test.
+    let both = |first: u32, second: u32| ElementFate {
+        generated: vec![
+            reported(ElementKind::Edge, 1, first),
+            reported(ElementKind::Edge, 2, second),
+        ],
+        ..ElementFate::default()
+    };
+    let history = one_input(vec![both(1, 2), both(2, 1)], vec![], (0, 2), vec![], vec![]);
+    let map = cut_of_box(&history);
+    assert_eq!(
+        names(&map, ElementKind::Edge, 2),
+        [
+            "rrrrrrrr.Edge(G1/2 aaaaaaaa.Face1, G2/2 aaaaaaaa.Face2)",
+            "rrrrrrrr.Edge(G2/2 aaaaaaaa.Face1, G1/2 aaaaaaaa.Face2)",
+        ]
+    );
+    for index in [1, 2] {
+        assert!(!map.is_unstable(&map.name(element(ElementKind::Edge, index)).unwrap()));
+    }
+}
+
+#[test]
+fn a_face_keeps_its_sources_name_only_as_its_first_and_only_result_of_its_kind() {
+    // N7's one from one, its two other conditions (found untested by the review):
+    // modified into the result's Face1, but second in OCCT's list, it's derived, as FreeCAD
+    // writes it (`;:M2`; a sole result at position 1 is the source's own name)...
+    let second = one_input(
+        vec![ElementFate {
+            modified: vec![reported(ElementKind::Face, 1, 2)],
+            ..ElementFate::default()
+        }],
+        vec![],
+        (1, 0),
+        vec![vec![]],
+        vec![vec![]],
+    );
+    let face = cut_of_box(&second)
+        .name(element(ElementKind::Face, 1))
+        .unwrap();
+    assert_eq!(freecad::text(&face), "Face1;:M2;CUT");
+    assert_eq!(face.to_string(), "rrrrrrrr.Face(M aaaaaaaa.Face1)");
+    // ...and modified into Face1 while it generated Face2 too, it's one of two results of
+    // its kind, so derived.
+    let also_generated = one_input(
+        vec![ElementFate {
+            modified: vec![reported(ElementKind::Face, 1, 1)],
+            generated: vec![reported(ElementKind::Face, 2, 1)],
+            ..ElementFate::default()
+        }],
+        vec![],
+        (2, 0),
+        vec![vec![], vec![]],
+        vec![vec![], vec![]],
+    );
+    let map = cut_of_box(&also_generated);
+    assert_eq!(
+        names(&map, ElementKind::Face, 2),
+        [
+            "rrrrrrrr.Face(M aaaaaaaa.Face1)",
+            "rrrrrrrr.Face(G aaaaaaaa.Face1)",
+        ]
+    );
+}
+
+#[test]
+fn a_face_is_named_from_below_only_when_every_edge_of_its_outer_wire_is_named() {
+    // A face nothing reports, its outer wire Edge1 (the box's, kept) and Edge2 (named by
+    // nothing, with no named face above it): FreeCAD names a face from below only if every
+    // lower element is named (TopoShapeExpansion.cpp:1933-1941), so it's named by its
+    // number, unstable, not from Edge1 alone. Found by the review.
+    let history = one_input(
+        vec![],
+        vec![kept(1)],
+        (1, 2),
+        vec![vec![1, 2]],
+        vec![vec![1, 2]],
+    );
+    let map = cut_of_box(&history);
+    let face = map.name(element(ElementKind::Face, 1)).unwrap();
+    assert_eq!(face.to_string(), "rrrrrrrr.Face1");
+    assert!(map.is_unstable(&face));
+}
+
 #[test]
 fn a_face_kept_and_modified_too_is_a_duplicate_and_both_are_marked() {
     // A history (a broken worker's, or an operation OCCT reports oddly) that keeps the
