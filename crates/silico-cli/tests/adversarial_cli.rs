@@ -373,7 +373,7 @@ fn fmt_doesnt_rewrite_a_file_its_owner_cant_write() {
     assert_eq!(std::fs::read_to_string(&file).unwrap(), EXAMPLE);
     assert_eq!(out.code(), Some(2), "{}", out.stderr);
     assert!(out.stderr.contains("io_failed"), "{}", out.stderr);
-    assert!(out.stderr.contains("read-only"), "{}", out.stderr);
+    assert!(out.stderr.contains("Permission denied"), "{}", out.stderr);
 }
 
 #[test]
@@ -403,7 +403,14 @@ fn fmt_of_a_hard_linked_document_cut_short_loses_neither_name_of_it() {
             None => limited.env_remove(key),
         };
     }
-    let limited = limited.output().unwrap();
+    // `exec`, so the shell's process is silico's: its number names the file it keeps.
+    let child = limited
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let limited = child.wait_with_output().unwrap();
     assert!(!limited.status.success());
     for name in [&a, &b] {
         assert_eq!(
@@ -417,6 +424,10 @@ fn fmt_of_a_hard_linked_document_cut_short_loses_neither_name_of_it() {
         std::fs::metadata(&a).unwrap().ino(),
         std::fs::metadata(&b).unwrap().ino()
     );
+    // Killed while keeping the old text: the file it kept it in is left, by the name
+    // docs/cli.md gives (here empty: the limit killed it at its first byte).
+    let kept = format!(".a.silico.fmt-{pid}");
+    assert!(ls(&scratch.0).contains(&kept), "{:?}", ls(&scratch.0));
 }
 
 #[test]
@@ -434,6 +445,13 @@ fn fmt_in_a_read_only_directory_is_exit_2_and_doesnt_claim_it_wrote() {
     let entries: Vec<_> = std::fs::read_dir(scratch.0.join("ro")).unwrap().collect();
     assert_eq!(entries.len(), 1, "nothing left beside it");
     assert!(out.stderr.contains("couldn't be written"), "{}", out.stderr);
+    // Why, as the system says: the directory, not a taken name.
+    assert!(
+        out.stderr.contains("couldn't create a file in")
+            && out.stderr.contains("Permission denied"),
+        "{}",
+        out.stderr
+    );
     assert!(
         !out.stderr.contains("wrote the fingerprint"),
         "{}",

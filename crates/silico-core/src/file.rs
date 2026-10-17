@@ -79,16 +79,13 @@ fn unwritable(why: impl std::fmt::Display) -> Error {
 pub fn save(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Error> {
     let target = std::fs::canonicalize(file).map_err(unwritable)?;
     let metadata = std::fs::metadata(&target).map_err(unwritable)?;
-    // Whether this process may write it, whatever its mode says (a file its owner can't
-    // write but others can, another user's): opened to write, not truncated.
-    let writable = std::fs::OpenOptions::new().write(true).open(&target);
-    let mut writable = match writable {
-        Ok(_) if metadata.permissions().readonly() => None,
-        Ok(writable) => Some(writable),
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => None,
-        Err(e) => return Err(unwritable(e)),
-    }
-    .ok_or_else(|| unwritable("it's read-only"))?;
+    // Whether this process may write it, as the system says, whatever its mode bits say
+    // (a file its owner can't write but its group can, another user's): opened to write,
+    // not truncated.
+    let mut writable = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&target)
+        .map_err(unwritable)?;
     // Changed while it was rebuilt (another editor saved it): left to them.
     if read(&target)? != before {
         return Err(Error::new(
@@ -162,6 +159,9 @@ fn in_place(
     }
 }
 
+/// How many names [`beside`] tries.
+const TRIES: u32 = 64;
+
 /// A new file beside `target` (`.NAME.fmt-PID`, or `-1`, `-2`, ... after it if one is
 /// left from a run killed with the same process number), no more open to others than
 /// `target` is.
@@ -171,8 +171,7 @@ fn beside(target: &Path, metadata: &std::fs::Metadata) -> Result<(PathBuf, std::
     let name = target
         .file_name()
         .ok_or_else(|| unwritable("it has no file name"))?;
-    let mut last = None;
-    for n in 0..64 {
+    for n in 0..TRIES {
         let mut partial_name = OsString::from(".");
         partial_name.push(name);
         partial_name.push(format!(".fmt-{}", std::process::id()));
@@ -187,7 +186,8 @@ fn beside(target: &Path, metadata: &std::fs::Metadata) -> Result<(PathBuf, std::
             .open(&partial)
         {
             Ok(f) => return Ok((partial, f)),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last = Some(e),
+            // Left by a run killed with this process's number: the next name.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => {
                 return Err(unwritable(format!(
                     "couldn't create a file in {}: {e}",
@@ -197,8 +197,10 @@ fn beside(target: &Path, metadata: &std::fs::Metadata) -> Result<(PathBuf, std::
         }
     }
     Err(unwritable(format!(
-        "couldn't create a file in {}: {}",
+        "every name for a file beside it is taken ({}/.{}.fmt-{}, and -1 to -{}): remove those left by runs that were killed",
         dir.display(),
-        last.map_or_else(String::new, |e| e.to_string())
+        name.to_string_lossy(),
+        std::process::id(),
+        TRIES - 1
     )))
 }
