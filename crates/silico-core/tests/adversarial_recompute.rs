@@ -237,13 +237,24 @@ fn polling_a_run_until_it_finishes_gives_the_same_model_as_waiting() {
 
 #[test]
 fn dropping_the_engine_mid_recompute_returns_at_once_and_the_run_is_superseded() {
+    // A step is held, and let go only after the drop returns: so a drop that waited for the
+    // run (or its kernel's work) before superseding it would never return. It's dropped on
+    // another thread, and given a hang guard's wait rather than a second: that it returns
+    // at all, with the step still held, is what tells it from one that waits, however
+    // loaded the machine.
     let engine = engine(2);
     let hold = engine.kernel().hold(|_| true);
     let run = engine.start(checked(EXAMPLE));
     assert!(engine.kernel().wait_running(1, WAIT));
-    let at = Instant::now();
-    drop(engine);
-    assert!(at.elapsed() < Duration::from_secs(1), "{:?}", at.elapsed());
+    let (dropped, returned) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        drop(engine);
+        let _ = dropped.send(());
+    });
+    assert!(
+        returned.recv_timeout(HANG).is_ok(),
+        "dropping the engine waited for its run"
+    );
     match run.wait_timeout(WAIT).ok() {
         Some(Ok(RunOutcome::Superseded)) => {}
         other => panic!("{other:?}"),
@@ -680,10 +691,29 @@ fn keys_are_the_same_on_another_engine_and_another_kernel_size() {
     }
 }
 
+/// How long a recompute here may take, in wall time, before it's taken as hung: far past
+/// what any takes, however loaded the machine.
+const HANG: Duration = Duration::from_secs(60);
+
+/// Recomputes `document` and gives the model it published, and the CPU time this process
+/// spent meanwhile: every thread's, the engine's and the fake kernel's, which is what the
+/// recompute costs, where a loaded machine's wall clock measures the machine. (Nextest
+/// runs each test in its own process.) Fails if it wasn't published, or took [`HANG`].
+fn published_costing(engine: &Recompute<FakeKernel>, document: Checked) -> (Arc<Model>, Duration) {
+    let start = cpu_time::ProcessTime::now();
+    let model = match engine.start(document).wait_timeout(HANG) {
+        Ok(Ok(RunOutcome::Published(model))) => model,
+        Ok(other) => panic!("not published: {other:?}"),
+        Err(_) => panic!("the recompute didn't finish in {HANG:?}"),
+    };
+    (model, start.elapsed())
+}
+
 #[test]
 fn a_chain_of_four_hundred_booleans_finishes_promptly() {
     // The fake's own shapes grow with the chain (a thousand take it 3 s alone, in sequence),
     // so the chain is kept short enough that only recompute's overhead could slow it.
+    // Bounded by the CPU it costs, not the wall clock (see `published_costing`).
     let n = 400;
     let mut features = vec![boxed(&fid(0), [0.0; 3], [1.0, 1.0, 1.0])];
     let mut last = fid(0);
@@ -695,32 +725,31 @@ fn a_chain_of_four_hundred_booleans_finishes_promptly() {
         last = b;
     }
     let engine = engine(8);
-    let at = Instant::now();
-    let model = published(&engine, document(&features));
-    let took = at.elapsed();
+    let (model, took) = published_costing(&engine, document(&features));
     assert_eq!(model.bodies(), [id(&last)]);
     assert_eq!(made(&engine.kernel().calls()).len(), 1 + 2 * (n - 1));
-    assert!(took < Duration::from_secs(5), "took {took:?}");
+    assert!(took < Duration::from_secs(5), "took {took:?} of CPU");
 }
 
 #[test]
 fn five_thousand_independent_features_finish_promptly() {
+    // Bounded by the CPU it costs, not the wall clock (see `published_costing`).
     let n = 5000;
     let features: Vec<String> = (0..n)
         .map(|i| boxed(&fid(i), [0.0; 3], [(i + 1) as f64, 1.0, 1.0]))
         .collect();
     let engine = engine(8);
-    let at = Instant::now();
-    let model = published(&engine, document(&features));
-    let took = at.elapsed();
+    let (model, took) = published_costing(&engine, document(&features));
     assert_eq!(model.bodies().len(), n);
     assert!(engine.kernel().most_running() <= 8);
-    assert!(took < Duration::from_secs(5), "took {took:?}");
+    assert!(took < Duration::from_secs(5), "took {took:?} of CPU");
     // And again, unchanged: nothing runs, and it's quick.
-    let at = Instant::now();
-    published(&engine, document(&features));
+    let (_, again) = published_costing(&engine, document(&features));
     assert_eq!(made(&engine.kernel().calls()).len(), n);
-    assert!(at.elapsed() < Duration::from_secs(2), "{:?}", at.elapsed());
+    assert!(
+        again < Duration::from_secs(2),
+        "took {again:?} of CPU again"
+    );
 }
 
 // ---------------------------------------------------------------------------------------
