@@ -61,8 +61,17 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.ref }}
           fetch-depth: 0
+      # By git, not actions/checkout, which takes no abbreviated commits.
+      - name: Check out the ref
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          if [ -n "$REF" ]; then
+            commit=$(git rev-parse --verify --quiet "origin/$REF^{commit}" || git rev-parse --verify "$REF^{commit}")
+            git checkout --quiet --detach "$commit"
+          fi
+          echo "Testing $(git log -1 --format='%h %s')"
       - name: Toolchains
         run: bash .github/tools.sh
       - name: Mutants
@@ -97,7 +106,6 @@ jobs:
         with:
           name: mutants-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/out/mutants.out
-          if-no-files-found: error
 
   summary:
     needs: [plan, shard]
