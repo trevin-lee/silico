@@ -12,7 +12,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use silico_core::ErrorCode;
-use silico_core::worker::Worker;
+use silico_core::worker::{Worker, WorkerKind};
 use silico_protocol::{
     Algorithm, Blob, DebugOp, Generation, Op, OutOfTurn, Primitive, Reply, SketchSystem,
     SolveStatus, Solved,
@@ -24,11 +24,11 @@ const TEST_WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-test-worker");
 const TIMEOUT: Duration = Duration::from_secs(30);
 
 fn worker() -> Worker {
-    Worker::spawn(Path::new(WORKER)).unwrap()
+    Worker::spawn_as(Path::new(WORKER), WorkerKind::Sketch).unwrap()
 }
 
 fn test_worker() -> Worker {
-    Worker::spawn(Path::new(TEST_WORKER)).unwrap()
+    Worker::spawn_as(Path::new(TEST_WORKER), WorkerKind::Sketch).unwrap()
 }
 
 /// Whether a process with this ID exists (zombies included).

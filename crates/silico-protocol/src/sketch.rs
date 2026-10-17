@@ -17,9 +17,21 @@ pub const MAX_SKETCH_VALUES: usize = 10_000;
 /// At most this many constraints in a system.
 pub const MAX_SKETCH_CONSTRAINTS: usize = 10_000;
 
+/// At most this many pieces of geometry in a system.
+pub const MAX_SKETCH_GEOMETRY: usize = 10_000;
+
+/// At most this many unknowns (about 500 lines): Levenberg–Marquardt forms a dense
+/// unknowns × unknowns matrix (32 MiB at this limit) and factors it in time that grows as
+/// the cube: about 13 s for 2,000 unknowns, 100 s for 4,000.
+pub const MAX_SKETCH_UNKNOWNS: usize = 2048;
+
 /// At most this many entries in the solver's Jacobian (rows × unknowns): PlaneGCS's
-/// diagnosis builds it dense, so this bounds its memory to 256 MiB.
+/// diagnosis builds it dense, so this bounds it to 256 MiB.
 pub const MAX_JACOBIAN_ENTRIES: usize = 1 << 25;
+
+/// The largest tag: PlaneGCS takes tags as C `int`s, and leaves a negative one out of its
+/// diagnosis.
+pub const MAX_TAG: u32 = i32::MAX as u32;
 
 /// A value of the system, by its place in [`SketchSystem::values`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -243,10 +255,14 @@ pub struct SketchSystem {
     pub algorithm: Algorithm,
 }
 
-/// How a solve ended (PlaneGCS's `SolveStatus`).
+/// How a solve ended (PlaneGCS's `SolveStatus`). It means something only when the diagnosis
+/// found no conflict: FreeCAD doesn't solve a conflicting sketch, and PlaneGCS can report
+/// `Success` for one with its conflicting constraints unmet. And PlaneGCS solves only the
+/// parts of a sketch with unknowns: a constraint among fixed values alone isn't solved,
+/// whatever the status, and its residual says whether it holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SolveStatus {
-    /// Every constraint met.
+    /// Every constraint the solver solved is met.
     Success,
     /// The solver stopped at a minimum where the constraints aren't all met.
     Converged,
@@ -265,11 +281,18 @@ pub struct Solved {
     pub redundant: Vec<Tag>,
     /// Constraints some of whose equations repeat others, by tag, in increasing order.
     pub partially_redundant: Vec<Tag>,
-    /// Unknowns the constraints don't fix, in increasing order.
+    /// Unknowns the constraints don't fix, each once, in increasing order: every unknown
+    /// when there are no equations.
     pub free: Vec<Value>,
     pub status: SolveStatus,
     /// Every value after the solve: the solution on success, otherwise as given.
     pub values: Vec<f64>,
+    /// Each tagged constraint's residual on those values, by tag in increasing order, as
+    /// PlaneGCS measures it: its error for a constraint of one equation, the root mean
+    /// square of them for one of several, in the constraint's own terms (millimetres for
+    /// distances, radians for angles, a sine or cosine for parallel and perpendicular).
+    /// `None` where it isn't a number (geometry of no size).
+    pub residuals: Vec<(Tag, Option<f64>)>,
 }
 
 impl SketchSystem {
@@ -278,27 +301,40 @@ impl SketchSystem {
     /// increasing order, tags from 1, each used once, and an arc's rules only for an arc.
     pub fn check(&self) -> Result<(), InvalidParameter> {
         let n = self.values.len();
-        if n > MAX_SKETCH_VALUES {
-            return Err(invalid(
-                "values",
-                format!("a sketch may have at most {MAX_SKETCH_VALUES} values, got {n}"),
-            ));
-        }
-        if self.constraints.len() > MAX_SKETCH_CONSTRAINTS {
-            return Err(invalid(
+        for (parameter, count, limit, what) in [
+            ("values", n, MAX_SKETCH_VALUES, "values"),
+            (
+                "unknowns",
+                self.unknowns.len(),
+                MAX_SKETCH_UNKNOWNS,
+                "unknowns",
+            ),
+            (
+                "geometry",
+                self.geometry.len(),
+                MAX_SKETCH_GEOMETRY,
+                "pieces of geometry",
+            ),
+            (
                 "constraints",
-                format!(
-                    "a sketch may have at most {MAX_SKETCH_CONSTRAINTS} constraints, got {}",
-                    self.constraints.len()
-                ),
-            ));
+                self.constraints.len(),
+                MAX_SKETCH_CONSTRAINTS,
+                "constraints",
+            ),
+        ] {
+            if count > limit {
+                return Err(invalid(
+                    parameter,
+                    format!("a sketch may have at most {limit} {what}, got {count}"),
+                ));
+            }
         }
         // A kilometre, or as many radians: everything the kernel can make is within reach.
         if let Some((i, v)) = self
             .values
             .iter()
             .enumerate()
-            .find(|(_, v)| !(v.is_finite() && v.abs() <= MAX_LENGTH))
+            .find(|(_, v)| !within_reach(**v))
         {
             return Err(invalid(
                 "values",
@@ -336,130 +372,40 @@ impl SketchSystem {
             for v in g.values() {
                 value(v, &format!("geometry {i}"))?;
             }
-        }
-        let kind = |g: Geometry| -> Result<GeometryKind, InvalidParameter> {
-            self.geometry
-                .get(g.0 as usize)
-                .map(SketchGeometry::kind)
-                .ok_or_else(|| {
-                    invalid(
-                        "constraints",
+            // A line drawn with no length gives the solver 0/0 for its direction: wrong
+            // diagnoses, not errors. FreeCAD can't draw one.
+            if let SketchGeometry::Line { start, end } = *g {
+                let at = |v: Value| self.values[v.0 as usize];
+                if at(start.x) == at(end.x) && at(start.y) == at(end.y) {
+                    return Err(invalid(
+                        "geometry",
                         format!(
-                            "a constraint names geometry {}, but there are {}",
-                            g.0,
-                            self.geometry.len()
+                            "geometry {i} is a line drawn with no length, both ends at ({}, {})",
+                            format_number(at(start.x)),
+                            format_number(at(start.y))
                         ),
-                    )
-                })
-        };
-        let want = |g: Geometry, kinds: &[GeometryKind], what: &str| {
-            let k = kind(g)?;
-            if kinds.contains(&k) {
-                Ok(())
-            } else {
-                Err(invalid(
-                    "constraints",
-                    format!(
-                        "{what} needs {}, but geometry {} is {}",
-                        kinds_word(kinds),
-                        g.0,
-                        k.word()
-                    ),
-                ))
-            }
-        };
-        let point = |p: PointOf, what: &str| -> Result<(), InvalidParameter> {
-            let k = kind(p.geometry())?;
-            let fits = match p {
-                PointOf::Point(_) => k == GeometryKind::Point,
-                PointOf::Start(_) | PointOf::End(_) => {
-                    matches!(k, GeometryKind::Line | GeometryKind::Arc)
+                    ));
                 }
-                PointOf::Center(_) => matches!(k, GeometryKind::Circle | GeometryKind::Arc),
-            };
-            if fits {
-                Ok(())
-            } else {
-                Err(invalid(
-                    "constraints",
-                    format!(
-                        "{what} names {p:?}, but geometry {} is {}",
-                        p.geometry().0,
-                        k.word()
-                    ),
-                ))
             }
-        };
-        // A dimension's value is fixed: reference dimensions, whose value the solver finds,
-        // come with the document's sketches (M3.3).
-        let dimension = |v: Value, what: &str| -> Result<(), InvalidParameter> {
-            value(v, what)?;
-            if self.unknowns.binary_search(&v).is_ok() {
-                Err(invalid(
-                    "constraints",
-                    format!(
-                        "{what}'s value {} is an unknown: a dimension's value must be fixed",
-                        v.0
-                    ),
-                ))
-            } else {
-                Ok(())
-            }
-        };
-        use GeometryKind::{Arc, Circle, Line};
+        }
         let mut tags = Vec::with_capacity(self.constraints.len());
         let mut ruled = Vec::new();
         let mut rows = 0usize;
-        for c in &self.constraints {
-            let what = constraint_word(c);
-            match *c {
-                SolverConstraint::ArcRules { arc } => {
-                    want(arc, &[Arc], what)?;
-                    ruled.push(arc);
+        for (i, c) in self.constraints.iter().enumerate() {
+            self.check_constraint(c).map_err(|e| InvalidParameter {
+                parameter: e.parameter,
+                message: match c.tag() {
+                    Some(tag) => format!("constraint {i} (tag {}): {}", tag.0, e.message),
+                    None => format!("constraint {i}: {}", e.message),
+                },
+            })?;
+            match c.tag() {
+                Some(tag) => tags.push(tag),
+                None => {
+                    if let SolverConstraint::ArcRules { arc } = *c {
+                        ruled.push(arc);
+                    }
                 }
-                SolverConstraint::Coincident { a, b, .. } => {
-                    point(a, what)?;
-                    point(b, what)?;
-                }
-                SolverConstraint::Horizontal { line, .. }
-                | SolverConstraint::Vertical { line, .. } => want(line, &[Line], what)?,
-                SolverConstraint::DistanceX { a, b, value: v, .. }
-                | SolverConstraint::DistanceY { a, b, value: v, .. }
-                | SolverConstraint::Distance { a, b, value: v, .. } => {
-                    point(a, what)?;
-                    point(b, what)?;
-                    dimension(v, what)?;
-                }
-                SolverConstraint::PointOnLine { point: p, line, .. } => {
-                    point(p, what)?;
-                    want(line, &[Line], what)?;
-                }
-                SolverConstraint::Parallel { a, b, .. }
-                | SolverConstraint::Perpendicular { a, b, .. }
-                | SolverConstraint::EqualLength { a, b, .. } => {
-                    want(a, &[Line], what)?;
-                    want(b, &[Line], what)?;
-                }
-                SolverConstraint::Angle { a, b, value: v, .. } => {
-                    want(a, &[Line], what)?;
-                    want(b, &[Line], what)?;
-                    dimension(v, what)?;
-                }
-                SolverConstraint::Radius {
-                    circle, value: v, ..
-                } => {
-                    want(circle, &[Circle, Arc], what)?;
-                    dimension(v, what)?;
-                }
-            }
-            if let Some(tag) = c.tag() {
-                if tag.0 == 0 {
-                    return Err(invalid(
-                        "constraints",
-                        format!("{what}'s tag must be at least 1 (the solver never reports tag 0)"),
-                    ));
-                }
-                tags.push(tag);
             }
             rows += c.rows();
         }
@@ -491,6 +437,143 @@ impl SketchSystem {
         }
         Ok(())
     }
+
+    /// One constraint's references, values, and tag: the parts of [`check`](Self::check)
+    /// a refusal names the constraint for.
+    fn check_constraint(&self, c: &SolverConstraint) -> Result<(), InvalidParameter> {
+        let n = self.values.len();
+        let what = constraint_word(c);
+        let kind = |g: Geometry| -> Result<GeometryKind, InvalidParameter> {
+            self.geometry
+                .get(g.0 as usize)
+                .map(SketchGeometry::kind)
+                .ok_or_else(|| {
+                    invalid(
+                        "constraints",
+                        format!(
+                            "{what} names geometry {}, but there are {}",
+                            g.0,
+                            self.geometry.len()
+                        ),
+                    )
+                })
+        };
+        let want = |g: Geometry, kinds: &[GeometryKind]| {
+            let k = kind(g)?;
+            if kinds.contains(&k) {
+                Ok(())
+            } else {
+                Err(invalid(
+                    "constraints",
+                    format!(
+                        "{what} needs {}, but geometry {} is {}",
+                        kinds_word(kinds),
+                        g.0,
+                        k.word()
+                    ),
+                ))
+            }
+        };
+        let point = |p: PointOf| -> Result<(), InvalidParameter> {
+            let k = kind(p.geometry())?;
+            let fits = match p {
+                PointOf::Point(_) => k == GeometryKind::Point,
+                PointOf::Start(_) | PointOf::End(_) => {
+                    matches!(k, GeometryKind::Line | GeometryKind::Arc)
+                }
+                PointOf::Center(_) => matches!(k, GeometryKind::Circle | GeometryKind::Arc),
+            };
+            if fits {
+                Ok(())
+            } else {
+                Err(invalid(
+                    "constraints",
+                    format!(
+                        "{what} names {p:?}, but geometry {} is {}",
+                        p.geometry().0,
+                        k.word()
+                    ),
+                ))
+            }
+        };
+        // A dimension's value is fixed: reference dimensions, whose value the solver finds,
+        // come with the document's sketches (M3.3).
+        let dimension = |v: Value| -> Result<(), InvalidParameter> {
+            if (v.0 as usize) >= n {
+                return Err(invalid(
+                    "values",
+                    format!("{what} names value {}, but there are {n}", v.0),
+                ));
+            }
+            if self.unknowns.binary_search(&v).is_ok() {
+                return Err(invalid(
+                    "constraints",
+                    format!(
+                        "{what}'s value {} is an unknown: a dimension's value must be fixed",
+                        v.0
+                    ),
+                ));
+            }
+            Ok(())
+        };
+        use GeometryKind::{Arc, Circle, Line};
+        match *c {
+            SolverConstraint::ArcRules { arc } => want(arc, &[Arc])?,
+            SolverConstraint::Coincident { a, b, .. } => {
+                point(a)?;
+                point(b)?;
+            }
+            SolverConstraint::Horizontal { line, .. } | SolverConstraint::Vertical { line, .. } => {
+                want(line, &[Line])?
+            }
+            SolverConstraint::DistanceX { a, b, value: v, .. }
+            | SolverConstraint::DistanceY { a, b, value: v, .. }
+            | SolverConstraint::Distance { a, b, value: v, .. } => {
+                point(a)?;
+                point(b)?;
+                dimension(v)?;
+            }
+            SolverConstraint::PointOnLine { point: p, line, .. } => {
+                point(p)?;
+                want(line, &[Line])?;
+            }
+            SolverConstraint::Parallel { a, b, .. }
+            | SolverConstraint::Perpendicular { a, b, .. }
+            | SolverConstraint::EqualLength { a, b, .. } => {
+                want(a, &[Line])?;
+                want(b, &[Line])?;
+            }
+            SolverConstraint::Angle { a, b, value: v, .. } => {
+                want(a, &[Line])?;
+                want(b, &[Line])?;
+                dimension(v)?;
+            }
+            SolverConstraint::Radius {
+                circle, value: v, ..
+            } => {
+                want(circle, &[Circle, Arc])?;
+                dimension(v)?;
+            }
+        }
+        if let Some(tag) = c.tag()
+            && !(1..=MAX_TAG).contains(&tag.0)
+        {
+            return Err(invalid(
+                "constraints",
+                format!(
+                    "{what}'s tag must be from 1 to {MAX_TAG} (the solver never reports tag 0, and takes tags as C ints), got {}",
+                    tag.0
+                ),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Whether a value is one a sketch may hold: finite, and within a kilometre (or as many
+/// radians) of 0. A solution must be too, so the next solve can start from it.
+pub fn within_reach(v: f64) -> bool {
+    v.is_finite() && v.abs() <= MAX_LENGTH
 }
 
 impl SolverConstraint {
@@ -679,7 +762,10 @@ mod tests {
             };
         });
         assert_eq!(parameter, "constraints");
-        assert_eq!(message, "a constraint names geometry 3, but there are 3");
+        assert_eq!(
+            message,
+            "constraint 1 (tag 1): a horizontal constraint names geometry 3, but there are 3"
+        );
         let (_, message) = refused(|s| {
             s.constraints[1] = SolverConstraint::Horizontal {
                 tag: Tag(1),
@@ -688,7 +774,7 @@ mod tests {
         });
         assert_eq!(
             message,
-            "a horizontal constraint needs a line, but geometry 1 is a circle"
+            "constraint 1 (tag 1): a horizontal constraint needs a line, but geometry 1 is a circle"
         );
         let (_, message) = refused(|s| {
             s.constraints[3] = SolverConstraint::Radius {
@@ -699,13 +785,13 @@ mod tests {
         });
         assert_eq!(
             message,
-            "a radius needs a circle or an arc, but geometry 0 is a line"
+            "constraint 3 (tag 3): a radius needs a circle or an arc, but geometry 0 is a line"
         );
         let (_, message) =
             refused(|s| s.constraints[0] = SolverConstraint::ArcRules { arc: Geometry(1) });
         assert_eq!(
             message,
-            "an arc's rules needs an arc, but geometry 1 is a circle"
+            "constraint 0: an arc's rules needs an arc, but geometry 1 is a circle"
         );
     }
 
@@ -730,7 +816,7 @@ mod tests {
             assert_eq!(
                 message,
                 format!(
-                    "a distance names {p:?}, but geometry {} is {kind}",
+                    "constraint 2 (tag 2): a distance names {p:?}, but geometry {} is {kind}",
                     p.geometry().0
                 )
             );
@@ -764,7 +850,7 @@ mod tests {
         });
         assert_eq!(
             message,
-            "a distance's value 3 is an unknown: a dimension's value must be fixed"
+            "constraint 2 (tag 2): a distance's value 3 is an unknown: a dimension's value must be fixed"
         );
         let (_, message) = refused(|s| {
             s.constraints[3] = SolverConstraint::Radius {
@@ -773,7 +859,10 @@ mod tests {
                 value: Value(18),
             };
         });
-        assert_eq!(message, "a radius names value 18, but there are 18");
+        assert_eq!(
+            message,
+            "constraint 3 (tag 3): a radius names value 18, but there are 18"
+        );
     }
 
     #[test]
@@ -786,7 +875,7 @@ mod tests {
         });
         assert_eq!(
             message,
-            "a horizontal constraint's tag must be at least 1 (the solver never reports tag 0)"
+            "constraint 1 (tag 0): a horizontal constraint's tag must be from 1 to 2147483647 (the solver never reports tag 0, and takes tags as C ints), got 0"
         );
         let (_, message) = refused(|s| {
             s.constraints[3] = SolverConstraint::Radius {
@@ -837,30 +926,105 @@ mod tests {
 
     #[test]
     fn a_jacobian_past_the_limit_is_refused_and_one_at_it_passes() {
-        // 3,277 one-row constraints on 10,240 unknowns: 33,556,480 entries, just past 2^25.
-        // The limit is on rows × unknowns, PlaneGCS's dense Jacobian.
-        let with = |rows: u32, unknowns: u32| {
+        // The limit is on rows × unknowns, PlaneGCS's dense Jacobian. A coincidence is two
+        // rows: 8,192 of them on 2,048 unknowns is 2^25 exactly; one more is past it.
+        let with = |coincidences: u32| {
             let mut s = system();
-            s.values.resize(unknowns as usize, 0.0);
-            s.unknowns = (0..unknowns).map(Value).collect();
-            s.constraints = (1..=rows)
-                .map(|t| SolverConstraint::Horizontal {
+            s.values.resize(MAX_SKETCH_UNKNOWNS, 1.0);
+            s.unknowns = (0..MAX_SKETCH_UNKNOWNS as u32).map(Value).collect();
+            s.constraints = vec![SolverConstraint::ArcRules { arc: Geometry(2) }];
+            s.constraints
+                .extend((1..=coincidences).map(|t| SolverConstraint::Coincident {
                     tag: Tag(t),
-                    line: Geometry(0),
-                })
-                .collect();
+                    a: PointOf::Start(Geometry(0)),
+                    b: PointOf::End(Geometry(0)),
+                }));
             s
         };
-        // 4,096 × 8,192 = 2^25 exactly.
-        with(4096, 8192).check().unwrap();
-        let e = with(4097, 8192).check().unwrap_err();
+        // The arc's rules are 4 rows too.
+        with(8190).check().unwrap();
+        let e = with(8191).check().unwrap_err();
         assert_eq!(e.parameter, "constraints");
         assert_eq!(
             e.message,
             format!(
-                "4097 equations in 8192 unknowns is more than the solver can diagnose (at most {MAX_JACOBIAN_ENTRIES} entries)"
+                "16386 equations in 2048 unknowns is more than the solver can diagnose (at most {MAX_JACOBIAN_ENTRIES} entries)"
             )
         );
+    }
+
+    #[test]
+    fn unknowns_and_geometry_past_their_limits_are_refused() {
+        // Every value an unknown but the two dimensions' (16 and 17).
+        let mut s = system();
+        s.values.resize(MAX_SKETCH_UNKNOWNS + 3, 1.0);
+        s.unknowns = (0..MAX_SKETCH_UNKNOWNS as u32 + 2)
+            .filter(|v| !matches!(v, 16 | 17))
+            .map(Value)
+            .collect();
+        s.check().unwrap();
+        s.unknowns.push(Value(MAX_SKETCH_UNKNOWNS as u32 + 2));
+        let e = s.check().unwrap_err();
+        assert_eq!(e.parameter, "unknowns");
+        assert_eq!(
+            e.message,
+            format!("a sketch may have at most {MAX_SKETCH_UNKNOWNS} unknowns, got 2049")
+        );
+
+        let mut s = system();
+        let point = SketchGeometry::Point(PointValues {
+            x: Value(0),
+            y: Value(1),
+        });
+        s.geometry.resize(MAX_SKETCH_GEOMETRY, point);
+        s.check().unwrap();
+        s.geometry.push(point);
+        let e = s.check().unwrap_err();
+        assert_eq!(e.parameter, "geometry");
+        assert_eq!(
+            e.message,
+            format!(
+                "a sketch may have at most {MAX_SKETCH_GEOMETRY} pieces of geometry, got 10001"
+            )
+        );
+    }
+
+    #[test]
+    fn a_tag_past_a_c_int_is_refused_and_the_largest_passes() {
+        // PlaneGCS takes tags as C ints, and a negative one drops out of its diagnosis.
+        let tagged = |t: u32| {
+            let mut s = system();
+            s.constraints[1] = SolverConstraint::Horizontal {
+                tag: Tag(t),
+                line: Geometry(0),
+            };
+            s
+        };
+        tagged(MAX_TAG).check().unwrap();
+        for t in [MAX_TAG + 1, u32::MAX] {
+            let e = tagged(t).check().unwrap_err();
+            assert_eq!(e.parameter, "constraints");
+            assert_eq!(
+                e.message,
+                format!(
+                    "constraint 1 (tag {t}): a horizontal constraint's tag must be from 1 to 2147483647 (the solver never reports tag 0, and takes tags as C ints), got {t}"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn a_line_drawn_with_no_length_is_refused_and_one_of_any_length_passes() {
+        let mut s = system();
+        s.values[2] = 0.0;
+        let e = s.check().unwrap_err();
+        assert_eq!(e.parameter, "geometry");
+        assert_eq!(
+            e.message,
+            "geometry 0 is a line drawn with no length, both ends at (0, 0)"
+        );
+        s.values[2] = 1e-300;
+        s.check().unwrap();
     }
 
     #[test]

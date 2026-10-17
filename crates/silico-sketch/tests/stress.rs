@@ -325,6 +325,11 @@ fn digest(solved: &Solved) -> String {
     for v in &solved.values {
         h.update(v.to_bits().to_le_bytes());
     }
+    // The residuals too: computed from the solution, so as platform-dependent as it.
+    for (tag, r) in &solved.residuals {
+        h.update(tag.0.to_le_bytes());
+        h.update(r.map_or(u64::MAX, f64::to_bits).to_le_bytes());
+    }
     let mut hex = String::with_capacity(16);
     for byte in &h.finalize()[..8] {
         let _ = write!(hex, "{byte:02x}");

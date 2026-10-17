@@ -75,6 +75,10 @@ fn main() -> BuildResult<()> {
         .compiler(cxx)
         .std("c++20")
         .cpp_link_stdlib("c++")
+        // Optimized in every profile: Eigen unoptimized is tens of times slower, and the
+        // recipe makes the results the same at any level (the stress reference holds in
+        // debug and release alike).
+        .opt_level(2)
         // FreeCAD's release builds have NDEBUG: PlaneGCS's asserts are gone there too.
         .define("NDEBUG", None)
         // No SIMD, so Eigen sums the same way on every CPU; and the register count it

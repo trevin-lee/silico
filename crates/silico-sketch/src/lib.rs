@@ -13,7 +13,7 @@ pub mod worker;
 
 use silico_protocol::{
     Algorithm, Failure, PointOf, Refusal, SketchGeometry, SketchSystem, SolveStatus, Solved,
-    SolverConstraint, Tag, Value,
+    SolverConstraint, Tag, Value, within_reach,
 };
 
 #[cxx::bridge(namespace = "silico_sketch")]
@@ -36,6 +36,9 @@ mod ffi {
         free: Vec<u32>,
         status: i32,
         values: Vec<f64>,
+        /// Each tagged constraint's residual, by tag in increasing order.
+        residual_tags: Vec<u32>,
+        residuals: Vec<f64>,
     }
 
     unsafe extern "C++" {
@@ -67,7 +70,7 @@ pub fn solve(system: &SketchSystem) -> Result<Solved, Failure> {
         refusal: Refusal::SolverThrew,
         cause: Some(e.what().to_owned()),
     })?;
-    check_finite(&out.values)?;
+    check_reach(&out.values)?;
     let tags = |tags: &[i32]| -> Result<Vec<Tag>, Failure> {
         tags.iter()
             .map(|&t| u32::try_from(t).map(Tag))
@@ -87,14 +90,21 @@ pub fn solve(system: &SketchSystem) -> Result<Solved, Failure> {
             other => return Err(internal(&format!("PlaneGCS returned status {other}"))),
         },
         values: out.values,
+        residuals: out
+            .residual_tags
+            .iter()
+            .zip(&out.residuals)
+            .map(|(&tag, &r)| (Tag(tag), r.is_finite().then_some(r)))
+            .collect(),
     })
 }
 
-/// A solution must be finite to leave the worker: PlaneGCS checks nothing.
-fn check_finite(values: &[f64]) -> Result<(), Failure> {
-    match values.iter().position(|v| !v.is_finite()) {
+/// A solution must be one the next solve can start from to leave the worker: finite and
+/// within reach. PlaneGCS checks nothing.
+fn check_reach(values: &[f64]) -> Result<(), Failure> {
+    match values.iter().position(|&v| !within_reach(v)) {
         None => Ok(()),
-        Some(at) => Err(Failure::new(Refusal::SolutionNotFinite {
+        Some(at) => Err(Failure::new(Refusal::SolutionOutOfReach {
             value: at as u32,
         })),
     }
@@ -229,16 +239,18 @@ mod tests {
     use silico_protocol::Refusal;
 
     #[test]
-    fn a_solution_that_isnt_finite_is_refused_naming_the_first_value_that_isnt() {
-        assert!(super::check_finite(&[0.0, -1e300, f64::MAX, f64::MIN_POSITIVE]).is_ok());
-        assert!(super::check_finite(&[]).is_ok());
+    fn a_solution_out_of_reach_is_refused_naming_the_first_value_that_is() {
+        assert!(super::check_reach(&[0.0, -1e6, 1e6, f64::MIN_POSITIVE, -0.0]).is_ok());
+        assert!(super::check_reach(&[]).is_ok());
         for (values, at) in [
             (vec![f64::NAN], 0),
             (vec![1.0, 2.0, f64::INFINITY, f64::NAN], 2),
             (vec![1.0, f64::NEG_INFINITY], 1),
+            (vec![1.0, 1e6, 1.000_000_1e6], 2),
+            (vec![-1e300], 0),
         ] {
-            let failure = super::check_finite(&values).unwrap_err();
-            assert_eq!(failure.refusal, Refusal::SolutionNotFinite { value: at });
+            let failure = super::check_reach(&values).unwrap_err();
+            assert_eq!(failure.refusal, Refusal::SolutionOutOfReach { value: at });
             assert_eq!(failure.cause, None);
         }
     }

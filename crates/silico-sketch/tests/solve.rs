@@ -83,9 +83,12 @@ fn a_free_line_has_four_degrees_of_freedom_and_stays_where_it_is() {
     assert_eq!(solved.dofs, 4);
     assert_eq!(solved.status, SolveStatus::Success);
     assert_eq!(solved.values, vec![1.0, 2.0, 3.0, 5.0]);
-    // PlaneGCS finds free values from the constraints' Jacobian: with no constraints there
-    // is none, and it lists nothing.
-    assert!(solved.free.is_empty());
+    // With no equations every unknown is free, as FreeCAD reads PlaneGCS's empty diagnosis.
+    assert_eq!(
+        solved.free,
+        (0..4).map(silico_protocol::Value).collect::<Vec<_>>()
+    );
+    assert!(solved.residuals.is_empty());
 }
 
 #[test]

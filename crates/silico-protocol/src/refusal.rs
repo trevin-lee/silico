@@ -102,8 +102,10 @@ pub enum Refusal {
     OtherWorkersOp { op: String },
     /// PlaneGCS threw while solving a sketch; its words, if any, are the cause.
     SolverThrew,
-    /// PlaneGCS's solution has a value that isn't finite: `value`, its place in the system.
-    SolutionNotFinite { value: u32 },
+    /// PlaneGCS's solution has a value that isn't finite, or is beyond a kilometre (or as
+    /// many radians) from 0, so the next solve couldn't start from it: `value`, its place in
+    /// the system.
+    SolutionOutOfReach { value: u32 },
     /// Floating-point traps found on after `op` (trap-enable bits `mask`).
     FpTrapsOn { mask: u32, op: String },
     /// Something went wrong in the worker itself, in a test worker's words.
@@ -263,7 +265,7 @@ impl Refusal {
             | Refusal::FacesUnmeshed { .. }
             | Refusal::NotFinite { .. }
             | Refusal::SolverThrew
-            | Refusal::SolutionNotFinite { .. } => FailureKind::KernelFailed,
+            | Refusal::SolutionOutOfReach { .. } => FailureKind::KernelFailed,
             Refusal::TestOperation { .. } | Refusal::OtherWorkersOp { .. } => {
                 FailureKind::UnknownOp
             }
@@ -542,9 +544,14 @@ impl Refusal {
                 "the sketch solver failed".to_owned(),
                 Some("this is a bug in Silico's sketch worker: report it".to_owned()),
             ),
-            Refusal::SolutionNotFinite { value } => (
-                format!("the sketch solver's solution has a value that isn't finite (value {value})"),
-                Some("check the sketch's geometry for elements of no size, then try again".to_owned()),
+            Refusal::SolutionOutOfReach { value } => (
+                format!(
+                    "the sketch solver's solution has a value that isn't finite or is more than 1e6 from 0 (value {value})"
+                ),
+                Some(
+                    "check the sketch's dimensions: they place geometry past a kilometre, or give it no size"
+                        .to_owned(),
+                ),
             ),
             Refusal::FpTrapsOn { mask, op } => (
                 format!("floating-point traps are on (trap-enable bits {mask:#x}) after {op}"),
@@ -881,7 +888,7 @@ mod tests {
                 op: "Solve".to_owned(),
             },
             Refusal::SolverThrew,
-            Refusal::SolutionNotFinite { value: 7 },
+            Refusal::SolutionOutOfReach { value: 7 },
             Refusal::FpTrapsOn {
                 mask: 0x200,
                 op: "Fillet".to_owned(),
@@ -975,7 +982,7 @@ mod tests {
             UnknownOp,         // TestOperation
             UnknownOp,         // OtherWorkersOp
             KernelFailed,      // SolverThrew
-            KernelFailed,      // SolutionNotFinite
+            KernelFailed,      // SolutionOutOfReach
             Internal,          // FpTrapsOn
             Internal,          // Internal
             ResourceExhausted, // OutOfMemory
@@ -1020,7 +1027,7 @@ mod tests {
             None,               // TestOperation
             None,               // OtherWorkersOp
             None,               // SolverThrew
-            None,               // SolutionNotFinite
+            None,               // SolutionOutOfReach
             None,               // FpTrapsOn
             None,               // Internal
             None,               // OutOfMemory

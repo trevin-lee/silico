@@ -34,6 +34,13 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Near-singular systems (almost-parallel lines given a distance constraint)
 - Circular expression references (`a = b + 1`, `b = a`)
 - 10,000 or more constraints
+- Tags or IDs past `i32::MAX` checked as `u32` and handed to C++ as `int`: PlaneGCS leaves negatively tagged constraints out of its diagnosis, so a conflict goes unnamed and the solve says Success
+- Constraints on fixed values only (two fixed points, a dimension between them that doesn't hold): PlaneGCS solves only components with unknowns and says Success, even when it names the constraint conflicting
+- Geometry drawn degenerate (a line from (1, 1) to (1, 1)) under a constraint whose gradient or scale divides by its length: the Jacobian row is NaN and a satisfiable constraint is called conflicting
+- A solver's lists of parameters or tags read as sets: PlaneGCS lists a dependent parameter once per group, so check each is listed once
+- Sizes the check bounds by the wrong product: Levenberg–Marquardt's JᵀJ is unknowns², not rows × unknowns (2,000 lines chained by parallels, half the Jacobian limit, runs for many minutes)
+- Counts a limit misses because entries may share values (a million points on the same two values): bound every list, not only the values
+- Solutions past the check's own reach (a point dimensioned 1e6 from one at 1e6): the solve succeeds and the next solve, started from it, is refused
 
 ## Features
 

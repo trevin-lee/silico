@@ -64,8 +64,36 @@ static NEXT_TRACE: AtomicU64 = AtomicU64::new(1);
 /// it costs a pool of fourteen a few milliseconds at start.
 static SPAWNING: Mutex<()> = Mutex::new(());
 
-/// A running kernel worker. Dropping it kills and reaps the process.
+/// Which kind of worker a [`Worker`] runs, so its errors name it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerKind {
+    /// OCCT's (silico-kernel).
+    Kernel,
+    /// PlaneGCS's (silico-sketch).
+    Sketch,
+}
+
+impl WorkerKind {
+    /// As errors name it: "kernel worker", "sketch worker".
+    pub fn noun(self) -> &'static str {
+        match self {
+            WorkerKind::Kernel => "kernel worker",
+            WorkerKind::Sketch => "sketch worker",
+        }
+    }
+
+    /// What the worker runs, as an error names it: "the kernel", "the sketch solver".
+    fn runs(self) -> &'static str {
+        match self {
+            WorkerKind::Kernel => "the kernel",
+            WorkerKind::Sketch => "the sketch solver",
+        }
+    }
+}
+
+/// A running worker. Dropping it kills and reaps the process.
 pub struct Worker {
+    kind: WorkerKind,
     /// Shared with [`WorkerKiller`]s, behind a lock taken for every kill and every reap, so a
     /// killer never signals a process that's been reaped (whose ID may be someone else's).
     child: Arc<Mutex<Child>>,
@@ -89,10 +117,16 @@ pub struct Worker {
 }
 
 impl Worker {
-    /// Starts the worker executable at `exe`.
+    /// Starts the kernel worker executable at `exe`.
     pub fn spawn(exe: &Path) -> Result<Self, Error> {
+        Self::spawn_as(exe, WorkerKind::Kernel)
+    }
+
+    /// Starts the worker executable at `exe`, of the given kind.
+    pub fn spawn_as(exe: &Path, kind: WorkerKind) -> Result<Self, Error> {
         let spawning = lock(&SPAWNING);
-        let (ours, theirs) = UnixStream::pair().map_err(|e| start_failed("socket pair", &e))?;
+        let (ours, theirs) =
+            UnixStream::pair().map_err(|e| start_failed(kind, "socket pair", &e))?;
         // Larger buffers than the platform default (8 KiB on macOS), so a multi-megabyte
         // shape moves in few system calls. The kernel may cap them; that's fine.
         for end in [&ours, &theirs] {
@@ -117,9 +151,9 @@ impl Worker {
                 parent_fd: OwnedFd::from(theirs),
                 child_fd: WORKER_FD,
             }])
-            .map_err(|e| internal("passing the socket", e))?;
+            .map_err(|e| internal(kind, "passing the socket", e))?;
         let child = command.spawn().map_err(|e| {
-            let message = format!("couldn't start the kernel worker {}", exe.display());
+            let message = format!("couldn't start the {} {}", kind.noun(), exe.display());
             // Short of something, the worker never ran; otherwise it can't be run.
             shortage(&e, &message).unwrap_or_else(|| {
                 Error::new(ErrorCode::WorkerCrashed, message)
@@ -151,15 +185,15 @@ impl Worker {
                     forward_logs(stderr, pid, &tail, &callers);
                     drop(done_tx);
                 })
-                .map_err(|e| start_failed("starting the log thread", &e))?;
+                .map_err(|e| start_failed(kind, "starting the log thread", &e))?;
         }
 
         // Non-blocking, so a send can give up at its deadline (see `DeadlineWriter`).
         ours.set_nonblocking(true)
-            .map_err(|e| start_failed("making the socket non-blocking", &e))?;
+            .map_err(|e| start_failed(kind, "making the socket non-blocking", &e))?;
         let reader = ours
             .try_clone()
-            .map_err(|e| start_failed("socket clone", &e))?;
+            .map_err(|e| start_failed(kind, "socket clone", &e))?;
         // One reply in flight: a worker sending unrequested replies can't make the core
         // buffer them without limit.
         let (tx, replies) = mpsc::sync_channel(1);
@@ -189,13 +223,14 @@ impl Worker {
                     }
                 }
             })
-            .map_err(|e| start_failed("starting the reply thread", &e))?;
+            .map_err(|e| start_failed(kind, "starting the reply thread", &e))?;
 
         let child = guard
             .release()
-            .ok_or_else(|| internal("keeping the process", "it was lost"))?;
-        tracing::debug!(pid, exe = %exe.display(), "started kernel worker");
+            .ok_or_else(|| internal(kind, "keeping the process", "it was lost"))?;
+        tracing::debug!(pid, exe = %exe.display(), kind = kind.noun(), "started worker");
         Ok(Self {
+            kind,
             child: Arc::new(Mutex::new(child)),
             socket: ours,
             replies,
@@ -313,10 +348,11 @@ impl Worker {
             return Err(Error::new(
                 ErrorCode::WorkerCrashed,
                 format!(
-                    "can't send {name}: this kernel worker was stopped after an earlier failure"
+                    "can't send {name}: this {} was stopped after an earlier failure",
+                    self.kind.noun()
                 ),
             )
-            .with_suggestion("start a new kernel worker"));
+            .with_suggestion(format!("start a new {}", self.kind.noun())));
         }
         // A timeout too long to add to the clock has no deadline.
         let deadline = Instant::now().checked_add(timeout);
@@ -361,7 +397,7 @@ impl Worker {
                 lock(&self.callers).forget(trace.0);
                 return Err(Error::new(
                     ErrorCode::InvalidInput,
-                    format!("{name} couldn't be sent to the kernel worker"),
+                    format!("{name} couldn't be sent to the {}", self.kind.noun()),
                 )
                 .with_cause(e.to_string())
                 .with_suggestion("make the request smaller: send smaller shapes"));
@@ -395,16 +431,17 @@ impl Worker {
                     // Checked before it's described, so a refusal the request can't explain
                     // (a broken worker's) costs no more than the request does.
                     Err(failure) => match refusal_fits(&failure.refusal, listed.as_deref()) {
-                        Ok(()) => Err(failure_error(name, failure)),
+                        Ok(()) => Err(failure_error_from(self.kind, name, failure)),
                         Err(misfit) => Err(self.stop(
                             Error::new(
                                 ErrorCode::ProtocolError,
                                 format!(
-                                    "the kernel worker's refusal of {name} doesn't fit the request"
+                                    "the {}'s refusal of {name} doesn't fit the request",
+                                    self.kind.noun()
                                 ),
                             )
                             .with_cause(misfit)
-                            .with_suggestion(BROKEN_WORKER),
+                            .with_suggestion(broken_worker(self.kind)),
                         )),
                     },
                 }
@@ -412,23 +449,26 @@ impl Worker {
             Ok(Ok(response)) => Err(self.stop(
                 Error::new(
                     ErrorCode::ProtocolError,
-                    format!("the kernel worker answered {name} out of turn"),
+                    format!("the {} answered {name} out of turn", self.kind.noun()),
                 )
                 .with_cause(format!(
                     "reply for request {} (generation {}), expected {} (generation {})",
                     response.id.0, response.generation.0, id.0, generation.0
                 ))
-                .with_suggestion(BROKEN_WORKER),
+                .with_suggestion(broken_worker(self.kind)),
             )),
             Ok(Err(FrameError::Io(_) | FrameError::Truncated { .. }))
             | Err(RecvTimeoutError::Disconnected) => Err(self.crashed(name, deadline, true, None)),
             Ok(Err(e)) => Err(self.stop(
                 Error::new(
                     ErrorCode::ProtocolError,
-                    format!("the kernel worker's reply to {name} couldn't be read"),
+                    format!(
+                        "the {}'s reply to {name} couldn't be read",
+                        self.kind.noun()
+                    ),
                 )
                 .with_cause(e.to_string())
-                .with_suggestion(BROKEN_WORKER),
+                .with_suggestion(broken_worker(self.kind)),
             )),
             Err(RecvTimeoutError::Timeout) => Err(self.timed_out(name, timeout)),
         }
@@ -437,19 +477,23 @@ impl Worker {
     fn timed_out(&mut self, name: &str, timeout: Duration) -> Error {
         let error = Error::new(
             ErrorCode::WorkerTimeout,
-            format!("the kernel worker didn't finish {name} within {timeout:?}"),
+            format!(
+                "the {} didn't finish {name} within {timeout:?}",
+                self.kind.noun()
+            ),
         );
         // A worker that hadn't started never had the request to work on.
         let error = if self.has_started() {
             error.with_suggestion("simplify the operation, or allow it more time")
         } else {
             error
-                .with_cause("the kernel worker hadn't started")
-                .with_suggestion(
-                    "try the request again: the kernel worker hadn't started in the time \
-                     allowed (a new worker binary's first launch can be slow while the system \
-                     checks it); if it never starts, check Silico's install",
-                )
+                .with_cause(format!("the {} hadn't started", self.kind.noun()))
+                .with_suggestion(format!(
+                    "try the request again: the {} hadn't started in the time allowed (a new \
+                     worker binary's first launch can be slow while the system checks it); if \
+                     it never starts, check Silico's install",
+                    self.kind.noun()
+                ))
         };
         self.stop(error)
     }
@@ -503,10 +547,10 @@ impl Worker {
         self.stopped = true;
         Error::new(
             ErrorCode::WorkerCrashed,
-            format!("the kernel worker crashed during {name}"),
+            format!("the {} crashed during {name}", self.kind.noun()),
         )
         .with_cause(cause)
-        .with_suggestion(crash_advice(status, reached))
+        .with_suggestion(crash_advice(self.kind, status, reached))
     }
 
     /// Waits briefly for a worker whose socket closed to exit, then kills it if needed.
@@ -846,37 +890,41 @@ enum Reached {
 /// shutdown), a worker that stopped responding, or one gone before the request reached it
 /// is from outside, worth trying again (the next request starts another worker). A worker
 /// that exited with a code ended on its own, which is its install, not the request.
-fn crash_advice(status: Option<ExitStatus>, reached: Reached) -> &'static str {
+fn crash_advice(kind: WorkerKind, status: Option<ExitStatus>, reached: Reached) -> String {
     let request = matches!(reached, Reached::Request);
+    let worker = kind.noun();
     match status.map(|s| (s.code(), s.signal())) {
-        Some((Some(_), _)) => {
-            "check Silico's install: the kernel worker exited on its own (see its last output), \
+        Some((Some(_), _)) => format!(
+            "check Silico's install: the {worker} exited on its own (see its last output), \
              which no change to the request will help; report it if it persists"
-        }
+        ),
         Some((None, Some(signal)))
             if matches!(reached, Reached::NotStarted) && FAULTS.contains(&signal) =>
         {
-            "check Silico's install: the kernel worker crashed as it started, before it could \
-             read the request (see its last output); report it if it persists"
+            format!(
+                "check Silico's install: the {worker} crashed as it started, before it could \
+                 read the request (see its last output); report it if it persists"
+            )
         }
-        Some((None, Some(signal))) if request && FAULTS.contains(&signal) => {
-            "change the operation's values: these crashed the kernel, and the same request \
-             would crash it again"
-        }
-        Some((None, Some(libc::SIGKILL))) if matches!(reached, Reached::NotStarted) => {
-            "try the request again: the kernel worker was killed before it started; if it's \
-             killed before starting again, check Silico's install (macOS kills a worker binary \
-             whose code signature is broken)"
-        }
-        Some((None, Some(libc::SIGKILL))) if request => {
-            "try the request once more: the kernel worker was killed, most likely by the \
-             system for running out of memory; if it's killed again, the request needs too \
-             much memory: simplify it"
-        }
-        _ => {
-            "try the request again: the kernel worker was stopped from outside, stopped \
-             responding, or was gone before the request reached it, not by these values"
-        }
+        Some((None, Some(signal))) if request && FAULTS.contains(&signal) => format!(
+            "change the operation's values: these crashed {}, and the same request would \
+             crash it again",
+            kind.runs()
+        ),
+        Some((None, Some(libc::SIGKILL))) if matches!(reached, Reached::NotStarted) => format!(
+            "try the request again: the {worker} was killed before it started; if it's killed \
+             before starting again, check Silico's install (macOS kills a worker binary whose \
+             code signature is broken)"
+        ),
+        Some((None, Some(libc::SIGKILL))) if request => format!(
+            "try the request once more: the {worker} was killed, most likely by the system for \
+             running out of memory; if it's killed again, the request needs too much memory: \
+             simplify it"
+        ),
+        _ => format!(
+            "try the request again: the {worker} was stopped from outside, stopped responding, \
+             or was gone before the request reached it, not by these values"
+        ),
     }
 }
 
@@ -910,8 +958,13 @@ fn signal_name(signal: i32) -> Option<&'static str> {
 }
 
 /// What to try when the worker itself misbehaved: nothing about the request will help.
-const BROKEN_WORKER: &str = "this is a bug in Silico's kernel worker, not in the request: report \
-     it (the worker was stopped, and the next request starts another)";
+fn broken_worker(kind: WorkerKind) -> String {
+    format!(
+        "this is a bug in Silico's {}, not in the request: report it (the worker was \
+         stopped, and the next request starts another)",
+        kind.noun()
+    )
+}
 
 /// What to try after an internal error: a bug, not the request's values.
 pub(crate) const SILICO_BUG: &str = "this is a bug in Silico, not in the request: report it";
@@ -981,6 +1034,11 @@ fn edges_fit(named: &[u32], listed: Option<&[u32]>) -> Result<(), String> {
 /// described with those names (`Refusal::describe`). A kernel failure always suggests
 /// something.
 pub(crate) fn failure_error(op: &str, failure: Failure) -> Error {
+    failure_error_from(WorkerKind::Kernel, op, failure)
+}
+
+/// [`failure_error`] for a worker of the given kind.
+pub(crate) fn failure_error_from(kind: WorkerKind, op: &str, failure: Failure) -> Error {
     let name = |element: ElementRef| element.to_string();
     let described = failure.refusal.describe(failure.cause.as_deref(), &name);
     // Why it failed: OCCT's words where it threw; otherwise the refusal's.
@@ -1022,7 +1080,7 @@ pub(crate) fn failure_error(op: &str, failure: Failure) -> Error {
         FailureKind::UnknownOp | FailureKind::Internal => (
             Error::new(
                 ErrorCode::Internal,
-                format!("the kernel worker couldn't do {op}"),
+                format!("the {} couldn't do {op}", kind.noun()),
             )
             .with_cause(why),
             SILICO_BUG,
@@ -1038,10 +1096,10 @@ pub(crate) fn failure_error(op: &str, failure: Failure) -> Error {
     error.with_suggestion(described.suggestion.unwrap_or_else(|| fallback.to_owned()))
 }
 
-fn internal(what: &str, e: impl std::fmt::Display) -> Error {
+fn internal(kind: WorkerKind, what: &str, e: impl std::fmt::Display) -> Error {
     Error::new(
         ErrorCode::Internal,
-        format!("couldn't start the kernel worker: {what} failed"),
+        format!("couldn't start the {}: {what} failed", kind.noun()),
     )
     .with_cause(e.to_string())
     .with_suggestion(SILICO_BUG)
@@ -1049,12 +1107,12 @@ fn internal(what: &str, e: impl std::fmt::Display) -> Error {
 
 /// A step of starting a worker failed in this process: short of descriptors, threads, or
 /// memory, most likely.
-fn start_failed(what: &str, e: &io::Error) -> Error {
+fn start_failed(kind: WorkerKind, what: &str, e: &io::Error) -> Error {
     shortage(
         e,
-        &format!("couldn't start the kernel worker: {what} failed"),
+        &format!("couldn't start the {}: {what} failed", kind.noun()),
     )
-    .unwrap_or_else(|| internal(what, e))
+    .unwrap_or_else(|| internal(kind, what, e))
 }
 
 /// `message` as a `resource_exhausted` error, if `e` says this process, or the system, is
@@ -1112,7 +1170,7 @@ mod tests {
             libc::SIGSYS,
         ] {
             for (reached, says) in [(Request, values), (Started, again), (NotStarted, install)] {
-                let advice = crash_advice(signalled(signal), reached);
+                let advice = crash_advice(super::WorkerKind::Kernel, signalled(signal), reached);
                 assert!(advice.starts_with(says), "{signal} {reached:?}: {advice}");
             }
         }
@@ -1121,14 +1179,21 @@ mod tests {
             (Started, again),
             (NotStarted, again),
         ] {
-            let advice = crash_advice(signalled(libc::SIGKILL), reached);
+            let advice = crash_advice(super::WorkerKind::Kernel, signalled(libc::SIGKILL), reached);
             assert!(advice.starts_with(says), "{reached:?}: {advice}");
         }
         // Killed before it started: from outside, or, again and again, the system refusing
         // the binary.
-        let unstarted = crash_advice(signalled(libc::SIGKILL), NotStarted);
+        let unstarted = crash_advice(
+            super::WorkerKind::Kernel,
+            signalled(libc::SIGKILL),
+            NotStarted,
+        );
         assert!(unstarted.contains(install), "{unstarted}");
-        assert!(!crash_advice(signalled(libc::SIGKILL), Started).contains(install));
+        assert!(
+            !crash_advice(super::WorkerKind::Kernel, signalled(libc::SIGKILL), Started)
+                .contains(install)
+        );
         for reached in [Request, Started, NotStarted] {
             for signal in [
                 libc::SIGTERM,
@@ -1137,16 +1202,20 @@ mod tests {
                 libc::SIGUSR1,
                 libc::SIGPIPE,
             ] {
-                let advice = crash_advice(signalled(signal), reached);
+                let advice = crash_advice(super::WorkerKind::Kernel, signalled(signal), reached);
                 assert!(advice.starts_with(again), "{signal} {reached:?}: {advice}");
             }
             // Killed after it stopped responding: no status.
             assert!(
-                crash_advice(None, reached).starts_with(again),
+                crash_advice(super::WorkerKind::Kernel, None, reached).starts_with(again),
                 "{reached:?}"
             );
             // An exit code (3, in the status's high byte) is the install's, either way.
-            let exited = crash_advice(Some(ExitStatus::from_raw(3 << 8)), reached);
+            let exited = crash_advice(
+                super::WorkerKind::Kernel,
+                Some(ExitStatus::from_raw(3 << 8)),
+                reached,
+            );
             assert!(exited.starts_with(install), "{reached:?}: {exited}");
         }
     }

@@ -307,6 +307,11 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             free: vec![Value(0), Value(7)],
             status: SolveStatus::Converged,
             values: vec![0.0, -1.5, 1e-300, f64::MAX],
+            residuals: vec![
+                (Tag(2), Some(-2.5e-11)),
+                (Tag(3), None),
+                (Tag(5), Some(0.0)),
+            ],
         })),
         Err(Failure::new(Refusal::InvalidParameter {
             parameter: "dx".to_owned(),

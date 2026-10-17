@@ -218,15 +218,25 @@ SolveOutput solve(const SolveInput &input) {
   tags.clear();
   system.getPartiallyRedundant(tags);
   for (int t : tags) out.partially_redundant.push_back(t);
-  GCS::VEC_pD free;
-  system.getDependentParams(free);
+  // PlaneGCS lists a value once for each group of dependent values it's in, and none when
+  // there are no equations to diagnose, which FreeCAD reads as everything free
+  // (Sketch::calculateDependentParametersElements).
   std::vector<uint32_t> free_values;
-  for (double *p : free) {
-    const auto at = p - values.data();
-    if (at < 0 || static_cast<size_t>(at) >= values.size()) bug("a free value outside the system");
-    free_values.push_back(static_cast<uint32_t>(at));
+  if (!input.unknowns.empty() && system.isEmptyDiagnoseMatrix()) {
+    free_values.assign(input.unknowns.begin(), input.unknowns.end());
+  } else {
+    GCS::VEC_pD free;
+    system.getDependentParams(free);
+    for (double *p : free) {
+      const auto at = p - values.data();
+      if (at < 0 || static_cast<size_t>(at) >= values.size()) {
+        bug("a free value outside the system");
+      }
+      free_values.push_back(static_cast<uint32_t>(at));
+    }
   }
   std::sort(free_values.begin(), free_values.end());
+  free_values.erase(std::unique(free_values.begin(), free_values.end()), free_values.end());
   for (uint32_t v : free_values) out.free.push_back(v);
 
   const int status = system.solve(true, algorithm);
@@ -237,6 +247,18 @@ SolveOutput solve(const SolveInput &input) {
   }
   out.status = status;
   for (double v : values) out.values.push_back(v);
+  // Every tagged constraint's residual on those values: PlaneGCS solves only the parts
+  // with unknowns, so this is how a constraint among fixed values alone shows whether it
+  // holds.
+  std::vector<int> tagged;
+  for (size_t i = 0; i < input.constraints.size(); i += CONSTRAINT_STRIDE) {
+    if (input.constraints[i] != ARC_RULES) tagged.push_back(static_cast<int>(input.constraints[i + 1]));
+  }
+  std::sort(tagged.begin(), tagged.end());
+  for (int tag : tagged) {
+    out.residual_tags.push_back(static_cast<uint32_t>(tag));
+    out.residuals.push_back(system.calculateConstraintErrorByTag(tag));
+  }
   return out;
 }
 
