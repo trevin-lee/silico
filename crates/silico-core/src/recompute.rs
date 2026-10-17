@@ -651,6 +651,14 @@ impl Job {
             Job::Make(key) | Job::Measure(key) => key,
         }
     }
+
+    /// What the job does, for its span.
+    fn name(self) -> &'static str {
+        match self {
+            Job::Make(_) => "make",
+            Job::Measure(_) => "measure",
+        }
+    }
 }
 
 /// What a job came to.
@@ -874,7 +882,8 @@ impl<K: Kernel + 'static> Engine<K> {
                 let _span = tracing::warn_span!(
                     "recompute_step",
                     feature = plan.feature(&key),
-                    key = %key
+                    key = %key,
+                    job = job.name(),
                 )
                 .entered();
                 match job {
