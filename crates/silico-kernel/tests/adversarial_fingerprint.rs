@@ -213,7 +213,7 @@ fn the_smallest_parts_the_gate_admits_fingerprint_as_their_formulas() {
 }
 
 #[test]
-fn a_common_of_parts_that_dont_meet_has_a_fingerprint_with_no_box_or_fails_cleanly() {
+fn a_common_of_parts_that_dont_meet_fails_cleanly() {
     let text = doc(&[
         r#"{"id": "aaaaaaaa", "type": "box", "v": 1, "name": "A", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1}"#,
         r#"{"id": "bbbbbbbb", "type": "box", "v": 1, "name": "B", "position": [5, 5, 5], "length": 1, "width": 1, "height": 1}"#,
@@ -221,20 +221,29 @@ fn a_common_of_parts_that_dont_meet_has_a_fingerprint_with_no_box_or_fails_clean
     ]);
     let model = occt(&text);
     let id = FeatureId::new("cccccccc").unwrap();
+    // The kernel refuses an empty boolean result, so the feature fails, naming itself.
     match model.outcome(&id) {
-        Some(FeatureOutcome::Built { .. }) => {
-            let f = model.fingerprint(&id).unwrap();
-            assert_eq!(f.volume.millionths(), 0);
-            assert_eq!(f.area.millionths(), 0);
-            assert_eq!(f.bbox, None);
-            assert_eq!((f.faces, f.edges, f.vertices), (0, 0, 0));
-        }
         Some(FeatureOutcome::Failed(e)) => {
             assert_eq!(e.feature(), Some("cccccccc"), "{e}");
             assert!(e.suggestion().is_some(), "{e}");
         }
         other => panic!("{other:?}"),
     }
+    assert_eq!(model.fingerprint(&id), None);
+}
+
+#[test]
+fn a_solid_with_nothing_in_it_is_measured_with_no_box() {
+    // No operation in a document makes one (an empty boolean is refused), so it's measured
+    // directly: nothing in it, no box, and a fingerprint without one.
+    let empty = silico_kernel::test_ops::empty_shape().unwrap();
+    let summary = silico_kernel::summarize(&empty).unwrap();
+    assert_eq!(summary.bounds, None);
+    assert_eq!((summary.faces, summary.edges, summary.vertices), (0, 0, 0));
+    assert_eq!((summary.volume, summary.area), (0.0, 0.0));
+    let f = silico_core::document::Fingerprint::of(&summary).unwrap();
+    assert_eq!(f.bbox, None);
+    assert_eq!((f.volume.millionths(), f.area.millionths()), (0, 0));
 }
 
 #[test]

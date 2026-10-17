@@ -428,6 +428,27 @@ mod tests {
             let said = failure.refusal.describe(None, &|e| e.to_string());
             assert_eq!(said.message, format!("the shape's {want}"));
         }
+        // Every corner of the box, NaN or infinite, each named.
+        for (c, corner) in ["lowest", "highest"].iter().enumerate() {
+            for (a, axis) in ["x", "y", "z"].iter().enumerate() {
+                for (value, text) in [(f64::NAN, "NaN"), (f64::INFINITY, "inf")] {
+                    let mut bounds = [[0.0; 3], [10.0, 20.0, 30.0]];
+                    bounds[c][a] = value;
+                    let bad = ShapeSummary {
+                        bounds: Some(bounds),
+                        ..good.clone()
+                    };
+                    let said = check_finite(&bad)
+                        .unwrap_err()
+                        .refusal
+                        .describe(None, &|e| e.to_string());
+                    assert_eq!(
+                        said.message,
+                        format!("the shape's bounding box's {corner} {axis} isn't finite ({text})")
+                    );
+                }
+            }
+        }
     }
 
     #[test]

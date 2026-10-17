@@ -185,6 +185,42 @@ fn every_field_that_moved_is_named_and_every_drifting_feature_reported_in_order(
 }
 
 #[test]
+fn edges_and_vertices_that_moved_are_drift_too() {
+    // The pin stored with 3 vertices (it has 2), the hole with 16 edges (it has 15).
+    let text = saved(EXAMPLE)
+        .replacen(r#""edges": 15"#, r#""edges": 16"#, 1)
+        .replacen(r#""vertices": 2"#, r#""vertices": 3"#, 1);
+    let document = read(text.as_bytes()).unwrap();
+    let said: Vec<_> = drift(&document)
+        .iter()
+        .map(|e| {
+            (
+                e.feature().unwrap().to_owned(),
+                e.parameter().unwrap().to_owned(),
+                e.message().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        said,
+        [
+            (
+                "a91cw0de".to_owned(),
+                "fingerprint.vertices".to_owned(),
+                "feature a91cw0de rebuilt to other measures than its fingerprint: vertices 3 → 2"
+                    .to_owned()
+            ),
+            (
+                "m3tq8v0z".to_owned(),
+                "fingerprint.edges".to_owned(),
+                "feature m3tq8v0z rebuilt to other measures than its fingerprint: edges 16 → 15"
+                    .to_owned()
+            ),
+        ]
+    );
+}
+
+#[test]
 fn a_box_stored_where_none_rebuilds_is_drift_too() {
     // Stored without a box (a solid with nothing in it), rebuilt with one.
     let document = tampered(r#", "bbox": [0, 0, 0, 40, 20, 10]"#, "");

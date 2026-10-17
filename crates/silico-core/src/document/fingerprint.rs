@@ -252,9 +252,11 @@ mod tests {
         assert!(stored.differences(&stored).is_empty());
         let rebuilt = Fingerprint {
             volume: Measure(7_999_500_000),
+            area: Measure(2_800_000_001),
             faces: 7,
+            edges: 13,
+            vertices: 9,
             bbox: None,
-            ..stored
         };
         let fields: Vec<_> = stored
             .differences(&rebuilt)
@@ -265,12 +267,15 @@ mod tests {
             fields,
             [
                 ("volume", "8000".to_owned(), "7999.5".to_owned()),
+                ("area", "2800".to_owned(), "2800.000001".to_owned()),
                 (
                     "bbox",
                     "[0, 0, 0, 40, 20, 10]".to_owned(),
                     "none".to_owned()
                 ),
                 ("faces", "6".to_owned(), "7".to_owned()),
+                ("edges", "12".to_owned(), "13".to_owned()),
+                ("vertices", "8".to_owned(), "9".to_owned()),
             ]
         );
     }

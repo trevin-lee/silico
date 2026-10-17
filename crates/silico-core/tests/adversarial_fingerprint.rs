@@ -631,19 +631,22 @@ fn a_cancel_while_a_summary_is_held_leaves_the_next_run_whole() {
         .hold(|op| matches!(op, Op::Summarize { .. }));
     let text = doc(&[&format!("{BLOCK}}}")]);
     let first = engine.start(checked(&text));
+    // Until the box's measure is asked, and held.
+    let deadline = std::time::Instant::now() + WAIT;
+    while !engine
+        .kernel()
+        .calls()
+        .iter()
+        .any(|c| c.op.name() == "Summarize")
+    {
+        assert!(std::time::Instant::now() < deadline, "never measured");
+        std::thread::yield_now();
+    }
     assert!(engine.kernel().wait_running(1, WAIT));
     engine.cancel();
     hold.release();
     assert!(first.wait_timeout(WAIT).is_ok(), "hung");
-    let (_, model) = rebuilt(&text);
-    assert_eq!(
-        model
-            .fingerprint(&id("k7f2qx3m"))
-            .map(|f| f.volume.to_string()),
-        Some("8000".to_owned())
-    );
-    // Each step the cancelled run made was summarized at most once.
-    let _ = made(&engine.kernel().calls());
+    let before = engine.kernel().calls().len();
     let again = published(&engine, checked(&text));
     assert_eq!(
         again
@@ -651,6 +654,15 @@ fn a_cancel_while_a_summary_is_held_leaves_the_next_run_whole() {
             .map(|f| f.volume.to_string()),
         Some("8000".to_owned())
     );
+    // The box the cancelled run made is kept; its measure, stopped with that run, is asked
+    // again by the next, once.
+    let calls = engine.kernel().calls();
+    assert!(made(&calls[before..]).is_empty(), "{:?}", made(&calls));
+    let measures = calls[before..]
+        .iter()
+        .filter(|c| c.op.name() == "Summarize")
+        .count();
+    assert_eq!(measures, 1);
 }
 
 // ---------------------------------------------------------------------------------------
