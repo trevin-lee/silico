@@ -45,6 +45,7 @@ oracle-sweep = { cmd = "cargo build -p silico-kernel --bin silico-kernel-worker 
 corpus = { cmd = "bash tests/corpus/run.sh", depends-on = ["occt", "install-oracle"], description = "Download real parts (NIST's STEP files) once, and compare them with FreeCAD" }
 # Every check on the committed tree; must pass before a merge.
 gate = { cmd = "bash tests/gate.sh", description = "Run every check on the committed tree" }
+mutants = { cmd = "bash tests/mutants.sh", description = "Mutation testing on the committed tree, in the gate's worktree (pass cargo mutants arguments, absolute paths)" }
 lint = { cmd = "cargo fmt --check && cargo fmt --check --manifest-path third_party/occt/libm-shim/Cargo.toml && cargo clippy --workspace --all-targets -- -D warnings && CARGO_TARGET_DIR=target/libm-shim cargo clippy --manifest-path third_party/occt/libm-shim/Cargo.toml --release --all-targets -- -D warnings", depends-on = ["occt"] }
 
 # FreeCAD, for oracle tests: the FreeCAD Silico references, on the same OCCT release as
