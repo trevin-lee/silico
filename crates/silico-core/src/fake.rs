@@ -812,9 +812,12 @@ impl Symbolic {
     /// its input's, and the fake's boolean its inputs' together, the tool's numbered after
     /// the base's, as its history keeps them.
     fn topology(&self) -> Topology {
+        // Each step's shape is used by one later step at most (`read` checks the shape is
+        // one tree), so it's moved into that step, never copied: a chain of booleans costs
+        // its size, not its size times its length.
         let mut made: Vec<(Topology, ElementCounts)> = Vec::with_capacity(self.0.len());
         for step in &self.0 {
-            let of = |i: usize| made.get(i).cloned().unwrap_or_default();
+            let mut of = |i: usize| made.get_mut(i).map(std::mem::take).unwrap_or_default();
             let next = match step {
                 Step::Primitive(primitive) => {
                     (primitive_topology(primitive), primitive_counts(primitive))

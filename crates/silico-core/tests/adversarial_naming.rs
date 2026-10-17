@@ -975,3 +975,78 @@ fn a_maps_unstable_names_are_its_own_however_long_the_timeline() {
     assert_eq!(face.to_string(), "f0000049.Face1");
     assert!(map.is_unstable(&face));
 }
+
+/// A fuse of disjoint solids, as OCCT reports one: the base's elements (`a` of each kind)
+/// kept, the tool's (`b`) kept after them.
+fn kept_fuse(a: ElementCounts, b: ElementCounts) -> History {
+    let kept_all = |n: u32, after: u32| (1..=n).map(|i| kept(after + i)).collect::<Vec<_>>();
+    let result = ElementCounts {
+        faces: a.faces + b.faces,
+        edges: a.edges + b.edges,
+        vertices: a.vertices + b.vertices,
+        solids: 1,
+    };
+    History {
+        inputs: vec![
+            InputHistory {
+                faces: kept_all(a.faces, 0),
+                edges: kept_all(a.edges, 0),
+                vertices: kept_all(a.vertices, 0),
+            },
+            InputHistory {
+                faces: kept_all(b.faces, a.faces),
+                edges: kept_all(b.edges, a.edges),
+                vertices: kept_all(b.vertices, a.vertices),
+            },
+        ],
+        result,
+        ends: Default::default(),
+        topology: Topology {
+            face_edges: vec![vec![]; result.faces as usize],
+            outer_edges: vec![vec![]; result.faces as usize],
+            edge_vertices: vec![vec![]; result.edges as usize],
+        },
+    }
+}
+
+/// The CPU time of naming a fuse of a solid of `n` boxes' elements (6 n faces, 12 n
+/// edges, 8 n vertices) and one more box, every element kept: a map of 26 (n + 1) names,
+/// the least of five.
+fn naming_cost(n: u32) -> Duration {
+    let counts = ElementCounts {
+        faces: 6 * n,
+        edges: 12 * n,
+        vertices: 8 * n,
+        solids: 1,
+    };
+    let base = ElementMap::primitive(id("pppppppp"), counts);
+    let history = kept_fuse(counts, BOX);
+    let tool = ElementMap::primitive(id("tttttttt"), BOX);
+    (0..5)
+        .map(|_| {
+            let start = cpu_time::ThreadTime::now();
+            let map =
+                ElementMap::operation(id("zzzzzzzz"), OpCode::Fuse, &[&base, &tool], &history);
+            let spent = start.elapsed();
+            assert_eq!(map.iter().count() as u32, 26 * (n + 1));
+            spent
+        })
+        .min()
+        .unwrap()
+}
+
+#[test]
+fn naming_a_solid_costs_as_its_elements_do() {
+    // One feature's names cost in proportion to its solid's elements: four times the
+    // elements, about four times the CPU (twice as many, at eight, would be the square).
+    // Found by the review (via #26): a long chain's recompute took seven times as long as
+    // without naming; the cost was the fake kernel's (fixed), and this keeps naming's own
+    // cost from growing past linear. In thread CPU time, which load doesn't change.
+    let small = naming_cost(1_000);
+    let large = naming_cost(4_000);
+    let ratio = large.as_secs_f64() / small.as_secs_f64().max(1e-9);
+    assert!(
+        ratio < 8.0,
+        "100: {small:?}, 400: {large:?}, {ratio:.1} times"
+    );
+}
