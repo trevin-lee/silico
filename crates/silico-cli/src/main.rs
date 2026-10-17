@@ -3,17 +3,22 @@
 //!
 //! Exit codes: 0, nothing wrong; 1, a document has problems (or, with `fmt --check`, isn't
 //! in canonical form); 2, the command couldn't run (a usage error, a file that couldn't be
-//! read or written, a kernel that couldn't start).
+//! read or written, a kernel that couldn't start or failed in a way that isn't the
+//! document's).
 
-use std::io::Write as _;
+use std::ffi::OsString;
+use std::io::{Read as _, Write as _};
+use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use silico_core::Error;
 use silico_core::cache::Cache;
 use silico_core::command::{self, Problems};
+use silico_core::document::Checked;
+use silico_core::document::json::MAX_INPUT_LEN;
 use silico_core::pool::KernelPool;
 use silico_core::recompute::Recompute;
-use silico_core::{Error, ErrorCode};
 
 /// A line on stderr (the workspace forbids `eprintln!`, which panics if stderr is closed).
 macro_rules! say {
@@ -22,9 +27,9 @@ macro_rules! say {
     }};
 }
 
-const USAGE: &str = "usage: silico check [--json] FILE...
-       silico fmt [--check] FILE...
-       silico show FILE";
+const USAGE: &str = "usage: silico check [--json] [--] FILE...
+       silico fmt [--check] [--] FILE...
+       silico show [--] FILE";
 
 /// How a command ended.
 enum Ended {
@@ -58,20 +63,33 @@ impl Ended {
 fn main() -> ExitCode {
     silico_core::logging::init();
     tracing::debug!(version = env!("CARGO_PKG_VERSION"), "silico starting");
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // As the OS gives them: a file's name needn't be UTF-8.
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let Some((command, rest)) = args.split_first() else {
         say!("{USAGE}");
         return Ended::Failed.code();
     };
-    let (flags, files): (Vec<&String>, Vec<&String>) =
-        rest.iter().partition(|a| a.starts_with("--"));
-    let flag = |name: &str| flags.iter().any(|f| f.as_str() == name);
+    let command = command.to_string_lossy().into_owned();
+    // Options, then files; `--` ends the options, so a file may be named like one.
+    let mut flags: Vec<String> = Vec::new();
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut options = true;
+    for arg in rest {
+        if options && arg == "--" {
+            options = false;
+        } else if options && arg.to_string_lossy().starts_with("--") {
+            flags.push(arg.to_string_lossy().into_owned());
+        } else {
+            files.push(PathBuf::from(arg));
+        }
+    }
+    let flag = |name: &str| flags.iter().any(|f| f == name);
     let known: &[&str] = match command.as_str() {
         "check" => &["--json"],
         "fmt" => &["--check"],
         "show" => &[],
         _ => {
-            say!("silico: no command {:?}\n{USAGE}", command);
+            say!("silico: no command {command:?}\n{USAGE}");
             return Ended::Failed.code();
         }
     };
@@ -83,7 +101,6 @@ fn main() -> ExitCode {
         say!("{USAGE}");
         return Ended::Failed.code();
     }
-    let files: Vec<PathBuf> = files.iter().map(PathBuf::from).collect();
     let ended = match command.as_str() {
         "check" => files
             .iter()
@@ -93,36 +110,49 @@ fn main() -> ExitCode {
             .iter()
             .map(|file| fmt(file, flag("--check")))
             .fold(Ended::Clean, Ended::and),
-        _ => show(&files[0]),
+        _ => files.first().map_or(Ended::Failed, |file| show(file)),
     };
     ended.code()
 }
 
-/// `silico check FILE`: its problems, each on stderr (or, with `--json`, a line of JSON on
-/// stdout: `{"file", "ok", "problems", "total"}`, each problem an error as the core's
-/// error contract has it).
+/// `silico check FILE`: its problems, each on stderr; or, with `--json`, one line of JSON
+/// on stdout for each file: `{"file", "ok", "problems", "total"}`, each problem an error as
+/// the core's error contract has it, or, for a file that couldn't be checked,
+/// `{"file", "ok": false, "error"}`, the error in words.
 fn check(file: &Path, json: bool) -> Ended {
-    let Some(bytes) = read(file) else {
-        return Ended::Failed;
+    let failed = |why: String| {
+        if json {
+            line(serde_json::json!({"file": shown(file), "ok": false, "error": why}));
+        } else {
+            say!("{}: {why}", shown(file));
+        }
+        Ended::Failed
     };
-    let Some(engine) = engine(file) else {
-        return Ended::Failed;
+    let bytes = match read(file) {
+        Ok(bytes) => bytes,
+        Err(why) => return failed(why),
     };
-    let problems = match command::check(&engine, &bytes) {
-        Ok(problems) => problems,
-        Err(error) => {
-            report(file, &error);
-            return Ended::Failed;
+    // What's wrong with the document needs no kernel: said even when none can start.
+    let problems = match command::gate(&bytes) {
+        Err(problems) => problems,
+        Ok(checked) => {
+            let engine = match engine(file) {
+                Ok(engine) => engine,
+                Err(error) => return failed(error.to_string()),
+            };
+            match command::check(&engine, checked) {
+                Ok(problems) => problems,
+                Err(error) => return failed(error.to_string()),
+            }
         }
     };
     if json {
-        let line = serde_json::json!({
-            "file": file.display().to_string(),
+        line(serde_json::json!({
+            "file": shown(file),
             "ok": problems.is_empty(),
             "problems": problems.problems,
             "total": problems.total,
-        });
-        let _ = writeln!(std::io::stdout().lock(), "{line}");
+        }));
     } else {
         print_problems(file, &problems);
     }
@@ -133,26 +163,42 @@ fn check(file: &Path, json: bool) -> Ended {
     }
 }
 
-/// `silico fmt FILE`: rewrites it in canonical form with its fingerprints as rebuilt, whole
-/// (to a file beside it, then renamed over it), saying on stderr which fingerprints it
-/// wrote; with `--check`, writes nothing, and says whether it would.
+/// `silico fmt FILE`: rewrites the file (the one it names, through a symbolic link) in
+/// canonical form with its fingerprints as rebuilt, then says on stderr which fingerprints
+/// it wrote, and the problems it couldn't fix (a feature that didn't build keeps its
+/// fingerprint); with `--check`, writes nothing, and says whether it would. A read-only
+/// file, one changed while it was rebuilt, or one the kernel couldn't rebuild, isn't
+/// written.
 fn fmt(file: &Path, check_only: bool) -> Ended {
-    let Some(bytes) = read(file) else {
-        return Ended::Failed;
+    let bytes = match read(file) {
+        Ok(bytes) => bytes,
+        Err(why) => {
+            say!("{}: {why}", shown(file));
+            return Ended::Failed;
+        }
     };
-    let Some(engine) = engine(file) else {
-        return Ended::Failed;
+    let checked = match command::gate(&bytes) {
+        Ok(checked) => checked,
+        Err(problems) => {
+            print_problems(file, &problems);
+            return Ended::Problems;
+        }
     };
-    let formatted = match command::format(&engine, &bytes) {
+    let formatted = match rebuild_formatted(file, checked) {
         Ok(Ok(formatted)) => formatted,
         Ok(Err(problems)) => {
             print_problems(file, &problems);
             return Ended::Problems;
         }
         Err(error) => {
-            report(file, &error);
+            say!("{}: {error}", shown(file));
             return Ended::Failed;
         }
+    };
+    let problems = if formatted.problems.is_empty() {
+        Ended::Clean
+    } else {
+        Ended::Problems
     };
     for error in &formatted.problems {
         report(file, error);
@@ -160,41 +206,48 @@ fn fmt(file: &Path, check_only: bool) -> Ended {
     let same = formatted.text.as_bytes() == bytes.as_slice();
     if check_only {
         if same {
-            return Ended::Clean;
+            return problems;
         }
         say!(
             "{}: not in canonical form; `silico fmt` would rewrite it",
-            file.display()
+            shown(file)
         );
         return Ended::Problems;
     }
+    if !same && let Err(why) = write_whole(file, &bytes, formatted.text.as_bytes()) {
+        say!("{}: couldn't be written: {why}", shown(file));
+        return Ended::Failed;
+    }
     for (id, before) in &formatted.refingerprinted {
         let what = if before.is_some() { "rewrote" } else { "wrote" };
-        say!("{}: {what} the fingerprint of {id}", file.display());
+        say!("{}: {what} the fingerprint of {id}", shown(file));
     }
-    if same {
-        return Ended::Clean;
-    }
-    match write_whole(file, formatted.text.as_bytes()) {
-        Ok(()) => Ended::Clean,
-        Err(e) => {
-            say!("{}: couldn't be written: {e}", file.display());
-            Ended::Failed
-        }
-    }
+    problems
+}
+
+fn rebuild_formatted(
+    file: &Path,
+    checked: Checked,
+) -> Result<Result<command::Formatted, Problems>, Error> {
+    command::format(&engine(file)?, checked)
 }
 
 /// `silico show FILE`: its outline, on stdout. Needs no kernel: it's the document as
 /// written, for reading and for `git diff`.
 fn show(file: &Path) -> Ended {
-    let Some(bytes) = read(file) else {
-        return Ended::Failed;
+    let bytes = match read(file) {
+        Ok(bytes) => bytes,
+        Err(why) => {
+            say!("{}: {why}", shown(file));
+            return Ended::Failed;
+        }
     };
     match silico_core::document::read(&bytes) {
         Ok(document) => {
             let mut out = std::io::stdout().lock();
             if out
                 .write_all(command::outline(&document).as_bytes())
+                .and_then(|()| out.flush())
                 .is_err()
             {
                 return Ended::Failed;
@@ -208,35 +261,52 @@ fn show(file: &Path) -> Ended {
     }
 }
 
-/// `file`'s bytes, or `None`, said why on stderr.
-fn read(file: &Path) -> Option<Vec<u8>> {
-    match std::fs::read(file) {
-        Ok(bytes) => Some(bytes),
-        Err(e) => {
-            say!("{}: couldn't be read: {e}", file.display());
-            None
-        }
+/// A file's name as it's shown (its bytes, any that aren't UTF-8 replaced).
+fn shown(file: &Path) -> String {
+    file.display().to_string()
+}
+
+fn line(value: serde_json::Value) {
+    let _ = writeln!(std::io::stdout().lock(), "{value}");
+}
+
+/// `file`'s bytes, if it's a regular file (a document is one: a pipe or a device, which
+/// could hang or never end, isn't), at most one more than a document may be (the reader
+/// refuses it then, saying so); or why not.
+fn read(file: &Path) -> Result<Vec<u8>, String> {
+    let couldnt = |e: std::io::Error| format!("couldn't be read: {e}");
+    // Opened without waiting (a pipe with no writer would block an open), then checked.
+    let opened = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(file)
+        .map_err(couldnt)?;
+    let metadata = opened.metadata().map_err(couldnt)?;
+    if !metadata.is_file() {
+        return Err("couldn't be read: it isn't a regular file".to_owned());
     }
+    let mut bytes = Vec::new();
+    opened
+        .take(MAX_INPUT_LEN as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(couldnt)?;
+    Ok(bytes)
 }
 
 /// An engine for `file`: kernel workers, and the rebuild cache beside it
 /// (`.silico-cache/`).
-fn engine(file: &Path) -> Option<Recompute<KernelPool>> {
-    let pool = match KernelPool::start() {
-        Ok(pool) => pool,
-        Err(error) => {
-            report(file, &error);
-            return None;
-        }
-    };
-    let dir = file
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    Some(Recompute::with_cache(
+fn engine(file: &Path) -> Result<Recompute<KernelPool>, Error> {
+    let pool = KernelPool::start()?;
+    Ok(Recompute::with_cache(
         pool,
-        Cache::open(dir.join(".silico-cache")),
+        Cache::open(directory(file).join(".silico-cache")),
     ))
+}
+
+fn directory(file: &Path) -> &Path {
+    file.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
 }
 
 fn print_problems(file: &Path, problems: &Problems) {
@@ -247,7 +317,7 @@ fn print_problems(file: &Path, problems: &Problems) {
     if problems.total > listed {
         say!(
             "{}: and {} more problems",
-            file.display(),
+            shown(file),
             problems.total - listed
         );
     }
@@ -256,43 +326,53 @@ fn print_problems(file: &Path, problems: &Problems) {
 /// An error on stderr, after the file it's about: its code and words, then the feature,
 /// elements, and parameter at fault, and what to do (the error's own `Display`).
 fn report(file: &Path, error: &Error) {
-    say!("{}: {}: {error}", file.display(), code(error.code()));
+    say!("{}: {error}", shown(file));
 }
 
-fn code(code: ErrorCode) -> String {
-    serde_json::to_value(code)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_else(|| format!("{code:?}"))
-}
-
-/// Writes `bytes` to `file` whole: to a new file beside it, then renamed over it, so a
-/// reader never sees a part of it and a write cut short leaves the old file.
-fn write_whole(file: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let dir = file
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let name = file
-        .file_name()
-        .ok_or_else(|| std::io::Error::other("no file name"))?;
-    let mut partial_name = std::ffi::OsString::from(".");
+/// Writes `bytes` over `file`, which held `before` when it was read: the file it names
+/// (through a symbolic link, which stays), whole (to a new file beside it, then renamed
+/// over it, so a reader never sees a part of it and a write cut short leaves the old
+/// file), keeping its permissions; or in place, if it has other names (hard links), which
+/// a rename would part from it. Refused if it's read-only, or changed since it was read.
+fn write_whole(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), String> {
+    let target = std::fs::canonicalize(file).map_err(|e| e.to_string())?;
+    let metadata = std::fs::metadata(&target).map_err(|e| e.to_string())?;
+    if metadata.permissions().readonly() {
+        return Err("it's read-only".to_owned());
+    }
+    // Changed while it was rebuilt (another editor saved it): left to them.
+    if read(&target)? != before {
+        return Err("it changed while it was rebuilt; run `silico fmt` again".to_owned());
+    }
+    if metadata.nlink() > 1 {
+        return std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&target)
+            .and_then(|mut f| {
+                f.write_all(bytes)?;
+                f.sync_all()
+            })
+            .map_err(|e| e.to_string());
+    }
+    let dir = directory(&target);
+    let name = target.file_name().ok_or("it has no file name")?;
+    let mut partial_name = OsString::from(".");
     partial_name.push(name);
     partial_name.push(format!(".fmt-{}", std::process::id()));
     let partial = dir.join(partial_name);
-    let permissions = std::fs::metadata(file)?.permissions();
     let written = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&partial)
         .and_then(|mut f| {
             f.write_all(bytes)?;
-            f.set_permissions(permissions)?;
+            f.set_permissions(metadata.permissions())?;
             f.sync_all()
         });
-    let renamed = written.and_then(|()| std::fs::rename(&partial, file));
+    let renamed = written.and_then(|()| std::fs::rename(&partial, &target));
     if renamed.is_err() {
         let _ = std::fs::remove_file(&partial);
     }
-    renamed
+    renamed.map_err(|e| e.to_string())
 }

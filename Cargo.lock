@@ -4164,6 +4164,7 @@ dependencies = [
 name = "silico-cli"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "serde_json",
  "silico-core",
  "tracing",

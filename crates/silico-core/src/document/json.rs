@@ -597,8 +597,11 @@ pub(crate) fn bidi_control(c: char) -> bool {
 /// Whether `c` is a format or other invisible character Unicode draws as nothing: the
 /// bidirectional controls, soft hyphen, combining grapheme joiner, the zero-width
 /// characters, word joiners and invisible operators, variation selectors, the byte-order
-/// mark, the Hangul fillers, and the tag characters.
-fn invisible(c: char) -> bool {
+/// mark, the Hangul fillers, the tag characters, and the rest of Unicode's format
+/// characters (category Cf: Arabic and Syriac number signs and marks, the Mongolian vowel
+/// separator, the interlinear annotation characters, Kaithi and Egyptian hieroglyph
+/// format controls, shorthand format controls, musical symbol beams).
+pub(crate) fn invisible(c: char) -> bool {
     bidi_control(c)
         || matches!(
             c as u32,
@@ -614,6 +617,16 @@ fn invisible(c: char) -> bool {
                 | 0xfeff
                 | 0xffa0
                 | 0xfff0..=0xfffb
+                | 0x600..=0x605
+                | 0x6dd
+                | 0x70f
+                | 0x890..=0x891
+                | 0x8e2
+                | 0x110bd
+                | 0x110cd
+                | 0x13430..=0x1343f
+                | 0x1bca0..=0x1bca3
+                | 0x1d173..=0x1d17a
                 | 0xe0000..=0xe0fff
         )
 }

@@ -33,21 +33,59 @@ impl Problems {
     }
 }
 
-/// A document checked: read, through the gate, rebuilt on `engine`'s kernel, and its
-/// fingerprints compared with the rebuild (`Model::drift`): the problems, if any. A
-/// feature that's blocked by another's failure isn't a problem of its own (the failure
-/// at its root is). An error is a check that couldn't be done (the recompute stopped, a
-/// bug), not a problem with the document.
-pub fn check<K: Kernel + 'static>(engine: &Recompute<K>, bytes: &[u8]) -> Result<Problems, Error> {
+/// `bytes` read and through the gate, or what's wrong with them: the first part of a check,
+/// which needs no kernel, so a client can say what's wrong with a document it can't
+/// rebuild.
+pub fn gate(bytes: &[u8]) -> Result<Checked, Problems> {
+    let document = document::read(bytes).map_err(|error| Problems::of(vec![error]))?;
+    Checked::new(document).map_err(|invalid| Problems {
+        problems: invalid.errors().to_vec(),
+        total: invalid.total(),
+    })
+}
+
+/// A gated document rebuilt on `engine`'s kernel and its fingerprints compared with the
+/// rebuild (`Model::drift`): the problems, if any. A feature blocked by another's failure
+/// isn't a problem of its own (the failure at its root is). An error is a check that
+/// couldn't be done: the recompute stopped (a bug), or the kernel failed in a way that
+/// says nothing about the document (a worker that crashed or hung, a shortage, a reply
+/// that couldn't be read), which a client reports as its own failure, not the document's.
+pub fn check<K: Kernel + 'static>(
+    engine: &Recompute<K>,
+    checked: Checked,
+) -> Result<Problems, Error> {
     let _span = tracing::info_span!("check").entered();
-    let checked = match gated(bytes) {
-        Ok(checked) => checked,
-        Err(problems) => return Ok(problems),
-    };
     let model = rebuilt(engine, checked)?;
-    let mut problems: Vec<Error> = model.errors().cloned().collect();
-    problems.extend(model.drift());
+    let mut problems = failures(&model)?;
+    problems.extend(own(model.drift())?);
     Ok(Problems::of(problems))
+}
+
+/// The model's failed features, as problems of the document; or, if one failed for a
+/// reason that isn't the document's, that.
+fn failures(model: &Model) -> Result<Vec<Error>, Error> {
+    own(model.errors().cloned().collect())
+}
+
+/// `errors`, the document's own problems; or the first that's the kernel's (a solid whose
+/// measure timed out, say), which isn't.
+fn own(errors: Vec<Error>) -> Result<Vec<Error>, Error> {
+    match errors.iter().find(|e| kernel_fault(e.code())) {
+        Some(fault) => Err(fault.clone()),
+        None => Ok(errors),
+    }
+}
+
+/// Whether an error is the kernel's own trouble, not something the document asks of it.
+fn kernel_fault(code: ErrorCode) -> bool {
+    matches!(
+        code,
+        ErrorCode::WorkerCrashed
+            | ErrorCode::WorkerTimeout
+            | ErrorCode::ProtocolError
+            | ErrorCode::ResourceExhausted
+            | ErrorCode::Internal
+    )
 }
 
 /// A document written in canonical form, its fingerprints as `engine` rebuilt it.
@@ -63,19 +101,17 @@ pub struct Formatted {
     pub problems: Vec<Error>,
 }
 
-/// A document in canonical form with each feature's fingerprint as `engine` rebuilds it
-/// (`Model::fingerprinted`): what `silico fmt` writes, and what a save writes. A document
-/// that doesn't read or pass the gate isn't written: its problems.
+/// A gated document in canonical form with each feature's fingerprint as `engine`
+/// rebuilds it (`Model::fingerprinted`): what `silico fmt` writes, and what a save writes;
+/// or, if its canonical text would be too long, that problem. An error is a format that
+/// couldn't be done, as for [`check`]: nothing should be written then.
 pub fn format<K: Kernel + 'static>(
     engine: &Recompute<K>,
-    bytes: &[u8],
+    checked: Checked,
 ) -> Result<Result<Formatted, Problems>, Error> {
     let _span = tracing::info_span!("format").entered();
-    let checked = match gated(bytes) {
-        Ok(checked) => checked,
-        Err(problems) => return Ok(Err(problems)),
-    };
     let model = rebuilt(engine, checked)?;
+    let mut problems = failures(&model)?;
     let written = model.fingerprinted();
     let refingerprinted = model
         .document()
@@ -91,10 +127,8 @@ pub fn format<K: Kernel + 'static>(
     };
     // Problems the save can't fix: drift is what it fixes, so only the failures and the
     // solids that couldn't be measured.
-    let mut problems: Vec<Error> = model.errors().cloned().collect();
     problems.extend(
-        model
-            .drift()
+        own(model.drift())?
             .into_iter()
             .filter(|error| error.code() != ErrorCode::Drift),
     );
@@ -103,15 +137,6 @@ pub fn format<K: Kernel + 'static>(
         refingerprinted,
         problems,
     }))
-}
-
-/// `bytes` read and through the gate, or what's wrong with them.
-fn gated(bytes: &[u8]) -> Result<Checked, Problems> {
-    let document = document::read(bytes).map_err(|error| Problems::of(vec![error]))?;
-    Checked::new(document).map_err(|invalid| Problems {
-        problems: invalid.errors().to_vec(),
-        total: invalid.total(),
-    })
 }
 
 /// `checked` rebuilt on `engine`, waited for.
@@ -249,7 +274,12 @@ fn quoted(text: &str) -> String {
         match c {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
-            c if c.is_control() || invisible(c) => {
+            // Controls, the line and paragraph separators, and every character Unicode
+            // draws as nothing.
+            c if c.is_control()
+                || matches!(c, '\u{2028}' | '\u{2029}')
+                || document::json::invisible(c) =>
+            {
                 let _ = write!(out, "\\u{{{:x}}}", c as u32);
             }
             c => out.push(c),
@@ -257,13 +287,4 @@ fn quoted(text: &str) -> String {
     }
     out.push('"');
     out
-}
-
-/// Characters that print as nothing or move text: zero-width and direction marks, line
-/// and paragraph separators.
-fn invisible(c: char) -> bool {
-    matches!(
-        c,
-        '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{feff}'
-    )
 }

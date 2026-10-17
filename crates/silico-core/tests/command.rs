@@ -14,6 +14,31 @@ use silico_core::kernel::{Op, Primitive};
 use silico_core::recompute::Recompute;
 use silico_core::{Error, ErrorCode};
 
+/// `command::check` of a document's bytes: the gate's problems, or the rebuild's.
+fn check_bytes<K: silico_core::kernel::Kernel + 'static>(
+    engine: &silico_core::recompute::Recompute<K>,
+    bytes: &[u8],
+) -> Result<silico_core::command::Problems, silico_core::Error> {
+    match silico_core::command::gate(bytes) {
+        Ok(checked) => silico_core::command::check(engine, checked),
+        Err(problems) => Ok(problems),
+    }
+}
+
+/// `command::format` of a document's bytes: the gate's problems, or the formatted text.
+fn format_bytes<K: silico_core::kernel::Kernel + 'static>(
+    engine: &silico_core::recompute::Recompute<K>,
+    bytes: &[u8],
+) -> Result<
+    Result<silico_core::command::Formatted, silico_core::command::Problems>,
+    silico_core::Error,
+> {
+    match silico_core::command::gate(bytes) {
+        Ok(checked) => silico_core::command::format(engine, checked),
+        Err(problems) => Ok(Err(problems)),
+    }
+}
+
 fn id(text: &str) -> FeatureId {
     FeatureId::new(text).unwrap()
 }
@@ -36,9 +61,7 @@ const PIN: &str = "volume 235.619449, area 227.765467, box (17.5, 7.5, -1) to (2
 const HOLE: &str = "volume 8235.619449, area 3027.765467, box (0, 0, -1) to (40, 20, 11), 9 faces, 15 edges, 10 vertices";
 
 fn formatted(text: &str) -> Formatted {
-    command::format(&engine(), text.as_bytes())
-        .unwrap()
-        .unwrap()
+    format_bytes(&engine(), text.as_bytes()).unwrap().unwrap()
 }
 
 #[test]
@@ -112,11 +135,11 @@ fn an_outline_escapes_what_could_break_or_hide_in_its_lines() {
 #[test]
 fn a_sound_document_checks_clean() {
     let saved = formatted(EXAMPLE).text;
-    let problems = command::check(&engine(), saved.as_bytes()).unwrap();
+    let problems = check_bytes(&engine(), saved.as_bytes()).unwrap();
     assert!(problems.is_empty(), "{problems:?}");
     // With no fingerprints stored, there's nothing to drift from: clean too.
     assert!(
-        command::check(&engine(), EXAMPLE.as_bytes())
+        check_bytes(&engine(), EXAMPLE.as_bytes())
             .unwrap()
             .is_empty()
     );
@@ -124,7 +147,7 @@ fn a_sound_document_checks_clean() {
 
 #[test]
 fn a_document_that_doesnt_read_is_one_problem_saying_where() {
-    let problems = command::check(&engine(), b"{\"silico\": 1,").unwrap();
+    let problems = check_bytes(&engine(), b"{\"silico\": 1,").unwrap();
     assert_eq!(problems.total, 1);
     assert_eq!(problems.problems[0].code(), ErrorCode::InvalidInput);
 }
@@ -135,7 +158,7 @@ fn every_problem_the_gate_finds_is_reported() {
     let text = EXAMPLE
         .replace(r#""tool": "a91cw0de""#, r#""tool": "m3tq8v0z""#)
         .replace(r#""length": 40"#, r#""length": 0"#);
-    let problems = command::check(&engine(), text.as_bytes()).unwrap();
+    let problems = check_bytes(&engine(), text.as_bytes()).unwrap();
     let said: Vec<_> = problems
         .problems
         .iter()
@@ -161,7 +184,7 @@ fn a_failure_and_drift_are_problems_and_a_blocked_feature_isnt_one_of_its_own() 
     // Drift: the block stored as 8001.
     let saved = formatted(EXAMPLE).text;
     let drifted = saved.replacen(r#""volume": 8000,"#, r#""volume": 8001,"#, 1);
-    let problems = command::check(&engine(), drifted.as_bytes()).unwrap();
+    let problems = check_bytes(&engine(), drifted.as_bytes()).unwrap();
     let codes: Vec<_> = problems.problems.iter().map(Error::code).collect();
     assert_eq!(codes, [ErrorCode::Drift]);
     // The pin refused: its failure, naming it; the cut, blocked on it, says nothing more.
@@ -170,7 +193,7 @@ fn a_failure_and_drift_are_problems_and_a_blocked_feature_isnt_one_of_its_own() 
         matches!(op, Op::MakePrimitive(Primitive::Cylinder { .. }))
             .then(|| Error::new(ErrorCode::KernelFailed, "MakeCylinder failed"))
     });
-    let problems = command::check(&refusing, EXAMPLE.as_bytes()).unwrap();
+    let problems = check_bytes(&refusing, EXAMPLE.as_bytes()).unwrap();
     let said: Vec<_> = problems
         .problems
         .iter()
@@ -219,9 +242,7 @@ fn formatting_keeps_a_failed_features_fingerprint_and_says_why() {
         matches!(op, Op::MakePrimitive(Primitive::Cylinder { .. }))
             .then(|| Error::new(ErrorCode::KernelFailed, "MakeCylinder failed"))
     });
-    let out = command::format(&refusing, saved.as_bytes())
-        .unwrap()
-        .unwrap();
+    let out = format_bytes(&refusing, saved.as_bytes()).unwrap().unwrap();
     assert_eq!(out.text, saved);
     let said: Vec<_> = out
         .problems
@@ -234,7 +255,7 @@ fn formatting_keeps_a_failed_features_fingerprint_and_says_why() {
 #[test]
 fn a_document_that_doesnt_pass_the_gate_isnt_formatted() {
     let text = EXAMPLE.replace(r#""length": 40"#, r#""length": 0"#);
-    let problems = command::format(&engine(), text.as_bytes())
+    let problems = format_bytes(&engine(), text.as_bytes())
         .unwrap()
         .unwrap_err();
     assert_eq!(problems.total, 1);
