@@ -25,6 +25,10 @@ name = "silico-sketch-test-worker"
 path = "src/bin/silico-sketch-test-worker.rs"
 required-features = ["test_ops"]
 
+[[bench]]
+name = "drag"
+harness = false
+
 [dev-dependencies]
 libm.workspace = true
 proptest.workspace = true
