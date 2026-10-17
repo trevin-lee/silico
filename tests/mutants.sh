@@ -24,27 +24,12 @@ echo "mutants: testing $commit"
 # the unmutated baseline, and a failing baseline stops cargo-mutants before it tests any
 # mutant. A filter, not a nextest profile, so trees older than this script take it too
 # (a name a tree doesn't have matches nothing). Each is to be made load-tolerant and taken
-# off; a test bounded by CPU time (silico-core's tests/common/within.rs) already is, and
-# stays. What they alone test, so a survivor there is checked against them, unloaded,
-# before it's a finding: in silico-kernel, the pool's restart, back-off, and kill-at-launch
-# handling (silico-core's pool.rs: killed_unstarted, back-off reset, a newer worker waking
-# a slot), a superseded request's stop, and dropping a pool of workers; in silico-core,
-# how fast recompute gets through long chains and wide timelines (and through them again
-# unchanged), that dropping the engine mid-recompute returns at once, and that a name
-# reported for many elements is written once and stays within its size bound
-# (silico-core's naming/build.rs, MOST_WEIGHT, which names_that_would_double_... tests too).
-kernel_wall_clock=(
-  dropping_the_pool_amid_crashes_kills_floods_and_advances_leaves_nothing
-  superseded_work_too_young_to_stop_at_advance_is_stopped_once_it_has_run_stop_after
-  a_kill_at_launch_after_an_exit_of_its_own_is_taken_as_from_outside
-  an_idle_slot_whose_worker_is_killed_at_launch_backs_off_after_the_second_kill
-  a_slot_waiting_out_a_long_back_off_starts_a_worker_once_a_newer_one_has_started
-  a_pool_whose_binary_comes_back_after_many_failed_starts_fills_at_once
-)
+# off; a test bounded by CPU time (silico-core's tests/common/within.rs), or by events and
+# the times its workers log, already is, and stays. What they alone test, so a survivor
+# there is checked against them, unloaded, before it's a finding: that a name reported for
+# many elements is written once and stays within its size bound (silico-core's
+# naming/build.rs, MOST_WEIGHT, which names_that_would_double_... tests too).
 core_wall_clock=(
-  a_chain_of_four_hundred_booleans_finishes_promptly
-  five_thousand_independent_features_finish_promptly
-  dropping_the_engine_mid_recompute_returns_at_once_and_the_run_is_superseded
   a_name_reported_for_many_elements_is_written_once
 )
 # package(p) & (test(=a) | test(=b) | ...), for a package and its tests.
@@ -54,5 +39,5 @@ tests_of() {
   for t in "$@"; do tests="${tests:+$tests | }test(=$t)"; done
   echo "package($package) & ($tests)"
 }
-filter="not (($(tests_of silico-kernel "${kernel_wall_clock[@]}")) | ($(tests_of silico-core "${core_wall_clock[@]}")))"
+filter="not ($(tests_of silico-core "${core_wall_clock[@]}"))"
 cargo mutants --in-place --minimum-test-timeout 300 --cargo-test-arg=-E --cargo-test-arg="$filter" "$@"
