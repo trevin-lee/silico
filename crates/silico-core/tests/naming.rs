@@ -135,12 +135,13 @@ fn an_element_named_from_above_takes_the_first_named_by_freecads_order() {
     assert_eq!(
         names(&map, ElementKind::Face, 2),
         [
-            "ffffffff.Face(M aaaaaaaa.Face1)",
+            // Modified from it alone, first in OCCT's list: the face as modified.
+            "aaaaaaaa.Face1*",
             "ffffffff.Face(G aaaaaaaa.Edge1)",
         ]
     );
     let generated = "ffffffff.Face(G aaaaaaaa.Edge1)";
-    let modified = "ffffffff.Face(M aaaaaaaa.Face1)";
+    let modified = "aaaaaaaa.Face1*";
     assert_eq!(
         names(&map, ElementKind::Edge, 3),
         [
@@ -443,7 +444,7 @@ fn a_name_derived_from_an_ambiguous_name_is_ambiguous() {
     next_history.validate(1).unwrap();
     let next = ElementMap::operation(id("nnnnnnnn"), OpCode::Fillet, &[&first], &next_history);
     let derived = next.name(element(ElementKind::Edge, 1)).unwrap();
-    assert!(matches!(&*derived, Name::Derived { .. }), "{derived}");
+    assert!(matches!(&*derived, Name::Modified { .. }), "{derived}");
     assert!(
         next.is_unstable(&derived),
         "{derived} derives from ambiguous {x}"

@@ -707,46 +707,32 @@ fn drilled() -> History {
 }
 
 #[test]
-fn a_thousand_holes_drilled_one_by_one_name_in_linear_time() {
-    // A perforated plate built as 1,000 cut features: each modifies the top face, so its
-    // name nests one level deeper per feature, up to the bound on a name's depth, where
-    // the face is named by its number and nests from there again. The cost per map must
-    // stay small, and the name's two forms grow by a constant per feature between those
-    // points, never compounding, and never past the bound.
+fn a_thousand_holes_drilled_one_by_one_leave_the_top_face_its_name() {
+    // A perforated plate built as 1,000 cut features, each modifying the top face (and
+    // nothing else) as OCCT's first result of it: the face is the plate's Face6 as later
+    // features have modified it (Trevin's collapse), whatever the number of holes, stable.
+    // Before the collapse its name nested a level per hole, until the bound on a name's
+    // depth made it a number, unreferenceable for good (the review found that cliff).
     let history = drilled();
     history.validate(2).unwrap();
     let tool = ElementMap::primitive(id("tttttttt"), BOX);
     let mut map = ElementMap::primitive(id("pppppppp"), BOX);
     let started = Instant::now();
-    let mut lengths = Vec::new();
     for n in 0..1000 {
         let feature = id(&format!("f{n:07}"));
         map = ElementMap::operation(feature, OpCode::Cut, &[&map, &tool], &history);
-        if n % 100 == 99 {
-            let top = map.name(element(ElementKind::Face, 6)).unwrap();
-            lengths.push((top.to_string().len(), freecad::text(&top).len()));
-        }
+        let top = map.name(element(ElementKind::Face, 6)).unwrap();
+        assert_eq!(top.to_string(), "pppppppp.Face6*", "after {n}");
+        assert!(!map.is_unstable(&top));
     }
-    let elapsed = started.elapsed();
-    assert!(elapsed < Duration::from_secs(10), "{elapsed:?}");
-    // Linear while it nests: the first two hundreds add the same length.
-    let step = |i: usize| {
-        (
-            lengths[i + 1].0 - lengths[i].0,
-            lengths[i + 1].1 - lengths[i].1,
-        )
-    };
-    // A level is `f0000001.Face(M ...)` in Silico's form, `;:M;CUT` in FreeCAD's.
-    assert_eq!(step(0), (100 * 17, 100 * 7), "{lengths:?}");
-    // And bounded: 256 levels of at most 18 characters each.
     assert!(
-        lengths
-            .iter()
-            .all(|&(silico, freecad)| silico < 256 * 18 && freecad < 256 * 18),
-        "{lengths:?}"
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
     );
+    // FreeCAD's form, one level: FreeCAD would write a thousand.
     let top = map.name(element(ElementKind::Face, 6)).unwrap();
-    assert!(map.is_unstable(&top));
+    assert_eq!(freecad::text(&top), "Face6;:M;CUT");
     // A bystander keeps its primitive name through all of it (N2).
     assert_eq!(
         map.name(element(ElementKind::Face, 1)).unwrap().to_string(),
@@ -816,8 +802,8 @@ fn names_that_would_double_with_every_feature_stay_bounded() {
 #[test]
 fn a_deep_timeline_names_and_writes_its_names_on_a_default_thread() {
     // Found by the review: a plate drilled 6,000 times, a feature a hole, nested its top
-    // face's name 6,000 deep, and writing it overflowed a 2 MB stack (an abort). Past the
-    // bounds the face is named by its number, so every walk is short.
+    // face's name 6,000 deep, and writing it overflowed a 2 MB stack (an abort). Bounded,
+    // and collapsed (a face only ever modified is one level), every walk is short.
     let joined = std::thread::Builder::new()
         .stack_size(2 << 20)
         .spawn(|| {
@@ -843,10 +829,9 @@ fn a_deep_timeline_names_and_writes_its_names_on_a_default_thread() {
         .join();
     let (text, top, unstable) = joined.unwrap();
     assert!(text < 200_000);
-    // The last time its name passed the bounds, the face was named by number; each cut
-    // since modified that.
-    assert!(top.contains(".Face6"), "{top}");
-    assert!(unstable);
+    // With the collapse, the plate's top face, modified 6,000 times, is still its Face6.
+    assert_eq!(top, "pppppppp.Face6*");
+    assert!(!unstable);
 }
 
 #[test]

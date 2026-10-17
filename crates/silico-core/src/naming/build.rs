@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use super::{ElementMap, Name, OpCode, Relation, Source, freecad};
+use super::{ElementMap, LastOp, Name, OpCode, Relation, Source, freecad};
 use crate::document::FeatureId;
 use crate::kernel::{ElementKind, ElementRef, History};
 
@@ -320,6 +320,7 @@ impl Builder {
                 continue;
             }
             let first_input = keyed.keys().next().map_or(usize::MAX, |key| key.1);
+            let alone = keyed.len() == 1;
             let mut sources = keyed.into_iter().take(MOST_SOURCES).map(
                 |((_, _, _, name), (relation, position))| Source {
                     relation,
@@ -330,12 +331,29 @@ impl Builder {
             let Some(first) = sources.next() else {
                 continue;
             };
-            let name = Name::Derived {
-                feature: self.map.feature.clone(),
-                operation: self.operation,
-                kind: element.kind,
-                first,
-                more: sources.collect(),
+            let name = if alone
+                && first.relation == Relation::Modified
+                && first.position == NonZeroU32::MIN
+            {
+                // Modified from one element alone, as OCCT's first result of it: that
+                // element as later features have modified it, however many (Trevin's
+                // collapse); a run of them is one level.
+                let origin = match &*first.name {
+                    Name::Modified { name, .. } => Arc::clone(name),
+                    _ => first.name,
+                };
+                Name::Modified {
+                    name: origin,
+                    last: LastOp(self.operation),
+                }
+            } else {
+                Name::Derived {
+                    feature: self.map.feature.clone(),
+                    operation: self.operation,
+                    kind: element.kind,
+                    first,
+                    more: sources.collect(),
+                }
             };
             let name = self.bounded(element, name);
             self.inputs.entry(element).or_insert(first_input);

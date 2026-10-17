@@ -91,6 +91,15 @@ pub enum Name {
         first: Source,
         more: Vec<Source>,
     },
+    /// An element modified from one element, `name`, as OCCT's first (and only) result of
+    /// it, by one feature or by a run of them, each the same way (Trevin's decision,
+    /// 2026-10-16): written `pppppppp.Face6*`, with no feature in between, so a plate's top
+    /// face is the same name after any number of holes cut through it, and a hole's rim
+    /// named from it doesn't change when an earlier hole is added, removed, or moved.
+    /// Unique: such a step makes one element of one, so two elements of a result never
+    /// both are. FreeCAD writes a level per feature (`Face6;:M;CUT;:H..;:M;CUT;:H..`),
+    /// hashed.
+    Modified { name: Arc<Name>, last: LastOp },
     /// An element nothing reported, named as the `nth` unnamed element of its kind in the
     /// element above it named `upper` (FreeCAD's `;:U`).
     Upper {
@@ -118,6 +127,36 @@ pub enum Name {
     },
 }
 
+/// The operation that last modified a [`Name::Modified`] element, for its FreeCAD form
+/// (`Face6;:M;CUT`) and nothing else: two such names are the same name whatever modified
+/// them, as their Silico form says.
+#[derive(Debug, Clone, Copy)]
+pub struct LastOp(pub OpCode);
+
+impl PartialEq for LastOp {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for LastOp {}
+
+impl PartialOrd for LastOp {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for LastOp {
+    fn cmp(&self, _: &Self) -> std::cmp::Ordering {
+        std::cmp::Ordering::Equal
+    }
+}
+
+impl std::hash::Hash for LastOp {
+    fn hash<H: std::hash::Hasher>(&self, _: &mut H) {}
+}
+
 impl Name {
     /// The kind of element it names.
     pub fn kind(&self) -> ElementKind {
@@ -126,7 +165,7 @@ impl Name {
             Name::Derived { kind, .. } | Name::Upper { kind, .. } | Name::Lower { kind, .. } => {
                 *kind
             }
-            Name::Duplicate { name, .. } => name.kind(),
+            Name::Duplicate { name, .. } | Name::Modified { name, .. } => name.kind(),
         }
     }
 
@@ -140,7 +179,7 @@ impl Name {
                 .collect(),
             Name::Upper { upper, .. } => vec![upper],
             Name::Lower { first, more, .. } => std::iter::once(first).chain(more).collect(),
-            Name::Duplicate { name, .. } => vec![name],
+            Name::Duplicate { name, .. } | Name::Modified { name, .. } => vec![name],
         }
     }
 }
@@ -223,6 +262,7 @@ impl fmt::Display for Name {
                 f.write_str(")")
             }
             Name::Duplicate { name, ordinal } => write!(f, "{name}~{ordinal}"),
+            Name::Modified { name, .. } => write!(f, "{name}*"),
         }
     }
 }

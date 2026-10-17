@@ -141,7 +141,7 @@ fn a_commons_first_face_is_freecads() {
         .unwrap();
     assert_eq!(freecad::text(&face1), "Face3;:M;CMN");
     // In Silico's form: the common modified cube 1's Face3.
-    assert_eq!(face1.to_string(), "rrrrrrrr.Face(M aaaaaaaa.Face3)");
+    assert_eq!(face1.to_string(), "aaaaaaaa.Face3*");
 }
 
 #[test]
@@ -391,10 +391,7 @@ fn a_recomputed_holes_names_say_how_each_element_came_about() {
     let hole = model.element_map(&id("m3tq8v0z")).unwrap();
     let all: Vec<String> = hole.iter().map(|(_, names)| names[0].to_string()).collect();
     // The hole's wall: the pin's side face, modified by the cut (docs/ports/history.md).
-    assert!(
-        all.contains(&"m3tq8v0z.Face(M a91cw0de.Face1)".to_owned()),
-        "{all:#?}"
-    );
+    assert!(all.contains(&"a91cw0de.Face1*".to_owned()), "{all:#?}");
     // Its two rims: edges the cut generated from the block's top (Face6) or bottom (Face5)
     // and the pin's side, as FreeCAD names a cylinder's hole (`Face6;:G2(Face1;K-2);CUT`).
     let rims: Vec<String> = hole
@@ -452,4 +449,166 @@ fn topo_shape_tests_maps_have_freecads_sizes() {
         one_name_each(&map, built);
         assert_eq!(map.iter().count(), 42, "{operation:?}");
     }
+}
+
+/// A plate (400 × 20 × 5, `pppppppp`) with a hole cut through it at each of `xs`, one cut
+/// feature per hole, in that order: pin `y<k>` (r 1, through) at (x, 10, -1), cut `c<k>`,
+/// each cut's base the cut before it.
+fn plate_with_holes(xs: &[(u32, f64)]) -> silico_core::document::Checked {
+    let mut features = vec![r#"{"id": "pppppppp", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, 0], "length": 400, "width": 20, "height": 5}"#.to_owned()];
+    let mut base = "pppppppp".to_owned();
+    for &(k, x) in xs {
+        features.push(format!(r#"{{"id": "y{k:07}", "type": "cylinder", "v": 1, "name": "Pin", "position": [{x}, 10, -1], "radius": 1, "height": 7}}"#));
+        let cut = format!("c{k:07}");
+        features.push(format!(r#"{{"id": "{cut}", "type": "cut", "v": 1, "name": "Hole", "base": "{base}", "tool": "y{k:07}"}}"#));
+        base = cut;
+    }
+    let text = format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "features": [{}]}}"#,
+        features.join(", ")
+    );
+    silico_core::document::Checked::new(silico_core::document::read(text.as_bytes()).unwrap())
+        .unwrap()
+}
+
+fn occt_engine() -> silico_core::recompute::Recompute<silico_core::pool::KernelPool> {
+    let pool = silico_core::pool::KernelPool::start_workers(
+        std::path::Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")),
+        2,
+    )
+    .unwrap();
+    silico_core::recompute::Recompute::new(pool)
+}
+
+fn published_on(
+    engine: &silico_core::recompute::Recompute<silico_core::pool::KernelPool>,
+    document: silico_core::document::Checked,
+) -> std::sync::Arc<silico_core::recompute::Model> {
+    match engine.start(document).wait().unwrap() {
+        silico_core::recompute::RunOutcome::Published(model) => model,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The names of the edges of `cut`'s solid made from pin `pin`'s side: the hole's rims.
+fn rims(model: &silico_core::recompute::Model, cut: &str, pin: &str) -> Vec<String> {
+    let map = model.element_map(&id(cut)).unwrap();
+    let side = format!("{pin}.Face1");
+    let mut rims: Vec<String> = map
+        .iter()
+        .filter(|(e, _)| e.kind == ElementKind::Edge)
+        .map(|(_, names)| names[0].to_string())
+        .filter(|name| name.contains(&side))
+        .collect();
+    rims.sort();
+    rims
+}
+
+#[test]
+fn a_later_holes_rims_keep_their_names_whatever_holes_come_before() {
+    // Trevin's collapse: the plate's top and bottom faces, modified by each cut, are
+    // `pppppppp.Face6*` and `pppppppp.Face5*` however many cuts came before, so the last
+    // hole's rims, named from them and the pin, are the same with an earlier hole
+    // added, removed, or moved, and the earlier holes reordered.
+    let engine = occt_engine();
+    let last = (9, 300.0);
+    let rims_of = |earlier: &[(u32, f64)]| {
+        let mut holes = earlier.to_vec();
+        holes.push(last);
+        let model = published_on(&engine, plate_with_holes(&holes));
+        rims(&model, "c0000009", "y0000009")
+    };
+    let three = rims_of(&[(1, 50.0), (2, 100.0), (3, 150.0)]);
+    assert_eq!(
+        three,
+        [
+            "c0000009.Edge(G2 pppppppp.Face5*, G2 y0000009.Face1)",
+            "c0000009.Edge(G2 pppppppp.Face6*, G y0000009.Face1)",
+        ]
+    );
+    for earlier in [
+        vec![(1, 50.0), (3, 150.0)],
+        vec![(1, 50.0), (2, 100.0), (4, 200.0), (3, 150.0)],
+        vec![(1, 50.0), (2, 120.0), (3, 150.0)],
+        vec![(3, 150.0), (1, 50.0), (2, 100.0)],
+        vec![(1, 50.0)],
+    ] {
+        assert_eq!(rims_of(&earlier), three, "{earlier:?}");
+    }
+    // With no hole before it, the plate's faces aren't yet modified: their own names, and
+    // OCCT lists the rims in the other order.
+    assert_eq!(
+        rims_of(&[]),
+        [
+            "c0000009.Edge(G2 pppppppp.Face5, G y0000009.Face1)",
+            "c0000009.Edge(G2 pppppppp.Face6, G2 y0000009.Face1)",
+        ]
+    );
+}
+
+#[test]
+fn a_face_split_by_a_cut_keeps_its_pieces_apart() {
+    // A slot (2 wide, 1 deep) across the plate's top splits the top face in two: OCCT's
+    // first piece is the face as modified (`pppppppp.Face6*`), the second keeps its level
+    // (`s0000001.Face(M2 pppppppp.Face6)`); every name is unique.
+    let engine = occt_engine();
+    let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "features": [
+        {"id": "pppppppp", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, 0], "length": 40, "width": 20, "height": 5},
+        {"id": "t0000001", "type": "box", "v": 1, "name": "Slot", "position": [19, -1, 4], "length": 2, "width": 22, "height": 2},
+        {"id": "s0000001", "type": "cut", "v": 1, "name": "Slotted", "base": "pppppppp", "tool": "t0000001"}
+    ]}"#;
+    let document =
+        silico_core::document::Checked::new(silico_core::document::read(text.as_bytes()).unwrap())
+            .unwrap();
+    let model = published_on(&engine, document);
+    let map = model.element_map(&id("s0000001")).unwrap();
+    let faces: Vec<String> = map
+        .iter()
+        .filter(|(e, _)| e.kind == ElementKind::Face)
+        .map(|(_, names)| names[0].to_string())
+        .collect();
+    let pieces: Vec<&String> = faces
+        .iter()
+        .filter(|f| f.contains("pppppppp.Face6"))
+        .collect();
+    assert_eq!(pieces.len(), 2, "{faces:#?}");
+    assert!(
+        pieces.contains(&&"pppppppp.Face6*".to_owned()),
+        "{faces:#?}"
+    );
+    assert!(
+        pieces.contains(&&"s0000001.Face(M2 pppppppp.Face6)".to_owned()),
+        "{faces:#?}"
+    );
+    // One name for each element, and none twice.
+    let all: Vec<String> = map.iter().map(|(_, names)| names[0].to_string()).collect();
+    let distinct: std::collections::BTreeSet<&String> = all.iter().collect();
+    assert_eq!(distinct.len(), all.len());
+}
+
+#[test]
+fn a_plate_with_a_hundred_and_fifty_holes_has_short_names() {
+    // Before the collapse its names nested a level per hole (2.6 KB at 150 holes, 805 KB
+    // for one map): now no name is longer than one hole's own.
+    let engine = occt_engine();
+    let holes: Vec<(u32, f64)> = (1..=150).map(|k| (k, 2.0 * f64::from(k) + 50.0)).collect();
+    let model = published_on(&engine, plate_with_holes(&holes));
+    let map = model.element_map(&id("c0000150")).unwrap();
+    let longest = map
+        .iter()
+        .map(|(_, names)| names[0].to_string().len())
+        .max()
+        .unwrap();
+    assert!(longest < 120, "longest name {longest}");
+    let total: usize = map
+        .iter()
+        .map(|(_, names)| names[0].to_string().len())
+        .sum();
+    let elements = map.iter().count();
+    assert!(total < 80 * elements, "{total} for {elements} elements");
+    let top = map
+        .iter()
+        .find(|(e, _)| e.kind == ElementKind::Face && e.index == 1)
+        .map(|(_, names)| names[0].to_string());
+    assert!(top.is_some());
 }

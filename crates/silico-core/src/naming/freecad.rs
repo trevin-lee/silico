@@ -94,6 +94,12 @@ fn write(name: &Name, out: &mut String) {
             out.push(';');
             out.push_str(operation.code());
         }
+        // One level, the last: FreeCAD writes a level per feature of the run.
+        Name::Modified { name, last } => {
+            write(name, out);
+            out.push_str(";:M;");
+            out.push_str(last.0.code());
+        }
         Name::Duplicate { name, ordinal } => {
             write(name, out);
             out.push_str(&format!(";D{:x}", ordinal.get()));
