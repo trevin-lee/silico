@@ -204,3 +204,107 @@ fn a_file_that_cant_be_read_or_a_bad_command_is_exit_2() {
         assert!(stderr(&out).contains("usage: silico"), "{}", stderr(&out));
     }
 }
+
+/// `git ARGS` in `dir`, with no user or system configuration.
+fn git(dir: &Path, args: &[&str]) -> Output {
+    let out = Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("HOME", dir)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", stderr(&out));
+    out
+}
+
+/// A git repository in `scratch` with `silico textconv` as `*.silico`'s diff driver, as
+/// docs/cli.md sets it up, and `text` committed as `part.silico`.
+fn repository(scratch: &Scratch, text: &str) -> PathBuf {
+    let dir = scratch.0.join("repo");
+    std::fs::create_dir_all(&dir).unwrap();
+    git(&dir, &["init", "-q"]);
+    std::fs::write(dir.join(".gitattributes"), "*.silico diff=silico\n").unwrap();
+    let driver = format!("{} textconv", env!("CARGO_BIN_EXE_silico"));
+    git(&dir, &["config", "diff.silico.textconv", &driver]);
+    std::fs::write(dir.join("part.silico"), text).unwrap();
+    git(&dir, &["add", "."]);
+    git(&dir, &["commit", "-q", "-m", "part"]);
+    dir
+}
+
+/// The lines `git diff` says were taken out and put in.
+fn changed(dir: &Path) -> (Vec<String>, Vec<String>) {
+    let out = git(dir, &["diff", "--no-color", "-U0"]);
+    let text = String::from_utf8(out.stdout).unwrap();
+    let lines = |sign: char| -> Vec<String> {
+        text.lines()
+            .filter(|l| l.starts_with(sign) && !l.starts_with("---") && !l.starts_with("+++"))
+            .map(|l| l[1..].to_owned())
+            .collect()
+    };
+    (lines('-'), lines('+'))
+}
+
+#[test]
+fn git_diff_through_textconv_shows_a_one_value_edit_as_one_line() {
+    let scratch = Scratch::new("textconv");
+    let dir = repository(&scratch, EXAMPLE);
+    std::fs::write(
+        dir.join("part.silico"),
+        EXAMPLE.replace(r#""length": 40"#, r#""length": 45"#),
+    )
+    .unwrap();
+    assert_eq!(
+        changed(&dir),
+        (
+            vec![r#"k7f2qx3m "Block" box length 40, width 20, height 10, at (0, 0, 0)"#.to_owned()],
+            vec![r#"k7f2qx3m "Block" box length 45, width 20, height 10, at (0, 0, 0)"#.to_owned()],
+        )
+    );
+}
+
+#[test]
+fn git_diff_through_textconv_shows_a_file_that_isnt_a_document_as_it_is() {
+    // A merge's conflict markers: not a document, so shown as written, not refused.
+    let scratch = Scratch::new("textconv-raw");
+    let dir = repository(&scratch, EXAMPLE);
+    let conflicted = EXAMPLE.replace(
+        r#"    {"id": "k7f2qx3m""#,
+        "<<<<<<< ours\n    {\"id\": \"k7f2qx3m\"",
+    );
+    std::fs::write(dir.join("part.silico"), &conflicted).unwrap();
+    let (out, put_in) = changed(&dir);
+    assert_eq!(
+        out,
+        [
+            r#"k7f2qx3m "Block" box length 40, width 20, height 10, at (0, 0, 0)"#,
+            "bodies k7f2qx3m",
+        ]
+    );
+    let expected: Vec<String> = conflicted.lines().map(str::to_owned).collect();
+    assert_eq!(put_in, expected);
+}
+
+#[test]
+fn textconv_prints_a_file_too_long_to_be_a_document_whole() {
+    let scratch = Scratch::new("textconv-long");
+    let file = scratch.0.join("big.silico");
+    let len = silico_core::document::json::MAX_INPUT_LEN + 4096;
+    let text: Vec<u8> = (0..len).map(|i| b'a' + (i % 26) as u8).collect();
+    std::fs::write(&file, &text).unwrap();
+    let out = silico(&scratch, &["textconv"], &file);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(out.stdout == text, "{} bytes of {len}", out.stdout.len());
+    let missing = scratch.0.join("nothing.silico");
+    let out = silico(&scratch, &["textconv"], &missing);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr(&out).contains("couldn't be read"),
+        "{}",
+        stderr(&out)
+    );
+}

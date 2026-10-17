@@ -1,5 +1,6 @@
 //! The `silico` command-line client: `check`, `fmt`, and `show`, each a thin client of the
-//! core's commands (`silico_core::command`), which the app and MCP run too.
+//! core's commands (`silico_core::command`), which the app and MCP run too, and `textconv`,
+//! for `git diff` (docs/cli.md).
 //!
 //! Exit codes: 0, nothing wrong; 1, a document has problems (or, with `fmt --check`, isn't
 //! in canonical form); 2, the command couldn't run (a usage error, a file that couldn't be
@@ -29,7 +30,8 @@ macro_rules! say {
 
 const USAGE: &str = "usage: silico check [--json] [--] FILE...
        silico fmt [--check] [--] FILE...
-       silico show [--] FILE";
+       silico show [--] FILE
+       silico textconv [--] FILE";
 
 /// How a command ended.
 enum Ended {
@@ -87,7 +89,7 @@ fn main() -> ExitCode {
     let known: &[&str] = match command.as_str() {
         "check" => &["--json"],
         "fmt" => &["--check"],
-        "show" => &[],
+        "show" | "textconv" => &[],
         _ => {
             say!("silico: no command {command:?}\n{USAGE}");
             return Ended::Failed.code();
@@ -97,7 +99,7 @@ fn main() -> ExitCode {
         say!("silico {command}: no option {unknown:?}\n{USAGE}");
         return Ended::Failed.code();
     }
-    if files.is_empty() || (command == "show" && files.len() != 1) {
+    if files.is_empty() || (matches!(command.as_str(), "show" | "textconv") && files.len() != 1) {
         say!("{USAGE}");
         return Ended::Failed.code();
     }
@@ -110,7 +112,8 @@ fn main() -> ExitCode {
             .iter()
             .map(|file| fmt(file, flag("--check")))
             .fold(Ended::Clean, Ended::and),
-        _ => files.first().map_or(Ended::Failed, |file| show(file)),
+        "show" => files.first().map_or(Ended::Failed, |file| show(file)),
+        _ => files.first().map_or(Ended::Failed, |file| textconv(file)),
     };
     ended.code()
 }
@@ -261,6 +264,40 @@ fn show(file: &Path) -> Ended {
     }
 }
 
+/// `silico textconv FILE`, git's text conversion for `*.silico` (docs/cli.md): the outline,
+/// as `show` prints it, if the file reads as a document; if not (a merge's conflict
+/// markers, an edit half made), the file as it is, so `git diff` still shows it. Fails only
+/// if the file can't be read or stdout written.
+fn textconv(file: &Path) -> Ended {
+    let fail = |why: String| {
+        say!("{}: {why}", shown(file));
+        Ended::Failed
+    };
+    let mut opened = match open(file) {
+        Ok(opened) => opened,
+        Err(why) => return fail(why),
+    };
+    let mut bytes = Vec::new();
+    if let Err(e) = (&mut opened)
+        .take(MAX_INPUT_LEN as u64 + 1)
+        .read_to_end(&mut bytes)
+    {
+        return fail(format!("couldn't be read: {e}"));
+    }
+    let mut out = std::io::stdout().lock();
+    let written = match silico_core::document::read(&bytes) {
+        Ok(document) => out.write_all(command::outline(&document).as_bytes()),
+        // As it is, all of it: what was read, then the rest of a file too long to read.
+        Err(_) => out
+            .write_all(&bytes)
+            .and_then(|()| std::io::copy(&mut opened, &mut out).map(drop)),
+    };
+    match written.and_then(|()| out.flush()) {
+        Ok(()) => Ended::Clean,
+        Err(e) => fail(format!("couldn't be converted: {e}")),
+    }
+}
+
 /// A file's name as it's shown (its bytes, any that aren't UTF-8 replaced).
 fn shown(file: &Path) -> String {
     file.display().to_string()
@@ -274,6 +311,16 @@ fn line(value: serde_json::Value) {
 /// could hang or never end, isn't), at most one more than a document may be (the reader
 /// refuses it then, saying so); or why not.
 fn read(file: &Path) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    open(file)?
+        .take(MAX_INPUT_LEN as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("couldn't be read: {e}"))?;
+    Ok(bytes)
+}
+
+/// `file`, opened to read, if it's a regular file; or why not.
+fn open(file: &Path) -> Result<std::fs::File, String> {
     let couldnt = |e: std::io::Error| format!("couldn't be read: {e}");
     // Opened without waiting (a pipe with no writer would block an open), then checked.
     let opened = std::fs::OpenOptions::new()
@@ -285,12 +332,7 @@ fn read(file: &Path) -> Result<Vec<u8>, String> {
     if !metadata.is_file() {
         return Err("couldn't be read: it isn't a regular file".to_owned());
     }
-    let mut bytes = Vec::new();
-    opened
-        .take(MAX_INPUT_LEN as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(couldnt)?;
-    Ok(bytes)
+    Ok(opened)
 }
 
 /// An engine for `file`: kernel workers, and the rebuild cache beside it
