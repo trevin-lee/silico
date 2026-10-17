@@ -229,7 +229,7 @@ impl Worker {
         let child = guard
             .release()
             .ok_or_else(|| internal(kind, "keeping the process", "it was lost"))?;
-        tracing::debug!(pid, exe = %exe.display(), kind = kind.noun(), "started worker");
+        tracing::debug!(pid, exe = %exe.display(), "started {}", kind.noun());
         Ok(Self {
             kind,
             child: Arc::new(Mutex::new(child)),
