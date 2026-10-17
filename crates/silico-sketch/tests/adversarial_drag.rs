@@ -1237,8 +1237,19 @@ fn check_drag(seed: u64) -> Result<(), (Broken, String)> {
                 ));
             }
         }
-        // Only the part the drag moves is solved; the rest stays where the drag began.
+        // Only the part the drag moves is solved; the rest stays where the drag began. The
+        // part's unknowns, from the protocol; each other value, checked bit for bit, so the
+        // part is held to what a move does, not only to its own list.
         let part = begin.part();
+        for (i, (a, b)) in system.values.iter().zip(&values).enumerate() {
+            if part.unknowns.binary_search(&Value(i as u32)).is_err() && a.to_bits() != b.to_bits()
+            {
+                return Err((
+                    Broken::FixedMoved,
+                    format!("to {c:?}: value {i}, outside the part, {a} -> {b}"),
+                ));
+            }
+        }
         for con in part.constraints.iter().filter(|con| {
             touches_an_unknown(&system, con) && !on_a_point_line(&system, &values, con)
         }) {
@@ -1296,4 +1307,35 @@ proptest! {
             prop_assert!(false, "seed {seed:#x}: {kind:?}: {problem}\n{:?}", generate(seed, false, Some(Algorithm::DogLeg)));
         }
     }
+}
+
+#[test]
+fn a_circle_drawn_at_radius_zero_dragged_is_no_frame() {
+    // Its radius is fixed at 0 and its centre free: the frame is solved, but no circle.
+    let mut b = Builder::default();
+    let center = b.point_values(0.0, 0.0);
+    let radius = b.fixed(0.0);
+    let circle = b.add(SketchGeometry::Circle { center, radius });
+    let system = b.system(Algorithm::DogLeg);
+    system.check().unwrap();
+    let mut drag = begin(system, PointOf::Center(circle));
+    let m = drag.move_to([3.0, 4.0]).unwrap();
+    assert_eq!((m.status, &m.values), (SolveStatus::SolvedInvalid, &None));
+}
+
+#[test]
+fn geometry_outside_the_part_doesnt_void_a_frame() {
+    // A circle drawn at radius 0, away from a lone point dragged: the drag doesn't move the
+    // circle, so the frame stands.
+    let mut b = Builder::default();
+    let center = b.point_values(10.0, 10.0);
+    let radius = b.fixed(0.0);
+    b.add(SketchGeometry::Circle { center, radius });
+    let p = b.point_values(1.0, 1.0);
+    let lone = b.add(SketchGeometry::Point(p));
+    let system = b.system(Algorithm::DogLeg);
+    system.check().unwrap();
+    let mut drag = begin(system, PointOf::Point(lone));
+    let m = drag.move_to([3.0, 4.0]).unwrap();
+    assert_eq!(m.status, SolveStatus::Success, "{m:?}");
 }

@@ -1475,6 +1475,9 @@ mod tests {
         // 1e-150 squared is 1e-300: a length.
         s.values[2] = 1e-150;
         s.check().unwrap();
+        // 1e-160 squared is 1e-320, below the smallest normal float but not 0: a length.
+        s.values[2] = 1e-160;
+        s.check().unwrap();
     }
 
     fn drag(point: PointOf) -> DragBegin {
