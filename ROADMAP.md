@@ -11,7 +11,7 @@ Every milestone ends with `/adversarial-review --milestone`, and the council mus
 | M0 – Foundations | [docs/roadmap/m0-foundations.md](docs/roadmap/m0-foundations.md) | Detailed |
 | M1 – The kernel layer | [docs/roadmap/m1-kernel.md](docs/roadmap/m1-kernel.md) | Detailed |
 | M2 – Document and naming | [docs/roadmap/m2-document-naming.md](docs/roadmap/m2-document-naming.md) | Outline, detailed after the FreeCAD study |
-| M3 – Sketcher | [docs/roadmap/m3-sketcher.md](docs/roadmap/m3-sketcher.md) | Outline, detailed after the FreeCAD study |
+| M3 – Sketcher | [docs/roadmap/m3-sketcher.md](docs/roadmap/m3-sketcher.md) | Detailed |
 | M4, M5 | This file | Detailed when M3 ends |
 | FreeCAD file import | [docs/roadmap/freecad-import.md](docs/roadmap/freecad-import.md) | Outline, detailed when its prerequisites exist |
 
@@ -41,7 +41,7 @@ The JSON timeline, the canonical writer, and the single parse → validate → r
 **Done when** golden models save and rebuild byte-identically on every platform, and references survive upstream edits or fail loudly.
 
 ### M3 – Sketcher
-Can run in parallel with M2. PlaneGCS in a worker, sketch entities and constraints, profile-to-face conversion, and pad, pocket, and revolve driven by sketches.
+Can run in parallel with M2, except M3.6, which needs M2.7–M2.8. PlaneGCS in a worker, sketch entities and constraints, profile-to-face conversion, and pad, pocket, and revolve driven by sketches.
 
 **Done when** the ported FreeCAD sketcher tests pass, and the latency of interactive drags through the worker has been measured. That measurement settles the IPC transport question.
 
