@@ -69,6 +69,7 @@ Evidence, in `tests/determinism/`: with OCCT 7.9.3, PR #1600, and the full shim,
 | `silico-protocol` | IPC message types shared by the core and workers. Few dependencies. |
 | `silico-kernel` | Thin C++ shim over OCCT plus the worker binary. The only crate that links OCCT. |
 | `silico-sketch` | PlaneGCS binding and sketch worker |
+| `silico-worker` | What every worker process is: the inherited socket, the request loop, logging, and the floating-point trap checks, shared by the kernel and sketch workers |
 | `silico-assembly` | OndselSolver binding and assembly worker (later) |
 | `silico-render` | Viewport built on `re_renderer` |
 | `silico-app` | egui UI client |

@@ -4209,6 +4209,7 @@ dependencies = [
  "silico-kernel",
  "silico-oracle",
  "silico-protocol",
+ "silico-worker",
  "tracing",
  "tracing-subscriber",
 ]
@@ -4234,11 +4235,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "silico-sketch"
+version = "0.0.0"
+dependencies = [
+ "cxx",
+ "cxx-build",
+ "proptest",
+ "sha2",
+ "silico-core",
+ "silico-protocol",
+ "silico-sketch",
+ "silico-worker",
+ "tracing",
+]
+
+[[package]]
 name = "silico-view"
 version = "0.0.0"
 dependencies = [
  "rerun",
  "silico-core",
+]
+
+[[package]]
+name = "silico-worker"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "silico-protocol",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

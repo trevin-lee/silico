@@ -97,6 +97,13 @@ pub enum Refusal {
     NoEdgeToRefuse { dressing: DressingKind },
     /// A test operation sent to a production worker.
     TestOperation { op: String },
+    /// An operation another kind of worker answers (a sketch solve sent to the kernel
+    /// worker, or a kernel operation to the sketch worker).
+    OtherWorkersOp { op: String },
+    /// PlaneGCS threw while solving a sketch; its words, if any, are the cause.
+    SolverThrew,
+    /// PlaneGCS's solution has a value that isn't finite: `value`, its place in the system.
+    SolutionNotFinite { value: u32 },
     /// Floating-point traps found on after `op` (trap-enable bits `mask`).
     FpTrapsOn { mask: u32, op: String },
     /// Something went wrong in the worker itself, in a test worker's words.
@@ -254,8 +261,12 @@ impl Refusal {
             | Refusal::BooleanResultEmpty { .. }
             | Refusal::ExtentNotFinite
             | Refusal::FacesUnmeshed { .. }
-            | Refusal::NotFinite { .. } => FailureKind::KernelFailed,
-            Refusal::TestOperation { .. } => FailureKind::UnknownOp,
+            | Refusal::NotFinite { .. }
+            | Refusal::SolverThrew
+            | Refusal::SolutionNotFinite { .. } => FailureKind::KernelFailed,
+            Refusal::TestOperation { .. } | Refusal::OtherWorkersOp { .. } => {
+                FailureKind::UnknownOp
+            }
             Refusal::ResultCheckMissing { .. }
             | Refusal::MalformedHistory { .. }
             | Refusal::NoEdgeToRefuse { .. }
@@ -522,6 +533,18 @@ impl Refusal {
             Refusal::TestOperation { op } => (
                 format!("{op} is a test operation, not answered by this worker"),
                 None,
+            ),
+            Refusal::OtherWorkersOp { op } => (
+                format!("{op} is answered by another kind of worker, not this one"),
+                Some("this is a bug in Silico: report it".to_owned()),
+            ),
+            Refusal::SolverThrew => (
+                "the sketch solver failed".to_owned(),
+                Some("this is a bug in Silico's sketch worker: report it".to_owned()),
+            ),
+            Refusal::SolutionNotFinite { value } => (
+                format!("the sketch solver's solution has a value that isn't finite (value {value})"),
+                Some("check the sketch's geometry for elements of no size, then try again".to_owned()),
             ),
             Refusal::FpTrapsOn { mask, op } => (
                 format!("floating-point traps are on (trap-enable bits {mask:#x}) after {op}"),
@@ -854,6 +877,11 @@ mod tests {
             Refusal::TestOperation {
                 op: "DebugSleep".to_owned(),
             },
+            Refusal::OtherWorkersOp {
+                op: "Solve".to_owned(),
+            },
+            Refusal::SolverThrew,
+            Refusal::SolutionNotFinite { value: 7 },
             Refusal::FpTrapsOn {
                 mask: 0x200,
                 op: "Fillet".to_owned(),
@@ -945,6 +973,9 @@ mod tests {
             Internal,          // MalformedHistory
             Internal,          // NoEdgeToRefuse
             UnknownOp,         // TestOperation
+            UnknownOp,         // OtherWorkersOp
+            KernelFailed,      // SolverThrew
+            KernelFailed,      // SolutionNotFinite
             Internal,          // FpTrapsOn
             Internal,          // Internal
             ResourceExhausted, // OutOfMemory
@@ -987,6 +1018,9 @@ mod tests {
             None,               // MalformedHistory
             None,               // NoEdgeToRefuse
             None,               // TestOperation
+            None,               // OtherWorkersOp
+            None,               // SolverThrew
+            None,               // SolutionNotFinite
             None,               // FpTrapsOn
             None,               // Internal
             None,               // OutOfMemory

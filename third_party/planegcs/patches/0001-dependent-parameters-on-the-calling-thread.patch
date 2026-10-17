@@ -1,0 +1,32 @@
+Run the dependent-parameter QR on the diagnosing thread, not a second one.
+
+System::diagnose() starts identifyDependentParameters{Dense,Sparse}QR with
+std::async's default policy, which libc++ runs on a new thread, and joins it
+(fut.wait()) before reading its result. The result doesn't depend on
+scheduling: the call works on copies of the Jacobian and its maps. Silico's
+workers are single-threaded (ARCHITECTURE.md, Deterministic kernel, 5), so the
+call is deferred: it runs on the calling thread at fut.wait(), with the same
+arguments, giving the same result. FreeCAD's own comment above the sparse call
+names std::launch::deferred as a supported policy.
+
+Upstream: none yet (the maintainer files it). Drop when FreeCAD defers it, or
+makes the policy configurable.
+
+--- a/src/Mod/Sketcher/App/planegcs/GCS.cpp
++++ b/src/Mod/Sketcher/App/planegcs/GCS.cpp
+@@ -4901,6 +4901,7 @@
+         // identifyDependentParametersDenseQR(J, jacobianconstraintmap, pdiagnoselist, true)
+         //
+         auto fut = std::async(
++            std::launch::deferred,
+             &System::identifyDependentParametersDenseQR,
+             this,
+             J,
+@@ -4978,6 +4979,7 @@
+         // std::async(std::launch::deferred,&System::identifyDependentParametersSparseQR, this,
+         // J, jacobianconstraintmap, pdiagnoselist, false);
+         auto fut = std::async(
++            std::launch::deferred,
+             &System::identifyDependentParametersSparseQR,
+             this,
+             J,

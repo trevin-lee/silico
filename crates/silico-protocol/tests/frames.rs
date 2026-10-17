@@ -4,6 +4,10 @@
 
 use proptest::prelude::*;
 use silico_protocol::{
+    Algorithm, Geometry, PointOf, PointValues, SketchGeometry, SketchSystem, SolveStatus, Solved,
+    SolverConstraint, Tag, Value,
+};
+use silico_protocol::{
     Axis, Blob, BooleanOp, BuiltData, ChamferSize, DebugOp, DressingKind, ElementCounts,
     ElementFate, ElementKind, ElementRef, Ends, Failure, FailureKind, FrameError, FrameReader,
     FreecadMeasures, Generation, History, InputHistory, MAX_FRAME_LEN, Mesh, Misbehavior, Op,
@@ -126,6 +130,33 @@ fn every_op() -> Vec<Op> {
         Op::Debug(DebugOp::Misbehave(Misbehavior::BadHistory)),
         Op::Debug(DebugOp::Misbehave(Misbehavior::HistoryForNoInputs)),
         Op::Debug(DebugOp::Misbehave(Misbehavior::ForgedRefusal)),
+        Op::Solve(SketchSystem {
+            values: vec![0.0, 0.5, 10.0, -0.25, 10.0],
+            unknowns: vec![Value(0), Value(1), Value(2), Value(3)],
+            geometry: vec![SketchGeometry::Line {
+                start: PointValues {
+                    x: Value(0),
+                    y: Value(1),
+                },
+                end: PointValues {
+                    x: Value(2),
+                    y: Value(3),
+                },
+            }],
+            constraints: vec![
+                SolverConstraint::Horizontal {
+                    tag: Tag(1),
+                    line: Geometry(0),
+                },
+                SolverConstraint::DistanceX {
+                    tag: Tag(2),
+                    a: PointOf::Start(Geometry(0)),
+                    b: PointOf::End(Geometry(0)),
+                    value: Value(4),
+                },
+            ],
+            algorithm: Algorithm::LevenbergMarquardt,
+        }),
     ];
     let indices: std::collections::BTreeSet<usize> = ops
         .iter()
@@ -178,9 +209,10 @@ fn every_op() -> Vec<Op> {
             } => 28,
             Op::MeasureAsFreecad { .. } => 29,
             Op::Debug(DebugOp::Misbehave(Misbehavior::ForgedRefusal)) => 30,
+            Op::Solve(_) => 31,
         })
         .collect();
-    assert_eq!(indices, (0..31).collect(), "an operation has no case");
+    assert_eq!(indices, (0..32).collect(), "an operation has no case");
     ops
 }
 
@@ -267,6 +299,15 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             valid: None,
         })),
         Ok(Reply::Done),
+        Ok(Reply::Solved(Solved {
+            dofs: -1,
+            conflicting: vec![Tag(2), Tag(5)],
+            redundant: vec![Tag(3)],
+            partially_redundant: vec![],
+            free: vec![Value(0), Value(7)],
+            status: SolveStatus::Converged,
+            values: vec![0.0, -1.5, 1e-300, f64::MAX],
+        })),
         Err(Failure::new(Refusal::InvalidParameter {
             parameter: "dx".to_owned(),
             message: "box dx must be a finite length above 1e-7, got -1".to_owned(),
@@ -306,6 +347,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             Ok(Reply::Done) => 4,
             Ok(Reply::Built(_)) => 10,
             Ok(Reply::FreecadMeasures(_)) => 11,
+            Ok(Reply::Solved(_)) => 13,
             Err(failure) => match failure.kind() {
                 FailureKind::InvalidInput => 5,
                 FailureKind::KernelFailed => 6,
@@ -318,7 +360,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         .collect();
     assert_eq!(
         indices,
-        (0..13).collect(),
+        (0..14).collect(),
         "a reply or failure kind has no case"
     );
     results
@@ -713,7 +755,8 @@ fn every_op_has_its_own_name() {
             "DebugMisbehaveWrongReply",
             "DebugMisbehaveBadHistory",
             "DebugMisbehaveHistoryForNoInputs",
-            "DebugMisbehaveForgedRefusal"
+            "DebugMisbehaveForgedRefusal",
+            "Solve"
         ]
     );
 }
