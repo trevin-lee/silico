@@ -43,3 +43,25 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 [[profile.ci.overrides]]
 filter = 'package(silico-kernel) & test(the_fake_answers_as_the_real_kernel_does_at_the_edges)'
 slow-timeout = { period = "60s", terminate-after = 10 }
+
+# Mutation testing (tests/mutants.sh selects it): the default profile, without the tests
+# that hold to a wall-clock limit, which fail on a machine the mutants shards saturate,
+# and a baseline that fails tests no mutant. Each is to be made load-tolerant and taken
+# off this list.
+[profile.mutants]
+default-filter = """
+not (
+    (package(silico-kernel) & binary(adversarial_worker) & (
+        test(=a_pool_of_the_most_workers_starts_and_stops_cleanly)
+        | test(=dropping_the_pool_amid_crashes_kills_floods_and_advances_leaves_nothing)
+    ))
+    | (package(silico-kernel) & binary(pool)
+        & test(=superseded_work_too_young_to_stop_at_advance_is_stopped_once_it_has_run_stop_after))
+    | (package(silico-kernel) & binary(adversarial_pool) & (
+        test(=a_kill_at_launch_after_an_exit_of_its_own_is_taken_as_from_outside)
+        | test(=an_idle_slot_whose_worker_is_killed_at_launch_backs_off_after_the_second_kill)
+        | test(=a_slot_waiting_out_a_long_back_off_starts_a_worker_once_a_newer_one_has_started)
+        | test(=a_pool_whose_binary_comes_back_after_many_failed_starts_fills_at_once)
+    ))
+)
+"""

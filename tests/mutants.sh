@@ -20,4 +20,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/committed-tree.sh"
 pixi run occt
 pixi install -e oracle
 echo "mutants: testing $commit"
+# Without the wall-clock tests a saturated machine fails (.config/nextest.toml).
+export NEXTEST_PROFILE=mutants
 cargo mutants --in-place --minimum-test-timeout 300 "$@"
