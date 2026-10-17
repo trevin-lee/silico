@@ -237,33 +237,35 @@ SolveOutput solve(const SolveInput &input) {
   free_values.erase(std::unique(free_values.begin(), free_values.end()), free_values.end());
   for (uint32_t v : free_values) out.free.push_back(v);
 
-  // Each algorithm in turn, from the values as given, until one succeeds: FreeCAD's
-  // fallback (Sketch::internalSolve), on the one diagnosis.
   // Each algorithm in turn, from the values as given, until one solves: FreeCAD's fallback
   // (Sketch::internalSolve), on the one diagnosis. (Its last step, SQP on a system anchored
   // at the given values, comes with M3.3.)
+  //
+  // With equations dropped as redundant, System::solve checks the dropped ones on the
+  // values it started from, before its solution is written back, and turns Success into
+  // Converged if they miss there; so whether it says Success depends on where the sketch
+  // was drawn, not on the solution. A solve with equations dropped is reported as solved
+  // except them either way: everything it kept is met, and the dropped ones' residuals on
+  // the solution say whether they agree, the core's to judge (docs/roadmap/m3-sketcher.md,
+  // decision 5). DogLeg and Levenberg–Marquardt end only in Success or Failed (GCS.cpp,
+  // solve_DL and solve_LM), so their Converged is that check. That holds while every
+  // constraint is driving with a tag of 0 or more: then there's no auxiliary subsystem,
+  // whose solver (SQP) ends Converged of its own accord. BFGS can too, so its Converged
+  // stays one, unsolved, as FreeCAD reads it; with equations dropped, it stays read on the
+  // drawing.
   const bool dropped = !redundant.empty() || !out.partially_redundant.empty();
-  int status = GCS::Failed;
   Status reported = Status::Failed;
   out.succeeded = -1;
   for (size_t i = 0; i < input.algorithms.size(); ++i) {
     const GCS::Algorithm algorithm = algorithm_of(input.algorithms[i]);
-    status = system.solve(true, algorithm);
-    if (status == GCS::Success) {
-      reported = Status::Success;
-    } else if (status == GCS::Converged && dropped && algorithm != GCS::BFGS) {
-      // DogLeg and Levenberg–Marquardt end only in Success or Failed (GCS.cpp, solve_DL and
-      // solve_LM): Converged from them is System::solve's check of the equations it dropped
-      // as redundant, made on the values it started from, before its solution is written
-      // back. So everything it kept is met, and the dropped ones are unchecked on the
-      // solution: their residuals say whether they agree, the core's to judge
-      // (docs/roadmap/m3-sketcher.md, decision 5). BFGS can end Converged of its own accord,
-      // so its Converged stays one.
-      reported = Status::SolvedExceptRedundant;
-    } else {
+    const int status = system.solve(true, algorithm);
+    const bool solved =
+        status == GCS::Success || (status == GCS::Converged && algorithm != GCS::BFGS && dropped);
+    if (!solved) {
       reported = status_of(status);
       continue;
     }
+    reported = dropped ? Status::SolvedExceptRedundant : Status::Success;
     out.succeeded = static_cast<int>(i);
     break;
   }

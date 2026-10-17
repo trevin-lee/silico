@@ -119,14 +119,86 @@ fn a_horizontal_stated_twice_is_redundant_and_the_later_is_named() {
     assert_eq!(tag, again);
     assert!(residual.unwrap().abs() <= 1e-10, "{residual:?}");
 
-    // Started where the constraints already hold, the dropped one holds too.
+    // Started where the constraints already hold, PlaneGCS's check passes and it says
+    // Success; the bridge says the same as before, since the status mustn't depend on where
+    // the sketch was drawn.
     let mut started_solved = system.clone();
     started_solved.values = silico_sketch::solve(&rectangle_40_by_20().b.system(Algorithm::DogLeg))
         .unwrap()
         .values;
     let solved = silico_sketch::solve(&started_solved).unwrap();
     assert_eq!(solved.redundant, vec![again]);
-    assert_eq!(solved.status, SolveStatus::Success);
+    assert_eq!(solved.status, SolveStatus::SolvedExceptRedundant);
+    assert_eq!(solved.algorithm, Some(Algorithm::DogLeg));
+
+    // BFGS can end Converged of its own accord, so its Converged can't be read as that
+    // check, and stays unsolved, as FreeCAD reads it (Sketch::internalSolve takes only
+    // Success): drawn off horizontal, the values come back as given; drawn solved, BFGS
+    // says Success, so the solve stands, except the dropped constraint.
+    let mut bfgs = system.clone();
+    bfgs.algorithms = vec![Algorithm::Bfgs];
+    let solved = silico_sketch::solve(&bfgs).unwrap();
+    assert_eq!(solved.status, SolveStatus::Converged);
+    assert_eq!(solved.algorithm, None);
+    assert_eq!(solved.values, system.values);
+    bfgs.values = started_solved.values;
+    let solved = silico_sketch::solve(&bfgs).unwrap();
+    assert_eq!(solved.status, SolveStatus::SolvedExceptRedundant);
+    assert_eq!(solved.algorithm, Some(Algorithm::Bfgs));
+}
+
+/// A point 5 from the origin in x, and 5.000001 too, and 2 in y. The diagnosis drops the
+/// second x distance as redundant (it repeats the first's equation to within the QR's
+/// tolerance), and the solve meets the rest exactly.
+fn disagreeing_widths_drawn_at(x: f64, y: f64) -> silico_protocol::Solved {
+    let mut b = Builder::default();
+    let origin = b.fixed_point(0.0, 0.0);
+    let v = b.point_values(x, y);
+    let p = b.add(SketchGeometry::Point(v));
+    let (five, five_ish, two) = (b.fixed(5.0), b.fixed(5.000_001), b.fixed(2.0));
+    for (value, x) in [(five, true), (five_ish, true), (two, false)] {
+        b.constrain(|tag| {
+            let (a, b) = (PointOf::Point(origin), PointOf::Point(p));
+            if x {
+                SolverConstraint::DistanceX { tag, a, b, value }
+            } else {
+                SolverConstraint::DistanceY { tag, a, b, value }
+            }
+        });
+    }
+    let system = b.system_trying(vec![
+        Algorithm::DogLeg,
+        Algorithm::LevenbergMarquardt,
+        Algorithm::Bfgs,
+    ]);
+    system.check().unwrap();
+    silico_sketch::solve(&system).unwrap()
+}
+
+#[test]
+fn a_solve_with_equations_dropped_says_so_wherever_the_sketch_was_drawn() {
+    // Found by the port review: PlaneGCS checks the dropped distance on the values it
+    // started from, within its convergence (an error of 1e-5), so drawn between the two
+    // widths it says Success, and drawn elsewhere Converged. The bridge says the same of
+    // both: solved, except the dropped distance, whose residual is the 1e-6 it misses by.
+    for (x, y) in [(5.000_000_5, 2.0), (7.0, 3.0)] {
+        let solved = disagreeing_widths_drawn_at(x, y);
+        assert_eq!(
+            (solved.redundant.as_slice(), solved.status, solved.algorithm),
+            (
+                [Tag(2)].as_slice(),
+                SolveStatus::SolvedExceptRedundant,
+                Some(Algorithm::DogLeg)
+            ),
+            "drawn at ({x}, {y}): {solved:?}"
+        );
+        // Values: the origin (0, 1), the point (2, 3).
+        for (v, want) in [(2, 5.0), (3, 2.0)] {
+            assert!((solved.values[v] - want).abs() <= CLOSE, "{solved:?}");
+        }
+        let residual = solved.residuals[1].1.unwrap();
+        assert!((residual.abs() - 1e-6).abs() <= 1e-12, "{residual}");
+    }
 }
 
 #[test]
@@ -312,16 +384,23 @@ fn chained_coincidences_onto_a_half_fixed_point_solve_in_every_order() {
         let system = b.system_trying(vec![Algorithm::DogLeg, Algorithm::LevenbergMarquardt]);
         system.check().unwrap();
         let solved = silico_sketch::solve(&system).unwrap();
-        assert!(
-            matches!(
-                solved.status,
-                SolveStatus::Success | SolveStatus::SolvedExceptRedundant
-            ),
+        assert_eq!(
+            solved.status,
+            SolveStatus::SolvedExceptRedundant,
             "{order:?}: {solved:?}"
         );
+        assert!(solved.redundant.is_empty(), "{order:?}: {solved:?}");
+        assert_eq!(solved.partially_redundant.len(), 1, "{order:?}: {solved:?}");
         // Values: a (0, 1), q (2, 3), r (4, 5), b's x (6) and y (7).
         for v in [2, 3, 4, 5, 7] {
             assert!(solved.values[v].abs() <= 1e-10, "{order:?}: {solved:?}");
+        }
+        assert_eq!(solved.residuals.len(), 3, "{order:?}: {solved:?}");
+        for (tag, residual) in &solved.residuals {
+            assert!(
+                residual.is_some_and(|r| r.abs() <= 1e-10),
+                "{order:?}, {tag:?}: {solved:?}"
+            );
         }
     }
 }

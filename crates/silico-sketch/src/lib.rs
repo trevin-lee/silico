@@ -143,12 +143,12 @@ mod ffi {
 }
 
 /// Diagnoses `system`, which must have passed [`SketchSystem::check`], and solves it with
-/// each of its algorithms in turn until one succeeds. A solution out of reach is refused.
+/// each of its algorithms in turn until one solves. A solution out of reach is refused.
 pub fn solve(system: &SketchSystem) -> Result<Solved, Failure> {
     // Before any product Eigen computes, in whatever process solves.
     static EIGEN_CACHES: std::sync::Once = std::sync::Once::new();
     EIGEN_CACHES.call_once(ffi::fix_eigen_cache_sizes);
-    let out = ffi::solve(&encode(system)).map_err(|e| thrown(e.what()))?;
+    let out = ffi::solve(&encode(system)).map_err(bridge_threw)?;
     check_reach(&out.values)?;
     let tags = |tags: &[i32]| -> Result<Vec<Tag>, Failure> {
         tags.iter()
@@ -183,7 +183,12 @@ pub fn solve(system: &SketchSystem) -> Result<Solved, Failure> {
     })
 }
 
-/// What the bridge threw, as a refusal: running out of memory is a shortage, as the kernel
+/// What the bridge threw, as a refusal.
+fn bridge_threw(e: cxx::Exception) -> Failure {
+    thrown(e.what())
+}
+
+/// An exception's words as a refusal: running out of memory is a shortage, as the kernel
 /// worker reports it; anything else is a bug in the bridge (PlaneGCS itself never throws).
 fn thrown(what: &str) -> Failure {
     let refusal = if what == "std::bad_alloc" {
@@ -326,12 +331,10 @@ pub mod test_ops {
         ffi::debug_enable_fp_traps().map_err(|e| e.what().to_owned())
     }
 
-    /// Throws `std::bad_alloc`, as a C++ allocation that fails does: its words.
-    pub fn throw_bad_alloc() -> String {
-        match ffi::debug_throw_bad_alloc() {
-            Ok(()) => String::new(),
-            Err(e) => e.what().to_owned(),
-        }
+    /// Throws `std::bad_alloc`, as a C++ allocation that fails does, and reads it as a
+    /// solve does.
+    pub fn throw_bad_alloc() -> Result<(), super::Failure> {
+        ffi::debug_throw_bad_alloc().map_err(super::bridge_threw)
     }
 }
 
@@ -358,9 +361,8 @@ mod tests {
 
     #[test]
     fn running_out_of_memory_is_a_shortage_and_anything_else_the_bridges_bug() {
-        // What libc++'s std::bad_alloc says, thrown through the bridge.
-        let what = super::test_ops::throw_bad_alloc();
-        let failure = super::thrown(&what);
+        // libc++'s std::bad_alloc, thrown through the bridge.
+        let failure = super::test_ops::throw_bad_alloc().unwrap_err();
         assert_eq!(
             (failure.refusal, failure.cause.as_deref()),
             (Refusal::OutOfMemory, Some("std::bad_alloc"))

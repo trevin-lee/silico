@@ -281,19 +281,21 @@ pub struct SketchSystem {
 /// values alone isn't solved, whatever the status, and its residual says whether it holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SolveStatus {
-    /// Every constraint the solver solved is met.
+    /// Every constraint the solver solved is met, and none was dropped as redundant.
     Success,
-    /// Every constraint the solver kept is met, and the equations it dropped as redundant
-    /// (`redundant`, `partially_redundant`) weren't checked on the solution: their residuals
-    /// say whether they agree. PlaneGCS checks them on the values it started from, before
-    /// writing its solution back, and calls the solve `Converged` when they don't hold
-    /// there; from DogLeg and Levenberg–Marquardt, which otherwise end only in success or
-    /// failure, that's all a `Converged` can mean. Whether they agree enough is the core's
-    /// (docs/roadmap/m3-sketcher.md, decision 5); FreeCAD fails such a sketch.
+    /// Equations were dropped as redundant (`redundant`, `partially_redundant`), every
+    /// constraint the solver kept is met, and the dropped ones weren't checked on the
+    /// solution: their residuals say whether they agree. PlaneGCS checks them on the values
+    /// it started from, before writing its solution back, and calls the solve `Converged`
+    /// when they don't hold there, so its own status depends on where the sketch was drawn;
+    /// this one doesn't. From DogLeg and Levenberg–Marquardt, which otherwise end only in
+    /// success or failure, that's all a `Converged` can mean. Whether the dropped equations
+    /// agree enough is the core's (docs/roadmap/m3-sketcher.md, decision 5); FreeCAD fails
+    /// such a sketch unless it started where they hold.
     SolvedExceptRedundant,
     /// The solver stopped at a minimum where the constraints aren't all met (BFGS), or found
     /// the redundant equations unmet on the values it started from (BFGS too: its own
-    /// Converged and that one can't be told apart).
+    /// `Converged` and that one can't be told apart, so, as FreeCAD does, it's unsolved).
     Converged,
     /// The solver failed.
     Failed,

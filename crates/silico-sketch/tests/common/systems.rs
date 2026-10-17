@@ -186,6 +186,7 @@ pub fn process_exists(pid: u32) -> bool {
     std::process::Command::new("ps")
         .args(["-p", &pid.to_string()])
         .output()
-        .map(|out| out.status.success())
-        .unwrap_or(false)
+        .unwrap_or_else(|e| panic!("ps: {e}"))
+        .status
+        .success()
 }

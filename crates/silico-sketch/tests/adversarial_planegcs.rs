@@ -207,7 +207,10 @@ fn a_residual_that_isnt_a_number_is_reported_as_none() {
         algorithms: vec![Algorithm::DogLeg],
     };
     let solved = solve(&system);
-    assert_eq!(solved.status, SolveStatus::Success);
+    // Equations repeat (the point on the line, stated twice, among them), so some are
+    // dropped, and the solve is reported as solved except them.
+    assert!(!solved.redundant.is_empty(), "{solved:?}");
+    assert_eq!(solved.status, SolveStatus::SolvedExceptRedundant);
     let v = &solved.values;
     assert_eq!((v[0], v[1]), (v[2], v[3]), "the line collapsed");
     assert_eq!(
@@ -423,7 +426,7 @@ fn a_line_parallel_to_itself_is_redundant() {
     let solved = solve(&b.system(Algorithm::DogLeg));
     assert_eq!(solved.redundant, vec![Tag(1)]);
     assert_eq!(solved.dofs, 4);
-    assert_eq!(solved.status, SolveStatus::Success);
+    assert_eq!(solved.status, SolveStatus::SolvedExceptRedundant);
     assert_eq!(solved.values, vec![0.0, 0.0, 3.0, 4.0]);
 }
 

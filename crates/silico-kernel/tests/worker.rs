@@ -770,7 +770,7 @@ fn a_request_to_a_worker_that_has_exited_is_a_crash() {
 
 #[test]
 fn the_trap_check_rejects_any_trap_bit() {
-    // The decision itself, on every platform (Apple silicon can't switch traps on).
+    // The decision itself, on every platform (some Apple silicon can't switch traps on).
     use silico_kernel::worker::check_fp_trap_mask;
     assert!(check_fp_trap_mask(0).is_ok());
     for bit in [0x100, 0x200, 0x400, 0x800, 0x1000, 0x8000, 0x1, 0x20] {

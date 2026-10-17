@@ -369,7 +369,7 @@ fn corpus() -> Vec<(String, SketchSystem)> {
 }
 
 /// Every generated sketch solves to the reference's bits; and the corpus covers what it
-/// claims: every status but one (`Failed` too, by chance), conflicts and redundancies, and
+/// claims: every status but `Failed` (that too, by chance), conflicts and redundancies, and
 /// a Levenberg–Marquardt system deeper than Eigen's unblocked product.
 #[test]
 fn generated_sketches_solve_to_the_references_bits() {
@@ -389,7 +389,10 @@ fn generated_sketches_solve_to_the_references_bits() {
         }
         lines.insert(name.clone(), line(&name, &system, &solved));
     }
-    assert!(statuses[0] && statuses[1], "statuses seen: {statuses:?}");
+    assert!(
+        statuses[0] && statuses[1] && statuses[2],
+        "statuses seen: {statuses:?}"
+    );
     assert!(
         conflicts >= 5 && redundancies >= 5,
         "{conflicts} {redundancies}"

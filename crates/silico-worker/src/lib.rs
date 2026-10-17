@@ -43,7 +43,7 @@ pub fn check_fp_traps(platform: &Platform) -> Result<(), String> {
 }
 
 /// The decision behind [`check_fp_traps`], on a given trap-enable mask, so it can be
-/// tested on every platform (Apple silicon can't switch traps on to test it for real).
+/// tested on every platform (some Apple silicon can't switch traps on to test it for real).
 pub fn check_fp_trap_mask(mask: u32) -> Result<(), String> {
     match mask {
         0 => Ok(()),
