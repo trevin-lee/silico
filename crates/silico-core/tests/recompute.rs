@@ -566,7 +566,9 @@ impl Kernel for Gate {
     ) -> Pending<T> {
         let before = self.inner.calls().len();
         let pending = self.inner.submit(generation, request);
-        if generation == self.held {
+        // Only the held generation's first request, its step: what follows it (the measure
+        // of its solid, asked once the newer recompute has superseded it) isn't held.
+        if generation == self.held && !self.delivered.load(std::sync::atomic::Ordering::SeqCst) {
             let deadline = std::time::Instant::now() + WAIT;
             while self.inner.calls().len() == before && std::time::Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(1));
