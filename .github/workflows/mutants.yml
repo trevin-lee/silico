@@ -4,7 +4,7 @@
 # build; the summary gathers every shard's caught, missed, timed-out, and unviable mutants
 # into the run's summary and one artifact, and fails if any mutant was missed.
 #
-#   gh workflow run mutants.yml --ref <branch> -f base=main -f packages="silico-core"
+#   gh workflow run mutants.yml --ref main -f ref=<branch> -f base=main -f packages="silico-core"
 name: mutants
 
 on:
