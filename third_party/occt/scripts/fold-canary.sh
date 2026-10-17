@@ -41,7 +41,9 @@ folded=""
 count=0
 for f in $want; do
   count=$((count + 1))
-  echo "$refs" | grep -qx "$f" || folded="$folded $f"
+  # Not `echo | grep -q`: grep stops at the first match, and under pipefail the echo it
+  # leaves unread (SIGPIPE) would fail the test now and then.
+  grep -qx "$f" <<<"$refs" || folded="$folded $f"
 done
 if [ "$count" -eq 0 ]; then
   echo "FAIL: no canary calls generated from inexact-math.txt" >&2
