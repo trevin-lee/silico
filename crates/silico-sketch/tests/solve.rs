@@ -150,7 +150,11 @@ fn a_horizontal_stated_twice_is_redundant_and_the_later_is_named() {
 /// A point 5 from the origin in x, and 5.000001 too, and 2 in y. The diagnosis drops the
 /// second x distance as redundant (it repeats the first's equation to within the QR's
 /// tolerance), and the solve meets the rest exactly.
-fn disagreeing_widths_drawn_at(x: f64, y: f64) -> silico_protocol::Solved {
+fn disagreeing_widths_drawn_at(
+    x: f64,
+    y: f64,
+    algorithms: &[Algorithm],
+) -> silico_protocol::Solved {
     let mut b = Builder::default();
     let origin = b.fixed_point(0.0, 0.0);
     let v = b.point_values(x, y);
@@ -166,11 +170,7 @@ fn disagreeing_widths_drawn_at(x: f64, y: f64) -> silico_protocol::Solved {
             }
         });
     }
-    let system = b.system_trying(vec![
-        Algorithm::DogLeg,
-        Algorithm::LevenbergMarquardt,
-        Algorithm::Bfgs,
-    ]);
+    let system = b.system_trying(algorithms.to_vec());
     system.check().unwrap();
     silico_sketch::solve(&system).unwrap()
 }
@@ -181,8 +181,40 @@ fn a_solve_with_equations_dropped_says_so_wherever_the_sketch_was_drawn() {
     // started from, within its convergence (an error of 1e-5), so drawn between the two
     // widths it says Success, and drawn elsewhere Converged. The bridge says the same of
     // both: solved, except the dropped distance, whose residual is the 1e-6 it misses by.
-    for (x, y) in [(5.000_000_5, 2.0), (7.0, 3.0)] {
-        let solved = disagreeing_widths_drawn_at(x, y);
+    // Levenberg–Marquardt alone says the same; BFGS alone, whose Converged stays one,
+    // depends on the drawing as PlaneGCS does.
+    let fallback = [
+        Algorithm::DogLeg,
+        Algorithm::LevenbergMarquardt,
+        Algorithm::Bfgs,
+    ];
+    let bfgs = |solved: bool| {
+        if solved {
+            (SolveStatus::SolvedExceptRedundant, Some(Algorithm::Bfgs))
+        } else {
+            (SolveStatus::Converged, None)
+        }
+    };
+    for (x, y, drawn_between) in [(5.000_000_5, 2.0, true), (7.0, 3.0, false)] {
+        for (algorithms, want) in [
+            (
+                &[Algorithm::LevenbergMarquardt][..],
+                (
+                    SolveStatus::SolvedExceptRedundant,
+                    Some(Algorithm::LevenbergMarquardt),
+                ),
+            ),
+            (&[Algorithm::Bfgs][..], bfgs(drawn_between)),
+        ] {
+            let solved = disagreeing_widths_drawn_at(x, y, algorithms);
+            assert_eq!(solved.redundant, [Tag(2)], "drawn at ({x}, {y})");
+            assert_eq!(
+                (solved.status, solved.algorithm),
+                want,
+                "{algorithms:?}, drawn at ({x}, {y}): {solved:?}"
+            );
+        }
+        let solved = disagreeing_widths_drawn_at(x, y, &fallback);
         assert_eq!(
             (solved.redundant.as_slice(), solved.status, solved.algorithm),
             (
