@@ -8,6 +8,8 @@
 mod imports;
 #[path = "common/kernel.rs"]
 mod kernel;
+#[path = "../../silico-core/tests/common/lateness.rs"]
+mod lateness;
 #[path = "common/pool.rs"]
 mod pool;
 #[path = "common/scripts.rs"]
@@ -18,6 +20,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use kernel::kernel;
+use lateness::{Lateness, allowance};
 use pool::{
     TEST_WORKER, WORKER, assert_reaped, children, done, echo, kill9_and_wait, outcome, pool,
     signal, sleep, spin, wait_full, wait_full_by, wait_no_children, wait_no_children_besides,
@@ -314,37 +317,53 @@ fn advance_stops_superseded_work_so_the_new_generation_doesnt_wait() {
 /// reaches it, however loaded the machine.
 const HANG: Duration = Duration::from_secs(60);
 
+/// What stopping a superseded request takes on a quiet machine, with room to spare: from
+/// when it's due to when its caller has the outcome (the stopper waking, the kill, the
+/// slot seeing its worker end, the caller waking). A loaded machine gets ten times its
+/// lateness on top ([`allowance`]); a stopper that looks again only once a second is up to
+/// a second late, however quiet the machine.
+const STOP_TAKES: Duration = Duration::from_millis(250);
+
 #[test]
 fn superseded_work_too_young_to_stop_at_advance_is_stopped_once_it_has_run_stop_after() {
     // Generation 2 starts 10 ms into 30 s sleeps of generation 1, too soon to stop them. They
     // aren't left to run: each is stopped once it has run STOP_AFTER, so generation 2's first
     // request waits that and a worker start, not the sleeps. On a pool of one, and of four.
-    // The bound is the sleeps' own end: work left to run can't end sooner, however the
-    // machine runs, and work stopped as it should is stopped in well under a second.
+    // Each is stopped when it's due (STOP_AFTER from its start, or the advance if that came
+    // later), within what a stop takes and the machine's lateness; and generation 2's request
+    // is answered before the sleeps would end.
     const SLEEP: Duration = Duration::from_secs(30);
     for size in [1, 4] {
         let pool = pool(TEST_WORKER, size);
         let before: BTreeSet<u32> = pool.pids().into_iter().collect();
+        let lateness = Lateness::start();
         let start = Instant::now();
         let stale: Vec<_> = (0..size)
             .map(|_| pool.submit(Generation(1), sleep(SLEEP.as_millis() as u64)))
             .collect();
         std::thread::sleep(Duration::from_millis(10));
+        let advanced = Instant::now();
         pool.advance(Generation(2));
         let current = pool.submit(Generation(2), echo(&[1])).wait();
         let waited = start.elapsed();
+        let mut ended = Vec::new();
         for pending in stale {
             assert!(matches!(outcome(pending), Outcome::Superseded));
+            ended.push(Instant::now());
         }
-        let all_stopped = start.elapsed();
+        let late = allowance(STOP_TAKES, lateness.most());
+        let due = (start + STOP_AFTER).max(advanced);
         assert!(matches!(current, Outcome::Done(Ok(_))), "{current:?}");
+        for (i, ended) in ended.into_iter().enumerate() {
+            assert!(
+                ended < due + late,
+                "pool of {size}: request {i} stopped {:?} after it was due, past {late:?}",
+                ended - due
+            );
+        }
         assert!(
             waited < SLEEP,
             "pool of {size}: waited {waited:?} behind superseded work, as long as it runs"
-        );
-        assert!(
-            all_stopped < SLEEP,
-            "pool of {size}: stale work ran on for {all_stopped:?}, to its end"
         );
         wait_full_by(&pool, size, &before, Instant::now() + HANG);
     }
@@ -582,49 +601,56 @@ fn an_advance_after_a_result_never_replaces_the_worker_that_gave_it() {
 
 #[test]
 fn superseded_work_is_stopped_its_stop_after_from_its_start_not_from_the_advance() {
-    // With a stop-after of 3 s, a request superseded 2 s in is stopped 3 s from its start,
-    // not 3 s from the advance (5 s). No sooner than 3 s after it was submitted (it can't
-    // have started before), and before 3 s after the advance, the soonest a stop counted
-    // from the advance could come: a loaded machine has 2 s to run the stop late.
+    // With a stop-after of 3 s, a request superseded 2.9 s in is stopped 3 s from its start,
+    // not 3 s from the advance (5.9 s): no sooner than 3 s after it was submitted (it can't
+    // have started before), and within what a stop takes and the machine's lateness of
+    // that. Due 0.1 s after the advance, so a stopper that looks again only once a second
+    // stops it 0.9 s late.
     let stop_after = Duration::from_secs(3);
     let pool = pool(TEST_WORKER, 1);
     pool.set_stop_after(stop_after);
     let before: BTreeSet<u32> = pool.pids().into_iter().collect();
+    let lateness = Lateness::start();
     let submitted = Instant::now();
     let stale = pool.submit(Generation(1), sleep(30_000));
-    std::thread::sleep(Duration::from_secs(2));
+    std::thread::sleep(Duration::from_millis(2_900));
     let advanced = Instant::now();
     pool.advance(Generation(2));
     assert!(matches!(outcome(stale), Outcome::Superseded));
     let ended = Instant::now();
+    let late = allowance(STOP_TAKES, lateness.most());
     assert!(
         ended >= submitted + stop_after,
         "stopped {:?} after it was submitted, before its stop-after",
         ended - submitted
     );
+    // Due at its stop-after from its start, or at the advance if that came later.
+    let due = (submitted + stop_after).max(advanced);
     assert!(
-        ended < advanced + stop_after,
-        "stopped {:?} after the advance: its stop-after counted from there",
-        ended - advanced
+        ended < due + late,
+        "stopped {:?} after it was due, past {late:?}: counted from the advance, or late",
+        ended - due
     );
     wait_full_by(&pool, 1, &before, Instant::now() + HANG);
 }
 
 #[test]
 fn each_superseded_request_is_stopped_when_it_is_due() {
-    // Three superseded requests, started 2 s apart, with a stop-after of 7 s: each is
-    // stopped at its own 7 s, none kept waiting for another's, whichever slots they ran on.
-    // The advance comes 2 s after the last starts, before the first is due. Each ends no
-    // sooner than 7 s after it was submitted (it can't have started before), and before the
-    // next can be due, 7 s after that one was submitted: stopping each only when the last
-    // is due, or only the first, fails that, and a loaded machine has 2 s to run a stop
-    // late. The last ends before its 30 s sleep would.
+    // Three superseded requests, started 2 s apart, with a stop-after of 7.1 s: each is
+    // stopped at its own 7.1 s, none kept waiting for another's, whichever slots they ran
+    // on. The advance comes 2 s after the last starts, before the first is due. Each ends
+    // no sooner than 7.1 s after it was submitted (it can't have started before), and
+    // within what a stop takes and the machine's lateness of that: stopping each only when
+    // the last is due, or only the first, fails that, and so does a stopper that looks
+    // again only once a second (they're due 1.1, 3.1, and 5.1 s after the advance: it
+    // stops each 0.9 s late).
     const COUNT: usize = 3;
     const SLEEP: Duration = Duration::from_secs(30);
-    let stop_after = Duration::from_secs(7);
+    let stop_after = Duration::from_millis(7_100);
     let stagger = Duration::from_secs(2);
     let pool = pool(TEST_WORKER, COUNT);
     pool.set_stop_after(stop_after);
+    let lateness = Lateness::start();
     let mut submitted = Vec::new();
     let mut stale = Vec::new();
     for i in 0..COUNT {
@@ -635,23 +661,25 @@ fn each_superseded_request_is_stopped_when_it_is_due() {
         stale.push(pool.submit(Generation(1), sleep(SLEEP.as_millis() as u64)));
     }
     std::thread::sleep(stagger);
+    let advanced = Instant::now();
     pool.advance(Generation(2));
-    for (i, pending) in stale.into_iter().enumerate() {
+    let mut ended = Vec::new();
+    for pending in stale {
         assert!(matches!(outcome(pending), Outcome::Superseded));
-        let ended = Instant::now();
+        ended.push(Instant::now());
+    }
+    let late = allowance(STOP_TAKES, lateness.most());
+    for (i, ended) in ended.into_iter().enumerate() {
         assert!(
             ended >= submitted[i] + stop_after,
             "request {i}: stopped {:?} after it was submitted, before it was due",
             ended - submitted[i]
         );
-        let (next, what) = match submitted.get(i + 1) {
-            Some(&next) => (next + stop_after, "when the next was due"),
-            None => (submitted[i] + SLEEP, "when its sleep ended"),
-        };
+        let due = (submitted[i] + stop_after).max(advanced);
         assert!(
-            ended < next,
-            "request {i}: stopped {:?} after it was submitted, {what}",
-            ended - submitted[i]
+            ended < due + late,
+            "request {i}: stopped {:?} after it was due, past {late:?}",
+            ended - due
         );
     }
 }

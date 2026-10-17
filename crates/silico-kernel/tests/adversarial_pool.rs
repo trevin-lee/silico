@@ -1204,7 +1204,7 @@ fn launch_logger(dir: &Path, then: &str) -> (PathBuf, PathBuf) {
 /// A shell line that logs the time to `log`, in seconds since the epoch.
 fn log_launch(log: &Path) -> String {
     format!(
-        "perl -MTime::HiRes=time -e 'print time, \"\\n\"' >> '{}'",
+        "echo \"$(perl -MTime::HiRes=time -e 'print time') $$\" >> '{}'",
         log.display()
     )
 }
@@ -1217,15 +1217,28 @@ fn epoch_now() -> f64 {
         .as_secs_f64()
 }
 
-/// The launch times logged to `log` so far, earliest first.
-fn launch_times(log: &Path) -> Vec<f64> {
-    let mut times: Vec<f64> = std::fs::read_to_string(log)
+/// The launches logged to `log` so far, earliest first: when, and the process ID.
+fn launches(log: &Path) -> Vec<(f64, u32)> {
+    let mut launches: Vec<(f64, u32)> = std::fs::read_to_string(log)
         .unwrap_or_default()
         .lines()
-        .map(|l| l.trim().parse().unwrap())
+        .map(|l| {
+            let (time, pid) = l.trim().split_once(' ').unwrap();
+            (time.parse().unwrap(), pid.parse().unwrap())
+        })
         .collect();
-    times.sort_by(f64::total_cmp);
-    times
+    launches.sort_by(|a, b| a.0.total_cmp(&b.0));
+    launches
+}
+
+/// The launch times logged to `log` so far, earliest first.
+fn launch_times(log: &Path) -> Vec<f64> {
+    launches(log).into_iter().map(|(time, _)| time).collect()
+}
+
+/// The process ID of launch `n` (from 0, earliest first) logged to `log`.
+fn launch_pid(log: &Path, n: usize) -> u32 {
+    launches(log)[n].1
 }
 
 /// Waits for `log` to hold `n` launches logged after `after`, and gives them, earliest
@@ -1254,13 +1267,28 @@ fn wait_launches(log: &Path, n: usize) -> Vec<f64> {
     wait_launches_after(log, f64::NEG_INFINITY, n)
 }
 
-/// Waits until a pool of one's worker has ended: exited, or let go already.
-fn wait_worker_ended(pool: &KernelPool) {
+/// Whether process `pid` has ended: exited (a zombie), or reaped (`ps` may still list one
+/// reaped an instant before, with no state: `?`).
+fn has_ended(pid: u32) -> bool {
+    state(pid).is_none_or(|s| s.starts_with('Z') || s.starts_with('?'))
+}
+
+/// Waits until worker `pid` has exited.
+fn wait_exited(pid: u32) {
     let deadline = Instant::now() + HANG;
-    while let Some(&pid) = pool.pids().first()
-        && state(pid).is_some_and(|s| !s.starts_with('Z'))
-    {
+    while !has_ended(pid) {
         assert!(Instant::now() < deadline, "{pid} never exited");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// Waits until the pool has let worker `pid` go after its end: reaped it (which only the
+/// slot holding it does, so it had been listed) and no longer lists it. Its slot decides
+/// how to go on in the same moment, microseconds later, with nothing to show it has.
+fn wait_let_go(pool: &KernelPool, pid: u32) {
+    let deadline = Instant::now() + HANG;
+    while state(pid).is_some_and(|s| !s.starts_with('?')) || pool.pids().contains(&pid) {
+        assert!(Instant::now() < deadline, "the pool kept {pid}");
         std::thread::sleep(Duration::from_millis(2));
     }
 }
@@ -1396,7 +1424,7 @@ fn an_answer_ends_a_slots_wait() {
     wait_launches(&log, 4);
     // That launch has failed (were `fail` gone before it looked, the request might go to a
     // worker on its way out, and fail as a crash), so the request starts a worker of its own.
-    wait_worker_ended(&pool);
+    wait_exited(launch_pid(&log, 3));
     std::fs::remove_file(&fail).unwrap();
     // A refusal is an answer too: the worker reads the bytes, finds no shape in them, and
     // says so.
@@ -1465,11 +1493,7 @@ fn a_wait_ended_early_by_a_newer_worker_still_doubles_on_the_next_failure() {
     // A: launches at about 2, 5, 10, and 19 s fail; once it has seen the last end (its
     // worker let go), its wait is 16 s.
     wait_launches(&log, 6);
-    let deadline = Instant::now() + HANG;
-    while pool.pids() != [b] {
-        assert!(Instant::now() < deadline, "A kept {:?}", pool.pids());
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_let_go(&pool, launch_pid(&log, 5));
     signal("KILL", b);
     // B's replacement (launch 7) works; A's next (8), early, fails.
     let early = wait_launches(&log, 8)[7];
@@ -1506,7 +1530,7 @@ fn a_request_refused_before_its_sent_doesnt_end_a_slots_wait() {
     let pool = KernelPool::start_workers(&script, 1).unwrap();
     let third = wait_launches(&log, 3)[2];
     // Its worker has ended, so the request starts one of its own.
-    wait_worker_ended(&pool);
+    wait_exited(launch_pid(&log, 2));
     let too_large = vec![0; silico_protocol::MAX_FRAME_LEN as usize + 1];
     let err =
         done(pool.submit(Generation(1), KernelRequest::echo(Blob::inline(too_large)))).unwrap_err();

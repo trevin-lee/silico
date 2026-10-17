@@ -53,6 +53,11 @@ fn waiting_on_a_worker_costs_no_cpu() {
     };
     let short = send(Duration::from_secs(1));
     let long = send(Duration::from_secs(4));
+    // And loosely, on its own: a burst of spinning the same for both shows here.
+    assert!(
+        short < Duration::from_millis(500),
+        "a send that couldn't finish cost {short:?} of CPU waiting 1 s"
+    );
     assert!(
         long.saturating_sub(short) < Duration::from_millis(100),
         "a send that couldn't finish cost {short:?} of CPU waiting 1 s, {long:?} waiting 4 s"
