@@ -955,3 +955,100 @@ fn fmt_of_a_hard_linked_document_killed_by_a_size_limit_mid_write_leaves_it_as_i
         std::fs::metadata(&b).unwrap().ino()
     );
 }
+
+/// `silico fmt a.silico` under `sh -c "<prefix> ulimit -f 1; exec ..."`.
+fn fmt_under_one_block(scratch: &Scratch, prefix: &str) -> (u32, std::process::Output) {
+    let silico = command(scratch, &worker(), &[]);
+    let mut limited = Command::new("sh");
+    limited
+        .arg("-c")
+        .arg(format!("{prefix} ulimit -f 1; exec \"$0\" fmt a.silico"))
+        .arg(silico.get_program())
+        .current_dir(&scratch.0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (key, value) in silico.get_envs() {
+        match value {
+            Some(value) => limited.env(key, value),
+            None => limited.env_remove(key),
+        };
+    }
+    let child = limited.spawn().unwrap();
+    let pid = child.id();
+    (pid, child.wait_with_output().unwrap())
+}
+
+fn padded(scratch: &Scratch) -> (PathBuf, PathBuf, String) {
+    let pad = 2000 - EXAMPLE.len();
+    let before = EXAMPLE.replace(
+        r#""name": "Block""#,
+        &format!(r#""name": "Block{}""#, "x".repeat(pad)),
+    );
+    assert_eq!(before.len(), 2000);
+    let a = scratch.file("a.silico", &before);
+    let b = scratch.0.join("b.silico");
+    std::fs::hard_link(&a, &b).unwrap();
+    let warm = run(scratch, &[os("fmt"), os("--check"), os("a.silico")]);
+    assert_eq!(warm.code(), Some(1), "{}", warm.stderr);
+    (a, b, before)
+}
+
+#[test]
+fn fmt_whose_copy_a_size_limit_refuses_says_so_and_leaves_nothing() {
+    // A limit below the old text's length, SIGXFSZ ignored: the copy of the old text is
+    // refused, the document is as it was, the copy is gone, and the advice is the limit's
+    // (found by the review: untested).
+    let scratch = Scratch::new("proof-copy-refused");
+    let (a, b, before) = padded(&scratch);
+    let (_, out) = fmt_under_one_block(&scratch, "trap '' XFSZ;");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("couldn't keep its text"), "{stderr}");
+    assert!(stderr.contains("ulimit -f"), "{stderr}");
+    for name in [&a, &b] {
+        assert_eq!(std::fs::read_to_string(name).unwrap(), before);
+    }
+    assert_eq!(
+        ls(&scratch.0),
+        [".silico-cache", "a.silico", "b.silico", "cache-home"]
+    );
+}
+
+#[test]
+fn fmt_whose_copy_a_size_limit_kills_leaves_no_part_of_the_old_text() {
+    // The same, killed by the limit: the copy is grown first, so the one left beside the
+    // file is empty or whole, never a part named as the whole (found by the review).
+    let scratch = Scratch::new("proof-copy-killed");
+    let (a, b, before) = padded(&scratch);
+    let (pid, out) = fmt_under_one_block(&scratch, "");
+    use std::os::unix::process::ExitStatusExt as _;
+    assert_eq!(out.status.signal(), Some(25), "{:?}", out.status);
+    let kept = std::fs::read_to_string(scratch.0.join(format!(".a.silico.fmt-{pid}"))).unwrap();
+    // Empty (stopped before a byte) or whole: never a part named as the whole.
+    assert!(kept.is_empty() || kept == before, "{} bytes", kept.len());
+    for name in [&a, &b] {
+        assert_eq!(std::fs::read_to_string(name).unwrap(), before);
+    }
+}
+
+#[test]
+fn fmt_of_a_single_named_document_refused_by_a_size_limit_says_so() {
+    // The rename path's write, under a limit: the limit's advice, and nothing left beside
+    // the file (found by the review: it advised on permissions).
+    let scratch = Scratch::new("proof-single-limit");
+    let pad = 2000 - EXAMPLE.len();
+    let before = EXAMPLE.replace(
+        r#""name": "Block""#,
+        &format!(r#""name": "Block{}""#, "x".repeat(pad)),
+    );
+    let a = scratch.file("a.silico", &before);
+    let warm = run(&scratch, &[os("fmt"), os("--check"), os("a.silico")]);
+    assert_eq!(warm.code(), Some(1), "{}", warm.stderr);
+    let (_, out) = fmt_under_one_block(&scratch, "trap '' XFSZ;");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), before);
+    assert!(stderr.contains("ulimit -f"), "{stderr}");
+    assert_eq!(ls(&scratch.0), [".silico-cache", "a.silico", "cache-home"]);
+}

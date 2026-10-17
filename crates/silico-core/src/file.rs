@@ -118,18 +118,27 @@ pub fn save(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Error> {
         return in_place(&target, &mut writable, &metadata, before, bytes);
     }
     let (partial, mut f) = beside(&target, &metadata)?;
+    // Grown to its length first, as an in-place write is: a size limit stops it before a
+    // byte is written, so nothing beside the file is part of the new text.
     let written = f
-        .write_all(bytes)
+        .set_len(bytes.len() as u64)
+        .and_then(|()| f.write_all(bytes))
         .and_then(|()| f.set_permissions(metadata.permissions()))
         .and_then(|()| f.sync_all())
-        .map_err(|e| format!("couldn't write {}: {e}", partial.display()))
+        .map_err(|e| {
+            let why = format!("couldn't write {}: {e}", partial.display());
+            limited(unwritable(why), &e)
+        })
         .and_then(|()| {
-            std::fs::rename(&partial, &target)
-                .map_err(|e| format!("couldn't rename {} over it: {e}", partial.display()))
+            std::fs::rename(&partial, &target).map_err(|e| {
+                unwritable(format!(
+                    "couldn't rename {} over it: {e}",
+                    partial.display()
+                ))
+            })
         });
-    written.map_err(|why| {
+    written.inspect_err(|_| {
         let _ = std::fs::remove_file(&partial);
-        unwritable(why)
     })
 }
 
@@ -145,7 +154,8 @@ fn in_place(
     use std::io::{Seek as _, SeekFrom};
     let (kept, mut copy) = beside(target, metadata)?;
     // Grown to its length first, as the document is below: a size limit stops the copy
-    // before any of it is written, so a copy left beside the file is all of the old text.
+    // before any of it is written, so a copy left beside the file is all of the old text,
+    // or nothing (killed by the limit as it grew), never a part of it.
     if let Err(e) = copy
         .set_len(before.len() as u64)
         .and_then(|()| copy.write_all(before))
@@ -231,4 +241,27 @@ fn beside(target: &Path, metadata: &std::fs::Metadata) -> Result<(PathBuf, std::
         std::process::id(),
         TRIES - 1
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_size_limit_gets_the_limits_advice() {
+        // Found by the review: an error on a full disk told to raise a limit that isn't the
+        // cause.
+        let full = std::io::Error::from_raw_os_error(libc::ENOSPC);
+        assert!(
+            !limited(unwritable("x"), &full)
+                .to_string()
+                .contains("ulimit")
+        );
+        let big = std::io::Error::from_raw_os_error(libc::EFBIG);
+        assert!(
+            limited(unwritable("x"), &big)
+                .to_string()
+                .contains("ulimit -f")
+        );
+    }
 }
