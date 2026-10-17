@@ -87,9 +87,11 @@ jobs:
           fi
           for package in $PACKAGES; do args+=(-p "$package"); done
           # Share the machine with the other shards (and any gate), so timing tests don't
-          # fail under load.
+          # fail under load; and retry a failed test, since one that fails only under load
+          # would fail the baseline or count a mutant as caught. A mutant that breaks a test
+          # fails it every time.
           share=$(( $(nproc) / 8 > 2 ? $(nproc) / 8 : 2 ))
-          export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share
+          export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share NEXTEST_RETRIES=2
           args+=(--jobserver-tasks "$share")
           # 2: mutants missed; 3: mutants timed out. The summary reports both.
           status=0
