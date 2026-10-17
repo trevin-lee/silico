@@ -1,5 +1,8 @@
 //! How late this machine runs threads that wake from a sleep: what a test allows for load
-//! when it bounds how soon something must happen.
+//! when it bounds how soon something that only waits must happen. Not how much CPU a
+//! process gets: a loaded machine can wake a sleeping thread within milliseconds while work
+//! that computes (a worker starting, a recompute) runs several times slower, so this bounds
+//! a wake, a kill, a reap, a delivery, never work.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,8 +11,8 @@ use std::time::{Duration, Instant};
 
 /// A thread that sleeps 50 ms over and over while the probe lives, noting the most any sleep
 /// overran: how late the machine is waking threads meanwhile. On a quiet machine a few
-/// milliseconds; on a loaded one, as much as load makes it, so a bound built on it grows
-/// with the load, where a fixed one would fail.
+/// milliseconds; on a loaded one, as much as load delays a wake (macOS favours threads that
+/// sleep, so often little even then), so a bound built on it grows with how late wakes run.
 pub struct Lateness {
     stop: Arc<AtomicBool>,
     thread: JoinHandle<Duration>,

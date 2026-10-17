@@ -344,13 +344,17 @@ fn superseded_work_too_young_to_stop_at_advance_is_stopped_once_it_has_run_stop_
         std::thread::sleep(Duration::from_millis(10));
         let advanced = Instant::now();
         pool.advance(Generation(2));
-        let current = pool.submit(Generation(2), echo(&[1])).wait();
-        let waited = start.elapsed();
+        let current = pool.submit(Generation(2), echo(&[1]));
+        // Each stale outcome as it's delivered, before generation 2's request is answered:
+        // that waits for a worker to be started in the stopped one's place, work that takes
+        // CPU, which the lateness probe doesn't measure (it measures how late threads wake).
         let mut ended = Vec::new();
         for pending in stale {
             assert!(matches!(outcome(pending), Outcome::Superseded));
             ended.push(Instant::now());
         }
+        let current = current.wait();
+        let waited = start.elapsed();
         let late = allowance(STOP_TAKES, lateness.most());
         let due = (start + STOP_AFTER).max(advanced);
         assert!(matches!(current, Outcome::Done(Ok(_))), "{current:?}");
@@ -631,6 +635,13 @@ fn superseded_work_is_stopped_its_stop_after_from_its_start_not_from_the_advance
         "stopped {:?} after it was due, past {late:?}: counted from the advance, or late",
         ended - due
     );
+    // And, whatever the lateness probe saw, before a stop counted from the advance would
+    // come: load can't make a correct pool fail that.
+    assert!(
+        ended < advanced + stop_after,
+        "stopped {:?} after the advance: counted from it",
+        ended - advanced
+    );
     wait_full_by(&pool, 1, &before, Instant::now() + HANG);
 }
 
@@ -681,6 +692,15 @@ fn each_superseded_request_is_stopped_when_it_is_due() {
             "request {i}: stopped {:?} after it was due, past {late:?}",
             ended - due
         );
+        // And, whatever the lateness probe saw, before the next is due: a stopper that waits
+        // for the last fails that however loaded the machine.
+        if let Some(&next) = submitted.get(i + 1) {
+            assert!(
+                ended < (next + stop_after).max(advanced),
+                "request {i}: stopped {:?} after it was submitted, once the next was due",
+                ended - submitted[i]
+            );
+        }
     }
 }
 
