@@ -1,4 +1,5 @@
-# Sourced by tests/gate.sh and tests/mutants.sh: checks out the committed tree (HEAD) into
+# Sourced by tests/gate.sh and tests/mutants.sh: checks out the committed tree (HEAD, or
+# the commit SILICO_TREE_COMMIT names, so a script can test commits older than itself) into
 # a worktree in the user cache, one per checkout, reused between runs and cleaned of
 # everything untracked except build caches (target/ and .pixi/), so runs after the first are
 # incremental, and cds into it. (Not inside the repository: Cargo would take the outer
@@ -9,7 +10,7 @@
 # before anything with side effects.
 
 root=$(git rev-parse --show-toplevel)
-commit=$(git -C "$root" rev-parse HEAD)
+commit=$(git -C "$root" rev-parse --verify "${SILICO_TREE_COMMIT:-HEAD}^{commit}")
 checkout_id=$(printf '%s' "$root" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-16)
 tree=${XDG_CACHE_HOME:-$HOME/.cache}/silico/gate/$checkout_id
 mkdir -p "$(dirname "$tree")"
@@ -30,7 +31,7 @@ if [ "${SILICO_GATE_LOCKED-}" != 1 ]; then
   ' "$tree.lock" bash "$0" "$@"
 fi
 
-if [ -n "$(git -C "$root" status --porcelain)" ]; then
+if [ -z "${SILICO_TREE_COMMIT-}" ] && [ -n "$(git -C "$root" status --porcelain)" ]; then
   echo "gate: note: uncommitted changes aren't checked; checking $commit" >&2
 fi
 

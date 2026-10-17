@@ -62,30 +62,27 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      # By git, not actions/checkout, which takes no abbreviated commits.
-      - name: Check out the ref
-        env:
-          REF: ${{ inputs.ref }}
-        run: |
-          if [ -n "$REF" ]; then
-            commit=$(git rev-parse --verify --quiet "origin/$REF^{commit}" || git rev-parse --verify "$REF^{commit}")
-            git checkout --quiet --detach "$commit"
-          fi
-          echo "Testing $(git log -1 --format='%h %s')"
       - name: Toolchains
         run: bash .github/tools.sh
       - name: Mutants
         env:
+          REF: ${{ inputs.ref }}
           BASE: ${{ inputs.base }}
           PACKAGES: ${{ inputs.packages }}
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ inputs.shards }}
         run: |
+          # Branch names as they are on GitHub, and commits, abbreviated or not.
+          resolve() { git rev-parse --verify --quiet "origin/$1^{commit}" || git rev-parse --verify "$1^{commit}"; }
+          # This checkout's scripts test the ref's tree, so refs older than them work too.
+          SILICO_TREE_COMMIT=$(resolve "${REF:-HEAD}")
+          export SILICO_TREE_COMMIT
+          echo "Testing $(git log -1 --format='%h %s' "$SILICO_TREE_COMMIT")"
           args=(--shard "$SHARD/$SHARDS" --sharding round-robin --output "$RUNNER_TEMP/out")
           if [ -n "$BASE" ]; then
-            base=$(git rev-parse --verify --quiet "origin/$BASE^{commit}" || git rev-parse --verify "$BASE^{commit}")
-            git diff "$base...HEAD" >"$RUNNER_TEMP/change.diff"
-            echo "Mutants in $(git diff --name-only "$base...HEAD" | wc -l) changed files since $base"
+            base=$(resolve "$BASE")
+            git diff "$base...$SILICO_TREE_COMMIT" >"$RUNNER_TEMP/change.diff"
+            echo "Mutants in $(git diff --name-only "$base...$SILICO_TREE_COMMIT" | wc -l) changed files since $base"
             args+=(--in-diff "$RUNNER_TEMP/change.diff")
           fi
           for package in $PACKAGES; do args+=(-p "$package"); done
