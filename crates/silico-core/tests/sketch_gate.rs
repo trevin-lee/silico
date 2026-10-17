@@ -674,6 +674,14 @@ fn a_tangent_on_whose_end_is_bs_own_point_or_whose_curves_are_one_is_refused() {
         "constraints.0.at",
         "a tangent_on's at, point pa000000, is part of its b, ca000000, itself",
     );
+    // The arc's centre the same.
+    only(
+        &constrained(
+            r#"{"id": "k0000000", "type": "tangent_on", "a": "na000000", "at": "pa000000", "b": "aa000000", "direction": "same"}"#,
+        ),
+        "constraints.0.at",
+        "a tangent_on's at, point pa000000, is part of its b, aa000000, itself",
+    );
     let text = constrained(
         r#"{"id": "k0000000", "type": "tangent_on", "a": "aa000000", "at": "pb000000", "b": "aa000000", "direction": "same"}"#,
     );
