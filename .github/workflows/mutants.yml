@@ -59,6 +59,9 @@ jobs:
     timeout-minutes: 1440
     strategy:
       fail-fast: false
+      # At most six at once, whatever the shard count: two of the eight runners stay free
+      # for gates (a saturated machine fails wall-clock tests).
+      max-parallel: 6
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:
@@ -93,7 +96,8 @@ jobs:
           # fail under load; and retry a failed test, since one that fails only under load
           # would fail the baseline or count a mutant as caught. A mutant that breaks a test
           # fails it every time.
-          share=$(( $(nproc) / SHARDS > 2 ? $(nproc) / SHARDS : 2 ))
+          running=$(( SHARDS < 6 ? SHARDS : 6 ))
+          share=$(( $(nproc) / running > 2 ? $(nproc) / running : 2 ))
           export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share NEXTEST_RETRIES=2
           args+=(--jobserver-tasks "$share")
           # 2: mutants missed; 3: mutants timed out. The summary reports both.
