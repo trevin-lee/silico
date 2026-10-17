@@ -411,17 +411,26 @@ fn a_rebuild_superseded_by_another_is_none_not_an_error() {
 #[test]
 fn engines_sharing_a_kernel_in_turn_dont_supersede_each_other() {
     // The CLI's files in several directories: an engine (a cache) each, one kernel, run
-    // one after another. Each starts a generation newer than the kernel's, so each
-    // publishes, though the other advanced the kernel past its own last generation.
+    // one after another. One engine runs several times before the other first runs, so
+    // the kernel is generations past the other's own: each starts a generation newer than
+    // the kernel's, so each publishes (found by the review: in even turns, an engine that
+    // ignored the kernel's generation passed).
     let kernel = std::sync::Arc::new(FakeKernel::new(2).unwrap());
     let first = Recompute::new(std::sync::Arc::clone(&kernel));
     let second = Recompute::new(std::sync::Arc::clone(&kernel));
+    let rebuilt = |engine: &Recompute<std::sync::Arc<FakeKernel>>| {
+        let model = command::rebuild(engine, command::gate(EXAMPLE.as_bytes()).unwrap())
+            .unwrap()
+            .expect("superseded");
+        assert!(command::check(&model).unwrap().is_empty());
+    };
     for _ in 0..3 {
-        for engine in [&first, &second] {
-            let model = command::rebuild(engine, command::gate(EXAMPLE.as_bytes()).unwrap())
-                .unwrap()
-                .expect("superseded");
-            assert!(command::check(&model).unwrap().is_empty());
-        }
+        rebuilt(&first);
     }
+    rebuilt(&second);
+    rebuilt(&first);
+    for _ in 0..2 {
+        rebuilt(&second);
+    }
+    rebuilt(&first);
 }

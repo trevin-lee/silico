@@ -699,3 +699,24 @@ fn a_cache_shown_for_debugging_says_whether_its_sealed_never_its_secret() {
     let unsealed = cache(&damaged.0);
     assert!(format!("{unsealed:?}").contains("sealed: false"));
 }
+
+#[test]
+fn a_shared_kernel_keys_the_cache_by_its_own_identity() {
+    // The CLI rebuilds on a kernel shared through an `Arc` (found untested by the review):
+    // the cache is keyed by the kernel's own identity, so the same kernel shared hits what
+    // it wrote unshared, and another build of it, shared, misses everything.
+    let dir = Scratch::new("shared-kernel");
+    published(&session(&dir.0), checked(EXAMPLE));
+    let same = Arc::new(FakeKernel::new(2).unwrap());
+    published(
+        &Recompute::with_cache(Arc::clone(&same), cache::cache(&dir.0)),
+        checked(EXAMPLE),
+    );
+    assert!(same.calls().is_empty(), "{:?}", same.calls());
+    let other = Arc::new(Rebuilt(FakeKernel::new(2).unwrap()));
+    published(
+        &Recompute::with_cache(Arc::clone(&other), cache::cache(&dir.0)),
+        checked(EXAMPLE),
+    );
+    assert_eq!(made(&other.0.calls()).len(), 4);
+}
