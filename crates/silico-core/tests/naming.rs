@@ -95,6 +95,53 @@ fn two_elements_that_come_about_alike_are_numbered_and_marked() {
 }
 
 #[test]
+fn a_face_kept_and_modified_too_is_a_duplicate_and_both_are_marked() {
+    // A history (a broken worker's, or an operation OCCT reports oddly) that keeps the
+    // input's Face1 as the result's Face1 and modifies it, as its sole result, into Face2:
+    // the modified face is the source's own name (Trevin's decision), so the two coincide.
+    // The kept face, named first, keeps the name; the other is its `~1`; and both are
+    // unstable, so no reference resolves to either (N3).
+    let history = History {
+        inputs: vec![InputHistory {
+            faces: vec![ElementFate {
+                kept: Some(1),
+                modified: vec![Reported {
+                    element: element(ElementKind::Face, 2),
+                    position: 1,
+                }],
+                ..ElementFate::default()
+            }],
+            edges: vec![],
+            vertices: vec![],
+        }],
+        result: ElementCounts {
+            faces: 2,
+            edges: 0,
+            vertices: 0,
+            solids: 1,
+        },
+        ends: Default::default(),
+        topology: Topology {
+            face_edges: vec![vec![], vec![]],
+            outer_edges: vec![vec![], vec![]],
+            edge_vertices: vec![],
+        },
+    };
+    history.validate(1).unwrap();
+    let input = ElementMap::primitive(id("aaaaaaaa"), BOX);
+    let map = ElementMap::operation(id("rrrrrrrr"), OpCode::Cut, &[&input], &history);
+    assert_eq!(
+        names(&map, ElementKind::Face, 2),
+        ["aaaaaaaa.Face1", "aaaaaaaa.Face1~1"]
+    );
+    for index in [1, 2] {
+        let name = map.name(element(ElementKind::Face, index)).unwrap();
+        assert!(map.is_unstable(&name), "Face{index}");
+        assert_eq!(map.element(&name), Some(element(ElementKind::Face, index)));
+    }
+}
+
+#[test]
 fn an_element_named_from_above_takes_the_first_named_by_freecads_order() {
     // One input face (Face1) modified into the result's Face1; the result's Face2 generated
     // from the input's Edge1. Edge3 bounds both faces, unnamed: named from the face whose
@@ -136,12 +183,12 @@ fn an_element_named_from_above_takes_the_first_named_by_freecads_order() {
         names(&map, ElementKind::Face, 2),
         [
             // Modified from it alone, first in OCCT's list: the face as modified.
-            "aaaaaaaa.Face1*",
+            "aaaaaaaa.Face1",
             "ffffffff.Face(G aaaaaaaa.Edge1)",
         ]
     );
     let generated = "ffffffff.Face(G aaaaaaaa.Edge1)";
-    let modified = "aaaaaaaa.Face1*";
+    let modified = "aaaaaaaa.Face1";
     assert_eq!(
         names(&map, ElementKind::Edge, 3),
         [

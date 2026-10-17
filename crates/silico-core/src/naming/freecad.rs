@@ -33,9 +33,9 @@ fn write(name: &Name, out: &mut String) {
             out.push_str(";:");
             if more.iter().any(|o| o.relation != first.relation) {
                 out.push_str("MG");
-                out.push_str(&count_text(first.position));
+                out.push_str(&count_text(first.position.0));
             } else {
-                out.push_str(&relation_text(first.relation, first.position));
+                out.push_str(&relation_text(first.relation, first.position.0));
             }
             if !more.is_empty() {
                 out.push('(');
@@ -46,7 +46,7 @@ fn write(name: &Name, out: &mut String) {
                     write(&other.name, out);
                     // FreeCAD's signed position: generated negative; left out for the first
                     // modified.
-                    let position = i64::from(other.position.get());
+                    let position = i64::from(other.position.0.get());
                     let signed = match other.relation {
                         Relation::Modified => position,
                         Relation::Generated => -position,

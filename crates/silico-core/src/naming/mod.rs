@@ -4,7 +4,7 @@
 //! reference to an element can follow it through upstream edits.
 //!
 //! A [`Name`] is structured, not a string; it's written in Silico's compact form
-//! (`m3tq8v0z.Edge(G2 k7f2qx3m.Face6, G2 a91cw0de.Face1)`), and [`freecad`] renders FreeCAD's
+//! (`m3tq8v0z.Edge(G k7f2qx3m.Face6, G a91cw0de.Face1)`), and [`freecad`] renders FreeCAD's
 //! form for comparison with FreeCAD's names. An [`ElementMap`] holds a solid's names, built
 //! by [`ElementMap::primitive`], [`ElementMap::operation`], or kept through a move.
 
@@ -61,19 +61,64 @@ pub enum Relation {
     Generated,
 }
 
-/// One of the elements an element came from, how, and where in OCCT's list for it the
-/// element was (from 1, counting entries the result doesn't have).
+/// One of the elements an element came from, and how; and, if other elements came about
+/// alike, which of them this one is.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Source {
     pub relation: Relation,
-    pub position: NonZeroU32,
+    /// Where it is among the elements that came about alike (Trevin's decision, 2026-10-16):
+    /// its rank among them in this source's OCCT list, and how many they are (`1/2`).
+    /// Written only for such a group, so a name doesn't change when OCCT reorders its lists
+    /// for reasons of its own (it reordered a hole's rims once the plate had another hole).
+    pub place: Option<Place>,
+    /// Where OCCT's list for the source had it, from 1, counting entries the result doesn't
+    /// have: FreeCAD writes it (`;:G2`), Silico only where `place` is. Not part of the name.
+    pub position: Raw,
     pub name: Arc<Name>,
+}
+
+/// A member's place in a group of elements that came about alike: its `rank` among them in
+/// one source's OCCT list, of `size`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Place {
+    pub rank: NonZeroU32,
+    pub size: NonZeroU32,
+}
+
+/// OCCT's position for a source, for FreeCAD's form of a name and nothing else: two names are
+/// the same name whatever positions OCCT gave, as their Silico form says.
+#[derive(Debug, Clone, Copy)]
+pub struct Raw(pub NonZeroU32);
+
+impl PartialEq for Raw {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for Raw {}
+
+impl PartialOrd for Raw {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Raw {
+    fn cmp(&self, _: &Self) -> std::cmp::Ordering {
+        std::cmp::Ordering::Equal
+    }
+}
+
+impl std::hash::Hash for Raw {
+    fn hash<H: std::hash::Hasher>(&self, _: &mut H) {}
 }
 
 /// An element's name: how it came about, down to the elements features made of nothing.
 /// Every count in it is from 1, and every list has a first, so no two names are written
-/// alike.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// alike. Two names are equal when they're written alike: a modified element that's its
+/// source's only result is equal to its source's name (`Modified`).
+#[derive(Debug, Clone)]
 pub enum Name {
     /// The element numbered so in what `feature` made: a primitive's own `Face3`. Also, as
     /// FreeCAD's unmapped names are, the last resort for an element nothing else names.
@@ -92,14 +137,13 @@ pub enum Name {
         more: Vec<Source>,
     },
     /// An element modified from one element, `name`, as its only result (OCCT's first,
-    /// none other modified or generated of its kind), by one feature or by a run of them,
-    /// each the same way (Trevin's decision, 2026-10-16): written `pppppppp.Face6*`, with
-    /// no feature in between, so a plate's top
-    /// face is the same name after any number of holes cut through it, and a hole's rim
-    /// named from it doesn't change when an earlier hole is added, removed, or moved.
-    /// Unique: such a step makes one element of one, so two elements of a result never
-    /// both are. FreeCAD writes a level per feature (`Face6;:M;CUT;:H..;:M;CUT;:H..`),
-    /// hashed.
+    /// none other modified or generated of its kind), by one feature or by a run of them
+    /// (Trevin's decision, 2026-10-16): it is its source's own name, written and compared
+    /// as that name, so a plate's top face is `pppppppp.Face6` after any number of holes,
+    /// and a hole's rim named from it doesn't change when an earlier hole is added, removed,
+    /// or moved. Unique: such a step makes one element of one, and an element and what it
+    /// became are never both in a solid (were they, the second would be `~1`, unstable).
+    /// The operation is kept for FreeCAD's form (`Face6;:M;CUT`) and nothing else.
     Modified { name: Arc<Name>, last: LastOp },
     /// An element nothing reported, named as the `nth` unnamed element of its kind in the
     /// element above it named `upper` (FreeCAD's `;:U`).
@@ -170,6 +214,16 @@ impl Name {
         }
     }
 
+    /// The name it's equal to: a modified element that's its source's only result is its
+    /// source's name.
+    fn identity(&self) -> &Name {
+        let mut name = self;
+        while let Name::Modified { name: source, .. } = name {
+            name = source;
+        }
+        name
+    }
+
     /// The names it's made of, one level down.
     pub(crate) fn parts(&self) -> Vec<&Arc<Name>> {
         match self {
@@ -181,6 +235,177 @@ impl Name {
             Name::Upper { upper, .. } => vec![upper],
             Name::Lower { first, more, .. } => std::iter::once(first).chain(more).collect(),
             Name::Duplicate { name, .. } | Name::Modified { name, .. } => vec![name],
+        }
+    }
+}
+
+impl Ord for Name {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let (a, b) = (self.identity(), other.identity());
+        // Names share their parts: one part is equal to itself without a walk.
+        if std::ptr::eq(a, b) {
+            return std::cmp::Ordering::Equal;
+        }
+        let variant = |n: &Name| match n {
+            Name::Element { .. } => 0u8,
+            Name::Derived { .. } => 1,
+            Name::Upper { .. } => 2,
+            Name::Lower { .. } => 3,
+            Name::Duplicate { .. } => 4,
+            Name::Modified { .. } => 5,
+        };
+        variant(a).cmp(&variant(b)).then_with(|| match (a, b) {
+            (
+                Name::Element { feature, element },
+                Name::Element {
+                    feature: f,
+                    element: e,
+                },
+            ) => feature.cmp(f).then(element.cmp(e)),
+            (
+                Name::Derived {
+                    feature,
+                    operation,
+                    kind,
+                    first,
+                    more,
+                },
+                Name::Derived {
+                    feature: f,
+                    operation: o,
+                    kind: k,
+                    first: fi,
+                    more: m,
+                },
+            ) => feature
+                .cmp(f)
+                .then(operation.cmp(o))
+                .then(kind.cmp(k))
+                .then_with(|| first.cmp(fi))
+                .then_with(|| more.cmp(m)),
+            (
+                Name::Upper {
+                    feature,
+                    operation,
+                    kind,
+                    upper,
+                    nth,
+                },
+                Name::Upper {
+                    feature: f,
+                    operation: o,
+                    kind: k,
+                    upper: u,
+                    nth: n,
+                },
+            ) => feature
+                .cmp(f)
+                .then(operation.cmp(o))
+                .then(kind.cmp(k))
+                .then_with(|| upper.cmp(u))
+                .then(nth.cmp(n)),
+            (
+                Name::Lower {
+                    feature,
+                    operation,
+                    kind,
+                    first,
+                    more,
+                },
+                Name::Lower {
+                    feature: f,
+                    operation: o,
+                    kind: k,
+                    first: fi,
+                    more: m,
+                },
+            ) => feature
+                .cmp(f)
+                .then(operation.cmp(o))
+                .then(kind.cmp(k))
+                .then_with(|| first.cmp(fi))
+                .then_with(|| more.cmp(m)),
+            (
+                Name::Duplicate { name, ordinal },
+                Name::Duplicate {
+                    name: n,
+                    ordinal: o,
+                },
+            ) => name.cmp(n).then(ordinal.cmp(o)),
+            // Different variants are ordered above; a `Modified` is never an identity.
+            _ => std::cmp::Ordering::Equal,
+        })
+    }
+}
+
+impl PartialOrd for Name {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for Name {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for Name {}
+
+impl std::hash::Hash for Name {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // As equality: by the name it's equal to, its parts by theirs.
+        let name = self.identity();
+        std::mem::discriminant(name).hash(state);
+        match name {
+            Name::Element { feature, element } => {
+                feature.hash(state);
+                element.hash(state);
+            }
+            Name::Derived {
+                feature,
+                operation,
+                kind,
+                first,
+                more,
+            } => {
+                feature.hash(state);
+                operation.hash(state);
+                kind.hash(state);
+                first.hash(state);
+                more.hash(state);
+            }
+            Name::Upper {
+                feature,
+                operation,
+                kind,
+                upper,
+                nth,
+            } => {
+                feature.hash(state);
+                operation.hash(state);
+                kind.hash(state);
+                upper.hash(state);
+                nth.hash(state);
+            }
+            Name::Lower {
+                feature,
+                operation,
+                kind,
+                first,
+                more,
+            } => {
+                feature.hash(state);
+                operation.hash(state);
+                kind.hash(state);
+                first.hash(state);
+                more.hash(state);
+            }
+            Name::Duplicate { name, ordinal } => {
+                name.hash(state);
+                ordinal.hash(state);
+            }
+            Name::Modified { .. } => {}
         }
     }
 }
@@ -203,13 +428,16 @@ fn count_text(n: NonZeroU32) -> String {
     }
 }
 
-/// A relation's letter and position, as Silico's form and FreeCAD's write them: `M`, `G2`.
-fn relation_text(relation: Relation, position: NonZeroU32) -> String {
-    let letter = match relation {
+fn relation_letter(relation: Relation) -> &'static str {
+    match relation {
         Relation::Modified => "M",
         Relation::Generated => "G",
-    };
-    format!("{letter}{}", count_text(position))
+    }
+}
+
+/// A relation's letter and position, as FreeCAD writes them: `M`, `G2`.
+fn relation_text(relation: Relation, position: NonZeroU32) -> String {
+    format!("{}{}", relation_letter(relation), count_text(position))
 }
 
 /// Silico's form (N1): the feature that made the element, its kind, and how it came about.
@@ -229,8 +457,13 @@ impl fmt::Display for Name {
                     if i > 0 {
                         f.write_str(", ")?;
                     }
-                    let relation = relation_text(source.relation, source.position);
-                    write!(f, "{relation} {}", source.name)?;
+                    let letter = relation_letter(source.relation);
+                    match source.place {
+                        Some(place) => {
+                            write!(f, "{letter}{}/{} {}", place.rank, place.size, source.name)?
+                        }
+                        None => write!(f, "{letter} {}", source.name)?,
+                    }
                 }
                 f.write_str(")")
             }
@@ -263,7 +496,7 @@ impl fmt::Display for Name {
                 f.write_str(")")
             }
             Name::Duplicate { name, ordinal } => write!(f, "{name}~{ordinal}"),
-            Name::Modified { name, .. } => write!(f, "{name}*"),
+            Name::Modified { name, .. } => write!(f, "{name}"),
         }
     }
 }

@@ -396,6 +396,26 @@ fn layouts() -> Vec<(&'static str, Vec<String>)> {
             ],
         ),
         (
+            // Names told apart only by rank: four loops `G1/4` to `G4/4`, the seam's
+            // three pieces (tests/name_collisions.rs).
+            "a torus cut by a pin through its tube",
+            vec![
+                torus("aaaaaaaa", [0.0, 0.0, 0.0], 10.0, 3.0),
+                cylinder("bbbbbbbb", [10.0, 0.0, -5.0], 1.0, 10.0),
+                op("rrrrrrrr", "cut", "aaaaaaaa", "bbbbbbbb"),
+            ],
+        ),
+        (
+            "a groove across a U-shaped face (three pieces ranked)",
+            vec![
+                boxed("aaaaaaaa", [0.0, 0.0, 0.0], [40.0, 20.0, 5.0]),
+                boxed("bbbbbbbb", [15.0, -1.0, -1.0], [10.0, 12.0, 7.0]),
+                op("cccccccc", "cut", "aaaaaaaa", "bbbbbbbb"),
+                boxed("dddddddd", [-1.0, 3.0, 4.0], [42.0, 2.0, 2.0]),
+                op("rrrrrrrr", "cut", "cccccccc", "dddddddd"),
+            ],
+        ),
+        (
             "nested: a cut of a fuse, then a common",
             vec![
                 boxed("aaaaaaaa", [0.0, 0.0, 0.0], unit),

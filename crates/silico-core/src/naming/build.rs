@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use super::{ElementMap, LastOp, Name, OpCode, Relation, Source, freecad};
+use super::{ElementMap, LastOp, Name, OpCode, Place, Raw, Relation, Source, freecad};
 use crate::document::FeatureId;
 use crate::kernel::{ElementKind, ElementRef, History};
 
@@ -319,6 +319,8 @@ impl Builder {
                 }
             }
         }
+        // Each element's name without places, and the input it came from.
+        let mut named: Vec<(ElementRef, usize, Name)> = Vec::new();
         for (element, keyed) in sources {
             if self.is_named(element) {
                 continue;
@@ -329,7 +331,8 @@ impl Builder {
             let mut sources = keyed.into_iter().take(MOST_SOURCES).map(
                 |((_, _, _, name), (relation, position, _))| Source {
                     relation,
-                    position,
+                    place: None,
+                    position: Raw(position),
                     name,
                 },
             );
@@ -338,12 +341,12 @@ impl Builder {
             };
             let name = if alone
                 && first.relation == Relation::Modified
-                && first.position == NonZeroU32::MIN
+                && first.position.0 == NonZeroU32::MIN
             {
                 // Modified from one element alone, its only result (a face split in two
                 // keeps its level, so a reference to the face isn't taken to one piece):
-                // that element as later features have modified it, however many (Trevin's
-                // collapse); a run of them is one level.
+                // that element's own name, however many features in a row did so (Trevin's
+                // decision).
                 let origin = match &*first.name {
                     Name::Modified { name, .. } => Arc::clone(name),
                     _ => first.name,
@@ -361,6 +364,10 @@ impl Builder {
                     more: sources.collect(),
                 }
             };
+            named.push((element, first_input, name));
+        }
+        places(&mut named);
+        for (element, first_input, name) in named {
             let name = self.bounded(element, name);
             self.inputs.entry(element).or_insert(first_input);
             self.set(element, name);
@@ -521,5 +528,71 @@ impl Ord for Candidate {
 impl PartialOrd for Candidate {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+/// Elements that came about alike (Trevin's decision, 2026-10-16): each member of a group of
+/// `m` whose names, without places, are one name gets, on each source, its rank among them
+/// in that source's OCCT list (`G1/2`, `G2/2`), as FreeCAD tells them apart by OCCT's
+/// positions, but only where they need telling apart: OCCT reorders its lists for reasons of
+/// its own, and a name that doesn't hold a position doesn't change with them.
+fn places(named: &mut [(ElementRef, usize, Name)]) {
+    let mut groups: BTreeMap<Name, Vec<usize>> = BTreeMap::new();
+    for (i, (_, _, name)) in named.iter().enumerate() {
+        if matches!(name, Name::Derived { .. }) {
+            groups.entry(name.clone()).or_default().push(i);
+        }
+    }
+    for members in groups.into_values().filter(|members| members.len() > 1) {
+        let size = NonZeroU32::new(u32::try_from(members.len()).unwrap_or(u32::MAX))
+            .unwrap_or(NonZeroU32::MIN);
+        let count = members
+            .first()
+            .and_then(|&i| named.get(i))
+            .map_or(0, |(_, _, name)| sources(name).len());
+        for s in 0..count {
+            // The members by their positions in this source's list (then element order), so
+            // the members before one are found by bisection.
+            let mut order: Vec<(NonZeroU32, ElementRef, usize)> = members
+                .iter()
+                .filter_map(|&i| {
+                    let (element, _, name) = named.get(i)?;
+                    let source = sources(name).get(s).copied()?;
+                    Some((source.position.0, *element, i))
+                })
+                .collect();
+            order.sort();
+            let positions: Vec<NonZeroU32> = order.iter().map(|&(p, _, _)| p).collect();
+            for (position, _, i) in order {
+                // One more than the members before it in the list: members OCCT lists at
+                // one position (a history from a broken worker) share a rank, and so the
+                // name, and are told apart as duplicates, never by their numbers.
+                let before = positions.partition_point(|&p| p < position);
+                let rank = NonZeroU32::new(u32::try_from(before + 1).unwrap_or(u32::MAX))
+                    .unwrap_or(NonZeroU32::MIN);
+                if let Some((_, _, name)) = named.get_mut(i)
+                    && let Some(source) = sources_mut(name).into_iter().nth(s)
+                {
+                    source.place = Some(Place { rank, size });
+                }
+            }
+        }
+    }
+}
+
+/// A derived name's sources, the first first.
+fn sources(name: &Name) -> Vec<&Source> {
+    match name {
+        Name::Derived { first, more, .. } => std::iter::once(first).chain(more).collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn sources_mut(name: &mut Name) -> Vec<&mut Source> {
+    match name {
+        Name::Derived { first, more, .. } => {
+            std::iter::once(first).chain(more.iter_mut()).collect()
+        }
+        _ => Vec::new(),
     }
 }

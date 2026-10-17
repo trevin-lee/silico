@@ -124,6 +124,88 @@ fn a_fuses_names_are_freecads() {
     assert_eq!(written(&map), expected("fuse"));
 }
 
+/// A source's place in its group and its raw OCCT position: (rank, size, raw).
+type Place = (u32, u32, u32);
+
+/// Each element whose name holds a position (`M1/2`), with the name and its sources'
+/// places.
+fn positioned(map: &ElementMap) -> Vec<(ElementRef, String, Vec<Place>)> {
+    map.iter()
+        .filter_map(|(element, names)| {
+            let Name::Derived { first, more, .. } = &*names[0] else {
+                return None;
+            };
+            let places: Vec<Place> = std::iter::once(first)
+                .chain(more)
+                .filter_map(|s| {
+                    s.place
+                        .map(|p| (p.rank.get(), p.size.get(), s.position.0.get()))
+                })
+                .collect();
+            (!places.is_empty()).then(|| (element, names[0].to_string(), places))
+        })
+        .collect()
+}
+
+#[test]
+fn a_fuse_writes_positions_only_on_the_pieces_of_its_split_edges() {
+    // Trevin's decision: a source's position is written only where names would collide.
+    // In the two cubes' fuse those are the 8 edges the other cube's faces split in two
+    // (each piece modified from its edge alike), and nothing else: 16 names, `M1/2` and
+    // `M2/2` of each. Each rank is FreeCAD's raw position (`Edge9;:M;FUS`, `Edge9;:M2;FUS`
+    // in the fixture), as two pieces are ranked by OCCT's list.
+    let (a, b) = two_cubes();
+    let fuse = boolean(BooleanOp::Fuse, &a, &b).unwrap();
+    let map = named(OpCode::Fuse, &fuse);
+    let held = positioned(&map);
+    assert_eq!(held.len(), 16, "{held:#?}");
+    let mut split: BTreeMap<String, Vec<u32>> = BTreeMap::new();
+    for (element, name, places) in &held {
+        assert_eq!(element.kind, ElementKind::Edge, "{name}");
+        let [(rank, size, raw)] = places[..] else {
+            panic!("{name}: {places:?}");
+        };
+        assert_eq!((size, rank), (2, raw), "{name}");
+        let Name::Derived { first, .. } = &*map.name(*element).unwrap() else {
+            panic!("{name}");
+        };
+        split.entry(first.name.to_string()).or_default().push(rank);
+    }
+    let split: Vec<(String, Vec<u32>)> = split
+        .into_iter()
+        .map(|(edge, mut ranks)| {
+            ranks.sort();
+            (edge, ranks)
+        })
+        .collect();
+    let expected: Vec<(String, Vec<u32>)> = [
+        "aaaaaaaa.Edge10",
+        "aaaaaaaa.Edge6",
+        "aaaaaaaa.Edge8",
+        "aaaaaaaa.Edge9",
+        "bbbbbbbb.Edge11",
+        "bbbbbbbb.Edge12",
+        "bbbbbbbb.Edge2",
+        "bbbbbbbb.Edge4",
+    ]
+    .iter()
+    .map(|e| (e.to_string(), vec![1, 2]))
+    .collect();
+    assert_eq!(split, expected);
+    // The cut, the common, and the dressings of the fixtures have no names that collide.
+    for (op, code) in [
+        (BooleanOp::Cut, OpCode::Cut),
+        (BooleanOp::Common, OpCode::Common),
+    ] {
+        let built = boolean(op, &a, &b).unwrap();
+        assert!(positioned(&named(code, &built)).is_empty(), "{op:?}");
+    }
+    for (chamfered, code) in [(false, OpCode::Fillet), (true, OpCode::Chamfer)] {
+        let map = named_dressing(code, &dressed(chamfered));
+        assert!(positioned(&map).is_empty(), "{code:?}");
+    }
+}
+
 #[test]
 fn a_commons_first_face_is_freecads() {
     // makeElementBooleanCommon: 26 names (a box), and Face1 is cube 1's Face3 (y = 0) cut
@@ -141,7 +223,7 @@ fn a_commons_first_face_is_freecads() {
         .unwrap();
     assert_eq!(freecad::text(&face1), "Face3;:M;CMN");
     // In Silico's form: the common modified cube 1's Face3.
-    assert_eq!(face1.to_string(), "aaaaaaaa.Face3*");
+    assert_eq!(face1.to_string(), "aaaaaaaa.Face3");
 }
 
 #[test]
@@ -391,7 +473,7 @@ fn a_recomputed_holes_names_say_how_each_element_came_about() {
     let hole = model.element_map(&id("m3tq8v0z")).unwrap();
     let all: Vec<String> = hole.iter().map(|(_, names)| names[0].to_string()).collect();
     // The hole's wall: the pin's side face, modified by the cut (docs/ports/history.md).
-    assert!(all.contains(&"a91cw0de.Face1*".to_owned()), "{all:#?}");
+    assert!(all.contains(&"a91cw0de.Face1".to_owned()), "{all:#?}");
     // Its two rims: edges the cut generated from the block's top (Face6) or bottom (Face5)
     // and the pin's side, as FreeCAD names a cylinder's hole (`Face6;:G2(Face1;K-2);CUT`).
     let rims: Vec<String> = hole
@@ -506,10 +588,12 @@ fn rims(model: &silico_core::recompute::Model, cut: &str, pin: &str) -> Vec<Stri
 
 #[test]
 fn a_later_holes_rims_keep_their_names_whatever_holes_come_before() {
-    // Trevin's collapse: the plate's top and bottom faces, modified by each cut, are
-    // `pppppppp.Face6*` and `pppppppp.Face5*` however many cuts came before, so the last
-    // hole's rims, named from them and the pin, are the same with an earlier hole
-    // added, removed, or moved, and the earlier holes reordered.
+    // Trevin's decision: the plate's top and bottom faces, modified by each cut as its sole
+    // result, keep their own names (`pppppppp.Face6`, `pppppppp.Face5`) however many cuts
+    // came before, and a source's position in OCCT's list is written only where names
+    // would otherwise collide, so the last hole's rims, named from them and the pin, are the
+    // same with no earlier hole, or with one added, removed, or moved, and the earlier holes
+    // reordered.
     let engine = occt_engine();
     let last = (9, 300.0);
     let rims_of = |earlier: &[(u32, f64)]| {
@@ -518,41 +602,31 @@ fn a_later_holes_rims_keep_their_names_whatever_holes_come_before() {
         let model = published_on(&engine, plate_with_holes(&holes));
         rims(&model, "c0000009", "y0000009")
     };
-    let three = rims_of(&[(1, 50.0), (2, 100.0), (3, 150.0)]);
-    assert_eq!(
-        three,
-        [
-            "c0000009.Edge(G2 pppppppp.Face5*, G2 y0000009.Face1)",
-            "c0000009.Edge(G2 pppppppp.Face6*, G y0000009.Face1)",
-        ]
-    );
+    let expected = [
+        "c0000009.Edge(G pppppppp.Face5, G y0000009.Face1)",
+        "c0000009.Edge(G pppppppp.Face6, G y0000009.Face1)",
+    ];
     for earlier in [
+        vec![],
+        vec![(1, 50.0)],
+        vec![(1, 50.0), (2, 100.0), (3, 150.0)],
         vec![(1, 50.0), (3, 150.0)],
         vec![(1, 50.0), (2, 100.0), (4, 200.0), (3, 150.0)],
         vec![(1, 50.0), (2, 120.0), (3, 150.0)],
         vec![(3, 150.0), (1, 50.0), (2, 100.0)],
-        vec![(1, 50.0)],
     ] {
-        assert_eq!(rims_of(&earlier), three, "{earlier:?}");
+        assert_eq!(rims_of(&earlier), expected, "{earlier:?}");
     }
-    // With no hole before it, the plate's faces aren't yet modified: their own names, and
-    // OCCT lists the rims in the other order.
-    assert_eq!(
-        rims_of(&[]),
-        [
-            "c0000009.Edge(G2 pppppppp.Face5, G y0000009.Face1)",
-            "c0000009.Edge(G2 pppppppp.Face6, G2 y0000009.Face1)",
-        ]
-    );
 }
 
 #[test]
 fn a_face_split_by_a_cut_keeps_its_pieces_apart() {
     // A slot (2 wide, 1 deep) across the plate's top splits the top face in two: each piece
-    // keeps its level (`s0000001.Face(M pppppppp.Face6)`, `...(M2 ...)`), so neither is
-    // taken for the face as it was (`pppppppp.Face6*`, the name of a face only modified):
-    // a reference to the top face finds neither piece, and fails, rather than following
-    // one. Every name is unique.
+    // keeps its level, ranked by OCCT's order among the pieces (`s0000001.Face(M1/2
+    // pppppppp.Face6)`, `...(M2/2 ...)`), so neither is taken for the face as it was
+    // (`pppppppp.Face6`, the name of a face only modified, as its sole result): a reference
+    // to the top face finds neither piece, and fails, rather than following one. Every
+    // name is unique.
     let engine = occt_engine();
     let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "features": [
         {"id": "pppppppp", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, 0], "length": 40, "width": 20, "height": 5},
@@ -575,12 +649,12 @@ fn a_face_split_by_a_cut_keeps_its_pieces_apart() {
         .collect();
     assert_eq!(pieces.len(), 2, "{faces:#?}");
     assert!(
-        pieces.contains(&&"s0000001.Face(M pppppppp.Face6)".to_owned()),
+        pieces.contains(&&"s0000001.Face(M1/2 pppppppp.Face6)".to_owned()),
         "{faces:#?}"
     );
-    assert!(!faces.contains(&"pppppppp.Face6*".to_owned()), "{faces:#?}");
+    assert!(!faces.contains(&"pppppppp.Face6".to_owned()), "{faces:#?}");
     assert!(
-        pieces.contains(&&"s0000001.Face(M2 pppppppp.Face6)".to_owned()),
+        pieces.contains(&&"s0000001.Face(M2/2 pppppppp.Face6)".to_owned()),
         "{faces:#?}"
     );
     // One name for each element, and none twice.

@@ -60,20 +60,30 @@ After a recompute FreeCAD looks each reference up by its mapped name and rewrite
 
 ### Names (N1, N2)
 
-`naming::Name` is a structured value: an `Element` (a feature's own element by number: a primitive's, or the last resort), a `Derived` element (the operation, the result's kind, the sources each with relation and position, first by FreeCAD's key, up to five), an `Upper` element (from the element above, `nth`), a `Lower` element (from the elements below, up to five), or a `Duplicate` (`~n`). Written in Silico's form, the maker feature's ID, the kind, and how it came about:
+`naming::Name` is a structured value: an `Element` (a feature's own element by number: a primitive's, or the last resort), a `Derived` element (the operation, the result's kind, the sources each with relation, OCCT's position, and, where needed, a place `n/m`, first by FreeCAD's key, up to five), an `Upper` element (from the element above, `nth`), a `Lower` element (from the elements below, up to five), a `Duplicate` (`~n`), or a `Modified` element (a source modified one from one: its source's name, with the operation as data). Written in Silico's form, the maker feature's ID, the kind, and how it came about:
 
 | Silico | FreeCAD (without tags) |
 |---|---|
 | `k7f2qx3m.Face3` | `Face3` |
 | `m3tq8v0z.Face(M a91cw0de.Face1)` | `Face1;:M;CUT` |
-| `m3tq8v0z.Edge(G2 k7f2qx3m.Face6, G2 a91cw0de.Face1)` | `Face6;:G2(Face1;K-2);CUT` |
+| `pppppppp.Face6` (after a hole) | `Face6;:M;CUT` |
+| `m3tq8v0z.Edge(G k7f2qx3m.Face6, G a91cw0de.Face1)` | `Face6;:G2(Face1;K-2);CUT` |
+| `c.Edge(G1/2 b.Face1, G1/2 p.Face1)` (a ball's through hole) | `Face1;:G(Face1;K-1);CUT` |
 | `f.Edge(U2 f.Face(G e.Edge1))` | `Edge1;:G;FLT;:U2;FLT` |
 | `f.Face(L a, b, c)` | `a;:L(b|c);FLT` |
 | `<name>~1` | `<name>;D1` |
 
-A kept element keeps its name exactly, through any number of features (N2): FreeCAD adds a tag level per feature. An element modified from one element alone, as OCCT's first result of it, is that element with a star (`pppppppp.Face6*`, N7), however many features in a row did so: FreeCAD adds a level for each (`Face6;:M;CUT;:H..;:M;CUT;:H..`), and Silico's FreeCAD form writes one. It's safe because a solid is consumed once (M2.1's D2), so an element's lineage is a tree and one origin can't reach a shape twice; patterns and mirrors, which copy, will add a copy marker. The op code isn't written (the maker feature says it) but is held, for FreeCAD's form and FreeCAD's orders.
+A kept element keeps its name exactly, through any number of features (N2): FreeCAD adds a tag level per feature. An element an operation modified from one element, as its sole result of it (nothing else of its kind modified or generated from it), is that element's name exactly (`pppppppp.Face6`, N7), however many features in a row did so: FreeCAD adds a level for each (`Face6;:M;CUT;:H..;:M;CUT;:H..`), and Silico's FreeCAD form writes one. It's safe because a solid is consumed once (M2.1's D2), so an element's lineage is a tree and one origin can't reach a shape twice; patterns and mirrors, which copy, will add a copy marker. The op code isn't written (the maker feature says it) but is held, for FreeCAD's form and FreeCAD's orders.
 
 `naming::freecad::text` renders FreeCAD's form without tags, for comparing with FreeCAD's names and for FreeCAD's orders (which source comes first, which element above or below names an element). Silico orders inputs by their place in the operation (base, then tool), where FreeCAD orders them by tag (object IDs, in creation order): the same in FreeCAD's tests and in documents built in order.
+
+### Positions only where names collide (a departure from FreeCAD, N7)
+
+FreeCAD writes every source's position in OCCT's `Modified` and `Generated` lists (`;:G2`, `;K-2`). Silico doesn't: OCCT orders those lists for reasons of its own, and measured on the real kernel, a plate's last hole's rims swapped positions (`G2` and `G`) depending on whether an earlier hole had been cut, which renamed them. So names are built without positions, grouped by kind and name, and only within a group of m ≥ 2 is each source written `n/m`, the element's rank among the group by its position in that source's list (members at one position share a rank): `G1/2`, `G2/2`. Where members still coincide, they're numbered `~n` and unstable (N3). An `n/m` name is stable. The raw positions are kept in the name, outside its identity, so `naming::freecad::text` still writes FreeCAD's positions, and the ported fixtures still match FreeCAD's names exactly; a split's ranks are FreeCAD's positions in every fixture (the two cubes' fuse: `M1/2` is `;:M`, `M2/2` is `;:M2`).
+
+Fable's census (2026-10-16), which the tests reproduce: names collide only where an element splits (a slot across a face or an edge, a groove across a U: `M1/2`, `M2/2`, `M3/3`) and where curved faces meet curved faces in loops (a ball's through hole: two rims and two seam points; a pin through a torus's tube: four loops `G1/4` to `G4/4`, the seam in three; a tube's wall). In each, positions are the only thing that tells the elements apart; FreeCAD tells them apart the same way.
+
+The residual case: OCCT reordering look-alikes the same way in every list after an upstream edit, so two ranks swap and a reference silently follows the other element. It's FreeCAD's case too (its positions swap alike), and wasn't reproduced. It's recorded here, not guarded.
 
 ### The map
 
@@ -94,7 +104,7 @@ A model names a feature's elements the first time they're asked for (`Model::ele
 
 ## Tests
 
-FreeCAD's tests, ported (silico-kernel `tests/naming.rs`, FreeCAD's expected names verbatim in `tests/fixtures/naming/`, compared without tags but with the sources in parentheses and the `K` positions, which FreeCAD's own matchers drop):
+FreeCAD's tests, ported (silico-kernel `tests/naming.rs`, FreeCAD's expected names verbatim in `tests/fixtures/naming/`, compared without tags but with the sources in parentheses and the `K` positions, which FreeCAD's own matchers drop; an exact comparison, so it holds what the matchers' comparison with positions stripped would, and more):
 
 | FreeCAD test | Status |
 |---|---|
@@ -109,3 +119,5 @@ FreeCAD's tests, ported (silico-kernel `tests/naming.rs`, FreeCAD's expected nam
 | `makeElementPrism`, `makeElementRevolve`, pad and revolution tests | M3, with extrusions. |
 | `testPartDesignTNPChamfer`, `testPartDesignTNPFillet`, `testBaseFeatureAttachmentSupport` | M2.8 (references surviving edits). |
 | `MapperMaker*`, `MapperHistory*`, `StringHasher`, child-map and persistence tests | Not ported: FreeCAD's internals Silico doesn't have. |
+
+Silico's own, for N7 (silico-kernel `tests/name_collisions.rs`, `tests/naming.rs`; silico-core `tests/naming.rs`): a hole's rims the same with no earlier hole or any; a slot's face and edge pieces ranked and the split names gone; a piece's name through a hole before the split and one after; a groove across a U face (three pieces); a ball's through hole and a pin through a torus (rims, loops, and seam points ranked, each referenceable); the two cubes' fuse with positions on its 8 split edges' pieces alone, each rank FreeCAD's position; a fuse, a slot, and a notch naming everything else alike with and without a hole before them; a face kept and modified too, a `~1`, both unstable; and the ball, torus, and groove in the two-pools-and-cache test.

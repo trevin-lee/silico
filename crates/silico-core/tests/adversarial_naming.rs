@@ -19,7 +19,7 @@ use silico_core::document::FeatureId;
 use silico_core::kernel::{
     ElementCounts, ElementFate, ElementKind, ElementRef, History, InputHistory, Reported, Topology,
 };
-use silico_core::naming::{ElementMap, Name, OpCode, Relation, Source, freecad};
+use silico_core::naming::{ElementMap, Name, OpCode, Place, Raw, Relation, Source, freecad};
 
 /// A box's faces, edges, and vertices, as OCCT makes it.
 const BOX: ElementCounts = ElementCounts {
@@ -524,25 +524,34 @@ fn an_ambiguous_name_kept_by_the_next_feature_is_still_marked_ambiguous() {
 
 #[test]
 fn every_name_the_types_hold_prints_differently_from_every_other() {
-    // Positions, `nth`, and ordinals count from 1 by their type (`/break-it` found that a 0
+    // Places, `nth`, and ordinals count from 1 by their type (`/break-it` found that a 0
     // printed as a 1 does), so the forms' leaving out a 1 can't make two names print alike:
-    // 1 and 2 differ, in both forms.
+    // 1 and 2 differ, and a place and none differ. OCCT's raw position isn't part of a
+    // name: two names that differ only in it are one name, printed alike (Trevin's
+    // decision: positions only within groups).
     let leaf = Arc::new(Name::Element {
         feature: id("aaaaaaaa"),
         element: element(ElementKind::Face, 1),
     });
     let n = |n: u32| NonZeroU32::new(n).unwrap();
-    let derived = |position| Name::Derived {
+    let derived = |place: Option<(u32, u32)>, position: u32| Name::Derived {
         feature: id("rrrrrrrr"),
         operation: OpCode::Cut,
         kind: ElementKind::Face,
         first: Source {
             relation: Relation::Modified,
-            position,
+            place: place.map(|(rank, size)| Place {
+                rank: NonZeroU32::new(rank).unwrap(),
+                size: NonZeroU32::new(size).unwrap(),
+            }),
+            position: Raw(NonZeroU32::new(position).unwrap()),
             name: Arc::clone(&leaf),
         },
         more: vec![],
     };
+    // Only OCCT's position differs: one name, written alike.
+    assert_eq!(derived(None, 1), derived(None, 2));
+    assert_eq!(derived(None, 1).to_string(), derived(None, 2).to_string());
     let upper = |nth| Name::Upper {
         feature: id("rrrrrrrr"),
         operation: OpCode::Cut,
@@ -556,19 +565,15 @@ fn every_name_the_types_hold_prints_differently_from_every_other() {
     };
     let mut clashes = Vec::new();
     for (a, b) in [
-        (derived(n(1)), derived(n(2))),
+        (derived(Some((1, 2)), 1), derived(Some((2, 2)), 2)),
+        (derived(None, 1), derived(Some((1, 2)), 1)),
+        (derived(Some((1, 2)), 1), derived(Some((1, 3)), 1)),
         (upper(n(1)), upper(n(2))),
         (duplicate(n(1)), duplicate(n(2))),
     ] {
         assert_ne!(a, b);
         if a.to_string() == b.to_string() {
             clashes.push(format!("{a:?} and {b:?} both print {a}"));
-        }
-        if freecad::text(&a) == freecad::text(&b) {
-            clashes.push(format!(
-                "{a:?} and {b:?} both FreeCAD {}",
-                freecad::text(&a)
-            ));
         }
     }
     assert!(clashes.is_empty(), "{clashes:#?}");
@@ -589,7 +594,8 @@ fn a_derived_name_has_a_freecad_form() {
         kind: ElementKind::Face,
         first: Source {
             relation: Relation::Generated,
-            position: NonZeroU32::MIN,
+            place: None,
+            position: Raw(NonZeroU32::MIN),
             name: Arc::clone(&leaf),
         },
         more: vec![],
@@ -710,8 +716,8 @@ fn drilled() -> History {
 fn a_thousand_holes_drilled_one_by_one_leave_the_top_face_its_name() {
     // A perforated plate built as 1,000 cut features, each modifying the top face (and
     // nothing else) as OCCT's first result of it: the face is the plate's Face6 as later
-    // features have modified it (Trevin's collapse), whatever the number of holes, stable.
-    // Before the collapse its name nested a level per hole, until the bound on a name's
+    // features have modified it (N7: its own name), whatever the number of holes, stable.
+    // Before N7 its name nested a level per hole, until the bound on a name's
     // depth made it a number, unreferenceable for good (the review found that cliff).
     let history = drilled();
     history.validate(2).unwrap();
@@ -722,7 +728,7 @@ fn a_thousand_holes_drilled_one_by_one_leave_the_top_face_its_name() {
         let feature = id(&format!("f{n:07}"));
         map = ElementMap::operation(feature, OpCode::Cut, &[&map, &tool], &history);
         let top = map.name(element(ElementKind::Face, 6)).unwrap();
-        assert_eq!(top.to_string(), "pppppppp.Face6*", "after {n}");
+        assert_eq!(top.to_string(), "pppppppp.Face6", "after {n}");
         assert!(!map.is_unstable(&top));
     }
     assert!(
@@ -803,7 +809,7 @@ fn names_that_would_double_with_every_feature_stay_bounded() {
 fn a_deep_timeline_names_and_writes_its_names_on_a_default_thread() {
     // Found by the review: a plate drilled 6,000 times, a feature a hole, nested its top
     // face's name 6,000 deep, and writing it overflowed a 2 MB stack (an abort). Bounded,
-    // and collapsed (a face only ever modified is one level), every walk is short.
+    // and with N7 (a face only ever modified keeps its name), every walk is short.
     let joined = std::thread::Builder::new()
         .stack_size(2 << 20)
         .spawn(|| {
@@ -829,8 +835,8 @@ fn a_deep_timeline_names_and_writes_its_names_on_a_default_thread() {
         .join();
     let (text, top, unstable) = joined.unwrap();
     assert!(text < 200_000);
-    // With the collapse, the plate's top face, modified 6,000 times, is still its Face6.
-    assert_eq!(top, "pppppppp.Face6*");
+    // With N7, the plate's top face, modified 6,000 times, is still its Face6.
+    assert_eq!(top, "pppppppp.Face6");
     assert!(!unstable);
 }
 
