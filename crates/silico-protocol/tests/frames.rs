@@ -12,7 +12,7 @@ use silico_protocol::{
     ElementFate, ElementKind, ElementRef, Ends, Failure, FailureKind, FrameError, FrameReader,
     FreecadMeasures, Generation, History, InputHistory, MAX_FRAME_LEN, Mesh, Misbehavior, Op,
     Operation, OutOfTurn, Primitive, Profile, Refusal, Reply, Reported, Request, RequestId,
-    Response, ShapeData, ShapeSummary, TraceId, write_message,
+    Response, ShapeData, ShapeSummary, Topology, TraceId, write_message,
 };
 
 /// One request per operation. The match gives each variant its own index and every
@@ -258,6 +258,11 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
                 ends: Ends {
                     start: vec![1],
                     end: vec![2, 3],
+                },
+                topology: Topology {
+                    face_edges: vec![vec![1, 3], vec![2, 3]],
+                    outer_edges: vec![vec![1, 3], vec![]],
+                    edge_vertices: vec![vec![], vec![], vec![]],
                 },
             },
         })),

@@ -215,6 +215,9 @@ pub enum HistoryDefect {
     WrongKind,
     UnknownElement,
     UnknownRelation,
+    /// A topology that doesn't fit the result: a list for each face and edge, each element
+    /// the result's, none twice.
+    BadTopology,
 }
 
 /// A refusal in words: what went wrong, and what to try, if anything.
@@ -526,6 +529,7 @@ impl Refusal {
                         HistoryDefect::WrongKind => "for an element of the wrong kind",
                         HistoryDefect::UnknownElement => "for an element the input doesn't have",
                         HistoryDefect::UnknownRelation => "with an unknown relation",
+                        HistoryDefect::BadTopology => "whose topology doesn't fit the result",
                     }
                 ),
                 Some("this is a bug in Silico's kernel bridge: report it".to_owned()),

@@ -46,6 +46,7 @@ use silico_protocol::{LENGTH_TOLERANCE, Reply, ShapeSummary};
 use crate::kernel::{
     Blob, BooleanOp, BuiltData, ElementCounts, ElementFate, ElementKind, ElementRef, Ends,
     Generation, History, InputHistory, Kernel, KernelRequest, Op, Primitive, Reported, ShapeData,
+    Topology,
 };
 use crate::pool::{MAX_WORKERS, Outcome, Pending, deliver, thread_error};
 use crate::worker::lock;
@@ -472,6 +473,7 @@ fn answer(op: &Op) -> Result<Reply, Error> {
                 inputs: vec![fates],
                 result: counts,
                 ends: Ends::default(),
+                topology: made.topology(),
             };
             let shape = made.moved(*offset).shape();
             Ok(Reply::Built(BuiltData { shape, history }))
@@ -479,12 +481,14 @@ fn answer(op: &Op) -> Result<Reply, Error> {
         Op::Boolean { op, base, tool } => {
             let (base, tool) = (Made::read(base)?, Made::read(tool)?);
             let (a, b) = (base.counts(), tool.counts());
+            let made = Made::boolean(*op, base, tool);
             let history = History {
                 inputs: vec![kept(a, ElementCounts::default()), kept(b, a)],
                 result: sum(a, b),
                 ends: Ends::default(),
+                topology: made.topology(),
             };
-            let shape = Made::boolean(*op, base, tool).shape();
+            let shape = made.shape();
             Ok(Reply::Built(BuiltData { shape, history }))
         }
         Op::Summarize { shape } => Ok(Reply::Summary(Made::read(shape)?.summary())),
@@ -521,27 +525,10 @@ fn primitive_counts(primitive: &Primitive) -> ElementCounts {
             radius1,
             radius2,
             height,
-        } => {
-            // OCCT leaves out a cap where the cone's meridian meets the axis, within its
-            // tolerance (BRepPrim_OneAxis::MeridianOnAxis): at the base, radius1 from it; at
-            // the top, the meridian's end, computed as BRepPrim_Cone and ElCLib::LineValue
-            // compute it (its direction normalized by gp_Dir2d, no fused multiply-add), with
-            // the math OCCT uses, so the edge cases fall as they do in OCCT.
-            let rise = radius2 - radius1;
-            let half_angle = libm::atan(rise / height);
-            let (sin, cos) = (libm::sin(half_angle), libm::cos(half_angle));
-            let along = sin / (sin * sin + cos * cos).sqrt();
-            let length = (height * height + rise * rise).sqrt();
-            let top = length * along + radius1;
-            let caps = [radius1, top]
-                .iter()
-                .filter(|x| x.abs() >= LENGTH_TOLERANCE)
-                .count();
-            match caps {
-                2 => (3, 3, 2),
-                _ => (2, 3, 2),
-            }
-        }
+        } => match cone_caps(radius1, radius2, height) {
+            (true, true) => (3, 3, 2),
+            _ => (2, 3, 2),
+        },
         Primitive::Torus { .. } => (1, 2, 1),
     };
     ElementCounts {
@@ -549,6 +536,104 @@ fn primitive_counts(primitive: &Primitive) -> ElementCounts {
         edges,
         vertices,
         solids: 1,
+    }
+}
+
+/// Whether OCCT gives a cone its base cap and its top cap. OCCT leaves out a cap where the
+/// cone's meridian meets the axis, within its tolerance (BRepPrim_OneAxis::MeridianOnAxis):
+/// at the base, radius1 from it; at the top, the meridian's end, computed as BRepPrim_Cone
+/// and ElCLib::LineValue compute it (its direction normalized by gp_Dir2d, no fused
+/// multiply-add), with the math OCCT uses, so the edge cases fall as they do in OCCT.
+fn cone_caps(radius1: f64, radius2: f64, height: f64) -> (bool, bool) {
+    let rise = radius2 - radius1;
+    let half_angle = libm::atan(rise / height);
+    let (sin, cos) = (libm::sin(half_angle), libm::cos(half_angle));
+    let along = sin / (sin * sin + cos * cos).sqrt();
+    let length = (height * height + rise * rise).sqrt();
+    let top = length * along + radius1;
+    (
+        radius1.abs() >= LENGTH_TOLERANCE,
+        top.abs() >= LENGTH_TOLERANCE,
+    )
+}
+
+/// How OCCT's primitive's elements bound each other, as the kernel reports it: each face's
+/// edges in OCCT's order, its outer wire's (sorted), and each edge's vertices.
+fn primitive_topology(primitive: &Primitive) -> Topology {
+    let lists = |lists: &[&[u32]]| lists.iter().map(|l| l.to_vec()).collect::<Vec<_>>();
+    type Lists = &'static [&'static [u32]];
+    let (faces, outer, vertices): (Lists, Lists, Lists) = match *primitive {
+        Primitive::Box { .. } => (
+            &[
+                &[1, 2, 3, 4],
+                &[5, 6, 7, 8],
+                &[9, 5, 10, 1],
+                &[11, 7, 12, 3],
+                &[4, 11, 8, 9],
+                &[2, 12, 6, 10],
+            ],
+            &[
+                &[1, 2, 3, 4],
+                &[5, 6, 7, 8],
+                &[1, 5, 9, 10],
+                &[3, 7, 11, 12],
+                &[4, 8, 9, 11],
+                &[2, 6, 10, 12],
+            ],
+            &[
+                &[1, 2],
+                &[3, 1],
+                &[3, 4],
+                &[4, 2],
+                &[5, 6],
+                &[7, 5],
+                &[7, 8],
+                &[8, 6],
+                &[6, 2],
+                &[5, 1],
+                &[8, 4],
+                &[7, 3],
+            ],
+        ),
+        Primitive::Cylinder { .. } => (
+            &[&[1, 2, 3], &[2], &[3]],
+            &[&[1, 2, 3], &[2], &[3]],
+            &[&[1, 2], &[1], &[2]],
+        ),
+        Primitive::Sphere { .. } => (&[&[1, 2, 3]], &[&[1, 2, 3]], &[&[1], &[1, 2], &[2]]),
+        Primitive::Cone {
+            radius1,
+            radius2,
+            height,
+        } => {
+            let faces: Lists = match cone_caps(radius1, radius2, height) {
+                (true, true) => &[&[1, 2, 3], &[1], &[3]],
+                (true, false) => &[&[1, 2, 3], &[3]],
+                _ => &[&[1, 2, 3], &[1]],
+            };
+            (faces, faces, &[&[1], &[1, 2], &[2]])
+        }
+        Primitive::Torus { .. } => (&[&[1, 2]], &[&[1, 2]], &[&[1], &[1]]),
+    };
+    Topology {
+        face_edges: lists(faces),
+        outer_edges: lists(outer),
+        edge_vertices: lists(vertices),
+    }
+}
+
+/// `topology` with every element numbered after `before`'s.
+fn shifted(topology: &Topology, before: ElementCounts) -> Topology {
+    let shift = |lists: &[Vec<u32>], by: u32| -> Vec<Vec<u32>> {
+        lists
+            .iter()
+            .map(|l| l.iter().map(|e| e.saturating_add(by)).collect())
+            .collect()
+    };
+    Topology {
+        face_edges: shift(&topology.face_edges, before.edges),
+        outer_edges: shift(&topology.outer_edges, before.edges),
+        edge_vertices: shift(&topology.edge_vertices, before.vertices),
     }
 }
 
@@ -763,6 +848,32 @@ impl Made {
             counts.push(made);
         }
         counts.last().copied().unwrap_or_default()
+    }
+
+    /// How the shape's elements bound each other: a primitive's as OCCT has them, a move's
+    /// its input's, and the fake's boolean its inputs' together, the tool's numbered after
+    /// the base's, as its history keeps them.
+    fn topology(&self) -> Topology {
+        let mut made: Vec<(Topology, ElementCounts)> = Vec::with_capacity(self.0.len());
+        for step in &self.0 {
+            let of = |i: usize| made.get(i).cloned().unwrap_or_default();
+            let next = match step {
+                Step::Primitive(primitive) => {
+                    (primitive_topology(primitive), primitive_counts(primitive))
+                }
+                Step::Translate { input, .. } => of(*input),
+                Step::Boolean { base, tool, .. } => {
+                    let ((mut topology, a), (tool, b)) = (of(*base), of(*tool));
+                    let tool = shifted(&tool, a);
+                    topology.face_edges.extend(tool.face_edges);
+                    topology.outer_edges.extend(tool.outer_edges);
+                    topology.edge_vertices.extend(tool.edge_vertices);
+                    (topology, sum(a, b))
+                }
+            };
+            made.push(next);
+        }
+        made.pop().map(|(topology, _)| topology).unwrap_or_default()
     }
 
     /// The shape's summary: each step's measures in turn, by formula for a primitive.

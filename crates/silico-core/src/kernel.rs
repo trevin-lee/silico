@@ -12,7 +12,7 @@ use std::time::Duration;
 pub use silico_protocol::{
     Axis, Blob, BooleanOp, BuiltData, ChamferSize, ElementCounts, ElementFate, ElementKind,
     ElementRef, Ends, FreecadMeasures, Generation, History, InputHistory, Mesh, Op, Primitive,
-    Profile, Reported, ShapeData, ShapeSummary,
+    Profile, Reported, ShapeData, ShapeSummary, Topology,
 };
 use silico_protocol::{DebugOp, Failure, Reply};
 

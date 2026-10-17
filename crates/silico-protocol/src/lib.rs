@@ -21,6 +21,7 @@ pub use chamfer::ChamferSize;
 pub use frame::{FrameError, FrameReader, MAX_FRAME_LEN, decode, write_message, write_started};
 pub use history::{
     ElementCounts, ElementFate, ElementKind, ElementRef, Ends, History, InputHistory, Reported,
+    Topology,
 };
 pub use primitive::{
     InvalidParameter, LENGTH_TOLERANCE, MAX_LENGTH, OFFSET_FIELD, Primitive, SIZE_FIELD,

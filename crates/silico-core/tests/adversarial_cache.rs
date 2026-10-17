@@ -32,7 +32,7 @@ use silico_core::pool::Pending;
 use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 use silico_core::{Error, ErrorCode};
 
-const MAGIC: &[u8] = b"silico cache 3\n";
+const MAGIC: &[u8] = b"silico cache 4\n";
 
 fn built(model: &Model, id: &str) -> (String, Arc<silico_core::recompute::Built>) {
     match model.outcome(&FeatureId::new(id).unwrap()) {
