@@ -274,15 +274,16 @@ fn the_corpus_reads_its_step_files_and_names_those_freecad_cant() {
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(found.differences.is_empty() && found.refused.is_empty());
     // Both sides' verdicts, for a known difference that doesn't show to be reported with.
+    let validity: Vec<(&str, Option<bool>, Option<bool>)> = found
+        .validity
+        .iter()
+        .map(|v| (v.case.as_str(), v.silico, v.freecad))
+        .collect();
     assert_eq!(
-        found.validity,
+        validity,
         [
-            ("it's \"a\" box.stp".to_owned(), Some(true), Some(true)),
-            (
-                "it's \"a\" box.stp_moved".to_owned(),
-                Some(true),
-                Some(true)
-            ),
+            ("it's \"a\" box.stp", Some(true), Some(true)),
+            ("it's \"a\" box.stp_moved", Some(true), Some(true)),
         ]
     );
 }

@@ -26,8 +26,8 @@ fn main() -> ExitCode {
     let mut out = std::io::stdout().lock();
     let ran = cases().and_then(|(cases, corpus)| {
         let mut report = run(&cases)?;
-        let (mut problems, mut known) = (Vec::new(), Vec::new());
-        if let Some((unread, breps)) = corpus {
+        let (mut problems, mut known, mut notes) = (Vec::new(), Vec::new(), Vec::new());
+        if let Some(CorpusNotes { unread, breps }) = corpus {
             problems = unread;
             problems.extend(corpus::meshes(&cases)?);
             let missing;
@@ -39,17 +39,20 @@ fn main() -> ExitCode {
             );
             problems.extend(missing);
             // What each platform's FreeCAD wrote, so two platforms' runs can be compared.
-            known.extend(breps);
+            notes = breps;
         }
-        Ok((cases.len(), report, problems, known))
+        Ok((cases.len(), report, problems, known, notes))
     });
     match ran {
-        Ok((count, report, problems, known)) => {
+        Ok((count, report, problems, known, notes)) => {
             for d in &report.differences {
                 let _ = writeln!(out, "{d}");
             }
             for k in &known {
                 let _ = writeln!(out, "{k}");
+            }
+            for n in &notes {
+                let _ = writeln!(out, "{n}");
             }
             for p in &problems {
                 let _ = writeln!(out, "{p}");
@@ -80,7 +83,10 @@ fn main() -> ExitCode {
 }
 
 /// For the corpus: its files FreeCAD couldn't read, and the B-reps it wrote.
-type CorpusNotes = (Vec<String>, Vec<String>);
+struct CorpusNotes {
+    unread: Vec<String>,
+    breps: Vec<String>,
+}
 
 /// The cases the command line asks for, and for the corpus, its files FreeCAD couldn't
 /// read and the B-reps it wrote.
@@ -99,7 +105,11 @@ fn cases() -> Result<(Vec<Case>, Option<CorpusNotes>), String> {
         Some("corpus") => match &args[1..] {
             [dir] => {
                 let corpus = corpus::cases(Path::new(dir))?;
-                Ok((corpus.cases, Some((corpus.unread, corpus.breps))))
+                let notes = CorpusNotes {
+                    unread: corpus.unread,
+                    breps: corpus.breps,
+                };
+                Ok((corpus.cases, Some(notes)))
             }
             _ => Err(format!("corpus takes one directory\n{USAGE}")),
         },

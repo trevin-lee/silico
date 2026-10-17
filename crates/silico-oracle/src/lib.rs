@@ -66,9 +66,17 @@ pub struct Report {
     pub differences: Vec<Difference>,
     /// The cases both sides refused: they agree, but nothing about the shape was compared.
     pub refused: Vec<String>,
-    /// Whether each side found each case's shape valid, by case (none for a side that
-    /// didn't build it): what a known difference that didn't show is reported with.
-    pub validity: Vec<(String, Option<bool>, Option<bool>)>,
+    /// Whether each side found each case's shape valid, in case order: what a known
+    /// difference that didn't show is reported with.
+    pub validity: Vec<Validity>,
+}
+
+/// Whether each side found a case's shape valid: none for a side that didn't build it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Validity {
+    pub case: String,
+    pub silico: Option<bool>,
+    pub freecad: Option<bool>,
 }
 
 /// Runs `cases` through Silico and FreeCAD, each compared to its shape's [`Tolerance`].
@@ -82,9 +90,11 @@ pub fn run(cases: &[Case]) -> Result<Report, String> {
             Outcome::Built(measured) => Some(measured.valid),
             Outcome::Failed(_) | Outcome::Lost(_) => None,
         };
-        report
-            .validity
-            .push((case.name.clone(), valid(&ours), valid(&theirs)));
+        report.validity.push(Validity {
+            case: case.name.clone(),
+            silico: valid(&ours),
+            freecad: valid(&theirs),
+        });
         let how = differences(&ours, &theirs, Tolerance::of(&case.shape));
         if !how.is_empty() {
             report.differences.push(Difference {

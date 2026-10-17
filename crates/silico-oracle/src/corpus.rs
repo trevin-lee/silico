@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 
 use silico_core::kernel::KernelWorker;
 
-use crate::Difference;
 use crate::case::{Case, Shape};
 use crate::freecad;
 use crate::silico;
+use crate::{Difference, Validity};
 
 /// The cases for every STEP file directly in `dir`, in name order, the files FreeCAD
 /// couldn't read (with why), and each B-rep FreeCAD wrote, with its SHA-256 (a part's
@@ -194,7 +194,7 @@ pub fn without_known(
     differences: Vec<Difference>,
     known: &[Known],
     platform: &str,
-    validity: &[(String, Option<bool>, Option<bool>)],
+    validity: &[Validity],
 ) -> (Vec<Difference>, Vec<String>, Vec<String>) {
     let here: Vec<&Known> = known
         .iter()
@@ -226,15 +226,10 @@ pub fn without_known(
         .zip(seen)
         .filter(|(_, seen)| !seen)
         .map(|(k, _)| {
-            let verdicts = validity
-                .iter()
-                .find(|(case, _, _)| case == k.case)
-                .map_or_else(
-                    || "no such case".to_owned(),
-                    |(_, ours, theirs)| {
-                        format!("Silico {}, FreeCAD {}", said(*ours), said(*theirs))
-                    },
-                );
+            let verdicts = validity.iter().find(|v| v.case == k.case).map_or_else(
+                || "no such case".to_owned(),
+                |v| format!("Silico {}, FreeCAD {}", said(v.silico), said(v.freecad)),
+            );
             format!(
                 "{}: a known difference didn't show on {platform}: {} ({verdicts})",
                 k.case, k.difference
@@ -246,8 +241,16 @@ pub fn without_known(
 
 #[cfg(test)]
 mod tests {
-    use super::{Known, without_known};
-    use crate::{Difference, Outcome};
+    use super::{KNOWN, Known, without_known};
+    use crate::{Difference, Outcome, Validity};
+
+    fn validity(case: &str, silico: Option<bool>, freecad: Option<bool>) -> Validity {
+        Validity {
+            case: case.to_owned(),
+            silico,
+            freecad,
+        }
+    }
 
     const WHY: &str = "why";
 
@@ -295,7 +298,7 @@ mod tests {
 
     #[test]
     fn a_known_difference_that_didnt_show_is_a_problem() {
-        let validity = [("a".to_owned(), Some(true), Some(true))];
+        let validity = [validity("a", Some(true), Some(true))];
         let (rest, found, missing) = without_known(
             vec![difference("b", "x")],
             &known(&["here"]),
@@ -329,7 +332,7 @@ mod tests {
 
     #[test]
     fn a_known_difference_on_a_case_that_didnt_build_says_so() {
-        let validity = [("a".to_owned(), None, Some(true))];
+        let validity = [validity("a", None, Some(true))];
         let (_, _, missing) = without_known(Vec::new(), &known(&["here"]), "here", &validity);
         assert_eq!(
             missing,
@@ -340,12 +343,34 @@ mod tests {
     }
 
     #[test]
-    fn this_platform_is_named_as_known_differences_name_it() {
-        assert_eq!(
-            super::platform(),
-            format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS)
-        );
+    fn every_known_differences_platforms_are_ones_this_code_names() {
+        // `platform()` writes `std::env::consts`' architecture and system: a platform
+        // listed some other way (`arm64-macos`, `aarch64-apple-darwin`) never matches.
+        const ARCHES: [&str; 3] = ["aarch64", "x86_64", "riscv64"];
+        const SYSTEMS: [&str; 3] = ["macos", "linux", "windows"];
+        for known in KNOWN {
+            for platform in known.platforms {
+                let (arch, os) = platform.split_once('-').unwrap();
+                assert!(
+                    ARCHES.contains(&arch) && SYSTEMS.contains(&os),
+                    "{platform}"
+                );
+            }
+        }
         #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
         assert_eq!(super::platform(), "aarch64-macos");
+        #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+        assert_eq!(super::platform(), "x86_64-linux");
+    }
+
+    #[test]
+    fn a_known_difference_on_a_case_the_corpus_hasnt_says_so() {
+        let (_, _, missing) = without_known(Vec::new(), &known(&["here"]), "here", &[]);
+        assert_eq!(
+            missing,
+            [
+                "a: a known difference didn't show on here: valid: Silico false, FreeCAD true (no such case)"
+            ]
+        );
     }
 }
