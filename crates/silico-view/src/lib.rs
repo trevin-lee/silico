@@ -136,6 +136,7 @@ mod tests {
             faces: 6,
             edges: 12,
             vertices: 8,
+            bounds: None,
             valid: true,
         };
         assert_eq!(

@@ -121,23 +121,25 @@ fn built_reply(built: crate::Built) -> Result<Reply, Failure> {
 
 /// A shape OCCT read but can't integrate gives NaN or infinity: never a result.
 fn check_finite(summary: &ShapeSummary) -> Result<(), Failure> {
-    let [x, y, z] = summary.center;
-    all_finite([
-        ("volume", summary.volume),
-        ("area", summary.area),
-        ("center x", x),
-        ("center y", y),
-        ("center z", z),
-    ])
+    measures_finite(summary.volume, summary.area, summary.center, summary.bounds)
 }
 
-/// As [`check_finite`], for a shape measured as FreeCAD measures it, with its box.
+/// As [`check_finite`], for a shape measured as FreeCAD measures it.
 fn check_freecad_finite(m: &FreecadMeasures) -> Result<(), Failure> {
-    let [x, y, z] = m.center;
-    let [low, high] = m.bounds.unwrap_or_default();
+    measures_finite(m.volume, m.area, m.center, m.bounds)
+}
+
+/// Whether a shape's measures are all finite, naming the first that isn't.
+fn measures_finite(
+    volume: f64,
+    area: f64,
+    [x, y, z]: [f64; 3],
+    bounds: Option<[[f64; 3]; 2]>,
+) -> Result<(), Failure> {
+    let [low, high] = bounds.unwrap_or_default();
     all_finite([
-        ("volume", m.volume),
-        ("area", m.area),
+        ("volume", volume),
+        ("area", area),
         ("center x", x),
         ("center y", y),
         ("center z", z),
@@ -388,11 +390,19 @@ mod tests {
             faces: 6,
             edges: 12,
             vertices: 8,
+            bounds: Some([[0.0; 3], [10.0, 20.0, 30.0]]),
             valid: true,
         };
         assert!(check_finite(&good).is_ok());
+        assert!(
+            check_finite(&ShapeSummary {
+                bounds: None,
+                ..good.clone()
+            })
+            .is_ok()
+        );
         type Spoil = fn(&mut ShapeSummary);
-        let cases: [(&str, Spoil); 6] = [
+        let cases: [(&str, Spoil); 8] = [
             ("volume isn't finite (NaN)", |s| s.volume = f64::NAN),
             ("volume isn't finite (inf)", |s| s.volume = f64::INFINITY),
             ("area isn't finite (NaN)", |s| s.area = f64::NAN),
@@ -403,6 +413,12 @@ mod tests {
             ("center z isn't finite (inf)", |s| {
                 s.center[2] = f64::INFINITY
             }),
+            ("bounding box's lowest y isn't finite (NaN)", |s| {
+                s.bounds = Some([[0.0, f64::NAN, 0.0], [10.0, 20.0, 30.0]]);
+            }),
+            ("bounding box's highest z isn't finite (inf)", |s| {
+                s.bounds = Some([[0.0; 3], [10.0, 20.0, f64::INFINITY]]);
+            }),
         ];
         for (want, spoil) in cases {
             let mut bad = good.clone();
@@ -411,6 +427,27 @@ mod tests {
             assert_eq!(failure.kind(), FailureKind::KernelFailed);
             let said = failure.refusal.describe(None, &|e| e.to_string());
             assert_eq!(said.message, format!("the shape's {want}"));
+        }
+        // Every corner of the box, NaN or infinite, each named.
+        for (c, corner) in ["lowest", "highest"].iter().enumerate() {
+            for (a, axis) in ["x", "y", "z"].iter().enumerate() {
+                for (value, text) in [(f64::NAN, "NaN"), (f64::INFINITY, "inf")] {
+                    let mut bounds = [[0.0; 3], [10.0, 20.0, 30.0]];
+                    bounds[c][a] = value;
+                    let bad = ShapeSummary {
+                        bounds: Some(bounds),
+                        ..good.clone()
+                    };
+                    let said = check_finite(&bad)
+                        .unwrap_err()
+                        .refusal
+                        .describe(None, &|e| e.to_string());
+                    assert_eq!(
+                        said.message,
+                        format!("the shape's bounding box's {corner} {axis} isn't finite ({text})")
+                    );
+                }
+            }
         }
     }
 

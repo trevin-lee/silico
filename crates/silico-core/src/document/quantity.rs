@@ -14,7 +14,7 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 pub enum NumberError {
     /// More precise than the quantity holds: a non-zero digit past its decimals.
     TooPrecise { decimals: u32 },
-    /// Larger than an `i64` of the quantity's units holds.
+    /// Larger, either way, than the quantity holds.
     OutOfRange,
     /// Zero written with a minus sign.
     NegativeZero,
@@ -44,6 +44,12 @@ const EXPONENT_CAP: i128 = 1 << 40;
 /// `1e-05`, `1.05E1`), in units of 10^-`decimals`: `0.1` with 6 decimals is 100,000. Read
 /// from its digits, never through a float. Digits past `decimals` must be zeros.
 pub fn parse_number(text: &str, decimals: u32) -> Result<i64, NumberError> {
+    parse_wide(text, decimals)
+        .and_then(|value| i64::try_from(value).map_err(|_| NumberError::OutOfRange))
+}
+
+/// As [`parse_number`], to an `i128`: as large as one holds, either way.
+pub fn parse_wide(text: &str, decimals: u32) -> Result<i128, NumberError> {
     let (negative, unsigned) = match text.strip_prefix('-') {
         Some(rest) => (true, rest),
         None => (false, text),
@@ -109,31 +115,44 @@ pub fn parse_number(text: &str, decimals: u32) -> Result<i64, NumberError> {
         }
         significant.truncate(kept);
     }
-    // The magnitude, in i128 so that i64::MIN's is held; checked at every step, so a
-    // thousand-digit number stops at the first digit that overflows.
+    // The magnitude, checked at every step, so a thousand-digit number stops at the first
+    // digit that overflows.
     let push = |m: i128, b: u8| {
         m.checked_mul(10)
             .and_then(|m| m.checked_add(i128::from(b - b'0')))
-            .filter(|&m| m <= i128::from(i64::MAX) + 1)
             .ok_or(NumberError::OutOfRange)
     };
     let mut magnitude: i128 = 0;
     for &b in &significant {
         magnitude = push(magnitude, b)?;
     }
-    // Zeros after: a non-zero value with 20 of them is past i64, so `push` refuses it by
+    // Zeros after: a non-zero value with 40 of them is past i128, so `push` refuses it by
     // then, however large the shift.
-    for _ in 0..shift.clamp(0, 20) {
+    for _ in 0..shift.clamp(0, 40) {
         magnitude = push(magnitude, b'0')?;
     }
-    let value = if negative { -magnitude } else { magnitude };
-    i64::try_from(value).map_err(|_| NumberError::OutOfRange)
+    Ok(if negative { -magnitude } else { magnitude })
+}
+
+/// `value` in units of 10^-`decimals`, rounded to the nearest, ties to even, from its exact
+/// value (Rust writes a float to a number of decimals exactly); none if it isn't finite or
+/// doesn't fit an `i128`. A value that rounds to zero is zero, whatever its sign.
+pub fn round_to(value: f64, decimals: u32) -> Option<i128> {
+    if !value.is_finite() {
+        return None;
+    }
+    let text = format!("{value:.*}", decimals as usize);
+    match parse_wide(&text, decimals) {
+        Ok(units) => Some(units),
+        Err(NumberError::NegativeZero) => Some(0),
+        Err(_) => None,
+    }
 }
 
 /// `value`, in units of 10^-`decimals`, as the shortest plain decimal that reads back as it:
 /// `100000` with 6 decimals is `0.1`, `10000000` is `10`.
-pub fn write_decimal(value: i64, decimals: u32) -> String {
-    let scale = 10u64.pow(decimals);
+pub fn write_decimal(value: i128, decimals: u32) -> String {
+    let scale = 10u128.pow(decimals);
     let magnitude = value.unsigned_abs();
     let (whole, fraction) = (magnitude / scale, magnitude % scale);
     let sign = if value < 0 { "-" } else { "" };
@@ -170,12 +189,20 @@ impl Length {
     pub fn parse(text: &str) -> Result<Self, NumberError> {
         parse_number(text, LENGTH_DECIMALS).map(Length)
     }
+
+    /// `mm` millimetres, rounded to the nanometre ([`round_to`]); none if it isn't finite
+    /// or doesn't fit.
+    pub fn rounded(mm: f64) -> Option<Self> {
+        i64::try_from(round_to(mm, LENGTH_DECIMALS)?)
+            .ok()
+            .map(Length)
+    }
 }
 
 impl fmt::Display for Length {
     /// In millimetres, as the file writes it.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&write_decimal(self.0, LENGTH_DECIMALS))
+        f.write_str(&write_decimal(i128::from(self.0), LENGTH_DECIMALS))
     }
 }
 
@@ -225,7 +252,7 @@ impl Angle {
 impl fmt::Display for Angle {
     /// In degrees, as the file writes it.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&write_decimal(self.0, ANGLE_DECIMALS))
+        f.write_str(&write_decimal(i128::from(self.0), ANGLE_DECIMALS))
     }
 }
 
@@ -245,6 +272,33 @@ impl JsonSchema for Angle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_length_rounded_past_i64_nanometres_is_none() {
+        // i64 holds up to 9223372036854775807 nm, about 9.2 million km.
+        assert_eq!(
+            Length::rounded(9e12),
+            Some(Length::from_nm(9_000_000_000_000_000_000))
+        );
+        assert_eq!(
+            Length::rounded(-9e12).map(Length::nm),
+            Some(-9_000_000_000_000_000_000)
+        );
+        assert_eq!(Length::rounded(1e13), None);
+        // i64::MAX nm is 9223372036854.775807 mm; the floats either side of it, 2^-9 apart
+        // (9223372036854.775390625 and 9223372036854.77734375, written as Rust's shortest).
+        assert_eq!(
+            Length::rounded(9_223_372_036_854.775),
+            Some(Length::from_nm(9_223_372_036_854_775_391))
+        );
+        assert_eq!(Length::rounded(9_223_372_036_854.777), None);
+        assert_eq!(Length::rounded(9.5e12), None);
+        assert_eq!(Length::rounded(-1e13), None);
+        assert_eq!(Length::rounded(f64::NAN), None);
+        assert_eq!(Length::rounded(0.0000004), Some(Length::from_nm(0)));
+        // The float written 1.0000005 is 1.00000050000000006988..., past the half: up.
+        assert_eq!(Length::rounded(1.0000005), Some(Length::from_nm(1_000_001)));
+    }
 
     #[test]
     fn decimals_read_exactly_without_a_float() {

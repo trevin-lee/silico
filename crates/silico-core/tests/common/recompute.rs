@@ -5,7 +5,7 @@ use silico_core::document::Checked;
 use silico_core::fake::FakeKernel;
 use silico_core::recompute::Recompute;
 
-use crate::model::checked;
+use crate::model::{checked, made};
 
 /// A document of these features, each a JSON object's text.
 pub fn document(features: &[&str]) -> Checked {
@@ -19,10 +19,7 @@ pub fn engine(size: usize) -> Recompute<FakeKernel> {
     Recompute::new(FakeKernel::new(size).unwrap())
 }
 
-/// The names of the kernel calls made since `from`.
+/// The names of the kernel calls that made shapes since `from`, in order ([`made`]).
 pub fn calls_since(engine: &Recompute<FakeKernel>, from: usize) -> Vec<&'static str> {
-    engine.kernel().calls()[from..]
-        .iter()
-        .map(|call| call.op.name())
-        .collect()
+    made(&engine.kernel().calls()[from..])
 }

@@ -21,18 +21,18 @@ use std::time::Duration;
 use cache::{HOLE, Scratch, calls, example_with_pin, files, hole, secret_of, session};
 use example::EXAMPLE;
 use hmac::{Hmac, Mac};
-use model::{checked, published};
+use model::{checked, made, published};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use silico_core::cache::Cache;
 use silico_core::document::FeatureId;
 use silico_core::fake::FakeKernel;
-use silico_core::kernel::{Generation, History, InputHistory, Kernel, KernelRequest};
+use silico_core::kernel::{Generation, History, InputHistory, Kernel, KernelRequest, ShapeSummary};
 use silico_core::pool::Pending;
 use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 use silico_core::{Error, ErrorCode};
 
-const MAGIC: &[u8] = b"silico cache 1\n";
+const MAGIC: &[u8] = b"silico cache 3\n";
 
 fn built(model: &Model, id: &str) -> (String, Arc<silico_core::recompute::Built>) {
     match model.outcome(&FeatureId::new(id).unwrap()) {
@@ -75,6 +75,7 @@ struct Entry {
     brep: Vec<u8>,
     valid: bool,
     history: Option<History>,
+    summary: Option<ShapeSummary>,
 }
 
 fn decode(bytes: &[u8]) -> Entry {
@@ -662,7 +663,7 @@ fn identity_and_platform_with_newlines_dont_share_entries() {
     );
     published(&second, checked(EXAMPLE));
     assert_eq!(
-        second.kernel().0.calls().len(),
+        made(&second.kernel().0.calls()).len(),
         4,
         "another kernel on another platform was served the first's entries"
     );

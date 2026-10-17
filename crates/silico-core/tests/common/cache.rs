@@ -10,7 +10,7 @@ use silico_core::fake::FakeKernel;
 use silico_core::recompute::{Model, Recompute};
 
 use crate::example::EXAMPLE;
-use crate::model::{checked, described};
+use crate::model::{checked, described, made};
 
 /// The example's hole, as the fake describes what made it.
 pub const HOLE: &str = "cut(box(40, 20, 10), translate(cylinder(2.5, 12), 20, 10, -1))";
@@ -80,14 +80,10 @@ pub fn example_with_pin(radius: &str) -> Checked {
     checked(&EXAMPLE.replace(r#""radius": 2.5"#, &format!(r#""radius": {radius}"#)))
 }
 
-/// The names of the kernel calls a session made, in order of name.
+/// The names of the kernel calls a session made shapes with (no summaries, [`made`]), in
+/// order of name.
 pub fn calls(engine: &Recompute<FakeKernel>) -> Vec<&'static str> {
-    let mut calls: Vec<_> = engine
-        .kernel()
-        .calls()
-        .iter()
-        .map(|c| c.op.name())
-        .collect();
+    let mut calls = made(&engine.kernel().calls());
     calls.sort_unstable();
     calls
 }

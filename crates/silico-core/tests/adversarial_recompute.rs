@@ -18,7 +18,7 @@ use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
 
 use example::EXAMPLE;
-use model::{WAIT, checked, described, id, published};
+use model::{WAIT, checked, described, id, made, published};
 use proptest::prelude::*;
 use recompute::{calls_since, engine};
 use silico_core::document::{Checked, FeatureId, read};
@@ -373,13 +373,13 @@ fn an_edit_that_shares_a_step_the_superseded_run_had_in_flight_runs_it_again() {
         "cut(box(40, 20, 10), translate(cylinder(2.5, 12), 20, 10, -1))"
     );
     let newest = engine.kernel().generation();
-    let mut ran: Vec<_> = engine
+    let newer_calls: Vec<_> = engine
         .kernel()
         .calls()
-        .iter()
+        .into_iter()
         .filter(|c| c.generation == newest)
-        .map(|c| c.op.name())
         .collect();
+    let mut ran = made(&newer_calls);
     ran.sort_unstable();
     // Nothing of the older run finished, so the newer one runs every step.
     assert_eq!(ran, ["Cut", "MakeBox", "MakeCylinder", "Translate"]);
@@ -699,7 +699,7 @@ fn a_chain_of_four_hundred_booleans_finishes_promptly() {
     let model = published(&engine, document(&features));
     let took = at.elapsed();
     assert_eq!(model.bodies(), [id(&last)]);
-    assert_eq!(engine.kernel().calls().len(), 1 + 2 * (n - 1));
+    assert_eq!(made(&engine.kernel().calls()).len(), 1 + 2 * (n - 1));
     assert!(took < Duration::from_secs(5), "took {took:?}");
 }
 
@@ -719,7 +719,7 @@ fn five_thousand_independent_features_finish_promptly() {
     // And again, unchanged: nothing runs, and it's quick.
     let at = Instant::now();
     published(&engine, document(&features));
-    assert_eq!(engine.kernel().calls().len(), n);
+    assert_eq!(made(&engine.kernel().calls()).len(), n);
     assert!(at.elapsed() < Duration::from_secs(2), "{:?}", at.elapsed());
 }
 

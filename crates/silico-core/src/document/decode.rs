@@ -5,6 +5,7 @@
 
 use std::fmt;
 
+use super::fingerprint::{Fingerprint, MEASURE_DECIMALS, Measure};
 use super::json::{At, Member, Node, SHOWN_CHARS, SyntaxError, Value, shown};
 use super::model::{
     Document, FEATURE_TYPES, Feature, FeatureId, FeatureVersion, FormatVersion, ID_LENGTH, Name,
@@ -215,7 +216,8 @@ fn field_name(key: &str) -> String {
     if plain { key.to_owned() } else { shown(key) }
 }
 
-/// A non-negative whole number's digits, as `silico` and `v` are written: compared as text,
+/// A non-negative whole number's digits, as `silico`, `v`, and a fingerprint's counts are
+/// written: compared as text,
 /// so no number is too large to say which it is.
 fn whole_number(node: &Node, feature: Option<&str>, parameter: &str) -> Result<String, Error> {
     let Value::Number(text) = &node.value else {
@@ -348,6 +350,10 @@ fn feature(index: usize, node: Node) -> Result<Feature, Error> {
         Some(node) => Some(string(node, fields.feature(), "note")?),
         None => None,
     };
+    let fingerprint = match fields.optional("fingerprint") {
+        Some(node) => Some(fingerprint(node, fields.feature())?),
+        None => None,
+    };
     fields.finish()?;
     Ok(Feature {
         id,
@@ -355,7 +361,94 @@ fn feature(index: usize, node: Node) -> Result<Feature, Error> {
         version: FeatureVersion,
         name,
         note,
+        fingerprint,
     })
+}
+
+fn fingerprint(node: Node, feature: Option<&str>) -> Result<Fingerprint, Error> {
+    let mut fields =
+        Fields::of(node, feature, Some("fingerprint"), "fingerprint")?.under("fingerprint");
+    let volume = measure(&mut fields, "volume")?;
+    let area = measure(&mut fields, "area")?;
+    let bbox = match fields.optional("bbox") {
+        Some(node) => Some(bbox(&node, fields.feature())?),
+        None => None,
+    };
+    let faces = count(&mut fields, "faces")?;
+    let edges = count(&mut fields, "edges")?;
+    let vertices = count(&mut fields, "vertices")?;
+    fields.finish()?;
+    Ok(Fingerprint {
+        volume,
+        area,
+        bbox,
+        faces,
+        edges,
+        vertices,
+    })
+}
+
+fn measure(fields: &mut Fields, key: &str) -> Result<Measure, Error> {
+    let node = fields.take(key)?;
+    let name = fields.name(key);
+    let feature = fields.feature();
+    let Value::Number(text) = &node.value else {
+        return Err(wrong_kind(feature, &name, &node, "a number"));
+    };
+    Measure::parse(text).map_err(|e| {
+        number_refused(
+            feature,
+            &name,
+            &node,
+            text,
+            &e,
+            Refused {
+                precise: String::new(),
+                range: format!(
+                    "a fingerprint's {key} is at most {} either way",
+                    Measure::from_millionths(i128::MAX)
+                ),
+                decimals: MEASURE_DECIMALS,
+            },
+        )
+    })
+}
+
+fn count(fields: &mut Fields, key: &str) -> Result<u32, Error> {
+    let node = fields.take(key)?;
+    let name = fields.name(key);
+    let feature = fields.feature();
+    let digits = whole_number(&node, feature, &name)?;
+    digits.parse::<u32>().map_err(|_| {
+        refuse(
+            feature,
+            &name,
+            node.at,
+            format!("{name} {} is too large", shown_number(&digits)),
+            format!("a fingerprint's {key} is at most {}", u32::MAX),
+        )
+    })
+}
+
+fn bbox(node: &Node, feature: Option<&str>) -> Result<[Length; 6], Error> {
+    let want = "an array of six lengths, [x, y, z, x, y, z]";
+    let Value::Array(items) = &node.value else {
+        return Err(wrong_kind(feature, "fingerprint.bbox", node, want));
+    };
+    let [a, b, c, d, e, f] = items.as_slice() else {
+        return Err(refuse(
+            feature,
+            "fingerprint.bbox",
+            node.at,
+            format!("fingerprint.bbox has {} values, not 6", items.len()),
+            format!("write fingerprint.bbox as {want}"),
+        ));
+    };
+    let mut corners = [Length::default(); 6];
+    for (i, (corner, item)) in corners.iter_mut().zip([a, b, c, d, e, f]).enumerate() {
+        *corner = length_value(item, feature, &format!("fingerprint.bbox.{i}"))?;
+    }
+    Ok(corners)
 }
 
 fn operation(type_name: &str, fields: &mut Fields) -> Result<Operation, Error> {
@@ -441,27 +534,58 @@ fn length_value(node: &Node, feature: Option<&str>, parameter: &str) -> Result<L
         ));
     };
     Length::parse(text).map_err(|e| {
-        let suggestion = match e {
-            NumberError::TooPrecise { decimals } => {
-                format!("round it to {decimals} decimals: lengths are whole nanometres")
-            }
-            NumberError::OutOfRange => format!(
-                "a length is at most {} mm either way",
-                Length::from_nm(i64::MAX)
-            ),
-            NumberError::NegativeZero => "write 0".to_owned(),
-            NumberError::Malformed => {
-                format!("write a number, to at most {LENGTH_DECIMALS} decimals")
-            }
-        };
-        refuse(
+        number_refused(
             feature,
             parameter,
-            node.at,
-            format!("{parameter} {} {e}", shown_number(text)),
-            suggestion,
+            node,
+            text,
+            &e,
+            Refused {
+                precise: ": lengths are whole nanometres".to_owned(),
+                range: format!(
+                    "a length is at most {} mm either way",
+                    Length::from_nm(i64::MAX)
+                ),
+                decimals: LENGTH_DECIMALS,
+            },
         )
     })
+}
+
+/// What to say of a number a quantity refused: after "round it to N decimals" (`precise`),
+/// how large it may be (`range`), and its decimals.
+struct Refused {
+    precise: String,
+    range: String,
+    decimals: u32,
+}
+
+/// The refusal of `text`, the number at `node` in `parameter`, for `e`.
+fn number_refused(
+    feature: Option<&str>,
+    parameter: &str,
+    node: &Node,
+    text: &str,
+    e: &NumberError,
+    said: Refused,
+) -> Error {
+    let suggestion = match e {
+        NumberError::TooPrecise { decimals } => {
+            format!("round it to {decimals} decimals{}", said.precise)
+        }
+        NumberError::OutOfRange => said.range,
+        NumberError::NegativeZero => "write 0".to_owned(),
+        NumberError::Malformed => {
+            format!("write a number, to at most {} decimals", said.decimals)
+        }
+    };
+    refuse(
+        feature,
+        parameter,
+        node.at,
+        format!("{parameter} {} {e}", shown_number(text)),
+        suggestion,
+    )
 }
 
 fn position(fields: &mut Fields) -> Result<Position, Error> {

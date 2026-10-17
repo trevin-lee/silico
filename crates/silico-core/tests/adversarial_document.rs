@@ -76,6 +76,7 @@ fn a_box(id: &str, name: &str) -> Feature {
         version: FeatureVersion,
         name: Name::new(name).unwrap(),
         note: None,
+        fingerprint: None,
     }
 }
 
@@ -908,6 +909,7 @@ fn any_document() -> impl Strategy<Value = Document> {
             version: FeatureVersion,
             name: Name::new(name).unwrap(),
             note,
+            fingerprint: None,
         });
     prop::collection::vec(feature, 0..5).prop_map(|features| Document {
         silico: FormatVersion,

@@ -222,6 +222,10 @@
         }
       ],
       "properties": {
+        "fingerprint": {
+          "$ref": "#/$defs/Fingerprint",
+          "description": "What the feature's solid measured when it was last built and saved; a rebuild that\nmeasures otherwise is drift (left out when it has none: new, or not built)."
+        },
         "id": {
           "$ref": "#/$defs/FeatureId"
         },
@@ -253,12 +257,63 @@
       "const": 1,
       "description": "The feature's version: changing a feature type's behaviour bumps it, and a document keeps the behaviour it was made with. 1 for every type so far."
     },
+    "Fingerprint": {
+      "additionalProperties": false,
+      "description": "What a feature's solid measures: its volume and area, its tight bounding box (lowest x, y,\nz, then highest; none for a solid with nothing in it), and how many faces, edges, and\nvertices it has.",
+      "properties": {
+        "area": {
+          "$ref": "#/$defs/Measure"
+        },
+        "bbox": {
+          "description": "`[x, y, z, x, y, z]`: the lowest corner, then the highest (left out when the solid\nhas nothing in it).",
+          "items": {
+            "$ref": "#/$defs/Length"
+          },
+          "maxItems": 6,
+          "minItems": 6,
+          "type": "array"
+        },
+        "edges": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "faces": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "vertices": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "volume": {
+          "$ref": "#/$defs/Measure"
+        }
+      },
+      "required": [
+        "volume",
+        "area",
+        "faces",
+        "edges",
+        "vertices"
+      ],
+      "type": "object"
+    },
     "FormatVersion": {
       "const": 1,
       "description": "The format's version: 1."
     },
     "Length": {
       "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+      "type": "number"
+    },
+    "Measure": {
+      "description": "A volume (mm³) or area (mm²): a number, to at most 6 decimals.",
       "type": "number"
     },
     "Name": {

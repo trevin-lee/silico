@@ -15,16 +15,20 @@ use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 
 /// Each `recompute_step` span: its ancestors' names, nearest first, and its `feature`.
-type Seen = Arc<Mutex<Vec<(Vec<&'static str>, String)>>>;
+type Seen = Arc<Mutex<Vec<(Vec<&'static str>, String, String)>>>;
 
 struct Steps(Seen);
 
-struct FeatureField(String);
+/// A step span's `feature` and `job`.
+#[derive(Default)]
+struct FeatureField(String, String);
 
 impl Visit for FeatureField {
     fn record_str(&mut self, field: &Field, value: &str) {
-        if field.name() == "feature" {
-            value.clone_into(&mut self.0);
+        match field.name() {
+            "feature" => value.clone_into(&mut self.0),
+            "job" => value.clone_into(&mut self.1),
+            _ => {}
         }
     }
 
@@ -40,9 +44,9 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Steps {
             .span(id)
             .map(|span| span.scope().skip(1).map(|s| s.name()).collect())
             .unwrap_or_default();
-        let mut feature = FeatureField(String::new());
-        attrs.record(&mut feature);
-        self.0.lock().unwrap().push((ancestors, feature.0));
+        let mut fields = FeatureField::default();
+        attrs.record(&mut fields);
+        self.0.lock().unwrap().push((ancestors, fields.0, fields.1));
     }
 }
 
@@ -59,9 +63,16 @@ fn a_recompute_step_descends_from_its_recompute_and_the_edit_that_asked_and_name
     let edit = tracing::info_span!("user_edit");
     let run = edit.in_scope(|| engine.start(document));
     assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
-    let steps = seen.lock().unwrap().clone();
-    assert_eq!(steps.len(), 1, "{steps:?}");
-    let (ancestors, feature) = &steps[0];
-    assert_eq!(ancestors, &["recompute", "user_edit"]);
-    assert_eq!(feature, "k7f2qx3m");
+    let mut steps = seen.lock().unwrap().clone();
+    steps.sort();
+    // The box's make and the measure of its solid, each under the recompute and the edit,
+    // each naming the feature.
+    let under = || vec!["recompute", "user_edit"];
+    assert_eq!(
+        steps,
+        [
+            (under(), "k7f2qx3m".to_owned(), "make".to_owned()),
+            (under(), "k7f2qx3m".to_owned(), "measure".to_owned()),
+        ]
+    );
 }

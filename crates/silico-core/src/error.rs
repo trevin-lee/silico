@@ -58,6 +58,9 @@ error_codes! {
     /// Silico, or the machine, is short of something the operation needs (open files,
     /// processes, memory, buffers): free some, then try again.
     ResourceExhausted = "resource_exhausted",
+    /// A feature rebuilt, but measures otherwise than the fingerprint stored with it: a
+    /// determinism bug or a kernel change, for a person to look at, never smoothed over.
+    Drift = "drift",
 }
 
 impl Serialize for ErrorCode {

@@ -8,6 +8,7 @@ use std::fmt;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use silico_protocol::Primitive;
 
+use super::fingerprint::Fingerprint;
 use super::quantity::Length;
 
 /// A Silico document: a part's feature timeline, rebuilt from this text.
@@ -133,6 +134,11 @@ pub struct Feature {
     /// A note about the feature, kept with it (left out when there's none).
     #[schemars(extend("type" = "string"))]
     pub note: Option<String>,
+    /// What the feature's solid measured when it was last built and saved; a rebuild that
+    /// measures otherwise is drift (left out when it has none: new, or not built).
+    #[serde(default)]
+    #[schemars(with = "Fingerprint")]
+    pub fingerprint: Option<Fingerprint>,
 }
 
 /// A feature's version: changing a feature type's behaviour bumps it, and a document keeps

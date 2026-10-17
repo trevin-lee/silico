@@ -4,8 +4,8 @@
 //! ([`pool::KernelPool`]) or an in-memory fake for tests (`fake::FakeKernel`, with the
 //! `fake` feature), the document's types, read and written exactly and checked
 //! ([`document`]), recompute ([`recompute::Recompute`]), and the rebuild cache
-//! ([`cache::Cache`]); fingerprints, topological naming, and the command API every client
-//! uses arrive later in M2.
+//! ([`cache::Cache`]), with each feature's fingerprint ([`document::Fingerprint`]);
+//! topological naming and the command API every client uses arrive later in M2.
 
 pub mod cache;
 pub mod document;

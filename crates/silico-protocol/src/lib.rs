@@ -304,6 +304,9 @@ pub struct ShapeSummary {
     pub faces: u32,
     pub edges: u32,
     pub vertices: u32,
+    /// The lowest and highest corners of the tight bounding box of its geometry (as a
+    /// [`FreecadMeasures`]'s); none for a shape with nothing in it.
+    pub bounds: Option<[[f64; 3]; 2]>,
     /// Whether OCCT's `BRepCheck_Analyzer` finds the shape valid.
     pub valid: bool,
 }
