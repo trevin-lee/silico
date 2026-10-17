@@ -241,10 +241,17 @@ fn independent_branches_run_at_once() {
         .kernel()
         .hold(|op| matches!(op, Op::MakePrimitive(_)));
     let run = engine.start(checked(EXAMPLE));
+    // The two primitives, held, run at once: neither branch waits on the other. Counted
+    // while they're held, where nothing else can run (each solid's measure, from M2.6,
+    // waits for its solid), not over the whole run, where a measure and a move can overlap
+    // however the scheduler lets them.
     assert!(engine.kernel().wait_running(2, WAIT));
+    assert_eq!(engine.kernel().most_running(), 2);
+    let mut started = calls_since(&engine, 0);
+    started.sort_unstable();
+    assert_eq!(started, ["MakeBox", "MakeCylinder"]);
     hold.release();
     assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
-    assert_eq!(engine.kernel().most_running(), 2);
 }
 
 #[test]
