@@ -229,6 +229,25 @@ fn a_face_keeps_its_sources_name_only_as_its_first_and_only_result_of_its_kind()
             "rrrrrrrr.Face(G aaaaaaaa.Face1)",
         ]
     );
+    // ...but an edge it generated is of another kind: the face is still its sole result
+    // of its own, and keeps its name (found untested by the review).
+    let and_an_edge = one_input(
+        vec![ElementFate {
+            modified: vec![reported(ElementKind::Face, 1, 1)],
+            generated: vec![reported(ElementKind::Edge, 1, 1)],
+            ..ElementFate::default()
+        }],
+        vec![],
+        (1, 1),
+        vec![vec![1]],
+        vec![vec![1]],
+    );
+    let map = cut_of_box(&and_an_edge);
+    assert_eq!(names(&map, ElementKind::Face, 1), ["aaaaaaaa.Face1"]);
+    assert_eq!(
+        names(&map, ElementKind::Edge, 1),
+        ["rrrrrrrr.Edge(G aaaaaaaa.Face1)"]
+    );
 }
 
 #[test]
@@ -661,19 +680,7 @@ fn a_cancel_after_publishing_doesnt_stop_the_published_models_names() {
     // Found by the review: a cancel (with nothing running) moved the generation on, and the
     // published model's background naming stopped for good, so `named_element_map` said
     // `None` for its later features forever. Naming stops only for a newer model.
-    let mut features = vec![
-        r#"{"id": "b0000000", "type": "box", "v": 1, "name": "b", "position": [0, 0, 0], "length": 400, "width": 20, "height": 5}"#.to_owned(),
-    ];
-    let mut base = "b0000000".to_owned();
-    for k in 1..=300 {
-        features.push(format!(r#"{{"id": "y{k:07}", "type": "cylinder", "v": 1, "name": "p", "position": [{k}, 10, -1], "radius": 0.25, "height": 7}}"#));
-        features.push(format!(r#"{{"id": "c{k:07}", "type": "cut", "v": 1, "name": "h", "base": "{base}", "tool": "y{k:07}"}}"#));
-        base = format!("c{k:07}");
-    }
-    let text = format!(
-        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "features": [{}]}}"#,
-        features.join(", ")
-    );
+    let (text, base) = plate(300);
     let engine = Recompute::new(FakeKernel::new(2).unwrap());
     let model = published(&engine, checked(&text));
     engine.cancel();
@@ -707,4 +714,117 @@ fn a_published_models_names_are_made_in_the_background() {
         );
     }
     assert!(model.named_element_map(&id("zzzzzzzz")).is_none());
+}
+
+/// A plate with `holes` holes drilled one by one, a cut a hole: its text, and the last
+/// cut's ID, the last feature named.
+fn plate(holes: u32) -> (String, String) {
+    let mut features = vec![
+        r#"{"id": "b0000000", "type": "box", "v": 1, "name": "b", "position": [0, 0, 0], "length": 400, "width": 20, "height": 5}"#.to_owned(),
+    ];
+    let mut base = "b0000000".to_owned();
+    for k in 1..=holes {
+        features.push(format!(r#"{{"id": "y{k:07}", "type": "cylinder", "v": 1, "name": "p", "position": [{k}, 10, -1], "radius": 0.25, "height": 7}}"#));
+        features.push(format!(r#"{{"id": "c{k:07}", "type": "cut", "v": 1, "name": "h", "base": "{base}", "tool": "y{k:07}"}}"#));
+        base = format!("c{k:07}");
+    }
+    (
+        format!(
+            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "features": [{}]}}"#,
+            features.join(", ")
+        ),
+        base,
+    )
+}
+
+#[test]
+fn a_newer_recompute_that_publishes_nothing_doesnt_stop_the_published_models_names() {
+    // Found by the review: only a cancel was tested; naming stopped by a newer start
+    // would pass it.
+    let (text, last) = plate(300);
+    let engine = Recompute::new(FakeKernel::new(2).unwrap());
+    let model = published(&engine, checked(&text));
+    // A newer recompute, cancelled: it publishes nothing.
+    let run = engine.start(checked(EXAMPLE));
+    engine.cancel();
+    let _ = run.wait_timeout(model::WAIT);
+    let last = id(&last);
+    let deadline = std::time::Instant::now() + 6 * model::WAIT;
+    while model.named_element_map(&last).is_none() {
+        assert!(std::time::Instant::now() < deadline, "never named");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(engine.published().as_ref(), Some(&model));
+}
+
+/// Waits until the background naming thread has let `model` go (only the test holds it).
+fn released(model: &Arc<silico_core::recompute::Model>) {
+    let deadline = std::time::Instant::now() + 30 * model::WAIT;
+    while Arc::strong_count(model) > 1 {
+        assert!(std::time::Instant::now() < deadline, "never released");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn a_newer_published_model_stops_the_older_ones_names() {
+    // Found by the review: that naming stops, and when, was untested. A newer model is
+    // the one to name; the older is let go, its last features unnamed.
+    let (text, last) = plate(300);
+    let engine = Recompute::new(FakeKernel::new(2).unwrap());
+    let model = published(&engine, checked(&text));
+    let _newer = published(&engine, checked(EXAMPLE));
+    released(&model);
+    assert!(
+        model.named_element_map(&id(&last)).is_none(),
+        "the old model was named on"
+    );
+}
+
+#[test]
+fn dropping_the_engine_stops_the_published_models_names() {
+    let (text, last) = plate(300);
+    let engine = Recompute::new(FakeKernel::new(2).unwrap());
+    let model = published(&engine, checked(&text));
+    drop(engine);
+    released(&model);
+    assert!(
+        model.named_element_map(&id(&last)).is_none(),
+        "named on after the drop"
+    );
+}
+
+#[test]
+fn a_place_is_a_rank_among_the_members_not_occts_position() {
+    // Edges 2 and 3 come about alike, generated from both faces, at positions 2 and 3 in
+    // Face1's list and 3 and 2 in Face2's, each list with an edge of its own first (Edge1
+    // in Face1's, Edge4 in Face2's). They're the group's only members, so their places are
+    // their ranks among themselves, 1/2 and 2/2, not OCCT's positions (found by the
+    // review: a place written as the raw position passed every test).
+    let face1 = ElementFate {
+        generated: vec![
+            reported(ElementKind::Edge, 1, 1),
+            reported(ElementKind::Edge, 2, 2),
+            reported(ElementKind::Edge, 3, 3),
+        ],
+        ..ElementFate::default()
+    };
+    let face2 = ElementFate {
+        generated: vec![
+            reported(ElementKind::Edge, 2, 3),
+            reported(ElementKind::Edge, 3, 2),
+            reported(ElementKind::Edge, 4, 1),
+        ],
+        ..ElementFate::default()
+    };
+    let history = one_input(vec![face1, face2], vec![], (0, 4), vec![], vec![]);
+    let map = cut_of_box(&history);
+    let got = names(&map, ElementKind::Edge, 4);
+    assert_eq!(
+        got[1..3],
+        [
+            "rrrrrrrr.Edge(G1/2 aaaaaaaa.Face1, G2/2 aaaaaaaa.Face2)",
+            "rrrrrrrr.Edge(G2/2 aaaaaaaa.Face1, G1/2 aaaaaaaa.Face2)",
+        ]
+    );
 }
