@@ -14,6 +14,7 @@ mod error;
 pub mod fake;
 pub mod kernel;
 pub mod logging;
+pub mod naming;
 pub mod pool;
 pub mod recompute;
 pub mod worker;
