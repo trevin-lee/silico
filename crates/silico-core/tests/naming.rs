@@ -828,3 +828,36 @@ fn a_place_is_a_rank_among_the_members_not_occts_position() {
         ]
     );
 }
+
+#[test]
+fn a_place_skips_the_non_members_between_members() {
+    // Face1 lists Edge2, then Edge1 (generated from Face1 alone, not a member), then
+    // Edge3; Face2 lists Edge3, then Edge2. Edge3's place in Face1's list is 2/2, not 3/2:
+    // a rank among the members, which an element between them doesn't move (found by the
+    // review: a place counted from the first member's position passed every test).
+    let face1 = ElementFate {
+        generated: vec![
+            reported(ElementKind::Edge, 1, 2),
+            reported(ElementKind::Edge, 2, 1),
+            reported(ElementKind::Edge, 3, 3),
+        ],
+        ..ElementFate::default()
+    };
+    let face2 = ElementFate {
+        generated: vec![
+            reported(ElementKind::Edge, 2, 2),
+            reported(ElementKind::Edge, 3, 1),
+        ],
+        ..ElementFate::default()
+    };
+    let history = one_input(vec![face1, face2], vec![], (0, 3), vec![], vec![]);
+    let map = cut_of_box(&history);
+    let got = names(&map, ElementKind::Edge, 3);
+    assert_eq!(
+        got[1..3],
+        [
+            "rrrrrrrr.Edge(G1/2 aaaaaaaa.Face1, G2/2 aaaaaaaa.Face2)",
+            "rrrrrrrr.Edge(G2/2 aaaaaaaa.Face1, G1/2 aaaaaaaa.Face2)",
+        ]
+    );
+}
