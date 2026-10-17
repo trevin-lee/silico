@@ -240,10 +240,10 @@ pub struct ElementMap {
     /// Names two or more elements came about by (each but the first then `~1`, `~2`, ...),
     /// here or in the solids this one was made from.
     duplicated: BTreeSet<Arc<Name>>,
-    /// Operations, this one or those it was made from, that named an element by its number
-    /// because nothing else named it, or its name would have been past the bounds: such a
-    /// name is unstable, as an upstream edit can renumber the element.
-    numbered: BTreeSet<FeatureId>,
+    /// Elements named by their numbers because nothing else named them, or their names
+    /// would have been past the bounds, here or in the solids this one was made from: such
+    /// a name is unstable, as an upstream edit can renumber the element.
+    numbered: BTreeSet<Arc<Name>>,
 }
 
 impl ElementMap {
@@ -298,9 +298,7 @@ impl ElementMap {
     /// element it names depends on how elements are numbered, which an upstream edit can
     /// change.
     pub fn is_unstable(&self, name: &Name) -> bool {
-        let numbered =
-            matches!(name, Name::Element { feature, .. } if self.numbered.contains(feature));
-        numbered
+        self.numbered.contains(name)
             || self.duplicated.contains(name)
             || matches!(name, Name::Duplicate { .. })
             || name.parts().into_iter().any(|part| self.is_unstable(part))

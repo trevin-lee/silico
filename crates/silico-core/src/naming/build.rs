@@ -58,7 +58,7 @@ impl ElementMap {
             .iter()
             .flat_map(|input| input.duplicated.iter().cloned())
             .collect();
-        let numbered: BTreeSet<FeatureId> = inputs
+        let numbered: BTreeSet<Arc<Name>> = inputs
             .iter()
             .flat_map(|input| input.numbered.iter().cloned())
             .collect();
@@ -87,7 +87,7 @@ impl ElementMap {
 /// face), its input (FreeCAD's tag, the input object's ID, so the base before the tool in
 /// FreeCAD's tests and documents alike), and its name as FreeCAD writes it, byte by byte;
 /// then Silico's name, so the order is total.
-type SourceKey = (u8, usize, String, Arc<Name>);
+type SourceKey = (u8, usize, Arc<str>, Arc<Name>);
 
 struct Builder {
     map: ElementMap,
@@ -131,10 +131,22 @@ impl Builder {
     fn bounded(&mut self, element: ElementRef, name: Name) -> Arc<Name> {
         let (depth, weight) = self.parts_size(&name);
         if depth > MOST_DEPTH || weight > MOST_WEIGHT {
-            self.map.numbered.insert(self.map.feature.clone());
-            return Arc::new(self.map.element_name(element));
+            let numbered = Arc::new(self.map.element_name(element));
+            self.map.numbered.insert(Arc::clone(&numbered));
+            return numbered;
         }
         Arc::new(name)
+    }
+
+    /// An input element's own name; if its map has none (a history that lists more of an
+    /// input's elements than it has; every map Silico builds names every element), one by
+    /// its number, unstable.
+    fn source_name(&mut self, map: &ElementMap, source: ElementRef) -> Arc<Name> {
+        map.name(source).unwrap_or_else(|| {
+            let numbered = Arc::new(map.element_name(source));
+            self.map.numbered.insert(Arc::clone(&numbered));
+            numbered
+        })
     }
 
     fn is_named(&self, element: ElementRef) -> bool {
@@ -190,7 +202,7 @@ impl Builder {
     fn candidate(&self, element: ElementRef) -> Option<Candidate> {
         let name = self.primary(element)?;
         Some(Candidate {
-            text: freecad::text(&name),
+            text: freecad::text(&name).into(),
             input: self.input_of(element),
             name,
         })
@@ -211,7 +223,10 @@ impl Builder {
                                 self.set(kept, Arc::clone(name));
                             }
                         }
-                        None => self.set(kept, input_name(map, source)),
+                        None => {
+                            let name = self.source_name(map, source);
+                            self.set(kept, name);
+                        }
                     }
                 }
             }
@@ -233,8 +248,8 @@ impl Builder {
                         continue;
                     }
                     let source = element(kind, n);
-                    let name = input_name(map, source);
-                    let key: SourceKey = (rank(kind), i, freecad::text(&name), name);
+                    let name = self.source_name(map, source);
+                    let key: SourceKey = (rank(kind), i, freecad::text(&name).into(), name);
                     // Generated after modified, so for a source that did both to one
                     // element, generated counts (FreeCAD's map overwrites the first).
                     let reported = fate
@@ -381,9 +396,9 @@ impl Builder {
             for index in 1..=counts.of(kind) {
                 let this = element_ref(kind, index);
                 if !self.is_named(this) {
-                    self.map.numbered.insert(self.map.feature.clone());
-                    let name = self.map.element_name(this);
-                    self.set(this, Arc::new(name));
+                    let name = Arc::new(self.map.element_name(this));
+                    self.map.numbered.insert(Arc::clone(&name));
+                    self.set(this, name);
                 }
             }
         }
@@ -409,13 +424,6 @@ fn element_ref(kind: ElementKind, index: u32) -> ElementRef {
     ElementRef { kind, index }
 }
 
-/// An input element's own name; one by its number if its map has none (FreeCAD's unmapped
-/// names), though every map Silico builds names every element.
-fn input_name(map: &ElementMap, element: ElementRef) -> Arc<Name> {
-    map.name(element)
-        .unwrap_or_else(|| Arc::new(map.element_name(element)))
-}
-
 /// A source's rank in FreeCAD's `NameKey`: vertex, edge, face.
 fn rank(kind: ElementKind) -> u8 {
     match kind {
@@ -431,7 +439,9 @@ fn rank(kind: ElementKind) -> u8 {
 /// order, so the order is total.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Candidate {
-    text: String,
+    /// Written once, and shared by every element it's a candidate for (the review found a
+    /// name's text copied for each, gigabytes from a megabyte of history).
+    text: Arc<str>,
     input: usize,
     name: Arc<Name>,
 }

@@ -848,3 +848,106 @@ fn a_deep_timeline_names_and_writes_its_names_on_a_default_thread() {
     assert!(top.contains(".Face6"), "{top}");
     assert!(unstable);
 }
+
+#[test]
+fn a_name_reported_for_many_elements_is_written_once() {
+    // Found by the review: a source's name, near the bound in size (32 KB written out),
+    // reported for 100,000 result faces made the core copy its text for each, 5 GB from a
+    // history of about a megabyte. Written once and shared, it's the history's size.
+    let history = crossed();
+    let tool = ElementMap::primitive(id("tttttttt"), BOX);
+    let mut map = ElementMap::primitive(id("pppppppp"), BOX);
+    for n in 0..11 {
+        map = ElementMap::operation(
+            id(&format!("f{n:07}")),
+            OpCode::Cut,
+            &[&map, &tool],
+            &history,
+        );
+    }
+    let face1 = map.name(element(ElementKind::Face, 1)).unwrap();
+    assert!(freecad::text(&face1).len() > 30_000);
+    let r: u32 = 100_000;
+    let all = |p: u32| ElementFate {
+        modified: (1..=r)
+            .map(|i| Reported {
+                element: element(ElementKind::Face, i),
+                position: p,
+            })
+            .collect(),
+        ..ElementFate::default()
+    };
+    let mut faces: Vec<ElementFate> = (0..6).map(|_| ElementFate::default()).collect();
+    faces[0] = all(1);
+    faces[1] = all(2);
+    let many = History {
+        inputs: vec![
+            InputHistory {
+                faces,
+                edges: vec![ElementFate::default(); 12],
+                vertices: vec![ElementFate::default(); 8],
+            },
+            InputHistory::default(),
+        ],
+        result: ElementCounts {
+            faces: r,
+            edges: 0,
+            vertices: 0,
+            solids: 1,
+        },
+        ends: Default::default(),
+        topology: Topology {
+            face_edges: vec![vec![]; r as usize],
+            outer_edges: vec![vec![]; r as usize],
+            edge_vertices: vec![],
+        },
+    };
+    many.validate(2).unwrap();
+    let started = Instant::now();
+    let named = ElementMap::operation(id("zzzzzzzz"), OpCode::Cut, &[&map, &tool], &many);
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(named.iter().count(), r as usize);
+}
+
+#[test]
+fn a_history_naming_an_element_its_input_doesnt_have_gives_an_unstable_name() {
+    // A box has 6 faces; a history that keeps a 7th (a broken worker's) names it by number,
+    // as FreeCAD's unmapped names are, and that name is unstable.
+    let mut faces: Vec<ElementFate> = (1..=6).map(kept).collect();
+    faces.push(kept(7));
+    let history = History {
+        inputs: vec![
+            InputHistory {
+                faces,
+                edges: (1..=12).map(kept).collect(),
+                vertices: (1..=8).map(kept).collect(),
+            },
+            InputHistory::default(),
+        ],
+        result: ElementCounts {
+            faces: 7,
+            edges: 12,
+            vertices: 8,
+            solids: 1,
+        },
+        ends: Default::default(),
+        topology: Topology {
+            face_edges: vec![vec![]; 7],
+            outer_edges: vec![vec![]; 7],
+            edge_vertices: vec![vec![]; 12],
+        },
+    };
+    history.validate(2).unwrap();
+    let base = ElementMap::primitive(id("pppppppp"), BOX);
+    let tool = ElementMap::primitive(id("tttttttt"), BOX);
+    let map = ElementMap::operation(id("cccccccc"), OpCode::Cut, &[&base, &tool], &history);
+    let seventh = map.name(element(ElementKind::Face, 7)).unwrap();
+    assert_eq!(seventh.to_string(), "pppppppp.Face7");
+    assert!(map.is_unstable(&seventh));
+    let sixth = map.name(element(ElementKind::Face, 6)).unwrap();
+    assert!(!map.is_unstable(&sixth));
+}
