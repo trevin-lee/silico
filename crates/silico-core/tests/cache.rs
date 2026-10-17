@@ -17,7 +17,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Barrier};
 
-use cache::{HOLE, Scratch, calls, example_with_pin, files, hole, session};
+use cache::{HOLE, Scratch, cache, calls, example_with_pin, files, hole, session};
 use example::EXAMPLE;
 use model::{checked, made, published};
 use silico_core::cache::Cache;
@@ -672,4 +672,26 @@ fn a_cache_whose_subdirectories_are_links_keeps_nothing_where_they_point() {
         .map(|e| e.file_name())
         .collect();
     assert_eq!(written, ["theirs"], "written through the links");
+}
+
+#[test]
+fn a_cache_shown_for_debugging_says_whether_its_sealed_never_its_secret() {
+    let dir = Scratch::new("debug");
+    let sealed = cache(&dir.0);
+    // Something written, so the secret exists.
+    published(&session(&dir.0), checked(EXAMPLE));
+    let shown = format!("{sealed:?}");
+    assert!(shown.contains("sealed: true"), "{shown}");
+    assert!(shown.contains(&format!("{:?}", dir.0)), "{shown}");
+    let secret = std::fs::read(dir.secret()).unwrap();
+    assert_eq!(secret.len(), 32);
+    // Neither the secret's bytes nor their hex appear.
+    let hex: String = secret.iter().map(|b| format!("{b:02x}")).collect();
+    assert!(!shown.contains(&hex), "{shown}");
+    assert!(!shown.contains(&format!("{secret:?}")), "{shown}");
+    // Without a secret (a damaged one), it says so.
+    let damaged = Scratch::new("debug-damaged");
+    std::fs::write(damaged.secret(), b"short").unwrap();
+    let unsealed = cache(&damaged.0);
+    assert!(format!("{unsealed:?}").contains("sealed: false"));
 }
