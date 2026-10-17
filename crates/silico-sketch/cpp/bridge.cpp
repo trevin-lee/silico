@@ -317,8 +317,9 @@ SolveOutput solve(const SolveInput &input) {
   return out;
 }
 
-// A drag's state (FreeCAD's Sketch::initMove and moveGeometries, absolute moves): the
-// sketch, diagnosed once, and the targets its pins hold points to. Which points to pin, and
+// A drag's state (FreeCAD's Sketch::initMove and moveGeometries, absolute moves): the part
+// of the sketch the drag moves, diagnosed for its own redundant equations, and the targets
+// its pins hold points to. Which points to pin, and
 // how strongly, is Rust's to say (silico_sketch::Drag::begin); the first pin's target is
 // the cursor.
 struct DragSession::State {
@@ -369,9 +370,9 @@ std::unique_ptr<DragSession> drag_begin(const SolveInput &input, rust::Slice<con
   return session;
 }
 
-DragDiagnosis diagnose(const SolveInput &input) {
+Diagnosis diagnose(const SolveInput &input) {
   Sketch sketch(input);
-  DragDiagnosis out;
+  Diagnosis out;
   sketch.diagnose(out.dofs, out.conflicting);
   return out;
 }

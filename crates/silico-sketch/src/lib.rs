@@ -136,7 +136,7 @@ mod ffi {
 
     /// What a diagnosis found: the degrees of freedom, and the tags of the constraints in
     /// conflict.
-    struct DragDiagnosis {
+    struct Diagnosis {
         dofs: i32,
         conflicting: Vec<i32>,
     }
@@ -153,10 +153,10 @@ mod ffi {
 
         fn solve(input: &SolveInput) -> Result<SolveOutput>;
 
-        /// A drag under way: the sketch's PlaneGCS system, kept between moves.
+        /// A drag under way: the PlaneGCS system of the part a drag moves, kept between moves.
         type DragSession;
         fn drag_begin(input: &SolveInput, pins: &[Pin]) -> Result<UniquePtr<DragSession>>;
-        fn diagnose(input: &SolveInput) -> Result<DragDiagnosis>;
+        fn diagnose(input: &SolveInput) -> Result<Diagnosis>;
         fn drag_move(session: Pin<&mut DragSession>, x: f64, y: f64) -> Result<MoveOutput>;
 
         fn fp_trap_mask() -> u32;
@@ -229,9 +229,11 @@ pub fn solve(system: &SketchSystem) -> Result<Solved, Failure> {
     })
 }
 
-/// A drag under way (docs/ports/sketcher.md, Dragging): the sketch as PlaneGCS holds it,
-/// diagnosed once at the start, with the dragged point pinned to the cursor by rows of
-/// lower priority than the sketch's constraints. Every move solves from the values at the
+/// A drag under way (docs/ports/sketcher.md, Dragging): the part of the sketch its pins
+/// move ([`DragBegin::part`]) as PlaneGCS holds it, every other value held where it began
+/// (the whole sketch diagnosed at the start for conflicts and degrees of freedom), with the
+/// dragged point pinned to the cursor by rows of lower priority than the sketch's
+/// constraints. Every move solves from the values at the
 /// start, never from the last move's, so a move's result is a function of the start and
 /// the cursor alone: frames dropped or reordered can't change where the sketch ends up.
 ///

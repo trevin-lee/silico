@@ -13,7 +13,7 @@ namespace silico_sketch {
 struct SolveInput;
 struct SolveOutput;
 struct Pin;
-struct DragDiagnosis;
+struct Diagnosis;
 struct MoveOutput;
 
 // Diagnoses and solves `input`. C++ exceptions reach Rust as errors (cxx's Result).
@@ -36,7 +36,7 @@ class DragSession {
 // is, at its weight: a drag's start.
 std::unique_ptr<DragSession> drag_begin(const SolveInput &input, rust::Slice<const Pin> pins);
 // Builds and diagnoses `input`: the degrees of freedom and the constraints in conflict.
-DragDiagnosis diagnose(const SolveInput &input);
+Diagnosis diagnose(const SolveInput &input);
 // Moves the first pin's target (the dragged point's) to (x, y) and solves from the drag's
 // start.
 MoveOutput drag_move(DragSession &session, double x, double y);

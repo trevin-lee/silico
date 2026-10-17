@@ -143,8 +143,10 @@ pub enum Op {
     /// drag's three (it answers `Echo` too, and nothing else). It ends any drag under way,
     /// as FreeCAD's solve does. Replies with [`Reply::Solved`].
     Solve(SketchSystem),
-    /// Starts a drag in the sketch worker, ending any under way: the sketch diagnosed once
-    /// and kept, with the point pinned to the cursor. Replies with [`Reply::DragStarted`].
+    /// Starts a drag in the sketch worker, ending any under way: the whole sketch diagnosed
+    /// for conflicts and degrees of freedom, and only the part its pins move
+    /// ([`DragBegin::part`]) kept, the point pinned to the cursor; every other value stays
+    /// where the drag began. Replies with [`Reply::DragStarted`].
     DragBegin(DragBegin),
     /// Moves the drag's cursor to `to`, and solves from where the drag started (never from
     /// the last move, so a move's result depends on the start and `to` alone). Replies with

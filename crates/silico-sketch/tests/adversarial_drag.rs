@@ -947,9 +947,9 @@ fn a_drag_counts_every_part_its_pins_hold() {
 #[test]
 fn a_move_solves_only_the_part_it_moves_and_leaves_the_rest_where_it_was() {
     // A lone free point beside a chain that can't be closed (its last end held 800 from the
-    // origin by 256 unit links): the whole sketch would fail every frame, solved anew each
-    // move (FreeCAD's System::solve solves every part). The drag holds only the point's
-    // part, so each move solves the point, and the chain stays as it was drawn.
+    // origin by 64 unit links, 256 unknowns): the whole sketch would fail every frame,
+    // solved anew each move (FreeCAD's System::solve solves every part). The drag holds only
+    // the point's part, so each move solves the point, and the chain stays as it was drawn.
     let (mut chain, last) = linked_chain(64);
     let far = Value(chain.values.len() as u32);
     chain.values.push(800.0);
@@ -989,7 +989,7 @@ fn a_move_solves_only_the_part_it_moves_and_leaves_the_rest_where_it_was() {
 }
 
 #[test]
-fn a_circle_of_negative_or_no_radius_or_a_line_too_short_to_measure_is_no_frame() {
+fn an_arc_of_negative_radius_or_a_line_too_short_to_measure_is_no_frame() {
     // An arc held at a radius of -1 (its rules join the radius to its centre), its centre
     // dragged: solved, but not an arc. (Held at 0, PlaneGCS lands on 7.7e-34: an arc.)
     let mut b = Builder::default();
