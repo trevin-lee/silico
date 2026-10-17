@@ -91,7 +91,8 @@ fn a_save_with_every_name_beside_the_file_taken_says_so_and_writes_nothing() {
     // All 64 names tried, and the message names them: the first, and -1 to -63.
     let said = format!(
         "every name for a file beside it is taken ({}/.part.silico.fmt-{pid}, and -1 to -63)",
-        dir.0.display()
+        // As the system names the directory, through any link (the temporary directory's).
+        std::fs::canonicalize(&dir.0).unwrap().display()
     );
     assert!(error.to_string().contains(&said), "{error}");
     assert_eq!(std::fs::read(&file).unwrap(), b"as read");
