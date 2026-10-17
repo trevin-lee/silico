@@ -861,3 +861,40 @@ fn a_place_skips_the_non_members_between_members() {
         ]
     );
 }
+
+#[test]
+fn a_non_member_before_a_middle_member_doesnt_move_its_rank() {
+    // A group of three: Edges 2, 3, and 4, generated alike from both faces, with Face1's
+    // Edge1 (not a member) listed between the first and the middle member. The middle
+    // member's rank is 2/3, counted among the members alone (found by the review: a rank
+    // counted from the first member's position, held to the group's size, passed with
+    // groups of two).
+    let face1 = ElementFate {
+        generated: vec![
+            reported(ElementKind::Edge, 1, 2),
+            reported(ElementKind::Edge, 2, 1),
+            reported(ElementKind::Edge, 3, 3),
+            reported(ElementKind::Edge, 4, 4),
+        ],
+        ..ElementFate::default()
+    };
+    let face2 = ElementFate {
+        generated: vec![
+            reported(ElementKind::Edge, 2, 3),
+            reported(ElementKind::Edge, 3, 2),
+            reported(ElementKind::Edge, 4, 1),
+        ],
+        ..ElementFate::default()
+    };
+    let history = one_input(vec![face1, face2], vec![], (0, 4), vec![], vec![]);
+    let map = cut_of_box(&history);
+    let got = names(&map, ElementKind::Edge, 4);
+    assert_eq!(
+        got[1..4],
+        [
+            "rrrrrrrr.Edge(G1/3 aaaaaaaa.Face1, G3/3 aaaaaaaa.Face2)",
+            "rrrrrrrr.Edge(G2/3 aaaaaaaa.Face1, G2/3 aaaaaaaa.Face2)",
+            "rrrrrrrr.Edge(G3/3 aaaaaaaa.Face1, G1/3 aaaaaaaa.Face2)",
+        ]
+    );
+}
