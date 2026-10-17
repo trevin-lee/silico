@@ -15,7 +15,7 @@ pub mod worker;
 use silico_protocol::{
     Algorithm, DragBegin, Failure, InvalidParameter, Moved, PointOf, Refusal, SketchGeometry,
     SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value, check_drag_target,
-    within_reach,
+    no_distance, within_reach,
 };
 
 #[cxx::bridge(namespace = "silico_sketch")]
@@ -336,16 +336,16 @@ impl Drag {
 }
 
 /// Whether geometry solved to `values` can be built, as FreeCAD's `Sketch::updateGeometry`
-/// finds when it makes its curves: a line has length to the solver (dx² + dy² isn't 0, the
-/// sketch worker's check; FreeCAD's `GeomLineSegment::setPoints`, "Both points are equal"),
+/// finds when it makes its curves: a line has length to the solver ([`no_distance`], the
+/// rule the sketch worker's check applies; FreeCAD's `GeomLineSegment::setPoints`, "Both
+/// points are equal"),
 /// and a circle or an arc a radius above 0 (FreeCAD's `gp_Circ` refuses one below 0 and
 /// keeps 0; Silico draws nothing of no size).
 fn buildable(geometry: &[SketchGeometry], values: &[f64]) -> bool {
     let at = |v: Value| values.get(v.0 as usize).copied().unwrap_or(f64::NAN);
     geometry.iter().all(|g| match *g {
         SketchGeometry::Line { start, end } => {
-            let (dx, dy) = (at(end.x) - at(start.x), at(end.y) - at(start.y));
-            dx * dx + dy * dy != 0.0
+            !no_distance([at(start.x), at(start.y)], [at(end.x), at(end.y)])
         }
         SketchGeometry::Circle { radius, .. } | SketchGeometry::Arc { radius, .. } => {
             at(radius) > 0.0
