@@ -16,7 +16,7 @@ use std::sync::Arc;
 use silico_core::cache::Cache;
 use silico_core::command::{self, Problems};
 use silico_core::document::Checked;
-use silico_core::file::{self, directory, opened_and_read, read};
+use silico_core::file::{self, opened_and_read, read};
 use silico_core::pool::KernelPool;
 use silico_core::recompute::Model;
 use silico_core::recompute::Recompute;
@@ -274,7 +274,7 @@ impl Engines {
     /// `checked`, read from `file`, rebuilt: on kernel workers, with the rebuild cache
     /// beside the file (`.silico-cache/`, beside the file a link names).
     fn rebuild(&mut self, file: &Path, checked: Checked) -> Result<Arc<Model>, Error> {
-        let dir = cache_directory(file);
+        let dir = file::cache_directory(file);
         let kept = self.current.take().filter(|(of, _)| *of == dir);
         let (dir, engine) = match kept {
             Some(current) => current,
@@ -283,7 +283,7 @@ impl Engines {
                     Some(pool) => Arc::clone(pool),
                     None => Arc::clone(self.pool.insert(Arc::new(KernelPool::start()?))),
                 };
-                let engine = Recompute::with_cache(pool, Cache::open(dir.join(".silico-cache")));
+                let engine = Recompute::with_cache(pool, Cache::open(dir.clone()));
                 (dir, engine)
             }
         };
@@ -296,13 +296,6 @@ impl Engines {
             .with_suggestion(silico_core::worker::SILICO_BUG)
         })
     }
-}
-
-/// Where `file`'s rebuild cache is: beside the file it names (through a link), so every
-/// name of a document shares one.
-fn cache_directory(file: &Path) -> PathBuf {
-    let named = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_owned());
-    directory(&named).to_owned()
 }
 
 /// `silico show FILE`: its outline, on stdout. Needs no kernel: it's the document as

@@ -41,6 +41,13 @@ pub fn opened_and_read(file: &Path) -> Result<(std::fs::File, Vec<u8>), Error> {
     Ok((opened, bytes))
 }
 
+/// Where `file`'s rebuild cache is (`.silico-cache/`): beside the file it names, through a
+/// link, so every name of a document, and every client, shares one.
+pub fn cache_directory(file: &Path) -> PathBuf {
+    let named = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_owned());
+    directory(&named).join(".silico-cache")
+}
+
 /// The directory `file` is in (`.` for a bare name).
 pub fn directory(file: &Path) -> &Path {
     file.parent()
@@ -84,8 +91,13 @@ pub fn save(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Error> {
     .ok_or_else(|| unwritable("it's read-only"))?;
     // Changed while it was rebuilt (another editor saved it): left to them.
     if read(&target)? != before {
-        return Err(unwritable(
-            "it changed while it was rebuilt: read it again, then save",
+        return Err(Error::new(
+            ErrorCode::IoFailed,
+            "couldn't be written: it changed while it was rebuilt",
+        )
+        .with_suggestion(
+            "it was saved by something else meanwhile: read it again (run `silico fmt` again), \
+             then save",
         ));
     }
     if metadata.nlink() > 1 {
