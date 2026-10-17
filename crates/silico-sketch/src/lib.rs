@@ -4,7 +4,8 @@
 //! this one.
 //!
 //! The bridge builds a PlaneGCS system from a [`SketchSystem`] exactly as given, diagnoses
-//! it, and solves it; what that means is the core's to decide (docs/ports/sketcher.md).
+//! it, and solves it, or keeps it for a drag ([`Drag`]); what that means is the core's to
+//! decide (docs/ports/sketcher.md).
 
 // FFI crate: `unsafe` is permitted here and nowhere else (see ARCHITECTURE.md).
 #![allow(unsafe_code)]
@@ -12,8 +13,9 @@
 pub mod worker;
 
 use silico_protocol::{
-    Algorithm, Failure, PointOf, Refusal, SketchGeometry, SketchSystem, SolveStatus, Solved,
-    SolverConstraint, Tag, Value, within_reach,
+    Algorithm, DragBegin, Failure, InvalidParameter, Moved, PointOf, Refusal, SketchGeometry,
+    SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value, check_drag_target,
+    within_reach,
 };
 
 #[cxx::bridge(namespace = "silico_sketch")]
@@ -123,10 +125,38 @@ mod ffi {
         residuals: Vec<f64>,
     }
 
+    /// The point a drag holds: which of its geometry's points (never `None` or
+    /// `Geometry`), and the geometry.
+    struct DragPoint {
+        position: Position,
+        geometry: u32,
+    }
+
+    /// What a drag's start found: the degrees of freedom, and the tags of the constraints
+    /// in conflict (none, or there's no drag).
+    struct DragDiagnosis {
+        dofs: i32,
+        conflicting: Vec<i32>,
+    }
+
+    /// How a drag's move ended: PlaneGCS's status (never `SolvedExceptRedundant`), and every
+    /// value when it's `Success` (otherwise none).
+    struct MoveOutput {
+        status: Status,
+        values: Vec<f64>,
+    }
+
     unsafe extern "C++" {
         include!("silico-sketch/cpp/bridge.h");
 
         fn solve(input: &SolveInput) -> Result<SolveOutput>;
+
+        /// A drag under way: the sketch's PlaneGCS system, kept between moves.
+        type DragSession;
+        fn drag_begin(input: &SolveInput, point: &DragPoint) -> Result<UniquePtr<DragSession>>;
+        fn drag_diagnosis(session: &DragSession) -> Result<DragDiagnosis>;
+        fn drag_move(session: Pin<&mut DragSession>, x: f64, y: f64) -> Result<MoveOutput>;
+
         fn fp_trap_mask() -> u32;
         fn disable_fp_traps() -> Result<()>;
         fn fix_eigen_cache_sizes();
@@ -142,20 +172,34 @@ mod ffi {
     }
 }
 
+/// Fixes Eigen's cache sizes before any product it computes, in whatever process solves.
+fn prepare_eigen() {
+    static EIGEN_CACHES: std::sync::Once = std::sync::Once::new();
+    EIGEN_CACHES.call_once(ffi::fix_eigen_cache_sizes);
+}
+
+/// Tags as PlaneGCS reported them, which are never negative for the core's constraints.
+fn tags(tags: &[i32]) -> Result<Vec<Tag>, Failure> {
+    tags.iter()
+        .map(|&t| u32::try_from(t).map(Tag))
+        .collect::<Result<_, _>>()
+        .map_err(|_| internal("PlaneGCS reported a negative tag"))
+}
+
+/// A value refused by the protocol's check, as the worker refuses it.
+pub fn invalid(e: InvalidParameter) -> Failure {
+    Failure::new(Refusal::InvalidParameter {
+        parameter: e.parameter.to_owned(),
+        message: e.message,
+    })
+}
+
 /// Diagnoses `system`, which must have passed [`SketchSystem::check`], and solves it with
 /// each of its algorithms in turn until one solves. A solution out of reach is refused.
 pub fn solve(system: &SketchSystem) -> Result<Solved, Failure> {
-    // Before any product Eigen computes, in whatever process solves.
-    static EIGEN_CACHES: std::sync::Once = std::sync::Once::new();
-    EIGEN_CACHES.call_once(ffi::fix_eigen_cache_sizes);
+    prepare_eigen();
     let out = ffi::solve(&encode(system)).map_err(bridge_threw)?;
     check_reach(&out.values)?;
-    let tags = |tags: &[i32]| -> Result<Vec<Tag>, Failure> {
-        tags.iter()
-            .map(|&t| u32::try_from(t).map(Tag))
-            .collect::<Result<_, _>>()
-            .map_err(|_| internal("PlaneGCS reported a negative tag"))
-    };
     Ok(Solved {
         dofs: out.dofs,
         conflicting: tags(&out.conflicting)?,
@@ -181,6 +225,79 @@ pub fn solve(system: &SketchSystem) -> Result<Solved, Failure> {
             .map(|(&tag, &r)| (Tag(tag), r.is_finite().then_some(r)))
             .collect(),
     })
+}
+
+/// A drag under way (docs/ports/sketcher.md, Dragging): the sketch as PlaneGCS holds it,
+/// diagnosed once at the start, with the dragged point pinned to the cursor by rows of
+/// lower priority than the sketch's constraints. Every move solves from the values at the
+/// start, never from the last move's, so a move's result is a function of the start and
+/// the cursor alone: frames dropped or reordered can't change where the sketch ends up.
+///
+/// FreeCAD 1.1.3 instead starts again from the current values once the cursor has gone 20
+/// times its first step from where it started (`RecalculateInitialSolutionWhileMovingPoint`),
+/// but measures from a point its GUI never sets (`initToPoint`), so whether it does depends
+/// on earlier drags; Silico doesn't port that.
+pub struct Drag {
+    session: cxx::UniquePtr<ffi::DragSession>,
+}
+
+/// What a drag's start found: the diagnosis, and the drag, unless constraints conflict.
+pub struct DragStart {
+    /// Degrees of freedom left: negative when over-constrained.
+    pub dofs: i32,
+    /// Constraints in conflict, by tag, in increasing order. FreeCAD doesn't drag a sketch
+    /// with any, so then there's no drag.
+    pub conflicting: Vec<Tag>,
+    pub drag: Option<Drag>,
+}
+
+impl Drag {
+    /// Checks `begin` ([`DragBegin::check`]), builds and diagnoses its sketch, and, unless
+    /// constraints conflict, pins its point where it is.
+    pub fn begin(begin: &DragBegin) -> Result<DragStart, Failure> {
+        begin.check().map_err(invalid)?;
+        prepare_eigen();
+        let (position, geometry) = point(begin.point);
+        let session = ffi::drag_begin(
+            &encode(&begin.system),
+            &ffi::DragPoint { position, geometry },
+        )
+        .map_err(bridge_threw)?;
+        let diagnosis = match session.as_ref() {
+            Some(s) => ffi::drag_diagnosis(s).map_err(bridge_threw)?,
+            None => return Err(internal("the bridge started no drag")),
+        };
+        let conflicting = tags(&diagnosis.conflicting)?;
+        let drag = conflicting.is_empty().then_some(Drag { session });
+        Ok(DragStart {
+            dofs: diagnosis.dofs,
+            conflicting,
+            drag,
+        })
+    }
+
+    /// Moves the cursor to `to` ([`check_drag_target`]) and solves from the drag's start
+    /// with DogLeg alone, as FreeCAD drags. A solution out of reach is refused.
+    pub fn move_to(&mut self, to: [f64; 2]) -> Result<Moved, Failure> {
+        check_drag_target(to).map_err(invalid)?;
+        let Some(session) = self.session.as_mut() else {
+            return Err(internal("the drag has no session"));
+        };
+        let out = ffi::drag_move(session, to[0], to[1]).map_err(bridge_threw)?;
+        let status = match out.status {
+            ffi::Status::Success => SolveStatus::Success,
+            ffi::Status::Converged => SolveStatus::Converged,
+            ffi::Status::Failed => SolveStatus::Failed,
+            _ => return Err(internal("the bridge returned a status a move can't have")),
+        };
+        let values = if status == SolveStatus::Success {
+            check_reach(&out.values)?;
+            Some(out.values)
+        } else {
+            None
+        };
+        Ok(Moved { status, values })
+    }
 }
 
 /// What the bridge threw, as a refusal.

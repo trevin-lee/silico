@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 
 #include "rust/cxx.h"
 
@@ -11,9 +12,33 @@ namespace silico_sketch {
 
 struct SolveInput;
 struct SolveOutput;
+struct DragPoint;
+struct DragDiagnosis;
+struct MoveOutput;
 
 // Diagnoses and solves `input`. C++ exceptions reach Rust as errors (cxx's Result).
 SolveOutput solve(const SolveInput &input);
+
+// A drag under way: the sketch's PlaneGCS system, kept between moves. Opaque to Rust,
+// which holds it by a UniquePtr; it's never moved, since PlaneGCS points into it.
+class DragSession {
+ public:
+  struct State;
+  explicit DragSession(const SolveInput &input);
+  ~DragSession();
+  DragSession(const DragSession &) = delete;
+  DragSession &operator=(const DragSession &) = delete;
+
+  std::unique_ptr<State> state;
+};
+
+// Builds and diagnoses `input` and, unless constraints conflict, pins `point` where it
+// is: a drag's start.
+std::unique_ptr<DragSession> drag_begin(const SolveInput &input, const DragPoint &point);
+// What the start's diagnosis found.
+DragDiagnosis drag_diagnosis(const DragSession &session);
+// Moves the pin's target to (x, y) and solves from the drag's start.
+MoveOutput drag_move(DragSession &session, double x, double y);
 
 // The trap-enable bits that are set: 0 when every floating-point trap is off.
 uint32_t fp_trap_mask();

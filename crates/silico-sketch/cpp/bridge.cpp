@@ -1,9 +1,11 @@
 #include "silico-sketch/cpp/bridge.h"
 
 #include <algorithm>
+#include <array>
 #include <csignal>
 #include <cstddef>
 #include <fenv.h>
+#include <memory>
 #include <new>
 #include <stdexcept>
 #include <string>
@@ -58,18 +60,69 @@ Status status_of(int status) {
   }
 }
 
-}  // namespace
+// A sketch as PlaneGCS takes it: every value in one array, in the core's order, never
+// resized (PlaneGCS orders its unknowns by address, so this makes that order the core's on
+// every platform, and its constraints point into it), the geometry made of those values,
+// and the system of constraints, its unknowns declared. Built in place and never moved.
+struct Sketch {
+  std::vector<double> values;
+  std::vector<Geo> geometry;
+  GCS::System system;
 
-SolveOutput solve(const SolveInput &input) {
-  // Every value in one array, in the core's order, never resized: PlaneGCS orders its
-  // unknowns by address, so this makes that order the core's on every platform.
-  std::vector<double> values(input.values.begin(), input.values.end());
-  auto value = [&](uint32_t i) -> double * {
+  explicit Sketch(const SolveInput &input);
+  Sketch(const Sketch &) = delete;
+  Sketch &operator=(const Sketch &) = delete;
+
+  double *value(uint32_t i) {
     if (i >= values.size()) bug("value " + std::to_string(i) + " out of range");
     return &values[i];
-  };
+  }
 
-  std::vector<Geo> geometry(input.geometry.size());
+  Geo &geo(uint32_t i, GeometryKind kind) {
+    if (i >= geometry.size() || geometry[i].kind != kind) {
+      bug("geometry " + std::to_string(i) + " isn't of the kind the constraint needs");
+    }
+    return geometry[i];
+  }
+
+  GCS::Point &point_of(Position position, uint32_t i) {
+    if (i >= geometry.size()) bug("geometry " + std::to_string(i) + " out of range");
+    Geo &g = geometry[i];
+    switch (position) {
+      case Position::Point:
+        if (g.kind == GeometryKind::Point) return g.point;
+        break;
+      case Position::Start:
+        if (g.kind == GeometryKind::Line) return g.line.p1;
+        if (g.kind == GeometryKind::Arc) return g.arc.start;
+        break;
+      case Position::End:
+        if (g.kind == GeometryKind::Line) return g.line.p2;
+        if (g.kind == GeometryKind::Arc) return g.arc.end;
+        break;
+      case Position::Center:
+        if (g.kind == GeometryKind::Circle) return g.circle.center;
+        if (g.kind == GeometryKind::Arc) return g.arc.center;
+        break;
+      default:
+        break;
+    }
+    bug("a point geometry " + std::to_string(i) + " doesn't have");
+  }
+
+  // The diagnosis, once, as FreeCAD's Sketch makes it (initSolution): the degrees of
+  // freedom and the constraints in conflict.
+  void diagnose(int &dofs, rust::Vec<int32_t> &conflicting) {
+    system.initSolution(GCS::DogLeg);
+    dofs = system.dofsNumber();
+    GCS::VEC_I tags;
+    system.getConflicting(tags);
+    for (int t : tags) conflicting.push_back(t);
+  }
+};
+
+Sketch::Sketch(const SolveInput &input) : values(input.values.begin(), input.values.end()) {
+  geometry.resize(input.geometry.size());
   for (size_t i = 0; i < geometry.size(); ++i) {
     const GeometryIn &in = input.geometry[i];
     const auto &v = in.values;
@@ -107,38 +160,7 @@ SolveOutput solve(const SolveInput &input) {
         bug("a geometry kind Rust doesn't send");
     }
   }
-  auto geo = [&](uint32_t i, GeometryKind kind) -> Geo & {
-    if (i >= geometry.size() || geometry[i].kind != kind) {
-      bug("geometry " + std::to_string(i) + " isn't of the kind the constraint needs");
-    }
-    return geometry[i];
-  };
-  auto point_of = [&](Position position, uint32_t i) -> GCS::Point & {
-    if (i >= geometry.size()) bug("geometry " + std::to_string(i) + " out of range");
-    Geo &g = geometry[i];
-    switch (position) {
-      case Position::Point:
-        if (g.kind == GeometryKind::Point) return g.point;
-        break;
-      case Position::Start:
-        if (g.kind == GeometryKind::Line) return g.line.p1;
-        if (g.kind == GeometryKind::Arc) return g.arc.start;
-        break;
-      case Position::End:
-        if (g.kind == GeometryKind::Line) return g.line.p2;
-        if (g.kind == GeometryKind::Arc) return g.arc.end;
-        break;
-      case Position::Center:
-        if (g.kind == GeometryKind::Circle) return g.circle.center;
-        if (g.kind == GeometryKind::Arc) return g.arc.center;
-        break;
-      default:
-        break;
-    }
-    bug("a point geometry " + std::to_string(i) + " doesn't have");
-  };
 
-  GCS::System system;
   for (const ConstraintIn &c : input.constraints) {
     const int tag = static_cast<int>(c.tag);
     switch (c.kind) {
@@ -200,21 +222,25 @@ SolveOutput solve(const SolveInput &input) {
         bug("a constraint kind Rust doesn't send");
     }
   }
-  if (input.algorithms.empty()) bug("no algorithm to try");
 
   GCS::VEC_pD unknowns;
   unknowns.reserve(input.unknowns.size());
   for (uint32_t u : input.unknowns) unknowns.push_back(value(u));
-
-  // As FreeCAD's Sketch does: declare, then diagnose once (initSolution).
   system.declareUnknowns(unknowns);
-  system.initSolution(GCS::DogLeg);
+}
+
+}  // namespace
+
+SolveOutput solve(const SolveInput &input) {
+  if (input.algorithms.empty()) bug("no algorithm to try");
+  Sketch sketch(input);
+  std::vector<double> &values = sketch.values;
+  GCS::System &system = sketch.system;
+
+  // As FreeCAD's Sketch does: declare, then diagnose once.
   SolveOutput out;
-  out.dofs = system.dofsNumber();
+  sketch.diagnose(out.dofs, out.conflicting);
   GCS::VEC_I tags;
-  system.getConflicting(tags);
-  for (int t : tags) out.conflicting.push_back(t);
-  tags.clear();
   system.getRedundant(tags);
   for (int t : tags) out.redundant.push_back(t);
   const std::vector<int> redundant = tags;
@@ -287,6 +313,85 @@ SolveOutput solve(const SolveInput &input) {
   for (int tag : tagged) {
     out.residual_tags.push_back(static_cast<uint32_t>(tag));
     out.residuals.push_back(system.calculateConstraintErrorByTag(tag));
+  }
+  return out;
+}
+
+// A drag's state (FreeCAD's Sketch::initMove and moveGeometries, one point, absolute
+// moves): the sketch, diagnosed once, and the targets the dragged point is pinned to.
+struct DragSession::State {
+  Sketch sketch;
+  // The targets: the dragged point's, then, for an arc's end, its centre's. Plain values,
+  // not unknowns, held here for the session's life, so the pins' pointers to them stay
+  // good (FreeCAD reserves its MoveParameters for the same reason).
+  std::array<double, 4> targets{};
+  int dofs = 0;
+  rust::Vec<int32_t> conflicting;
+
+  explicit State(const SolveInput &input) : sketch(input) {}
+};
+
+DragSession::DragSession(const SolveInput &input) : state(std::make_unique<State>(input)) {}
+DragSession::~DragSession() = default;
+
+std::unique_ptr<DragSession> drag_begin(const SolveInput &input, const DragPoint &point) {
+  auto session = std::make_unique<DragSession>(input);
+  DragSession::State &s = *session->state;
+  s.sketch.diagnose(s.dofs, s.conflicting);
+  // FreeCAD doesn't drag a sketch with constraints in conflict: no pins, no session.
+  if (!s.conflicting.empty()) return session;
+
+  GCS::System &system = s.sketch.system;
+  GCS::Point &dragged = s.sketch.point_of(point.position, point.geometry);
+  // Each pin starts where its point is, as FreeCAD's do; tagged -1
+  // (GCS::DefaultTemporaryConstraint), so they stay out of the diagnosis and go to the
+  // lower-priority subsystem.
+  auto pin = [&](GCS::Point &p, size_t at) {
+    s.targets[at] = *p.x;
+    s.targets[at + 1] = *p.y;
+    GCS::Point target(&s.targets[at], &s.targets[at + 1]);
+    return system.addConstraintP2PCoincident(target, p, GCS::DefaultTemporaryConstraint);
+  };
+  pin(dragged, 0);
+  const Geo &geo = s.sketch.geometry[point.geometry];
+  if (geo.kind == GeometryKind::Arc &&
+      (point.position == Position::Start || point.position == Position::End)) {
+    // The arc's centre pinned where it is, a hundred times more weakly, so the end moves
+    // before the centre does (FreeCAD 4d7a9435c1). Its two rows are the last two added.
+    GCS::Point &center = s.sketch.geometry[point.geometry].arc.center;
+    const int last = pin(center, 2);
+    system.rescaleConstraint(last - 1, 0.01);
+    system.rescaleConstraint(last, 0.01);
+  }
+  // Keeps the diagnosis (rows tagged below 0 don't touch it), splits the system again with
+  // the pins, and makes these values the ones every move starts from.
+  system.initSolution();
+  return session;
+}
+
+DragDiagnosis drag_diagnosis(const DragSession &session) {
+  DragDiagnosis out;
+  out.dofs = session.state->dofs;
+  for (int32_t t : session.state->conflicting) out.conflicting.push_back(t);
+  return out;
+}
+
+MoveOutput drag_move(DragSession &session, double x, double y) {
+  DragSession::State &s = *session.state;
+  if (!s.conflicting.empty()) bug("a move in a drag that never started");
+  GCS::System &system = s.sketch.system;
+  s.targets[0] = x;
+  s.targets[1] = y;
+  // DogLeg alone, with no fallback, as FreeCAD drags; a part with a pin is solved by SQP.
+  // Each solve starts from the values at the drag's start (System::solve resets to them).
+  const int status = system.solve(true, GCS::DogLeg);
+  MoveOutput out;
+  out.status = status_of(status);
+  if (status == GCS::Success) {
+    system.applySolution();
+    for (double v : s.sketch.values) out.values.push_back(v);
+  } else {
+    system.undoSolution();
   }
   return out;
 }
