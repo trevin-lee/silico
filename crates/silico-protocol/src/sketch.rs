@@ -79,7 +79,8 @@ impl SketchGeometry {
         }
     }
 
-    fn values(&self) -> Vec<Value> {
+    /// The values it's made of, in the order the sketch worker hands them to PlaneGCS.
+    pub fn values(&self) -> Vec<Value> {
         match *self {
             SketchGeometry::Point(p) => vec![p.x, p.y],
             SketchGeometry::Line { start, end } => vec![start.x, start.y, end.x, end.y],
@@ -147,13 +148,28 @@ impl PointOf {
     }
 }
 
-/// A constraint, in PlaneGCS's terms. Each named value is a [`Value`] of the system: fixed
-/// for a driving dimension, an unknown for a reference one. Every one except
-/// [`ArcRules`](SolverConstraint::ArcRules) carries the tag the solver reports it by.
+impl std::fmt::Display for PointOf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PointOf::Point(g) => write!(f, "point {}", g.0),
+            PointOf::Start(g) => write!(f, "the start of geometry {}", g.0),
+            PointOf::End(g) => write!(f, "the end of geometry {}", g.0),
+            PointOf::Center(g) => write!(f, "the centre of geometry {}", g.0),
+        }
+    }
+}
+
+/// A constraint, in PlaneGCS's terms. Each named value is a fixed [`Value`] of the system:
+/// reference dimensions, whose value the solver finds, come with the document's sketches
+/// (M3.3). Every one except [`ArcRules`](SolverConstraint::ArcRules) carries the tag the
+/// solver reports it by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SolverConstraint {
     /// An arc's end points on its circle at its angles: implicit in every arc whose values
-    /// the solver may change, never reported (PlaneGCS's tag 0).
+    /// the solver may change, never reported (PlaneGCS's tag 0). Each of its four
+    /// equations must involve an unknown: on fixed values they're rows of zeros that count
+    /// against the degrees of freedom, as FreeCAD found (`c6de527391`: fixed arcs get no
+    /// rules).
     ArcRules {
         arc: Geometry,
     },
@@ -252,7 +268,9 @@ pub struct SketchSystem {
     pub unknowns: Vec<Value>,
     pub geometry: Vec<SketchGeometry>,
     pub constraints: Vec<SolverConstraint>,
-    pub algorithm: Algorithm,
+    /// The algorithms to try, in order, after one diagnosis, until one succeeds (FreeCAD's
+    /// fallback: DogLeg, then Levenberg–Marquardt, then BFGS): one to three, each once.
+    pub algorithms: Vec<Algorithm>,
 }
 
 /// How a solve ended (PlaneGCS's `SolveStatus`). It means something only when the diagnosis
@@ -281,17 +299,25 @@ pub struct Solved {
     pub redundant: Vec<Tag>,
     /// Constraints some of whose equations repeat others, by tag, in increasing order.
     pub partially_redundant: Vec<Tag>,
-    /// Unknowns the constraints don't fix, each once, in increasing order: every unknown
-    /// when there are no equations.
+    /// Unknowns PlaneGCS finds the constraints don't fix, each once, in increasing order.
+    /// It finds none when there are no equations to diagnose (`no_equations`), which
+    /// FreeCAD reads as every unknown free.
     pub free: Vec<Value>,
+    /// The diagnosis had no equations: no constraint touches an unknown.
+    pub no_equations: bool,
+    /// How the last algorithm tried ended: the first to succeed, or the last of them.
     pub status: SolveStatus,
+    /// The algorithm that succeeded, if one did.
+    pub algorithm: Option<Algorithm>,
     /// Every value after the solve: the solution on success, otherwise as given.
     pub values: Vec<f64>,
     /// Each tagged constraint's residual on those values, by tag in increasing order, as
     /// PlaneGCS measures it: its error for a constraint of one equation, the root mean
-    /// square of them for one of several, in the constraint's own terms (millimetres for
-    /// distances, radians for angles, a sine or cosine for parallel and perpendicular).
-    /// `None` where it isn't a number (geometry of no size).
+    /// square of them for one of several, in the constraint's own terms: millimetres for
+    /// distances and coincidences, radians for angles, and for parallel and perpendicular a
+    /// sine or cosine scaled by the lines' starting lengths over their solved ones
+    /// (PlaneGCS fixes the scale when it builds the constraint). `None` where it isn't a
+    /// number (geometry of no size).
     pub residuals: Vec<(Tag, Option<f64>)>,
 }
 
@@ -329,6 +355,16 @@ impl SketchSystem {
                 ));
             }
         }
+        let algorithms = &self.algorithms;
+        if algorithms.is_empty()
+            || algorithms.len() > 3
+            || (1..algorithms.len()).any(|i| algorithms[..i].contains(&algorithms[i]))
+        {
+            return Err(invalid(
+                "algorithms",
+                format!("algorithms must be one to three different ones, got {algorithms:?}"),
+            ));
+        }
         // A kilometre, or as many radians: everything the kernel can make is within reach.
         if let Some((i, v)) = self
             .values
@@ -339,7 +375,8 @@ impl SketchSystem {
             return Err(invalid(
                 "values",
                 format!(
-                    "value {i} must be finite and within 1e6 of 0, got {}",
+                    "value {i} must be finite and within {} of 0, got {}",
+                    format_number(MAX_LENGTH),
                     format_number(*v)
                 ),
             ));
@@ -489,7 +526,7 @@ impl SketchSystem {
                 Err(invalid(
                     "constraints",
                     format!(
-                        "{what} names {p:?}, but geometry {} is {}",
+                        "{what} names {p}, but geometry {} is {}",
                         p.geometry().0,
                         k.word()
                     ),
@@ -518,7 +555,10 @@ impl SketchSystem {
         };
         use GeometryKind::{Arc, Circle, Line};
         match *c {
-            SolverConstraint::ArcRules { arc } => want(arc, &[Arc])?,
+            SolverConstraint::ArcRules { arc } => {
+                want(arc, &[Arc])?;
+                self.check_arc_rules(arc)?;
+            }
             SolverConstraint::Coincident { a, b, .. } => {
                 point(a)?;
                 point(b)?;
@@ -565,6 +605,42 @@ impl SketchSystem {
                     tag.0
                 ),
             ));
+        }
+        Ok(())
+    }
+}
+
+impl SketchSystem {
+    /// An arc's rules are four equations, the start's x and y and the end's from the
+    /// centre, radius, and angle: each must involve an unknown (FreeCAD `c6de527391`).
+    fn check_arc_rules(&self, arc: Geometry) -> Result<(), InvalidParameter> {
+        let Some(SketchGeometry::Arc {
+            center,
+            radius,
+            start_angle,
+            end_angle,
+            start,
+            end,
+        }) = self.geometry.get(arc.0 as usize).copied()
+        else {
+            return Ok(());
+        };
+        let unknown = |v: Value| self.unknowns.binary_search(&v).is_ok();
+        for (what, row) in [
+            ("start's x", [start.x, center.x, radius, start_angle]),
+            ("start's y", [start.y, center.y, radius, start_angle]),
+            ("end's x", [end.x, center.x, radius, end_angle]),
+            ("end's y", [end.y, center.y, radius, end_angle]),
+        ] {
+            if !row.into_iter().any(unknown) {
+                return Err(invalid(
+                    "constraints",
+                    format!(
+                        "an arc's rules on arc {}, whose {what} equation has no unknown: rules go only on an arc the solver may change",
+                        arc.0
+                    ),
+                ));
+            }
         }
         Ok(())
     }
@@ -687,7 +763,7 @@ mod tests {
                     value: Value(17),
                 },
             ],
-            algorithm: Algorithm::DogLeg,
+            algorithms: vec![Algorithm::DogLeg],
         }
     }
 
@@ -716,7 +792,7 @@ mod tests {
             assert_eq!(parameter, "values");
             assert_eq!(
                 message,
-                format!("value 5 must be finite and within 1e6 of 0, got {shown}")
+                format!("value 5 must be finite and within 1000000 of 0, got {shown}")
             );
         }
         // A kilometre is within reach.
@@ -816,7 +892,7 @@ mod tests {
             assert_eq!(
                 message,
                 format!(
-                    "constraint 2 (tag 2): a distance names {p:?}, but geometry {} is {kind}",
+                    "constraint 2 (tag 2): a distance names {p}, but geometry {} is {kind}",
                     p.geometry().0
                 )
             );
@@ -885,6 +961,55 @@ mod tests {
             };
         });
         assert_eq!(message, "tag 1 is used twice: each constraint has its own");
+    }
+
+    #[test]
+    fn an_arcs_rules_need_an_unknown_in_each_equation() {
+        // FreeCAD c6de527391: rules on a fixed arc are rows of zeros that count against the
+        // degrees of freedom (a fixed arc and a point on its start: dofs -4, not 0).
+        let (_, message) = refused(|s| s.unknowns.retain(|v| !(7..16).contains(&v.0)));
+        assert_eq!(
+            message,
+            "constraint 0: an arc's rules on arc 2, whose start's x equation has no unknown: rules go only on an arc the solver may change"
+        );
+        // One equation without one: the end's y (14, 15 are the end; 8 the centre's y; 9 the
+        // radius; 11 the end angle).
+        let (_, message) = refused(|s| s.unknowns.retain(|v| ![8, 9, 11, 15].contains(&v.0)));
+        assert!(
+            message.contains("whose end's y equation has no unknown"),
+            "{message}"
+        );
+        // An unknown in each is enough: only the start and end points free (12 to 15), the
+        // centre, radius, and angles fixed.
+        let mut s = system();
+        s.unknowns.retain(|v| !(7..12).contains(&v.0));
+        s.check().unwrap();
+    }
+
+    #[test]
+    fn algorithms_are_one_to_three_different_ones() {
+        use Algorithm::{Bfgs, DogLeg, LevenbergMarquardt};
+        for algorithms in [
+            vec![DogLeg],
+            vec![LevenbergMarquardt, DogLeg],
+            vec![DogLeg, LevenbergMarquardt, Bfgs],
+        ] {
+            let mut s = system();
+            s.algorithms = algorithms;
+            s.check().unwrap();
+        }
+        for algorithms in [
+            vec![],
+            vec![DogLeg, DogLeg],
+            vec![Bfgs, DogLeg, Bfgs, LevenbergMarquardt],
+        ] {
+            let (parameter, message) = refused(|s| s.algorithms = algorithms.clone());
+            assert_eq!(parameter, "algorithms");
+            assert_eq!(
+                message,
+                format!("algorithms must be one to three different ones, got {algorithms:?}")
+            );
+        }
     }
 
     #[test]

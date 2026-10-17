@@ -155,7 +155,7 @@ fn every_op() -> Vec<Op> {
                     value: Value(4),
                 },
             ],
-            algorithm: Algorithm::LevenbergMarquardt,
+            algorithms: vec![Algorithm::LevenbergMarquardt, Algorithm::DogLeg],
         }),
     ];
     let indices: std::collections::BTreeSet<usize> = ops
@@ -305,7 +305,9 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             redundant: vec![Tag(3)],
             partially_redundant: vec![],
             free: vec![Value(0), Value(7)],
+            no_equations: false,
             status: SolveStatus::Converged,
+            algorithm: None,
             values: vec![0.0, -1.5, 1e-300, f64::MAX],
             residuals: vec![
                 (Tag(2), Some(-2.5e-11)),

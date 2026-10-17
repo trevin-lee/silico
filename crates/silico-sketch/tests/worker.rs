@@ -99,11 +99,61 @@ fn a_kernel_operation_is_refused_as_another_workers() {
         )
         .unwrap_err();
     assert_eq!(err.code(), ErrorCode::Internal, "{err}");
-    assert!(
-        err.cause().unwrap().contains("another kind of worker"),
-        "{err}"
+    assert_eq!(err.message(), "the sketch worker couldn't do MakeBox");
+    assert_eq!(
+        err.cause(),
+        Some("MakeBox is answered by another kind of worker, not this one")
     );
     assert!(echo(&mut w));
+}
+
+/// Whether this machine keeps floating-point trap-enable bits once they're set: Linux
+/// does; some Apple silicon ignores them (they read back as 0), and some keeps them.
+fn traps_stay_on_here() -> bool {
+    silico_sketch::test_ops::enable_fp_traps().unwrap();
+    let on = silico_sketch::fp_trap_mask() != 0;
+    silico_sketch::disable_fp_traps().unwrap();
+    on
+}
+
+#[test]
+fn fp_traps_switched_on_by_a_request_fail_it() {
+    let mut w = test_worker();
+    let result = w.call(Generation(1), Op::Debug(DebugOp::EnableFpTraps), TIMEOUT);
+    if traps_stay_on_here() {
+        let err = result.unwrap_err();
+        assert_eq!(err.code(), ErrorCode::Internal, "{err}");
+        assert!(
+            err.cause().unwrap().contains("floating-point traps are on"),
+            "{err}"
+        );
+    } else {
+        // The hardware ignores the trap-enable bits: the request succeeds, traps off.
+        assert!(matches!(result.unwrap(), Reply::Done));
+    }
+    // Either way the worker has them off again and carries on.
+    let system = rectangle_40_by_20().b.system(Algorithm::DogLeg);
+    assert_eq!(solve(&mut w, system).status, SolveStatus::Success);
+}
+
+#[test]
+fn fp_trap_check_fails_when_traps_are_on() {
+    // In-process: the check the sketch worker runs at startup and after every request.
+    let platform = &silico_sketch::worker::PLATFORM;
+    assert!(silico_worker::check_fp_traps(platform).is_ok());
+    let stays_on = traps_stay_on_here();
+    silico_sketch::test_ops::enable_fp_traps().unwrap();
+    let on = silico_worker::check_fp_traps(platform);
+    silico_sketch::disable_fp_traps().unwrap();
+    if cfg!(target_os = "linux") {
+        assert!(stays_on, "Linux keeps trap-enable bits");
+    }
+    if stays_on {
+        assert!(on.unwrap_err().contains("floating-point traps are on"));
+    } else {
+        assert!(on.is_ok());
+    }
+    assert!(silico_worker::check_fp_traps(platform).is_ok());
 }
 
 #[test]
@@ -209,21 +259,24 @@ fn a_worker_not_started_by_the_core_refuses_to_run() {
     );
 }
 
-/// The worker and the test worker import no inexact platform math: PlaneGCS's comes from
-/// the libm shim (ARCHITECTURE.md, Deterministic kernel).
+/// The worker imports no inexact platform math: PlaneGCS's comes from the libm shim
+/// (ARCHITECTURE.md, Deterministic kernel). (The test worker, which can switch traps on,
+/// imports `feenableexcept` on Linux, which only OCCT's TKernel may.)
 #[test]
-fn workers_import_no_platform_math() {
-    for exe in [WORKER, TEST_WORKER] {
-        let script = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../third_party/occt/scripts/check-math-imports.sh"
-        );
-        let out = Command::new("bash").arg(script).arg(exe).output().unwrap();
-        assert!(
-            out.status.success(),
-            "{exe}: {}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
+fn the_worker_imports_no_platform_math() {
+    let script = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../third_party/occt/scripts/check-math-imports.sh"
+    );
+    let out = Command::new("bash")
+        .arg(script)
+        .arg(WORKER)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
 }

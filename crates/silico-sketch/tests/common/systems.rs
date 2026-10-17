@@ -73,12 +73,17 @@ impl Builder {
     }
 
     pub fn system(self, algorithm: Algorithm) -> SketchSystem {
+        self.system_trying(vec![algorithm])
+    }
+
+    /// The system, its algorithms tried in this order.
+    pub fn system_trying(self, algorithms: Vec<Algorithm>) -> SketchSystem {
         SketchSystem {
             values: self.values,
             unknowns: self.unknowns,
             geometry: self.geometry,
             constraints: self.constraints,
-            algorithm,
+            algorithms,
         }
     }
 }
@@ -150,5 +155,28 @@ pub fn line_values(system: &SketchSystem, values: &[f64], line: Geometry) -> [f6
             [start.x, start.y, end.x, end.y].map(|v| values[v.0 as usize])
         }
         other => panic!("geometry {} is {other:?}", line.0),
+    }
+}
+
+/// SplitMix64: a fixed sequence from a seed, the same on every platform.
+pub struct Rng(pub u64);
+
+impl Rng {
+    pub fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+
+    /// In [lo, hi), from the top 53 bits: exact arithmetic, no platform math.
+    pub fn range(&mut self, lo: f64, hi: f64) -> f64 {
+        let unit = (self.next() >> 11) as f64 / (1u64 << 53) as f64;
+        lo + (hi - lo) * unit
+    }
+
+    pub fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
     }
 }

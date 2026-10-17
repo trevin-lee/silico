@@ -4201,7 +4201,6 @@ dependencies = [
  "crc32fast",
  "cxx",
  "cxx-build",
- "libc",
  "proptest",
  "rustix",
  "serde_json",
@@ -4247,7 +4246,6 @@ dependencies = [
  "silico-protocol",
  "silico-sketch",
  "silico-worker",
- "tracing",
 ]
 
 [[package]]

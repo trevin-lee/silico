@@ -100,7 +100,8 @@ pub enum Refusal {
     /// An operation another kind of worker answers (a sketch solve sent to the kernel
     /// worker, or a kernel operation to the sketch worker).
     OtherWorkersOp { op: String },
-    /// PlaneGCS threw while solving a sketch; its words, if any, are the cause.
+    /// The sketch bridge threw (PlaneGCS itself never does): a bug in Silico; its words are
+    /// the cause.
     SolverThrew,
     /// PlaneGCS's solution has a value that isn't finite, or is beyond a kilometre (or as
     /// many radians) from 0, so the next solve couldn't start from it: `value`, its place in
@@ -264,7 +265,6 @@ impl Refusal {
             | Refusal::ExtentNotFinite
             | Refusal::FacesUnmeshed { .. }
             | Refusal::NotFinite { .. }
-            | Refusal::SolverThrew
             | Refusal::SolutionOutOfReach { .. } => FailureKind::KernelFailed,
             Refusal::TestOperation { .. } | Refusal::OtherWorkersOp { .. } => {
                 FailureKind::UnknownOp
@@ -273,6 +273,7 @@ impl Refusal {
             | Refusal::MalformedHistory { .. }
             | Refusal::NoEdgeToRefuse { .. }
             | Refusal::FpTrapsOn { .. }
+            | Refusal::SolverThrew
             | Refusal::Internal { .. } => FailureKind::Internal,
             Refusal::OutOfMemory => FailureKind::ResourceExhausted,
         }
@@ -981,7 +982,7 @@ mod tests {
             Internal,          // NoEdgeToRefuse
             UnknownOp,         // TestOperation
             UnknownOp,         // OtherWorkersOp
-            KernelFailed,      // SolverThrew
+            Internal,          // SolverThrew
             KernelFailed,      // SolutionOutOfReach
             Internal,          // FpTrapsOn
             Internal,          // Internal

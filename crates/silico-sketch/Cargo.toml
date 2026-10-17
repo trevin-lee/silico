@@ -15,7 +15,6 @@ test_ops = ["silico-worker/test_ops"]
 cxx.workspace = true
 silico-protocol.workspace = true
 silico-worker.workspace = true
-tracing.workspace = true
 
 [[bin]]
 name = "silico-sketch-worker"

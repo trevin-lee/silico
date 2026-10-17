@@ -14,7 +14,6 @@ test_ops = ["silico-worker/test_ops"]
 [dependencies]
 crc32fast.workspace = true
 cxx.workspace = true
-libc.workspace = true
 silico-protocol.workspace = true
 silico-worker.workspace = true
 tracing.workspace = true

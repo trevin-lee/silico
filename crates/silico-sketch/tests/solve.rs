@@ -83,11 +83,10 @@ fn a_free_line_has_four_degrees_of_freedom_and_stays_where_it_is() {
     assert_eq!(solved.dofs, 4);
     assert_eq!(solved.status, SolveStatus::Success);
     assert_eq!(solved.values, vec![1.0, 2.0, 3.0, 5.0]);
-    // With no equations every unknown is free, as FreeCAD reads PlaneGCS's empty diagnosis.
-    assert_eq!(
-        solved.free,
-        (0..4).map(silico_protocol::Value).collect::<Vec<_>>()
-    );
+    // With no equations PlaneGCS lists nothing free, and says there were none, which
+    // FreeCAD reads as every unknown free.
+    assert!(solved.free.is_empty());
+    assert!(solved.no_equations);
     assert!(solved.residuals.is_empty());
 }
 
@@ -106,10 +105,19 @@ fn a_horizontal_stated_twice_is_redundant_and_the_later_is_named() {
     assert_eq!(solved.dofs, 0);
     // PlaneGCS solves without the dropped constraint, then checks it on the values it
     // started from (GCS.cpp's System::solve, before anything is written back): this
-    // rectangle starts with its bottom off horizontal, so the solve is only `Converged`,
-    // and its values stay as they were.
-    assert_eq!(solved.status, SolveStatus::Converged);
-    assert_eq!(solved.values, system.values);
+    // rectangle starts with its bottom off horizontal, so PlaneGCS says only `Converged`.
+    // The bridge writes the solution back and checks the dropped constraint there, as
+    // PlaneGCS's own diagnosis does: it holds, so the solve succeeds, at the corners.
+    assert_eq!(solved.status, SolveStatus::Success);
+    assert_eq!(solved.algorithm, Some(Algorithm::DogLeg));
+    assert_close(
+        line_values(&system, &solved.values, bottom),
+        [0.0, 0.0, 40.0, 0.0],
+        "bottom",
+    );
+    let (tag, residual) = solved.residuals[solved.residuals.len() - 1];
+    assert_eq!(tag, again);
+    assert!(residual.unwrap().abs() <= 1e-10, "{residual:?}");
 
     // Started where the constraints already hold, the dropped one holds too.
     let mut started_solved = system.clone();

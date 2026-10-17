@@ -146,6 +146,31 @@ fn kernel_and_input_errors_are_structured_and_the_worker_lives_on() {
 }
 
 #[test]
+fn a_sketch_solve_is_refused_as_another_workers() {
+    let mut w = worker();
+    let err = w
+        .call(
+            Generation(1),
+            Op::Solve(silico_protocol::SketchSystem {
+                values: vec![],
+                unknowns: vec![],
+                geometry: vec![],
+                constraints: vec![],
+                algorithms: vec![silico_protocol::Algorithm::DogLeg],
+            }),
+            TIMEOUT,
+        )
+        .unwrap_err();
+    assert_eq!(err.code(), ErrorCode::Internal, "{err}");
+    assert_eq!(err.message(), "the kernel worker couldn't do Solve");
+    assert_eq!(
+        err.cause(),
+        Some("Solve is answered by another kind of worker, not this one")
+    );
+    assert!(make_box(&mut w, 1.0, 1.0, 1.0).is_ok());
+}
+
+#[test]
 fn production_worker_refuses_debug_ops() {
     let mut w = worker();
     for op in [

@@ -8,7 +8,8 @@
 //! so a worker passes them in as a [`Platform`].
 
 // Takes ownership of the inherited descriptor and closes the others: `unsafe` for those
-// system calls only (ARCHITECTURE.md, invariant 8: a crate at the OS boundary).
+// system calls only, the exception ARCHITECTURE.md's invariant 8 names (inherited
+// descriptors, nothing else).
 #![allow(unsafe_code)]
 
 use std::fs::File;

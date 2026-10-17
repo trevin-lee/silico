@@ -4,9 +4,9 @@
 //! headers from pixi, and links libc++ and the libm shim into every executable of this
 //! crate, as silico-kernel does.
 
+use std::env;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::{env, fs};
 
 #[path = "../silico-kernel/cxx_env.rs"]
 mod cxx_env;
@@ -142,6 +142,5 @@ fn main() -> BuildResult<()> {
         "cargo:rerun-if-changed={}",
         root.join("pixi.lock").display()
     )?;
-    let _ = fs::metadata(&planegcs)?;
     Ok(())
 }

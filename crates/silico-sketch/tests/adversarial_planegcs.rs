@@ -19,7 +19,7 @@ use silico_protocol::{
     Algorithm, DebugOp, Generation, Geometry, Op, PointOf, PointValues, Refusal, Reply,
     SketchGeometry, SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value,
 };
-use systems::{Builder, rectangle_40_by_20};
+use systems::{Builder, Rng, rectangle_40_by_20};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-worker");
 const TEST_WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-test-worker");
@@ -134,6 +134,95 @@ fn a_violated_distance_between_fixed_points_beside_a_solved_sketch_is_named_and_
     }
 }
 
+#[test]
+fn a_constraint_of_two_equations_is_reported_by_their_root_mean_square() {
+    // A coincidence is two equations, x and y: between fixed points at (0, 0) and (3, 4)
+    // their errors are −3 and −4, and the residual is √((9 + 16) / 2) = √12.5.
+    let mut b = Builder::default();
+    let p = b.fixed_point(0.0, 0.0);
+    let q = b.fixed_point(3.0, 4.0);
+    b.constrain(|tag| SolverConstraint::Coincident {
+        tag,
+        a: PointOf::Point(p),
+        b: PointOf::Point(q),
+    });
+    let solved = solve(&b.system(Algorithm::DogLeg));
+    assert_eq!(solved.residuals, vec![(Tag(1), Some(12.5_f64.sqrt()))]);
+}
+
+#[test]
+fn a_residual_that_isnt_a_number_is_reported_as_none() {
+    // Found by break-it (seed 0xca6ae0f8e83e36dc): a line whose ends are made coincident
+    // collapses, and a point on it then measures 0/0. Its residual is reported as none, not
+    // NaN, so the core can't mistake it for a number.
+    // That seed's system: a line from (−2, 0) to (23.44, 8.46), its start's x fixed, made
+    // perpendicular to itself and its ends coincident, so it collapses to a point; a point
+    // on it (its own start, twice) then measures 0/0, and the rest measure 0.
+    let line = Geometry(0);
+    let system = SketchSystem {
+        values: vec![-2.0, 0.0, 23.440289617918054, 8.464919169626306],
+        unknowns: vec![Value(1), Value(2), Value(3)],
+        geometry: vec![SketchGeometry::Line {
+            start: PointValues {
+                x: Value(0),
+                y: Value(1),
+            },
+            end: PointValues {
+                x: Value(2),
+                y: Value(3),
+            },
+        }],
+        constraints: vec![
+            SolverConstraint::PointOnLine {
+                tag: Tag(1),
+                point: PointOf::Start(line),
+                line,
+            },
+            SolverConstraint::Perpendicular {
+                tag: Tag(2),
+                a: line,
+                b: line,
+            },
+            SolverConstraint::PointOnLine {
+                tag: Tag(3),
+                point: PointOf::Start(line),
+                line,
+            },
+            SolverConstraint::EqualLength {
+                tag: Tag(4),
+                a: line,
+                b: line,
+            },
+            SolverConstraint::Parallel {
+                tag: Tag(5),
+                a: line,
+                b: line,
+            },
+            SolverConstraint::Coincident {
+                tag: Tag(6),
+                a: PointOf::Start(line),
+                b: PointOf::End(line),
+            },
+        ],
+        algorithms: vec![Algorithm::DogLeg],
+    };
+    let solved = solve(&system);
+    assert_eq!(solved.status, SolveStatus::Success);
+    let v = &solved.values;
+    assert_eq!((v[0], v[1]), (v[2], v[3]), "the line collapsed");
+    assert_eq!(
+        solved.residuals,
+        vec![
+            (Tag(1), None),
+            (Tag(2), Some(0.0)),
+            (Tag(3), None),
+            (Tag(4), Some(0.0)),
+            (Tag(5), Some(0.0)),
+            (Tag(6), Some(0.0)),
+        ]
+    );
+}
+
 // ---------------------------------------------------------------------------------------
 // What `Solved` promises about its lists.
 
@@ -165,18 +254,20 @@ fn a_line_with_no_constraints_is_free_as_it_is_beside_a_constrained_sketch() {
     assert_eq!(solved.dofs, 4);
     assert_eq!(solved.free, (20..24).map(Value).collect::<Vec<_>>());
 
-    // Found by break-it, now fixed: alone, with no constraint in the sketch, the same line
-    // was listed as fixed:
-    // PlaneGCS's diagnosis matrix is empty and it lists no dependent parameter. FreeCAD
-    // reads that case as "everything free" (Sketch::calculateDependentParametersElements,
-    // `isEmptyDiagnoseMatrix()` → Dependent); the bridge drops the flag, so `free` is []
-    // while dofs is 4. (solve.rs's a_free_line_has_four_degrees_of_freedom_and_stays_where_
-    // it_is asserts the empty list.)
+    // Found by break-it: alone, with no constraint in the sketch, the same line was listed
+    // as fixed, with dofs 4: PlaneGCS's diagnosis has no equations and lists no dependent
+    // value. FreeCAD reads that as "everything free" (Sketch::calculateDependentParameters-
+    // Elements, `isEmptyDiagnoseMatrix()`); the bridge now says so, and the core decides.
     let mut b = Builder::default();
     b.line((100.0, 100.0), (110.0, 105.0));
     let solved = solve(&b.system(Algorithm::DogLeg));
     assert_eq!(solved.dofs, 4);
-    assert_eq!(solved.free, (0..4).map(Value).collect::<Vec<_>>());
+    assert!(solved.free.is_empty());
+    assert!(solved.no_equations);
+    // And a sketch with equations says it has them.
+    let mut r = rectangle_40_by_20();
+    r.b.line((100.0, 100.0), (110.0, 105.0));
+    assert!(!solve(&r.b.system(Algorithm::DogLeg)).no_equations);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -442,37 +533,86 @@ fn parallel_chain(n: usize, algorithm: Algorithm) -> SketchSystem {
 }
 
 #[test]
-fn a_system_well_within_the_checks_limits_is_answered_in_a_minute() {
+fn the_largest_system_the_check_admits_is_answered() {
     // Found by break-it: 2,000 lines (8,000 unknowns) chained by 1,999 parallels passed the
     // check, half its Jacobian limit, and ran for many minutes: Levenberg–Marquardt forms
     // JᵀJ, unknowns × unknowns, and factors it in O(unknowns³) (measured in release: 500
     // lines 13 s, 1,000 lines about 100 s). The check now refuses more than
-    // MAX_SKETCH_UNKNOWNS, and the most it admits is answered.
+    // MAX_SKETCH_UNKNOWNS, and the most it admits is answered: 512 free lines, each
+    // parallel to the next, are 2,048 unknowns less 511 independent equations.
     assert!(
         parallel_chain(2000, Algorithm::LevenbergMarquardt)
             .check()
             .is_err()
     );
-    let system = parallel_chain(
-        silico_protocol::MAX_SKETCH_UNKNOWNS / 4,
-        Algorithm::LevenbergMarquardt,
-    );
+    let lines = silico_protocol::MAX_SKETCH_UNKNOWNS / 4;
+    let system = parallel_chain(lines, Algorithm::LevenbergMarquardt);
     system.check().unwrap();
     let mut w = Worker::spawn_as(Path::new(WORKER), WorkerKind::Sketch).unwrap();
+    match w.call(Generation(1), Op::Solve(system), Duration::from_secs(60)) {
+        Ok(Reply::Solved(solved)) => {
+            assert_eq!(solved.status, SolveStatus::Success);
+            assert_eq!(solved.dofs, 2048 - 511);
+            assert!(solved.conflicting.is_empty() && solved.redundant.is_empty());
+        }
+        other => panic!("the largest admitted system wasn't solved: {other:?}"),
+    }
+}
+
+/// Whether a process with this ID exists (zombies included).
+fn process_exists(pid: u32) -> bool {
+    std::process::Command::new("ps")
+        .args(["-p", &pid.to_string()])
+        .output()
+        .unwrap()
+        .status
+        .success()
+}
+
+#[test]
+fn a_heavily_conflicting_system_at_the_limits_is_answered_or_timed_out_and_reaped() {
+    // Found by the robustness review: thousands of dimensions that conflict make
+    // PlaneGCS's conflict analysis run for minutes (2,048 unknowns and 4,000 distances:
+    // over 11 minutes). The bound on a solve is the request's timeout: the worker is
+    // killed and reaped when it passes, and the error says so.
+    let mut rng = Rng(0x00c0_ffee);
+    let mut b = Builder::default();
+    let lines: Vec<Geometry> = (0..silico_protocol::MAX_SKETCH_UNKNOWNS / 4)
+        .map(|_| {
+            let (x, y) = (rng.range(-100.0, 100.0), rng.range(-100.0, 100.0));
+            b.line((x, y), (x + rng.range(1.0, 10.0), y + rng.range(1.0, 10.0)))
+        })
+        .collect();
+    for _ in 0..4000 {
+        let a = lines[rng.below(lines.len() as u64) as usize];
+        let c = lines[rng.below(lines.len() as u64) as usize];
+        let value = b.fixed(rng.range(1.0, 50.0));
+        b.constrain(|tag| SolverConstraint::Distance {
+            tag,
+            a: PointOf::Start(a),
+            b: PointOf::End(c),
+            value,
+        });
+    }
+    let system = b.system(Algorithm::DogLeg);
+    system.check().unwrap();
+    let mut w = Worker::spawn_as(Path::new(WORKER), WorkerKind::Sketch).unwrap();
+    let pid = w.pid();
     let start = Instant::now();
-    let result = w.call(Generation(1), Op::Solve(system), Duration::from_secs(60));
-    match result {
-        Ok(Reply::Solved(solved)) => assert_eq!(solved.status, SolveStatus::Success),
+    match w.call(Generation(1), Op::Solve(system), Duration::from_secs(5)) {
+        Ok(Reply::Solved(_)) => {}
         Ok(other) => panic!("replied {other:?}"),
         Err(e) => {
-            assert_ne!(
-                e.code(),
-                ErrorCode::WorkerTimeout,
-                "a checked system timed out after {:?}: {e}",
-                start.elapsed()
-            );
+            assert_eq!(e.code(), ErrorCode::WorkerTimeout, "{e}");
+            assert!(w.is_stopped());
+            assert!(!process_exists(pid), "worker {pid} still exists");
         }
     }
+    assert!(
+        start.elapsed() < Duration::from_secs(15),
+        "{:?}",
+        start.elapsed()
+    );
 }
 
 #[test]
@@ -496,7 +636,7 @@ fn a_checked_system_has_a_bounded_amount_of_geometry() {
             points
         ],
         constraints: Vec::new(),
-        algorithm: Algorithm::DogLeg,
+        algorithms: vec![Algorithm::DogLeg],
     };
     let e = system.check().unwrap_err();
     assert_eq!(e.parameter, "geometry", "{}", e.message);
@@ -598,25 +738,6 @@ fn solves_on_many_threads_at_once_agree_bit_for_bit() {
 // zero and negative dimensions, constraints on fixed values, and now and then a reference
 // the check must refuse. Whatever passes the check, the bridge must build (no exception),
 // and what it returns must keep `Solved`'s promises, checked here from the values alone.
-
-/// SplitMix64.
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
-    fn range(&mut self, lo: f64, hi: f64) -> f64 {
-        lo + (hi - lo) * ((self.next() >> 11) as f64 / (1u64 << 53) as f64)
-    }
-    fn below(&mut self, n: u64) -> u64 {
-        self.next() % n
-    }
-}
 
 struct Gen {
     rng: Rng,

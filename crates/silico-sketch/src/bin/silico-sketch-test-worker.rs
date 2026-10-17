@@ -1,5 +1,6 @@
 //! The sketch worker with the test operations, for tests of how the core treats it:
-//! sleeping, aborting, crashing, replying with garbage or out of turn, and a C++ exception.
+//! sleeping, aborting, crashing, replying with garbage or out of turn, and switching
+//! floating-point traps on.
 //! Built only with the `test_ops` feature, and kept in its own binary so the production
 //! worker's code never dispatches these.
 
@@ -15,6 +16,9 @@ fn main() -> std::process::ExitCode {
                     silico_sketch::test_ops::raise_sigsegv();
                     Ok(Reply::Done)
                 }
+                Err(DebugOp::EnableFpTraps) => silico_sketch::test_ops::enable_fp_traps()
+                    .map(|()| Reply::Done)
+                    .map_err(|what| Failure::new(Refusal::Internal { what })),
                 Err(other) => Err(Failure::new(Refusal::TestOperation {
                     op: Op::Debug(other).name().to_owned(),
                 })),

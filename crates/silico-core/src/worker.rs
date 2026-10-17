@@ -1,4 +1,5 @@
-//! The core's side of a kernel worker (ARCHITECTURE.md, Process model): it starts the
+//! The core's side of a worker, the kernel's or the sketch solver's (ARCHITECTURE.md,
+//! Process model, and [`WorkerKind`], which names it in errors): it starts the
 //! worker with one end of a socket pair, sends requests, and waits for replies with a
 //! timeout covering both sending and waiting. A worker that crashes, hangs, or replies
 //! with something unreadable is killed and reaped, and the call returns a structured
@@ -57,7 +58,7 @@ static NEXT_TRACE: AtomicU64 = AtomicU64::new(1);
 /// running. On macOS the standard library marks new descriptors close-on-exec only after
 /// making them, so a worker started by another thread in that gap would inherit this one's
 /// socket, log pipe, or the pipe `Command::spawn` waits on to learn the program started.
-/// Workers close what they inherit when they start running (`silico_kernel::worker`), so
+/// Workers close what they inherit when they start running (`silico_worker`), so
 /// such a descriptor would be held only until then; but until then is as long as the
 /// system takes to launch the worker (macOS has held a newly copied binary for 17 s and
 /// more), and that spawn would wait as long. Starting workers one at a time closes the gap;
@@ -760,7 +761,7 @@ impl Callers {
         if self.0.len() == Self::MOST {
             self.0.pop_front();
             tracing::warn!(
-                "a kernel worker hasn't said {} requests were done: its log lines for the \
+                "a worker hasn't said {} requests were done: its log lines for the \
                  oldest no longer trace back to them",
                 Self::MOST
             );
@@ -1150,6 +1151,28 @@ mod tests {
         failure_error, forward_logs, signal_name,
     };
     use crate::ErrorCode;
+
+    #[test]
+    fn a_sketch_workers_crash_advice_names_it_and_its_solver() {
+        use super::Reached::Request;
+        use super::WorkerKind::Sketch;
+        let signalled = |signal| Some(ExitStatus::from_raw(signal));
+        assert_eq!(
+            crash_advice(Sketch, signalled(libc::SIGSEGV), Request),
+            "change the operation's values: these crashed the sketch solver, and the same \
+             request would crash it again"
+        );
+        assert_eq!(
+            crash_advice(Sketch, signalled(libc::SIGTERM), Request),
+            "try the request again: the sketch worker was stopped from outside, stopped \
+             responding, or was gone before the request reached it, not by these values"
+        );
+        assert_eq!(
+            super::broken_worker(Sketch),
+            "this is a bug in Silico's sketch worker, not in the request: report it (the \
+             worker was stopped, and the next request starts another)"
+        );
+    }
 
     #[test]
     fn crash_advice_follows_how_the_worker_ended() {

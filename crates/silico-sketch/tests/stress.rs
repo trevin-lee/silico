@@ -26,7 +26,7 @@ use silico_protocol::{
     Algorithm, Geometry, PointOf, PointValues, SketchGeometry, SketchSystem, SolveStatus, Solved,
     SolverConstraint,
 };
-use systems::Builder;
+use systems::{Builder, Rng};
 
 const REFERENCE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -39,29 +39,6 @@ const ALGORITHMS: [Algorithm; 3] = [
     Algorithm::LevenbergMarquardt,
     Algorithm::Bfgs,
 ];
-
-/// SplitMix64: a fixed sequence from the seed, the same on every platform.
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
-
-    /// In [lo, hi), from the top 53 bits: exact arithmetic, no platform math.
-    fn range(&mut self, lo: f64, hi: f64) -> f64 {
-        let unit = (self.next() >> 11) as f64 / (1u64 << 53) as f64;
-        lo + (hi - lo) * unit
-    }
-
-    fn below(&mut self, n: u64) -> u64 {
-        self.next() % n
-    }
-}
 
 /// A rectangle at (x, y), `w` by `h`, its corners drawn up to `off` from their places, its
 /// sides joined, horizontal and vertical, and its lengths given: returns its sides.
@@ -406,7 +383,7 @@ fn generated_sketches_solve_to_the_references_bits() {
         statuses[solved.status as usize] = true;
         conflicts += usize::from(!solved.conflicting.is_empty());
         redundancies += usize::from(!solved.redundant.is_empty());
-        if system.algorithm == Algorithm::LevenbergMarquardt {
+        if system.algorithms == [Algorithm::LevenbergMarquardt] {
             deepest = deepest.max(system.constraints.len());
         }
         lines.insert(name.clone(), line(&name, &system, &solved));

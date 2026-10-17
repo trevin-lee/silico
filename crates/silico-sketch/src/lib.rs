@@ -18,23 +18,98 @@ use silico_protocol::{
 
 #[cxx::bridge(namespace = "silico_sketch")]
 mod ffi {
-    /// A [`SketchSystem`](super::SketchSystem), flattened (see [`encode`](super::encode)).
+    /// The kinds of geometry, as [`SketchGeometry`](super::SketchGeometry) has them.
+    #[repr(u8)]
+    enum GeometryKind {
+        Point,
+        Line,
+        Circle,
+        Arc,
+    }
+
+    /// A piece of geometry: its kind and its values, in
+    /// [`SketchGeometry::values`](super::SketchGeometry::values)' order.
+    struct GeometryIn {
+        kind: GeometryKind,
+        values: Vec<u32>,
+    }
+
+    /// Which point of a piece of geometry a constraint names, or the geometry itself.
+    #[repr(u8)]
+    enum Position {
+        Geometry,
+        Point,
+        Start,
+        End,
+        Center,
+    }
+
+    /// The kinds of constraint, as [`SolverConstraint`](super::SolverConstraint) has them.
+    #[repr(u8)]
+    enum ConstraintKind {
+        ArcRules,
+        Coincident,
+        Horizontal,
+        Vertical,
+        DistanceX,
+        DistanceY,
+        Distance,
+        PointOnLine,
+        Parallel,
+        Perpendicular,
+        Angle,
+        EqualLength,
+        Radius,
+    }
+
+    /// A constraint: its kind, its tag (0 for an arc's rules), what it names, and its value
+    /// (if it has one).
+    struct ConstraintIn {
+        kind: ConstraintKind,
+        tag: u32,
+        a_position: Position,
+        a: u32,
+        b_position: Position,
+        b: u32,
+        value: u32,
+    }
+
+    /// PlaneGCS's algorithms.
+    #[repr(u8)]
+    enum AlgorithmIn {
+        DogLeg,
+        LevenbergMarquardt,
+        Bfgs,
+    }
+
+    /// How a solve ended: PlaneGCS's `SolveStatus` (it never returns the fourth,
+    /// `SuccessfulSolutionInvalid`, which only FreeCAD's sketch sets).
+    #[repr(u8)]
+    enum Status {
+        Success,
+        Converged,
+        Failed,
+    }
+
     struct SolveInput {
         values: Vec<f64>,
         unknowns: Vec<u32>,
-        geometry: Vec<u32>,
-        constraints: Vec<u32>,
-        algorithm: u8,
+        geometry: Vec<GeometryIn>,
+        constraints: Vec<ConstraintIn>,
+        algorithms: Vec<AlgorithmIn>,
     }
 
-    /// What PlaneGCS found, as [`Solved`](super::Solved) has it, its status a number.
+    /// What PlaneGCS found, as [`Solved`](super::Solved) has it.
     struct SolveOutput {
         dofs: i32,
         conflicting: Vec<i32>,
         redundant: Vec<i32>,
         partially_redundant: Vec<i32>,
         free: Vec<u32>,
-        status: i32,
+        no_equations: bool,
+        status: Status,
+        /// The index in `algorithms` of the one that succeeded, or -1.
+        succeeded: i32,
         values: Vec<f64>,
         /// Each tagged constraint's residual, by tag in increasing order.
         residual_tags: Vec<u32>,
@@ -53,23 +128,18 @@ mod ffi {
         fn debug_throw_runtime_error(message: &str) -> Result<()>;
         #[cfg(feature = "test_ops")]
         fn debug_raise_sigsegv();
+        #[cfg(feature = "test_ops")]
+        fn debug_enable_fp_traps() -> Result<()>;
     }
 }
 
-/// Where geometry and constraints sit in the flattened encoding the C++ side reads.
-const GEOMETRY_STRIDE: usize = 10;
-const CONSTRAINT_STRIDE: usize = 8;
-
-/// Diagnoses and solves `system`, which must have passed [`SketchSystem::check`]. A
-/// solution with a value that isn't finite is refused.
+/// Diagnoses `system`, which must have passed [`SketchSystem::check`], and solves it with
+/// each of its algorithms in turn until one succeeds. A solution out of reach is refused.
 pub fn solve(system: &SketchSystem) -> Result<Solved, Failure> {
     // Before any product Eigen computes, in whatever process solves.
     static EIGEN_CACHES: std::sync::Once = std::sync::Once::new();
     EIGEN_CACHES.call_once(ffi::fix_eigen_cache_sizes);
-    let out = ffi::solve(&encode(system)).map_err(|e| Failure {
-        refusal: Refusal::SolverThrew,
-        cause: Some(e.what().to_owned()),
-    })?;
+    let out = ffi::solve(&encode(system)).map_err(|e| thrown(e.what()))?;
     check_reach(&out.values)?;
     let tags = |tags: &[i32]| -> Result<Vec<Tag>, Failure> {
         tags.iter()
@@ -83,12 +153,16 @@ pub fn solve(system: &SketchSystem) -> Result<Solved, Failure> {
         redundant: tags(&out.redundant)?,
         partially_redundant: tags(&out.partially_redundant)?,
         free: out.free.iter().map(|&v| Value(v)).collect(),
+        no_equations: out.no_equations,
         status: match out.status {
-            0 => SolveStatus::Success,
-            1 => SolveStatus::Converged,
-            2 => SolveStatus::Failed,
-            other => return Err(internal(&format!("PlaneGCS returned status {other}"))),
+            ffi::Status::Success => SolveStatus::Success,
+            ffi::Status::Converged => SolveStatus::Converged,
+            ffi::Status::Failed => SolveStatus::Failed,
+            _ => return Err(internal("the bridge returned a status Rust doesn't know")),
         },
+        algorithm: usize::try_from(out.succeeded)
+            .ok()
+            .and_then(|i| system.algorithms.get(i).copied()),
         values: out.values,
         residuals: out
             .residual_tags
@@ -97,6 +171,20 @@ pub fn solve(system: &SketchSystem) -> Result<Solved, Failure> {
             .map(|(&tag, &r)| (Tag(tag), r.is_finite().then_some(r)))
             .collect(),
     })
+}
+
+/// What the bridge threw, as a refusal: running out of memory is a shortage, as the kernel
+/// worker reports it; anything else is a bug in the bridge (PlaneGCS itself never throws).
+fn thrown(what: &str) -> Failure {
+    let refusal = if what == "std::bad_alloc" {
+        Refusal::OutOfMemory
+    } else {
+        Refusal::SolverThrew
+    };
+    Failure {
+        refusal,
+        cause: Some(what.to_owned()),
+    }
 }
 
 /// A solution must be one the next solve can start from to leave the worker: finite and
@@ -126,94 +214,83 @@ pub fn disable_fp_traps() -> Result<(), String> {
     ffi::disable_fp_traps().map_err(|e| e.what().to_owned())
 }
 
-/// `system` flattened for the C++ side: geometry as `[kind, values...]` and constraints as
-/// `[kind, tag, a's position, a, b's position, b, value, 0]`, each padded to its stride.
+/// `system` as the C++ side reads it.
 fn encode(system: &SketchSystem) -> ffi::SolveInput {
-    let mut geometry = Vec::with_capacity(system.geometry.len() * GEOMETRY_STRIDE);
-    for g in &system.geometry {
-        let (kind, values): (u32, Vec<Value>) = match *g {
-            SketchGeometry::Point(p) => (0, vec![p.x, p.y]),
-            SketchGeometry::Line { start, end } => (1, vec![start.x, start.y, end.x, end.y]),
-            SketchGeometry::Circle { center, radius } => (2, vec![center.x, center.y, radius]),
-            SketchGeometry::Arc {
-                center,
-                radius,
-                start_angle,
-                end_angle,
-                start,
-                end,
-            } => (
-                3,
-                vec![
-                    center.x,
-                    center.y,
-                    radius,
-                    start_angle,
-                    end_angle,
-                    start.x,
-                    start.y,
-                    end.x,
-                    end.y,
-                ],
-            ),
-        };
-        let at = geometry.len();
-        geometry.push(kind);
-        geometry.extend(values.iter().map(|v| v.0));
-        geometry.resize(at + GEOMETRY_STRIDE, 0);
-    }
-    let mut constraints = Vec::with_capacity(system.constraints.len() * CONSTRAINT_STRIDE);
-    for c in &system.constraints {
-        constraints.extend(encode_constraint(c));
-    }
+    let geometry = system
+        .geometry
+        .iter()
+        .map(|g| ffi::GeometryIn {
+            kind: match g {
+                SketchGeometry::Point(_) => ffi::GeometryKind::Point,
+                SketchGeometry::Line { .. } => ffi::GeometryKind::Line,
+                SketchGeometry::Circle { .. } => ffi::GeometryKind::Circle,
+                SketchGeometry::Arc { .. } => ffi::GeometryKind::Arc,
+            },
+            values: g.values().iter().map(|v| v.0).collect(),
+        })
+        .collect();
     ffi::SolveInput {
         values: system.values.clone(),
         unknowns: system.unknowns.iter().map(|v| v.0).collect(),
         geometry,
-        constraints,
-        algorithm: match system.algorithm {
-            Algorithm::DogLeg => 0,
-            Algorithm::LevenbergMarquardt => 1,
-            Algorithm::Bfgs => 2,
-        },
+        constraints: system.constraints.iter().map(encode_constraint).collect(),
+        algorithms: system
+            .algorithms
+            .iter()
+            .map(|a| match a {
+                Algorithm::DogLeg => ffi::AlgorithmIn::DogLeg,
+                Algorithm::LevenbergMarquardt => ffi::AlgorithmIn::LevenbergMarquardt,
+                Algorithm::Bfgs => ffi::AlgorithmIn::Bfgs,
+            })
+            .collect(),
     }
 }
 
-/// Positions as the C++ side numbers them: 0 for the geometry itself.
-fn point(p: PointOf) -> [u32; 2] {
+fn point(p: PointOf) -> (ffi::Position, u32) {
     match p {
-        PointOf::Point(g) => [1, g.0],
-        PointOf::Start(g) => [2, g.0],
-        PointOf::End(g) => [3, g.0],
-        PointOf::Center(g) => [4, g.0],
+        PointOf::Point(g) => (ffi::Position::Point, g.0),
+        PointOf::Start(g) => (ffi::Position::Start, g.0),
+        PointOf::End(g) => (ffi::Position::End, g.0),
+        PointOf::Center(g) => (ffi::Position::Center, g.0),
     }
 }
 
-fn encode_constraint(c: &SolverConstraint) -> [u32; CONSTRAINT_STRIDE] {
+fn encode_constraint(c: &SolverConstraint) -> ffi::ConstraintIn {
+    use ffi::ConstraintKind as K;
     let tag = c.tag().map_or(0, |t| t.0);
-    let points = |kind: u32, a: PointOf, b: PointOf, value: u32| {
-        let [ap, a] = point(a);
-        let [bp, b] = point(b);
-        [kind, tag, ap, a, bp, b, value, 0]
-    };
-    let two = |kind: u32, a: u32, b: u32, value: u32| [kind, tag, 0, a, 0, b, value, 0];
-    match *c {
-        SolverConstraint::ArcRules { arc } => two(0, arc.0, 0, 0),
-        SolverConstraint::Coincident { a, b, .. } => points(1, a, b, 0),
-        SolverConstraint::Horizontal { line, .. } => two(2, line.0, 0, 0),
-        SolverConstraint::Vertical { line, .. } => two(3, line.0, 0, 0),
-        SolverConstraint::DistanceX { a, b, value, .. } => points(4, a, b, value.0),
-        SolverConstraint::DistanceY { a, b, value, .. } => points(5, a, b, value.0),
-        SolverConstraint::Distance { a, b, value, .. } => points(6, a, b, value.0),
-        SolverConstraint::PointOnLine { point: p, line, .. } => {
-            let [pp, p] = point(p);
-            [7, tag, pp, p, 0, line.0, 0, 0]
+    let whole = |g: silico_protocol::Geometry| (ffi::Position::Geometry, g.0);
+    let none = (ffi::Position::Geometry, 0);
+    let (kind, a, b, value) = match *c {
+        SolverConstraint::ArcRules { arc } => (K::ArcRules, whole(arc), none, 0),
+        SolverConstraint::Coincident { a, b, .. } => (K::Coincident, point(a), point(b), 0),
+        SolverConstraint::Horizontal { line, .. } => (K::Horizontal, whole(line), none, 0),
+        SolverConstraint::Vertical { line, .. } => (K::Vertical, whole(line), none, 0),
+        SolverConstraint::DistanceX { a, b, value, .. } => {
+            (K::DistanceX, point(a), point(b), value.0)
         }
-        SolverConstraint::Parallel { a, b, .. } => two(8, a.0, b.0, 0),
-        SolverConstraint::Perpendicular { a, b, .. } => two(9, a.0, b.0, 0),
-        SolverConstraint::Angle { a, b, value, .. } => two(10, a.0, b.0, value.0),
-        SolverConstraint::EqualLength { a, b, .. } => two(11, a.0, b.0, 0),
-        SolverConstraint::Radius { circle, value, .. } => two(12, circle.0, 0, value.0),
+        SolverConstraint::DistanceY { a, b, value, .. } => {
+            (K::DistanceY, point(a), point(b), value.0)
+        }
+        SolverConstraint::Distance { a, b, value, .. } => {
+            (K::Distance, point(a), point(b), value.0)
+        }
+        SolverConstraint::PointOnLine { point: p, line, .. } => {
+            (K::PointOnLine, point(p), whole(line), 0)
+        }
+        SolverConstraint::Parallel { a, b, .. } => (K::Parallel, whole(a), whole(b), 0),
+        SolverConstraint::Perpendicular { a, b, .. } => (K::Perpendicular, whole(a), whole(b), 0),
+        SolverConstraint::Angle { a, b, value, .. } => (K::Angle, whole(a), whole(b), value.0),
+        SolverConstraint::EqualLength { a, b, .. } => (K::EqualLength, whole(a), whole(b), 0),
+        SolverConstraint::Radius { circle, value, .. } => (K::Radius, whole(circle), none, value.0),
+    };
+    ffi::ConstraintIn {
+        kind,
+        tag,
+        a_position: a.0,
+        a: a.1,
+        b_position: b.0,
+        b: b.1,
+        value,
     }
 }
 
@@ -231,6 +308,12 @@ pub mod test_ops {
     /// Crashes the process with SIGSEGV, as a fault inside PlaneGCS would.
     pub fn raise_sigsegv() {
         ffi::debug_raise_sigsegv();
+    }
+
+    /// Turns floating-point traps on. Only Linux can; on Apple silicon the hardware ignores
+    /// the request.
+    pub fn enable_fp_traps() -> Result<(), String> {
+        ffi::debug_enable_fp_traps().map_err(|e| e.what().to_owned())
     }
 }
 
