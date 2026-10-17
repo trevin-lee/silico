@@ -351,3 +351,34 @@ fn each_features_solid_is_measured_once_and_a_kept_one_not_again() {
     assert!(made(&engine.kernel().calls()[before..]).is_empty());
     assert_eq!(engine.kernel().calls().len(), before);
 }
+
+#[test]
+fn a_published_model_doesnt_change_when_a_later_recompute_measures_its_solids() {
+    // The first recompute's measures time out; the second, of the same document on the same
+    // engine, measures the solids the first left unmeasured. The first model, published
+    // already, must say and write what it did.
+    let failing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let engine = engine();
+    let flag = std::sync::Arc::clone(&failing);
+    engine.kernel().refuse(move |op| {
+        (flag.load(std::sync::atomic::Ordering::SeqCst) && matches!(op, Op::Summarize { .. }))
+            .then(|| Error::new(ErrorCode::WorkerTimeout, "the worker hung"))
+    });
+    let first = published(&engine, checked(EXAMPLE));
+    let written = write(&first.fingerprinted()).unwrap();
+    assert_eq!(first.fingerprint(&id("k7f2qx3m")), None);
+    assert_eq!(first.drift().len(), 3);
+    failing.store(false, std::sync::atomic::Ordering::SeqCst);
+    let second = published(&engine, checked(EXAMPLE));
+    assert!(second.fingerprint(&id("k7f2qx3m")).is_some());
+    assert!(second.drift().is_empty());
+    for feature in ["k7f2qx3m", "a91cw0de", "m3tq8v0z"] {
+        assert_eq!(first.fingerprint(&id(feature)), None, "{feature}");
+        let Some(FeatureOutcome::Built { built, .. }) = first.outcome(&id(feature)) else {
+            panic!("{feature} didn't build");
+        };
+        assert_eq!(built.summary(), None, "{feature}");
+    }
+    assert_eq!(first.drift().len(), 3);
+    assert_eq!(write(&first.fingerprinted()).unwrap(), written);
+}

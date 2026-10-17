@@ -24,7 +24,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
-use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
@@ -62,13 +62,14 @@ impl fmt::Debug for Key {
 }
 
 /// What a kernel step made: its shape, for an operation on other shapes what it did to
-/// them, and, once it's measured, the shape's summary (from which a feature's fingerprint
-/// comes; a step that's a feature's solid is measured after it's made, by a job of its own).
+/// them, and, if it was measured, the shape's summary (from which a feature's fingerprint
+/// comes; a step that's a feature's solid is measured after it's made, by a job of its own,
+/// which puts a measured copy in its place). Never changed once made: models share it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Built {
     pub shape: ShapeData,
     pub history: Option<History>,
-    summary: OnceLock<ShapeSummary>,
+    summary: Option<ShapeSummary>,
 }
 
 impl Built {
@@ -77,20 +78,24 @@ impl Built {
         history: Option<History>,
         summary: Option<ShapeSummary>,
     ) -> Self {
-        let measured = OnceLock::new();
-        if let Some(summary) = summary {
-            let _ = measured.set(summary);
-        }
         Built {
             shape,
             history,
-            summary: measured,
+            summary,
         }
     }
 
-    /// The shape's summary, if it's been measured.
+    /// The shape's summary, if it was measured.
     pub fn summary(&self) -> Option<&ShapeSummary> {
-        self.summary.get()
+        self.summary.as_ref()
+    }
+
+    /// This result, measured.
+    fn measured(&self, summary: ShapeSummary) -> Self {
+        Built {
+            summary: Some(summary),
+            ..self.clone()
+        }
     }
 }
 
@@ -234,8 +239,11 @@ impl Model {
     /// worker that hung, say) mustn't lose the record a later rebuild is checked against.
     pub fn fingerprinted(&self) -> Document {
         let mut document = self.document().clone();
-        for feature in &mut document.features {
-            if let Some(rebuilt) = self.fingerprint(&feature.id) {
+        // The model's features are its document's, in order.
+        for (feature, (_, outcome)) in document.features.iter_mut().zip(&self.features) {
+            if let FeatureOutcome::Built { built, .. } = outcome
+                && let Some(rebuilt) = built.summary().and_then(Fingerprint::of)
+            {
                 feature.fingerprint = Some(rebuilt);
             }
         }
@@ -941,14 +949,22 @@ impl<K: Kernel + 'static> Engine<K> {
                     s.done.insert(key, result);
                 }
                 Ran::Measured(Outcome::Done(Ok(summary))) => {
+                    // A measured copy takes the result's place, here and once kept; the
+                    // result itself is never changed, since a published model may hold it.
                     if let Some(Ok(built)) = s.done.get(&key) {
-                        // Measured once: another recompute sharing the result may have
-                        // measured it first, the same.
-                        let _ = built.summary.set(summary);
-                        to_keep = Some(Arc::clone(built));
+                        let built = Arc::new(built.measured(summary));
+                        to_keep = Some(Arc::clone(&built));
+                        s.done.insert(key, Ok(built));
                     }
                 }
                 Ran::Measured(Outcome::Done(Err(error))) => {
+                    // A solid that won't measure however often it's asked is kept on disk
+                    // unmeasured, so it isn't made again each time the document opens.
+                    if kept(&error)
+                        && let Some(Ok(built)) = s.done.get(&key)
+                    {
+                        to_keep = Some(Arc::clone(built));
+                    }
                     s.unmeasured.insert(key, error);
                 }
             }

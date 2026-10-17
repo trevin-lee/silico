@@ -181,6 +181,38 @@ fn failures_arent_kept_on_disk() {
 }
 
 #[test]
+fn a_solid_that_wont_measure_is_kept_on_disk_unmeasured_and_measures_a_transient_failure_again() {
+    // A measure refused for its values (asked again, the same) keeps the solid on disk all
+    // the same, so it isn't made again; one refused by a hung worker doesn't, since the next
+    // session measures it when it's made anyway.
+    for (code, entries) in [(ErrorCode::KernelFailed, 4), (ErrorCode::WorkerTimeout, 1)] {
+        let dir = Scratch::new("unmeasured");
+        let first = session(&dir.0);
+        first.kernel().refuse(move |op| {
+            matches!(op, Op::Summarize { .. }).then(|| Error::new(code, "Summarize failed"))
+        });
+        let model = published(&first, checked(EXAMPLE));
+        assert_eq!(model.drift().len(), 3, "{code:?}");
+        // The pin's make is written at once, the features' solids only once measured or
+        // refused for good.
+        assert_eq!(files(&dir.0).len(), entries, "{code:?}");
+        let second = session(&dir.0);
+        let model = published(&second, checked(EXAMPLE));
+        let made_again = if entries == 4 {
+            vec![]
+        } else {
+            vec!["Cut", "MakeBox", "Translate"]
+        };
+        assert_eq!(calls(&second), made_again, "{code:?}");
+        // Measured now, and written measured: a third session asks the kernel nothing.
+        assert!(model.drift().is_empty(), "{code:?}");
+        let third = session(&dir.0);
+        published(&third, checked(EXAMPLE));
+        assert!(third.kernel().calls().is_empty(), "{code:?}");
+    }
+}
+
+#[test]
 fn a_cache_that_cant_be_written_fails_nothing() {
     // A file where the cache's directory would be: nothing can be written under it.
     let dir = Scratch::new("unwritable");

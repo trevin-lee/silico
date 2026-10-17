@@ -36,7 +36,7 @@ use crate::kernel::{Blob, History, ShapeData, ShapeSummary};
 use crate::recompute::{Built, Key};
 
 /// The first bytes of every entry, naming its format: a change to the format changes it.
-const MAGIC: &[u8] = b"silico cache 2\n";
+const MAGIC: &[u8] = b"silico cache 3\n";
 
 /// What the cache's directory holds besides its entries: it ignores itself.
 const GITIGNORE: &[u8] =
