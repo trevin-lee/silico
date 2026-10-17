@@ -325,6 +325,7 @@ fn line(name: &str, system: &SketchSystem, solved: &Solved) -> String {
     let status = match solved.status {
         SolveStatus::Success => "Success",
         SolveStatus::Converged => "Converged",
+        SolveStatus::SolvedExceptRedundant => "SolvedExceptRedundant",
         SolveStatus::Failed => "Failed",
     };
     let free: Vec<String> = solved.free.iter().map(|v| v.0.to_string()).collect();
@@ -373,7 +374,7 @@ fn corpus() -> Vec<(String, SketchSystem)> {
 #[test]
 fn generated_sketches_solve_to_the_references_bits() {
     let mut lines = BTreeMap::new();
-    let mut statuses = [false; 3];
+    let mut statuses = [false; 4];
     let (mut conflicts, mut redundancies, mut deepest) = (0, 0, 0usize);
     for (name, system) in corpus() {
         system
@@ -425,4 +426,29 @@ fn generated_sketches_solve_to_the_references_bits() {
             first.join("\n")
         );
     }
+}
+
+#[test]
+fn a_failed_algorithm_falls_back_to_the_next() {
+    // From the tests review: a slot BFGS fails on alone and DogLeg solves; tried in that
+    // order, the second solves it, to DogLeg's own bits.
+    let (_, system) = corpus()
+        .into_iter()
+        .find(|(n, _)| n == "case010_kind2")
+        .unwrap();
+    assert_eq!(system.algorithms, [Algorithm::Bfgs]);
+    let alone = silico_sketch::solve(&system).unwrap();
+    assert_eq!(alone.status, SolveStatus::Failed);
+    assert_eq!(alone.algorithm, None);
+    let mut dl = system.clone();
+    dl.algorithms = vec![Algorithm::DogLeg];
+    let dl = silico_sketch::solve(&dl).unwrap();
+    assert_eq!(dl.status, SolveStatus::Success);
+    let mut both = system.clone();
+    both.algorithms = vec![Algorithm::Bfgs, Algorithm::DogLeg];
+    let both = silico_sketch::solve(&both).unwrap();
+    assert_eq!(both.status, SolveStatus::Success);
+    assert_eq!(both.algorithm, Some(Algorithm::DogLeg));
+    let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    assert_eq!(bits(&both.values), bits(&dl.values));
 }

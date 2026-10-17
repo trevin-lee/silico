@@ -105,10 +105,10 @@ fn a_horizontal_stated_twice_is_redundant_and_the_later_is_named() {
     assert_eq!(solved.dofs, 0);
     // PlaneGCS solves without the dropped constraint, then checks it on the values it
     // started from (GCS.cpp's System::solve, before anything is written back): this
-    // rectangle starts with its bottom off horizontal, so PlaneGCS says only `Converged`.
-    // The bridge writes the solution back and checks the dropped constraint there, as
-    // PlaneGCS's own diagnosis does: it holds, so the solve succeeds, at the corners.
-    assert_eq!(solved.status, SolveStatus::Success);
+    // rectangle starts with its bottom off horizontal, so PlaneGCS says Converged, which
+    // from DogLeg can only mean that check. The bridge says so, with the solution: the
+    // corners, and the dropped constraint's residual there, for the core to judge.
+    assert_eq!(solved.status, SolveStatus::SolvedExceptRedundant);
     assert_eq!(solved.algorithm, Some(Algorithm::DogLeg));
     assert_close(
         line_values(&system, &solved.values, bottom),
@@ -229,4 +229,128 @@ fn a_system_the_bridge_cant_read_is_its_exception_not_undefined_behavior() {
 fn a_cpp_exception_reaches_rust_as_an_error() {
     let e = silico_sketch::test_ops::throw_runtime_error("from the test").unwrap_err();
     assert_eq!(e, "from the test");
+}
+
+#[test]
+fn a_partly_redundant_sketch_is_solved_except_its_dropped_equation() {
+    // Found by the port review, and FreeCAD 1.1.3 fails it (solve() -1): a point drawn at
+    // (1, 2), made coincident with a fixed origin, and given x(origin) − x(point) = 0 and
+    // x(point) − x(origin) = 0. PlaneGCS drops the coincidence's x equation (tag 1, so
+    // partially redundant), solves the rest, and checks the dropped equation on the values
+    // it started from (x = 1): Converged. The solution is the origin.
+    let mut b = Builder::default();
+    let o = b.fixed_point(0.0, 0.0);
+    let v = b.point_values(1.0, 2.0);
+    let p = b.add(SketchGeometry::Point(v));
+    let zero = b.fixed(0.0);
+    b.constrain(|tag| SolverConstraint::Coincident {
+        tag,
+        a: PointOf::Point(p),
+        b: PointOf::Point(o),
+    });
+    b.constrain(|tag| SolverConstraint::DistanceX {
+        tag,
+        a: PointOf::Point(o),
+        b: PointOf::Point(p),
+        value: zero,
+    });
+    b.constrain(|tag| SolverConstraint::DistanceX {
+        tag,
+        a: PointOf::Point(p),
+        b: PointOf::Point(o),
+        value: zero,
+    });
+    let system = b.system_trying(vec![
+        Algorithm::DogLeg,
+        Algorithm::LevenbergMarquardt,
+        Algorithm::Bfgs,
+    ]);
+    let solved = silico_sketch::solve(&system).unwrap();
+    assert!(solved.redundant.is_empty());
+    assert_eq!(solved.partially_redundant, vec![Tag(1)]);
+    assert_eq!(solved.status, SolveStatus::SolvedExceptRedundant);
+    assert_eq!(solved.algorithm, Some(Algorithm::DogLeg));
+    assert!(solved.values[2].abs() <= 1e-10 && solved.values[3].abs() <= 1e-10);
+    for (tag, r) in &solved.residuals {
+        assert!(r.unwrap().abs() <= 1e-10, "tag {}: {r:?}", tag.0);
+    }
+}
+
+#[test]
+fn chained_coincidences_onto_a_half_fixed_point_solve_in_every_order() {
+    // Found by the robustness review: a fixed point a, two free points q and r, and a point
+    // b whose x is fixed at 0 and y free, chained a = q = r = b. One coincidence's x
+    // equation repeats the others (partially redundant), in whatever order they come. Each
+    // order solves to q = r = a and b's y = 0.
+    for order in [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ] {
+        let mut b = Builder::default();
+        let a = b.fixed_point(0.0, 0.0);
+        let qv = b.point_values(1.0, 2.0);
+        let q = b.add(SketchGeometry::Point(qv));
+        let rv = b.point_values(3.0, 5.0);
+        let r = b.add(SketchGeometry::Point(rv));
+        let bv = PointValues {
+            x: b.fixed(0.0),
+            y: b.unknown(9.0),
+        };
+        let bp = b.add(SketchGeometry::Point(bv));
+        for i in order {
+            let (x, y) = [(a, q), (q, r), (r, bp)][i];
+            b.constrain(|tag| SolverConstraint::Coincident {
+                tag,
+                a: PointOf::Point(x),
+                b: PointOf::Point(y),
+            });
+        }
+        let system = b.system_trying(vec![Algorithm::DogLeg, Algorithm::LevenbergMarquardt]);
+        system.check().unwrap();
+        let solved = silico_sketch::solve(&system).unwrap();
+        assert!(
+            matches!(
+                solved.status,
+                SolveStatus::Success | SolveStatus::SolvedExceptRedundant
+            ),
+            "{order:?}: {solved:?}"
+        );
+        // Values: a (0, 1), q (2, 3), r (4, 5), b's x (6) and y (7).
+        for v in [2, 3, 4, 5, 7] {
+            assert!(solved.values[v].abs() <= 1e-10, "{order:?}: {solved:?}");
+        }
+    }
+}
+
+#[test]
+fn every_algorithm_failing_reports_the_last_and_gives_the_values_back() {
+    let mut r = rectangle_40_by_20();
+    let bottom = r.sides[0];
+    let other = r.b.fixed(50.0);
+    r.b.constrain(|tag| SolverConstraint::DistanceX {
+        tag,
+        a: PointOf::Start(bottom),
+        b: PointOf::End(bottom),
+        value: other,
+    });
+    let system = r.b.system_trying(vec![
+        Algorithm::DogLeg,
+        Algorithm::LevenbergMarquardt,
+        Algorithm::Bfgs,
+    ]);
+    let solved = silico_sketch::solve(&system).unwrap();
+    let mut bfgs = system.clone();
+    bfgs.algorithms = vec![Algorithm::Bfgs];
+    let last = silico_sketch::solve(&bfgs).unwrap();
+    assert!(!matches!(
+        last.status,
+        SolveStatus::Success | SolveStatus::SolvedExceptRedundant
+    ));
+    assert_eq!(solved.status, last.status);
+    assert_eq!(solved.algorithm, None);
+    assert_eq!(solved.values, system.values);
 }

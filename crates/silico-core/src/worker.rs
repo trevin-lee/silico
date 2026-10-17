@@ -1424,7 +1424,7 @@ mod tests {
                 ErrorCode::ResourceExhausted,
                 "Fuse ran out of memory",
                 Some("Standard_OutOfMemory"),
-                Some("free some memory, or make the part simpler, and try again")
+                Some("free some memory, or make the part or sketch simpler, and try again")
             )
         );
     }

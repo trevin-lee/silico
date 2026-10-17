@@ -34,9 +34,11 @@ mod ffi {
         values: Vec<u32>,
     }
 
-    /// Which point of a piece of geometry a constraint names, or the geometry itself.
+    /// Which point of a piece of geometry a constraint names, the geometry itself, or
+    /// nothing (a constraint with one operand).
     #[repr(u8)]
     enum Position {
+        None,
         Geometry,
         Point,
         Start,
@@ -62,8 +64,9 @@ mod ffi {
         Radius,
     }
 
-    /// A constraint: its kind, its tag (0 for an arc's rules), what it names, and its value
-    /// (if it has one).
+    /// A constraint: its kind, its tag (0 for an arc's rules), what it names (`b_position`
+    /// `None` for a constraint of one operand, whose `b` is then never read), and its value
+    /// (if it has one; otherwise 0, never read).
     struct ConstraintIn {
         kind: ConstraintKind,
         tag: u32,
@@ -82,13 +85,16 @@ mod ffi {
         Bfgs,
     }
 
-    /// How a solve ended: PlaneGCS's `SolveStatus` (it never returns the fourth,
-    /// `SuccessfulSolutionInvalid`, which only FreeCAD's sketch sets).
+    /// How a solve ended: PlaneGCS's `SolveStatus` (it never returns its fourth,
+    /// `SuccessfulSolutionInvalid`, which only FreeCAD's sketch sets), and the bridge's
+    /// reading of a Converged that can only be its redundancy check.
     #[repr(u8)]
     enum Status {
         Success,
         Converged,
         Failed,
+        /// See [`SolveStatus::SolvedExceptRedundant`](super::SolveStatus).
+        SolvedExceptRedundant,
     }
 
     struct SolveInput {
@@ -108,7 +114,8 @@ mod ffi {
         free: Vec<u32>,
         no_equations: bool,
         status: Status,
-        /// The index in `algorithms` of the one that succeeded, or -1.
+        /// The index in `algorithms` of the one that solved (Success or
+        /// SolvedExceptRedundant), or -1.
         succeeded: i32,
         values: Vec<f64>,
         /// Each tagged constraint's residual, by tag in increasing order.
@@ -130,6 +137,8 @@ mod ffi {
         fn debug_raise_sigsegv();
         #[cfg(feature = "test_ops")]
         fn debug_enable_fp_traps() -> Result<()>;
+        #[cfg(feature = "test_ops")]
+        fn debug_throw_bad_alloc() -> Result<()>;
     }
 }
 
@@ -158,6 +167,7 @@ pub fn solve(system: &SketchSystem) -> Result<Solved, Failure> {
             ffi::Status::Success => SolveStatus::Success,
             ffi::Status::Converged => SolveStatus::Converged,
             ffi::Status::Failed => SolveStatus::Failed,
+            ffi::Status::SolvedExceptRedundant => SolveStatus::SolvedExceptRedundant,
             _ => return Err(internal("the bridge returned a status Rust doesn't know")),
         },
         algorithm: usize::try_from(out.succeeded)
@@ -259,7 +269,7 @@ fn encode_constraint(c: &SolverConstraint) -> ffi::ConstraintIn {
     use ffi::ConstraintKind as K;
     let tag = c.tag().map_or(0, |t| t.0);
     let whole = |g: silico_protocol::Geometry| (ffi::Position::Geometry, g.0);
-    let none = (ffi::Position::Geometry, 0);
+    let none = (ffi::Position::None, 0);
     let (kind, a, b, value) = match *c {
         SolverConstraint::ArcRules { arc } => (K::ArcRules, whole(arc), none, 0),
         SolverConstraint::Coincident { a, b, .. } => (K::Coincident, point(a), point(b), 0),
@@ -310,10 +320,18 @@ pub mod test_ops {
         ffi::debug_raise_sigsegv();
     }
 
-    /// Turns floating-point traps on. Only Linux can; on Apple silicon the hardware ignores
-    /// the request.
+    /// Turns floating-point traps on. Linux keeps them on; some Apple silicon ignores the
+    /// trap-enable bits (they read back as 0), and some keeps them.
     pub fn enable_fp_traps() -> Result<(), String> {
         ffi::debug_enable_fp_traps().map_err(|e| e.what().to_owned())
+    }
+
+    /// Throws `std::bad_alloc`, as a C++ allocation that fails does: its words.
+    pub fn throw_bad_alloc() -> String {
+        match ffi::debug_throw_bad_alloc() {
+            Ok(()) => String::new(),
+            Err(e) => e.what().to_owned(),
+        }
     }
 }
 
@@ -335,6 +353,24 @@ mod tests {
             let failure = super::check_reach(&values).unwrap_err();
             assert_eq!(failure.refusal, Refusal::SolutionOutOfReach { value: at });
             assert_eq!(failure.cause, None);
+        }
+    }
+
+    #[test]
+    fn running_out_of_memory_is_a_shortage_and_anything_else_the_bridges_bug() {
+        // What libc++'s std::bad_alloc says, thrown through the bridge.
+        let what = super::test_ops::throw_bad_alloc();
+        let failure = super::thrown(&what);
+        assert_eq!(
+            (failure.refusal, failure.cause.as_deref()),
+            (Refusal::OutOfMemory, Some("std::bad_alloc"))
+        );
+        for what in [
+            "silico-sketch bridge: value 7 out of range",
+            "std::bad_alloc!",
+            "",
+        ] {
+            assert_eq!(super::thrown(what).refusal, Refusal::SolverThrew, "{what}");
         }
     }
 

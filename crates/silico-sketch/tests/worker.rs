@@ -17,7 +17,7 @@ use silico_protocol::{
     Algorithm, Blob, DebugOp, Generation, Op, OutOfTurn, Primitive, Reply, SketchSystem,
     SolveStatus, Solved,
 };
-use systems::rectangle_40_by_20;
+use systems::{process_exists, rectangle_40_by_20};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-worker");
 const TEST_WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-test-worker");
@@ -29,16 +29,6 @@ fn worker() -> Worker {
 
 fn test_worker() -> Worker {
     Worker::spawn_as(Path::new(TEST_WORKER), WorkerKind::Sketch).unwrap()
-}
-
-/// Whether a process with this ID exists (zombies included).
-fn process_exists(pid: u32) -> bool {
-    Command::new("ps")
-        .args(["-p", &pid.to_string()])
-        .output()
-        .unwrap()
-        .status
-        .success()
 }
 
 fn solve(w: &mut Worker, system: SketchSystem) -> Solved {

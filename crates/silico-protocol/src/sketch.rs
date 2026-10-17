@@ -268,21 +268,32 @@ pub struct SketchSystem {
     pub unknowns: Vec<Value>,
     pub geometry: Vec<SketchGeometry>,
     pub constraints: Vec<SolverConstraint>,
-    /// The algorithms to try, in order, after one diagnosis, until one succeeds (FreeCAD's
-    /// fallback: DogLeg, then Levenberg–Marquardt, then BFGS): one to three, each once.
+    /// The algorithms to try, in order, after one diagnosis, until one solves (FreeCAD's
+    /// fallback: DogLeg, then Levenberg–Marquardt, then BFGS; its last step, SQP on a system
+    /// anchored at the given values, comes with M3.3): one to three, each once.
     pub algorithms: Vec<Algorithm>,
 }
 
-/// How a solve ended (PlaneGCS's `SolveStatus`). It means something only when the diagnosis
-/// found no conflict: FreeCAD doesn't solve a conflicting sketch, and PlaneGCS can report
-/// `Success` for one with its conflicting constraints unmet. And PlaneGCS solves only the
-/// parts of a sketch with unknowns: a constraint among fixed values alone isn't solved,
-/// whatever the status, and its residual says whether it holds.
+/// How a solve ended: PlaneGCS's `SolveStatus`, and one reading of it. A status means
+/// something only when the diagnosis found no conflict: FreeCAD doesn't solve a conflicting
+/// sketch, and PlaneGCS can report `Success` for one with its conflicting constraints unmet.
+/// And PlaneGCS solves only the parts of a sketch with unknowns: a constraint among fixed
+/// values alone isn't solved, whatever the status, and its residual says whether it holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SolveStatus {
     /// Every constraint the solver solved is met.
     Success,
-    /// The solver stopped at a minimum where the constraints aren't all met.
+    /// Every constraint the solver kept is met, and the equations it dropped as redundant
+    /// (`redundant`, `partially_redundant`) weren't checked on the solution: their residuals
+    /// say whether they agree. PlaneGCS checks them on the values it started from, before
+    /// writing its solution back, and calls the solve `Converged` when they don't hold
+    /// there; from DogLeg and Levenberg–Marquardt, which otherwise end only in success or
+    /// failure, that's all a `Converged` can mean. Whether they agree enough is the core's
+    /// (docs/roadmap/m3-sketcher.md, decision 5); FreeCAD fails such a sketch.
+    SolvedExceptRedundant,
+    /// The solver stopped at a minimum where the constraints aren't all met (BFGS), or found
+    /// the redundant equations unmet on the values it started from (BFGS too: its own
+    /// Converged and that one can't be told apart).
     Converged,
     /// The solver failed.
     Failed,
@@ -305,11 +316,14 @@ pub struct Solved {
     pub free: Vec<Value>,
     /// The diagnosis had no equations: no constraint touches an unknown.
     pub no_equations: bool,
-    /// How the last algorithm tried ended: the first to succeed, or the last of them.
+    /// How the solve ended: the first algorithm to solve (`Success` or
+    /// `SolvedExceptRedundant`), or the last tried.
     pub status: SolveStatus,
-    /// The algorithm that succeeded, if one did.
+    /// The algorithm that solved, exactly when the status is `Success` or
+    /// `SolvedExceptRedundant`.
     pub algorithm: Option<Algorithm>,
-    /// Every value after the solve: the solution on success, otherwise as given.
+    /// Every value after the solve: the solution when the status is `Success` or
+    /// `SolvedExceptRedundant`, otherwise as given.
     pub values: Vec<f64>,
     /// Each tagged constraint's residual on those values, by tag in increasing order, as
     /// PlaneGCS measures it: its error for a constraint of one equation, the root mean
@@ -872,6 +886,35 @@ mod tests {
     }
 
     #[test]
+    fn points_are_named_in_words() {
+        assert_eq!(PointOf::Point(Geometry(3)).to_string(), "point 3");
+        assert_eq!(
+            PointOf::Start(Geometry(0)).to_string(),
+            "the start of geometry 0"
+        );
+        assert_eq!(
+            PointOf::End(Geometry(7)).to_string(),
+            "the end of geometry 7"
+        );
+        assert_eq!(
+            PointOf::Center(Geometry(2)).to_string(),
+            "the centre of geometry 2"
+        );
+        let (_, message) = refused(|s| {
+            s.constraints[2] = SolverConstraint::Distance {
+                tag: Tag(2),
+                a: PointOf::Start(Geometry(0)),
+                b: PointOf::End(Geometry(1)),
+                value: Value(16),
+            };
+        });
+        assert_eq!(
+            message,
+            "constraint 2 (tag 2): a distance names the end of geometry 1, but geometry 1 is a circle"
+        );
+    }
+
+    #[test]
     fn points_must_be_points_the_geometry_has() {
         // A circle has a centre but no ends; a line has ends but no centre; a point is
         // only itself.
@@ -972,13 +1015,20 @@ mod tests {
             message,
             "constraint 0: an arc's rules on arc 2, whose start's x equation has no unknown: rules go only on an arc the solver may change"
         );
-        // One equation without one: the end's y (14, 15 are the end; 8 the centre's y; 9 the
-        // radius; 11 the end angle).
-        let (_, message) = refused(|s| s.unknowns.retain(|v| ![8, 9, 11, 15].contains(&v.0)));
-        assert!(
-            message.contains("whose end's y equation has no unknown"),
-            "{message}"
-        );
+        // Each equation on its own: the arc's values are the centre (7, 8), the radius (9),
+        // the angles (10, 11), the start (12, 13), and the end (14, 15).
+        for (fixed, row) in [
+            ([7, 9, 10, 12], "start's x"),
+            ([8, 9, 10, 13], "start's y"),
+            ([7, 9, 11, 14], "end's x"),
+            ([8, 9, 11, 15], "end's y"),
+        ] {
+            let (_, message) = refused(|s| s.unknowns.retain(|v| !fixed.contains(&v.0)));
+            assert!(
+                message.contains(&format!("whose {row} equation has no unknown")),
+                "{row}: {message}"
+            );
+        }
         // An unknown in each is enough: only the start and end points free (12 to 15), the
         // centre, radius, and angles fixed.
         let mut s = system();

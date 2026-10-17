@@ -19,7 +19,7 @@ use silico_protocol::{
     Algorithm, DebugOp, Generation, Geometry, Op, PointOf, PointValues, Refusal, Reply,
     SketchGeometry, SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value,
 };
-use systems::{Builder, Rng, rectangle_40_by_20};
+use systems::{Builder, Rng, process_exists, rectangle_40_by_20};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-worker");
 const TEST_WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-test-worker");
@@ -559,16 +559,6 @@ fn the_largest_system_the_check_admits_is_answered() {
     }
 }
 
-/// Whether a process with this ID exists (zombies included).
-fn process_exists(pid: u32) -> bool {
-    std::process::Command::new("ps")
-        .args(["-p", &pid.to_string()])
-        .output()
-        .unwrap()
-        .status
-        .success()
-}
-
 #[test]
 fn a_heavily_conflicting_system_at_the_limits_is_answered_or_timed_out_and_reaped() {
     // Found by the robustness review: thousands of dimensions that conflict make
@@ -600,7 +590,10 @@ fn a_heavily_conflicting_system_at_the_limits_is_answered_or_timed_out_and_reape
     let pid = w.pid();
     let start = Instant::now();
     match w.call(Generation(1), Op::Solve(system), Duration::from_secs(5)) {
-        Ok(Reply::Solved(_)) => {}
+        Ok(Reply::Solved(solved)) => {
+            assert!(!solved.conflicting.is_empty(), "{solved:?}");
+            assert_ne!(solved.status, SolveStatus::Success);
+        }
         Ok(other) => panic!("replied {other:?}"),
         Err(e) => {
             assert_eq!(e.code(), ErrorCode::WorkerTimeout, "{e}");
@@ -1210,7 +1203,17 @@ fn check_promises(system: &SketchSystem) -> Result<(), String> {
             _ => {}
         }
     }
-    if solved.status != SolveStatus::Success {
+    let solved_it = matches!(
+        solved.status,
+        SolveStatus::Success | SolveStatus::SolvedExceptRedundant
+    );
+    if solved_it != solved.algorithm.is_some() {
+        return Err(format!(
+            "{:?} with algorithm {:?}",
+            solved.status, solved.algorithm
+        ));
+    }
+    if !solved_it {
         if solved.values != system.values {
             return Err(format!("{:?}, yet the values moved", solved.status));
         }
@@ -1222,7 +1225,7 @@ fn check_promises(system: &SketchSystem) -> Result<(), String> {
     if !solved.conflicting.is_empty() {
         return Ok(());
     }
-    // Success: every constraint the solver solved (one with an unknown) is met, to its
+    // Solved: every constraint the solver solved (one with an unknown) is met, to its
     // convergence (1e-10 on each residual; a redundant constraint is checked to 1e-5, err² ≤
     // 1e-10), or its residual is reported as none (geometry the solve left of no size). A
     // constraint among fixed values alone isn't solved: its residual says whether it holds.
@@ -1238,10 +1241,14 @@ fn check_promises(system: &SketchSystem) -> Result<(), String> {
         if c.tag().is_some_and(|t| residual_of(t).is_none()) {
             continue;
         }
+        // Solved except the dropped equations: those are the core's to judge.
+        if loose && solved.status == SolveStatus::SolvedExceptRedundant {
+            continue;
+        }
         let tolerance = if loose { 1e-4 } else { 1e-8 };
         for r in residuals(system, &solved.values, c) {
             if r.is_nan() || r.abs() > tolerance {
-                return Err(format!("Success, but {c:?} is off by {r:e}: {solved:?}"));
+                return Err(format!("solved, but {c:?} is off by {r:e}: {solved:?}"));
             }
         }
     }

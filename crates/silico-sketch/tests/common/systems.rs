@@ -180,3 +180,12 @@ impl Rng {
         self.next() % n
     }
 }
+
+/// Whether a process with this ID exists (zombies included).
+pub fn process_exists(pid: u32) -> bool {
+    std::process::Command::new("ps")
+        .args(["-p", &pid.to_string()])
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}

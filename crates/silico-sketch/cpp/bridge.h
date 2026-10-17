@@ -27,6 +27,7 @@ void fix_eigen_cache_sizes();
 void debug_throw_runtime_error(rust::Str message);
 void debug_raise_sigsegv();
 void debug_enable_fp_traps();
+void debug_throw_bad_alloc();
 #endif
 
 }  // namespace silico_sketch

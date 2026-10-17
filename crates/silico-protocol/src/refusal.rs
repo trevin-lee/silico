@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use crate::{BooleanOp, ElementRef, FailureKind, LENGTH_TOLERANCE, OFFSET_FIELD, format_number};
 
 /// What to do when the kernel runs out of memory.
-pub const OUT_OF_MEMORY: &str = "free some memory, or make the part simpler, and try again";
+pub const OUT_OF_MEMORY: &str =
+    "free some memory, or make the part or sketch simpler, and try again";
 
 /// Why a request was refused or failed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -100,8 +101,8 @@ pub enum Refusal {
     /// An operation another kind of worker answers (a sketch solve sent to the kernel
     /// worker, or a kernel operation to the sketch worker).
     OtherWorkersOp { op: String },
-    /// The sketch bridge threw (PlaneGCS itself never does): a bug in Silico; its words are
-    /// the cause.
+    /// The sketch worker's bridge threw (PlaneGCS itself never does): a bug in Silico; its
+    /// words are the cause.
     SolverThrew,
     /// PlaneGCS's solution has a value that isn't finite, or is beyond a kilometre (or as
     /// many radians) from 0, so the next solve couldn't start from it: `value`, its place in
@@ -111,9 +112,9 @@ pub enum Refusal {
     FpTrapsOn { mask: u32, op: String },
     /// Something went wrong in the worker itself, in a test worker's words.
     Internal { what: String },
-    /// OCCT ran out of memory (`Standard_OutOfMemory`, `std::bad_alloc`): a shortage, not the
-    /// values' fault, so the same request may succeed once memory is free. Its words are the
-    /// cause.
+    /// A worker ran out of memory (OCCT's `Standard_OutOfMemory`, or `std::bad_alloc` in
+    /// either worker's C++): a shortage, not the values' fault, so the same request may
+    /// succeed once memory is free. Its words are the cause.
     OutOfMemory,
 }
 
@@ -542,12 +543,13 @@ impl Refusal {
                 Some("this is a bug in Silico: report it".to_owned()),
             ),
             Refusal::SolverThrew => (
-                "the sketch solver failed".to_owned(),
+                "the sketch worker's bridge to its solver failed".to_owned(),
                 Some("this is a bug in Silico's sketch worker: report it".to_owned()),
             ),
             Refusal::SolutionOutOfReach { value } => (
                 format!(
-                    "the sketch solver's solution has a value that isn't finite or is more than 1e6 from 0 (value {value})"
+                    "the sketch solver's solution has a value that isn't finite or is more than {} from 0 (value {value})",
+                    format_number(crate::MAX_LENGTH)
                 ),
                 Some(
                     "check the sketch's dimensions: they place geometry past a kilometre, or give it no size"
@@ -560,7 +562,7 @@ impl Refusal {
             ),
             Refusal::Internal { what } => (what.clone(), None),
             Refusal::OutOfMemory => (
-                "the kernel ran out of memory".to_owned(),
+                "the worker ran out of memory".to_owned(),
                 Some(OUT_OF_MEMORY.to_owned()),
             ),
         };

@@ -1,10 +1,10 @@
 #include "silico-sketch/cpp/bridge.h"
 
 #include <algorithm>
-#include <cmath>
 #include <csignal>
 #include <cstddef>
 #include <fenv.h>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -239,49 +239,40 @@ SolveOutput solve(const SolveInput &input) {
 
   // Each algorithm in turn, from the values as given, until one succeeds: FreeCAD's
   // fallback (Sketch::internalSolve), on the one diagnosis.
+  // Each algorithm in turn, from the values as given, until one solves: FreeCAD's fallback
+  // (Sketch::internalSolve), on the one diagnosis. (Its last step, SQP on a system anchored
+  // at the given values, comes with M3.3.)
+  const bool dropped = !redundant.empty() || !out.partially_redundant.empty();
   int status = GCS::Failed;
+  Status reported = Status::Failed;
   out.succeeded = -1;
   for (size_t i = 0; i < input.algorithms.size(); ++i) {
-    status = system.solve(true, algorithm_of(input.algorithms[i]));
-    if (status == GCS::Converged && !redundant.empty()) {
-      // PlaneGCS checks the constraints it dropped as redundant before writing its
-      // solution back (System::solve), so it measures them on the values it started from:
-      // an unsolved sketch with a redundancy is never Success. Its own diagnosis writes
-      // back first, then checks (identifyConflictingRedundantConstraints); so does this.
-      // But Converged also means the solve itself fell short, and PlaneGCS doesn't say
-      // which: so every other constraint (the arcs' rules too, tag 0) must be met as the
-      // strictest of its algorithms requires of a success (each residual within 1e-10:
-      // DogLeg's own test; Levenberg–Marquardt's and BFGS's allow as much or a little
-      // more, so this errs towards Converged), and the dropped ones within PlaneGCS's
-      // tolerance for them (squared error within `convergence`).
-      system.applySolution();
-      const auto met = [&](int t, double tolerance) {
-        const double e = system.calculateConstraintErrorByTag(t);
-        return std::isnan(e) ? false : std::fabs(e) <= tolerance;
-      };
-      bool all_met = std::all_of(redundant.begin(), redundant.end(), [&](int t) {
-        return met(t, std::sqrt(system.convergence));
-      });
-      for (const ConstraintIn &c : input.constraints) {
-        const int t = c.kind == ConstraintKind::ArcRules ? 0 : static_cast<int>(c.tag);
-        if (std::find(redundant.begin(), redundant.end(), t) == redundant.end() &&
-            !met(t, 1e-10)) {
-          all_met = false;
-        }
-      }
-      if (all_met) status = GCS::Success;
-    }
+    const GCS::Algorithm algorithm = algorithm_of(input.algorithms[i]);
+    status = system.solve(true, algorithm);
     if (status == GCS::Success) {
-      out.succeeded = static_cast<int>(i);
-      break;
+      reported = Status::Success;
+    } else if (status == GCS::Converged && dropped && algorithm != GCS::BFGS) {
+      // DogLeg and Levenberg–Marquardt end only in Success or Failed (GCS.cpp, solve_DL and
+      // solve_LM): Converged from them is System::solve's check of the equations it dropped
+      // as redundant, made on the values it started from, before its solution is written
+      // back. So everything it kept is met, and the dropped ones are unchecked on the
+      // solution: their residuals say whether they agree, the core's to judge
+      // (docs/roadmap/m3-sketcher.md, decision 5). BFGS can end Converged of its own accord,
+      // so its Converged stays one.
+      reported = Status::SolvedExceptRedundant;
+    } else {
+      reported = status_of(status);
+      continue;
     }
+    out.succeeded = static_cast<int>(i);
+    break;
   }
-  if (status == GCS::Success) {
+  if (out.succeeded >= 0) {
     system.applySolution();
   } else {
     system.undoSolution();
   }
-  out.status = status_of(status);
+  out.status = reported;
   for (double v : values) out.values.push_back(v);
   // Every tagged constraint's residual on those values: PlaneGCS solves only the parts
   // with unknowns, so this is how a constraint among fixed values alone shows whether it
@@ -344,13 +335,15 @@ void debug_raise_sigsegv() {
   std::raise(SIGSEGV);
 }
 
+void debug_throw_bad_alloc() { throw std::bad_alloc(); }
+
 void debug_enable_fp_traps() {
 #if defined(__linux__)
   if (feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW) == -1) {
     throw std::runtime_error("feenableexcept failed");
   }
 #elif defined(__aarch64__)
-  // Apple silicon ignores the trap-enable bits: they read back as 0.
+  // Some Apple silicon ignores the trap-enable bits (they read back as 0); some keeps them.
   uint64_t fpcr;
   __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
   fpcr |= 0x0700;  // IOE, DZE, OFE
