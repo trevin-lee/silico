@@ -91,9 +91,10 @@ pub enum Name {
         first: Source,
         more: Vec<Source>,
     },
-    /// An element modified from one element, `name`, as OCCT's first (and only) result of
-    /// it, by one feature or by a run of them, each the same way (Trevin's decision,
-    /// 2026-10-16): written `pppppppp.Face6*`, with no feature in between, so a plate's top
+    /// An element modified from one element, `name`, as its only result (OCCT's first,
+    /// none other modified or generated of its kind), by one feature or by a run of them,
+    /// each the same way (Trevin's decision, 2026-10-16): written `pppppppp.Face6*`, with
+    /// no feature in between, so a plate's top
     /// face is the same name after any number of holes cut through it, and a hole's rim
     /// named from it doesn't change when an earlier hole is added, removed, or moved.
     /// Unique: such a step makes one element of one, so two elements of a result never

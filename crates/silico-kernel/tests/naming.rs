@@ -548,9 +548,11 @@ fn a_later_holes_rims_keep_their_names_whatever_holes_come_before() {
 
 #[test]
 fn a_face_split_by_a_cut_keeps_its_pieces_apart() {
-    // A slot (2 wide, 1 deep) across the plate's top splits the top face in two: OCCT's
-    // first piece is the face as modified (`pppppppp.Face6*`), the second keeps its level
-    // (`s0000001.Face(M2 pppppppp.Face6)`); every name is unique.
+    // A slot (2 wide, 1 deep) across the plate's top splits the top face in two: each piece
+    // keeps its level (`s0000001.Face(M pppppppp.Face6)`, `...(M2 ...)`), so neither is
+    // taken for the face as it was (`pppppppp.Face6*`, the name of a face only modified):
+    // a reference to the top face finds neither piece, and fails, rather than following
+    // one. Every name is unique.
     let engine = occt_engine();
     let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "features": [
         {"id": "pppppppp", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, 0], "length": 40, "width": 20, "height": 5},
@@ -573,9 +575,10 @@ fn a_face_split_by_a_cut_keeps_its_pieces_apart() {
         .collect();
     assert_eq!(pieces.len(), 2, "{faces:#?}");
     assert!(
-        pieces.contains(&&"pppppppp.Face6*".to_owned()),
+        pieces.contains(&&"s0000001.Face(M pppppppp.Face6)".to_owned()),
         "{faces:#?}"
     );
+    assert!(!faces.contains(&"pppppppp.Face6*".to_owned()), "{faces:#?}");
     assert!(
         pieces.contains(&&"s0000001.Face(M2 pppppppp.Face6)".to_owned()),
         "{faces:#?}"

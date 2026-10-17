@@ -280,7 +280,9 @@ impl Builder {
         // Each result element's sources. (FreeCAD names elements in its `IndexedName` order,
         // edges, faces, vertices; two elements can come about alike only if they're of one
         // kind, so element order decides the same `~1`.)
-        let mut sources: BTreeMap<ElementRef, BTreeMap<SourceKey, (Relation, NonZeroU32)>> =
+        // Each source's relation and position, and whether it became this element alone (one
+        // element modified, none generated of its kind).
+        let mut sources: BTreeMap<ElementRef, BTreeMap<SourceKey, (Relation, NonZeroU32, bool)>> =
             BTreeMap::new();
         for kind in KINDS {
             for (i, (input, map)) in history.inputs.iter().zip(inputs).enumerate() {
@@ -291,6 +293,8 @@ impl Builder {
                     let source = element(kind, n);
                     let name = self.source_name(map, source);
                     let key: SourceKey = (rank(kind), i, freecad::text(&name).into(), name);
+                    let sole = fate.modified.len() == 1
+                        && fate.generated.iter().all(|r| r.element.kind != kind);
                     // Generated after modified, so for a source that did both to one
                     // element, generated counts (FreeCAD's map overwrites the first).
                     let reported = fate
@@ -310,7 +314,7 @@ impl Builder {
                         sources
                             .entry(r.element)
                             .or_default()
-                            .insert(key.clone(), (relation, position));
+                            .insert(key.clone(), (relation, position, sole));
                     }
                 }
             }
@@ -320,9 +324,10 @@ impl Builder {
                 continue;
             }
             let first_input = keyed.keys().next().map_or(usize::MAX, |key| key.1);
-            let alone = keyed.len() == 1;
+            // One source, which became this element and nothing else of its kind.
+            let alone = keyed.len() == 1 && keyed.values().all(|&(_, _, sole)| sole);
             let mut sources = keyed.into_iter().take(MOST_SOURCES).map(
-                |((_, _, _, name), (relation, position))| Source {
+                |((_, _, _, name), (relation, position, _))| Source {
                     relation,
                     position,
                     name,
@@ -335,8 +340,9 @@ impl Builder {
                 && first.relation == Relation::Modified
                 && first.position == NonZeroU32::MIN
             {
-                // Modified from one element alone, as OCCT's first result of it: that
-                // element as later features have modified it, however many (Trevin's
+                // Modified from one element alone, its only result (a face split in two
+                // keeps its level, so a reference to the face isn't taken to one piece):
+                // that element as later features have modified it, however many (Trevin's
                 // collapse); a run of them is one level.
                 let origin = match &*first.name {
                     Name::Modified { name, .. } => Arc::clone(name),
