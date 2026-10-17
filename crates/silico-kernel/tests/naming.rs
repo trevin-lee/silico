@@ -347,3 +347,48 @@ fn a_primitives_elements_are_named_by_their_numbers() {
     };
     assert_eq!(map.element(&other), None);
 }
+
+#[test]
+fn a_recomputed_holes_names_say_how_each_element_came_about() {
+    // The design's example on OCCT: a 40 × 20 × 10 block, a pin (r 2.5) through it, cut.
+    use silico_core::document::{Checked, read};
+    use silico_core::pool::KernelPool;
+    use silico_core::recompute::{Recompute, RunOutcome};
+    let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "features": [
+        {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+        {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
+        {"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de"}
+    ]}"#;
+    let pool = KernelPool::start_workers(
+        std::path::Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")),
+        2,
+    )
+    .unwrap();
+    let engine = Recompute::new(pool);
+    let document = Checked::new(read(text.as_bytes()).unwrap()).unwrap();
+    let Ok(RunOutcome::Published(model)) = engine.start(document).wait() else {
+        panic!("not published");
+    };
+    let hole = model.element_map(&id("m3tq8v0z")).unwrap();
+    let all: Vec<String> = hole.iter().map(|(_, names)| names[0].to_string()).collect();
+    // The hole's wall: the pin's side face, modified by the cut (docs/ports/history.md).
+    assert!(
+        all.contains(&"m3tq8v0z.Face(M a91cw0de.Face1)".to_owned()),
+        "{all:#?}"
+    );
+    // Its two rims: edges the cut generated from the block's top (Face6) or bottom (Face5)
+    // and the pin's side, as FreeCAD names a cylinder's hole (`Face6;:G2(Face1;K-2);CUT`).
+    let rims: Vec<String> = hole
+        .iter()
+        .filter(|(e, _)| e.kind == ElementKind::Edge)
+        .map(|(_, names)| freecad::text(&names[0]))
+        .filter(|t| t.contains("(Face1;K-") && t.ends_with(";CUT"))
+        .collect();
+    let mut tops: Vec<&str> = rims.iter().map(|t| &t[..5]).collect();
+    tops.sort_unstable();
+    assert_eq!(tops, ["Face5", "Face6"], "{rims:?}");
+    // The block's untouched faces keep their names: its four sides.
+    for face in 1..=4 {
+        assert!(all.contains(&format!("k7f2qx3m.Face{face}")), "{all:#?}");
+    }
+}

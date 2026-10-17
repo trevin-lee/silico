@@ -35,6 +35,7 @@ use crate::kernel::{
     BooleanOp, BuiltData, Generation, History, Kernel, KernelRequest, Primitive, ShapeData,
     ShapeSummary,
 };
+use crate::naming::{self, ElementMap};
 use crate::pool::Outcome;
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
@@ -123,6 +124,8 @@ pub struct Model {
     bodies: Vec<FeatureId>,
     /// Built features whose solids couldn't be measured, in timeline order: why.
     unmeasured: Vec<(FeatureId, Error)>,
+    /// Each feature's solid's element names, in timeline order, for those that built.
+    names: Vec<Option<Arc<ElementMap>>>,
 }
 
 impl Model {
@@ -162,6 +165,15 @@ impl Model {
                 | FeatureOutcome::Blocked { .. }
                 | FeatureOutcome::Sketch => None,
             })
+    }
+
+    /// The names of the elements of the feature `id`'s solid, if it built.
+    pub fn element_map(&self, id: &FeatureId) -> Option<&ElementMap> {
+        let i = self
+            .features
+            .iter()
+            .position(|(feature, _)| feature == id)?;
+        self.names.get(i)?.as_deref()
     }
 
     /// The document it was built from.
@@ -530,6 +542,9 @@ struct Planned {
     steps: Vec<Key>,
     /// The earlier features it uses, base then tool, by index.
     uses: Vec<usize>,
+    /// How its solid's elements are named: a primitive's by their numbers, an operation's
+    /// from its history (a primitive's move keeps its names).
+    naming: Option<naming::Operation>,
 }
 
 impl Planned {
@@ -593,6 +608,11 @@ impl Plan {
                 id: feature.id.clone(),
                 steps: own,
                 uses,
+                naming: boolean_op(&feature.operation).map(|op| match op {
+                    BooleanOp::Fuse => naming::Operation::Fuse,
+                    BooleanOp::Cut => naming::Operation::Cut,
+                    BooleanOp::Common => naming::Operation::Common,
+                }),
             });
         }
         plan
@@ -1121,13 +1141,50 @@ fn model(source: &Arc<Checked>, plan: &Plan, schedule: &Schedule, generation: Ge
             }
         })
         .collect();
+    let names = element_maps(plan, &features);
     Model {
         source: Arc::clone(source),
         generation,
         features,
         bodies,
         unmeasured,
+        names,
     }
+}
+
+/// Each built feature's element names, in timeline order: a primitive's by their numbers,
+/// a boolean's from its inputs' names and its step's history (docs/ports/naming.md).
+fn element_maps(
+    plan: &Plan,
+    features: &[(FeatureId, FeatureOutcome)],
+) -> Vec<Option<Arc<ElementMap>>> {
+    let mut maps: Vec<Option<Arc<ElementMap>>> = Vec::with_capacity(features.len());
+    for (planned, (id, outcome)) in plan.features.iter().zip(features) {
+        let map = match (outcome, planned.naming) {
+            (FeatureOutcome::Built { .. }, None) => {
+                Some(Arc::new(ElementMap::primitive(id.clone())))
+            }
+            (FeatureOutcome::Built { built, .. }, Some(operation)) => {
+                let inputs: Option<Vec<&ElementMap>> = planned
+                    .uses
+                    .iter()
+                    .map(|&i| maps.get(i).and_then(Option::as_deref))
+                    .collect();
+                match (inputs, &built.history) {
+                    (Some(inputs), Some(history)) => Some(Arc::new(ElementMap::operation(
+                        id.clone(),
+                        operation,
+                        &inputs,
+                        history,
+                    ))),
+                    _ => None,
+                }
+            }
+            (FeatureOutcome::Failed(_) | FeatureOutcome::Blocked { .. }, _) => None,
+        };
+        maps.push(map);
+    }
+    maps
 }
 
 /// A feature whose inputs built: built, if its own steps did, or failed on the first that
