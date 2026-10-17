@@ -491,10 +491,11 @@ fn a_violated_dimension_between_fixed_points_beside_a_drag_is_named_or_refused()
 // Points that can't move.
 
 #[test]
-fn a_fixed_point_dragged_stays_and_the_rest_of_the_sketch_is_solved() {
-    // The pin has no unknown, so PlaneGCS leaves it alone (its own component, no
-    // parameters): the point stays, and a free line beside it, whose end is tied 3 right of
-    // its start, is solved.
+fn a_fixed_point_dragged_stays_and_the_rest_of_the_sketch_stays_where_it_began() {
+    // The pin has no unknown, so the drag's part is empty: the point stays, and so does a
+    // free line beside it, whose end is tied 3 right of its start though drawn 1 right: the
+    // drag solves only its own part (FreeCAD's solves every part each move, which a solved
+    // sketch leaves where it is anyway; the closing solve solves the rest).
     let mut b = Builder::default();
     let fixed = b.fixed_point(4.0, -1.0);
     let line = b.line((0.0, 0.0), (1.0, 1.0));
@@ -510,8 +511,7 @@ fn a_fixed_point_dragged_stays_and_the_rest_of_the_sketch_is_solved() {
     let moved = drag.move_to([50.0, 50.0]).unwrap();
     assert_eq!(moved.status, SolveStatus::Success);
     let values = moved.values.unwrap();
-    assert_eq!(&values[..2], &[4.0, -1.0]);
-    assert!((values[4] - values[2] - 3.0).abs() <= CLOSE, "{values:?}");
+    assert_eq!(values, system.values);
 }
 
 #[test]
@@ -711,7 +711,7 @@ fn a_worker_killed_mid_drag_is_reported_and_its_successor_has_no_drag() {
 // Size: what the check admits must be answered, one frame at a time.
 
 #[test]
-fn a_move_of_the_largest_system_the_check_admits_is_answered_in_time() {
+fn a_move_of_the_largest_part_a_drag_admits_is_answered_in_time() {
     // Was a BREAK (twice): a pinned part goes to SQP (GCS.cpp 4502), dense, up to 100
     // iterations, so a move costs more than a solve. A chain linked end to end and pulled
     // far from where it began is the worst found (the review's): a move takes 0.76 s at 256
@@ -720,7 +720,7 @@ fn a_move_of_the_largest_system_the_check_admits_is_answered_in_time() {
     // in the part it moves, and a move of that worst case at the limit comes back in time.
     let links = silico_protocol::MAX_DRAG_UNKNOWNS / 4;
     let (system, last) = linked_chain(links);
-    assert_eq!(system.part_unknowns(PointOf::End(last)), 256);
+    assert_eq!(system.part(&[PointOf::End(last)]).unknowns.len(), 256);
     let mut w = Worker::spawn_as(Path::new(WORKER), WorkerKind::Sketch).unwrap();
     match w.call(
         Generation(1),
@@ -730,7 +730,11 @@ fn a_move_of_the_largest_system_the_check_admits_is_answered_in_time() {
         }),
         TIMEOUT,
     ) {
-        Ok(Reply::DragStarted { conflicting, .. }) => assert!(conflicting.is_empty()),
+        Ok(Reply::DragStarted { dofs, conflicting }) => {
+            // 4 unknowns a link, 3 equations a link (its length, and the two joining it to
+            // the one before, or to the origin): one degree of freedom a link.
+            assert_eq!((dofs, conflicting.as_slice()), (64, &[][..]));
+        }
         other => panic!("begin: {other:?}"),
     }
     let t = Instant::now();
@@ -826,7 +830,7 @@ fn a_drag_is_bounded_by_the_part_it_moves_not_the_whole_sketch() {
         value,
     });
     b.check().unwrap();
-    assert_eq!(b.part_unknowns(PointOf::End(last)), 257);
+    assert_eq!(b.part(&[PointOf::End(last)]).unknowns.len(), 257);
     let err = DragBegin {
         system: b,
         point: PointOf::End(last),
@@ -855,7 +859,7 @@ fn a_drag_is_bounded_by_the_part_it_moves_not_the_whole_sketch() {
         x: Value(at),
         y: Value(at + 1),
     }));
-    assert_eq!(big.part_unknowns(PointOf::Point(lone)), 2);
+    assert_eq!(big.part(&[PointOf::Point(lone)]).unknowns.len(), 2);
     DragBegin {
         system: big,
         point: PointOf::Point(lone),
@@ -864,26 +868,175 @@ fn a_drag_is_bounded_by_the_part_it_moves_not_the_whole_sketch() {
     .unwrap();
 }
 
+/// `n` free lines of length 1 in a row, each end joined to the next start by a coincidence.
+fn coincident_chain_into(b: &mut Builder, n: usize) -> Vec<Geometry> {
+    let lines: Vec<Geometry> = (0..n)
+        .map(|i| b.line((i as f64, 0.0), (i as f64 + 0.5, 1.0)))
+        .collect();
+    let one = b.fixed(1.0);
+    for &l in &lines {
+        b.constrain(|tag| SolverConstraint::Distance {
+            tag,
+            a: PointOf::Start(l),
+            b: PointOf::End(l),
+            value: one,
+        });
+    }
+    for w in lines.windows(2) {
+        let (a, c) = (PointOf::End(w[0]), PointOf::Start(w[1]));
+        b.constrain(|tag| SolverConstraint::Coincident { tag, a, b: c });
+    }
+    lines
+}
+
+#[test]
+fn a_drag_counts_every_part_its_pins_hold() {
+    // A chain joined by coincidences, as sketches join lines: 65 lines, 260 unknowns, one
+    // part, past the limit.
+    let mut b = Builder::default();
+    let lines = coincident_chain_into(&mut b, 65);
+    let last = *lines.last().unwrap();
+    let system = b.system(Algorithm::DogLeg);
+    system.check().unwrap();
+    assert_eq!(system.part(&[PointOf::End(last)]).unknowns.len(), 260);
+    let err = DragBegin {
+        system,
+        point: PointOf::End(last),
+    }
+    .check()
+    .unwrap_err();
+    assert_eq!(err.parameter, "point");
+    // An arc whose centre is joined to that chain's end (without its rules, which the
+    // protocol allows), its end dragged: the end's own part is 2 unknowns, but its centre is
+    // pinned too, so the drag holds the chain's part: 260 + the centre's.
+    let mut b = Builder::default();
+    let lines = coincident_chain_into(&mut b, 64);
+    let last = *lines.last().unwrap();
+    let (cx, cy) = (40.0, 3.0);
+    let center = b.point_values(cx, cy);
+    let radius = b.unknown(5.0);
+    let start_angle = b.unknown(0.0);
+    let end_angle = b.unknown(std::f64::consts::FRAC_PI_2);
+    let start = b.point_values(cx + 5.0, cy);
+    let end = b.point_values(cx, cy + 5.0);
+    let arc = b.add(SketchGeometry::Arc {
+        center,
+        radius,
+        start_angle,
+        end_angle,
+        start,
+        end,
+    });
+    b.constrain(|tag| SolverConstraint::Coincident {
+        tag,
+        a: PointOf::End(last),
+        b: PointOf::Center(arc),
+    });
+    let system = b.system(Algorithm::DogLeg);
+    system.check().unwrap();
+    assert_eq!(system.part(&[PointOf::End(arc)]).unknowns.len(), 2);
+    let begin = DragBegin {
+        system,
+        point: PointOf::End(arc),
+    };
+    // The end's 2, and the centre's with the chain's: 2 + 256 + 2.
+    assert_eq!(begin.part().unknowns.len(), 260);
+    assert_eq!(begin.check().unwrap_err().parameter, "point");
+}
+
+#[test]
+fn a_move_solves_only_the_part_it_moves_and_leaves_the_rest_where_it_was() {
+    // A lone free point beside a chain that can't be closed (its last end held 800 from the
+    // origin by 256 unit links): the whole sketch would fail every frame, solved anew each
+    // move (FreeCAD's System::solve solves every part). The drag holds only the point's
+    // part, so each move solves the point, and the chain stays as it was drawn.
+    let (mut chain, last) = linked_chain(64);
+    let far = Value(chain.values.len() as u32);
+    chain.values.push(800.0);
+    let origin = PointOf::Point(Geometry(0));
+    chain.constraints.push(SolverConstraint::Distance {
+        tag: Tag(chain.constraints.len() as u32 + 1),
+        a: origin,
+        b: PointOf::End(last),
+        value: far,
+    });
+    let at = chain.values.len() as u32;
+    chain.values.extend([3.0, 4.0]);
+    chain.unknowns.extend([Value(at), Value(at + 1)]);
+    let lone = Geometry(chain.geometry.len() as u32);
+    chain.geometry.push(SketchGeometry::Point(PointValues {
+        x: Value(at),
+        y: Value(at + 1),
+    }));
+    chain.check().unwrap();
+    let before = chain.values.clone();
+    let mut drag = begin(chain, PointOf::Point(lone));
+    for cursor in [[3.05, 4.0], [3.1, 4.1], [5.0, -2.0]] {
+        let m = drag.move_to(cursor).unwrap();
+        assert_eq!(m.status, SolveStatus::Success, "{cursor:?}");
+        let values = m.values.unwrap();
+        assert_near(
+            [values[at as usize], values[at as usize + 1]],
+            cursor,
+            "the point",
+        );
+        for (i, (a, b)) in before.iter().zip(&values).enumerate() {
+            if i != at as usize && i != at as usize + 1 {
+                assert_eq!(a.to_bits(), b.to_bits(), "value {i} moved");
+            }
+        }
+    }
+}
+
 #[test]
 fn a_circle_of_negative_or_no_radius_or_a_line_too_short_to_measure_is_no_frame() {
-    // A circle held at a radius of -1 or 0, its centre dragged: solved, but not a circle.
-    for r in [-1.0, 0.0] {
-        let mut b = Builder::default();
-        let center = b.point_values(0.0, 0.0);
-        let radius = b.unknown(2.0);
-        let circle = b.add(SketchGeometry::Circle { center, radius });
-        let value = b.fixed(r);
-        b.constrain(|tag| SolverConstraint::Radius { tag, circle, value });
-        let system = b.system(Algorithm::DogLeg);
-        system.check().unwrap();
-        let mut drag = begin(system, PointOf::Center(circle));
-        let m = drag.move_to([3.0, 4.0]).unwrap();
-        assert_eq!(
-            (m.status, &m.values),
-            (SolveStatus::SolvedInvalid, &None),
-            "radius {r}"
-        );
-    }
+    // An arc held at a radius of -1 (its rules join the radius to its centre), its centre
+    // dragged: solved, but not an arc. (Held at 0, PlaneGCS lands on 7.7e-34: an arc.)
+    let mut b = Builder::default();
+    let center = b.point_values(1.0, 2.0);
+    let radius = b.unknown(5.0);
+    let start_angle = b.unknown(0.0);
+    let end_angle = b.unknown(std::f64::consts::FRAC_PI_2);
+    let start = b.point_values(6.0, 2.0);
+    let end = b.point_values(1.0, 7.0);
+    let arc = b.add(SketchGeometry::Arc {
+        center,
+        radius,
+        start_angle,
+        end_angle,
+        start,
+        end,
+    });
+    b.constraints.push(SolverConstraint::ArcRules { arc });
+    let value = b.fixed(-1.0);
+    b.constrain(|tag| SolverConstraint::Radius {
+        tag,
+        circle: arc,
+        value,
+    });
+    let system = b.system(Algorithm::DogLeg);
+    system.check().unwrap();
+    let mut drag = begin(system, PointOf::Center(arc));
+    let m = drag.move_to([3.0, 4.0]).unwrap();
+    assert_eq!(
+        (m.status, &m.values),
+        (SolveStatus::SolvedInvalid, &None),
+        "radius -1"
+    );
+    // A circle held at a radius of -1, its centre dragged: its radius isn't in the part the
+    // drag moves (nothing joins it to the centre), so the circle moves as it was, radius 2.
+    let mut b = Builder::default();
+    let center = b.point_values(0.0, 0.0);
+    let radius = b.unknown(2.0);
+    let circle = b.add(SketchGeometry::Circle { center, radius });
+    let value = b.fixed(-1.0);
+    b.constrain(|tag| SolverConstraint::Radius { tag, circle, value });
+    let system = b.system(Algorithm::DogLeg);
+    system.check().unwrap();
+    let mut drag = begin(system, PointOf::Center(circle));
+    let m = drag.move_to([3.0, 4.0]).unwrap();
+    assert_eq!(m.status, SolveStatus::Success);
+    assert_eq!(m.values.as_deref().map(|v| v[2]), Some(2.0));
     // A line whose end lands 1e-200 from its start: no length to the solver.
     let mut b = Builder::default();
     let start = PointValues {
@@ -1084,7 +1237,9 @@ fn check_drag(seed: u64) -> Result<(), (Broken, String)> {
                 ));
             }
         }
-        for con in system.constraints.iter().filter(|con| {
+        // Only the part the drag moves is solved; the rest stays where the drag began.
+        let part = begin.part();
+        for con in part.constraints.iter().filter(|con| {
             touches_an_unknown(&system, con) && !on_a_point_line(&system, &values, con)
         }) {
             // Dropped as redundant where the drag starts: never looked at again, so a move

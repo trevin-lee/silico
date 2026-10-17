@@ -32,12 +32,13 @@ class DragSession {
   std::unique_ptr<State> state;
 };
 
-// Builds and diagnoses `input` and, unless constraints conflict, pins `point` where it
-// is: a drag's start.
+// Builds and diagnoses `input` (the part a drag moves), and pins each of `pins` where it
+// is, at its weight: a drag's start.
 std::unique_ptr<DragSession> drag_begin(const SolveInput &input, rust::Slice<const Pin> pins);
-// What the start's diagnosis found.
-DragDiagnosis drag_diagnosis(const DragSession &session);
-// Moves the pin's target to (x, y) and solves from the drag's start.
+// Builds and diagnoses `input`: the degrees of freedom and the constraints in conflict.
+DragDiagnosis diagnose(const SolveInput &input);
+// Moves the first pin's target (the dragged point's) to (x, y) and solves from the drag's
+// start.
 MoveOutput drag_move(DragSession &session, double x, double y);
 
 // The trap-enable bits that are set: 0 when every floating-point trap is off.

@@ -8,8 +8,9 @@
 //! the last one's size left free. Sizes run from the stress corpus's (tens of constraints)
 //! to the worker's limit (2,048 unknowns). A drag takes at most `MAX_DRAG_UNKNOWNS` (256)
 //! in the part it moves (chain-64; a grid's parts are small), so past that only the full
-//! solve is timed, and the table says the drag was refused. The dragged point follows a smooth path, 300
-//! steps of 0.05 mm along a circle of radius 10 mm, each frame timed four ways:
+//! solve is timed, and the table says the drag was refused. The dragged point follows a
+//! smooth path, 300 steps of 0.05 mm along a circle of radius 10 mm, each frame timed four
+//! ways:
 //!
 //! - `solve`, today's path: a full solve through the worker each frame (built and
 //!   diagnosed each time), the point fixed at the cursor, from the last frame's values;

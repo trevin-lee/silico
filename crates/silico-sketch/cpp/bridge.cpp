@@ -327,8 +327,6 @@ struct DragSession::State {
   // them and never resized, so the pins' pointers stay good (FreeCAD reserves its
   // MoveParameters for the same reason).
   std::vector<double> targets;
-  int dofs = 0;
-  rust::Vec<int32_t> conflicting;
 
   State(const SolveInput &input, size_t pins) : sketch(input), targets(2 * pins) {}
 };
@@ -341,9 +339,12 @@ std::unique_ptr<DragSession> drag_begin(const SolveInput &input, rust::Slice<con
   if (pins.empty()) bug("a drag with nothing to pin");
   auto session = std::make_unique<DragSession>(input, pins.size());
   DragSession::State &s = *session->state;
-  s.sketch.diagnose(s.dofs, s.conflicting);
-  // FreeCAD doesn't drag a sketch with constraints in conflict: no pins, no session.
-  if (!s.conflicting.empty()) return session;
+  // The part's own diagnosis, which drops its redundant equations. Whether the drag may
+  // start (no conflict in the whole sketch, as FreeCAD's) is Rust's to say, before this:
+  // a part's rank, found against its own largest entries, can differ from the whole's.
+  int dofs = 0;
+  rust::Vec<int32_t> conflicting;
+  s.sketch.diagnose(dofs, conflicting);
 
   GCS::System &system = s.sketch.system;
   for (size_t i = 0; i < pins.size(); ++i) {
@@ -368,16 +369,15 @@ std::unique_ptr<DragSession> drag_begin(const SolveInput &input, rust::Slice<con
   return session;
 }
 
-DragDiagnosis drag_diagnosis(const DragSession &session) {
+DragDiagnosis diagnose(const SolveInput &input) {
+  Sketch sketch(input);
   DragDiagnosis out;
-  out.dofs = session.state->dofs;
-  for (int32_t t : session.state->conflicting) out.conflicting.push_back(t);
+  sketch.diagnose(out.dofs, out.conflicting);
   return out;
 }
 
 MoveOutput drag_move(DragSession &session, double x, double y) {
   DragSession::State &s = *session.state;
-  if (!s.conflicting.empty()) bug("a move in a drag that never started");
   GCS::System &system = s.sketch.system;
   s.targets[0] = x;
   s.targets[1] = y;

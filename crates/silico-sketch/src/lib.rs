@@ -134,8 +134,8 @@ mod ffi {
         scale: f64,
     }
 
-    /// What a drag's start found: the degrees of freedom, and the tags of the constraints
-    /// in conflict (none, or there's no drag).
+    /// What a diagnosis found: the degrees of freedom, and the tags of the constraints in
+    /// conflict.
     struct DragDiagnosis {
         dofs: i32,
         conflicting: Vec<i32>,
@@ -156,7 +156,7 @@ mod ffi {
         /// A drag under way: the sketch's PlaneGCS system, kept between moves.
         type DragSession;
         fn drag_begin(input: &SolveInput, pins: &[Pin]) -> Result<UniquePtr<DragSession>>;
-        fn drag_diagnosis(session: &DragSession) -> Result<DragDiagnosis>;
+        fn diagnose(input: &SolveInput) -> Result<DragDiagnosis>;
         fn drag_move(session: Pin<&mut DragSession>, x: f64, y: f64) -> Result<MoveOutput>;
 
         fn fp_trap_mask() -> u32;
@@ -241,7 +241,8 @@ pub fn solve(system: &SketchSystem) -> Result<Solved, Failure> {
 /// on earlier drags; Silico doesn't port that.
 pub struct Drag {
     session: cxx::UniquePtr<ffi::DragSession>,
-    /// The sketch's geometry, to check each move's against.
+    /// The geometry the drag moves (any with a value in its part), to check each move's
+    /// against.
     geometry: Vec<SketchGeometry>,
 }
 
@@ -261,7 +262,20 @@ impl Drag {
     pub fn begin(begin: &DragBegin) -> Result<DragStart, Failure> {
         begin.check().map_err(invalid)?;
         prepare_eigen();
-        let pins: Vec<ffi::Pin> = pins(&begin.system, begin.point)
+        // The whole sketch's diagnosis, as FreeCAD's: a conflict anywhere refuses the drag.
+        let whole = ffi::diagnose(&encode(&begin.system)).map_err(bridge_threw)?;
+        let conflicting = tags(&whole.conflicting)?;
+        if !conflicting.is_empty() {
+            return Ok(DragStart {
+                dofs: whole.dofs,
+                conflicting,
+                drag: None,
+            });
+        }
+        // The session holds only the part the pins move; the rest stays where it is.
+        let part = begin.part();
+        let pins: Vec<ffi::Pin> = begin
+            .pins()
             .into_iter()
             .map(|(p, scale)| {
                 let (position, geometry) = point(p);
@@ -272,20 +286,22 @@ impl Drag {
                 }
             })
             .collect();
-        let session = ffi::drag_begin(&encode(&begin.system), &pins).map_err(bridge_threw)?;
-        let diagnosis = match session.as_ref() {
-            Some(s) => ffi::drag_diagnosis(s).map_err(bridge_threw)?,
-            None => return Err(internal("the bridge started no drag")),
+        let session = ffi::drag_begin(&encode(&part), &pins).map_err(bridge_threw)?;
+        if session.is_null() {
+            return Err(internal("the bridge started no drag"));
+        }
+        let moved = |g: &SketchGeometry| {
+            g.values()
+                .into_iter()
+                .any(|v| part.unknowns.binary_search(&v).is_ok())
         };
-        let conflicting = tags(&diagnosis.conflicting)?;
-        let drag = conflicting.is_empty().then(|| Drag {
-            session,
-            geometry: begin.system.geometry.clone(),
-        });
         Ok(DragStart {
-            dofs: diagnosis.dofs,
+            dofs: whole.dofs,
             conflicting,
-            drag,
+            drag: Some(Drag {
+                session,
+                geometry: part.geometry.iter().copied().filter(moved).collect(),
+            }),
         })
     }
 
@@ -317,20 +333,6 @@ impl Drag {
         };
         Ok(Moved { status, values })
     }
-}
-
-/// The pins a drag of `p` holds, with their weights, as FreeCAD's `Sketch::initMove` pins
-/// one point: the point itself; and for an arc's start or end, the arc's centre too, where
-/// it starts, a hundred times more weakly, so the end moves before the centre does
-/// (`4d7a9435c1`). `p` must name a point its geometry has.
-fn pins(system: &SketchSystem, p: PointOf) -> Vec<(PointOf, f64)> {
-    let mut pins = vec![(p, 1.0)];
-    if let (Some(SketchGeometry::Arc { .. }), PointOf::Start(g) | PointOf::End(g)) =
-        (system.geometry.get(p.geometry().0 as usize), p)
-    {
-        pins.push((PointOf::Center(g), 0.01));
-    }
-    pins
 }
 
 /// Whether geometry solved to `values` can be built, as FreeCAD's `Sketch::updateGeometry`
