@@ -302,22 +302,15 @@ fn fmt_through_a_symlink_formats_the_file_it_names_and_keeps_the_link() {
     let out = run(&scratch, &[os("fmt"), os("link.silico")]);
     let link = std::fs::symlink_metadata(scratch.0.join("link.silico")).unwrap();
     let real_text = std::fs::read_to_string(&real).unwrap();
-    if out.code() == Some(2) {
-        assert_eq!(real_text, EXAMPLE);
-    } else {
-        assert_eq!(out.code(), Some(0), "{}", out.stderr);
-        assert!(
-            link.file_type().is_symlink(),
-            "the link was replaced by a file"
-        );
-        assert!(
-            real_text.contains("fingerprint"),
-            "the real document wasn't formatted"
-        );
-    }
+    // `fmt` writes through a link (docs/cli.md), so it's done, not refused.
+    assert_eq!(out.code(), Some(0), "{}", out.stderr);
     assert!(
         link.file_type().is_symlink(),
         "the link was replaced by a file"
+    );
+    assert!(
+        real_text.contains(r#""fingerprint": {"volume": 8000,"#),
+        "the real document wasn't formatted: {real_text}"
     );
 }
 
@@ -331,16 +324,21 @@ fn fmt_of_a_hard_linked_document_changes_every_name_of_it() {
     let b = scratch.0.join("b.silico");
     std::fs::hard_link(&a, &b).unwrap();
     let out = run(&scratch, &[os("fmt"), os("a.silico")]);
-    if out.code() == Some(2) {
-        assert_eq!(std::fs::read_to_string(&a).unwrap(), EXAMPLE);
-        return;
-    }
+    // Written in place, so every name reads the formatted text: done, not refused.
     assert_eq!(out.code(), Some(0), "{}", out.stderr);
     assert_eq!(
         std::fs::metadata(&a).unwrap().ino(),
         std::fs::metadata(&b).unwrap().ino(),
         "the hard link was split"
     );
+    for name in [&a, &b] {
+        let text = std::fs::read_to_string(name).unwrap();
+        assert!(
+            text.contains(r#""fingerprint": {"volume": 8000,"#),
+            "{}: {text}",
+            name.display()
+        );
+    }
 }
 
 #[test]
@@ -360,6 +358,65 @@ fn fmt_doesnt_rewrite_a_read_only_file() {
         "a read-only file was rewritten"
     );
     assert_eq!(out.code(), Some(2), "{}", out.stderr);
+}
+
+#[test]
+fn fmt_doesnt_rewrite_a_file_its_owner_cant_write() {
+    // Found by the review: 0464 (the owner's write bit off, the group's on, common where
+    // each user has a group of their own) isn't `readonly()`, which looks for no write bit
+    // at all, so `fmt` renamed a new file over one its user can't write. What the system
+    // says this process may do decides.
+    let scratch = Scratch::new("owner-cant-write");
+    let file = scratch.file("part.silico", EXAMPLE);
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o464)).unwrap();
+    let out = run(&scratch, &[os("fmt"), os("part.silico")]);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), EXAMPLE);
+    assert_eq!(out.code(), Some(2), "{}", out.stderr);
+    assert!(out.stderr.contains("io_failed"), "{}", out.stderr);
+    assert!(out.stderr.contains("read-only"), "{}", out.stderr);
+}
+
+#[test]
+fn fmt_of_a_hard_linked_document_cut_short_loses_neither_name_of_it() {
+    // Found by the review: written in place, the document was truncated first, so a write
+    // cut short (here, a file-size limit of 0, which kills at the first byte written)
+    // left it empty under both names. The cache is warmed first, so the document is the
+    // first file written.
+    let scratch = Scratch::new("hardlink-cut-short");
+    let a = scratch.file("a.silico", EXAMPLE);
+    let b = scratch.0.join("b.silico");
+    std::fs::hard_link(&a, &b).unwrap();
+    let warm = run(&scratch, &[os("fmt"), os("--check"), os("a.silico")]);
+    assert_eq!(warm.code(), Some(1), "{}", warm.stderr);
+    // `silico fmt a.silico` as `command` runs it, through a shell that sets the limit.
+    let silico = command(&scratch, &worker(), &[]);
+    let mut limited = Command::new("sh");
+    limited
+        .arg("-c")
+        .arg("ulimit -f 0; exec \"$0\" fmt a.silico")
+        .arg(silico.get_program())
+        .current_dir(&scratch.0)
+        .stdin(Stdio::null());
+    for (key, value) in silico.get_envs() {
+        match value {
+            Some(value) => limited.env(key, value),
+            None => limited.env_remove(key),
+        };
+    }
+    let limited = limited.output().unwrap();
+    assert!(!limited.status.success());
+    for name in [&a, &b] {
+        assert_eq!(
+            std::fs::read_to_string(name).unwrap(),
+            EXAMPLE,
+            "{}",
+            name.display()
+        );
+    }
+    assert_eq!(
+        std::fs::metadata(&a).unwrap().ino(),
+        std::fs::metadata(&b).unwrap().ino()
+    );
 }
 
 #[test]
@@ -569,6 +626,16 @@ fn check_json_says_a_line_for_every_file_even_one_it_couldnt_read() {
     assert_eq!(lines.len(), 2, "stdout: {}", out.stdout);
     assert_eq!(lines[0]["file"], "missing.silico");
     assert_eq!(lines[0]["ok"], false);
+    // The error in the core's contract shape (tests/contract/check-line.json).
+    assert_eq!(lines[0]["error"]["code"], "io_failed", "{}", lines[0]);
+    assert!(
+        lines[0]["error"]["message"]
+            .as_str()
+            .is_some_and(|e| e.contains("couldn't be read")),
+        "{}",
+        lines[0]
+    );
+    assert_eq!(lines[1]["ok"], true, "{}", lines[1]);
 }
 
 #[test]

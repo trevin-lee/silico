@@ -3,48 +3,20 @@
 //! measures them (tests/fingerprint.rs works them out).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/command.rs"]
+mod commands;
 #[path = "common/example.rs"]
 mod example;
 
+use commands::{check_bytes, engine, format_bytes};
 use example::EXAMPLE;
 use silico_core::command::{self, Formatted};
 use silico_core::document::{FeatureId, read};
-use silico_core::fake::FakeKernel;
 use silico_core::kernel::{Op, Primitive};
-use silico_core::recompute::Recompute;
 use silico_core::{Error, ErrorCode};
-
-/// `command::check` of a document's bytes: the gate's problems, or the rebuild's.
-fn check_bytes<K: silico_core::kernel::Kernel + 'static>(
-    engine: &silico_core::recompute::Recompute<K>,
-    bytes: &[u8],
-) -> Result<silico_core::command::Problems, silico_core::Error> {
-    match silico_core::command::gate(bytes) {
-        Ok(checked) => silico_core::command::check(engine, checked),
-        Err(problems) => Ok(problems),
-    }
-}
-
-/// `command::format` of a document's bytes: the gate's problems, or the formatted text.
-fn format_bytes<K: silico_core::kernel::Kernel + 'static>(
-    engine: &silico_core::recompute::Recompute<K>,
-    bytes: &[u8],
-) -> Result<
-    Result<silico_core::command::Formatted, silico_core::command::Problems>,
-    silico_core::Error,
-> {
-    match silico_core::command::gate(bytes) {
-        Ok(checked) => silico_core::command::format(engine, checked),
-        Err(problems) => Ok(Err(problems)),
-    }
-}
 
 fn id(text: &str) -> FeatureId {
     FeatureId::new(text).unwrap()
-}
-
-fn engine() -> Recompute<FakeKernel> {
-    Recompute::new(FakeKernel::new(2).unwrap())
 }
 
 const OUTLINE: &str = r#"k7f2qx3m "Block" box length 40, width 20, height 10, at (0, 0, 0)
@@ -130,6 +102,27 @@ fn an_outline_escapes_what_could_break_or_hide_in_its_lines() {
         "{outline}"
     );
     assert_eq!(outline.lines().count(), 5);
+    // Spaces that look like the plain one, written so they don't (found by the review).
+    for (space, written) in [
+        ('\u{a0}', r"\u{a0}"),
+        ('\u{2002}', r"\u{2002}"),
+        ('\u{3000}', r"\u{3000}"),
+    ] {
+        let text = EXAMPLE.replace(
+            r#""name": "Block""#,
+            &format!(r#""name": "Top{space}Plate""#),
+        );
+        let outline = command::outline(&read(text.as_bytes()).unwrap());
+        assert!(
+            outline.starts_with(&format!(r#"k7f2qx3m "Top{written}Plate" box"#)),
+            "{outline}"
+        );
+    }
+    let text = EXAMPLE.replace(r#""name": "Block""#, r#""name": "Top Plate""#);
+    assert!(
+        command::outline(&read(text.as_bytes()).unwrap())
+            .starts_with(r#"k7f2qx3m "Top Plate" box"#)
+    );
 }
 
 #[test]
@@ -148,8 +141,8 @@ fn a_sound_document_checks_clean() {
 #[test]
 fn a_document_that_doesnt_read_is_one_problem_saying_where() {
     let problems = check_bytes(&engine(), b"{\"silico\": 1,").unwrap();
-    assert_eq!(problems.total, 1);
-    assert_eq!(problems.problems[0].code(), ErrorCode::InvalidInput);
+    assert_eq!(problems.total(), 1);
+    assert_eq!(problems.errors()[0].code(), ErrorCode::InvalidInput);
 }
 
 #[test]
@@ -160,7 +153,7 @@ fn every_problem_the_gate_finds_is_reported() {
         .replace(r#""length": 40"#, r#""length": 0"#);
     let problems = check_bytes(&engine(), text.as_bytes()).unwrap();
     let said: Vec<_> = problems
-        .problems
+        .errors()
         .iter()
         .map(|e| {
             (
@@ -176,7 +169,7 @@ fn every_problem_the_gate_finds_is_reported() {
             ("m3tq8v0z".to_owned(), Some("tool".to_owned())),
         ]
     );
-    assert_eq!(problems.total, 2);
+    assert_eq!(problems.total(), 2);
 }
 
 #[test]
@@ -185,7 +178,7 @@ fn a_failure_and_drift_are_problems_and_a_blocked_feature_isnt_one_of_its_own() 
     let saved = formatted(EXAMPLE).text;
     let drifted = saved.replacen(r#""volume": 8000,"#, r#""volume": 8001,"#, 1);
     let problems = check_bytes(&engine(), drifted.as_bytes()).unwrap();
-    let codes: Vec<_> = problems.problems.iter().map(Error::code).collect();
+    let codes: Vec<_> = problems.errors().iter().map(Error::code).collect();
     assert_eq!(codes, [ErrorCode::Drift]);
     // The pin refused: its failure, naming it; the cut, blocked on it, says nothing more.
     let refusing = engine();
@@ -195,7 +188,7 @@ fn a_failure_and_drift_are_problems_and_a_blocked_feature_isnt_one_of_its_own() 
     });
     let problems = check_bytes(&refusing, EXAMPLE.as_bytes()).unwrap();
     let said: Vec<_> = problems
-        .problems
+        .errors()
         .iter()
         .map(|e| (e.code(), e.feature().unwrap().to_owned()))
         .collect();
@@ -232,6 +225,8 @@ fn formatting_rewrites_a_stale_fingerprint_and_says_what_it_was() {
     let (feature, before) = &out.refingerprinted[0];
     assert_eq!(feature, &id("k7f2qx3m"));
     assert_eq!(before.unwrap().volume.to_string(), "8001");
+    // The drift it fixed isn't a problem it reports.
+    assert!(out.problems.is_empty(), "{:?}", out.problems);
 }
 
 #[test]
@@ -246,6 +241,7 @@ fn formatting_keeps_a_failed_features_fingerprint_and_says_why() {
     assert_eq!(out.text, saved);
     let said: Vec<_> = out
         .problems
+        .errors()
         .iter()
         .map(|e| (e.code(), e.feature().unwrap().to_owned()))
         .collect();
@@ -258,6 +254,151 @@ fn a_document_that_doesnt_pass_the_gate_isnt_formatted() {
     let problems = format_bytes(&engine(), text.as_bytes())
         .unwrap()
         .unwrap_err();
-    assert_eq!(problems.total, 1);
-    assert_eq!(problems.problems[0].parameter(), Some("length"));
+    assert_eq!(problems.total(), 1);
+    assert_eq!(problems.errors()[0].parameter(), Some("length"));
+}
+
+#[test]
+fn an_outline_says_every_kind_of_feature_with_its_own_values() {
+    // Written by hand from the document: each primitive's values by the names the file
+    // gives them, in the file's order, and a fingerprint with no box (a solid with nothing
+    // in it).
+    let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "features": [
+    {"id": "00000000", "type": "sphere", "v": 1, "name": "S", "position": [1, 2, 3], "radius": 0.000001},
+    {"id": "11111111", "type": "cone", "v": 1, "name": "C", "position": [0, 0, 0], "radius1": 5, "radius2": 0, "height": 7.25},
+    {"id": "22222222", "type": "torus", "v": 1, "name": "T", "position": [-0.5, 0, 0], "radius1": 10, "radius2": 2},
+    {"id": "33333333", "type": "fuse", "v": 1, "name": "F", "base": "00000000", "tool": "11111111"},
+    {"id": "44444444", "type": "common", "v": 1, "name": "M", "base": "33333333", "tool": "22222222", "fingerprint": {"volume": 0, "area": 0, "faces": 0, "edges": 0, "vertices": 0}}]}"#;
+    assert_eq!(
+        command::outline(&read(text.as_bytes()).unwrap()),
+        r#"00000000 "S" sphere radius 0.000001, at (1, 2, 3)
+11111111 "C" cone radius1 5, radius2 0, height 7.25, at (0, 0, 0)
+22222222 "T" torus radius1 10, radius2 2, at (-0.5, 0, 0)
+33333333 "F" fuse base 00000000, tool 11111111
+44444444 "M" common base 33333333, tool 22222222 | volume 0, area 0, no box, 0 faces, 0 edges, 0 vertices
+bodies 44444444
+"#
+    );
+}
+
+#[test]
+fn formatting_says_which_solids_it_couldnt_measure_and_keeps_their_fingerprints() {
+    // Found by the review: nothing tested it. Every summary refused: each feature keeps
+    // what was stored, and says why.
+    let saved = formatted(EXAMPLE).text;
+    let refusing = engine();
+    refusing.kernel().refuse(|op| {
+        matches!(op, Op::Summarize { .. })
+            .then(|| Error::new(ErrorCode::KernelFailed, "Summarize failed"))
+    });
+    let out = format_bytes(&refusing, saved.as_bytes()).unwrap().unwrap();
+    assert_eq!(out.text, saved, "each keeps its fingerprint");
+    assert!(out.refingerprinted.is_empty());
+    let said: Vec<_> = out
+        .problems
+        .errors()
+        .iter()
+        .map(|e| (e.code(), e.feature().unwrap().to_owned()))
+        .collect();
+    assert_eq!(
+        said,
+        [
+            (ErrorCode::KernelFailed, "k7f2qx3m".to_owned()),
+            (ErrorCode::KernelFailed, "a91cw0de".to_owned()),
+            (ErrorCode::KernelFailed, "m3tq8v0z".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn every_kernel_fault_is_the_commands_failure_not_the_documents() {
+    // A worker that crashed or hung, a reply that couldn't be read, a shortage, or a bug:
+    // none says anything about the document, so check and format fail with it, building
+    // or measuring alike.
+    let saved = formatted(EXAMPLE).text;
+    for code in [
+        ErrorCode::WorkerCrashed,
+        ErrorCode::WorkerTimeout,
+        ErrorCode::ProtocolError,
+        ErrorCode::ResourceExhausted,
+        ErrorCode::Internal,
+    ] {
+        let building = move |op: &Op| {
+            matches!(op, Op::MakePrimitive(Primitive::Cylinder { .. }))
+                .then(|| Error::new(code, "fault"))
+        };
+        let measuring =
+            move |op: &Op| matches!(op, Op::Summarize { .. }).then(|| Error::new(code, "fault"));
+        for (what, saved) in [("building", EXAMPLE), ("measuring", saved.as_str())] {
+            let checking = engine();
+            let formatting = engine();
+            if what == "building" {
+                checking.kernel().refuse(building);
+                formatting.kernel().refuse(building);
+            } else {
+                checking.kernel().refuse(measuring);
+                formatting.kernel().refuse(measuring);
+            }
+            assert_eq!(
+                check_bytes(&checking, saved.as_bytes()).map_err(|e| e.code()),
+                Err(code),
+                "check, {what}, {code:?}"
+            );
+            assert_eq!(
+                format_bytes(&formatting, saved.as_bytes())
+                    .map(|_| ())
+                    .map_err(|e| e.code()),
+                Err(code),
+                "format, {what}, {code:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn check_and_format_read_the_model_given_and_ask_the_kernel_nothing() {
+    // Found by the review: they took the engine and started a recompute on it, so a
+    // client's live recompute (the app's) would be superseded by a check. Given a model,
+    // they rebuild nothing and leave the engine as it was.
+    let engine = engine();
+    let saved = formatted(EXAMPLE).text;
+    let model = command::rebuild(&engine, command::gate(saved.as_bytes()).unwrap())
+        .unwrap()
+        .unwrap();
+    let calls = engine.kernel().calls().len();
+    assert!(command::check(&model).unwrap().is_empty());
+    let out = command::format(&model).unwrap().unwrap();
+    assert_eq!(out.text, saved);
+    assert_eq!(engine.kernel().calls().len(), calls);
+    assert_eq!(engine.published().as_ref(), Some(&model));
+}
+
+#[test]
+fn a_rebuild_superseded_by_another_is_none_not_an_error() {
+    // A client that shares its engine (the app) has the newer run's model: the older
+    // rebuild says it was superseded, as data, not as a bug.
+    let engine = engine();
+    let hold = engine
+        .kernel()
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Cylinder { .. })));
+    let block = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}]}"#;
+    std::thread::scope(|scope| {
+        let older =
+            scope.spawn(|| command::rebuild(&engine, command::gate(EXAMPLE.as_bytes()).unwrap()));
+        // Once the older one is at the pin, held, a newer one supersedes it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !format!("{:?}", engine.kernel().calls()).contains("Cylinder") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the pin never started"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let newer = command::rebuild(&engine, command::gate(block.as_bytes()).unwrap())
+            .unwrap()
+            .unwrap();
+        hold.release();
+        assert!(older.join().unwrap().unwrap().is_none());
+        assert_eq!(engine.published().as_ref(), Some(&newer));
+    });
 }

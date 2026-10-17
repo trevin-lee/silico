@@ -9,3 +9,4 @@ internal
 invalid_result
 resource_exhausted
 drift
+io_failed

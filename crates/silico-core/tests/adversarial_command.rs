@@ -5,46 +5,18 @@
 //! bidirectional and format characters (UAX #9, General_Category=Cf), and hand counts.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/command.rs"]
+mod commands;
 #[path = "common/example.rs"]
 mod example;
 
+use commands::{check_bytes, engine, format_bytes};
 use example::EXAMPLE;
 use proptest::prelude::*;
 use silico_core::command;
 use silico_core::document::{self, read};
-use silico_core::fake::FakeKernel;
 use silico_core::kernel::{Op, Primitive};
-use silico_core::recompute::Recompute;
 use silico_core::{Error, ErrorCode};
-
-/// `command::check` of a document's bytes: the gate's problems, or the rebuild's.
-fn check_bytes<K: silico_core::kernel::Kernel + 'static>(
-    engine: &silico_core::recompute::Recompute<K>,
-    bytes: &[u8],
-) -> Result<silico_core::command::Problems, silico_core::Error> {
-    match silico_core::command::gate(bytes) {
-        Ok(checked) => silico_core::command::check(engine, checked),
-        Err(problems) => Ok(problems),
-    }
-}
-
-/// `command::format` of a document's bytes: the gate's problems, or the formatted text.
-fn format_bytes<K: silico_core::kernel::Kernel + 'static>(
-    engine: &silico_core::recompute::Recompute<K>,
-    bytes: &[u8],
-) -> Result<
-    Result<silico_core::command::Formatted, silico_core::command::Problems>,
-    silico_core::Error,
-> {
-    match silico_core::command::gate(bytes) {
-        Ok(checked) => silico_core::command::format(engine, checked),
-        Err(problems) => Ok(Err(problems)),
-    }
-}
-
-fn engine() -> Recompute<FakeKernel> {
-    Recompute::new(FakeKernel::new(2).unwrap())
-}
 
 /// The example with the block's name replaced by `name` (written as JSON).
 fn named(name: &str) -> String {
@@ -235,8 +207,8 @@ fn checking_a_document_just_under_the_size_limit_then_formatting_it_says_why_it_
     let problems = format_bytes(&engine(), padded.as_bytes())
         .unwrap()
         .unwrap_err();
-    assert_eq!(problems.total, 1);
-    let error = &problems.problems[0];
+    assert_eq!(problems.total(), 1);
+    let error = &problems.errors()[0];
     assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
     assert!(error.to_string().contains(&limit.to_string()), "{error}");
 }
@@ -255,8 +227,8 @@ fn a_refusal_doesnt_leave_the_engine_broken_for_the_next_command() {
             && matches!(op, Op::MakePrimitive(Primitive::Box { .. })))
         .then(|| Error::new(ErrorCode::KernelFailed, "MakeBox failed"))
     });
-    assert_eq!(check_bytes(&e, EXAMPLE.as_bytes()).unwrap().total, 1);
-    assert_eq!(check_bytes(&e, b"\xff").unwrap().total, 1);
+    assert_eq!(check_bytes(&e, EXAMPLE.as_bytes()).unwrap().total(), 1);
+    assert_eq!(check_bytes(&e, b"\xff").unwrap().total(), 1);
     refusing.store(false, std::sync::atomic::Ordering::SeqCst);
     let other = EXAMPLE.replace(r#""length": 40"#, r#""length": 41"#);
     let out = format_bytes(&e, other.as_bytes()).unwrap().unwrap();
@@ -279,13 +251,13 @@ fn more_problems_than_the_gate_lists_report_their_total() {
         features.join(",")
     );
     let problems = check_bytes(&engine(), text.as_bytes()).unwrap();
-    assert_eq!(problems.total, 150);
-    assert_eq!(problems.problems.len(), 100);
+    assert_eq!(problems.total(), 150);
+    assert_eq!(problems.errors().len(), 100);
     assert!(!problems.is_empty());
     let problems = format_bytes(&engine(), text.as_bytes())
         .unwrap()
         .unwrap_err();
-    assert_eq!(problems.total, 150);
+    assert_eq!(problems.total(), 150);
 }
 
 // Hostile bytes: the example cut, spliced, and flipped at random. Every outcome must be a
@@ -350,7 +322,7 @@ proptest! {
         let twice = check_bytes(&e, &bytes);
         prop_assert_eq!(&once, &twice);
         let problems = once.unwrap();
-        prop_assert!(problems.total >= problems.problems.len() as u64);
+        prop_assert!(problems.total() >= problems.errors().len() as u64);
         match format_bytes(&e, &bytes).unwrap() {
             Ok(formatted) => {
                 // It read: the canonical text reads back, formats to itself, and checks

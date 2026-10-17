@@ -16,8 +16,8 @@ use crate::case::{Chamfer, Shape};
 use crate::compare::{Measured, Outcome};
 
 /// What Silico builds and measures for `shape`: [`Outcome::Lost`] if the worker crashed,
-/// hung, or answered out of turn, and was stopped (the next case needs a new one), or hit a
-/// bug in Silico itself: neither may agree with a refusal.
+/// hung, or answered out of turn, and was stopped (the next case needs a new one), ran short
+/// of something, or hit a bug in Silico itself: none may agree with a refusal.
 pub fn measure(kernel: &mut KernelWorker, shape: &Shape) -> Outcome {
     let measured = build(kernel, shape).and_then(|s| {
         let summary = kernel.summarize(&s)?;
@@ -30,15 +30,10 @@ pub fn measure(kernel: &mut KernelWorker, shape: &Shape) -> Outcome {
     }
 }
 
-/// Whether an error with `code` means Silico couldn't finish, rather than refused.
+/// Whether an error with `code` means Silico couldn't finish, rather than refused: the
+/// kernel's own trouble (`ErrorCode::is_kernel_fault`), a shortage too.
 pub(crate) fn lost(code: ErrorCode) -> bool {
-    matches!(
-        code,
-        ErrorCode::WorkerCrashed
-            | ErrorCode::WorkerTimeout
-            | ErrorCode::ProtocolError
-            | ErrorCode::Internal
-    )
+    code.is_kernel_fault()
 }
 
 /// `shape`, built through `kernel`.
@@ -269,7 +264,7 @@ mod tests {
     use super::lost;
 
     #[test]
-    fn only_a_crash_a_hang_a_bad_reply_or_a_bug_is_lost() {
+    fn only_a_crash_a_hang_a_bad_reply_a_shortage_or_a_bug_is_lost() {
         let lost_codes: Vec<ErrorCode> = ErrorCode::ALL
             .iter()
             .copied()
@@ -282,6 +277,7 @@ mod tests {
                 ErrorCode::WorkerTimeout,
                 ErrorCode::ProtocolError,
                 ErrorCode::Internal,
+                ErrorCode::ResourceExhausted,
             ]
         );
     }

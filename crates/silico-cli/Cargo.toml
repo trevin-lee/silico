@@ -16,7 +16,5 @@ serde_json.workspace = true
 silico-core.workspace = true
 tracing.workspace = true
 
-[dev-dependencies]
-
 [lints]
 workspace = true

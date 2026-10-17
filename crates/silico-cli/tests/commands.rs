@@ -198,6 +198,18 @@ fn a_file_that_cant_be_read_or_a_bad_command_is_exit_2() {
         );
     }
     let file = scratch.file(EXAMPLE);
+    // `show` and `textconv` take one file.
+    for command in ["show", "textconv"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_silico"))
+            .args([command])
+            .arg(&file)
+            .arg(&file)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{command}");
+        assert!(stderr(&out).contains("usage: silico"), "{}", stderr(&out));
+        assert!(out.stdout.is_empty(), "{command}");
+    }
     for args in [&["chekc"][..], &["check", "--jsno"], &["fmt", "--json"]] {
         let out = silico(&scratch, args, &file);
         assert_eq!(out.status.code(), Some(2), "{args:?}");
@@ -307,4 +319,98 @@ fn textconv_prints_a_file_too_long_to_be_a_document_whole() {
         "{}",
         stderr(&out)
     );
+}
+
+#[test]
+fn fmt_of_a_drifted_file_rewrites_it_and_is_clean() {
+    // The drift it fixes isn't a problem it reports: exit 0, and the file checks clean.
+    let scratch = Scratch::new("fmt-drift");
+    let file = scratch.file(EXAMPLE);
+    assert_eq!(silico(&scratch, &["fmt"], &file).status.code(), Some(0));
+    let saved = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(
+        &file,
+        saved.replacen(r#""volume": 8000,"#, r#""volume": 8001,"#, 1),
+    )
+    .unwrap();
+    let out = silico(&scratch, &["fmt"], &file);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(!stderr(&out).contains(": drift:"), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("rewrote the fingerprint of k7f2qx3m"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), saved);
+}
+
+#[test]
+fn checking_several_files_in_a_directory_starts_its_workers_once() {
+    // Found by the review: each file started a pool of its own, files × cores workers
+    // with nothing to build. Counted from the workers' start log.
+    let scratch = Scratch::new("one-pool");
+    let exe = Path::new(env!("CARGO_BIN_EXE_silico"));
+    let started = |files: &[&str]| -> usize {
+        let out = Command::new(exe)
+            .arg("check")
+            .args(files.iter().map(|f| scratch.0.join(f)))
+            .env(
+                "SILICO_KERNEL_WORKER",
+                exe.with_file_name("silico-kernel-worker"),
+            )
+            .env("XDG_CACHE_HOME", scratch.0.join("cache-home"))
+            .env("SILICO_LOG", "debug")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        stderr(&out).matches("started kernel worker").count()
+    };
+    for name in ["a.silico", "b.silico", "c.silico"] {
+        std::fs::write(scratch.0.join(name), EXAMPLE).unwrap();
+    }
+    let one = started(&["a.silico"]);
+    assert!(one > 0);
+    assert_eq!(started(&["a.silico", "b.silico", "c.silico"]), one);
+}
+
+/// What `tests/contract/check-line.json` pins: the line `silico check --json` writes for
+/// a document with problems, and for a file it couldn't check.
+fn check_lines(scratch: &Scratch) -> serde_json::Value {
+    let bad = scratch.0.join("bad.silico");
+    std::fs::write(&bad, EXAMPLE.replace(r#""length": 40"#, r#""length": 0"#)).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_silico"))
+        .args(["check", "--json", "bad.silico", "missing.silico"])
+        .current_dir(&scratch.0)
+        .env("SILICO_KERNEL_WORKER", "/nonexistent")
+        .env("XDG_CACHE_HOME", scratch.0.join("cache-home"))
+        .env_remove("SILICO_LOG")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    let lines: Vec<serde_json::Value> = String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let [problems, couldnt] = &lines[..] else {
+        panic!("{lines:?}");
+    };
+    serde_json::json!({"problems": problems, "couldnt_check": couldnt})
+}
+
+#[test]
+fn check_jsons_lines_are_the_contracts() {
+    // The JSON agents read (protected, tests/contract/): a document's problems, each an
+    // error in the core's contract shape, and a file that couldn't be checked, its error in
+    // that shape too (`io_failed`, Trevin's, 2026-10-16).
+    let scratch = Scratch::new("contract");
+    let path = format!(
+        "{}/tests/contract/check-line.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let contract: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(check_lines(&scratch), contract);
 }
