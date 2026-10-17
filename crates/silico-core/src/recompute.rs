@@ -201,20 +201,51 @@ impl Model {
             })
     }
 
-    /// The names of the elements of the feature `id`'s solid, if it built, named now if
-    /// they haven't been (with those of every feature before it not yet named).
+    /// The names of the elements of the feature `id`'s solid, if it built. The recompute
+    /// that published the model names every feature's elements in the background once
+    /// it's published; asked before then, this names the feature's now, on the caller's
+    /// thread, with those of the features it's made from (and no others).
     pub fn element_map(&self, id: &FeatureId) -> Option<&ElementMap> {
-        let i = self
-            .features
-            .iter()
-            .position(|(feature, _)| feature == id)?;
-        // In timeline order, so each is named after those it's made from.
-        for j in 0..i {
+        let i = self.index(id)?;
+        // Those it's made from, all the way down, in timeline order, so each is named after
+        // those it's made from. An explicit stack: a timeline can be thousands deep.
+        let mut needed = std::collections::BTreeSet::new();
+        let mut stack = vec![i];
+        while let Some(j) = stack.pop() {
+            if needed.insert(j)
+                && let Some(Some(naming)) = self.naming.get(j)
+            {
+                stack.extend(naming.uses.iter().copied());
+            }
+        }
+        for j in needed {
             if let Some(slot) = self.maps.get(j) {
                 slot.get_or_init(|| self.name(j));
             }
         }
-        self.maps.get(i)?.get_or_init(|| self.name(i)).as_deref()
+        self.maps.get(i)?.get()?.as_deref()
+    }
+
+    /// The names of the elements of the feature `id`'s solid if they've been named
+    /// already, without naming them, so a caller that mustn't wait (the UI's thread)
+    /// never does.
+    pub fn named_element_map(&self, id: &FeatureId) -> Option<&ElementMap> {
+        self.maps.get(self.index(id)?)?.get()?.as_deref()
+    }
+
+    /// Names every feature's elements not yet named, in timeline order, while `go_on` says
+    /// to.
+    fn name_all(&self, go_on: impl Fn() -> bool) {
+        for (j, slot) in self.maps.iter().enumerate() {
+            if !go_on() {
+                return;
+            }
+            slot.get_or_init(|| self.name(j));
+        }
+    }
+
+    fn index(&self, id: &FeatureId) -> Option<usize> {
+        self.features.iter().position(|(feature, _)| feature == id)
     }
 
     /// The `j`th feature's element names, those it's made from named already: from the maps
@@ -530,7 +561,18 @@ impl<K: Kernel + 'static> Recompute<K> {
                 let _caller = caller.enter();
                 let _entered = span.enter();
                 let outcome = engine.run(&Arc::new(document), generation);
+                let published = match &outcome {
+                    Ok(RunOutcome::Published(model)) => Some(Arc::clone(model)),
+                    _ => None,
+                };
                 let _ = reply.send(outcome);
+                // The model's names, in the background, so a client asking for them later
+                // doesn't wait (and stopping once a newer recompute starts: its model is
+                // the one to name).
+                if let Some(model) = published {
+                    let _naming = tracing::debug_span!("name_elements").entered();
+                    model.name_all(|| lock(&engine.state).generation == generation);
+                }
             });
         if let Err(e) = started {
             let (reply, outcome) = mpsc::sync_channel(1);

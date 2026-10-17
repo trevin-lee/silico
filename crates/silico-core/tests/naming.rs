@@ -451,3 +451,26 @@ fn a_name_derived_from_an_ambiguous_name_is_ambiguous() {
     // A plain kept vertex isn't.
     assert!(!next.is_unstable(&next.name(element(ElementKind::Vertex, 1)).unwrap()));
 }
+
+#[test]
+fn a_published_models_names_are_made_in_the_background() {
+    // Nothing asks for them, yet they come: a caller that mustn't wait (the UI's thread)
+    // finds them with `named_element_map`, which never names anything itself.
+    let engine = Recompute::new(FakeKernel::new(2).unwrap());
+    let model = published(&engine, checked(EXAMPLE));
+    let deadline = std::time::Instant::now() + model::WAIT;
+    for feature in ["k7f2qx3m", "a91cw0de", "m3tq8v0z"] {
+        while model.named_element_map(&id(feature)).is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{feature} wasn't named"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(
+            model.named_element_map(&id(feature)),
+            model.element_map(&id(feature))
+        );
+    }
+    assert!(model.named_element_map(&id("zzzzzzzz")).is_none());
+}
