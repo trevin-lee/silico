@@ -526,6 +526,9 @@ pub(crate) enum Takes {
     Point,
     /// A point of the sketch that's an end of both curves the constraint names.
     SharedEnd,
+    /// A point of the sketch that's an end of the first curve the constraint names, on the
+    /// other (a tangent_on's `at`).
+    EndOn,
     /// A line of the sketch.
     Line,
     /// A line of the sketch, or an axis.
@@ -594,7 +597,7 @@ impl Form {
             Form::Equal { a, b } => vec![("a", a, Equal), ("b", b, Equal)],
             Form::Tangent { a, b, .. } => vec![("a", a, Curve), ("b", b, Curve)],
             Form::TangentOn { a, at, b, .. } => {
-                vec![("a", a, EndedCurve), ("at", at, SharedEnd), ("b", b, Curve)]
+                vec![("a", a, EndedCurve), ("at", at, EndOn), ("b", b, Curve)]
             }
             Form::TangentAt { a, b, at, .. } => vec![
                 ("a", a, EndedCurve),
@@ -636,11 +639,6 @@ impl Form {
             | Form::Diameter { driving, .. } => Some(driving),
             _ => None,
         }
-    }
-
-    /// Whether the form is a dimension (it has a `value` and `driving`).
-    pub fn is_dimension(&self) -> bool {
-        self.driving().is_some()
     }
 }
 

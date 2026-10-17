@@ -340,6 +340,12 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
             Some(Target::Element(place)) => Some(place),
             _ => None,
         };
+        // Whether reference `n` is a line or an axis.
+        let is_line = |n: usize| match resolved.get(n).copied().flatten() {
+            Some(Target::Axis) => true,
+            Some(Target::Element(p)) => p.kind == ElementKind::Line,
+            _ => false,
+        };
 
         // Two references to one element where the form needs two.
         if let [(ka, ra, _), (kb, rb, _), ..] = references.as_slice()
@@ -422,11 +428,6 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                         ),
                     ));
                 }
-                let is_line = |n: usize| match resolved.get(n).copied().flatten() {
-                    Some(Target::Axis) => true,
-                    Some(Target::Element(p)) => p.kind == ElementKind::Line,
-                    _ => false,
-                };
                 let (line_a, line_b) = (is_line(0), is_line(1));
                 let fits = match side {
                     TangentSide::Left | TangentSide::Right => line_a != line_b,
@@ -451,12 +452,14 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                     ));
                 }
             }
+            Form::TangentOn { a, b, .. } if a == b => {
+                add(refuse(
+                    &format!("{at}.b"),
+                    format!("a tangent_on's a and b are both {a}: it needs two different curves"),
+                    "name another curve in b".to_owned(),
+                ));
+            }
             Form::TangentOn { a, at: end, b, .. } => {
-                let is_line = |n: usize| match resolved.get(n).copied().flatten() {
-                    Some(Target::Axis) => true,
-                    Some(Target::Element(p)) => p.kind == ElementKind::Line,
-                    _ => false,
-                };
                 if let Some(point) = end.element() {
                     let ends = a.element().map(|a| ends_of(sketch, a, lookup));
                     let ends_b = b.element().map(|b| ends_of(sketch, b, lookup));
@@ -473,6 +476,20 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                                 "a tangent_on's at, point {point}, is an end of its b, {b}, too: the curves meet there"
                             ),
                             format!("make it a tangent_at, at point {point}"),
+                        ));
+                    } else if b
+                        .element()
+                        .is_some_and(|b| own_points(sketch, b, lookup).contains(&point))
+                    {
+                        // b's own centre: the end on b would need it of no radius.
+                        add(refuse(
+                            &format!("{at}.at"),
+                            format!(
+                                "a tangent_on's at, point {point}, is part of its b, {b}, itself"
+                            ),
+                            format!(
+                                "name the end of {a} that lies on {b}, not a point of {b}'s own"
+                            ),
                         ));
                     }
                 }
@@ -623,7 +640,7 @@ impl Target {
         };
         match takes {
             Takes::Point => matches!(self, Target::Origin) || kind == Some(Point),
-            Takes::SharedEnd => kind == Some(Point),
+            Takes::SharedEnd | Takes::EndOn => kind == Some(Point),
             Takes::Line => kind == Some(Line),
             Takes::LineOrAxis => matches!(self, Target::Axis) || kind == Some(Line),
             Takes::Curve => {
@@ -652,6 +669,7 @@ fn takes_noun(takes: Takes) -> &'static str {
     match takes {
         Takes::Point => "a point of this sketch, or origin",
         Takes::SharedEnd => "a point of this sketch where the two curves meet",
+        Takes::EndOn => "a point of this sketch where a ends, on b",
         Takes::Line => "a line of this sketch",
         Takes::LineOrAxis => "a line of this sketch, x_axis, or y_axis",
         Takes::Curve => "a line, circle, or arc of this sketch, x_axis, or y_axis",
@@ -720,9 +738,11 @@ fn ends_of<'a>(
 /// these): each limit's field, the count, the limit, and what's counted. Every point's x
 /// and y, a circle's radius, and an arc's radius and two angles are unknowns; each
 /// constraint is one or two equations (a symmetry, a midpoint, and a tangent_on two), and an arc's rules
-/// four; the values are the unknowns, the driving dimensions', and the origin's. A
-/// reference dimension's value is never the solver's: the core measures it after the solve
-/// (as FreeCAD's main does), so it may be past what the worker takes.
+/// four; the values are the unknowns, the driving dimensions', a tangency's fixed angle
+/// for each `tangent_on` and `tangent_at` (FreeCAD's translation fixes one), and the
+/// origin's. A reference dimension's value isn't the solver's: it's evaluated from the
+/// solved geometry, as FreeCAD's main does (`92894ea3a8`), not solved for as 1.1.3 does
+/// (docs/ports/sketcher.md), so it may be past what the worker takes.
 pub(super) fn size(sketch: &Sketch) -> [(&'static str, usize, usize, &'static str); 5] {
     let unknowns = 2 * sketch.points.len() + sketch.circles.len() + 3 * sketch.arcs.len();
     let geometry =
@@ -733,7 +753,12 @@ pub(super) fn size(sketch: &Sketch) -> [(&'static str, usize, usize, &'static st
         .iter()
         .filter(|c| c.form.driving() == Some(true))
         .count();
-    let values = unknowns + dimensions + 2;
+    let angles = sketch
+        .constraints
+        .iter()
+        .filter(|c| matches!(c.form, Form::TangentOn { .. } | Form::TangentAt { .. }))
+        .count();
+    let values = unknowns + dimensions + angles + 2;
     let equations: usize = sketch
         .constraints
         .iter()

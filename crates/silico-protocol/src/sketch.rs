@@ -160,9 +160,9 @@ impl std::fmt::Display for PointOf {
 }
 
 /// A constraint, in PlaneGCS's terms. Each named value is a fixed [`Value`] of the system:
-/// reference dimensions, whose value the solver finds, come with the document's sketches
-/// (M3.3). Every one except [`ArcRules`](SolverConstraint::ArcRules) carries the tag the
-/// solver reports it by.
+/// reference dimensions, whose value is evaluated after the solve, never solved for, come
+/// with the document's sketches (M3.3). Every one except
+/// [`ArcRules`](SolverConstraint::ArcRules) carries the tag the solver reports it by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SolverConstraint {
     /// An arc's end points on its circle at its angles: implicit in every arc whose values
@@ -553,8 +553,8 @@ impl SketchSystem {
                 ))
             }
         };
-        // A dimension's value is fixed: reference dimensions, whose value the solver finds,
-        // come with the document's sketches (M3.3).
+        // A dimension's value is fixed: reference dimensions, whose value is evaluated after
+        // the solve, come with the document's sketches (M3.3).
         let dimension = |v: Value| -> Result<(), InvalidParameter> {
             if (v.0 as usize) >= n {
                 return Err(invalid(

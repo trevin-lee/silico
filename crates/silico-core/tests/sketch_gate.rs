@@ -573,3 +573,126 @@ fn a_tangent_on_takes_an_end_of_a_that_isnt_an_end_of_b() {
         r#"{"id": "k0000000", "type": "tangent_on", "a": "aa000000", "at": "pc000000", "b": "x_axis", "direction": "opposite"}"#,
     ));
 }
+
+#[test]
+fn each_tangent_on_direction_reads_as_its_own_value_and_writes_back() {
+    use silico_core::document::{Direction, Form};
+    for (word, direction) in [("same", Direction::Same), ("opposite", Direction::Opposite)] {
+        let text = constrained(&format!(
+            r#"{{"id": "k0000000", "type": "tangent_on", "a": "aa000000", "at": "pc000000", "b": "x_axis", "direction": "{word}"}}"#
+        ));
+        let d = read(text.as_bytes()).unwrap();
+        let Operation::Sketch(sketch) = &d.features[0].operation else {
+            panic!()
+        };
+        assert!(
+            matches!(sketch.constraints[0].form, Form::TangentOn { direction: d, .. } if d == direction),
+            "{word}"
+        );
+        assert!(
+            write(&d)
+                .unwrap()
+                .contains(&format!("\"direction\": \"{word}\""))
+        );
+    }
+}
+
+#[test]
+fn reference_dimensions_arent_the_solvers_values() {
+    // The base points (6 unknowns) and the origin's 2: 9,992 values to spare. As many
+    // reference lengths as that, and one more, are admitted; as many driving ones, refused.
+    let lengths = |n: usize, driving: bool| {
+        let all: Vec<String> = (0..n)
+            .map(|i| format!(r#"{{"id": "k{i:07}", "type": "length", "line": "na000000", "value": 10, "driving": {driving}}}"#))
+            .collect();
+        document(&fields(POINTS, LINE, "", "", &all.join(", ")))
+    };
+    none(&lengths(9993, false));
+    none(&lengths(9992, true));
+    only(
+        &lengths(9993, true),
+        "points",
+        "the sketch has 10001 values, more than the 10000 the sketch solver takes",
+    );
+}
+
+#[test]
+fn a_tangent_on_is_two_equations_and_a_fixed_angle() {
+    // 1,023 points (2,046 unknowns), a circle about one (2,047), a line between two, and
+    // 8,197 tangent_ons: 16,394 equations × 2,047 unknowns = 33,558,518 entries, past 2^25
+    // (33,554,432); and 2,047 + 8,197 angles + 2 = 10,246 values, past 10,000.
+    let points: Vec<String> = (0..1023)
+        .map(|i| format!(r#"{{"id": "p{i:07}", "x": {i}, "y": 0, "construction": false}}"#))
+        .collect();
+    let line = r#"{"id": "n0000000", "from": "p0000000", "to": "p0000001", "construction": false}"#;
+    let circle = r#"{"id": "c0000000", "center": "p0000005", "radius": 3, "construction": false}"#;
+    let tangents: Vec<String> = (0..8197)
+        .map(|i| format!(r#"{{"id": "k{i:07}", "type": "tangent_on", "a": "n0000000", "at": "p0000001", "b": "c0000000", "direction": "same"}}"#))
+        .collect();
+    let all = problems(&document(&fields(
+        &points.join(", "),
+        line,
+        circle,
+        "",
+        &tangents.join(", "),
+    )));
+    let messages: Vec<&str> = all.iter().map(|e| e.message()).collect();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.starts_with("the sketch has 33558518 entries")),
+        "{messages:#?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.starts_with("the sketch has 10246 values")),
+        "{messages:#?}"
+    );
+    assert_eq!(all.len(), 2, "{messages:#?}");
+}
+
+#[test]
+fn an_on_and_a_tangent_that_dont_meet_at_an_end_stand() {
+    // The line's end on an axis, and the line tangent to the circle: no end on the circle.
+    none(&constrained(
+        r#"{"id": "k0000000", "type": "on", "point": "pb000000", "curve": "x_axis"}, {"id": "k0000001", "type": "tangent", "a": "na000000", "b": "ca000000", "side": "left"}"#,
+    ));
+    // The arc's end on the circle, and the line tangent to it: not the line's end.
+    none(&constrained(
+        r#"{"id": "k0000000", "type": "on", "point": "pc000000", "curve": "ca000000"}, {"id": "k0000001", "type": "tangent", "a": "na000000", "b": "ca000000", "side": "left"}"#,
+    ));
+}
+
+#[test]
+fn a_tangent_on_whose_end_is_bs_own_point_or_whose_curves_are_one_is_refused() {
+    // The line's start is the circle's centre: on the circle, it would need no radius.
+    only(
+        &constrained(
+            r#"{"id": "k0000000", "type": "tangent_on", "a": "na000000", "at": "pa000000", "b": "ca000000", "direction": "same"}"#,
+        ),
+        "constraints.0.at",
+        "a tangent_on's at, point pa000000, is part of its b, ca000000, itself",
+    );
+    let text = constrained(
+        r#"{"id": "k0000000", "type": "tangent_on", "a": "aa000000", "at": "pb000000", "b": "aa000000", "direction": "same"}"#,
+    );
+    only(
+        &text,
+        "constraints.0.b",
+        "a tangent_on's a and b are both aa000000: it needs two different curves",
+    );
+    assert!(
+        problems(&text)
+            .iter()
+            .all(|e| !e.suggestion().unwrap_or("").contains("tangent_at"))
+    );
+    // A circle where its at should be: told what at is.
+    only(
+        &constrained(
+            r#"{"id": "k0000000", "type": "tangent_on", "a": "na000000", "at": "ca000000", "b": "aa000000", "direction": "same"}"#,
+        ),
+        "constraints.0.at",
+        "constraints.0.at ca000000 is a circle, but a tangent_on's at is a point of this sketch where a ends, on b",
+    );
+}
