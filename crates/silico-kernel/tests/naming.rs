@@ -255,11 +255,11 @@ fn coincident_solids_fused_are_named_from_both_the_base_first() {
     one_name_each(&map, &fuse);
     assert_eq!(map.iter().count(), 26);
     for (element, names) in map.iter() {
-        let Name::Derived { sources, .. } = &*names[0] else {
+        let Name::Derived { first, more, .. } = &*names[0] else {
             panic!("{element}: {}", names[0]);
         };
-        let from: Vec<String> = sources
-            .iter()
+        let from: Vec<String> = std::iter::once(first)
+            .chain(more)
             .map(|s| match &*s.name {
                 Name::Element { feature, element } => format!("{feature}.{:?}", element.kind),
                 other => panic!("{other}"),

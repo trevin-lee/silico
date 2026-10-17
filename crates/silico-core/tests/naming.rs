@@ -252,3 +252,53 @@ fn a_kept_name_is_its_inputs_and_a_primitive_names_any_element_of_its_own() {
     assert_eq!(map.feature(), &id("aaaaaaaa"));
     assert_eq!(map.iter().count(), 0);
 }
+
+#[test]
+fn an_edit_names_only_the_features_it_changes() {
+    // A plate and 60 bolts fused onto it one feature at a time. Moving the last bolt
+    // renames only its fuse: every other feature's map is the one the model before had,
+    // not built again (`/break-it` found every map rebuilt on every edit, quadratic in the
+    // timeline). Moving the first bolt renames every fuse from its own on.
+    let document = |first: u32, last: u32| {
+        let mut features = vec![r#"{"id": "pppppppp", "type": "box", "v": 1, "name": "P", "position": [0, 0, 0], "length": 1000, "width": 10, "height": 1}"#.to_owned()];
+        let mut base = "pppppppp".to_owned();
+        for n in 0..60u32 {
+            let x = match n {
+                0 => first,
+                59 => last,
+                _ => 10 * n,
+            };
+            features.push(format!(r#"{{"id": "b{n:07}", "type": "box", "v": 1, "name": "B", "position": [{x}, 0, 1], "length": 1, "width": 1, "height": 1}}"#));
+            let fuse = format!("f{n:07}");
+            features.push(format!(r#"{{"id": "{fuse}", "type": "fuse", "v": 1, "name": "F", "base": "{base}", "tool": "b{n:07}"}}"#));
+            base = fuse;
+        }
+        checked(&format!(
+            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "features": [{}]}}"#,
+            features.join(", ")
+        ))
+    };
+    let engine = Recompute::new(FakeKernel::new(2).unwrap());
+    let before = published(&engine, document(0, 590));
+    let maps = |model: &silico_core::recompute::Model, n: u32| {
+        model.element_map(&id(&format!("f{n:07}"))).unwrap() as *const ElementMap
+    };
+    let after = published(&engine, document(0, 595));
+    for n in 0..59 {
+        assert_eq!(maps(&before, n), maps(&after, n), "f{n:07} was named again");
+    }
+    assert_ne!(maps(&before, 59), maps(&after, 59));
+    let moved = published(&engine, document(5, 595));
+    for n in 0..60 {
+        assert_ne!(
+            maps(&after, n),
+            maps(&moved, n),
+            "f{n:07} wasn't named again"
+        );
+    }
+    // Named alike either way: the bolts' names don't hold where they are.
+    assert_eq!(
+        before.element_map(&id("f0000059")).unwrap().iter().count(),
+        after.element_map(&id("f0000059")).unwrap().iter().count()
+    );
+}

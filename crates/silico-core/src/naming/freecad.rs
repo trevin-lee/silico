@@ -10,7 +10,7 @@
 
 use std::cmp::Ordering;
 
-use super::{Name, Relation, kind_word, relation_text};
+use super::{Name, Relation, count_text, kind_word, relation_text};
 
 /// FreeCAD's form of `name`, without tags: `Face6;:G2(Face1;K-2);CUT`.
 pub fn text(name: &Name) -> String {
@@ -26,35 +26,33 @@ fn write(name: &Name, out: &mut String) {
             out.push_str(&element.index.to_string());
         }
         Name::Derived {
-            operation, sources, ..
+            operation,
+            first,
+            more,
+            ..
         } => {
-            let Some((first, others)) = sources.split_first() else {
-                return;
-            };
             write(&first.name, out);
             // Modified, generated, or (sources disagreeing) both, with the first's position.
-            let mixed = others.iter().any(|o| o.relation != first.relation);
             out.push_str(";:");
-            if mixed {
+            if more.iter().any(|o| o.relation != first.relation) {
                 out.push_str("MG");
-                if first.position > 1 {
-                    out.push_str(&first.position.to_string());
-                }
+                out.push_str(&count_text(first.position));
             } else {
                 out.push_str(&relation_text(first.relation, first.position));
             }
-            if !others.is_empty() {
+            if !more.is_empty() {
                 out.push('(');
-                for (i, other) in others.iter().enumerate() {
+                for (i, other) in more.iter().enumerate() {
                     if i > 0 {
                         out.push('|');
                     }
                     write(&other.name, out);
                     // FreeCAD's signed position: generated negative; left out for the first
                     // modified.
+                    let position = i64::from(other.position.get());
                     let signed = match other.relation {
-                        Relation::Modified => i64::from(other.position),
-                        Relation::Generated => -i64::from(other.position),
+                        Relation::Modified => position,
+                        Relation::Generated => -position,
                     };
                     if signed != 1 {
                         out.push_str(";K");
@@ -74,23 +72,21 @@ fn write(name: &Name, out: &mut String) {
         } => {
             write(upper, out);
             out.push_str(";:U");
-            if *nth > 1 {
-                out.push_str(&nth.to_string());
-            }
+            out.push_str(&count_text(*nth));
             out.push(';');
             out.push_str(operation.code());
         }
         Name::Lower {
-            operation, lowers, ..
+            operation,
+            first,
+            more,
+            ..
         } => {
-            let Some((first, rest)) = lowers.split_first() else {
-                return;
-            };
             write(first, out);
             out.push_str(";:L");
-            if !rest.is_empty() {
+            if !more.is_empty() {
                 out.push('(');
-                for (i, lower) in rest.iter().enumerate() {
+                for (i, lower) in more.iter().enumerate() {
                     if i > 0 {
                         out.push('|');
                     }
@@ -103,7 +99,7 @@ fn write(name: &Name, out: &mut String) {
         }
         Name::Duplicate { name, ordinal } => {
             write(name, out);
-            out.push_str(&format!(";D{ordinal:x}"));
+            out.push_str(&format!(";D{:x}", ordinal.get()));
         }
     }
 }

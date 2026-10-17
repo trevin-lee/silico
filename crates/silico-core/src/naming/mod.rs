@@ -13,6 +13,7 @@ pub mod freecad;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use crate::document::FeatureId;
@@ -55,11 +56,13 @@ pub enum Relation {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Source {
     pub relation: Relation,
-    pub position: u32,
+    pub position: NonZeroU32,
     pub name: Arc<Name>,
 }
 
 /// An element's name: how it came about, down to the elements features made of nothing.
+/// Every count in it is from 1, and every list has a first, so no two names are written
+/// alike.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Name {
     /// The element numbered so in what `feature` made: a primitive's own `Face3`. Also, as
@@ -69,13 +72,14 @@ pub enum Name {
         element: ElementRef,
     },
     /// An element `feature`'s operation made from its inputs' elements, as OCCT reported
-    /// it: the first source first (by its kind, then input, then name, as FreeCAD orders
-    /// them), then up to four more.
+    /// it: the first source (by its kind, then input, then name, as FreeCAD orders them),
+    /// then up to four more.
     Derived {
         feature: FeatureId,
         operation: Operation,
         kind: ElementKind,
-        sources: Vec<Source>,
+        first: Source,
+        more: Vec<Source>,
     },
     /// An element nothing reported, named as the `nth` unnamed element of its kind in the
     /// element above it named `upper` (FreeCAD's `;:U`).
@@ -84,7 +88,7 @@ pub enum Name {
         operation: Operation,
         kind: ElementKind,
         upper: Arc<Name>,
-        nth: u32,
+        nth: NonZeroU32,
     },
     /// An element named from the elements below it (an edge from its vertices, a face from
     /// its outer wire's edges): the first in FreeCAD's order, then up to four more
@@ -93,11 +97,15 @@ pub enum Name {
         feature: FeatureId,
         operation: Operation,
         kind: ElementKind,
-        lowers: Vec<Arc<Name>>,
+        first: Arc<Name>,
+        more: Vec<Arc<Name>>,
     },
     /// The `ordinal`th of the elements that came about as `name` did, after the first:
     /// rare, and never stable, so a reference to one is refused (N3).
-    Duplicate { name: Arc<Name>, ordinal: u32 },
+    Duplicate {
+        name: Arc<Name>,
+        ordinal: NonZeroU32,
+    },
 }
 
 impl Name {
@@ -111,6 +119,20 @@ impl Name {
             Name::Duplicate { name, .. } => name.kind(),
         }
     }
+
+    /// The names it's made of, one level down.
+    fn parts(&self) -> Vec<&Arc<Name>> {
+        match self {
+            Name::Element { .. } => Vec::new(),
+            Name::Derived { first, more, .. } => std::iter::once(first)
+                .chain(more)
+                .map(|source| &source.name)
+                .collect(),
+            Name::Upper { upper, .. } => vec![upper],
+            Name::Lower { first, more, .. } => std::iter::once(first).chain(more).collect(),
+            Name::Duplicate { name, .. } => vec![name],
+        }
+    }
 }
 
 fn kind_word(kind: ElementKind) -> &'static str {
@@ -122,17 +144,22 @@ fn kind_word(kind: ElementKind) -> &'static str {
     }
 }
 
+/// A count as Silico's form and FreeCAD's write it: nothing for 1.
+fn count_text(n: NonZeroU32) -> String {
+    if n.get() > 1 {
+        n.to_string()
+    } else {
+        String::new()
+    }
+}
+
 /// A relation's letter and position, as Silico's form and FreeCAD's write them: `M`, `G2`.
-fn relation_text(relation: Relation, position: u32) -> String {
+fn relation_text(relation: Relation, position: NonZeroU32) -> String {
     let letter = match relation {
         Relation::Modified => "M",
         Relation::Generated => "G",
     };
-    if position > 1 {
-        format!("{letter}{position}")
-    } else {
-        letter.to_owned()
-    }
+    format!("{letter}{}", count_text(position))
 }
 
 /// Silico's form (N1): the feature that made the element, its kind, and how it came about.
@@ -145,11 +172,12 @@ impl fmt::Display for Name {
             Name::Derived {
                 feature,
                 kind,
-                sources,
+                first,
+                more,
                 ..
             } => {
                 write!(f, "{feature}.{}(", kind_word(*kind))?;
-                for (i, source) in sources.iter().enumerate() {
+                for (i, source) in std::iter::once(first).chain(more).enumerate() {
                     if i > 0 {
                         f.write_str(", ")?;
                     }
@@ -164,22 +192,21 @@ impl fmt::Display for Name {
                 upper,
                 nth,
                 ..
-            } => {
-                let nth = if *nth > 1 {
-                    nth.to_string()
-                } else {
-                    String::new()
-                };
-                write!(f, "{feature}.{}(U{nth} {upper})", kind_word(*kind))
-            }
+            } => write!(
+                f,
+                "{feature}.{}(U{} {upper})",
+                kind_word(*kind),
+                count_text(*nth)
+            ),
             Name::Lower {
                 feature,
                 kind,
-                lowers,
+                first,
+                more,
                 ..
             } => {
                 write!(f, "{feature}.{}(L ", kind_word(*kind))?;
-                for (i, lower) in lowers.iter().enumerate() {
+                for (i, lower) in std::iter::once(first).chain(more).enumerate() {
                     if i > 0 {
                         f.write_str(", ")?;
                     }
@@ -203,7 +230,8 @@ pub struct ElementMap {
     primitive: bool,
     names: BTreeMap<ElementRef, Vec<Arc<Name>>>,
     elements: BTreeMap<Arc<Name>, ElementRef>,
-    /// Names two or more elements came about by (each but the first then `~1`, `~2`, ...).
+    /// Names two or more elements came about by (each but the first then `~1`, `~2`, ...),
+    /// here or in the solids this one was made from.
     duplicated: BTreeSet<Arc<Name>>,
 }
 
@@ -225,40 +253,50 @@ impl ElementMap {
         &self.feature
     }
 
-    /// The element's own name (its first).
+    /// The element's own name (its first). Faces, edges, and vertices are named, from 1.
     pub fn name(&self, element: ElementRef) -> Option<Arc<Name>> {
-        if self.primitive {
-            return Some(Arc::new(self.element_name(element)));
-        }
-        self.names
-            .get(&element)
-            .and_then(|names| names.first().cloned())
+        self.names(element).into_iter().next()
     }
 
     /// Every name of the element, its own first.
     pub fn names(&self, element: ElementRef) -> Vec<Arc<Name>> {
         if self.primitive {
-            return vec![Arc::new(self.element_name(element))];
+            return if named(element) {
+                vec![Arc::new(self.element_name(element))]
+            } else {
+                Vec::new()
+            };
         }
         self.names.get(&element).cloned().unwrap_or_default()
     }
 
     /// The element `name` names, if any. A primitive's map can't say how many elements its
-    /// solid has, so it answers for any number; the solid's own counts bound it.
+    /// solid has, so it answers for any number from 1; the solid's own counts bound it.
     pub fn element(&self, name: &Name) -> Option<ElementRef> {
         if self.primitive {
             return match name {
-                Name::Element { feature, element } if *feature == self.feature => Some(*element),
+                Name::Element { feature, element }
+                    if *feature == self.feature && named(*element) =>
+                {
+                    Some(*element)
+                }
                 _ => None,
             };
         }
         self.elements.get(name).copied()
     }
 
-    /// Whether `name` came about for more than one element, so it and its `~n` forms are
-    /// ambiguous.
+    /// Whether `name` is ambiguous: it came about for more than one element (here, or in a
+    /// solid this one was made from: a kept element keeps its ambiguity), it's one of those
+    /// elements' `~n`, or it was derived from such a name. Which element it names depends on
+    /// how they're numbered, which an upstream edit can change (N3).
     pub fn is_duplicated(&self, name: &Name) -> bool {
         self.duplicated.contains(name)
+            || matches!(name, Name::Duplicate { .. })
+            || name
+                .parts()
+                .into_iter()
+                .any(|part| self.is_duplicated(part))
     }
 
     /// Every named element and its names, in element order. Empty for a primitive's map,
@@ -275,4 +313,9 @@ impl ElementMap {
             element,
         }
     }
+}
+
+/// Whether a map names `element`: a face, edge, or vertex, numbered from 1.
+fn named(element: ElementRef) -> bool {
+    element.kind != ElementKind::Solid && element.index >= 1
 }

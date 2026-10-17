@@ -20,6 +20,7 @@
 //! extrusion's top), arrives with extrusions (M3); none of M2's operations reports one.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use super::{ElementMap, Name, Operation, Relation, Source, freecad};
@@ -41,13 +42,18 @@ impl ElementMap {
         inputs: &[&ElementMap],
         history: &History,
     ) -> Self {
+        // An ambiguous name stays ambiguous in what's made from it.
+        let duplicated: BTreeSet<Arc<Name>> = inputs
+            .iter()
+            .flat_map(|input| input.duplicated.iter().cloned())
+            .collect();
         let mut builder = Builder {
             map: ElementMap {
                 feature,
                 primitive: false,
                 names: BTreeMap::new(),
                 elements: BTreeMap::new(),
-                duplicated: BTreeSet::new(),
+                duplicated,
             },
             operation,
         };
@@ -88,18 +94,18 @@ impl Builder {
     /// builds, random in its releases), and the name is marked duplicated.
     fn set(&mut self, element: ElementRef, name: Arc<Name>) {
         let mut candidate = Arc::clone(&name);
-        let mut ordinal = 0u32;
+        let mut ordinal = NonZeroU32::MIN;
         loop {
             match self.map.elements.get(&candidate) {
                 None => break,
                 Some(&holder) if holder == element => return,
                 Some(_) => {
-                    ordinal = ordinal.saturating_add(1);
                     self.map.duplicated.insert(Arc::clone(&name));
                     candidate = Arc::new(Name::Duplicate {
                         name: Arc::clone(&name),
                         ordinal,
                     });
+                    ordinal = ordinal.saturating_add(1);
                 }
             }
         }
@@ -127,7 +133,7 @@ impl Builder {
     fn derived(&mut self, inputs: &[&ElementMap], history: &History) {
         // Each result element's sources, in FreeCAD's order of elements (edges, then faces,
         // then vertices), which decides only which of two that come about alike is `~1`.
-        let mut sources: BTreeMap<(u8, ElementRef), BTreeMap<SourceKey, (Relation, u32)>> =
+        let mut sources: BTreeMap<(u8, ElementRef), BTreeMap<SourceKey, (Relation, NonZeroU32)>> =
             BTreeMap::new();
         for kind in KINDS {
             for (i, (input, map)) in history.inputs.iter().zip(inputs).enumerate() {
@@ -146,14 +152,18 @@ impl Builder {
                         .map(|r| (r, Relation::Modified))
                         .chain(fate.generated.iter().map(|r| (r, Relation::Generated)));
                     for (r, relation) in reported {
-                        // A whole solid generated (an extrusion's) names nothing here.
+                        // A whole solid generated (an extrusion's) names nothing here; nor
+                        // does a position of 0, which a checked history never has.
+                        let Some(position) = NonZeroU32::new(r.position) else {
+                            continue;
+                        };
                         if r.element.kind == ElementKind::Solid || self.is_named(r.element) {
                             continue;
                         }
                         sources
                             .entry((freecad_rank(r.element.kind), r.element))
                             .or_default()
-                            .insert(key.clone(), (relation, r.position));
+                            .insert(key.clone(), (relation, position));
                     }
                 }
             }
@@ -162,20 +172,22 @@ impl Builder {
             if self.is_named(element) {
                 continue;
             }
-            let sources: Vec<Source> = keyed
-                .into_iter()
-                .take(MOST_SOURCES)
-                .map(|((_, _, _, name), (relation, position))| Source {
+            let mut sources = keyed.into_iter().take(MOST_SOURCES).map(
+                |((_, _, _, name), (relation, position))| Source {
                     relation,
                     position,
                     name,
-                })
-                .collect();
+                },
+            );
+            let Some(first) = sources.next() else {
+                continue;
+            };
             let name = Name::Derived {
                 feature: self.map.feature.clone(),
                 operation: self.operation,
                 kind: element.kind,
-                sources,
+                first,
+                more: sources.collect(),
             };
             self.set(element, Arc::new(name));
         }
@@ -190,25 +202,25 @@ impl Builder {
             (ElementKind::Face, ElementKind::Edge, &t.face_edges),
             (ElementKind::Edge, ElementKind::Vertex, &t.edge_vertices),
         ] {
-            let mut candidates: BTreeMap<ElementRef, Vec<(String, Arc<Name>, u32)>> =
+            let mut candidates: BTreeMap<ElementRef, Vec<(String, Arc<Name>, NonZeroU32)>> =
                 BTreeMap::new();
             for (u, lowers) in lists.iter().enumerate() {
                 let Some(upper) = self.primary(element(upper_kind, u)) else {
                     continue;
                 };
                 let text = freecad::text(&upper);
-                let mut nth = 0u32;
+                let mut nth = NonZeroU32::MIN;
                 for &lower in lowers {
                     let lower = element_ref(lower_kind, lower);
                     if self.is_named(lower) {
                         continue;
                     }
-                    nth = nth.saturating_add(1);
                     candidates.entry(lower).or_default().push((
                         text.clone(),
                         Arc::clone(&upper),
                         nth,
                     ));
+                    nth = nth.saturating_add(1);
                 }
             }
             for (lower, mut uppers) in candidates {
@@ -253,16 +265,16 @@ impl Builder {
                     .collect();
                 named.sort_by(|a, b| freecad::compare(&a.0, &b.0).then_with(|| a.1.cmp(&b.1)));
                 named.dedup_by(|a, b| a.1 == b.1);
-                let lowers = named
-                    .into_iter()
-                    .take(MOST_SOURCES)
-                    .map(|(_, name)| name)
-                    .collect();
+                let mut lowers = named.into_iter().take(MOST_SOURCES).map(|(_, name)| name);
+                let Some(first) = lowers.next() else {
+                    continue;
+                };
                 let name = Name::Lower {
                     feature: self.map.feature.clone(),
                     operation: self.operation,
                     kind,
-                    lowers,
+                    first,
+                    more: lowers.collect(),
                 };
                 self.set(this, Arc::new(name));
             }

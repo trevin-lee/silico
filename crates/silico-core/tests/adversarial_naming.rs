@@ -1,0 +1,725 @@
+//! break-it: M2.7's element map (silico_core::naming) on hostile histories written by hand
+//! or generated, every one passing `History::validate` (what the core checks before naming):
+//! random histories against the map's own promises (every element named, every name
+//! finding its element, nothing named twice, names that don't depend on how the result
+//! happens to number its elements), FreeCAD's comparator against the rules of a total
+//! order (Rust's sort may panic on one that isn't), ambiguous names carried into the next
+//! feature, values the types hold that print alike, and long timelines.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroU32;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use proptest::prelude::*;
+use proptest::test_runner::{Config, TestRunner};
+use silico_core::document::FeatureId;
+use silico_core::kernel::{
+    ElementCounts, ElementFate, ElementKind, ElementRef, History, InputHistory, Reported, Topology,
+};
+use silico_core::naming::{ElementMap, Name, Operation, Relation, Source, freecad};
+
+fn id(text: &str) -> FeatureId {
+    FeatureId::new(text).unwrap()
+}
+
+fn element(kind: ElementKind, index: u32) -> ElementRef {
+    ElementRef { kind, index }
+}
+
+fn kept(index: u32) -> ElementFate {
+    ElementFate {
+        kept: Some(index),
+        ..ElementFate::default()
+    }
+}
+
+const KINDS: [ElementKind; 3] = [ElementKind::Face, ElementKind::Edge, ElementKind::Vertex];
+
+// --- FreeCAD's comparator is a total order ---------------------------------------------
+
+/// Every string up to `len` long over `alphabet`.
+fn strings(alphabet: &[u8], len: usize) -> Vec<String> {
+    let mut all = vec![String::new()];
+    let mut layer = vec![String::new()];
+    for _ in 0..len {
+        let mut next = Vec::new();
+        for s in &layer {
+            for &c in alphabet {
+                let mut t = s.clone();
+                t.push(c as char);
+                next.push(t);
+            }
+        }
+        all.extend(next.iter().cloned());
+        layer = next;
+    }
+    all
+}
+
+#[test]
+fn freecads_comparator_is_a_total_order_over_every_short_name() {
+    // Digits, letters, and the punctuation FreeCAD's names hold, both below '0' in ASCII
+    // ('(' ',' and '|' is above) and above it (';' ':'), so the "digit first" rule and the
+    // byte order after a run of digits meet. `sort_by` panics (Rust 1.81+) on an order that
+    // isn't total, and two sorts of one set would disagree.
+    let all = strings(b"01a(;:|", 4);
+    let less = |a: &str, b: &str| freecad::compare(a, b) == Ordering::Less;
+    // Reflexive and antisymmetric.
+    for a in &all {
+        assert_eq!(freecad::compare(a, a), Ordering::Equal, "{a:?}");
+    }
+    for a in &all {
+        for b in &all {
+            let (ab, ba) = (freecad::compare(a, b), freecad::compare(b, a));
+            assert_eq!(ab, ba.reverse(), "{a:?} {b:?}");
+            if a != b {
+                assert_ne!(ab, Ordering::Equal, "{a:?} and {b:?} compare equal");
+            }
+        }
+    }
+    // Transitive, on the strings up to 3 long (every triple).
+    let short: Vec<&String> = all.iter().filter(|s| s.len() <= 3).collect();
+    for a in &short {
+        for b in &short {
+            if !less(a, b) {
+                continue;
+            }
+            for c in &short {
+                if less(b, c) {
+                    assert!(less(a, c), "{a:?} < {b:?} < {c:?} but not {a:?} < {c:?}");
+                }
+            }
+        }
+    }
+}
+
+// --- Random histories against the map's promises --------------------------------------
+
+/// A random history that passes `History::validate`: up to two inputs, each element kept,
+/// modified, or generated at random into a small result, and a random topology.
+fn histories() -> impl Strategy<Value = History> {
+    let counts = (1u32..=5, 0u32..=8, 0u32..=6);
+    counts
+        .prop_flat_map(|(faces, edges, vertices)| {
+            let result = ElementCounts {
+                faces,
+                edges,
+                vertices,
+                solids: 1,
+            };
+            let input = (0usize..=5, 0usize..=8, 0usize..=6).prop_flat_map(move |(f, e, v)| {
+                (
+                    proptest::collection::vec(fate(ElementKind::Face, result), f),
+                    proptest::collection::vec(fate(ElementKind::Edge, result), e),
+                    proptest::collection::vec(fate(ElementKind::Vertex, result), v),
+                )
+                    .prop_map(|(faces, edges, vertices)| InputHistory {
+                        faces,
+                        edges,
+                        vertices,
+                    })
+            });
+            (
+                proptest::collection::vec(input, 1..=2),
+                topology(result),
+                Just(result),
+            )
+        })
+        .prop_map(|(inputs, topology, result)| History {
+            inputs,
+            result,
+            ends: Default::default(),
+            topology,
+        })
+}
+
+/// A sorted, repeat-free list of reported result elements of the kinds in `kinds`.
+fn reports(kinds: Vec<ElementKind>, result: ElementCounts) -> impl Strategy<Value = Vec<Reported>> {
+    let all: Vec<ElementRef> = kinds
+        .into_iter()
+        .flat_map(|k| (1..=result.of(k)).map(move |i| element(k, i)))
+        .collect();
+    let n = all.len();
+    (
+        proptest::sample::subsequence(all, 0..=n.min(3)),
+        proptest::collection::vec(1u32..=3, 3),
+    )
+        .prop_map(|(mut elements, positions)| {
+            elements.sort();
+            elements
+                .into_iter()
+                .zip(positions)
+                .map(|(element, position)| Reported { element, position })
+                .collect()
+        })
+}
+
+fn fate(kind: ElementKind, result: ElementCounts) -> impl Strategy<Value = ElementFate> {
+    let count = result.of(kind);
+    let keep = if count == 0 {
+        Just(None).boxed()
+    } else {
+        prop_oneof![2 => Just(None), 1 => (1..=count).prop_map(Some)].boxed()
+    };
+    (
+        keep,
+        reports(vec![kind], result),
+        reports(
+            vec![
+                ElementKind::Vertex,
+                ElementKind::Edge,
+                ElementKind::Face,
+                ElementKind::Solid,
+            ],
+            result,
+        ),
+    )
+        .prop_map(|(kept, modified, generated)| ElementFate {
+            kept,
+            modified,
+            generated,
+        })
+}
+
+fn shuffled_subset(n: u32, most: usize) -> impl Strategy<Value = Vec<u32>> {
+    let all: Vec<u32> = (1..=n).collect();
+    let len = all.len();
+    proptest::sample::subsequence(all, 0..=len.min(most)).prop_shuffle()
+}
+
+fn topology(result: ElementCounts) -> impl Strategy<Value = Topology> {
+    let face = shuffled_subset(result.edges, 5).prop_flat_map(|edges| {
+        let len = edges.len();
+        (
+            Just(edges.clone()),
+            proptest::sample::subsequence(edges, 0..=len),
+        )
+            .prop_map(|(edges, mut outer)| {
+                outer.sort_unstable();
+                (edges, outer)
+            })
+    });
+    (
+        proptest::collection::vec(face, result.faces as usize),
+        proptest::collection::vec(shuffled_subset(result.vertices, 2), result.edges as usize),
+    )
+        .prop_map(|(faces, edge_vertices)| {
+            let (face_edges, outer_edges) = faces.into_iter().unzip();
+            Topology {
+                face_edges,
+                outer_edges,
+                edge_vertices,
+            }
+        })
+}
+
+/// The inputs' maps: each a primitive's, by its own feature.
+fn input_maps(history: &History) -> Vec<ElementMap> {
+    (0..history.inputs.len())
+        .map(|i| ElementMap::primitive(id(&format!("abcd{i:04}"))))
+        .collect()
+}
+
+fn named(history: &History) -> ElementMap {
+    let maps = input_maps(history);
+    let refs: Vec<&ElementMap> = maps.iter().collect();
+    ElementMap::operation(id("rrrrrrrr"), Operation::Fuse, &refs, history)
+}
+
+fn every_element(result: ElementCounts) -> Vec<ElementRef> {
+    KINDS
+        .iter()
+        .flat_map(|&k| (1..=result.of(k)).map(move |i| element(k, i)))
+        .collect()
+}
+
+fn config(cases: u32) -> Config {
+    Config {
+        cases,
+        failure_persistence: None,
+        ..Config::default()
+    }
+}
+
+#[test]
+fn every_valid_history_names_each_element_and_each_name_finds_it() {
+    let mut runner = TestRunner::new(config(3000));
+    runner
+        .run(&histories(), |history| {
+            prop_assert_eq!(history.validate(history.inputs.len()), Ok(()));
+            let map = named(&history);
+            let elements = every_element(history.result);
+            let mut texts = BTreeSet::new();
+            for &e in &elements {
+                let names = map.names(e);
+                prop_assert!(!names.is_empty(), "{} has no name", e);
+                for name in &names {
+                    prop_assert_eq!(map.element(name), Some(e), "{}'s name {}", e, name);
+                    prop_assert!(texts.insert(name.to_string()), "two names written {}", name);
+                }
+            }
+            // Nothing outside the result is named.
+            for (e, _) in map.iter() {
+                prop_assert!(elements.contains(&e), "names {}, not the result's", e);
+            }
+            // N2: a kept element has every name its input element had.
+            let maps = input_maps(&history);
+            for (input, (fates, imap)) in history.inputs.iter().zip(&maps).enumerate() {
+                for kind in KINDS {
+                    let list = match kind {
+                        ElementKind::Face => &fates.faces,
+                        ElementKind::Edge => &fates.edges,
+                        _ => &fates.vertices,
+                    };
+                    for (n, fate) in list.iter().enumerate() {
+                        if let Some(k) = fate.kept {
+                            let source = element(kind, n as u32 + 1);
+                            for name in imap.names(source) {
+                                prop_assert!(
+                                    map.names(element(kind, k)).contains(&name),
+                                    "input {} {} kept as {:?}{} lost its name {}",
+                                    input,
+                                    source,
+                                    kind,
+                                    k,
+                                    name
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            // The same history names alike.
+            prop_assert_eq!(&named(&history), &map);
+            Ok(())
+        })
+        .unwrap();
+}
+
+/// `history` with its result's elements renumbered by `order` (each kind's new number for
+/// old number `i` is `order[kind][i - 1]`): the same result, as OCCT might number it after
+/// an upstream edit that changed no element.
+fn renumbered(history: &History, order: &BTreeMap<ElementKind, Vec<u32>>) -> History {
+    let to = |e: ElementRef| -> ElementRef {
+        match order.get(&e.kind) {
+            Some(o) => element(e.kind, o[e.index as usize - 1]),
+            None => e,
+        }
+    };
+    let list = |l: &[Reported]| -> Vec<Reported> {
+        let mut l: Vec<Reported> = l
+            .iter()
+            .map(|r| Reported {
+                element: to(r.element),
+                position: r.position,
+            })
+            .collect();
+        l.sort();
+        l
+    };
+    let fates = |kind: ElementKind, fates: &[ElementFate]| -> Vec<ElementFate> {
+        fates
+            .iter()
+            .map(|f| ElementFate {
+                kept: f.kept.map(|k| to(element(kind, k)).index),
+                modified: list(&f.modified),
+                generated: list(&f.generated),
+            })
+            .collect()
+    };
+    let inputs = history
+        .inputs
+        .iter()
+        .map(|i| InputHistory {
+            faces: fates(ElementKind::Face, &i.faces),
+            edges: fates(ElementKind::Edge, &i.edges),
+            vertices: fates(ElementKind::Vertex, &i.vertices),
+        })
+        .collect();
+    // Each owner's list moves to its new number; its values are renumbered, its order
+    // within the element kept (OCCT's order within one face doesn't follow the numbering).
+    let relist = |lists: &[Vec<u32>], owner: ElementKind, of: ElementKind, sort: bool| {
+        let mut out = vec![Vec::new(); lists.len()];
+        for (i, l) in lists.iter().enumerate() {
+            let new = to(element(owner, i as u32 + 1)).index as usize - 1;
+            let mut l: Vec<u32> = l.iter().map(|&e| to(element(of, e)).index).collect();
+            if sort {
+                l.sort_unstable();
+            }
+            out[new] = l;
+        }
+        out
+    };
+    let t = &history.topology;
+    History {
+        inputs,
+        result: history.result,
+        ends: Default::default(),
+        topology: Topology {
+            face_edges: relist(&t.face_edges, ElementKind::Face, ElementKind::Edge, false),
+            outer_edges: relist(&t.outer_edges, ElementKind::Face, ElementKind::Edge, true),
+            edge_vertices: relist(
+                &t.edge_vertices,
+                ElementKind::Edge,
+                ElementKind::Vertex,
+                false,
+            ),
+        },
+    }
+}
+
+fn is_number(name: &Name) -> bool {
+    matches!(name, Name::Element { feature, .. } if *feature == id("rrrrrrrr"))
+}
+
+#[test]
+fn names_dont_depend_on_how_the_result_numbers_its_elements() {
+    // The point of naming: the same result numbered another way (as OCCT numbers it after
+    // an upstream edit that moved nothing) names each element alike. Leaves out histories
+    // with `~n` duplicates (N3: their order is the numbering's, and they're refused), and
+    // bare numbers (FreeCAD's unmapped names), which are numbers by definition.
+    let strategy = histories().prop_flat_map(|h| {
+        let r = h.result;
+        let perm = |n: u32| Just((1..=n).collect::<Vec<u32>>()).prop_shuffle();
+        (Just(h), perm(r.faces), perm(r.edges), perm(r.vertices))
+    });
+    let mut runner = TestRunner::new(config(3000));
+    runner
+        .run(&strategy, |(history, faces, edges, vertices)| {
+            let order: BTreeMap<ElementKind, Vec<u32>> = [
+                (ElementKind::Face, faces),
+                (ElementKind::Edge, edges),
+                (ElementKind::Vertex, vertices),
+            ]
+            .into_iter()
+            .collect();
+            let other = renumbered(&history, &order);
+            prop_assert_eq!(other.validate(other.inputs.len()), Ok(()));
+            let (a, b) = (named(&history), named(&other));
+            let has_duplicates = |m: &ElementMap| {
+                m.iter()
+                    .any(|(_, ns)| ns.iter().any(|n| matches!(&**n, Name::Duplicate { .. })))
+            };
+            prop_assume!(!has_duplicates(&a));
+            prop_assert!(
+                !has_duplicates(&b),
+                "duplicates appear only when renumbered"
+            );
+            for e in every_element(history.result) {
+                let moved = element(e.kind, order[&e.kind][e.index as usize - 1]);
+                let (na, nb) = (a.name(e).unwrap(), b.name(moved).unwrap());
+                if is_number(&na) || is_number(&nb) {
+                    prop_assert!(
+                        is_number(&na) && is_number(&nb),
+                        "{} named {} but, renumbered, {}",
+                        e,
+                        na,
+                        nb
+                    );
+                    continue;
+                }
+                prop_assert_eq!(&na, &nb, "{} renumbered as {}", e, moved);
+            }
+            Ok(())
+        })
+        .unwrap();
+}
+
+// --- Ambiguous names carried on ---------------------------------------------------------
+
+/// Two edges joining the same two vertices, named alike from them (the second `~1`).
+fn ambiguous() -> (History, ElementMap) {
+    let history = History {
+        inputs: vec![InputHistory {
+            faces: vec![],
+            edges: vec![],
+            vertices: vec![kept(1), kept(2)],
+        }],
+        result: ElementCounts {
+            faces: 0,
+            edges: 2,
+            vertices: 2,
+            solids: 0,
+        },
+        ends: Default::default(),
+        topology: Topology {
+            face_edges: vec![],
+            outer_edges: vec![],
+            edge_vertices: vec![vec![1, 2], vec![2, 1]],
+        },
+    };
+    history.validate(1).unwrap();
+    let input = ElementMap::primitive(id("aaaaaaaa"));
+    let map = ElementMap::operation(id("pppppppp"), Operation::Fuse, &[&input], &history);
+    (history, map)
+}
+
+#[test]
+fn an_ambiguous_name_kept_by_the_next_feature_is_still_marked_ambiguous() {
+    // Found by /break-it: `duplicated` was filled only by a map's own collisions, so the
+    // next feature, keeping both edges unchanged (N2), had `X` and `X~1` in a map that said
+    // neither was duplicated, and a reference to `X` (refused one feature earlier, N3) would
+    // have been accepted, though which edge `X` names still turns on the numbering.
+    let (_, first) = ambiguous();
+    let x = first.name(element(ElementKind::Edge, 1)).unwrap();
+    assert!(first.is_duplicated(&x));
+    // A cut by a tool that misses: the base's edges and vertices kept as they were; the
+    // tool's (none) nothing.
+    let history = History {
+        inputs: vec![
+            InputHistory {
+                faces: vec![],
+                edges: vec![kept(1), kept(2)],
+                vertices: vec![kept(1), kept(2)],
+            },
+            InputHistory::default(),
+        ],
+        result: ElementCounts {
+            faces: 0,
+            edges: 2,
+            vertices: 2,
+            solids: 0,
+        },
+        ends: Default::default(),
+        topology: Topology {
+            face_edges: vec![],
+            outer_edges: vec![],
+            edge_vertices: vec![vec![1, 2], vec![2, 1]],
+        },
+    };
+    history.validate(2).unwrap();
+    let tool = ElementMap::primitive(id("tttttttt"));
+    let next = ElementMap::operation(id("nnnnnnnn"), Operation::Cut, &[&first, &tool], &history);
+    assert_eq!(
+        next.name(element(ElementKind::Edge, 1)),
+        Some(Arc::clone(&x))
+    );
+    assert!(
+        next.is_duplicated(&x),
+        "{x} names one of two edges that came about alike, in the next feature too"
+    );
+}
+
+// --- Values the types hold that print alike ---------------------------------------------
+
+#[test]
+fn every_name_the_types_hold_prints_differently_from_every_other() {
+    // Positions, `nth`, and ordinals count from 1 by their type (`/break-it` found that a 0
+    // printed as a 1 does), so the forms' leaving out a 1 can't make two names print alike:
+    // 1 and 2 differ, in both forms.
+    let leaf = Arc::new(Name::Element {
+        feature: id("aaaaaaaa"),
+        element: element(ElementKind::Face, 1),
+    });
+    let n = |n: u32| NonZeroU32::new(n).unwrap();
+    let derived = |position| Name::Derived {
+        feature: id("rrrrrrrr"),
+        operation: Operation::Cut,
+        kind: ElementKind::Face,
+        first: Source {
+            relation: Relation::Modified,
+            position,
+            name: Arc::clone(&leaf),
+        },
+        more: vec![],
+    };
+    let upper = |nth| Name::Upper {
+        feature: id("rrrrrrrr"),
+        operation: Operation::Cut,
+        kind: ElementKind::Edge,
+        upper: Arc::clone(&leaf),
+        nth,
+    };
+    let duplicate = |ordinal| Name::Duplicate {
+        name: Arc::clone(&leaf),
+        ordinal,
+    };
+    let mut clashes = Vec::new();
+    for (a, b) in [
+        (derived(n(1)), derived(n(2))),
+        (upper(n(1)), upper(n(2))),
+        (duplicate(n(1)), duplicate(n(2))),
+    ] {
+        assert_ne!(a, b);
+        if a.to_string() == b.to_string() {
+            clashes.push(format!("{a:?} and {b:?} both print {a}"));
+        }
+        if freecad::text(&a) == freecad::text(&b) {
+            clashes.push(format!(
+                "{a:?} and {b:?} both FreeCAD {}",
+                freecad::text(&a)
+            ));
+        }
+    }
+    assert!(clashes.is_empty(), "{clashes:#?}");
+}
+
+#[test]
+fn a_derived_name_has_a_freecad_form() {
+    // Every derived or lower name has a first source by its type (`/break-it` found an
+    // empty list writing FreeCAD's form as "", which sorts before every other name), so
+    // the shortest of each writes its source.
+    let leaf = Arc::new(Name::Element {
+        feature: id("aaaaaaaa"),
+        element: element(ElementKind::Edge, 1),
+    });
+    let derived = Name::Derived {
+        feature: id("rrrrrrrr"),
+        operation: Operation::Cut,
+        kind: ElementKind::Face,
+        first: Source {
+            relation: Relation::Generated,
+            position: NonZeroU32::MIN,
+            name: Arc::clone(&leaf),
+        },
+        more: vec![],
+    };
+    let lower = Name::Lower {
+        feature: id("rrrrrrrr"),
+        operation: Operation::Cut,
+        kind: ElementKind::Face,
+        first: Arc::clone(&leaf),
+        more: vec![],
+    };
+    assert_eq!(freecad::text(&derived), "Edge1;:G;CUT");
+    assert_eq!(freecad::text(&lower), "Edge1;:L;CUT");
+    assert_eq!(derived.to_string(), "rrrrrrrr.Face(G aaaaaaaa.Edge1)");
+    assert_eq!(lower.to_string(), "rrrrrrrr.Face(L aaaaaaaa.Edge1)");
+}
+
+// --- A primitive's map and element numbers ----------------------------------------------
+
+#[test]
+fn a_primitives_map_doesnt_name_element_zero() {
+    // Found by /break-it: elements count from 1 (`Face1`), so `Face0` is no solid's. A
+    // primitive's map answers for any number, leaving the bound to the solid's counts, and
+    // a check of `index <= count` let 0 through: a reference `k7f2qx3m.Face0` (made up, or
+    // off by one) resolved to an element that can't exist. An operation's map says None.
+    let map = ElementMap::primitive(id("k7f2qx3m"));
+    let zero = Name::Element {
+        feature: id("k7f2qx3m"),
+        element: element(ElementKind::Face, 0),
+    };
+    assert_eq!(map.element(&zero), None);
+    assert!(map.name(element(ElementKind::Face, 0)).is_none());
+}
+
+#[test]
+fn a_primitives_map_and_an_operations_agree_about_solids() {
+    // A map names faces, edges, and vertices. A primitive's says it names `Solid1` too,
+    // an operation's doesn't, so a reference to a solid is found or not by what made it.
+    let primitive = ElementMap::primitive(id("k7f2qx3m"));
+    let (_, operation) = ambiguous();
+    let solid = element(ElementKind::Solid, 1);
+    // Found by /break-it: the primitive's map named the solid; the operation's didn't.
+    assert_eq!(
+        primitive.name(solid).is_some(),
+        operation.name(solid).is_some(),
+        "primitive {:?}, operation {:?}",
+        primitive.name(solid),
+        operation.name(solid)
+    );
+}
+
+// --- Long timelines ---------------------------------------------------------------------
+
+/// A box's history through an operation that modifies its top face (Face6) and keeps
+/// everything else: a hole drilled from the top, without the hole's own elements.
+fn drilled() -> History {
+    let box_counts = ElementCounts {
+        faces: 6,
+        edges: 12,
+        vertices: 8,
+        solids: 1,
+    };
+    let mut faces: Vec<ElementFate> = (1..=6).map(kept).collect();
+    faces[5] = ElementFate {
+        modified: vec![Reported {
+            element: element(ElementKind::Face, 6),
+            position: 1,
+        }],
+        ..ElementFate::default()
+    };
+    History {
+        inputs: vec![
+            InputHistory {
+                faces,
+                edges: (1..=12).map(kept).collect(),
+                vertices: (1..=8).map(kept).collect(),
+            },
+            InputHistory::default(),
+        ],
+        result: box_counts,
+        ends: Default::default(),
+        topology: Topology {
+            face_edges: vec![
+                vec![1, 2, 3, 4],
+                vec![5, 6, 7, 8],
+                vec![9, 5, 10, 1],
+                vec![11, 7, 12, 3],
+                vec![4, 11, 8, 9],
+                vec![2, 12, 6, 10],
+            ],
+            outer_edges: vec![
+                vec![1, 2, 3, 4],
+                vec![5, 6, 7, 8],
+                vec![1, 5, 9, 10],
+                vec![3, 7, 11, 12],
+                vec![4, 8, 9, 11],
+                vec![2, 6, 10, 12],
+            ],
+            edge_vertices: vec![
+                vec![1, 2],
+                vec![3, 1],
+                vec![3, 4],
+                vec![4, 2],
+                vec![5, 6],
+                vec![7, 5],
+                vec![7, 8],
+                vec![8, 6],
+                vec![6, 2],
+                vec![5, 1],
+                vec![8, 4],
+                vec![7, 3],
+            ],
+        },
+    }
+}
+
+#[test]
+fn a_thousand_holes_drilled_one_by_one_name_in_linear_time() {
+    // A perforated plate built as 1,000 cut features: each modifies the top face, so its
+    // name nests one level deeper per feature. Every map is built from scratch on every
+    // publish, so the cost per map must stay small, and the name's two forms must grow by
+    // a constant per feature, not compound.
+    let history = drilled();
+    history.validate(2).unwrap();
+    let tool = ElementMap::primitive(id("tttttttt"));
+    let mut map = ElementMap::primitive(id("pppppppp"));
+    let started = Instant::now();
+    let mut lengths = Vec::new();
+    for n in 0..1000 {
+        let feature = id(&format!("f{n:07}"));
+        map = ElementMap::operation(feature, Operation::Cut, &[&map, &tool], &history);
+        if n % 100 == 99 {
+            let top = map.name(element(ElementKind::Face, 6)).unwrap();
+            lengths.push((top.to_string().len(), freecad::text(&top).len()));
+        }
+    }
+    let elapsed = started.elapsed();
+    assert!(elapsed < Duration::from_secs(10), "{elapsed:?}");
+    // Linear: each 100 features add the same length.
+    let steps: BTreeSet<(usize, usize)> = lengths
+        .windows(2)
+        .map(|w| (w[1].0 - w[0].0, w[1].1 - w[0].1))
+        .collect();
+    assert_eq!(steps.len(), 1, "{lengths:?}");
+    // A bystander keeps its primitive name through all of it (N2).
+    assert_eq!(
+        map.name(element(ElementKind::Face, 1)).unwrap().to_string(),
+        "pppppppp.Face1"
+    );
+}

@@ -86,6 +86,11 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Features that produce zero faces or an empty result
 - Long undo/redo sequences mixed with recomputes
 - References by stale names after an upstream edit
+- Ambiguous (`~n`) names that the next feature keeps unchanged: a "duplicated" set filled only by one map's own collisions forgets them, so the pair is unmarked downstream; check `is_duplicated` one feature later
+- Element number 0 in a name (`k7f2qx3m.Face0`): a map that answers for any number of a kind resolves it, and a bound of `index <= count` lets it through; elements count from 1
+- Counters that count from 1 and print a 1 as nothing (positions, `nth`, `G2` vs `G`): 0 prints as 1 does, so a name's text no longer says which name it is; compare `Display` of every constructible value
+- A long timeline of disjoint fuses (bolts fused one at a time): every feature's element map holds all its solid's names and all are rebuilt each publish, so time and memory grow with the square of the timeline
+- Renumber a result's elements (permute faces, edges, vertices consistently through the history and topology): names that aren't duplicates or bare numbers must not change
 
 ## Files
 
@@ -162,6 +167,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Callbacks a test hands the fake (hold and refusal rules) that panic: the serving thread dies with the lock held and its request counted as running, its caller is told the kernel stopped, and every later request hangs
 - Waits of "forever" (`Duration::MAX`) added to `Instant::now()` unchecked, and sizes of `usize::MAX` collected into a Vec: panics where the real component returns an error
 - IDs parsed with `from_str_radix`, which takes upper-case digits and a leading '+': bytes the component never made are taken as one of its own
+- Hand-written topology tables (each face's edges, each edge's vertices) for primitives: compare with the real kernel's move history, cones whose cap OCCT drops included
 
 ## Caches and files the core writes
 
