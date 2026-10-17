@@ -970,10 +970,14 @@ fn a_worker_named_by_a_bare_name_runs_the_one_in_the_working_directory() {
 fn a_pool_of_the_most_workers_starts_and_stops_cleanly() {
     // MAX_WORKERS slots of a stand-in worker that never starts: 1024 processes and three
     // threads each in the app. The pool starts (or fails, structured), and its drop kills
-    // and reaps every worker within seconds.
+    // and reaps every worker. Bounded by this process's CPU time, not the wall clock: on a
+    // machine other work saturates, the wall clock measures the machine (1024 starts took
+    // 35–76 s on CI under mutants shards, against 6 s alone), while what starting and
+    // dropping cost here is the pool's. Measured on an M-series Mac: 4.3 s to start, 0.4 s
+    // to drop. The wall clock bounds only a hang.
     let exe = script("most-workers", "exec sleep 600");
-    let (started, pids, dropped) = within(Duration::from_secs(90), move || {
-        let start = Instant::now();
+    let (started, pids, dropped) = within(Duration::from_secs(600), move || {
+        let start = cpu_time::ProcessTime::now();
         let pool = KernelPool::start_workers(&exe, silico_core::pool::MAX_WORKERS);
         let started = start.elapsed();
         let pool = match pool {
@@ -984,18 +988,18 @@ fn a_pool_of_the_most_workers_starts_and_stops_cleanly() {
             }
         };
         let pids = pool.pids();
-        let start = Instant::now();
+        let start = cpu_time::ProcessTime::now();
         drop(pool);
         (started, pids, start.elapsed())
     });
     assert_eq!(pids.len(), silico_core::pool::MAX_WORKERS);
     assert!(
         started < Duration::from_secs(30),
-        "the start took {started:?}"
+        "the start took {started:?} of CPU"
     );
     assert!(
-        dropped < Duration::from_secs(10),
-        "the drop took {dropped:?}"
+        dropped < Duration::from_secs(5),
+        "the drop took {dropped:?} of CPU"
     );
     assert_reaped(&pids, "after the drop");
     wait_no_children("after the drop");

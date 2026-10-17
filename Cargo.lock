@@ -4198,6 +4198,7 @@ name = "silico-kernel"
 version = "0.0.0"
 dependencies = [
  "command-fds",
+ "cpu-time",
  "crc32fast",
  "cxx",
  "cxx-build",

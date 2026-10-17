@@ -29,7 +29,6 @@ echo "mutants: testing $commit"
 # (silico-core's pool.rs: killed_unstarted, back-off reset, a newer worker waking a slot),
 # a superseded request's stop, and dropping a pool of workers.
 wall_clock=(
-  a_pool_of_the_most_workers_starts_and_stops_cleanly
   dropping_the_pool_amid_crashes_kills_floods_and_advances_leaves_nothing
   superseded_work_too_young_to_stop_at_advance_is_stopped_once_it_has_run_stop_after
   a_kill_at_launch_after_an_exit_of_its_own_is_taken_as_from_outside
