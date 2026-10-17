@@ -19,7 +19,7 @@ struct MoveOutput;
 // Diagnoses and solves `input`. C++ exceptions reach Rust as errors (cxx's Result).
 SolveOutput solve(const SolveInput &input);
 
-// A drag under way: the sketch's PlaneGCS system, kept between moves. Opaque to Rust,
+// A drag under way: the PlaneGCS system of the part a drag moves, kept between moves. Opaque to Rust,
 // which holds it by a UniquePtr; it's never moved, since PlaneGCS points into it.
 class DragSession {
  public:

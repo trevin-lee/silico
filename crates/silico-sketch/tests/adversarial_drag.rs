@@ -1132,7 +1132,7 @@ enum Broken {
     MoveFailed,
     /// Status and values disagree, or values of another length.
     Shape,
-    /// A fixed value moved.
+    /// A value outside the part the drag moves changed.
     FixedMoved,
     /// A Success with a constraint the solver solved unmet, or not a number.
     Unmet,
@@ -1216,6 +1216,7 @@ fn check_drag(seed: u64) -> Result<(), (Broken, String)> {
         cursors.push(c);
     }
     let unknown = |i: usize| system.unknowns.binary_search(&Value(i as u32)).is_ok();
+    let part = begin.part();
     for c in cursors {
         let moved = match drag.move_to(c) {
             Ok(m) => m,
@@ -1229,24 +1230,20 @@ fn check_drag(seed: u64) -> Result<(), (Broken, String)> {
             }
             other => return Err((Broken::Shape, format!("to {c:?}: {other:?}"))),
         };
-        for (i, (a, b)) in system.values.iter().zip(&values).enumerate() {
-            if !unknown(i) && a.to_bits() != b.to_bits() {
-                return Err((
-                    Broken::FixedMoved,
-                    format!("to {c:?}: value {i} {a} -> {b}"),
-                ));
-            }
-        }
-        // Only the part the drag moves is solved; the rest stays where the drag began. The
-        // part's unknowns, from the protocol; each other value, checked bit for bit, so the
-        // part is held to what a move does, not only to its own list.
-        let part = begin.part();
+        // Only the part the drag moves is solved; every other value (fixed, or an unknown of
+        // another part) stays where the drag began, bit for bit, so the part is held to what
+        // a move does, not only to its own list.
         for (i, (a, b)) in system.values.iter().zip(&values).enumerate() {
             if part.unknowns.binary_search(&Value(i as u32)).is_err() && a.to_bits() != b.to_bits()
             {
+                let what = if unknown(i) {
+                    "an unknown outside the part"
+                } else {
+                    "fixed"
+                };
                 return Err((
                     Broken::FixedMoved,
-                    format!("to {c:?}: value {i}, outside the part, {a} -> {b}"),
+                    format!("to {c:?}: value {i}, {what}, {a} -> {b}"),
                 ));
             }
         }
@@ -1335,7 +1332,12 @@ fn geometry_outside_the_part_doesnt_void_a_frame() {
     let lone = b.add(SketchGeometry::Point(p));
     let system = b.system(Algorithm::DogLeg);
     system.check().unwrap();
+    let before = system.values.clone();
     let mut drag = begin(system, PointOf::Point(lone));
     let m = drag.move_to([3.0, 4.0]).unwrap();
     assert_eq!(m.status, SolveStatus::Success, "{m:?}");
+    // The circle (values 0..3) as drawn, the point (3, 4) on the cursor.
+    let values = m.values.unwrap();
+    assert_eq!(bits(&values[..3]), bits(&before[..3]));
+    assert_near([values[3], values[4]], [3.0, 4.0], "the point");
 }
