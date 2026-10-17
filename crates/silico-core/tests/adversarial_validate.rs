@@ -42,6 +42,7 @@ fn feature(identity: &str, name: &str, operation: Operation) -> Feature {
         version: FeatureVersion,
         name: Name::new(name).unwrap(),
         note: None,
+        fingerprint: None,
     }
 }
 
@@ -837,6 +838,7 @@ fn a_million_valid_features_validate_promptly() {
             version: FeatureVersion,
             name: Name::new("F").unwrap(),
             note: None,
+            fingerprint: None,
         })
         .collect();
     let doc = document(features);

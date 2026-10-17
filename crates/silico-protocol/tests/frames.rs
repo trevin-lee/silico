@@ -272,6 +272,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             faces: 6,
             edges: 12,
             vertices: 8,
+            bounds: Some([[0.0, 0.0, -30.0], [10.0, 20.0, 0.0]]),
             valid: true,
         })),
         Ok(Reply::FreecadMeasures(FreecadMeasures {

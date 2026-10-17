@@ -91,7 +91,9 @@ fn an_edit_built_on_hits_is_byte_identical_to_one_built_fresh() {
     // The block comes from the cache, as bytes read from disk; the cut is OCCT's, on them.
     let second = Recompute::with_cache(counted(), dir.cache());
     let model = published(&second, &edited);
-    assert_eq!(second.kernel().asked(), 3);
+    // Three steps made (the pin's make and move, the cut), and two solids measured (the
+    // pin's, its move's, and the cut's).
+    assert_eq!(second.kernel().asked(), 5);
     assert_eq!(shapes(&model), shapes(&fresh));
     assert_eq!(model.features(), fresh.features());
     // And again from the cache, now entirely.

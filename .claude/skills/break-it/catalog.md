@@ -12,6 +12,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Integer counts of 0, 1, `u32::MAX`, and negative counts passed through a signed type
 - Vectors with finite components whose length overflows (`[1e300, 0, 1e300]`): normalizing gives `(0, 0, 0)`, and the error blames the wrong parameter
 - Counts from a command line fed to `(0..n).map(..).collect()`: `collect` sizes the Vec up front, so `usize::MAX` panics (capacity overflow) and 1e15 aborts on allocation
+- Derived measures in fixed point sized for their inputs' units (millionths of a mm³ in an i64 hold 9.2e12 mm³, a cube 21 m on a side, while the gate admits 1 km sides): take the largest values the gate admits through every derived quantity (volume, area, products of lengths)
 - Absolute tolerances on quantities that scale with the part (OCCT's `GeomLib::NormEstim` orients a pole's or apex's normal only when \|dP/du × dP/dv\| a 1e-5 step away is over 1e-8): a ball under 0.0316 mm radius or a cone slenderer than 1:1000 gets a normal pointing into the solid
 
 ## Sketch geometry
@@ -98,6 +99,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Errors that quote the input: a 1 MB number, key, or string echoed into the message, parameter, and suggestion makes a multi-MB error; keys holding ESC sequences or newlines reach terminals and logs raw, and an empty key reads as nothing
 - Invisible characters where whitespace may go (U+00A0, U+200B, U+FEFF after the start, U+2028): errors that print the character itself show ` ` or nothing; check they name it by code point
 - Memory amplification of a parsed tree: a 100 MB array of `0` under an unknown key, measured with `/usr/bin/time -l` (a tree of nodes and a `Vec<char>` cost 33x here), and no size cap to refuse it with
+- Schemas generated from Rust integers (schemars writes `"format": "uint32"`, `"minimum": 0`, no `"maximum"`; formats are annotations): the schema takes 4294967296 where the reader refuses it
+- What the core adds to a document on save (fingerprints, metadata) when it opened just under the size limit: it opens, but can't be saved again
 - Several bad values in one entity at once (a box with length, width, and height all 0) given to a checker that promises every problem: a rule returning `Result` stops at the first, so the user fixes one value per round trip
 
 ## MCP and agent input

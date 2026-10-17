@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use silico_core::document::{Checked, FeatureId, read};
-use silico_core::fake::FakeKernel;
+use silico_core::fake::{Call, FakeKernel};
 use silico_core::kernel::Kernel;
 use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 
@@ -27,6 +27,16 @@ pub fn published<K: Kernel + 'static>(engine: &Recompute<K>, document: Checked) 
         Ok(other) => panic!("not published: {other:?}"),
         Err(_) => panic!("the recompute didn't finish in {WAIT:?}"),
     }
+}
+
+/// The names of the kernel calls in `calls` that made shapes: every call but the summaries,
+/// which measure features' solids once they're made (checked in tests/fingerprint.rs).
+pub fn made(calls: &[Call]) -> Vec<&'static str> {
+    calls
+        .iter()
+        .map(|call| call.op.name())
+        .filter(|name| *name != "Summarize")
+        .collect()
 }
 
 /// How the fake made the feature's solid.

@@ -22,8 +22,9 @@ mod ffi {
     }
 
     /// What OCCT measures of a shape: its volume and center of mass (taken as uniformly
-    /// dense), its area, and how many distinct faces, edges, and vertices it has.
-    /// [`summarize`](super::summarize) adds its validity.
+    /// dense), its area, how many distinct faces, edges, and vertices it has, and its tight
+    /// bounding box, from `low` to `high` if it's `bounded`. [`summarize`](super::summarize)
+    /// adds its validity.
     struct Measures {
         volume: f64,
         area: f64,
@@ -31,6 +32,9 @@ mod ffi {
         faces: u32,
         edges: u32,
         vertices: u32,
+        bounded: bool,
+        low: Point3,
+        high: Point3,
     }
 
     /// A shape's volume and area.
@@ -643,13 +647,15 @@ pub fn disable_fp_traps() -> Result<(), KernelError> {
 /// The shape's summary: volume, area, center, topology counts, and validity.
 pub fn summarize(shape: &Shape) -> Result<ShapeSummary, KernelError> {
     let m = ffi::measure(shape.get()?)?;
+    let point = |p: ffi::Point3| [p.x, p.y, p.z];
     Ok(ShapeSummary {
         volume: m.volume,
         area: m.area,
-        center: [m.center.x, m.center.y, m.center.z],
+        center: point(m.center),
         faces: m.faces,
         edges: m.edges,
         vertices: m.vertices,
+        bounds: m.bounded.then(|| [point(m.low), point(m.high)]),
         valid: shape.is_valid()?,
     })
 }

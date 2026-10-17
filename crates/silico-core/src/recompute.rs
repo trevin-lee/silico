@@ -30,9 +30,10 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 
 use crate::cache::Cache;
-use crate::document::{Checked, FeatureId, Operation};
+use crate::document::{Checked, Document, FeatureId, Fingerprint, Operation};
 use crate::kernel::{
     BooleanOp, BuiltData, Generation, History, Kernel, KernelRequest, Primitive, ShapeData,
+    ShapeSummary,
 };
 use crate::pool::Outcome;
 use crate::worker::lock;
@@ -60,12 +61,42 @@ impl fmt::Debug for Key {
     }
 }
 
-/// What a kernel step made: its shape, and, for an operation on other shapes, what it did
-/// to them.
+/// What a kernel step made: its shape, for an operation on other shapes what it did to
+/// them, and, if it was measured, the shape's summary (from which a feature's fingerprint
+/// comes; a step that's a feature's solid is measured after it's made, by a job of its own,
+/// which puts a measured copy in its place). Never changed once made: models share it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Built {
     pub shape: ShapeData,
     pub history: Option<History>,
+    summary: Option<ShapeSummary>,
+}
+
+impl Built {
+    pub(crate) fn new(
+        shape: ShapeData,
+        history: Option<History>,
+        summary: Option<ShapeSummary>,
+    ) -> Self {
+        Built {
+            shape,
+            history,
+            summary,
+        }
+    }
+
+    /// The shape's summary, if it was measured.
+    pub fn summary(&self) -> Option<&ShapeSummary> {
+        self.summary.as_ref()
+    }
+
+    /// This result, measured.
+    fn measured(&self, summary: ShapeSummary) -> Self {
+        Built {
+            summary: Some(summary),
+            ..self.clone()
+        }
+    }
 }
 
 /// What became of a feature in a recompute.
@@ -83,9 +114,13 @@ pub enum FeatureOutcome {
 /// A document as rebuilt: what became of each feature, in timeline order, and its bodies.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Model {
+    /// The document it was built from.
+    source: Arc<Checked>,
     generation: Generation,
     features: Vec<(FeatureId, FeatureOutcome)>,
     bodies: Vec<FeatureId>,
+    /// Built features whose solids couldn't be measured, in timeline order: why.
+    unmeasured: Vec<(FeatureId, Error)>,
 }
 
 impl Model {
@@ -124,7 +159,101 @@ impl Model {
                 FeatureOutcome::Built { .. } | FeatureOutcome::Blocked { .. } => None,
             })
     }
+
+    /// The document it was built from.
+    pub fn document(&self) -> &Document {
+        self.source.document()
+    }
+
+    /// The fingerprint of the feature `id`'s solid, if it built and was measured: none if it
+    /// didn't (or the document has no such feature), or if a measure can't be written.
+    pub fn fingerprint(&self, id: &FeatureId) -> Option<Fingerprint> {
+        match self.outcome(id)? {
+            FeatureOutcome::Built { built, .. } => built.summary().and_then(Fingerprint::of),
+            FeatureOutcome::Failed(_) | FeatureOutcome::Blocked { .. } => None,
+        }
+    }
+
+    /// Each feature of its document whose fingerprint doesn't hold, in timeline order: one
+    /// whose solid couldn't be measured (that error, naming it), and one whose rebuild
+    /// measures otherwise than the fingerprint stored with it (a `drift` error naming the
+    /// feature and what moved). A feature with no fingerprint stored isn't drift (the next
+    /// save writes one), nor is one that didn't build (its failure says why).
+    pub fn drift(&self) -> Vec<Error> {
+        let mut errors = Vec::new();
+        let mut unmeasured = self.unmeasured.iter().peekable();
+        for (feature, (_, outcome)) in self.document().features.iter().zip(&self.features) {
+            if let Some((_, error)) = unmeasured.next_if(|(id, _)| *id == feature.id) {
+                errors.push(error.clone());
+                continue;
+            }
+            let (Some(stored), FeatureOutcome::Built { built, .. }) =
+                (&feature.fingerprint, outcome)
+            else {
+                continue;
+            };
+            let Some(summary) = built.summary() else {
+                continue;
+            };
+            let error = match Fingerprint::of(summary) {
+                Some(rebuilt) => {
+                    let differences = stored.differences(&rebuilt);
+                    let Some(first) = differences.first() else {
+                        continue;
+                    };
+                    let moved: Vec<String> = differences
+                        .iter()
+                        .map(|d| format!("{} {} → {}", d.field, d.stored, d.rebuilt))
+                        .collect();
+                    Error::new(
+                        ErrorCode::Drift,
+                        format!(
+                            "feature {} rebuilt to other measures than its fingerprint: {}",
+                            feature.id,
+                            moved.join(", ")
+                        ),
+                    )
+                    .with_parameter(format!("fingerprint.{}", first.field))
+                }
+                None => Error::new(
+                    ErrorCode::Drift,
+                    format!(
+                        "feature {} rebuilt to measures a fingerprint can't hold (not finite, or too large)",
+                        feature.id
+                    ),
+                )
+                .with_parameter("fingerprint"),
+            };
+            errors.push(
+                error
+                    .with_feature(feature.id.as_str())
+                    .with_suggestion(DRIFT),
+            );
+        }
+        errors
+    }
+
+    /// Its document with each feature's fingerprint as it rebuilt. A feature that didn't
+    /// rebuild, or whose solid couldn't be measured or written, keeps the fingerprint
+    /// stored with it: there's nothing to put in its place, and a failure that passes (a
+    /// worker that hung, say) mustn't lose the record a later rebuild is checked against.
+    pub fn fingerprinted(&self) -> Document {
+        let mut document = self.document().clone();
+        // The model's features are its document's, in order.
+        for (feature, (_, outcome)) in document.features.iter_mut().zip(&self.features) {
+            if let FeatureOutcome::Built { built, .. } = outcome
+                && let Some(rebuilt) = built.summary().and_then(Fingerprint::of)
+            {
+                feature.fingerprint = Some(rebuilt);
+            }
+        }
+        document
+    }
 }
+
+/// What to do about drift: most often the feature, or one it uses, was edited (by hand, or
+/// in a merge) since it was saved; otherwise the kernel's results changed.
+const DRIFT: &str = "if this feature or one it uses was edited by hand or in a merge since it was saved, save the document (or run `silico fmt`) to write its new fingerprint; if not, this is a determinism bug or a change in the kernel: find which, and once the new measures are right, save to write them";
 
 /// What a recompute came to.
 #[derive(Debug, Clone, PartialEq)]
@@ -300,7 +429,7 @@ impl<K: Kernel + 'static> Recompute<K> {
             .spawn(move || {
                 let _caller = caller.enter();
                 let _entered = span.enter();
-                let outcome = engine.run(&document, generation);
+                let outcome = engine.run(&Arc::new(document), generation);
                 let _ = reply.send(outcome);
             });
         if let Err(e) = started {
@@ -385,6 +514,8 @@ struct Plan {
     /// errors.
     first_feature: BTreeMap<Key, FeatureId>,
     features: Vec<Planned>,
+    /// The steps that make features' solids, which are measured once they're made.
+    results: BTreeSet<Key>,
 }
 
 struct Planned {
@@ -414,6 +545,7 @@ impl Plan {
             order: Vec::new(),
             first_feature: BTreeMap::new(),
             features: Vec::with_capacity(features.len()),
+            results: BTreeSet::new(),
         };
         for feature in features {
             let mut own = Vec::new();
@@ -447,6 +579,9 @@ impl Plan {
                         own.push(plan.add(Step::Boolean { op, base, tool }, &feature.id));
                     }
                 }
+            }
+            if let Some(result) = own.last() {
+                plan.results.insert(*result);
             }
             plan.features.push(Planned {
                 id: feature.id.clone(),
@@ -503,6 +638,41 @@ fn kept(error: &Error) -> bool {
     )
 }
 
+/// A job a recompute's threads run: making a step, or measuring a feature's solid.
+#[derive(Debug, Clone, Copy)]
+enum Job {
+    Make(Key),
+    Measure(Key),
+}
+
+impl Job {
+    fn key(self) -> Key {
+        match self {
+            Job::Make(key) | Job::Measure(key) => key,
+        }
+    }
+
+    /// What the job does, for its span.
+    fn name(self) -> &'static str {
+        match self {
+            Job::Make(_) => "make",
+            Job::Measure(_) => "measure",
+        }
+    }
+}
+
+/// What a job came to.
+enum Ran {
+    Made(Outcome<Built>),
+    /// The solid, measured: a copy, made outside the schedule's lock.
+    Measured(Outcome<Built>),
+}
+
+/// An error that's a bug in Silico.
+fn silico_bug(message: &str) -> Error {
+    Error::new(ErrorCode::Internal, message).with_suggestion(crate::worker::SILICO_BUG)
+}
+
 /// A recompute's steps in flight.
 struct Schedule {
     /// Results so far: the kept ones it started with, and its own.
@@ -511,7 +681,9 @@ struct Schedule {
     waiting: BTreeMap<Key, usize>,
     /// The steps that use each step.
     users: BTreeMap<Key, Vec<Key>>,
-    ready: VecDeque<Key>,
+    ready: VecDeque<Job>,
+    /// Features' solids that couldn't be measured, by their steps' keys: why.
+    unmeasured: BTreeMap<Key, Error>,
     running: usize,
     superseded: bool,
     /// A step that panicked, a bug in Silico: the recompute stops, and fails with this.
@@ -519,7 +691,7 @@ struct Schedule {
 }
 
 impl<K: Kernel + 'static> Engine<K> {
-    fn run(&self, document: &Checked, generation: Generation) -> Result<RunOutcome, Error> {
+    fn run(&self, document: &Arc<Checked>, generation: Generation) -> Result<RunOutcome, Error> {
         let plan = Plan::of(document);
         let keys: Arc<BTreeSet<Key>> = Arc::new(plan.steps.keys().copied().collect());
         let mut done: BTreeMap<Key, StepResult> = {
@@ -557,6 +729,7 @@ impl<K: Kernel + 'static> Engine<K> {
             waiting: BTreeMap::new(),
             users: BTreeMap::new(),
             ready: VecDeque::new(),
+            unmeasured: BTreeMap::new(),
             running: 0,
             superseded: false,
             broken: None,
@@ -584,9 +757,17 @@ impl<K: Kernel + 'static> Engine<K> {
                 }
             }
             if unbuilt == 0 {
-                schedule.ready.push_back(*key);
+                schedule.ready.push_back(Job::Make(*key));
             } else {
                 schedule.waiting.insert(*key, unbuilt);
+            }
+        }
+        // Features' solids built before (kept, or from the cache) but not measured yet.
+        for key in &plan.results {
+            if let Some(Ok(built)) = schedule.done.get(key)
+                && built.summary().is_none()
+            {
+                schedule.ready.push_back(Job::Measure(*key));
             }
         }
         let to_run = schedule.ready.len() + schedule.waiting.len();
@@ -627,7 +808,7 @@ impl<K: Kernel + 'static> Engine<K> {
         if schedule.superseded {
             return Ok(RunOutcome::Superseded);
         }
-        let model = Arc::new(model(&plan, &schedule.done, generation));
+        let model = Arc::new(model(document, &plan, &schedule, generation));
         let mut state = lock(&self.state);
         if state.generation != generation || state.cancelled {
             return Ok(RunOutcome::Superseded);
@@ -656,7 +837,8 @@ impl<K: Kernel + 'static> Engine<K> {
         state.trim();
     }
 
-    /// One of a recompute's threads: runs ready steps until none are left to run.
+    /// One of a recompute's threads: runs ready jobs (steps, and measures of features'
+    /// solids) until none are left to run.
     fn serve(
         &self,
         plan: &Plan,
@@ -665,56 +847,63 @@ impl<K: Kernel + 'static> Engine<K> {
         generation: Generation,
     ) {
         loop {
-            let (key, inputs) = {
+            let (job, inputs) = {
                 let mut s = lock(schedule);
-                let key = loop {
+                let job = loop {
                     if s.superseded || s.broken.is_some() || (s.ready.is_empty() && s.running == 0)
                     {
                         changed.notify_all();
                         return;
                     }
-                    if let Some(key) = s.ready.pop_front() {
-                        break key;
+                    if let Some(job) = s.ready.pop_front() {
+                        break job;
                     }
                     s = changed.wait(s).unwrap_or_else(PoisonError::into_inner);
                 };
                 s.running += 1;
-                let inputs: Vec<Arc<Built>> = plan
-                    .steps
-                    .get(&key)
-                    .map(Step::inputs)
-                    .unwrap_or_default()
+                // A step's inputs' results; a measure's, its step's own.
+                let keys = match job {
+                    Job::Make(key) => plan.steps.get(&key).map(Step::inputs).unwrap_or_default(),
+                    Job::Measure(key) => vec![key],
+                };
+                let inputs: Vec<Arc<Built>> = keys
                     .iter()
                     .filter_map(|input| match s.done.get(input) {
                         Some(Ok(built)) => Some(Arc::clone(built)),
                         _ => None,
                     })
                     .collect();
-                (key, inputs)
+                (job, inputs)
             };
-            // A panic under a step is a bug in Silico: caught, so the recompute ends with an
-            // error rather than waiting forever on a step that will never finish.
+            let key = job.key();
+            // A panic under a job is a bug in Silico: caught, so the recompute ends with an
+            // error rather than waiting forever on a job that will never finish.
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                match plan.steps.get(&key) {
-                    Some(step) => {
-                        let _span = tracing::warn_span!(
-                            "recompute_step",
-                            feature = plan.feature(&key),
-                            key = %key
-                        )
-                        .entered();
-                        self.step(*step, &inputs, generation)
-                    }
-                    None => Outcome::Done(Err(Error::new(
-                        ErrorCode::Internal,
-                        "a recompute step wasn't planned",
-                    )
-                    .with_suggestion(crate::worker::SILICO_BUG))),
+                let _span = tracing::warn_span!(
+                    "recompute_step",
+                    feature = plan.feature(&key),
+                    key = %key,
+                    job = job.name(),
+                )
+                .entered();
+                match job {
+                    Job::Make(key) => match plan.steps.get(&key) {
+                        Some(step) => Ran::Made(self.step(*step, &inputs, generation)),
+                        None => Ran::Made(Outcome::Done(Err(silico_bug(
+                            "a recompute step wasn't planned",
+                        )))),
+                    },
+                    Job::Measure(_) => match inputs.first() {
+                        Some(built) => Ran::Measured(self.measure(built, generation)),
+                        None => Ran::Measured(Outcome::Done(Err(silico_bug(
+                            "a feature's solid was measured before it was made",
+                        )))),
+                    },
                 }
             }));
             let mut s = lock(schedule);
-            let outcome = match outcome {
-                Ok(outcome) => outcome,
+            let ran = match outcome {
+                Ok(ran) => ran,
                 Err(panic) => {
                     s.running -= 1;
                     let said = panic
@@ -735,9 +924,11 @@ impl<K: Kernel + 'static> Engine<K> {
             };
             let mut woken = 0;
             let mut to_keep = None;
-            match outcome {
-                Outcome::Superseded => s.superseded = true,
-                Outcome::Done(result) => {
+            match ran {
+                Ran::Made(Outcome::Superseded) | Ran::Measured(Outcome::Superseded) => {
+                    s.superseded = true;
+                }
+                Ran::Made(Outcome::Done(result)) => {
                     if result.is_ok() {
                         for user in s.users.remove(&key).unwrap_or_default() {
                             let now_ready = s.waiting.get_mut(&user).is_some_and(|n| {
@@ -746,20 +937,45 @@ impl<K: Kernel + 'static> Engine<K> {
                             });
                             if now_ready {
                                 s.waiting.remove(&user);
-                                s.ready.push_back(user);
+                                s.ready.push_back(Job::Make(user));
                                 woken += 1;
                             }
                         }
+                        // A feature's solid is measured once it's made, by a job of its own:
+                        // what uses it doesn't wait for that.
+                        if plan.results.contains(&key) {
+                            s.ready.push_back(Job::Measure(key));
+                            woken += 1;
+                        }
                     }
                     let result = result.map(Arc::new);
-                    if let Ok(built) = &result {
+                    // A feature's solid is kept on disk once it's measured, with its
+                    // summary (written now too, it could land after, and over, that).
+                    if let Ok(built) = &result
+                        && !plan.results.contains(&key)
+                    {
                         to_keep = Some(Arc::clone(built));
                     }
                     s.done.insert(key, result);
                 }
+                Ran::Measured(Outcome::Done(Ok(measured))) => {
+                    // The measured copy takes the result's place, here and once kept; the
+                    // result itself is never changed, since a published model may hold it.
+                    let measured = Arc::new(measured);
+                    to_keep = Some(Arc::clone(&measured));
+                    s.done.insert(key, Ok(measured));
+                }
+                Ran::Measured(Outcome::Done(Err(error))) => {
+                    // A solid that couldn't be measured is kept on disk unmeasured, so the
+                    // next open measures it without making it again.
+                    if let Some(Ok(built)) = s.done.get(&key) {
+                        to_keep = Some(Arc::clone(built));
+                    }
+                    s.unmeasured.insert(key, error);
+                }
             }
-            // A step counts as running until its result is written to the cache, so a
-            // recompute doesn't end before its results are on disk; the steps it made ready
+            // A job counts as running until its result is written to the cache, so a
+            // recompute doesn't end before its results are on disk; the jobs it made ready
             // start meanwhile.
             drop(s);
             for _ in 0..woken {
@@ -781,11 +997,31 @@ impl<K: Kernel + 'static> Engine<K> {
 
     /// Runs one step on the kernel, for `generation`.
     fn step(&self, step: Step, inputs: &[Arc<Built>], generation: Generation) -> Outcome<Built> {
+        map(self.make(step, inputs, generation), |(shape, history)| {
+            Built::new(shape, history, None)
+        })
+    }
+
+    /// Measures `built`, a feature's solid, on the kernel, for `generation`: a copy of it
+    /// with its summary.
+    fn measure(&self, built: &Built, generation: Generation) -> Outcome<Built> {
+        map(
+            self.kernel
+                .submit(generation, KernelRequest::summarize(&built.shape))
+                .wait(),
+            |summary| built.measured(summary),
+        )
+    }
+
+    /// What one step makes on the kernel, for `generation`: its shape, and its history.
+    fn make(
+        &self,
+        step: Step,
+        inputs: &[Arc<Built>],
+        generation: Generation,
+    ) -> Outcome<(ShapeData, Option<History>)> {
         let shape = |i: usize| inputs.get(i).map(|built| &built.shape);
-        let built = |data: BuiltData| Built {
-            shape: data.shape,
-            history: Some(data.history),
-        };
+        let built = |data: BuiltData| (data.shape, Some(data.history));
         let missing = || {
             Outcome::Done(Err(Error::new(
                 ErrorCode::Internal,
@@ -796,10 +1032,7 @@ impl<K: Kernel + 'static> Engine<K> {
         match step {
             Step::Make(primitive) => match KernelRequest::make(primitive) {
                 Ok(request) => map(self.kernel.submit(generation, request).wait(), |shape| {
-                    Built {
-                        shape,
-                        history: None,
-                    }
+                    (shape, None)
                 }),
                 Err(e) => Outcome::Done(Err(e)),
             },
@@ -830,8 +1063,9 @@ fn map<T, U>(outcome: Outcome<T>, f: impl FnOnce(T) -> U) -> Outcome<U> {
     }
 }
 
-/// What became of each feature, from its steps' results, and the bodies.
-fn model(plan: &Plan, done: &BTreeMap<Key, StepResult>, generation: Generation) -> Model {
+/// What became of each feature of `source`, from its steps' results, and the bodies.
+fn model(source: &Arc<Checked>, plan: &Plan, schedule: &Schedule, generation: Generation) -> Model {
+    let done = &schedule.done;
     let mut features: Vec<(FeatureId, FeatureOutcome)> = Vec::with_capacity(plan.features.len());
     for planned in &plan.features {
         // A feature it uses that didn't build blocks it, on the failure at the root.
@@ -864,10 +1098,23 @@ fn model(plan: &Plan, done: &BTreeMap<Key, StepResult>, generation: Generation) 
         })
         .map(|((id, _), _)| id.clone())
         .collect();
+    // Built features whose solids couldn't be measured: why, naming the feature.
+    let unmeasured = features
+        .iter()
+        .filter_map(|(id, outcome)| match outcome {
+            FeatureOutcome::Built { key, .. } => schedule
+                .unmeasured
+                .get(key)
+                .map(|error| (id.clone(), error.clone().with_feature(id.as_str()))),
+            FeatureOutcome::Failed(_) | FeatureOutcome::Blocked { .. } => None,
+        })
+        .collect();
     Model {
+        source: Arc::clone(source),
         generation,
         features,
         bodies,
+        unmeasured,
     }
 }
 

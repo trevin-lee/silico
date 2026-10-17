@@ -16,8 +16,12 @@
 //! kernel's locations do (a moved shape moved again is the original moved by the sum, keeping
 //! the sign of a zero; a move by nothing, or back to where it was, is the shape itself). A
 //! boolean is the fake's own: it has both inputs' elements, as if they didn't touch, and
-//! keeps them all. It answers making primitives, moving shapes, booleans, and echoes;
-//! anything else is refused as an internal error.
+//! keeps them all. A summary is exact for a primitive (its volume, area, center, and box by
+//! formula, where it sits as the kernel makes it) and a move; a boolean's, its own model's
+//! again, is its inputs' together, as if they didn't touch: their volumes and areas added,
+//! their centers weighed by volume, and the box around both. It answers making primitives,
+//! moving shapes, booleans, summaries, and echoes; anything else is refused as an internal
+//! error.
 //!
 //! The real kernel writes some primitives (a cylinder, a torus) differently when it makes
 //! them than once it has read them back, so their bytes change once, on the first operation
@@ -37,7 +41,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use silico_protocol::{LENGTH_TOLERANCE, Reply};
+use silico_protocol::{LENGTH_TOLERANCE, Reply, ShapeSummary};
 
 use crate::kernel::{
     Blob, BooleanOp, BuiltData, ElementCounts, ElementFate, ElementKind, ElementRef, Ends,
@@ -483,6 +487,7 @@ fn answer(op: &Op) -> Result<Reply, Error> {
             let shape = Made::boolean(*op, base, tool).shape();
             Ok(Reply::Built(BuiltData { shape, history }))
         }
+        Op::Summarize { shape } => Ok(Reply::Summary(Made::read(shape)?.summary())),
         Op::Echo { data } => Ok(Reply::Echo { data: data.clone() }),
         other => Err(Error::new(
             ErrorCode::Internal,
@@ -760,6 +765,36 @@ impl Made {
         counts.last().copied().unwrap_or_default()
     }
 
+    /// The shape's summary: each step's measures in turn, by formula for a primitive.
+    fn summary(&self) -> ShapeSummary {
+        let mut measured: Vec<Measured> = Vec::with_capacity(self.0.len());
+        for step in &self.0 {
+            let of = |i: usize| measured.get(i).copied().unwrap_or_default();
+            let made = match step {
+                Step::Primitive(primitive) => Measured::primitive(primitive),
+                Step::Translate { input, offset } => of(*input).moved(*offset),
+                Step::Boolean { base, tool, .. } => of(*base).with(of(*tool)),
+            };
+            measured.push(made);
+        }
+        let m = measured.last().copied().unwrap_or_default();
+        let counts = self.counts();
+        ShapeSummary {
+            volume: m.volume,
+            area: m.area,
+            center: if m.volume == 0.0 {
+                [0.0; 3]
+            } else {
+                m.moment.map(|c| c / m.volume)
+            },
+            faces: counts.faces,
+            edges: counts.edges,
+            vertices: counts.vertices,
+            bounds: Some(m.bounds),
+            valid: true,
+        }
+    }
+
     /// The shape as an expression. Written from the last step down, with a stack, so a long
     /// chain of booleans can't overflow the thread's.
     fn describe(&self) -> String {
@@ -795,6 +830,112 @@ impl Made {
             }
         }
         out
+    }
+}
+
+/// What the fake measures of a shape: its volume, area, first moment of volume (its center
+/// times its volume), and box.
+#[derive(Debug, Clone, Copy, Default)]
+struct Measured {
+    volume: f64,
+    area: f64,
+    moment: [f64; 3],
+    bounds: [[f64; 3]; 2],
+}
+
+impl Measured {
+    /// A primitive's measures, where the kernel makes it: a box from the origin, a cylinder
+    /// and cone up z from a base centred on it, a sphere and torus centred on it.
+    fn primitive(primitive: &Primitive) -> Self {
+        use std::f64::consts::PI;
+        let (volume, area, center, low, high) = match *primitive {
+            Primitive::Box { dx, dy, dz } => (
+                dx * dy * dz,
+                2.0 * (dx * dy + dy * dz + dz * dx),
+                [dx / 2.0, dy / 2.0, dz / 2.0],
+                [0.0; 3],
+                [dx, dy, dz],
+            ),
+            Primitive::Cylinder {
+                radius: r,
+                height: h,
+            } => (
+                PI * r * r * h,
+                2.0 * PI * r * h + 2.0 * PI * r * r,
+                [0.0, 0.0, h / 2.0],
+                [-r, -r, 0.0],
+                [r, r, h],
+            ),
+            Primitive::Sphere { radius: r } => (
+                4.0 / 3.0 * PI * r * r * r,
+                4.0 * PI * r * r,
+                [0.0; 3],
+                [-r; 3],
+                [r; 3],
+            ),
+            Primitive::Cone {
+                radius1: a,
+                radius2: b,
+                height: h,
+            } => {
+                let sum = a * a + a * b + b * b;
+                let slant = ((a - b) * (a - b) + h * h).sqrt();
+                let m = a.max(b);
+                (
+                    PI * h * sum / 3.0,
+                    PI * (a + b) * slant + PI * a * a + PI * b * b,
+                    [
+                        0.0,
+                        0.0,
+                        h * (a * a + 2.0 * a * b + 3.0 * b * b) / (4.0 * sum),
+                    ],
+                    [-m, -m, 0.0],
+                    [m, m, h],
+                )
+            }
+            Primitive::Torus {
+                major_radius: big,
+                minor_radius: r,
+            } => (
+                2.0 * PI * PI * big * r * r,
+                4.0 * PI * PI * big * r,
+                [0.0; 3],
+                [-(big + r), -(big + r), -r],
+                [big + r, big + r, r],
+            ),
+        };
+        Measured {
+            volume,
+            area,
+            moment: center.map(|c| c * volume),
+            bounds: [low, high],
+        }
+    }
+
+    fn moved(self, offset: [f64; 3]) -> Self {
+        let [low, high] = self.bounds;
+        Measured {
+            moment: [0, 1, 2].map(|i| self.moment[i] + self.volume * offset[i]),
+            bounds: [
+                [0, 1, 2].map(|i| low[i] + offset[i]),
+                [0, 1, 2].map(|i| high[i] + offset[i]),
+            ],
+            ..self
+        }
+    }
+
+    /// Two shapes' measures together, as if they didn't touch.
+    fn with(self, other: Measured) -> Self {
+        let ([a_low, a_high], [b_low, b_high]) = (self.bounds, other.bounds);
+        Measured {
+            volume: self.volume + other.volume,
+            area: self.area + other.area,
+            moment: [0, 1, 2].map(|i| self.moment[i] + other.moment[i]),
+            bounds: [
+                [0, 1, 2].map(|i| a_low[i].min(b_low[i])),
+                [0, 1, 2].map(|i| a_high[i].max(b_high[i])),
+            ],
+        }
     }
 }
 

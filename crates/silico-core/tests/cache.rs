@@ -17,9 +17,9 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Barrier};
 
-use cache::{HOLE, Scratch, calls, example_with_pin, files, hole, session};
+use cache::{HOLE, Scratch, cache, calls, example_with_pin, files, hole, session};
 use example::EXAMPLE;
-use model::{checked, published};
+use model::{checked, made, published};
 use silico_core::cache::Cache;
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::{Generation, Kernel, KernelRequest, Op, Primitive};
@@ -97,7 +97,7 @@ fn another_kernel_misses_everything() {
     published(&session(&dir.0), checked(EXAMPLE));
     let rebuilt = Recompute::with_cache(Rebuilt(FakeKernel::new(2).unwrap()), cache::cache(&dir.0));
     published(&rebuilt, checked(EXAMPLE));
-    assert_eq!(rebuilt.kernel().0.calls().len(), 4);
+    assert_eq!(made(&rebuilt.kernel().0.calls()).len(), 4);
 }
 
 #[test]
@@ -155,7 +155,7 @@ fn an_entry_that_doesnt_hold_together_is_rebuilt_and_written_over() {
         let second = session(&dir.0);
         let model = published(&second, checked(EXAMPLE));
         // One step rebuilt, the rest kept; the same result.
-        assert_eq!(second.kernel().calls().len(), 1, "{damage}");
+        assert_eq!(made(&second.kernel().calls()).len(), 1, "{damage}");
         assert_eq!(hole(&model), HOLE, "{damage}");
         // Written over, sound again.
         assert_eq!(std::fs::read(victim).unwrap(), sound, "{damage}");
@@ -178,6 +178,35 @@ fn failures_arent_kept_on_disk() {
     let model = published(&second, checked(EXAMPLE));
     assert_eq!(calls(&second), ["Cut", "MakeCylinder", "Translate"]);
     assert_eq!(hole(&model), HOLE);
+}
+
+#[test]
+fn a_solid_that_couldnt_be_measured_is_kept_on_disk_unmeasured_and_measured_next_time() {
+    // Refused for its values or by a hung worker, a measure keeps the solid on disk all the
+    // same, so the next session measures it without making it again.
+    for code in [ErrorCode::KernelFailed, ErrorCode::WorkerTimeout] {
+        let dir = Scratch::new("unmeasured");
+        let first = session(&dir.0);
+        first.kernel().refuse(move |op| {
+            matches!(op, Op::Summarize { .. }).then(|| Error::new(code, "Summarize failed"))
+        });
+        let model = published(&first, checked(EXAMPLE));
+        assert_eq!(model.drift().len(), 3, "{code:?}");
+        // Every step, the features' solids unmeasured.
+        assert_eq!(files(&dir.0).len(), 4, "{code:?}");
+        let second = session(&dir.0);
+        let model = published(&second, checked(EXAMPLE));
+        assert!(calls(&second).is_empty(), "{code:?}: {:?}", calls(&second));
+        // Measured now, and written measured: a third session asks the kernel nothing.
+        assert!(model.drift().is_empty(), "{code:?}");
+        assert!(
+            model.fingerprint(&model::id("k7f2qx3m")).is_some(),
+            "{code:?}"
+        );
+        let third = session(&dir.0);
+        published(&third, checked(EXAMPLE));
+        assert!(third.kernel().calls().is_empty(), "{code:?}");
+    }
 }
 
 #[test]
@@ -647,4 +676,26 @@ fn a_cache_whose_subdirectories_are_links_keeps_nothing_where_they_point() {
         .map(|e| e.file_name())
         .collect();
     assert_eq!(written, ["theirs"], "written through the links");
+}
+
+#[test]
+fn a_cache_shown_for_debugging_says_whether_its_sealed_never_its_secret() {
+    let dir = Scratch::new("debug");
+    let sealed = cache(&dir.0);
+    // Something written, so the secret exists.
+    published(&session(&dir.0), checked(EXAMPLE));
+    let shown = format!("{sealed:?}");
+    assert!(shown.contains("sealed: true"), "{shown}");
+    assert!(shown.contains(&format!("{:?}", dir.0)), "{shown}");
+    let secret = std::fs::read(dir.secret()).unwrap();
+    assert_eq!(secret.len(), 32);
+    // Neither the secret's bytes nor their hex appear.
+    let hex: String = secret.iter().map(|b| format!("{b:02x}")).collect();
+    assert!(!shown.contains(&hex), "{shown}");
+    assert!(!shown.contains(&format!("{secret:?}")), "{shown}");
+    // Without a secret (a damaged one), it says so.
+    let damaged = Scratch::new("debug-damaged");
+    std::fs::write(damaged.secret(), b"short").unwrap();
+    let unsealed = cache(&damaged.0);
+    assert!(format!("{unsealed:?}").contains("sealed: false"));
 }
