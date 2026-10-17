@@ -97,6 +97,8 @@ mod ffi {
         Failed,
         /// See [`SolveStatus::SolvedExceptRedundant`](super::SolveStatus).
         SolvedExceptRedundant,
+        /// See [`SolveStatus::SolvedInvalid`](super::SolveStatus).
+        SolvedInvalid,
     }
 
     struct SolveInput {
@@ -288,6 +290,7 @@ impl Drag {
             ffi::Status::Success => SolveStatus::Success,
             ffi::Status::Converged => SolveStatus::Converged,
             ffi::Status::Failed => SolveStatus::Failed,
+            ffi::Status::SolvedInvalid => SolveStatus::SolvedInvalid,
             _ => return Err(internal("the bridge returned a status a move can't have")),
         };
         let values = if status == SolveStatus::Success {

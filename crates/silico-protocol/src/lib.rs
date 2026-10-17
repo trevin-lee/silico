@@ -36,10 +36,10 @@ pub use refusal::{
     OUT_OF_MEMORY, Operation, Refusal, Returned, Role, Trouble,
 };
 pub use sketch::{
-    Algorithm, DragBegin, Geometry, MAX_JACOBIAN_ENTRIES, MAX_SKETCH_CONSTRAINTS,
-    MAX_SKETCH_GEOMETRY, MAX_SKETCH_UNKNOWNS, MAX_SKETCH_VALUES, MAX_TAG, Moved, PointOf,
-    PointValues, SketchGeometry, SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value,
-    check_drag_target, no_distance, squared_distance, within_reach,
+    Algorithm, DragBegin, Geometry, MAX_DRAG_UNKNOWNS, MAX_JACOBIAN_ENTRIES,
+    MAX_SKETCH_CONSTRAINTS, MAX_SKETCH_GEOMETRY, MAX_SKETCH_UNKNOWNS, MAX_SKETCH_VALUES, MAX_TAG,
+    Moved, PointOf, PointValues, SketchGeometry, SketchSystem, SolveStatus, Solved,
+    SolverConstraint, Tag, Value, check_drag_target, no_distance, squared_distance, within_reach,
 };
 
 /// The file descriptor a worker inherits its end of the socket pair as.

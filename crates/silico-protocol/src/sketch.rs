@@ -25,6 +25,12 @@ pub const MAX_SKETCH_GEOMETRY: usize = 10_000;
 /// the cube: about 13 s for 2,000 unknowns, 100 s for 4,000.
 pub const MAX_SKETCH_UNKNOWNS: usize = 2048;
 
+/// At most this many unknowns in a drag: while the cursor holds a point, PlaneGCS solves the
+/// part of the sketch it's in with SQP, on dense matrices, so one move costs more than a
+/// solve (on an M4 Pro, 0.5 s at 512 unknowns in one part, 3.4 s at 1024, 45 s at 2048,
+/// past a request's time). Larger sketches solve, but don't drag.
+pub const MAX_DRAG_UNKNOWNS: usize = 1024;
+
 /// At most this many entries in the solver's Jacobian (rows × unknowns): PlaneGCS's
 /// diagnosis builds it dense, so this bounds it to 256 MiB.
 pub const MAX_JACOBIAN_ENTRIES: usize = 1 << 25;
@@ -299,6 +305,11 @@ pub enum SolveStatus {
     Converged,
     /// The solver failed.
     Failed,
+    /// The solver met the constraints, but on geometry that can't be built: a line of no
+    /// length (dx² + dy² is 0), or a circle or arc whose radius isn't above 0. Nothing is
+    /// kept, as FreeCAD undoes such a solution (`Sketch::internalSolve`, "Invalid solution";
+    /// its `SuccessfulSolutionInvalid`). A drag's move gives it; a solve's comes with M3.3.
+    SolvedInvalid,
 }
 
 /// What the sketch worker found: the diagnosis, then the solve.
@@ -356,10 +367,19 @@ pub struct DragBegin {
 
 impl DragBegin {
     /// Whether the worker can start this drag: the system passes
-    /// [`SketchSystem::check`], and the point is one its geometry has, as a constraint's
-    /// points must be.
+    /// [`SketchSystem::check`], has at most [`MAX_DRAG_UNKNOWNS`] unknowns, and the point
+    /// is one its geometry has, as a constraint's points must be.
     pub fn check(&self) -> Result<(), InvalidParameter> {
         self.system.check()?;
+        let n = self.system.unknowns.len();
+        if n > MAX_DRAG_UNKNOWNS {
+            return Err(invalid(
+                "unknowns",
+                format!(
+                    "a sketch dragged may have at most {MAX_DRAG_UNKNOWNS} unknowns, got {n}: each move of a larger one takes too long"
+                ),
+            ));
+        }
         self.system.check_point(self.point, "point", "the drag")
     }
 }
@@ -386,7 +406,8 @@ pub fn check_drag_target(to: [f64; 2]) -> Result<(), InvalidParameter> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Moved {
     /// PlaneGCS's status, as it gave it: `Success`, `Converged`, or `Failed`, never
-    /// `SolvedExceptRedundant`. A solve's reading of redundancy doesn't apply: the pin is
+    /// `SolvedExceptRedundant`; or `SolvedInvalid`, a `Success` on geometry that can't be
+    /// built, undone. A solve's reading of redundancy doesn't apply: the pin is
     /// of lower priority, so the part of the sketch it's in is solved by SQP, which can end
     /// `Converged` on its own (the cursor somewhere the constraints don't let the point
     /// reach), and FreeCAD's drag takes only `Success`.

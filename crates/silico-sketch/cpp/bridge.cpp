@@ -376,6 +376,36 @@ DragDiagnosis drag_diagnosis(const DragSession &session) {
   return out;
 }
 
+namespace {
+
+// Whether the solved geometry can be built, as FreeCAD's Sketch::updateGeometry finds when
+// it makes its curves: a line has length to the solver (dx² + dy² isn't 0; FreeCAD's
+// "Both points are equal"), and a circle or an arc a radius above 0 (gp_Circ refuses one
+// below 0; Silico draws nothing of no size).
+bool buildable(const Sketch &sketch) {
+  for (const Geo &g : sketch.geometry) {
+    switch (g.kind) {
+      case GeometryKind::Line: {
+        const double dx = *g.line.p2.x - *g.line.p1.x;
+        const double dy = *g.line.p2.y - *g.line.p1.y;
+        if (dx * dx + dy * dy == 0.0) return false;
+        break;
+      }
+      case GeometryKind::Circle:
+        if (!(*g.circle.rad > 0.0)) return false;
+        break;
+      case GeometryKind::Arc:
+        if (!(*g.arc.rad > 0.0)) return false;
+        break;
+      default:
+        break;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
 MoveOutput drag_move(DragSession &session, double x, double y) {
   DragSession::State &s = *session.state;
   if (!s.conflicting.empty()) bug("a move in a drag that never started");
@@ -389,7 +419,14 @@ MoveOutput drag_move(DragSession &session, double x, double y) {
   out.status = status_of(status);
   if (status == GCS::Success) {
     system.applySolution();
-    for (double v : s.sketch.values) out.values.push_back(v);
+    // FreeCAD keeps a solution only if its geometry can be made, and undoes it otherwise
+    // (Sketch::internalSolve, "Invalid solution").
+    if (buildable(s.sketch)) {
+      for (double v : s.sketch.values) out.values.push_back(v);
+    } else {
+      system.undoSolution();
+      out.status = Status::SolvedInvalid;
+    }
   } else {
     system.undoSolution();
   }
