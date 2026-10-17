@@ -201,7 +201,7 @@ fn every_constraint_form_reads_and_writes_back_in_schema_order() {
         r#"{"id": "k000000g", "type": "tangent", "a": "na000000", "b": "ca000000", "side": "right"}"#,
         r#"{"id": "k000000h", "type": "tangent_at", "a": "na000000", "b": "aa000000", "at": "pb000000", "direction": "opposite"}"#,
         r#"{"id": "k000000j", "type": "symmetric", "a": "pb000000", "b": "pc000000", "about": "origin"}"#,
-        r#"{"id": "k000000k", "type": "midpoint", "point": "pa000000", "line": "na000000"}"#,
+        r#"{"id": "k000000k", "type": "midpoint", "point": "pc000000", "line": "na000000"}"#,
     ];
     let text = format!(
         r#"{{
@@ -901,13 +901,19 @@ fn a_document_with_a_sketch_rebuilds_its_solids_and_the_sketch_makes_none() {
     );
     let engine = Recompute::new(FakeKernel::new(2).unwrap());
     let checked = Checked::new(read(text.as_bytes()).unwrap()).unwrap();
-    let model = match engine.start(checked).wait_timeout(std::time::Duration::from_secs(10)) {
+    let model = match engine
+        .start(checked)
+        .wait_timeout(std::time::Duration::from_secs(10))
+    {
         Ok(Ok(RunOutcome::Published(model))) => model,
         Ok(other) => panic!("{other:?}"),
         Err(_) => panic!("the recompute didn't finish"),
     };
     let id = |t: &str| FeatureId::new(t).unwrap();
-    assert_eq!(model.outcome(&id("k7f2qx3m")), Some(&FeatureOutcome::Sketch));
+    assert_eq!(
+        model.outcome(&id("k7f2qx3m")),
+        Some(&FeatureOutcome::Sketch)
+    );
     assert!(matches!(
         model.outcome(&id("b0000000")),
         Some(FeatureOutcome::Built { .. })
@@ -916,6 +922,11 @@ fn a_document_with_a_sketch_rebuilds_its_solids_and_the_sketch_makes_none() {
     assert_eq!(model.errors().count(), 0);
     assert_eq!(model.fingerprint(&id("k7f2qx3m")), None);
     // The kernel was asked for the box alone (and to measure it).
-    let calls: Vec<&str> = engine.kernel().calls().iter().map(|c| c.op.name()).collect();
+    let calls: Vec<&str> = engine
+        .kernel()
+        .calls()
+        .iter()
+        .map(|c| c.op.name())
+        .collect();
     assert_eq!(calls, ["MakeBox", "Summarize"]);
 }

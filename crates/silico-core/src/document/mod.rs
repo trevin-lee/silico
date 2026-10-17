@@ -73,9 +73,13 @@ fn too_long(document: &Document, what: &str) -> Error {
         .iter()
         .find(|f| !write::feature_fits(f, limit / 2));
     match large {
-        Some(feature) => error
-            .with_feature(feature.id.as_str())
-            .with_suggestion("make this feature's name or note shorter"),
+        Some(feature) => error.with_feature(feature.id.as_str()).with_suggestion(
+            if matches!(feature.operation, Operation::Sketch(_)) {
+                "make this sketch smaller: split it into several sketches"
+            } else {
+                "make this feature's name or note shorter"
+            },
+        ),
         None => {
             error.with_suggestion("make it smaller: fewer features, or shorter names and notes")
         }

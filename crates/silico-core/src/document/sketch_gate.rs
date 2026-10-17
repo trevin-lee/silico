@@ -73,6 +73,8 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
     };
 
     for (i, point) in sketch.points.iter().enumerate() {
+        let mut named = |e: Error| add(e.with_element(point.id.as_str()));
+        let add: &mut dyn FnMut(Error) = &mut named;
         unique(ElementKind::Point, i, &point.id, add);
         for (axis, value) in [("x", point.x), ("y", point.y)] {
             if value.mm().abs() > MAX_LENGTH {
@@ -88,6 +90,14 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
         }
     }
     let lookup = |id: &ElementId| by_id.get(id).copied();
+    // Where a point of this sketch is drawn.
+    let at_of = |id: &ElementId| match lookup(id) {
+        Some(Place {
+            kind: ElementKind::Point,
+            index,
+        }) => sketch.points.get(index).map(|p| (p.x.mm(), p.y.mm())),
+        _ => None,
+    };
 
     // A curve's own points: each a point of this sketch.
     let point_of = |field: String, id: &ElementId, add: &mut dyn FnMut(Error)| match lookup(id) {
@@ -115,6 +125,8 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
 
     for (i, line) in sketch.lines.iter().enumerate() {
         let at = format!("lines.{i}");
+        let mut named = |e: Error| add(e.with_element(line.id.as_str()));
+        let add: &mut dyn FnMut(Error) = &mut named;
         unique(ElementKind::Line, i, &line.id, add);
         let from = point_of(format!("{at}.from"), &line.from, add);
         let to = point_of(format!("{at}.to"), &line.to, add);
@@ -127,10 +139,26 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                 ),
                 "end the line at another point".to_owned(),
             ));
+        } else if from
+            && to
+            && let (Some(a), Some(b)) = (at_of(&line.from), at_of(&line.to))
+            && a == b
+        {
+            // The sketch worker refuses a line drawn with no length.
+            add(refuse(
+                &format!("{at}.to"),
+                format!(
+                    "line {}'s ends, points {} and {}, are both drawn at ({}, {}), so it has no length",
+                    line.id, line.from, line.to, a.0, a.1
+                ),
+                "draw the line's ends apart, or end it at the same point to remove it".to_owned(),
+            ));
         }
     }
     for (i, circle) in sketch.circles.iter().enumerate() {
         let at = format!("circles.{i}");
+        let mut named = |e: Error| add(e.with_element(circle.id.as_str()));
+        let add: &mut dyn FnMut(Error) = &mut named;
         unique(ElementKind::Circle, i, &circle.id, add);
         point_of(format!("{at}.center"), &circle.center, add);
         let radius = circle.radius.mm();
@@ -148,6 +176,8 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
     }
     for (i, arc) in sketch.arcs.iter().enumerate() {
         let at = format!("arcs.{i}");
+        let mut named = |e: Error| add(e.with_element(arc.id.as_str()));
+        let add: &mut dyn FnMut(Error) = &mut named;
         unique(ElementKind::Arc, i, &arc.id, add);
         let center = point_of(format!("{at}.center"), &arc.center, add);
         let start = point_of(format!("{at}.start"), &arc.start, add);
@@ -164,6 +194,41 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                 ));
             }
         }
+        // Drawn with no radius, or with one past what the solver takes: the solver works
+        // out the radius from the center to the start (D2, arcs).
+        if let Some(c) = at_of(&arc.center).filter(|_| center) {
+            for (key, id, ok) in [("start", &arc.start, start), ("end", &arc.end, end)] {
+                if ok
+                    && *id != arc.center
+                    && let Some(p) = at_of(id)
+                    && p == c
+                {
+                    add(refuse(
+                        &format!("{at}.{key}"),
+                        format!(
+                            "arc {}'s {key}, point {id}, is drawn at its center ({}, {}), so it has no radius",
+                            arc.id, c.0, c.1
+                        ),
+                        format!("draw the arc's {key} away from its center"),
+                    ));
+                }
+            }
+            if start && let Some(p) = at_of(&arc.start) {
+                let (dx, dy) = (p.0 - c.0, p.1 - c.1);
+                let radius = (dx * dx + dy * dy).sqrt();
+                if radius > MAX_LENGTH {
+                    add(refuse(
+                        &format!("{at}.start"),
+                        format!(
+                            "arc {}'s radius, from its center to its start, is {radius} mm, more than the {} mm (a kilometre) the solver takes",
+                            arc.id,
+                            format_number(MAX_LENGTH)
+                        ),
+                        "draw the arc smaller".to_owned(),
+                    ));
+                }
+            }
+        }
         if start && end && arc.start == arc.end && arc.start != arc.center {
             add(refuse(
                 &format!("{at}.end"),
@@ -178,6 +243,8 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
 
     for (i, constraint) in sketch.constraints.iter().enumerate() {
         let at = format!("constraints.{i}");
+        let mut named = |e: Error| add(e.with_element(constraint.id.as_str()));
+        let add: &mut dyn FnMut(Error) = &mut named;
         unique(ElementKind::Constraint, i, &constraint.id, add);
         let form = &constraint.form;
         let what = form.type_name();
@@ -311,6 +378,34 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
             _ => {}
         }
 
+        // A curve's own point constrained onto that curve: on it already, or never (an end
+        // on its line, a center on its circle), as FreeCAD's commands refuse
+        // (CommandConstraints.cpp, "parts of the same element", and a symmetry of a line's
+        // ends about that line).
+        let own = |point: &Reference, curve: &Reference| match (point.element(), curve.element()) {
+            (Some(p), Some(c)) => own_points(sketch, c, lookup).contains(&p),
+            _ => false,
+        };
+        match form {
+            Form::On { point, curve } | Form::Midpoint { point, line: curve }
+                if own(point, curve) =>
+            {
+                add(refuse(
+                    &format!("{at}.point"),
+                    format!("a {what}'s point, {point}, is part of {curve} itself"),
+                    format!("name a point that isn't part of {curve}"),
+                ));
+            }
+            Form::Symmetric { a, b, about } if own(a, about) && own(b, about) => {
+                add(refuse(
+                    &format!("{at}.about"),
+                    format!("a symmetric's a and b, {a} and {b}, are the ends of {about} itself"),
+                    "mirror the points about another line or a point".to_owned(),
+                ));
+            }
+            _ => {}
+        }
+
         // Every constraint names an element of the sketch's own (FreeCAD's 3d7871fca5).
         if references.iter().all(|(_, r, _)| r.element().is_none()) {
             add(refuse(
@@ -422,6 +517,33 @@ fn takes_noun(takes: Takes) -> &'static str {
         Takes::EndedCurve => "a line or arc of this sketch",
         Takes::Equal => "a line, circle, or arc of this sketch",
         Takes::LineOrPoint => "a line or point of this sketch, origin, x_axis, or y_axis",
+    }
+}
+
+/// A curve's own points: a line's ends, a circle's center, an arc's center and ends.
+fn own_points<'a>(
+    sketch: &'a Sketch,
+    curve: &ElementId,
+    lookup: impl Fn(&ElementId) -> Option<Place>,
+) -> Vec<&'a ElementId> {
+    match lookup(curve) {
+        Some(Place {
+            kind: ElementKind::Circle,
+            index,
+        }) => sketch
+            .circles
+            .get(index)
+            .map(|c| vec![&c.center])
+            .unwrap_or_default(),
+        Some(Place {
+            kind: ElementKind::Arc,
+            index,
+        }) => sketch
+            .arcs
+            .get(index)
+            .map(|a| vec![&a.center, &a.start, &a.end])
+            .unwrap_or_default(),
+        _ => ends_of(sketch, curve, lookup),
     }
 }
 
