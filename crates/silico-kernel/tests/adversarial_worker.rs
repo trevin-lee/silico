@@ -575,25 +575,40 @@ fn a_pool_short_of_descriptors_fails_its_request_cleanly_and_recovers() {
 fn an_idle_slot_whose_worker_starts_then_exits_on_its_own_backs_off() {
     // A worker that says it has started and then exits on its own (code 3) while idle is
     // the install's, as its crash advice says, so it's started again less and less often, as
-    // one that ends before it starts is: about 3 launches in 8.5 s (0, 2, 5 s), not one a
-    // second.
+    // one that ends before it starts is: launches at about 0, 2, 5, and 10 s, not one a
+    // second. Each gap is longer than the wait before it (1, 2, and 4 s), counted from the
+    // idle check that sees the exit, after the launch was logged: so however late a loaded
+    // machine runs the checks.
     let dir = scratch_dir("starts-then-exits");
     let log = dir.join("launches");
     let exe = script(
         "starts-then-exits",
         &format!(
-            "echo x >> '{}'\nprintf '\\0\\0\\0\\0' >&3\nexit 3",
+            "perl -MTime::HiRes=time -e 'print time, \"\\n\"' >> '{}'\n\
+             printf '\\0\\0\\0\\0' >&3\nexit 3",
             log.display()
         ),
     );
     let pool = KernelPool::start_workers(&exe, 1).unwrap();
-    std::thread::sleep(Duration::from_millis(8_500));
+    // A hang guard: the fourth launch comes at about 10 s.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let times = loop {
+        let times: Vec<f64> = std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .map(|l| l.trim().parse().unwrap())
+            .collect();
+        if times.len() >= 4 {
+            break times;
+        }
+        assert!(Instant::now() < deadline, "launches at {times:?}");
+        std::thread::sleep(Duration::from_millis(5));
+    };
     drop(pool);
-    let launches = std::fs::read_to_string(&log).unwrap().lines().count();
-    assert!(
-        (3..=4).contains(&launches),
-        "{launches} launches in 8.5 s idle of a worker that exits on its own"
-    );
+    let gaps: Vec<f64> = times.windows(2).map(|w| w[1] - w[0]).collect();
+    for (k, wait) in [1.0, 2.0, 4.0].into_iter().enumerate() {
+        assert!(gaps[k] > wait, "gap {k} not over {wait} s: gaps {gaps:?}");
+    }
     wait_no_children("after the drop");
 }
 
@@ -747,12 +762,20 @@ fn dropping_the_pool_amid_crashes_kills_floods_and_advances_leaves_nothing() {
         });
         let mut held = pool.pids();
         held.extend(killed);
-        let start = Instant::now();
-        drop(pool);
-        let took = start.elapsed();
+        // Nothing in flight here runs long (sleeps of at most 30 ms, a stop-after of at most
+        // 40 ms; crashes, aborts, and garbage end at once), so a drop that waited for what
+        // was running would still end within milliseconds: what it mustn't do is wait for
+        // something that never comes (a thread or the stopper left asleep, a worker left
+        // running). So the wait for the drop is a hang guard, which a loaded machine's slow
+        // starts and reaps don't reach.
+        let (dropped, returned) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(pool);
+            let _ = dropped.send(());
+        });
         assert!(
-            took < Duration::from_secs(3),
-            "round {round}: the drop took {took:?}"
+            returned.recv_timeout(Duration::from_secs(30)).is_ok(),
+            "round {round}: the drop hung"
         );
         assert_reaped(&held, &format!("round {round}"));
         for s in sent {

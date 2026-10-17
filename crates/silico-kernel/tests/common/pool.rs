@@ -150,7 +150,16 @@ pub fn spin(d: Duration) {
 
 /// Waits up to five seconds for the pool to hold `size` live workers, none of `gone`.
 pub fn wait_full(pool: &KernelPool, size: usize, gone: &BTreeSet<u32>) -> Vec<u32> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    wait_full_by(pool, size, gone, Instant::now() + Duration::from_secs(5))
+}
+
+/// Waits until `deadline` for the pool to hold `size` live workers, none of `gone`.
+pub fn wait_full_by(
+    pool: &KernelPool,
+    size: usize,
+    gone: &BTreeSet<u32>,
+    deadline: Instant,
+) -> Vec<u32> {
     loop {
         let pids = pool.pids();
         let live: BTreeSet<u32> = children()
