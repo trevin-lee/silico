@@ -285,6 +285,14 @@ mod tests {
             Some(-9_000_000_000_000_000_000)
         );
         assert_eq!(Length::rounded(1e13), None);
+        // i64::MAX nm is 9223372036854.775807 mm; the floats either side of it, 2^-9 apart
+        // (9223372036854.775390625 and 9223372036854.77734375, written as Rust's shortest).
+        assert_eq!(
+            Length::rounded(9_223_372_036_854.775),
+            Some(Length::from_nm(9_223_372_036_854_775_391))
+        );
+        assert_eq!(Length::rounded(9_223_372_036_854.777), None);
+        assert_eq!(Length::rounded(9.5e12), None);
         assert_eq!(Length::rounded(-1e13), None);
         assert_eq!(Length::rounded(f64::NAN), None);
         assert_eq!(Length::rounded(0.0000004), Some(Length::from_nm(0)));

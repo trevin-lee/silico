@@ -636,7 +636,11 @@ mod tests {
             .is_ok()
         );
         type Spoil = fn(&mut ShapeSummary);
-        let cases: [(Spoil, &str); 9] = [
+        let cases: [(Spoil, &str); 10] = [
+            (
+                |s| s.bounds = Some([[0.0; 3], [10.0, 20.0, f64::INFINITY]]),
+                "its box has inf",
+            ),
             (|s| s.volume = f64::NAN, "its volume has NaN"),
             (|s| s.area = f64::INFINITY, "its area has inf"),
             (|s| s.center[0] = f64::NAN, "its center x has NaN"),
