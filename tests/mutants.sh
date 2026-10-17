@@ -7,9 +7,11 @@
 # tree.
 #
 # Arguments go to cargo mutants; paths in them must be absolute, since it runs in the
-# worktree. CI shards it over the runners (.github/workflows/mutants.yml).
+# worktree. Without --output, the results (mutants.out) land in the worktree, which the next
+# gate or mutants run cleans: pass --output. CI shards it over the runners
+# (.github/workflows/mutants.yml).
 #
-# Run through pixi:  pixi run mutants -- --in-diff /tmp/change.diff -p silico-core
+# Run through pixi:  pixi run mutants -- --in-diff /tmp/change.diff -p silico-core --output /tmp
 set -euo pipefail
 
 # shellcheck source=tests/committed-tree.sh

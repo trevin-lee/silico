@@ -6,6 +6,9 @@
 #
 #   gh workflow run mutants.yml --ref main -f ref=<branch> -f base=main -f packages="silico-core"
 name: mutants
+# The ref, base, and packages, so concurrent runs can be told apart (review-tests finds its
+# run by this title).
+run-name: "mutants ${{ inputs.ref || github.ref_name }} since ${{ inputs.base || 'nothing' }} in ${{ inputs.packages || 'every package' }}"
 
 on:
   workflow_dispatch:
@@ -20,8 +23,8 @@ on:
         description: "Only mutants in these packages, space-separated (empty: every package)"
         default: ""
       shards:
-        description: "Number of runners to share the work (1 to 16)"
-        default: "8"
+        description: "Number of runners to share the work (1 to 16; the default leaves two of the eight for gates)"
+        default: "6"
 
 permissions:
   contents: read
@@ -90,7 +93,7 @@ jobs:
           # fail under load; and retry a failed test, since one that fails only under load
           # would fail the baseline or count a mutant as caught. A mutant that breaks a test
           # fails it every time.
-          share=$(( $(nproc) / 8 > 2 ? $(nproc) / 8 : 2 ))
+          share=$(( $(nproc) / SHARDS > 2 ? $(nproc) / SHARDS : 2 ))
           export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share NEXTEST_RETRIES=2
           args+=(--jobserver-tasks "$share")
           # 2: mutants missed; 3: mutants timed out. The summary reports both.
