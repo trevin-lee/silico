@@ -15,11 +15,11 @@ bash third_party/planegcs/scripts/verify.sh   # src/ is 1.1.3's PlaneGCS plus th
 
 ## Patches
 
-Under the OCCT patch policy (`third_party/occt/README.md`), and single-threading allowed: whether to extend that policy to PlaneGCS is the maintainer's decision (docs/roadmap/m3-sketcher.md, open decision 7).
+OCCT's patch policy (`third_party/occt/README.md`), with single-threading allowed (the maintainer's decision, 2026-10-16: docs/roadmap/m3-sketcher.md, decision 7): a patch fixes determinism or a crash, exposes what PlaneGCS already computes, or keeps a worker single-threaded; each exists upstream as a FreeCAD issue or pull request, which the maintainer files.
 
 | Patch | Upstream | What it changes |
 |---|---|---|
-| [0001](patches/0001-dependent-parameters-on-the-calling-thread.patch) | None yet: the maintainer files it | `System::diagnose()` ran its dependent-parameter QR on a second thread (`std::async`'s default policy), joined before its result is read. It now runs deferred, on the calling thread, with the same arguments and result, so workers stay single-threaded (ARCHITECTURE.md, Deterministic kernel, 5). |
+| [0001](patches/0001-dependent-parameters-on-the-calling-thread.patch) | An issue drafted for the maintainer to file | `System::diagnose()` ran its dependent-parameter QR on a second thread (`std::async`'s default policy), joined before its result is read. It now runs deferred, on the calling thread, with the same arguments and result, so workers stay single-threaded (ARCHITECTURE.md, Deterministic kernel, 5). |
 
 ## Updating
 
