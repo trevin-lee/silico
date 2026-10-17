@@ -146,7 +146,7 @@ FreeCAD avoids this problem by storing each feature's B-rep in the file and load
 ## Topological naming
 
 - The kernel returns history. The core builds the element map from it, as a port of FreeCAD's `ElementMap` and `TopoShapeExpansion`.
-- Names stored in files are human-readable. No opaque hashes. A name is the ID of the feature that made the element, its kind, and how it came about, every source written out: `m3tq8v0z.Edge(G2 k7f2qx3m.Face6, G2 a91cw0de.Face1)`, the edge a cut generated from a block's top face and a pin's side (docs/design/m2.7-naming.md). A kept element keeps its name exactly.
+- Names stored in files are human-readable. No opaque hashes. A name is the ID of the feature that made the element, its kind, and how it came about, every source written out: `m3tq8v0z.Edge(G2 k7f2qx3m.Face6, G2 a91cw0de.Face1)`, the edge a cut generated from a block's top face and a pin's side (docs/design/m2.7-naming.md). A kept element keeps its name exactly, and an element only ever modified one from one is its origin with a star (`pppppppp.Face6*`, a plate's top face after any number of holes), so a name grows only where elements split, merge, or are generated.
 - After an upstream edit, a reference either resolves to the geometrically equivalent element or fails loudly with a structured error that lists candidates. It must never silently resolve to a different element.
 
 ## Agent interface (MCP)

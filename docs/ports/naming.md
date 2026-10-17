@@ -71,7 +71,7 @@ After a recompute FreeCAD looks each reference up by its mapped name and rewrite
 | `f.Face(L a, b, c)` | `a;:L(b|c);FLT` |
 | `<name>~1` | `<name>;D1` |
 
-A kept element keeps its name exactly, through any number of features (N2): FreeCAD adds a tag level per feature. It's safe because a solid is consumed once (M2.1's D2), so an element's lineage is a tree and one origin can't reach a shape twice; patterns and mirrors, which copy, will add a copy marker. The op code isn't written (the maker feature says it) but is held, for FreeCAD's form and FreeCAD's orders.
+A kept element keeps its name exactly, through any number of features (N2): FreeCAD adds a tag level per feature. An element modified from one element alone, as OCCT's first result of it, is that element with a star (`pppppppp.Face6*`, N7), however many features in a row did so: FreeCAD adds a level for each (`Face6;:M;CUT;:H..;:M;CUT;:H..`), and Silico's FreeCAD form writes one. It's safe because a solid is consumed once (M2.1's D2), so an element's lineage is a tree and one origin can't reach a shape twice; patterns and mirrors, which copy, will add a copy marker. The op code isn't written (the maker feature says it) but is held, for FreeCAD's form and FreeCAD's orders.
 
 `naming::freecad::text` renders FreeCAD's form without tags, for comparing with FreeCAD's names and for FreeCAD's orders (which source comes first, which element above or below names an element). Silico orders inputs by their place in the operation (base, then tool), where FreeCAD orders them by tag (object IDs, in creation order): the same in FreeCAD's tests and in documents built in order.
 
