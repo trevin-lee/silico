@@ -970,10 +970,21 @@ fn a_worker_named_by_a_bare_name_runs_the_one_in_the_working_directory() {
 fn a_pool_of_the_most_workers_starts_and_stops_cleanly() {
     // MAX_WORKERS slots of a stand-in worker that never starts: 1024 processes and three
     // threads each in the app. The pool starts (or fails, structured), and its drop kills
-    // and reaps every worker within seconds.
+    // and reaps every worker. Bounded by this process's CPU time, not the wall clock: on a
+    // machine other work saturates, the wall clock measures the machine (1024 starts took
+    // 35–76 s on CI under mutants shards, against 6 s alone), while what starting and
+    // dropping cost here is the pool's. Measured on an M-series Mac: about 4 s to start and
+    // 0.5 s to drop, 5 s and 0.4 s with the machine at a load of 43. On Linux each start
+    // forks this whole process (the socket's descriptor is passed in the child before exec),
+    // growing by three threads a worker, so it costs far more: 32 s on the CI runner with
+    // six mutants shards running. The bounds are about four times what was measured, per
+    // platform. The wall clock bounds
+    // only a hang, at 9 minutes (nextest allows this test 10: .config/nextest.toml): so a
+    // start or drop that waits on each worker is caught once the wait is about half a
+    // second (a handshake's timeout, say), not a brief sleep, which the CPU time doesn't see.
     let exe = script("most-workers", "exec sleep 600");
-    let (started, pids, dropped) = within(Duration::from_secs(90), move || {
-        let start = Instant::now();
+    let (started, pids, dropped) = within(Duration::from_secs(540), move || {
+        let start = cpu_time::ProcessTime::now();
         let pool = KernelPool::start_workers(&exe, silico_core::pool::MAX_WORKERS);
         let started = start.elapsed();
         let pool = match pool {
@@ -984,18 +995,19 @@ fn a_pool_of_the_most_workers_starts_and_stops_cleanly() {
             }
         };
         let pids = pool.pids();
-        let start = Instant::now();
+        let start = cpu_time::ProcessTime::now();
         drop(pool);
         (started, pids, start.elapsed())
     });
     assert_eq!(pids.len(), silico_core::pool::MAX_WORKERS);
+    let most = if cfg!(target_os = "linux") { 120 } else { 30 };
     assert!(
-        started < Duration::from_secs(30),
-        "the start took {started:?}"
+        started < Duration::from_secs(most),
+        "the start took {started:?} of CPU"
     );
     assert!(
-        dropped < Duration::from_secs(10),
-        "the drop took {dropped:?}"
+        dropped < Duration::from_secs(5),
+        "the drop took {dropped:?} of CPU"
     );
     assert_reaped(&pids, "after the drop");
     wait_no_children("after the drop");
