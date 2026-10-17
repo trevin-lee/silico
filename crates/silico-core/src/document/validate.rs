@@ -145,10 +145,7 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
         }
 
         if let Operation::Sketch(sketch) = &feature.operation {
-            let refuse_field = |parameter: &str, message: String, suggestion: String| {
-                refuse(parameter, message, suggestion)
-            };
-            super::sketch_gate::check(sketch, &refuse_field, &mut |error| problems.add(|| error));
+            super::sketch_gate::check(sketch, &refuse, &mut |error| problems.add(|| error));
             if feature.fingerprint.is_some() {
                 problems.add(|| {
                     refuse(

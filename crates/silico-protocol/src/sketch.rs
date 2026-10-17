@@ -426,16 +426,21 @@ impl SketchSystem {
                 value(v, &format!("geometry {i}"))?;
             }
             // A line drawn with no length gives the solver 0/0 for its direction: wrong
-            // diagnoses, not errors. FreeCAD can't draw one.
+            // diagnoses, not errors. FreeCAD can't draw one. The solver works the length out
+            // as the square root of dx² + dy², so ends close enough for that to be 0 (1e-200
+            // apart, say) are no length to it either.
             if let SketchGeometry::Line { start, end } = *g {
                 let at = |v: Value| self.values[v.0 as usize];
-                if at(start.x) == at(end.x) && at(start.y) == at(end.y) {
+                let (dx, dy) = (at(end.x) - at(start.x), at(end.y) - at(start.y));
+                if dx * dx + dy * dy == 0.0 {
                     return Err(invalid(
                         "geometry",
                         format!(
-                            "geometry {i} is a line drawn with no length, both ends at ({}, {})",
+                            "geometry {i} is a line drawn with no length, its ends at ({}, {}) and ({}, {})",
                             format_number(at(start.x)),
-                            format_number(at(start.y))
+                            format_number(at(start.y)),
+                            format_number(at(end.x)),
+                            format_number(at(end.y))
                         ),
                     ));
                 }
@@ -1198,9 +1203,17 @@ mod tests {
         assert_eq!(e.parameter, "geometry");
         assert_eq!(
             e.message,
-            "geometry 0 is a line drawn with no length, both ends at (0, 0)"
+            "geometry 0 is a line drawn with no length, its ends at (0, 0) and (0, 0)"
         );
-        s.values[2] = 1e-300;
+        // 1e-200 squared underflows to 0: no length to the solver.
+        s.values[2] = 1e-200;
+        let e = s.check().unwrap_err();
+        assert!(
+            e.message
+                .starts_with("geometry 0 is a line drawn with no length")
+        );
+        // 1e-150 squared is 1e-300: a length.
+        s.values[2] = 1e-150;
         s.check().unwrap();
     }
 

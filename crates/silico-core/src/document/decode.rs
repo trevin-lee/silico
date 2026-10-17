@@ -768,11 +768,7 @@ fn constraint(fields: &mut Fields) -> Result<SketchConstraint, Error> {
             point: r(fields, "point")?,
             line: r(fields, "line")?,
             value: sketch_length(fields, "value")?,
-            side: word(
-                fields,
-                "side",
-                &[("left", LineSide::Left), ("right", LineSide::Right)],
-            )?,
+            side: word(fields, "side", &LineSide::ALL.map(|w| (w.as_str(), w)))?,
             driving: boolean(fields, "driving")?,
         },
         "on" => Form::On {
@@ -810,16 +806,7 @@ fn constraint(fields: &mut Fields) -> Result<SketchConstraint, Error> {
         "tangent" => Form::Tangent {
             a: r(fields, "a")?,
             b: r(fields, "b")?,
-            side: word(
-                fields,
-                "side",
-                &[
-                    ("left", TangentSide::Left),
-                    ("right", TangentSide::Right),
-                    ("outside", TangentSide::Outside),
-                    ("inside", TangentSide::Inside),
-                ],
-            )?,
+            side: word(fields, "side", &TangentSide::ALL.map(|w| (w.as_str(), w)))?,
         },
         "tangent_at" => Form::TangentAt {
             a: r(fields, "a")?,
@@ -828,7 +815,7 @@ fn constraint(fields: &mut Fields) -> Result<SketchConstraint, Error> {
             direction: word(
                 fields,
                 "direction",
-                &[("same", Direction::Same), ("opposite", Direction::Opposite)],
+                &Direction::ALL.map(|w| (w.as_str(), w)),
             )?,
         },
         "symmetric" => Form::Symmetric {
@@ -933,7 +920,10 @@ fn coordinate(fields: &mut Fields, key: &str) -> Result<Coordinate, Error> {
             &name,
             node.at,
             format!("{name} {} is too large", shown_number(text)),
-            "a sketch's points are within a kilometre (1000000 mm) of its origin".to_owned(),
+            format!(
+                "a sketch's coordinates and radii are within a kilometre ({} mm)",
+                silico_protocol::format_number(silico_protocol::MAX_LENGTH)
+            ),
         )
     })
 }

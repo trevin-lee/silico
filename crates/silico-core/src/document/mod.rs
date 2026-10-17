@@ -21,10 +21,10 @@ pub use model::{
 pub use quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
 pub use sketch::{
     CONSTRAINT_TYPES, Coordinate, Direction, ElementId, ElementKind, Form, LineSide, Plane,
-    Reference, Sketch, SketchArc, SketchCircle, SketchConstraint, SketchLine, SketchPoint, Takes,
+    Reference, Sketch, SketchArc, SketchCircle, SketchConstraint, SketchLine, SketchPoint,
     TangentSide,
 };
-pub use sketch_gate::MAX_ANGLE_DEGREES;
+pub use sketch_gate::{MAX_ANGLE_DEGREES, MAX_REFERENCE_LENGTH};
 pub use validate::{Checked, Invalid, PROBLEMS_LISTED, validate};
 
 use schemars::generate::SchemaSettings;

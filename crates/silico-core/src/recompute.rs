@@ -1074,18 +1074,15 @@ fn map<T, U>(outcome: Outcome<T>, f: impl FnOnce(T) -> U) -> Outcome<U> {
 fn model(source: &Arc<Checked>, plan: &Plan, schedule: &Schedule, generation: Generation) -> Model {
     let done = &schedule.done;
     let mut features: Vec<(FeatureId, FeatureOutcome)> = Vec::with_capacity(plan.features.len());
-    for planned in &plan.features {
+    // The plan has one entry for each of the document's features, in its order.
+    for (planned, feature) in plan.features.iter().zip(&source.document().features) {
         // A feature it uses that didn't build blocks it, on the failure at the root.
         let blocked = planned.uses.iter().find_map(|&i| match features.get(i) {
             Some((id, FeatureOutcome::Failed(_))) => Some(id.clone()),
             Some((_, FeatureOutcome::Blocked { on })) => Some(on.clone()),
             Some((_, FeatureOutcome::Built { .. } | FeatureOutcome::Sketch)) | None => None,
         });
-        let makes_solid = source
-            .document()
-            .features
-            .get(features.len())
-            .is_none_or(|feature| feature.operation.makes_solid());
+        let makes_solid = feature.operation.makes_solid();
         let outcome = match blocked {
             Some(on) => FeatureOutcome::Blocked { on },
             None if !makes_solid => FeatureOutcome::Sketch,

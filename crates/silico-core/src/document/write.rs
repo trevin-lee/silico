@@ -15,10 +15,7 @@ use super::model::{
     Document, Feature, FeatureId, FeatureVersion, FormatVersion, Operation, Position, Units,
 };
 use super::quantity::{Angle, Length};
-use super::sketch::{
-    Coordinate, Direction, ElementId, Form, LineSide, Reference, Sketch, SketchConstraint,
-    TangentSide,
-};
+use super::sketch::{Coordinate, ElementId, Form, Reference, Sketch, SketchConstraint};
 
 /// The text passed the limit it was written to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -340,7 +337,7 @@ fn constraint(constraint: &SketchConstraint) -> Out<'_> {
             ("point", r(point)),
             ("line", r(line)),
             ("value", length(value)),
-            ("side", Out::Str(line_side(*side))),
+            ("side", Out::Str(side.as_str())),
             ("driving", driving(d)),
         ],
         Form::On { point, curve } => vec![("point", r(point)), ("curve", r(curve))],
@@ -369,11 +366,9 @@ fn constraint(constraint: &SketchConstraint) -> Out<'_> {
             ("value", length(value)),
             ("driving", driving(d)),
         ],
-        Form::Tangent { a, b, side } => vec![
-            ("a", r(a)),
-            ("b", r(b)),
-            ("side", Out::Str(tangent_side(*side))),
-        ],
+        Form::Tangent { a, b, side } => {
+            vec![("a", r(a)), ("b", r(b)), ("side", Out::Str(side.as_str()))]
+        }
         Form::TangentAt {
             a,
             b,
@@ -383,7 +378,7 @@ fn constraint(constraint: &SketchConstraint) -> Out<'_> {
             ("a", r(a)),
             ("b", r(b)),
             ("at", r(at)),
-            ("direction", Out::Str(self::direction(*direction))),
+            ("direction", Out::Str(direction.as_str())),
         ],
         Form::Symmetric { a, b, about } => {
             vec![("a", r(a)), ("b", r(b)), ("about", r(about))]
@@ -395,29 +390,6 @@ fn constraint(constraint: &SketchConstraint) -> Out<'_> {
 
 fn r(reference: &Reference) -> Out<'_> {
     Out::Str(reference.as_str())
-}
-
-fn line_side(side: LineSide) -> &'static str {
-    match side {
-        LineSide::Left => "left",
-        LineSide::Right => "right",
-    }
-}
-
-fn tangent_side(side: TangentSide) -> &'static str {
-    match side {
-        TangentSide::Left => "left",
-        TangentSide::Right => "right",
-        TangentSide::Outside => "outside",
-        TangentSide::Inside => "inside",
-    }
-}
-
-fn direction(direction: Direction) -> &'static str {
-    match direction {
-        Direction::Same => "same",
-        Direction::Opposite => "opposite",
-    }
 }
 
 fn element(id: &ElementId) -> Out<'_> {

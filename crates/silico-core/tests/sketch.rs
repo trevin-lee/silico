@@ -623,7 +623,7 @@ fn a_dimension_out_of_range_is_refused() {
         ),
         (
             r#"{"id": "k0000000", "type": "distance", "a": "pa000000", "b": "pb000000", "value": -1, "driving": false}"#,
-            "a distance's value is -1 mm, but it's above 0 and at most 1000000 mm",
+            "a reference distance's value is -1 mm, but it's from 0 to 3000000 mm",
         ),
         (
             r#"{"id": "k0000000", "type": "radius", "curve": "ca000000", "value": 0, "driving": true}"#,

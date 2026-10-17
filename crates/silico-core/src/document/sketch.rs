@@ -144,6 +144,8 @@ impl JsonSchema for ElementId {
 
 /// What a constraint names: an element of its sketch, or one of the fixed references every
 /// sketch has, the origin and the two axes (D6: FreeCAD's `RootPoint`, `H_Axis`, `V_Axis`).
+/// `x_axis` runs from the origin along +x and `y_axis` along +y, as FreeCAD's axes do, so a
+/// side of an axis and an angle from one mean what they mean for a line drawn that way.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Reference {
     Element(ElementId),
@@ -199,7 +201,7 @@ impl JsonSchema for Reference {
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         let pattern = format!("^([{ID_ALPHABET}]{{{ID_LENGTH}}}|origin|x_axis|y_axis)$");
         json_schema!({
-            "description": "An element of this sketch, by its ID, or one of the fixed references every sketch has: origin, x_axis, y_axis.",
+            "description": "An element of this sketch, by its ID, or one of the fixed references every sketch has: origin, x_axis (from the origin along +x), y_axis (from the origin along +y).",
             "type": "string",
             "pattern": pattern
         })
@@ -313,12 +315,25 @@ pub struct SketchConstraint {
     pub form: Form,
 }
 
-/// Which side of a line, facing from its start (`from`) to its end (`to`).
+/// Which side of a line, facing from its start (`from`) to its end (`to`); for an axis,
+/// facing along it (+x, +y).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum LineSide {
     Left,
     Right,
+}
+
+impl LineSide {
+    pub const ALL: [LineSide; 2] = [LineSide::Left, LineSide::Right];
+
+    /// As the file writes it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LineSide::Left => "left",
+            LineSide::Right => "right",
+        }
+    }
 }
 
 /// Where a tangent curve lies: for a line and a circle or arc, the side of the line the
@@ -333,6 +348,25 @@ pub enum TangentSide {
     Inside,
 }
 
+impl TangentSide {
+    pub const ALL: [TangentSide; 4] = [
+        TangentSide::Left,
+        TangentSide::Right,
+        TangentSide::Outside,
+        TangentSide::Inside,
+    ];
+
+    /// As the file writes it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TangentSide::Left => "left",
+            TangentSide::Right => "right",
+            TangentSide::Outside => "outside",
+            TangentSide::Inside => "inside",
+        }
+    }
+}
+
 /// How two curves meeting at a point run there: on in the `same` direction (a smooth
 /// join), or back the `opposite` way (a cusp).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
@@ -340,6 +374,18 @@ pub enum TangentSide {
 pub enum Direction {
     Same,
     Opposite,
+}
+
+impl Direction {
+    pub const ALL: [Direction; 2] = [Direction::Same, Direction::Opposite];
+
+    /// As the file writes it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Direction::Same => "same",
+            Direction::Opposite => "opposite",
+        }
+    }
 }
 
 /// A constraint's form: every form its own type, so none has optional references (D4).
@@ -464,9 +510,9 @@ pub enum Form {
     },
 }
 
-/// What a constraint's reference may name.
+/// What a constraint's reference may name (the gate's).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Takes {
+pub(crate) enum Takes {
     /// A point of the sketch, or the origin.
     Point,
     /// A point of the sketch that's an end of both curves the constraint names.
@@ -479,9 +525,6 @@ pub enum Takes {
     Curve,
     /// A circle or an arc of the sketch.
     Round,
-    /// A line, circle, or arc of the sketch, or an axis (a tangent's two curves; which
-    /// pairs fit is the side's to say).
-    TangentCurve,
     /// A line, circle, or arc of the sketch, whose end `at` is.
     EndedCurve,
     /// Two lines, or two circles or arcs (equal's).
@@ -518,7 +561,7 @@ impl Form {
     }
 
     /// The form's references, in the order the file writes them, with what each may name.
-    pub fn references(&self) -> Vec<(&'static str, &Reference, Takes)> {
+    pub(crate) fn references(&self) -> Vec<(&'static str, &Reference, Takes)> {
         use Takes::*;
         match self {
             Form::Horizontal { line } | Form::Vertical { line } => vec![("line", line, Line)],
@@ -539,7 +582,7 @@ impl Form {
                 vec![("curve", curve, Round)]
             }
             Form::Equal { a, b } => vec![("a", a, Equal), ("b", b, Equal)],
-            Form::Tangent { a, b, .. } => vec![("a", a, TangentCurve), ("b", b, TangentCurve)],
+            Form::Tangent { a, b, .. } => vec![("a", a, Curve), ("b", b, Curve)],
             Form::TangentAt { a, b, at, .. } => vec![
                 ("a", a, EndedCurve),
                 ("b", b, EndedCurve),
@@ -554,7 +597,7 @@ impl Form {
         }
     }
 
-    /// A dimension's value as a length, its field, and whether it may be negative.
+    /// A length dimension's value, and whether it's signed (may be negative).
     pub fn length(&self) -> Option<(Length, bool)> {
         match *self {
             Form::Length { value, .. }
@@ -563,6 +606,21 @@ impl Form {
             | Form::Radius { value, .. }
             | Form::Diameter { value, .. } => Some((value, false)),
             Form::DistanceX { value, .. } | Form::DistanceY { value, .. } => Some((value, true)),
+            _ => None,
+        }
+    }
+
+    /// A dimension's `driving`; none for a form that isn't one.
+    pub fn driving(&self) -> Option<bool> {
+        match *self {
+            Form::Length { driving, .. }
+            | Form::Distance { driving, .. }
+            | Form::DistanceX { driving, .. }
+            | Form::DistanceY { driving, .. }
+            | Form::PointLineDistance { driving, .. }
+            | Form::Angle { driving, .. }
+            | Form::Radius { driving, .. }
+            | Form::Diameter { driving, .. } => Some(driving),
             _ => None,
         }
     }

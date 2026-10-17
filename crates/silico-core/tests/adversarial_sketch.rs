@@ -1,10 +1,10 @@
 //! break-it: hostile input for M3.2's sketches in the document (`document::read`,
 //! `document::write`, and the gate's sketch rules, `document::validate`), and the sketch's
 //! outcome in a recompute. Expected values come from the design
-//! (docs/design/m3.2-sketch-format.md, on the m3.2-sketch-format-design branch), from
+//! (docs/design/m3.2-sketch-format.md), from
 //! FreeCAD's own refusals (src/Mod/Sketcher/Gui/CommandConstraints.cpp), from the sketch
 //! worker's own check (`silico_protocol::SketchSystem::check`, `within_reach`), or from hand
-//! calculation. Tests marked `BREAKS:` fail on the code as written: each is a bug report.
+//! calculation. Tests marked `BREAKS:` were bug reports, each since fixed.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 #[path = "common/within.rs"]
@@ -622,7 +622,7 @@ fn ranges_hold_exactly_at_their_edges() {
                 r#"{{"id": "ka000000", "type": "length", "line": "na000000", "value": {value}, "driving": true}}"#
             ),
             "distance_x" => format!(
-                r#"{{"id": "ka000000", "type": "distance_x", "a": "pa000000", "b": "pb000000", "value": {value}, "driving": false}}"#
+                r#"{{"id": "ka000000", "type": "distance_x", "a": "pa000000", "b": "pb000000", "value": {value}, "driving": true}}"#
             ),
             "diameter" => format!(
                 r#"{{"id": "ka000000", "type": "diameter", "curve": "ca000000", "value": {value}, "driving": true}}"#

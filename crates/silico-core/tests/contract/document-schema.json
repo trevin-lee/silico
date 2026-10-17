@@ -387,7 +387,7 @@
       "type": "number"
     },
     "LineSide": {
-      "description": "Which side of a line, facing from its start (`from`) to its end (`to`).",
+      "description": "Which side of a line, facing from its start (`from`) to its end (`to`); for an axis,\nfacing along it (+x, +y).",
       "enum": [
         "left",
         "right"
@@ -1016,7 +1016,7 @@
       "type": "object"
     },
     "SketchReference": {
-      "description": "An element of this sketch, by its ID, or one of the fixed references every sketch has: origin, x_axis, y_axis.",
+      "description": "An element of this sketch, by its ID, or one of the fixed references every sketch has: origin, x_axis (from the origin along +x), y_axis (from the origin along +y).",
       "pattern": "^([0123456789abcdefghjkmnpqrstvwxyz]{8}|origin|x_axis|y_axis)$",
       "type": "string"
     },

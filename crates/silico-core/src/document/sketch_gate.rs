@@ -1,10 +1,20 @@
 //! The validation gate's rules for a sketch (docs/design/m3.2-sketch-format.md, *The gate's
 //! rules for sketches*): what FreeCAD finds only when it solves, or never, refused here,
-//! naming the field and the element. Every ID is unique within its sketch; every reference
-//! names an element of a kind its place takes; nothing is drawn with no size; dimensions
-//! are in range; every constraint names an element of the sketch's own; and the sketch is
-//! one the sketch worker takes. Whether an arc's ends lie on its circle is the solve's to
-//! mend or name (D2, arcs), not the gate's.
+//! naming the field and the element.
+//! - Every ID is unique within its sketch; every reference names an element of a kind its
+//!   place takes.
+//! - Nothing is drawn with no size as the solver measures it (a line's or an arc's radius
+//!   as the square root of dx² + dy²), or past what it takes (an arc's radius, center to
+//!   start, within a kilometre).
+//! - A curve's own point isn't constrained onto it, curves sharing an end are tangent only
+//!   there (`tangent_at`), and forms that take two elements get two.
+//! - Driving dimensions are above 0 (unless signed) and within a kilometre; reference ones
+//!   hold what a solve can measure.
+//! - Every constraint names an element of the sketch's own, and the sketch is one the sketch
+//!   worker takes.
+//!
+//! Whether an arc's ends lie on its circle is the solve's to mend or name (D2, arcs), not
+//! the gate's.
 
 use std::collections::BTreeMap;
 
@@ -18,6 +28,16 @@ use crate::Error;
 
 /// The largest angle a constraint may have, either way, in degrees.
 pub const MAX_ANGLE_DEGREES: i64 = 360;
+
+/// The largest value a reference dimension may hold, in millimetres: more than the
+/// farthest two points within a kilometre of the origin can be apart (2√2 km).
+pub const MAX_REFERENCE_LENGTH: f64 = 3e6;
+
+/// The square of the distance between two places, as the solver works it out.
+fn squared(a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    dx * dx + dy * dy
+}
 
 /// A refusal of a sketch field: its dotted name, the message, and the suggestion.
 pub(super) type Refuse<'a> = &'a dyn Fn(&str, String, String) -> Error;
@@ -42,9 +62,9 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
     // earlier one holds, by place, with that holder.
     let mut by_id: BTreeMap<&ElementId, Place> = BTreeMap::new();
     let mut taken: BTreeMap<(ElementKind, usize), Place> = BTreeMap::new();
-    let mut counts = [0usize; 5];
+    let mut counts: BTreeMap<ElementKind, usize> = BTreeMap::new();
     for (id, kind) in sketch.elements() {
-        let slot = &mut counts[kind as usize];
+        let slot = counts.entry(kind).or_default();
         let place = Place { kind, index: *slot };
         *slot += 1;
         match by_id.get(id) {
@@ -139,19 +159,19 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                 ),
                 "end the line at another point".to_owned(),
             ));
-        } else if from
-            && to
-            && let (Some(a), Some(b)) = (at_of(&line.from), at_of(&line.to))
-            && a == b
+        } else if let (Some(a), Some(b)) = (at_of(&line.from), at_of(&line.to))
+            && squared(a, b) == 0.0
         {
-            // The sketch worker refuses a line drawn with no length.
+            // The solver works out the length as the square root of dx² + dy², so ends
+            // that close (or at one place) are a line of no length to it, which the sketch
+            // worker refuses.
             add(refuse(
                 &format!("{at}.to"),
                 format!(
-                    "line {}'s ends, points {} and {}, are both drawn at ({}, {}), so it has no length",
-                    line.id, line.from, line.to, a.0, a.1
+                    "line {}'s ends, points {} at ({}, {}) and {} at ({}, {}), are too close for its length to be anything but 0 to the solver",
+                    line.id, line.from, a.0, a.1, line.to, b.0, b.1
                 ),
-                "draw the line's ends apart, or end it at the same point to remove it".to_owned(),
+                "draw the line's ends apart".to_owned(),
             ));
         }
     }
@@ -195,27 +215,26 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
             }
         }
         // Drawn with no radius, or with one past what the solver takes: the solver works
-        // out the radius from the center to the start (D2, arcs).
-        if let Some(c) = at_of(&arc.center).filter(|_| center) {
-            for (key, id, ok) in [("start", &arc.start, start), ("end", &arc.end, end)] {
-                if ok
-                    && *id != arc.center
+        // out the radius from the center to the start (D2, arcs), as the square root of
+        // dx² + dy², and an end with no distance from the center has no angle.
+        if let Some(c) = at_of(&arc.center) {
+            for (key, id) in [("start", &arc.start), ("end", &arc.end)] {
+                if *id != arc.center
                     && let Some(p) = at_of(id)
-                    && p == c
+                    && squared(c, p) == 0.0
                 {
                     add(refuse(
                         &format!("{at}.{key}"),
                         format!(
-                            "arc {}'s {key}, point {id}, is drawn at its center ({}, {}), so it has no radius",
-                            arc.id, c.0, c.1
+                            "arc {}'s {key}, point {id} at ({}, {}), is too close to its center at ({}, {}) for its radius to be anything but 0 to the solver",
+                            arc.id, p.0, p.1, c.0, c.1
                         ),
                         format!("draw the arc's {key} away from its center"),
                     ));
                 }
             }
-            if start && let Some(p) = at_of(&arc.start) {
-                let (dx, dy) = (p.0 - c.0, p.1 - c.1);
-                let radius = (dx * dx + dy * dy).sqrt();
+            if let Some(p) = at_of(&arc.start) {
+                let radius = squared(c, p).sqrt();
                 if radius > MAX_LENGTH {
                     add(refuse(
                         &format!("{at}.start"),
@@ -228,6 +247,19 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                     ));
                 }
             }
+        }
+        if arc.start != arc.end
+            && let (Some(a), Some(b)) = (at_of(&arc.start), at_of(&arc.end))
+            && a == b
+        {
+            add(refuse(
+                &format!("{at}.end"),
+                format!(
+                    "arc {}'s start and end, points {} and {}, are both drawn at ({}, {}), so its sweep is 0 or a whole turn (a whole circle is a circle)",
+                    arc.id, arc.start, arc.end, a.0, a.1
+                ),
+                "draw the arc's end away from its start, or draw a circle".to_owned(),
+            ));
         }
         if start && end && arc.start == arc.end && arc.start != arc.center {
             add(refuse(
@@ -327,7 +359,28 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                     ));
                 }
             }
-            Form::Tangent { side, .. } => {
+            Form::Tangent { a, b, side } => {
+                // Two curves sharing an end are tangent there or not at all: FreeCAD's
+                // tangent command makes that a tangent_at (180d722a53), since an edge
+                // tangency with the shared point is redundant where it holds.
+                let shared = match (a.element(), b.element()) {
+                    (Some(a), Some(b)) => {
+                        let theirs = ends_of(sketch, b, lookup);
+                        ends_of(sketch, a, lookup)
+                            .into_iter()
+                            .find(|end| theirs.contains(end))
+                    }
+                    _ => None,
+                };
+                if let Some(point) = shared {
+                    add(refuse(
+                        &format!("{at}.b"),
+                        format!(
+                            "a tangent's {a} and {b} share an end, point {point}: curves that meet are tangent where they meet"
+                        ),
+                        format!("make it a tangent_at, at point {point}"),
+                    ));
+                }
                 let is_line = |n: usize| match resolved.get(n).copied().flatten() {
                     Some(Target::Axis) => true,
                     Some(Target::Element(p)) => p.kind == ElementKind::Line,
@@ -387,9 +440,11 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
             _ => false,
         };
         match form {
-            Form::On { point, curve } | Form::Midpoint { point, line: curve }
-                if own(point, curve) =>
-            {
+            Form::On { point, curve }
+            | Form::Midpoint { point, line: curve }
+            | Form::PointLineDistance {
+                point, line: curve, ..
+            } if own(point, curve) => {
                 add(refuse(
                     &format!("{at}.point"),
                     format!("a {what}'s point, {point}, is part of {curve} itself"),
@@ -417,21 +472,36 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
             ));
         }
 
+        // A driving dimension is one the solver holds: above 0 (unless signed) and within
+        // what it takes. A reference one is what the last solve measured, so it may be 0,
+        // and as long as the farthest two points within a kilometre can be apart.
         if let Some((value, signed)) = form.length() {
+            let driving = form.driving().unwrap_or(true);
             let most = match form {
+                _ if !driving => MAX_REFERENCE_LENGTH,
                 Form::Diameter { .. } => 2.0 * MAX_LENGTH,
                 _ => MAX_LENGTH,
             };
             let mm = value.mm();
-            if (!signed && value.nm() <= 0) || mm.abs() > most {
+            let low = if signed {
+                false
+            } else if driving {
+                value.nm() <= 0
+            } else {
+                value.nm() < 0
+            };
+            if low || mm.abs() > most {
                 let range = if signed {
                     format!("at most {} mm either way", format_number(most))
-                } else {
+                } else if driving {
                     format!("above 0 and at most {} mm", format_number(most))
+                } else {
+                    format!("from 0 to {} mm", format_number(most))
                 };
+                let kind = if driving { "" } else { "reference " };
                 add(refuse(
                     &format!("{at}.value"),
-                    format!("a {what}'s value is {value} mm, but it's {range}"),
+                    format!("a {kind}{what}'s value is {value} mm, but it's {range}"),
                     format!("give the {what} a value {range}"),
                 ));
             }
@@ -482,7 +552,7 @@ impl Target {
             Takes::SharedEnd => kind == Some(Point),
             Takes::Line => kind == Some(Line),
             Takes::LineOrAxis => matches!(self, Target::Axis) || kind == Some(Line),
-            Takes::Curve | Takes::TangentCurve => {
+            Takes::Curve => {
                 matches!(self, Target::Axis) || matches!(kind, Some(Line | Circle | Arc))
             }
             Takes::Round => matches!(kind, Some(Circle | Arc)),
@@ -510,9 +580,7 @@ fn takes_noun(takes: Takes) -> &'static str {
         Takes::SharedEnd => "a point of this sketch where the two curves meet",
         Takes::Line => "a line of this sketch",
         Takes::LineOrAxis => "a line of this sketch, x_axis, or y_axis",
-        Takes::Curve | Takes::TangentCurve => {
-            "a line, circle, or arc of this sketch, x_axis, or y_axis"
-        }
+        Takes::Curve => "a line, circle, or arc of this sketch, x_axis, or y_axis",
         Takes::Round => "a circle or arc of this sketch",
         Takes::EndedCurve => "a line or arc of this sketch",
         Takes::Equal => "a line, circle, or arc of this sketch",
