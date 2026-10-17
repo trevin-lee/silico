@@ -41,12 +41,12 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use silico_protocol::{LENGTH_TOLERANCE, Reply, ShapeSummary};
+use silico_protocol::{Reply, ShapeSummary};
 
 use crate::kernel::{
     Blob, BooleanOp, BuiltData, ElementCounts, ElementFate, ElementKind, ElementRef, Ends,
     Generation, History, InputHistory, Kernel, KernelRequest, Op, Primitive, Reported, ShapeData,
-    Topology,
+    Topology, cone_caps, primitive_counts,
 };
 use crate::pool::{MAX_WORKERS, Outcome, Pending, deliver, thread_error};
 use crate::worker::lock;
@@ -513,48 +513,6 @@ fn sum(a: ElementCounts, b: ElementCounts) -> ElementCounts {
         vertices: a.vertices.saturating_add(b.vertices),
         solids: a.solids.saturating_add(b.solids),
     }
-}
-
-/// The faces, edges, vertices, and solids OCCT gives a primitive.
-fn primitive_counts(primitive: &Primitive) -> ElementCounts {
-    let (faces, edges, vertices) = match *primitive {
-        Primitive::Box { .. } => (6, 12, 8),
-        Primitive::Cylinder { .. } => (3, 3, 2),
-        Primitive::Sphere { .. } => (1, 3, 2),
-        Primitive::Cone {
-            radius1,
-            radius2,
-            height,
-        } => match cone_caps(radius1, radius2, height) {
-            (true, true) => (3, 3, 2),
-            _ => (2, 3, 2),
-        },
-        Primitive::Torus { .. } => (1, 2, 1),
-    };
-    ElementCounts {
-        faces,
-        edges,
-        vertices,
-        solids: 1,
-    }
-}
-
-/// Whether OCCT gives a cone its base cap and its top cap. OCCT leaves out a cap where the
-/// cone's meridian meets the axis, within its tolerance (BRepPrim_OneAxis::MeridianOnAxis):
-/// at the base, radius1 from it; at the top, the meridian's end, computed as BRepPrim_Cone
-/// and ElCLib::LineValue compute it (its direction normalized by gp_Dir2d, no fused
-/// multiply-add), with the math OCCT uses, so the edge cases fall as they do in OCCT.
-fn cone_caps(radius1: f64, radius2: f64, height: f64) -> (bool, bool) {
-    let rise = radius2 - radius1;
-    let half_angle = libm::atan(rise / height);
-    let (sin, cos) = (libm::sin(half_angle), libm::cos(half_angle));
-    let along = sin / (sin * sin + cos * cos).sqrt();
-    let length = (height * height + rise * rise).sqrt();
-    let top = length * along + radius1;
-    (
-        radius1.abs() >= LENGTH_TOLERANCE,
-        top.abs() >= LENGTH_TOLERANCE,
-    )
 }
 
 /// How OCCT's primitive's elements bound each other, as the kernel reports it: each face's

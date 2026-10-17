@@ -17,13 +17,13 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use crate::document::FeatureId;
-use crate::kernel::{ElementKind, ElementRef};
+use crate::kernel::{BooleanOp, ElementCounts, ElementKind, ElementRef};
 
 /// The operation that derived an element, as FreeCAD's op code names it (`FUS`, `CUT`, ...).
 /// It isn't written in Silico's form, where the feature that made the element says it, but
 /// it's part of FreeCAD's names, and of the order in which FreeCAD picks a name's sources.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Operation {
+pub enum OpCode {
     Fuse,
     Cut,
     Common,
@@ -31,15 +31,25 @@ pub enum Operation {
     Chamfer,
 }
 
-impl Operation {
+impl From<BooleanOp> for OpCode {
+    fn from(op: BooleanOp) -> Self {
+        match op {
+            BooleanOp::Fuse => OpCode::Fuse,
+            BooleanOp::Cut => OpCode::Cut,
+            BooleanOp::Common => OpCode::Common,
+        }
+    }
+}
+
+impl OpCode {
     /// FreeCAD's op code (`TopoShapeOpCode.h`).
     pub fn code(self) -> &'static str {
         match self {
-            Operation::Fuse => "FUS",
-            Operation::Cut => "CUT",
-            Operation::Common => "CMN",
-            Operation::Fillet => "FLT",
-            Operation::Chamfer => "CHF",
+            OpCode::Fuse => "FUS",
+            OpCode::Cut => "CUT",
+            OpCode::Common => "CMN",
+            OpCode::Fillet => "FLT",
+            OpCode::Chamfer => "CHF",
         }
     }
 }
@@ -76,7 +86,7 @@ pub enum Name {
     /// then up to four more.
     Derived {
         feature: FeatureId,
-        operation: Operation,
+        operation: OpCode,
         kind: ElementKind,
         first: Source,
         more: Vec<Source>,
@@ -85,7 +95,7 @@ pub enum Name {
     /// element above it named `upper` (FreeCAD's `;:U`).
     Upper {
         feature: FeatureId,
-        operation: Operation,
+        operation: OpCode,
         kind: ElementKind,
         upper: Arc<Name>,
         nth: NonZeroU32,
@@ -95,7 +105,7 @@ pub enum Name {
     /// (FreeCAD's `;:L`).
     Lower {
         feature: FeatureId,
-        operation: Operation,
+        operation: OpCode,
         kind: ElementKind,
         first: Arc<Name>,
         more: Vec<Arc<Name>>,
@@ -166,9 +176,7 @@ fn relation_text(relation: Relation, position: NonZeroU32) -> String {
 impl fmt::Display for Name {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Name::Element { feature, element } => {
-                write!(f, "{feature}.{}{}", kind_word(element.kind), element.index)
-            }
+            Name::Element { feature, element } => write!(f, "{feature}.{element}"),
             Name::Derived {
                 feature,
                 kind,
@@ -221,13 +229,12 @@ impl fmt::Display for Name {
 
 /// A solid's element names: each element's names (the first its own, any others other
 /// derivations that also reach it), and each name's element, so a name is looked up either
-/// way. Every name names one element.
+/// way. Every name names one element; every face, edge, and vertex has a name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ElementMap {
-    /// The feature that made the solid: a primitive's map names every element `feature.KindN`
-    /// without listing them, and any map names an element nothing else names so.
+    /// The feature that made the solid; any map names an element nothing else names by
+    /// its number, `feature.Face7`.
     feature: FeatureId,
-    primitive: bool,
     names: BTreeMap<ElementRef, Vec<Arc<Name>>>,
     elements: BTreeMap<Arc<Name>, ElementRef>,
     /// Names two or more elements came about by (each but the first then `~1`, `~2`, ...),
@@ -240,17 +247,26 @@ pub struct ElementMap {
 }
 
 impl ElementMap {
-    /// A primitive's map: each element is named by its number (`k7f2qx3m.Face3`), as the
-    /// kernel made it, which is OCCT's order (and FreeCAD's `Face3`).
-    pub fn primitive(feature: FeatureId) -> Self {
-        ElementMap {
+    /// A primitive's map: each of its `counts` faces, edges, and vertices named by its
+    /// number (`k7f2qx3m.Face3`), as the kernel made it, which is OCCT's order (and
+    /// FreeCAD's `Face3`).
+    pub fn primitive(feature: FeatureId, counts: ElementCounts) -> Self {
+        let mut map = ElementMap {
             feature,
-            primitive: true,
             names: BTreeMap::new(),
             elements: BTreeMap::new(),
             duplicated: BTreeSet::new(),
             numbered: BTreeSet::new(),
+        };
+        for kind in [ElementKind::Face, ElementKind::Edge, ElementKind::Vertex] {
+            for index in 1..=counts.of(kind) {
+                let element = ElementRef { kind, index };
+                let name = Arc::new(map.element_name(element));
+                map.elements.insert(Arc::clone(&name), element);
+                map.names.insert(element, vec![name]);
+            }
         }
+        map
     }
 
     /// The feature that made the solid.
@@ -258,36 +274,20 @@ impl ElementMap {
         &self.feature
     }
 
-    /// The element's own name (its first). Faces, edges, and vertices are named, from 1.
+    /// The element's own name (its first).
     pub fn name(&self, element: ElementRef) -> Option<Arc<Name>> {
-        self.names(element).into_iter().next()
+        self.names
+            .get(&element)
+            .and_then(|names| names.first().cloned())
     }
 
     /// Every name of the element, its own first.
     pub fn names(&self, element: ElementRef) -> Vec<Arc<Name>> {
-        if self.primitive {
-            return if named(element) {
-                vec![Arc::new(self.element_name(element))]
-            } else {
-                Vec::new()
-            };
-        }
         self.names.get(&element).cloned().unwrap_or_default()
     }
 
-    /// The element `name` names, if any. A primitive's map can't say how many elements its
-    /// solid has, so it answers for any number from 1; the solid's own counts bound it.
+    /// The element `name` names, if any.
     pub fn element(&self, name: &Name) -> Option<ElementRef> {
-        if self.primitive {
-            return match name {
-                Name::Element { feature, element }
-                    if *feature == self.feature && named(*element) =>
-                {
-                    Some(*element)
-                }
-                _ => None,
-            };
-        }
         self.elements.get(name).copied()
     }
 
@@ -306,8 +306,7 @@ impl ElementMap {
             || name.parts().into_iter().any(|part| self.is_unstable(part))
     }
 
-    /// Every named element and its names, in element order. Empty for a primitive's map,
-    /// which lists none.
+    /// Every element and its names, in element order.
     pub fn iter(&self) -> impl Iterator<Item = (ElementRef, &[Arc<Name>])> {
         self.names
             .iter()
@@ -320,9 +319,4 @@ impl ElementMap {
             element,
         }
     }
-}
-
-/// Whether a map names `element`: a face, edge, or vertex, numbered from 1.
-fn named(element: ElementRef) -> bool {
-    element.kind != ElementKind::Solid && element.index >= 1
 }

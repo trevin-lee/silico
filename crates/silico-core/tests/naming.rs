@@ -18,8 +18,16 @@ use silico_core::kernel::{
     ElementCounts, ElementFate, ElementKind, ElementRef, History, InputHistory, Op, Primitive,
     Reported, Topology,
 };
-use silico_core::naming::{ElementMap, Name, Operation, freecad};
+use silico_core::naming::{ElementMap, Name, OpCode, freecad};
 use silico_core::recompute::Recompute;
+
+/// A box's faces, edges, and vertices, as OCCT makes it.
+const BOX: ElementCounts = ElementCounts {
+    faces: 6,
+    edges: 12,
+    vertices: 8,
+    solids: 1,
+};
 
 fn element(kind: ElementKind, index: u32) -> ElementRef {
     ElementRef { kind, index }
@@ -63,8 +71,8 @@ fn two_elements_that_come_about_alike_are_numbered_and_marked() {
         },
     };
     history.validate(1).unwrap();
-    let input = ElementMap::primitive(id("aaaaaaaa"));
-    let map = ElementMap::operation(id("rrrrrrrr"), Operation::Fuse, &[&input], &history);
+    let input = ElementMap::primitive(id("aaaaaaaa"), BOX);
+    let map = ElementMap::operation(id("rrrrrrrr"), OpCode::Fuse, &[&input], &history);
     assert_eq!(
         names(&map, ElementKind::Edge, 2),
         [
@@ -122,8 +130,8 @@ fn an_element_named_from_above_takes_the_first_named_by_freecads_order() {
         },
     };
     history.validate(1).unwrap();
-    let input = ElementMap::primitive(id("aaaaaaaa"));
-    let map = ElementMap::operation(id("ffffffff"), Operation::Fillet, &[&input], &history);
+    let input = ElementMap::primitive(id("aaaaaaaa"), BOX);
+    let map = ElementMap::operation(id("ffffffff"), OpCode::Fillet, &[&input], &history);
     assert_eq!(
         names(&map, ElementKind::Face, 2),
         [
@@ -163,8 +171,8 @@ fn an_element_with_no_name_from_history_or_neighbours_is_named_by_its_number() {
             edge_vertices: vec![],
         },
     };
-    let input = ElementMap::primitive(id("aaaaaaaa"));
-    let map = ElementMap::operation(id("rrrrrrrr"), Operation::Cut, &[&input], &history);
+    let input = ElementMap::primitive(id("aaaaaaaa"), BOX);
+    let map = ElementMap::operation(id("rrrrrrrr"), OpCode::Cut, &[&input], &history);
     assert_eq!(names(&map, ElementKind::Face, 1), ["rrrrrrrr.Face1"]);
 }
 
@@ -241,16 +249,26 @@ fn a_feature_that_doesnt_build_has_no_names() {
 }
 
 #[test]
-fn a_kept_name_is_its_inputs_and_a_primitive_names_any_element_of_its_own() {
-    let map = ElementMap::primitive(id("aaaaaaaa"));
-    let name = Arc::new(Name::Element {
+fn a_primitives_map_names_each_of_its_elements_and_no_others() {
+    // A box: its 6 faces, 12 edges, and 8 vertices, each by its number, and nothing past
+    // them (the review found a primitive's map answering for any number).
+    let map = ElementMap::primitive(id("aaaaaaaa"), BOX);
+    assert_eq!(map.iter().count(), 26);
+    let vertex = |index| Name::Element {
         feature: id("aaaaaaaa"),
-        element: element(ElementKind::Vertex, 99),
-    });
-    assert_eq!(map.element(&name), Some(element(ElementKind::Vertex, 99)));
-    assert_eq!(map.names(element(ElementKind::Vertex, 99)), vec![name]);
+        element: element(ElementKind::Vertex, index),
+    };
+    assert_eq!(
+        map.element(&vertex(8)),
+        Some(element(ElementKind::Vertex, 8))
+    );
+    assert_eq!(map.element(&vertex(9)), None);
+    assert!(map.names(element(ElementKind::Vertex, 9)).is_empty());
+    assert_eq!(
+        map.names(element(ElementKind::Vertex, 8)),
+        vec![Arc::new(vertex(8))]
+    );
     assert_eq!(map.feature(), &id("aaaaaaaa"));
-    assert_eq!(map.iter().count(), 0);
 }
 
 #[test]
@@ -301,4 +319,135 @@ fn an_edit_names_only_the_features_it_changes() {
         before.element_map(&id("f0000059")).unwrap().iter().count(),
         after.element_map(&id("f0000059")).unwrap().iter().count()
     );
+}
+
+#[test]
+fn a_name_lists_at_most_five_sources() {
+    // Six input faces all modified into the result's one face: the first and four more, as
+    // FreeCAD's names list them (TopoShapeExpansion.cpp:1774, `if (++count == 4) break;`).
+    let modified = || ElementFate {
+        modified: vec![Reported {
+            element: element(ElementKind::Face, 1),
+            position: 1,
+        }],
+        ..ElementFate::default()
+    };
+    let history = History {
+        inputs: vec![InputHistory {
+            faces: (0..6).map(|_| modified()).collect(),
+            edges: vec![],
+            vertices: vec![],
+        }],
+        result: ElementCounts {
+            faces: 1,
+            edges: 0,
+            vertices: 0,
+            solids: 1,
+        },
+        ends: Default::default(),
+        topology: Topology {
+            face_edges: vec![vec![]],
+            outer_edges: vec![vec![]],
+            edge_vertices: vec![],
+        },
+    };
+    history.validate(1).unwrap();
+    let input = ElementMap::primitive(id("aaaaaaaa"), BOX);
+    let map = ElementMap::operation(id("rrrrrrrr"), OpCode::Fuse, &[&input], &history);
+    assert_eq!(
+        map.name(element(ElementKind::Face, 1)).unwrap().to_string(),
+        "rrrrrrrr.Face(M aaaaaaaa.Face1, M aaaaaaaa.Face2, M aaaaaaaa.Face3, M aaaaaaaa.Face4, M aaaaaaaa.Face5)"
+    );
+}
+
+#[test]
+fn a_face_named_from_below_lists_at_most_five_edges() {
+    // A hexagonal face nothing reports, its six edges kept: named from the first and four
+    // more (TopoShapeExpansion.cpp:1988).
+    let history = History {
+        inputs: vec![InputHistory {
+            faces: vec![],
+            edges: (1..=6).map(kept).collect(),
+            vertices: vec![],
+        }],
+        result: ElementCounts {
+            faces: 1,
+            edges: 6,
+            vertices: 0,
+            solids: 1,
+        },
+        ends: Default::default(),
+        topology: Topology {
+            face_edges: vec![vec![1, 2, 3, 4, 5, 6]],
+            outer_edges: vec![vec![1, 2, 3, 4, 5, 6]],
+            edge_vertices: vec![vec![]; 6],
+        },
+    };
+    history.validate(1).unwrap();
+    let input = ElementMap::primitive(id("aaaaaaaa"), BOX);
+    let map = ElementMap::operation(id("rrrrrrrr"), OpCode::Fuse, &[&input], &history);
+    assert_eq!(
+        map.name(element(ElementKind::Face, 1)).unwrap().to_string(),
+        "rrrrrrrr.Face(L aaaaaaaa.Edge1, aaaaaaaa.Edge2, aaaaaaaa.Edge3, aaaaaaaa.Edge4, aaaaaaaa.Edge5)"
+    );
+}
+
+#[test]
+fn a_name_derived_from_an_ambiguous_name_is_ambiguous() {
+    // Two edges alike (`X`, `X~1`); the next feature modifies `X`: its new name is built on
+    // `X`, so which edge it names still depends on how they were numbered (N3).
+    let topology = Topology {
+        face_edges: vec![],
+        outer_edges: vec![],
+        edge_vertices: vec![vec![1, 2], vec![2, 1]],
+    };
+    let counts = ElementCounts {
+        faces: 0,
+        edges: 2,
+        vertices: 2,
+        solids: 0,
+    };
+    let first_history = History {
+        inputs: vec![InputHistory {
+            faces: vec![],
+            edges: vec![],
+            vertices: vec![kept(1), kept(2)],
+        }],
+        result: counts,
+        ends: Default::default(),
+        topology: topology.clone(),
+    };
+    let input = ElementMap::primitive(id("aaaaaaaa"), BOX);
+    let first = ElementMap::operation(id("pppppppp"), OpCode::Fuse, &[&input], &first_history);
+    let x = first.name(element(ElementKind::Edge, 1)).unwrap();
+    assert!(first.is_unstable(&x));
+    let next_history = History {
+        inputs: vec![InputHistory {
+            faces: vec![],
+            edges: vec![
+                ElementFate {
+                    modified: vec![Reported {
+                        element: element(ElementKind::Edge, 1),
+                        position: 1,
+                    }],
+                    ..ElementFate::default()
+                },
+                kept(2),
+            ],
+            vertices: vec![kept(1), kept(2)],
+        }],
+        result: counts,
+        ends: Default::default(),
+        topology,
+    };
+    next_history.validate(1).unwrap();
+    let next = ElementMap::operation(id("nnnnnnnn"), OpCode::Fillet, &[&first], &next_history);
+    let derived = next.name(element(ElementKind::Edge, 1)).unwrap();
+    assert!(matches!(&*derived, Name::Derived { .. }), "{derived}");
+    assert!(
+        next.is_unstable(&derived),
+        "{derived} derives from ambiguous {x}"
+    );
+    // A plain kept vertex isn't.
+    assert!(!next.is_unstable(&next.name(element(ElementKind::Vertex, 1)).unwrap()));
 }

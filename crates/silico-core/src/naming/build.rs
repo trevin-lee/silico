@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use super::{ElementMap, Name, Operation, Relation, Source, freecad};
+use super::{ElementMap, Name, OpCode, Relation, Source, freecad};
 use crate::document::FeatureId;
 use crate::kernel::{ElementKind, ElementRef, History};
 
@@ -49,7 +49,7 @@ impl ElementMap {
     /// operation's order) with `history`, which the core has checked (`History::validate`).
     pub fn operation(
         feature: FeatureId,
-        operation: Operation,
+        operation: OpCode,
         inputs: &[&ElementMap],
         history: &History,
     ) -> Self {
@@ -65,7 +65,6 @@ impl ElementMap {
         let mut builder = Builder {
             map: ElementMap {
                 feature,
-                primitive: false,
                 names: BTreeMap::new(),
                 elements: BTreeMap::new(),
                 duplicated,
@@ -73,6 +72,7 @@ impl ElementMap {
             },
             operation,
             sizes: BTreeMap::new(),
+            inputs: BTreeMap::new(),
         };
         builder.kept(inputs, history);
         builder.derived(inputs, history);
@@ -91,10 +91,15 @@ type SourceKey = (u8, usize, String, Arc<Name>);
 
 struct Builder {
     map: ElementMap,
-    operation: Operation,
+    operation: OpCode,
     /// Each name measured so far, by its address (the name held, so the address is never
     /// another's): how deep it nests and how many names it's made of.
     sizes: BTreeMap<usize, (Arc<Name>, u32, u64)>,
+    /// The input each element named so far came from, as FreeCAD's tag on its name says: a
+    /// kept element its input's, a derived one its first source's, one from above or below
+    /// its upper's or first lower's. Two names FreeCAD's comparator can't tell apart without their tags
+    /// (Silico's form has none: the base's `Face1` and the tool's) are ordered by it.
+    inputs: BTreeMap<ElementRef, usize>,
 }
 
 impl Builder {
@@ -146,35 +151,67 @@ impl Builder {
     /// has is that name's next free `~n` (N3; FreeCAD's `;D<n>`, numbered in its debug
     /// builds, random in its releases), and the name is marked duplicated.
     fn set(&mut self, element: ElementRef, name: Arc<Name>) {
-        let mut candidate = Arc::clone(&name);
+        let mut candidate = name;
         let mut ordinal = NonZeroU32::MIN;
         loop {
-            match self.map.elements.get(&candidate) {
-                None => break,
-                Some(&holder) if holder == element => return,
-                Some(_) => {
-                    self.map.duplicated.insert(Arc::clone(&name));
+            match self.map.elements.entry(candidate) {
+                std::collections::btree_map::Entry::Vacant(free) => {
+                    let candidate = Arc::clone(free.key());
+                    free.insert(element);
+                    self.map.names.entry(element).or_default().push(candidate);
+                    return;
+                }
+                std::collections::btree_map::Entry::Occupied(taken) => {
+                    if *taken.get() == element {
+                        return;
+                    }
+                    let base = match &**taken.key() {
+                        Name::Duplicate { name, .. } => Arc::clone(name),
+                        _ => Arc::clone(taken.key()),
+                    };
+                    self.map.duplicated.insert(Arc::clone(&base));
                     candidate = Arc::new(Name::Duplicate {
-                        name: Arc::clone(&name),
+                        name: base,
                         ordinal,
                     });
                     ordinal = ordinal.saturating_add(1);
                 }
             }
         }
-        self.map.elements.insert(Arc::clone(&candidate), element);
-        self.map.names.entry(element).or_default().push(candidate);
+    }
+
+    /// The input `element` came from, for ordering: none (last) if it isn't known.
+    fn input_of(&self, element: ElementRef) -> usize {
+        self.inputs.get(&element).copied().unwrap_or(usize::MAX)
+    }
+
+    /// `element`'s own name, as a candidate to name another from.
+    fn candidate(&self, element: ElementRef) -> Option<Candidate> {
+        let name = self.primary(element)?;
+        Some(Candidate {
+            text: freecad::text(&name),
+            input: self.input_of(element),
+            name,
+        })
     }
 
     /// Step 1: each input element the result has unchanged keeps its names.
     fn kept(&mut self, inputs: &[&ElementMap], history: &History) {
-        for (input, map) in history.inputs.iter().zip(inputs) {
+        for (i, (input, map)) in history.inputs.iter().zip(inputs).enumerate() {
             for kind in KINDS {
                 for (n, fate) in fates(input, kind).iter().enumerate() {
                     let Some(kept) = fate.kept else { continue };
                     let source = element(kind, n);
-                    for name in input_names(map, source) {
-                        self.set(element_ref(kind, kept), name);
+                    let kept = element_ref(kind, kept);
+                    self.inputs.entry(kept).or_insert(i);
+                    match map.names.get(&source) {
+                        Some(names) => {
+                            for name in names {
+                                self.set(kept, Arc::clone(name));
+                            }
+                        }
+                        // Every map names every element; by its number, if not.
+                        None => self.set(kept, Arc::new(map.element_name(source))),
                     }
                 }
             }
@@ -184,9 +221,10 @@ impl Builder {
     /// Step 2: each element OCCT reports modified or generated, still unnamed, from its
     /// sources.
     fn derived(&mut self, inputs: &[&ElementMap], history: &History) {
-        // Each result element's sources, in FreeCAD's order of elements (edges, then faces,
-        // then vertices), which decides only which of two that come about alike is `~1`.
-        let mut sources: BTreeMap<(u8, ElementRef), BTreeMap<SourceKey, (Relation, NonZeroU32)>> =
+        // Each result element's sources. (FreeCAD names elements in its `IndexedName` order,
+        // edges, faces, vertices; two elements can come about alike only if they're of one
+        // kind, so element order decides the same `~1`.)
+        let mut sources: BTreeMap<ElementRef, BTreeMap<SourceKey, (Relation, NonZeroU32)>> =
             BTreeMap::new();
         for kind in KINDS {
             for (i, (input, map)) in history.inputs.iter().zip(inputs).enumerate() {
@@ -214,17 +252,18 @@ impl Builder {
                             continue;
                         }
                         sources
-                            .entry((freecad_rank(r.element.kind), r.element))
+                            .entry(r.element)
                             .or_default()
                             .insert(key.clone(), (relation, position));
                     }
                 }
             }
         }
-        for ((_, element), keyed) in sources {
+        for (element, keyed) in sources {
             if self.is_named(element) {
                 continue;
             }
+            let first_input = keyed.keys().next().map_or(usize::MAX, |key| key.1);
             let mut sources = keyed.into_iter().take(MOST_SOURCES).map(
                 |((_, _, _, name), (relation, position))| Source {
                     relation,
@@ -243,6 +282,7 @@ impl Builder {
                 more: sources.collect(),
             };
             let name = self.bounded(element, name);
+            self.inputs.entry(element).or_insert(first_input);
             self.set(element, name);
         }
     }
@@ -256,40 +296,39 @@ impl Builder {
             (ElementKind::Face, ElementKind::Edge, &t.face_edges),
             (ElementKind::Edge, ElementKind::Vertex, &t.edge_vertices),
         ] {
-            let mut candidates: BTreeMap<ElementRef, Vec<(String, Arc<Name>, NonZeroU32)>> =
+            let mut candidates: BTreeMap<ElementRef, Vec<(Candidate, NonZeroU32)>> =
                 BTreeMap::new();
             for (u, lowers) in lists.iter().enumerate() {
-                let Some(upper) = self.primary(element(upper_kind, u)) else {
+                let Some(upper) = self.candidate(element(upper_kind, u)) else {
                     continue;
                 };
-                let text = freecad::text(&upper);
                 let mut nth = NonZeroU32::MIN;
                 for &lower in lowers {
                     let lower = element_ref(lower_kind, lower);
                     if self.is_named(lower) {
                         continue;
                     }
-                    candidates.entry(lower).or_default().push((
-                        text.clone(),
-                        Arc::clone(&upper),
-                        nth,
-                    ));
+                    candidates
+                        .entry(lower)
+                        .or_default()
+                        .push((upper.clone(), nth));
                     nth = nth.saturating_add(1);
                 }
             }
             for (lower, mut uppers) in candidates {
-                uppers.sort_by(|a, b| freecad::compare(&a.0, &b.0).then_with(|| a.1.cmp(&b.1)));
-                let Some((_, upper, nth)) = uppers.into_iter().next() else {
+                uppers.sort_by(|a, b| a.0.cmp(&b.0));
+                let Some((upper, nth)) = uppers.into_iter().next() else {
                     continue;
                 };
                 let name = Name::Upper {
                     feature: self.map.feature.clone(),
                     operation: self.operation,
                     kind: lower_kind,
-                    upper,
+                    upper: upper.name,
                     nth,
                 };
                 let name = self.bounded(lower, name);
+                self.inputs.entry(lower).or_insert(upper.input);
                 self.set(lower, name);
             }
         }
@@ -309,18 +348,15 @@ impl Builder {
                 if self.is_named(this) || lowers.is_empty() {
                     continue;
                 }
-                let named: Option<Vec<Arc<Name>>> = lowers
+                let named: Option<Vec<Candidate>> = lowers
                     .iter()
-                    .map(|&l| self.primary(element_ref(lower_kind, l)))
+                    .map(|&l| self.candidate(element_ref(lower_kind, l)))
                     .collect();
-                let Some(named) = named else { continue };
-                let mut named: Vec<(String, Arc<Name>)> = named
-                    .into_iter()
-                    .map(|name| (freecad::text(&name), name))
-                    .collect();
-                named.sort_by(|a, b| freecad::compare(&a.0, &b.0).then_with(|| a.1.cmp(&b.1)));
-                named.dedup_by(|a, b| a.1 == b.1);
-                let mut lowers = named.into_iter().take(MOST_SOURCES).map(|(_, name)| name);
+                let Some(mut named) = named else { continue };
+                named.sort();
+                named.dedup_by(|a, b| a.name == b.name);
+                let input = named.first().map_or(usize::MAX, |first| first.input);
+                let mut lowers = named.into_iter().take(MOST_SOURCES).map(|c| c.name);
                 let Some(first) = lowers.next() else {
                     continue;
                 };
@@ -332,6 +368,7 @@ impl Builder {
                     more: lowers.collect(),
                 };
                 let name = self.bounded(this, name);
+                self.inputs.entry(this).or_insert(input);
                 self.set(this, name);
             }
         }
@@ -372,18 +409,8 @@ fn element_ref(kind: ElementKind, index: u32) -> ElementRef {
     ElementRef { kind, index }
 }
 
-/// An input element's names; one by its number if its map has none (FreeCAD's unmapped
+/// An input element's own name; one by its number if its map has none (FreeCAD's unmapped
 /// names), though every map Silico builds names every element.
-fn input_names(map: &ElementMap, element: ElementRef) -> Vec<Arc<Name>> {
-    let names = map.names(element);
-    if names.is_empty() {
-        vec![Arc::new(map.element_name(element))]
-    } else {
-        names
-    }
-}
-
-/// An input element's own name, as [`input_names`] finds it.
 fn input_name(map: &ElementMap, element: ElementRef) -> Arc<Name> {
     map.name(element)
         .unwrap_or_else(|| Arc::new(map.element_name(element)))
@@ -399,13 +426,26 @@ fn rank(kind: ElementKind) -> u8 {
     }
 }
 
-/// An element's place in FreeCAD's `IndexedName` order, its type's name compared as text:
-/// `Edge`, `Face`, `Vertex`.
-fn freecad_rank(kind: ElementKind) -> u8 {
-    match kind {
-        ElementKind::Edge => 0,
-        ElementKind::Face => 1,
-        ElementKind::Vertex => 2,
-        ElementKind::Solid => 3,
+/// A name another element might be named from, ordered as FreeCAD orders such names: by its
+/// comparator on FreeCAD's form, then, as FreeCAD's tags would, by input, then by Silico's
+/// order, so the order is total.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Candidate {
+    text: String,
+    input: usize,
+    name: Arc<Name>,
+}
+
+impl Ord for Candidate {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        freecad::compare(&self.text, &other.text)
+            .then_with(|| self.input.cmp(&other.input))
+            .then_with(|| self.name.cmp(&other.name))
+    }
+}
+
+impl PartialOrd for Candidate {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }

@@ -10,7 +10,7 @@ publish.workspace = true
 command-fds.workspace = true
 hmac.workspace = true
 libc.workspace = true
-libm = { workspace = true, optional = true }
+libm.workspace = true
 postcard.workspace = true
 rustix.workspace = true
 schemars.workspace = true
@@ -23,8 +23,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [features]
-# The in-memory kernel for tests (`fake`), and the math it computes OCCT's results with.
-fake = ["dep:libm"]
+# The in-memory kernel for tests.
+fake = []
 
 [dev-dependencies]
 cpu-time.workspace = true

@@ -168,8 +168,8 @@ impl History {
     /// within the result's counts, and that it keeps its own promises: each `modified` is
     /// the input element's kind, every position is from 1, each list is sorted by element
     /// without repeats, and the topology has a list for each face and edge, each without
-    /// repeats, a face's outer edges sorted and among its edges. Run it before using a history that came from another
-    /// process. Two things it can't check: how many elements each input has (read fates
+    /// repeats, a face's outer edges sorted and among its edges. Run it before using a
+    /// history that came from another process. Two things it can't check: how many elements each input has (read fates
     /// with [`History::fate`]), and that `result` counts the shape that came with it (the
     /// core can't count without OCCT, so look result elements up with `get`).
     pub fn validate(&self, inputs: usize) -> Result<(), String> {
@@ -291,7 +291,9 @@ impl Topology {
             if !outer.windows(2).all(|w| w[0] < w[1]) {
                 return Err(format!("Face{}'s outer edges aren't sorted", n + 1));
             }
-            if let Some(e) = outer.iter().find(|e| !all.contains(e)) {
+            let mut all = all.clone();
+            all.sort_unstable();
+            if let Some(e) = outer.iter().find(|e| all.binary_search(e).is_err()) {
                 return Err(format!(
                     "Face{}'s outer edges name Edge{e}, which isn't one of its edges",
                     n + 1

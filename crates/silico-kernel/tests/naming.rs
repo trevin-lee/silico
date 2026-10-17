@@ -9,9 +9,17 @@ use std::collections::BTreeMap;
 
 use silico_core::document::FeatureId;
 use silico_core::kernel::{ElementKind, ElementRef};
-use silico_core::naming::{ElementMap, Name, Operation, freecad};
+use silico_core::naming::{ElementMap, Name, OpCode, freecad};
 use silico_kernel::{
     BooleanOp, Built, ChamferSize, Primitive, Shape, boolean, chamfer, fillet, make, translate,
+};
+
+/// A box's faces, edges, and vertices, as OCCT makes it.
+const BOX: silico_core::kernel::ElementCounts = silico_core::kernel::ElementCounts {
+    faces: 6,
+    edges: 12,
+    vertices: 8,
+    solids: 1,
 };
 
 fn id(text: &str) -> FeatureId {
@@ -77,10 +85,10 @@ fn written(map: &ElementMap) -> Vec<String> {
 
 /// The map of `op` on two primitives' solids `base` (made by `aaaaaaaa`) and `tool`
 /// (`bbbbbbbb`), by the feature `rrrrrrrr`.
-fn named(operation: Operation, built: &Built) -> ElementMap {
+fn named(operation: OpCode, built: &Built) -> ElementMap {
     built.history.validate(2).unwrap();
-    let base = ElementMap::primitive(id("aaaaaaaa"));
-    let tool = ElementMap::primitive(id("bbbbbbbb"));
+    let base = ElementMap::primitive(id("aaaaaaaa"), BOX);
+    let tool = ElementMap::primitive(id("bbbbbbbb"), BOX);
     ElementMap::operation(id("rrrrrrrr"), operation, &[&base, &tool], &built.history)
 }
 
@@ -100,7 +108,7 @@ fn a_cuts_names_are_freecads() {
     // makeElementBooleanCut: 38 names, one for each of the result's elements.
     let (a, b) = two_cubes();
     let cut = boolean(BooleanOp::Cut, &a, &b).unwrap();
-    let map = named(Operation::Cut, &cut);
+    let map = named(OpCode::Cut, &cut);
     one_name_each(&map, &cut);
     assert_eq!(written(&map), expected("cut"));
 }
@@ -111,7 +119,7 @@ fn a_fuses_names_are_freecads() {
     // faces (`Face5;:M2(Face5;K2);FUS`).
     let (a, b) = two_cubes();
     let fuse = boolean(BooleanOp::Fuse, &a, &b).unwrap();
-    let map = named(Operation::Fuse, &fuse);
+    let map = named(OpCode::Fuse, &fuse);
     one_name_each(&map, &fuse);
     assert_eq!(written(&map), expected("fuse"));
 }
@@ -122,7 +130,7 @@ fn a_commons_first_face_is_freecads() {
     // down, `Face3;:M;CMN`, the one name FreeCAD's test pins to its element.
     let (a, b) = two_cubes();
     let common = boolean(BooleanOp::Common, &a, &b).unwrap();
-    let map = named(Operation::Common, &common);
+    let map = named(OpCode::Common, &common);
     one_name_each(&map, &common);
     assert_eq!(map.iter().count(), 26);
     let face1 = map
@@ -162,9 +170,9 @@ fn dressed(chamfered: bool) -> Built {
     }
 }
 
-fn named_dressing(operation: Operation, built: &Built) -> ElementMap {
+fn named_dressing(operation: OpCode, built: &Built) -> ElementMap {
     built.history.validate(1).unwrap();
-    let cube = ElementMap::primitive(id("aaaaaaaa"));
+    let cube = ElementMap::primitive(id("aaaaaaaa"), BOX);
     ElementMap::operation(id("rrrrrrrr"), operation, &[&cube], &built.history)
 }
 
@@ -174,7 +182,7 @@ fn a_chamfers_names_are_freecads() {
     // from the edges, corner faces from the vertices, and every edge and vertex named from
     // a face above it.
     let built = dressed(true);
-    let map = named_dressing(Operation::Chamfer, &built);
+    let map = named_dressing(OpCode::Chamfer, &built);
     one_name_each(&map, &built);
     assert_eq!(written(&map), expected("chamfer"));
 }
@@ -184,7 +192,7 @@ fn a_fillets_names_are_freecads() {
     // makeElementFillet, every edge of a unit cube: FreeCAD's test checks its 106 names are
     // among the map's; here they're all of it.
     let built = dressed(false);
-    let map = named_dressing(Operation::Fillet, &built);
+    let map = named_dressing(OpCode::Fillet, &built);
     one_name_each(&map, &built);
     assert_eq!(written(&map), expected("fillet"));
 }
@@ -196,7 +204,7 @@ fn names_say_how_each_element_came_about_in_silicos_form() {
     // bbbbbbbb.Edge2)`.
     let (a, b) = two_cubes();
     let cut = boolean(BooleanOp::Cut, &a, &b).unwrap();
-    let map = named(Operation::Cut, &cut);
+    let map = named(OpCode::Cut, &cut);
     let by_text: BTreeMap<String, Name> = map
         .iter()
         .map(|(_, names)| (freecad::text(&names[0]), (*names[0]).clone()))
@@ -226,8 +234,8 @@ fn names_dont_depend_on_size() {
     let chamfered = chamfer(&cube, &edges, ChamferSize::Equal { distance: 1.0 }, false).unwrap();
     let filleted = fillet(&cube, &edges, 1.0).unwrap();
     for (built, operation, case, counts) in [
-        (&chamfered, Operation::Chamfer, "chamfer", (26, 48, 24)),
-        (&filleted, Operation::Fillet, "fillet", (26, 56, 24)),
+        (&chamfered, OpCode::Chamfer, "chamfer", (26, 48, 24)),
+        (&filleted, OpCode::Fillet, "fillet", (26, 56, 24)),
     ] {
         let r = built.history.result;
         assert_eq!((r.faces, r.edges, r.vertices), counts, "{case}");
@@ -251,7 +259,7 @@ fn coincident_solids_fused_are_named_from_both_the_base_first() {
         .unwrap()
     };
     let fuse = boolean(BooleanOp::Fuse, &block(), &block()).unwrap();
-    let map = named(Operation::Fuse, &fuse);
+    let map = named(OpCode::Fuse, &fuse);
     one_name_each(&map, &fuse);
     assert_eq!(map.iter().count(), 26);
     for (element, names) in map.iter() {
@@ -284,7 +292,6 @@ fn a_primitives_elements_are_named_by_their_numbers() {
     // testPartDesignElementMapBox, ...Cylinder, ...Sphere, ...Cone, ...Torus: 26, 8, 6, 8,
     // and 4 names, one per element, seams and the sphere's degenerate pole edges too.
     let feature = id("aaaaaaaa");
-    let map = ElementMap::primitive(feature.clone());
     for (primitive, count) in [
         (
             Primitive::Box {
@@ -321,6 +328,11 @@ fn a_primitives_elements_are_named_by_their_numbers() {
         let moved = translate(&make(&primitive).unwrap(), [1.0, 0.0, 0.0]).unwrap();
         let r = moved.history.result;
         assert_eq!(r.faces + r.edges + r.vertices, count, "{primitive:?}");
+        // The core's counts for the primitive are OCCT's.
+        let counts = silico_core::kernel::primitive_counts(&primitive);
+        assert_eq!(counts, r, "{primitive:?}");
+        let map = ElementMap::primitive(feature.clone(), counts);
+        assert_eq!(map.iter().count(), count as usize, "{primitive:?}");
         let mut names = std::collections::BTreeSet::new();
         for (kind, n) in [
             (ElementKind::Face, r.faces),
@@ -336,8 +348,15 @@ fn a_primitives_elements_are_named_by_their_numbers() {
             }
         }
         assert_eq!(names.len(), count as usize);
+        // Nothing past its elements.
+        let past = ElementRef {
+            kind: ElementKind::Face,
+            index: r.faces + 1,
+        };
+        assert!(map.name(past).is_none());
     }
-    // Another feature's element isn't this map's.
+    // Another feature's element isn't a map's.
+    let map = ElementMap::primitive(feature, BOX);
     let other = Name::Element {
         feature: id("bbbbbbbb"),
         element: ElementRef {
@@ -390,5 +409,47 @@ fn a_recomputed_holes_names_say_how_each_element_came_about() {
     // The block's untouched faces keep their names: its four sides.
     for face in 1..=4 {
         assert!(all.contains(&format!("k7f2qx3m.Face{face}")), "{all:#?}");
+    }
+}
+
+#[test]
+fn topo_shape_tests_maps_have_freecads_sizes() {
+    // TopoShapeTest.py (src/Mod/Part/parttests): a 1 × 2 × 2 box and a 2 × 1 × 2 box at the
+    // origin. Fused, 58 names (testPartFuse, testTopoShapeFuse); common and cut, 26 each
+    // (testPartCommon, testPartCut, testTopoShapeCommon, testTopoShapeCut); the first box's
+    // Face1 edges filleted or chamfered by 0.1, 42 each (testTopoShapeMakeFillet,
+    // ...MakeChamfer). FreeCAD's counts, one name each.
+    let one = || {
+        make(&Primitive::Box {
+            dx: 1.0,
+            dy: 2.0,
+            dz: 2.0,
+        })
+        .unwrap()
+    };
+    let two = make(&Primitive::Box {
+        dx: 2.0,
+        dy: 1.0,
+        dz: 2.0,
+    })
+    .unwrap();
+    for (op, operation, size) in [
+        (BooleanOp::Fuse, OpCode::Fuse, 58),
+        (BooleanOp::Common, OpCode::Common, 26),
+        (BooleanOp::Cut, OpCode::Cut, 26),
+    ] {
+        let built = boolean(op, &one(), &two).unwrap();
+        let map = named(operation, &built);
+        one_name_each(&map, &built);
+        assert_eq!(map.iter().count(), size, "{op:?}");
+    }
+    // Face1's edges: OCCT's box's Face1 (x = 0) is bounded by Edges 1 to 4.
+    let edges = [1, 2, 3, 4];
+    let filleted = fillet(&one(), &edges, 0.1).unwrap();
+    let chamfered = chamfer(&one(), &edges, ChamferSize::Equal { distance: 0.1 }, false).unwrap();
+    for (built, operation) in [(&filleted, OpCode::Fillet), (&chamfered, OpCode::Chamfer)] {
+        let map = named_dressing(operation, built);
+        one_name_each(&map, built);
+        assert_eq!(map.iter().count(), 42, "{operation:?}");
     }
 }

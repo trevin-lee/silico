@@ -19,7 +19,15 @@ use silico_core::document::FeatureId;
 use silico_core::kernel::{
     ElementCounts, ElementFate, ElementKind, ElementRef, History, InputHistory, Reported, Topology,
 };
-use silico_core::naming::{ElementMap, Name, Operation, Relation, Source, freecad};
+use silico_core::naming::{ElementMap, Name, OpCode, Relation, Source, freecad};
+
+/// A box's faces, edges, and vertices, as OCCT makes it.
+const BOX: ElementCounts = ElementCounts {
+    faces: 6,
+    edges: 12,
+    vertices: 8,
+    solids: 1,
+};
 
 fn id(text: &str) -> FeatureId {
     FeatureId::new(text).unwrap()
@@ -219,14 +227,23 @@ fn topology(result: ElementCounts) -> impl Strategy<Value = Topology> {
 /// The inputs' maps: each a primitive's, by its own feature.
 fn input_maps(history: &History) -> Vec<ElementMap> {
     (0..history.inputs.len())
-        .map(|i| ElementMap::primitive(id(&format!("abcd{i:04}"))))
+        .map(|i| {
+            let input = &history.inputs[i];
+            let counts = ElementCounts {
+                faces: input.faces.len() as u32,
+                edges: input.edges.len() as u32,
+                vertices: input.vertices.len() as u32,
+                solids: 1,
+            };
+            ElementMap::primitive(id(&format!("abcd{i:04}")), counts)
+        })
         .collect()
 }
 
 fn named(history: &History) -> ElementMap {
     let maps = input_maps(history);
     let refs: Vec<&ElementMap> = maps.iter().collect();
-    ElementMap::operation(id("rrrrrrrr"), Operation::Fuse, &refs, history)
+    ElementMap::operation(id("rrrrrrrr"), OpCode::Fuse, &refs, history)
 }
 
 fn every_element(result: ElementCounts) -> Vec<ElementRef> {
@@ -452,8 +469,8 @@ fn ambiguous() -> (History, ElementMap) {
         },
     };
     history.validate(1).unwrap();
-    let input = ElementMap::primitive(id("aaaaaaaa"));
-    let map = ElementMap::operation(id("pppppppp"), Operation::Fuse, &[&input], &history);
+    let input = ElementMap::primitive(id("aaaaaaaa"), BOX);
+    let map = ElementMap::operation(id("pppppppp"), OpCode::Fuse, &[&input], &history);
     (history, map)
 }
 
@@ -491,8 +508,8 @@ fn an_ambiguous_name_kept_by_the_next_feature_is_still_marked_ambiguous() {
         },
     };
     history.validate(2).unwrap();
-    let tool = ElementMap::primitive(id("tttttttt"));
-    let next = ElementMap::operation(id("nnnnnnnn"), Operation::Cut, &[&first, &tool], &history);
+    let tool = ElementMap::primitive(id("tttttttt"), BOX);
+    let next = ElementMap::operation(id("nnnnnnnn"), OpCode::Cut, &[&first, &tool], &history);
     assert_eq!(
         next.name(element(ElementKind::Edge, 1)),
         Some(Arc::clone(&x))
@@ -517,7 +534,7 @@ fn every_name_the_types_hold_prints_differently_from_every_other() {
     let n = |n: u32| NonZeroU32::new(n).unwrap();
     let derived = |position| Name::Derived {
         feature: id("rrrrrrrr"),
-        operation: Operation::Cut,
+        operation: OpCode::Cut,
         kind: ElementKind::Face,
         first: Source {
             relation: Relation::Modified,
@@ -528,7 +545,7 @@ fn every_name_the_types_hold_prints_differently_from_every_other() {
     };
     let upper = |nth| Name::Upper {
         feature: id("rrrrrrrr"),
-        operation: Operation::Cut,
+        operation: OpCode::Cut,
         kind: ElementKind::Edge,
         upper: Arc::clone(&leaf),
         nth,
@@ -568,7 +585,7 @@ fn a_derived_name_has_a_freecad_form() {
     });
     let derived = Name::Derived {
         feature: id("rrrrrrrr"),
-        operation: Operation::Cut,
+        operation: OpCode::Cut,
         kind: ElementKind::Face,
         first: Source {
             relation: Relation::Generated,
@@ -579,7 +596,7 @@ fn a_derived_name_has_a_freecad_form() {
     };
     let lower = Name::Lower {
         feature: id("rrrrrrrr"),
-        operation: Operation::Cut,
+        operation: OpCode::Cut,
         kind: ElementKind::Face,
         first: Arc::clone(&leaf),
         more: vec![],
@@ -598,7 +615,7 @@ fn a_primitives_map_doesnt_name_element_zero() {
     // primitive's map answers for any number, leaving the bound to the solid's counts, and
     // a check of `index <= count` let 0 through: a reference `k7f2qx3m.Face0` (made up, or
     // off by one) resolved to an element that can't exist. An operation's map says None.
-    let map = ElementMap::primitive(id("k7f2qx3m"));
+    let map = ElementMap::primitive(id("k7f2qx3m"), BOX);
     let zero = Name::Element {
         feature: id("k7f2qx3m"),
         element: element(ElementKind::Face, 0),
@@ -611,7 +628,7 @@ fn a_primitives_map_doesnt_name_element_zero() {
 fn a_primitives_map_and_an_operations_agree_about_solids() {
     // A map names faces, edges, and vertices. A primitive's says it names `Solid1` too,
     // an operation's doesn't, so a reference to a solid is found or not by what made it.
-    let primitive = ElementMap::primitive(id("k7f2qx3m"));
+    let primitive = ElementMap::primitive(id("k7f2qx3m"), BOX);
     let (_, operation) = ambiguous();
     let solid = element(ElementKind::Solid, 1);
     // Found by /break-it: the primitive's map named the solid; the operation's didn't.
@@ -698,13 +715,13 @@ fn a_thousand_holes_drilled_one_by_one_name_in_linear_time() {
     // points, never compounding, and never past the bound.
     let history = drilled();
     history.validate(2).unwrap();
-    let tool = ElementMap::primitive(id("tttttttt"));
-    let mut map = ElementMap::primitive(id("pppppppp"));
+    let tool = ElementMap::primitive(id("tttttttt"), BOX);
+    let mut map = ElementMap::primitive(id("pppppppp"), BOX);
     let started = Instant::now();
     let mut lengths = Vec::new();
     for n in 0..1000 {
         let feature = id(&format!("f{n:07}"));
-        map = ElementMap::operation(feature, Operation::Cut, &[&map, &tool], &history);
+        map = ElementMap::operation(feature, OpCode::Cut, &[&map, &tool], &history);
         if n % 100 == 99 {
             let top = map.name(element(ElementKind::Face, 6)).unwrap();
             lengths.push((top.to_string().len(), freecad::text(&top).len()));
@@ -768,13 +785,13 @@ fn names_that_would_double_with_every_feature_stay_bounded() {
     // its number, and the name says it's unstable.
     let history = crossed();
     history.validate(2).unwrap();
-    let tool = ElementMap::primitive(id("tttttttt"));
-    let mut map = ElementMap::primitive(id("pppppppp"));
+    let tool = ElementMap::primitive(id("tttttttt"), BOX);
+    let mut map = ElementMap::primitive(id("pppppppp"), BOX);
     let started = Instant::now();
     for n in 0..40 {
         map = ElementMap::operation(
             id(&format!("f{n:07}")),
-            Operation::Cut,
+            OpCode::Cut,
             &[&map, &tool],
             &history,
         );
@@ -805,12 +822,12 @@ fn a_deep_timeline_names_and_writes_its_names_on_a_default_thread() {
         .stack_size(2 << 20)
         .spawn(|| {
             let history = drilled();
-            let tool = ElementMap::primitive(id("tttttttt"));
-            let mut map = ElementMap::primitive(id("pppppppp"));
+            let tool = ElementMap::primitive(id("tttttttt"), BOX);
+            let mut map = ElementMap::primitive(id("pppppppp"), BOX);
             for n in 0..6000 {
                 map = ElementMap::operation(
                     id(&format!("f{n:07}")),
-                    Operation::Cut,
+                    OpCode::Cut,
                     &[&map, &tool],
                     &history,
                 );

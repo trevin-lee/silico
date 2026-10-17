@@ -24,7 +24,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
@@ -35,7 +35,7 @@ use crate::kernel::{
     BooleanOp, BuiltData, Generation, History, Kernel, KernelRequest, Primitive, ShapeData,
     ShapeSummary,
 };
-use crate::naming::{self, ElementMap};
+use crate::naming::{ElementMap, OpCode};
 use crate::pool::Outcome;
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
@@ -115,7 +115,7 @@ pub enum FeatureOutcome {
 }
 
 /// A document as rebuilt: what became of each feature, in timeline order, and its bodies.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Model {
     /// The document it was built from.
     source: Arc<Checked>,
@@ -124,9 +124,39 @@ pub struct Model {
     bodies: Vec<FeatureId>,
     /// Built features whose solids couldn't be measured, in timeline order: why.
     unmeasured: Vec<(FeatureId, Error)>,
-    /// Each feature's solid's element names, in timeline order, for those that built, each
-    /// with the key of what it was named from.
-    names: Vec<Option<(NamingKey, Arc<ElementMap>)>>,
+    /// How each feature's solid's elements are named, in timeline order: none for one that
+    /// didn't build.
+    naming: Vec<Option<FeatureNaming>>,
+    /// Each feature's element names, named the first time they're asked for (or any
+    /// feature's after it): only references and queries need them, so a recompute doesn't
+    /// name what nothing asks about (naming every element of every feature at publishing
+    /// doubled the cost of a long timeline on the fake). They're a function of the model's
+    /// own data alone, so they're the same whenever they're named.
+    maps: Vec<OnceLock<Option<Arc<ElementMap>>>>,
+    /// Maps named so far, by naming key, shared with the engine and the models it published
+    /// before, so a feature named alike in an earlier model isn't named again.
+    known: Arc<Mutex<BTreeMap<NamingKey, Arc<ElementMap>>>>,
+}
+
+/// How a feature's solid's elements are named, and what from.
+#[derive(Debug, Clone)]
+struct FeatureNaming {
+    key: NamingKey,
+    how: Naming,
+    /// The features whose solids it's made from, by index.
+    uses: Vec<usize>,
+}
+
+/// Models are equal when they're of the same document and every feature came to the same:
+/// names are a function of those.
+impl PartialEq for Model {
+    fn eq(&self, other: &Self) -> bool {
+        self.source == other.source
+            && self.generation == other.generation
+            && self.features == other.features
+            && self.bodies == other.bodies
+            && self.unmeasured == other.unmeasured
+    }
 }
 
 impl Model {
@@ -168,13 +198,59 @@ impl Model {
             })
     }
 
-    /// The names of the elements of the feature `id`'s solid, if it built.
+    /// The names of the elements of the feature `id`'s solid, if it built, named now if
+    /// they haven't been (with those of every feature before it not yet named).
     pub fn element_map(&self, id: &FeatureId) -> Option<&ElementMap> {
         let i = self
             .features
             .iter()
             .position(|(feature, _)| feature == id)?;
-        self.names.get(i)?.as_ref().map(|(_, map)| &**map)
+        let slot = self.maps.get(i)?;
+        if slot.get().is_none() {
+            for j in 0..=i {
+                if let Some(slot) = self.maps.get(j)
+                    && slot.get().is_none()
+                {
+                    let _ = slot.set(self.name(j));
+                }
+            }
+        }
+        slot.get()?.as_deref()
+    }
+
+    /// The `j`th feature's element names, those it's made from named already: from the maps
+    /// known by its naming key, or named from its history.
+    fn name(&self, j: usize) -> Option<Arc<ElementMap>> {
+        let naming = self.naming.get(j)?.as_ref()?;
+        if let Some(map) = lock(&self.known).get(&naming.key) {
+            return Some(Arc::clone(map));
+        }
+        let (id, outcome) = self.features.get(j)?;
+        let map = match naming.how {
+            Naming::Primitive(primitive) => {
+                ElementMap::primitive(id.clone(), crate::kernel::primitive_counts(&primitive))
+            }
+            Naming::Operation(operation) => {
+                let FeatureOutcome::Built { built, .. } = outcome else {
+                    return None;
+                };
+                let history = built.history.as_ref()?;
+                let inputs: Option<Vec<&ElementMap>> = naming
+                    .uses
+                    .iter()
+                    .map(|&u| self.maps.get(u)?.get()?.as_deref())
+                    .collect();
+                ElementMap::operation(id.clone(), operation, &inputs?, history)
+            }
+        };
+        let map = Arc::new(map);
+        // The first named is kept, so a map named in two threads at once is one map.
+        let known = Arc::clone(
+            lock(&self.known)
+                .entry(naming.key)
+                .or_insert_with(|| Arc::clone(&map)),
+        );
+        Some(known)
     }
 
     /// The document it was built from.
@@ -351,6 +427,10 @@ struct EngineState {
     published_plans: VecDeque<Arc<BTreeSet<Key>>>,
     newest_plan: Option<Arc<BTreeSet<Key>>>,
     published: Option<Arc<Model>>,
+    /// Element maps named so far, by naming key: those the last [`PUBLISHED_KEPT`] published
+    /// models name (`published_names`), shared with them.
+    names: Arc<Mutex<BTreeMap<NamingKey, Arc<ElementMap>>>>,
+    published_names: VecDeque<BTreeSet<NamingKey>>,
 }
 
 /// How many published models' results are kept.
@@ -401,6 +481,8 @@ impl<K: Kernel + 'static> Recompute<K> {
                     published_plans: VecDeque::new(),
                     newest_plan: None,
                     published: None,
+                    names: Arc::default(),
+                    published_names: VecDeque::new(),
                 }),
             }),
         }
@@ -543,9 +625,16 @@ struct Planned {
     steps: Vec<Key>,
     /// The earlier features it uses, base then tool, by index.
     uses: Vec<usize>,
-    /// How its solid's elements are named: a primitive's by their numbers, an operation's
-    /// from its history (a primitive's move keeps its names).
-    naming: Option<naming::Operation>,
+    /// How its solid's elements are named (every feature the gate admits is one of these).
+    naming: Option<Naming>,
+}
+
+/// How a feature's solid's elements are named: a primitive's by their numbers (a move
+/// keeps them), an operation's from its history.
+#[derive(Debug, Clone, Copy)]
+enum Naming {
+    Primitive(Primitive),
+    Operation(OpCode),
 }
 
 impl Planned {
@@ -609,11 +698,14 @@ impl Plan {
                 id: feature.id.clone(),
                 steps: own,
                 uses,
-                naming: boolean_op(&feature.operation).map(|op| match op {
-                    BooleanOp::Fuse => naming::Operation::Fuse,
-                    BooleanOp::Cut => naming::Operation::Cut,
-                    BooleanOp::Common => naming::Operation::Common,
-                }),
+                naming: match (
+                    feature.operation.primitive(),
+                    boolean_op(&feature.operation),
+                ) {
+                    (Some(primitive), _) => Some(Naming::Primitive(primitive)),
+                    (None, Some(op)) => Some(Naming::Operation(op.into())),
+                    (None, None) => None,
+                },
             });
         }
         plan
@@ -836,19 +928,18 @@ impl<K: Kernel + 'static> Engine<K> {
         if schedule.superseded {
             return Ok(RunOutcome::Superseded);
         }
-        // The published model's element maps, for those this one's features name alike.
-        let previous = lock(&self.state).published.clone();
-        let model = Arc::new(model(
-            document,
-            &plan,
-            &schedule,
-            generation,
-            previous.as_deref(),
-        ));
+        let known = Arc::clone(&lock(&self.state).names);
+        let model = Arc::new(model(document, &plan, &schedule, generation, known));
         let mut state = lock(&self.state);
         if state.generation != generation || state.cancelled {
             return Ok(RunOutcome::Superseded);
         }
+        // Maps only the models worth keeping name are kept.
+        let named: BTreeSet<NamingKey> = model.naming.iter().flatten().map(|n| n.key).collect();
+        state.published_names.push_front(named);
+        state.published_names.truncate(PUBLISHED_KEPT);
+        let kept: BTreeSet<NamingKey> = state.published_names.iter().flatten().copied().collect();
+        lock(&state.names).retain(|key, _| kept.contains(key));
         state.published = Some(Arc::clone(&model));
         state.published_plans.push_front(keys);
         state.published_plans.truncate(PUBLISHED_KEPT);
@@ -1105,7 +1196,7 @@ fn model(
     plan: &Plan,
     schedule: &Schedule,
     generation: Generation,
-    previous: Option<&Model>,
+    known: Arc<Mutex<BTreeMap<NamingKey, Arc<ElementMap>>>>,
 ) -> Model {
     let done = &schedule.done;
     let mut features: Vec<(FeatureId, FeatureOutcome)> = Vec::with_capacity(plan.features.len());
@@ -1156,14 +1247,17 @@ fn model(
             }
         })
         .collect();
-    let names = element_maps(plan, &features, previous);
+    let naming = naming(plan, &features);
+    let maps = (0..features.len()).map(|_| OnceLock::new()).collect();
     Model {
         source: Arc::clone(source),
         generation,
         features,
         bodies,
         unmeasured,
-        names,
+        naming,
+        maps,
+        known,
     }
 }
 
@@ -1181,64 +1275,42 @@ impl fmt::Debug for NamingKey {
     }
 }
 
-/// Each built feature's element names, in timeline order: a primitive's by their numbers,
-/// a boolean's from its inputs' names and its step's history (docs/ports/naming.md); each
-/// taken from `previous` where its naming key is one `previous` has.
-fn element_maps(
-    plan: &Plan,
-    features: &[(FeatureId, FeatureOutcome)],
-    previous: Option<&Model>,
-) -> Vec<Option<(NamingKey, Arc<ElementMap>)>> {
-    let earlier: BTreeMap<NamingKey, &Arc<ElementMap>> = previous
-        .map(|model| {
-            model
-                .names
-                .iter()
-                .flatten()
-                .map(|(key, map)| (*key, map))
-                .collect()
-        })
-        .unwrap_or_default();
-    let mut maps: Vec<Option<(NamingKey, Arc<ElementMap>)>> = Vec::with_capacity(features.len());
+/// How each built feature's elements are named, in timeline order: a primitive's by their
+/// numbers, a boolean's from its inputs' names and its step's history
+/// (docs/ports/naming.md), each with its naming key.
+fn naming(plan: &Plan, features: &[(FeatureId, FeatureOutcome)]) -> Vec<Option<FeatureNaming>> {
+    let mut naming: Vec<Option<FeatureNaming>> = Vec::with_capacity(features.len());
     for (planned, (id, outcome)) in plan.features.iter().zip(features) {
-        let FeatureOutcome::Built { key, built } = outcome else {
-            maps.push(None);
+        let (FeatureOutcome::Built { key, .. }, Some(how)) = (outcome, planned.naming) else {
+            naming.push(None);
             continue;
         };
-        let inputs: Option<Vec<&(NamingKey, Arc<ElementMap>)>> = planned
+        let inputs: Option<Vec<NamingKey>> = planned
             .uses
             .iter()
-            .map(|&i| maps.get(i).and_then(Option::as_ref))
+            .map(|&i| naming.get(i).and_then(Option::as_ref).map(|n| n.key))
             .collect();
         let Some(inputs) = inputs else {
-            maps.push(None);
+            naming.push(None);
             continue;
         };
         let mut hash = Sha256::new();
         hash.update(key.0);
         hash.update(id.as_str().as_bytes());
-        hash.update([planned.naming.map_or(0, |op| op as u8 + 1)]);
-        for (input, _) in &inputs {
+        hash.update([match how {
+            Naming::Primitive(_) => 0,
+            Naming::Operation(op) => op as u8 + 1,
+        }]);
+        for input in &inputs {
             hash.update(input.0);
         }
-        let naming = NamingKey(hash.finalize().into());
-        let map = match (earlier.get(&naming), planned.naming, &built.history) {
-            (Some(map), _, _) => Some(Arc::clone(map)),
-            (None, None, _) => Some(Arc::new(ElementMap::primitive(id.clone()))),
-            (None, Some(operation), Some(history)) => {
-                let inputs: Vec<&ElementMap> = inputs.iter().map(|(_, map)| &**map).collect();
-                Some(Arc::new(ElementMap::operation(
-                    id.clone(),
-                    operation,
-                    &inputs,
-                    history,
-                )))
-            }
-            (None, Some(_), None) => None,
-        };
-        maps.push(map.map(|map| (naming, map)));
+        naming.push(Some(FeatureNaming {
+            key: NamingKey(hash.finalize().into()),
+            how,
+            uses: planned.uses.clone(),
+        }));
     }
-    maps
+    naming
 }
 
 /// A feature whose inputs built: built, if its own steps did, or failed on the first that

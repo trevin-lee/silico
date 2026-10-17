@@ -54,7 +54,7 @@ After a recompute FreeCAD looks each reference up by its mapped name and rewrite
 | `0a3677b9eb` (2025-04) | An operator-precedence bug in a restore cap rejected files with more than two element maps, silently corrupting projects for seven weeks. | Maps aren't stored; they're rebuilt from history (and the cache). |
 | `0e7aa5f7bc`, `99b753b006` (2024) | Segfaults on a null element map. | Maps are values, never null. |
 | `8bac0ce895` (2026, #30444) | An out-of-range `topoShapes[index-1]` crash from naming sub-shapes through the parent. | Every lookup is checked (`get`), and histories are validated first. |
-| `f9b65e563d` | Removed realthunder's fallback to the index name as "too risky". | Never falls back to an index. |
+| `f9b65e563d` | Removed realthunder's fallback to the index name as "too risky". | A reference never falls back to an index: an element nothing names is named by its number only as a last resort, and that name is unstable, refused as a reference (N3). |
 
 ## Silico
 
@@ -100,6 +100,7 @@ FreeCAD's tests, ported (silico-kernel `tests/naming.rs`, FreeCAD's expected nam
 | `testPartDesignElementMapBox`, `...Cylinder`, `...Sphere`, `...Cone`, `...Torus` (26, 8, 6, 8, 4) | Ported: a primitive names each element, seams and degenerate edges too. |
 | `testBodySubShapeBinderElementMap` (coincident boxes fused: 26 names, from both, the first operand first) | Ported (the fuse; the binder parts wait for binders). |
 | `testGetElementFunctionality` (a name and its index find the same element) | Ported in every map test. |
+| `TopoShapeTest.py` `testPartFuse`, `testPartCommon`, `testPartCut`, `testTopoShapeFuse`, `...Common`, `...Cut`, `testTopoShapeMakeFillet`, `...MakeChamfer` (58, 26, 26, 42, 42 names) | Ported: the map sizes, one name per element. |
 | `tests/src/App/MappedElement.cpp` comparator tests | Ported, those without `#` (`naming::freecad`). |
 | `makeElementPrism`, `makeElementRevolve`, pad and revolution tests | M3, with extrusions. |
 | `testPartDesignTNPChamfer`, `testPartDesignTNPFillet`, `testBaseFeatureAttachmentSupport` | M2.8 (references surviving edits). |

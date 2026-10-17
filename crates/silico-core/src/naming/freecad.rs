@@ -10,7 +10,7 @@
 
 use std::cmp::Ordering;
 
-use super::{Name, Relation, count_text, kind_word, relation_text};
+use super::{Name, Relation, count_text, relation_text};
 
 /// FreeCAD's form of `name`, without tags: `Face6;:G2(Face1;K-2);CUT`.
 pub fn text(name: &Name) -> String {
@@ -21,10 +21,7 @@ pub fn text(name: &Name) -> String {
 
 fn write(name: &Name, out: &mut String) {
     match name {
-        Name::Element { element, .. } => {
-            out.push_str(kind_word(element.kind));
-            out.push_str(&element.index.to_string());
-        }
+        Name::Element { element, .. } => out.push_str(&element.to_string()),
         Name::Derived {
             operation,
             first,
