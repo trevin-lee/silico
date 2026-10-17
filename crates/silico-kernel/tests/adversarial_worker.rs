@@ -973,10 +973,13 @@ fn a_pool_of_the_most_workers_starts_and_stops_cleanly() {
     // and reaps every worker. Bounded by this process's CPU time, not the wall clock: on a
     // machine other work saturates, the wall clock measures the machine (1024 starts took
     // 35–76 s on CI under mutants shards, against 6 s alone), while what starting and
-    // dropping cost here is the pool's. Measured on an M-series Mac: 4.3 s to start, 0.4 s
-    // to drop. The wall clock bounds only a hang.
+    // dropping cost here is the pool's. Measured on an M-series Mac: about 4 s to start and
+    // 0.5 s to drop, 5 s and 0.4 s with the machine at a load of 43. The wall clock bounds
+    // only a hang, at 9 minutes (nextest allows this test 10: .config/nextest.toml): so a
+    // start or drop that waits on each worker is caught once the wait is about half a
+    // second (a handshake's timeout, say), not a brief sleep, which the CPU time doesn't see.
     let exe = script("most-workers", "exec sleep 600");
-    let (started, pids, dropped) = within(Duration::from_secs(600), move || {
+    let (started, pids, dropped) = within(Duration::from_secs(540), move || {
         let start = cpu_time::ProcessTime::now();
         let pool = KernelPool::start_workers(&exe, silico_core::pool::MAX_WORKERS);
         let started = start.elapsed();
