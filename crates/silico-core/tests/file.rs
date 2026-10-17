@@ -88,12 +88,16 @@ fn a_save_with_every_name_beside_the_file_taken_says_so_and_writes_nothing() {
     }
     let error = silico_core::file::save(&file, b"as read", b"formatted").unwrap_err();
     assert_eq!(error.code(), ErrorCode::IoFailed);
-    assert!(
-        error
-            .to_string()
-            .contains("every name for a file beside it is taken"),
-        "{error}"
+    // All 64 names tried, and the message names them: the first, and -1 to -63.
+    let said = format!(
+        "every name for a file beside it is taken ({}/.part.silico.fmt-{pid}, and -1 to -63)",
+        dir.0.display()
     );
+    assert!(error.to_string().contains(&said), "{error}");
     assert_eq!(std::fs::read(&file).unwrap(), b"as read");
     assert_eq!(dir.names().len(), 65);
+    // With the last name free, it's used: every name is tried.
+    std::fs::remove_file(dir.0.join(format!(".part.silico.fmt-{pid}-63"))).unwrap();
+    silico_core::file::save(&file, b"as read", b"formatted").unwrap();
+    assert_eq!(std::fs::read(&file).unwrap(), b"formatted");
 }
