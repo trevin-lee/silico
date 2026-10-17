@@ -249,7 +249,19 @@ fn the_corpus_reads_its_step_files_and_names_those_freecad_cant() {
     ))
     .unwrap();
     std::fs::write(dir.join("bad.stp"), "not a step file").unwrap();
-    let (cases, unread) = silico_oracle::corpus::cases(&dir).unwrap();
+    let corpus = silico_oracle::corpus::cases(&dir).unwrap();
+    let (cases, unread) = (corpus.cases, corpus.unread);
+    // The box's B-rep, named with its SHA-256, which is the file's.
+    use sha2::Digest;
+    let brep = std::fs::read(dir.join("brep").join("it's \"a\" box.stp.brep")).unwrap();
+    let hex: String = sha2::Sha256::digest(&brep)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(
+        corpus.breps,
+        [format!("it's \"a\" box.stp: B-rep SHA-256 {hex}")]
+    );
     let names: Vec<&str> = cases.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(names, ["it's \"a\" box.stp", "it's \"a\" box.stp_moved"]);
     assert_eq!(unread.len(), 1, "{unread:?}");
@@ -261,6 +273,18 @@ fn the_corpus_reads_its_step_files_and_names_those_freecad_cant() {
     let found = run(&cases).unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(found.differences.is_empty() && found.refused.is_empty());
+    // Both sides' verdicts, for a known difference that doesn't show to be reported with.
+    assert_eq!(
+        found.validity,
+        [
+            ("it's \"a\" box.stp".to_owned(), Some(true), Some(true)),
+            (
+                "it's \"a\" box.stp_moved".to_owned(),
+                Some(true),
+                Some(true)
+            ),
+        ]
+    );
 }
 
 /// A face whose edges cross (a bowtie, 10 mm across, at x and y from 100 to 110), as

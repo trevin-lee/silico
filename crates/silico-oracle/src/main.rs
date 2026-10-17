@@ -27,13 +27,19 @@ fn main() -> ExitCode {
     let ran = cases().and_then(|(cases, corpus)| {
         let mut report = run(&cases)?;
         let (mut problems, mut known) = (Vec::new(), Vec::new());
-        if let Some(unread) = corpus {
+        if let Some((unread, breps)) = corpus {
             problems = unread;
             problems.extend(corpus::meshes(&cases)?);
             let missing;
-            (report.differences, known, missing) =
-                corpus::without_known(report.differences, corpus::KNOWN);
+            (report.differences, known, missing) = corpus::without_known(
+                report.differences,
+                corpus::KNOWN,
+                &corpus::platform(),
+                &report.validity,
+            );
             problems.extend(missing);
+            // What each platform's FreeCAD wrote, so two platforms' runs can be compared.
+            known.extend(breps);
         }
         Ok((cases.len(), report, problems, known))
     });
@@ -73,9 +79,12 @@ fn main() -> ExitCode {
     }
 }
 
+/// For the corpus: its files FreeCAD couldn't read, and the B-reps it wrote.
+type CorpusNotes = (Vec<String>, Vec<String>);
+
 /// The cases the command line asks for, and for the corpus, its files FreeCAD couldn't
-/// read.
-fn cases() -> Result<(Vec<Case>, Option<Vec<String>>), String> {
+/// read and the B-reps it wrote.
+fn cases() -> Result<(Vec<Case>, Option<CorpusNotes>), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("run") => {
@@ -89,8 +98,8 @@ fn cases() -> Result<(Vec<Case>, Option<Vec<String>>), String> {
         }
         Some("corpus") => match &args[1..] {
             [dir] => {
-                let (cases, unread) = corpus::cases(Path::new(dir))?;
-                Ok((cases, Some(unread)))
+                let corpus = corpus::cases(Path::new(dir))?;
+                Ok((corpus.cases, Some((corpus.unread, corpus.breps))))
             }
             _ => Err(format!("corpus takes one directory\n{USAGE}")),
         },
