@@ -1,5 +1,6 @@
 //! M0.5: `silico` logs through `tracing` to stderr (never stdout), filtered by SILICO_LOG,
-//! as text or, with SILICO_LOG_FORMAT=json, one JSON object per line.
+//! as text or, with SILICO_LOG_FORMAT=json, one JSON object per line. Each test runs
+//! `silico show`, whose stdout is the outline alone and whose stderr is empty but for logs.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::process::{Command, Output, Stdio};
@@ -12,17 +13,38 @@ fn run(env: &[(&str, &str)]) -> Output {
     )
 }
 
+/// A one-box document, and its outline.
+const DOCUMENT: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}]}"#;
+const OUTLINE: &str =
+    "k7f2qx3m \"Block\" box length 40, width 20, height 10, at (0, 0, 0)\nbodies k7f2qx3m\n";
+
+/// `silico show` of [`DOCUMENT`], which writes the outline to stdout and nothing to
+/// stderr: anything else on stderr is a log line, and stdout must be the outline alone.
 fn run_os(env: &[(&str, std::ffi::OsString)]) -> Output {
+    static RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let file = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        "logging-{}-{}.silico",
+        std::process::id(),
+        RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::write(&file, DOCUMENT).unwrap();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_silico"));
-    cmd.stdin(Stdio::null())
+    cmd.arg("show")
+        .arg(&file)
+        .stdin(Stdio::null())
         .env_remove("SILICO_LOG")
         .env_remove("SILICO_LOG_FORMAT");
     for (k, v) in env {
         cmd.env(k, v);
     }
     let out = cmd.output().unwrap();
+    let _ = std::fs::remove_file(&file);
     assert!(out.status.success(), "{out:?}");
-    assert!(out.stdout.is_empty(), "logs leaked to stdout: {out:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        OUTLINE,
+        "logs leaked to stdout"
+    );
     out
 }
 

@@ -9,6 +9,7 @@
 //! command API every client uses arrives later in M2.
 
 pub mod cache;
+pub mod command;
 pub mod document;
 mod error;
 #[cfg(feature = "fake")]
