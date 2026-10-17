@@ -51,7 +51,7 @@ The command API exposed over MCP: transactions, geometry queries that return sta
 **Done when** an agent designs a bracket headlessly and exports a printable 3MF.
 
 ### M5 – The app
-A Fusion-style layout with browser tree, timeline bar, and property panel. A viewport built on `re_renderer` with crisp edges and GPU picking. The sketch-mode UI. Behavior follows SolidWorks; visuals follow Fusion 360.
+A Fusion-style layout with browser tree, timeline bar, and property panel. A viewport built on `re_renderer` with crisp edges and GPU picking. The sketch-mode UI. Behavior follows SolidWorks; visuals follow Fusion 360. Sketch points are shared, merged as SolidWorks merges them (docs/design/m3.2-sketch-format.md, D2): drawing from a point shares it; trim, split, delete, and pulling a corner apart create or split shared points explicitly; unmerging is a deliberate act; deleting a curve keeps its neighbours' shared point.
 
 **Done when** the vertical slice works end to end in both the UI and MCP.
 

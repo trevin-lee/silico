@@ -27,6 +27,7 @@
 ## Decided
 
 - **One way only.** Silico reads `.FCStd`; it never writes it.
+- **Sketches' coincidences become shared points** (Silico's sketches share points: docs/design/m3.2-sketch-format.md, D2, the maintainer's decision, 2026-10-16). Coincident ends merge into one point, including chains of three or more and arc centers. A coincidence that isn't between ends (a point on a curve) becomes an `on` constraint. A suppressed coincidence (FreeCAD's `isActive` off), and the coincident ends of a sketch FreeCAD hadn't solved that sit apart in the file, can't merge without moving geometry: each becomes an `on` constraint where its form allows, or is reported as not imported, naming the constraint.
 - **A `.FCStd` is untrusted input:** it's parsed with limits, in a worker where its B-rep is read (OCCT's text reader can loop on a truncated one unless its stream raises, `c3828d6225`), names in it never become paths, and embedded Python (add-ons, macros, objects defined in Python) is never run.
 
 ## To settle
