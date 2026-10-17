@@ -237,13 +237,11 @@ pub struct ElementMap {
     feature: FeatureId,
     names: BTreeMap<ElementRef, Vec<Arc<Name>>>,
     elements: BTreeMap<Arc<Name>, ElementRef>,
-    /// Names two or more elements came about by (each but the first then `~1`, `~2`, ...),
-    /// here or in the solids this one was made from.
-    duplicated: BTreeSet<Arc<Name>>,
-    /// Elements named by their numbers because nothing else named them, or their names
-    /// would have been past the bounds, here or in the solids this one was made from: such
-    /// a name is unstable, as an upstream edit can renumber the element.
-    numbered: BTreeSet<Arc<Name>>,
+    /// Its names that are unstable ([`ElementMap::is_unstable`]), decided when it was made:
+    /// only its own, so nothing is carried from the solids it was made from that it no
+    /// longer names (the review found a set carried forward growing with the square of the
+    /// timeline).
+    unstable: BTreeSet<Arc<Name>>,
 }
 
 impl ElementMap {
@@ -255,8 +253,7 @@ impl ElementMap {
             feature,
             names: BTreeMap::new(),
             elements: BTreeMap::new(),
-            duplicated: BTreeSet::new(),
-            numbered: BTreeSet::new(),
+            unstable: BTreeSet::new(),
         };
         for kind in [ElementKind::Face, ElementKind::Edge, ElementKind::Vertex] {
             for index in 1..=counts.of(kind) {
@@ -298,10 +295,14 @@ impl ElementMap {
     /// element it names depends on how elements are numbered, which an upstream edit can
     /// change.
     pub fn is_unstable(&self, name: &Name) -> bool {
-        self.numbered.contains(name)
-            || self.duplicated.contains(name)
+        self.unstable.contains(name)
             || matches!(name, Name::Duplicate { .. })
             || name.parts().into_iter().any(|part| self.is_unstable(part))
+    }
+
+    /// Its unstable names, in order.
+    pub fn unstable(&self) -> impl Iterator<Item = &Arc<Name>> {
+        self.unstable.iter()
     }
 
     /// Every element and its names, in element order.

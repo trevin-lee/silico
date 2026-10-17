@@ -53,32 +53,25 @@ impl ElementMap {
         inputs: &[&ElementMap],
         history: &History,
     ) -> Self {
-        // An ambiguous name stays ambiguous in what's made from it.
-        let duplicated: BTreeSet<Arc<Name>> = inputs
-            .iter()
-            .flat_map(|input| input.duplicated.iter().cloned())
-            .collect();
-        let numbered: BTreeSet<Arc<Name>> = inputs
-            .iter()
-            .flat_map(|input| input.numbered.iter().cloned())
-            .collect();
         let mut builder = Builder {
             map: ElementMap {
                 feature,
                 names: BTreeMap::new(),
                 elements: BTreeMap::new(),
-                duplicated,
-                numbered,
+                unstable: BTreeSet::new(),
             },
             operation,
             sizes: BTreeMap::new(),
             inputs: BTreeMap::new(),
+            duplicated: BTreeSet::new(),
+            numbered: BTreeSet::new(),
         };
         builder.kept(inputs, history);
         builder.derived(inputs, history);
         builder.named_from_above(history);
         builder.named_from_below(history);
         builder.by_number(history);
+        builder.settle(inputs);
         builder.map
     }
 }
@@ -101,6 +94,12 @@ struct Builder {
     /// without their tags (Silico's form has none: the base's `Face1` and the tool's) are
     /// ordered by it.
     inputs: BTreeMap<ElementRef, usize>,
+    /// Names two or more of this result's elements came about by (each but the first then
+    /// `~1`, `~2`, ...).
+    duplicated: BTreeSet<Arc<Name>>,
+    /// Names by number made here: an element nothing else named, one whose name would
+    /// have been past the bounds, or an input's element its map doesn't have.
+    numbered: BTreeSet<Arc<Name>>,
 }
 
 impl Builder {
@@ -131,22 +130,64 @@ impl Builder {
     fn bounded(&mut self, element: ElementRef, name: Name) -> Arc<Name> {
         let (depth, weight) = self.parts_size(&name);
         if depth > MOST_DEPTH || weight > MOST_WEIGHT {
-            let numbered = Arc::new(self.map.element_name(element));
-            self.map.numbered.insert(Arc::clone(&numbered));
-            return numbered;
+            return self.numbered(&self.map.feature.clone(), element);
         }
         Arc::new(name)
+    }
+
+    /// `feature`'s `element` by its number, unstable.
+    fn numbered(&mut self, feature: &FeatureId, element: ElementRef) -> Arc<Name> {
+        let name = Arc::new(Name::Element {
+            feature: feature.clone(),
+            element,
+        });
+        self.numbered.insert(Arc::clone(&name));
+        name
     }
 
     /// An input element's own name; if its map has none (a history that lists more of an
     /// input's elements than it has; every map Silico builds names every element), one by
     /// its number, unstable.
     fn source_name(&mut self, map: &ElementMap, source: ElementRef) -> Arc<Name> {
-        map.name(source).unwrap_or_else(|| {
-            let numbered = Arc::new(map.element_name(source));
-            self.map.numbered.insert(Arc::clone(&numbered));
-            numbered
-        })
+        map.name(source)
+            .unwrap_or_else(|| self.numbered(map.feature(), source))
+    }
+
+    /// Decides which of the map's names are unstable: a duplicate's `~n`, a name that came
+    /// about for more than one element, one by number, one its input's map says is
+    /// unstable (a kept element keeps it), or one made from such a name.
+    fn settle(&mut self, inputs: &[&ElementMap]) {
+        let mut decided: BTreeMap<usize, (Arc<Name>, bool)> = BTreeMap::new();
+        let held: Vec<Arc<Name>> = self.map.elements.keys().cloned().collect();
+        let unstable = held
+            .into_iter()
+            .filter(|name| self.decide(name, inputs, &mut decided))
+            .collect();
+        self.map.unstable = unstable;
+    }
+
+    /// Whether `name` is unstable, as [`settle`](Self::settle) decides it, each name (by
+    /// its address, held so the address is never another's) decided once.
+    fn decide(
+        &self,
+        name: &Arc<Name>,
+        inputs: &[&ElementMap],
+        decided: &mut BTreeMap<usize, (Arc<Name>, bool)>,
+    ) -> bool {
+        let address = Arc::as_ptr(name) as usize;
+        if let Some((_, unstable)) = decided.get(&address) {
+            return *unstable;
+        }
+        let unstable = matches!(**name, Name::Duplicate { .. })
+            || self.duplicated.contains(name)
+            || self.numbered.contains(name)
+            || inputs.iter().any(|input| input.unstable.contains(name))
+            || name
+                .parts()
+                .into_iter()
+                .any(|part| self.decide(part, inputs, decided));
+        decided.insert(address, (Arc::clone(name), unstable));
+        unstable
     }
 
     fn is_named(&self, element: ElementRef) -> bool {
@@ -182,7 +223,7 @@ impl Builder {
                         Name::Duplicate { name, .. } => Arc::clone(name),
                         _ => Arc::clone(taken.key()),
                     };
-                    self.map.duplicated.insert(Arc::clone(&base));
+                    self.duplicated.insert(Arc::clone(&base));
                     candidate = Arc::new(Name::Duplicate {
                         name: base,
                         ordinal,
@@ -224,7 +265,7 @@ impl Builder {
                             }
                         }
                         None => {
-                            let name = self.source_name(map, source);
+                            let name = self.numbered(map.feature(), source);
                             self.set(kept, name);
                         }
                     }
@@ -396,8 +437,7 @@ impl Builder {
             for index in 1..=counts.of(kind) {
                 let this = element_ref(kind, index);
                 if !self.is_named(this) {
-                    let name = Arc::new(self.map.element_name(this));
-                    self.map.numbered.insert(Arc::clone(&name));
+                    let name = self.numbered(&self.map.feature.clone(), this);
                     self.set(this, name);
                 }
             }

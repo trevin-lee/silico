@@ -201,12 +201,12 @@ impl FakeKernel {
     /// How a fake kernel made `shape`, written out (`cut(box(40, 20, 10), sphere(5))`), if
     /// it's a fake kernel's shape.
     pub fn describe(shape: &ShapeData) -> Option<String> {
-        Made::read(shape).ok().map(|made| made.describe())
+        Symbolic::read(shape).ok().map(|made| made.describe())
     }
 
     /// The faces, edges, vertices, and solids of `shape`, if it's a fake kernel's shape.
     pub fn counts(shape: &ShapeData) -> Option<ElementCounts> {
-        Made::read(shape).ok().map(|made| made.counts())
+        Symbolic::read(shape).ok().map(|made| made.counts())
     }
 }
 
@@ -458,9 +458,9 @@ fn rule_panicked(kind: &str, op: &Op) -> Error {
 /// The fake's reply to `op`.
 fn answer(op: &Op) -> Result<Reply, Error> {
     match op {
-        Op::MakePrimitive(primitive) => Ok(Reply::Shape(Made::primitive(*primitive).shape())),
+        Op::MakePrimitive(primitive) => Ok(Reply::Shape(Symbolic::primitive(*primitive).shape())),
         Op::Translate { shape, offset } => {
-            let made = Made::read(shape)?;
+            let made = Symbolic::read(shape)?;
             let counts = made.counts();
             // As the kernel reports a move: each element modified into its own number (a
             // moved element isn't the same sub-shape), or kept by a move of nothing.
@@ -479,9 +479,9 @@ fn answer(op: &Op) -> Result<Reply, Error> {
             Ok(Reply::Built(BuiltData { shape, history }))
         }
         Op::Boolean { op, base, tool } => {
-            let (base, tool) = (Made::read(base)?, Made::read(tool)?);
+            let (base, tool) = (Symbolic::read(base)?, Symbolic::read(tool)?);
             let (a, b) = (base.counts(), tool.counts());
-            let made = Made::boolean(*op, base, tool);
+            let made = Symbolic::boolean(*op, base, tool);
             let history = History {
                 inputs: vec![kept(a, ElementCounts::default()), kept(b, a)],
                 result: sum(a, b),
@@ -491,7 +491,7 @@ fn answer(op: &Op) -> Result<Reply, Error> {
             let shape = made.shape();
             Ok(Reply::Built(BuiltData { shape, history }))
         }
-        Op::Summarize { shape } => Ok(Reply::Summary(Made::read(shape)?.summary())),
+        Op::Summarize { shape } => Ok(Reply::Summary(Symbolic::read(shape)?.summary())),
         Op::Echo { data } => Ok(Reply::Echo { data: data.clone() }),
         other => Err(Error::new(
             ErrorCode::Internal,
@@ -656,11 +656,11 @@ enum Step {
 /// base's steps come before its tool's, which end just before it. A move's input is never a
 /// move (moves compose), and no move is by nothing.
 #[derive(Debug, Clone, PartialEq)]
-struct Made(Vec<Step>);
+struct Symbolic(Vec<Step>);
 
-impl Made {
+impl Symbolic {
     fn primitive(primitive: Primitive) -> Self {
-        Made(vec![Step::Primitive(primitive)])
+        Symbolic(vec![Step::Primitive(primitive)])
     }
 
     /// This shape moved by `offset`, as the kernel composes locations.
@@ -695,8 +695,8 @@ impl Made {
         self
     }
 
-    fn boolean(op: BooleanOp, base: Made, tool: Made) -> Self {
-        let Made(mut steps) = base;
+    fn boolean(op: BooleanOp, base: Symbolic, tool: Symbolic) -> Self {
+        let Symbolic(mut steps) = base;
         let shift = steps.len();
         steps.extend(tool.0.into_iter().map(|step| match step {
             Step::Primitive(_) => step,
@@ -716,7 +716,7 @@ impl Made {
             base: shift - 1,
             tool,
         });
-        Made(steps)
+        Symbolic(steps)
     }
 
     /// The shape's bytes: the header, then a line for each step.
@@ -786,7 +786,7 @@ impl Made {
             sizes.push(size.ok_or_else(refused)?);
             steps.push(step);
         }
-        let made = Made(steps);
+        let made = Symbolic(steps);
         // One shape, every step part of it, and every number as `text` writes it.
         if sizes.last() != Some(&made.0.len()) || made.text().as_bytes() != bytes {
             return Err(refused());
@@ -1044,7 +1044,7 @@ fn parse_boolean(name: &str) -> Option<BooleanOp> {
 }
 
 /// The step a line of a shape's bytes says, if it's one. Whether it's written canonically
-/// is [`Made::read`]'s to check.
+/// is [`Symbolic::read`]'s to check.
 fn parse_step(line: &str) -> Option<Step> {
     let mut words = line.split(' ');
     let name = words.next()?;
@@ -1097,7 +1097,7 @@ mod tests {
     fn a_deep_chain_of_booleans_is_read_and_described_without_overflowing_the_stack() {
         // Built directly: through the kernel, each boolean's history lists its base's
         // elements, so a chain this deep would take quadratic time to make.
-        let unit = Made::primitive(Primitive::Sphere { radius: 1.0 });
+        let unit = Symbolic::primitive(Primitive::Sphere { radius: 1.0 });
         let depth = 100_000;
         let mut steps = unit.0.clone();
         for _ in 0..depth {
@@ -1109,8 +1109,8 @@ mod tests {
                 tool: base + 1,
             });
         }
-        let made = Made(steps);
-        let read = Made::read(&made.shape()).unwrap();
+        let made = Symbolic(steps);
+        let read = Symbolic::read(&made.shape()).unwrap();
         assert_eq!(read, made);
         let text = read.describe();
         assert!(text.starts_with("fuse(fuse(fuse("));

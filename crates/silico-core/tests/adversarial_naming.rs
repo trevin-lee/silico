@@ -951,3 +951,42 @@ fn a_history_naming_an_element_its_input_doesnt_have_gives_an_unstable_name() {
     let sixth = map.name(element(ElementKind::Face, 6)).unwrap();
     assert!(!map.is_unstable(&sixth));
 }
+
+#[test]
+fn a_maps_unstable_names_are_its_own_however_long_the_timeline() {
+    // Found by the review: each map carried every earlier map's names by number, so a
+    // chain of results nothing names grew with the square of its length (3.7 GB for 160
+    // features of 20,000 faces). A map holds only its own unstable names.
+    let (r, n) = (1_000u32, 50usize);
+    let history = History {
+        inputs: vec![InputHistory::default(), InputHistory::default()],
+        result: ElementCounts {
+            faces: r,
+            edges: 0,
+            vertices: 0,
+            solids: 1,
+        },
+        ends: Default::default(),
+        topology: Topology {
+            face_edges: vec![vec![]; r as usize],
+            outer_edges: vec![vec![]; r as usize],
+            edge_vertices: vec![],
+        },
+    };
+    history.validate(2).unwrap();
+    let tool = ElementMap::primitive(id("tttttttt"), BOX);
+    let mut map = ElementMap::primitive(id("pppppppp"), BOX);
+    for k in 0..n {
+        map = ElementMap::operation(
+            id(&format!("f{k:07}")),
+            OpCode::Cut,
+            &[&map, &tool],
+            &history,
+        );
+    }
+    assert_eq!(map.unstable().count(), r as usize);
+    // Each is this feature's element by number.
+    let face = map.name(element(ElementKind::Face, 1)).unwrap();
+    assert_eq!(face.to_string(), "f0000049.Face1");
+    assert!(map.is_unstable(&face));
+}

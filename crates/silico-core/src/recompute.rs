@@ -30,7 +30,7 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 
 use crate::cache::Cache;
-use crate::document::{Checked, Document, FeatureId, Fingerprint, Made, Operation};
+use crate::document::{Checked, Document, FeatureId, Fingerprint, Made};
 use crate::kernel::{
     BooleanOp, BuiltData, Generation, History, Kernel, KernelRequest, Primitive, ShapeData,
     ShapeSummary,
@@ -133,8 +133,7 @@ pub struct Model {
     /// doubled the cost of a long timeline on the fake). They're a function of the model's
     /// own data alone, so they're the same whenever they're named.
     maps: Vec<OnceLock<Option<Arc<ElementMap>>>>,
-    /// Maps named so far, by naming key, shared with the engine and the models it published
-    /// before, so a feature named alike in an earlier model isn't named again.
+    /// The engine's maps named so far.
     known: NamedMaps,
 }
 
@@ -427,10 +426,10 @@ struct EngineState {
     published_plans: VecDeque<Arc<BTreeSet<Key>>>,
     newest_plan: Option<Arc<BTreeSet<Key>>>,
     published: Option<Arc<Model>>,
-    /// Element maps named so far, by naming key: those the last [`PUBLISHED_KEPT`] published
-    /// models name (`published_names`), shared with them.
+    /// Maps named so far, kept for the naming keys the last [`PUBLISHED_KEPT`] published
+    /// models have (`published_keys`).
     known: NamedMaps,
-    published_names: VecDeque<BTreeSet<NamingKey>>,
+    published_keys: VecDeque<BTreeSet<NamingKey>>,
 }
 
 /// How many published models' results are kept.
@@ -482,7 +481,7 @@ impl<K: Kernel + 'static> Recompute<K> {
                     newest_plan: None,
                     published: None,
                     known: Arc::default(),
-                    published_names: VecDeque::new(),
+                    published_keys: VecDeque::new(),
                 }),
             }),
         }
@@ -661,36 +660,43 @@ impl Plan {
         for feature in features {
             let mut own = Vec::new();
             let mut uses = Vec::new();
-            if let Some(primitive) = feature.operation.primitive() {
-                let made = plan.add(Step::Make(primitive), &feature.id);
-                own.push(made);
-                // A primitive at the origin isn't moved.
-                if let Some(position) = feature.operation.position()
-                    && position.iter().any(|length| length.nm() != 0)
-                {
-                    let offset = position.map(crate::document::Length::mm);
-                    own.push(plan.add(
-                        Step::Translate {
-                            input: made,
-                            offset,
-                        },
-                        &feature.id,
-                    ));
-                }
-            }
-            if let (Some(op), Some([(_, base), (_, tool)])) =
-                (boolean_op(&feature.operation), feature.operation.inputs())
-            {
-                // The gate has checked that both are earlier features, so both are planned.
-                let input = |id: &FeatureId| index.get(id).copied();
-                if let (Some(b), Some(t)) = (input(base), input(tool)) {
-                    uses = vec![b, t];
-                    let key = |i: usize| plan.features.get(i).and_then(Planned::key);
-                    if let (Some(base), Some(tool)) = (key(b), key(t)) {
-                        own.push(plan.add(Step::Boolean { op, base, tool }, &feature.id));
+            let naming = match feature.operation.made() {
+                Made::Primitive(primitive) => {
+                    let made = plan.add(Step::Make(primitive), &feature.id);
+                    own.push(made);
+                    // A primitive at the origin isn't moved.
+                    if let Some(position) = feature.operation.position()
+                        && position.iter().any(|length| length.nm() != 0)
+                    {
+                        let offset = position.map(crate::document::Length::mm);
+                        own.push(plan.add(
+                            Step::Translate {
+                                input: made,
+                                offset,
+                            },
+                            &feature.id,
+                        ));
                     }
+                    Some(Naming::Primitive(primitive))
                 }
-            }
+                Made::Boolean(op) => {
+                    // The gate has checked that both are earlier features, so both are
+                    // planned.
+                    if let Some([(_, base), (_, tool)]) = feature.operation.inputs() {
+                        let input = |id: &FeatureId| index.get(id).copied();
+                        if let (Some(b), Some(t)) = (input(base), input(tool)) {
+                            uses = vec![b, t];
+                            let key = |i: usize| plan.features.get(i).and_then(Planned::key);
+                            if let (Some(base), Some(tool)) = (key(b), key(t)) {
+                                own.push(plan.add(Step::Boolean { op, base, tool }, &feature.id));
+                            }
+                        }
+                    }
+                    Some(Naming::Operation(op.into()))
+                }
+                // A sketch makes no solid: nothing to build or name.
+                Made::Sketch => None,
+            };
             if let Some(result) = own.last() {
                 plan.results.insert(*result);
             }
@@ -698,11 +704,7 @@ impl Plan {
                 id: feature.id.clone(),
                 steps: own,
                 uses,
-                naming: match feature.operation.made() {
-                    Made::Primitive(primitive) => Some(Naming::Primitive(primitive)),
-                    Made::Boolean(op) => Some(Naming::Operation(op.into())),
-                    Made::Sketch => None,
-                },
+                naming,
             });
         }
         plan
@@ -720,14 +722,6 @@ impl Plan {
     /// The feature to name for step `key`.
     fn feature(&self, key: &Key) -> &str {
         self.first_feature.get(key).map_or("", FeatureId::as_str)
-    }
-}
-
-/// The boolean `operation` is, if it's one.
-fn boolean_op(operation: &Operation) -> Option<BooleanOp> {
-    match operation.made() {
-        Made::Boolean(op) => Some(op),
-        Made::Primitive(_) | Made::Sketch => None,
     }
 }
 
@@ -927,9 +921,9 @@ impl<K: Kernel + 'static> Engine<K> {
         }
         // Maps only the models worth keeping name are kept.
         let named: BTreeSet<NamingKey> = model.naming.iter().flatten().map(|n| n.key).collect();
-        state.published_names.push_front(named);
-        state.published_names.truncate(PUBLISHED_KEPT);
-        let kept: BTreeSet<NamingKey> = state.published_names.iter().flatten().copied().collect();
+        state.published_keys.push_front(named);
+        state.published_keys.truncate(PUBLISHED_KEPT);
+        let kept: BTreeSet<NamingKey> = state.published_keys.iter().flatten().copied().collect();
         lock(&state.known).retain(|key, _| kept.contains(key));
         state.published = Some(Arc::clone(&model));
         state.published_plans.push_front(keys);
