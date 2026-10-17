@@ -595,3 +595,80 @@ pub(crate) fn worker_path() -> Result<PathBuf, Error> {
         )))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn summary() -> ShapeSummary {
+        ShapeSummary {
+            volume: 6000.0,
+            area: 2200.0,
+            center: [5.0, 10.0, 15.0],
+            faces: 6,
+            edges: 12,
+            vertices: 8,
+            bounds: Some([[0.0; 3], [10.0, 20.0, 30.0]]),
+            valid: true,
+        }
+    }
+
+    /// The summary request's reading of `reply`, as a worker's would be read.
+    fn read(reply: ShapeSummary) -> Result<ShapeSummary, Error> {
+        let request = KernelRequest::summarize(&ShapeData::checked(Blob::inline(vec![]), true));
+        (request.read)("Summarize", Reply::Summary(reply))
+    }
+
+    #[test]
+    fn a_summary_no_shape_has_is_refused_as_a_protocol_error_saying_why() {
+        assert_eq!(read(summary()), Ok(summary()));
+        // A flat box, and none, are fine.
+        let flat = ShapeSummary {
+            bounds: Some([[0.0; 3], [10.0, 0.0, 30.0]]),
+            ..summary()
+        };
+        assert!(read(flat).is_ok());
+        assert!(
+            read(ShapeSummary {
+                bounds: None,
+                ..summary()
+            })
+            .is_ok()
+        );
+        type Spoil = fn(&mut ShapeSummary);
+        let cases: [(Spoil, &str); 9] = [
+            (|s| s.volume = f64::NAN, "its volume has NaN"),
+            (|s| s.area = f64::INFINITY, "its area has inf"),
+            (|s| s.center[0] = f64::NAN, "its center x has NaN"),
+            (|s| s.center[1] = f64::NEG_INFINITY, "its center y has -inf"),
+            (|s| s.center[2] = f64::INFINITY, "its center z has inf"),
+            (
+                |s| s.bounds = Some([[0.0, 0.0, f64::NAN], [10.0, 20.0, 30.0]]),
+                "its box has NaN",
+            ),
+            (
+                |s| s.bounds = Some([[11.0, 0.0, 0.0], [10.0, 20.0, 30.0]]),
+                "its box's lowest x, 11, is past its highest, 10",
+            ),
+            (
+                |s| s.bounds = Some([[0.0, 21.0, 0.0], [10.0, 20.0, 30.0]]),
+                "its box's lowest y, 21, is past its highest, 20",
+            ),
+            (
+                |s| s.bounds = Some([[0.0, 0.0, 31.0], [10.0, 20.0, 30.0]]),
+                "its box's lowest z, 31, is past its highest, 30",
+            ),
+        ];
+        for (spoil, why) in cases {
+            let mut bad = summary();
+            spoil(&mut bad);
+            let error = read(bad).unwrap_err();
+            assert_eq!(error.code(), ErrorCode::ProtocolError, "{why}");
+            assert_eq!(error.cause(), Some(why));
+            assert_eq!(
+                error.message(),
+                "the kernel worker answered Summarize with a summary no shape has"
+            );
+        }
+    }
+}

@@ -535,8 +535,9 @@ fn editing_any_value_of_a_cone_or_a_torus_rebuilds_it() {
     }
 }
 
-/// A fake kernel that, for one generation, holds each step after the fake has run it and
-/// before handing it back, until let go: a recompute superseded after its last step ran.
+/// A fake kernel that, for one generation, holds its last job (the measure of a feature's
+/// solid) after the fake has run it and before handing it back, until let go: a recompute
+/// superseded after its last job ran.
 struct Gate {
     inner: FakeKernel,
     held: Generation,
@@ -565,10 +566,15 @@ impl Kernel for Gate {
         request: KernelRequest<T>,
     ) -> Pending<T> {
         let before = self.inner.calls().len();
+        // The held generation's last job, the measure of its feature's solid, once: so the
+        // older recompute has run every job when the newer one supersedes it, and only the
+        // check at publishing can stop it.
+        let last = request.name() == "Summarize";
         let pending = self.inner.submit(generation, request);
-        // Only the held generation's first request, its step: what follows it (the measure
-        // of its solid, asked once the newer recompute has superseded it) isn't held.
-        if generation == self.held && !self.delivered.load(std::sync::atomic::Ordering::SeqCst) {
+        if generation == self.held
+            && last
+            && !self.delivered.load(std::sync::atomic::Ordering::SeqCst)
+        {
             let deadline = std::time::Instant::now() + WAIT;
             while self.inner.calls().len() == before && std::time::Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(1));
@@ -608,8 +614,9 @@ fn a_recompute_superseded_after_its_last_step_ran_doesnt_publish_over_the_newer_
     let older = engine.start(document(&[
         r#"{"id": "aaaaaaaa", "type": "sphere", "v": 1, "name": "A", "position": [0, 0, 0], "radius": 7}"#,
     ]));
-    // Until the fake has delivered the older recompute's step: only then does the newer
-    // one start, so the older one is superseded after its last step ran.
+    // Until the fake has delivered the older recompute's last job, the measure of its solid:
+    // only then does the newer one start, so the older one is superseded after every job
+    // ran, and only publishing can tell.
     let deadline = std::time::Instant::now() + WAIT;
     while !engine
         .kernel()

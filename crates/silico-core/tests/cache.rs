@@ -199,6 +199,10 @@ fn a_solid_that_couldnt_be_measured_is_kept_on_disk_unmeasured_and_measured_next
         assert!(calls(&second).is_empty(), "{code:?}: {:?}", calls(&second));
         // Measured now, and written measured: a third session asks the kernel nothing.
         assert!(model.drift().is_empty(), "{code:?}");
+        assert!(
+            model.fingerprint(&model::id("k7f2qx3m")).is_some(),
+            "{code:?}"
+        );
         let third = session(&dir.0);
         published(&third, checked(EXAMPLE));
         assert!(third.kernel().calls().is_empty(), "{code:?}");

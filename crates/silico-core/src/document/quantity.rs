@@ -274,6 +274,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_length_rounded_past_i64_nanometres_is_none() {
+        // i64 holds up to 9223372036854775807 nm, about 9.2 million km.
+        assert_eq!(
+            Length::rounded(9e12),
+            Some(Length::from_nm(9_000_000_000_000_000_000))
+        );
+        assert_eq!(
+            Length::rounded(-9e12).map(Length::nm),
+            Some(-9_000_000_000_000_000_000)
+        );
+        assert_eq!(Length::rounded(1e13), None);
+        assert_eq!(Length::rounded(-1e13), None);
+        assert_eq!(Length::rounded(f64::NAN), None);
+        assert_eq!(Length::rounded(0.0000004), Some(Length::from_nm(0)));
+        // The float written 1.0000005 is 1.00000050000000006988..., past the half: up.
+        assert_eq!(Length::rounded(1.0000005), Some(Length::from_nm(1_000_001)));
+    }
+
+    #[test]
     fn decimals_read_exactly_without_a_float() {
         // 0.1 is exactly 100,000 nm; no f64 holds 0.1 exactly.
         assert_eq!(Length::parse("0.1"), Ok(Length::from_nm(100_000)));

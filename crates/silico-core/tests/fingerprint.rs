@@ -331,8 +331,10 @@ fn a_solid_that_cant_be_measured_is_built_but_says_why_and_keeps_its_fingerprint
 
 #[test]
 fn what_uses_a_solid_doesnt_wait_for_it_to_be_measured() {
-    // Every measure held: the cut still runs, on the block and the moved pin.
-    let engine = engine();
+    // Every measure held: the cut still runs, on the block and the moved pin. A held
+    // request holds one of the fake's workers, and two measures (the block's and the
+    // pin's) can be held before the cut is asked, so the fake has a third for it.
+    let engine = Recompute::new(FakeKernel::new(3).unwrap());
     let hold = engine
         .kernel()
         .hold(|op| matches!(op, Op::Summarize { .. }));
@@ -417,4 +419,35 @@ fn a_published_model_doesnt_change_when_a_later_recompute_measures_its_solids() 
     }
     assert_eq!(first.drift().len(), 3);
     assert_eq!(write(&first.fingerprinted()).unwrap(), written);
+}
+
+#[test]
+fn unmeasured_and_drift_are_reported_in_timeline_order_together() {
+    // The block and the hole can't be measured; the pin is stored with 3 vertices (it has
+    // 2): an unmeasured error, drift, and an unmeasured error, in the timeline's order.
+    let text = saved(EXAMPLE).replacen(r#""vertices": 2"#, r#""vertices": 3"#, 1);
+    let document = read(text.as_bytes()).unwrap();
+    let engine = engine();
+    engine.kernel().refuse(|op| match op {
+        Op::Summarize { shape } => {
+            let d = FakeKernel::describe(shape).unwrap_or_default();
+            (d.starts_with("box") || d.starts_with("cut"))
+                .then(|| Error::new(ErrorCode::KernelFailed, "Summarize failed"))
+        }
+        _ => None,
+    });
+    let model = published(&engine, Checked::new(document).unwrap());
+    let said: Vec<_> = model
+        .drift()
+        .iter()
+        .map(|e| (e.code(), e.feature().unwrap().to_owned()))
+        .collect();
+    assert_eq!(
+        said,
+        [
+            (ErrorCode::KernelFailed, "k7f2qx3m".to_owned()),
+            (ErrorCode::Drift, "a91cw0de".to_owned()),
+            (ErrorCode::KernelFailed, "m3tq8v0z".to_owned()),
+        ]
+    );
 }
