@@ -524,7 +524,12 @@ fn a_solution_is_read_back_by_id() {
     // As the file holds them: coordinates, -0 kept apart from 0.
     let c = |v: f64| silico_core::document::Coordinate::new(v).unwrap();
     assert_eq!(solution.points[&id("p0000003")], [c(4.0), c(4.5)]);
-    assert_ne!(solution.points[&id("p0000001")], [c(-0.0), c(0.0)]);
+    // A coordinate solved to -0 is -0 (round 2's tests lens).
+    let mut values = t.system.values.clone();
+    values[10] = -0.0;
+    let negative = read_back(&t, &answer(&t, values, SolveStatus::Success)).unwrap();
+    assert_eq!(negative.points[&id("p0000003")], [c(-0.0), c(3.0)]);
+    assert_ne!(negative.points[&id("p0000003")], [c(0.0), c(3.0)]);
     assert_eq!(solution.algorithm, Algorithm::DogLeg);
     assert!(solution.redundant.is_empty() && solution.references.is_empty());
 }
@@ -796,11 +801,12 @@ fn shapes2(constraint: &str) -> String {
 #[test]
 fn every_form_redundant_and_met_is_kept_and_a_nanometre_off_is_over_constrained() {
     // Each form alone, drawn exactly met, answered as PlaneGCS dropping it as redundant:
-    // kept, and named redundant. Then one value it reads moved by a nanometre (1e-6 mm), by
-    // hand chosen to move the form's own measure (a millimetre gap of 1e-6, or a radian gap
-    // of 1e-7 over a 10 mm line): past decision 5's 1e-8 mm and 1e-9 rad, over-constrained,
-    // naming it.
-    let cases: [(&str, usize); 26] = [
+    // kept, and named redundant. Then one value it reads moved, chosen by hand so the move
+    // is the form's own measure: a millimetre gap as large as the move, or a radian gap a
+    // tenth of it over a 10 mm line. A move of 1e-8 is then exactly decision 5's tolerance
+    // (1e-8 mm, 1e-9 rad): half of it is kept, twice it is over-constrained, naming it. A
+    // measure off by any factor fails one or the other (round 2's tests lens).
+    let cases: [(&str, usize); 28] = [
         (r#""type": "horizontal", "line": "n0000001""#, 9),
         (r#""type": "vertical", "line": "n0000002""#, 10),
         (
@@ -895,6 +901,15 @@ fn every_form_redundant_and_met_is_kept_and_a_nanometre_off_is_over_constrained(
             r#""type": "midpoint", "point": "p0000005", "line": "n0000001""#,
             14,
         ),
+        // The right side of a line: p6 and c2's centre are 10 right of n2 (running +y).
+        (
+            r#""type": "point_line_distance", "point": "p0000006", "line": "n0000002", "value": 10, "side": "right", "driving": true"#,
+            16,
+        ),
+        (
+            r#""type": "tangent", "a": "n0000002", "b": "c0000002", "side": "right""#,
+            21,
+        ),
     ];
     for (form, moved) in cases {
         let t = translate(&shapes2(&format!(r#"{{"id": "k0000001", {form}}}"#)));
@@ -906,9 +921,13 @@ fn every_form_redundant_and_met_is_kept_and_a_nanometre_off_is_over_constrained(
         met.redundant = vec![Tag(1)];
         let kept = read_back(&t, &met).unwrap_or_else(|e| panic!("{form}: {e}"));
         assert_eq!(kept.redundant.len(), 1, "{form}");
-        let mut off = met.clone();
-        off.values[moved] += 1e-6;
-        let e = read_back(&t, &off).unwrap_err();
+        let moved_by = |step: f64| {
+            let mut off = met.clone();
+            off.values[moved] += step;
+            read_back(&t, &off)
+        };
+        assert!(moved_by(0.5e-8).is_ok(), "{form}: half the tolerance off");
+        let e = moved_by(2e-8).unwrap_err();
         assert_eq!(
             (e.code(), e.elements()),
             (ErrorCode::OverConstrained, &["k0000001".to_owned()][..]),
@@ -1065,9 +1084,14 @@ fn a_circle_or_arc_that_cant_be_built_is_named_and_a_free_circle_listed() {
 struct Scripted {
     answers: Vec<Result<Solved, silico_core::Error>>,
     sent: Vec<SketchSystem>,
+    distrusted: usize,
 }
 
 impl SketchSolver for Scripted {
+    fn distrust(&mut self) {
+        self.distrusted += 1;
+    }
+
     fn solve(&mut self, system: SketchSystem) -> Result<Solved, silico_core::Error> {
         self.sent.push(system);
         if self.answers.is_empty() {
@@ -1094,8 +1118,14 @@ fn the_second_solve_stands_only_when_it_solves_and_happens_only_after_a_solved_c
         let mut s = Scripted {
             answers,
             sent: Vec::new(),
+            distrusted: 0,
         };
         let got = t.solve(&mut s).map(|a| a.outcome);
+        assert_eq!(
+            s.distrusted,
+            usize::from(matches!(&got, Err(e) if e.code() == ErrorCode::ProtocolError)),
+            "a worker is distrusted exactly when its reply can't be trusted"
+        );
         (got, s.sent)
     };
     // The first conflicting but solved, the second clean: the second stands, sent from the

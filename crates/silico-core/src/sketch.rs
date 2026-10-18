@@ -1011,10 +1011,19 @@ impl Translation {
 
     /// The ID of the constraint the solver reports as `tag`, if one is.
     pub fn constraint_id(&self, tag: Tag) -> Option<&ElementId> {
+        self.constraint_tagged(tag).map(|c| &c.id)
+    }
+
+    /// The document's constraint tagged `tag`, if one is.
+    fn constraint_tagged(&self, tag: Tag) -> Option<&SketchConstraint> {
         (tag.0 as usize)
             .checked_sub(1)
             .and_then(|i| self.constraints.get(i))
-            .map(|c| &c.id)
+    }
+
+    /// The form of the document's constraint tagged `tag`, if one is.
+    fn form(&self, tag: Tag) -> Option<&Form> {
+        self.constraint_tagged(tag).map(|c| &c.form)
     }
 
     /// The angle sent for the `i`th constraint (sorted by ID), if it's a tangency at an end
@@ -1568,9 +1577,17 @@ impl Translation {
                 let mid = [(pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0];
                 Gap::mm(from_line(mid, line).abs())
             }
-            S::SymmetricPoint { a, b, center, .. } => {
-                let (pb, m) = (p(b), p(center));
-                Gap::mm(length(p(a), [2.0 * m[0] - pb[0], 2.0 * m[1] - pb[1]]))
+            S::SymmetricPoint { tag, a, b, center } => {
+                let (pa, pb, m) = (p(a), p(b), p(center));
+                let midpoint = matches!(self.form(tag), Some(Form::Midpoint { .. }));
+                if midpoint {
+                    // A midpoint's gap is the point's distance from the line's middle.
+                    let middle = [(pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0];
+                    Gap::mm(length(m, middle))
+                } else {
+                    // A symmetry's, one point's distance from the other's mirror image.
+                    Gap::mm(length(pa, [2.0 * m[0] - pb[0], 2.0 * m[1] - pb[1]]))
+                }
             }
         }
     }

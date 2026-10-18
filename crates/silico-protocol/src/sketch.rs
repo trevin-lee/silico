@@ -32,12 +32,14 @@ pub const MAX_SKETCH_GEOMETRY: usize = 10_000;
 pub const MAX_SKETCH_UNKNOWNS: usize = 1024;
 
 /// At most this many unknowns in the part of a sketch a drag moves (the unknowns its
-/// constraints join to the points its pins hold: [`DragBegin::part`]): while the cursor holds a point, PlaneGCS
-/// solves that part with SQP, on dense matrices, up to 100 iterations, so one move can cost
+/// constraints join to the points its pins hold: [`DragBegin::part`]): while the cursor
+/// holds a point, PlaneGCS solves that part with SQP, on dense matrices, up to 100
+/// iterations, so one move can cost
 /// far more than a solve. A chain the cursor pulls far from where it began, linked end to
 /// end: 0.76 s a move at 256 unknowns on a loaded M4 Pro, 6 s at 512, 64 s at 1024, past a
 /// request's time. A larger part solves, but doesn't drag; parts the point isn't in don't
-/// count (a 1,936-unknown grid of rectangles drags in 0.2 ms a move).
+/// count (a grid of rectangles drags in 0.2 ms a move, measured at 1,936 unknowns before
+/// a sketch was held to 1,024).
 pub const MAX_DRAG_UNKNOWNS: usize = 256;
 
 /// At most this many entries in the solver's Jacobian (rows × unknowns): PlaneGCS's
