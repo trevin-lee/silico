@@ -67,11 +67,11 @@ jobs:
       fail-fast: false
       # At most three at once, whatever the shard count. A run's cap doesn't count other
       # runs' shards, so two runs together take six of the eight runners and leave two for
-      # gates and the other workflows (bench, the nightly oracle sweep); a third run at once
-      # would take the rest, and they would wait for a shard to finish. (Runner labels could reserve runners for gates, but the VM's runners are
-      # single-use and minted with fixed labels.) The runners share one VM, so free runners
-      # alone don't keep its CPU free for gates either: a saturated machine fails wall-clock
-      # tests.
+      # gates and the other workflows (bench, whose timings a busy machine skews, and the
+      # nightly oracle sweep); a third run at once would take the rest, and they would wait
+      # for a shard to finish. (Runner labels could reserve runners for gates, but the VM's
+      # runners are single-use and minted with fixed labels.) The runners share one VM, and
+      # free runners don't keep its CPU free: see the shard's share below.
       max-parallel: 3
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
@@ -104,10 +104,11 @@ jobs:
           fi
           for package in $PACKAGES; do args+=(-p "$package"); done
           # A sixth of the machine each: the most shards that run at once, two runs of three.
-          # One run alone uses half of it; two use all of it, and a gate then shares the
-          # machine with them, which its load-tolerant tests are made for. Retry a failed
-          # test, since one that fails only under load would fail the baseline or count a
-          # mutant as caught; a mutant that breaks a test fails it every time.
+          # One run alone uses half of it. Two use all of it, and a gate then runs on a full
+          # machine, where a test still held to a wall clock (tests/mutants.sh lists them)
+          # can fail: re-run the gate. Retry a failed test here, since one that fails only
+          # under load would fail the baseline or count a mutant as caught; a mutant that
+          # breaks a test fails it every time.
           running=6
           share=$(( $(nproc) / running > 2 ? $(nproc) / running : 2 ))
           export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share NEXTEST_RETRIES=2
