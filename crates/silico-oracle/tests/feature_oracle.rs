@@ -47,6 +47,11 @@ fn the_case_file_holds_every_case_of_the_design() {
         "sphere",
         "rectangle_about_its_side_360_xy",
         "rectangle_about_its_side_90_yz",
+        "groove_both_sides_360",
+        "groove_both_sides_181",
+        "groove_both_sides_180",
+        "groove_both_sides_near_270",
+        "groove_both_sides_mirrored_360",
     ] {
         assert!(names.contains(name), "{name} is missing");
     }
@@ -61,10 +66,10 @@ fn the_case_file_holds_every_case_of_the_design() {
     assert_eq!(count("torus_"), 42);
     assert_eq!(
         count("groove_"),
-        2 + 24,
-        "the ported groove and each groove and its cylinder"
+        2 + 24 + 10,
+        "the ported groove, each groove and its cylinder, and the five grooves of regions either side of their axis (council round 2) and their cylinders"
     );
-    assert_eq!(cases.cases.len(), 114);
+    assert_eq!(cases.cases.len(), 124);
 }
 
 #[test]

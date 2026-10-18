@@ -2008,6 +2008,216 @@
       "axis": "y_axis",
       "extent": {"type": "one_side", "angle": 360, "reversed": false},
       "note": "The square grooved 360 degrees right-handed about the sketch's y axis into the cylinder's top (design S9): pi 10 (30^2 - 20^2) 360/360 removed. Expected: volume 84823.00164692441; box -40 -40 0 40 40 20; center 0 0 9.074074074074073."
+    },
+    {
+      "id": "s1000001",
+      "type": "sketch",
+      "v": 1,
+      "name": "groove_both_sides_cylinder_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "c0000001", "center": "p0000001", "radius": 20, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": [],
+      "note": "The council's round 2: a circle of radius 20 at the origin, padded for each groove of regions either side of its axis."
+    },
+    {
+      "id": "s1000002",
+      "type": "sketch",
+      "v": 1,
+      "name": "groove_both_sides_profile",
+      "plane": "xz",
+      "points": [
+        {"id": "pa000001", "x": 15, "y": 5, "construction": false},
+        {"id": "pa000002", "x": 25, "y": 5, "construction": false},
+        {"id": "pa000003", "x": 25, "y": 10, "construction": false},
+        {"id": "pa000004", "x": 15, "y": 10, "construction": false},
+        {"id": "pb000001", "x": -25, "y": 7, "construction": false},
+        {"id": "pb000002", "x": -15, "y": 7, "construction": false},
+        {"id": "pb000003", "x": -15, "y": 12, "construction": false},
+        {"id": "pb000004", "x": -25, "y": 12, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false},
+        {"id": "nb000001", "from": "pb000001", "to": "pb000002", "construction": false},
+        {"id": "nb000002", "from": "pb000002", "to": "pb000003", "construction": false},
+        {"id": "nb000003", "from": "pb000003", "to": "pb000004", "construction": false},
+        {"id": "nb000004", "from": "pb000004", "to": "pb000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "Rectangles A (x 15..25, z 5..10) and B (x -25..-15, z 7..12), either side of the sketch's y axis."
+    },
+    {
+      "id": "p1000011",
+      "type": "pad",
+      "v": 1,
+      "name": "groove_both_sides_360_cylinder",
+      "sketch": "s1000001",
+      "extent": {"type": "one_side", "length": 20, "reversed": false},
+      "note": "The circle of radius 20 padded 20: 8000 pi. Expected: volume 25132.741228718343; faces 3; edges 3; vertices 2; box -20 -20 0 20 20 20."
+    },
+    {
+      "id": "g1000001",
+      "type": "groove",
+      "v": 1,
+      "name": "groove_both_sides_360",
+      "base": "p1000011",
+      "sketch": "s1000002",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "The council's round 2 critical: A turns through the ring 15..20 from z 5 to 10, B from 7 to 12, each a whole turn: their union, the ring from z 5 to 12, pi (20^2 - 15^2) 7 removed, with the regions' solids cut as separate tools as FreeCAD does. Expected: volume 21284.290228070848."
+    },
+    {
+      "id": "p1000012",
+      "type": "pad",
+      "v": 1,
+      "name": "groove_both_sides_181_cylinder",
+      "sketch": "s1000001",
+      "extent": {"type": "one_side", "length": 20, "reversed": false},
+      "note": "The circle of radius 20 padded 20: 8000 pi. Expected: volume 25132.741228718343; faces 3; edges 3; vertices 2; box -20 -20 0 20 20 20."
+    },
+    {
+      "id": "g1000002",
+      "type": "groove",
+      "v": 1,
+      "name": "groove_both_sides_181",
+      "base": "p1000012",
+      "sketch": "s1000002",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 181, "reversed": false},
+      "note": "A over 0..181 degrees, B over 180..361: z 5..7 and 10..12 181 degrees each, z 7..10 the whole ring: pi (20^2 - 15^2) (3 + 4 181/360) removed. Expected: volume 22377.739004445295."
+    },
+    {
+      "id": "p1000013",
+      "type": "pad",
+      "v": 1,
+      "name": "groove_both_sides_180_cylinder",
+      "sketch": "s1000001",
+      "extent": {"type": "one_side", "length": 20, "reversed": false},
+      "note": "The circle of radius 20 padded 20: 8000 pi. Expected: volume 25132.741228718343; faces 3; edges 3; vertices 2; box -20 -20 0 20 20 20."
+    },
+    {
+      "id": "g1000003",
+      "type": "groove",
+      "v": 1,
+      "name": "groove_both_sides_180",
+      "base": "p1000013",
+      "sketch": "s1000002",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 180, "reversed": false},
+      "note": "A over 0..180 degrees, B over 180..360: half rings, z 7..10 whole: pi (20^2 - 15^2) 5 removed. Expected: volume 22383.847656827274."
+    },
+    {
+      "id": "s1000003",
+      "type": "sketch",
+      "v": 1,
+      "name": "groove_both_sides_near_profile",
+      "plane": "xz",
+      "points": [
+        {"id": "pa000001", "x": 15, "y": 5, "construction": false},
+        {"id": "pa000002", "x": 25, "y": 5, "construction": false},
+        {"id": "pa000003", "x": 25, "y": 10, "construction": false},
+        {"id": "pa000004", "x": 15, "y": 10, "construction": false},
+        {"id": "pb000001", "x": -18, "y": 7, "construction": false},
+        {"id": "pb000002", "x": -12, "y": 7, "construction": false},
+        {"id": "pb000003", "x": -12, "y": 12, "construction": false},
+        {"id": "pb000004", "x": -18, "y": 12, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false},
+        {"id": "nb000001", "from": "pb000001", "to": "pb000002", "construction": false},
+        {"id": "nb000002", "from": "pb000002", "to": "pb000003", "construction": false},
+        {"id": "nb000003", "from": "pb000003", "to": "pb000004", "construction": false},
+        {"id": "nb000004", "from": "pb000004", "to": "pb000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "Rectangles A (x 15..25, z 5..10) and B (x -18..-12, z 7..12), either side of the sketch's y axis."
+    },
+    {
+      "id": "p1000014",
+      "type": "pad",
+      "v": 1,
+      "name": "groove_both_sides_near_270_cylinder",
+      "sketch": "s1000001",
+      "extent": {"type": "one_side", "length": 20, "reversed": false},
+      "note": "The circle of radius 20 padded 20: 8000 pi. Expected: volume 25132.741228718343; faces 3; edges 3; vertices 2; box -20 -20 0 20 20 20."
+    },
+    {
+      "id": "g1000004",
+      "type": "groove",
+      "v": 1,
+      "name": "groove_both_sides_near_270",
+      "base": "p1000014",
+      "sketch": "s1000003",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 270, "reversed": false},
+      "note": "A (ring 15..20, z 5..10) over 0..270 degrees, B (ring 12..18, z 7..12) over 180..450: each alone three quarters, their overlap (ring 15..18, z 7..10) whole: (3 pi/4) ((175 5 - 99 3) + (180 5 - 99 3)) + pi 99 3 = 1182.75 pi removed. Expected: volume 21417.022517685014."
+    },
+    {
+      "id": "s1000004",
+      "type": "sketch",
+      "v": 1,
+      "name": "groove_both_sides_mirrored_profile",
+      "plane": "xz",
+      "points": [
+        {"id": "pa000001", "x": 15, "y": 5, "construction": false},
+        {"id": "pa000002", "x": 25, "y": 5, "construction": false},
+        {"id": "pa000003", "x": 25, "y": 10, "construction": false},
+        {"id": "pa000004", "x": 15, "y": 10, "construction": false},
+        {"id": "pb000001", "x": -25, "y": 5, "construction": false},
+        {"id": "pb000002", "x": -15, "y": 5, "construction": false},
+        {"id": "pb000003", "x": -15, "y": 10, "construction": false},
+        {"id": "pb000004", "x": -25, "y": 10, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false},
+        {"id": "nb000001", "from": "pb000001", "to": "pb000002", "construction": false},
+        {"id": "nb000002", "from": "pb000002", "to": "pb000003", "construction": false},
+        {"id": "nb000003", "from": "pb000003", "to": "pb000004", "construction": false},
+        {"id": "nb000004", "from": "pb000004", "to": "pb000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "Rectangles A (x 15..25, z 5..10) and its mirror B (x -25..-15, z 5..10), either side of the sketch's y axis."
+    },
+    {
+      "id": "p1000015",
+      "type": "pad",
+      "v": 1,
+      "name": "groove_both_sides_mirrored_360_cylinder",
+      "sketch": "s1000001",
+      "extent": {"type": "one_side", "length": 20, "reversed": false},
+      "note": "The circle of radius 20 padded 20: 8000 pi. Expected: volume 25132.741228718343; faces 3; edges 3; vertices 2; box -20 -20 0 20 20 20."
+    },
+    {
+      "id": "g1000005",
+      "type": "groove",
+      "v": 1,
+      "name": "groove_both_sides_mirrored_360",
+      "base": "p1000015",
+      "sketch": "s1000004",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "A and its mirror B each a whole turn through the same ring, z 5..10: pi (20^2 - 15^2) 5 removed. Expected: volume 22383.847656827274."
     }
   ]
 }

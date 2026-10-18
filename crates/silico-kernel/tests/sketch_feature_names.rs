@@ -71,8 +71,10 @@ fn named(model: &Model, feature: &str) -> BTreeMap<String, Option<Bounds>> {
         let name = names.first().unwrap();
         assert!(!map.is_unstable(name), "{feature}: {name} is unstable");
         let text = name.to_string();
-        assert!(
-            text.starts_with(&format!("{feature}.")) || !text.contains(".sketch."),
+        // Its type word, after the feature's ID, is never a sketch's.
+        assert_ne!(
+            text.split('.').nth(1),
+            Some("sketch"),
             "{feature}: {text} is a sketch's own"
         );
         let n = element.index as usize - 1;
@@ -999,59 +1001,86 @@ fn a_groove_whose_regions_lie_either_side_of_its_axis_cuts_both() {
 }
 
 #[test]
-fn regions_either_side_of_the_axis_are_refused_past_half_a_turn_and_right_to_it() {
-    // Council round 2 (proven, critical): a pad of a circle r 20 by 20, grooved by
+fn a_groove_of_regions_either_side_of_its_axis_turned_whole_cuts_what_both_sweep() {
+    // Council round 2's critical: a pad of a circle r 20 by 20, grooved a whole turn by
     // rectangles A (x 15..25, z 5..10) and B (x −25..−15, z 7..12) about the sketch's y
-    // axis. A whole turn turned their solids into each other and OCCT's cut gave 2748.893572
-    // for the right 21284.29 (FreeCAD 1.1.3 builds it right, measured). Refused past 180°
-    // now; at 180° each sweeps its own half, the ring 15..20, 5 high: π (20² − 15²) × 5 in
-    // all removed, FreeCAD's 22383.847657 left. Regions all on one side (A, and C at x
-    // 15..25, z 12..15) turn a whole turn: π (20² − 15²) × (5 + 3) removed.
+    // axis. Their swept solids overlap (z 7..10), and cut as one compound tool OCCT removed
+    // 2748.893572. Cut as separate tools, as FreeCAD's makeElementBoolean expands a compound
+    // tool (docs/ports/sketch-features.md), the groove removes the union, the ring 15..20
+    // from z 5 to 12: π (20² − 15²) × 7, leaving 21284.290228, FreeCAD 1.1.3's measure.
     let engine = engine();
-    let document = |rects: &[[f64; 4]], extent: &str| {
-        publish(
+    let model = publish(
+        &engine,
+        &[
+            &circles("cccccccc", "xy", &[([0.0, 0.0], 20.0)]),
+            &pad("pppppppp", None, "cccccccc", &one_side("20")),
+            &rectangles(
+                "ssssssss",
+                "xz",
+                &[[15.0, 5.0, 25.0, 10.0], [-25.0, 7.0, -15.0, 12.0]],
+            ),
+            &turned(
+                "gggggggg",
+                "groove",
+                Some("pppppppp"),
+                "ssssssss",
+                "y_axis",
+                TURN,
+            ),
+        ],
+    );
+    assert_eq!(errors(&model), []);
+    let want = PI * 400.0 * 20.0 - PI * 175.0 * 7.0;
+    assert!((want - 21284.290228).abs() < 1e-6);
+    assert_close(volume(&model, "gggggggg"), want, "the whole turn");
+}
+
+#[test]
+fn a_two_region_grooves_names_dont_depend_on_the_order_of_its_tools() {
+    // The cut takes each region's solid as a tool of its own, in the regions' order (their
+    // smallest curve IDs). Renaming B's curves so it comes first changes that order, and
+    // every name of A's elements finds the same place: names come from each tool's own
+    // elements, never from where OCCT lists the tools.
+    let engine = engine();
+    let groove = |b: &str| {
+        let sketch = rectangles(
+            "ssssssss",
+            "xz",
+            &[[15.0, 5.0, 25.0, 10.0], [-25.0, 7.0, -15.0, 12.0]],
+        )
+        .replace("nb0", b);
+        let model = publish(
             &engine,
             &[
                 &circles("cccccccc", "xy", &[([0.0, 0.0], 20.0)]),
                 &pad("pppppppp", None, "cccccccc", &one_side("20")),
-                &rectangles("ssssssss", "xz", rects),
+                &sketch,
                 &turned(
                     "gggggggg",
                     "groove",
                     Some("pppppppp"),
                     "ssssssss",
                     "y_axis",
-                    extent,
+                    TURN,
                 ),
             ],
-        )
+        );
+        assert_eq!(errors(&model), []);
+        named(&model, "gggggggg")
     };
-    let both = [[15.0, 5.0, 25.0, 10.0], [-25.0, 7.0, -15.0, 12.0]];
-    let model = document(&both, TURN);
-    match model.outcome(&id("gggggggg")) {
-        Some(FeatureOutcome::Failed(error)) => {
-            assert_eq!(error.code(), ErrorCode::InvalidInput);
-            assert_eq!(error.parameter(), Some("extent.angle"));
-            assert!(
-                error
-                    .message()
-                    .contains("past 180° they turn into each other")
-            );
-        }
-        other => panic!("{other:?}"),
-    }
-    let cylinder = PI * 400.0 * 20.0;
-    let model = document(&both, &angle("180"));
-    assert_eq!(errors(&model), []);
-    let half = cylinder - PI * 175.0 * 5.0;
-    assert!((half - 22383.847657).abs() < 1e-6);
-    assert_close(volume(&model, "gggggggg"), half, "the half turn");
-    let one = [[15.0, 5.0, 25.0, 10.0], [15.0, 12.0, 25.0, 15.0]];
-    let model = document(&one, TURN);
-    assert_eq!(errors(&model), []);
-    assert_close(
-        volume(&model, "gggggggg"),
-        cylinder - PI * 175.0 * 8.0,
-        "the whole turn",
-    );
+    // B's lines nb0000n1.., or n00000n (before A's na0000n).
+    let (after, before) = (groove("nb0"), groove("n00"));
+    let of_a = |names: &BTreeMap<String, Option<Bounds>>| -> BTreeMap<String, Option<Bounds>> {
+        names
+            .iter()
+            .filter(|(n, _)| {
+                n.contains("sketch.Edge.na")
+                    && !n.contains("sketch.Edge.n00")
+                    && !n.contains("sketch.Edge.nb")
+            })
+            .map(|(n, b)| (n.clone(), *b))
+            .collect()
+    };
+    assert!(!of_a(&after).is_empty());
+    assert_eq!(of_a(&after), of_a(&before));
 }

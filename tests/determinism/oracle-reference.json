@@ -717,6 +717,86 @@
     "summary": "dbc68fd3253aeb69",
     "topology": "a852e1d1394f0ff4"
   },
+  "groove_both_sides_180": {
+    "brep": "e8241fa5218eb8b2",
+    "history": "790a732e49045533",
+    "measures": "391faa24afa7f8c9",
+    "mesh": "b80a1d23adc19efe",
+    "summary": "73d4b98000f280b4",
+    "topology": "0e45541552d52ec1"
+  },
+  "groove_both_sides_180_cylinder": {
+    "brep": "d3102ee2a60ba3ff",
+    "history": "616cc19e20092a6b",
+    "measures": "67c17890ff5f6eb0",
+    "mesh": "668d79d2ed636ef2",
+    "summary": "3b4562b4c435f846",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "groove_both_sides_181": {
+    "brep": "6b1cb87a8a552b3c",
+    "history": "e66429ece43e6cbc",
+    "measures": "43f6baff991ac955",
+    "mesh": "e35e1c37ec7afae8",
+    "summary": "c4279c14b35a5910",
+    "topology": "f158fb2a2a2b8aaf"
+  },
+  "groove_both_sides_181_cylinder": {
+    "brep": "d3102ee2a60ba3ff",
+    "history": "616cc19e20092a6b",
+    "measures": "67c17890ff5f6eb0",
+    "mesh": "668d79d2ed636ef2",
+    "summary": "3b4562b4c435f846",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "groove_both_sides_360": {
+    "brep": "3e749c8ab25270fc",
+    "history": "fc4500238ee24f63",
+    "measures": "28d942781b592774",
+    "mesh": "5c2da18ee7bfbeec",
+    "summary": "84cb1aa620c2b211",
+    "topology": "d680858e40be4f33"
+  },
+  "groove_both_sides_360_cylinder": {
+    "brep": "d3102ee2a60ba3ff",
+    "history": "616cc19e20092a6b",
+    "measures": "67c17890ff5f6eb0",
+    "mesh": "668d79d2ed636ef2",
+    "summary": "3b4562b4c435f846",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "groove_both_sides_mirrored_360": {
+    "brep": "7cb2d02cb9f28b1e",
+    "history": "1e149540a264c908",
+    "measures": "bf7b12d14154fcc9",
+    "mesh": "61142dfa04ed30c1",
+    "summary": "4687bfa4f15cb606",
+    "topology": "afc79a99b2d162dc"
+  },
+  "groove_both_sides_mirrored_360_cylinder": {
+    "brep": "d3102ee2a60ba3ff",
+    "history": "616cc19e20092a6b",
+    "measures": "67c17890ff5f6eb0",
+    "mesh": "668d79d2ed636ef2",
+    "summary": "3b4562b4c435f846",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "groove_both_sides_near_270": {
+    "brep": "cbe5e1d8d44a90ba",
+    "history": "cfe1449e589fcf8c",
+    "measures": "97c7d1e52a5c2b66",
+    "mesh": "76c0a39d32ab7ad5",
+    "summary": "f33727bdaa125667",
+    "topology": "060c516f55c2c6f1"
+  },
+  "groove_both_sides_near_270_cylinder": {
+    "brep": "d3102ee2a60ba3ff",
+    "history": "616cc19e20092a6b",
+    "measures": "67c17890ff5f6eb0",
+    "mesh": "668d79d2ed636ef2",
+    "summary": "3b4562b4c435f846",
+    "topology": "b7fe2b2d96d27620"
+  },
   "groove_control": {
     "brep": "f8e9511dfecd0969",
     "history": "12805f56a645be41",

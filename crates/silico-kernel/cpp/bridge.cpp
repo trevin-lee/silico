@@ -991,6 +991,18 @@ std::unique_ptr<Shape> sweep_revolution(const Shape &faces, Point3 origin, Point
   return std::make_unique<Shape>(Shape{result});
 }
 
+// `shape`'s shapes, a compound's every child's that isn't a compound itself, in order:
+// FreeCAD's expandCompound (TopoShapeExpansion.cpp 122-134).
+static void expand_compound(const TopoDS_Shape &shape, NCollection_List<TopoDS_Shape> &into) {
+  if (shape.ShapeType() != TopAbs_COMPOUND) {
+    into.Append(shape);
+    return;
+  }
+  for (TopoDS_Iterator child(shape); child.More(); child.Next()) {
+    expand_compound(child.Value(), into);
+  }
+}
+
 std::unique_ptr<Shape> boolean(BooleanOp op, const Shape &base, const Shape &tool,
                                rust::Vec<HistoryEntry> &history,
                                rust::Vec<rust::String> &warnings) {
@@ -1011,7 +1023,19 @@ std::unique_ptr<Shape> boolean(BooleanOp op, const Shape &base, const Shape &too
   NCollection_List<TopoDS_Shape> arguments;
   arguments.Append(base.shape);
   NCollection_List<TopoDS_Shape> tools;
-  tools.Append(tool.shape);
+  // A cut's or fuse's tool that's a compound of several shapes (a pocket's or groove's
+  // sweep of several regions) is given as that many tools, as FreeCAD 1.1.3's
+  // TopoShape::makeElementBoolean expands it (expandCompound, TopoShapeExpansion.cpp
+  // 122-134 and 5905-5940): one compound of tools that overlap is a self-intersecting
+  // argument, which OCCT cuts wrongly. A compound of one is given as it is, so every
+  // single-tool boolean is unchanged. The history is still the tool's, by its own
+  // numbering, whatever order the tools are in.
+  if (op != BooleanOp::Common && tool.shape.ShapeType() == TopAbs_COMPOUND &&
+      tool.shape.NbChildren() > 1) {
+    expand_compound(tool.shape, tools);
+  } else {
+    tools.Append(tool.shape);
+  }
   maker->SetArguments(arguments);
   maker->SetTools(tools);
   // Leave the inputs' sub-shapes as they are, so history reports changed elements as

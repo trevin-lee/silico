@@ -225,12 +225,6 @@ fn reach(edge: &crate::profile::Edge, origin: [f64; 2], direction: [f64; 2]) -> 
 ///   crossing is refused as `invalid_input`, the feature the sketch (its elements are
 ///   where it's fixed), the elements the crossing region's curves reaching off the axis,
 ///   by ID, and the axis, if it's a line;
-/// - **regions on both sides turn at most half a turn**: where some region lies wholly on
-///   each side of the axis, the whole angle (one side's, or symmetric's in all) must be at
-///   most 180°, exactly, in nanodegrees; past it their solids turn into each other, and
-///   OCCT's cut of overlapping tools is wrong (council round 2). Refused as
-///   `invalid_input`, naming the feature, its `extent.angle`, and the outer-loop curves of
-///   the first region on each side. Regions all on one side may turn a whole turn;
 /// - **the angle must move something**: the profile's farthest point from the axis, over
 ///   every region, times the angle in radians more than the tolerance, as M1's revolve
 ///   refuses one; refused as `invalid_input`, naming the feature and its `extent.angle`.
@@ -247,11 +241,6 @@ pub fn check_axis(
     let word = axis.word;
     let tolerance = silico_protocol::LENGTH_TOLERANCE;
     let mut farthest = 0.0f64;
-    // A region wholly on each side of the axis, the first of each (its outer loop's curves).
-    let (mut left, mut right): (
-        Option<&crate::profile::Region>,
-        Option<&crate::profile::Region>,
-    ) = (None, None);
     for region in &profile.regions {
         let (mut low, mut high) = (0.0f64, 0.0f64);
         let mut off: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -267,11 +256,6 @@ pub fn check_axis(
             }
         }
         farthest = farthest.max(-low).max(high);
-        if high > tolerance && low >= -tolerance {
-            left.get_or_insert(region);
-        } else if low < -tolerance && high <= tolerance {
-            right.get_or_insert(region);
-        }
         if low < -tolerance && high > tolerance {
             let total = off.len() + usize::from(axis.line.is_some());
             let mut elements: Vec<String> = off.iter().take(PROBLEMS_LISTED).cloned().collect();
@@ -306,56 +290,13 @@ pub fn check_axis(
         .features
         .iter()
         .find(|f| &f.id == feature);
-    let angle = match found.and_then(|f| f.operation.extent()) {
+    let degrees = match found.and_then(|f| f.operation.extent()) {
         Some(crate::document::Extent::Turn(
             crate::document::TurnExtent::OneSide { angle, .. }
             | crate::document::TurnExtent::Symmetric { angle },
-        )) => angle,
+        )) => angle.degrees(),
         _ => return Err(unchecked(format!("has {feature}, which turns by no angle"))),
     };
-    let degrees = angle.degrees();
-    // Regions on both sides of the axis, turned past half a turn in all, turn into each
-    // other: their solids overlap, and OCCT's cut of overlapping tools is wrong (council
-    // round 2: a 360° groove removed 2748.9 mm³ for 3848.5). Exact, in the file's own
-    // nanodegrees; regions all on one side may turn a whole turn (disjoint in the plane,
-    // disjoint when turned), and the rule doesn't ask where the base is.
-    if let (Some(left), Some(right)) = (left, right)
-        && angle.ndeg() > HALF_TURN_NDEG
-    {
-        let curves = |region: &crate::profile::Region| -> Vec<String> {
-            region
-                .outer
-                .curves
-                .iter()
-                .map(|e| e.curve.to_string())
-                .collect()
-        };
-        let (one, other) = (curves(left), curves(right));
-        let total = one.len() + other.len();
-        let elements: Vec<String> = one
-            .iter()
-            .chain(&other)
-            .take(PROBLEMS_LISTED)
-            .cloned()
-            .collect();
-        return Err(Error::new(
-            ErrorCode::InvalidInput,
-            format!(
-                "{word} {feature} turns sketch {} {}° about a line with regions on both sides of it (inside loops {} and {}): past 180° they turn into each other",
-                axis.sketch,
-                format_number(degrees),
-                one.join(", "),
-                other.join(", ")
-            ),
-        )
-        .with_feature(feature.as_str())
-        .with_parameter("extent.angle")
-        .with_elements(elements)
-        .with_elements_total(total as u64)
-        .with_suggestion(format!(
-            "turn it at most 180°, or make one {word} per side"
-        )));
-    }
     if farthest * silico_protocol::radians(degrees) <= tolerance {
         return Err(Error::new(
             ErrorCode::InvalidInput,
@@ -375,10 +316,6 @@ pub fn check_axis(
         line: axis.line.cloned(),
     })
 }
-
-/// Half a turn in nanodegrees, the most a profile with regions either side of its axis may
-/// turn in all (council round 2): 180 × 10⁹.
-const HALF_TURN_NDEG: i64 = 180_000_000_000;
 
 /// [`check_axis`]'s checks of the profile, once [`check_axis_length`] has passed.
 pub fn check_axis_turn(
