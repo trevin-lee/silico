@@ -18,6 +18,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Refusals written as `change <= k * before`: NaN makes every comparison false, so the refusal is skipped; an infinite result or a negative (inverted) base passes too
 - Angles from `atan2` at a signed zero (a point at its centre's left with y = −0 gives −π, +0 gives π): a request whose points are placed with zeros as 0 still differs by a turn, and the kernel's bytes with it
 - One rule computed twice, by the core and again by a worker (a sliver's |area| ≤ tol × perimeter about different first points, sqrt against hypot): bisect a turned thin strip's width to the core's boundary and send it; a shoelace sum of coordinates ~10 cancels to ~1e-8 relative
+- Relative no-op thresholds on large parts (a change of at most 1e-9 × the base's volume is "nothing"): a 4 × 2 mm hole through a 200 m block removes 1.6 litres and is refused, the message claiming the volumes equal
 
 ## Sketch geometry
 
@@ -77,6 +78,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Revolve with an axis that crosses the profile, or angles of 0°, 360°, or more than 360°
 - Revolve a side leaning just off parallel to the axis (its length within 1e-7 of its length along the axis): OCCT makes a cylinder, not a cone, and calls the solid valid
 - Revolve a profile that touches its axis only at a corner (a cone's apex where its slanted side meets the side on the axis, a diamond's tip): OCCT generates a degenerate edge from that vertex (two, when MakeRevol copies one two faces share), so a history rule of "on the axis, it generates nothing" refuses the commonest revolve
+- Bases of several solids (a fuse of two boxes apart, which M2 accepts) under a feature that checks its result is one solid: the extra solid is blamed on the feature ("doesn't reach its base", "cuts its base in two")
 - A sweep's vector, or a revolution's axis, in the faces' own plane, given to a kernel operation that leaves the plane to the core: OCCT builds a solid of volume 0 that `BRepCheck` calls valid
 - OCCT makers that share their input's topology (`MakePrism`, `MakeRevol` without copying): they add curves and locations to the input's edges, so the input's bytes change and each later sweep of the same shape in one process writes different bytes; compare the input's bytes before and after, and sweep it twice
 - Revolve with a side or corner exactly 1e-7 from the axis, or across it by less than 1e-7: OCCT throws (`NCollection_Sequence::Value`, `BRep_API: command not done`)
@@ -115,6 +117,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Primitives whose numbering follows their values (a cone whose top radius goes to 0: OCCT drops the top cap and numbers the base Face2, the top's number): a name derived from `cone.Face2` (a hole's top rim) finds the base rim; check where a fillet of it takes material, before and after
 - Elements a boolean keeps whole (a pin wholly inside a block: the void's rim is the pin's circle) under the boolean retyped (cut to common) or its operands swapped: a rule about which side an operation keeps that's applied only to modified elements lets the kept one keep its bare name in both solids, and a fillet of the void's concave rim silently rounds the pin's convex one; check where the fillet takes material
 - Examples an error message gives ("as `m3tq8v0z.cut.Edge1`"): feed each back through the same gate; an example in a form the gate refuses (an operation's element by its number) sends an agent from one refusal to another
+- Advice that names an element as a feature usually makes it (a sweep's start edge, `M`) given whatever the extent: a symmetric or reversed through pocket starts outside its base and keeps no start edge; follow the advice on every extent
 
 ## Files
 
@@ -192,6 +195,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A naive sequential evaluator as the oracle: random timelines with value-based refusals (kept and not kept), several edits in a row, comparing every feature's outcome, the bodies, which keys are equal, and exactly which steps each edit ran
 - Results taken from the cache or memory without their inputs' (an entry lost, a subdirectory that's a link): a step that reads more than its inputs (a fillet naming its base's elements from the whole lineage) runs before they're rebuilt
 - A superseded recompute that ends after the newer one: both keep their results by key, the last wins, and the older one's copy (its measure superseded, so unmeasured) overwrites the newer's measured or refused one; hold the older one's requests, start the newer, and loop a few hundred rounds, since which keeps last is a race
+- Features alike in every value but their IDs (two identical boxes each pocketed alike, or a refused feature deleted and re-added under a new ID): the deduplicated step, or the refusal kept by its key, carries the first feature's words, so the second is told another feature and base failed
 
 ## Oracles and comparisons
 
