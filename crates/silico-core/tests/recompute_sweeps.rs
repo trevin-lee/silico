@@ -882,3 +882,128 @@ fn a_cached_sweep_is_taken_from_disk_by_a_new_session_with_no_kernel_call() {
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_file(&secret);
 }
+
+#[test]
+fn a_swept_sketch_is_solved_once_per_recompute() {
+    // Council round 1 (proven): the sketch a pad sweeps was solved before the plan, then its
+    // solve dropped (kept before the plan's keys were, so trimmed) and solved again beside
+    // the steps; its profile never kept. Once a recompute, and an unchanged sketch not again.
+    let sketches = FakeSketches::new();
+    let engine = Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(sketches.clone());
+    let features = [sketch("xy"), pad("pppppppp", None, "ssssssss", TEN)];
+    let refs: Vec<&str> = features.iter().map(String::as_str).collect();
+    assert!(built(&published(&engine, &refs), "pppppppp"));
+    assert_eq!(sketches.requests().len(), 1);
+    assert!(built(&published(&engine, &refs), "pppppppp"));
+    assert_eq!(
+        sketches.requests().len(),
+        1,
+        "an unchanged sketch was solved again"
+    );
+}
+
+/// Two rectangles on XZ, x 15..25 and x −25..−15, both z 5..10: either side of the sketch's
+/// y axis, each on one side of it.
+const TWO_SIDES: &str = r#"{"id": "ssssssss", "type": "sketch", "v": 1, "name": "S", "plane": "xz", "points": [{"id": "pa000001", "x": 15, "y": 5, "construction": false}, {"id": "pa000002", "x": 25, "y": 5, "construction": false}, {"id": "pa000003", "x": 25, "y": 10, "construction": false}, {"id": "pa000004", "x": 15, "y": 10, "construction": false}, {"id": "pb000001", "x": -25, "y": 5, "construction": false}, {"id": "pb000002", "x": -15, "y": 5, "construction": false}, {"id": "pb000003", "x": -15, "y": 10, "construction": false}, {"id": "pb000004", "x": -25, "y": 10, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}, {"id": "nb000001", "from": "pb000001", "to": "pb000002", "construction": false}, {"id": "nb000002", "from": "pb000002", "to": "pb000003", "construction": false}, {"id": "nb000003", "from": "pb000003", "to": "pb000004", "construction": false}, {"id": "nb000004", "from": "pb000004", "to": "pb000001", "construction": false}], "circles": [], "arcs": [], "constraints": []}"#;
+
+#[test]
+fn a_groove_whose_regions_lie_either_side_of_its_axis_is_built() {
+    // Council round 1 (proven against FreeCAD 1.1.3, which checks each face's outer wire
+    // alone, FeatureSketchBased.cpp's checkLineCrossesFace per face): no region crosses the
+    // axis, so the groove builds; the axis was refused as crossing the profile, the regions
+    // taken together. On the fake, the axis passes and the faces are turned (the fake
+    // measures a turn by its faces' box, centred here on the axis, so it can't tell the
+    // volume removed); the real kernel's volume is in silico-kernel
+    // tests/sketch_feature_names.rs.
+    let engine = engine();
+    let model = published(
+        &engine,
+        &[
+            &circles("cccccccc", "xy", &[([0.0, 0.0], 20.0)]),
+            &pad(
+                "pppppppp",
+                None,
+                "cccccccc",
+                r#"{"type": "one_side", "length": 20, "reversed": false}"#,
+            ),
+            TWO_SIDES,
+            &turned(
+                "gggggggg",
+                "groove",
+                Some("pppppppp"),
+                "ssssssss",
+                "y_axis",
+                &angle("90"),
+            ),
+        ],
+    );
+    if let Some(FeatureOutcome::Failed(error)) = model.outcome(&id("gggggggg")) {
+        assert!(!error.message().contains("crosses"), "{error:?}");
+    }
+    assert!(names(&engine).contains(&"Revolution"));
+}
+
+#[test]
+fn an_axis_crossing_its_profile_and_an_angle_too_small_are_refused_in_full() {
+    // Council round 1: every field of both refusals, worked by hand. The L-shaped region
+    // A(−1, 3), B(−1, 2), C(0, 2), D(0, 0), E(2, 0), F(2, 3), its sides na000001 (AB) to
+    // na000006 (FA), about a construction line nb000000 up the y axis, x = 0: CD lies along
+    // the axis (not listed), the rest reach off it, 1 mm to the left (x = −1) and 2 to the
+    // right (x = 2); the line's left of +y is −x, so 2 mm on one side and 1 on the other.
+    let sketch = r#"{"id": "ssssssss", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "pa000001", "x": -1, "y": 3, "construction": false}, {"id": "pa000002", "x": -1, "y": 2, "construction": false}, {"id": "pa000003", "x": 0, "y": 2, "construction": false}, {"id": "pa000004", "x": 0, "y": 0, "construction": false}, {"id": "pa000005", "x": 2, "y": 0, "construction": false}, {"id": "pa000006", "x": 2, "y": 3, "construction": false}, {"id": "pb000001", "x": 0, "y": -5, "construction": false}, {"id": "pb000002", "x": 0, "y": 5, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000005", "construction": false}, {"id": "na000005", "from": "pa000005", "to": "pa000006", "construction": false}, {"id": "na000006", "from": "pa000006", "to": "pa000001", "construction": false}, {"id": "nb000000", "from": "pb000001", "to": "pb000002", "construction": true}], "circles": [], "arcs": [], "constraints": []}"#;
+    let engine = engine();
+    let model = published(
+        &engine,
+        &[
+            sketch,
+            &turned("rrrrrrrr", "revolve", None, "ssssssss", "nb000000", TURN),
+        ],
+    );
+    let error = failed(&model, "rrrrrrrr");
+    assert_eq!(error.code(), ErrorCode::InvalidInput);
+    assert_eq!(error.feature(), Some("ssssssss"));
+    assert_eq!(error.parameter(), None);
+    assert_eq!(
+        error.message(),
+        "revolve rrrrrrrr turns sketch ssssssss about a line that crosses its profile: its axis, line nb000000, has the profile's curves on both sides, 2 mm on one and 1 mm on the other"
+    );
+    assert_eq!(
+        error.elements(),
+        [
+            "na000001", "na000002", "na000004", "na000005", "na000006", "nb000000"
+        ]
+    );
+    assert_eq!(error.elements_total(), 6);
+    assert_eq!(
+        error.suggestion(),
+        Some(
+            "move the profile to one side of the axis, or turn it about another line; a profile may touch its axis"
+        )
+    );
+    // The angle: the rectangle 4 by 2 from the origin about the x axis, its farthest point
+    // 2 mm off it, turned 2e-6 degrees: 2 × 2e-6 × π/180 = 7e-8 mm, no more than 1e-7.
+    let model = published(
+        &engine,
+        &[
+            &rectangle("ssssssss", "xy", [0.0, 0.0], 4.0, 2.0),
+            &turned(
+                "rrrrrrrr",
+                "revolve",
+                None,
+                "ssssssss",
+                "x_axis",
+                &angle("0.000002"),
+            ),
+        ],
+    );
+    let error = failed(&model, "rrrrrrrr");
+    assert_eq!(error.code(), ErrorCode::InvalidInput);
+    assert_eq!(error.feature(), Some("rrrrrrrr"));
+    assert_eq!(error.parameter(), Some("extent.angle"));
+    assert_eq!(
+        error.message(),
+        "revolve rrrrrrrr's angle, 2e-6 degrees, moves its profile's farthest point, 2 mm from the axis, by at most 1e-7 mm: it would make no solid"
+    );
+    assert!(error.elements().is_empty());
+    assert_eq!(error.suggestion(), Some("turn it by a larger angle"));
+}

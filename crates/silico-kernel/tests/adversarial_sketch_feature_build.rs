@@ -584,3 +584,67 @@ fn a_pocket_of_three_hundred_and_forty_one_holes_is_cut_in_reasonable_time() {
     assert!(took < Duration::from_secs(120), "{took:?}");
     assert_named_apart(&model, "qqqqqqqq");
 }
+
+#[test]
+fn the_gates_advice_for_a_sketchs_edge_named_whole_resolves_on_a_through_pocket_and_a_revolve() {
+    // Council round 1: the advice round trip for the other extents that start at the
+    // sketch's plane. Each fillet names the sketch's curve whole, is refused advising the
+    // `M` name, and, that name followed, builds. A through-all pocket of the rectangle from
+    // the cube's top; a quarter turn, reversed (away from the cube, toward −y), of the
+    // rectangle x 2..4, z −4..−2 on XZ, in the cube's front face (y = 0), about the sketch's
+    // y axis: its start edges are the rims where it meets that face.
+    let all = r#"{"type": "through_all", "reversed": false}"#;
+    let front = box_at("bbbbbbbb", [-1.0, 0.0, -10.0], 10.0, 10.0, 10.0);
+    let quarter = r#"{"type": "one_side", "angle": 90, "reversed": true}"#;
+    let cases: [(Vec<String>, &str, &str); 2] = [
+        (
+            vec![
+                cube_below(),
+                rect(),
+                pocket("qqqqqqqq", "bbbbbbbb", "ssssssss", all),
+            ],
+            "qqqqqqqq",
+            "pocket",
+        ),
+        (
+            vec![
+                front,
+                rectangle("ssssssss", "xz", [2.0, -4.0], 2.0, 2.0),
+                turned(
+                    "qqqqqqqq",
+                    "revolve",
+                    Some("bbbbbbbb"),
+                    "ssssssss",
+                    "y_axis",
+                    quarter,
+                ),
+            ],
+            "qqqqqqqq",
+            "revolve",
+        ),
+    ];
+    let engine = engine();
+    for (features, feature, word) in cases {
+        let with = |edge: &str| {
+            let mut all = features.clone();
+            all.push(fillet(feature, edge));
+            all
+        };
+        let whole = with("ssssssss.sketch.Edge.na000003");
+        let refs: Vec<&str> = whole.iter().map(String::as_str).collect();
+        let message = checked(&refs).unwrap_err().errors()[0].message().to_owned();
+        let advice = format!("{feature}.{word}.Edge(M ssssssss.sketch.Edge.na000003)");
+        assert!(message.contains(&advice), "{word}: {message}");
+        let followed = with(&advice);
+        let refs: Vec<&str> = followed.iter().map(String::as_str).collect();
+        let model = publish(&engine, &refs);
+        assert!(
+            matches!(
+                model.outcome(&id("ffffffff")),
+                Some(FeatureOutcome::Built { .. })
+            ),
+            "{word}: {:?}",
+            model.outcome(&id("ffffffff"))
+        );
+    }
+}

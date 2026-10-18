@@ -126,7 +126,8 @@ Not in M3.6: the up-to modes, through all both ways, a second side of another mo
 | an angle that moves the profile's far point less than 1e-7 | built if above 1e-12 rad | refused, as M1's revolve |
 | an axis perpendicular to the sketch | `N_Axis` isn't checked; an edge is refused | not expressible: every axis is a line of the sketch |
 | an axis line whose solved ends coincide | OCCT throws on the null direction | refused in the core, `invalid_input`, parameter `axis` (S6) |
-| an axis crossing the profile | "Revolve axis intersects the sketch", by sampling the outer wire | refused exactly, naming the curves on both sides (S6) |
+| an axis crossing the profile | "Revolve axis intersects the sketch", by sampling each face's outer wire | refused exactly, region by region, naming the crossing region's curves off the axis and the axis line (S6) |
+| a groove whose regions lie on opposite sides of its axis, neither crossing it | built: each face is checked alone (measured: two rectangles x 15..25 and −25..−15, z 5..10, a quarter turn into a cylinder r 20, remove 1374.446786) | the same (S6), its volume pinned on the real kernel |
 | an axis along a side of the profile, or touching a corner | allowed | allowed: within 1e-7 is on the axis |
 | a side exactly 1e-7 from the axis | OCCT fails (docs/ports/extrude-revolve.md) | the same failure, passed on with M1's suggestion |
 | a whole turn | the start face isn't in the result, no ends | the same; its seams named from above |

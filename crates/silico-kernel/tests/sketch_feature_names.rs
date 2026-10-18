@@ -965,3 +965,35 @@ fn a_symmetric_whole_turns_seam_and_its_start_edge_short_of_whole_name_alike() {
         assert_at(&names, start, [x, y, 0.0], [x, y, 3.0]);
     }
 }
+
+#[test]
+fn a_groove_whose_regions_lie_either_side_of_its_axis_cuts_both() {
+    // Council round 1, proven against FreeCAD 1.1.3, which checks each face's outer wire
+    // alone: a pad of a circle r 20 by 20, grooved a quarter turn about the sketch's y axis
+    // by two rectangles on XZ, x 15..25 and x −25..−15, both z 5..10. Each turns through
+    // the ring 15 to 20 of the cylinder, a quarter of it, 5 high: 2 × (π/4)(20² − 15²) × 5,
+    // 1374.446786, FreeCAD's measure too.
+    let engine = engine();
+    let two = r#"{"id": "ssssssss", "type": "sketch", "v": 1, "name": "S", "plane": "xz", "points": [{"id": "pa000001", "x": 15, "y": 5, "construction": false}, {"id": "pa000002", "x": 25, "y": 5, "construction": false}, {"id": "pa000003", "x": 25, "y": 10, "construction": false}, {"id": "pa000004", "x": 15, "y": 10, "construction": false}, {"id": "pb000001", "x": -25, "y": 5, "construction": false}, {"id": "pb000002", "x": -15, "y": 5, "construction": false}, {"id": "pb000003", "x": -15, "y": 10, "construction": false}, {"id": "pb000004", "x": -25, "y": 10, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}, {"id": "nb000001", "from": "pb000001", "to": "pb000002", "construction": false}, {"id": "nb000002", "from": "pb000002", "to": "pb000003", "construction": false}, {"id": "nb000003", "from": "pb000003", "to": "pb000004", "construction": false}, {"id": "nb000004", "from": "pb000004", "to": "pb000001", "construction": false}], "circles": [], "arcs": [], "constraints": []}"#;
+    let model = publish(
+        &engine,
+        &[
+            &circles("cccccccc", "xy", &[([0.0, 0.0], 20.0)]),
+            &pad("pppppppp", None, "cccccccc", &one_side("20")),
+            two,
+            &turned(
+                "gggggggg",
+                "groove",
+                Some("pppppppp"),
+                "ssssssss",
+                "y_axis",
+                &angle("90"),
+            ),
+        ],
+    );
+    assert_eq!(errors(&model), []);
+    let cylinder = PI * 400.0 * 20.0;
+    let removed = 2.0 * (PI / 4.0) * (400.0 - 225.0) * 5.0;
+    assert!((removed - 1374.446786).abs() < 1e-6);
+    assert_close(volume(&model, "gggggggg"), cylinder - removed, "the groove");
+}

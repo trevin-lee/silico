@@ -724,6 +724,7 @@ type SketchResults = BTreeMap<Key, SketchResult>;
 /// A sketch's result in a recompute: its solve's, or the solver's failure, not the
 /// sketch's (a worker that couldn't start), which isn't kept, so the next recompute tries
 /// again.
+#[derive(Clone)]
 enum SketchOutcome {
     Solved(SketchResult),
     SolverFailed(Error),
@@ -740,6 +741,19 @@ impl SketchOutcome {
 
 /// What a recompute's sketch thread came to, by key.
 type SketchRun = BTreeMap<Key, SketchOutcome>;
+
+/// The sketches a recompute's features sweep, solved before its plan: each one's solve and
+/// profile (`swept`, those that solved), every solve's result by key, the solves made now
+/// (`fresh`) and the profiles made now, which the recompute keeps once its plan's keys say
+/// they're worth keeping (kept sooner, a trim drops them: the review found every swept
+/// sketch solved twice a recompute).
+#[derive(Default)]
+struct SolvedFirst {
+    swept: BTreeMap<FeatureId, Swept>,
+    solutions: SketchResults,
+    fresh: SketchRun,
+    profiles: Vec<(Key, ProfileResult)>,
+}
 
 /// A failure of the sketch solver, not the sketch: as the kernel's own failures, a fault
 /// a client reports as its own (`check` and `fmt` exit 2), not the document's. A missing
@@ -1686,11 +1700,8 @@ impl Plan {
         }
         let mut axis = None;
         if matches!(kind, SweepFeature::Revolve | SweepFeature::Groove) {
-            let checked = crate::sweep::check_axis_length(document, &feature.id, &solved.solution)
-                .and_then(|()| {
-                    crate::sweep::check_axis_turn(document, &feature.id, &solved.solution, profile)
-                })
-                .and_then(|()| crate::sweep::axis_line(document, &feature.id, &solved.solution));
+            let checked =
+                crate::sweep::check_axis(document, &feature.id, &solved.solution, profile);
             match checked {
                 Ok(line) => axis = Some((line.origin, line.direction)),
                 Err(error) => return SweepPlan::Refused(error),
@@ -2027,11 +2038,11 @@ impl<K: Kernel + 'static> Engine<K> {
         // Every sketch a feature sweeps is solved, and its profile made, before the plan
         // (design S3): a sweep's steps depend on its profile. Unchanged sketches cost
         // nothing (their solves and profiles are kept by key).
-        let swept = match self.solve_swept(document, generation)? {
-            Some(swept) => swept,
+        let first = match self.solve_swept(document, generation)? {
+            Some(first) => first,
             None => return Ok(RunOutcome::Superseded),
         };
-        let plan = Plan::of(document, &swept);
+        let plan = Plan::of(document, &first.swept);
         let keys: Arc<BTreeSet<Key>> = Arc::new(
             plan.steps
                 .keys()
@@ -2046,18 +2057,23 @@ impl<K: Kernel + 'static> Engine<K> {
             if state.newest_started == generation {
                 state.newest_plan = Some(Arc::clone(&keys));
             }
+            // The sketches solved before the plan, and their profiles, kept now that the
+            // plan's keys hold them.
+            state.profiles.extend(first.profiles.iter().cloned());
             let done = plan
                 .order
                 .iter()
                 .filter_map(|key| state.results.get(key).map(|r| (*key, r.clone())))
                 .collect();
-            let solutions = plan
+            let mut solutions: SketchResults = plan
                 .sketches
                 .iter()
                 .filter_map(|(_, key)| state.solutions.get(key).map(|r| (*key, r.clone())))
                 .collect();
+            solutions.extend(first.solutions.iter().map(|(k, r)| (*k, r.clone())));
             (done, solutions)
         };
+        self.keep_solutions(&first.fresh);
         // The sketches not solved before, solved on a thread of their own.
         let to_solve: Vec<(FeatureId, Key)> = plan
             .sketches
@@ -2237,14 +2253,14 @@ impl<K: Kernel + 'static> Engine<K> {
         &self,
         document: &Checked,
         generation: Generation,
-    ) -> Result<Option<BTreeMap<FeatureId, Swept>>, Error> {
+    ) -> Result<Option<SolvedFirst>, Error> {
         let (sketches, swept) = Plan::sketches_of(document);
         let used: Vec<(FeatureId, Key)> = sketches
             .into_iter()
             .filter(|(id, _)| swept.contains(id))
             .collect();
         if used.is_empty() {
-            return Ok(Some(BTreeMap::new()));
+            return Ok(Some(SolvedFirst::default()));
         }
         let _span = tracing::debug_span!("solve_swept", sketches = used.len()).entered();
         let (mut solutions, mut profiles): (SketchResults, BTreeMap<Key, ProfileResult>) = {
@@ -2264,6 +2280,7 @@ impl<K: Kernel + 'static> Engine<K> {
             .filter(|(_, key)| !solutions.contains_key(key))
             .cloned()
             .collect();
+        let mut fresh = SketchRun::new();
         if !to_solve.is_empty() {
             // A panic under a solve is a bug in Silico, as under a step.
             let solved = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2277,8 +2294,8 @@ impl<K: Kernel + 'static> Engine<K> {
             let Some(solved) = solved else {
                 return Ok(None);
             };
-            self.keep_solutions(&solved);
-            solutions.extend(solved.into_iter().map(|(key, s)| (key, s.result())));
+            solutions.extend(solved.iter().map(|(key, s)| (*key, s.clone().result())));
+            fresh = solved;
         }
         let mut swept_sketches = BTreeMap::new();
         let mut made = Vec::new();
@@ -2305,12 +2322,12 @@ impl<K: Kernel + 'static> Engine<K> {
                 },
             );
         }
-        if !made.is_empty() {
-            let mut state = lock(&self.state);
-            state.profiles.extend(made);
-            state.trim();
-        }
-        Ok(Some(swept_sketches))
+        Ok(Some(SolvedFirst {
+            swept: swept_sketches,
+            solutions,
+            fresh,
+            profiles: made,
+        }))
     }
 
     /// Keeps a recompute's results by key, but for failures that might not happen again,
