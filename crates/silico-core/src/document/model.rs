@@ -9,8 +9,8 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use silico_protocol::{BooleanOp, Primitive};
 
 use super::fingerprint::Fingerprint;
-use super::quantity::Length;
-use super::sketch::Sketch;
+use super::quantity::{Angle, Length};
+use super::sketch::{ElementId, Reference, Sketch};
 
 /// A Silico document: a part's feature timeline, rebuilt from this text.
 #[derive(Debug, Clone, PartialEq, Eq, JsonSchema)]
@@ -245,8 +245,9 @@ impl JsonSchema for Name {
 }
 
 /// What a feature makes. A primitive makes a solid; a boolean makes one from two earlier
-/// features' solids, consuming them; a sketch makes no solid (pad, pocket, and revolve,
-/// which make solids from sketches, come in M3.6).
+/// features' solids, consuming them; a sketch makes no solid; a pad, pocket, revolve, or
+/// groove sweeps a sketch's profile into a solid, and fuses it with its base or cuts it from
+/// it, consuming the base and using the sketch (docs/design/m3.6-sketch-features.md, S1).
 #[derive(Debug, Clone, PartialEq, Eq, JsonSchema)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Operation {
@@ -303,6 +304,210 @@ pub enum Operation {
         edges: Vec<ElementName>,
         size: ChamferSize,
     },
+    /// `sketch`'s profile swept along the sketch's normal as `extent` says, and fused with
+    /// `base`'s solid, if it has one (left out when it has none).
+    Pad {
+        #[serde(default)]
+        #[schemars(with = "FeatureId")]
+        base: Option<FeatureId>,
+        sketch: FeatureId,
+        extent: PadExtent,
+    },
+    /// `sketch`'s profile swept against the sketch's normal as `extent` says, and cut from
+    /// `base`'s solid.
+    Pocket {
+        base: FeatureId,
+        sketch: FeatureId,
+        extent: PocketExtent,
+    },
+    /// `sketch`'s profile turned about `axis` as `extent` says, and fused with `base`'s
+    /// solid, if it has one (left out when it has none).
+    Revolve {
+        #[serde(default)]
+        #[schemars(with = "FeatureId")]
+        base: Option<FeatureId>,
+        sketch: FeatureId,
+        axis: Axis,
+        extent: TurnExtent,
+    },
+    /// `sketch`'s profile turned about `axis` as `extent` says, and cut from `base`'s solid.
+    Groove {
+        base: FeatureId,
+        sketch: FeatureId,
+        axis: Axis,
+        extent: TurnExtent,
+    },
+}
+
+/// How far a pad goes from its sketch's plane: each form holds exactly the values it needs.
+/// Lengths are above 0; `reversed` only where it changes the solid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PadExtent {
+    /// `length` along the feature's direction, or against it when `reversed`.
+    OneSide { length: Length, reversed: bool },
+    /// `length / 2` each way from the plane.
+    Symmetric { length: Length },
+    /// `length` along the feature's direction and `length2` against it.
+    TwoSides { length: Length, length2: Length },
+}
+
+/// How far a pocket goes from its sketch's plane: a pad's forms, or through everything of
+/// its base along its direction (against it when `reversed`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PocketExtent {
+    /// `length` along the feature's direction, or against it when `reversed`.
+    OneSide { length: Length, reversed: bool },
+    /// `length / 2` each way from the plane.
+    Symmetric { length: Length },
+    /// `length` along the feature's direction and `length2` against it.
+    TwoSides { length: Length, length2: Length },
+    /// Through everything of its base along the feature's direction, or against it when
+    /// `reversed`.
+    ThroughAll { reversed: bool },
+}
+
+/// How far a revolve or groove turns its profile: an angle above 0° and at most 360°.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TurnExtent {
+    /// `angle` right-handed about the axis, or left-handed when `reversed`.
+    OneSide { angle: Angle, reversed: bool },
+    /// `angle / 2` each way from the sketch.
+    Symmetric { angle: Angle },
+}
+
+/// A pad's, pocket's, revolve's, or groove's extent, for what reads every form alike: the
+/// writer, the gate, and the outline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Extent {
+    Pad(PadExtent),
+    Pocket(PocketExtent),
+    Turn(TurnExtent),
+}
+
+impl Extent {
+    /// The form's `type`, as the file writes it.
+    pub fn type_name(self) -> &'static str {
+        match self {
+            Extent::Pad(PadExtent::OneSide { .. })
+            | Extent::Pocket(PocketExtent::OneSide { .. })
+            | Extent::Turn(TurnExtent::OneSide { .. }) => "one_side",
+            Extent::Pad(PadExtent::Symmetric { .. })
+            | Extent::Pocket(PocketExtent::Symmetric { .. })
+            | Extent::Turn(TurnExtent::Symmetric { .. }) => "symmetric",
+            Extent::Pad(PadExtent::TwoSides { .. })
+            | Extent::Pocket(PocketExtent::TwoSides { .. }) => "two_sides",
+            Extent::Pocket(PocketExtent::ThroughAll { .. }) => "through_all",
+        }
+    }
+
+    /// The form's values after its `type`, in the order the file writes them, each by its
+    /// field.
+    pub fn values(self) -> Vec<(&'static str, ExtentValue)> {
+        use ExtentValue::{Angle as A, Length as L, Reversed as R};
+        match self {
+            Extent::Pad(PadExtent::OneSide { length, reversed })
+            | Extent::Pocket(PocketExtent::OneSide { length, reversed }) => {
+                vec![("length", L(length)), ("reversed", R(reversed))]
+            }
+            Extent::Pad(PadExtent::Symmetric { length })
+            | Extent::Pocket(PocketExtent::Symmetric { length }) => vec![("length", L(length))],
+            Extent::Pad(PadExtent::TwoSides { length, length2 })
+            | Extent::Pocket(PocketExtent::TwoSides { length, length2 }) => {
+                vec![("length", L(length)), ("length2", L(length2))]
+            }
+            Extent::Pocket(PocketExtent::ThroughAll { reversed }) => {
+                vec![("reversed", R(reversed))]
+            }
+            Extent::Turn(TurnExtent::OneSide { angle, reversed }) => {
+                vec![("angle", A(angle)), ("reversed", R(reversed))]
+            }
+            Extent::Turn(TurnExtent::Symmetric { angle }) => vec![("angle", A(angle))],
+        }
+    }
+}
+
+/// One of an extent's values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtentValue {
+    Length(Length),
+    Angle(Angle),
+    Reversed(bool),
+}
+
+/// What a revolve or groove turns about: the sketch's x axis (from its origin along +x), its
+/// y axis (along +y), or a line of the sketch, construction or not, from its `from` point to
+/// its `to`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Axis {
+    XAxis,
+    YAxis,
+    Line(ElementId),
+}
+
+impl Axis {
+    /// The axis `text` writes, if it's one: `x_axis`, `y_axis`, or an element's ID (whether
+    /// it's a line of the sketch is the gate's to say).
+    pub fn new(text: &str) -> Option<Self> {
+        match Reference::new(text)? {
+            Reference::XAxis => Some(Axis::XAxis),
+            Reference::YAxis => Some(Axis::YAxis),
+            Reference::Element(id) => Some(Axis::Line(id)),
+            Reference::Origin => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Axis::XAxis => Reference::X_AXIS,
+            Axis::YAxis => Reference::Y_AXIS,
+            Axis::Line(id) => id.as_str(),
+        }
+    }
+}
+
+impl fmt::Display for Axis {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl JsonSchema for Axis {
+    fn schema_name() -> Cow<'static, str> {
+        "Axis".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        let pattern = format!("^([{ID_ALPHABET}]{{{ID_LENGTH}}}|x_axis|y_axis)$");
+        json_schema!({
+            "description": "What a revolve or groove turns about: x_axis (the sketch's, from its origin along +x), y_axis (along +y), or the ID of a line of the sketch, construction or not, from its `from` point to its `to`.",
+            "type": "string",
+            "pattern": pattern
+        })
+    }
+}
+
+/// Which of the features that sweep a sketch's profile a feature is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SweepKind {
+    Pad,
+    Pocket,
+    Revolve,
+    Groove,
+}
+
+impl SweepKind {
+    /// The `type` the file writes.
+    pub fn word(self) -> &'static str {
+        match self {
+            SweepKind::Pad => "pad",
+            SweepKind::Pocket => "pocket",
+            SweepKind::Revolve => "revolve",
+            SweepKind::Groove => "groove",
+        }
+    }
 }
 
 /// What a feature makes its solid with ([`Operation::made`]).
@@ -318,6 +523,8 @@ pub enum Made {
     Fillet { radius: f64 },
     /// Its `base` feature's solid with edges cut back, by the distance.
     Chamfer { distance: f64 },
+    /// A sketch's profile swept, and fused with or cut from its `base`, if it has one.
+    Sweep(SweepKind),
 }
 
 impl Operation {
@@ -370,6 +577,10 @@ impl Operation {
             Operation::Chamfer { size, .. } => Made::Chamfer {
                 distance: size.distance.mm(),
             },
+            Operation::Pad { .. } => Made::Sweep(SweepKind::Pad),
+            Operation::Pocket { .. } => Made::Sweep(SweepKind::Pocket),
+            Operation::Revolve { .. } => Made::Sweep(SweepKind::Revolve),
+            Operation::Groove { .. } => Made::Sweep(SweepKind::Groove),
         }
     }
 
@@ -378,7 +589,11 @@ impl Operation {
     pub fn primitive(&self) -> Option<Primitive> {
         match self.made() {
             Made::Primitive(primitive) => Some(primitive),
-            Made::Boolean(_) | Made::Fillet { .. } | Made::Chamfer { .. } | Made::Sketch => None,
+            Made::Boolean(_)
+            | Made::Fillet { .. }
+            | Made::Chamfer { .. }
+            | Made::Sketch
+            | Made::Sweep(_) => None,
         }
     }
 
@@ -395,7 +610,11 @@ impl Operation {
             | Operation::Common { .. }
             | Operation::Sketch(_)
             | Operation::Fillet { .. }
-            | Operation::Chamfer { .. } => None,
+            | Operation::Chamfer { .. }
+            | Operation::Pad { .. }
+            | Operation::Pocket { .. }
+            | Operation::Revolve { .. }
+            | Operation::Groove { .. } => None,
         }
     }
 
@@ -423,19 +642,31 @@ impl Operation {
             | Operation::Common { .. }
             | Operation::Sketch(_)
             | Operation::Fillet { .. }
-            | Operation::Chamfer { .. } => parameter,
+            | Operation::Chamfer { .. }
+            | Operation::Pad { .. }
+            | Operation::Pocket { .. }
+            | Operation::Revolve { .. }
+            | Operation::Groove { .. } => parameter,
         }
     }
 
-    /// The features this one consumes, by field: a boolean's `base` then `tool`, a fillet's
-    /// or chamfer's `base`; none for a primitive or a sketch.
+    /// The features this one consumes, by field: a boolean's `base` then `tool`, a fillet's,
+    /// chamfer's, pocket's, or groove's `base`, and a pad's or revolve's if it has one; none
+    /// for a primitive or a sketch. (A sketch a feature sweeps is used, not consumed:
+    /// [`sketch`](Self::sketch).)
     pub fn inputs(&self) -> Vec<(&'static str, &FeatureId)> {
         match self {
             Operation::Fuse { base, tool }
             | Operation::Cut { base, tool }
             | Operation::Common { base, tool } => vec![("base", base), ("tool", tool)],
-            Operation::Fillet { base, .. } | Operation::Chamfer { base, .. } => {
+            Operation::Fillet { base, .. }
+            | Operation::Chamfer { base, .. }
+            | Operation::Pocket { base, .. }
+            | Operation::Groove { base, .. } => {
                 vec![("base", base)]
+            }
+            Operation::Pad { base, .. } | Operation::Revolve { base, .. } => {
+                base.iter().map(|base| ("base", base)).collect()
             }
             Operation::Box { .. }
             | Operation::Cylinder { .. }
@@ -458,7 +689,74 @@ impl Operation {
             | Operation::Fuse { .. }
             | Operation::Cut { .. }
             | Operation::Common { .. }
-            | Operation::Sketch(_) => &[],
+            | Operation::Sketch(_)
+            | Operation::Pad { .. }
+            | Operation::Pocket { .. }
+            | Operation::Revolve { .. }
+            | Operation::Groove { .. } => &[],
+        }
+    }
+
+    /// The sketch a pad, pocket, revolve, or groove sweeps; none for another feature.
+    pub fn sketch(&self) -> Option<&FeatureId> {
+        match self {
+            Operation::Pad { sketch, .. }
+            | Operation::Pocket { sketch, .. }
+            | Operation::Revolve { sketch, .. }
+            | Operation::Groove { sketch, .. } => Some(sketch),
+            Operation::Box { .. }
+            | Operation::Cylinder { .. }
+            | Operation::Sphere { .. }
+            | Operation::Cone { .. }
+            | Operation::Torus { .. }
+            | Operation::Fuse { .. }
+            | Operation::Cut { .. }
+            | Operation::Common { .. }
+            | Operation::Sketch(_)
+            | Operation::Fillet { .. }
+            | Operation::Chamfer { .. } => None,
+        }
+    }
+
+    /// What a revolve or groove turns about; none for another feature.
+    pub fn axis(&self) -> Option<&Axis> {
+        match self {
+            Operation::Revolve { axis, .. } | Operation::Groove { axis, .. } => Some(axis),
+            Operation::Box { .. }
+            | Operation::Cylinder { .. }
+            | Operation::Sphere { .. }
+            | Operation::Cone { .. }
+            | Operation::Torus { .. }
+            | Operation::Fuse { .. }
+            | Operation::Cut { .. }
+            | Operation::Common { .. }
+            | Operation::Sketch(_)
+            | Operation::Fillet { .. }
+            | Operation::Chamfer { .. }
+            | Operation::Pad { .. }
+            | Operation::Pocket { .. } => None,
+        }
+    }
+
+    /// How far a pad, pocket, revolve, or groove goes; none for another feature.
+    pub fn extent(&self) -> Option<Extent> {
+        match *self {
+            Operation::Pad { extent, .. } => Some(Extent::Pad(extent)),
+            Operation::Pocket { extent, .. } => Some(Extent::Pocket(extent)),
+            Operation::Revolve { extent, .. } | Operation::Groove { extent, .. } => {
+                Some(Extent::Turn(extent))
+            }
+            Operation::Box { .. }
+            | Operation::Cylinder { .. }
+            | Operation::Sphere { .. }
+            | Operation::Cone { .. }
+            | Operation::Torus { .. }
+            | Operation::Fuse { .. }
+            | Operation::Cut { .. }
+            | Operation::Common { .. }
+            | Operation::Sketch(_)
+            | Operation::Fillet { .. }
+            | Operation::Chamfer { .. } => None,
         }
     }
 
@@ -482,12 +780,16 @@ impl Operation {
             Operation::Sketch(_) => "sketch",
             Operation::Fillet { .. } => "fillet",
             Operation::Chamfer { .. } => "chamfer",
+            Operation::Pad { .. } => "pad",
+            Operation::Pocket { .. } => "pocket",
+            Operation::Revolve { .. } => "revolve",
+            Operation::Groove { .. } => "groove",
         }
     }
 }
 
 /// Every feature type, as the file writes it.
-pub const FEATURE_TYPES: [&str; 11] = [
+pub const FEATURE_TYPES: [&str; 15] = [
     "box", "cylinder", "sphere", "cone", "torus", "fuse", "cut", "common", "sketch", "fillet",
-    "chamfer",
+    "chamfer", "pad", "pocket", "revolve", "groove",
 ];

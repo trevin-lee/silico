@@ -305,6 +305,34 @@ fn values(operation: &Operation) -> String {
         Operation::Chamfer { base, size, .. } => {
             format!("base {base}, size.distance {}", size.distance)
         }
+        Operation::Pad { .. }
+        | Operation::Pocket { .. }
+        | Operation::Revolve { .. }
+        | Operation::Groove { .. } => {
+            let mut values = Vec::new();
+            if let Some((_, base)) = operation.inputs().first() {
+                values.push(format!("base {base}"));
+            }
+            if let Some(sketch) = operation.sketch() {
+                values.push(format!("sketch {sketch}"));
+            }
+            if let Some(axis) = operation.axis() {
+                values.push(format!("axis {axis}"));
+            }
+            if let Some(extent) = operation.extent() {
+                values.push(format!("extent {}", extent.type_name()));
+                for (field, value) in extent.values() {
+                    values.push(match value {
+                        document::ExtentValue::Length(length) => format!("extent.{field} {length}"),
+                        document::ExtentValue::Angle(angle) => format!("extent.{field} {angle}"),
+                        document::ExtentValue::Reversed(reversed) => {
+                            format!("extent.{field} {reversed}")
+                        }
+                    });
+                }
+            }
+            values.join(", ")
+        }
     }
 }
 

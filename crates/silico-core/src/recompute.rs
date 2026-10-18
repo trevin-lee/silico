@@ -8,6 +8,9 @@
 //! a rename runs nothing, and a value edit runs that feature's steps and those below it.
 //! Identical steps run once.
 //!
+//! A pad, pocket, revolve, or groove isn't built yet (M3.6's steps come later): it fails,
+//! saying so, and what uses it is blocked on it.
+//!
 //! Steps run as soon as their inputs are built, several at once, so independent branches
 //! overlap on the kernel; nothing depends on the order they finish in. A step the kernel
 //! refuses fails its feature, and each feature using a failed (or blocked) one is blocked
@@ -1057,6 +1060,24 @@ struct Planned {
     naming_key: Option<NamingKey>,
     /// A sketch's solve's key.
     sketch: Option<Key>,
+    /// Why it isn't built, though what it uses is, if this Silico can't build its type.
+    refused: Option<Error>,
+}
+
+/// A pad's, pocket's, revolve's, or groove's refusal: the gate checks them, but recompute
+/// doesn't build them yet (docs/design/m3.6-sketch-features.md, *Implementation order*).
+fn unbuilt_sweep(id: &FeatureId, kind: crate::document::SweepKind) -> Error {
+    let word = kind.word();
+    Error::new(
+        ErrorCode::InvalidInput,
+        format!("{id} is a {word}, which this Silico reads and checks but can't build yet"),
+    )
+    .with_feature(id.as_str())
+    .with_parameter("type")
+    .with_suggestion(
+        "build the document with a Silico that builds pads, pockets, revolves, and grooves; \
+         until then, make the solid from primitives and booleans",
+    )
 }
 
 /// A sketch's solve's key: SHA-256 of a domain line (`silico sketch 1`), its feature's ID
@@ -1117,6 +1138,7 @@ impl Plan {
         for feature in features {
             let mut own = Vec::new();
             let mut uses = Vec::new();
+            let mut refused = None;
             let naming = match feature.operation.made() {
                 Made::Primitive(primitive) => {
                     let made = plan.add(Step::Make(primitive), &feature.id);
@@ -1163,6 +1185,19 @@ impl Plan {
                     (own, uses) = plan.dress(&index, feature, dressing);
                     Some(Naming::Operation(OpCode::Chamfer))
                 }
+                // Not built yet (M3.6's steps come later): refused, as a document asking for
+                // what this Silico can't make. It still uses its base, so a base that fails
+                // blocks it, and is blocked on, as any feature's would.
+                Made::Sweep(kind) => {
+                    uses = feature
+                        .operation
+                        .inputs()
+                        .iter()
+                        .filter_map(|(_, base)| index.get(*base).copied())
+                        .collect();
+                    refused = Some(unbuilt_sweep(&feature.id, kind));
+                    None
+                }
             };
             if let Some(result) = own.last() {
                 plan.results.insert(*result);
@@ -1191,6 +1226,7 @@ impl Plan {
                 naming,
                 naming_key,
                 sketch,
+                refused,
             });
         }
         plan
@@ -2182,7 +2218,10 @@ fn model(
                     silico_bug("a sketch wasn't solved").with_feature(planned.id.as_str()),
                 ),
             },
-            (None, None) => feature_outcome(planned, done, &schedule.unresolved),
+            (None, None) => match &planned.refused {
+                Some(error) => FeatureOutcome::Failed(error.clone()),
+                None => feature_outcome(planned, done, &schedule.unresolved),
+            },
         };
         features.push((planned.id.clone(), outcome));
     }

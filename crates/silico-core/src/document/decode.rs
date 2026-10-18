@@ -8,8 +8,9 @@ use std::fmt;
 use super::fingerprint::{Fingerprint, MEASURE_DECIMALS, Measure};
 use super::json::{At, Member, Node, SHOWN_CHARS, SyntaxError, Value, shown};
 use super::model::{
-    ChamferSize, Document, ElementName, FEATURE_TYPES, Feature, FeatureId, FeatureVersion,
-    FormatVersion, ID_LENGTH, Name, Operation, Position, Units,
+    Axis, ChamferSize, Document, ElementName, FEATURE_TYPES, Feature, FeatureId, FeatureVersion,
+    FormatVersion, ID_LENGTH, Name, Operation, PadExtent, PocketExtent, Position, SweepKind,
+    TurnExtent, Units,
 };
 use super::quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
 use super::sketch::{
@@ -506,6 +507,28 @@ fn operation(type_name: &str, fields: &mut Fields) -> Result<Operation, Error> {
             edges: element_names(fields, "edges")?,
             size: chamfer_size(fields)?,
         },
+        "pad" => Operation::Pad {
+            base: optional_reference(fields, "base")?,
+            sketch: reference(fields, "sketch")?,
+            extent: pad_extent(fields)?,
+        },
+        "pocket" => Operation::Pocket {
+            base: reference(fields, "base")?,
+            sketch: reference(fields, "sketch")?,
+            extent: pocket_extent(fields)?,
+        },
+        "revolve" => Operation::Revolve {
+            base: optional_reference(fields, "base")?,
+            sketch: reference(fields, "sketch")?,
+            axis: axis(fields, SweepKind::Revolve)?,
+            extent: turn_extent(fields, SweepKind::Revolve)?,
+        },
+        "groove" => Operation::Groove {
+            base: reference(fields, "base")?,
+            sketch: reference(fields, "sketch")?,
+            axis: axis(fields, SweepKind::Groove)?,
+            extent: turn_extent(fields, SweepKind::Groove)?,
+        },
         // A type in FEATURE_TYPES with no arm here: Silico's bug, not the document's.
         other => {
             return Err(Error::new(
@@ -564,6 +587,153 @@ fn chamfer_size(fields: &mut Fields) -> Result<ChamferSize, Error> {
 fn reference(fields: &mut Fields, key: &str) -> Result<FeatureId, Error> {
     let node = fields.take(key)?;
     id(node, fields.feature(), key)
+}
+
+/// A reference that may be left out (a pad's or revolve's `base`): never `null`.
+fn optional_reference(fields: &mut Fields, key: &str) -> Result<Option<FeatureId>, Error> {
+    match fields.optional(key) {
+        Some(node) => id(node, fields.feature(), key).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// What a revolve or groove turns about: `x_axis`, `y_axis`, or an element's ID (whether
+/// it's a line of the sketch is the gate's to say). The origin is a point, so it's refused
+/// here.
+fn axis(fields: &mut Fields, kind: SweepKind) -> Result<Axis, Error> {
+    let node = fields.take("axis")?;
+    let at = node.at;
+    let text = string(node, fields.feature(), "axis")?;
+    let what = kind.word();
+    let suggestion = "name a line of the sketch by its ID, or x_axis or y_axis";
+    if text == super::sketch::Reference::ORIGIN {
+        return Err(refuse(
+            fields.feature(),
+            "axis",
+            at,
+            format!("axis origin is the sketch's origin, a point: a {what} turns about a line"),
+            suggestion,
+        ));
+    }
+    Axis::new(&text).ok_or_else(|| {
+        refuse(
+            fields.feature(),
+            "axis",
+            at,
+            format!(
+                "axis {} isn't x_axis, y_axis, or a sketch element's ID",
+                shown(&text)
+            ),
+            suggestion,
+        )
+    })
+}
+
+/// A sweep's `extent`: the object's members, and its form (`type`), which must be one of
+/// `forms`. A pad's `through_all` is refused saying it's a pocket's.
+fn extent_form(
+    fields: &mut Fields,
+    kind: SweepKind,
+    forms: &[&str],
+) -> Result<(Fields, String), Error> {
+    let node = fields.take("extent")?;
+    let mut extent = Fields::of(node, fields.feature(), Some("extent"), "extent")?.under("extent");
+    let type_node = extent.take("type")?;
+    let at = type_node.at;
+    let form = string(type_node, extent.feature(), "extent.type")?;
+    if forms.contains(&form.as_str()) {
+        return Ok((extent, form));
+    }
+    let what = kind.word();
+    let (message, suggestion) = if kind == SweepKind::Pad && form == "through_all" {
+        (
+            "extent.type through_all is a pocket's: a pad goes a length from its sketch".to_owned(),
+            "write extent.type as one_side, symmetric, or two_sides".to_owned(),
+        )
+    } else {
+        (
+            format!(
+                "extent.type {} isn't one of a {what}'s, {}",
+                shown(&form),
+                forms.join(", ")
+            ),
+            format!("write extent.type as one of {}", forms.join(", ")),
+        )
+    };
+    Err(refuse(
+        extent.feature(),
+        "extent.type",
+        at,
+        message,
+        suggestion,
+    ))
+}
+
+/// A pad's `extent`: one side, symmetric, or two sides.
+fn pad_extent(fields: &mut Fields) -> Result<PadExtent, Error> {
+    let (mut extent, form) = extent_form(
+        fields,
+        SweepKind::Pad,
+        &["one_side", "symmetric", "two_sides"],
+    )?;
+    let read = match form.as_str() {
+        "one_side" => PadExtent::OneSide {
+            length: length(&mut extent, "length")?,
+            reversed: boolean(&mut extent, "reversed")?,
+        },
+        "symmetric" => PadExtent::Symmetric {
+            length: length(&mut extent, "length")?,
+        },
+        _ => PadExtent::TwoSides {
+            length: length(&mut extent, "length")?,
+            length2: length(&mut extent, "length2")?,
+        },
+    };
+    extent.finish()?;
+    Ok(read)
+}
+
+/// A pocket's `extent`: a pad's forms, or through all.
+fn pocket_extent(fields: &mut Fields) -> Result<PocketExtent, Error> {
+    let (mut extent, form) = extent_form(
+        fields,
+        SweepKind::Pocket,
+        &["one_side", "symmetric", "two_sides", "through_all"],
+    )?;
+    let read = match form.as_str() {
+        "one_side" => PocketExtent::OneSide {
+            length: length(&mut extent, "length")?,
+            reversed: boolean(&mut extent, "reversed")?,
+        },
+        "symmetric" => PocketExtent::Symmetric {
+            length: length(&mut extent, "length")?,
+        },
+        "two_sides" => PocketExtent::TwoSides {
+            length: length(&mut extent, "length")?,
+            length2: length(&mut extent, "length2")?,
+        },
+        _ => PocketExtent::ThroughAll {
+            reversed: boolean(&mut extent, "reversed")?,
+        },
+    };
+    extent.finish()?;
+    Ok(read)
+}
+
+/// A revolve's or groove's `extent`: one side, or symmetric.
+fn turn_extent(fields: &mut Fields, kind: SweepKind) -> Result<TurnExtent, Error> {
+    let (mut extent, form) = extent_form(fields, kind, &["one_side", "symmetric"])?;
+    let read = match form.as_str() {
+        "one_side" => TurnExtent::OneSide {
+            angle: angle(&mut extent, "angle")?,
+            reversed: boolean(&mut extent, "reversed")?,
+        },
+        _ => TurnExtent::Symmetric {
+            angle: angle(&mut extent, "angle")?,
+        },
+    };
+    extent.finish()?;
+    Ok(read)
 }
 
 fn length(fields: &mut Fields, key: &str) -> Result<Length, Error> {

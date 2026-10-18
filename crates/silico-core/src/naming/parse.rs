@@ -31,7 +31,7 @@ use std::sync::Arc;
 
 use super::build::{MOST_DEPTH, MOST_SOURCES, MOST_WEIGHT};
 use super::{Name, OpCode, Place, PrimitiveKind, Raw, Relation, Source, TypeWord};
-use crate::document::{FeatureId, Made, Operation};
+use crate::document::{FeatureId, Made, Operation, SweepKind};
 use crate::kernel::{ElementKind, ElementRef};
 
 /// Why a name's text isn't a name: what's wrong, and where (the column, from 1, in
@@ -73,22 +73,26 @@ impl Name {
 }
 
 /// What a feature is now: a primitive, of this kind, or an operation; or a sketch, which
-/// makes no solid. A name's own type is read from its text (N8); this says only which
-/// features there are, which make no solid, and, for messages, what each is now.
+/// makes no solid; or a feature that sweeps a sketch, whose names this Silico doesn't read
+/// yet (docs/design/m3.6-sketch-features.md, S4). A name's own type is read from its text
+/// (N8); this says only which features there are, which make no solid, and, for messages,
+/// what each is now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Maker {
     Itself(PrimitiveKind),
     By(OpCode),
     Nothing,
+    Unnamed(SweepKind),
 }
 
 impl Maker {
-    /// The type the feature is now, as its elements' names write it; none for a sketch.
+    /// The type the feature is now, as its elements' names write it; none for a sketch, or
+    /// for a feature that sweeps one, whose names aren't read yet.
     pub fn type_word(self) -> Option<TypeWord> {
         match self {
             Maker::Itself(kind) => Some(TypeWord::Primitive(kind)),
             Maker::By(op) => Some(TypeWord::Operation(op)),
-            Maker::Nothing => None,
+            Maker::Nothing | Maker::Unnamed(_) => None,
         }
     }
 
@@ -100,6 +104,7 @@ impl Maker {
             Made::Fillet { .. } => Maker::By(OpCode::Fillet),
             Made::Chamfer { .. } => Maker::By(OpCode::Chamfer),
             Made::Sketch => Maker::Nothing,
+            Made::Sweep(kind) => Maker::Unnamed(kind),
         }
     }
 }
@@ -229,6 +234,13 @@ impl Reader<'_> {
             self.at = start;
             return Err(self.error(&format!(
                 "{feature} makes no solid (a sketch): it has no faces, edges, or vertices"
+            )));
+        }
+        if let Maker::Unnamed(kind) = maker {
+            self.at = start;
+            let word = kind.word();
+            return Err(self.error(&format!(
+                "{feature} is a {word}: this Silico doesn't name a {word}'s faces, edges, or vertices yet"
             )));
         }
         self.expect(".")?;

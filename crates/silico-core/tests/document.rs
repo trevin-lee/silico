@@ -10,8 +10,9 @@ use example::EXAMPLE;
 use proptest::prelude::*;
 use silico_core::ErrorCode;
 use silico_core::document::{
-    ChamferSize, Document, ElementName, Feature, FeatureId, FeatureVersion, FormatVersion,
-    ID_ALPHABET, Length, Name, Operation, Units, read, schema, write,
+    Angle, Axis, ChamferSize, Document, ElementId, ElementName, Feature, FeatureId, FeatureVersion,
+    FormatVersion, ID_ALPHABET, Length, Name, Operation, PadExtent, PocketExtent, TurnExtent,
+    Units, read, schema, write,
 };
 
 fn mm(nm: i64) -> Length {
@@ -299,10 +300,10 @@ fn a_value_that_doesnt_fit_is_refused_naming_its_feature_field_and_place() {
         ),
         (
             "\"type\": \"cut\"",
-            "\"type\": \"pocket\"",
+            "\"type\": \"loft\"",
             Some("m3tq8v0z"),
             Some("type"),
-            "\"pocket\" isn't a feature type",
+            "\"loft\" isn't a feature type",
             "line 7",
         ),
         (
@@ -526,7 +527,7 @@ fn the_schema_refuses_what_the_reader_refuses_by_shape() {
     for (from, to) in [
         ("\"height\": 12}", "\"height\": 12, \"depth\": 3}"),
         ("\"radius\": 2.5, ", ""),
-        ("\"type\": \"cut\"", "\"type\": \"pocket\""),
+        ("\"type\": \"cut\"", "\"type\": \"loft\""),
         ("\"type\": \"box\", \"v\": 1", "\"type\": \"box\", \"v\": 2"),
         ("\"name\": \"Pin\"", "\"name\": \"\""),
         ("\"id\": \"k7f2qx3m\"", "\"id\": \"k7f2qx3l\""),
@@ -607,6 +608,36 @@ fn every_feature_type_is_read_written_and_in_the_schema() {
             base: id("00000000"),
             edges: vec![ElementName::new("00000000.Edge1").unwrap()],
             size: ChamferSize { distance: one },
+        },
+        Operation::Pad {
+            base: None,
+            sketch: id("00000000"),
+            extent: PadExtent::OneSide {
+                length: one,
+                reversed: false,
+            },
+        },
+        Operation::Pocket {
+            base: id("00000000"),
+            sketch: id("11111111"),
+            extent: PocketExtent::ThroughAll { reversed: true },
+        },
+        Operation::Revolve {
+            base: Some(id("00000000")),
+            sketch: id("11111111"),
+            axis: Axis::YAxis,
+            extent: TurnExtent::Symmetric {
+                angle: Angle::from_ndeg(90_000_000_000),
+            },
+        },
+        Operation::Groove {
+            base: id("00000000"),
+            sketch: id("11111111"),
+            axis: Axis::Line(ElementId::new("6t7v8w9x").unwrap()),
+            extent: TurnExtent::OneSide {
+                angle: Angle::from_ndeg(360_000_000_000),
+                reversed: false,
+            },
         },
     ];
     let names: Vec<&str> = samples.iter().map(Operation::type_name).collect();
@@ -1036,6 +1067,86 @@ fn any_operation() -> impl Strategy<Value = Operation> {
         (any_id(), any_id()).prop_map(|(base, tool)| Operation::Fuse { base, tool }),
         (any_id(), any_id()).prop_map(|(base, tool)| Operation::Cut { base, tool }),
         (any_id(), any_id()).prop_map(|(base, tool)| Operation::Common { base, tool }),
+        (prop::option::of(any_id()), any_id(), any_pad_extent()).prop_map(
+            |(base, sketch, extent)| Operation::Pad {
+                base,
+                sketch,
+                extent
+            }
+        ),
+        (any_id(), any_id(), any_pocket_extent()).prop_map(|(base, sketch, extent)| {
+            Operation::Pocket {
+                base,
+                sketch,
+                extent,
+            }
+        }),
+        (
+            prop::option::of(any_id()),
+            any_id(),
+            any_axis(),
+            any_turn_extent()
+        )
+            .prop_map(|(base, sketch, axis, extent)| Operation::Revolve {
+                base,
+                sketch,
+                axis,
+                extent
+            }),
+        (any_id(), any_id(), any_axis(), any_turn_extent()).prop_map(
+            |(base, sketch, axis, extent)| Operation::Groove {
+                base,
+                sketch,
+                axis,
+                extent
+            }
+        ),
+    ]
+}
+
+/// Any extent of a pad's forms (the reader takes any length; the gate says which are in
+/// range).
+fn any_pad_extent() -> impl Strategy<Value = PadExtent> {
+    prop_oneof![
+        (any_length(), any::<bool>())
+            .prop_map(|(length, reversed)| PadExtent::OneSide { length, reversed }),
+        any_length().prop_map(|length| PadExtent::Symmetric { length }),
+        (any_length(), any_length())
+            .prop_map(|(length, length2)| PadExtent::TwoSides { length, length2 }),
+    ]
+}
+
+fn any_pocket_extent() -> impl Strategy<Value = PocketExtent> {
+    prop_oneof![
+        (any_length(), any::<bool>())
+            .prop_map(|(length, reversed)| PocketExtent::OneSide { length, reversed }),
+        any_length().prop_map(|length| PocketExtent::Symmetric { length }),
+        (any_length(), any_length())
+            .prop_map(|(length, length2)| PocketExtent::TwoSides { length, length2 }),
+        any::<bool>().prop_map(|reversed| PocketExtent::ThroughAll { reversed }),
+    ]
+}
+
+fn any_angle() -> impl Strategy<Value = Angle> {
+    prop_oneof![
+        any::<i64>().prop_map(Angle::from_ndeg),
+        (-360_000_000_001i64..=360_000_000_001).prop_map(Angle::from_ndeg),
+    ]
+}
+
+fn any_turn_extent() -> impl Strategy<Value = TurnExtent> {
+    prop_oneof![
+        (any_angle(), any::<bool>())
+            .prop_map(|(angle, reversed)| TurnExtent::OneSide { angle, reversed }),
+        any_angle().prop_map(|angle| TurnExtent::Symmetric { angle }),
+    ]
+}
+
+fn any_axis() -> impl Strategy<Value = Axis> {
+    prop_oneof![
+        Just(Axis::XAxis),
+        Just(Axis::YAxis),
+        any_id().prop_map(|id| Axis::Line(ElementId::new(id.as_str()).unwrap())),
     ]
 }
 

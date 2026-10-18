@@ -107,7 +107,8 @@ A `.silico` file is strict JSON describing the feature timeline. Silico rebuilds
       ]
     },
     {
-      "id": "a91cw0de", "type": "pad", "v": 1, "name": "body", "profile": "k7f2qx3m", "length": 10,
+      "id": "a91cw0de", "type": "pad", "v": 1, "name": "body", "sketch": "k7f2qx3m",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
       "note": "Wall thickness matches the motor mount interface",
       "fingerprint": {"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}
     }

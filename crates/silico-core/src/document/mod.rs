@@ -15,8 +15,9 @@ mod write;
 
 pub use fingerprint::{Difference, Fingerprint, MEASURE_DECIMALS, Measure};
 pub use model::{
-    ChamferSize, Document, ElementName, FEATURE_TYPES, Feature, FeatureId, FeatureVersion,
-    FormatVersion, ID_ALPHABET, ID_LENGTH, Made, Name, Operation, Position, Units,
+    Axis, ChamferSize, Document, ElementName, Extent, ExtentValue, FEATURE_TYPES, Feature,
+    FeatureId, FeatureVersion, FormatVersion, ID_ALPHABET, ID_LENGTH, Made, Name, Operation,
+    PadExtent, PocketExtent, Position, SweepKind, TurnExtent, Units,
 };
 pub use quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
 pub use sketch::{
@@ -114,7 +115,11 @@ fn too_long(document: &Document, what: &str) -> Error {
                     | Operation::Torus { .. }
                     | Operation::Fuse { .. }
                     | Operation::Cut { .. }
-                    | Operation::Common { .. } => "make this feature's name or note shorter",
+                    | Operation::Common { .. }
+                    | Operation::Pad { .. }
+                    | Operation::Pocket { .. }
+                    | Operation::Revolve { .. }
+                    | Operation::Groove { .. } => "make this feature's name or note shorter",
                 })
         }
         None => error.with_suggestion(
