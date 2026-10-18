@@ -557,8 +557,12 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
 /// `m3tq8v0z.cut.Edge5`).
 /// Where `text` names a sketch's edge whole (`s.sketch.Edge.<id>`, which the parser
 /// refuses: its elements are in no solid), and the fillet's or chamfer's base sweeps that
-/// sketch, what to write instead, as the base names the edge it made from that curve at its
-/// start (design S4): ` (p.pad.Edge(M s.sketch.Edge.<id>))`. Otherwise nothing.
+/// sketch, what to write instead. Where the sweep starts at the sketch's plane (one side,
+/// or through all), the edge it made there from that curve, its start (design S4):
+/// ` (p.pad.Edge(M s.sketch.Edge.<id>))`, the rim where the sketch lies in the base's face.
+/// Where it starts elsewhere (symmetric, two sides), that edge is cut away wherever the
+/// base is, so no name is offered that might name nothing: only the form the feature's own
+/// edges take. Otherwise nothing.
 fn made_of_sketch(
     text: &str,
     operation: &Operation,
@@ -577,10 +581,30 @@ fn made_of_sketch(
         .inputs()
         .first()
         .and_then(|(_, base)| features.iter().find(|f| &f.id == *base));
+    use super::model::{Extent, PadExtent, PocketExtent, TurnExtent};
     match base {
         Some(base) if is_edge && base.operation.sketch() == Some(&sketch) => {
             let word = Maker::of(&base.operation).type_word();
-            format!(" ({}.{word}.Edge(M {text}))", base.id)
+            let at_its_plane = matches!(
+                base.operation.extent(),
+                Some(
+                    Extent::Pad(PadExtent::OneSide { .. })
+                        | Extent::Pocket(
+                            PocketExtent::OneSide { .. } | PocketExtent::ThroughAll { .. }
+                        )
+                        | Extent::Turn(TurnExtent::OneSide { .. })
+                )
+            );
+            if at_its_plane {
+                format!(" ({}.{word}.Edge(M {text}))", base.id)
+            } else {
+                format!(
+                    " (an edge {} made, as it names it: {}.{word}.Edge(...); its extent, {}, doesn't start at the sketch's plane, so no edge of it is the curve's own)",
+                    base.id,
+                    base.id,
+                    base.operation.extent().map_or("extent", |e| e.type_name())
+                )
+            }
         }
         _ => String::new(),
     }

@@ -410,3 +410,66 @@ fn a_profile_of_many_regions_names_the_first_hundred_curves_and_counts_them_all(
     );
     assert!(!refused.message().contains("c0000101"));
 }
+
+#[test]
+fn a_change_under_the_precision_is_said_as_the_change_and_the_limit() {
+    // Found by break-it: a 4 by 2 hole through a 200 m cube removes 1.6e6 mm³, no more than
+    // 1e-9 of the cube's 8e15 (8e6): refused by the rule (S7, S11), but the message said
+    // the result's volume was the base's. Now it says the change and the limit, with advice
+    // that fits a small feature on a large part. Worked by hand: 8e15 × 1e-9 = 8e6.
+    let base = Measured {
+        volume: 8e15,
+        ..cube()
+    };
+    let refused = check(SweepFeature::Pocket, base, result(8e15 - 1.6e6)).unwrap_err();
+    assert_eq!(
+        refused.message(),
+        "pocket p0000001 removes nothing from its base b0000001 that its volume can tell: the 1600000 mm³ it removes is no more than the 8000000 mm³ (1e-9 of the base's volume) the volume is measured to (10 faces, 20 edges, and 12 vertices, against the base's 6, 12, and 8)"
+    );
+    assert!(
+        refused
+            .suggestion()
+            .unwrap()
+            .starts_with("make the pocket larger, or make it on a smaller part"),
+        "{:?}",
+        refused.suggestion()
+    );
+    // No change at all keeps the words it had: the volume is the base's.
+    let same = check(SweepFeature::Pocket, base, result(8e15)).unwrap_err();
+    assert!(same.message().contains("the result's volume is the base's"));
+}
+
+#[test]
+fn a_base_already_of_several_solids_is_said_so_and_never_blamed_on_the_feature() {
+    // Found by break-it: a pad onto M2's fuse of two boxes apart was told it "doesn't reach
+    // its base", a pocket into it that it "cuts its base in two". Whether such a feature
+    // may leave as many solids as its base is open (design S12, `solids_allowed`); held
+    // here only: whatever it decides, a refusal says the base's own count and makes no such
+    // claim.
+    let base = Measured {
+        solids: 2,
+        ..cube()
+    };
+    for kind in SweepFeature::ALL {
+        for solids in [2, 3] {
+            let after = Measured {
+                solids,
+                volume: if kind.adds() { 1100.0 } else { 900.0 },
+                ..result(1000.0)
+            };
+            if let Err(e) = check(kind, base, after) {
+                assert!(
+                    e.message().contains("b0000001, which is already 2 solids"),
+                    "{}",
+                    e.message()
+                );
+                assert!(!e.message().contains("doesn't reach"), "{}", e.message());
+                assert!(!e.message().contains(" in two"), "{}", e.message());
+            }
+        }
+    }
+    // A base of one solid keeps the approved rule: one solid, its misses said as before.
+    for kind in SweepFeature::ALL {
+        assert_eq!(silico_core::sweep::solids_allowed(1, kind), 1);
+    }
+}

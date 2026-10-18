@@ -313,7 +313,7 @@ fn unchecked(what: String) -> Error {
 }
 
 /// A solid as a sketch feature's checks see it: its volume, by the precise measure, and how
-/// many solids, faces, edges, and vertices it has.
+/// many solids, faces, edges, and vertices it has (a base's solids as its last step made it).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Measured {
     pub volume: f64,
@@ -404,18 +404,31 @@ fn and_list(items: &[String]) -> String {
     }
 }
 
-/// What a sketch feature's result must be, once its boolean is built (design S5, S7): one
-/// solid, and a change to its base's volume. Both `kernel_failed`, naming the feature: the
-/// geometry is valid and so is the input, but the feature didn't do what it's for.
+/// How many solids a sketch feature's result may have, its base being `base_solids`: one
+/// (design S5, D2, as approved). A base already of several solids (M2's fuse of two solids
+/// apart) is the open question of S12: whether a feature onto it may leave as many as its
+/// base had is with the maintainer, and this is the one place the answer goes.
+pub fn solids_allowed(base_solids: u32, kind: SweepFeature) -> u32 {
+    let _ = (base_solids, kind);
+    1
+}
+
+/// What a sketch feature's result must be, once its boolean is built (design S5, S7): no
+/// more solids than [`solids_allowed`], and a change to its base's volume. Both
+/// `kernel_failed`, naming the feature: the geometry is valid and so is the input, but the
+/// feature didn't do what it's for. `before` is the base, its `solids` the base's count.
 ///
-/// - **One solid** (D2): more than one is refused (a pad that misses its base, a pocket that
-///   cuts it in two), and so is none, which the kernel's empty boolean refuses first.
+/// - **Solids** (D2): more than allowed is refused: a pad that misses its base, a pocket that
+///   cuts it in two, said so where the base was one solid, and where it was already several,
+///   said so instead, so the feature isn't blamed for its base. None is refused, as the
+///   kernel's empty boolean refuses it first.
 /// - **A change**: a pad or revolve is refused when V(result) − V(base) is at most
 ///   [`MEASURE_PRECISION`] × V(base), and a pocket or groove when V(base) − V(result) is: the
 ///   change within the precise measure's own precision is no change. By volume alone: a fuse
 ///   only adds and a cut only removes, so the volume is the witness, and counts aren't (a pad
 ///   reversed into its base scars its top, 7 faces at the base's volume). The counts are in
-///   the message as evidence only.
+///   the message as evidence only. A change above 0 but within the precision (a small
+///   feature on a large part, S11) is said as what it is, the change and the limit.
 /// - **A volume**: the change needs both volumes to be ones a solid has, finite and above 0
 ///   (the base's) or at least 0 (the result's); one that isn't (NaN, infinite, or negative,
 ///   as a broken or inverted shape measures) witnesses nothing, and is refused, as the
@@ -434,8 +447,8 @@ pub fn check_result(
             .with_feature(id)
             .with_suggestion(suggestion))
     };
+    let allowed = solids_allowed(before.solids, kind);
     match after.solids {
-        1 => {}
         0 => {
             return failed(
                 format!("{word} {id} leaves nothing of its base {base_id}: the result is no solid"),
@@ -444,6 +457,16 @@ pub fn check_result(
                 } else {
                     "move the sketch or shorten the cut, so it leaves some of its base"
                 },
+            );
+        }
+        n if n <= allowed => {}
+        n if before.solids > 1 => {
+            return failed(
+                format!(
+                    "{word} {id} makes {n} solids of its base {base_id}, which is already {} solids: a {word}'s result is one solid",
+                    before.solids
+                ),
+                &format!("{word} a feature of one solid, or {word} each solid of it apart"),
             );
         }
         n => {
@@ -484,7 +507,8 @@ pub fn check_result(
     } else {
         before.volume - after.volume
     };
-    if change <= MEASURE_PRECISION * before.volume {
+    let limit = MEASURE_PRECISION * before.volume;
+    if change <= limit {
         let (verb, preposition) = if kind.adds() {
             ("adds", "to")
         } else {
@@ -494,6 +518,20 @@ pub fn check_result(
             "{} faces, {} edges, and {} vertices, against the base's {}, {}, and {}",
             after.faces, after.edges, after.vertices, before.faces, before.edges, before.vertices
         );
+        if change > 0.0 {
+            // Something changed, but no more than the volume is measured to: a feature small
+            // against its part (S11), or OCCT's thin-wall loss measured a hair off nothing.
+            return failed(
+                format!(
+                    "{word} {id} {verb} nothing {preposition} its base {base_id} that its volume can tell: the {} mm³ it {verb} is no more than the {} mm³ (1e-9 of the base's volume) the volume is measured to ({counts})",
+                    format_number(significant(change)),
+                    format_number(significant(limit))
+                ),
+                &format!(
+                    "make the {word} larger, or make it on a smaller part; if it has a thin wall flush with a face of the base, OCCT can lose it (docs/ports/sketch-features.md): thicken it"
+                ),
+            );
+        }
         let suggestion = if kind.adds() {
             format!(
                 "if the {word} points into its base, reverse it; if it lies inside it, move its sketch; if neither, OCCT lost it: a thin wall of its profile flush with a face of the base can do this (docs/ports/sketch-features.md), so thicken it"
@@ -512,6 +550,21 @@ pub fn check_result(
         );
     }
     Ok(())
+}
+
+/// `value` to 9 significant figures, for a message: a measure and its limit, which the
+/// precise measure gives to 1e-9 of the base's volume, read without its last bits' noise
+/// (1e-9 × 8e15 is 8000000.000000001 in floating point).
+fn significant(value: f64) -> f64 {
+    if value == 0.0 || !value.is_finite() {
+        return value;
+    }
+    let scale = libm::pow(10.0, 8.0 - libm::floor(libm::log10(value.abs())));
+    if !scale.is_finite() || scale == 0.0 {
+        return value;
+    }
+    let rounded = libm::round(value * scale) / scale;
+    if rounded.is_finite() { rounded } else { value }
 }
 
 /// How many pieces `n` is, in words where it's short: `two`, `three`, else the number.

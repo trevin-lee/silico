@@ -615,6 +615,9 @@ struct EngineState {
     /// recompute's uses, so a superseded one's work isn't lost to the next; nothing more, so
     /// a run of superseded recomputes holds no more than one's.
     results: BTreeMap<Key, StepResult>,
+    /// What each sweep feature's refused fuse or cut measured, by key, kept as its refusal
+    /// is.
+    facts: BTreeMap<Key, CheckFacts>,
     /// Each sketch solved, by its key, kept as step results are.
     solutions: BTreeMap<Key, SketchResult>,
     /// The profile of each sketch a feature sweeps, by its solve's key, kept as solves are.
@@ -641,6 +644,7 @@ impl EngineState {
     fn trim(&mut self) {
         let EngineState {
             results,
+            facts,
             solutions,
             profiles,
             published_plans,
@@ -654,6 +658,7 @@ impl EngineState {
                 .any(|plan| plan.contains(key))
         };
         results.retain(|key, _| used(key));
+        facts.retain(|key, _| results.contains_key(key));
         solutions.retain(|key, _| used(key));
         profiles.retain(|key, _| used(key));
     }
@@ -807,6 +812,7 @@ impl<K: Kernel + 'static> Recompute<K> {
                     cancelled: false,
                     dropped: false,
                     results: BTreeMap::new(),
+                    facts: BTreeMap::new(),
                     solutions: BTreeMap::new(),
                     profiles: BTreeMap::new(),
                     solver: Solver::Unstarted,
@@ -1208,8 +1214,10 @@ struct Plan {
     /// Each sketch to solve, in timeline order: its feature, and its solve's key.
     sketches: Vec<(FeatureId, Key)>,
     /// Each sweep feature's fuse or cut, by key: what its result is checked for (design S5,
-    /// S7), once it's built.
+    /// S7), once it's built, as the first feature of that step has it.
     checks: BTreeMap<Key, SweepCheck>,
+    /// Each sweep feature's own check, by ID, until its `Planned` takes it.
+    checks_of: BTreeMap<FeatureId, SweepCheck>,
 }
 
 /// A pad's, pocket's, revolve's, or groove's fuse or cut: its feature, what it is, and its
@@ -1219,6 +1227,28 @@ struct SweepCheck {
     feature: FeatureId,
     kind: SweepFeature,
     base: FeatureId,
+}
+
+impl SweepCheck {
+    /// Its feature's check of what its fuse or cut measured, worded as its own.
+    fn of(&self, facts: &CheckFacts) -> Result<(), Error> {
+        crate::sweep::check_result(
+            &self.feature,
+            self.kind,
+            &self.base,
+            &facts.before,
+            &facts.after,
+        )
+    }
+}
+
+/// What a sweep feature's fuse or cut measured, its base and its result, for
+/// `sweep::check_result`: kept with a refusal, so each feature that shares the step words
+/// its refusal from its own ID and base (break-it found a second feature told the first's).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CheckFacts {
+    before: crate::sweep::Measured,
+    after: crate::sweep::Measured,
 }
 
 /// A sketch some pad, pocket, revolve, or groove sweeps, solved before the plan is made
@@ -1255,6 +1285,9 @@ struct Planned {
     /// Why a pad, pocket, revolve, or groove isn't built, its sketch solved: every refusal
     /// of the sketch's profile (the first hundred), and how many there are (design S3).
     unprofiled: Option<(Vec<Error>, u64)>,
+    /// A pad's, pocket's, revolve's, or groove's own check of its fuse or cut: its ID, type,
+    /// and base, to word a refusal of its own whatever feature's check the shared step ran.
+    check: Option<SweepCheck>,
 }
 
 /// What a sweep feature's plan came to.
@@ -1497,6 +1530,7 @@ impl Plan {
                 .collect(),
             sketches: Vec::new(),
             checks: BTreeMap::new(),
+            checks_of: BTreeMap::new(),
         };
         for feature in features {
             let mut own = Vec::new();
@@ -1609,6 +1643,7 @@ impl Plan {
                 sweeps,
                 refused,
                 unprofiled,
+                check: plan.checks_of.remove(&feature.id),
             });
         }
         plan
@@ -1686,11 +1721,15 @@ impl Plan {
                 &feature.id,
             );
             if let Some(base_id) = self.feature_id(b).cloned() {
-                self.checks.entry(key).or_insert(SweepCheck {
+                let check = SweepCheck {
                     feature: feature.id.clone(),
                     kind,
                     base: base_id,
-                });
+                };
+                // The step is shared by every feature alike (its key holds no ID): it's
+                // checked once, and each feature words a refusal of its own (`facts`).
+                self.checks.entry(key).or_insert_with(|| check.clone());
+                self.checks_of.insert(feature.id.clone(), check);
             }
             steps.push(key);
         }
@@ -1976,6 +2015,8 @@ struct Schedule {
     /// Fillets' and chamfers' steps whose edges didn't all resolve, by key: their broken
     /// references' errors (the first hundred), and how many there are.
     unresolved: BTreeMap<Key, crate::references::Broken>,
+    /// What each sweep feature's refused fuse or cut measured, by key.
+    facts: BTreeMap<Key, CheckFacts>,
 }
 
 impl<K: Kernel + 'static> Engine<K> {
@@ -1995,7 +2036,11 @@ impl<K: Kernel + 'static> Engine<K> {
                 .chain(plan.sketches.iter().map(|(_, key)| *key))
                 .collect(),
         );
-        let (mut done, mut solutions): (BTreeMap<Key, StepResult>, BTreeMap<Key, SketchResult>) = {
+        let (mut done, mut solutions, facts): (
+            BTreeMap<Key, StepResult>,
+            BTreeMap<Key, SketchResult>,
+            BTreeMap<Key, CheckFacts>,
+        ) = {
             let mut state = lock(&self.state);
             // The newest recompute's plan is worth keeping results for, whether or not it
             // finishes: an older one finishing later keeps what this one will use.
@@ -2012,7 +2057,12 @@ impl<K: Kernel + 'static> Engine<K> {
                 .iter()
                 .filter_map(|(_, key)| state.solutions.get(key).map(|r| (*key, r.clone())))
                 .collect();
-            (done, solutions)
+            let facts = plan
+                .checks
+                .keys()
+                .filter_map(|key| state.facts.get(key).map(|f| (*key, *f)))
+                .collect();
+            (done, solutions, facts)
         };
         // The sketches not solved before, solved on a thread of their own.
         let to_solve: Vec<(FeatureId, Key)> = plan
@@ -2046,6 +2096,7 @@ impl<K: Kernel + 'static> Engine<K> {
             ready: VecDeque::new(),
             unmeasured: BTreeMap::new(),
             unresolved: BTreeMap::new(),
+            facts,
             running: 0,
             superseded: false,
             broken: None,
@@ -2143,7 +2194,7 @@ impl<K: Kernel + 'static> Engine<K> {
         if let Some(error) = schedule.broken {
             return Err(error);
         }
-        self.keep(&schedule.done);
+        self.keep(&schedule.done, &schedule.facts);
         // A superseded solve gives nothing to keep or publish.
         let Some(solved) = solved else {
             return Ok(RunOutcome::Superseded);
@@ -2276,11 +2327,19 @@ impl<K: Kernel + 'static> Engine<K> {
     /// A result already kept isn't replaced by one that knows less of its measure
     /// ([`replaces`]): a superseded recompute finishing last would otherwise put back what a
     /// newer one had measured.
-    fn keep(&self, done: &BTreeMap<Key, StepResult>) {
+    fn keep(&self, done: &BTreeMap<Key, StepResult>, facts: &BTreeMap<Key, CheckFacts>) {
         let mut state = lock(&self.state);
         for (key, result) in done {
             if replaces(state.results.get(key), result) {
                 state.results.insert(*key, result.clone());
+                match (result, facts.get(key)) {
+                    (Err(_), Some(facts)) => {
+                        state.facts.insert(*key, *facts);
+                    }
+                    _ => {
+                        state.facts.remove(key);
+                    }
+                }
             }
         }
         state.trim();
@@ -2478,6 +2537,8 @@ impl<K: Kernel + 'static> Engine<K> {
             let key = job.key();
             // A panic under a job is a bug in Silico: caught, so the recompute ends with an
             // error rather than waiting forever on a job that will never finish.
+            // What a sweep feature's fuse or cut measured, if the job is one and got that far.
+            let mut facts = None;
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let _span = tracing::warn_span!(
                     "recompute_step",
@@ -2503,7 +2564,10 @@ impl<K: Kernel + 'static> Engine<K> {
                         }
                         (Some(step), None) => match plan.checks.get(&key) {
                             Some(check) => {
-                                Ran::Made(self.checked(step.clone(), &inputs, check, generation))
+                                let made;
+                                (made, facts) =
+                                    self.checked(step.clone(), &inputs, check, generation);
+                                Ran::Made(made)
                             }
                             None => Ran::Made(self.step(step.clone(), &inputs, generation)),
                         },
@@ -2542,6 +2606,10 @@ impl<K: Kernel + 'static> Engine<K> {
             };
             let mut woken = 0;
             let mut to_keep = None;
+            // A checked step's refusal is kept with what it measured.
+            if let (Ran::Made(Outcome::Done(Err(_))), Some(facts)) = (&ran, facts) {
+                s.facts.insert(key, facts);
+            }
             match ran {
                 Ran::Made(Outcome::Superseded) | Ran::Measured(Outcome::Superseded) => {
                     s.superseded = true;
@@ -2654,16 +2722,15 @@ impl<K: Kernel + 'static> Engine<K> {
         inputs: &[Arc<Built>],
         check: &SweepCheck,
         generation: Generation,
-    ) -> Outcome<Built> {
+    ) -> (Outcome<Built>, Option<CheckFacts>) {
         let (shape, history) = match self.make(step, inputs, generation) {
             Outcome::Done(Ok(made)) => made,
-            Outcome::Done(Err(error)) => return Outcome::Done(Err(error)),
-            Outcome::Superseded => return Outcome::Superseded,
+            Outcome::Done(Err(error)) => return (Outcome::Done(Err(error)), None),
+            Outcome::Superseded => return (Outcome::Superseded, None),
         };
         let Some(base) = inputs.first() else {
-            return Outcome::Done(Err(silico_bug(
-                "a sketch feature's fuse or cut ran before its base was built",
-            )));
+            let bug = silico_bug("a sketch feature's fuse or cut ran before its base was built");
+            return (Outcome::Done(Err(bug)), None);
         };
         let measure = |shape: &ShapeData| {
             self.kernel
@@ -2674,15 +2741,18 @@ impl<K: Kernel + 'static> Engine<K> {
             Some(summary) => summary.clone(),
             None => match measure(&base.shape) {
                 Outcome::Done(Ok(summary)) => summary,
-                Outcome::Done(Err(error)) => return Outcome::Done(Err(error)),
-                Outcome::Superseded => return Outcome::Superseded,
+                Outcome::Done(Err(error)) => return (Outcome::Done(Err(error)), None),
+                Outcome::Superseded => return (Outcome::Superseded, None),
             },
         };
         let after = match measure(&shape) {
             Outcome::Done(Ok(summary)) => summary,
-            Outcome::Done(Err(error)) => return Outcome::Done(Err(error)),
-            Outcome::Superseded => return Outcome::Superseded,
+            Outcome::Done(Err(error)) => return (Outcome::Done(Err(error)), None),
+            Outcome::Superseded => return (Outcome::Superseded, None),
         };
+        // The base's solids as its own last step made them (a primitive is one), and the
+        // result's as the boolean's history counts them.
+        let base_solids = base.history.as_ref().map_or(1, |h| h.result.solids);
         let solids = history.as_ref().map_or(1, |h| h.result.solids);
         let measured = |summary: &ShapeSummary, solids: u32| crate::sweep::Measured {
             volume: summary.volume,
@@ -2691,14 +2761,15 @@ impl<K: Kernel + 'static> Engine<K> {
             edges: summary.edges,
             vertices: summary.vertices,
         };
-        let checked = crate::sweep::check_result(
-            &check.feature,
-            check.kind,
-            &check.base,
-            &measured(&before, 1),
-            &measured(&after, solids),
-        );
-        Outcome::Done(checked.map(|()| Built::new(shape, history, Some(after))))
+        let facts = CheckFacts {
+            before: measured(&before, base_solids),
+            after: measured(&after, solids),
+        };
+        let checked = check.of(&facts);
+        (
+            Outcome::Done(checked.map(|()| Built::new(shape, history, Some(after)))),
+            Some(facts),
+        )
     }
 
     /// Runs a fillet's or chamfer's step on the kernel, of `edges` (resolved, the document
@@ -2926,7 +2997,9 @@ fn model(
                     errors: errors.clone(),
                     total: *total,
                 },
-                (None, None) => feature_outcome(planned, done, &schedule.unresolved),
+                (None, None) => {
+                    feature_outcome(planned, done, &schedule.unresolved, &schedule.facts)
+                }
             },
         };
         features.push((planned.id.clone(), outcome));
@@ -3115,6 +3188,7 @@ fn feature_outcome(
     planned: &Planned,
     done: &BTreeMap<Key, StepResult>,
     unresolved: &BTreeMap<Key, crate::references::Broken>,
+    facts: &BTreeMap<Key, CheckFacts>,
 ) -> FeatureOutcome {
     let unbuilt = || {
         FeatureOutcome::Failed(
@@ -3134,6 +3208,14 @@ fn feature_outcome(
                     errors: broken.errors.clone(),
                     total: broken.total,
                 };
+            }
+            // A sweep feature's refused fuse or cut, which other features may share: its
+            // refusal in its own words, from what the step measured.
+            Some(Err(_))
+                if let (Some(facts), Some(check)) = (facts.get(key), &planned.check)
+                    && let Err(own) = check.of(facts) =>
+            {
+                return FeatureOutcome::Failed(own);
             }
             Some(Err(error)) => {
                 return FeatureOutcome::Failed(error.clone().with_feature(planned.id.as_str()));
