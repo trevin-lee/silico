@@ -113,7 +113,7 @@ fn two_lines_equal_are_admitted() {
 }
 
 #[test]
-fn symmetric_about_its_b_is_refused_and_about_a_line_through_one_end_admitted() {
+fn symmetric_about_its_b_or_a_line_through_one_of_them_is_refused() {
     only(
         &with_two_lines(
             r#"{"id": "k0000000", "type": "symmetric", "a": "pb000000", "b": "pc000000", "about": "pc000000"}"#,
@@ -121,10 +121,17 @@ fn symmetric_about_its_b_is_refused_and_about_a_line_through_one_end_admitted() 
         "constraints.0.about",
         "is one of the points it mirrors",
     );
-    // FreeCAD refuses only both ends of the line (CommandConstraints.cpp, GeoId1 == GeoId2 == GeoId3).
-    none(&with_two_lines(
-        r#"{"id": "k0000000", "type": "symmetric", "a": "pa000000", "b": "pc000000", "about": "na000000"}"#,
-    ));
+    // FreeCAD refuses only both ends of the line (CommandConstraints.cpp, GeoId1 == GeoId2 ==
+    // GeoId3), and solves one end's mirror onto that end, two points at one place. With
+    // shared points that's a joint the sketch doesn't have, which the next solve refuses
+    // (M3.3's break-it): refused here, naming the end.
+    only(
+        &with_two_lines(
+            r#"{"id": "k0000000", "type": "symmetric", "a": "pa000000", "b": "pc000000", "about": "na000000"}"#,
+        ),
+        "constraints.0.about",
+        "a symmetric's pa000000 is an end of na000000, so it mirrors onto itself",
+    );
 }
 
 #[test]
@@ -599,18 +606,19 @@ fn each_tangent_on_direction_reads_as_its_own_value_and_writes_back() {
 
 #[test]
 fn reference_dimensions_arent_the_solvers_values() {
-    // The base points (6 unknowns) and the origin's 2: 9,992 values to spare. As many
-    // reference lengths as that, and one more, are admitted; as many driving ones, refused.
+    // The base points (6 unknowns), and the origin's and the axes' ends 6: 9,988 values to
+    // spare. As many reference lengths as that, and one more, are admitted; one more driving
+    // one, refused.
     let lengths = |n: usize, driving: bool| {
         let all: Vec<String> = (0..n)
             .map(|i| format!(r#"{{"id": "k{i:07}", "type": "length", "line": "na000000", "value": 10, "driving": {driving}}}"#))
             .collect();
         document(&fields(POINTS, LINE, "", "", &all.join(", ")))
     };
-    none(&lengths(9993, false));
-    none(&lengths(9992, true));
+    none(&lengths(9989, false));
+    none(&lengths(9988, true));
     only(
-        &lengths(9993, true),
+        &lengths(9989, true),
         "points",
         "the sketch has 10001 values, more than the 10000 the sketch solver takes",
     );
@@ -620,7 +628,8 @@ fn reference_dimensions_arent_the_solvers_values() {
 fn a_tangent_on_is_two_equations_and_a_fixed_angle() {
     // 1,023 points (2,046 unknowns), a circle about one (2,047), a line between two, and
     // 8,197 tangent_ons: 16,394 equations × 2,047 unknowns = 33,558,518 entries, past 2^25
-    // (33,554,432); and 2,047 + 8,197 angles + 2 = 10,246 values, past 10,000.
+    // (33,554,432); and 2,047 + 8,197 angles + 6 (the origin, the axes' ends) = 10,250
+    // values, past 10,000.
     let points: Vec<String> = (0..1023)
         .map(|i| format!(r#"{{"id": "p{i:07}", "x": {i}, "y": 0, "construction": false}}"#))
         .collect();
@@ -646,7 +655,7 @@ fn a_tangent_on_is_two_equations_and_a_fixed_angle() {
     assert!(
         messages
             .iter()
-            .any(|m| m.starts_with("the sketch has 10246 values")),
+            .any(|m| m.starts_with("the sketch has 10250 values")),
         "{messages:#?}"
     );
     assert_eq!(all.len(), 2, "{messages:#?}");
@@ -707,17 +716,18 @@ fn a_tangent_on_whose_end_is_bs_own_point_or_whose_curves_are_one_is_refused() {
 
 #[test]
 fn a_tangent_at_is_a_fixed_angle_too() {
-    // POINTS (6 unknowns) and ARC (3): 9 unknowns, and the origin's 2: 9,989 values to
-    // spare. As many tangent_ats, each with its fixed angle, are admitted; one more, refused.
+    // POINTS (6 unknowns) and ARC (3): 9 unknowns, and the origin's and the axes' ends 6:
+    // 9,985 values to spare. As many tangent_ats, each with its fixed angle, are admitted;
+    // one more, refused.
     let tangents = |n: usize| {
         let all: Vec<String> = (0..n)
             .map(|i| format!(r#"{{"id": "k{i:07}", "type": "tangent_at", "a": "na000000", "b": "aa000000", "at": "pb000000", "direction": "same"}}"#))
             .collect();
         document(&fields(POINTS, LINE, "", ARC, &all.join(", ")))
     };
-    none(&tangents(9989));
+    none(&tangents(9985));
     only(
-        &tangents(9990),
+        &tangents(9986),
         "points",
         "the sketch has 10001 values, more than the 10000 the sketch solver takes",
     );

@@ -650,7 +650,9 @@ fn a_solution_is_one_the_next_solve_accepts() {
     // solution puts it at x = 2e6, past the check's reach (1e6).
     // Found by break-it: the worker returned it as a Success, and the next solve, started
     // from it (a drag, an edit), was refused: "value 2 must be finite and within 1e6 of 0,
-    // got 2000000". The worker now refuses such a solution itself, as out of reach.
+    // got 2000000". The worker refused such a solution itself, as out of reach; since M3.3
+    // it's a solution that can't be built, passed over for the next algorithm and given as
+    // solved invalid, with its values, so the core can name the point that went there.
     let mut b = Builder::default();
     let p = b.fixed_point(1e6, 0.0);
     let q = b.point_values(1e6 - 1.0, 0.5);
@@ -671,19 +673,16 @@ fn a_solution_is_one_the_next_solve_accepts() {
     });
     let system = b.system(Algorithm::DogLeg);
     system.check().unwrap();
-    match silico_sketch::solve(&system) {
-        Err(failure) => assert_eq!(
-            failure.refusal,
-            Refusal::SolutionOutOfReach { value: 2 },
-            "{failure:?}"
-        ),
-        Ok(solved) => {
-            let mut next = system.clone();
-            next.values = solved.values;
-            if let Err(e) = next.check() {
-                panic!("solved, then refused: {}", e.message);
-            }
+    let solved = silico_sketch::solve(&system).unwrap();
+    if solved.status == SolveStatus::Success {
+        let mut next = system.clone();
+        next.values = solved.values;
+        if let Err(e) = next.check() {
+            panic!("solved, then refused: {}", e.message);
         }
+    } else {
+        assert_eq!(solved.status, SolveStatus::SolvedInvalid);
+        assert_eq!(solved.values[2], 2e6, "{solved:?}");
     }
 }
 
@@ -833,10 +832,13 @@ fn constraint_values(s: &SketchSystem, c: &SolverConstraint, out: &mut Vec<Value
     }
 }
 
-/// Whether geometry at `values` can be built, written out here: every line has length
-/// (dx² + dy² isn't 0), every circle and arc a radius above 0, and every arc its ends at two
-/// places.
+/// Whether geometry at `values` can be built, written out here: every value is finite and
+/// within a kilometre, every line has length (dx² + dy² isn't 0), every circle and arc a
+/// radius above 0, and every arc its ends at two places.
 fn can_build(system: &SketchSystem, values: &[f64]) -> bool {
+    if values.iter().any(|v| !v.is_finite() || v.abs() > 1e6) {
+        return false;
+    }
     let apart = |a: PointValues, b: PointValues| {
         let dx = values[b.x.0 as usize] - values[a.x.0 as usize];
         let dy = values[b.y.0 as usize] - values[a.y.0 as usize];

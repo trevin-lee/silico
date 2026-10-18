@@ -880,7 +880,7 @@ fn a_huge_sketch_of_nothing_but_problems_is_checked_promptly() {
     });
     assert_eq!(invalid.errors().len(), PROBLEMS_LISTED);
     // Two dangling references each, and two sizes: 120,000 constraints past 10,000, and
-    // their 120,000 values (each a dimension's) and the origin's two past 10,000.
+    // their 120,000 values (each a dimension's) and the origin's and axes' six past 10,000.
     assert_eq!(invalid.total(), 2 * 120_000 + 2);
 }
 
@@ -893,8 +893,9 @@ fn ten_thousand_elements_sharing_one_id_are_each_named_once_promptly() {
     let invalid = within(Duration::from_secs(10), move || {
         validate(&read(text.as_bytes()).unwrap()).unwrap_err()
     });
-    // 9,999 duplicates, and 20,000 unknowns past 2048, and 20,002 values past 10,000.
-    assert_eq!(invalid.total(), 9_999 + 2);
+    // 9,999 duplicates, and 20,000 unknowns past 2048, 20,006 values past 10,000, and
+    // 10,003 pieces of geometry (the origin and the axes with them) past 10,000.
+    assert_eq!(invalid.total(), 9_999 + 3);
     assert_eq!(invalid.errors()[0].parameter(), Some("points.1.id"));
 }
 

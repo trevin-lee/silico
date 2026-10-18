@@ -6,6 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{PI, TAU};
 use std::path::Path;
+use std::time::Duration;
 
 use silico_protocol::{
     Algorithm, Generation, Geometry, Op, PointOf, PointValues, Reply, SketchGeometry, SketchSystem,
@@ -17,7 +18,6 @@ use crate::document::{
     Checked, Direction, ElementId, FeatureId, Form, LineSide, Operation, Reference, Sketch,
     SketchConstraint, TangentSide,
 };
-use crate::kernel::DEFAULT_TIMEOUT;
 use crate::worker::{Worker, WorkerKind};
 use crate::{Error, ErrorCode};
 
@@ -38,6 +38,13 @@ pub const LENGTH_TOLERANCE: f64 = 1e-8;
 /// others (decision 5): ten times the solver's convergence, 57 nanodegrees.
 pub const ANGLE_TOLERANCE: f64 = 1e-9;
 
+/// How long a solve may take before the worker is stopped. A sketch the constraints can't
+/// solve is tried by every algorithm in turn, and at half the unknowns the worker takes
+/// (1,024, a chain of 512 points held too far apart), break-it measured DogLeg 11.5 s,
+/// Levenberg–Marquardt 28.9 s, BFGS 0.2 s, and anchored SQP 33.2 s on a loaded machine:
+/// 74 s, past the kernel's 60.
+pub const SKETCH_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// The environment variable that names the sketch worker executable.
 pub const SKETCH_WORKER_ENV: &str = "SILICO_SKETCH_WORKER";
 
@@ -50,6 +57,7 @@ pub trait SketchSolver {
 /// The sketch worker, one request at a time.
 pub struct SketchWorker {
     worker: Worker,
+    timeout: Duration,
 }
 
 impl SketchWorker {
@@ -66,15 +74,25 @@ impl SketchWorker {
 
     /// Starts the sketch worker at `exe`.
     pub fn start_worker(exe: &Path) -> Result<Self, Error> {
-        Ok(Self {
-            worker: Worker::spawn_as(exe, WorkerKind::Sketch)?,
-        })
+        Ok(Self::from_worker(Worker::spawn_as(
+            exe,
+            WorkerKind::Sketch,
+        )?))
     }
 
     /// A sketch worker that's already running. For tests, which hand it one that
     /// misbehaves.
     pub fn from_worker(worker: Worker) -> Self {
-        Self { worker }
+        Self {
+            worker,
+            timeout: SKETCH_TIMEOUT,
+        }
+    }
+
+    /// How long each solve may take ([`SKETCH_TIMEOUT`] unless set).
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
     }
 
     /// The worker's process.
@@ -88,7 +106,7 @@ impl SketchSolver for SketchWorker {
         let name = Op::Solve(system.clone()).name();
         match self
             .worker
-            .call(Generation(0), Op::Solve(system), DEFAULT_TIMEOUT)?
+            .call(Generation(0), Op::Solve(system), self.timeout)?
         {
             Reply::Solved(solved) => Ok(solved),
             other => {
@@ -162,11 +180,17 @@ pub fn solve(
     };
     let _span = tracing::info_span!("solve sketch", feature = feature.as_str()).entered();
     let translation = Translation::new(sketch).map_err(|e| e.with_feature(feature.as_str()))?;
-    let solved = solver.solve(translation.system.clone())?;
-    translation
-        .check_reply(&solved)
-        .and_then(|()| translation.read(&solved))
-        .map_err(|e| e.with_feature(feature.as_str()))
+    let named = |e: Error| e.with_feature(feature.as_str());
+    let answer = translation.solve(solver).map_err(named)?;
+    answer.outcome.map_err(named)
+}
+
+/// What solving a [`Translation`] found: the worker's answer the outcome is read from, and
+/// the outcome.
+#[derive(Debug, Clone)]
+pub struct Answer {
+    pub solved: Solved,
+    pub outcome: Result<SketchSolution, Error>,
 }
 
 /// A sketch in the solver's terms, and how to read the solution back.
@@ -817,6 +841,53 @@ fn unchecked(what: String) -> Error {
 }
 
 impl Translation {
+    /// Solves this with `solver`, and reads the answer. A reply that can't be trusted, or a
+    /// solver that couldn't answer (a crash, a timeout), is the error; what the answer says
+    /// about the sketch is the outcome.
+    ///
+    /// PlaneGCS diagnoses where the sketch is drawn, as FreeCAD does, and tells redundant
+    /// from conflicting by solving from there: a sketch drawn far from its solution (a
+    /// template redimensioned a thousandfold) can be called conflicting, and one whose kept
+    /// constraints fix a value only to the square root of their convergence can leave an
+    /// agreeing redundancy measurably off (M3.3's break-it). When the outcome is
+    /// over-constrained but the solver reached a solution anyway, the sketch is diagnosed
+    /// and solved again from it (the solve M3.4's re-solve on load would make), and that
+    /// answer stands if it solves: SolidWorks solves such a sketch. Otherwise the first
+    /// stands.
+    pub fn solve(&self, solver: &mut dyn SketchSolver) -> Result<Answer, Error> {
+        let solved = solver.solve(self.system.clone())?;
+        self.check_reply(&solved)?;
+        let first = Answer {
+            outcome: self.read(&solved),
+            solved,
+        };
+        let again_from = match &first.outcome {
+            Err(e)
+                if e.code() == ErrorCode::OverConstrained
+                    && matches!(
+                        first.solved.status,
+                        SolveStatus::Success | SolveStatus::SolvedExceptRedundant
+                    ) =>
+            {
+                first.solved.values.clone()
+            }
+            _ => return Ok(first),
+        };
+        let mut again = self.clone();
+        again.system.values = again_from;
+        let resolved = solver.solve(again.system.clone())?;
+        again.check_reply(&resolved)?;
+        let second = again.read(&resolved);
+        Ok(if second.is_ok() {
+            Answer {
+                solved: resolved,
+                outcome: second,
+            }
+        } else {
+            first
+        })
+    }
+
     /// The tags sent, in increasing order.
     fn tags(&self) -> Vec<Tag> {
         let mut tags: Vec<Tag> = self
@@ -853,7 +924,8 @@ impl Translation {
             if !unknown && a.to_bits() != b.to_bits() {
                 return bad(format!("moves value {i}, which is fixed"));
             }
-            if !silico_protocol::within_reach(*b) {
+            // A solution that can't be built may be out of reach: it's named, not used.
+            if solved.status != SolveStatus::SolvedInvalid && !silico_protocol::within_reach(*b) {
                 return bad(format!("has value {i} out of reach"));
             }
         }
@@ -951,14 +1023,14 @@ impl Translation {
         let algorithm = match (solved.status, solved.algorithm) {
             (SolveStatus::Success | SolveStatus::SolvedExceptRedundant, Some(a)) => a,
             (SolveStatus::SolvedInvalid, _) => {
-                return Err(Error::new(
-                    ErrorCode::InvalidResult,
-                    "the sketch solves only to geometry that can't be built: a line of no length, a circle or arc of no radius, or an arc whose ends meet",
-                )
-                .with_elements(self.unbuildable(&solved.values))
-                .with_suggestion(
-                    "draw the geometry nearer its solution, or check the dimensions that shrink it to nothing",
-                ));
+                let unbuildable = self.unbuildable(&solved.values);
+                if unbuildable.is_empty() {
+                    return Err(Error::new(
+                        ErrorCode::ProtocolError,
+                        "the sketch worker calls its solution one that can't be built, and every piece of it can be",
+                    ));
+                }
+                return Err(unbuildable_error(unbuildable));
             }
             (status, _) => {
                 return Err(Error::new(
@@ -974,6 +1046,11 @@ impl Translation {
             }
         };
         let values = &solved.values;
+        // A solution stands only on geometry that can be built, whatever the worker says.
+        let unbuildable = self.unbuildable(values);
+        if !unbuildable.is_empty() {
+            return Err(unbuildable_error(unbuildable));
+        }
         // Decision 5: a redundant constraint is kept only if it's met on the solution.
         let mut dropped: Vec<Tag> = solved
             .redundant
@@ -1002,6 +1079,30 @@ impl Translation {
             )
             .with_elements(self.ids(&disagreeing)?)
             .with_suggestion("remove the constraints named, or make them agree with the rest"));
+        }
+        // An arc's own ends mirrored about a line its centre is held on are sent as their
+        // middle on the line alone (FreeCAD's 365af33fc6); on a half circle that's the
+        // centre, which the line already holds, so the solve can leave the ends unmirrored
+        // (break-it; FreeCAD 1.1.3 does). The symmetry is checked whole.
+        let unmirrored: Vec<Tag> = self
+            .system
+            .constraints
+            .iter()
+            .filter_map(|c| match *c {
+                SolverConstraint::MidpointOnLine { tag, a, b, line } => {
+                    let whole = SolverConstraint::SymmetricLine { tag, a, b, line };
+                    (!self.gap(&whole, values).met()).then_some(tag)
+                }
+                _ => None,
+            })
+            .collect();
+        if !unmirrored.is_empty() {
+            return Err(Error::new(
+                ErrorCode::InvalidResult,
+                "the solution leaves an arc's ends unmirrored about the line through its centre: a half circle, its chord through the centre",
+            )
+            .with_elements(self.ids(&unmirrored)?)
+            .with_suggestion("draw the arc's ends nearer mirror images, or turn the arc less than half a circle"));
         }
         let wrong_side = self.wrong_sides(values)?;
         if !wrong_side.is_empty() {
@@ -1049,16 +1150,24 @@ impl Translation {
             })
     }
 
-    /// The lines, circles, and arcs `values` can't build, by ID.
+    /// The points, lines, circles, and arcs `values` can't build, by ID: past reach (a
+    /// kilometre), of no length or radius, or an arc whose ends meet.
     fn unbuildable(&self, values: &[f64]) -> Vec<String> {
         let mut out = BTreeSet::new();
+        let reach = |v: f64| silico_protocol::within_reach(v);
+        for (id, p) in &self.points {
+            if !reach(at(values, p.x)) || !reach(at(values, p.y)) {
+                out.insert(id.as_str().to_owned());
+            }
+        }
         for (id, l) in &self.lines {
             if no_distance(self.xy(values, l.from), self.xy(values, l.to)) {
                 out.insert(id.as_str().to_owned());
             }
         }
         for (id, c) in &self.circles {
-            if at(values, c.radius).is_nan() || at(values, c.radius) <= 0.0 {
+            let r = at(values, c.radius);
+            if !reach(r) || r <= 0.0 {
                 out.insert(id.as_str().to_owned());
             }
         }
@@ -1068,7 +1177,8 @@ impl Translation {
                 self.xy(values, a.start_values),
                 self.xy(values, a.end_values),
             );
-            if r.is_nan() || r <= 0.0 || meet {
+            let angles = a.angles.iter().all(|&v| reach(at(values, v)));
+            if !reach(r) || r <= 0.0 || meet || !angles {
                 out.insert(id.as_str().to_owned());
             }
         }
@@ -1402,6 +1512,18 @@ impl Translation {
             }
         }
     }
+}
+
+/// Geometry a solution can't build, named.
+fn unbuildable_error(elements: Vec<String>) -> Error {
+    Error::new(
+        ErrorCode::InvalidResult,
+        "the sketch solves only to geometry that can't be built: past a kilometre, a line of no length, a circle or arc of no radius, or an arc whose ends meet",
+    )
+    .with_elements(elements)
+    .with_suggestion(
+        "draw the geometry nearer its solution, or check the dimensions that move it past a kilometre or shrink it to nothing",
+    )
 }
 
 /// How far a constraint is from met: millimetres and radians, each its own way of missing.

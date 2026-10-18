@@ -223,7 +223,7 @@ pub fn invalid(e: InvalidParameter) -> Failure {
 /// Diagnoses `system`, which must have passed [`SketchSystem::check`], and solves it with each of its algorithms in turn, each from the values
 /// it gives, until one solves on geometry that can be built ([`buildable`]): FreeCAD's
 /// `Sketch::internalSolve`, which undoes a solution its geometry refuses and tries the next
-/// (`fc128d357d`). A solution out of reach is refused.
+/// (`fc128d357d`); a solution out of reach is one of those.
 ///
 /// With equations dropped as redundant, PlaneGCS's `System::solve` checks the dropped ones on
 /// the values it started from, before its solution is written back, and turns `Success` into
@@ -270,8 +270,10 @@ pub fn solve(system: &SketchSystem) -> Result<Solved, Failure> {
                 };
                 continue;
             }
-            check_reach(&attempt.values)?;
-            if buildable(&system.geometry, &attempt.values) {
+            // A solution out of reach can't be built either: the next solve couldn't start
+            // from it.
+            if check_reach(&attempt.values).is_ok() && buildable(&system.geometry, &attempt.values)
+            {
                 status = if dropped {
                     SolveStatus::SolvedExceptRedundant
                 } else {

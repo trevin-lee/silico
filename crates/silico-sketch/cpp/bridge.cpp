@@ -75,6 +75,7 @@ struct Sketch {
 
   explicit Sketch(const SolveInput &input);
   Sketch(const Sketch &) = delete;
+  void add(const ConstraintIn &c, int tag);
   Sketch &operator=(const Sketch &) = delete;
 
   double *value(uint32_t i) {
@@ -214,151 +215,153 @@ Sketch::Sketch(const SolveInput &input) : values(input.values.begin(), input.val
     }
   }
 
-  for (const ConstraintIn &c : input.constraints) {
-    const int tag = static_cast<int>(c.tag);
-    switch (c.kind) {
-      case ConstraintKind::ArcRules:
-        system.addConstraintArcRules(geo(c.a, GeometryKind::Arc).arc, 0);
-        break;
-      case ConstraintKind::Coincident:
-        system.addConstraintP2PCoincident(point_of(c.a_position, c.a),
-                                          point_of(c.b_position, c.b), tag);
-        break;
-      case ConstraintKind::Horizontal:
-        system.addConstraintHorizontal(geo(c.a, GeometryKind::Line).line, tag);
-        break;
-      case ConstraintKind::Vertical:
-        system.addConstraintVertical(geo(c.a, GeometryKind::Line).line, tag);
-        break;
-      case ConstraintKind::DistanceX:
-        system.addConstraintDifference(point_of(c.a_position, c.a).x,
-                                       point_of(c.b_position, c.b).x, value(c.value), tag);
-        break;
-      case ConstraintKind::DistanceY:
-        system.addConstraintDifference(point_of(c.a_position, c.a).y,
-                                       point_of(c.b_position, c.b).y, value(c.value), tag);
-        break;
-      case ConstraintKind::Distance:
-        system.addConstraintP2PDistance(point_of(c.a_position, c.a),
-                                        point_of(c.b_position, c.b), value(c.value), tag);
-        break;
-      case ConstraintKind::PointOnLine:
-        system.addConstraintPointOnLine(point_of(c.a_position, c.a),
-                                        geo(c.b, GeometryKind::Line).line, tag);
-        break;
-      case ConstraintKind::Parallel:
-        system.addConstraintParallel(geo(c.a, GeometryKind::Line).line,
-                                     geo(c.b, GeometryKind::Line).line, tag);
-        break;
-      case ConstraintKind::Perpendicular:
-        system.addConstraintPerpendicular(geo(c.a, GeometryKind::Line).line,
-                                          geo(c.b, GeometryKind::Line).line, tag);
-        break;
-      case ConstraintKind::Angle:
-        system.addConstraintL2LAngle(geo(c.a, GeometryKind::Line).line,
-                                     geo(c.b, GeometryKind::Line).line, value(c.value), tag);
-        break;
-      case ConstraintKind::EqualLength:
-        system.addConstraintEqualLength(geo(c.a, GeometryKind::Line).line,
-                                        geo(c.b, GeometryKind::Line).line, tag);
-        break;
-      case ConstraintKind::Radius:
-        // An arc's radius as FreeCAD constrains it (Sketch.cpp, addRadiusConstraint).
-        if (c.a < geometry.size() && geometry[c.a].kind == GeometryKind::Arc) {
-          system.addConstraintArcRadius(geometry[c.a].arc, value(c.value), tag);
-        } else {
-          system.addConstraintCircleRadius(geo(c.a, GeometryKind::Circle).circle,
-                                           value(c.value), tag);
-        }
-        break;
-      case ConstraintKind::HorizontalPoints:
-        system.addConstraintHorizontal(point_of(c.a_position, c.a), point_of(c.b_position, c.b),
-                                       tag);
-        break;
-      case ConstraintKind::VerticalPoints:
-        system.addConstraintVertical(point_of(c.a_position, c.a), point_of(c.b_position, c.b),
-                                     tag);
-        break;
-      case ConstraintKind::PointLineDistance:
-        system.addConstraintP2LDistance(point_of(c.a_position, c.a),
-                                        geo(c.b, GeometryKind::Line).line, value(c.value), tag);
-        break;
-      case ConstraintKind::PointOnCircle:
-        // An arc as FreeCAD puts a point on one: on its whole circle.
-        if (is_arc(c.b)) {
-          system.addConstraintPointOnArc(point_of(c.a_position, c.a), geometry[c.b].arc, tag);
-        } else {
-          system.addConstraintPointOnCircle(point_of(c.a_position, c.a),
-                                            geo(c.b, GeometryKind::Circle).circle, tag);
-        }
-        break;
-      case ConstraintKind::EqualRadius:
-        // As FreeCAD's Sketch::addEqualConstraint: a circle before an arc.
-        if (is_arc(c.a) && is_arc(c.b)) {
-          system.addConstraintEqualRadius(geometry[c.a].arc, geometry[c.b].arc, tag);
-        } else if (is_arc(c.b)) {
-          system.addConstraintEqualRadius(geo(c.a, GeometryKind::Circle).circle,
-                                          geometry[c.b].arc, tag);
-        } else if (is_arc(c.a)) {
-          system.addConstraintEqualRadius(geo(c.b, GeometryKind::Circle).circle,
-                                          geometry[c.a].arc, tag);
-        } else {
-          system.addConstraintEqualRadius(geo(c.a, GeometryKind::Circle).circle,
-                                          geo(c.b, GeometryKind::Circle).circle, tag);
-        }
-        break;
-      case ConstraintKind::TangentLine:
-        if (is_arc(c.b)) {
-          system.addConstraintTangent(geo(c.a, GeometryKind::Line).line, geometry[c.b].arc, tag);
-        } else {
-          system.addConstraintTangent(geo(c.a, GeometryKind::Line).line,
-                                      geo(c.b, GeometryKind::Circle).circle, tag);
-        }
-        break;
-      case ConstraintKind::TangentCircles: {
-        // FreeCAD's addConstraintTangent of two circles or arcs, its side given rather than
-        // read from the geometry.
-        GCS::Circle &a = round(c.a);
-        GCS::Circle &b = round(c.b);
-        system.addConstraintTangentCircumf(a.center, b.center, a.rad, b.rad, c.flag, tag);
-        break;
-      }
-      case ConstraintKind::TangentOn: {
-        // FreeCAD's endpoint-to-edge tangency (Sketch::addAngleAtPointConstraint): the point
-        // on the curve, then the angle between the curves there, under one tag.
-        GCS::Point &p = point_of(c.c_position, c.c);
-        point_on(p, c.b, tag);
-        system.addConstraintAngleViaPoint(curve(c.a), curve(c.b), p, value(c.value), tag);
-        break;
-      }
-      case ConstraintKind::AngleViaPoint:
-        system.addConstraintAngleViaPoint(curve(c.a), curve(c.b), point_of(c.c_position, c.c),
-                                          value(c.value), tag);
-        break;
-      case ConstraintKind::SymmetricLine:
-        system.addConstraintP2PSymmetric(point_of(c.a_position, c.a),
-                                         point_of(c.b_position, c.b),
-                                         geo(c.c, GeometryKind::Line).line, tag);
-        break;
-      case ConstraintKind::MidpointOnLine: {
-        GCS::Line &l = geo(c.c, GeometryKind::Line).line;
-        system.addConstraintMidpointOnLine(point_of(c.a_position, c.a),
-                                           point_of(c.b_position, c.b), l.p1, l.p2, tag);
-        break;
-      }
-      case ConstraintKind::SymmetricPoint:
-        system.addConstraintP2PSymmetric(point_of(c.a_position, c.a),
-                                         point_of(c.b_position, c.b),
-                                         point_of(c.c_position, c.c), tag);
-        break;
-      default:
-        bug("a constraint kind Rust doesn't send");
-    }
-  }
+  for (const ConstraintIn &c : input.constraints) add(c, static_cast<int>(c.tag));
 
   unknowns.reserve(input.unknowns.size());
   for (uint32_t u : input.unknowns) unknowns.push_back(value(u));
   system.declareUnknowns(unknowns);
+}
+
+// Adds constraint `c`'s rows, tagged `tag` (its own, or -1 for rows of lower priority).
+void Sketch::add(const ConstraintIn &c, int tag) {
+  switch (c.kind) {
+    case ConstraintKind::ArcRules:
+      system.addConstraintArcRules(geo(c.a, GeometryKind::Arc).arc, 0);
+      break;
+    case ConstraintKind::Coincident:
+      system.addConstraintP2PCoincident(point_of(c.a_position, c.a),
+                                        point_of(c.b_position, c.b), tag);
+      break;
+    case ConstraintKind::Horizontal:
+      system.addConstraintHorizontal(geo(c.a, GeometryKind::Line).line, tag);
+      break;
+    case ConstraintKind::Vertical:
+      system.addConstraintVertical(geo(c.a, GeometryKind::Line).line, tag);
+      break;
+    case ConstraintKind::DistanceX:
+      system.addConstraintDifference(point_of(c.a_position, c.a).x,
+                                     point_of(c.b_position, c.b).x, value(c.value), tag);
+      break;
+    case ConstraintKind::DistanceY:
+      system.addConstraintDifference(point_of(c.a_position, c.a).y,
+                                     point_of(c.b_position, c.b).y, value(c.value), tag);
+      break;
+    case ConstraintKind::Distance:
+      system.addConstraintP2PDistance(point_of(c.a_position, c.a),
+                                      point_of(c.b_position, c.b), value(c.value), tag);
+      break;
+    case ConstraintKind::PointOnLine:
+      system.addConstraintPointOnLine(point_of(c.a_position, c.a),
+                                      geo(c.b, GeometryKind::Line).line, tag);
+      break;
+    case ConstraintKind::Parallel:
+      system.addConstraintParallel(geo(c.a, GeometryKind::Line).line,
+                                   geo(c.b, GeometryKind::Line).line, tag);
+      break;
+    case ConstraintKind::Perpendicular:
+      system.addConstraintPerpendicular(geo(c.a, GeometryKind::Line).line,
+                                        geo(c.b, GeometryKind::Line).line, tag);
+      break;
+    case ConstraintKind::Angle:
+      system.addConstraintL2LAngle(geo(c.a, GeometryKind::Line).line,
+                                   geo(c.b, GeometryKind::Line).line, value(c.value), tag);
+      break;
+    case ConstraintKind::EqualLength:
+      system.addConstraintEqualLength(geo(c.a, GeometryKind::Line).line,
+                                      geo(c.b, GeometryKind::Line).line, tag);
+      break;
+    case ConstraintKind::Radius:
+      // An arc's radius as FreeCAD constrains it (Sketch.cpp, addRadiusConstraint).
+      if (c.a < geometry.size() && geometry[c.a].kind == GeometryKind::Arc) {
+        system.addConstraintArcRadius(geometry[c.a].arc, value(c.value), tag);
+      } else {
+        system.addConstraintCircleRadius(geo(c.a, GeometryKind::Circle).circle,
+                                         value(c.value), tag);
+      }
+      break;
+    case ConstraintKind::HorizontalPoints:
+      system.addConstraintHorizontal(point_of(c.a_position, c.a), point_of(c.b_position, c.b),
+                                     tag);
+      break;
+    case ConstraintKind::VerticalPoints:
+      system.addConstraintVertical(point_of(c.a_position, c.a), point_of(c.b_position, c.b),
+                                   tag);
+      break;
+    case ConstraintKind::PointLineDistance:
+      system.addConstraintP2LDistance(point_of(c.a_position, c.a),
+                                      geo(c.b, GeometryKind::Line).line, value(c.value), tag);
+      break;
+    case ConstraintKind::PointOnCircle:
+      // An arc as FreeCAD puts a point on one: on its whole circle.
+      if (is_arc(c.b)) {
+        system.addConstraintPointOnArc(point_of(c.a_position, c.a), geometry[c.b].arc, tag);
+      } else {
+        system.addConstraintPointOnCircle(point_of(c.a_position, c.a),
+                                          geo(c.b, GeometryKind::Circle).circle, tag);
+      }
+      break;
+    case ConstraintKind::EqualRadius:
+      // As FreeCAD's Sketch::addEqualConstraint: a circle before an arc.
+      if (is_arc(c.a) && is_arc(c.b)) {
+        system.addConstraintEqualRadius(geometry[c.a].arc, geometry[c.b].arc, tag);
+      } else if (is_arc(c.b)) {
+        system.addConstraintEqualRadius(geo(c.a, GeometryKind::Circle).circle,
+                                        geometry[c.b].arc, tag);
+      } else if (is_arc(c.a)) {
+        system.addConstraintEqualRadius(geo(c.b, GeometryKind::Circle).circle,
+                                        geometry[c.a].arc, tag);
+      } else {
+        system.addConstraintEqualRadius(geo(c.a, GeometryKind::Circle).circle,
+                                        geo(c.b, GeometryKind::Circle).circle, tag);
+      }
+      break;
+    case ConstraintKind::TangentLine:
+      if (is_arc(c.b)) {
+        system.addConstraintTangent(geo(c.a, GeometryKind::Line).line, geometry[c.b].arc, tag);
+      } else {
+        system.addConstraintTangent(geo(c.a, GeometryKind::Line).line,
+                                    geo(c.b, GeometryKind::Circle).circle, tag);
+      }
+      break;
+    case ConstraintKind::TangentCircles: {
+      // FreeCAD's addConstraintTangent of two circles or arcs, its side given rather than
+      // read from the geometry.
+      GCS::Circle &a = round(c.a);
+      GCS::Circle &b = round(c.b);
+      system.addConstraintTangentCircumf(a.center, b.center, a.rad, b.rad, c.flag, tag);
+      break;
+    }
+    case ConstraintKind::TangentOn: {
+      // FreeCAD's endpoint-to-edge tangency (Sketch::addAngleAtPointConstraint): the point
+      // on the curve, then the angle between the curves there, under one tag.
+      GCS::Point &p = point_of(c.c_position, c.c);
+      point_on(p, c.b, tag);
+      system.addConstraintAngleViaPoint(curve(c.a), curve(c.b), p, value(c.value), tag);
+      break;
+    }
+    case ConstraintKind::AngleViaPoint:
+      system.addConstraintAngleViaPoint(curve(c.a), curve(c.b), point_of(c.c_position, c.c),
+                                        value(c.value), tag);
+      break;
+    case ConstraintKind::SymmetricLine:
+      system.addConstraintP2PSymmetric(point_of(c.a_position, c.a),
+                                       point_of(c.b_position, c.b),
+                                       geo(c.c, GeometryKind::Line).line, tag);
+      break;
+    case ConstraintKind::MidpointOnLine: {
+      GCS::Line &l = geo(c.c, GeometryKind::Line).line;
+      system.addConstraintMidpointOnLine(point_of(c.a_position, c.a),
+                                         point_of(c.b_position, c.b), l.p1, l.p2, tag);
+      break;
+    }
+    case ConstraintKind::SymmetricPoint:
+      system.addConstraintP2PSymmetric(point_of(c.a_position, c.a),
+                                       point_of(c.b_position, c.b),
+                                       point_of(c.c_position, c.c), tag);
+      break;
+    default:
+      bug("a constraint kind Rust doesn't send");
+  }
 }
 
 }  // namespace

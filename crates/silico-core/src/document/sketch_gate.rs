@@ -550,6 +550,17 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                     "mirror the points about another line or a point".to_owned(),
                 ));
             }
+            // A point on the line mirrors onto itself: the other would have to be the same
+            // point, which two of the sketch's points can't be (break-it: it solves once,
+            // then the next solve finds them at one place).
+            Form::Symmetric { a, b, about } if own(a, about) || own(b, about) => {
+                let end = if own(a, about) { a } else { b };
+                add(refuse(
+                    &format!("{at}.about"),
+                    format!("a symmetric's {end} is an end of {about}, so it mirrors onto itself"),
+                    "share the point instead, or mirror about another line or a point".to_owned(),
+                ));
+            }
             _ => {}
         }
 
@@ -740,13 +751,14 @@ fn ends_of<'a>(
 /// constraint is one or two equations (a symmetry, a midpoint, and a tangent_on two), and an arc's rules
 /// four; the values are the unknowns, the driving dimensions', a tangency's fixed angle
 /// for each `tangent_on` and `tangent_at` (FreeCAD's translation fixes one), and the
-/// origin's. A reference dimension's value isn't the solver's: it's evaluated from the
+/// origin's and the axes' ends (the translation's, silico_core::sketch). A reference dimension's value isn't the solver's: it's evaluated from the
 /// solved geometry, as FreeCAD's main does (`92894ea3a8`), not solved for as 1.1.3 does
 /// (docs/ports/sketcher.md), so it may be past what the worker takes.
 pub(super) fn size(sketch: &Sketch) -> [(&'static str, usize, usize, &'static str); 5] {
     let unknowns = 2 * sketch.points.len() + sketch.circles.len() + 3 * sketch.arcs.len();
+    // The origin and the two axes are geometry too.
     let geometry =
-        sketch.points.len() + sketch.lines.len() + sketch.circles.len() + sketch.arcs.len();
+        sketch.points.len() + sketch.lines.len() + sketch.circles.len() + sketch.arcs.len() + 3;
     let constraints = sketch.constraints.len() + sketch.arcs.len();
     let dimensions = sketch
         .constraints
@@ -758,7 +770,8 @@ pub(super) fn size(sketch: &Sketch) -> [(&'static str, usize, usize, &'static st
         .iter()
         .filter(|c| matches!(c.form, Form::TangentOn { .. } | Form::TangentAt { .. }))
         .count();
-    let values = unknowns + dimensions + angles + 2;
+    // The origin and the axes' far ends, fixed values all three.
+    let values = unknowns + dimensions + angles + 6;
     let equations: usize = sketch
         .constraints
         .iter()

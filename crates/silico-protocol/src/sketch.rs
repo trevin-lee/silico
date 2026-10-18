@@ -418,8 +418,9 @@ pub enum SolveStatus {
     /// The solver failed.
     Failed,
     /// The solver met the constraints, but on geometry that can't be built: a line of no
-    /// length (dx² + dy² is 0), a circle or arc whose radius isn't above 0, or an arc whose
-    /// start and end are at one place (dx² + dy² is 0). Nothing
+    /// length (dx² + dy² is 0), a circle or arc whose radius isn't above 0, an arc whose
+    /// start and end are at one place (dx² + dy² is 0), or (a solve's) any value out of reach
+    /// ([`within_reach`]), which the next solve couldn't start from. Nothing
     /// is kept. FreeCAD undoes such a solution too and tries its next algorithm
     /// (`Sketch::internalSolve`, "Invalid solution", `fc128d357d`), as a solve does, but
     /// during a drag still reports it as a success and draws the drag's start for that
@@ -453,8 +454,9 @@ pub struct Solved {
     /// `SolvedInvalid` the first whose solution can't be built.
     pub algorithm: Option<Algorithm>,
     /// Every value: the solution when the status is `Success` or `SolvedExceptRedundant`,
-    /// the first solution that can't be built for `SolvedInvalid` (so the core can say what
-    /// can't), and otherwise as given.
+    /// the first solution that can't be built for
+    /// `SolvedInvalid` (so the core can say what can't; its values may be out of reach, or
+    /// not numbers), and otherwise as given.
     pub values: Vec<f64>,
     /// Each tagged constraint's residual on those values, by tag in increasing order, as
     /// PlaneGCS measures it: its error for a constraint of one equation, the root mean
