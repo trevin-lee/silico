@@ -218,3 +218,54 @@ fn every_sketch_case_matches_freecad() {
             .join("\n")
     );
 }
+
+#[test]
+fn the_harness_catches_each_measure_freecad_gives_otherwise() {
+    // The council's tests lens: the self-test above caught only points and lists. Two of
+    // the approved cases solved by both sides, then FreeCAD's answer spoilt one measure at a
+    // time: its degrees of freedom, a circle's radius, a tangency's locked value, a
+    // reference value, and how it ended. Each is reported.
+    let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/oracle"));
+    let cases = silico_oracle::sketch::load(dir).unwrap();
+    let pick = |name: &str| cases.iter().find(|c| c.name == name).unwrap().clone();
+    let (tangent, diameter) = (pick("tangent_on_circle"), pick("reference_diameter"));
+    let mut worker = SketchWorker::start().unwrap();
+    let models: Vec<FreecadSketch> = [&tangent, &diameter]
+        .iter()
+        .map(|c| freecad_sketch(&c.sketch, &Translation::new(&c.sketch).unwrap()).unwrap())
+        .collect();
+    let theirs = freecad_solve(&models).unwrap();
+    let ours = [
+        silico_solve(&tangent, &mut worker).unwrap(),
+        silico_solve(&diameter, &mut worker).unwrap(),
+    ];
+    for i in 0..2 {
+        assert!(compare(&models[i], &ours[i], &theirs[i]).is_empty());
+    }
+    let reported =
+        |i: usize, spoil: &dyn Fn(&mut silico_oracle::sketch::FreecadSolved), what: &str| {
+            let mut t = theirs[i].clone();
+            spoil(&mut t);
+            let how = compare(&models[i], &ours[i], &t);
+            assert!(how.iter().any(|h| h.contains(what)), "{what}: {how:?}");
+        };
+    reported(0, &|t| t.dof += 1, "degrees of freedom");
+    reported(
+        0,
+        &|t| *t.radii.get_mut("c0000001").unwrap() += 1e-6,
+        "radius",
+    );
+    let lock = models[0]
+        .constraints
+        .iter()
+        .position(|c| c.locked.is_some())
+        .unwrap();
+    reported(0, &|t| t.values[lock] += PI, "locked");
+    reported(0, &|t| t.code = -3, "FreeCAD's solve gave -3");
+    let reference = models[1]
+        .constraints
+        .iter()
+        .position(|c| !c.driving)
+        .unwrap();
+    reported(1, &|t| t.values[reference] += 1e-3, "reference");
+}

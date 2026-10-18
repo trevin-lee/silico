@@ -20,10 +20,16 @@ pub const MAX_SKETCH_CONSTRAINTS: usize = 10_000;
 /// At most this many pieces of geometry in a system.
 pub const MAX_SKETCH_GEOMETRY: usize = 10_000;
 
-/// At most this many unknowns (about 500 lines): Levenberg–Marquardt forms a dense
-/// unknowns × unknowns matrix (32 MiB at this limit) and factors it in time that grows as
-/// the cube: about 13 s for 2,000 unknowns, 100 s for 4,000.
-pub const MAX_SKETCH_UNKNOWNS: usize = 2048;
+/// At most this many unknowns in a whole sketch (2 per point, 1 per circle, 3 per arc:
+/// 512 points, or about 250 lines), so whatever is admitted gets an answer in bounded time.
+/// A sketch no algorithm solves is tried by all four (DogLeg, Levenberg–Marquardt, BFGS,
+/// anchored SQP), each up to 100 iterations on dense matrices: at 1,024 unknowns that took
+/// 74 s on a loaded M4 Pro (DogLeg 11.5 s, Levenberg–Marquardt 28.9 s, BFGS 0.2 s, SQP
+/// 33.2 s), within the core's 300 s; at 2,048, about 1,660 s (M3.3's review; decided on the
+/// maintainer's behalf, 2026-10-17). A count of the whole sketch; counting only its largest
+/// part (`SketchSystem::part`'s union-find), which PlaneGCS solves apart, is the next step
+/// when imports bring bigger sketches.
+pub const MAX_SKETCH_UNKNOWNS: usize = 1024;
 
 /// At most this many unknowns in the part of a sketch a drag moves (the unknowns its
 /// constraints join to the points its pins hold: [`DragBegin::part`]): while the cursor holds a point, PlaneGCS
@@ -1718,29 +1724,30 @@ mod tests {
 
     #[test]
     fn a_jacobian_past_the_limit_is_refused_and_one_at_it_passes() {
-        // The limit is on rows × unknowns, PlaneGCS's dense Jacobian. A coincidence is two
-        // rows: 8,192 of them on 2,048 unknowns is 2^25 exactly; one more is past it.
-        let with = |coincidences: u32| {
+        // The limit is on rows × unknowns, PlaneGCS's dense Jacobian. An arc's rules are four
+        // rows: 8,192 arcs (one geometry each, sharing the base arc's values), each with its
+        // rules, on 1,024 unknowns is 2^25 exactly; one more is past it.
+        let with = |arcs: u32| {
             let mut s = system();
             s.values.resize(MAX_SKETCH_UNKNOWNS, 1.0);
             s.unknowns = (0..MAX_SKETCH_UNKNOWNS as u32).map(Value).collect();
-            s.constraints = vec![SolverConstraint::ArcRules { arc: Geometry(2) }];
-            s.constraints
-                .extend((1..=coincidences).map(|t| SolverConstraint::Coincident {
-                    tag: Tag(t),
-                    a: PointOf::Start(Geometry(0)),
-                    b: PointOf::End(Geometry(0)),
-                }));
+            let arc = s.geometry[2];
+            s.geometry.extend((1..arcs).map(|_| arc));
+            s.constraints = (0..arcs)
+                .map(|i| SolverConstraint::ArcRules {
+                    arc: Geometry(2 + i),
+                })
+                .collect();
             s
         };
-        // The arc's rules are 4 rows too.
-        with(8190).check().unwrap();
-        let e = with(8191).check().unwrap_err();
+        assert_eq!(4 * 8192 * MAX_SKETCH_UNKNOWNS, MAX_JACOBIAN_ENTRIES);
+        with(8192).check().unwrap();
+        let e = with(8193).check().unwrap_err();
         assert_eq!(e.parameter, "constraints");
         assert_eq!(
             e.message,
             format!(
-                "16386 equations in 2048 unknowns is more than the solver can diagnose (at most {MAX_JACOBIAN_ENTRIES} entries)"
+                "32772 equations in 1024 unknowns is more than the solver can diagnose (at most {MAX_JACOBIAN_ENTRIES} entries)"
             )
         );
     }
@@ -1760,7 +1767,7 @@ mod tests {
         assert_eq!(e.parameter, "unknowns");
         assert_eq!(
             e.message,
-            format!("a sketch may have at most {MAX_SKETCH_UNKNOWNS} unknowns, got 2049")
+            format!("a sketch may have at most {MAX_SKETCH_UNKNOWNS} unknowns, got 1025")
         );
 
         let mut s = system();

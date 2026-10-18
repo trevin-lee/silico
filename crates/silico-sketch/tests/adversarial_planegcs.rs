@@ -547,8 +547,8 @@ fn the_largest_system_the_check_admits_is_answered() {
     // check, half its Jacobian limit, and ran for many minutes: Levenberg–Marquardt forms
     // JᵀJ, unknowns × unknowns, and factors it in O(unknowns³) (measured in release: 500
     // lines 13 s, 1,000 lines about 100 s). The check now refuses more than
-    // MAX_SKETCH_UNKNOWNS, and the most it admits is answered: 512 free lines, each
-    // parallel to the next, are 2,048 unknowns less 511 independent equations.
+    // MAX_SKETCH_UNKNOWNS, and the most it admits is answered: 256 free lines, each
+    // parallel to the next, are 1,024 unknowns less 255 independent equations.
     assert!(
         parallel_chain(2000, Algorithm::LevenbergMarquardt)
             .check()
@@ -561,7 +561,10 @@ fn the_largest_system_the_check_admits_is_answered() {
     match w.call(Generation(1), Op::Solve(system), Duration::from_secs(60)) {
         Ok(Reply::Solved(solved)) => {
             assert_eq!(solved.status, SolveStatus::Success);
-            assert_eq!(solved.dofs, 2048 - 511);
+            assert_eq!(
+                solved.dofs,
+                (silico_protocol::MAX_SKETCH_UNKNOWNS - (lines - 1)) as i32
+            );
             assert!(solved.conflicting.is_empty() && solved.redundant.is_empty());
         }
         other => panic!("the largest admitted system wasn't solved: {other:?}"),

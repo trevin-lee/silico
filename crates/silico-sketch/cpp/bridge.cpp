@@ -166,12 +166,10 @@ struct Sketch {
 
   // The diagnosis, once, as FreeCAD's Sketch makes it (initSolution): the degrees of
   // freedom and the constraints in conflict.
-  void diagnose(int &dofs, rust::Vec<int32_t> &conflicting) {
+  void diagnose(int &dofs, std::vector<int> &conflicting) {
     system.initSolution(GCS::DogLeg);
     dofs = system.dofsNumber();
-    GCS::VEC_I tags;
-    system.getConflicting(tags);
-    for (int t : tags) conflicting.push_back(t);
+    system.getConflicting(conflicting);
   }
 };
 
@@ -222,7 +220,7 @@ Sketch::Sketch(const SolveInput &input) : values(input.values.begin(), input.val
   system.declareUnknowns(unknowns);
 }
 
-// Adds constraint `c`'s rows, tagged `tag` (its own, or -1 for rows of lower priority).
+// Adds constraint `c`'s rows, tagged `tag`.
 void Sketch::add(const ConstraintIn &c, int tag) {
   switch (c.kind) {
     case ConstraintKind::ArcRules:
@@ -392,9 +390,7 @@ std::unique_ptr<Solver> solver_new(const SolveInput &input) {
   Solver::State &s = *solver->state;
   GCS::System &system = s.sketch.system;
   // As FreeCAD's Sketch does: declare, then diagnose once.
-  system.initSolution(GCS::DogLeg);
-  s.dofs = system.dofsNumber();
-  system.getConflicting(s.conflicting);
+  s.sketch.diagnose(s.dofs, s.conflicting);
   system.getRedundant(s.redundant);
   system.getPartiallyRedundant(s.partially_redundant);
   // PlaneGCS lists a value once for each group of dependent values it's in, and none when
@@ -498,7 +494,7 @@ std::unique_ptr<DragSession> drag_begin(const SolveInput &input, rust::Slice<con
   // start (no conflict in the whole sketch, as FreeCAD's) is Rust's to say, before this:
   // a part's rank, found against its own largest entries, can differ from the whole's.
   int dofs = 0;
-  rust::Vec<int32_t> conflicting;
+  std::vector<int> conflicting;
   s.sketch.diagnose(dofs, conflicting);
 
   GCS::System &system = s.sketch.system;
@@ -527,7 +523,9 @@ std::unique_ptr<DragSession> drag_begin(const SolveInput &input, rust::Slice<con
 Diagnosis diagnose(const SolveInput &input) {
   Sketch sketch(input);
   Diagnosis out;
-  sketch.diagnose(out.dofs, out.conflicting);
+  std::vector<int> conflicting;
+  sketch.diagnose(out.dofs, conflicting);
+  for (int t : conflicting) out.conflicting.push_back(t);
   return out;
 }
 

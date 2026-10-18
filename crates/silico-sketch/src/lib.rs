@@ -220,8 +220,9 @@ pub fn invalid(e: InvalidParameter) -> Failure {
     })
 }
 
-/// Diagnoses `system`, which must have passed [`SketchSystem::check`], and solves it with each of its algorithms in turn, each from the values
-/// it gives, until one solves on geometry that can be built ([`buildable`]): FreeCAD's
+/// Diagnoses `system`, which must have passed [`SketchSystem::check`], and solves it with
+/// each of its algorithms in turn, each from the values it gives, until one solves on
+/// geometry that can be built ([`SketchSystem::unbuildable`]): FreeCAD's
 /// `Sketch::internalSolve`, which undoes a solution its geometry refuses and tries the next
 /// (`fc128d357d`); a solution out of reach is one of those.
 ///
@@ -249,45 +250,40 @@ pub fn solve(system: &SketchSystem) -> Result<Solved, Failure> {
     let mut invalid: Option<(Algorithm, Vec<f64>)> = None;
     // FreeCAD doesn't solve a sketch whose constraints conflict; the worker does, as M3.1's
     // did, and the core reads the conflict first.
-    {
-        for &algorithm in &system.algorithms {
-            let attempt = ffi::solver_try(solver.pin_mut(), encode_algorithm(algorithm))
-                .map_err(bridge_threw)?;
-            let solved = match attempt.status {
-                ffi::Status::Success => true,
-                ffi::Status::Converged => {
-                    dropped
-                        && matches!(algorithm, Algorithm::DogLeg | Algorithm::LevenbergMarquardt)
-                }
-                ffi::Status::Failed => false,
-                _ => return Err(internal("the bridge returned a status Rust doesn't know")),
+    for &algorithm in &system.algorithms {
+        let attempt =
+            ffi::solver_try(solver.pin_mut(), encode_algorithm(algorithm)).map_err(bridge_threw)?;
+        let solved = match attempt.status {
+            ffi::Status::Success => true,
+            ffi::Status::Converged => {
+                dropped && matches!(algorithm, Algorithm::DogLeg | Algorithm::LevenbergMarquardt)
+            }
+            ffi::Status::Failed => false,
+            _ => return Err(internal("the bridge returned a status Rust doesn't know")),
+        };
+        if !solved {
+            status = if attempt.status == ffi::Status::Converged {
+                SolveStatus::Converged
+            } else {
+                SolveStatus::Failed
             };
-            if !solved {
-                status = if attempt.status == ffi::Status::Converged {
-                    SolveStatus::Converged
-                } else {
-                    SolveStatus::Failed
-                };
-                continue;
-            }
-            // A solution out of reach can't be built either: the next solve couldn't start
-            // from it.
-            if check_reach(&attempt.values).is_ok()
-                && system.unbuildable(&attempt.values).is_empty()
-            {
-                status = if dropped {
-                    SolveStatus::SolvedExceptRedundant
-                } else {
-                    SolveStatus::Success
-                };
-                solution = Some((algorithm, attempt.values));
-                break;
-            }
-            invalid.get_or_insert((algorithm, attempt.values));
+            continue;
         }
-        if solution.is_none() && invalid.is_some() {
-            status = SolveStatus::SolvedInvalid;
+        // A solution out of reach can't be built either: the next solve couldn't start
+        // from it.
+        if check_reach(&attempt.values).is_ok() && system.unbuildable(&attempt.values).is_empty() {
+            status = if dropped {
+                SolveStatus::SolvedExceptRedundant
+            } else {
+                SolveStatus::Success
+            };
+            solution = Some((algorithm, attempt.values));
+            break;
         }
+        invalid.get_or_insert((algorithm, attempt.values));
+    }
+    if solution.is_none() && invalid.is_some() {
+        status = SolveStatus::SolvedInvalid;
     }
     let (algorithm, values) = match solution.or(invalid) {
         Some((algorithm, values)) => (Some(algorithm), values),

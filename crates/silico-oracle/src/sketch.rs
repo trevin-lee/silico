@@ -119,8 +119,8 @@ pub struct FreecadConstraint {
     pub locked: Option<f64>,
 }
 
-/// `sketch` in FreeCAD's model, with `translation` (Silico's own of it) for the arcs'
-/// angles and the tangencies' directions.
+/// `sketch` in FreeCAD's model, with `translation` (Silico's own of it) for the tangencies'
+/// directions, which FreeCAD locks from the drawing on its own and the harness checks.
 pub fn freecad_sketch(sketch: &Sketch, translation: &Translation) -> Result<FreecadSketch, String> {
     let mut points: Vec<_> = sketch.points.iter().collect();
     points.sort_by(|a, b| a.id.cmp(&b.id));

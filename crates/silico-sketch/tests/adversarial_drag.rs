@@ -851,8 +851,9 @@ fn a_drag_is_bounded_by_the_part_it_moves_not_the_whole_sketch() {
     }
     .check()
     .unwrap();
-    // A small part of a large sketch: a free point beside a chain of 1,024 unknowns.
-    let (mut big, _) = linked_chain(256);
+    // A small part of a large sketch: a free point beside a chain of 1,020 unknowns, 1,022
+    // in all, within MAX_SKETCH_UNKNOWNS.
+    let (mut big, _) = linked_chain(255);
     let at = big.values.len() as u32;
     big.values.extend([3.0, 4.0]);
     big.unknowns.extend([Value(at), Value(at + 1)]);

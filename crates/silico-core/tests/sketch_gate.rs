@@ -150,52 +150,30 @@ fn an_arcs_own_end_on_the_arc_is_refused() {
 // E9: each arc is three unknowns.
 #[test]
 fn arcs_count_three_unknowns_each() {
-    // 3 points (6) and 681 arcs (2043): 2049, past 2048.
-    let arcs: Vec<String> = (0..681).map(|i| format!(r#"{{"id": "a{i:07}", "center": "pa000000", "start": "pb000000", "end": "pc000000", "construction": false}}"#)).collect();
+    // 3 points (6) and 340 arcs (1,020): 1,026, past 1,024; 339 arcs, 1,023, admitted.
+    let arcs = |n: usize| -> String {
+        (0..n).map(|i| format!(r#"{{"id": "a{i:07}", "center": "pa000000", "start": "pb000000", "end": "pc000000", "construction": false}}"#)).collect::<Vec<_>>().join(",")
+    };
     only(
-        &document(&fields(POINTS, "", "", &arcs.join(","), "")),
+        &document(&fields(POINTS, "", "", &arcs(340), "")),
         "points",
-        "the sketch has 2049 unknowns",
+        "the sketch has 1026 unknowns",
     );
+    none(&document(&fields(POINTS, "", "", &arcs(339), "")));
 }
 
 // E9: each arc's rules count as a constraint.
 #[test]
 fn arcs_count_as_constraints() {
-    // 680 arcs and 9,321 constraints: 10,001.
-    let arcs: Vec<String> = (0..680).map(|i| format!(r#"{{"id": "a{i:07}", "center": "pa000000", "start": "pb000000", "end": "pc000000", "construction": false}}"#)).collect();
-    let cs: Vec<String> = (0..9321)
+    // 339 arcs and 9,662 constraints: 10,001.
+    let arcs: Vec<String> = (0..339).map(|i| format!(r#"{{"id": "a{i:07}", "center": "pa000000", "start": "pb000000", "end": "pc000000", "construction": false}}"#)).collect();
+    let cs: Vec<String> = (0..9662)
         .map(|i| format!(r#"{{"id": "k{i:07}", "type": "horizontal", "line": "na000000"}}"#))
         .collect();
     only(
         &document(&fields(POINTS, LINE, "", &arcs.join(","), &cs.join(","))),
         "constraints",
         "the sketch has 10001 constraints",
-    );
-}
-
-// E9: each arc is four rows; each midpoint two.
-#[test]
-fn arcs_and_midpoints_count_their_rows_in_the_jacobian() {
-    // 680 arcs (2046 unknowns), 8,000 symmetric (16,000 rows) and the arcs' 2,720:
-    // 18,720 × 2046 = 38,301,120, past 2^25; without the arcs' rows, 32,736,000.
-    let arcs: Vec<String> = (0..680).map(|i| format!(r#"{{"id": "a{i:07}", "center": "pa000000", "start": "pb000000", "end": "pc000000", "construction": false}}"#)).collect();
-    let cs: Vec<String> = (0..8000).map(|i| format!(r#"{{"id": "k{i:07}", "type": "symmetric", "a": "pb000000", "b": "pc000000", "about": "pa000000"}}"#)).collect();
-    only(
-        &document(&fields(POINTS, "", "", &arcs.join(","), &cs.join(","))),
-        "constraints",
-        "38301120",
-    );
-    // 1024 points (2048 unknowns) and 8,193 midpoints, two rows each: 33,558,528.
-    let points: Vec<String> = (0..1024)
-        .map(|i| format!(r#"{{"id": "p{i:07}", "x": {i}, "y": 0, "construction": false}}"#))
-        .collect();
-    let line = r#"{"id": "n0000000", "from": "p0000000", "to": "p0000001", "construction": false}"#;
-    let cs: Vec<String> = (0..8193).map(|i| format!(r#"{{"id": "k{i:07}", "type": "midpoint", "point": "p0000002", "line": "n0000000"}}"#)).collect();
-    only(
-        &document(&fields(&points.join(","), line, "", "", &cs.join(","))),
-        "constraints",
-        "33558528",
     );
 }
 
@@ -625,40 +603,22 @@ fn reference_dimensions_arent_the_solvers_values() {
 }
 
 #[test]
-fn a_tangent_on_is_two_equations_and_a_fixed_angle() {
-    // 1,023 points (2,046 unknowns), a circle about one (2,047), a line between two, and
-    // 8,197 tangent_ons: 16,394 equations × 2,047 unknowns = 33,558,518 entries, past 2^25
-    // (33,554,432); and 2,047 + 8,197 angles + 6 (the origin, the axes' ends) = 10,250
-    // values, past 10,000.
-    let points: Vec<String> = (0..1023)
-        .map(|i| format!(r#"{{"id": "p{i:07}", "x": {i}, "y": 0, "construction": false}}"#))
-        .collect();
-    let line = r#"{"id": "n0000000", "from": "p0000000", "to": "p0000001", "construction": false}"#;
-    let circle = r#"{"id": "c0000000", "center": "p0000005", "radius": 3, "construction": false}"#;
-    let tangents: Vec<String> = (0..8197)
-        .map(|i| format!(r#"{{"id": "k{i:07}", "type": "tangent_on", "a": "n0000000", "at": "p0000001", "b": "c0000000", "direction": "same"}}"#))
-        .collect();
-    let all = problems(&document(&fields(
-        &points.join(", "),
-        line,
-        circle,
-        "",
-        &tangents.join(", "),
-    )));
-    let messages: Vec<&str> = all.iter().map(|e| e.message()).collect();
-    assert!(
-        messages
-            .iter()
-            .any(|m| m.starts_with("the sketch has 33558518 entries")),
-        "{messages:#?}"
+fn a_tangent_on_is_a_fixed_angle() {
+    // POINTS (6 unknowns) and CIRCLE (1), and 9,988 tangent_ons of the line's end on the
+    // circle, each with its fixed angle: 7 + 9,988 + 6 (the origin, the axes' ends) =
+    // 10,001 values, past 10,000; one fewer, 10,000, admitted.
+    let tangents = |n: usize| {
+        let all: Vec<String> = (0..n)
+            .map(|i| format!(r#"{{"id": "k{i:07}", "type": "tangent_on", "a": "na000000", "at": "pb000000", "b": "ca000000", "direction": "same"}}"#))
+            .collect();
+        document(&fields(POINTS, LINE, CIRCLE, "", &all.join(", ")))
+    };
+    none(&tangents(9987));
+    only(
+        &tangents(9988),
+        "points",
+        "the sketch has 10001 values, more than the 10000 the sketch solver takes",
     );
-    assert!(
-        messages
-            .iter()
-            .any(|m| m.starts_with("the sketch has 10250 values")),
-        "{messages:#?}"
-    );
-    assert_eq!(all.len(), 2, "{messages:#?}");
 }
 
 #[test]

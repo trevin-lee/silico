@@ -39,10 +39,11 @@ pub const LENGTH_TOLERANCE: f64 = 1e-8;
 pub const ANGLE_TOLERANCE: f64 = 1e-9;
 
 /// How long a solve may take before the worker is stopped. A sketch the constraints can't
-/// solve is tried by every algorithm in turn, and at half the unknowns the worker takes
+/// solve is tried by every algorithm in turn, and at the most unknowns the worker takes
 /// (1,024, a chain of 512 points held too far apart), break-it measured DogLeg 11.5 s,
 /// Levenberg–Marquardt 28.9 s, BFGS 0.2 s, and anchored SQP 33.2 s on a loaded machine:
-/// 74 s, past the kernel's 60.
+/// 74 s, past the kernel's 60. A sketch solved again from its solution
+/// ([`Translation::solve`]) takes it twice at most.
 pub const SKETCH_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// The environment variable that names the sketch worker executable.
@@ -95,6 +96,11 @@ impl SketchWorker {
         self
     }
 
+    /// How long each solve may take.
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
     /// The worker's process.
     pub fn pid(&self) -> u32 {
         self.worker.pid()
@@ -103,7 +109,7 @@ impl SketchWorker {
 
 impl SketchSolver for SketchWorker {
     fn solve(&mut self, system: SketchSystem) -> Result<Solved, Error> {
-        let name = Op::Solve(system.clone()).name();
+        let name = "Solve";
         match self
             .worker
             .call(Generation(0), Op::Solve(system), self.timeout)?
@@ -246,6 +252,13 @@ struct Arc {
     start: ElementId,
     end: ElementId,
     angles: [Value; 2],
+}
+
+/// Which end of a line or an arc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum End {
+    Start,
+    End,
 }
 
 /// A curve a constraint names.
@@ -512,8 +525,8 @@ impl Translation {
             .or_else(|_| self.round(r).map(Curve::Round))
     }
 
-    /// Which end of curve `a` (a line or an arc) the point `at` is: its start (true) or end.
-    fn end_of(&self, a: &Reference, at: &Reference) -> Result<bool, Error> {
+    /// Which end of curve `a` (a line or an arc) the point `at` is.
+    fn end_of(&self, a: &Reference, at: &Reference) -> Result<End, Error> {
         let (Some(a), Some(at)) = (a.element(), at.element()) else {
             return Err(unchecked(format!("names {at} as an end of {a}")));
         };
@@ -526,8 +539,8 @@ impl Translation {
             (None, None) => (false, false),
         };
         match (from, to) {
-            (true, false) => Ok(true),
-            (false, true) => Ok(false),
+            (true, false) => Ok(End::Start),
+            (false, true) => Ok(End::End),
             _ => Err(unchecked(format!("names {at} as an end of {a}"))),
         }
     }
@@ -538,7 +551,7 @@ impl Translation {
         c: &SketchConstraint,
         tag: Tag,
         point_of: &dyn Fn(&Reference) -> Result<PointOf, Error>,
-    ) -> Result<Vec<SolverConstraint>, Error> {
+    ) -> Result<Option<SolverConstraint>, Error> {
         use SolverConstraint as S;
         let sent = match &c.form {
             Form::Horizontal { line } => S::Horizontal {
@@ -566,7 +579,7 @@ impl Translation {
             | Form::PointLineDistance { driving: false, .. }
             | Form::Angle { driving: false, .. }
             | Form::Radius { driving: false, .. }
-            | Form::Diameter { driving: false, .. } => return Ok(Vec::new()),
+            | Form::Diameter { driving: false, .. } => return Ok(None),
             Form::Length { line, value, .. } => {
                 let l = self.line(line)?;
                 S::Distance {
@@ -687,19 +700,21 @@ impl Translation {
             } => {
                 // `a`'s direction leaving `at` against `b`'s own: leaving `a`'s start is its
                 // own direction, leaving its end the reverse (docs/design/m3.3-solving.md).
-                let at_start = self.end_of(a, at)?;
-                let same = *direction == Direction::Same;
+                let end = self.end_of(a, at)?;
                 let ga = self.curve(a)?.geometry();
+                let angle = match (end, direction) {
+                    (End::Start, Direction::Same) | (End::End, Direction::Opposite) => 0.0,
+                    (End::Start, Direction::Opposite) | (End::End, Direction::Same) => PI,
+                };
                 S::TangentOn {
                     tag,
                     a: ga,
-                    point: if at_start {
-                        PointOf::Start(ga)
-                    } else {
-                        PointOf::End(ga)
+                    point: match end {
+                        End::Start => PointOf::Start(ga),
+                        End::End => PointOf::End(ga),
                     },
                     b: self.curve(b)?.geometry(),
-                    angle: self.fixed(if at_start == same { 0.0 } else { PI }),
+                    angle: self.fixed(angle),
                 }
             }
             Form::TangentAt {
@@ -711,15 +726,20 @@ impl Translation {
                 // A path along `a` into `at` and on along `b`: smooth (`same`) with the two
                 // curves' own directions the same there when `at` is one's end and the other's
                 // start, opposite when it's both starts or both ends.
-                let (a_start, b_start) = (self.end_of(a, at)?, self.end_of(b, at)?);
-                let own_same = a_start != b_start;
-                let same = *direction == Direction::Same;
+                let own_directions_same = match (self.end_of(a, at)?, self.end_of(b, at)?) {
+                    (End::End, End::Start) | (End::Start, End::End) => true,
+                    (End::Start, End::Start) | (End::End, End::End) => false,
+                };
+                let angle = match (own_directions_same, direction) {
+                    (true, Direction::Same) | (false, Direction::Opposite) => 0.0,
+                    (true, Direction::Opposite) | (false, Direction::Same) => PI,
+                };
                 S::AngleViaPoint {
                     tag,
                     a: self.curve(a)?.geometry(),
                     b: self.curve(b)?.geometry(),
                     point: point_of(at)?,
-                    angle: self.fixed(if own_same == same { 0.0 } else { PI }),
+                    angle: self.fixed(angle),
                 }
             }
             Form::Symmetric { a, b, about } => {
@@ -770,7 +790,7 @@ impl Translation {
         if let S::SymmetricLine { a, b, .. } | S::SymmetricPoint { a, b, .. } = sent {
             self.apart(a, b)?;
         }
-        Ok(vec![sent])
+        Ok(Some(sent))
     }
 
     /// Whether `a` and `b` are one arc's own start and end, and the sketch holds its centre
@@ -811,27 +831,21 @@ impl Translation {
     /// That a symmetry's two points aren't drawn at one place: PlaneGCS measures a symmetry
     /// by the line between them.
     fn apart(&self, a: PointOf, b: PointOf) -> Result<(), Error> {
-        let at = |p: PointOf| -> Option<[f64; 2]> {
-            let (PointOf::Point(g) | PointOf::Start(g) | PointOf::End(g) | PointOf::Center(g)) = p;
-            let v = match (self.system.geometry.get(g.0 as usize)?, p) {
-                (SketchGeometry::Point(v), _) => *v,
-                (SketchGeometry::Line { start, .. }, PointOf::Start(_)) => *start,
-                (SketchGeometry::Line { end, .. }, PointOf::End(_)) => *end,
-                _ => return None,
-            };
-            Some(self.xy(&self.system.values, v))
-        };
-        match (at(a), at(b)) {
-            (Some(pa), Some(pb)) if no_distance(pa, pb) => Err(Error::new(
+        let (pa, pb) = (
+            self.point_of(&self.system.values, a),
+            self.point_of(&self.system.values, b),
+        );
+        if no_distance(pa, pb) {
+            return Err(Error::new(
                 ErrorCode::InvalidInput,
                 format!(
                     "a symmetry of two points drawn at one place, ({}, {}): the solver measures it by the line between them",
                     pa[0], pa[1]
                 ),
             )
-            .with_suggestion("draw the two points apart, where they'd mirror each other")),
-            _ => Ok(()),
+            .with_suggestion("draw the two points apart, where they'd mirror each other"));
         }
+        Ok(())
     }
 
     fn xy(&self, values: &[f64], p: PointValues) -> [f64; 2] {
@@ -846,7 +860,7 @@ impl Translation {
 fn unchecked(what: String) -> Error {
     Error::new(
         ErrorCode::Internal,
-        format!("a constraint the gate let through {what}"),
+        format!("the gate let through a sketch that {what}"),
     )
     .with_suggestion("this is a bug in Silico's sketch gate: report it")
 }
@@ -1004,16 +1018,12 @@ impl Translation {
 
     /// The constraint tagged `tag`'s ID.
     fn id(&self, tag: Tag) -> Result<&ElementId, Error> {
-        (tag.0 as usize)
-            .checked_sub(1)
-            .and_then(|i| self.constraints.get(i))
-            .map(|c| &c.id)
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorCode::ProtocolError,
-                    format!("the sketch worker names tag {}, which wasn't sent", tag.0),
-                )
-            })
+        self.constraint_id(tag).ok_or_else(|| {
+            Error::new(
+                ErrorCode::ProtocolError,
+                format!("the sketch worker names tag {}, which wasn't sent", tag.0),
+            )
+        })
     }
 
     fn ids(&self, tags: &[Tag]) -> Result<Vec<String>, Error> {

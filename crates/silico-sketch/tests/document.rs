@@ -219,8 +219,9 @@ fn freecads_circle_to_line_distance_and_its_reference() {
     // in Silico's forms: a circle of radius 20 about the origin, held there, and a
     // horizontal line drawn at y 40. Silico has no circle-to-line distance; its essence is
     // the centre's distance from the line, the radius plus the gap: a gap of 10 is a
-    // distance of 30, so the line lands at y 30, 10 from the circle. And a line at y 10
-    // across the circle, held there, reads back a reference distance of 10.
+    // distance of 30, so the line lands at y 30, 10 from the circle. And a line at y 7
+    // across the circle, held there, reads back a reference distance of 7 (not half the
+    // radius, so it can't pass by FreeCAD's circle-to-line distance by coincidence).
     let doc = document(
         &[
             point("p0000001", 0.0, 0.0),
@@ -246,8 +247,8 @@ fn freecads_circle_to_line_distance_and_its_reference() {
     let doc = document(
         &[
             point("p0000001", 0.0, 0.0),
-            point("p0000002", -20.0, 10.0),
-            point("p0000003", 20.0, 10.0),
+            point("p0000002", -20.0, 7.0),
+            point("p0000003", 20.0, 7.0),
         ],
         &[line("n0000001", "p0000002", "p0000003")],
         &[circle("c0000001", "p0000001", 20.0)],
@@ -256,18 +257,18 @@ fn freecads_circle_to_line_distance_and_its_reference() {
             r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
             r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
             r#"{"id": "k0000003", "type": "distance_x", "a": "origin", "b": "p0000002", "value": -20, "driving": true}"#,
-            r#"{"id": "k0000004", "type": "distance_y", "a": "origin", "b": "p0000002", "value": 10, "driving": true}"#,
+            r#"{"id": "k0000004", "type": "distance_y", "a": "origin", "b": "p0000002", "value": 7, "driving": true}"#,
             r#"{"id": "k0000005", "type": "distance_x", "a": "origin", "b": "p0000003", "value": 20, "driving": true}"#,
-            r#"{"id": "k0000006", "type": "distance_y", "a": "origin", "b": "p0000003", "value": 10, "driving": true}"#,
+            r#"{"id": "k0000006", "type": "distance_y", "a": "origin", "b": "p0000003", "value": 7, "driving": true}"#,
             r#"{"id": "k0000007", "type": "point_line_distance", "point": "p0000001", "line": "n0000001", "value": 0, "side": "left", "driving": false}"#,
         ],
     );
     let s = solved(&doc, &mut worker()).unwrap();
-    // The centre is right of a line running +x at y 10.
+    // The centre is right of a line running +x at y 7.
     assert_eq!(
         s.references[&id("k0000007")],
         silico_core::sketch::Measured::FromLine {
-            distance: 10.0,
+            distance: 7.0,
             side: silico_core::document::LineSide::Right
         }
     );
@@ -686,4 +687,37 @@ fn two_circles_tangent_outside_and_inside_land_their_radii_apart() {
             "{side}: {p:?}"
         );
     }
+}
+
+#[test]
+fn a_sketch_worker_waits_its_own_time_and_the_time_it_is_given() {
+    // The council's tests lens: SKETCH_TIMEOUT was guarded only by a test bounded by the
+    // wall clock. The default is it, and a time given is the one used: a chain of 256 unit
+    // links held 1,000 apart, which every algorithm takes seconds to fail, given 100 ms,
+    // times out.
+    use std::time::Duration;
+    assert_eq!(worker().timeout(), silico_core::sketch::SKETCH_TIMEOUT);
+    let short = Duration::from_millis(100);
+    let mut w = worker().with_timeout(short);
+    assert_eq!(w.timeout(), short);
+    let n = 256;
+    let points: Vec<String> = (0..n)
+        .map(|i| point(&format!("p{i:07}"), i as f64 * 0.7, (i % 2) as f64 * 0.5))
+        .collect();
+    let mut constraints = vec![
+        r#"{"id": "a0000001", "type": "distance_x", "a": "origin", "b": "p0000000", "value": 0, "driving": true}"#.to_owned(),
+        r#"{"id": "a0000002", "type": "distance_y", "a": "origin", "b": "p0000000", "value": 0, "driving": true}"#.to_owned(),
+        format!(r#"{{"id": "a0000003", "type": "distance_x", "a": "origin", "b": "p{:07}", "value": 1000, "driving": true}}"#, n - 1),
+    ];
+    for i in 1..n {
+        constraints.push(format!(
+            r#"{{"id": "d{i:07}", "type": "distance", "a": "p{:07}", "b": "p{i:07}", "value": 1, "driving": true}}"#,
+            i - 1
+        ));
+    }
+    let refs: Vec<&str> = constraints.iter().map(String::as_str).collect();
+    let doc = document(&points, &[], &[], &[], &refs);
+    let e = solved(&doc, &mut w).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::WorkerTimeout, "{e}");
+    assert_eq!(e.feature(), Some(FEATURE));
 }
