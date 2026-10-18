@@ -724,9 +724,14 @@ fn a_sketch_worker_waits_its_own_time_and_the_time_it_is_given() {
     // robustness review: it stayed stopped, and every later sketch failed).
     let stopped = w.pid();
     w.set_timeout(silico_core::sketch::SKETCH_TIMEOUT);
+    assert_eq!(w.timeout(), silico_core::sketch::SKETCH_TIMEOUT);
     let s = solved(&free_line(&[]), &mut w).unwrap();
     assert_eq!(s.dofs, 4);
-    assert_ne!(w.pid(), stopped, "a new worker");
+    let restarted = w.pid();
+    assert_ne!(restarted, stopped, "a new worker");
+    // A worker that answered is kept: no new process for each solve (round 4's tests lens).
+    solved(&free_line(&[]), &mut w).unwrap();
+    assert_eq!(w.pid(), restarted);
 }
 
 #[test]
@@ -742,6 +747,39 @@ fn a_distrusted_sketch_worker_is_stopped_and_the_next_solve_starts_another() {
         assert!(
             std::time::Instant::now() < deadline,
             "the distrusted worker still runs"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let s = solved(&free_line(&[]), &mut w).unwrap();
+    assert_eq!(s.dofs, 4);
+    assert_ne!(w.pid(), first);
+}
+
+#[test]
+fn a_sketch_worker_killed_while_idle_is_started_again_for_the_next_solve() {
+    // Round 4's robustness review: one killed from outside between solves failed the next
+    // solve once before it was replaced.
+    let mut w = worker();
+    solved(&free_line(&[]), &mut w).unwrap();
+    let first = w.pid();
+    std::process::Command::new("kill")
+        .args(["-9", &first.to_string()])
+        .status()
+        .unwrap();
+    // Dead: gone, or a zombie waiting for its parent to reap it.
+    let dead = || {
+        let out = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &first.to_string()])
+            .output()
+            .unwrap();
+        let stat = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        stat.is_empty() || stat.starts_with('Z')
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !dead() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the worker still runs"
         );
         std::thread::sleep(std::time::Duration::from_millis(20));
     }

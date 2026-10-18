@@ -130,9 +130,9 @@ impl SketchSolver for SketchWorker {
     }
 
     fn solve(&mut self, system: SketchSystem) -> Result<Solved, Error> {
-        // A worker stopped after a failure is started again, as the kernel pool replaces
-        // one.
-        if self.worker.is_stopped()
+        // A worker stopped after a failure, or gone while idle (killed from outside), is
+        // started again, as the kernel pool replaces one.
+        if (self.worker.is_stopped() || self.worker.has_exited())
             && let Some(exe) = &self.exe
         {
             self.worker = Worker::spawn_as(exe, WorkerKind::Sketch)?;
