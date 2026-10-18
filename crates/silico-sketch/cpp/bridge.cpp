@@ -444,6 +444,14 @@ void debug_raise_sigsegv() {
 
 void debug_throw_bad_alloc() { throw std::bad_alloc(); }
 
+rust::Vec<uint64_t> debug_eigen_cache_sizes() {
+  rust::Vec<uint64_t> out;
+  out.push_back(static_cast<uint64_t>(Eigen::l1CacheSize()));
+  out.push_back(static_cast<uint64_t>(Eigen::l2CacheSize()));
+  out.push_back(static_cast<uint64_t>(Eigen::l3CacheSize()));
+  return out;
+}
+
 void debug_enable_fp_traps() {
 #if defined(__linux__)
   if (feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW) == -1) {

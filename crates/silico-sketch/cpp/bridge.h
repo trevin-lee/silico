@@ -54,6 +54,7 @@ void debug_throw_runtime_error(rust::Str message);
 void debug_raise_sigsegv();
 void debug_enable_fp_traps();
 void debug_throw_bad_alloc();
+rust::Vec<std::uint64_t> debug_eigen_cache_sizes();
 #endif
 
 }  // namespace silico_sketch

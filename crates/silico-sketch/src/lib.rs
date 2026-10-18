@@ -171,6 +171,8 @@ mod ffi {
         fn debug_enable_fp_traps() -> Result<()>;
         #[cfg(feature = "test_ops")]
         fn debug_throw_bad_alloc() -> Result<()>;
+        #[cfg(feature = "test_ops")]
+        fn debug_eigen_cache_sizes() -> Vec<u64>;
     }
 }
 
@@ -504,6 +506,11 @@ pub mod test_ops {
         ffi::debug_enable_fp_traps().map_err(|e| e.what().to_owned())
     }
 
+    /// The cache sizes Eigen blocks its matrix products by: L1, L2, L3, in bytes.
+    pub fn eigen_cache_sizes() -> Vec<u64> {
+        ffi::debug_eigen_cache_sizes()
+    }
+
     /// Throws `std::bad_alloc`, as a C++ allocation that fails does, and reads it as a
     /// solve does.
     pub fn throw_bad_alloc() -> Result<(), super::Failure> {
@@ -530,6 +537,31 @@ mod tests {
             assert_eq!(failure.refusal, Refusal::SolutionOutOfReach { value: at });
             assert_eq!(failure.cause, None);
         }
+    }
+
+    #[test]
+    fn a_solve_fixes_the_cache_sizes_eigen_blocks_its_products_by() {
+        // Eigen asks an x86 CPU for its caches and blocks matrix products deeper than its
+        // L1 allows by them, so two machines would sum in different orders; a solve fixes
+        // them first to the sizes it assumes where it can't ask (ARM's). On ARM, then, a
+        // missing fix leaves the same sizes, and this is caught on x86 (the CI runner):
+        // the M3.7 mutation run's one miss.
+        use silico_protocol::{Algorithm, PointValues, SketchGeometry, SketchSystem, Value};
+        let system = SketchSystem {
+            values: vec![0.0, 0.0],
+            unknowns: vec![Value(0), Value(1)],
+            geometry: vec![SketchGeometry::Point(PointValues {
+                x: Value(0),
+                y: Value(1),
+            })],
+            constraints: Vec::new(),
+            algorithms: vec![Algorithm::DogLeg],
+        };
+        super::solve(&system).unwrap();
+        assert_eq!(
+            super::test_ops::eigen_cache_sizes(),
+            [16 * 1024, 512 * 1024, 512 * 1024]
+        );
     }
 
     #[test]
