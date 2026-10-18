@@ -90,17 +90,19 @@ A `.silico` file is strict JSON describing the feature timeline. Silico rebuilds
   "units": {"length": "mm", "resolution": "1nm"},
   "features": [
     {
-      "id": "k7f2qx3m", "type": "sketch", "v": 1, "name": "base", "plane": "XY",
+      "id": "k7f2qx3m", "type": "sketch", "v": 1, "name": "base", "plane": "xy",
       "points": [
-        {"id": "p1", "x": 0, "y": 0},
-        {"id": "p2", "x": 40, "y": 0}
+        {"id": "0a1b2c3d", "x": 0, "y": 0, "construction": false},
+        {"id": "4e5f6g7h", "x": 40, "y": 0, "construction": false}
       ],
       "lines": [
-        {"id": "l1", "from": "p1", "to": "p2"}
+        {"id": "6t7v8w9x", "from": "0a1b2c3d", "to": "4e5f6g7h", "construction": false}
       ],
+      "circles": [],
+      "arcs": [],
       "constraints": [
-        {"id": "c1", "type": "horizontal", "on": "l1"},
-        {"id": "c2", "type": "distance", "on": "l1", "value": 40}
+        {"id": "c0d1e2f3", "type": "horizontal", "line": "6t7v8w9x"},
+        {"id": "g4h5j6k7", "type": "length", "line": "6t7v8w9x", "value": 40, "driving": true}
       ]
     },
     {
@@ -113,6 +115,7 @@ A `.silico` file is strict JSON describing the feature timeline. Silico rebuilds
 ```
 
 - **The timeline is the array order** of `features`.
+- **Sketches** (docs/design/m3.2-sketch-format.md) list points their curves share, lines, circles, arcs, and constraints, each element with its own ID and each list sorted by ID; points' coordinates are the solver's, written in full. (Canonical form writes a feature that holds objects one member per line; the example is compressed.)
 - **IDs** are random 8-character lowercase base32, unique within the document, so parallel branches don't collide. Display names are separate and don't need to be unique.
 - **Units** are declared in the `units` header. Version 1 accepts only millimetres at 1 nm resolution, with angles in degrees at 1 nanodegree resolution. The header exists so other scales, such as nanometre-scale documents, can be added later without breaking the format. The length unit is also the kernel's working unit, because OCCT's tolerances are absolute: a 5 nm feature in a millimetre document would be only 50× OCCT's tolerance. Display units are a UI setting. Expressions are strings starting with `=` (`"length": "=width * 2"`).
 - **Parameters** are named, typed values with units, stored at the top of the document. Expressions reference them. This is the data model only. How parameters are presented and edited (a spreadsheet, a parameter panel, inline in dimension fields) is a separate UX decision.
@@ -219,7 +222,7 @@ GPL-3.0-or-later. Silico's dependencies are LGPL (FreeCAD, OCCT, PlaneGCS, Ondse
 ## Open questions
 
 - The syntax of topological names in files.
-- Sketch entity ordering: creation order or sorted by ID. A semantic git merge driver.
+- A semantic git merge driver.
 - IPC transport (pipes or shared memory), and whether an out-of-process sketch solver meets the latency budget for interactive drags.
 - Interfaces: published, semver-versioned geometry contracts that parallel design work builds on. Also CAD CI.
 - Version control beyond git.

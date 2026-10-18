@@ -14,7 +14,8 @@ use super::fingerprint::Fingerprint;
 use super::model::{
     Document, Feature, FeatureId, FeatureVersion, FormatVersion, Operation, Position, Units,
 };
-use super::quantity::Length;
+use super::quantity::{Angle, Length};
+use super::sketch::{Coordinate, ElementId, Form, Reference, Sketch, SketchConstraint};
 
 /// The text passed the limit it was written to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,7 +199,220 @@ fn fields(operation: &Operation) -> Vec<(&'static str, Out<'_>)> {
         | Operation::Common { base, tool } => {
             vec![("base", reference(base)), ("tool", reference(tool))]
         }
+        Operation::Sketch(sketch) => self::sketch(sketch),
     }
+}
+
+/// A sketch's fields (D5 of docs/design/m3.2-sketch-format.md): each list sorted by ID,
+/// one element per line.
+fn sketch(sketch: &Sketch) -> Vec<(&'static str, Out<'_>)> {
+    let Sketch {
+        plane,
+        points,
+        lines,
+        circles,
+        arcs,
+        constraints,
+    } = sketch;
+    fn sorted<T>(items: &[T], id: impl Fn(&T) -> &ElementId) -> Vec<&T> {
+        let mut items: Vec<&T> = items.iter().collect();
+        // Stable, so elements sharing an ID (which the gate refuses) keep their order.
+        items.sort_by(|a, b| id(a).cmp(id(b)));
+        items
+    }
+    let points = sorted(points, |p| &p.id)
+        .into_iter()
+        .map(|p| {
+            Out::Object(vec![
+                ("id", element(&p.id)),
+                ("x", coordinate(p.x)),
+                ("y", coordinate(p.y)),
+                ("construction", boolean(p.construction)),
+            ])
+        })
+        .collect();
+    let lines = sorted(lines, |l| &l.id)
+        .into_iter()
+        .map(|l| {
+            Out::Object(vec![
+                ("id", element(&l.id)),
+                ("from", element(&l.from)),
+                ("to", element(&l.to)),
+                ("construction", boolean(l.construction)),
+            ])
+        })
+        .collect();
+    let circles = sorted(circles, |c| &c.id)
+        .into_iter()
+        .map(|c| {
+            Out::Object(vec![
+                ("id", element(&c.id)),
+                ("center", element(&c.center)),
+                ("radius", coordinate(c.radius)),
+                ("construction", boolean(c.construction)),
+            ])
+        })
+        .collect();
+    let arcs = sorted(arcs, |a| &a.id)
+        .into_iter()
+        .map(|a| {
+            Out::Object(vec![
+                ("id", element(&a.id)),
+                ("center", element(&a.center)),
+                ("start", element(&a.start)),
+                ("end", element(&a.end)),
+                ("construction", boolean(a.construction)),
+            ])
+        })
+        .collect();
+    let constraints = sorted(constraints, |c| &c.id)
+        .into_iter()
+        .map(constraint)
+        .collect();
+    vec![
+        ("plane", Out::Str(plane.as_str())),
+        ("points", Out::Array(points)),
+        ("lines", Out::Array(lines)),
+        ("circles", Out::Array(circles)),
+        ("arcs", Out::Array(arcs)),
+        ("constraints", Out::Array(constraints)),
+    ]
+}
+
+/// A constraint: its ID, its type, then its form's fields in schema order.
+fn constraint(constraint: &SketchConstraint) -> Out<'_> {
+    let mut members = vec![
+        ("id", element(&constraint.id)),
+        ("type", Out::Str(constraint.form.type_name())),
+    ];
+    let length = |l: &Length| number(*l);
+    let angle = |a: &Angle| Out::Raw(a.to_string());
+    let driving = |d: &bool| boolean(*d);
+    members.extend(match &constraint.form {
+        Form::Horizontal { line } | Form::Vertical { line } => vec![("line", r(line))],
+        Form::HorizontalPoints { a, b }
+        | Form::VerticalPoints { a, b }
+        | Form::Parallel { a, b }
+        | Form::Perpendicular { a, b }
+        | Form::Equal { a, b } => vec![("a", r(a)), ("b", r(b))],
+        Form::Length {
+            line,
+            value,
+            driving: d,
+        } => vec![
+            ("line", r(line)),
+            ("value", length(value)),
+            ("driving", driving(d)),
+        ],
+        Form::Distance {
+            a,
+            b,
+            value,
+            driving: d,
+        }
+        | Form::DistanceX {
+            a,
+            b,
+            value,
+            driving: d,
+        }
+        | Form::DistanceY {
+            a,
+            b,
+            value,
+            driving: d,
+        } => vec![
+            ("a", r(a)),
+            ("b", r(b)),
+            ("value", length(value)),
+            ("driving", driving(d)),
+        ],
+        Form::PointLineDistance {
+            point,
+            line,
+            value,
+            side,
+            driving: d,
+        } => vec![
+            ("point", r(point)),
+            ("line", r(line)),
+            ("value", length(value)),
+            ("side", Out::Str(side.as_str())),
+            ("driving", driving(d)),
+        ],
+        Form::On { point, curve } => vec![("point", r(point)), ("curve", r(curve))],
+        Form::Angle {
+            a,
+            b,
+            value,
+            driving: d,
+        } => vec![
+            ("a", r(a)),
+            ("b", r(b)),
+            ("value", angle(value)),
+            ("driving", driving(d)),
+        ],
+        Form::Radius {
+            curve,
+            value,
+            driving: d,
+        }
+        | Form::Diameter {
+            curve,
+            value,
+            driving: d,
+        } => vec![
+            ("curve", r(curve)),
+            ("value", length(value)),
+            ("driving", driving(d)),
+        ],
+        Form::Tangent { a, b, side } => {
+            vec![("a", r(a)), ("b", r(b)), ("side", Out::Str(side.as_str()))]
+        }
+        Form::TangentOn {
+            a,
+            at,
+            b,
+            direction,
+        } => vec![
+            ("a", r(a)),
+            ("at", r(at)),
+            ("b", r(b)),
+            ("direction", Out::Str(direction.as_str())),
+        ],
+        Form::TangentAt {
+            a,
+            b,
+            at,
+            direction,
+        } => vec![
+            ("a", r(a)),
+            ("b", r(b)),
+            ("at", r(at)),
+            ("direction", Out::Str(direction.as_str())),
+        ],
+        Form::Symmetric { a, b, about } => {
+            vec![("a", r(a)), ("b", r(b)), ("about", r(about))]
+        }
+        Form::Midpoint { point, line } => vec![("point", r(point)), ("line", r(line))],
+    });
+    Out::Object(members)
+}
+
+fn r(reference: &Reference) -> Out<'_> {
+    Out::Str(reference.as_str())
+}
+
+fn element(id: &ElementId) -> Out<'_> {
+    Out::Str(id.as_str())
+}
+
+fn coordinate(c: Coordinate) -> Out<'static> {
+    Out::Raw(c.to_string())
+}
+
+fn boolean(b: bool) -> Out<'static> {
+    Out::Raw(if b { "true" } else { "false" }.to_owned())
 }
 
 fn number(length: Length) -> Out<'static> {

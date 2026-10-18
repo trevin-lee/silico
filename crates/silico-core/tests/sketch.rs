@@ -1,0 +1,915 @@
+//! M3.2: sketches in the document (docs/design/m3.2-sketch-format.md). Each is read
+//! exactly, written in canonical form with its lists sorted by ID, and checked by the gate.
+//! Expected text and messages are written out by hand. Coordinates are checked bit for bit,
+//! against floats written as literals.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+#[path = "common/sketch.rs"]
+mod fixture;
+
+use fixture::{ARC, CIRCLE, FEATURE, LINE, POINTS, constrained, document, fields, problems};
+use proptest::prelude::*;
+use silico_core::document::{
+    Coordinate, Direction, ElementId, Form, Operation, Plane, Reference, Sketch, TangentSide, read,
+    validate, write,
+};
+use silico_core::{Error, ErrorCode};
+
+/// The design's example, a 40 × 20 rectangle with a construction diagonal, in canonical
+/// form: the feature holds objects, so it's written one member per line (M2.1's D7), and
+/// each list is sorted by ID.
+const EXAMPLE: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "features": [
+    {
+      "id": "k7f2qx3m",
+      "type": "sketch",
+      "v": 1,
+      "name": "Base",
+      "plane": "xy",
+      "points": [
+        {"id": "0a1b2c3d", "x": 0, "y": 0, "construction": false},
+        {"id": "2p3q4r5s", "x": 0, "y": 20, "construction": false},
+        {"id": "4e5f6g7h", "x": 40, "y": 0, "construction": false},
+        {"id": "8j9k0m1n", "x": 40, "y": 20, "construction": false}
+      ],
+      "lines": [
+        {"id": "6t7v8w9x", "from": "0a1b2c3d", "to": "4e5f6g7h", "construction": false},
+        {"id": "a0b1c2d3", "from": "4e5f6g7h", "to": "8j9k0m1n", "construction": false},
+        {"id": "e4f5g6h7", "from": "0a1b2c3d", "to": "8j9k0m1n", "construction": true},
+        {"id": "j8k9m0n1", "from": "8j9k0m1n", "to": "2p3q4r5s", "construction": false},
+        {"id": "p2q3r4s5", "from": "2p3q4r5s", "to": "0a1b2c3d", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [
+        {"id": "c0d1e2f3", "type": "horizontal", "line": "6t7v8w9x"},
+        {"id": "g4h5j6k7", "type": "length", "line": "6t7v8w9x", "value": 40, "driving": true},
+        {"id": "m8n9p0q1", "type": "distance_x", "a": "origin", "b": "0a1b2c3d", "value": 0, "driving": true},
+        {"id": "r2s3t4v5", "type": "vertical", "line": "a0b1c2d3"},
+        {"id": "w6x7y8z9", "type": "length", "line": "a0b1c2d3", "value": 20, "driving": true},
+        {"id": "x0y1z2a3", "type": "horizontal", "line": "j8k9m0n1"},
+        {"id": "y4z5a6b7", "type": "distance_y", "a": "origin", "b": "0a1b2c3d", "value": 0, "driving": true},
+        {"id": "z8a9b0c1", "type": "vertical", "line": "p2q3r4s5"}
+      ]
+    }
+  ]
+}
+"#;
+
+fn sketch_of(text: &str) -> Sketch {
+    let document = read(text.as_bytes()).unwrap();
+    match &document.features[0].operation {
+        Operation::Sketch(sketch) => sketch.clone(),
+        other => panic!("{other:?}"),
+    }
+}
+
+fn el(text: &str) -> ElementId {
+    ElementId::new(text).unwrap()
+}
+
+fn read_error(text: &str) -> Error {
+    read(text.as_bytes()).unwrap_err()
+}
+
+/// The one problem the gate finds in `text`.
+#[track_caller]
+fn problem(text: &str) -> Error {
+    let all = problems(text);
+    assert_eq!(all.len(), 1, "{all:#?}");
+    all[0].clone()
+}
+
+#[track_caller]
+fn assert_error(error: &Error, parameter: &str, message: &str) {
+    assert_eq!(error.code(), ErrorCode::InvalidInput, "{error:?}");
+    assert_eq!(error.feature(), Some(FEATURE), "{error:?}");
+    assert_eq!(error.parameter(), Some(parameter), "{error:?}");
+    assert!(
+        error.message().starts_with(message),
+        "{:?}\nwanted it to start {message:?}",
+        error.message()
+    );
+}
+
+#[test]
+fn the_designs_example_reads_as_its_values_and_writes_back_byte_for_byte() {
+    let document = read(EXAMPLE.as_bytes()).unwrap();
+    assert!(validate(&document).is_ok());
+    let sketch = sketch_of(EXAMPLE);
+    assert_eq!(sketch.plane, Plane::Xy);
+    assert_eq!(sketch.points.len(), 4);
+    let corner = &sketch.points[3];
+    assert_eq!(corner.id, el("8j9k0m1n"));
+    assert_eq!((corner.x.mm(), corner.y.mm()), (40.0, 20.0));
+    let diagonal = &sketch.lines[2];
+    assert_eq!(
+        (&diagonal.from, &diagonal.to, diagonal.construction),
+        (&el("0a1b2c3d"), &el("8j9k0m1n"), true)
+    );
+    assert_eq!(
+        sketch.constraints[2].form,
+        Form::DistanceX {
+            a: Reference::Origin,
+            b: Reference::Element(el("0a1b2c3d")),
+            value: silico_core::document::Length::from_nm(0),
+            driving: true,
+        }
+    );
+    assert_eq!(write(&document).unwrap(), EXAMPLE);
+}
+
+#[test]
+fn lists_are_read_in_any_order_and_written_sorted_by_id() {
+    // The example's points and constraints reversed, and its lines rotated.
+    let mut text = EXAMPLE.to_owned();
+    for (a, b) in [
+        (
+            r#"{"id": "0a1b2c3d", "x": 0, "y": 0, "construction": false}"#,
+            r#"{"id": "8j9k0m1n", "x": 40, "y": 20, "construction": false}"#,
+        ),
+        (
+            r#"{"id": "c0d1e2f3", "type": "horizontal", "line": "6t7v8w9x"}"#,
+            r#"{"id": "z8a9b0c1", "type": "vertical", "line": "p2q3r4s5"}"#,
+        ),
+    ] {
+        text = text.replace(a, "SWAP").replace(b, a).replace("SWAP", b);
+    }
+    assert_ne!(text, EXAMPLE);
+    let document = read(text.as_bytes()).unwrap();
+    let sketch = sketch_of(&text);
+    // Held as written.
+    assert_eq!(sketch.points[0].id, el("8j9k0m1n"));
+    assert_eq!(sketch.constraints[0].id, el("z8a9b0c1"));
+    assert_eq!(write(&document).unwrap(), EXAMPLE);
+}
+
+#[test]
+fn every_constraint_form_reads_and_writes_back_in_schema_order() {
+    // One of each, with every choice written, in canonical form (each list sorted by ID).
+    let constraints = [
+        r#"{"id": "k0000000", "type": "horizontal", "line": "na000000"}"#,
+        r#"{"id": "k0000001", "type": "vertical", "line": "na000000"}"#,
+        r#"{"id": "k0000002", "type": "horizontal_points", "a": "pa000000", "b": "pb000000"}"#,
+        r#"{"id": "k0000003", "type": "vertical_points", "a": "origin", "b": "pc000000"}"#,
+        r#"{"id": "k0000004", "type": "length", "line": "na000000", "value": 10, "driving": true}"#,
+        r#"{"id": "k0000005", "type": "distance", "a": "pa000000", "b": "pc000000", "value": 10.000001, "driving": false}"#,
+        r#"{"id": "k0000006", "type": "distance_x", "a": "pb000000", "b": "pa000000", "value": -10, "driving": true}"#,
+        r#"{"id": "k0000007", "type": "distance_y", "a": "origin", "b": "pc000000", "value": 10, "driving": true}"#,
+        r#"{"id": "k0000008", "type": "point_line_distance", "point": "pc000000", "line": "na000000", "value": 10, "side": "left", "driving": true}"#,
+        r#"{"id": "k0000009", "type": "on", "point": "pc000000", "curve": "y_axis"}"#,
+        r#"{"id": "k000000a", "type": "parallel", "a": "na000000", "b": "x_axis"}"#,
+        r#"{"id": "k000000b", "type": "perpendicular", "a": "na000000", "b": "y_axis"}"#,
+        r#"{"id": "k000000c", "type": "angle", "a": "x_axis", "b": "na000000", "value": -0.000000001, "driving": true}"#,
+        r#"{"id": "k000000d", "type": "radius", "curve": "ca000000", "value": 5, "driving": true}"#,
+        r#"{"id": "k000000e", "type": "diameter", "curve": "aa000000", "value": 20, "driving": false}"#,
+        r#"{"id": "k000000f", "type": "equal", "a": "ca000000", "b": "aa000000"}"#,
+        r#"{"id": "k000000g", "type": "tangent", "a": "na000000", "b": "ca000000", "side": "right"}"#,
+        r#"{"id": "k000000h", "type": "tangent_on", "a": "na000000", "at": "pb000000", "b": "ca000000", "direction": "same"}"#,
+        r#"{"id": "k000000j", "type": "tangent_at", "a": "na000000", "b": "aa000000", "at": "pb000000", "direction": "opposite"}"#,
+        r#"{"id": "k000000k", "type": "symmetric", "a": "pb000000", "b": "pc000000", "about": "origin"}"#,
+        r#"{"id": "k000000m", "type": "midpoint", "point": "pc000000", "line": "na000000"}"#,
+    ];
+    let text = format!(
+        r#"{{
+  "silico": 1,
+  "units": {{"length": "mm", "resolution": "1nm"}},
+  "features": [
+    {{
+      "id": "k7f2qx3m",
+      "type": "sketch",
+      "v": 1,
+      "name": "S",
+      "plane": "yz",
+      "points": [
+        {pa},
+        {pb},
+        {pc}
+      ],
+      "lines": [
+        {LINE}
+      ],
+      "circles": [
+        {CIRCLE}
+      ],
+      "arcs": [
+        {ARC}
+      ],
+      "constraints": [
+        {}
+      ]
+    }}
+  ]
+}}
+"#,
+        constraints.join(",\n        "),
+        pa = r#"{"id": "pa000000", "x": 0, "y": 0, "construction": false}"#,
+        pb = r#"{"id": "pb000000", "x": 10, "y": 0, "construction": false}"#,
+        pc = r#"{"id": "pc000000", "x": 0, "y": 10, "construction": false}"#,
+    );
+    let document = read(text.as_bytes()).unwrap();
+    assert_eq!(write(&document).unwrap(), text);
+    let sketch = sketch_of(&text);
+    let types: Vec<&str> = sketch
+        .constraints
+        .iter()
+        .map(|c| c.form.type_name())
+        .collect();
+    assert_eq!(types, silico_core::document::CONSTRAINT_TYPES);
+    assert_eq!(
+        sketch.constraints[16].form,
+        Form::Tangent {
+            a: Reference::Element(el("na000000")),
+            b: Reference::Element(el("ca000000")),
+            side: TangentSide::Right,
+        }
+    );
+    assert_eq!(
+        sketch.constraints[17].form,
+        Form::TangentOn {
+            a: Reference::Element(el("na000000")),
+            at: Reference::Element(el("pb000000")),
+            b: Reference::Element(el("ca000000")),
+            direction: Direction::Same,
+        }
+    );
+    // Each word reads as its own value.
+    let Form::PointLineDistance { side, .. } = sketch.constraints[8].form else {
+        panic!("{:?}", sketch.constraints[8].form)
+    };
+    assert_eq!(side, silico_core::document::LineSide::Left);
+    assert_eq!(
+        sketch.constraints[18].form,
+        Form::TangentAt {
+            a: Reference::Element(el("na000000")),
+            b: Reference::Element(el("aa000000")),
+            at: Reference::Element(el("pb000000")),
+            direction: Direction::Opposite,
+        }
+    );
+    // The schema takes it too.
+    let schema: serde_json::Value =
+        serde_json::from_str(&silico_core::document::schema().unwrap()).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    assert!(validator.is_valid(&serde_json::from_str(&text).unwrap()));
+    // And the gate.
+    assert!(validate(&document).is_ok(), "{:#?}", validate(&document));
+}
+
+/// A point at (x, y), as written, read back as the f64 it holds.
+fn coordinate_of(x: &str) -> f64 {
+    let text = document(&fields(
+        &format!(r#"{{"id": "pa000000", "x": {x}, "y": 0, "construction": false}}"#),
+        "",
+        "",
+        "",
+        "",
+    ));
+    sketch_of(&text).points[0].x.mm()
+}
+
+/// How a coordinate of `value` is written.
+fn written(value: f64) -> String {
+    Coordinate::new(value).unwrap().to_string()
+}
+
+#[test]
+fn coordinates_are_read_correctly_rounded_and_written_in_full() {
+    // The float nearest each decimal: 0.1 + 0.2 is the float after 0.3's.
+    assert_eq!(coordinate_of("0.1").to_bits(), 0.1f64.to_bits());
+    assert_eq!(
+        coordinate_of("0.30000000000000004").to_bits(),
+        (0.1f64 + 0.2).to_bits()
+    );
+    assert_ne!(0.3f64.to_bits(), (0.1f64 + 0.2).to_bits());
+    assert_eq!(written(0.1 + 0.2), "0.30000000000000004");
+    assert_eq!(written(0.3), "0.3");
+    // Exponents read; plain decimals written.
+    assert_eq!(coordinate_of("1e-7").to_bits(), 1e-7f64.to_bits());
+    assert_eq!(written(1e-7), "0.0000001");
+    assert_eq!(coordinate_of("1.05E1"), 10.5);
+    assert_eq!(written(10.5), "10.5");
+    assert_eq!(written(40.0), "40");
+    assert_eq!(written(1e6), "1000000");
+    // Minus zero is a float of its own, read and written as one.
+    assert_eq!(coordinate_of("-0").to_bits(), (-0.0f64).to_bits());
+    assert_eq!(written(-0.0), "-0");
+    assert_ne!(Coordinate::new(-0.0), Coordinate::new(0.0));
+    // The smallest float, and a decimal far finer than it, which rounds to 0.
+    assert_eq!(
+        coordinate_of("5e-324").to_bits(),
+        f64::from_bits(1).to_bits()
+    );
+    assert_eq!(coordinate_of("1e-400").to_bits(), 0.0f64.to_bits());
+    // Not finite.
+    assert_eq!(Coordinate::new(f64::NAN), None);
+    assert_eq!(Coordinate::new(f64::INFINITY), None);
+}
+
+#[test]
+fn a_coordinate_past_the_largest_float_is_refused() {
+    let text = document(&fields(
+        r#"{"id": "pa000000", "x": 1e400, "y": 0, "construction": false}"#,
+        "",
+        "",
+        "",
+        "",
+    ));
+    let error = read_error(&text);
+    assert_error(
+        &error,
+        "points.0.x",
+        "points.0.x 1e400 is too large, at line 1",
+    );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 2000,
+        failure_persistence: None,
+        rng_seed: proptest::test_runner::RngSeed::Fixed(0x5ce7c4),
+        ..ProptestConfig::default()
+    })]
+
+    #[test]
+    fn every_finite_coordinate_reads_back_as_the_same_bits(bits in any::<u64>()) {
+        let value = f64::from_bits(bits);
+        prop_assume!(value.is_finite());
+        let text = written(value);
+        prop_assert!(!text.contains(['e', 'E']), "{text}");
+        prop_assert_eq!(coordinate_of(&text).to_bits(), bits, "{}", text);
+    }
+}
+
+#[test]
+fn a_sketch_read_wrongly_is_refused_naming_its_field() {
+    let p = |x: &str| format!(r#"{{"id": "pa000000", "x": {x}, "y": 0, "construction": false}}"#);
+    let cases: Vec<(String, &str, &str)> = vec![
+        (
+            document(&fields("", "", "", "", "").replace("\"xy\"", "\"XY\"")),
+            "plane",
+            "plane \"XY\" isn't a sketch plane",
+        ),
+        (
+            document(&fields("", "", "", "", "").replace("\"points\": []", "\"points\": {}")),
+            "points",
+            "points is an object, not an array of points",
+        ),
+        (
+            document(&fields(&p("\"1\""), "", "", "", "")),
+            "points.0.x",
+            "points.0.x is a string, not a number in millimetres",
+        ),
+        (
+            document(&fields(
+                r#"{"id": "pa000000", "x": 0, "construction": false}"#,
+                "",
+                "",
+                "",
+                "",
+            )),
+            "points.0.y",
+            "points.0 has no y",
+        ),
+        (
+            document(&fields(
+                r#"{"id": "pa000000", "x": 0, "y": 0, "z": 0, "construction": false}"#,
+                "",
+                "",
+                "",
+                "",
+            )),
+            "points.0.z",
+            "points.0 has a key it can't have: \"z\"",
+        ),
+        (
+            document(&fields(
+                r#"{"id": "pa000000", "x": 0, "y": 0, "construction": 0}"#,
+                "",
+                "",
+                "",
+                "",
+            )),
+            "points.0.construction",
+            "points.0.construction is a number, not true or false",
+        ),
+        (
+            document(&fields(
+                r#"{"id": "PA000000", "x": 0, "y": 0, "construction": false}"#,
+                "",
+                "",
+                "",
+                "",
+            )),
+            "points.0.id",
+            "points.0.id \"PA000000\" isn't a sketch element's ID",
+        ),
+        (
+            document(&fields(
+                "",
+                r#"{"id": "na000000", "from": "origin", "to": "pb000000", "construction": false}"#,
+                "",
+                "",
+                "",
+            )),
+            "lines.0.from",
+            "lines.0.from \"origin\" isn't a sketch element's ID",
+        ),
+        (
+            constrained(
+                r#"{"id": "k0000000", "type": "coincident", "a": "pa000000", "b": "pb000000"}"#,
+            ),
+            "constraints.0.type",
+            "\"coincident\" isn't a constraint type",
+        ),
+        (
+            constrained(r#"{"id": "k0000000", "type": "horizontal", "line": "x-axis"}"#),
+            "constraints.0.line",
+            "constraints.0.line \"x-axis\" isn't a sketch element's ID, origin, x_axis, or y_axis",
+        ),
+        (
+            constrained(
+                r#"{"id": "k0000000", "type": "tangent", "a": "na000000", "b": "ca000000", "side": "above"}"#,
+            ),
+            "constraints.0.side",
+            "constraints.0.side \"above\" isn't one of left, right, outside, inside",
+        ),
+        (
+            constrained(
+                r#"{"id": "k0000000", "type": "length", "line": "na000000", "value": "=w", "driving": true}"#,
+            ),
+            "constraints.0.value",
+            "constraints.0.value is a string, not a length in millimetres",
+        ),
+        (
+            constrained(
+                r#"{"id": "k0000000", "type": "angle", "a": "na000000", "b": "x_axis", "value": 0.0000000001, "driving": true}"#,
+            ),
+            "constraints.0.value",
+            "constraints.0.value 0.0000000001 has more than 9 decimals",
+        ),
+        (
+            constrained(r#"{"id": "k0000000", "type": "length", "line": "na000000", "value": 10}"#),
+            "constraints.0.driving",
+            "constraints.0 has no driving",
+        ),
+        (
+            constrained(
+                r#"{"id": "k0000000", "type": "horizontal", "line": "na000000", "value": 10}"#,
+            ),
+            "constraints.0.value",
+            "constraints.0 has a key it can't have: \"value\"",
+        ),
+    ];
+    for (text, parameter, message) in cases {
+        let error = read_error(&text);
+        assert_error(&error, parameter, message);
+    }
+}
+
+#[test]
+fn ids_are_unique_within_a_sketch_whatever_their_kind() {
+    let error = problem(&constrained(
+        r#"{"id": "na000000", "type": "horizontal", "line": "na000000"}"#,
+    ));
+    assert_error(
+        &error,
+        "constraints.0.id",
+        "id na000000 is already the ID of line na000000 (lines.0)",
+    );
+    // The same ID in another sketch is another element.
+    let one = document(&fields(POINTS, LINE, "", "", ""));
+    let other = r#"{"id": "k7f2qx3n", "type": "sketch", "v": 1, "name": "T", "plane": "xz", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": []}"#;
+    let two = format!("{}, {other}]}}", one.strip_suffix("]}").unwrap());
+    assert!(problems(&two).is_empty(), "{:#?}", problems(&two));
+}
+
+#[test]
+fn a_curves_points_must_be_points_of_its_sketch() {
+    let cases = [
+        (
+            document(&fields(
+                POINTS,
+                r#"{"id": "na000000", "from": "pa000000", "to": "pz000000", "construction": false}"#,
+                "",
+                "",
+                "",
+            )),
+            "lines.0.to",
+            "lines.0.to pz000000 isn't the ID of any element of this sketch",
+        ),
+        (
+            document(&fields(
+                POINTS,
+                LINE,
+                r#"{"id": "ca000000", "center": "na000000", "radius": 5, "construction": false}"#,
+                "",
+                "",
+            )),
+            "circles.0.center",
+            "circles.0.center na000000 is a line, not a point",
+        ),
+        (
+            document(&fields(
+                POINTS,
+                r#"{"id": "na000000", "from": "pa000000", "to": "pa000000", "construction": false}"#,
+                "",
+                "",
+                "",
+            )),
+            "lines.0.to",
+            "line na000000 goes from point pa000000 to itself, so it has no length",
+        ),
+        (
+            document(&fields(
+                POINTS,
+                "",
+                "",
+                r#"{"id": "aa000000", "center": "pa000000", "start": "pa000000", "end": "pc000000", "construction": false}"#,
+                "",
+            )),
+            "arcs.0.start",
+            "arc aa000000's start is its center, point pa000000, so it has no radius",
+        ),
+        (
+            document(&fields(
+                POINTS,
+                "",
+                "",
+                r#"{"id": "aa000000", "center": "pa000000", "start": "pb000000", "end": "pb000000", "construction": false}"#,
+                "",
+            )),
+            "arcs.0.end",
+            "arc aa000000 starts and ends at point pb000000, so it has no sweep",
+        ),
+    ];
+    for (text, parameter, message) in cases {
+        assert_error(&problem(&text), parameter, message);
+    }
+}
+
+#[test]
+fn an_arc_whose_ends_disagree_about_its_radius_is_the_solves_not_the_gates() {
+    // Start 10 from the center, end 20: a hand edit the re-solve mends (D2, arcs).
+    let text = document(&fields(
+        r#"{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 10, "y": 0, "construction": false}, {"id": "pc000000", "x": 0, "y": 20, "construction": false}"#,
+        "",
+        "",
+        ARC,
+        "",
+    ));
+    assert!(problems(&text).is_empty(), "{:#?}", problems(&text));
+}
+
+#[test]
+fn sizes_and_places_past_a_kilometre_or_at_zero_are_refused() {
+    let far = document(&fields(
+        r#"{"id": "pa000000", "x": 1000000.0000000001, "y": -1000000, "construction": false}"#,
+        "",
+        "",
+        "",
+        "",
+    ));
+    assert_error(
+        &problem(&far),
+        "points.0.x",
+        "points.0.x is 1000000.0000000001 mm, farther from the sketch's origin than the 1000000 mm (a kilometre) a point may be",
+    );
+    for (radius, shown) in [("0", "0"), ("-1", "-1"), ("1000001", "1000001")] {
+        let text = document(&fields(
+            POINTS,
+            "",
+            &format!(
+                r#"{{"id": "ca000000", "center": "pa000000", "radius": {radius}, "construction": false}}"#
+            ),
+            "",
+            "",
+        ));
+        assert_error(
+            &problem(&text),
+            "circles.0.radius",
+            &format!(
+                "circles.0.radius is {shown} mm: a circle's radius is above 0 and at most 1000000 mm (a kilometre)"
+            ),
+        );
+    }
+}
+
+#[test]
+fn a_dimension_out_of_range_is_refused() {
+    let cases = [
+        (
+            r#"{"id": "k0000000", "type": "length", "line": "na000000", "value": 0, "driving": true}"#,
+            "a length's value is 0 mm, but it's above 0 and at most 1000000 mm",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "distance", "a": "pa000000", "b": "pb000000", "value": -1, "driving": false}"#,
+            "a reference distance's value is -1 mm, but it's from 0 to 3000000 mm",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "radius", "curve": "ca000000", "value": 0, "driving": true}"#,
+            "a radius's value is 0 mm, but it's above 0 and at most 1000000 mm",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "diameter", "curve": "ca000000", "value": 2000000.000001, "driving": true}"#,
+            "a diameter's value is 2000000.000001 mm, but it's above 0 and at most 2000000 mm",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "point_line_distance", "point": "pc000000", "line": "na000000", "value": 0, "side": "left", "driving": true}"#,
+            "a point_line_distance's value is 0 mm, but it's above 0 and at most 1000000 mm",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "distance_x", "a": "pa000000", "b": "pb000000", "value": -1000000.000001, "driving": true}"#,
+            "a distance_x's value is -1000000.000001 mm, but it's at most 1000000 mm either way",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "angle", "a": "na000000", "b": "x_axis", "value": -360.000000001, "driving": true}"#,
+            "an angle's value is -360.000000001 degrees, but it's at most 360 either way",
+        ),
+    ];
+    for (constraint, message) in cases {
+        assert_error(
+            &problem(&constrained(constraint)),
+            "constraints.0.value",
+            message,
+        );
+    }
+    // The edges of each range pass.
+    for constraint in [
+        r#"{"id": "k0000000", "type": "length", "line": "na000000", "value": 0.000001, "driving": true}"#,
+        r#"{"id": "k0000000", "type": "diameter", "curve": "ca000000", "value": 2000000, "driving": true}"#,
+        r#"{"id": "k0000000", "type": "distance_y", "a": "pa000000", "b": "pb000000", "value": -1000000, "driving": true}"#,
+        r#"{"id": "k0000000", "type": "distance_x", "a": "pa000000", "b": "pb000000", "value": 0, "driving": true}"#,
+        r#"{"id": "k0000000", "type": "angle", "a": "na000000", "b": "x_axis", "value": 360, "driving": true}"#,
+    ] {
+        assert!(
+            problems(&constrained(constraint)).is_empty(),
+            "{constraint}"
+        );
+    }
+}
+
+#[test]
+fn every_reference_must_name_an_element_its_place_takes() {
+    let cases = [
+        (
+            r#"{"id": "k0000000", "type": "horizontal", "line": "pz000000"}"#,
+            "constraints.0.line",
+            "constraints.0.line pz000000 isn't the ID of any element of this sketch",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "horizontal", "line": "x_axis"}"#,
+            "constraints.0.line",
+            "constraints.0.line x_axis is an axis, but a horizontal's line is a line of this sketch",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "length", "line": "ca000000", "value": 1, "driving": true}"#,
+            "constraints.0.line",
+            "constraints.0.line ca000000 is a circle, but a length's line is a line of this sketch",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "distance", "a": "na000000", "b": "pb000000", "value": 1, "driving": true}"#,
+            "constraints.0.a",
+            "constraints.0.a na000000 is a line, but a distance's a is a point of this sketch, or origin",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "distance", "a": "x_axis", "b": "pb000000", "value": 1, "driving": true}"#,
+            "constraints.0.a",
+            "constraints.0.a x_axis is an axis, but a distance's a is a point of this sketch, or origin",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "on", "point": "pc000000", "curve": "origin"}"#,
+            "constraints.0.curve",
+            "constraints.0.curve origin is the origin, but a on's curve is a line, circle, or arc of this sketch, x_axis, or y_axis",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "radius", "curve": "na000000", "value": 1, "driving": true}"#,
+            "constraints.0.curve",
+            "constraints.0.curve na000000 is a line, but a radius's curve is a circle or arc of this sketch",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "parallel", "a": "na000000", "b": "ca000000"}"#,
+            "constraints.0.b",
+            "constraints.0.b ca000000 is a circle, but a parallel's b is a line of this sketch, x_axis, or y_axis",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "midpoint", "point": "pc000000", "line": "aa000000"}"#,
+            "constraints.0.line",
+            "constraints.0.line aa000000 is a arc, but a midpoint's line is a line of this sketch",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "symmetric", "a": "pb000000", "b": "pc000000", "about": "ca000000"}"#,
+            "constraints.0.about",
+            "constraints.0.about ca000000 is a circle, but a symmetric's about is a line or point of this sketch, origin, x_axis, or y_axis",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "horizontal", "line": "k0000001"}, {"id": "k0000001", "type": "vertical", "line": "na000000"}"#,
+            "constraints.0.line",
+            "constraints.0.line k0000001 is a constraint, but a horizontal's line is a line of this sketch",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "tangent_at", "a": "ca000000", "b": "aa000000", "at": "pb000000", "direction": "same"}"#,
+            "constraints.0.a",
+            "constraints.0.a ca000000 is a circle, but a tangent_at's a is a line or arc of this sketch",
+        ),
+    ];
+    for (constraints, parameter, message) in cases {
+        assert_error(&problem(&constrained(constraints)), parameter, message);
+    }
+}
+
+#[test]
+fn a_form_that_needs_two_elements_or_a_fitting_pair_gets_them() {
+    let cases = [
+        (
+            r#"{"id": "k0000000", "type": "parallel", "a": "na000000", "b": "na000000"}"#,
+            "constraints.0.b",
+            "a parallel's a and b are both na000000: it needs two different elements",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "distance", "a": "pa000000", "b": "pa000000", "value": 1, "driving": true}"#,
+            "constraints.0.b",
+            "a distance's a and b are both pa000000: it needs two different elements",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "symmetric", "a": "pb000000", "b": "pc000000", "about": "pb000000"}"#,
+            "constraints.0.about",
+            "a symmetric's about, pb000000, is one of the points it mirrors",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "equal", "a": "na000000", "b": "ca000000"}"#,
+            "constraints.0.b",
+            "an equal takes two lines, or two circles or arcs",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "tangent", "a": "na000000", "b": "x_axis", "side": "left"}"#,
+            "constraints.0.b",
+            "a tangent takes a line and a circle or arc, or two circles or arcs: two lines can't be tangent",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "tangent", "a": "na000000", "b": "ca000000", "side": "outside"}"#,
+            "constraints.0.side",
+            "a tangent's side for these curves is left or right",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "tangent", "a": "aa000000", "b": "ca000000", "side": "left"}"#,
+            "constraints.0.side",
+            "a tangent's side for these curves is outside or inside",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "tangent_at", "a": "na000000", "b": "aa000000", "at": "pc000000", "direction": "same"}"#,
+            "constraints.0.at",
+            "a tangent_at's at, point pc000000, isn't an end of its a, na000000",
+        ),
+    ];
+    for (constraint, parameter, message) in cases {
+        assert_error(&problem(&constrained(constraint)), parameter, message);
+    }
+    // An axis is a line a circle can be tangent to.
+    assert!(problems(&constrained(
+        r#"{"id": "k0000000", "type": "tangent", "a": "x_axis", "b": "ca000000", "side": "left"}"#
+    ))
+    .is_empty());
+}
+
+#[test]
+fn a_constraint_on_the_fixed_references_alone_is_refused() {
+    // FreeCAD's 3d7871fca5: a dimension between the origin and an axis constrains nothing.
+    for (constraint, what) in [
+        (
+            r#"{"id": "k0000000", "type": "angle", "a": "x_axis", "b": "y_axis", "value": 90, "driving": true}"#,
+            "angle",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "on", "point": "origin", "curve": "x_axis"}"#,
+            "on",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "perpendicular", "a": "x_axis", "b": "y_axis"}"#,
+            "perpendicular",
+        ),
+    ] {
+        assert_error(
+            &problem(&constrained(constraint)),
+            "constraints.0",
+            &format!(
+                "this {what} names only the sketch's fixed references, so it constrains nothing in the sketch"
+            ),
+        );
+    }
+}
+
+#[test]
+fn a_sketch_makes_no_solid_for_a_boolean_or_a_fingerprint() {
+    let sketch = r#"{"id": "k7f2qx3m", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [], "lines": [], "circles": [], "arcs": [], "constraints": []}"#;
+    let block = r#"{"id": "b0000000", "type": "box", "v": 1, "name": "B", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1}"#;
+    let cut = r#"{"id": "c0000000", "type": "cut", "v": 1, "name": "C", "base": "b0000000", "tool": "k7f2qx3m"}"#;
+    let text = format!(
+        "{{\"silico\": 1, \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}}, \"features\": [{sketch}, {block}, {cut}]}}"
+    );
+    let error = problem(&text);
+    assert_eq!(error.feature(), Some("c0000000"));
+    assert_eq!(error.parameter(), Some("tool"));
+    assert_eq!(
+        error.message(),
+        "tool k7f2qx3m is k7f2qx3m (\"S\"), a sketch, which makes no solid for a cut to use"
+    );
+    let fingerprinted = document(&fields("", "", "", "", "")).replace(
+        "\"constraints\": []",
+        "\"constraints\": [], \"fingerprint\": {\"volume\": 1, \"area\": 1, \"faces\": 1, \"edges\": 1, \"vertices\": 1}",
+    );
+    assert_error(
+        &problem(&fingerprinted),
+        "fingerprint",
+        "a sketch has a fingerprint, but it makes no solid to measure",
+    );
+}
+
+#[test]
+fn a_sketch_larger_than_the_solver_takes_is_refused() {
+    // 1025 points: 2050 unknowns, past the solver's 2048.
+    let points: Vec<String> = (0..1025)
+        .map(|i| format!(r#"{{"id": "p{i:07}", "x": {i}, "y": 0, "construction": false}}"#))
+        .collect();
+    let text = document(&fields(&points.join(", "), "", "", "", ""));
+    assert_error(
+        &problem(&text),
+        "points",
+        "the sketch has 2050 unknowns (two for each point, one for each circle, three for each arc), more than the 2048 the sketch solver takes",
+    );
+    // 1024 points: 2048 unknowns, exactly the limit.
+    let text = document(&fields(&points[..1024].join(", "), "", "", "", ""));
+    assert!(problems(&text).is_empty());
+}
+
+#[test]
+fn every_problem_in_a_sketch_is_reported_at_once_in_field_order() {
+    let text = document(&fields(
+        r#"{"id": "pa000000", "x": 2000000, "y": 0, "construction": false}"#,
+        r#"{"id": "na000000", "from": "pa000000", "to": "pa000000", "construction": false}"#,
+        "",
+        "",
+        r#"{"id": "na000000", "type": "length", "line": "na000000", "value": 0, "driving": true}"#,
+    ));
+    let parameters: Vec<String> = problems(&text)
+        .iter()
+        .map(|e| e.parameter().unwrap_or_default().to_owned())
+        .collect();
+    assert_eq!(
+        parameters,
+        [
+            "points.0.x",
+            "lines.0.to",
+            "constraints.0.id",
+            "constraints.0.value"
+        ]
+    );
+}
+
+#[test]
+fn a_document_with_a_sketch_rebuilds_its_solids_and_the_sketch_makes_none() {
+    use silico_core::document::{Checked, FeatureId};
+    use silico_core::fake::FakeKernel;
+    use silico_core::recompute::{FeatureOutcome, Recompute, RunOutcome};
+    let block = r#"{"id": "b0000000", "type": "box", "v": 1, "name": "B", "position": [0, 0, 0], "length": 1, "width": 2, "height": 3}"#;
+    let sketch = EXAMPLE
+        .split_once("\"features\": [\n")
+        .and_then(|(_, rest)| rest.rsplit_once("\n  ]"))
+        .map(|(feature, _)| feature)
+        .unwrap();
+    let text = format!(
+        "{{\"silico\": 1, \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}}, \"features\": [{sketch}, {block}]}}"
+    );
+    let engine = Recompute::new(FakeKernel::new(2).unwrap());
+    let checked = Checked::new(read(text.as_bytes()).unwrap()).unwrap();
+    let model = match engine
+        .start(checked)
+        .wait_timeout(std::time::Duration::from_secs(10))
+    {
+        Ok(Ok(RunOutcome::Published(model))) => model,
+        Ok(other) => panic!("{other:?}"),
+        Err(_) => panic!("the recompute didn't finish"),
+    };
+    let id = |t: &str| FeatureId::new(t).unwrap();
+    assert_eq!(
+        model.outcome(&id("k7f2qx3m")),
+        Some(&FeatureOutcome::Sketch)
+    );
+    assert!(matches!(
+        model.outcome(&id("b0000000")),
+        Some(FeatureOutcome::Built { .. })
+    ));
+    assert_eq!(model.bodies(), [id("b0000000")]);
+    assert_eq!(model.errors().count(), 0);
+    assert_eq!(model.fingerprint(&id("k7f2qx3m")), None);
+    // The kernel was asked for the box alone (and to measure it).
+    let calls: Vec<&str> = engine
+        .kernel()
+        .calls()
+        .iter()
+        .map(|c| c.op.name())
+        .collect();
+    assert_eq!(calls, ["MakeBox", "Summarize"]);
+}

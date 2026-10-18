@@ -160,9 +160,9 @@ impl std::fmt::Display for PointOf {
 }
 
 /// A constraint, in PlaneGCS's terms. Each named value is a fixed [`Value`] of the system:
-/// reference dimensions, whose value the solver finds, come with the document's sketches
-/// (M3.3). Every one except [`ArcRules`](SolverConstraint::ArcRules) carries the tag the
-/// solver reports it by.
+/// reference dimensions, whose value is evaluated after the solve, never solved for, come
+/// with the document's sketches (M3.3). Every one except
+/// [`ArcRules`](SolverConstraint::ArcRules) carries the tag the solver reports it by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SolverConstraint {
     /// An arc's end points on its circle at its angles: implicit in every arc whose values
@@ -426,16 +426,20 @@ impl SketchSystem {
                 value(v, &format!("geometry {i}"))?;
             }
             // A line drawn with no length gives the solver 0/0 for its direction: wrong
-            // diagnoses, not errors. FreeCAD can't draw one.
+            // diagnoses, not errors. FreeCAD can't draw one. The solver works the length out
+            // as the square root of dx² + dy², so ends close enough for that to be 0 (1e-200
+            // apart, say) are no length to it either.
             if let SketchGeometry::Line { start, end } = *g {
                 let at = |v: Value| self.values[v.0 as usize];
-                if at(start.x) == at(end.x) && at(start.y) == at(end.y) {
+                if no_distance([at(start.x), at(start.y)], [at(end.x), at(end.y)]) {
                     return Err(invalid(
                         "geometry",
                         format!(
-                            "geometry {i} is a line drawn with no length, both ends at ({}, {})",
+                            "geometry {i} is a line drawn with no length, its ends at ({}, {}) and ({}, {})",
                             format_number(at(start.x)),
-                            format_number(at(start.y))
+                            format_number(at(start.y)),
+                            format_number(at(end.x)),
+                            format_number(at(end.y))
                         ),
                     ));
                 }
@@ -549,8 +553,8 @@ impl SketchSystem {
                 ))
             }
         };
-        // A dimension's value is fixed: reference dimensions, whose value the solver finds,
-        // come with the document's sketches (M3.3).
+        // A dimension's value is fixed: reference dimensions, whose value is evaluated after
+        // the solve, come with the document's sketches (M3.3).
         let dimension = |v: Value| -> Result<(), InvalidParameter> {
             if (v.0 as usize) >= n {
                 return Err(invalid(
@@ -666,6 +670,21 @@ impl SketchSystem {
 /// radians) of 0. A solution must be too, so the next solve can start from it.
 pub fn within_reach(v: f64) -> bool {
     v.is_finite() && v.abs() <= MAX_LENGTH
+}
+
+/// The square of the distance from `a` to `b`, as PlaneGCS works it out (dx² + dy², whose
+/// square root is a line's length or an arc's radius to it). The rule lives here so the
+/// core's gate and the sketch worker's check measure alike.
+pub fn squared_distance(a: [f64; 2], b: [f64; 2]) -> f64 {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    dx * dx + dy * dy
+}
+
+/// Whether `a` and `b` are no distance apart to the solver: at one place, or close enough
+/// that their [`squared_distance`] is 0 (1e-200 apart, say), so a line between them has no
+/// length and an arc about one through the other no radius.
+pub fn no_distance(a: [f64; 2], b: [f64; 2]) -> bool {
+    squared_distance(a, b) == 0.0
 }
 
 impl SolverConstraint {
@@ -1198,9 +1217,17 @@ mod tests {
         assert_eq!(e.parameter, "geometry");
         assert_eq!(
             e.message,
-            "geometry 0 is a line drawn with no length, both ends at (0, 0)"
+            "geometry 0 is a line drawn with no length, its ends at (0, 0) and (0, 0)"
         );
-        s.values[2] = 1e-300;
+        // 1e-200 squared underflows to 0: no length to the solver.
+        s.values[2] = 1e-200;
+        let e = s.check().unwrap_err();
+        assert!(
+            e.message
+                .starts_with("geometry 0 is a line drawn with no length")
+        );
+        // 1e-150 squared is 1e-300: a length.
+        s.values[2] = 1e-150;
         s.check().unwrap();
     }
 

@@ -11,7 +11,11 @@ use super::model::{
     Document, FEATURE_TYPES, Feature, FeatureId, FeatureVersion, FormatVersion, ID_LENGTH, Name,
     Operation, Position, Units,
 };
-use super::quantity::{LENGTH_DECIMALS, Length, NumberError};
+use super::quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
+use super::sketch::{
+    CONSTRAINT_TYPES, Coordinate, Direction, ElementId, Form, LineSide, Plane, Reference, Sketch,
+    SketchArc, SketchCircle, SketchConstraint, SketchLine, SketchPoint, TangentSide,
+};
 use crate::{Error, ErrorCode};
 
 /// The document `bytes` hold, or why they don't hold one.
@@ -491,6 +495,7 @@ fn operation(type_name: &str, fields: &mut Fields) -> Result<Operation, Error> {
             base: reference(fields, "base")?,
             tool: reference(fields, "tool")?,
         },
+        "sketch" => Operation::Sketch(sketch(fields)?),
         // A type in FEATURE_TYPES with no arm here: Silico's bug, not the document's.
         other => {
             return Err(Error::new(
@@ -609,4 +614,369 @@ fn position(fields: &mut Fields) -> Result<Position, Error> {
         length_value(y, feature, "position.1")?,
         length_value(z, feature, "position.2")?,
     ])
+}
+
+/// A sketch's fields (docs/design/m3.2-sketch-format.md). Each list is kept in the order
+/// written; the writer sorts it by ID.
+fn sketch(fields: &mut Fields) -> Result<Sketch, Error> {
+    let plane = plane(fields)?;
+    let points = list(fields, "points", point)?;
+    let lines = list(fields, "lines", line)?;
+    let circles = list(fields, "circles", circle)?;
+    let arcs = list(fields, "arcs", arc)?;
+    let constraints = list(fields, "constraints", constraint)?;
+    Ok(Sketch {
+        plane,
+        points,
+        lines,
+        circles,
+        arcs,
+        constraints,
+    })
+}
+
+fn plane(fields: &mut Fields) -> Result<Plane, Error> {
+    let node = fields.take("plane")?;
+    let at = node.at;
+    let text = string(node, fields.feature(), "plane")?;
+    Plane::ALL
+        .into_iter()
+        .find(|p| p.as_str() == text)
+        .ok_or_else(|| {
+            refuse(
+                fields.feature(),
+                "plane",
+                at,
+                format!("plane {} isn't a sketch plane", shown(&text)),
+                "the planes are xy, xz, and yz",
+            )
+        })
+}
+
+/// The list `key`, each item an object read by `item` as `key.i`.
+fn list<T>(
+    fields: &mut Fields,
+    key: &str,
+    item: fn(&mut Fields) -> Result<T, Error>,
+) -> Result<Vec<T>, Error> {
+    let node = fields.take(key)?;
+    let feature = fields.feature().map(str::to_owned);
+    let feature = feature.as_deref();
+    let Value::Array(items) = node.value else {
+        return Err(wrong_kind(
+            feature,
+            key,
+            &node,
+            &format!("an array of {key}"),
+        ));
+    };
+    items
+        .into_iter()
+        .enumerate()
+        .map(|(i, node)| {
+            let name = format!("{key}.{i}");
+            let mut fields = Fields::of(node, feature, Some(&name), &name)?.under(&name);
+            let value = item(&mut fields)?;
+            fields.finish()?;
+            Ok(value)
+        })
+        .collect()
+}
+
+fn point(fields: &mut Fields) -> Result<SketchPoint, Error> {
+    Ok(SketchPoint {
+        id: element_id(fields, "id")?,
+        x: coordinate(fields, "x")?,
+        y: coordinate(fields, "y")?,
+        construction: boolean(fields, "construction")?,
+    })
+}
+
+fn line(fields: &mut Fields) -> Result<SketchLine, Error> {
+    Ok(SketchLine {
+        id: element_id(fields, "id")?,
+        from: element_id(fields, "from")?,
+        to: element_id(fields, "to")?,
+        construction: boolean(fields, "construction")?,
+    })
+}
+
+fn circle(fields: &mut Fields) -> Result<SketchCircle, Error> {
+    Ok(SketchCircle {
+        id: element_id(fields, "id")?,
+        center: element_id(fields, "center")?,
+        radius: coordinate(fields, "radius")?,
+        construction: boolean(fields, "construction")?,
+    })
+}
+
+fn arc(fields: &mut Fields) -> Result<SketchArc, Error> {
+    Ok(SketchArc {
+        id: element_id(fields, "id")?,
+        center: element_id(fields, "center")?,
+        start: element_id(fields, "start")?,
+        end: element_id(fields, "end")?,
+        construction: boolean(fields, "construction")?,
+    })
+}
+
+fn constraint(fields: &mut Fields) -> Result<SketchConstraint, Error> {
+    let id = element_id(fields, "id")?;
+    let type_node = fields.take("type")?;
+    let type_at = type_node.at;
+    let type_name = string(type_node, fields.feature(), &fields.name("type"))?;
+    let r = sketch_reference;
+    let form = match type_name.as_str() {
+        "horizontal" => Form::Horizontal {
+            line: r(fields, "line")?,
+        },
+        "vertical" => Form::Vertical {
+            line: r(fields, "line")?,
+        },
+        "horizontal_points" => Form::HorizontalPoints {
+            a: r(fields, "a")?,
+            b: r(fields, "b")?,
+        },
+        "vertical_points" => Form::VerticalPoints {
+            a: r(fields, "a")?,
+            b: r(fields, "b")?,
+        },
+        "length" => Form::Length {
+            line: r(fields, "line")?,
+            value: sketch_length(fields, "value")?,
+            driving: boolean(fields, "driving")?,
+        },
+        "distance" => Form::Distance {
+            a: r(fields, "a")?,
+            b: r(fields, "b")?,
+            value: sketch_length(fields, "value")?,
+            driving: boolean(fields, "driving")?,
+        },
+        "distance_x" => Form::DistanceX {
+            a: r(fields, "a")?,
+            b: r(fields, "b")?,
+            value: sketch_length(fields, "value")?,
+            driving: boolean(fields, "driving")?,
+        },
+        "distance_y" => Form::DistanceY {
+            a: r(fields, "a")?,
+            b: r(fields, "b")?,
+            value: sketch_length(fields, "value")?,
+            driving: boolean(fields, "driving")?,
+        },
+        "point_line_distance" => Form::PointLineDistance {
+            point: r(fields, "point")?,
+            line: r(fields, "line")?,
+            value: sketch_length(fields, "value")?,
+            side: word(fields, "side", &LineSide::ALL.map(|w| (w.as_str(), w)))?,
+            driving: boolean(fields, "driving")?,
+        },
+        "on" => Form::On {
+            point: r(fields, "point")?,
+            curve: r(fields, "curve")?,
+        },
+        "parallel" => Form::Parallel {
+            a: r(fields, "a")?,
+            b: r(fields, "b")?,
+        },
+        "perpendicular" => Form::Perpendicular {
+            a: r(fields, "a")?,
+            b: r(fields, "b")?,
+        },
+        "angle" => Form::Angle {
+            a: r(fields, "a")?,
+            b: r(fields, "b")?,
+            value: angle(fields, "value")?,
+            driving: boolean(fields, "driving")?,
+        },
+        "radius" => Form::Radius {
+            curve: r(fields, "curve")?,
+            value: sketch_length(fields, "value")?,
+            driving: boolean(fields, "driving")?,
+        },
+        "diameter" => Form::Diameter {
+            curve: r(fields, "curve")?,
+            value: sketch_length(fields, "value")?,
+            driving: boolean(fields, "driving")?,
+        },
+        "equal" => Form::Equal {
+            a: r(fields, "a")?,
+            b: r(fields, "b")?,
+        },
+        "tangent" => Form::Tangent {
+            a: r(fields, "a")?,
+            b: r(fields, "b")?,
+            side: word(fields, "side", &TangentSide::ALL.map(|w| (w.as_str(), w)))?,
+        },
+        "tangent_on" => Form::TangentOn {
+            a: r(fields, "a")?,
+            at: r(fields, "at")?,
+            b: r(fields, "b")?,
+            direction: word(
+                fields,
+                "direction",
+                &Direction::ALL.map(|w| (w.as_str(), w)),
+            )?,
+        },
+        "tangent_at" => Form::TangentAt {
+            a: r(fields, "a")?,
+            b: r(fields, "b")?,
+            at: r(fields, "at")?,
+            direction: word(
+                fields,
+                "direction",
+                &Direction::ALL.map(|w| (w.as_str(), w)),
+            )?,
+        },
+        "symmetric" => Form::Symmetric {
+            a: r(fields, "a")?,
+            b: r(fields, "b")?,
+            about: r(fields, "about")?,
+        },
+        "midpoint" => Form::Midpoint {
+            point: r(fields, "point")?,
+            line: r(fields, "line")?,
+        },
+        other => {
+            return Err(refuse(
+                fields.feature(),
+                &fields.name("type"),
+                type_at,
+                format!("{} isn't a constraint type", shown(other)),
+                format!("the types are {}", CONSTRAINT_TYPES.join(", ")),
+            ));
+        }
+    };
+    Ok(SketchConstraint { id, form })
+}
+
+fn element_id(fields: &mut Fields, key: &str) -> Result<ElementId, Error> {
+    let node = fields.take(key)?;
+    let name = fields.name(key);
+    let at = node.at;
+    let text = string(node, fields.feature(), &name)?;
+    ElementId::new(&text).ok_or_else(|| {
+        refuse(
+            fields.feature(),
+            &name,
+            at,
+            format!("{name} {} isn't a sketch element's ID", shown(&text)),
+            format!(
+                "an ID is {ID_LENGTH} characters of digits and lower-case letters but i, l, o, and u"
+            ),
+        )
+    })
+}
+
+fn sketch_reference(fields: &mut Fields, key: &str) -> Result<Reference, Error> {
+    let node = fields.take(key)?;
+    let name = fields.name(key);
+    let at = node.at;
+    let text = string(node, fields.feature(), &name)?;
+    Reference::new(&text).ok_or_else(|| {
+        refuse(
+            fields.feature(),
+            &name,
+            at,
+            format!("{name} {} isn't a sketch element's ID, origin, x_axis, or y_axis", shown(&text)),
+            format!(
+                "name an element of this sketch by its ID ({ID_LENGTH} characters of digits and lower-case letters but i, l, o, and u), or origin, x_axis, or y_axis"
+            ),
+        )
+    })
+}
+
+/// One of `words`, by its text.
+fn word<T: Copy>(fields: &mut Fields, key: &str, words: &[(&str, T)]) -> Result<T, Error> {
+    let node = fields.take(key)?;
+    let name = fields.name(key);
+    let at = node.at;
+    let text = string(node, fields.feature(), &name)?;
+    words
+        .iter()
+        .find(|(w, _)| *w == text)
+        .map(|&(_, value)| value)
+        .ok_or_else(|| {
+            let all: Vec<&str> = words.iter().map(|(w, _)| *w).collect();
+            refuse(
+                fields.feature(),
+                &name,
+                at,
+                format!("{name} {} isn't one of {}", shown(&text), all.join(", ")),
+                format!("write {name} as one of {}", all.join(", ")),
+            )
+        })
+}
+
+fn boolean(fields: &mut Fields, key: &str) -> Result<bool, Error> {
+    let node = fields.take(key)?;
+    let name = fields.name(key);
+    match node.value {
+        Value::Bool(b) => Ok(b),
+        _ => Err(wrong_kind(fields.feature(), &name, &node, "true or false")),
+    }
+}
+
+fn coordinate(fields: &mut Fields, key: &str) -> Result<Coordinate, Error> {
+    let node = fields.take(key)?;
+    let name = fields.name(key);
+    let feature = fields.feature();
+    let Value::Number(text) = &node.value else {
+        return Err(wrong_kind(feature, &name, &node, "a number in millimetres"));
+    };
+    Coordinate::parse(text).ok_or_else(|| {
+        refuse(
+            feature,
+            &name,
+            node.at,
+            format!("{name} {} is too large", shown_number(text)),
+            format!(
+                "a sketch's coordinates and radii are within a kilometre ({} mm)",
+                silico_protocol::format_number(silico_protocol::MAX_LENGTH)
+            ),
+        )
+    })
+}
+
+/// A length inside a sketch, named by its dotted field (`constraints.3.value`).
+fn sketch_length(fields: &mut Fields, key: &str) -> Result<Length, Error> {
+    let node = fields.take(key)?;
+    length_value(&node, fields.feature(), &fields.name(key))
+}
+
+fn angle(fields: &mut Fields, key: &str) -> Result<Angle, Error> {
+    let node = fields.take(key)?;
+    let name = fields.name(key);
+    let feature = fields.feature();
+    let Value::Number(text) = &node.value else {
+        if let Value::String(_) = &node.value {
+            return Err(refuse(
+                feature,
+                &name,
+                node.at,
+                format!("{name} is a string, not an angle in degrees"),
+                format!(
+                    "write {name} as a number, such as 45: strings are reserved for expressions, which this Silico doesn't read yet"
+                ),
+            ));
+        }
+        return Err(wrong_kind(feature, &name, &node, "an angle in degrees"));
+    };
+    Angle::parse(text).map_err(|e| {
+        number_refused(
+            feature,
+            &name,
+            &node,
+            text,
+            &e,
+            Refused {
+                precise: ": angles are whole nanodegrees".to_owned(),
+                range: format!(
+                    "an angle is at most {} degrees either way",
+                    Angle::from_ndeg(i64::MAX)
+                ),
+                decimals: ANGLE_DECIMALS,
+            },
+        )
+    })
 }

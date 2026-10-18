@@ -8,6 +8,8 @@ mod fingerprint;
 pub mod json;
 mod model;
 mod quantity;
+mod sketch;
+mod sketch_gate;
 mod validate;
 mod write;
 
@@ -17,6 +19,12 @@ pub use model::{
     ID_LENGTH, Name, Operation, Position, Units,
 };
 pub use quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
+pub use sketch::{
+    CONSTRAINT_TYPES, Coordinate, Direction, ElementId, ElementKind, Form, LineSide, Plane,
+    Reference, Sketch, SketchArc, SketchCircle, SketchConstraint, SketchLine, SketchPoint,
+    TangentSide,
+};
+pub use sketch_gate::{MAX_ANGLE_DEGREES, MAX_REFERENCE_LENGTH};
 pub use validate::{Checked, Invalid, PROBLEMS_LISTED, validate};
 
 use schemars::generate::SchemaSettings;
@@ -65,9 +73,13 @@ fn too_long(document: &Document, what: &str) -> Error {
         .iter()
         .find(|f| !write::feature_fits(f, limit / 2));
     match large {
-        Some(feature) => error
-            .with_feature(feature.id.as_str())
-            .with_suggestion("make this feature's name or note shorter"),
+        Some(feature) => error.with_feature(feature.id.as_str()).with_suggestion(
+            if matches!(feature.operation, Operation::Sketch(_)) {
+                "make this sketch smaller: split it into several sketches"
+            } else {
+                "make this feature's name or note shorter"
+            },
+        ),
         None => {
             error.with_suggestion("make it smaller: fewer features, or shorter names and notes")
         }

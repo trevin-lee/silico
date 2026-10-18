@@ -2,13 +2,14 @@
 //! make each (docs/design/m2.1-document-format.md, D2). Reading checks each value on its
 //! own; the gate checks what features say about each other: every ID names one feature,
 //! every reference is to a feature before the one making it (so the timeline has no
-//! cycles), every solid is consumed at most once, and every primitive's values are ones
-//! the kernel accepts, by the kernel's own rules.
+//! cycles), every solid is consumed at most once (and is a solid: a sketch makes none),
+//! every primitive's values are ones the kernel accepts, by the kernel's own rules, and
+//! every sketch holds together (`sketch_gate`).
 
 use silico_protocol::{MAX_LENGTH, check_offset, format_number};
 
 use super::json::shown;
-use super::model::{Document, FeatureId, ID_LENGTH};
+use super::model::{Document, FeatureId, ID_LENGTH, Operation};
 use crate::{Error, ErrorCode};
 
 /// How many of a document's problems [`Invalid`] lists; it counts the rest.
@@ -143,6 +144,19 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
             }
         }
 
+        if let Operation::Sketch(sketch) = &feature.operation {
+            super::sketch_gate::check(sketch, &refuse, &mut |error| problems.add(|| error));
+            if feature.fingerprint.is_some() {
+                problems.add(|| {
+                    refuse(
+                        "fingerprint",
+                        "a sketch has a fingerprint, but it makes no solid to measure".to_owned(),
+                        "remove the sketch's fingerprint".to_owned(),
+                    )
+                });
+            }
+        }
+
         for (field, target) in feature.operation.inputs().into_iter().flatten() {
             let Some(used) = holder(target) else {
                 problems.add(|| {
@@ -154,7 +168,19 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
                 });
                 continue;
             };
-            if used == index {
+            if !features[used].operation.makes_solid() {
+                problems.add(|| {
+                    refuse(
+                        field,
+                        format!(
+                            "{field} {target} is {}, a {}, which makes no solid for a {what} to use",
+                            described(used),
+                            features[used].operation.type_name()
+                        ),
+                        "use a feature that makes a solid".to_owned(),
+                    )
+                });
+            } else if used == index {
                 problems.add(|| {
                     refuse(
                         field,

@@ -587,6 +587,14 @@ fn every_feature_type_is_read_written_and_in_the_schema() {
             base: id("00000000"),
             tool: id("11111111"),
         },
+        Operation::Sketch(silico_core::document::Sketch {
+            plane: silico_core::document::Plane::Xy,
+            points: Vec::new(),
+            lines: Vec::new(),
+            circles: Vec::new(),
+            arcs: Vec::new(),
+            constraints: Vec::new(),
+        }),
     ];
     let names: Vec<&str> = samples.iter().map(Operation::type_name).collect();
     assert_eq!(names, FEATURE_TYPES);

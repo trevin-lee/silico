@@ -26,6 +26,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Two long sides crossing at a very shallow angle (1e-8 rad over 100 mm): a closest-point formula using `uu·vv − uv²` cancels to noise and misses the crossing
 - B-splines with repeated control points, degree higher than the number of control points, or periodic closure
 - Thousands of entities, or a sketch entirely outside its own bounding region
+- Constraints that force geometry of no size through shared points (a line's two ends mirrored about the line itself, a circle's or arc's center on it, a line's midpoint at its own end, a line tangent to a circle centered on its end): FreeCAD's GUI refuses some, and its solve says success with a zero-length line or a radius of 0
+- Degeneracy a check compares by ID that's there by value (a line between two distinct points at the same place), and values derived from checked ones past the solver's reach (an arc's radius from points each within a kilometre is up to 2√2 km)
 
 ## Sketch solver
 
@@ -101,6 +103,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Memory amplification of a parsed tree: a 100 MB array of `0` under an unknown key, measured with `/usr/bin/time -l` (a tree of nodes and a `Vec<char>` cost 33x here), and no size cap to refuse it with
 - Schemas generated from Rust integers (schemars writes `"format": "uint32"`, `"minimum": 0`, no `"maximum"`; formats are annotations): the schema takes 4294967296 where the reader refuses it
 - What the core adds to a document on save (fingerprints, metadata) when it opened just under the size limit: it opens, but can't be saved again
+- Error advice written before a new feature kind existed: a sketch of 30,000 points at `5e-324` (6 bytes each in the file, 326 written in full) is too large to save, and is told to shorten its name or note
 - Several bad values in one entity at once (a box with length, width, and height all 0) given to a checker that promises every problem: a rule returning `Result` stops at the first, so the user fixes one value per round trip
 
 ## MCP and agent input

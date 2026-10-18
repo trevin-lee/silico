@@ -109,6 +109,8 @@ pub enum FeatureOutcome {
     /// Not built, since it uses a feature that failed: that feature (the first failure
     /// along its base, then its tool).
     Blocked { on: FeatureId },
+    /// A sketch, which makes no solid. (Solving it comes in M3.3.)
+    Sketch,
 }
 
 /// A document as rebuilt: what became of each feature, in timeline order, and its bodies.
@@ -156,7 +158,9 @@ impl Model {
             .iter()
             .filter_map(|(_, outcome)| match outcome {
                 FeatureOutcome::Failed(error) => Some(error),
-                FeatureOutcome::Built { .. } | FeatureOutcome::Blocked { .. } => None,
+                FeatureOutcome::Built { .. }
+                | FeatureOutcome::Blocked { .. }
+                | FeatureOutcome::Sketch => None,
             })
     }
 
@@ -170,7 +174,9 @@ impl Model {
     pub fn fingerprint(&self, id: &FeatureId) -> Option<Fingerprint> {
         match self.outcome(id)? {
             FeatureOutcome::Built { built, .. } => built.summary().and_then(Fingerprint::of),
-            FeatureOutcome::Failed(_) | FeatureOutcome::Blocked { .. } => None,
+            FeatureOutcome::Failed(_) | FeatureOutcome::Blocked { .. } | FeatureOutcome::Sketch => {
+                None
+            }
         }
     }
 
@@ -616,7 +622,8 @@ fn boolean_op(operation: &Operation) -> Option<BooleanOp> {
         | Operation::Cylinder { .. }
         | Operation::Sphere { .. }
         | Operation::Cone { .. }
-        | Operation::Torus { .. } => None,
+        | Operation::Torus { .. }
+        | Operation::Sketch(_) => None,
     }
 }
 
@@ -1067,15 +1074,18 @@ fn map<T, U>(outcome: Outcome<T>, f: impl FnOnce(T) -> U) -> Outcome<U> {
 fn model(source: &Arc<Checked>, plan: &Plan, schedule: &Schedule, generation: Generation) -> Model {
     let done = &schedule.done;
     let mut features: Vec<(FeatureId, FeatureOutcome)> = Vec::with_capacity(plan.features.len());
-    for planned in &plan.features {
+    // The plan has one entry for each of the document's features, in its order.
+    for (planned, feature) in plan.features.iter().zip(&source.document().features) {
         // A feature it uses that didn't build blocks it, on the failure at the root.
         let blocked = planned.uses.iter().find_map(|&i| match features.get(i) {
             Some((id, FeatureOutcome::Failed(_))) => Some(id.clone()),
             Some((_, FeatureOutcome::Blocked { on })) => Some(on.clone()),
-            Some((_, FeatureOutcome::Built { .. })) | None => None,
+            Some((_, FeatureOutcome::Built { .. } | FeatureOutcome::Sketch)) | None => None,
         });
+        let makes_solid = feature.operation.makes_solid();
         let outcome = match blocked {
             Some(on) => FeatureOutcome::Blocked { on },
+            None if !makes_solid => FeatureOutcome::Sketch,
             None => feature_outcome(planned, done),
         };
         features.push((planned.id.clone(), outcome));
@@ -1106,7 +1116,9 @@ fn model(source: &Arc<Checked>, plan: &Plan, schedule: &Schedule, generation: Ge
                 .unmeasured
                 .get(key)
                 .map(|error| (id.clone(), error.clone().with_feature(id.as_str()))),
-            FeatureOutcome::Failed(_) | FeatureOutcome::Blocked { .. } => None,
+            FeatureOutcome::Failed(_) | FeatureOutcome::Blocked { .. } | FeatureOutcome::Sketch => {
+                None
+            }
         })
         .collect();
     Model {
