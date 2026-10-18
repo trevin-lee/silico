@@ -1,0 +1,110 @@
+{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "features": [
+    {
+      "id": "s0000001",
+      "type": "sketch",
+      "v": 1,
+      "name": "Plate outline",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": -30, "y": -15, "construction": false},
+        {"id": "pa000002", "x": 30, "y": -15, "construction": false},
+        {"id": "pa000003", "x": 30, "y": 15, "construction": false},
+        {"id": "pa000004", "x": -30, "y": 15, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000001",
+      "type": "pad",
+      "v": 1,
+      "name": "Plate",
+      "sketch": "s0000001",
+      "extent": {"type": "one_side", "length": 8, "reversed": false},
+      "fingerprint": {"volume": 14400, "area": 5040, "bbox": [-30, -15, 0, 30, 15, 8], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "s0000002",
+      "type": "sketch",
+      "v": 1,
+      "name": "Holes",
+      "plane": "xy",
+      "points": [
+        {"id": "pc000001", "x": -15, "y": 0, "construction": false},
+        {"id": "pc000002", "x": 15, "y": 0, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "ca000001", "center": "pc000001", "radius": 3, "construction": false},
+        {"id": "ca000002", "center": "pc000002", "radius": 4, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "q0000001",
+      "type": "pocket",
+      "v": 1,
+      "name": "Holes",
+      "base": "p0000001",
+      "sketch": "s0000002",
+      "extent": {"type": "through_all", "reversed": true},
+      "fingerprint": {"volume": 13771.681469, "area": 5234.778745, "bbox": [-30, -15, 0, 30, 15, 8], "faces": 8, "edges": 18, "vertices": 12}
+    },
+    {
+      "id": "s0000003",
+      "type": "sketch",
+      "v": 1,
+      "name": "Boss profile",
+      "plane": "xz",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 8, "construction": false},
+        {"id": "pa000002", "x": 5, "y": 8, "construction": false},
+        {"id": "pa000003", "x": 5, "y": 14, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 14, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "r0000001",
+      "type": "revolve",
+      "v": 1,
+      "name": "Boss",
+      "base": "q0000001",
+      "sketch": "s0000003",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "fingerprint": {"volume": 14242.920367, "area": 5423.274304, "bbox": [-30, -15, 0, 30, 15, 14], "faces": 10, "edges": 21, "vertices": 14}
+    },
+    {
+      "id": "f0000001",
+      "type": "fillet",
+      "v": 1,
+      "name": "Front edge round",
+      "base": "r0000001",
+      "edges": [
+        "p0000001.pad.Edge(G s0000001.sketch.Edge.na000001)"
+      ],
+      "radius": 1,
+      "fingerprint": {"volume": 14230.044257, "area": 5397.09288, "bbox": [-30, -15, 0, 30, 15, 14], "faces": 11, "edges": 24, "vertices": 16}
+    }
+  ]
+}
