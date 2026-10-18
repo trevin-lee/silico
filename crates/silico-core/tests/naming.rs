@@ -898,3 +898,28 @@ fn a_non_member_before_a_middle_member_doesnt_move_its_rank() {
         ]
     );
 }
+
+#[test]
+fn a_sketch_in_the_timeline_has_no_map_and_changes_no_other_features_names() {
+    // A sketch makes no solid (M3.2; solved in M3.3), so it's named nothing, and the
+    // features around it are named as without it.
+    let sketch = r#"{"id": "s0000001", "type": "sketch", "v": 1, "name": "Sketch", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 10, "y": 0, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}], "circles": [], "arcs": [], "constraints": []},"#;
+    let with = EXAMPLE.replacen(
+        "    {\"id\": \"a91cw0de\"",
+        &format!("    {sketch}\n    {{\"id\": \"a91cw0de\""),
+        1,
+    );
+    assert_ne!(with, EXAMPLE);
+    let engine = Recompute::new(FakeKernel::new(2).unwrap());
+    let plain = published(&engine, checked(EXAMPLE));
+    let sketched = published(&engine, checked(&with));
+    assert!(sketched.errors().next().is_none());
+    assert!(sketched.element_map(&id("s0000001")).is_none());
+    let hole = |model: &silico_core::recompute::Model| {
+        let map = model.element_map(&id("m3tq8v0z")).unwrap();
+        map.iter()
+            .map(|(e, names)| (e, names[0].to_string()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(hole(&sketched), hole(&plain));
+}
