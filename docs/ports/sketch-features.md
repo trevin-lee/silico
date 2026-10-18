@@ -131,7 +131,7 @@ Not in M3.6: the up-to modes, through all both ways, a second side of another mo
 | a side exactly 1e-7 from the axis | OCCT fails (docs/ports/extrude-revolve.md) | the same failure, passed on with M1's suggestion |
 | a whole turn | the start face isn't in the result, no ends | the same; its seams named from above |
 | a sketch on XZ | the normal is −Y: a pad goes toward −Y | the same (D6) |
-| a profile wall 1e-7 < g ≤ 3e-7 wide, flush with a face of the base, padded onto it | measured: the pad dropped, the result the base alone, valid (*Known OCCT wrong results*) | refused: adds nothing (S7) |
+| a profile wall 1e-7 < g ≤ 3e-7 wide, flush with a face of the base, padded onto it | measured: the pad dropped, the result the base alone, valid (*Known OCCT wrong results*) | the same on Silico's kernel (measured at 2e-7: the cube alone, exactly), refused: adds nothing (S7) |
 | the same, pocketed | measured: valid, the volume off by about 20 × g without the fuzzy value | accepted, documented (S7) |
 
 ## Bug fixes from FreeCAD's history
@@ -200,7 +200,9 @@ FreeCAD's PartDesign booleans use an automatic fuzzy value (1e-6 × the diagonal
 | The same | 1.7e-5, as PartDesign's | the base alone at every g measured, up to 1e-5 | off by 20 × g at every g measured |
 | The pad's outer square inset 2 mm, so no face of the wall is near a face of the cube | either | right at every g, to 5e-13 | right at every g, to 3e-13 |
 
-So the wrong results need the thin wall to lie flush with a face of the base. Without the fuzzy value, the band is the 1e-7 < g ≤ 3e-7 that the earlier measurement found. PartDesign's fuzzy value widens it to at least 1e-5: FreeCAD drops a flush pad whose wall is up to about the fuzzy value thick. Silico's worker sets the same options as Part's booleans, non-destructive and no fuzzy value, except that it runs single-threaded where FreeCAD runs in parallel (`FCBRepAlgoAPI_BooleanOperation.cpp:43-44`). So Silico is expected to match the first row. M3.6's kernel tests pin it on Silico's own booleans (S9). Design S7's rule holds whatever the cause: a sweep feature whose result measures as its base is refused, and a volume error that leaves a valid solid is accepted and documented, as FreeCAD accepts both.
+So the wrong results need the thin wall to lie flush with a face of the base. Without the fuzzy value, the band is the 1e-7 < g ≤ 3e-7 that the earlier measurement found. PartDesign's fuzzy value widens it to at least 1e-5: FreeCAD drops a flush pad whose wall is up to about the fuzzy value thick. Silico's worker sets the same options as Part's booleans, non-destructive and no fuzzy value, except that it runs single-threaded where FreeCAD runs in parallel (`FCBRepAlgoAPI_BooleanOperation.cpp:43-44`). So Silico is expected to match the first row. Design S7's rule holds whatever the cause: a sweep feature whose result measures as its base is refused, and a volume error that leaves a valid solid is accepted and documented, as FreeCAD accepts both.
+
+**Measured on Silico's own kernel** (`crates/silico-kernel/tests/sweep_faces.rs`, `a_thin_wall_flush_with_the_base_is_dropped_by_occt_and_the_pad_refused_as_adding_nothing`), as above: the flush profile made by the faces request, swept by the prism request from the cube's top up 5 (a start offset of 10), and fused with the cube by the boolean request. It matches the first row. At g = 2e-7 the fuse is valid and is the cube alone: volume exactly 1000, 6 faces, 12 edges, 8 vertices, the pad dropped; the no-op rule (`silico_core::sweep::check_result`) refuses it as adding nothing. At g = 4e-7 it's right: 1000 + 5 × (100 − (5 − g) × 6) to 1e-12, 15 faces, and accepted. Across the band (`the_thin_wall_band_is_freecads_without_the_fuzzy_value`): the pad is the cube alone at g = 1.5e-7, 2e-7, and 3e-7, and the pocket valid with 11 faces and its volume 20 × g too large (to 1e-3 of that); both right to 1e-12 at 4e-7, 1e-6, and 1e-5.
 
 ## Refine
 

@@ -9,8 +9,8 @@
 //! first of the commands every client runs ([`command`]: gate, rebuild, check, format, outline), and a
 //! document's file read and saved safely ([`file`]); and a solved sketch's profile
 //! ([`profile`]: its loops, nested into regions and oriented, or what keeps it from being
-//! one, named), and what only a solve can tell of a feature that sweeps one ([`sweep`]); the
-//! rest of the command API arrives later.
+//! one, named), and what a sketch feature's rebuild refuses of its profile, its solve, and
+//! its result ([`sweep`]); the rest of the command API arrives later.
 
 pub mod cache;
 pub mod command;
