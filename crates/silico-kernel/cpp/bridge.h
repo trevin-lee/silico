@@ -45,6 +45,7 @@ namespace silico {
 
 struct Measures;
 struct Bounds;
+struct Flat;
 struct Point3;
 struct Amounts;
 struct FreecadMeasures;
@@ -76,6 +77,11 @@ std::unique_ptr<Shape> make_torus(double major_radius, double minor_radius);
 // Volume, area (each integrated to the relative `precision`), center of mass, the
 // numbers of distinct faces, edges, and vertices, and the tight bounding box.
 Measures measure(const Shape &shape, double precision);
+
+// The unit normal of the planes the shape's faces lie on (each face's surface's, in place),
+// if every face lies on a plane, all of them parallel (within Precision::Angular()); not
+// flat otherwise, or if it has no faces.
+Flat flat_normal(const Shape &shape);
 
 // The tight box of the shape's geometry, as measure's (Shape.optimalBoundingBox(False,
 // False)), if it has any.

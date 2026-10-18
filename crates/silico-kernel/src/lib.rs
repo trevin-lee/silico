@@ -44,6 +44,12 @@ mod ffi {
         high: Point3,
     }
 
+    /// Whether a shape's faces all lie on parallel planes (`flat`), and their unit normal.
+    struct Flat {
+        flat: bool,
+        normal: Point3,
+    }
+
     /// A shape's volume and area.
     struct Amounts {
         volume: f64,
@@ -204,6 +210,7 @@ mod ffi {
         fn make_torus(major_radius: f64, minor_radius: f64) -> Result<UniquePtr<Shape>>;
         fn measure(shape: &Shape, precision: f64) -> Result<Measures>;
         fn tight_bounds(shape: &Shape) -> Result<Bounds>;
+        fn flat_normal(shape: &Shape) -> Result<Flat>;
         fn edge_facts(shape: &Shape) -> Result<EdgeFacts>;
 
         type Dressing;
@@ -894,61 +901,99 @@ pub fn revolve(profile: &Profile, axis: &Axis, angle: f64) -> Result<Built, Kern
     })
 }
 
-/// That `faces` can be swept: faces only (a profile's, as [`make_faces`] makes them), at
-/// least one, and no solid.
-fn sweepable(faces: &Shape) -> Result<(), KernelError> {
-    let c = ffi::count_elements(faces.get()?)?;
-    if c.faces == 0 || c.solids != 0 {
+/// The unit normal of the plane `faces` lie on, if they can be swept: faces only (a
+/// profile's, as [`make_faces`] makes them), at least one, no solid, all on parallel planes.
+fn sweepable(faces: &Shape) -> Result<[f64; 3], KernelError> {
+    let inner = faces.get()?;
+    let c = ffi::count_elements(inner)?;
+    let flat = ffi::flat_normal(inner)?;
+    if c.faces == 0 || c.solids != 0 || !flat.flat {
         return Err(KernelError::new(Refusal::InvalidParameter {
             parameter: "faces".to_owned(),
             message: format!(
-                "a sweep takes a profile's faces, got a shape of {} faces and {} solids",
-                c.faces, c.solids
+                "a sweep takes a profile's faces, on one plane, got a shape of {} faces and {} solids{}",
+                c.faces,
+                c.solids,
+                if flat.flat { "" } else { ", not on one plane" }
             ),
         }));
     }
-    Ok(())
+    Ok([flat.normal.x, flat.normal.y, flat.normal.z])
+}
+
+/// A sweep the plane checks refuse, as the refusal that says what to do instead.
+fn flat(invalid: silico_protocol::InvalidParameter) -> KernelError {
+    KernelError::new(Refusal::SweepFlat {
+        parameter: invalid.parameter.to_owned(),
+        message: invalid.message,
+    })
 }
 
 fn point3([x, y, z]: [f64; 3]) -> ffi::Point3 {
     ffi::Point3 { x, y, z }
 }
 
-/// `faces` (a profile's, [`make_faces`]) moved by `start`, then swept along `vector` into a
-/// solid for each face: one solid, or a compound of them (docs/design/m3.6-sketch-features.md,
-/// S3). The core works out the start and the vector; this builds exactly them. The history
-/// has the faces as its one input: each face's, edge's, and vertex's start counterpart (the
-/// element itself, or its moved copy) its one `modified` element, never kept; its end
-/// counterpart `generated`, of its own kind; and its sides `generated` (a face its solid, an
-/// edge its side face, a vertex its side edge). `History::ends` is left empty.
-pub fn prism(faces: &Shape, start: [f64; 3], vector: [f64; 3]) -> Result<Built, KernelError> {
-    silico_protocol::check_prism(start, vector).map_err(|invalid| refused(None, invalid))?;
-    sweepable(faces)?;
-    let inner = faces.get()?;
-    let mut entries = Vec::new();
-    // OCCT has built every prism of valid faces tried; should one fail, the refusal says
-    // what to change.
-    let solid = ffi::sweep_prism(inner, point3(start), point3(vector), &mut entries)
-        .map_err(|e| KernelError::from(e).during(Operation::Extrusion))?;
-    let result = checked_result(&[faces], solid, Operation::Extrusion)?;
-    let history = history_of(&[inner], result.get()?, &entries)?;
+/// A sweep's result, checked as any operation's ([`checked_result`]), and refused as an
+/// invalid result if it has no volume to speak of ([`has_no_volume`], as a boolean's is):
+/// a flat "solid" OCCT calls valid, which the plane checks keep out, should one get past.
+fn swept(
+    faces: &Shape,
+    solid: cxx::UniquePtr<ffi::Shape>,
+    operation: Operation,
+    entries: &[ffi::HistoryEntry],
+) -> Result<Built, KernelError> {
+    let result = checked_result(&[faces], solid, operation.clone())?;
+    if has_no_volume(result.get()?, &[])? {
+        return Err(KernelError::new(Refusal::ResultInvalid {
+            operation,
+            edges: Vec::new(),
+        }));
+    }
+    let history = history_of(&[faces.get()?], result.get()?, entries)?;
     Ok(Built {
         shape: result,
         history,
     })
 }
 
-/// `faces` swept from where they are along `direction` (a unit vector) through all of `base`:
-/// [`silico_protocol::THROUGH_ALL_FACTOR`] times the diagonal of the tight box around both
-/// ([`silico_protocol::through_all_length`], FreeCAD's rule, design S3). `base` only sizes
-/// the prism; the history is the faces' alone, as [`prism`]'s.
+/// `faces` (a profile's, [`make_faces`]) moved by `start`, then swept along `vector` into a
+/// solid for each face: one solid, or a compound of them (docs/design/m3.6-sketch-features.md,
+/// S3). The core works out the start and the vector; this builds exactly them, out of the
+/// faces' plane ([`silico_protocol::check_leaves_plane`]). The faces are left as they were.
+/// The history has the faces as its one input: each face's, edge's, and vertex's start
+/// counterpart (the element itself, or its moved copy) its one `modified` element, never
+/// kept; its end counterpart `generated`, of its own kind; and its sides `generated` (a face
+/// its solid, an edge its side face, a vertex its side edge). `History::ends` is left empty.
+pub fn prism(faces: &Shape, start: [f64; 3], vector: [f64; 3]) -> Result<Built, KernelError> {
+    silico_protocol::check_prism(start, vector).map_err(|invalid| refused(None, invalid))?;
+    let normal = sweepable(faces)?;
+    silico_protocol::check_leaves_plane("vector", normal, vector).map_err(flat)?;
+    build_prism(faces, start, vector)
+}
+
+/// The prism of [`prism`], its values checked.
+fn build_prism(faces: &Shape, start: [f64; 3], vector: [f64; 3]) -> Result<Built, KernelError> {
+    let mut entries = Vec::new();
+    // OCCT has built every prism of valid faces tried; should one fail, the refusal says
+    // what to change.
+    let solid = ffi::sweep_prism(faces.get()?, point3(start), point3(vector), &mut entries)
+        .map_err(|e| KernelError::from(e).during(Operation::Extrusion))?;
+    swept(faces, solid, Operation::Extrusion, &entries)
+}
+
+/// `faces` swept from where they are along `direction` (a unit vector, out of their plane)
+/// through all of `base`: [`silico_protocol::THROUGH_ALL_FACTOR`] times the diagonal of the
+/// tight box around both ([`silico_protocol::through_all_length`], FreeCAD's rule, design
+/// S3), refused naming `base` past a kilometre. `base` only sizes the prism; the history is
+/// the faces' alone, as [`prism`]'s.
 pub fn prism_through_all(
     faces: &Shape,
     base: &Shape,
     direction: [f64; 3],
 ) -> Result<Built, KernelError> {
     silico_protocol::check_through_all(direction).map_err(|invalid| refused(None, invalid))?;
-    sweepable(faces)?;
+    let normal = sweepable(faces)?;
+    silico_protocol::check_leaves_plane("direction", normal, direction).map_err(flat)?;
     let base_inner = base.get()?;
     if is_empty(base_inner)? {
         return Err(KernelError::new(Refusal::InvalidParameter {
@@ -975,13 +1020,27 @@ pub fn prism_through_all(
     }
     let length =
         silico_protocol::through_all_length(around).map_err(|invalid| refused(None, invalid))?;
-    prism(faces, [0.0; 3], direction.map(|c| c * length))
+    let vector = direction.map(|c| c * length);
+    // The rules compose (check_prism allows a unit direction's rounding past the
+    // kilometre); should they not, the length is the base's doing, so the base is named.
+    silico_protocol::check_prism([0.0; 3], vector).map_err(|invalid| {
+        refused(
+            None,
+            silico_protocol::InvalidParameter {
+                parameter: "base",
+                message: invalid.message,
+            },
+        )
+    })?;
+    build_prism(faces, [0.0; 3], vector)
 }
 
 /// `faces` (a profile's, [`make_faces`]) turned `start` radians about `axis` (its direction a
-/// unit vector), then swept `angle` radians about it, right-handed: a solid for each face
-/// (design S3). The history is as [`prism`]'s, but for an element on the axis, whose end is
-/// its start (reported once, modified), and a whole turn, which has no ends.
+/// unit vector, in their plane: [`silico_protocol::check_axis_in_plane`]), then swept `angle`
+/// radians about it, right-handed: a solid for each face (design S3). The faces are left as
+/// they were. The history is as [`prism`]'s, but for an element on the axis, whose end is
+/// its start (reported once, modified), and a whole turn, which has no ends
+/// (`History::sweep_fault`).
 pub fn revolution(
     faces: &Shape,
     axis: &Axis,
@@ -990,13 +1049,13 @@ pub fn revolution(
 ) -> Result<Built, KernelError> {
     silico_protocol::check_revolution(axis.origin, axis.direction, start, angle)
         .map_err(|invalid| refused(None, invalid))?;
-    sweepable(faces)?;
-    let inner = faces.get()?;
+    let normal = sweepable(faces)?;
+    silico_protocol::check_axis_in_plane(normal, axis.direction).map_err(flat)?;
     let mut entries = Vec::new();
     // OCCT fails on some profiles the core accepts, a side exactly 1e-7 from the axis among
     // them (FreeCAD's OCCT too): the refusal says what to change.
     let solid = ffi::sweep_revolution(
-        inner,
+        faces.get()?,
         point3(axis.origin),
         point3(axis.direction),
         start,
@@ -1004,12 +1063,7 @@ pub fn revolution(
         &mut entries,
     )
     .map_err(|e| KernelError::from(e).during(Operation::Revolve))?;
-    let result = checked_result(&[faces], solid, Operation::Revolve)?;
-    let history = history_of(&[inner], result.get()?, &entries)?;
-    Ok(Built {
-        shape: result,
-        history,
-    })
+    swept(faces, solid, Operation::Revolve, &entries)
 }
 
 /// A face for each of `regions`' regions, on its sketch's plane, as the core sends them

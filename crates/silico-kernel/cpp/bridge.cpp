@@ -855,6 +855,32 @@ std::unique_ptr<Shape> revolve(const Shape &face, Point3 origin, Point3 directio
   return std::make_unique<Shape>(Shape{result});
 }
 
+Flat flat_normal(const Shape &shape) {
+  Flat out{false, Point3{0.0, 0.0, 0.0}};
+  bool first = true;
+  gp_Dir normal;
+  for (TopExp_Explorer faces(shape.shape, TopAbs_FACE); faces.More(); faces.Next()) {
+    TopLoc_Location location;
+    const Handle(Geom_Surface) surface =
+        BRep_Tool::Surface(TopoDS::Face(faces.Current()), location);
+    const Handle(Geom_Plane) plane = Handle(Geom_Plane)::DownCast(surface);
+    if (plane.IsNull()) {
+      return out;
+    }
+    const gp_Dir here = plane->Axis().Direction().Transformed(location.Transformation());
+    if (first) {
+      normal = here;
+      first = false;
+    } else if (!normal.IsParallel(here, Precision::Angular())) {
+      return out;
+    }
+  }
+  if (first) {
+    return out;
+  }
+  return Flat{true, Point3{normal.X(), normal.Y(), normal.Z()}};
+}
+
 Bounds tight_bounds(const Shape &shape) {
   Point3 low{0.0, 0.0, 0.0};
   Point3 high{0.0, 0.0, 0.0};
@@ -932,7 +958,11 @@ std::unique_ptr<Shape> sweep_prism(const Shape &faces, Point3 start, Point3 vect
   gp_Trsf move;
   move.SetTranslation(gp_Vec(start.x, start.y, start.z));
   const TopoDS_Shape moved = placed(faces.shape, move);
-  BRepPrimAPI_MakePrism prism(moved, gp_Vec(vector.x, vector.y, vector.z));
+  // Copy = true: the sweep builds on copies of the faces' edges and vertices, so the faces
+  // it was given are left as they were (shared, MakePrism would add the side faces' curves
+  // to their edges). FirstShape, LastShape, and Generated still answer for the faces' own
+  // elements.
+  BRepPrimAPI_MakePrism prism(moved, gp_Vec(vector.x, vector.y, vector.z), true);
   if (!prism.IsDone()) {
     throw Standard_Failure("the prism couldn't be built");
   }
@@ -951,7 +981,8 @@ std::unique_ptr<Shape> sweep_revolution(const Shape &faces, Point3 origin, Point
     turn.SetRotation(axis, start);
   }
   const TopoDS_Shape moved = placed(faces.shape, turn);
-  BRepPrimAPI_MakeRevol revolution(moved, axis, angle);
+  // Copy = true, as for sweep_prism: the faces given are left as they were.
+  BRepPrimAPI_MakeRevol revolution(moved, axis, angle, true);
   if (!revolution.IsDone() || revolution.Shape().IsNull()) {
     throw Standard_Failure("the revolution couldn't be built");
   }

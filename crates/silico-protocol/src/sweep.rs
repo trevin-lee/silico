@@ -63,7 +63,7 @@ fn check_unit(
     direction: [f64; 3],
 ) -> Result<(), InvalidParameter> {
     let size = length(direction);
-    if direction.iter().all(|c| c.is_finite()) && (size - 1.0).abs() <= 4.0 * f64::EPSILON {
+    if direction.iter().all(|c| c.is_finite()) && (size - 1.0).abs() <= UNIT_SLACK {
         Ok(())
     } else {
         Err(invalid(
@@ -73,19 +73,75 @@ fn check_unit(
     }
 }
 
+/// How far a unit direction's length may be from 1: rounding, as the core normalizes one.
+const UNIT_SLACK: f64 = 4.0 * f64::EPSILON;
+
+/// The longest a sweep's vector may measure: a kilometre, and the rounding a unit direction
+/// (to [`UNIT_SLACK`]) times a length of at most a kilometre, measured, can add to it. So a
+/// through-all prism of a length [`through_all_length`] admits, along a direction
+/// [`check_through_all`] admits, is a prism [`check_prism`] admits (break-it found the
+/// kernel refusing one a few ulps past the kilometre, naming a `vector` the request didn't
+/// have).
+const MAX_SWEEP: f64 = MAX_LENGTH * (1.0 + 4.0 * UNIT_SLACK);
+
 /// Whether a prism of a profile's faces moved by `start`, then swept along `vector`, can be
 /// built: `start` a place ([`check_point`]'s rule), and `vector` finite, longer than OCCT's
-/// tolerance, and at most a kilometre.
+/// tolerance, and at most a kilometre (to the rounding of a unit direction, [`MAX_SWEEP`]).
 pub fn check_prism(start: [f64; 3], vector: [f64; 3]) -> Result<(), InvalidParameter> {
     check_point("start", "prism's start", start)?;
     let size = length(vector);
-    if vector.iter().all(|c| c.is_finite()) && size > LENGTH_TOLERANCE && size <= MAX_LENGTH {
+    if vector.iter().all(|c| c.is_finite()) && size > LENGTH_TOLERANCE && size <= MAX_SWEEP {
         Ok(())
     } else {
         Err(invalid(
             "vector",
             format!(
                 "the prism's vector must be finite, longer than 1e-7 mm, and at most 1e6 mm (a kilometre), got {vector:?}"
+            ),
+        ))
+    }
+}
+
+/// Whether a prism along `vector` leaves the plane of faces whose unit normal is `normal`:
+/// the vector's unit direction makes at least FreeCAD's 1e-7 with the plane
+/// (|direction · normal| ≥ 1e-7, M1's `extrusion_vector` rule), so it sweeps a solid with a
+/// volume, not a flat one. The kernel reads the faces' normal; `parameter` names the field
+/// the vector came from (`vector`, or a through-all prism's `direction`). The core's
+/// vectors lie along the normal, so this is the kernel's own guard.
+pub fn check_leaves_plane(
+    parameter: &'static str,
+    normal: [f64; 3],
+    vector: [f64; 3],
+) -> Result<(), InvalidParameter> {
+    let size = length(vector);
+    let along = (vector[0] * normal[0] + vector[1] * normal[1] + vector[2] * normal[2]).abs();
+    if size > 0.0 && along >= crate::profile::MIN_DIRECTION_FACTOR * size {
+        Ok(())
+    } else {
+        Err(invalid(
+            parameter,
+            format!(
+                "the sweep's {parameter} {vector:?} lies in the faces' plane (normal {normal:?}): it must point out of it"
+            ),
+        ))
+    }
+}
+
+/// Whether a revolution's axis, along the unit `direction`, lies in the plane of faces whose
+/// unit normal is `normal`, to FreeCAD's 1e-7 (|direction · normal| ≤ 1e-7): an axis out of
+/// the plane turns the faces through themselves, and one along the normal spins them in
+/// their plane into a flat "solid". The core's axes are lines of the sketch, in its plane,
+/// so this is the kernel's own guard.
+pub fn check_axis_in_plane(normal: [f64; 3], direction: [f64; 3]) -> Result<(), InvalidParameter> {
+    let lean =
+        (direction[0] * normal[0] + direction[1] * normal[1] + direction[2] * normal[2]).abs();
+    if lean <= crate::profile::MIN_DIRECTION_FACTOR {
+        Ok(())
+    } else {
+        Err(invalid(
+            "axis",
+            format!(
+                "the revolution's axis {direction:?} leans out of the faces' plane (normal {normal:?}): it must lie in it"
             ),
         ))
     }
@@ -272,14 +328,10 @@ impl History {
                         ));
                     }
                 }
-                // In a turn, an edge or vertex on the axis has neither an end nor a side, and
-                // one off it has both.
-                if kind == SweepKind::Turn && (ends.is_empty() != (sides == 0)) {
-                    return Some(format!(
-                        "{} has {} end and {sides} side counterparts in a Turn sweep: an element on the axis has neither, and one off it both",
-                        what(),
-                        ends.len()
-                    ));
+                if kind == SweepKind::Turn
+                    && let Some(fault) = self.turn_fault(element_kind, fate, &ends, sides)
+                {
+                    return Some(format!("{} {fault}", what()));
                 }
                 for r in fate.modified.iter().chain(&fate.generated) {
                     if !claimed.insert(r.element) {
@@ -311,6 +363,71 @@ impl History {
             }
         }
         None
+    }
+}
+
+impl History {
+    /// What's wrong with how a turn short of a whole one reports an edge's or a vertex's
+    /// fate, by what OCCT does (`crates/silico-kernel/tests/sweep_faces.rs`,
+    /// `adversarial_sweep_faces.rs`):
+    ///
+    /// - An edge off the axis has its end and one side face; one along the axis has neither
+    ///   (its start is its end, and it sweeps nothing).
+    /// - A vertex off the axis has its end and one side edge, an arc from its start to its
+    ///   end. A vertex on the axis has no end (its start is its end), and as sides only the
+    ///   degenerate edges OCCT generates where a face of revolution closes on the axis (a
+    ///   cone's apex): each an edge whose one vertex is the vertex's start, none where no
+    ///   face closes there, and two where `MakeRevol` copies one that two faces share (a
+    ///   diamond's tip).
+    fn turn_fault(
+        &self,
+        kind: ElementKind,
+        fate: &crate::ElementFate,
+        ends: &[&crate::Reported],
+        sides: usize,
+    ) -> Option<String> {
+        let start = fate.modified.first()?.element.index;
+        let vertices = |edge: u32| -> Option<&Vec<u32>> {
+            self.topology
+                .edge_vertices
+                .get((edge as usize).checked_sub(1)?)
+        };
+        let side_edges = || {
+            fate.generated
+                .iter()
+                .filter(|r| r.element.kind == ElementKind::Edge)
+                .map(|r| r.element.index)
+        };
+        match (kind, ends.first()) {
+            (ElementKind::Edge, Some(_)) if sides == 1 => None,
+            (ElementKind::Edge, None) if sides == 0 => None,
+            (ElementKind::Edge, _) => Some(format!(
+                "has {} end and {sides} side counterparts in a Turn sweep: an edge on the axis has neither, and one off it both",
+                ends.len()
+            )),
+            (ElementKind::Vertex, Some(end)) => {
+                let arc = side_edges().next().and_then(vertices).map(|v| {
+                    let mut v = v.clone();
+                    v.sort_unstable();
+                    v
+                });
+                let mut want = vec![start, end.element.index];
+                want.sort_unstable();
+                (sides != 1 || arc.as_ref() != Some(&want)).then(|| {
+                    format!(
+                        "has its end and {sides} side edges in a Turn sweep, {arc:?}: a vertex off the axis sweeps one arc from its start to its end"
+                    )
+                })
+            }
+            (ElementKind::Vertex, None) => side_edges()
+                .find(|&edge| vertices(edge).map(Vec::as_slice) != Some(&[start]))
+                .map(|edge| {
+                    format!(
+                        "has no end, but sweeps Edge{edge}, which isn't a point at its start: a vertex on the axis sweeps only degenerate edges"
+                    )
+                }),
+            _ => None,
+        }
     }
 }
 
@@ -360,6 +477,16 @@ mod tests {
                 edges: 9,
                 vertices: 6,
                 solids: 1,
+            },
+            // Each start edge from its vertex to the next, each end edge likewise, and each
+            // side edge from a start vertex to its end.
+            topology: crate::Topology {
+                edge_vertices: (0..3)
+                    .map(|i| vec![i + 1, (i + 1) % 3 + 1])
+                    .chain((0..3).map(|i| vec![i + 4, (i + 1) % 3 + 4]))
+                    .chain((1..=3).map(|j| vec![j, j + 3]))
+                    .collect(),
+                ..crate::Topology::default()
             },
             ..History::default()
         }
@@ -440,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn a_turn_lets_an_axis_element_lose_its_end_and_side_and_a_whole_turn_has_no_ends() {
+    fn a_turn_tells_an_axis_element_by_what_occt_reports_and_a_whole_turn_has_no_ends() {
         let mut on_axis = triangle_prism();
         // Edge1 and its two vertices on the axis: their ends are their starts, unreported,
         // and they sweep nothing.
@@ -455,7 +582,7 @@ mod tests {
         assert_eq!(
             half.sweep_fault(SweepKind::Turn).as_deref(),
             Some(
-                "Edge2 has 0 end and 1 side counterparts in a Turn sweep: an element on the axis has neither, and one off it both"
+                "Edge2 has 0 end and 1 side counterparts in a Turn sweep: an edge on the axis has neither, and one off it both"
             )
         );
         let mut half = on_axis.clone();
@@ -463,8 +590,45 @@ mod tests {
         assert!(
             half.sweep_fault(SweepKind::Turn)
                 .unwrap()
-                .starts_with("Vertex3 has 1 end and 0 side")
+                .starts_with("Vertex3 has its end and 0 side edges in a Turn sweep")
         );
+        // A vertex on the axis where a face of revolution closes (a cone's apex) sweeps a
+        // degenerate edge, a point at its start; where two faces close, two (MakeRevol copies
+        // the one they'd share).
+        let mut apex = on_axis.clone();
+        apex.inputs[0].vertices[0].generated = vec![r(ElementKind::Edge, 7)];
+        apex.topology.edge_vertices[6] = vec![1];
+        assert_eq!(apex.sweep_fault(SweepKind::Turn), None);
+        apex.inputs[0].vertices[1].generated = vec![r(ElementKind::Edge, 8)];
+        apex.topology.edge_vertices[7] = vec![2];
+        assert_eq!(apex.sweep_fault(SweepKind::Turn), None);
+        // A point elsewhere, or an edge with two vertices, isn't the vertex's apex.
+        let mut elsewhere = apex.clone();
+        elsewhere.topology.edge_vertices[6] = vec![3];
+        assert_eq!(
+            elsewhere.sweep_fault(SweepKind::Turn).as_deref(),
+            Some(
+                "Vertex1 has no end, but sweeps Edge7, which isn't a point at its start: a vertex on the axis sweeps only degenerate edges"
+            )
+        );
+        let mut long = apex.clone();
+        long.topology.edge_vertices[6] = vec![1, 4];
+        assert!(
+            long.sweep_fault(SweepKind::Turn)
+                .unwrap()
+                .starts_with("Vertex1 has no end, but sweeps Edge7")
+        );
+        // A vertex off the axis sweeps an arc from its start to its end, and one only.
+        let mut astray = triangle_prism();
+        astray.topology.edge_vertices[8] = vec![3, 5];
+        assert!(
+            astray
+                .sweep_fault(SweepKind::Turn)
+                .unwrap()
+                .starts_with("Vertex3 has its end and 1 side edges in a Turn sweep, Some([3, 5])")
+        );
+        // The prism's rule doesn't read the topology.
+        assert_eq!(astray.sweep_fault(SweepKind::Prism), None);
         // But every element has its start, and the face its end and solid.
         let mut no_start = on_axis.clone();
         no_start.inputs[0].edges[0].modified.clear();
@@ -577,6 +741,52 @@ mod tests {
                     .unwrap_err()
                     .parameter,
                 parameter
+            );
+        }
+    }
+
+    #[test]
+    fn a_sweep_must_leave_the_faces_plane_and_a_turn_keep_its_axis_in_it() {
+        let z = [0.0, 0.0, 1.0];
+        // Along the normal, either way, or leaning: out of the plane.
+        for vector in [[0.0, 0.0, 10.0], [0.0, 0.0, -1e-6], [5.0, 0.0, 1e-6]] {
+            assert_eq!(
+                check_leaves_plane("vector", z, vector),
+                Ok(()),
+                "{vector:?}"
+            );
+        }
+        // FreeCAD's 1e-7 of the vector's length along the normal: a hair over, out; a hair
+        // under, in.
+        assert_eq!(check_leaves_plane("vector", z, [1.0, 0.0, 1.01e-7]), Ok(()));
+        for vector in [
+            [1.0, 0.0, 0.99e-7],
+            [5.0, 0.0, 0.0],
+            [0.0, -3.0, -0.0],
+            [0.0; 3],
+        ] {
+            let e = check_leaves_plane("direction", z, vector).unwrap_err();
+            assert_eq!(e.parameter, "direction", "{vector:?}");
+            assert!(
+                e.message.contains("lies in the faces' plane"),
+                "{}",
+                e.message
+            );
+        }
+        // An axis in the plane, or leaning by at most 1e-7: in; more, or along the normal:
+        // out.
+        for direction in [
+            [1.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.6, 0.8, 0.0],
+            [1.0, 0.0, 1e-7],
+        ] {
+            assert_eq!(check_axis_in_plane(z, direction), Ok(()), "{direction:?}");
+        }
+        for direction in [z, [0.0, 0.0, -1.0], [1.0, 0.0, 1.01e-7], [0.6, 0.0, 0.8]] {
+            assert_eq!(
+                check_axis_in_plane(z, direction).unwrap_err().parameter,
+                "axis"
             );
         }
     }

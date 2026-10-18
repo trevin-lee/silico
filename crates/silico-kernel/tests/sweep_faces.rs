@@ -682,16 +682,20 @@ fn a_turn_reports_an_axis_side_once_and_a_whole_turn_no_ends() {
         the(&fate.generated, ElementKind::Edge);
     }
     assert_history(&quarter, SweepKind::Turn);
-    // A whole turn: no ends at all. The face is reported nothing, and so are the top and
-    // bottom, which sweep flat discs, and the side on the axis and its points, which aren't
-    // in the result; the right side starts at its cylinder's seam, and sweeps the cylinder.
+    // A whole turn: no ends at all. The face is reported nothing; the top and bottom sweep
+    // flat discs, with no start (no seam); the side on the axis and its points aren't in
+    // the result; the right side starts at its cylinder's seam, and sweeps the cylinder.
     let whole = revolution(&made.shape, &z, 0.0, TAU).unwrap();
     let r = whole.history.result;
     assert_eq!((r.faces, r.edges, r.vertices), (3, 3, 2));
     assert_eq!(whole.history.inputs[0].faces[0], Default::default());
-    for n in [1, 3, 4] {
-        assert_eq!(edge(&whole, n), Default::default(), "curve {n}");
+    for n in [1, 3] {
+        let disc = edge(&whole, n);
+        assert!(disc.modified.is_empty(), "curve {n}");
+        the(&disc.generated, ElementKind::Face);
+        assert_eq!(disc.generated.len(), 1);
     }
+    assert_eq!(edge(&whole, 4), Default::default());
     let seam = edge(&whole, 2);
     the(&seam.modified, ElementKind::Edge);
     the(&seam.generated, ElementKind::Face);
@@ -929,9 +933,9 @@ fn the_worker_refuses_what_isnt_faces_and_bad_values_and_goes_on() {
     assert_eq!(error.code(), ErrorCode::InvalidInput);
     assert_eq!(error.parameter(), Some("faces"));
     assert!(
-        error
-            .message()
-            .contains("a sweep takes a profile's faces, got a shape of 6 faces and 1 solids"),
+        error.message().contains(
+            "a sweep takes a profile's faces, on one plane, got a shape of 6 faces and 1 solids"
+        ),
         "{error:?}"
     );
     // Values the core would refuse, refused again by the worker.
@@ -958,6 +962,46 @@ fn the_worker_refuses_what_isnt_faces_and_bad_values_and_goes_on() {
         &mut worker,
     );
     assert_eq!(error.parameter(), Some("direction"), "{error:?}");
+    // A sweep along the faces' own plane, or about their own normal: a flat "solid" OCCT
+    // would call valid, refused naming the field, with what to do instead.
+    for (op, parameter, says) in [
+        (
+            Op::Prism {
+                faces: made.clone(),
+                start: [0.0; 3],
+                vector: [1.0, 0.0, 0.0],
+            },
+            "vector",
+            "sweep the faces along a vector out of their plane",
+        ),
+        (
+            Op::PrismThroughAll {
+                faces: made.clone(),
+                base: cube.clone(),
+                direction: [0.0, 1.0, 0.0],
+            },
+            "direction",
+            "sweep the faces along a vector out of their plane",
+        ),
+        (
+            Op::Revolution {
+                faces: made.clone(),
+                axis: Axis {
+                    origin: [5.0, 0.0, 0.0],
+                    direction: [0.0, 0.0, 1.0],
+                },
+                start: 0.0,
+                angle: 1.0,
+            },
+            "axis",
+            "turn the faces about a line in their plane",
+        ),
+    ] {
+        let error = refusal(op, &mut worker);
+        assert_eq!(error.code(), ErrorCode::InvalidInput, "{error:?}");
+        assert_eq!(error.parameter(), Some(parameter), "{error:?}");
+        assert_eq!(error.suggestion(), Some(says));
+    }
     // And it goes on.
     let reply = worker
         .call(
