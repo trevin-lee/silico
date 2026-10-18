@@ -10,7 +10,7 @@
 use std::ffi::{OsStr, OsString};
 use std::io::{Read as _, Write as _};
 use std::os::unix::ffi::OsStringExt;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
@@ -242,11 +242,23 @@ fn reading_stops_at_the_most_a_document_may_be() {
     let scratch = Scratch::new("endless");
     let fifo = scratch.0.join("part.silico");
     mkfifo(&fifo);
+    // Both ends opened here, before silico runs: a read end of the test's own, held until
+    // silico has finished, and the write end the writer feeds. An open in the writer's
+    // thread raced silico (which opens the FIFO, refuses it, and closes it): opened after,
+    // with no reader left, it waited forever. Dropping the read end ends the writer, whose
+    // next write fails (EPIPE).
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&fifo)
+        .unwrap();
+    // With a reader there already, the write end's open returns at once, and its writes
+    // wait for room, so silico has a stream to read.
+    let mut f = std::fs::OpenOptions::new().write(true).open(&fifo).unwrap();
     let child = command(&scratch, &worker(), &[os("show"), os("part.silico")])
         .spawn()
         .unwrap();
     let writer = std::thread::spawn(move || {
-        let mut f = std::fs::OpenOptions::new().write(true).open(&fifo).unwrap();
         let chunk = vec![b' '; 1 << 20];
         let mut written = 0usize;
         while written < 256 << 20 {
@@ -258,6 +270,7 @@ fn reading_stops_at_the_most_a_document_may_be() {
         written
     });
     let out = finish(child, Duration::from_secs(60));
+    drop(held);
     let written = writer.join().unwrap();
     let limit = silico_core::document::json::MAX_INPUT_LEN;
     assert!(out.status.is_some(), "hung");
