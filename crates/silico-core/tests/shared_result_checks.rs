@@ -118,6 +118,11 @@ fn an_m2_cut_isnt_refused_by_an_unrelated_pockets_check() {
         matches!(outcome, Some(FeatureOutcome::Built { .. })),
         "{outcome:?}"
     );
+    // The premise: the pocket sharing the cut's step is refused, removing nothing.
+    let Some(FeatureOutcome::Failed(error)) = with_pocket.outcome(&id("qqqqqqqq")) else {
+        panic!("{:?}", with_pocket.outcome(&id("qqqqqqqq")));
+    };
+    assert!(error.message().contains("removes nothing"), "{error:?}");
 }
 
 /// The pocket of the proofs, missing its cube: refused, its error said once, naming it.

@@ -2,17 +2,22 @@
 //! m3.6-sketch-features.md, S5): a `fuse`, `cut`, or `common` feature whose result holds more
 //! than one solid is refused, `kernel_failed`, naming itself, and what uses it is blocked;
 //! decided per feature from its solid's stored history, the same fresh, warm in memory, and
-//! from the disk cache. Each case's count is worked out by hand from where the boxes are.
+//! from the disk cache; and the same for a pad or pocket, end to end. Each case's count is
+//! worked out by hand from where the boxes and sketches are.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/cached.rs"]
+mod cached;
 #[path = "../../silico-core/tests/common/sweeps.rs"]
 mod sweeps;
 
 use std::path::Path;
 use std::sync::Arc;
 
-use silico_core::cache::Cache;
+use cached::{Counted, Scratch};
 use silico_core::document::{Checked, read};
+use silico_core::fake::FakeSketches;
+use silico_core::kernel::Kernel;
 use silico_core::pool::KernelPool;
 use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 use silico_core::{Error, ErrorCode};
@@ -22,7 +27,7 @@ fn pool() -> KernelPool {
     KernelPool::start_workers(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")), 2).unwrap()
 }
 
-fn publish(engine: &Recompute<KernelPool>, features: &[&str]) -> Arc<Model> {
+fn publish<K: Kernel + 'static>(engine: &Recompute<K>, features: &[&str]) -> Arc<Model> {
     let document = Checked::new(read(document(features).as_bytes()).unwrap()).unwrap();
     match engine.start(document).wait().unwrap() {
         RunOutcome::Published(model) => model,
@@ -60,12 +65,7 @@ fn two_boxes_apart_fused_are_refused_naming_the_fuse_fresh_warm_and_from_the_cac
         fillet_of("f0000001"),
     ];
     let refs: Vec<&str> = features.iter().map(String::as_str).collect();
-    let dir = std::env::temp_dir().join(format!("silico-boolean-solids-{}", std::process::id()));
-    let secret = std::env::temp_dir().join(format!(
-        "silico-boolean-solids-{}.secret",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
+    let scratch = Scratch::new("boolean-solids");
     let check = |model: &Model| {
         let error = refused(model, "f0000001");
         assert_eq!(error.code(), ErrorCode::KernelFailed);
@@ -82,14 +82,21 @@ fn two_boxes_apart_fused_are_refused_naming_the_fuse_fresh_warm_and_from_the_cac
         // Neither box is consumed: both are bodies, as a failed feature leaves its inputs.
         assert_eq!(model.bodies(), [id("b0000001"), id("b0000002")]);
     };
-    let first = Recompute::with_cache(pool(), Cache::with_secret(&dir, &secret));
+    let counted = || Counted::new(env!("CARGO_BIN_EXE_silico-kernel-worker"), 2);
+    let first = Recompute::with_cache(counted(), scratch.cache());
     check(&publish(&first, &refs));
+    let asked = first.kernel().asked();
     check(&publish(&first, &refs));
+    assert_eq!(
+        first.kernel().asked(),
+        asked,
+        "warm, the kernel was asked again"
+    );
     drop(first);
-    let second = Recompute::with_cache(pool(), Cache::with_secret(&dir, &secret));
+    // From the cache: every step read back, measured, nothing asked of the kernel.
+    let second = Recompute::with_cache(counted(), scratch.cache());
     check(&publish(&second, &refs));
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_file(&secret);
+    assert_eq!(second.kernel().asked(), 0);
 }
 
 #[test]
@@ -160,4 +167,71 @@ fn a_common_of_a_slotted_box_and_a_slab_across_its_slot_is_refused_as_two_pieces
         error.message(),
         "common m0000001 makes 2 solids of base c0000001 and tool b0000003: they overlap in two places"
     );
+}
+
+/// A counted pool over `scratch`'s cache, sketches solved as stored.
+fn swept(scratch: &Scratch) -> Recompute<Counted> {
+    Recompute::with_cache(
+        Counted::new(env!("CARGO_BIN_EXE_silico-kernel-worker"), 2),
+        scratch.cache(),
+    )
+    .with_sketches(FakeSketches::new())
+}
+
+#[test]
+fn a_sweep_feature_leaving_more_than_one_solid_is_refused_fresh_and_from_the_cache_and_nothing_is_built_on_it()
+ {
+    // Design S5 end to end on the real kernel: a slot (x −5..15, y 3..5) pocketed through
+    // all of the 10 mm cube under the XY plane, across its whole x span: two pieces; and a
+    // pad of a rectangle beside the cube (x 20..24), missing it: two solids. Each refused in
+    // its words, fresh and from the cache (nothing asked then), and a fillet on it blocked,
+    // its step never asked for: the document with the fillet asks the kernel no more than
+    // the one without.
+    let cube = box_at("bbbbbbbb", [-1.0, -1.0, -10.0], 10.0, 10.0, 10.0);
+    let all = r#"{"type": "through_all", "reversed": false}"#;
+    let cases = [
+        (
+            rectangle("ssssssss", "xy", [-5.0, 3.0], 20.0, 2.0),
+            pocket("qqqqqqqq", "bbbbbbbb", "ssssssss", all),
+            "pocket qqqqqqqq cuts its base bbbbbbbb in two: the result is 2 solids",
+        ),
+        (
+            rectangle("ssssssss", "xy", [20.0, 0.0], 4.0, 2.0),
+            pad("qqqqqqqq", Some("bbbbbbbb"), "ssssssss", TEN),
+            "pad qqqqqqqq doesn't reach its base bbbbbbbb: the result is 2 solids",
+        ),
+    ];
+    for (n, (sketch, feature, said)) in cases.into_iter().enumerate() {
+        let fillet = r#"{"id": "ffffffff", "type": "fillet", "v": 1, "name": "F", "base": "qqqqqqqq", "edges": ["bbbbbbbb.box.Edge1"], "radius": 0.5}"#;
+        let without = [cube.as_str(), sketch.as_str(), feature.as_str()];
+        let with = [cube.as_str(), sketch.as_str(), feature.as_str(), fillet];
+        let check = |model: &Model, filleted: bool| {
+            let error = refused(model, "qqqqqqqq");
+            assert_eq!(error.code(), ErrorCode::KernelFailed);
+            assert_eq!(error.message(), said);
+            if filleted {
+                assert_eq!(
+                    model.outcome(&id("ffffffff")),
+                    Some(&FeatureOutcome::Blocked { on: id("qqqqqqqq") })
+                );
+            }
+        };
+        let scratch = Scratch::new(&format!("swept-solids-{n}"));
+        let plain = swept(&scratch);
+        check(&publish(&plain, &without), false);
+        let alone = plain.kernel().asked();
+        drop(plain);
+        let scratch = Scratch::new(&format!("swept-solids-{n}-again"));
+        let first = swept(&scratch);
+        check(&publish(&first, &with), true);
+        assert_eq!(
+            first.kernel().asked(),
+            alone,
+            "the fillet's step was asked for"
+        );
+        drop(first);
+        let second = swept(&scratch);
+        check(&publish(&second, &with), true);
+        assert_eq!(second.kernel().asked(), 0);
+    }
 }
