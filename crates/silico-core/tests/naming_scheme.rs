@@ -26,7 +26,7 @@ const DOCUMENTS: &[&str] = &[
 {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
 {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
 {"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de"},
-{"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "m3tq8v0z", "edges": ["a91cw0de.cylinder.Edge2"], "radius": 0.5}]}"#,
+{"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "m3tq8v0z", "edges": ["m3tq8v0z.cut.Edge(I a91cw0de.cylinder.Edge2)"], "radius": 0.5}]}"#,
     // Every primitive, a cone pointed at either end among them, fused in turn.
     r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "features": [
 {"id": "b0000001", "type": "box", "v": 1, "name": "B", "position": [0, 0, 0], "length": 1, "width": 2, "height": 3},
@@ -38,7 +38,7 @@ const DOCUMENTS: &[&str] = &[
 {"id": "f0000003", "type": "common", "v": 1, "name": "F3", "base": "f0000002", "tool": "s0000001"},
 {"id": "t0000001", "type": "torus", "v": 1, "name": "T", "position": [20, 0, 0], "radius1": 3, "radius2": 1},
 {"id": "f0000004", "type": "fuse", "v": 1, "name": "F4", "base": "f0000003", "tool": "t0000001"},
-{"id": "c0000003", "type": "chamfer", "v": 1, "name": "Ch", "base": "f0000004", "edges": ["b0000001.box.Edge1"], "size": {"distance": 0.1}}]}"#,
+{"id": "c0000003", "type": "chamfer", "v": 1, "name": "Ch", "base": "f0000004", "edges": ["f0000003.common.Edge(I b0000001.box.Edge1)"], "size": {"distance": 0.1}}]}"#,
 ];
 
 /// Every element name of every feature of every document, in timeline and element order.
@@ -246,7 +246,8 @@ fn built() -> String {
 #[test]
 fn the_histories_take_every_step_of_the_builder() {
     // So the digest holds each step's names: places among derived and upper names, upper
-    // and lower names, five above of six, a duplicate, and an element by its number.
+    // and lower names, five above of six, a duplicate, an element by its number, and a
+    // piece.
     let names = built();
     for (what, needle) in [
         ("a derived name's place", "(G1/2 "),
@@ -255,18 +256,23 @@ fn the_histories_take_every_step_of_the_builder() {
         ("an element above with a place", "Edge(U1/2 "),
         (
             "several above",
-            "Edge(U rrrrrrrr.Face(G aaaaaaaa.box.Edge7), ",
+            "Edge(U rrrrrrrr.chamfer.Face(G aaaaaaaa.box.Edge7), ",
         ),
         ("elements below", "(L "),
         ("a duplicate", ")~1"),
-        ("an element by its number", "ffffffff.Face1\n"),
+        ("an element by its number", "ffffffff.fillet.Face1\n"),
+        // N9: what of a cut's tool it keeps is a piece, the cut's own, `I`.
+        (
+            "a piece of a cut's tool",
+            "rrrrrrrr.cut.Face(I pppppppp.cylinder.Face1)\n",
+        ),
     ] {
         assert!(names.contains(needle), "no {what} ({needle}) in:\n{names}");
     }
     // Five above of the six edges the vertex ends.
     let five = names
         .lines()
-        .find(|line| line.contains("ffffffff.Vertex(U "))
+        .find(|line| line.contains("ffffffff.fillet.Vertex(U "))
         .unwrap();
     assert_eq!(five.matches("aaaaaaaa.box.Face").count(), 5, "{five}");
 }
@@ -280,9 +286,37 @@ fn the_names_a_scheme_gives_are_pinned_with_its_version() {
     assert_eq!(
         (std::str::from_utf8(NAMING_SCHEME).unwrap(), digest.as_str()),
         (
-            "silico naming 2\n",
-            "2cd34cce58d1305366d80bdb03e67b6098cd8572d3d31e247619222bbc021177"
+            "silico naming 4\n",
+            "12bcfe352b85b86355775f4528b268ab828d822a396e4a0f0c6b26d64fbda38e"
         ),
         "the names changed: bump NAMING_SCHEME, then pin the new digest"
+    );
+}
+
+#[test]
+fn every_name_the_scheme_gives_reads_back_as_itself() {
+    // N8: each name says its features' types, which the parser reads from the text (the
+    // makers only say which features there are), so every name the documents and the
+    // histories get reads back, written alike; and with its type word changed, reads as
+    // another name. (Names by number are unstable, refused as references by the gate, but
+    // they read.)
+    let all = names() + &built();
+    let any = |_: &FeatureId| Some(silico_core::naming::Maker::By(OpCode::Fuse));
+    let mut read = 0;
+    for line in all.lines() {
+        let Some((_, text)) = line.split_once("} ") else {
+            panic!("{line}");
+        };
+        let name =
+            silico_core::naming::Name::parse(text, &any).unwrap_or_else(|e| panic!("{text}: {e}"));
+        assert_eq!(name.to_string(), text);
+        read += 1;
+    }
+    assert!(read > 500, "{read}");
+    let rim = "m3tq8v0z.cut.Edge(G k7f2qx3m.box.Face6, G a91cw0de.cylinder.Face1)";
+    let as_common = rim.replacen(".cut.", ".common.", 1);
+    assert_ne!(
+        silico_core::naming::Name::parse(rim, &any).unwrap(),
+        silico_core::naming::Name::parse(&as_common, &any).unwrap()
     );
 }

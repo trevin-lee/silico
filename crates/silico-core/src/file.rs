@@ -61,7 +61,6 @@ fn unreadable(why: impl std::fmt::Display) -> Error {
         .with_suggestion("check the file's name, and that it's a regular file this user may read")
 }
 
-/// A file that couldn't be written, `why`, and what to try.
 /// `error`, advising to raise the limit if `cause` is a file-size limit's (EFBIG).
 fn limited(error: Error, cause: &std::io::Error) -> Error {
     if cause.kind() == std::io::ErrorKind::FileTooLarge {
@@ -73,6 +72,7 @@ fn limited(error: Error, cause: &std::io::Error) -> Error {
     }
 }
 
+/// A file that couldn't be written, `why`, and what to try.
 fn unwritable(why: impl std::fmt::Display) -> Error {
     Error::new(ErrorCode::IoFailed, format!("couldn't be written: {why}")).with_suggestion(
         "check that this user may write the file and its directory, and that the disk has room",
@@ -126,14 +126,14 @@ pub fn save(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Error> {
         .and_then(|()| f.set_permissions(metadata.permissions()))
         .and_then(|()| f.sync_all())
         .map_err(|e| {
-            let why = format!("couldn't write {}: {e}", partial.display());
+            let why = format!("couldn't write {}: {e}", shown_path(&partial));
             limited(unwritable(why), &e)
         })
         .and_then(|()| {
             std::fs::rename(&partial, &target).map_err(|e| {
                 unwritable(format!(
                     "couldn't rename {} over it: {e}",
-                    partial.display()
+                    shown_path(&partial)
                 ))
             })
         });
@@ -163,7 +163,10 @@ fn in_place(
     {
         let _ = std::fs::remove_file(&kept);
         return Err(limited(
-            unwritable(format!("couldn't keep its text in {}: {e}", kept.display())),
+            unwritable(format!(
+                "couldn't keep its text in {}: {e}",
+                shown_path(&kept)
+            )),
             &e,
         ));
     }
@@ -190,7 +193,7 @@ fn in_place(
                 Err(limited(unwritable(format!("{e}; it's as it was")), &e))
             }
             Err(_) => Err(limited(
-                unwritable(format!("{e}; its text before is in {}", kept.display())),
+                unwritable(format!("{e}; its text before is in {}", shown_path(&kept))),
                 &e,
             )),
         },
@@ -229,18 +232,28 @@ fn beside(target: &Path, metadata: &std::fs::Metadata) -> Result<(PathBuf, std::
             Err(e) => {
                 return Err(unwritable(format!(
                     "couldn't create a file in {}: {e}",
-                    dir.display()
+                    shown_path(dir)
                 )));
             }
         }
     }
-    Err(unwritable(format!(
-        "every name for a file beside it is taken ({}/.{}.fmt-{}, and -1 to -{}): remove those left by runs that were killed",
-        dir.display(),
+    let first = dir.join(format!(
+        ".{}.fmt-{}",
         name.to_string_lossy(),
-        std::process::id(),
+        std::process::id()
+    ));
+    Err(unwritable(format!(
+        "every name for a file beside it is taken ({}, and -1 to -{}): remove those left by runs that were killed",
+        shown_path(&first),
         TRIES - 1
     )))
+}
+
+/// A path as an error says it: quoted, with control and invisible characters escaped, as an
+/// outline quotes a document's text, so a file's name can't act on the terminal it's shown
+/// in (found by the milestone's robustness review).
+fn shown_path(path: &Path) -> String {
+    crate::command::quoted(&path.display().to_string())
 }
 
 #[cfg(test)]

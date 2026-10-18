@@ -19,6 +19,21 @@ fn a_save_over_a_file_changed_since_it_was_read_is_refused_and_says_to_read_it_a
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+#[test]
+fn a_save_replaces_the_file_whole_rather_than_writing_into_it() {
+    // Found by the milestone's tests review: a copy over the file, then the partial file
+    // removed, passed every test; a crash mid-copy would leave the document cut short. A
+    // save renames a new file over the old: another inode.
+    use std::os::unix::fs::MetadataExt;
+    let scratch = Scratch::new("replaced");
+    let file = scratch.0.join("part.silico");
+    std::fs::write(&file, b"as read").unwrap();
+    let before = std::fs::metadata(&file).unwrap().ino();
+    silico_core::file::save(&file, b"as read", b"formatted").unwrap();
+    assert_eq!(std::fs::read(&file).unwrap(), b"formatted");
+    assert_ne!(std::fs::metadata(&file).unwrap().ino(), before);
+}
+
 /// A directory of its own for one test, removed after.
 struct Scratch(std::path::PathBuf);
 
@@ -90,8 +105,9 @@ fn a_save_with_every_name_beside_the_file_taken_says_so_and_writes_nothing() {
     assert_eq!(error.code(), ErrorCode::IoFailed);
     // All 64 names tried, and the message names them: the first, and -1 to -63.
     let said = format!(
-        "every name for a file beside it is taken ({}/.part.silico.fmt-{pid}, and -1 to -63)",
-        // As the system names the directory, through any link (the temporary directory's).
+        "every name for a file beside it is taken (\"{}/.part.silico.fmt-{pid}\", and -1 to -63)",
+        // As the system names the directory, through any link (the temporary directory's),
+        // quoted, as every path an error says is.
         std::fs::canonicalize(&dir.0).unwrap().display()
     );
     assert!(error.to_string().contains(&said), "{error}");
@@ -137,4 +153,24 @@ fn a_save_over_a_file_swapped_for_a_pipe_is_refused_not_waited_on() {
         error.to_string().contains("isn't a regular file now"),
         "{error}"
     );
+}
+
+#[test]
+fn a_save_that_fails_says_its_paths_without_a_terminals_escapes() {
+    // Found by the milestone's robustness review: the CLI quoted a file's name, but the
+    // core's errors after it said paths as they were, so a directory named with an escape
+    // sequence (a cloned repository's) reached the terminal through a failed save.
+    use std::os::unix::fs::PermissionsExt;
+    let scratch = Scratch::new("escaped");
+    let dir = scratch.0.join("bad\u{1b}]0;owned\u{7}");
+    std::fs::create_dir(&dir).unwrap();
+    let file = dir.join("part.silico");
+    std::fs::write(&file, b"as read").unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let error = silico_core::file::save(&file, b"as read", b"formatted").unwrap_err();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(error.code(), ErrorCode::IoFailed);
+    let words = error.to_string();
+    assert!(!words.contains(['\u{1b}', '\u{7}']), "{words:?}");
+    assert!(words.contains(r"bad\u{1b}]0;owned\u{7}"), "{words:?}");
 }

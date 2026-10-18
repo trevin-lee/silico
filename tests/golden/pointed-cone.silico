@@ -39,7 +39,7 @@
       "name": "Bore rim",
       "base": "hhhhhhhh",
       "edges": [
-        "hhhhhhhh.Edge(G kkkkkkkk.cone.Face3, G pppppppp.cylinder.Face1)"
+        "hhhhhhhh.cut.Edge(G kkkkkkkk.cone.Face3, G pppppppp.cylinder.Face1)"
       ],
       "radius": 0.2,
       "note": "The bore's rim on the base cap, which a pointed cone keeps as Face3",

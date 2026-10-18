@@ -14,7 +14,7 @@ use silico_protocol::{ChamferSize, MAX_LENGTH, check_fillet_radius, check_offset
 use super::json::shown;
 use super::model::{Document, FeatureId, ID_LENGTH, Operation};
 use crate::kernel::ElementKind;
-use crate::naming::{Maker, Name};
+use crate::naming::{Maker, Name, TypeWord};
 use crate::{Error, ErrorCode};
 
 /// How many of a document's problems [`Invalid`] lists; it counts the rest.
@@ -212,7 +212,7 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
             std::collections::BTreeMap::new();
         for (i, edge) in feature.operation.edges().iter().enumerate() {
             let parameter = format!("edges.{i}");
-            let advice = "write the edge's name as Silico names it (feature.Edge(...)), of a feature before this one";
+            let advice = "write the edge's name as Silico names it (feature.type.Edge(...)), of a feature before this one";
             match Name::parse(edge.as_str(), &makers) {
                 Err(error) => problems.add(|| {
                     refuse(
@@ -240,9 +240,33 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
                         advice.to_owned(),
                     )
                 }),
+                // An operation's element by its number, of a feature that's a primitive now:
+                // the word isn't the feature's, and no number of the primitive's is the one
+                // the operation's was, so none is suggested.
+                Ok(Name::Element {
+                    feature: named,
+                    made: TypeWord::Operation(op),
+                    element,
+                }) if matches!(makers(&named), Some(Maker::Itself(_))) => problems.add(|| {
+                    let kind = match makers(&named) {
+                        Some(Maker::Itself(kind)) => kind.word(),
+                        _ => "primitive",
+                    };
+                    refuse(
+                        &parameter,
+                        format!(
+                            "{parameter}, {}, names {element} of a {}, but {named} is a {kind}: its elements are another's",
+                            shown(edge.as_str()),
+                            op.word()
+                        ),
+                        format!(
+                            "name the edge as {named}'s solid names it now (a {kind}'s elements are `{named}.{kind}.` and their numbers)"
+                        ),
+                    )
+                }),
                 // Names a rebuild never takes (N3): a duplicate's, and an operation's element
                 // by its number, which says nothing of how it came about.
-                Ok(name) if unstable(&name, &makers) => problems.add(|| {
+                Ok(name) if unstable(&name) => problems.add(|| {
                     refuse(
                         &parameter,
                         format!(
@@ -351,13 +375,17 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
 }
 
 /// Whether `name` is one no map holds stable: a duplicate's (`~n`), or names, at its top or
-/// anywhere inside, an operation's element by its number.
-fn unstable(name: &Name, makers: &dyn Fn(&FeatureId) -> Option<Maker>) -> bool {
+/// anywhere inside, an operation's element by its number (as the name writes it:
+/// `m3tq8v0z.cut.Edge5`).
+fn unstable(name: &Name) -> bool {
     let mut stack = vec![name];
     while let Some(name) = stack.pop() {
         match name {
             Name::Duplicate { .. } => return true,
-            Name::Element { feature, .. } if matches!(makers(feature), Some(Maker::By(_))) => {
+            Name::Element {
+                made: TypeWord::Operation(_),
+                ..
+            } => {
                 return true;
             }
             _ => stack.extend(name.parts().into_iter().map(std::sync::Arc::as_ref)),

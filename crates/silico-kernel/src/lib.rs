@@ -996,7 +996,11 @@ fn topology(facts: &ffi::TopologyFacts, counts: ElementCounts) -> Result<Topolog
         outer_edges,
         edge_vertices: split(&facts.edge_vertices, &facts.edge_vertex_counts)?,
     };
-    topology.validate(counts).map_err(|_| bad())?;
+    topology.validate(counts).map_err(|why| {
+        // The refusal says the topology is bad; the log says how, for the bug report.
+        tracing::warn!(%why, "OCCT's topology doesn't fit the result's counts");
+        bad()
+    })?;
     Ok(topology)
 }
 

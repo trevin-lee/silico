@@ -248,8 +248,8 @@ fn a_cone_brought_to_a_point_breaks_a_reference_to_the_rim_it_lost_and_keeps_the
         KernelPool::start_workers(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")), 2)
             .unwrap(),
     );
-    let top = "hhhhhhhh.Edge(G kkkkkkkk.cone.Face2, G pppppppp.cylinder.Face1)";
-    let base = "hhhhhhhh.Edge(G kkkkkkkk.cone.Face3, G pppppppp.cylinder.Face1)";
+    let top = "hhhhhhhh.cut.Edge(G kkkkkkkk.cone.Face2, G pppppppp.cylinder.Face1)";
+    let base = "hhhhhhhh.cut.Edge(G kkkkkkkk.cone.Face3, G pppppppp.cylinder.Face1)";
     for edge in [top, base] {
         let model = publish(&engine, &drilled_cone("5", "3", edge));
         assert!(model.errors().next().is_none(), "{edge}");

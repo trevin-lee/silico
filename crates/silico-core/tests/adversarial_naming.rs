@@ -19,7 +19,9 @@ use silico_core::document::FeatureId;
 use silico_core::kernel::{
     ElementCounts, ElementFate, ElementKind, ElementRef, History, InputHistory, Reported, Topology,
 };
-use silico_core::naming::{ElementMap, Maker, Name, OpCode, Place, Raw, Relation, Source, freecad};
+use silico_core::naming::{
+    ElementMap, Maker, Name, OpCode, Place, Raw, Relation, Source, TypeWord, freecad,
+};
 
 #[path = "common/within.rs"]
 mod within;
@@ -240,7 +242,7 @@ fn input_maps(history: &History) -> Vec<ElementMap> {
                 vertices: input.vertices.len() as u32,
                 solids: 1,
             };
-            ElementMap::by_number(id(&format!("abcd{i:04}")), counts)
+            ElementMap::by_number(id(&format!("abcd{i:04}")), OpCode::Fuse, counts)
         })
         .collect()
 }
@@ -488,7 +490,7 @@ fn ambiguous() -> (History, ElementMap) {
         },
     };
     history.validate(1).unwrap();
-    let input = ElementMap::by_number(id("aaaaaaaa"), BOX);
+    let input = ElementMap::by_number(id("aaaaaaaa"), OpCode::Fuse, BOX);
     let map = ElementMap::operation(id("pppppppp"), OpCode::Fuse, &[&input], &history);
     (history, map)
 }
@@ -527,7 +529,7 @@ fn an_ambiguous_name_kept_by_the_next_feature_is_still_marked_ambiguous() {
         },
     };
     history.validate(2).unwrap();
-    let tool = ElementMap::by_number(id("tttttttt"), BOX);
+    let tool = ElementMap::by_number(id("tttttttt"), OpCode::Fuse, BOX);
     let next = ElementMap::operation(id("nnnnnnnn"), OpCode::Cut, &[&first, &tool], &history);
     assert_eq!(
         next.name(element(ElementKind::Edge, 1)),
@@ -550,7 +552,7 @@ fn every_name_the_types_hold_prints_differently_from_every_other() {
     // decision: positions only within groups).
     let leaf = Arc::new(Name::Element {
         feature: id("aaaaaaaa"),
-        primitive: None,
+        made: TypeWord::Operation(OpCode::Fuse),
         element: element(ElementKind::Face, 1),
     });
     let n = |n: u32| NonZeroU32::new(n).unwrap();
@@ -564,7 +566,7 @@ fn every_name_the_types_hold_prints_differently_from_every_other() {
                 rank: NonZeroU32::new(rank).unwrap(),
                 size: NonZeroU32::new(size).unwrap(),
             }),
-            position: Raw(NonZeroU32::new(position).unwrap()),
+            position: Raw(Some(NonZeroU32::new(position).unwrap())),
             name: Arc::clone(&leaf),
         },
         more: vec![],
@@ -614,7 +616,7 @@ fn a_derived_name_has_a_freecad_form() {
     // the shortest of each writes its source.
     let leaf = Arc::new(Name::Element {
         feature: id("aaaaaaaa"),
-        primitive: None,
+        made: TypeWord::Operation(OpCode::Fuse),
         element: element(ElementKind::Edge, 1),
     });
     let derived = Name::Derived {
@@ -624,7 +626,7 @@ fn a_derived_name_has_a_freecad_form() {
         first: Source {
             relation: Relation::Generated,
             place: None,
-            position: Raw(NonZeroU32::MIN),
+            position: Raw(Some(NonZeroU32::MIN)),
             name: Arc::clone(&leaf),
         },
         more: vec![],
@@ -638,8 +640,14 @@ fn a_derived_name_has_a_freecad_form() {
     };
     assert_eq!(freecad::text(&derived), "Edge1;:G;CUT");
     assert_eq!(freecad::text(&lower), "Edge1;:L;CUT");
-    assert_eq!(derived.to_string(), "rrrrrrrr.Face(G aaaaaaaa.Edge1)");
-    assert_eq!(lower.to_string(), "rrrrrrrr.Face(L aaaaaaaa.Edge1)");
+    assert_eq!(
+        derived.to_string(),
+        "rrrrrrrr.cut.Face(G aaaaaaaa.fuse.Edge1)"
+    );
+    assert_eq!(
+        lower.to_string(),
+        "rrrrrrrr.cut.Face(L aaaaaaaa.fuse.Edge1)"
+    );
 }
 
 // --- A primitive's map and element numbers ----------------------------------------------
@@ -648,12 +656,12 @@ fn a_derived_name_has_a_freecad_form() {
 fn a_primitives_map_doesnt_name_element_zero() {
     // Found by /break-it: elements count from 1 (`Face1`), so `Face0` is no solid's. A
     // primitive's map answers for any number, leaving the bound to the solid's counts, and
-    // a check of `index <= count` let 0 through: a reference `k7f2qx3m.Face0` (made up, or
+    // a check of `index <= count` let 0 through: a reference `k7f2qx3m.fuse.Face0` (made up, or
     // off by one) resolved to an element that can't exist. An operation's map says None.
-    let map = ElementMap::by_number(id("k7f2qx3m"), BOX);
+    let map = ElementMap::by_number(id("k7f2qx3m"), OpCode::Fuse, BOX);
     let zero = Name::Element {
         feature: id("k7f2qx3m"),
-        primitive: None,
+        made: TypeWord::Operation(OpCode::Fuse),
         element: element(ElementKind::Face, 0),
     };
     assert_eq!(map.element(&zero), None);
@@ -664,7 +672,7 @@ fn a_primitives_map_doesnt_name_element_zero() {
 fn a_primitives_map_and_an_operations_agree_about_solids() {
     // A map names faces, edges, and vertices. A primitive's says it names `Solid1` too,
     // an operation's doesn't, so a reference to a solid is found or not by what made it.
-    let primitive = ElementMap::by_number(id("k7f2qx3m"), BOX);
+    let primitive = ElementMap::by_number(id("k7f2qx3m"), OpCode::Fuse, BOX);
     let (_, operation) = ambiguous();
     let solid = element(ElementKind::Solid, 1);
     // Found by /break-it: the primitive's map named the solid; the operation's didn't.
@@ -751,14 +759,14 @@ fn a_thousand_holes_drilled_one_by_one_leave_the_top_face_its_name_promptly() {
     // depth made it a number, unreferenceable for good (the review found that cliff).
     let history = drilled();
     history.validate(2).unwrap();
-    let tool = ElementMap::by_number(id("tttttttt"), BOX);
+    let tool = ElementMap::by_number(id("tttttttt"), OpCode::Fuse, BOX);
     let map = within(Duration::from_secs(10), move || {
-        let mut map = ElementMap::by_number(id("pppppppp"), BOX);
+        let mut map = ElementMap::by_number(id("pppppppp"), OpCode::Fuse, BOX);
         for n in 0..1000 {
             let feature = id(&format!("f{n:07}"));
             map = ElementMap::operation(feature, OpCode::Cut, &[&map, &tool], &history);
             let top = map.name(element(ElementKind::Face, 6)).unwrap();
-            assert_eq!(top.to_string(), "pppppppp.Face6", "after {n}");
+            assert_eq!(top.to_string(), "pppppppp.fuse.Face6", "after {n}");
             assert!(!map.is_unstable(&top));
         }
         map
@@ -769,7 +777,7 @@ fn a_thousand_holes_drilled_one_by_one_leave_the_top_face_its_name_promptly() {
     // A bystander keeps its primitive name through all of it (N2).
     assert_eq!(
         map.name(element(ElementKind::Face, 1)).unwrap().to_string(),
-        "pppppppp.Face1"
+        "pppppppp.fuse.Face1"
     );
 }
 
@@ -804,9 +812,9 @@ fn names_that_would_double_with_every_feature_are_bounded_promptly() {
     // its number, and the name says it's unstable.
     let history = crossed();
     history.validate(2).unwrap();
-    let tool = ElementMap::by_number(id("tttttttt"), BOX);
+    let tool = ElementMap::by_number(id("tttttttt"), OpCode::Fuse, BOX);
     let map = within(Duration::from_secs(5), move || {
-        let mut map = ElementMap::by_number(id("pppppppp"), BOX);
+        let mut map = ElementMap::by_number(id("pppppppp"), OpCode::Fuse, BOX);
         for n in 0..40 {
             map = ElementMap::operation(
                 id(&format!("f{n:07}")),
@@ -825,7 +833,7 @@ fn names_that_would_double_with_every_feature_are_bounded_promptly() {
     assert!(map.is_unstable(&face1));
     // The kept faces aren't touched by it.
     let face3 = map.name(element(ElementKind::Face, 3)).unwrap();
-    assert_eq!(face3.to_string(), "pppppppp.Face3");
+    assert_eq!(face3.to_string(), "pppppppp.fuse.Face3");
     assert!(!map.is_unstable(&face3));
 }
 
@@ -838,8 +846,8 @@ fn a_deep_timeline_names_and_writes_its_names_on_a_default_thread() {
         .stack_size(2 << 20)
         .spawn(|| {
             let history = drilled();
-            let tool = ElementMap::by_number(id("tttttttt"), BOX);
-            let mut map = ElementMap::by_number(id("pppppppp"), BOX);
+            let tool = ElementMap::by_number(id("tttttttt"), OpCode::Fuse, BOX);
+            let mut map = ElementMap::by_number(id("pppppppp"), OpCode::Fuse, BOX);
             for n in 0..6000 {
                 map = ElementMap::operation(
                     id(&format!("f{n:07}")),
@@ -860,7 +868,7 @@ fn a_deep_timeline_names_and_writes_its_names_on_a_default_thread() {
     let (text, top, unstable) = joined.unwrap();
     assert!(text < 200_000);
     // With N7, the plate's top face, modified 6,000 times, is still its Face6.
-    assert_eq!(top, "pppppppp.Face6");
+    assert_eq!(top, "pppppppp.fuse.Face6");
     assert!(!unstable);
 }
 
@@ -870,8 +878,8 @@ fn a_name_reported_for_many_elements_is_written_once_promptly() {
     // reported for 100,000 result faces made the core copy its text for each, 5 GB from a
     // history of about a megabyte. Written once and shared, it's the history's size.
     let history = crossed();
-    let tool = ElementMap::by_number(id("tttttttt"), BOX);
-    let mut map = ElementMap::by_number(id("pppppppp"), BOX);
+    let tool = ElementMap::by_number(id("tttttttt"), OpCode::Fuse, BOX);
+    let mut map = ElementMap::by_number(id("pppppppp"), OpCode::Fuse, BOX);
     for n in 0..11 {
         map = ElementMap::operation(
             id(&format!("f{n:07}")),
@@ -953,11 +961,11 @@ fn a_history_naming_an_element_its_input_doesnt_have_gives_an_unstable_name() {
         },
     };
     history.validate(2).unwrap();
-    let base = ElementMap::by_number(id("pppppppp"), BOX);
-    let tool = ElementMap::by_number(id("tttttttt"), BOX);
+    let base = ElementMap::by_number(id("pppppppp"), OpCode::Fuse, BOX);
+    let tool = ElementMap::by_number(id("tttttttt"), OpCode::Fuse, BOX);
     let map = ElementMap::operation(id("cccccccc"), OpCode::Cut, &[&base, &tool], &history);
     let seventh = map.name(element(ElementKind::Face, 7)).unwrap();
-    assert_eq!(seventh.to_string(), "pppppppp.Face7");
+    assert_eq!(seventh.to_string(), "pppppppp.fuse.Face7");
     assert!(map.is_unstable(&seventh));
     let sixth = map.name(element(ElementKind::Face, 6)).unwrap();
     assert!(!map.is_unstable(&sixth));
@@ -985,8 +993,8 @@ fn a_maps_unstable_names_are_its_own_however_long_the_timeline() {
         },
     };
     history.validate(2).unwrap();
-    let tool = ElementMap::by_number(id("tttttttt"), BOX);
-    let mut map = ElementMap::by_number(id("pppppppp"), BOX);
+    let tool = ElementMap::by_number(id("tttttttt"), OpCode::Fuse, BOX);
+    let mut map = ElementMap::by_number(id("pppppppp"), OpCode::Fuse, BOX);
     for k in 0..n {
         map = ElementMap::operation(
             id(&format!("f{k:07}")),
@@ -998,7 +1006,7 @@ fn a_maps_unstable_names_are_its_own_however_long_the_timeline() {
     assert_eq!(map.unstable().count(), r as usize);
     // Each is this feature's element by number.
     let face = map.name(element(ElementKind::Face, 1)).unwrap();
-    assert_eq!(face.to_string(), "f0000049.Face1");
+    assert_eq!(face.to_string(), "f0000049.cut.Face1");
     assert!(map.is_unstable(&face));
 }
 
@@ -1045,9 +1053,9 @@ fn naming_cost(n: u32) -> Duration {
         vertices: 8 * n,
         solids: 1,
     };
-    let base = ElementMap::by_number(id("pppppppp"), counts);
+    let base = ElementMap::by_number(id("pppppppp"), OpCode::Fuse, counts);
     let history = kept_fuse(counts, BOX);
-    let tool = ElementMap::by_number(id("tttttttt"), BOX);
+    let tool = ElementMap::by_number(id("tttttttt"), OpCode::Fuse, BOX);
     (0..5)
         .map(|_| {
             let start = cpu_time::ThreadTime::now();
@@ -1075,4 +1083,62 @@ fn naming_a_solid_costs_as_its_elements_do() {
         ratio < 8.0,
         "100: {small:?}, 400: {large:?}, {ratio:.1} times"
     );
+}
+
+#[test]
+fn a_chain_of_commons_keeping_a_face_whole_is_bounded() {
+    // Found by the milestone's third round: what a common keeps whole of its base is its own
+    // piece, `I` (N9), a level a common, which no collapse takes away; past the bound (256
+    // deep), an element is named by its number, unstable, as every name's depth is bounded
+    // (a reference can't be deeper). 300 commons in a row, each keeping the base's Face1.
+    let history = History {
+        inputs: vec![
+            InputHistory {
+                faces: vec![ElementFate {
+                    kept: Some(1),
+                    ..ElementFate::default()
+                }],
+                edges: vec![],
+                vertices: vec![],
+            },
+            InputHistory {
+                faces: vec![],
+                edges: vec![],
+                vertices: vec![],
+            },
+        ],
+        result: ElementCounts {
+            faces: 1,
+            edges: 0,
+            vertices: 0,
+            solids: 1,
+        },
+        ends: Default::default(),
+        topology: Topology {
+            face_edges: vec![vec![]],
+            outer_edges: vec![vec![]],
+            edge_vertices: vec![],
+        },
+    };
+    history.validate(2).unwrap();
+    let tool = ElementMap::by_number(id("tttttttt"), OpCode::Fuse, BOX);
+    let mut map = ElementMap::by_number(id("pppppppp"), OpCode::Fuse, BOX);
+    let face = element(ElementKind::Face, 1);
+    for n in 0..300 {
+        map = ElementMap::operation(
+            id(&format!("f{n:07}")),
+            OpCode::Common,
+            &[&map, &tool],
+            &history,
+        );
+        let name = map.name(face).unwrap();
+        let depth = name.to_string().matches("(I ").count();
+        assert!(depth <= 256, "common {n}: {depth} deep");
+        // Within the bound, a level a common, stable.
+        if n < 255 {
+            assert_eq!(depth, n + 1, "common {n}");
+            assert!(!map.is_unstable(&name), "common {n}");
+        }
+    }
+    assert!(map.is_unstable(&map.name(face).unwrap()));
 }

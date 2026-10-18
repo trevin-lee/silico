@@ -45,6 +45,7 @@ use crate::kernel::{
 };
 use crate::naming::{ElementMap, Maker, NAMING_SCHEME, OpCode};
 use crate::pool::Outcome;
+use crate::references::EdgeNames;
 use crate::sketch::{SketchSolution, SketchSolver, SketchWorker, SolveStopper};
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
@@ -916,10 +917,14 @@ struct Dress {
     /// Its base feature, by index.
     base: usize,
     edges: Vec<ElementName>,
-    /// The solids of its base and every feature its base is made from, by step: the step
-    /// waits for all of them, since naming the base's elements reads them all (a cache can
-    /// hold the base's solid without those it was made from).
-    lineage: Vec<Key>,
+}
+
+/// What a feature's element map is named from, for a fillet or chamfer to read its base's:
+/// the map, if it's named already, or the feature's solid, to name it from (its inputs'
+/// maps first).
+enum MapSource {
+    Named(Arc<ElementMap>),
+    Built(Arc<Built>),
 }
 
 impl Step {
@@ -1179,23 +1184,12 @@ impl Plan {
             names: digest.finalize().into(),
         };
         let key = self.add(step, &feature.id);
-        let mut lineage = BTreeSet::new();
-        let mut stack = vec![b];
-        while let Some(i) = stack.pop() {
-            if let Some(planned) = self.features.get(i)
-                && let Some(solid) = planned.key()
-                && lineage.insert(solid)
-            {
-                stack.extend(planned.uses.iter().copied());
-            }
-        }
         self.dresses.insert(
             key,
             Dress {
                 feature: self.features.len(),
                 base: b,
                 edges,
-                lineage: lineage.into_iter().collect(),
             },
         );
         (vec![key], vec![b])
@@ -1210,46 +1204,75 @@ impl Plan {
         key
     }
 
-    /// The built solids of feature `base` and every feature it's made from, by index, from
-    /// `done`.
-    fn lineage(
+    /// What feature `base`'s element map is named from, by index: its map, if `known`
+    /// holds it; or its solid, from `done`, and what its inputs' maps are named from, each
+    /// alike. So naming it reads only the solids of the features whose maps aren't named
+    /// yet: in a chain of fillets, each named as the next is resolved, one or two. Or the
+    /// step whose solid it needs, not built yet (a cache can hold a feature's solid
+    /// without those it was made from), for the fillet to wait for.
+    fn sources(
         &self,
         base: usize,
         done: &BTreeMap<Key, StepResult>,
-    ) -> BTreeMap<usize, Arc<Built>> {
-        let mut lineage = BTreeMap::new();
+        known: &NamedMaps,
+    ) -> Result<BTreeMap<usize, MapSource>, Key> {
+        let mut sources = BTreeMap::new();
         let mut stack = vec![base];
         while let Some(i) = stack.pop() {
-            if lineage.contains_key(&i) {
+            if sources.contains_key(&i) {
                 continue;
             }
+            // A feature that can't be named (a sketch, or one whose steps couldn't be
+            // planned) is left out, and naming what's made from it fails (`map_of`).
             let Some(planned) = self.features.get(i) else {
                 continue;
             };
-            if let Some(Some(Ok(built))) = planned.key().map(|key| done.get(&key)) {
-                lineage.insert(i, Arc::clone(built));
-                stack.extend(planned.uses.iter().copied());
+            let (Some(naming), Some(solid)) = (planned.naming_key, planned.key()) else {
+                continue;
+            };
+            let named = lock(known).get(&naming).map(Arc::clone);
+            if let Some(map) = named {
+                sources.insert(i, MapSource::Named(map));
+                continue;
+            }
+            match done.get(&solid) {
+                Some(Ok(built)) => {
+                    sources.insert(i, MapSource::Built(Arc::clone(built)));
+                    stack.extend(planned.uses.iter().copied());
+                }
+                // Not built yet, or failed (which blocks the fillet: it never runs).
+                _ => return Err(solid),
             }
         }
-        lineage
+        Ok(sources)
     }
 
-    /// Feature `j`'s element map, its lineage's solids in `lineage`: from `known` by its
-    /// naming key, or named from its history and its inputs' maps (each named first, in
-    /// timeline order, and kept in `known`), as a published model names them.
+    /// Feature `j`'s element map, named from `sources` (`Plan::sources`): each map named
+    /// already as it is, or named from its feature's history and its inputs' maps (each
+    /// named first, in timeline order, and kept in `known`), as a published model names
+    /// them.
     fn map_of(
         &self,
         j: usize,
-        lineage: &BTreeMap<usize, Arc<Built>>,
+        sources: &BTreeMap<usize, MapSource>,
         known: &NamedMaps,
     ) -> Option<Arc<ElementMap>> {
         let mut named: BTreeMap<usize, Arc<ElementMap>> = BTreeMap::new();
         // Ascending, so each feature comes after those it's made from.
-        for (&i, built) in lineage.range(..=j) {
+        for (&i, source) in sources.range(..=j) {
+            let built = match source {
+                MapSource::Named(map) => {
+                    named.insert(i, Arc::clone(map));
+                    continue;
+                }
+                MapSource::Built(built) => built,
+            };
             let planned = self.features.get(i)?;
             let key = planned.naming_key?;
-            if let Some(map) = lock(known).get(&key) {
-                named.insert(i, Arc::clone(map));
+            // Named meanwhile, by another fillet's step.
+            let meanwhile = lock(known).get(&key).map(Arc::clone);
+            if let Some(map) = meanwhile {
+                named.insert(i, map);
                 continue;
             }
             let inputs: Option<Vec<&ElementMap>> = planned
@@ -1272,23 +1295,6 @@ impl Plan {
     /// Feature `i`'s ID.
     fn feature_id(&self, i: usize) -> Option<&FeatureId> {
         self.features.get(i).map(|p| &p.id)
-    }
-
-    /// What step `key` waits for: its inputs, and, for a fillet or chamfer, the solids its
-    /// base's names are read from.
-    fn needs(&self, key: &Key) -> Vec<Key> {
-        let mut needs = self.steps.get(key).map(Step::inputs).unwrap_or_default();
-        if let Some(dress) = self.dresses.get(key) {
-            needs.extend(
-                dress
-                    .lineage
-                    .iter()
-                    .filter(|k| !needs.contains(k))
-                    .copied()
-                    .collect::<Vec<_>>(),
-            );
-        }
-        needs
     }
 
     /// The feature to name for step `key`.
@@ -1445,7 +1451,7 @@ impl<K: Kernel + 'static> Engine<K> {
             if schedule.done.contains_key(key) {
                 continue;
             }
-            let inputs = plan.needs(key);
+            let inputs = plan.steps.get(key).map(Step::inputs).unwrap_or_default();
             let cant = inputs.iter().any(|input| {
                 doomed.contains(input) || matches!(schedule.done.get(input), Some(Err(_)))
             });
@@ -1728,19 +1734,37 @@ impl<K: Kernel + 'static> Engine<K> {
         changed: &Condvar,
         generation: Generation,
     ) {
+        let known = Arc::clone(&lock(&self.state).known);
         loop {
-            let (job, inputs, lineage) = {
+            let (job, inputs, sources) = {
                 let mut s = lock(schedule);
-                let job = loop {
+                let (job, sources) = loop {
                     if s.superseded || s.broken.is_some() || (s.ready.is_empty() && s.running == 0)
                     {
                         changed.notify_all();
                         return;
                     }
-                    if let Some(job) = s.ready.pop_front() {
-                        break job;
-                    }
-                    s = changed.wait(s).unwrap_or_else(PoisonError::into_inner);
+                    let Some(job) = s.ready.pop_front() else {
+                        s = changed.wait(s).unwrap_or_else(PoisonError::into_inner);
+                        continue;
+                    };
+                    // A fillet's or chamfer's base is built: what its elements are named
+                    // from. Or a solid that isn't built yet, which it waits for (and, if it
+                    // failed, waits for forever: the failure blocks it).
+                    let dress = match job {
+                        Job::Make(key) => plan.dresses.get(&key),
+                        Job::Measure(_) => None,
+                    };
+                    let sources = match dress.map(|d| plan.sources(d.base, &s.done, &known)) {
+                        None => None,
+                        Some(Ok(sources)) => Some(sources),
+                        Some(Err(unbuilt)) => {
+                            s.users.entry(unbuilt).or_default().push(job.key());
+                            s.waiting.insert(job.key(), 1);
+                            continue;
+                        }
+                    };
+                    break (job, sources);
                 };
                 s.running += 1;
                 // A step's inputs' results; a measure's, its step's own.
@@ -1755,16 +1779,7 @@ impl<K: Kernel + 'static> Engine<K> {
                         _ => None,
                     })
                     .collect();
-                // A fillet's or chamfer's base is built, so every feature it's made from is:
-                // their solids, to name the base's elements by.
-                let lineage = match job {
-                    Job::Make(key) => plan
-                        .dresses
-                        .get(&key)
-                        .map(|dress| plan.lineage(dress.base, &s.done)),
-                    Job::Measure(_) => None,
-                };
-                (job, inputs, lineage)
+                (job, inputs, sources)
             };
             let key = job.key();
             // A panic under a job is a bug in Silico: caught, so the recompute ends with an
@@ -1780,11 +1795,11 @@ impl<K: Kernel + 'static> Engine<K> {
                 match job {
                     Job::Make(key) => match (plan.steps.get(&key), plan.dresses.get(&key)) {
                         (Some(step), Some(dress)) => {
-                            let lineage = lineage.unwrap_or_default();
-                            match self.resolve(plan, dress, &lineage) {
-                                Ok(edges) => {
-                                    Ran::Made(self.dressed(*step, &inputs, &edges, generation))
-                                }
+                            let sources = sources.unwrap_or_default();
+                            match self.resolve(plan, dress, &sources, &known) {
+                                Ok((edges, names)) => Ran::Made(
+                                    self.dressed(*step, &inputs, &edges, names, generation),
+                                ),
                                 Err(broken) => Ran::Unresolved(broken),
                             }
                         }
@@ -1911,13 +1926,14 @@ impl<K: Kernel + 'static> Engine<K> {
         })
     }
 
-    /// Runs a fillet's or chamfer's step on the kernel, of `edges` (resolved), for
-    /// `generation`.
+    /// Runs a fillet's or chamfer's step on the kernel, of `edges` (resolved, the document
+    /// naming them as `names` says, so the kernel's errors name them so), for `generation`.
     fn dressed(
         &self,
         step: Step,
         inputs: &[Arc<Built>],
         edges: &[u32],
+        names: EdgeNames,
         generation: Generation,
     ) -> Outcome<Built> {
         let Step::Dress { dressing, .. } = step else {
@@ -1938,25 +1954,36 @@ impl<K: Kernel + 'static> Engine<K> {
             ),
         };
         match request {
-            Ok(request) => map(self.kernel.submit(generation, request).wait(), |data| {
-                Built::new(data.shape, Some(data.history), None)
-            }),
+            Ok(request) => map(
+                self.kernel
+                    .submit(generation, request.with_edge_names(names))
+                    .wait(),
+                |data| Built::new(data.shape, Some(data.history), None),
+            ),
             Err(e) => Outcome::Done(Err(e)),
         }
     }
 
-    /// The edge numbers `dress`'s names find in its base feature's solid, its lineage's
-    /// solids in `lineage`; or, for every name that finds none (or an edge whose name is
-    /// unstable, N3), its `reference_broken` error, with candidates (N4, N6).
+    /// The edge numbers `dress`'s names find in its base feature's solid, its map named
+    /// from `sources` (`Plan::sources`), and the names by number; or, for every name that
+    /// finds none (or an edge whose name is unstable, N3), its `reference_broken` error,
+    /// with candidates (N4, N6).
     fn resolve(
         &self,
         plan: &Plan,
         dress: &Dress,
-        lineage: &BTreeMap<usize, Arc<Built>>,
-    ) -> Result<Vec<u32>, crate::references::Broken> {
-        let _span = tracing::debug_span!("resolve", edges = dress.edges.len()).entered();
-        let known = Arc::clone(&lock(&self.state).known);
-        let Some(map) = plan.map_of(dress.base, lineage, &known) else {
+        sources: &BTreeMap<usize, MapSource>,
+        known: &NamedMaps,
+    ) -> Result<(Vec<u32>, EdgeNames), crate::references::Broken> {
+        // How many maps the names are read from, named or to be named: one or two in a
+        // chain of fillets, each named as the next is resolved.
+        let _span = tracing::debug_span!(
+            "resolve",
+            edges = dress.edges.len(),
+            sources = sources.len()
+        )
+        .entered();
+        let Some(map) = plan.map_of(dress.base, sources, known) else {
             return Err(crate::references::Broken::bug(silico_bug(
                 "a fillet's base was built, but its elements couldn't be named",
             )));
@@ -2263,7 +2290,7 @@ mod tests {
         );
         assert_eq!(
             crate::hex(&block.0),
-            "2a2f126374bb1252b1843e9c5d8a149e8cfce3af9d7b91421402d0173982113a"
+            "de3ee4548d35b48d0d61573b7f80ea0626b41ec44efcaf6c6e2c9d163ee6e364"
         );
         let cut = naming_key(
             made,
@@ -2273,7 +2300,7 @@ mod tests {
         );
         assert_eq!(
             crate::hex(&cut.0),
-            "35db188d9e9aa263e00cf6d1ab8bcfc2787444ef039fb8a86679bff2da8e9d8c"
+            "b5616c3441bd1ecfe2f33fe8b5ec10af1993c2af4b7377b75301c2218e7aeed9"
         );
     }
 

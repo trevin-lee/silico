@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use super::{ElementMap, LastOp, Name, OpCode, Place, Raw, Relation, Source, freecad};
+use super::{ElementMap, LastOp, Name, OpCode, Place, Raw, Relation, Source, TypeWord, freecad};
 use crate::document::FeatureId;
 use crate::kernel::{ElementKind, ElementRef, History};
 
@@ -56,6 +56,7 @@ impl ElementMap {
         let mut builder = Builder {
             map: ElementMap {
                 feature,
+                made: TypeWord::Operation(operation),
                 names: BTreeMap::new(),
                 elements: BTreeMap::new(),
                 unstable: BTreeSet::new(),
@@ -130,16 +131,16 @@ impl Builder {
     fn bounded(&mut self, element: ElementRef, name: Name) -> Arc<Name> {
         let (depth, weight) = self.parts_size(&name);
         if depth > MOST_DEPTH || weight > MOST_WEIGHT {
-            return self.numbered(&self.map.feature.clone(), element);
+            return self.numbered(&self.map.feature.clone(), self.map.made, element);
         }
         Arc::new(name)
     }
 
-    /// `feature`'s `element` by its number, unstable.
-    fn numbered(&mut self, feature: &FeatureId, element: ElementRef) -> Arc<Name> {
+    /// `feature`'s `element` by its number, `feature` of type `made`, unstable.
+    fn numbered(&mut self, feature: &FeatureId, made: TypeWord, element: ElementRef) -> Arc<Name> {
         let name = Arc::new(Name::Element {
             feature: feature.clone(),
-            primitive: None,
+            made,
             element,
         });
         self.numbered.insert(Arc::clone(&name));
@@ -151,7 +152,7 @@ impl Builder {
     /// its number, unstable.
     fn source_name(&mut self, map: &ElementMap, source: ElementRef) -> Arc<Name> {
         map.name(source)
-            .unwrap_or_else(|| self.numbered(map.feature(), source))
+            .unwrap_or_else(|| self.numbered(map.feature(), map.made(), source))
     }
 
     /// Decides which of the map's names are unstable: a duplicate's `~n`, a name that came
@@ -250,7 +251,8 @@ impl Builder {
         })
     }
 
-    /// Step 1: each input element the result has unchanged keeps its names.
+    /// Step 1: each input element the result has unchanged keeps its names, where the
+    /// operation bites its input; where it doesn't, it's the feature's own piece, `I` (N9).
     fn kept(&mut self, inputs: &[&ElementMap], history: &History) {
         for (i, (input, map)) in history.inputs.iter().zip(inputs).enumerate() {
             for kind in KINDS {
@@ -259,20 +261,42 @@ impl Builder {
                     let source = element(kind, n);
                     let kept = element_ref(kind, kept);
                     self.inputs.entry(kept).or_insert(i);
-                    match map.names.get(&source) {
-                        Some(names) => {
-                            for name in names {
-                                self.set(kept, Arc::clone(name));
-                            }
-                        }
-                        None => {
-                            let name = self.numbered(map.feature(), source);
-                            self.set(kept, name);
-                        }
+                    let names: Vec<Arc<Name>> = match map.names.get(&source) {
+                        Some(names) => names.clone(),
+                        None => vec![self.numbered(map.feature(), map.made(), source)],
+                    };
+                    for name in names {
+                        // Kept whole where the operation keeps what of the input lies
+                        // inside its other operand: the feature's own piece (N9).
+                        let name = if self.operation.bites(i) {
+                            name
+                        } else {
+                            self.inside(kept, name)
+                        };
+                        self.set(kept, name);
                     }
                 }
             }
         }
+    }
+
+    /// `name`'s element kept whole inside the other operand: the feature's own piece of
+    /// it, `I`, with no OCCT position (FreeCAD's form writes it as the source, as
+    /// FreeCAD's `mapSubElement` does).
+    fn inside(&mut self, element: ElementRef, name: Arc<Name>) -> Arc<Name> {
+        let name = Name::Derived {
+            feature: self.map.feature.clone(),
+            operation: self.operation,
+            kind: element.kind,
+            first: Source {
+                relation: Relation::Inside,
+                place: None,
+                position: Raw(None),
+                name,
+            },
+            more: Vec::new(),
+        };
+        self.bounded(element, name)
     }
 
     /// Step 2: each element OCCT reports modified or generated, still unnamed, from its
@@ -329,11 +353,17 @@ impl Builder {
             let first_input = keyed.keys().next().map_or(usize::MAX, |key| key.1);
             // One source, which became this element and nothing else of its kind.
             let alone = keyed.len() == 1 && keyed.values().all(|&(_, _, sole)| sole);
+            let operation = self.operation;
             let mut sources = keyed.into_iter().take(MOST_SOURCES).map(
-                |((_, _, _, name), (relation, position, _))| Source {
-                    relation,
+                |((_, input, _, name), (relation, position, _))| Source {
+                    // Modified where the operation keeps what lies inside its other
+                    // operand is the feature's own piece, `I` (N9).
+                    relation: match relation {
+                        Relation::Modified if !operation.bites(input) => Relation::Inside,
+                        relation => relation,
+                    },
                     place: None,
-                    position: Raw(position),
+                    position: Raw(Some(position)),
                     name,
                 },
             );
@@ -342,12 +372,13 @@ impl Builder {
             };
             let name = if alone
                 && first.relation == Relation::Modified
-                && first.position.0 == NonZeroU32::MIN
+                && first.position.0 == Some(NonZeroU32::MIN)
             {
                 // Modified from one element alone, its only result (a face split in two
-                // keeps its level, so a reference to the face isn't taken to one piece):
-                // that element's own name, however many features in a row did so (Trevin's
-                // decision).
+                // keeps its level, so a reference to the face isn't taken to one piece),
+                // a sole `M` at OCCT's first: that element's own name, however many features
+                // in a row did so (Trevin's decision). What lies inside the other operand is
+                // never an `M` (N9: an `I`, the feature's own), so it never collapses.
                 let origin = match &*first.name {
                     Name::Modified { name, .. } => Arc::clone(name),
                     _ => first.name,
@@ -483,7 +514,7 @@ impl Builder {
             for index in 1..=counts.of(kind) {
                 let this = element_ref(kind, index);
                 if !self.is_named(this) {
-                    let name = self.numbered(&self.map.feature.clone(), this);
+                    let name = self.numbered(&self.map.feature.clone(), self.map.made, this);
                     self.set(this, name);
                 }
             }
@@ -564,7 +595,7 @@ fn places(named: &mut [(ElementRef, usize, Name)]) {
                 .filter_map(|&i| {
                     let (element, _, name) = named.get(i)?;
                     let source = sources(name).get(s).copied()?;
-                    Some((source.position.0, *element, i))
+                    Some((source.position.0.unwrap_or(NonZeroU32::MIN), *element, i))
                 })
                 .collect();
             for (i, rank) in ranked(order) {

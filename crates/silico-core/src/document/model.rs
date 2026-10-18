@@ -123,7 +123,7 @@ impl JsonSchema for FeatureId {
 pub type Position = [Length; 3];
 
 /// An element of a feature's solid, by its name in Silico's form as written
-/// (docs/ports/naming.md, `m3tq8v0z.Edge(G k7f2qx3m.box.Face6, G a91cw0de.cylinder.Face1)`):
+/// (docs/ports/naming.md, `m3tq8v0z.cut.Edge(G k7f2qx3m.box.Face6, G a91cw0de.cylinder.Face1)`):
 /// never an element's number, which an upstream edit can make another's. The gate reads it back
 /// (`naming::Name::parse`), knowing what each feature before it is; recompute finds the
 /// element it names, or fails the feature saying so.
@@ -149,7 +149,7 @@ impl JsonSchema for ElementName {
 
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         json_schema!({
-            "description": "An element of an earlier feature's solid, by its name in Silico's form (feature.Kind(...)), never by its number.",
+            "description": "An element of an earlier feature's solid, by its name in Silico's form (feature.type.Kind(...)), never by its number.",
             "type": "string",
             "minLength": 1
         })

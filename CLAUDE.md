@@ -9,6 +9,7 @@ Silico is a parametric CAD system: a Rust core, an egui/wgpu UI, and OpenCascade
 - `silico-kernel`: the OCCT bridge (C++ through `cxx`), the kernel worker binaries, and `silico-brep-convert` (OCCT text B-reps to Silico's, for the corpus). The only crate that links OCCT.
 - `silico-protocol`: the messages between the core and workers, their framing, and the rules for valid primitive values (`Primitive::check`), profiles (`Profile::check`), and chamfer sizes (`ChamferSize::check`); and each history's result topology (`Topology`), which naming reads.
 - `silico-core`: the structured `Error`; the worker client (`worker::Worker`), which starts workers and turns crashes, hangs, and bad replies into errors, each with advice that fits how the worker ended; typed kernel requests (`kernel::KernelRequest`: primitives, extrude, revolve, fillet, chamfer, translate, booleans, summarize, measure as FreeCAD does, tessellate), which check values and replies so nothing above them handles protocol messages, run on one worker (`kernel::KernelWorker`) or, through the `kernel::Kernel` trait, a pool of them (`pool::KernelPool`, which replaces workers that crash or hang, and drops or stops work of superseded generations) or an in-memory fake for tests (`fake::FakeKernel`, behind the `fake` feature: symbolic shapes whose bytes say what made them, every call recorded); and the document's types (`document`: read exactly from strict JSON by Silico's own reader, written in canonical form, with a JSON Schema, and checked by the validation gate, `document::validate`, into `document::Checked`); recompute (`recompute::Recompute`: a checked document rebuilt on a kernel, step by keyed step, in the background); and the rebuild cache (`cache::Cache`, `.silico-cache/`: each step's result on disk, sealed with a secret of the user's); and fingerprints (`document::Fingerprint`, each feature's measures, with `Model::drift` and `Model::fingerprinted`); and topological naming (`naming`: each element's `Name`, how it came about, in Silico's form or FreeCAD's, and each solid's `ElementMap`, given for each built feature by `Model::element_map`, read back by `Name::parse`); and references by name (fillets and chamfers whose `edges` are names, found in their base's element map when they rebuild, or each broken one a `reference_broken` error with candidates, never re-pointed); and the first of the core's commands (`command`: gate, rebuild, check, format, outline; and `file`, a document's file read and saved safely), which every client runs. The rest of the command API comes later.
+- `silico-worker`: what every worker process is: the inherited socket, the request loop, logging, and the floating-point trap checks, shared by the kernel and sketch workers (its `unsafe`, for inherited descriptors only, is ARCHITECTURE.md's one exception).
 - `silico-cli`: the `silico` command: `check`, `fmt`, `show`, and `textconv` for `git diff` (docs/cli.md), each a thin client of the core's commands (`silico_core::command`).
 - `silico-view`: a debug viewer that shows the kernel's parts in Rerun, until the app exists; its library logs any mesh (faces shaded by the kernel's normals, labelled edges) for tests and scripts.
 - `silico-oracle`: the FreeCAD oracle harness. Each case in `tests/oracle/` (protected) is built through a kernel worker and through headless FreeCAD and compared: volume, area, and center of mass measured as FreeCAD measures them, the tight bounding box, topology counts, and validity, to a tolerance set by what the shape is made of.
@@ -69,14 +70,12 @@ pixi run view      # the kernel's parts (a box, fillets, the primitives) in Reru
 pixi run oracle    # every case in tests/oracle compared with FreeCAD
 pixi run oracle-sweep  # 500 generated cases compared with FreeCAD (-- --seed S for others)
 pixi run corpus    # real parts (NIST's STEP files, downloaded once) compared with FreeCAD
-cargo mutants --in-place --in-diff <(git diff main...HEAD) --minimum-test-timeout 300
-                   # every workspace test, with nextest (.cargo/mutants.toml); the timeout floor,
-                   # since the baseline it's scaled from may time a single package. In place, since a
-                   # copy of the tree has no target/occt: run it in a scratch worktree
-                   # (git worktree add /tmp/silico-mutants HEAD, then link .pixi and target/occt
-                   # from the main checkout), never in a checkout others are using. Run cargo directly
-                   # there, not pixi tasks: most depend on `occt`, which rewrites the shared
-                   # target/occt/recipe.env with the scratch checkout's paths
+pixi run mutants -- --in-diff /tmp/change.diff --output /tmp
+                   # cargo-mutants on the committed tree, in the gate's worktree (tests/mutants.sh), never
+                   # in a checkout: every workspace test for each mutant (.cargo/mutants.toml), but the
+                   # few that hold to a wall clock, which fail a loaded baseline. Arguments go to cargo
+                   # mutants, paths absolute (git diff main...HEAD > /tmp/change.diff first; -p to
+                   # narrow it). CI shards it over the runners (.github/workflows/mutants.yml)
 ```
 
 Run C++ builds through pixi so the pinned clang is used. `pixi run gate` runs every check on the committed tree and must pass before a merge. `silico check FILE` checks a document and `silico fmt FILE` writes it in canonical form with its fingerprints (docs/cli.md).

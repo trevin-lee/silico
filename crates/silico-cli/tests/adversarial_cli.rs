@@ -174,6 +174,38 @@ fn a_file_name_that_isnt_utf8_is_checked_not_a_panic() {
 }
 
 #[test]
+fn a_file_name_a_terminal_would_act_on_is_shown_escaped() {
+    // Found by the milestone's robustness review: file names reached the terminal as they
+    // were, so a cloned repository's `\e]0;...\a.silico` could retitle it, or hide lines.
+    // Shown quoted, those characters escaped; a JSON line's name is the name, which JSON
+    // escapes.
+    let scratch = Scratch::new("escapes");
+    let name = "bad\u{1b}]0;owned\u{7}\u{200b}.silico";
+    scratch.file(name, "{");
+    let out = run(&scratch, &[os("check"), os(name)]);
+    assert_eq!(out.code(), Some(1), "{}", out.stderr);
+    assert!(
+        !out.stderr.contains(['\u{1b}', '\u{7}', '\u{200b}']),
+        "{:?}",
+        out.stderr
+    );
+    assert!(
+        out.stderr
+            .starts_with(r#""bad\u{1b}]0;owned\u{7}\u{200b}.silico": "#),
+        "{:?}",
+        out.stderr
+    );
+    let out = run(&scratch, &[os("check"), os("--json"), os(name)]);
+    let line: serde_json::Value = serde_json::from_str(out.stdout.trim()).unwrap();
+    assert_eq!(line["file"], name);
+    assert!(!out.stdout.contains('\u{1b}'), "{:?}", out.stdout);
+    // A plain name is shown as it is.
+    scratch.file("plain.silico", "{");
+    let out = run(&scratch, &[os("check"), os("plain.silico")]);
+    assert!(out.stderr.starts_with("plain.silico: "), "{:?}", out.stderr);
+}
+
+#[test]
 fn double_dash_ends_the_options_so_a_file_may_be_named_like_one() {
     // BREAKS: `--` is taken as an unknown option ("silico check: no option \"--\""), and
     // anything starting `--` is an option wherever it is, so a file named `--json` can be

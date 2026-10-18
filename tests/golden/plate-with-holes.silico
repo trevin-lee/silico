@@ -78,7 +78,7 @@
       "name": "Rim",
       "base": "c0000003",
       "edges": [
-        "c0000002.Edge(G pppppppp.box.Face6, G y0000002.cylinder.Face1)"
+        "c0000002.cut.Edge(G pppppppp.box.Face6, G y0000002.cylinder.Face1)"
       ],
       "radius": 0.5,
       "note": "The blind hole's top rim: each hole's rim is its own size, so a fillet of another measures otherwise",

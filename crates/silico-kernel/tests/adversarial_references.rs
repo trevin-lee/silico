@@ -62,7 +62,7 @@ fn holed_cone(top: f64, edge: &str) -> String {
 
 /// The hole's rim where the cone's `face` meets the pin's side, as M2.7 names it.
 fn rim(face: u32) -> String {
-    format!("hhhhhhhh.Edge(G kkkkkkkk.cone.Face{face}, G pppppppp.cylinder.Face1)")
+    format!("hhhhhhhh.cut.Edge(G kkkkkkkk.cone.Face{face}, G pppppppp.cylinder.Face1)")
 }
 
 /// The height of the material a fillet took from the hole: the centroid of what the hole
@@ -106,7 +106,7 @@ fn cone_top_rim_named_before_the_top_shrinks_to_a_point_is_never_the_bottom_rim(
         let z = taken_at(&model);
         // BREAKS: a primitive's elements are named by their numbers (M2.7), and OCCT numbers
         // a pointed cone's base Face2: the hole's base rim is now named exactly as its top
-        // rim was, `hhhhhhhh.Edge(G kkkkkkkk.cone.Face2, G pppppppp.cylinder.Face1)`, so the reference
+        // rim was, `hhhhhhhh.cut.Edge(G kkkkkkkk.cone.Face2, G pppppppp.cylinder.Face1)`, so the reference
         // resolves, silently, to the base rim, and the fillet rounds the bottom of the hole
         // (material taken at z = 0.04). FreeCAD 1.1.3, the same edit: the top rim was
         // `Face2;:G2(Face1;K-1;...)`, the base rim is now `Face2;:G2(Face1;K-2;...)` (its

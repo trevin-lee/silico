@@ -132,16 +132,17 @@ fn a_balls_through_hole_has_two_rims_and_two_seam_points_told_apart_by_rank() {
         names_of(map, ElementKind::Edge),
         [
             "bbbbbbbb.sphere.Edge2",
-            "cccccccc.Edge(G1/2 bbbbbbbb.sphere.Face1, G1/2 pppppppp.cylinder.Face1)",
-            "cccccccc.Edge(G2/2 bbbbbbbb.sphere.Face1, G2/2 pppppppp.cylinder.Face1)",
-            "pppppppp.cylinder.Edge1",
+            "cccccccc.cut.Edge(G1/2 bbbbbbbb.sphere.Face1, G1/2 pppppppp.cylinder.Face1)",
+            "cccccccc.cut.Edge(G2/2 bbbbbbbb.sphere.Face1, G2/2 pppppppp.cylinder.Face1)",
+            // The pin's seam, kept inside the ball: a piece, the cut's own (N8).
+            "cccccccc.cut.Edge(I pppppppp.cylinder.Edge1)",
         ]
     );
     assert_eq!(
         names_of(map, ElementKind::Vertex),
         [
-            "cccccccc.Vertex(G1/2 bbbbbbbb.sphere.Edge2, G1/2 pppppppp.cylinder.Edge1)",
-            "cccccccc.Vertex(G2/2 bbbbbbbb.sphere.Edge2, G2/2 pppppppp.cylinder.Edge1)",
+            "cccccccc.cut.Vertex(G1/2 bbbbbbbb.sphere.Edge2, G1/2 pppppppp.cylinder.Edge1)",
+            "cccccccc.cut.Vertex(G2/2 bbbbbbbb.sphere.Edge2, G2/2 pppppppp.cylinder.Edge1)",
         ]
     );
     // FreeCAD's form still writes OCCT's positions, which the ranks are.
@@ -155,22 +156,32 @@ fn a_balls_through_hole_has_two_rims_and_two_seam_points_told_apart_by_rank() {
         texts,
         [
             (
-                "cccccccc.Edge(G1/2 bbbbbbbb.sphere.Face1, G1/2 pppppppp.cylinder.Face1)"
+                "cccccccc.cut.Edge(G1/2 bbbbbbbb.sphere.Face1, G1/2 pppppppp.cylinder.Face1)"
                     .to_owned(),
                 "Face1;:G(Face1;K-1);CUT".to_owned()
             ),
             (
-                "cccccccc.Edge(G2/2 bbbbbbbb.sphere.Face1, G2/2 pppppppp.cylinder.Face1)"
+                "cccccccc.cut.Edge(G2/2 bbbbbbbb.sphere.Face1, G2/2 pppppppp.cylinder.Face1)"
                     .to_owned(),
                 "Face1;:G2(Face1;K-2);CUT".to_owned()
             ),
         ]
     );
-    // The faces, each modified as its sole result, keep their own names.
+    // The faces, each modified as its sole result: the ball's, bitten, keeps its own name;
+    // the pin's, the bore's wall, kept inside the ball, is a piece (N8), FreeCAD's
+    // `Face1;:M;CUT`.
     assert_eq!(
         names_of(map, ElementKind::Face),
-        ["bbbbbbbb.sphere.Face1", "pppppppp.cylinder.Face1"]
+        [
+            "bbbbbbbb.sphere.Face1",
+            "cccccccc.cut.Face(I pppppppp.cylinder.Face1)"
+        ]
     );
+    let wall = map
+        .iter()
+        .find(|(_, names)| names[0].to_string().contains("(I pppppppp.cylinder.Face1)"))
+        .unwrap();
+    assert_eq!(freecad::text(&wall.1[0]), "Face1;:M;CUT");
 }
 
 #[test]
@@ -190,12 +201,13 @@ fn a_pin_through_a_torus_tube_has_four_loops_told_apart_by_rank() {
     all_referenceable(map);
     let edges = names_of(map, ElementKind::Edge);
     for n in 1..=4 {
-        let rim =
-            format!("cccccccc.Edge(G{n}/4 tttttttt.torus.Face1, G{n}/4 pppppppp.cylinder.Face1)");
+        let rim = format!(
+            "cccccccc.cut.Edge(G{n}/4 tttttttt.torus.Face1, G{n}/4 pppppppp.cylinder.Face1)"
+        );
         assert!(edges.contains(&rim), "{rim}: {edges:#?}");
     }
     for n in 1..=3 {
-        let piece = format!("cccccccc.Edge(M{n}/3 tttttttt.torus.Edge2)");
+        let piece = format!("cccccccc.cut.Edge(M{n}/3 tttttttt.torus.Edge2)");
         assert!(edges.contains(&piece), "{piece}: {edges:#?}");
     }
     // The seam is gone as it was.
@@ -222,8 +234,8 @@ fn a_slot_splits_the_top_and_its_edges_into_ranked_pieces() {
     all_referenceable(map);
     let faces = names_of(map, ElementKind::Face);
     for piece in [
-        "s0000001.Face(M1/2 pppppppp.box.Face6)",
-        "s0000001.Face(M2/2 pppppppp.box.Face6)",
+        "s0000001.cut.Face(M1/2 pppppppp.box.Face6)",
+        "s0000001.cut.Face(M2/2 pppppppp.box.Face6)",
     ] {
         assert!(faces.contains(&piece.to_owned()), "{faces:#?}");
     }
@@ -234,7 +246,7 @@ fn a_slot_splits_the_top_and_its_edges_into_ranked_pieces() {
     let edges = names_of(map, ElementKind::Edge);
     for edge in ["pppppppp.box.Edge10", "pppppppp.box.Edge12"] {
         for n in [1, 2] {
-            let piece = format!("s0000001.Edge(M{n}/2 {edge})");
+            let piece = format!("s0000001.cut.Edge(M{n}/2 {edge})");
             assert!(edges.contains(&piece), "{piece}: {edges:#?}");
         }
         assert!(!edges.contains(&edge.to_owned()), "{edge}: {edges:#?}");
@@ -261,8 +273,8 @@ fn a_piece_keeps_its_name_through_a_hole_before_the_split_and_one_after() {
     let after_first = model.element_map(&id("c0000001")).unwrap();
     assert!(names_of(after_first, ElementKind::Face).contains(&"pppppppp.box.Face6".to_owned()));
     let pieces = [
-        "s0000001.Face(M1/2 pppppppp.box.Face6)",
-        "s0000001.Face(M2/2 pppppppp.box.Face6)",
+        "s0000001.cut.Face(M1/2 pppppppp.box.Face6)",
+        "s0000001.cut.Face(M2/2 pppppppp.box.Face6)",
     ];
     let slotted = model.element_map(&id("s0000001")).unwrap();
     let last = model.element_map(&id("c0000002")).unwrap();
@@ -282,7 +294,7 @@ fn a_piece_keeps_its_name_through_a_hole_before_the_split_and_one_after() {
     let edges = names_of(last, ElementKind::Edge);
     assert!(
         edges.contains(
-            &"c0000002.Edge(G s0000001.Face(M2/2 pppppppp.box.Face6), G y0000002.cylinder.Face1)"
+            &"c0000002.cut.Edge(G s0000001.cut.Face(M2/2 pppppppp.box.Face6), G y0000002.cylinder.Face1)"
                 .to_owned()
         ),
         "{edges:#?}"
@@ -315,9 +327,9 @@ fn a_groove_across_a_u_shaped_face_leaves_three_ranked_pieces() {
     assert_eq!(
         tops,
         [
-            "rrrrrrrr.Face(M1/3 pppppppp.box.Face6)",
-            "rrrrrrrr.Face(M2/3 pppppppp.box.Face6)",
-            "rrrrrrrr.Face(M3/3 pppppppp.box.Face6)",
+            "rrrrrrrr.cut.Face(M1/3 pppppppp.box.Face6)",
+            "rrrrrrrr.cut.Face(M2/3 pppppppp.box.Face6)",
+            "rrrrrrrr.cut.Face(M3/3 pppppppp.box.Face6)",
         ]
     );
 }

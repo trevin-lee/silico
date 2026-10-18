@@ -14,8 +14,10 @@ use std::time::{Duration, Instant};
 use proptest::prelude::*;
 use silico_core::document::{Checked, Document, FeatureId, read, write};
 use silico_core::fake::FakeKernel;
-use silico_core::kernel::{Blob, ElementKind, ElementRef, Op, ShapeData};
-use silico_core::naming::{Maker, Name, OpCode, Place, PrimitiveKind, Raw, Relation, Source};
+use silico_core::kernel::{Blob, ElementKind, ElementRef, Op, Primitive, ShapeData};
+use silico_core::naming::{
+    Maker, Name, OpCode, Place, PrimitiveKind, Raw, Relation, Source, TypeWord,
+};
 use silico_core::recompute::{FeatureOutcome, Recompute, RunOutcome};
 use silico_core::{Error, ErrorCode};
 
@@ -44,6 +46,15 @@ fn makers(feature: &FeatureId) -> Option<Maker> {
     }
 }
 
+/// The type `makers` says `feature` is.
+fn type_of(feature: &str) -> TypeWord {
+    match makers(&id(feature)) {
+        Some(Maker::Itself(kind)) => TypeWord::Primitive(kind),
+        Some(Maker::By(op)) => TypeWord::Operation(op),
+        other => panic!("{feature}: {other:?}"),
+    }
+}
+
 fn parse(text: &str) -> Result<Name, silico_core::naming::NameError> {
     Name::parse(text, &makers)
 }
@@ -60,7 +71,7 @@ fn name_numbers_at_the_edges_of_u32() {
         max,
         Name::Element {
             feature: id("aaaaaaaa"),
-            primitive: Some(PrimitiveKind::Box),
+            made: TypeWord::Primitive(PrimitiveKind::Box),
             element: ElementRef {
                 kind: ElementKind::Edge,
                 index: u32::MAX
@@ -92,47 +103,47 @@ fn name_numbers_at_the_edges_of_u32() {
 #[test]
 fn name_places_and_unnamed_counts_at_their_edges() {
     let ok = [
-        "cccccccc.Edge(G2/2 aaaaaaaa.box.Face1)",
-        "cccccccc.Edge(M1/4294967295 aaaaaaaa.box.Face1)",
-        "cccccccc.Edge(M4294967295/4294967295 aaaaaaaa.box.Face1)",
-        "cccccccc.Edge(U aaaaaaaa.box.Face1)",
-        "cccccccc.Edge(U aaaaaaaa.box.Face1, aaaaaaaa.box.Face2)",
-        "cccccccc.Edge(U2/2 aaaaaaaa.box.Face1)",
-        "cccccccc.Edge(U4294967295/4294967295 aaaaaaaa.box.Face1, aaaaaaaa.box.Face2)",
+        "cccccccc.cut.Edge(G2/2 aaaaaaaa.box.Face1)",
+        "cccccccc.cut.Edge(M1/4294967295 aaaaaaaa.box.Face1)",
+        "cccccccc.cut.Edge(M4294967295/4294967295 aaaaaaaa.box.Face1)",
+        "cccccccc.cut.Edge(U aaaaaaaa.box.Face1)",
+        "cccccccc.cut.Edge(U aaaaaaaa.box.Face1, aaaaaaaa.box.Face2)",
+        "cccccccc.cut.Edge(U2/2 aaaaaaaa.box.Face1)",
+        "cccccccc.cut.Edge(U4294967295/4294967295 aaaaaaaa.box.Face1, aaaaaaaa.box.Face2)",
         "aaaaaaaa.box.Edge1~1~1",
-        "cccccccc.Edge(G aaaaaaaa.box.Face1~2)~3",
+        "cccccccc.cut.Edge(G aaaaaaaa.box.Face1~2)~3",
     ];
     for text in ok {
         let name = parse(text).unwrap_or_else(|e| panic!("{text}: {e}"));
         assert_eq!(name.to_string(), text);
     }
     let refused = [
-        "cccccccc.Edge(G1/1 aaaaaaaa.box.Face1)",
-        "cccccccc.Edge(G0/2 aaaaaaaa.box.Face1)",
-        "cccccccc.Edge(G3/2 aaaaaaaa.box.Face1)",
-        "cccccccc.Edge(G1/02 aaaaaaaa.box.Face1)",
-        "cccccccc.Edge(G1/ aaaaaaaa.box.Face1)",
-        "cccccccc.Edge(G/2 aaaaaaaa.box.Face1)",
-        "cccccccc.Edge(G1 aaaaaaaa.box.Face1)",
-        "cccccccc.Edge(U1 aaaaaaaa.box.Face1)",
-        "cccccccc.Edge(U0 aaaaaaaa.box.Face1)",
-        "cccccccc.Edge(U01 aaaaaaaa.box.Face1)",
-        "cccccccc.Edge(U2aaaaaaaa.Face1)",
-        "cccccccc.Edge(Uaaaaaaaa.Face1)",
-        "cccccccc.Edge(L)",
-        "cccccccc.Edge(L )",
-        "cccccccc.Edge()",
-        "cccccccc.Edge(",
-        "cccccccc.Edge(G aaaaaaaa.box.Face1",
-        "cccccccc.Edge(G aaaaaaaa.box.Face1))",
-        "cccccccc.Edge(G aaaaaaaa.box.Face1,G aaaaaaaa.box.Face2)",
-        "cccccccc.Edge(G aaaaaaaa.box.Face1,  G aaaaaaaa.box.Face2)",
-        "cccccccc.Edge(G aaaaaaaa.box.Face1, )",
-        "cccccccc.Edge(G  aaaaaaaa.box.Face1)",
-        "cccccccc.Edge(G\taaaaaaaa.Face1)",
-        "cccccccc.Edge (G aaaaaaaa.box.Face1)",
-        "cccccccc.Edge(g aaaaaaaa.box.Face1)",
-        "cccccccc.Edge(X aaaaaaaa.box.Face1)",
+        "cccccccc.cut.Edge(G1/1 aaaaaaaa.box.Face1)",
+        "cccccccc.cut.Edge(G0/2 aaaaaaaa.box.Face1)",
+        "cccccccc.cut.Edge(G3/2 aaaaaaaa.box.Face1)",
+        "cccccccc.cut.Edge(G1/02 aaaaaaaa.box.Face1)",
+        "cccccccc.cut.Edge(G1/ aaaaaaaa.box.Face1)",
+        "cccccccc.cut.Edge(G/2 aaaaaaaa.box.Face1)",
+        "cccccccc.cut.Edge(G1 aaaaaaaa.box.Face1)",
+        "cccccccc.cut.Edge(U1 aaaaaaaa.box.Face1)",
+        "cccccccc.cut.Edge(U0 aaaaaaaa.box.Face1)",
+        "cccccccc.cut.Edge(U01 aaaaaaaa.box.Face1)",
+        "cccccccc.cut.Edge(U2aaaaaaaa.Face1)",
+        "cccccccc.cut.Edge(Uaaaaaaaa.Face1)",
+        "cccccccc.cut.Edge(L)",
+        "cccccccc.cut.Edge(L )",
+        "cccccccc.cut.Edge()",
+        "cccccccc.cut.Edge(",
+        "cccccccc.cut.Edge(G aaaaaaaa.box.Face1",
+        "cccccccc.cut.Edge(G aaaaaaaa.box.Face1))",
+        "cccccccc.cut.Edge(G aaaaaaaa.box.Face1,G aaaaaaaa.box.Face2)",
+        "cccccccc.cut.Edge(G aaaaaaaa.box.Face1,  G aaaaaaaa.box.Face2)",
+        "cccccccc.cut.Edge(G aaaaaaaa.box.Face1, )",
+        "cccccccc.cut.Edge(G  aaaaaaaa.box.Face1)",
+        "cccccccc.cut.Edge(G\taaaaaaaa.Face1)",
+        "cccccccc.cut.Edge (G aaaaaaaa.box.Face1)",
+        "cccccccc.cut.Edge(g aaaaaaaa.box.Face1)",
+        "cccccccc.cut.Edge(X aaaaaaaa.box.Face1)",
         // A primitive names its elements by number only.
         "aaaaaaaa.box.Edge(G bbbbbbbb.box.Face1)",
         "aaaaaaaa.box.Edge(U bbbbbbbb.box.Face1)",
@@ -178,7 +189,9 @@ fn name_text_that_is_almost_a_name() {
         "aaaaaaaa.box",
         "aaaaaaaa.box.",
         "aaaaaaaa.prism.Edge1",
-        "cccccccc.box.Edge1",
+        "aaaaaaaa.cut",
+        "aaaaaaaa.cutEdge1",
+        "aaaaaaaa.box.Edge(G aaaaaaaa.box.Face1)",
         "zzzzzzzz.Edge1",
         // Fullwidth digits, Arabic-Indic digits: not ASCII.
         "aaaaaaaa.box.Edge\u{ff11}",
@@ -198,7 +211,7 @@ fn name_with_a_multibyte_character_cut_by_the_ids_eight_bytes() {
         ("aaaaaaé.Edge1", 1),
         ("é", 1),
         ("😀😀.Edge1", 1),
-        ("cccccccc.Edge(G aaaaaaaé.Face1)", 17),
+        ("cccccccc.cut.Edge(G aaaaaaaé.Face1)", 21),
         ("aaaaaaaa.box.Edge1~é", 20),
         ("aaaaaaaa.box.Ed\u{301}ge1", 14),
     ] {
@@ -223,7 +236,7 @@ fn staircase() -> String {
     let last = tildes.last().copied().unwrap_or(0);
     let mut text = format!("aaaaaaaa.box.Face1{}", "~1".repeat(last));
     for &t in tildes.iter().rev().skip(1) {
-        text = format!("cccccccc.Face(M {text}){}", "~1".repeat(t));
+        text = format!("cccccccc.cut.Face(M {text}){}", "~1".repeat(t));
     }
     text
 }
@@ -246,7 +259,7 @@ fn name_whose_tilde_chains_stack_up_past_the_deepest_is_refused_not_walked() {
     // At the bound: a chain inside a level and a chain on it count together. The face
     // and 127 `~1`s inside, the cut's level, and 127 on it: 256 deep, read; one more, not.
     let inside = format!("aaaaaaaa.box.Face1{}", "~1".repeat(127));
-    let at = format!("cccccccc.Face(M {inside}){}", "~1".repeat(127));
+    let at = format!("cccccccc.cut.Face(M {inside}){}", "~1".repeat(127));
     assert_eq!(parse(&at).unwrap().to_string(), at);
     let past = format!("{at}~1");
     assert!(
@@ -260,7 +273,7 @@ fn name_whose_tilde_chains_stack_up_past_the_deepest_is_refused_not_walked() {
     for (chain, levels) in [(200, 100), (255, 255)] {
         let mut text = format!("aaaaaaaa.box.Face1{}", "~1".repeat(chain));
         for _ in 0..levels {
-            text = format!("cccccccc.Face(M {text})");
+            text = format!("cccccccc.cut.Face(M {text})");
         }
         let error = parse(&text).unwrap_err();
         assert!(error.why.contains("nested more than 256 deep"), "{error}");
@@ -277,7 +290,7 @@ fn name_wide_and_deep_on_a_recompute_threads_stack() {
         let others: Vec<String> = (2..=5)
             .map(|i| format!("G aaaaaaaa.box.Face{}", level * 4 + i))
             .collect();
-        text = format!("cccccccc.Face(M {text}, {})", others.join(", "));
+        text = format!("cccccccc.cut.Face(M {text}, {})", others.join(", "));
     }
     let name = std::thread::Builder::new()
         .stack_size(2 << 20)
@@ -325,7 +338,7 @@ fn arb_name() -> impl Strategy<Value = Name> {
     )
         .prop_map(|(f, kind, index)| Name::Element {
             feature: id(f),
-            primitive: matches!(f, "aaaaaaaa" | "bbbbbbbb").then_some(PrimitiveKind::Box),
+            made: type_of(f),
             element: ElementRef { kind, index },
         });
     let op_feature = prop_oneof![
@@ -352,7 +365,7 @@ fn arb_name() -> impl Strategy<Value = Name> {
             .prop_map(|(relation, place, position, name)| Source {
                 relation,
                 place,
-                position: Raw(n(position)),
+                position: Raw(Some(n(position))),
                 name: Arc::new(name),
             });
         prop_oneof![
@@ -646,9 +659,11 @@ fn rebuilt_from_a_partial_cache(
     text: &str,
     keep: impl Fn(&[u8]) -> bool,
     kept: usize,
+    refuses: fn(&Op) -> Option<Error>,
 ) -> (
     Arc<silico_core::recompute::Model>,
     Arc<silico_core::recompute::Model>,
+    Vec<&'static str>,
 ) {
     let dir = std::env::temp_dir().join(format!(
         "silico-adversarial-references-{case}-{}",
@@ -686,6 +701,7 @@ fn rebuilt_from_a_partial_cache(
     }
     assert_eq!(left, kept, "the entries kept");
     let kernel = FakeKernel::new(2).unwrap();
+    kernel.refuse(refuses);
     let hold = kernel.hold(|op| matches!(op, Op::MakePrimitive(_)));
     let second = Recompute::with_cache(kernel, cache());
     let pending = second.start(checked(text));
@@ -695,13 +711,10 @@ fn rebuilt_from_a_partial_cache(
         Ok(RunOutcome::Published(model)) => model,
         other => panic!("{other:?}"),
     };
-    assert!(
-        made(&second.kernel().calls()).contains(&"MakeBox"),
-        "{:?}",
-        second.kernel().calls()
-    );
+    let calls = made(&second.kernel().calls());
+    assert!(calls.contains(&"MakeBox"), "{calls:?}");
     let _ = std::fs::remove_dir_all(&dir);
-    (built, model)
+    (built, model, calls)
 }
 
 /// How many times `needle` is in `bytes`.
@@ -718,15 +731,16 @@ fn fillet_rebuilt_from_a_cache_missing_its_bases_inputs_still_finds_its_edges() 
     let text = document(&[&fillet(
         "f0000001",
         "m3tq8v0z",
-        &["a91cw0de.cylinder.Edge2"],
+        &["m3tq8v0z.cut.Edge(I a91cw0de.cylinder.Edge2)"],
         "0.5",
     )]);
     // Only the hole's entry: the one whose shape is a cut and not a fillet.
-    let (built, model) = rebuilt_from_a_partial_cache(
+    let (built, model, _) = rebuilt_from_a_partial_cache(
         "one-level",
         &text,
         |bytes| count(bytes, b"\ncut ") == 1 && count(bytes, b"\nfillet ") == 0,
         1,
+        |_| None,
     );
     let errors: Vec<(ErrorCode, String)> = model
         .errors()
@@ -749,14 +763,20 @@ fn fillet_of_a_fillet_rebuilt_from_a_cache_missing_the_block_still_finds_its_edg
     // and the first fillet but not the block: the second fillet's names are of the first's
     // elements, named from the hole's, named from the block's, which is still being built.
     let text = document(&[
-        &fillet("f0000001", "m3tq8v0z", &["a91cw0de.cylinder.Edge2"], "0.5"),
+        &fillet(
+            "f0000001",
+            "m3tq8v0z",
+            &["m3tq8v0z.cut.Edge(I a91cw0de.cylinder.Edge2)"],
+            "0.5",
+        ),
         &fillet("f0000002", "f0000001", &["k7f2qx3m.box.Edge1"], "0.25"),
     ]);
-    let (built, model) = rebuilt_from_a_partial_cache(
+    let (built, model, _) = rebuilt_from_a_partial_cache(
         "two-levels",
         &text,
         |bytes| count(bytes, b"\ncut ") == 1 && count(bytes, b"\nfillet ") <= 1,
         2,
+        |_| None,
     );
     let errors: Vec<(ErrorCode, String)> = model
         .errors()
@@ -767,16 +787,58 @@ fn fillet_of_a_fillet_rebuilt_from_a_cache_missing_the_block_still_finds_its_edg
 }
 
 #[test]
+fn fillet_from_a_cache_missing_the_block_is_blocked_when_the_block_fails() {
+    // The cache holds the hole but not the block, and the block fails when it's rebuilt:
+    // the fillet, whose names are read from the block's elements, waits for the block and
+    // never runs; the recompute ends, and the hole and the fillet are blocked on the block.
+    let text = document(&[&fillet(
+        "f0000001",
+        "m3tq8v0z",
+        &["m3tq8v0z.cut.Edge(I a91cw0de.cylinder.Edge2)"],
+        "0.5",
+    )]);
+    let (_, model, calls) = rebuilt_from_a_partial_cache(
+        "block-fails",
+        &text,
+        |bytes| count(bytes, b"\ncut ") == 1 && count(bytes, b"\nfillet ") == 0,
+        1,
+        |op| {
+            matches!(op, Op::MakePrimitive(Primitive::Box { .. }))
+                .then(|| Error::new(ErrorCode::KernelFailed, "the block can't be made"))
+        },
+    );
+    let block = id("k7f2qx3m");
+    assert!(
+        matches!(model.outcome(&block), Some(FeatureOutcome::Failed(_))),
+        "{:?}",
+        model.outcome(&block)
+    );
+    for feature in ["m3tq8v0z", "f0000001"] {
+        assert_eq!(
+            model.outcome(&id(feature)),
+            Some(&FeatureOutcome::Blocked { on: block.clone() }),
+            "{feature}"
+        );
+    }
+    // The fillet never ran (found by the tests review: the outcome is decided from the
+    // timeline, so it alone would hold whether the fillet ran or not), and nothing failed
+    // as a bug.
+    assert!(!calls.contains(&"Fillet"), "{calls:?}");
+    let codes: Vec<ErrorCode> = model.errors().map(Error::code).collect();
+    assert!(!codes.contains(&ErrorCode::Internal), "{codes:?}");
+}
+
+#[test]
 fn fillet_name_nested_to_the_limit_is_resolved_on_a_recompute_thread() {
     // A name 256 levels deep, the deepest the grammar reads, of features the document has:
     // read again and looked up on a recompute thread, it finds nothing and fails the
     // fillet, never the thread's stack.
     let deep = format!(
         "{}k7f2qx3m.box.Face1{}",
-        "m3tq8v0z.Face(M ".repeat(255),
+        "m3tq8v0z.cut.Face(M ".repeat(255),
         ")".repeat(255)
     );
-    let deep_edge = deep.replacen("m3tq8v0z.Face(", "m3tq8v0z.Edge(", 1);
+    let deep_edge = deep.replacen("m3tq8v0z.cut.Face(", "m3tq8v0z.cut.Edge(", 1);
     let engine = engine();
     let text = document(&[&fillet("f0000001", "m3tq8v0z", &[&deep_edge], "0.5")]);
     let model = published(&engine, checked(&text));
@@ -801,9 +863,9 @@ fn fillet_reference_broken_error_quoting_a_long_name_stays_small() {
         }
         let inner = wide(level - 1);
         let sources: Vec<String> = (0..5).map(|_| format!("M {inner}")).collect();
-        format!("m3tq8v0z.Face({})", sources.join(", "))
+        format!("m3tq8v0z.cut.Face({})", sources.join(", "))
     }
-    let name = wide(5).replacen("m3tq8v0z.Face(", "m3tq8v0z.Edge(", 1);
+    let name = wide(5).replacen("m3tq8v0z.cut.Face(", "m3tq8v0z.cut.Edge(", 1);
     assert!(name.len() > 50_000, "{}", name.len());
     let engine = engine();
     let text = document(&[&fillet("f0000001", "m3tq8v0z", &[&name], "0.5")]);
@@ -856,7 +918,12 @@ fn fillet_of_an_edge_named_by_a_boolean_by_its_number_is_refused_not_taken() {
     // own `Edge5` is no name it holds, and is never taken for its fifth edge. An
     // operation's element by its number is never a stable name (N3), so the gate refuses
     // it before anything is rebuilt.
-    let text = document(&[&fillet("f0000001", "m3tq8v0z", &["m3tq8v0z.Edge5"], "0.5")]);
+    let text = document(&[&fillet(
+        "f0000001",
+        "m3tq8v0z",
+        &["m3tq8v0z.cut.Edge5"],
+        "0.5",
+    )]);
     let invalid = Checked::new(read(text.as_bytes()).unwrap()).unwrap_err();
     let said: Vec<(ErrorCode, Option<&str>)> = invalid
         .errors()
@@ -880,7 +947,7 @@ fn fillet_names_that_alias_one_edge_are_one_edge_in_the_request() {
             "f0000001",
             &[
                 "k7f2qx3m.box.Edge3",
-                "a91cw0de.cylinder.Edge1",
+                "m3tq8v0z.cut.Edge(I a91cw0de.cylinder.Edge1)",
                 "k7f2qx3m.box.Edge2",
             ],
             "0.25",
@@ -904,7 +971,10 @@ fn fillet_edits_flipping_between_resolving_and_broken_match_a_fresh_rebuild() {
     let good = document(&[&fillet(
         "f0000001",
         "m3tq8v0z",
-        &["a91cw0de.cylinder.Edge2", "k7f2qx3m.box.Edge4"],
+        &[
+            "m3tq8v0z.cut.Edge(I a91cw0de.cylinder.Edge2)",
+            "k7f2qx3m.box.Edge4",
+        ],
         "0.5",
     )]);
     let bad = document(&[&fillet(
@@ -1043,4 +1113,42 @@ fn fillet_too_large_to_save_is_told_to_name_fewer_edges() {
     assert_eq!(error.feature(), Some("f0000001"));
     let advice = error.suggestion().unwrap_or_default();
     assert!(advice.contains("fewer edges"), "{advice}");
+}
+
+/// Two alike boxes, `xxxxxxxx` and `zzzzzzzz`, and a fillet of `base` naming the first's
+/// Edge1.
+fn twin_boxes(base: &str) -> String {
+    document_of(&format!(
+        r#"{{"id": "xxxxxxxx", "type": "box", "v": 1, "name": "X", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}},
+{{"id": "zzzzzzzz", "type": "box", "v": 1, "name": "Z", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}},
+{{"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "{base}", "edges": ["xxxxxxxx.box.Edge1"], "radius": 1}}"#
+    ))
+}
+
+fn document_of(features: &str) -> String {
+    format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "features": [
+{features}
+]}}"#
+    )
+}
+
+#[test]
+fn fillet_moved_to_an_alike_base_breaks_on_an_engine_that_named_the_first() {
+    // Two boxes alike in every value, so one solid's step: their maps are told apart by
+    // the feature (its naming key holds its ID), and a fillet moved from one to the other
+    // breaks, on an engine that already named the first's map as on a fresh one.
+    let fresh = published(&engine(), checked(&twin_boxes("zzzzzzzz")));
+    let codes: Vec<ErrorCode> = fresh.errors().map(Error::code).collect();
+    assert_eq!(codes, [ErrorCode::ReferenceBroken]);
+    let engine = engine();
+    let first = published(&engine, checked(&twin_boxes("xxxxxxxx")));
+    assert!(first.errors().next().is_none());
+    let moved = published(&engine, checked(&twin_boxes("zzzzzzzz")));
+    let codes: Vec<ErrorCode> = moved.errors().map(Error::code).collect();
+    assert_eq!(codes, [ErrorCode::ReferenceBroken]);
+    assert!(matches!(
+        moved.outcome(&id("f0000001")),
+        Some(FeatureOutcome::Broken { .. })
+    ));
 }

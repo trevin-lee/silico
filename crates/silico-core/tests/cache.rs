@@ -19,7 +19,7 @@ use std::sync::{Arc, Barrier};
 
 use cache::{HOLE, Scratch, cache, calls, example_with_pin, files, hole, session};
 use example::EXAMPLE;
-use model::{checked, made, published};
+use model::{checked, described, made, published};
 use silico_core::cache::Cache;
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::{Generation, Kernel, KernelRequest, Op, Primitive};
@@ -159,6 +159,41 @@ fn an_entry_that_doesnt_hold_together_is_rebuilt_and_written_over() {
         assert_eq!(hole(&model), HOLE, "{damage}");
         // Written over, sound again.
         assert_eq!(std::fs::read(victim).unwrap(), sound, "{damage}");
+    }
+}
+
+#[test]
+fn any_sound_entry_under_another_steps_name_is_refused() {
+    // Found by the milestone's tests review: the one planted pair above is chosen by the
+    // entries' paths, HMACs under a secret made each run, and most pairs are refused by the
+    // check that an entry fits its step anyway. Every entry under every other's name: each
+    // is a sound, sealed entry, so only the key it holds tells it's another step's.
+    let count = {
+        let dir = Scratch::new("pairs-count");
+        published(&session(&dir.0), checked(EXAMPLE));
+        files(&dir.0).len()
+    };
+    // The block, the pin and its move, and the cut.
+    assert_eq!(count, 4);
+    for victim in 0..count {
+        for planted in (0..count).filter(|&p| p != victim) {
+            let dir = Scratch::new(&format!("pairs-{victim}-{planted}"));
+            let built = published(&session(&dir.0), checked(EXAMPLE));
+            let files = files(&dir.0);
+            let other = std::fs::read(&files[planted]).unwrap();
+            std::fs::write(&files[victim], other).unwrap();
+            let second = session(&dir.0);
+            let model = published(&second, checked(EXAMPLE));
+            let pair = format!("victim {victim}, planted {planted}");
+            assert_eq!(made(&second.kernel().calls()).len(), 1, "{pair}");
+            for feature in ["k7f2qx3m", "a91cw0de", "m3tq8v0z"] {
+                assert_eq!(
+                    described(&model, feature),
+                    described(&built, feature),
+                    "{pair}: {feature}"
+                );
+            }
+        }
     }
 }
 

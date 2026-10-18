@@ -36,7 +36,10 @@ fn a_fillets_edges_are_found_by_name_in_its_base() {
     let text = document(&[&fillet(
         "f0000001",
         "m3tq8v0z",
-        &["a91cw0de.cylinder.Edge2", "k7f2qx3m.box.Edge1"],
+        &[
+            "m3tq8v0z.cut.Edge(I a91cw0de.cylinder.Edge2)",
+            "k7f2qx3m.box.Edge1",
+        ],
         "0.5",
     )]);
     let model = published(&engine, checked(&text));
@@ -157,7 +160,12 @@ fn an_edit_that_takes_a_named_edge_from_the_base_breaks_the_reference_loudly() {
     // another tool: the pin is no longer in the cut, so the name finds nothing, and the
     // fillet fails, never taking another edge for it.
     let engine = engine();
-    let round = fillet("f0000001", "m3tq8v0z", &["a91cw0de.cylinder.Edge2"], "0.5");
+    let round = fillet(
+        "f0000001",
+        "m3tq8v0z",
+        &["m3tq8v0z.cut.Edge(I a91cw0de.cylinder.Edge2)"],
+        "0.5",
+    );
     let before = document(&[&round]);
     let model = published(&engine, checked(&before));
     assert!(model.errors().next().is_none());
@@ -185,7 +193,7 @@ fn a_fillet_rebuilt_from_the_cache_finds_the_same_edges_without_the_kernel() {
     let text = document(&[&fillet(
         "f0000001",
         "m3tq8v0z",
-        &["a91cw0de.cylinder.Edge2"],
+        &["m3tq8v0z.cut.Edge(I a91cw0de.cylinder.Edge2)"],
         "0.5",
     )]);
     let cache = || silico_core::cache::Cache::with_secret(dir.join("cache"), &secret);
@@ -265,13 +273,13 @@ fn the_gate_refuses_a_name_that_doesnt_say_which_anywhere_in_it() {
     let first = fillet("f0000001", "m3tq8v0z", &["k7f2qx3m.box.Edge1"], "1");
     for (base, edge) in [
         ("m3tq8v0z", "k7f2qx3m.box.Edge1~1"),
-        ("m3tq8v0z", "m3tq8v0z.Edge(G k7f2qx3m.box.Face1)~2"),
+        ("m3tq8v0z", "m3tq8v0z.cut.Edge(G k7f2qx3m.box.Face1)~2"),
         // A fillet of the first fillet's edges, one named from the hole's Face3 by number,
         // one from a duplicate.
-        ("f0000001", "f0000001.Edge(G m3tq8v0z.Face3)"),
+        ("f0000001", "f0000001.fillet.Edge(G m3tq8v0z.cut.Face3)"),
         (
             "f0000001",
-            "f0000001.Edge(G m3tq8v0z.Edge(G k7f2qx3m.box.Face1)~1)",
+            "f0000001.fillet.Edge(G m3tq8v0z.cut.Edge(G k7f2qx3m.box.Face1)~1)",
         ),
     ] {
         let text = if base == "f0000001" {
@@ -340,7 +348,7 @@ fn refused(text: &str) -> Vec<(String, String)> {
 
 #[test]
 fn the_gate_refuses_a_fillet_whose_edges_or_radius_cant_be() {
-    let cases: [(String, &str, &str); 10] = [
+    let cases: [(String, &str, &str); 12] = [
         (
             fillet("f0000001", "m3tq8v0z", &[], "1"),
             "edges",
@@ -381,7 +389,7 @@ fn the_gate_refuses_a_fillet_whose_edges_or_radius_cant_be() {
             fillet(
                 "f0000001",
                 "m3tq8v0z",
-                &["f0000001.Edge(G k7f2qx3m.box.Face1)"],
+                &["f0000001.fillet.Edge(G k7f2qx3m.box.Face1)"],
                 "1",
             ),
             "edges.0",
@@ -396,12 +404,33 @@ fn the_gate_refuses_a_fillet_whose_edges_or_radius_cant_be() {
             // Trevin's (2026-10-17): a primitive's element says what made it.
             fillet("f0000001", "m3tq8v0z", &["k7f2qx3m.Edge1"], "1"),
             "edges.0",
-            "k7f2qx3m is a primitive: its elements say which (`k7f2qx3m.box.Edge1`)",
+            "expected the type of the feature that made the element",
         ),
         (
-            fillet("f0000001", "m3tq8v0z", &["m3tq8v0z.box.Edge1"], "1"),
+            fillet("f0000001", "m3tq8v0z", &["k7f2qx3m.Edge1"], "1"),
             "edges.0",
-            "m3tq8v0z isn't a primitive",
+            "as `k7f2qx3m.box.Edge1`",
+        ),
+        (
+            // N8: an operation's element says its type too.
+            fillet(
+                "f0000001",
+                "m3tq8v0z",
+                &["m3tq8v0z.Edge(G k7f2qx3m.box.Face1)"],
+                "1",
+            ),
+            "edges.0",
+            "as `m3tq8v0z.cut.Edge(G k7f2qx3m.box.Face1)`",
+        ),
+        (
+            fillet(
+                "f0000001",
+                "m3tq8v0z",
+                &["m3tq8v0z.box.Edge(G k7f2qx3m.box.Face1)"],
+                "1",
+            ),
+            "edges.0",
+            "a box makes its elements itself",
         ),
         (
             fillet("f0000001", "m3tq8v0z", &["k7f2qx3m.box.Edge1"], "0"),
@@ -463,13 +492,16 @@ fn a_fillet_is_written_canonically_an_edge_to_a_line() {
     let text = document(&[&fillet(
         "f0000001",
         "m3tq8v0z",
-        &["a91cw0de.cylinder.Edge2", "k7f2qx3m.box.Edge1"],
+        &[
+            "m3tq8v0z.cut.Edge(I a91cw0de.cylinder.Edge2)",
+            "k7f2qx3m.box.Edge1",
+        ],
         "0.5",
     )]);
     let written = silico_core::document::write(&read(text.as_bytes()).unwrap()).unwrap();
     assert!(
         written.contains(
-            "    {\n      \"id\": \"f0000001\",\n      \"type\": \"fillet\",\n      \"v\": 1,\n      \"name\": \"Round\",\n      \"base\": \"m3tq8v0z\",\n      \"edges\": [\n        \"a91cw0de.cylinder.Edge2\",\n        \"k7f2qx3m.box.Edge1\"\n      ],\n      \"radius\": 0.5\n    }"
+            "    {\n      \"id\": \"f0000001\",\n      \"type\": \"fillet\",\n      \"v\": 1,\n      \"name\": \"Round\",\n      \"base\": \"m3tq8v0z\",\n      \"edges\": [\n        \"m3tq8v0z.cut.Edge(I a91cw0de.cylinder.Edge2)\",\n        \"k7f2qx3m.box.Edge1\"\n      ],\n      \"radius\": 0.5\n    }"
         ),
         "{written}"
     );
@@ -546,7 +578,7 @@ fn a_primitive_made_another_kind_under_its_id_breaks_a_reference_to_its_elements
             // name found nothing).
             assert!(
                 errors[0].message().contains(&format!(
-                    "names an element of a {named}, but k7f2qx3m is a {made} now"
+                    "names an element a {named} made, but k7f2qx3m is a {made} now"
                 )),
                 "{}",
                 errors[0]

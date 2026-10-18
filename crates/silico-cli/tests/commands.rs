@@ -230,6 +230,48 @@ fn a_file_that_cant_be_read_or_a_bad_command_is_exit_2() {
     }
 }
 
+/// The example's block and a fillet of it too large to build.
+const FAILING: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge1"], "radius": 50}
+  ]
+}
+"#;
+
+#[test]
+fn a_feature_that_fails_to_build_is_exit_1_for_check_and_fmt_which_still_writes() {
+    // Found by the milestone's tests review: no test had a feature fail to build, so `fmt`
+    // exiting 0 for one passed (docs/cli.md: the file is still written, exit 1).
+    let scratch = Scratch::new("failing");
+    let file = scratch.file(FAILING);
+    let check = silico(&scratch, &["check"], &file);
+    assert_eq!(check.status.code(), Some(1), "{}", stderr(&check));
+    let fmt = silico(&scratch, &["fmt"], &file);
+    assert_eq!(fmt.status.code(), Some(1), "{}", stderr(&fmt));
+    assert!(stderr(&fmt).contains("f0000001"), "{}", stderr(&fmt));
+    // Written: the block, which built, has its fingerprint (8000, the block's volume).
+    let written = std::fs::read_to_string(&file).unwrap();
+    assert!(written.contains(r#""volume": 8000"#), "{written}");
+}
+
+#[test]
+fn the_worst_of_several_files_decides_the_exit_whatever_their_order() {
+    // Found by the milestone's tests review: the orders tested were all ones a fold that
+    // keeps the last file's outcome passes too. A file that can't be read (2), then one
+    // that doesn't pass the gate (1): 2.
+    let scratch = Scratch::new("worst");
+    let bad = scratch.file("{");
+    let missing = scratch.0.join("missing.silico");
+    let missing = missing.to_str().unwrap();
+    for command in ["check", "fmt"] {
+        let out = silico(&scratch, &[command, missing], &bad);
+        assert_eq!(out.status.code(), Some(2), "{command}: {}", stderr(&out));
+    }
+}
+
 /// `git ARGS` in `dir`, with no user or system configuration.
 fn git(dir: &Path, args: &[&str]) -> Output {
     let out = Command::new("git")
