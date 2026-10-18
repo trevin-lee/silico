@@ -694,6 +694,18 @@ fn a_sweep_feature_that_changes_nothing_is_refused_and_blocks_what_uses_it() {
     let cube_above = box_at("bbbbbbbb", [-1.0, -1.0, 1.0], 10.0, 10.0, 10.0);
     let fillet = r#"{"id": "ffffffff", "type": "fillet", "v": 1, "name": "F", "base": "qqqqqqqq", "edges": ["bbbbbbbb.box.Edge1"], "radius": 0.1}"#;
     let engine = engine();
+    // The pocket alone first: its refusal is then known when the fillet is planned, so the
+    // fillet's step is never started. (In one recompute, a step's users start as soon as
+    // it's built, beside its measure, and the verdict stops only what hasn't started:
+    // round 3's council. Fresh, the outcomes are the same.)
+    published(
+        &engine,
+        &[
+            &cube_above,
+            &sketch("xy"),
+            &pocket("qqqqqqqq", "bbbbbbbb", "ssssssss", TEN),
+        ],
+    );
     let model = published(
         &engine,
         &[
@@ -1009,41 +1021,77 @@ fn an_axis_crossing_its_profile_and_an_angle_too_small_are_refused_in_full() {
 
 #[test]
 fn nothing_is_built_on_a_refused_pocket() {
-    // Council round 2 (proven): the result check decided only a feature's outcome, so the
-    // steps of what used a refused feature still ran. Three pockets chained on the cube
-    // above the XY plane, each of the last, all going down and missing it: the first's cut
-    // is made and refused, and nothing is made on it.
+    // Council rounds 2 and 3: three pockets chained on the cube above the XY plane, each of
+    // the last, all going down and missing it. Fresh, the first's cut is made and refused,
+    // the others blocked, reported alike whatever ran: a step's users start as soon as it's
+    // built, beside its measure (round 3: the measure on the critical path doubled a cold
+    // chain), so a later cut may start before the first's verdict lands, and none starts
+    // after it. Once the verdict is known, at a recompute's start (kept), nothing is
+    // started for a refused feature's dependants: here two new pockets on it ask for no
+    // cut at all.
     let cube_above = box_at("bbbbbbbb", [-1.0, -1.0, 1.0], 10.0, 10.0, 10.0);
+    let chain = |second: &str, third: &str| {
+        vec![
+            cube_above.clone(),
+            sketch("xy"),
+            pocket("qqqqqqqq", "bbbbbbbb", "ssssssss", TEN),
+            pocket("rrrrrrrr", "qqqqqqqq", "ssssssss", second),
+            pocket("tttttttt", "rrrrrrrr", "ssssssss", third),
+        ]
+    };
+    let check = |model: &Model| {
+        assert_eq!(failed(model, "qqqqqqqq").code(), ErrorCode::KernelFailed);
+        for feature in ["rrrrrrrr", "tttttttt"] {
+            assert_eq!(
+                model.outcome(&id(feature)),
+                Some(&FeatureOutcome::Blocked { on: id("qqqqqqqq") })
+            );
+        }
+    };
+    let cuts =
+        |engine: &Recompute<FakeKernel>| names(engine).iter().filter(|n| **n == "Cut").count();
+    let fresh = engine();
+    let all = chain(TEN, TEN);
+    let refs: Vec<&str> = all.iter().map(String::as_str).collect();
+    check(&published(&fresh, &refs));
+    assert!((1..=3).contains(&cuts(&fresh)));
+    // The verdict known before anything is planned: the pockets on it, new steps (other
+    // lengths), are never started.
     let engine = engine();
-    let model = published(
-        &engine,
-        &[
-            &cube_above,
-            &sketch("xy"),
-            &pocket("qqqqqqqq", "bbbbbbbb", "ssssssss", TEN),
-            &pocket("rrrrrrrr", "qqqqqqqq", "ssssssss", TEN),
-            &pocket("tttttttt", "rrrrrrrr", "ssssssss", TEN),
-        ],
+    published(&engine, &refs[..3]);
+    assert_eq!(cuts(&engine), 1);
+    let other = chain(&one_side("3"), &one_side("4"));
+    let refs: Vec<&str> = other.iter().map(String::as_str).collect();
+    check(&published(&engine, &refs));
+    assert_eq!(cuts(&engine), 1);
+}
+
+#[test]
+fn a_valid_chains_users_dont_wait_for_its_measures() {
+    // Council round 3: a feature's measure runs beside its users, not before them. Every
+    // measure held, a pad onto a base and a fillet of the pad's top edge: the fillet's step
+    // starts (and is held too) while the measures are, so three requests run at once (on
+    // four workers: two held measures would fill the usual two).
+    let engine = Recompute::new(FakeKernel::new(4).unwrap()).with_sketches(FakeSketches::new());
+    let summaries = engine.kernel().hold(|op| op.name() == "Summarize");
+    let fillets = engine.kernel().hold(|op| op.name() == "Fillet");
+    let fillet = r#"{"id": "ffffffff", "type": "fillet", "v": 1, "name": "F", "base": "pppppppp", "edges": ["pppppppp.pad.Edge(G ssssssss.sketch.Edge.na000003)"], "radius": 0.5}"#;
+    let run = engine.start(checked_document(&[
+        &cube_below(),
+        &sketch("xy"),
+        &pad("pppppppp", Some("bbbbbbbb"), "ssssssss", TEN),
+        fillet,
+    ]));
+    assert!(
+        engine.kernel().wait_running(3, Duration::from_secs(30)),
+        "the fillet didn't start while the measures were held: {:?}",
+        names(&engine)
     );
-    assert_eq!(failed(&model, "qqqqqqqq").code(), ErrorCode::KernelFailed);
-    for feature in ["rrrrrrrr", "tttttttt"] {
-        assert_eq!(
-            model.outcome(&id(feature)),
-            Some(&FeatureOutcome::Blocked { on: id("qqqqqqqq") })
-        );
-    }
-    let cuts = names(&engine).iter().filter(|n| **n == "Cut").count();
-    assert_eq!(cuts, 1);
-    // Warm, and again nothing more.
-    published(
-        &engine,
-        &[
-            &cube_above,
-            &sketch("xy"),
-            &pocket("qqqqqqqq", "bbbbbbbb", "ssssssss", TEN),
-            &pocket("rrrrrrrr", "qqqqqqqq", "ssssssss", TEN),
-            &pocket("tttttttt", "rrrrrrrr", "ssssssss", TEN),
-        ],
-    );
-    assert_eq!(names(&engine).iter().filter(|n| **n == "Cut").count(), 1);
+    assert!(names(&engine).contains(&"Fillet"));
+    drop(summaries);
+    drop(fillets);
+    let Ok(Ok(RunOutcome::Published(model))) = run.wait_timeout(Duration::from_secs(60)) else {
+        panic!("not published");
+    };
+    assert!(built(&model, "pppppppp") && built(&model, "ffffffff"));
 }

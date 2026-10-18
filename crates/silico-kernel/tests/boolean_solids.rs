@@ -185,8 +185,7 @@ fn a_sweep_feature_leaving_more_than_one_solid_is_refused_fresh_and_from_the_cac
     // all of the 10 mm cube under the XY plane, across its whole x span: two pieces; and a
     // pad of a rectangle beside the cube (x 20..24), missing it: two solids. Each refused in
     // its words, fresh and from the cache (nothing asked then), and a fillet on it blocked,
-    // its step never asked for: the document with the fillet asks the kernel no more than
-    // the one without.
+    // its step never asked for once the feature is refused.
     let cube = box_at("bbbbbbbb", [-1.0, -1.0, -10.0], 10.0, 10.0, 10.0);
     let all = r#"{"type": "through_all", "reversed": false}"#;
     let cases = [
@@ -216,19 +215,24 @@ fn a_sweep_feature_leaving_more_than_one_solid_is_refused_fresh_and_from_the_cac
                 );
             }
         };
+        // The feature's users are released as soon as its steps are built, beside its
+        // measures, so on a fresh engine the fillet's step may start before the verdict
+        // lands; once the verdict is known, it never starts. So: the document without the
+        // fillet first, then with it on the same engine, asks the kernel nothing more.
         let scratch = Scratch::new(&format!("swept-solids-{n}"));
         let plain = swept(&scratch);
         check(&publish(&plain, &without), false);
         let alone = plain.kernel().asked();
+        check(&publish(&plain, &with), true);
+        assert_eq!(
+            plain.kernel().asked(),
+            alone,
+            "the fillet's step was asked for once the feature was refused"
+        );
         drop(plain);
         let scratch = Scratch::new(&format!("swept-solids-{n}-again"));
         let first = swept(&scratch);
         check(&publish(&first, &with), true);
-        assert_eq!(
-            first.kernel().asked(),
-            alone,
-            "the fillet's step was asked for"
-        );
         drop(first);
         let second = swept(&scratch);
         check(&publish(&second, &with), true);

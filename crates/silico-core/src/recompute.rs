@@ -1223,23 +1223,14 @@ struct Plan {
     sketches: Vec<(FeatureId, Key)>,
     /// Each sweep feature's own check of its result, by ID, until its `Planned` takes it.
     checks_of: BTreeMap<FeatureId, SweepCheck>,
-    /// The steps whose users wait on their result's verdict ([`Gate`]), by key.
-    gates: BTreeMap<Key, Gate>,
-    /// The sweep features' gated steps, by their base's key, to judge once it's measured.
-    gated_by_base: BTreeMap<Key, Vec<Key>>,
-}
-
-/// What a step's users wait for beside its result: its verdict, which is the step's (the
-/// same key, base, and result give the same answer for every feature sharing it; only the
-/// words are each feature's, in `model`), so nothing is built on a refused result (the
-/// review's round 2 found a chain of refused pockets each making its cut).
-#[derive(Debug, Clone, Copy)]
-enum Gate {
-    /// An M2 boolean's: its result one solid at most (D2).
-    Solids,
-    /// A sweep feature's fuse or cut: `sweep::check_result`, once it and its base are
-    /// measured.
-    Sweep { base: Key, kind: SweepFeature },
+    /// Each step's features (those whose own steps hold it), by index: a step is run while
+    /// one of them may still be built.
+    owners: BTreeMap<Key, Vec<usize>>,
+    /// The features whose checks a step's result (or measure) can decide, by the step's
+    /// key: those whose solid it is, and those whose base's solid it is.
+    judged_by: BTreeMap<Key, Vec<usize>>,
+    /// Each feature's users, by index: those whose base, tool, or sketch it is.
+    dependants: Vec<Vec<usize>>,
 }
 
 /// A pad's, pocket's, revolve's, or groove's fuse or cut: its feature, what it is, and its
@@ -1558,8 +1549,9 @@ impl Plan {
                 .collect(),
             sketches: Vec::new(),
             checks_of: BTreeMap::new(),
-            gates: BTreeMap::new(),
-            gated_by_base: BTreeMap::new(),
+            owners: BTreeMap::new(),
+            judged_by: BTreeMap::new(),
+            dependants: Vec::new(),
         };
         for feature in features {
             let mut own = Vec::new();
@@ -1595,9 +1587,7 @@ impl Plan {
                             uses = vec![b, t];
                             let key = |i: usize| plan.features.get(i).and_then(Planned::key);
                             if let (Some(base), Some(tool)) = (key(b), key(t)) {
-                                let step = plan.add(Step::Boolean { op, base, tool }, &feature.id);
-                                plan.gate(step, Gate::Solids);
-                                own.push(step);
+                                own.push(plan.add(Step::Boolean { op, base, tool }, &feature.id));
                             }
                         }
                     }
@@ -1686,6 +1676,30 @@ impl Plan {
                     _ => plan.checks_of.remove(&feature.id).map(Check::Sweep),
                 },
             });
+            // Which features each step serves, which checks its result decides, and what
+            // uses what.
+            let index = plan.features.len() - 1;
+            plan.dependants.push(Vec::new());
+            if let Some(planned) = plan.features.last() {
+                for &u in planned.uses.iter().chain(&planned.sweeps) {
+                    if let Some(users) = plan.dependants.get_mut(u) {
+                        users.push(index);
+                    }
+                }
+                for key in &planned.steps {
+                    plan.owners.entry(*key).or_default().push(index);
+                }
+                if planned.check.is_some() {
+                    let base = planned
+                        .uses
+                        .first()
+                        .and_then(|&b| plan.features.get(b))
+                        .and_then(Planned::key);
+                    for key in planned.key().into_iter().chain(base) {
+                        plan.judged_by.entry(key).or_default().push(index);
+                    }
+                }
+            }
         }
         plan
     }
@@ -1758,7 +1772,6 @@ impl Plan {
                 },
                 &feature.id,
             );
-            self.gate(key, Gate::Sweep { base, kind });
             if let Some(base_id) = self.feature_id(b).cloned() {
                 self.checks_of.insert(
                     feature.id.clone(),
@@ -1777,36 +1790,81 @@ impl Plan {
         )
     }
 
-    /// Gates step `key`'s users on `gate` (the first feature's: a shared step's verdict is
-    /// the same for all).
-    fn gate(&mut self, key: Key, gate: Gate) {
-        if self.gates.contains_key(&key) {
-            return;
-        }
-        if let Gate::Sweep { base, .. } = gate {
-            self.gated_by_base.entry(base).or_default().push(key);
-        }
-        self.gates.insert(key, gate);
-    }
-
-    /// Whether step `key`'s users may use its result, by its gate: yes, no, or not yet
-    /// (it, or its base, not yet built or measured). A step with no gate: yes, once built.
-    fn verdict(&self, key: &Key, done: &BTreeMap<Key, StepResult>) -> Option<bool> {
-        let Some(Ok(built)) = done.get(key) else {
-            return None;
+    /// Whether feature `i`'s result passes its check ([`Check`]), from what `done` holds:
+    /// yes, no, or not yet known (its solid, or its base's, not yet built or measured). A
+    /// feature with no check: yes. The verdict is a function of the step's key alone (its
+    /// result and its base's), the same for every feature sharing it; `model` words each
+    /// feature's own refusal.
+    fn verdict(&self, i: usize, done: &BTreeMap<Key, StepResult>) -> Option<bool> {
+        let planned = self.features.get(i)?;
+        let Some(check) = &planned.check else {
+            return Some(true);
         };
-        match self.gates.get(key) {
-            None => Some(true),
-            Some(Gate::Solids) => Some(built.history.as_ref().map_or(1, |h| h.result.solids) <= 1),
-            Some(Gate::Sweep { base, kind }) => {
-                let after = measured_of(built)?;
-                let before = match done.get(base) {
+        let built = match done.get(&planned.key()?) {
+            Some(Ok(built)) => built,
+            _ => return None,
+        };
+        match check {
+            Check::Boolean { .. } => {
+                Some(built.history.as_ref().map_or(1, |h| h.result.solids) <= 1)
+            }
+            Check::Sweep(sweep) => {
+                let base = planned
+                    .uses
+                    .first()
+                    .and_then(|&b| self.features.get(b))
+                    .and_then(Planned::key)?;
+                let before = match done.get(&base) {
                     Some(Ok(base)) => measured_of(base)?,
                     _ => return None,
                 };
-                Some(crate::sweep::result_holds(*kind, &before, &after))
+                Some(crate::sweep::result_holds(
+                    sweep.kind,
+                    &before,
+                    &measured_of(built)?,
+                ))
             }
         }
+    }
+
+    /// The features refused so far, from `done`, and every feature made from one (its base,
+    /// tool, or sketch one, all the way down): nothing is built for them alone.
+    fn refused_and_after(&self, done: &BTreeMap<Key, StepResult>) -> BTreeSet<usize> {
+        let mut dead = BTreeSet::new();
+        for (i, planned) in self.features.iter().enumerate() {
+            let after = planned
+                .uses
+                .iter()
+                .chain(&planned.sweeps)
+                .any(|u| dead.contains(u));
+            if after || self.verdict(i, done) == Some(false) {
+                dead.insert(i);
+            }
+        }
+        dead
+    }
+
+    /// Adds to `dead` the features `key`'s result (or measure) refuses, now that `done` holds
+    /// it, and every feature made from one.
+    fn judge(&self, key: &Key, done: &BTreeMap<Key, StepResult>, dead: &mut BTreeSet<usize>) {
+        for &f in self.judged_by.get(key).into_iter().flatten() {
+            if dead.contains(&f) || self.verdict(f, done) != Some(false) {
+                continue;
+            }
+            let mut stack = vec![f];
+            while let Some(i) = stack.pop() {
+                if dead.insert(i) {
+                    stack.extend(self.dependants.get(i).into_iter().flatten().copied());
+                }
+            }
+        }
+    }
+
+    /// Whether step `key` serves a feature not in `dead`, so it's to be run.
+    fn needed(&self, key: &Key, dead: &BTreeSet<usize>) -> bool {
+        self.owners
+            .get(key)
+            .is_none_or(|owners| owners.iter().any(|f| !dead.contains(f)))
     }
 
     /// The step of a fillet or chamfer `feature` (the next feature planned), of its base:
@@ -2085,6 +2143,9 @@ struct Schedule {
     /// Fillets' and chamfers' steps whose edges didn't all resolve, by key: their broken
     /// references' errors (the first hundred), and how many there are.
     unresolved: BTreeMap<Key, crate::references::Broken>,
+    /// Features refused by their result's check, and every feature made from one, by
+    /// index: a step only these need isn't started (one already running finishes, unused).
+    dead: BTreeSet<usize>,
 }
 
 impl<K: Kernel + 'static> Engine<K> {
@@ -2160,10 +2221,13 @@ impl<K: Kernel + 'static> Engine<K> {
             ready: VecDeque::new(),
             unmeasured: BTreeMap::new(),
             unresolved: BTreeMap::new(),
+            dead: BTreeSet::new(),
             running: 0,
             superseded: false,
             broken: None,
         };
+        // Features refused already, by results kept or read from the cache.
+        schedule.dead = plan.refused_and_after(&schedule.done);
         // Steps that can't run, since an input failed in an earlier recompute (and its
         // failure was kept): left out, and decided blocked or failed from `done`.
         let mut doomed: BTreeSet<Key> = BTreeSet::new();
@@ -2173,9 +2237,7 @@ impl<K: Kernel + 'static> Engine<K> {
             }
             let inputs = plan.steps.get(key).map(Step::inputs).unwrap_or_default();
             let cant = inputs.iter().any(|input| {
-                doomed.contains(input)
-                    || matches!(schedule.done.get(input), Some(Err(_)))
-                    || plan.verdict(input, &schedule.done) == Some(false)
+                doomed.contains(input) || matches!(schedule.done.get(input), Some(Err(_)))
             });
             if cant {
                 doomed.insert(*key);
@@ -2183,8 +2245,7 @@ impl<K: Kernel + 'static> Engine<K> {
             }
             let mut unbuilt = 0;
             for input in inputs {
-                // Not built, or built but not yet judged (it or its base to be measured).
-                if plan.verdict(&input, &schedule.done).is_none() {
+                if !schedule.done.contains_key(&input) {
                     unbuilt += 1;
                     schedule.users.entry(input).or_default().push(*key);
                 }
@@ -2560,6 +2621,13 @@ impl<K: Kernel + 'static> Engine<K> {
                         s = changed.wait(s).unwrap_or_else(PoisonError::into_inner);
                         continue;
                     };
+                    // A step only refused features (and what's made from them) need isn't
+                    // started: they're reported blocked, whatever ran.
+                    if let Job::Make(key) = job
+                        && !plan.needed(&key, &s.dead)
+                    {
+                        continue;
+                    }
                     // A fillet's or chamfer's base is built: what its elements are named
                     // from. Or a solid that isn't built yet, which it waits for (and, if it
                     // failed, waits for forever: the failure blocks it).
@@ -2682,11 +2750,11 @@ impl<K: Kernel + 'static> Engine<K> {
                     }
                     s.done.insert(key, result);
                     if made {
-                        // Its users, if its verdict allows them (a sweep feature's waits for
-                        // the measures below).
-                        woken += release(plan, &mut s, key);
+                        woken += release(&mut s, key);
+                        let Schedule { done, dead, .. } = &mut *s;
+                        plan.judge(&key, done, dead);
                         // A feature's solid is measured once it's made, by a job of its own:
-                        // what uses it doesn't wait for that, unless its gate does.
+                        // what uses it doesn't wait for that.
                         if plan.results.contains(&key) {
                             s.ready.push_back(Job::Measure(key));
                             woken += 1;
@@ -2699,13 +2767,10 @@ impl<K: Kernel + 'static> Engine<K> {
                     let measured = Arc::new(measured);
                     to_keep = Some(Arc::clone(&measured));
                     s.done.insert(key, Ok(measured));
-                    // A gated step waiting on this measure (its own, or its base's).
-                    let judged: Vec<Key> = std::iter::once(key)
-                        .chain(plan.gated_by_base.get(&key).into_iter().flatten().copied())
-                        .collect();
-                    for gated in judged {
-                        woken += release(plan, &mut s, gated);
-                    }
+                    // The checks this measure decides (its feature's, and those whose base it
+                    // is): what only refused features need is no longer started.
+                    let Schedule { done, dead, .. } = &mut *s;
+                    plan.judge(&key, done, dead);
                 }
                 Ran::Measured(Outcome::Done(Err(error))) => {
                     // A solid that couldn't be measured is kept on disk all the same, so the
@@ -2930,12 +2995,9 @@ fn panic_text(panic: &(dyn std::any::Any + Send)) -> String {
         .unwrap_or_else(|| "a panic with no message".to_owned())
 }
 
-/// Releases step `key`'s users waiting on it, if its verdict allows them now (`Plan::
-/// verdict`): each made ready once nothing else holds it. How many were.
-fn release(plan: &Plan, s: &mut Schedule, key: Key) -> usize {
-    if plan.verdict(&key, &s.done) != Some(true) {
-        return 0;
-    }
+/// Releases step `key`'s users waiting on it, now that it's built: each made ready once
+/// nothing else holds it. How many were.
+fn release(s: &mut Schedule, key: Key) -> usize {
     let mut woken = 0;
     for user in s.users.remove(&key).unwrap_or_default() {
         let now_ready = s.waiting.get_mut(&user).is_some_and(|n| {
