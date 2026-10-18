@@ -194,6 +194,8 @@ What OCCT does with closer geometry, measured on the oracle (FreeCAD 1.1.3, OCCT
 
 So exact predicates would let near loops reach the kernel, which builds them and calls them valid, and then (below) the sweep comes back valid and wrong. And no predicate is exact for arcs: an arc's end lies on its circle only to the solve's convergence (about 1e-10), so even "the shared point's intersection" needs a tolerance.
 
+**The profile and the request share their rules.** Whatever the kernel's faces request refuses (`silico_protocol::FaceRegions::check`) the profile refuses first, naming the sketch's elements, by the request's own code on the same numbers: each curve converted once (`Profile::faces`'s conversion, every zero as +0), its size by `Curve::size_problem`, each loop's area and perimeter by `area_and_perimeter` about the loop's first point as sent, and slivers by `sliver`. Two computations of one rule disagreed at the boundary (`/break-it`: a strip whose area the core and the request summed about different first points, and corner arcs, chords, and lone curves within the tolerance).
+
 **Known OCCT wrong results, for M3.6** (measured as above; OCCT calls each result valid):
 - A pad fused onto a 10 × 10 × 10 base, its profile a hole a wall g from the outer side: for g ≤ 3e-7 the fuse is "valid" with volume 1000 and 6 faces, the whole pad silently dropped. Right from 4e-7.
 - The pocket's cut of the same: "valid", with its volume off by about 30 × g, up to g = 3e-7. Right at 1e-6.

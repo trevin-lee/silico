@@ -1430,7 +1430,8 @@ fn plane_word(plane: SketchPlane) -> &'static str {
 }
 
 /// Faces as a line of a shape's bytes: `faces xy region loop line 0 0 4 0 ... loop circle 2
-/// 1.5 0.5`, every number as Rust writes it, which reads back as the same number.
+/// 1.5 0.5`, every number as Rust writes it, which reads back as the same number (a zero of
+/// either sign written as 0).
 fn faces_line(regions: &FaceRegions) -> String {
     let mut line = format!("faces {}", plane_word(regions.plane));
     for region in &regions.regions {
@@ -1469,8 +1470,10 @@ fn faces_line(regions: &FaceRegions) -> String {
                 };
                 line.push(' ');
                 line.push_str(word);
+                // A zero of either sign as 0, as the kernel places points: one shape's
+                // bytes whatever the sign of its zeros.
                 for value in values {
-                    line.push_str(&format!(" {value}"));
+                    line.push_str(&format!(" {}", value + 0.0));
                 }
             }
         }

@@ -348,3 +348,89 @@ fn a_circle_whose_area_is_exactly_1e_7_times_its_perimeter_is_a_sliver() {
     d.circle(0.0, 0.0, r);
     assert!(close(d.made().regions[0].area(), PI * r * r, 1e-15));
 }
+
+#[test]
+fn curves_whose_size_is_exactly_1e_7_are_too_small_and_the_next_f64_is_not() {
+    // A 10 × w rectangle: its short sides are w long. At w = 1e-7 they're too small to
+    // build, refused by the request's own rule before anything else; the next f64 up they
+    // build, and the rectangle is then a sliver.
+    let strip = |w: f64| {
+        let mut d = Draw::new();
+        let n = d.rectangle(0.0, 0.0, 10.0, w);
+        (d, n)
+    };
+    let (d, n) = strip(LENGTH_TOLERANCE);
+    let errors = d.refused();
+    assert_eq!(
+        named(&errors),
+        vec![
+            (
+                format!(
+                    "line {} is 1e-7 mm long: a profile's lines and arcs are longer than 1e-7 mm between their ends",
+                    n[1]
+                ),
+                vec![n[1].clone(), "p0000002".to_owned(), "p0000003".to_owned()]
+            ),
+            (
+                format!(
+                    "line {} is 1e-7 mm long: a profile's lines and arcs are longer than 1e-7 mm between their ends",
+                    n[3]
+                ),
+                vec![n[3].clone(), "p0000004".to_owned(), "p0000001".to_owned()]
+            ),
+        ]
+    );
+    let (d, _) = strip(above());
+    let errors = d.refused();
+    assert_eq!(errors.len(), 1);
+    assert!(errors[0].message().starts_with("loop "), "{}", errors[0]);
+
+    // A circle of radius 1e-7, and of the next f64 up (whose ring of area to perimeter,
+    // r/2, makes it a sliver).
+    let mut d = Draw::new();
+    let c = d.circle(0.0, 0.0, LENGTH_TOLERANCE);
+    let errors = d.refused();
+    assert_eq!(
+        named(&errors),
+        vec![(
+            format!(
+                "circle {c}'s radius is 1e-7 mm: a profile's arcs and circles have a radius above 1e-7 mm"
+            ),
+            vec![c.clone(), "p0000001".to_owned()]
+        )]
+    );
+    assert_eq!(errors[0].suggestion(), Some("draw it larger, or remove it"));
+    let mut d = Draw::new();
+    d.circle(0.0, 0.0, above());
+    assert!(d.refused()[0].message().starts_with("loop "));
+}
+
+#[test]
+fn a_corner_arc_of_radius_1e_7_is_too_small_naming_it_and_its_points() {
+    // A 10 × 10 square, its lower right corner rounded by an arc of radius 1e-7 about
+    // (10 − 1e-7, 1e-7): the arc's ends are 1.41e-7 apart, but its radius is the
+    // tolerance.
+    let r = LENGTH_TOLERANCE;
+    let mut d = Draw::new();
+    let a = d.point(0.0, 0.0);
+    let b = d.point(10.0 - r, 0.0);
+    let c = d.point(10.0, r);
+    let top = d.point(10.0, 10.0);
+    let left = d.point(0.0, 10.0);
+    let o = d.point(10.0 - r, r);
+    d.line(&a, &b);
+    let arc = d.arc(&o, &b, &c);
+    d.line(&c, &top);
+    d.line(&top, &left);
+    d.line(&left, &a);
+    let errors = d.refused();
+    assert_eq!(errors.len(), 1, "{:#?}", named(&errors));
+    assert_eq!(errors[0].elements(), [arc.clone(), o, b, c]);
+    assert!(
+        errors[0]
+            .message()
+            .starts_with(&format!("arc {arc}'s radius is 1e-7 mm: ")),
+        "{}",
+        errors[0]
+    );
+}

@@ -220,8 +220,33 @@ fn a_solution_that_collapses_a_curve_is_refused_naming_it() {
     solution.points.insert(id("p0000002"), at(0.0, 0.0));
     solution.radii.insert(id(&c), Coordinate::new(0.0).unwrap());
     let r = d.profile_from(&solution).unwrap_err();
-    let got: Vec<Vec<String>> = r.errors().iter().map(|e| e.elements().to_vec()).collect();
-    assert_eq!(got, vec![vec![n[0].clone()], vec![c.clone()]]);
+    // Too small to build, each named with its points, by curve ID (the circle's c… first).
+    assert_eq!(
+        named(r.errors()),
+        vec![
+            (
+                format!(
+                    "circle {c}'s radius is 0 mm: a profile's arcs and circles have a radius above 1e-7 mm"
+                ),
+                vec![c.clone(), "p0000009".to_owned()]
+            ),
+            (
+                format!(
+                    "line {} is 0 mm long: a profile's lines and arcs are longer than 1e-7 mm between their ends",
+                    n[0]
+                ),
+                vec![n[0].clone(), "p0000001".to_owned(), "p0000002".to_owned()]
+            ),
+        ]
+    );
+    assert_eq!(
+        r.errors()[0].suggestion(),
+        Some("draw it larger, or remove it")
+    );
+    assert_eq!(
+        r.errors()[1].suggestion(),
+        Some("lengthen it, or remove it and end its neighbours at one point")
+    );
 
     // An arc whose end the solve puts on its start (and so its chord's ends too).
     let mut d = Draw::new();
@@ -234,12 +259,16 @@ fn a_solution_that_collapses_a_curve_is_refused_naming_it() {
     solution.points.insert(id(&e), at(1.0, 0.0));
     let r = d.profile_from(&solution).unwrap_err();
     let got: Vec<Vec<String>> = r.errors().iter().map(|e| e.elements().to_vec()).collect();
-    assert_eq!(got, vec![vec![chord], vec![a]]);
+    assert_eq!(
+        got,
+        vec![vec![a, o, s.clone(), e.clone()], vec![chord, e, s]]
+    );
     assert!(
-        r.errors()[1]
+        r.errors()[0]
             .message()
             .contains("sweeps nothing, or a whole turn")
     );
+    assert!(r.errors()[1].message().contains(" is 0 mm long: "));
 }
 
 #[test]

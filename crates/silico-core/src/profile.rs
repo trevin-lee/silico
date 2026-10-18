@@ -7,14 +7,16 @@
 //! What's refused, in the order it's checked, each an `invalid_input` naming the sketch and
 //! the elements at fault:
 //! 1. no profile curve (none, or construction only);
-//! 2. an open end (a point that ends one profile curve), or open ends close enough to be one
+//! 2. a curve too small to build: a radius, or a line's or an arc's ends apart, of at most
+//!    the tolerance (`silico_protocol::Curve::size_problem`, the kernel request's own rule);
+//! 3. an open end (a point that ends one profile curve), or open ends close enough to be one
 //!    point ("share the point", D2);
-//! 3. a point where three or more profile curves meet;
-//! 4. two curves that meet away from a point they share: crossing, overlapping, or within
+//! 4. a point where three or more profile curves meet;
+//! 5. two curves that meet away from a point they share: crossing, overlapping, or within
 //!    the tolerance of each other;
-//! 5. a loop, or a region (its outer loop less its holes), with no area to speak of.
+//! 6. a loop, or a region (its outer loop less its holes), with no area to speak of.
 //!
-//! 2 to 4 are listed together; 5 only once they pass, since it needs the loops. Every
+//! 3 to 5 are listed together; 6 only once they pass, since it needs the loops. Every
 //! refusal of a kind is listed, up to [`PROBLEMS_LISTED`] in all, and the rest counted.
 //!
 //! The tolerance is OCCT's, [`LENGTH_TOLERANCE`] (1e-7 mm), inclusive: every vertex, edge,
@@ -22,13 +24,20 @@
 //! B-rep (the maintainer's decision, 2026-10-18, on the design's open question 1). Every
 //! closeness question asks one of three predicates over it: [`touching`] (two curves meet),
 //! [`sliver`] (a loop or region has no area), and [`one_point`] (open ends that should share
-//! a point). Nothing is joined or moved. Nothing here depends on the order the sketch lists
+//! a point). Nothing is joined or moved. Every rule the kernel's faces request checks
+//! (`silico_protocol::FaceRegions::check`) the profile applies first, by the request's own
+//! code on the request's own numbers: each curve converted once ([`Profile::faces`]'s
+//! conversion), its size by `Curve::size_problem`, and each loop's area and perimeter by
+//! `area_and_perimeter`, so a profile made is a request taken. Nothing here depends on the order the sketch lists
 //! its geometry: loops, regions, and refusals are ordered by ID.
 
 use std::collections::BTreeMap;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
-use silico_protocol::{LENGTH_TOLERANCE, arc_from_points, format_number, no_distance};
+pub use silico_protocol::sliver;
+use silico_protocol::{
+    LENGTH_TOLERANCE, SizeProblem, arc_from_points, area_and_perimeter, format_number, loop_area,
+};
 
 use crate::document::{Checked, ElementId, FeatureId, Operation, PROBLEMS_LISTED, Sketch};
 use crate::sketch::SketchSolution;
@@ -37,13 +46,6 @@ use crate::{Error, ErrorCode};
 /// Whether two curves `distance` apart meet: within [`LENGTH_TOLERANCE`], inclusive.
 pub fn touching(distance: f64) -> bool {
     distance <= LENGTH_TOLERANCE
-}
-
-/// Whether a loop or region of `area` (signed, or net of its holes) and `perimeter`
-/// encloses no area to speak of: `Profile::check`'s rule, |area| ≤ the tolerance × the
-/// perimeter (on a thin rectangle, a width up to about twice the tolerance).
-pub fn sliver(area: f64, perimeter: f64) -> bool {
-    area.abs() <= LENGTH_TOLERANCE * perimeter
 }
 
 /// Whether two open ends `distance` apart are drawn as one point that should be shared (D2).
@@ -226,12 +228,6 @@ struct Arc {
     to: f64,
 }
 
-impl Arc {
-    fn sweep(&self) -> f64 {
-        self.to - self.from
-    }
-}
-
 /// A curve's geometry, solved.
 #[derive(Debug, Clone, Copy)]
 enum Shape {
@@ -248,16 +244,6 @@ enum Shape {
 }
 
 impl Shape {
-    fn length(&self) -> f64 {
-        match *self {
-            Shape::Line { a, b } => distance(a, b),
-            Shape::Round { r, arc: None, .. } => 2.0 * PI * r,
-            Shape::Round {
-                r, arc: Some(arc), ..
-            } => r * arc.sweep(),
-        }
-    }
-
     /// Its bounding box, `[min x, min y, max x, max y]`: a round's is its circle's.
     fn bounds(&self) -> [f64; 4] {
         match *self {
@@ -287,6 +273,102 @@ impl Curve<'_> {
     fn named(&self) -> String {
         format!("{} {}", self.kind.noun(), self.id)
     }
+
+    /// The curve as drawn, for [`sent`].
+    fn drawn(&self) -> Drawn {
+        match self.shape {
+            Shape::Line { a, b } => Drawn::Line { from: a, to: b },
+            Shape::Round {
+                c, arc: Some(arc), ..
+            } => Drawn::Arc {
+                center: c,
+                start: arc.start,
+                end: arc.end,
+            },
+            Shape::Round { c, r, arc: None } => Drawn::Circle {
+                center: c,
+                radius: r,
+            },
+        }
+    }
+}
+
+/// A profile curve as the sketch draws it, where the solve put it.
+#[derive(Debug, Clone, Copy)]
+enum Drawn {
+    Line {
+        from: Xy,
+        to: Xy,
+    },
+    /// Counter-clockwise from `start` to `end` about `center`.
+    Arc {
+        center: Xy,
+        start: Xy,
+        end: Xy,
+    },
+    Circle {
+        center: Xy,
+        radius: f64,
+    },
+}
+
+/// `p` with a zero of either sign as +0, so a point is one point, and an arc one angle,
+/// whatever the sign of its zeros (a solve can leave −0, and atan2(±0, −1) is ±π).
+fn unsigned([x, y]: Xy) -> Xy {
+    [x + 0.0, y + 0.0]
+}
+
+/// The one conversion of a profile curve to the kernel request's: walked as drawn, or
+/// `reversed`. A line goes from its walk's first point to its second; an arc has its
+/// radius and angles from its own points, as M3.3's translation has them
+/// (`arc_from_points`, the libm crate's), and one walked against its drawing is sent end
+/// first with its angles swapped, so it turns clockwise; a circle has its radius, and no
+/// direction (the request runs it with its loop's). Every coordinate's zero as +0. None for
+/// an arc whose points make none (its ends at one angle from its centre).
+fn sent(drawn: Drawn, reversed: bool) -> Option<silico_protocol::Curve> {
+    use silico_protocol::Curve;
+    Some(match drawn {
+        Drawn::Line { from, to } => {
+            let (from, to) = (unsigned(from), unsigned(to));
+            let (start, end) = if reversed { (to, from) } else { (from, to) };
+            Curve::Line { start, end }
+        }
+        Drawn::Arc { center, start, end } => {
+            let (center, start, end) = (unsigned(center), unsigned(start), unsigned(end));
+            let [radius, start_angle, end_angle] = arc_from_points(center, start, end)?;
+            if reversed {
+                Curve::Arc {
+                    center,
+                    start: end,
+                    end: start,
+                    radius,
+                    start_angle: end_angle,
+                    end_angle: start_angle,
+                }
+            } else {
+                Curve::Arc {
+                    center,
+                    start,
+                    end,
+                    radius,
+                    start_angle,
+                    end_angle,
+                }
+            }
+        }
+        Drawn::Circle { center, radius } => Curve::Circle {
+            center: unsigned(center),
+            radius,
+        },
+    })
+}
+
+/// A walk's curves as the request takes them: none if one can't be converted.
+fn sent_loop(curves: &[Curve<'_>], edges: &[(usize, bool)]) -> Option<Vec<silico_protocol::Curve>> {
+    edges
+        .iter()
+        .map(|&(c, reversed)| sent(curves[c].drawn(), reversed))
+        .collect()
 }
 
 /// The profile of `feature`, a sketch of `document`, from `solution`, its solve: the
@@ -349,14 +431,71 @@ fn of_sketch(
         points,
         ids,
         curves,
+        unbuilt,
     } = gather(feature, sketch, solution)?;
-    if curves.is_empty() {
+    if curves.is_empty() && unbuilt.is_empty() {
         return Err(Refused::of(refuse(
             "the sketch has no curves to make a profile of".to_owned(),
             Vec::new(),
             "draw a closed outline of lines, arcs, or circles that aren't construction geometry",
         )));
     }
+
+    // 2. Curves too small to build, by the request's rule, and arcs whose points make
+    // none; by curve ID.
+    let mut small: BTreeMap<&ElementId, Error> = unbuilt.into_iter().collect();
+    for curve in &curves {
+        let Some(problem) = sent(curve.drawn(), false).and_then(|c| c.size_problem()) else {
+            continue;
+        };
+        let mut elements = vec![curve.id.to_string()];
+        for p in curve
+            .center
+            .iter()
+            .map(|id| id.to_string())
+            .chain(curve.ends.into_iter().flatten().map(|p| ids[p].to_string()))
+        {
+            if !elements.contains(&p) {
+                elements.push(p);
+            }
+        }
+        let rule = format!(
+            "a profile's lines and arcs are longer than {} mm between their ends",
+            format_number(LENGTH_TOLERANCE)
+        );
+        let error = match (problem, curve.kind) {
+            (SizeProblem::Ends(d), CurveKind::Line) => refuse(
+                format!("{} is {} mm long: {rule}", curve.named(), format_number(d)),
+                elements,
+                "lengthen it, or remove it and end its neighbours at one point",
+            ),
+            (SizeProblem::Ends(d), _) => refuse(
+                format!(
+                    "{}'s ends are {} mm apart: {rule}",
+                    curve.named(),
+                    format_number(d)
+                ),
+                elements,
+                "draw a circle instead, or open the arc",
+            ),
+            (SizeProblem::Radius(r), _) => refuse(
+                format!(
+                    "{}'s radius is {} mm: a profile's arcs and circles have a radius above {} mm",
+                    curve.named(),
+                    format_number(r),
+                    format_number(LENGTH_TOLERANCE)
+                ),
+                elements,
+                "draw it larger, or remove it",
+            ),
+        };
+        small.insert(curve.id, error);
+    }
+    let mut found = Found::default();
+    for (_, error) in small {
+        found.add(|| error);
+    }
+    found.into_result()?;
 
     let mut found = Found::default();
     // Each point's curves, once for each end of theirs there.
@@ -368,7 +507,8 @@ fn of_sketch(
     }
     let point_name = |p: usize| ids[p].to_string();
 
-    // 2. Open ends, and open ends that should be one point.
+    // 3. Open ends, and open ends that should be one point (never one curve's own two:
+    // those are a curve too small, refused above).
     let open: Vec<usize> = (0..points.len())
         .filter(|&p| at_point[p].len() == 1)
         .collect();
@@ -415,7 +555,7 @@ fn of_sketch(
         }
     }
 
-    // 3. Points where three or more curves meet.
+    // 4. Points where three or more curves meet.
     for (p, there) in at_point.iter().enumerate() {
         if there.len() >= 3 {
             let mut named: Vec<&ElementId> = there.iter().map(|&c| curves[c].id).collect();
@@ -436,7 +576,7 @@ fn of_sketch(
         }
     }
 
-    // 4. Curves that meet away from a point they share.
+    // 5. Curves that meet away from a point they share.
     let (meets, unlisted) = meetings(&curves, &points, &shared_as);
     let rule = format!(
         "a profile's curves must be more than {} mm apart except at a point they share",
@@ -498,7 +638,8 @@ fn of_sketch(
     found.count(unlisted);
     found.into_result()?;
 
-    // The loops, then 5: loops and regions with no area.
+    // The loops, then 6: loops and regions with no area, measured as the request measures
+    // them.
     let loops =
         walk(&curves, &at_point).map_err(|e| Refused::of(e.with_feature(feature.as_str())))?;
     let profile = regions(&curves, &ids, &loops)
@@ -566,10 +707,13 @@ struct Gathered<'a> {
     ids: Vec<&'a ElementId>,
     /// The profile curves, in ID order.
     curves: Vec<Curve<'a>>,
+    /// Arcs whose solved points make none (their ends at one angle from their centre),
+    /// left out of `curves`, each with its refusal.
+    unbuilt: Vec<(&'a ElementId, Error)>,
 }
 
-/// The points and profile curves of `sketch` where `solution` puts them. Refused where the
-/// solution doesn't hold the sketch (a bug), or holds a curve it can't make.
+/// The points and profile curves of `sketch` where `solution` puts them, each point's
+/// zeros as +0. Refused where the solution doesn't hold the sketch (a bug).
 fn gather<'a>(
     feature: &FeatureId,
     sketch: &'a Sketch,
@@ -592,7 +736,7 @@ fn gather<'a>(
     for (point, curve) in used {
         match solution.point(point) {
             Some(xy) => {
-                table.insert(point, xy);
+                table.insert(point, unsigned(xy));
             }
             None => {
                 missing.get_or_insert((point, curve));
@@ -622,29 +766,10 @@ fn gather<'a>(
     let points: Vec<Xy> = table.values().copied().collect();
     let at = |id: &ElementId| place.get(id).copied().unwrap_or(0);
 
-    let mut found = Found::default();
-    let unbuildable = |id: &ElementId, message: String, suggestion: &str| {
-        Error::new(ErrorCode::InvalidInput, message)
-            .with_feature(feature.as_str())
-            .with_element(id.as_str())
-            .with_suggestion(suggestion)
-    };
+    let mut unbuilt = Vec::new();
     let mut curves = Vec::new();
     for l in lines {
         let (a, b) = (at(&l.from), at(&l.to));
-        if no_distance(points[a], points[b]) {
-            found.add(|| {
-                unbuildable(
-                    &l.id,
-                    format!(
-                        "line {}'s ends are solved to one place, so it has no length",
-                        l.id
-                    ),
-                    "draw the line's ends apart",
-                )
-            });
-            continue;
-        }
         curves.push(Curve {
             id: &l.id,
             kind: CurveKind::Line,
@@ -663,20 +788,6 @@ fn gather<'a>(
                 [&c.id, &c.center],
             ));
         };
-        if !(r > 0.0 && r.is_finite()) {
-            found.add(|| {
-                unbuildable(
-                    &c.id,
-                    format!(
-                        "circle {}'s radius is solved to {} mm",
-                        c.id,
-                        format_number(r)
-                    ),
-                    "give the circle a radius above 0",
-                )
-            });
-            continue;
-        }
         curves.push(Curve {
             id: &c.id,
             kind: CurveKind::Circle,
@@ -691,19 +802,22 @@ fn gather<'a>(
     }
     for a in arcs {
         let (c, s, e) = (at(&a.center), at(&a.start), at(&a.end));
-        let built = arc_from_points(points[c], points[s], points[e])
-            .filter(|&[r, ..]| r > 0.0 && !no_distance(points[s], points[e]));
-        let Some([r, from, to]) = built else {
-            found.add(|| {
-                unbuildable(
-                    &a.id,
+        let Some([r, from, to]) = arc_from_points(points[c], points[s], points[e]) else {
+            unbuilt.push((
+                &a.id,
+                Error::new(
+                    ErrorCode::InvalidInput,
                     format!(
                         "arc {}'s start and end are solved to one angle from its centre, so it sweeps nothing, or a whole turn",
                         a.id
                     ),
-                    "move the arc's end round its centre from its start, or draw a circle",
                 )
-            });
+                .with_feature(feature.as_str())
+                .with_elements([&a.id, &a.center, &a.start, &a.end].map(|id| id.to_string()))
+                .with_suggestion(
+                    "move the arc's end round its centre from its start, or draw a circle",
+                ),
+            ));
             continue;
         };
         curves.push(Curve {
@@ -723,12 +837,12 @@ fn gather<'a>(
             },
         });
     }
-    found.into_result()?;
     curves.sort_by(|a, b| a.id.cmp(b.id));
     Ok(Gathered {
         points,
         ids,
         curves,
+        unbuilt,
     })
 }
 
@@ -1220,12 +1334,11 @@ fn line_round_beside(
     (0.0..=1.0).contains(&t) && away(x) && on_round(c, arc, x)
 }
 
-/// A loop as walked: its curves (by place) and whether each is reversed, its area signed
-/// by the walk, and its perimeter.
+/// A loop as walked: its curves (by place) and whether each is reversed, and its area
+/// signed by the walk, as the request measures it.
 struct Walked {
     edges: Vec<(usize, bool)>,
     area: f64,
-    perimeter: f64,
 }
 
 /// The loops of a profile whose every point joins two curves: each from its curve with the
@@ -1263,53 +1376,10 @@ fn walk(curves: &[Curve<'_>], at_point: &[Vec<usize>]) -> Result<Vec<Walked>, Er
                 current = next;
             }
         }
-        let (area, perimeter) = measure(curves, &edges);
-        loops.push(Walked {
-            edges,
-            area,
-            perimeter,
-        });
+        let (area, _) = area_and_perimeter(&sent_loop(curves, &edges).ok_or_else(broken)?);
+        loops.push(Walked { edges, area });
     }
     Ok(loops)
-}
-
-/// A walk's signed area (the shoelace sum over its chords, about its first point, plus
-/// each arc's segment, ±(r²/2)(θ − sin θ) by the way the walk runs along it) and its
-/// perimeter.
-fn measure(curves: &[Curve<'_>], edges: &[(usize, bool)]) -> (f64, f64) {
-    let ends = |shape: &Shape, reversed: bool| match *shape {
-        Shape::Line { a, b } => Some(if reversed { (b, a) } else { (a, b) }),
-        Shape::Round { arc: Some(arc), .. } => Some(if reversed {
-            (arc.end, arc.start)
-        } else {
-            (arc.start, arc.end)
-        }),
-        Shape::Round { arc: None, .. } => None,
-    };
-    let origin = edges
-        .first()
-        .and_then(|&(c, r)| ends(&curves[c].shape, r))
-        .map_or([0.0, 0.0], |(s, _)| s);
-    let (mut area, mut perimeter) = (0.0, 0.0);
-    for &(c, reversed) in edges {
-        let shape = &curves[c].shape;
-        perimeter += shape.length();
-        let sign = if reversed { -1.0 } else { 1.0 };
-        if let Some((s, e)) = ends(shape, reversed) {
-            area += cross(sub(s, origin), sub(e, origin)) / 2.0;
-        }
-        if let Shape::Round { r, arc, .. } = *shape {
-            area += sign
-                * match arc {
-                    Some(arc) => {
-                        let theta = arc.sweep();
-                        r * r / 2.0 * (theta - libm::sin(theta))
-                    }
-                    None => PI * r * r,
-                };
-        }
-    }
-    (area, perimeter)
 }
 
 /// How many times the ray from `p` along +x crosses the loop, by the half-open rule
@@ -1428,40 +1498,45 @@ fn regions(curves: &[Curve<'_>], ids: &[&ElementId], loops: &[Walked]) -> Result
         }
     }
 
-    let oriented = |l: &Walked, outer: bool| -> Loop {
-        let edge = |&(c, reversed): &(usize, bool)| {
-            let curve = &curves[c];
-            Edge {
-                curve: curve.id.clone(),
-                kind: curve.kind,
-                center: curve.center.cloned(),
-                ends: curve.ends.map(|[a, b]| {
-                    let (a, b) = (ids[a].clone(), ids[b].clone());
-                    if reversed { [b, a] } else { [a, b] }
-                }),
-                reversed,
-            }
-        };
-        let mut edges: Vec<Edge> = l.edges.iter().map(edge).collect();
-        let mut area = l.area;
-        if (area > 0.0) != outer {
+    let oriented = |l: &Walked, outer: bool| -> Result<Loop, Error> {
+        let mut walked = l.edges.clone();
+        if (l.area > 0.0) != outer {
             // Walked the other way, still from the first curve.
-            if let Some((first, rest)) = edges.split_first_mut() {
+            if let Some((first, rest)) = walked.split_first_mut() {
                 rest.reverse();
                 for e in std::iter::once(first).chain(rest.iter_mut()) {
-                    e.reversed = !e.reversed;
-                    if let Some([a, b]) = e.ends.take() {
-                        e.ends = Some([b, a]);
-                    }
+                    e.1 = !e.1;
                 }
             }
-            area = -area;
         }
-        Loop {
+        let edges = walked
+            .iter()
+            .map(|&(c, reversed)| {
+                let curve = &curves[c];
+                Edge {
+                    curve: curve.id.clone(),
+                    kind: curve.kind,
+                    center: curve.center.cloned(),
+                    ends: curve.ends.map(|[a, b]| {
+                        let (a, b) = (ids[a].clone(), ids[b].clone());
+                        if reversed { [b, a] } else { [a, b] }
+                    }),
+                    reversed,
+                }
+            })
+            .collect();
+        // Measured as the request will measure what it's sent.
+        let sent = sent_loop(curves, &walked).ok_or_else(|| {
+            Error::new(
+                ErrorCode::Internal,
+                "a profile's loop has a curve it can't send",
+            )
+        })?;
+        Ok(Loop {
             curves: edges,
-            area,
-            perimeter: l.perimeter,
-        }
+            area: loop_area(&sent, outer),
+            perimeter: area_and_perimeter(&sent).1,
+        })
     };
 
     // Loops are in their first curves' order, which is ID order, so regions and holes
@@ -1472,7 +1547,7 @@ fn regions(curves: &[Curve<'_>], ids: &[&ElementId], loops: &[Walked]) -> Result
         if depth[i].is_multiple_of(2) {
             index_of_region.insert(i, regions.len());
             regions.push(Region {
-                outer: oriented(l, true),
+                outer: oriented(l, true)?,
                 holes: Vec::new(),
                 depth: depth[i],
             });
@@ -1492,7 +1567,7 @@ fn regions(curves: &[Curve<'_>], ids: &[&ElementId], loops: &[Walked]) -> Result
                 )
                 .with_elements(l.edges.iter().map(|&(c, _)| curves[c].id.to_string()))
             })?;
-        region.holes.push(oriented(l, false));
+        region.holes.push(oriented(l, false)?);
     }
     Ok(Profile { regions })
 }
@@ -1500,13 +1575,9 @@ fn regions(curves: &[Curve<'_>], ids: &[&ElementId], loops: &[Walked]) -> Result
 impl Profile {
     /// The profile as the kernel's faces request takes it (`KernelRequest::make_faces`), on
     /// `plane`, from `solution` (the sketch's, which made it): its regions in order, each
-    /// loop's curves as walked, outer loops counter-clockwise and holes clockwise. A line
-    /// goes from its walk's first point to its second; an arc as drawn has its radius and
-    /// angles from its own points, as M3.3's translation has them (`arc_from_points`, the
-    /// libm crate's), and one walked against its drawing is sent end first with its angles
-    /// swapped, so it turns clockwise; a circle has its solved radius, and no direction
-    /// (the request runs it with its loop's). An error is a bug: a solution without a
-    /// point or a radius the profile names.
+    /// loop's curves as walked, outer loops counter-clockwise and holes clockwise, each
+    /// curve converted as the profile measured it ([`sent`], the one conversion). An error
+    /// is a bug: a solution without a point or a radius the profile names.
     pub fn faces(
         &self,
         plane: crate::document::Plane,
@@ -1527,53 +1598,38 @@ impl Profile {
                     .ok_or_else(|| missing("a centre of", &edge.curve))
                     .and_then(point)
             };
-            match (edge.kind, &edge.ends) {
-                (CurveKind::Line, Some([from, to])) => Ok(silico_protocol::Curve::Line {
-                    start: point(from)?,
-                    end: point(to)?,
-                }),
-                (CurveKind::Arc, Some([from, to])) => {
-                    let (from_at, to_at, c) = (point(from)?, point(to)?, center()?);
-                    // The arc as drawn runs counter-clockwise from its start to its end: the
-                    // walk's first point, unless the walk runs against it.
-                    let (start, end) = if edge.reversed {
-                        (to_at, from_at)
-                    } else {
-                        (from_at, to_at)
-                    };
-                    let [radius, start_angle, end_angle] = arc_from_points(c, start, end)
-                        .ok_or_else(|| missing("an arc with a sweep of", &edge.curve))?;
-                    Ok(if edge.reversed {
-                        silico_protocol::Curve::Arc {
-                            center: c,
-                            start: end,
-                            end: start,
-                            radius,
-                            start_angle: end_angle,
-                            end_angle: start_angle,
-                        }
-                    } else {
-                        silico_protocol::Curve::Arc {
-                            center: c,
-                            start,
-                            end,
-                            radius,
-                            start_angle,
-                            end_angle,
-                        }
-                    })
+            // The curve as drawn: the walk's ends, the other way round if it's reversed.
+            let drawn_ends = |[a, b]: &[ElementId; 2]| -> Result<(Xy, Xy), Error> {
+                let (a, b) = (point(a)?, point(b)?);
+                Ok(if edge.reversed { (b, a) } else { (a, b) })
+            };
+            let drawn = match (edge.kind, &edge.ends) {
+                (CurveKind::Line, Some(ends)) => {
+                    let (from, to) = drawn_ends(ends)?;
+                    Drawn::Line { from, to }
                 }
-                (CurveKind::Circle, None) => Ok(silico_protocol::Curve::Circle {
+                (CurveKind::Arc, Some(ends)) => {
+                    let (start, end) = drawn_ends(ends)?;
+                    Drawn::Arc {
+                        center: center()?,
+                        start,
+                        end,
+                    }
+                }
+                (CurveKind::Circle, None) => Drawn::Circle {
                     center: center()?,
                     radius: solution
                         .radius(&edge.curve)
                         .ok_or_else(|| missing("the radius of", &edge.curve))?,
-                }),
-                _ => Err(missing(
-                    "a curve shaped otherwise than its kind,",
-                    &edge.curve,
-                )),
-            }
+                },
+                _ => {
+                    return Err(missing(
+                        "a curve shaped otherwise than its kind,",
+                        &edge.curve,
+                    ));
+                }
+            };
+            sent(drawn, edge.reversed).ok_or_else(|| missing("an arc with a sweep of", &edge.curve))
         };
         let curves = |l: &Loop| l.curves.iter().map(curve).collect::<Result<Vec<_>, _>>();
         let regions = self

@@ -107,7 +107,38 @@ pub enum Curve {
     Circle { center: [f64; 2], radius: f64 },
 }
 
+/// What's too small about a curve for OCCT to build ([`Curve::size_problem`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SizeProblem {
+    /// An arc's or a circle's radius, not above [`LENGTH_TOLERANCE`].
+    Radius(f64),
+    /// How far apart a line's or an arc's ends are, not more than [`LENGTH_TOLERANCE`]
+    /// (by `libm`'s `hypot`).
+    Ends(f64),
+}
+
 impl Curve {
+    /// What's too small about it to build, if anything: its radius (an arc's or a
+    /// circle's) at most OCCT's tolerance, or else its ends (a line's or an arc's) at most
+    /// the tolerance apart. Two places within the tolerance are one place to OCCT. The
+    /// request's check refuses what this names, and the core's profile refuses it first,
+    /// by the same rule on the same numbers.
+    pub fn size_problem(&self) -> Option<SizeProblem> {
+        let radius = match *self {
+            Curve::Arc { radius, .. } | Curve::Circle { radius, .. } => Some(radius),
+            Curve::Line { .. } => None,
+        };
+        // Not above the tolerance, or not a number.
+        if let Some(radius) = radius
+            && (radius <= LENGTH_TOLERANCE || radius.is_nan())
+        {
+            return Some(SizeProblem::Radius(radius));
+        }
+        let (start, end) = self.ends()?;
+        let length = distance(start, end);
+        (length <= LENGTH_TOLERANCE).then_some(SizeProblem::Ends(length))
+    }
+
     /// Where it starts and ends, if it isn't a circle.
     pub fn ends(&self) -> Option<([f64; 2], [f64; 2])> {
         match *self {
@@ -300,7 +331,8 @@ fn check_curve(c: &Curve, place: &Place) -> Result<(), InvalidParameter> {
         ))
     };
     let check_radius = |radius: f64| {
-        if radius > LENGTH_TOLERANCE && radius <= MAX_LENGTH {
+        let small = matches!(c.size_problem(), Some(SizeProblem::Radius(_)));
+        if !small && radius <= MAX_LENGTH {
             Ok(())
         } else {
             Err(invalid(format!(
@@ -327,13 +359,12 @@ fn check_curve(c: &Curve, place: &Place) -> Result<(), InvalidParameter> {
             format_number(length)
         ))
     };
+    let ends_short = || match c.size_problem() {
+        Some(SizeProblem::Ends(length)) => Err(short(length)),
+        _ => Ok(()),
+    };
     match *c {
-        Curve::Line { start, end } => {
-            let length = distance(start, end);
-            if length <= LENGTH_TOLERANCE {
-                return Err(short(length));
-            }
-        }
+        Curve::Line { .. } => ends_short()?,
         Curve::Arc {
             center,
             start,
@@ -358,10 +389,7 @@ fn check_curve(c: &Curve, place: &Place) -> Result<(), InvalidParameter> {
                     format_number(sweep)
                 )));
             }
-            let length = distance(start, end);
-            if length <= LENGTH_TOLERANCE {
-                return Err(short(length));
-            }
+            ends_short()?;
             for (what, p, angle) in [("start", start, start_angle), ("end", end, end_angle)] {
                 let off = distance(p, on_circle(center, radius, angle));
                 if off > LENGTH_TOLERANCE {
@@ -377,8 +405,10 @@ fn check_curve(c: &Curve, place: &Place) -> Result<(), InvalidParameter> {
     Ok(())
 }
 
-/// A loop's signed area, a circle counter-clockwise ([`loop_area`]), and its perimeter.
-fn area_and_perimeter(curves: &[Curve]) -> (f64, f64) {
+/// A loop's signed area, about its first point, a circle counter-clockwise
+/// ([`loop_area`] runs one the way its role says), and its perimeter: the measure the
+/// request's check and the core's profile both take a loop's area and perimeter by.
+pub fn area_and_perimeter(curves: &[Curve]) -> (f64, f64) {
     use std::f64::consts::PI;
     let origin = curves
         .iter()
@@ -422,12 +452,20 @@ fn cross(a: [f64; 2], b: [f64; 2], origin: [f64; 2]) -> f64 {
     a[0] * b[1] - a[1] * b[0]
 }
 
+/// Whether a loop (or a region, its loops' areas and perimeters summed) of `area` and
+/// `perimeter` encloses no area to speak of: |area| at most the tolerance times the
+/// perimeter, M1's rule (`Profile::check`). On a thin rectangle, a width up to about twice
+/// the tolerance.
+pub fn sliver(area: f64, perimeter: f64) -> bool {
+    area.abs() <= LENGTH_TOLERANCE * perimeter
+}
+
 /// That a loop encloses an area, more than the tolerance times its perimeter, the way its
 /// role says: counter-clockwise for an outer loop, clockwise for a hole.
 fn check_area(curves: &[Curve], outer: bool, name: &str) -> Result<(), InvalidParameter> {
     let area = loop_area(curves, outer);
     let (_, perimeter) = area_and_perimeter(curves);
-    if area.abs() <= LENGTH_TOLERANCE * perimeter {
+    if sliver(area, perimeter) {
         return Err(invalid(format!(
             "{name} encloses no area to speak of ({} mm², against a perimeter of {} mm)",
             format_number(area.abs()),

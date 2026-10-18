@@ -20,7 +20,8 @@ use serde::{Deserialize, Serialize};
 
 pub use chamfer::ChamferSize;
 pub use faces::{
-    Curve, FaceRegions, MAX_ARC_ANGLE, MAX_FACE_CURVES, Region, SketchPlane, loop_area,
+    Curve, FaceRegions, MAX_ARC_ANGLE, MAX_FACE_CURVES, Region, SizeProblem, SketchPlane,
+    area_and_perimeter, loop_area, sliver,
 };
 pub use frame::{FrameError, FrameReader, MAX_FRAME_LEN, decode, write_message, write_started};
 pub use history::{
