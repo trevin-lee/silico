@@ -11,13 +11,38 @@
 namespace silico_sketch {
 
 struct SolveInput;
-struct SolveOutput;
+struct Diagnosed;
+struct Attempt;
 struct Pin;
 struct Diagnosis;
 struct MoveOutput;
+enum class AlgorithmIn : std::uint8_t;
 
-// Diagnoses and solves `input`. C++ exceptions reach Rust as errors (cxx's Result).
-SolveOutput solve(const SolveInput &input);
+// A sketch built and diagnosed once, to be solved by one algorithm after another, each from
+// the values it was built with (FreeCAD's Sketch::internalSolve). Opaque to Rust, which
+// holds it by a UniquePtr; it's never moved, since PlaneGCS points into it. C++ exceptions
+// reach Rust as errors (cxx's Result).
+class Solver {
+ public:
+  struct State;
+  explicit Solver(const SolveInput &input);
+  ~Solver();
+  Solver(const Solver &) = delete;
+  Solver &operator=(const Solver &) = delete;
+
+  std::unique_ptr<State> state;
+};
+
+// Builds and diagnoses `input`.
+std::unique_ptr<Solver> solver_new(const SolveInput &input);
+// What the diagnosis found.
+Diagnosed solver_diagnosis(const Solver &solver);
+// Solves with `algorithm` from the values the sketch was built with, and gives PlaneGCS's
+// status and, unless it failed, its solution; the values are then as they were built.
+Attempt solver_try(Solver &solver, AlgorithmIn algorithm);
+// Each of `tags`' residuals with the sketch's values set to `values`.
+rust::Vec<double> solver_residuals(Solver &solver, rust::Slice<const double> values,
+                                   rust::Slice<const std::uint32_t> tags);
 
 // A drag under way: the PlaneGCS system of the part a drag moves, kept between moves. Opaque to Rust,
 // which holds it by a UniquePtr; it's never moved, since PlaneGCS points into it.

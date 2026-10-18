@@ -43,6 +43,8 @@ GCS::Algorithm algorithm_of(AlgorithmIn a) {
       return GCS::LevenbergMarquardt;
     case AlgorithmIn::Bfgs:
       return GCS::BFGS;
+    default:
+      break;
   }
   bug("an algorithm Rust doesn't send");
 }
@@ -68,6 +70,8 @@ struct Sketch {
   std::vector<double> values;
   std::vector<Geo> geometry;
   GCS::System system;
+  // The unknowns, in the core's order.
+  GCS::VEC_pD unknowns;
 
   explicit Sketch(const SolveInput &input);
   Sketch(const Sketch &) = delete;
@@ -108,6 +112,55 @@ struct Sketch {
         break;
     }
     bug("a point geometry " + std::to_string(i) + " doesn't have");
+  }
+
+  // A line, circle, or arc, as the curve PlaneGCS's angle at a point takes.
+  GCS::Curve &curve(uint32_t i) {
+    if (i >= geometry.size()) bug("geometry " + std::to_string(i) + " out of range");
+    Geo &g = geometry[i];
+    switch (g.kind) {
+      case GeometryKind::Line:
+        return g.line;
+      case GeometryKind::Circle:
+        return g.circle;
+      case GeometryKind::Arc:
+        return g.arc;
+      default:
+        bug("geometry " + std::to_string(i) + " isn't a curve");
+    }
+  }
+
+  // A circle, or an arc's circle: its centre and radius.
+  GCS::Circle &round(uint32_t i) {
+    if (i >= geometry.size()) bug("geometry " + std::to_string(i) + " out of range");
+    Geo &g = geometry[i];
+    if (g.kind == GeometryKind::Circle) return g.circle;
+    if (g.kind == GeometryKind::Arc) return g.arc;
+    bug("geometry " + std::to_string(i) + " isn't a circle or an arc");
+  }
+
+  bool is_arc(uint32_t i) const {
+    return i < geometry.size() && geometry[i].kind == GeometryKind::Arc;
+  }
+
+  // A point on a line (extended), a circle, or an arc's whole circle, as FreeCAD's
+  // PointOnObject puts it (Sketch::addPointOnObjectConstraint).
+  void point_on(GCS::Point &p, uint32_t i, int tag) {
+    if (i >= geometry.size()) bug("geometry " + std::to_string(i) + " out of range");
+    Geo &g = geometry[i];
+    switch (g.kind) {
+      case GeometryKind::Line:
+        system.addConstraintPointOnLine(p, g.line, tag);
+        break;
+      case GeometryKind::Circle:
+        system.addConstraintPointOnCircle(p, g.circle, tag);
+        break;
+      case GeometryKind::Arc:
+        system.addConstraintPointOnArc(p, g.arc, tag);
+        break;
+      default:
+        bug("geometry " + std::to_string(i) + " isn't a curve");
+    }
   }
 
   // The diagnosis, once, as FreeCAD's Sketch makes it (initSolution): the degrees of
@@ -218,12 +271,91 @@ Sketch::Sketch(const SolveInput &input) : values(input.values.begin(), input.val
                                            value(c.value), tag);
         }
         break;
+      case ConstraintKind::HorizontalPoints:
+        system.addConstraintHorizontal(point_of(c.a_position, c.a), point_of(c.b_position, c.b),
+                                       tag);
+        break;
+      case ConstraintKind::VerticalPoints:
+        system.addConstraintVertical(point_of(c.a_position, c.a), point_of(c.b_position, c.b),
+                                     tag);
+        break;
+      case ConstraintKind::PointLineDistance:
+        system.addConstraintP2LDistance(point_of(c.a_position, c.a),
+                                        geo(c.b, GeometryKind::Line).line, value(c.value), tag);
+        break;
+      case ConstraintKind::PointOnCircle:
+        // An arc as FreeCAD puts a point on one: on its whole circle.
+        if (is_arc(c.b)) {
+          system.addConstraintPointOnArc(point_of(c.a_position, c.a), geometry[c.b].arc, tag);
+        } else {
+          system.addConstraintPointOnCircle(point_of(c.a_position, c.a),
+                                            geo(c.b, GeometryKind::Circle).circle, tag);
+        }
+        break;
+      case ConstraintKind::EqualRadius:
+        // As FreeCAD's Sketch::addEqualConstraint: a circle before an arc.
+        if (is_arc(c.a) && is_arc(c.b)) {
+          system.addConstraintEqualRadius(geometry[c.a].arc, geometry[c.b].arc, tag);
+        } else if (is_arc(c.b)) {
+          system.addConstraintEqualRadius(geo(c.a, GeometryKind::Circle).circle,
+                                          geometry[c.b].arc, tag);
+        } else if (is_arc(c.a)) {
+          system.addConstraintEqualRadius(geo(c.b, GeometryKind::Circle).circle,
+                                          geometry[c.a].arc, tag);
+        } else {
+          system.addConstraintEqualRadius(geo(c.a, GeometryKind::Circle).circle,
+                                          geo(c.b, GeometryKind::Circle).circle, tag);
+        }
+        break;
+      case ConstraintKind::TangentLine:
+        if (is_arc(c.b)) {
+          system.addConstraintTangent(geo(c.a, GeometryKind::Line).line, geometry[c.b].arc, tag);
+        } else {
+          system.addConstraintTangent(geo(c.a, GeometryKind::Line).line,
+                                      geo(c.b, GeometryKind::Circle).circle, tag);
+        }
+        break;
+      case ConstraintKind::TangentCircles: {
+        // FreeCAD's addConstraintTangent of two circles or arcs, its side given rather than
+        // read from the geometry.
+        GCS::Circle &a = round(c.a);
+        GCS::Circle &b = round(c.b);
+        system.addConstraintTangentCircumf(a.center, b.center, a.rad, b.rad, c.flag, tag);
+        break;
+      }
+      case ConstraintKind::TangentOn: {
+        // FreeCAD's endpoint-to-edge tangency (Sketch::addAngleAtPointConstraint): the point
+        // on the curve, then the angle between the curves there, under one tag.
+        GCS::Point &p = point_of(c.c_position, c.c);
+        point_on(p, c.b, tag);
+        system.addConstraintAngleViaPoint(curve(c.a), curve(c.b), p, value(c.value), tag);
+        break;
+      }
+      case ConstraintKind::AngleViaPoint:
+        system.addConstraintAngleViaPoint(curve(c.a), curve(c.b), point_of(c.c_position, c.c),
+                                          value(c.value), tag);
+        break;
+      case ConstraintKind::SymmetricLine:
+        system.addConstraintP2PSymmetric(point_of(c.a_position, c.a),
+                                         point_of(c.b_position, c.b),
+                                         geo(c.c, GeometryKind::Line).line, tag);
+        break;
+      case ConstraintKind::MidpointOnLine: {
+        GCS::Line &l = geo(c.c, GeometryKind::Line).line;
+        system.addConstraintMidpointOnLine(point_of(c.a_position, c.a),
+                                           point_of(c.b_position, c.b), l.p1, l.p2, tag);
+        break;
+      }
+      case ConstraintKind::SymmetricPoint:
+        system.addConstraintP2PSymmetric(point_of(c.a_position, c.a),
+                                         point_of(c.b_position, c.b),
+                                         point_of(c.c_position, c.c), tag);
+        break;
       default:
         bug("a constraint kind Rust doesn't send");
     }
   }
 
-  GCS::VEC_pD unknowns;
   unknowns.reserve(input.unknowns.size());
   for (uint32_t u : input.unknowns) unknowns.push_back(value(u));
   system.declareUnknowns(unknowns);
@@ -231,88 +363,107 @@ Sketch::Sketch(const SolveInput &input) : values(input.values.begin(), input.val
 
 }  // namespace
 
-SolveOutput solve(const SolveInput &input) {
-  if (input.algorithms.empty()) bug("no algorithm to try");
-  Sketch sketch(input);
-  std::vector<double> &values = sketch.values;
-  GCS::System &system = sketch.system;
+// A sketch built and diagnosed once (FreeCAD's Sketch::setUpSketch and the diagnosis in
+// initSolution), and the anchors its last algorithm adds.
+struct Solver::State {
+  Sketch sketch;
+  // One per unknown, its starting value: anchored SQP's targets. Sized once, before any
+  // anchor points into it, and never resized.
+  std::vector<double> anchors;
+  bool anchored = false;
+  int dofs = 0;
+  std::vector<int> conflicting;
+  std::vector<int> redundant;
+  std::vector<int> partially_redundant;
+  std::vector<uint32_t> free;
+  bool no_equations = false;
 
+  explicit State(const SolveInput &input) : sketch(input), anchors(input.unknowns.size()) {}
+};
+
+Solver::Solver(const SolveInput &input) : state(std::make_unique<State>(input)) {}
+Solver::~Solver() = default;
+
+std::unique_ptr<Solver> solver_new(const SolveInput &input) {
+  auto solver = std::make_unique<Solver>(input);
+  Solver::State &s = *solver->state;
+  GCS::System &system = s.sketch.system;
   // As FreeCAD's Sketch does: declare, then diagnose once.
-  SolveOutput out;
-  sketch.diagnose(out.dofs, out.conflicting);
-  GCS::VEC_I tags;
-  system.getRedundant(tags);
-  for (int t : tags) out.redundant.push_back(t);
-  const std::vector<int> redundant = tags;
-  tags.clear();
-  system.getPartiallyRedundant(tags);
-  for (int t : tags) out.partially_redundant.push_back(t);
+  system.initSolution(GCS::DogLeg);
+  s.dofs = system.dofsNumber();
+  system.getConflicting(s.conflicting);
+  system.getRedundant(s.redundant);
+  system.getPartiallyRedundant(s.partially_redundant);
   // PlaneGCS lists a value once for each group of dependent values it's in, and none when
   // there are no equations: no_equations says which (FreeCAD reads it as every unknown
   // free; that's the core's to decide).
-  out.no_equations = !input.unknowns.empty() && system.isEmptyDiagnoseMatrix();
+  s.no_equations = !input.unknowns.empty() && system.isEmptyDiagnoseMatrix();
   GCS::VEC_pD free;
   system.getDependentParams(free);
-  std::vector<uint32_t> free_values;
+  const std::vector<double> &values = s.sketch.values;
   for (double *p : free) {
     const auto at = p - values.data();
     if (at < 0 || static_cast<size_t>(at) >= values.size()) bug("a free value outside the system");
-    free_values.push_back(static_cast<uint32_t>(at));
+    s.free.push_back(static_cast<uint32_t>(at));
   }
-  std::sort(free_values.begin(), free_values.end());
-  free_values.erase(std::unique(free_values.begin(), free_values.end()), free_values.end());
-  for (uint32_t v : free_values) out.free.push_back(v);
+  std::sort(s.free.begin(), s.free.end());
+  s.free.erase(std::unique(s.free.begin(), s.free.end()), s.free.end());
+  return solver;
+}
 
-  // Each algorithm in turn, from the values as given, until one solves: FreeCAD's fallback
-  // (Sketch::internalSolve), on the one diagnosis. (Its last step, SQP on a system anchored
-  // at the given values, comes with M3.3.)
-  //
-  // With equations dropped as redundant, System::solve checks the dropped ones on the
-  // values it started from, before its solution is written back, and turns Success into
-  // Converged if they miss there; so whether it says Success depends on where the sketch
-  // was drawn, not on the solution. A solve with equations dropped is reported as solved
-  // except them either way: everything it kept is met, and the dropped ones' residuals on
-  // the solution say whether they agree, the core's to judge (docs/roadmap/m3-sketcher.md,
-  // decision 5). DogLeg and Levenberg–Marquardt end only in Success or Failed (GCS.cpp,
-  // solve_DL and solve_LM), so their Converged is that check. That holds while every
-  // constraint is driving with a tag of 0 or more: then there's no auxiliary subsystem,
-  // whose solver (SQP) ends Converged of its own accord. BFGS can too, so its Converged
-  // stays one, unsolved, as FreeCAD reads it; with equations dropped, it stays read on the
-  // drawing.
-  const bool dropped = !redundant.empty() || !out.partially_redundant.empty();
-  Status reported = Status::Failed;
-  out.succeeded = -1;
-  for (size_t i = 0; i < input.algorithms.size(); ++i) {
-    const GCS::Algorithm algorithm = algorithm_of(input.algorithms[i]);
-    const int status = system.solve(true, algorithm);
-    const bool solved =
-        status == GCS::Success || (status == GCS::Converged && algorithm != GCS::BFGS && dropped);
-    if (!solved) {
-      reported = status_of(status);
-      continue;
+Diagnosed solver_diagnosis(const Solver &solver) {
+  const Solver::State &s = *solver.state;
+  Diagnosed out;
+  out.dofs = s.dofs;
+  for (int t : s.conflicting) out.conflicting.push_back(t);
+  for (int t : s.redundant) out.redundant.push_back(t);
+  for (int t : s.partially_redundant) out.partially_redundant.push_back(t);
+  for (uint32_t v : s.free) out.free.push_back(v);
+  out.no_equations = s.no_equations;
+  return out;
+}
+
+Attempt solver_try(Solver &solver, AlgorithmIn algorithm) {
+  Solver::State &s = *solver.state;
+  GCS::System &system = s.sketch.system;
+  int status = GCS::Failed;
+  if (algorithm == AlgorithmIn::AnchoredSqp) {
+    // FreeCAD's last resort (Sketch::internalSolve, case 3): every unknown anchored at its
+    // starting value by a row tagged -1, which stays out of the diagnosis and puts each
+    // part with unknowns under SQP, then solved with the default algorithm.
+    if (!s.anchored) {
+      GCS::VEC_pD &unknowns = s.sketch.unknowns;
+      for (size_t i = 0; i < unknowns.size(); ++i) {
+        s.anchors[i] = *unknowns[i];
+        system.addConstraintEqual(unknowns[i], &s.anchors[i], GCS::DefaultTemporaryConstraint);
+      }
+      s.anchored = true;
+      system.initSolution();
     }
-    reported = dropped ? Status::SolvedExceptRedundant : Status::Success;
-    out.succeeded = static_cast<int>(i);
-    break;
-  }
-  if (out.succeeded >= 0) {
-    system.applySolution();
+    status = system.solve(true);
   } else {
-    system.undoSolution();
+    status = system.solve(true, algorithm_of(algorithm));
   }
-  out.status = reported;
-  for (double v : values) out.values.push_back(v);
-  // Every tagged constraint's residual on those values: PlaneGCS solves only the parts
-  // with unknowns, so this is how a constraint among fixed values alone shows whether it
-  // holds.
-  std::vector<int> tagged;
-  for (const ConstraintIn &c : input.constraints) {
-    if (c.kind != ConstraintKind::ArcRules) tagged.push_back(static_cast<int>(c.tag));
+  Attempt out;
+  out.status = status_of(status);
+  if (status != GCS::Failed) {
+    system.applySolution();
+    for (double v : s.sketch.values) out.values.push_back(v);
   }
-  std::sort(tagged.begin(), tagged.end());
-  for (int tag : tagged) {
-    out.residual_tags.push_back(static_cast<uint32_t>(tag));
-    out.residuals.push_back(system.calculateConstraintErrorByTag(tag));
+  // Back to the values the sketch was built with, for the next algorithm.
+  system.undoSolution();
+  return out;
+}
+
+rust::Vec<double> solver_residuals(Solver &solver, rust::Slice<const double> values,
+                                   rust::Slice<const uint32_t> tags) {
+  Solver::State &s = *solver.state;
+  std::vector<double> &own = s.sketch.values;
+  if (values.size() != own.size()) bug("residuals asked for on values of another size");
+  std::copy(values.begin(), values.end(), own.begin());
+  rust::Vec<double> out;
+  for (uint32_t tag : tags) {
+    out.push_back(s.sketch.system.calculateConstraintErrorByTag(static_cast<int>(tag)));
   }
   return out;
 }

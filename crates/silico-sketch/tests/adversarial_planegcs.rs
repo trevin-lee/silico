@@ -211,9 +211,12 @@ fn a_residual_that_isnt_a_number_is_reported_as_none() {
     };
     let solved = solve(&system);
     // Equations repeat (the point on the line, stated twice, among them), so some are
-    // dropped, and the solve is reported as solved except them.
+    // dropped. DogLeg solves what's left, but on a line of no length, which FreeCAD can't
+    // build and undoes (`fc128d357d`): solved invalid, with that solution, so its residuals
+    // are read on it.
     assert!(!solved.redundant.is_empty(), "{solved:?}");
-    assert_eq!(solved.status, SolveStatus::SolvedExceptRedundant);
+    assert_eq!(solved.status, SolveStatus::SolvedInvalid);
+    assert_eq!(solved.algorithm, Some(Algorithm::DogLeg));
     let v = &solved.values;
     assert_eq!((v[0], v[1]), (v[2], v[3]), "the line collapsed");
     assert_eq!(
@@ -825,7 +828,28 @@ fn constraint_values(s: &SketchSystem, c: &SolverConstraint, out: &mut Vec<Value
             });
             out.push(value);
         }
+        // Not generated here: M3.3's forms have their own tests.
+        other => panic!("not a form this test generates: {other:?}"),
     }
+}
+
+/// Whether geometry at `values` can be built, written out here: every line has length
+/// (dx² + dy² isn't 0), every circle and arc a radius above 0, and every arc its ends at two
+/// places.
+fn can_build(system: &SketchSystem, values: &[f64]) -> bool {
+    let apart = |a: PointValues, b: PointValues| {
+        let dx = values[b.x.0 as usize] - values[a.x.0 as usize];
+        let dy = values[b.y.0 as usize] - values[a.y.0 as usize];
+        dx * dx + dy * dy != 0.0
+    };
+    system.geometry.iter().all(|g| match *g {
+        SketchGeometry::Point(_) => true,
+        SketchGeometry::Line { start, end } => apart(start, end),
+        SketchGeometry::Circle { radius, .. } => values[radius.0 as usize] > 0.0,
+        SketchGeometry::Arc {
+            radius, start, end, ..
+        } => values[radius.0 as usize] > 0.0 && apart(start, end),
+    })
 }
 
 /// Every promise `Solved` makes about `system`, checked independently of the solver.
@@ -906,11 +930,24 @@ fn check_promises(system: &SketchSystem) -> Result<(), String> {
         solved.status,
         SolveStatus::Success | SolveStatus::SolvedExceptRedundant
     );
-    if solved_it != solved.algorithm.is_some() {
+    let invalid = solved.status == SolveStatus::SolvedInvalid;
+    if (solved_it || invalid) != solved.algorithm.is_some() {
         return Err(format!(
             "{:?} with algorithm {:?}",
             solved.status, solved.algorithm
         ));
+    }
+    // A solution stands only on geometry that can be built; one that can't is given as
+    // solved invalid, with that solution (M3.3, FreeCAD's `fc128d357d`).
+    if (solved_it || invalid) && can_build(system, &solved.values) != solved_it {
+        return Err(format!(
+            "{:?} on geometry that {} be built",
+            solved.status,
+            if solved_it { "can't" } else { "can" }
+        ));
+    }
+    if invalid {
+        return Ok(());
     }
     if !solved_it {
         if solved.values != system.values {

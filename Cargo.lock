@@ -4229,6 +4229,7 @@ dependencies = [
 name = "silico-protocol"
 version = "0.0.0"
 dependencies = [
+ "libm",
  "postcard",
  "proptest",
  "serde",

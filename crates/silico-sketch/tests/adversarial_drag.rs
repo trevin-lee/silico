@@ -347,7 +347,9 @@ fn an_arcs_start_moves_before_its_centre_as_its_end_does() {
 #[test]
 fn an_arcs_centre_dragged_goes_to_the_cursor_and_keeps_its_rules() {
     // The centre alone is pinned: it lands on the cursor, and the arc's start and end stay
-    // on it at its radius and angles.
+    // on it at its radius and angles. Which way the angles went doesn't matter (the arc is
+    // the counter-clockwise one from its start to its end): dragged to (100, −0.5), the
+    // solve leaves the end angle a turn below where it reads, as FreeCAD draws it too.
     let (system, arc, radius, center, start, end) = quarter_arc(true);
     let mut drag = begin(system, PointOf::Center(arc));
     for cursor in [[-20.0, 30.0], [1.0, 2.0], [100.0, -0.5]] {
@@ -1098,6 +1100,8 @@ fn touches_an_unknown(s: &SketchSystem, c: &SolverConstraint) -> bool {
         | SolverConstraint::EqualLength { a, b, .. }
         | SolverConstraint::Angle { a, b, .. } => geometry(a) || geometry(b),
         SolverConstraint::Radius { circle, .. } => geometry(circle),
+        // Not generated here: M3.3's forms have their own tests.
+        other => panic!("not a form this test generates: {other:?}"),
     }
 }
 
