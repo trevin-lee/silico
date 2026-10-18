@@ -199,3 +199,22 @@ fn the_harness_catches_a_wrong_answer_from_either_side() {
     let how = compare(&good, &ours, &listed);
     assert!(how.iter().any(|h| h.starts_with("redundant")), "{how:?}");
 }
+
+#[test]
+fn every_sketch_case_matches_freecad() {
+    // tests/oracle/sketches.silico (protected): the maintainer's approved cases, each solved
+    // by Silico's sketch worker and by FreeCAD 1.1.3.
+    let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/oracle"));
+    let cases = silico_oracle::sketch::load(dir).unwrap();
+    assert_eq!(cases.len(), 15);
+    let differences = silico_oracle::sketch::run(&cases).unwrap();
+    assert!(
+        differences.is_empty(),
+        "{}",
+        differences
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
