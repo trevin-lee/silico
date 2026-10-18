@@ -720,4 +720,11 @@ fn a_sketch_worker_waits_its_own_time_and_the_time_it_is_given() {
     let e = solved(&doc, &mut w).unwrap_err();
     assert_eq!(e.code(), ErrorCode::WorkerTimeout, "{e}");
     assert_eq!(e.feature(), Some(FEATURE));
+    // Stopped for that, the worker is started again for the next solve (round 3's
+    // robustness review: it stayed stopped, and every later sketch failed).
+    let stopped = w.pid();
+    w.set_timeout(silico_core::sketch::SKETCH_TIMEOUT);
+    let s = solved(&free_line(&[]), &mut w).unwrap();
+    assert_eq!(s.dofs, 4);
+    assert_ne!(w.pid(), stopped, "a new worker");
 }

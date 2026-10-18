@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{PI, TAU};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use silico_protocol::{
@@ -63,9 +63,12 @@ pub trait SketchSolver {
     fn distrust(&mut self) {}
 }
 
-/// The sketch worker, one request at a time.
+/// The sketch worker, one request at a time. One that crashed, hung past its time, or
+/// sent a reply that can't be trusted is stopped, and started again for the next solve.
 pub struct SketchWorker {
     worker: Worker,
+    /// The executable it was started from, to start again; none for a worker handed in.
+    exe: Option<PathBuf>,
     timeout: Duration,
 }
 
@@ -83,17 +86,18 @@ impl SketchWorker {
 
     /// Starts the sketch worker at `exe`.
     pub fn start_worker(exe: &Path) -> Result<Self, Error> {
-        Ok(Self::from_worker(Worker::spawn_as(
-            exe,
-            WorkerKind::Sketch,
-        )?))
+        Ok(Self {
+            exe: Some(exe.to_owned()),
+            ..Self::from_worker(Worker::spawn_as(exe, WorkerKind::Sketch)?)
+        })
     }
 
     /// A sketch worker that's already running. For tests, which hand it one that
-    /// misbehaves.
+    /// misbehaves: stopped, it isn't started again (there's nothing to start it from).
     pub fn from_worker(worker: Worker) -> Self {
         Self {
             worker,
+            exe: None,
             timeout: SKETCH_TIMEOUT,
         }
     }
@@ -102,6 +106,11 @@ impl SketchWorker {
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
+    }
+
+    /// Sets how long each solve may take from now on.
+    pub fn set_timeout(&mut self, timeout: Duration) {
+        self.timeout = timeout;
     }
 
     /// How long each solve may take.
@@ -121,6 +130,13 @@ impl SketchSolver for SketchWorker {
     }
 
     fn solve(&mut self, system: SketchSystem) -> Result<Solved, Error> {
+        // A worker stopped after a failure is started again, as the kernel pool replaces
+        // one.
+        if self.worker.is_stopped()
+            && let Some(exe) = &self.exe
+        {
+            self.worker = Worker::spawn_as(exe, WorkerKind::Sketch)?;
+        }
         let op = Op::Solve(system);
         let name = op.name();
         match self.worker.call(Generation(0), op, self.timeout)? {
