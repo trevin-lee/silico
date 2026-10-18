@@ -575,8 +575,18 @@ fn answer(op: &Op) -> Result<Reply, Error> {
             base,
             direction,
         } => {
-            // Sized as the kernel sizes it, by the protocol's rule, from the fake's boxes of
-            // the base and the faces.
+            // As the kernel: the faces, and the direction out of their plane, first; then
+            // sized by the protocol's rule from the fake's boxes of the base and the faces,
+            // and a length that makes no prism the rules admit is the base's doing.
+            let regions = swept_faces(faces)?;
+            flat_check(
+                silico_protocol::check_leaves_plane(
+                    "direction",
+                    regions.plane.normal(),
+                    *direction,
+                ),
+                "direction",
+            )?;
             let [low, high] = Symbolic::read(base)?.summary().bounds.unwrap_or_default();
             let [f_low, f_high] = Symbolic::read(faces)?.summary().bounds.unwrap_or_default();
             let around = [
@@ -585,11 +595,22 @@ fn answer(op: &Op) -> Result<Reply, Error> {
             ];
             let length = silico_protocol::through_all_length(around)
                 .map_err(|invalid| crate::kernel::refused("through-all prism", None, invalid))?;
+            let vector = direction.map(|c| c * length);
+            silico_protocol::check_prism([0.0; 3], vector).map_err(|invalid| {
+                crate::kernel::refused(
+                    "through-all prism",
+                    None,
+                    silico_protocol::InvalidParameter {
+                        parameter: "base",
+                        message: invalid.message,
+                    },
+                )
+            })?;
             swept(
                 faces,
                 Sweep::Prism {
                     start: [0.0; 3],
-                    vector: direction.map(|c| c * length),
+                    vector,
                 },
             )
         }
@@ -619,18 +640,19 @@ fn answer(op: &Op) -> Result<Reply, Error> {
 /// The fake's sweep of `faces`, which must be faces a fake kernel made from regions, as the
 /// kernel refuses a shape that isn't faces.
 fn swept(faces: &ShapeData, sweep: Sweep) -> Result<Reply, Error> {
+    let regions = swept_faces(faces)?;
+    let normal = regions.plane.normal();
+    match sweep {
+        Sweep::Prism { vector, .. } => flat_check(
+            silico_protocol::check_leaves_plane("vector", normal, vector),
+            "vector",
+        )?,
+        Sweep::Revolution { axis, .. } => flat_check(
+            silico_protocol::check_axis_in_plane(normal, axis.direction),
+            "axis",
+        )?,
+    }
     let made = Symbolic::read(faces)?;
-    let regions = match made.0.as_slice() {
-        [Step::Faces(regions)] => regions.as_ref().clone(),
-        _ => {
-            return Err(Error::new(
-                ErrorCode::InvalidInput,
-                format!("a sweep takes a profile's faces, got {}", made.describe()),
-            )
-            .with_parameter("faces")
-            .with_suggestion("sweep the faces the kernel made of a profile"));
-        }
-    };
     let layout = FacesLayout::of(&regions);
     let numbers = SweepNumbers::of(&layout, sweep.kind());
     let history = History {
@@ -645,6 +667,37 @@ fn swept(faces: &ShapeData, sweep: Sweep) -> Result<Reply, Error> {
         shape: Symbolic(steps).shape(),
         history,
     }))
+}
+
+/// The regions of `faces`, if they're faces a fake kernel made from regions, as the kernel
+/// refuses a shape that isn't faces.
+fn swept_faces(faces: &ShapeData) -> Result<FaceRegions, Error> {
+    let made = Symbolic::read(faces)?;
+    match made.0.as_slice() {
+        [Step::Faces(regions)] => Ok(regions.as_ref().clone()),
+        _ => Err(Error::new(
+            ErrorCode::InvalidInput,
+            format!("a sweep takes a profile's faces, got {}", made.describe()),
+        )
+        .with_parameter("faces")
+        .with_suggestion("sweep the faces the kernel made of a profile")),
+    }
+}
+
+/// A sweep the plane checks refuse, as the kernel refuses it (`Refusal::SweepFlat`).
+fn flat_check(
+    checked: Result<(), silico_protocol::InvalidParameter>,
+    parameter: &str,
+) -> Result<(), Error> {
+    checked.map_err(|invalid| {
+        Error::new(ErrorCode::InvalidInput, invalid.message)
+            .with_parameter(parameter)
+            .with_suggestion(if parameter == "axis" {
+                "turn the faces about a line in their plane"
+            } else {
+                "sweep the faces along a vector out of their plane"
+            })
+    })
 }
 
 /// A sweep of faces, as the fake keeps it.
@@ -668,6 +721,20 @@ impl Sweep {
             Sweep::Prism { start, vector } => silico_protocol::check_prism(start, vector).is_ok(),
             Sweep::Revolution { axis, start, angle } => {
                 silico_protocol::check_revolution(axis.origin, axis.direction, start, angle).is_ok()
+            }
+        }
+    }
+
+    /// Whether it sweeps faces whose plane's normal is `normal` into something with a
+    /// volume, by the kernel's plane checks: a prism out of the plane, a turn about an axis
+    /// in it.
+    fn leaves(&self, normal: [f64; 3]) -> bool {
+        match *self {
+            Sweep::Prism { vector, .. } => {
+                silico_protocol::check_leaves_plane("vector", normal, vector).is_ok()
+            }
+            Sweep::Revolution { axis, .. } => {
+                silico_protocol::check_axis_in_plane(normal, axis.direction).is_ok()
             }
         }
     }
@@ -1227,9 +1294,12 @@ impl Symbolic {
                     .then(|| sizes.get(*input).map(|s| s + 1))
                     .flatten(),
                 // Faces, and only faces, are swept: the step just before.
-                Step::Sweep { input, .. } => (index > 0
+                Step::Sweep { input, sweep } => (index > 0
                     && *input == index - 1
-                    && matches!(steps.get(*input), Some(Step::Faces(_))))
+                    && matches!(
+                        steps.get(*input),
+                        Some(Step::Faces(regions)) if sweep.leaves(regions.plane.normal())
+                    ))
                 .then_some(2),
             };
             sizes.push(size.ok_or_else(refused)?);

@@ -949,6 +949,14 @@ fn made_faces<K: Kernel>(
     )
 }
 
+/// The line x = −10 along +y, in the XY plane, clear of faces on it near the origin.
+fn beside() -> silico_core::kernel::Axis {
+    silico_core::kernel::Axis {
+        origin: [-10.0, 0.0, 0.0],
+        direction: [0.0, 1.0, 0.0],
+    }
+}
+
 fn z_axis() -> silico_core::kernel::Axis {
     silico_core::kernel::Axis {
         origin: [0.0; 3],
@@ -1007,17 +1015,32 @@ fn a_sweep_reports_each_element_as_the_kernel_does_with_the_fakes_own_numbers() 
         FakeKernel::describe(&prism.shape).as_deref(),
         Some("prism(faces(xy, 1 regions, 5 curves), 0, 0, -1, 0, 0, 2)")
     );
+    // A sweep the kernel would refuse as flat (about the faces' own normal, or along their
+    // plane) is refused alike.
+    for refused in [
+        KernelRequest::revolution(&faces.shape, z_axis(), 0.0, FRAC_PI_2).unwrap(),
+        KernelRequest::prism(&faces.shape, [0.0; 3], [1.0, 0.0, 0.0]).unwrap(),
+    ] {
+        let Outcome::Done(Err(error)) = kernel.submit(Generation(0), refused).wait() else {
+            panic!("a flat sweep built")
+        };
+        assert_eq!(error.code(), ErrorCode::InvalidInput);
+        assert!(
+            error.suggestion().unwrap().contains("their plane"),
+            "{error:?}"
+        );
+    }
     // A turn reports as a prism does; a whole turn: each edge its seam and face, each vertex
     // itself and its circle, the face nothing.
     let turned = run(
         &kernel,
-        KernelRequest::revolution(&faces.shape, z_axis(), 0.0, FRAC_PI_2).unwrap(),
+        KernelRequest::revolution(&faces.shape, beside(), 0.0, FRAC_PI_2).unwrap(),
     );
     assert_eq!(turned.history.result, counts(7, 15, 10, 1));
     assert_eq!(turned.history.sweep_fault(SweepKind::Turn), None);
     let whole = run(
         &kernel,
-        KernelRequest::revolution(&faces.shape, z_axis(), 0.0, TAU).unwrap(),
+        KernelRequest::revolution(&faces.shape, beside(), 0.0, TAU).unwrap(),
     );
     assert_eq!(whole.history.result, counts(5, 10, 5, 1));
     assert_eq!(whole.history.validate(1), Ok(()));

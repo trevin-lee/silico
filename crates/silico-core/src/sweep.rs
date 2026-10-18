@@ -194,6 +194,11 @@ fn and_list(items: &[String]) -> String {
 ///   only adds and a cut only removes, so the volume is the witness, and counts aren't (a pad
 ///   reversed into its base scars its top, 7 faces at the base's volume). The counts are in
 ///   the message as evidence only.
+/// - **A volume**: the change needs both volumes to be ones a solid has, finite and above 0
+///   (the base's) or at least 0 (the result's); one that isn't (NaN, infinite, or negative,
+///   as a broken or inverted shape measures) witnesses nothing, and is refused, as the
+///   kernel's boolean refuses a result of no volume (break-it found NaN passing every
+///   comparison, and an inverted base making the threshold negative).
 pub fn check_result(
     feature: &FeatureId,
     kind: SweepFeature,
@@ -236,6 +241,20 @@ pub fn check_result(
                     &format!("move the sketch or shorten the {word}"),
                 )
             };
+        }
+    }
+    for (whose, volume, least) in [
+        ("its base's", before.volume, f64::MIN_POSITIVE),
+        ("its result's", after.volume, 0.0),
+    ] {
+        if !(volume.is_finite() && volume >= least) {
+            return failed(
+                format!(
+                    "{word} {id} can't be told to change its base {base_id}: {whose} volume measured {}, which no solid has",
+                    format_number(volume)
+                ),
+                "OCCT measured a broken shape: rebuild the base, or change the feature slightly",
+            );
         }
     }
     let change = if kind.adds() {
