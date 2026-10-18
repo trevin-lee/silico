@@ -64,7 +64,8 @@ pub trait SketchSolver: Send {
 
     /// Readies the solver for a solve, and gives a handle that stops that solve from
     /// another thread (a recompute superseded mid-solve: the solve then fails, and the
-    /// next starts a worker again); none if a solve can't be stopped.
+    /// next starts a worker again); none if a solve can't be stopped. Once called, every
+    /// solve begins with it: a solve runs from one call to the next.
     fn stopper(&mut self) -> Result<Option<SolveStopper>, Error> {
         Ok(None)
     }
@@ -102,8 +103,10 @@ pub struct SketchWorker {
     /// killed, perhaps after it answered (no call failed to say so). The solve's later
     /// requests are refused, and the next solve's start starts a worker again.
     stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// Whether a solve was begun with [`SketchSolver::stopper`]: its requests then start no
-    /// worker (the stopper couldn't reach one), and only the next solve's start does.
+    /// Whether solves are begun with [`SketchSolver::stopper`] (as the engine begins every
+    /// one): a solve then runs from one `stopper` call to the next, its requests start no
+    /// worker (the stopper couldn't reach one), and only a `stopper` call does. A caller that
+    /// has called `stopper` once has to begin each solve with it from then on.
     begun: bool,
 }
 
