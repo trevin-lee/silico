@@ -870,3 +870,40 @@ fn three_moves_on_one_make_all_run_at_once() {
     assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
     assert!(together, "the three moves didn't run at once");
 }
+
+#[test]
+fn models_are_equal_exactly_when_theyre_of_the_same_document_and_came_to_the_same() {
+    // Found by the milestone's mutation run: no test compared two models, so equality that
+    // looked only at the document, or only at the features, passed every test. Two engines'
+    // first models, of documents that differ only in a name and a note: every feature comes
+    // to the same, in the same generation, but they're not of the same document.
+    let renamed = EXAMPLE
+        .replace("\"Pin\"", "\"Dowel\"")
+        .replace("Clearance for an M5 bolt", "Clearance for an M6 bolt");
+    let first = published(&engine(2), checked(EXAMPLE));
+    let same = published(&engine(2), checked(EXAMPLE));
+    let other = published(&engine(2), checked(&renamed));
+    assert_eq!(*same, *first);
+    assert_eq!(other.generation(), first.generation());
+    assert_eq!(other.features(), first.features());
+    assert_eq!(other.bodies(), first.bodies());
+    assert_eq!(other.errors().count(), 0);
+    assert_ne!(*other, *first);
+}
+
+#[test]
+fn a_key_debugs_as_its_hex() {
+    // Found by the milestone's mutation run: a key's `Debug` (in every logged outcome) was
+    // never read. It's `Key(...)` around its 64 hex digits, as it displays.
+    let model = published(&engine(2), checked(EXAMPLE));
+    let Some(FeatureOutcome::Built { key, .. }) = model.outcome(&id("k7f2qx3m")) else {
+        panic!()
+    };
+    let hex = key.to_string();
+    assert_eq!(hex.len(), 64);
+    assert!(
+        hex.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    );
+    assert_eq!(format!("{key:?}"), format!("Key({hex})"));
+}

@@ -489,3 +489,220 @@ fn new_file(dir: &Path, mode: u32) -> std::io::Result<(PathBuf, std::fs::File)> 
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A directory of its own for one test, removed after.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir()
+                .join(format!("silico-cache-unit-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Scratch(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(
+                &self.0,
+                <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
+            );
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// The cache's tests that make partial files, one at a time: [`new_file`]'s counter is
+    /// the process's, and a test that plants names after it needs it to itself.
+    static PARTIAL_FILES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn a_cache_through_a_link_says_so_once_for_itself_and_its_clones() {
+        // Found by the milestone's mutation run: saying it never, or every time but the
+        // first, passed every test.
+        use std::sync::Mutex;
+        use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+        struct Warnings(Arc<Mutex<u32>>);
+        impl<S: tracing::Subscriber> Layer<S> for Warnings {
+            fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
+                if *event.metadata().level() == tracing::Level::WARN {
+                    *self.0.lock().unwrap() += 1;
+                }
+            }
+        }
+        let scratch = Scratch::new("said-once");
+        let real = scratch.0.join("real");
+        std::fs::create_dir(&real).unwrap();
+        let linked = scratch.0.join("linked");
+        std::os::unix::fs::symlink(&real, &linked).unwrap();
+        let cache = Cache::new(linked, this_platform(), Some(Secret([7; 32])));
+        let warnings = Arc::new(Mutex::new(0));
+        let subscriber = tracing_subscriber::registry().with(Warnings(Arc::clone(&warnings)));
+        tracing::subscriber::with_default(subscriber, || {
+            assert!(cache.secret().is_none());
+            assert!(cache.secret().is_none());
+            assert!(cache.clone().secret().is_none());
+        });
+        assert_eq!(*warnings.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn a_secret_the_system_wont_link_into_place_fails_with_the_systems_reason() {
+        // Found by the milestone's mutation run: only a name already taken (a session that
+        // made the secret first) is tried again; any other failure to link it is the
+        // system's, said as it is, not "it keeps changing". A name ending in a slash is
+        // missing to read, and can't be linked to (ENOENT on Linux and macOS).
+        let _partial_files = PARTIAL_FILES.lock().unwrap_or_else(|e| e.into_inner());
+        let scratch = Scratch::new("secret-unlinkable");
+        let mut name = scratch.0.join("cache-secret").into_os_string();
+        name.push("/");
+        let error = read_or_make_secret(Path::new(&name)).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::ENOENT), "{error}");
+        // Nothing left beside it.
+        assert_eq!(std::fs::read_dir(&scratch.0).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_cache_file_is_read_only_if_its_a_regular_file() {
+        // Found by the milestone's mutation run: each of these came to a miss through
+        // `Cache::get` whatever `read_file` said, so a wrong answer passed every test.
+        let scratch = Scratch::new("read-file");
+        let file = scratch.0.join("entry");
+        std::fs::write(&file, b"an entry").unwrap();
+        assert!(matches!(read_file(&file), FileRead::Bytes(b) if b == b"an entry"));
+        assert!(matches!(
+            read_file(&scratch.0.join("none")),
+            FileRead::Missing
+        ));
+        // A link isn't followed, even to a regular file.
+        let link = scratch.0.join("link");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        assert!(matches!(
+            read_file(&link),
+            FileRead::Unusable("is a symbolic link")
+        ));
+        // A pipe (opened without waiting for a writer, so it reads as empty) and a
+        // directory aren't files.
+        let fifo = scratch.0.join("fifo");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(matches!(
+            read_file(&fifo),
+            FileRead::Unusable("isn't a file")
+        ));
+        assert!(matches!(
+            read_file(&scratch.0),
+            FileRead::Unusable("isn't a file")
+        ));
+        // A path through a file (ENOTDIR) is neither missing nor a link: a failure.
+        assert!(matches!(
+            read_file(&file.join("below")),
+            FileRead::Failed(e) if e.raw_os_error() == Some(libc::ENOTDIR)
+        ));
+    }
+
+    #[test]
+    fn an_entry_is_at_most_twice_the_largest_frame() {
+        // Found by the milestone's mutation run: a limit of the frame's size plus two
+        // passed every test. A worker's frame is at most 512 MiB, so an entry (a shape and
+        // its history) is at most 1 GiB.
+        assert_eq!(silico_protocol::MAX_FRAME_LEN, 512 << 20);
+        assert_eq!(MAX_ENTRY, 1 << 30);
+    }
+
+    #[test]
+    fn a_file_larger_than_any_entry_is_refused_without_reading_it_promptly() {
+        // Found by the milestone's mutation run: a sparse file of 64 GiB was refused by the
+        // read's own limit after reading 1 GiB of it, which passed every test: refused by
+        // its size, it costs an open and a stat, far under 50 ms of CPU; read to the limit,
+        // a gigabyte copied in.
+        let scratch = Scratch::new("huge");
+        let file = scratch.0.join("entry");
+        std::fs::File::create(&file)
+            .unwrap()
+            .set_len(64 << 30)
+            .unwrap();
+        let start = cpu_time::ThreadTime::now();
+        let read = read_file(&file);
+        let spent = start.elapsed();
+        assert!(matches!(read, FileRead::Unusable("is too large")));
+        assert!(
+            spent < std::time::Duration::from_millis(50),
+            "took {spent:?} of CPU"
+        );
+    }
+
+    #[test]
+    fn an_entry_isnt_written_where_its_subdirectory_cant_be_made() {
+        // Found by the milestone's mutation run: a failure to make the entry's subdirectory
+        // (here, the cache's directory read-only) went on, and failed later for another
+        // reason, which passed every test; the reason is the subdirectory's.
+        use std::os::unix::fs::PermissionsExt as _;
+        let scratch = Scratch::new("read-only-root");
+        std::fs::set_permissions(&scratch.0, std::fs::Permissions::from_mode(0o555)).unwrap();
+        if std::fs::create_dir(scratch.0.join("probe")).is_ok() {
+            // Running as root: permissions don't bite.
+            return;
+        }
+        let error = write_entry(
+            &scratch.0,
+            &scratch.0.join("ab").join("cdef"),
+            &Seal([0; 32]),
+            b"payload",
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_partial_file_takes_the_ninth_name_after_eight_taken_and_no_tenth() {
+        // Found by the milestone's mutation run: none of the tries after a name already
+        // taken (a planted one) was tested. A new file is tried at a name, then at up to
+        // eight more, each the counter's next: with the next eight taken, the ninth is used;
+        // with the next nine taken, it fails, as the name it last tried was taken.
+        let _partial_files = PARTIAL_FILES.lock().unwrap_or_else(|e| e.into_inner());
+        let scratch = Scratch::new("partial-names");
+        let pid = std::process::id();
+        let named = |n: u64| scratch.0.join(format!(".partial-{pid}-{n}"));
+        let (first, _) = new_file(&scratch.0, 0o600).unwrap();
+        let prefix = format!(".partial-{pid}-");
+        let n: u64 = first
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .strip_prefix(&prefix)
+            .unwrap()
+            .parse()
+            .unwrap();
+        for taken in n + 1..=n + 8 {
+            std::fs::write(named(taken), b"planted").unwrap();
+        }
+        let (ninth, _) = new_file(&scratch.0, 0o600).unwrap();
+        assert_eq!(ninth, named(n + 9));
+        for taken in n + 10..=n + 18 {
+            std::fs::write(named(taken), b"planted").unwrap();
+        }
+        let error = new_file(&scratch.0, 0o600).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists, "{error}");
+        assert!(!named(n + 19).exists());
+        // Planted names are left as they were.
+        for taken in (n + 1..=n + 8).chain(n + 10..=n + 18) {
+            assert_eq!(std::fs::read(named(taken)).unwrap(), b"planted");
+        }
+    }
+}

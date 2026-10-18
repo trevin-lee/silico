@@ -174,3 +174,67 @@ fn a_save_that_fails_says_its_paths_without_a_terminals_escapes() {
     assert!(!words.contains(['\u{1b}', '\u{7}']), "{words:?}");
     assert!(words.contains(r"bad\u{1b}]0;owned\u{7}"), "{words:?}");
 }
+
+/// Set to a file's path, for [`save_entry`]: the file to save over.
+const SAVE_ENV: &str = "SILICO_FILE_TEST_SAVE";
+
+/// Not a test of its own: run by [`a_save_cut_short_leaves_nothing_more_open_than_the_document`]
+/// with [`SAVE_ENV`] set, this test binary saves 64 KiB over the file it names, which held
+/// `as read`. Run normally, it does nothing.
+#[test]
+fn save_entry() {
+    let Some(file) = std::env::var_os(SAVE_ENV) else {
+        return;
+    };
+    let _ = silico_core::file::save(std::path::Path::new(&file), b"as read", &[b'x'; 1 << 16]);
+    std::process::exit(0);
+}
+
+#[test]
+fn a_save_cut_short_leaves_nothing_more_open_than_the_document() {
+    // Found by the milestone's mutation run: the file a save writes beside the document
+    // was made with every permission (mode | 0o777, not mode & 0o777) and narrowed only
+    // before it was renamed, which passed every test. Killed by a file-size limit (a
+    // shell's `ulimit -f`, SIGXFSZ) as it grows the new file, under no umask, the save
+    // leaves that file: it holds the next text of a document others may not read, so
+    // others may not read it either. On macOS the signal goes to the process, not the
+    // thread that grew the file, which may run on and remove the file (or exit) before
+    // the process ends: tried until a run leaves the file.
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::os::unix::process::ExitStatusExt as _;
+    let dir = Scratch::new("cut-short-mode");
+    let file = dir.0.join("part.silico");
+    std::fs::write(&file, b"as read").unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let me = std::env::current_exe().unwrap();
+    let mut left = None;
+    for _ in 0..50 {
+        // `exec`, so the shell's process is the save's: its number names the file beside.
+        let child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(
+                "umask 0; ulimit -f 1; exec \"$0\" --exact save_entry --nocapture --test-threads=1",
+            )
+            .arg(&me)
+            .env(SAVE_ENV, &file)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let status = child.wait_with_output().unwrap().status;
+        // Ended by the limit, or by the save's own exit after it failed: never saved.
+        assert!(
+            status.signal() == Some(libc::SIGXFSZ) || status.success(),
+            "{status:?}"
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), b"as read");
+        let beside = dir.0.join(format!(".part.silico.fmt-{pid}"));
+        if let Ok(metadata) = std::fs::metadata(&beside) {
+            left = Some(metadata.permissions().mode() & 0o777);
+            break;
+        }
+    }
+    let mode = left.expect("no save cut short left its file beside the document");
+    assert_eq!(mode, 0o600, "{mode:o}");
+}
