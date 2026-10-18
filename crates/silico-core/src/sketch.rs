@@ -38,9 +38,10 @@ pub const LENGTH_TOLERANCE: f64 = 1e-8;
 /// others (decision 5): ten times the solver's convergence, 57 nanodegrees.
 pub const ANGLE_TOLERANCE: f64 = 1e-9;
 
-/// How many times, at most, a solution is solved again as a load solves it, to reach one a
-/// load leaves where it is ([`Translation::solve`]).
-pub const AGAIN: usize = 3;
+/// How many loads, at most, a solve's answer is checked by: its solution written as the file
+/// holds it and solved as a load solves it, until one leaves it where it is
+/// ([`Translation::solve`]).
+pub const MAX_LOAD_RESOLVES: usize = 3;
 
 /// How long a solve may take before the worker is stopped. A sketch the constraints can't
 /// solve is tried by every algorithm in turn, and at the most unknowns the worker takes
@@ -48,8 +49,9 @@ pub const AGAIN: usize = 3;
 /// Levenberg–Marquardt 28.9 s, BFGS 0.2 s, and anchored SQP 33.2 s on a loaded machine:
 /// 74 s, past the kernel's 60. The time grows with the equations the diagnosis keeps
 /// too: the same chain with one line given `horizontal` 2,000 times took DogLeg 8.7× as
-/// long, and passes 300 s with all four (`MAX_SKETCH_UNKNOWNS`'s doc). A sketch solved
-/// again from its solution ([`Translation::solve`]) takes it 1 + [`AGAIN`] times at most.
+/// long, and passes 300 s with all four (`MAX_SKETCH_UNKNOWNS`'s doc). Every solve that
+/// reaches a solution is checked by at least one load ([`Translation::solve`]): at least
+/// two solves, and 1 + [`MAX_LOAD_RESOLVES`] at most, each with this limit.
 pub const SKETCH_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// The environment variable that names the sketch worker executable.
@@ -315,24 +317,37 @@ impl SketchSolution {
     /// a value of their kind (a point–line distance's side too). A measure that can't be
     /// written (not finite) keeps the value stored.
     pub fn written(&self, sketch: &Sketch) -> Sketch {
-        let mut out = sketch.clone();
-        for p in &mut out.points {
-            if let Some(&[x, y]) = self.points.get(&p.id) {
-                (p.x, p.y) = (x, y);
-            }
-        }
-        for c in &mut out.circles {
-            if let Some(&r) = self.radii.get(&c.id) {
-                c.radius = r;
-            }
-        }
-        for c in &mut out.constraints {
-            if let Some(&measured) = self.references.get(&c.id) {
-                measure_into(&mut c.form, measured);
-            }
-        }
-        out
+        written(sketch, &self.points, &self.radii, &self.references)
     }
+}
+
+/// `sketch` with its points at `points`, its circles' radii at `radii`, and its reference
+/// dimensions holding `references`, as its file holds them: what a save writes
+/// ([`SketchSolution::written`]) and what a load starts from ([`Translation::solve`]). A
+/// measure that can't be written (not finite) keeps the value stored.
+fn written(
+    sketch: &Sketch,
+    points: &BTreeMap<ElementId, [Coordinate; 2]>,
+    radii: &BTreeMap<ElementId, Coordinate>,
+    references: &BTreeMap<ElementId, Measured>,
+) -> Sketch {
+    let mut out = sketch.clone();
+    for p in &mut out.points {
+        if let Some(&[x, y]) = points.get(&p.id) {
+            (p.x, p.y) = (x, y);
+        }
+    }
+    for c in &mut out.circles {
+        if let Some(&r) = radii.get(&c.id) {
+            c.radius = r;
+        }
+    }
+    for c in &mut out.constraints {
+        if let Some(&measured) = references.get(&c.id) {
+            measure_into(&mut c.form, measured);
+        }
+    }
+    out
 }
 
 /// `form`, a reference dimension, holding `measured`.
@@ -461,7 +476,13 @@ pub fn solve(
 /// write a file that can't be opened again. Refused as an invalid result, naming what the
 /// gate names.
 fn savable(sketch: &Sketch, solution: &SketchSolution) -> Result<(), Error> {
-    let problems = crate::document::sketch_problems(&solution.written(sketch));
+    holdable(&solution.written(sketch))
+}
+
+/// Whether `file`, a sketch with a solve written back, is one the gate takes; refused as
+/// [`savable`] says, if not.
+fn holdable(file: &Sketch) -> Result<(), Error> {
+    let problems = crate::document::sketch_problems(file);
     let Some(first) = problems.first() else {
         return Ok(());
     };
@@ -1159,69 +1180,97 @@ impl Translation {
     /// solver that couldn't answer (a crash, a timeout), is the error; what the answer says
     /// about the sketch is the outcome.
     ///
-    /// PlaneGCS diagnoses where the sketch is drawn, as FreeCAD does, and drops the
-    /// redundant constraints it picks there; so a sketch drawn far from its solution (a
-    /// template redimensioned a thousandfold) can be called conflicting, and one whose kept
-    /// constraints fix a value only loosely (through a square root of their convergence, or
-    /// an angle along a long side) can leave a dropped constraint measurably off (M3.3's
-    /// break-it). A load (M3.4) solves the sketch from the solution its file stores, and
-    /// diagnoses there: it can drop other constraints, call them conflicting, or move the
-    /// solution. So when the solver reached a solution and either called the sketch
-    /// over-constrained or dropped redundant constraints, the solution is written into the
-    /// sketch as its file would hold it and solved as a load solves it (translated again,
-    /// each arc's radius and angles worked out from its points), until a load leaves the
-    /// sketch where it started, bit for bit, at most [`AGAIN`] times. That load's answer
-    /// stands, a refusal or not, with the constraints it names: it is what every later
-    /// load gives. So does a load that reaches no solution from a solution a save would
-    /// write: it leaves the file as it is, so every load refuses it the same way. If no load
-    /// settles, or one fails from a refusal, the first answer stands. SolidWorks solves such
-    /// a sketch.
+    /// M3.4: a sketch is solved on every load from the solution its file stores, so the
+    /// answer kept must be one its own file gives back. PlaneGCS diagnoses where the sketch
+    /// is drawn, as FreeCAD does, so a load, starting from the solution, can drop other
+    /// redundant constraints, count other degrees of freedom, call the sketch conflicting,
+    /// or move it (an arc's radius and angles, worked out from its stored points, aren't the
+    /// solver's own; a kept constraint can fix a value only loosely, through a square root
+    /// or an angle along a long side). So every solve that reaches a solution is checked by
+    /// loads: its solution written as the file holds it, translated again, and solved, until
+    /// a load leaves the file where it was, bit for bit, at most [`MAX_LOAD_RESOLVES`]
+    /// times. That load's answer, solved, is a fixed point: its file gives it back (a load
+    /// runs this same check, from the same file, and finds it at once). A refusal writes no
+    /// file, so its load solves the drawing again and refuses alike; so a refusal on the
+    /// drawing stands unless a load reaches a solved fixed point (SolidWorks solves such a
+    /// sketch), and a solved answer that loads don't settle on is refused: as a load
+    /// refuses it, or, if they keep moving, as a solution that doesn't settle.
     pub fn solve(&self, solver: &mut dyn SketchSolver) -> Result<Answer, Error> {
         let first = self.answer(solver)?;
-        if !reached(&first.solved) {
-            return Ok(first);
-        }
-        let dropped =
-            !first.solved.redundant.is_empty() || !first.solved.partially_redundant.is_empty();
-        match &first.outcome {
-            Ok(_) if dropped => {}
-            Err(e) if e.code() == ErrorCode::OverConstrained => {}
-            _ => return Ok(first),
-        }
-        // A solution a load can't start from (a translation the gate's rules refuse, which a
-        // save refuses too), the worker refusing it as a start, or a load that reaches no
-        // solution: the first answer stands. A worker that failed (crashed, timed out, ran
-        // short) or a reply that can't be trusted is the error, as it is for the first solve.
-        let Some(mut stored) = self.stored(&first.solved.values) else {
-            return Ok(first);
+        // A refusal writes no file, so its load solves the drawing again and refuses alike.
+        // Only an over-constrained one is looked past (a diagnosis on the drawing): a load
+        // from an invalid result would measure sides from where that result put them.
+        let looked_past = match &first.outcome {
+            Ok(_) => true,
+            Err(e) => e.code() == ErrorCode::OverConstrained,
         };
-        // Whether the answer `stored` was written from solved: one a save would write.
-        let mut saved = first.outcome.is_ok();
-        for _ in 0..AGAIN {
-            let Ok(load) = Translation::new(&stored) else {
-                return Ok(first);
+        if !reached(&first.solved) || !looked_past {
+            return Ok(first);
+        }
+        // What stands when no load reaches a solved fixed point: the drawing's refusal, or
+        // for a drawing that solved, the refusal `refused` gives.
+        // A solve that leaves its own file as it was drawn is its own load: the load would
+        // send the same system and get the same answer. Every load of a saved sketch is one.
+        if self
+            .stored(&first.solved.values)
+            .is_ok_and(|file| file == self.sketch)
+        {
+            return Ok(first);
+        }
+        let drawn_ok = first.outcome.is_ok();
+        let refusal = |first: Answer, refused: Answer| if drawn_ok { refused } else { first };
+        let mut latest = first.solved.clone();
+        let mut solved_by = self.clone();
+        for _ in 0..MAX_LOAD_RESOLVES {
+            let file = match solved_by.stored(&latest.values) {
+                Ok(file) => file,
+                Err(e) => return Ok(refusal_with(first, drawn_ok, e)),
             };
+            // A file the gate refuses can't be saved (`savable`) or loaded.
+            if let Err(e) = holdable(&file) {
+                return Ok(refusal_with(first, drawn_ok, e));
+            }
+            let load = match Translation::new(&file) {
+                Ok(load) => load,
+                Err(e) => return Ok(refusal_with(first, drawn_ok, e)),
+            };
+            // A worker that failed (crashed, timed out, ran short) or a reply that can't be
+            // trusted is the error, as for the first solve; the worker refusing the start is
+            // the load's error too, so a drawing that solved is refused with it.
             let here = match load.answer(solver) {
                 Ok(here) => here,
-                Err(e) if e.code() == ErrorCode::InvalidInput => return Ok(first),
+                Err(e) if e.code() == ErrorCode::InvalidInput && !drawn_ok => return Ok(first),
                 Err(e) => return Err(e),
             };
             if !reached(&here.solved) {
-                // A load that reaches no solution leaves the file as it is, so every load
-                // gives this refusal: a solution a save would write stands refused with it.
-                // From a refusal, nothing is saved, and the first answer stands.
-                return Ok(if saved { here } else { first });
+                return Ok(refusal(first, here));
             }
-            let Some(next) = load.stored(&here.solved.values) else {
-                return Ok(first);
+            // Coordinates compare bit for bit (a file keeps -0 and 0 apart).
+            let settled = match load.stored(&here.solved.values) {
+                Ok(next) => next == file,
+                Err(e) => return Ok(refusal_with(first, drawn_ok, e)),
             };
-            if same_place(&next, &stored) {
-                return Ok(here);
+            if settled {
+                return Ok(if here.outcome.is_ok() {
+                    here
+                } else {
+                    refusal(first, here)
+                });
             }
-            saved = here.outcome.is_ok();
-            stored = next;
+            latest = here.solved;
+            solved_by = load;
         }
-        Ok(first)
+        Ok(refusal_with(
+            first,
+            drawn_ok,
+            Error::new(
+                ErrorCode::SolveFailed,
+                format!(
+                    "the sketch's solution doesn't settle on load: each of {MAX_LOAD_RESOLVES} loads of its solution moved it"
+                ),
+            )
+            .with_suggestion("draw the geometry nearer its solution, or report the sketch: Silico can't keep a solution its own file doesn't give back"),
+        ))
     }
 
     /// Solves this with `solver`, checks the reply, and reads it.
@@ -1237,18 +1286,38 @@ impl Translation {
         })
     }
 
-    /// The sketch as its file holds it with its points and circles' radii at `values`;
-    /// none if one isn't a finite number.
-    fn stored(&self, values: &[f64]) -> Option<Sketch> {
-        let mut out = self.sketch.clone();
-        for p in &mut out.points {
-            let [x, y] = self.xy(values, *self.points.get(&p.id)?);
-            (p.x, p.y) = (Coordinate::new(x)?, Coordinate::new(y)?);
-        }
-        for c in &mut out.circles {
-            c.radius = Coordinate::new(at(values, self.circles.get(&c.id)?.radius))?;
-        }
-        Some(out)
+    /// The points, circles' radii, and reference dimensions' measures at `values`.
+    fn placed(&self, values: &[f64]) -> Result<Placed, Error> {
+        // Finite, as check_reply and the buildable checks have made sure of a solution.
+        let coordinate = |v: f64| {
+            Coordinate::new(v).ok_or_else(|| {
+                Error::new(
+                    ErrorCode::Internal,
+                    format!("a solution the core checked has a value that isn't a number: {v}"),
+                )
+            })
+        };
+        let points = self
+            .points
+            .iter()
+            .map(|(id, &p)| {
+                let [x, y] = self.xy(values, p);
+                Ok((id.clone(), [coordinate(x)?, coordinate(y)?]))
+            })
+            .collect::<Result<_, Error>>()?;
+        let radii = self
+            .circles
+            .iter()
+            .map(|(id, c)| Ok((id.clone(), coordinate(at(values, c.radius))?)))
+            .collect::<Result<_, Error>>()?;
+        Ok((points, radii, self.references(values)?))
+    }
+
+    /// The sketch as its file holds it once `values` are written back, as a save writes a
+    /// solution ([`SketchSolution::written`]): what a load starts from.
+    fn stored(&self, values: &[f64]) -> Result<Sketch, Error> {
+        let (points, radii, references) = self.placed(values)?;
+        Ok(written(&self.sketch, &points, &radii, &references))
     }
 
     /// The tags sent, in increasing order.
@@ -1510,32 +1579,11 @@ impl Translation {
             .iter()
             .map(|&t| self.id(t).cloned())
             .collect::<Result<_, _>>()?;
-        // Finite, as check_reply and the buildable check above have made sure.
-        let coordinate = |v: f64| {
-            Coordinate::new(v).ok_or_else(|| {
-                Error::new(
-                    ErrorCode::Internal,
-                    format!("a solution the core checked has a value that isn't a number: {v}"),
-                )
-            })
-        };
-        let points = self
-            .points
-            .iter()
-            .map(|(id, &p)| {
-                let [x, y] = self.xy(values, p);
-                Ok((id.clone(), [coordinate(x)?, coordinate(y)?]))
-            })
-            .collect::<Result<_, Error>>()?;
-        let radii = self
-            .circles
-            .iter()
-            .map(|(id, c)| Ok((id.clone(), coordinate(at(values, c.radius))?)))
-            .collect::<Result<_, Error>>()?;
+        let (points, radii, references) = self.placed(values)?;
         Ok(SketchSolution {
             points,
             radii,
-            references: self.references(values)?,
+            references,
             dofs: solved.dofs,
             free: self.free(solved),
             redundant,
@@ -1957,28 +2005,33 @@ impl Gap {
     }
 }
 
+/// A solution's points, circles' radii, and reference dimensions' measures, by ID.
+type Placed = (
+    BTreeMap<ElementId, [Coordinate; 2]>,
+    BTreeMap<ElementId, Coordinate>,
+    BTreeMap<ElementId, Measured>,
+);
+
+/// The answer that stands when a load can't be made or checked, `e` saying why: the
+/// drawing's refusal if it was refused; otherwise `e`, as the outcome, since a drawing that
+/// solved can't keep a solution its file doesn't give back.
+fn refusal_with(first: Answer, drawn_ok: bool, e: Error) -> Answer {
+    if drawn_ok {
+        Answer {
+            solved: first.solved,
+            outcome: Err(e),
+        }
+    } else {
+        first
+    }
+}
+
 /// Whether `solved` reached a solution, one that can be built or not.
 fn reached(solved: &Solved) -> bool {
     matches!(
         solved.status,
         SolveStatus::Success | SolveStatus::SolvedExceptRedundant
     )
-}
-
-/// Whether `a` and `b` have their points and circles' radii at the same places, bit for
-/// bit (a file keeps `-0` and `0` apart).
-fn same_place(a: &Sketch, b: &Sketch) -> bool {
-    let bits = |c: Coordinate| c.mm().to_bits();
-    a.points.len() == b.points.len()
-        && a.circles.len() == b.circles.len()
-        && a.points
-            .iter()
-            .zip(&b.points)
-            .all(|(p, q)| p.id == q.id && bits(p.x) == bits(q.x) && bits(p.y) == bits(q.y))
-        && a.circles
-            .iter()
-            .zip(&b.circles)
-            .all(|(c, d)| c.id == d.id && bits(c.radius) == bits(d.radius))
 }
 
 fn at(values: &[f64], v: Value) -> f64 {

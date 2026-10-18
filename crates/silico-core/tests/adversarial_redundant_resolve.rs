@@ -12,7 +12,7 @@ mod fixture;
 use std::sync::{Arc, Mutex};
 
 use silico_core::document::{Operation, read};
-use silico_core::sketch::{AGAIN, Answer, SketchSolver, Translation};
+use silico_core::sketch::{Answer, MAX_LOAD_RESOLVES, SketchSolver, Translation};
 use silico_core::{Error, ErrorCode};
 use silico_protocol::{Algorithm, SketchSystem, SolveStatus, Solved, Tag};
 
@@ -165,25 +165,30 @@ fn the_redundant_constraints_a_save_names_are_those_its_load_names() {
 }
 
 #[test]
-fn a_solution_that_settles_one_solve_past_again_keeps_the_first() {
-    // Moving 3 → 4 → 5 → 6 → 7, then settled at 7: AGAIN (3) solves again reach 7 but can't
-    // see that it's settled, so the first (y 4) stands and every load moves it. Documented
-    // ("the solution keeps moving: the first stands"), and loud (drift); pinned here so a
-    // change of AGAIN or of the rule is seen.
+fn a_solution_that_settles_one_load_past_the_bound_is_refused_as_not_settling() {
+    // Moving 3 → 4 → 5 → 6 → 7, then settled at 7: MAX_LOAD_RESOLVES (3) loads reach 7 but
+    // can't see that it's settled. The first (y 4) stood on 56b7fe2, and every load moved
+    // it; now the save is refused as a solution that doesn't settle on load (the council on
+    // 56b7fe2), which writes nothing. Pinned so a change of MAX_LOAD_RESOLVES or of the rule
+    // is seen.
     let t = translation();
     let (mut s, starts) = by_start(|system| {
         let y = system.values[11];
         Ok(dropping(system, 3, if y < 7.0 { y + 1.0 } else { y }))
     });
     let save = t.solve(&mut s).unwrap();
-    assert_eq!(starts.lock().unwrap().len(), 1 + AGAIN);
-    assert_eq!(save.solved.values[11], 4.0);
+    assert_eq!(starts.lock().unwrap().len(), 1 + MAX_LOAD_RESOLVES);
+    assert_eq!(
+        save.outcome.unwrap_err().code(),
+        ErrorCode::SolveFailed,
+        "refused as not settling"
+    );
 }
 
 #[test]
-fn a_solution_that_flips_between_two_places_is_bounded_and_keeps_the_first() {
-    // 3 → 4 → 5 → 4 → 5: two solutions, each solving to the other. At most 1 + AGAIN
-    // solves, then the first.
+fn a_solution_that_flips_between_two_places_is_bounded_and_refused() {
+    // 3 → 4 → 5 → 4 → 5: two solutions, each solving to the other. At most
+    // 1 + MAX_LOAD_RESOLVES solves, then refused as not settling.
     let t = translation();
     let (mut s, starts) = by_start(|system| {
         let y = system.values[11];
@@ -191,7 +196,7 @@ fn a_solution_that_flips_between_two_places_is_bounded_and_keeps_the_first() {
     });
     let save = t.solve(&mut s).unwrap();
     assert_eq!(*starts.lock().unwrap(), [3.0, 4.0, 5.0, 4.0]);
-    assert_eq!(save.solved.values[11], 4.0);
+    assert_eq!(save.outcome.unwrap_err().code(), ErrorCode::SolveFailed);
 }
 
 #[test]

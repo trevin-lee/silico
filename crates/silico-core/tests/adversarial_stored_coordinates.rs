@@ -680,9 +680,12 @@ fn at_the_limit() -> String {
 fn a_sketch_at_the_limit_with_everything_moved_reports_drift_and_saves_promptly() {
     let sketches = FakeSketches::new();
     sketches.answer(|system| {
+        // Each coordinate to its whole number and a half: every point moves from where
+        // it's drawn, and a load of the solution leaves it there, as a solve must
+        // (Translation::solve keeps only a solution its own file gives back).
         let mut solved = FakeSketches::as_sent(system);
         for v in &mut solved.values[FIRST_POINT..FIRST_POINT + 1024] {
-            *v += 0.5;
+            *v = v.floor() + 0.5;
         }
         Ok(solved)
     });

@@ -568,9 +568,7 @@ fn written_back(doc: &Checked, solution: &SketchSolution) -> Checked {
     let Operation::Sketch(sketch) = &mut document.features[0].operation else {
         panic!("not a sketch")
     };
-    for p in &mut sketch.points {
-        [p.x, p.y] = solution.points[&p.id];
-    }
+    *sketch = solution.written(sketch);
     checked(&write(&document).unwrap())
 }
 

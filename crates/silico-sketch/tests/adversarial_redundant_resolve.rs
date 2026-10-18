@@ -1,7 +1,7 @@
 //! /break-it on `Translation::solve`'s solve again from the solution (dc18c28): a sketch the
 //! solver reached a solution for, and either called over-constrained or solved with
 //! constraints dropped, is solved again from each solution until a solve leaves it where it
-//! was, at most AGAIN times. The claim under attack: the answer that stands "is what every
+//! was, at most MAX_LOAD_RESOLVES times. The claim under attack: the answer that stands "is what every
 //! later load gives" (M3.4: a sketch is solved on every load from the coordinates its file
 //! stores). Each case here is solved, written through the file as a save writes it, read
 //! back, and solved again as a load does; the two answers must agree: Ok on both or a
@@ -12,12 +12,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::Path;
-use std::time::Instant;
 
 use proptest::prelude::*;
 use silico_core::ErrorCode;
 use silico_core::document::{Checked, FeatureId, Operation, read, write};
-use silico_core::sketch::{AGAIN, SketchSolution, SketchSolver, SketchWorker, solve};
+use silico_core::sketch::{SketchSolution, SketchSolver, SketchWorker, solve};
 use silico_protocol::{SketchSystem, Solved};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-worker");
@@ -155,11 +154,13 @@ fn case(
     }
     let again = written_back(doc, &s);
     match solved(&again, w) {
-        Ok(l) if said(&l) == said(&s) => Ok(()),
+        Ok(l) if said(&l) == said(&s) && dropped(&l) == dropped(&s) => Ok(()),
         Ok(l) => Err(Broke::LoadDiffers(format!(
-            "{what}: saved {}\n  loaded {}",
+            "{what}: saved {} redundant {:?}\n  loaded {} redundant {:?}",
             said(&s),
-            said(&l)
+            dropped(&s),
+            said(&l),
+            dropped(&l)
         ))),
         Err(e) => Err(Broke::LoadDiffers(format!(
             "{what}: saved Ok {}\n  loaded refused: {e} / {:?}",
@@ -373,6 +374,61 @@ fn triangle_is(s: &SketchSolution, x0: f64, y0: f64, side: f64) -> bool {
     near(at("p0000001"), [x0, y0])
         && near(at("p0000002"), [x0 + side, y0])
         && near(at("p0000003"), [x0 + side / 2.0, y0 + hgt])
+}
+
+/// Two circles of radius r, c1 about p1 held at (x0, y0) and c2 about p2 held d to its
+/// right, drawn with radii off by `jitter` (fractions of r): c1's radius and diameter both
+/// given, c2's radius given, and the two equal: the radii given redundantly, so the circles'
+/// radii are what a save writes and a load starts from.
+fn equal_circles(x0: f64, y0: f64, r: f64, d: f64, jitter: [f64; 2]) -> String {
+    let points = [point("p0000001", x0, y0), point("p0000002", x0 + d, y0)];
+    let circles = [
+        format!(
+            r#"{{"id": "c0000001", "center": "p0000001", "radius": {}, "construction": false}}"#,
+            nm(r * (1.0 + jitter[0]))
+        ),
+        format!(
+            r#"{{"id": "c0000002", "center": "p0000002", "radius": {}, "construction": false}}"#,
+            nm(r * (1.0 + jitter[1]))
+        ),
+    ];
+    let constraints = [
+        format!(
+            r#"{{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": {x0}, "driving": true}}"#
+        ),
+        format!(
+            r#"{{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": {y0}, "driving": true}}"#
+        ),
+        format!(
+            r#"{{"id": "k0000003", "type": "distance_x", "a": "origin", "b": "p0000002", "value": {}, "driving": true}}"#,
+            nm(x0 + d)
+        ),
+        format!(
+            r#"{{"id": "k0000004", "type": "distance_y", "a": "origin", "b": "p0000002", "value": {y0}, "driving": true}}"#
+        ),
+        format!(
+            r#"{{"id": "k0000005", "type": "radius", "curve": "c0000001", "value": {r}, "driving": true}}"#
+        ),
+        format!(
+            r#"{{"id": "k0000006", "type": "diameter", "curve": "c0000001", "value": {}, "driving": true}}"#,
+            nm(2.0 * r)
+        ),
+        format!(
+            r#"{{"id": "k0000007", "type": "radius", "curve": "c0000002", "value": {r}, "driving": true}}"#
+        ),
+        c(r#"{"id": "k0000008", "type": "equal", "a": "c0000001", "b": "c0000002"}"#),
+    ];
+    text(&points, &[], &[], &constraints).replace(
+        "\"circles\": []",
+        &format!("\"circles\": [{}]", circles.join(", ")),
+    )
+}
+
+fn equal_circles_are(s: &SketchSolution, r: f64) -> bool {
+    ["c0000001", "c0000002"].iter().all(|c| {
+        s.radius(&silico_core::document::ElementId::new(c).unwrap())
+            .is_some_and(|got| (got - r).abs() <= CLOSE)
+    })
 }
 
 // --- Targeted --------------------------------------------------------------------------------
@@ -597,10 +653,10 @@ fn a_redundant_slot_saved_by_silico_loads_without_moving() {
 }
 
 #[test]
-fn a_sketch_with_every_constraint_given_three_times_is_solved_at_most_one_plus_again_times() {
-    // Each constraint three times: PlaneGCS drops two of every three. The loop stops after
-    // AGAIN solves again whatever happens; and a solve from a solution DogLeg meets as it
-    // starts returns it untouched, so it should stop after one.
+fn a_sketch_with_every_constraint_given_three_times_is_saved_in_two_solves_and_loaded_in_one() {
+    // Each constraint three times: PlaneGCS drops two of every three. A load from a solution
+    // DogLeg meets as it starts returns it untouched: the save is the first solve and one
+    // load, and the load of the saved file is one solve (it leaves its file as drawn).
     let mut w = Counting {
         inner: worker(),
         sent: Vec::new(),
@@ -619,8 +675,7 @@ fn a_sketch_with_every_constraint_given_three_times_is_solved_at_most_one_plus_a
         rectangle_is(s, 3.0, -4.0, 25.0, 7.0)
     });
     assert!(r.is_ok(), "{}", r.unwrap_err());
-    // Two calls of `solve` (the save's, the load's), each 1 + up to AGAIN.
-    assert!(w.sent.len() <= 2 * (1 + AGAIN), "{} solves", w.sent.len());
+    assert_eq!(w.sent.len(), 2 + 1, "solves");
 }
 
 #[test]
@@ -645,11 +700,10 @@ fn the_same_redundant_sketch_in_two_workers_gives_the_same_answer() {
 }
 
 #[test]
-fn a_large_redundant_chain_solved_again_costs_at_most_a_few_solves() {
+fn a_large_redundant_chain_is_saved_in_two_solves() {
     // 200 lines in a chain, each horizontal twice and equal to the next, the first held:
-    // every redundancy agrees. The solve again from the solution re-diagnoses 1,000
-    // equations; it must not cost more than the 1 + AGAIN solves the docs promise, measured
-    // against the first solve's own time.
+    // every redundancy agrees. The load from the solution re-diagnoses 1,000 equations,
+    // once: it leaves the solution where it is.
     let n = 200;
     let mut points = Vec::new();
     let mut lines = Vec::new();
@@ -696,25 +750,15 @@ fn a_large_redundant_chain_solved_again_costs_at_most_a_few_solves() {
         sent: Vec::new(),
         replies: Vec::new(),
     };
-    let t = Instant::now();
     let s = solved(&doc, &mut w);
-    let total = t.elapsed();
     let solves = w.sent.len();
-    // One solve alone, the first's request, timed on its own.
-    let first = w.sent[0].clone();
-    let t = Instant::now();
-    let _ = w.inner.solve(first).unwrap();
-    let one = t.elapsed();
     let s = s.unwrap_or_else(|e| panic!("{e} {:?}", e.elements()));
     assert_eq!(
         s.point(&silico_core::document::ElementId::new("p0000200").unwrap()),
         Some([1000.0, 0.0])
     );
-    assert!(solves <= 1 + AGAIN, "{solves} solves");
-    assert!(
-        total <= one * (1 + AGAIN as u32) * 4,
-        "{total:?} against {one:?} for one"
-    );
+    // The first solve and one load, which leaves the solution where it is.
+    assert_eq!(solves, 2, "solves");
     let again = written_back(&doc, &s);
     let l = solved(&again, &mut w.inner).unwrap();
     assert_eq!(said(&l), said(&s));
@@ -828,6 +872,30 @@ proptest! {
         let what = format!("rectangle {wd} x {ht} at ({x0}, {y0}), jitter {jitter:?}, times {times}");
         let r = W.with(|w| case(&doc, &what, &mut *w.borrow_mut(), |s| rectangle_is(s, x0, y0, wd, ht)));
         report(r)?;
+    }
+
+    /// Two equal circles, their radii given redundantly: a load starts from the radii a
+    /// save writes (the council on 56b7fe2).
+    #[test]
+    fn redundant_equal_circles_load_gives_the_answer_its_save_kept(
+        log_r in -3.0f64..5.0,
+        log_d in -3.0f64..5.0,
+        place in prop_oneof![Just(0.0), Just(999_000.0), -999_000.0f64..999_000.0],
+        j0 in -0.4f64..0.4,
+        j1 in -0.4f64..0.4,
+    ) {
+        let (r, d) = (nm(libm::pow(10.0, log_r)), nm(libm::pow(10.0, log_d)));
+        prop_assume!(r > 0.0 && d > 0.0 && 2.0 * r < 1e6);
+        let room = 1e6 - 2.0 * (r + d);
+        prop_assume!(room > 0.0);
+        let (x0, y0) = (nm(place.clamp(-room, room)), nm((-place).clamp(-room, room)));
+        let Ok(doc) = checked(&equal_circles(x0, y0, r, d, [j0, j1])) else {
+            return Ok(());
+        };
+        let what = format!("equal circles r {r} d {d} at ({x0}, {y0}), jitter {:?}", [j0, j1]);
+        let res = W.with(|w| case(&doc, &what, &mut *w.borrow_mut(), |s| equal_circles_are(s, r)));
+        let far = x0.abs().max(y0.abs()) + d + r;
+        report(unless_open(res, past_the_solvers_precision(far, r.min(d)), r.min(d), (2.0 * r).max(d)))?;
     }
 
     // Found by break-it on dc18c28, fixed: about 1 in 2,000 slots loaded a few ulps (up to

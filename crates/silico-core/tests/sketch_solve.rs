@@ -13,7 +13,8 @@ use std::f64::consts::PI;
 use silico_core::ErrorCode;
 use silico_core::document::{Checked, FeatureId, LineSide, Operation, Sketch, read};
 use silico_core::sketch::{
-    AGAIN, ALGORITHMS, Answer, Measured, SketchSolution, SketchSolver, Translation, solve,
+    ALGORITHMS, Answer, MAX_LOAD_RESOLVES, Measured, SketchSolution, SketchSolver, Translation,
+    solve,
 };
 use silico_protocol::{
     Algorithm, Geometry, PointOf, PointValues, SketchGeometry, SketchSystem, SolveStatus, Solved,
@@ -1216,13 +1217,15 @@ fn after_a_solved_conflict_the_second_solve_stands_only_when_it_solves() {
     let t = translate(&ten(&[
         r#"{"id": "k0000003", "type": "length", "line": "n0000001", "value": 11, "driving": true}"#,
     ]));
+    // p3 (values 10, 11) moved by each conflicting solve: a solve that leaves the drawing
+    // where it was is its own load, and isn't solved again (asserted last).
+    let mut moved = t.system.values.clone();
+    moved[11] = 2.5;
     let conflict = |status| {
-        let mut a = answer(&t, t.system.values.clone(), status);
+        let mut a = answer(&t, moved.clone(), status);
         a.conflicting = vec![Tag(2), Tag(3)];
         a
     };
-    let mut moved = t.system.values.clone();
-    moved[11] = 2.5;
     let clean = answer(&t, moved.clone(), SolveStatus::Success);
     let run = |answers: Vec<Result<Solved, silico_core::Error>>| {
         let mut s = Scripted {
@@ -1240,17 +1243,19 @@ fn after_a_solved_conflict_the_second_solve_stands_only_when_it_solves() {
     };
     // The first conflicting but solved, the second clean: the second stands, sent from the
     // first's solution.
-    let mut first = conflict(SolveStatus::Success);
-    first.values = moved.clone();
-    let (got, sent) = run(vec![Ok(first), Ok(clean.clone())]);
+    let (got, sent) = run(vec![Ok(conflict(SolveStatus::Success)), Ok(clean.clone())]);
     assert!(got.unwrap().is_ok());
     assert_eq!(sent.len(), 2);
     assert_eq!(sent[1].values, moved);
     // The second conflicting too, or failing, or the worker refusing its start: the first's
-    // refusal stands, naming its constraints.
+    // refusal stands, naming its constraints (a refusal writes no file; its load solves the
+    // drawing again).
+    let mut elsewhere = conflict(SolveStatus::Success);
+    elsewhere.conflicting = vec![Tag(3)];
     for second in [
         Ok(conflict(SolveStatus::Success)),
-        Ok(answer(&t, t.system.values.clone(), SolveStatus::Failed)),
+        Ok(elsewhere),
+        Ok(answer(&t, moved.clone(), SolveStatus::Failed)),
         Err(silico_core::Error::new(ErrorCode::InvalidInput, "refused")),
     ] {
         let (got, sent) = run(vec![Ok(conflict(SolveStatus::Success)), second]);
@@ -1284,9 +1289,15 @@ fn after_a_solved_conflict_the_second_solve_stands_only_when_it_solves() {
     assert_eq!(sent.len(), 1);
     // No second solve after a conflict the solver didn't solve, or a refusal of another
     // kind.
+    // No second solve after a conflict the solver didn't solve, a refusal of another kind,
+    // or a solve that leaves the drawing where it was (its load would be the same solve).
+    let mut unmoved = answer(&t, t.system.values.clone(), SolveStatus::Success);
+    unmoved.conflicting = vec![Tag(2), Tag(3)];
     for first in [
         conflict(SolveStatus::Failed),
         answer(&t, t.system.values.clone(), SolveStatus::Failed),
+        unmoved,
+        answer(&t, t.system.values.clone(), SolveStatus::Success),
     ] {
         let (_, sent) = run(vec![Ok(first)]);
         assert_eq!(sent.len(), 1);
@@ -1294,12 +1305,12 @@ fn after_a_solved_conflict_the_second_solve_stands_only_when_it_solves() {
 }
 
 #[test]
-fn a_solve_that_dropped_constraints_is_solved_again_until_it_doesnt_move() {
+fn a_solve_stands_only_where_a_load_of_its_own_file_gives_it_back() {
     // M3.4: a sketch is solved on every load from the solution its file stores, so the
-    // answer that stands must be the one a load gives: a load that leaves the solution where
-    // it is. PlaneGCS picks what it drops where it diagnoses: the line horizontal twice,
-    // k0000003 dropped from the drawing, may be kept from the solution, and the solve move.
-    // p3, free, is values 10 and 11: the scripted solves move it.
+    // answer that stands must be one its own file gives back: a load that leaves the file
+    // where it was. PlaneGCS picks what it drops where it diagnoses: the line horizontal
+    // twice, k0000003 dropped from the drawing, may be kept from the solution, and the
+    // solve move. p3, free, is values 10 and 11 (drawn at y 3): the scripted solves move it.
     let t = translate(&ten(&[
         r#"{"id": "k0000003", "type": "horizontal", "line": "n0000001"}"#,
     ]));
@@ -1346,8 +1357,14 @@ fn a_solve_that_dropped_constraints_is_solved_again_until_it_doesnt_move() {
     let (got, starts) = run(vec![dropping(3, 4.0), dropping(1, 4.0)]);
     assert_eq!(redundant_of(&got), (4.0, vec!["k0000001".to_owned()]));
     assert_eq!(starts, [3.0, 4.0]);
-    // Moved by the first load, which the second doesn't move: the second load stands.
-    let (got, starts) = run(vec![dropping(3, 4.0), dropping(1, 5.0), dropping(3, 5.0)]);
+    // Nothing dropped and moved: checked by a load all the same (the council on 56b7fe2: an
+    // arc, nothing repeated, whose load moved it); moved by the first load, which the
+    // second doesn't move: the second load stands.
+    let (got, starts) = run(vec![
+        answer(&t, at(4.0), SolveStatus::Success),
+        dropping(1, 5.0),
+        dropping(3, 5.0),
+    ]);
     assert_eq!(redundant_of(&got), (5.0, vec!["k0000003".to_owned()]));
     assert_eq!(starts, [3.0, 4.0, 5.0]);
     // Called conflicting, then conflicting again but moved, then not moved and solved: the
@@ -1355,26 +1372,54 @@ fn a_solve_that_dropped_constraints_is_solved_again_until_it_doesnt_move() {
     let (got, starts) = run(vec![conflict(4.0), conflict(5.0), dropping(1, 5.0)]);
     assert_eq!(redundant_of(&got), (5.0, vec!["k0000001".to_owned()]));
     assert_eq!(starts, [3.0, 4.0, 5.0]);
-    // Settled, but refused: the settled load's refusal stands, naming what it names, since
-    // every load gives it (break-it on dc18c28: a save Ok whose every load was refused).
+    // Refused on the drawing, and no load reaches a solved fixed point: the drawing's
+    // refusal stands, naming what it names (a refusal writes no file, so its load solves
+    // the drawing again and refuses alike).
     let mut other = conflict(5.0);
     other.conflicting = vec![Tag(3)];
     let (got, starts) = run(vec![conflict(4.0), conflict(5.0), other]);
     let e = got.outcome.unwrap_err();
     assert_eq!(
         (e.code(), e.elements()),
-        (ErrorCode::OverConstrained, &["k0000003".to_owned()][..])
+        (
+            ErrorCode::OverConstrained,
+            &["k0000001".to_owned(), "k0000003".to_owned()][..]
+        )
     );
     assert_eq!(starts, [3.0, 4.0, 5.0]);
-    // Solved Ok on the drawing, and refused by the load that doesn't move it: refused.
+    // Solved Ok on the drawing, and refused by the load that doesn't move it: refused as
+    // the load refuses it (break-it on dc18c28: a save Ok whose every load was refused).
     let (got, starts) = run(vec![dropping(3, 4.0), conflict(4.0)]);
-    assert_eq!(got.outcome.unwrap_err().code(), ErrorCode::OverConstrained);
+    let e = got.outcome.unwrap_err();
+    assert_eq!(
+        (e.code(), e.elements()),
+        (
+            ErrorCode::OverConstrained,
+            &["k0000001".to_owned(), "k0000003".to_owned()][..]
+        )
+    );
     assert_eq!(starts, [3.0, 4.0]);
-    // Moving on every solve: AGAIN solves again at most, and then the first stands.
-    let moving: Vec<Solved> = (0..=AGAIN).map(|i| dropping(3, 4.0 + i as f64)).collect();
+    // Solved Ok on the drawing, every load moving it: MAX_LOAD_RESOLVES loads, then refused
+    // as a solution that doesn't settle (the council on 56b7fe2: never the first, whose own
+    // file loads elsewhere).
+    let moving: Vec<Solved> = (0..=MAX_LOAD_RESOLVES)
+        .map(|i| dropping(3, 4.0 + i as f64))
+        .collect();
     let (got, starts) = run(moving);
-    assert_eq!(redundant_of(&got), (4.0, vec!["k0000003".to_owned()]));
-    assert_eq!(starts.len(), 1 + AGAIN);
+    let e = got.outcome.unwrap_err();
+    assert_eq!(e.code(), ErrorCode::SolveFailed);
+    assert!(
+        e.message()
+            .starts_with("the sketch's solution doesn't settle on load"),
+        "{e}"
+    );
+    assert_eq!(starts.len(), 1 + MAX_LOAD_RESOLVES);
+    // Refused on the drawing, every load moving it: the drawing's refusal stands.
+    let mut moving = vec![conflict(4.0)];
+    moving.extend((1..=MAX_LOAD_RESOLVES).map(|i| conflict(4.0 + i as f64)));
+    let (got, starts) = run(moving);
+    assert_eq!(got.outcome.unwrap_err().code(), ErrorCode::OverConstrained);
+    assert_eq!(starts.len(), 1 + MAX_LOAD_RESOLVES);
     // Solved Ok on the drawing, and the load from its solution reaches none: that load's
     // refusal stands, since it leaves the file as it is and every load gives it (break-it
     // on dc18c28: a far triangle saved Ok whose every load failed).
@@ -1384,25 +1429,79 @@ fn a_solve_that_dropped_constraints_is_solved_again_until_it_doesnt_move() {
     ]);
     assert_eq!(got.outcome.unwrap_err().code(), ErrorCode::SolveFailed);
     assert_eq!(starts, [3.0, 4.0]);
-    // Moved and refused by the first load, and the load from that refusal reaches none: no
-    // load settled, so the first answer stands, the documented fallback (no sweep has
-    // reached it; after_a_solved_conflict_... has it from a first answer refused).
+    // Solved Ok on the drawing, moved and refused by the first load, and the load from
+    // there reaches none: refused, as the last load refused it (break-it on 56b7fe2: the
+    // first stood, Ok, and every load of its file was refused).
     let (got, starts) = run(vec![
         dropping(3, 4.0),
         conflict(5.0),
         answer(&t, at(5.0), SolveStatus::Failed),
     ]);
-    assert_eq!(redundant_of(&got), (4.0, vec!["k0000003".to_owned()]));
+    assert_eq!(got.outcome.unwrap_err().code(), ErrorCode::SolveFailed);
     assert_eq!(starts, [3.0, 4.0, 5.0]);
-    // Nothing dropped, or a refusal of another kind: no solve again.
-    let (got, starts) = run(vec![answer(&t, at(4.0), SolveStatus::Success)]);
-    assert_eq!(redundant_of(&got), (4.0, Vec::new()));
+    // A solve that leaves the drawing where it was is its own load: no solve again.
+    let (got, starts) = run(vec![dropping(3, 3.0)]);
+    assert_eq!(redundant_of(&got), (3.0, vec!["k0000003".to_owned()]));
     assert_eq!(starts, [3.0]);
+    // A refusal of another kind on the drawing: no solve again (a load from an invalid
+    // result would measure sides from where that result put them).
     let mut flat = dropping(3, 4.0);
     flat.values[8] = 0.0;
     let (got, starts) = run(vec![flat]);
     assert_eq!(got.outcome.unwrap_err().code(), ErrorCode::InvalidResult);
     assert_eq!(starts, [3.0]);
+}
+
+#[test]
+fn a_circles_solved_radius_is_where_the_solve_again_starts() {
+    // The council on 56b7fe2: a circle's radius is a value the solve moves and the file
+    // stores, so a load starts from the solved radius, and a load that moves only the
+    // radius hasn't settled. A circle about p1, held at the origin, drawn radius 2, its
+    // radius given as 3 twice (one dropped).
+    let t = translate(&text(
+        &[point("p0000001", 0.0, 0.0)],
+        &[],
+        &[circle("c0000001", "p0000001", 2.0)],
+        &[],
+        &[
+            r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#.to_owned(),
+            r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#.to_owned(),
+            r#"{"id": "k0000003", "type": "radius", "curve": "c0000001", "value": 3, "driving": true}"#.to_owned(),
+            r#"{"id": "k0000004", "type": "radius", "curve": "c0000001", "value": 3, "driving": true}"#.to_owned(),
+        ],
+    ));
+    let radius = t.system.values.iter().position(|&v| v == 2.0).unwrap();
+    let at = |r: f64| {
+        let mut v = t.system.values.clone();
+        v[radius] = r;
+        let mut a = answer(&t, v, SolveStatus::SolvedExceptRedundant);
+        a.redundant = vec![Tag(4)];
+        a
+    };
+    let run = |answers: Vec<Solved>| {
+        let mut s = Scripted {
+            answers: answers.into_iter().map(Ok).collect(),
+            sent: Vec::new(),
+            distrusted: 0,
+        };
+        let got = t.solve(&mut s).unwrap();
+        let starts: Vec<f64> = s.sent.iter().map(|system| system.values[radius]).collect();
+        let solved = got
+            .outcome
+            .unwrap()
+            .radius(&silico_core::document::ElementId::new("c0000001").unwrap())
+            .unwrap();
+        (solved, starts)
+    };
+    // The first load starts from the solved radius, 3, and leaves it there: settled.
+    let near = 3.0 + f64::EPSILON * 2.0;
+    assert_eq!(run(vec![at(3.0), at(3.0)]), (3.0, vec![2.0, 3.0]));
+    // A load that moves the radius alone, by two ulps, hasn't settled: the next load starts
+    // from the moved radius, and its answer stands.
+    assert_eq!(
+        run(vec![at(3.0), at(near), at(near)]),
+        (near, vec![2.0, 3.0, near])
+    );
 }
 
 /// `t` answered met with its one constraint dropped as redundant, its values `values`.

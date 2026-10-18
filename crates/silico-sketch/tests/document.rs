@@ -11,8 +11,9 @@ use std::path::Path;
 
 use silico_core::ErrorCode;
 use silico_core::document::{Checked, ElementId, FeatureId, read};
-use silico_core::sketch::{SketchSolution, SketchWorker, solve};
+use silico_core::sketch::{SketchSolution, SketchSolver, SketchWorker, solve};
 use silico_protocol::Algorithm;
+use silico_protocol::{SketchSystem, Solved};
 use systems::Rng;
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-worker");
@@ -62,7 +63,7 @@ fn document(
     Checked::new(read(text.as_bytes()).unwrap()).unwrap()
 }
 
-fn solved(doc: &Checked, w: &mut SketchWorker) -> Result<SketchSolution, silico_core::Error> {
+fn solved(doc: &Checked, w: &mut dyn SketchSolver) -> Result<SketchSolution, silico_core::Error> {
     solve(doc, &FeatureId::new(FEATURE).unwrap(), w)
 }
 
@@ -513,6 +514,33 @@ fn a_point_two_lines_share_held_in_two_places_conflicts() {
     assert_eq!(e.elements(), ["k0000001", "k0000002"]);
 }
 
+/// The worker, recording the algorithm each solve it answers was solved by.
+struct Counting {
+    inner: SketchWorker,
+    replies: Vec<Solved>,
+}
+
+impl Counting {
+    fn new(inner: SketchWorker) -> Self {
+        Counting {
+            inner,
+            replies: Vec::new(),
+        }
+    }
+
+    fn algorithms(&self) -> Vec<Option<Algorithm>> {
+        self.replies.iter().map(|r| r.algorithm).collect()
+    }
+}
+
+impl SketchSolver for Counting {
+    fn solve(&mut self, system: SketchSystem) -> Result<Solved, silico_core::Error> {
+        let r = self.inner.solve(system)?;
+        self.replies.push(r.clone());
+        Ok(r)
+    }
+}
+
 #[test]
 fn a_solution_that_cant_be_built_is_passed_over_for_the_next_algorithms() {
     // TestCoincidentCommandGui.py's collapsed line: FreeCAD's coincidences make its two ends
@@ -521,7 +549,8 @@ fn a_solution_that_cant_be_built_is_passed_over_for_the_next_algorithms() {
     // dimensions. DogLeg solves that exactly, to a line of no length, which FreeCAD's
     // GeomLineSegment refuses ("Both points are equal": gp::Resolution, so only exactly);
     // its solution is passed over (fc128d357d), and Levenberg–Marquardt's, its ends 1e-10
-    // apart, is a line FreeCAD builds too.
+    // apart, is a line FreeCAD builds too. Loaded from that file, DogLeg meets it as it
+    // starts and leaves it there, so the answer kept (the load's, M3.4) says DogLeg.
     let doc = free_line(&[
         r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 5, "driving": true}"#,
         r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 5, "driving": true}"#,
@@ -541,8 +570,13 @@ fn a_solution_that_cant_be_built_is_passed_over_for_the_next_algorithms() {
         by_dogleg.status,
         silico_protocol::SolveStatus::SolvedInvalid
     );
-    let s = solved(&doc, &mut worker()).unwrap();
-    assert_eq!(s.algorithm, Algorithm::LevenbergMarquardt);
+    let mut w = Counting::new(worker());
+    let s = solved(&doc, &mut w).unwrap();
+    assert_eq!(
+        w.algorithms(),
+        [Some(Algorithm::LevenbergMarquardt), Some(Algorithm::DogLeg)]
+    );
+    assert_eq!(s.algorithm, Algorithm::DogLeg);
     let (a, b) = (
         s.point(&id("p0000001")).unwrap(),
         s.point(&id("p0000002")).unwrap(),
