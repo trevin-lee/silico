@@ -196,3 +196,34 @@ pub fn box_at(id: &str, position: [f64; 3], l: f64, w: f64, h: f64) -> String {
         number(h)
     )
 }
+
+/// A sketch `id` on `plane` of rectangles, each `[x0, y0, x1, y1]`: the n-th's corners
+/// p<n>000001 to p<n>000004 counter-clockwise from (x0, y0), its sides n<n>000001 (the
+/// bottom) to n<n>000004 (the left), the letter n-th from `a` (at most 8).
+pub fn rectangles(id: &str, plane: &str, rects: &[[f64; 4]]) -> String {
+    let mut points = Vec::new();
+    let mut lines = Vec::new();
+    for (r, [x0, y0, x1, y1]) in rects.iter().enumerate() {
+        let letter = ["a", "b", "c", "d", "e", "f", "g", "h"][r];
+        let corners = [[*x0, *y0], [*x1, *y0], [*x1, *y1], [*x0, *y1]];
+        for (i, [x, y]) in corners.iter().enumerate() {
+            points.push(format!(
+                r#"{{"id": "p{letter}00000{}", "x": {}, "y": {}, "construction": false}}"#,
+                i + 1,
+                number(*x),
+                number(*y)
+            ));
+            lines.push(format!(
+                r#"{{"id": "n{letter}00000{}", "from": "p{letter}00000{}", "to": "p{letter}00000{}", "construction": false}}"#,
+                i + 1,
+                i + 1,
+                (i + 1) % 4 + 1
+            ));
+        }
+    }
+    format!(
+        r#"{{"id": "{id}", "type": "sketch", "v": 1, "name": "Sketch", "plane": "{plane}", "points": [{}], "lines": [{}], "circles": [], "arcs": [], "constraints": []}}"#,
+        points.join(", "),
+        lines.join(", ")
+    )
+}

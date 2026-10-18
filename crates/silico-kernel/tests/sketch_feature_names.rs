@@ -997,3 +997,61 @@ fn a_groove_whose_regions_lie_either_side_of_its_axis_cuts_both() {
     assert!((removed - 1374.446786).abs() < 1e-6);
     assert_close(volume(&model, "gggggggg"), cylinder - removed, "the groove");
 }
+
+#[test]
+fn regions_either_side_of_the_axis_are_refused_past_half_a_turn_and_right_to_it() {
+    // Council round 2 (proven, critical): a pad of a circle r 20 by 20, grooved by
+    // rectangles A (x 15..25, z 5..10) and B (x −25..−15, z 7..12) about the sketch's y
+    // axis. A whole turn turned their solids into each other and OCCT's cut gave 2748.893572
+    // for the right 21284.29 (FreeCAD 1.1.3 builds it right, measured). Refused past 180°
+    // now; at 180° each sweeps its own half, the ring 15..20, 5 high: π (20² − 15²) × 5 in
+    // all removed, FreeCAD's 22383.847657 left. Regions all on one side (A, and C at x
+    // 15..25, z 12..15) turn a whole turn: π (20² − 15²) × (5 + 3) removed.
+    let engine = engine();
+    let document = |rects: &[[f64; 4]], extent: &str| {
+        publish(
+            &engine,
+            &[
+                &circles("cccccccc", "xy", &[([0.0, 0.0], 20.0)]),
+                &pad("pppppppp", None, "cccccccc", &one_side("20")),
+                &rectangles("ssssssss", "xz", rects),
+                &turned(
+                    "gggggggg",
+                    "groove",
+                    Some("pppppppp"),
+                    "ssssssss",
+                    "y_axis",
+                    extent,
+                ),
+            ],
+        )
+    };
+    let both = [[15.0, 5.0, 25.0, 10.0], [-25.0, 7.0, -15.0, 12.0]];
+    let model = document(&both, TURN);
+    match model.outcome(&id("gggggggg")) {
+        Some(FeatureOutcome::Failed(error)) => {
+            assert_eq!(error.code(), ErrorCode::InvalidInput);
+            assert_eq!(error.parameter(), Some("extent.angle"));
+            assert!(
+                error
+                    .message()
+                    .contains("past 180° they turn into each other")
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    let cylinder = PI * 400.0 * 20.0;
+    let model = document(&both, &angle("180"));
+    assert_eq!(errors(&model), []);
+    let half = cylinder - PI * 175.0 * 5.0;
+    assert!((half - 22383.847657).abs() < 1e-6);
+    assert_close(volume(&model, "gggggggg"), half, "the half turn");
+    let one = [[15.0, 5.0, 25.0, 10.0], [15.0, 12.0, 25.0, 15.0]];
+    let model = document(&one, TURN);
+    assert_eq!(errors(&model), []);
+    assert_close(
+        volume(&model, "gggggggg"),
+        cylinder - PI * 175.0 * 8.0,
+        "the whole turn",
+    );
+}
