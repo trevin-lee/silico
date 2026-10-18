@@ -302,3 +302,98 @@ fn a_case_file_that_cant_be_read_is_an_error_and_a_missing_one_no_cases() {
     assert!(e.contains("can't read"), "{e}");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// FreeCAD's answer ending in `code`, its lists empty and nothing solved; and Silico's
+/// ending in `outcome`, its lists empty too: so only how each ended is compared.
+fn ended(
+    code: i32,
+    outcome: Result<silico_core::sketch::SketchSolution, silico_core::Error>,
+) -> (
+    silico_oracle::sketch::FreecadSolved,
+    silico_oracle::sketch::Ours,
+) {
+    let theirs = silico_oracle::sketch::FreecadSolved {
+        code,
+        dof: 0,
+        conflicting: Vec::new(),
+        redundant: Vec::new(),
+        partially_redundant: Vec::new(),
+        malformed: Vec::new(),
+        points: Default::default(),
+        radii: Default::default(),
+        values: Vec::new(),
+    };
+    let ours = silico_oracle::sketch::Ours {
+        dofs: 0,
+        conflicting: Vec::new(),
+        redundant: Vec::new(),
+        partially_redundant: Vec::new(),
+        outcome,
+    };
+    (theirs, ours)
+}
+
+#[test]
+fn how_each_side_ended_is_compared_as_the_harness_says_they_agree() {
+    // M3.3's round-1 mutants: the outcome arms that let two endings agree were tested only
+    // where they agree. Each pair here, with the lists equal, either agrees or is a
+    // difference, as compare's comment has it (and docs/ports/sketcher.md for −3 and −4).
+    use silico_core::{Error, ErrorCode};
+    let m = model(&corner(""));
+    let failed = |code| Err(Error::new(code, "made up here"));
+    // A solution of nothing: the (−1, solved) row never reaches compare_solutions, so only
+    // that Silico solved matters.
+    let solved = || {
+        Ok(silico_core::sketch::SketchSolution {
+            points: Default::default(),
+            radii: Default::default(),
+            references: Default::default(),
+            dofs: 0,
+            free: Default::default(),
+            redundant: Default::default(),
+            algorithm: silico_protocol::Algorithm::DogLeg,
+        })
+    };
+    for (code, outcome, agrees, why) in [
+        (
+            -2,
+            failed(ErrorCode::OverConstrained),
+            true,
+            "redundant, refused as over-constrained",
+        ),
+        (
+            -2,
+            failed(ErrorCode::SolveFailed),
+            false,
+            "redundant, but failed otherwise",
+        ),
+        (
+            -1,
+            solved(),
+            false,
+            "FreeCAD failed with nothing redundant, Silico solved",
+        ),
+        (
+            -3,
+            failed(ErrorCode::OverConstrained),
+            true,
+            "conflicting, over-constrained",
+        ),
+        (
+            -3,
+            failed(ErrorCode::SolveFailed),
+            false,
+            "conflicting, but failed otherwise",
+        ),
+        (
+            -4,
+            failed(ErrorCode::InvalidResult),
+            false,
+            "over-constrained, but an invalid result",
+        ),
+    ] {
+        let (theirs, ours) = ended(code, outcome);
+        let how = compare(&m, &ours, &theirs);
+        assert_eq!(how.is_empty(), agrees, "{why}: {how:?}");
+    }
+}
