@@ -269,3 +269,36 @@ fn the_harness_catches_each_measure_freecad_gives_otherwise() {
         .unwrap();
     reported(1, &|t| t.values[reference] += 1e-3, "reference");
 }
+
+#[test]
+fn a_symmetry_about_the_origin_is_freecads_symmetric_about_its_root_point() {
+    // Round 1's mutants: a symmetry about the sketch's origin wasn't built. In FreeCAD's
+    // terms the origin is geometry −1's start (its root point): p2 (n1's end, 0 2) and p3
+    // (n2's end, 1 2) about (−1, 1).
+    let m = model(&corner(
+        r#", {"id": "k0000004", "type": "symmetric", "a": "p0000002", "b": "p0000003", "about": "origin"}"#,
+    ));
+    let made = m
+        .constraints
+        .iter()
+        .find(|c| c.id.as_deref() == Some("k0000004"))
+        .unwrap();
+    assert_eq!(
+        (made.kind, made.ints.clone()),
+        ("Symmetric", vec![0, 2, 1, 2, -1, 1])
+    );
+}
+
+#[test]
+fn a_case_file_that_cant_be_read_is_an_error_and_a_missing_one_no_cases() {
+    // Round 1's mutants: any read error was taken as no file, so a case file the harness
+    // couldn't read (here a directory where it goes) ran no cases, silently.
+    let dir = std::env::temp_dir().join(format!("silico-oracle-load-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(silico_oracle::sketch::load(&dir).unwrap().is_empty());
+    std::fs::create_dir(dir.join(silico_oracle::sketch::FILE)).unwrap();
+    let e = silico_oracle::sketch::load(&dir).unwrap_err();
+    assert!(e.contains("can't read"), "{e}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
