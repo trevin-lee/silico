@@ -929,15 +929,16 @@ fn a_sketch_in_the_timeline_has_no_map_and_changes_no_other_features_names() {
     let map = sketched.element_map(&id("m3tq8v0z")).unwrap();
     assert_eq!(map.iter().count(), 26 + 8);
     for (kind, index, name) in [
-        (ElementKind::Face, 1, "k7f2qx3m.Face1"),
-        (ElementKind::Face, 7, "a91cw0de.Face1"),
-        (ElementKind::Edge, 13, "a91cw0de.Edge1"),
-        (ElementKind::Vertex, 10, "a91cw0de.Vertex2"),
+        (ElementKind::Face, 1, "k7f2qx3m.box.Face1"),
+        (ElementKind::Face, 7, "a91cw0de.cylinder.Face1"),
+        (ElementKind::Edge, 13, "a91cw0de.cylinder.Edge1"),
+        (ElementKind::Vertex, 10, "a91cw0de.cylinder.Vertex2"),
     ] {
         assert_eq!(map.name(element(kind, index)).unwrap().to_string(), name);
     }
 }
 
+#[test]
 fn edges_or_vertices_bounding_the_same_named_elements_are_ranked_by_freecads_count() {
     // Found by the tests review: no map gave an element from above a place. Face1 modified
     // from the cube's Face1; Face2 generated from its Edge1. Edge1 and Edge2 bound both

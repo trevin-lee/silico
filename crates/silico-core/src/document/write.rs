@@ -227,8 +227,6 @@ fn fields(operation: &Operation) -> Vec<(&'static str, Out<'_>)> {
     }
 }
 
-/// A sketch's fields (D5 of docs/design/m3.2-sketch-format.md): each list sorted by ID,
-/// one element per line.
 /// A sketch's plane, and each of its lists as the file writes it, by the kind of element
 /// it holds: taken apart whole, so a field added to a sketch is a compile error here until
 /// the file, and the outline, say it.
@@ -308,6 +306,8 @@ fn sketch_lists(sketch: &Sketch) -> (&Plane, [(ElementKind, Vec<Out<'_>>); 5]) {
     )
 }
 
+/// A sketch's fields (D5 of docs/design/m3.2-sketch-format.md): each list sorted by ID,
+/// one element per line.
 fn sketch(sketch: &Sketch) -> Vec<(&'static str, Out<'_>)> {
     let (plane, lists) = sketch_lists(sketch);
     let mut fields = vec![("plane", Out::Str(plane.as_str()))];

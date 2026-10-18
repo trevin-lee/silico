@@ -606,3 +606,30 @@ fn a_merge_of_a_kind_change_and_a_new_fillet_on_other_lines_breaks_the_fillet() 
         [ErrorCode::ReferenceBroken]
     );
 }
+
+#[test]
+fn a_fillet_of_a_sketch_or_of_a_sketchs_element_is_refused_saying_it_makes_no_solid() {
+    // M3.2's sketches, met on rebasing M2.8 onto them: a sketch makes no solid, so a fillet
+    // can't round one, and no name can be of its elements.
+    let sketch = r#"{"id": "s0000001", "type": "sketch", "v": 1, "name": "Profile", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": []}"#;
+    let said = refused(&document(&[
+        sketch,
+        &fillet("f0000001", "s0000001", &["k7f2qx3m.box.Edge1"], "1"),
+    ]));
+    assert!(
+        said.iter()
+            .any(|(p, m)| p == "base" && m.contains("makes no solid")),
+        "{said:?}"
+    );
+    let said = refused(&document(&[
+        sketch,
+        &fillet("f0000001", "m3tq8v0z", &["s0000001.Edge1"], "1"),
+    ]));
+    assert!(
+        said.iter().any(|(p, m)| p == "edges.0"
+            && m.contains(
+                "s0000001 makes no solid (a sketch): it has no faces, edges, or vertices"
+            )),
+        "{said:?}"
+    );
+}
