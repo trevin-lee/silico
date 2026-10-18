@@ -59,9 +59,10 @@ jobs:
     timeout-minutes: 1440
     strategy:
       fail-fast: false
-      # At most six at once, whatever the shard count: two of the eight runners stay free
-      # for gates (a saturated machine fails wall-clock tests).
-      max-parallel: 6
+      # At most four at once, whatever the shard count: the eight runners share one VM, so
+      # free runners alone don't keep its CPU free for gates (a saturated machine fails
+      # wall-clock tests).
+      max-parallel: 4
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:

@@ -660,9 +660,11 @@ const STDERR_FD: i32 = 2;
 
 /// Each worker's sockets and pipes that `allowed` doesn't allow it, in round `round` of a
 /// test. `allowed` is given each one and the worker's socket's address (the socket at
-/// descriptor 3, which it may copy). A process caught mid-exec (a script that execs
-/// another program) lists no descriptors for a moment, so the listing is taken again, for
-/// up to five seconds, until it shows every worker's socket.
+/// descriptor 3, which it may copy). One listing can miss a worker's socket for a moment
+/// (on Linux, `lsof` reads `/proc/net/unix` in chunks, and an entry is skipped when a
+/// socket before it closes in between; the socket is then listed as `sock`, not `unix`),
+/// so the listing is taken again, for up to five seconds, until it shows every worker's
+/// socket.
 fn not_allowed(
     round: usize,
     pids: &[u32],
