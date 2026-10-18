@@ -7,9 +7,12 @@ slow-timeout = { period = "30s", terminate-after = 4 }
 filter = 'test(/stress|oracle/)'
 slow-timeout = { period = "60s", terminate-after = 10 }
 
-# CI (NEXTEST_PROFILE=ci): every test runs, so one run reports every failure.
+# CI (NEXTEST_PROFILE=ci): every test runs, so one run reports every failure. One test per
+# physical core: the runner VM's 30 vCPUs are 15 cores' SMT siblings, and 30 tests at once
+# run each thread slower.
 [profile.ci]
 fail-fast = false
+test-threads = 15
 slow-timeout = { period = "30s", terminate-after = 4 }
 
 [[profile.ci.overrides]]
@@ -52,4 +55,16 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 
 [[profile.ci.overrides]]
 filter = 'package(silico-kernel) & test(=a_pool_of_the_most_workers_starts_and_stops_cleanly)'
+slow-timeout = { period = "60s", terminate-after = 10 }
+
+# Dropping a pool while a slot replaces its dead worker (silico-kernel adversarial_pool),
+# swept over 120 moments: each attempt starts a pool and lists processes, so a loaded
+# machine stretches its wall time (16 s alone, a minute at a load of 160). What it checks
+# holds to no wall clock but a 30 s sleep it must not wait for.
+[[profile.default.overrides]]
+filter = 'package(silico-kernel) & test(=dropping_the_pool_while_a_slot_replaces_its_dead_worker_stops_at_once)'
+slow-timeout = { period = "60s", terminate-after = 10 }
+
+[[profile.ci.overrides]]
+filter = 'package(silico-kernel) & test(=dropping_the_pool_while_a_slot_replaces_its_dead_worker_stops_at_once)'
 slow-timeout = { period = "60s", terminate-after = 10 }

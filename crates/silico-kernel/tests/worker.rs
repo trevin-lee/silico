@@ -489,14 +489,16 @@ fn a_corrupted_brep_is_never_read_as_a_shape() {
 fn a_request_over_the_frame_limit_is_invalid_input_and_the_worker_lives_on() {
     let mut w = worker();
     let too_large = vec![0; silico_protocol::MAX_FRAME_LEN as usize + 1];
+    // Refused before sending, not by waiting out the timeout, which a refusal that waited
+    // can't come before: so the timeout is the bound, and long, since encoding the 512 MiB
+    // request takes about 0.2 s alone and over a second on a loaded machine (under cargo
+    // mutants), and more as the machine's memory runs short.
+    let timeout = Duration::from_secs(90);
     let start = Instant::now();
-    let err = echo(&mut w, too_large, TIMEOUT).unwrap_err();
+    let err = echo(&mut w, too_large, timeout).unwrap_err();
     assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
     assert!(!w.is_stopped());
-    // Refused before sending, not by waiting out the timeout. Encoding the 512 MiB request
-    // takes about 0.2 s alone and over a second on a loaded machine (under cargo mutants),
-    // so the bound is a fraction of the timeout, not of a second.
-    assert!(start.elapsed() < TIMEOUT / 4, "{:?}", start.elapsed());
+    assert!(start.elapsed() < timeout, "{:?}", start.elapsed());
     assert_eq!(echo(&mut w, vec![1, 2], TIMEOUT).unwrap(), [1, 2]);
 }
 
@@ -577,45 +579,66 @@ fn a_crash_report_waits_for_the_last_line() {
     assert!(cause.ends_with("FINAL LINE"), "{err}");
 }
 
+/// How long the timeout tests wait for a call that should have given up before failing:
+/// long enough that only a call its timeout didn't end reaches it, however loaded the
+/// machine.
+const HANG: Duration = Duration::from_secs(60);
+
+/// Echoes 32 MiB through a worker started from `exe`, with a timeout of 5 s, on another
+/// thread: it must time out, no sooner than its timeout, and within twice it (room for a
+/// loaded machine, where a send whose wait ignored its deadline, or overran it by a
+/// multiple, would take far longer). Kills the worker and fails the test if the call
+/// hasn't ended after [`HANG`].
+fn echo_32_mib_with_a_timeout(exe: std::path::PathBuf, what: &str) {
+    let timeout = Duration::from_secs(5);
+    let (started, pid) = std::sync::mpsc::channel();
+    let (done, result) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut w = Worker::spawn(&exe).unwrap();
+        let _ = started.send(w.pid());
+        let start = Instant::now();
+        let err = echo(&mut w, vec![0; 32 * 1024 * 1024], timeout).unwrap_err();
+        let _ = done.send((err, start.elapsed()));
+    });
+    let pid = pid.recv_timeout(HANG).expect("the worker never started");
+    let Ok((err, elapsed)) = result.recv_timeout(HANG) else {
+        // The call is stuck with the worker: end it, so nothing outlives the test.
+        let _ = Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .status();
+        panic!("{what}: the call was still blocked after {HANG:?}");
+    };
+    assert_eq!(err.code(), ErrorCode::WorkerTimeout, "{what}: {err}");
+    assert!(
+        elapsed >= timeout && elapsed < timeout * 2,
+        "{what}: gave up after {elapsed:?}, with a timeout of {timeout:?}"
+    );
+}
+
 #[test]
 fn the_timeout_covers_sending() {
     // A worker that never reads: a request bigger than the socket buffers can't be sent,
     // and the call must still give up when its timeout runs out.
-    let exe = script("never-reads", "exec sleep 600");
-    let (done, result) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut w = Worker::spawn(&exe).unwrap();
-        let start = Instant::now();
-        let err = echo(&mut w, vec![0; 32 * 1024 * 1024], Duration::from_secs(1)).unwrap_err();
-        let _ = done.send((err, start.elapsed()));
-    });
-    let (err, elapsed) = result
-        .recv_timeout(Duration::from_secs(10))
-        .expect("the call was still blocked after 10 s");
-    assert_eq!(err.code(), ErrorCode::WorkerTimeout, "{err}");
-    assert!(elapsed < Duration::from_secs(3), "{elapsed:?}");
+    echo_32_mib_with_a_timeout(script("never-reads", "exec sleep 600"), "never reads");
 }
 
 #[test]
 fn the_timeout_covers_a_worker_that_reads_slowly() {
     // Each write gets through a little at a time, so a per-write timeout never fires; the
-    // call's timeout must still cover the whole send.
-    let exe = script(
-        "slow-reader",
-        "while :; do dd bs=16384 count=1 <&3 >/dev/null 2>&1; sleep 0.5; done",
+    // call's timeout must still cover the whole send. A timeout per write would let the
+    // send run on as long as the worker reads, 16 KiB every half second: about 17 minutes
+    // for the 32 MiB. The worker stops once its socket is closed.
+    echo_32_mib_with_a_timeout(
+        script(
+            "slow-reader",
+            "while :; do\n\
+             n=$(dd bs=16384 count=1 <&3 2>/dev/null | wc -c)\n\
+             [ \"$n\" -eq 0 ] && exit 0\n\
+             sleep 0.5\n\
+             done",
+        ),
+        "reads slowly",
     );
-    let (done, result) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut w = Worker::spawn(&exe).unwrap();
-        let start = Instant::now();
-        let err = echo(&mut w, vec![0; 32 * 1024 * 1024], Duration::from_secs(1)).unwrap_err();
-        let _ = done.send((err, start.elapsed()));
-    });
-    let (err, elapsed) = result
-        .recv_timeout(Duration::from_secs(20))
-        .expect("the call was still blocked after 20 s");
-    assert_eq!(err.code(), ErrorCode::WorkerTimeout, "{err}");
-    assert!(elapsed < Duration::from_millis(1500), "{elapsed:?}");
 }
 
 #[test]
