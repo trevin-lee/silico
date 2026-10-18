@@ -638,7 +638,7 @@ fn a_fillet_naming_a_sweeps_element_is_refused_until_sweeps_are_named() {
         "f0000001",
         "edges.0",
         "edges.0, \"p0000001.Edge(G s0000001.Edge1)\", isn't an edge's name: p0000001 is a pad: this Silico doesn't name a pad's faces, edges, or vertices yet, at column 1",
-        "write the edge's name as Silico names it (feature.Edge(...)), of a feature before this one",
+        "write the edge's name as Silico names it (feature.type.Edge(...)), of a feature before this one",
     );
     // Each type says what it is.
     for (feature, word) in [
