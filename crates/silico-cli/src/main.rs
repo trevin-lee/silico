@@ -149,7 +149,8 @@ fn main() -> ExitCode {
     ended.code()
 }
 
-/// `silico check FILE`: its problems, each on stderr; or, with `--json`, one line of JSON
+/// `silico check FILE`: its problems (failed features and sketches, and drift of
+/// fingerprints and of sketches' stored solves), each on stderr; or, with `--json`, one line of JSON
 /// on stdout for each file: `{"file", "ok", "problems", "total"}`, each problem an error as
 /// the core's error contract has it, or, for a file that couldn't be checked,
 /// `{"file", "ok": false, "error"}`, the error that stopped it, in the same shape
@@ -196,9 +197,11 @@ fn check(engines: &mut Engines, file: &Path, json: bool) -> Ended {
 }
 
 /// `silico fmt FILE`: rewrites the file (the one it names, through a symbolic link) in
-/// canonical form with its fingerprints as rebuilt, then says on stderr which fingerprints
-/// it wrote, and the problems it couldn't fix (a feature that didn't build keeps the
-/// fingerprint stored with it, and the file is written); with `--check`, writes nothing,
+/// canonical form with its fingerprints as rebuilt and its sketches as solved, then says on
+/// stderr which fingerprints and sketches' solves it wrote, and the problems it couldn't fix
+/// (a feature that didn't build keeps the fingerprint stored with it, and a sketch that
+/// didn't solve keeps what its file holds, and the file is written); with `--check`, writes
+/// nothing,
 /// and says whether it would. A read-only file, one changed while it was rebuilt, or one
 /// whose rebuild failed for the kernel's own reasons (a worker that crashed or hung), isn't
 /// written.
@@ -255,6 +258,9 @@ fn fmt(engines: &mut Engines, file: &Path, check_only: bool) -> Ended {
     for (id, before) in &formatted.refingerprinted {
         let what = if before.is_some() { "rewrote" } else { "wrote" };
         say!("{}: {what} the fingerprint of {id}", shown(file));
+    }
+    for id in &formatted.resolved {
+        say!("{}: wrote the solve of sketch {id}", shown(file));
     }
     problems
 }

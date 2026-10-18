@@ -51,6 +51,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Special cases that send fewer rows because "the rest is implied" (an arc's ends symmetric about a line its centre is held on: the midpoint row only): find the solution the reduced system has that the full one doesn't (a half circle, whose chord's midpoint is its centre), and draw toward it; any arc drawn past a half turn solves there with its ends unmirrored, Ok (FreeCAD too)
 - A dropped redundancy that was the well-conditioned one (a vertical, where an equal length fixes the same x only through a square root): the solve lands √residual off (12 nm on a 1 mm side), and an agreement check blames the constraint PlaneGCS dropped
 - Diagnoses on shared points against FreeCAD's coincident ends, at extreme redimensioning (a square template set to 100,000 × 0.01): FreeCAD finds one redundancy, Silico six conflicts; run the oracle on both
+- Values written back rounded whose measure depends on the value they replace (a reference angle measured on its stored value's turn, `stored + remainder(measured − stored, 2π)`): near a rounding boundary each save flips the last digit; bias directions to within 1e-13 of a half unit, store them a turn away, and save three times
+- Solutions checked by the solver's values while the file stores what those derive from (an arc's radius value against its points, which the gate re-measures): dimensioned to exactly the limit, a quarter of solves save points an ulp past it, and the file is refused when read
 
 ## Features
 

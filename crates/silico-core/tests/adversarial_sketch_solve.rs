@@ -53,7 +53,7 @@ fn answer(system: &SketchSystem, values: Vec<f64>, status: SolveStatus) -> Solve
 }
 
 /// How a stand-in worker answers a system.
-type Answer = Box<dyn FnMut(&SketchSystem) -> Result<Solved, Error>>;
+type Answer = Box<dyn FnMut(&SketchSystem) -> Result<Solved, Error> + Send>;
 
 /// A stand-in worker.
 struct Standing(Answer);
@@ -65,7 +65,7 @@ impl SketchSolver for Standing {
 }
 
 fn solve_with(
-    f: impl FnMut(&SketchSystem) -> Result<Solved, Error> + 'static,
+    f: impl FnMut(&SketchSystem) -> Result<Solved, Error> + Send + 'static,
 ) -> Result<silico_core::sketch::SketchSolution, Error> {
     let checked = Checked::new(read(ten().as_bytes()).unwrap()).unwrap();
     solve(

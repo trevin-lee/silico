@@ -115,7 +115,8 @@ fn own(errors: Vec<Error>) -> Result<Vec<Error>, Error> {
     }
 }
 
-/// A document written in canonical form, its fingerprints as `engine` rebuilt it.
+/// A document written in canonical form, its fingerprints as `engine` rebuilt it and its
+/// sketches as it solved them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Formatted {
     /// The canonical text.
@@ -123,6 +124,9 @@ pub struct Formatted {
     /// The features whose fingerprints the rebuild changed (written new, or rewritten),
     /// in timeline order, each with what was stored before, if anything.
     pub refingerprinted: Vec<(document::FeatureId, Option<Fingerprint>)>,
+    /// The sketches whose stored values (points, circles' radii, reference dimensions'
+    /// values) the solve changed, in timeline order.
+    pub resolved: Vec<document::FeatureId>,
     /// The features that didn't build, or whose solids couldn't be measured: each keeps
     /// the fingerprint stored with it, and this says why. Drift isn't among them: it's
     /// what formatting fixes.
@@ -130,21 +134,31 @@ pub struct Formatted {
 }
 
 /// The model's document in canonical form with each feature's fingerprint as the model
-/// rebuilt it (`Model::fingerprinted`): what `silico fmt` writes, and what a save writes;
+/// rebuilt it and each sketch as it solved (`Model::saved`): what `silico fmt` writes, and
+/// what a save writes;
 /// or, if its canonical text would be too long, that problem. An error is a format that
 /// couldn't be done, as for [`check`]: nothing should be written then.
 pub fn format(model: &Model) -> Result<Result<Formatted, Problems>, Error> {
     let _span = tracing::info_span!("format").entered();
     let mut problems = failures(model)?;
     let unlisted = model.unlisted_errors();
-    let written = model.fingerprinted();
-    let refingerprinted = model
-        .document()
-        .features
-        .iter()
-        .zip(&written.features)
+    let written = model.saved();
+    let pairs = || model.document().features.iter().zip(&written.features);
+    let refingerprinted = pairs()
         .filter(|(before, after)| before.fingerprint != after.fingerprint)
         .map(|(before, _)| (before.id.clone(), before.fingerprint))
+        .collect();
+    // Bit for bit, as drift compares them: a coordinate solved to -0 from 0 is written so.
+    let resolved = pairs()
+        .filter(
+            |(before, after)| match (&before.operation, &after.operation) {
+                (document::Operation::Sketch(stored), document::Operation::Sketch(written)) => {
+                    !crate::sketch::moved(stored, written).is_empty()
+                }
+                _ => false,
+            },
+        )
+        .map(|(before, _)| before.id.clone())
         .collect();
     let text = match document::write(&written) {
         Ok(text) => text,
@@ -160,6 +174,7 @@ pub fn format(model: &Model) -> Result<Result<Formatted, Problems>, Error> {
     Ok(Ok(Formatted {
         text,
         refingerprinted,
+        resolved,
         problems: Problems::with_unlisted(problems, unlisted),
     }))
 }

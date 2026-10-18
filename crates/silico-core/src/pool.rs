@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 use silico_protocol::Generation;
 
 use crate::kernel::KernelRequest;
-use crate::worker::{Worker, WorkerKiller, lock};
+use crate::worker::{Stamp, Worker, WorkerKiller, WorkerKind, identity_of, lock};
 use crate::{Error, ErrorCode};
 
 /// How often an idle thread checks that its worker is still alive.
@@ -188,7 +188,7 @@ impl KernelPool {
         })?;
         let exe = exe.as_path();
         let exe_stamp = Stamp::of(exe);
-        let identity = identity_of(exe)?;
+        let identity = identity_of(exe, WorkerKind::Kernel)?;
         let shared = Arc::new(Shared {
             identity,
             exe_stamp,
@@ -375,44 +375,6 @@ impl Drop for KernelPool {
             let _ = thread.join();
         }
     }
-}
-
-/// A file's size, modification time, and inode: what changes when it's rebuilt or replaced.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Stamp {
-    len: u64,
-    modified: Option<std::time::SystemTime>,
-    inode: u64,
-}
-
-impl Stamp {
-    fn of(path: &Path) -> Option<Self> {
-        use std::os::unix::fs::MetadataExt;
-        let meta = std::fs::metadata(path).ok()?;
-        Some(Self {
-            len: meta.len(),
-            modified: meta.modified().ok(),
-            inode: meta.ino(),
-        })
-    }
-}
-
-/// The identity of the kernel the worker executable at `exe` is: `kernel worker sha256:`
-/// and its bytes' SHA-256, so a rebuilt or replaced worker is another kernel.
-fn identity_of(exe: &Path) -> Result<String, Error> {
-    use sha2::{Digest, Sha256};
-    let bytes = std::fs::read(exe).map_err(|e| {
-        Error::new(
-            ErrorCode::WorkerCrashed,
-            format!("couldn't read the kernel worker {}", exe.display()),
-        )
-        .with_cause(e.to_string())
-        .with_suggestion("check Silico's install: rebuild the kernel worker")
-    })?;
-    Ok(format!(
-        "kernel worker sha256:{}",
-        crate::hex(&Sha256::digest(&bytes))
-    ))
 }
 
 /// Starts a pool thread.
@@ -990,7 +952,7 @@ impl Keeper<'_> {
         if self.shared.exe_stamp.is_some() && Stamp::of(&self.exe) == self.shared.exe_stamp {
             return Ok(());
         }
-        if identity_of(&self.exe)? == self.shared.identity {
+        if identity_of(&self.exe, WorkerKind::Kernel)? == self.shared.identity {
             return Ok(());
         }
         Err(Error::new(

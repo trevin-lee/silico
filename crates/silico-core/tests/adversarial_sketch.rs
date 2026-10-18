@@ -858,9 +858,9 @@ fn ten_thousand_elements_sharing_one_id_are_each_named_once_promptly() {
 // Recompute.
 
 fn rebuilt(text: &str) -> (std::sync::Arc<silico_core::recompute::Model>, Vec<String>) {
-    use silico_core::fake::FakeKernel;
+    use silico_core::fake::{FakeKernel, FakeSketches};
     use silico_core::recompute::{Recompute, RunOutcome};
-    let engine = Recompute::new(FakeKernel::new(2).unwrap());
+    let engine = Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(FakeSketches::new());
     let checked = Checked::new(read(text.as_bytes()).unwrap()).unwrap();
     let model = match engine.start(checked).wait_timeout(Duration::from_secs(20)) {
         Ok(Ok(RunOutcome::Published(model))) => model,
@@ -900,13 +900,16 @@ fn a_document_of_sketches_alone_asks_the_kernel_nothing() {
     assert_eq!(model.errors().count(), 0);
     assert!(model.drift().is_empty());
     for id in ["s0000000", "s0000001"] {
-        assert_eq!(
-            model.outcome(&FeatureId::new(id).unwrap()),
-            Some(&FeatureOutcome::Sketch)
+        assert!(
+            matches!(
+                model.outcome(&FeatureId::new(id).unwrap()),
+                Some(FeatureOutcome::Sketch(_))
+            ),
+            "{id}"
         );
     }
     // Saved as rebuilt, the sketches have no fingerprint, and the document opens and passes.
-    let saved = write(&model.fingerprinted()).unwrap();
+    let saved = write(&model.saved()).unwrap();
     assert!(!saved.contains("fingerprint"), "{saved}");
     assert!(validate(&read(saved.as_bytes()).unwrap()).is_ok());
 }
@@ -936,7 +939,11 @@ fn sketches_between_solids_change_nothing_about_them() {
     assert_eq!(model.bodies(), [id("f0000000")]);
     assert_eq!(model.errors().count(), 0);
     for s in ["s0000000", "s0000001", "s0000002", "s0000003"] {
-        assert_eq!(model.outcome(&id(s)), Some(&FeatureOutcome::Sketch), "{s}");
+        assert!(
+            matches!(model.outcome(&id(s)), Some(FeatureOutcome::Sketch(_))),
+            "{s}: {:?}",
+            model.outcome(&id(s))
+        );
         assert_eq!(model.fingerprint(&id(s)), None);
     }
     for b in ["b0000000", "b0000001", "f0000000"] {

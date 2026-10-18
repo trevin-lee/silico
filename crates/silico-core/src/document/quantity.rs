@@ -247,6 +247,14 @@ impl Angle {
     pub fn parse(text: &str) -> Result<Self, NumberError> {
         parse_number(text, ANGLE_DECIMALS).map(Angle)
     }
+
+    /// `degrees`, rounded to the nanodegree ([`round_to`]); none if it isn't finite or
+    /// doesn't fit.
+    pub fn rounded(degrees: f64) -> Option<Self> {
+        i64::try_from(round_to(degrees, ANGLE_DECIMALS)?)
+            .ok()
+            .map(Angle)
+    }
 }
 
 impl fmt::Display for Angle {

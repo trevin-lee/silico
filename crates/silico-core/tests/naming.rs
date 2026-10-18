@@ -914,7 +914,11 @@ fn a_sketch_in_the_timeline_has_no_map_and_changes_no_other_features_names() {
     // Each on its own engine, so neither borrows the other's names (found by the review:
     // on one engine the second model took the first's map, so this compared a map with
     // itself).
-    let model = |text: &str| published(&Recompute::new(FakeKernel::new(2).unwrap()), checked(text));
+    let model = |text: &str| {
+        let engine = Recompute::new(FakeKernel::new(2).unwrap())
+            .with_sketches(silico_core::fake::FakeSketches::new());
+        published(&engine, checked(text))
+    };
     let (plain, sketched) = (model(EXAMPLE), model(&with));
     assert!(sketched.errors().next().is_none());
     assert!(sketched.element_map(&id("s0000001")).is_none());

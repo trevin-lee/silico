@@ -798,7 +798,7 @@ fn a_reply_that_doesnt_answer_the_request_is_a_protocol_error() {
 }
 
 /// A stand-in for the worker: answers with `answer`, made from the system it's sent.
-struct Standing(Box<dyn Fn(&SketchSystem) -> Solved>);
+struct Standing(Box<dyn Fn(&SketchSystem) -> Solved + Send>);
 
 impl SketchSolver for Standing {
     fn solve(&mut self, system: SketchSystem) -> Result<Solved, silico_core::Error> {

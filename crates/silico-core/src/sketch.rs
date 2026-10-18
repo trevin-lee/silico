@@ -15,10 +15,10 @@ use silico_protocol::{
 };
 
 use crate::document::{
-    Checked, Coordinate, Direction, ElementId, FeatureId, Form, LineSide, Operation, Reference,
-    Sketch, SketchConstraint, TangentSide,
+    Angle as DocumentAngle, Checked, Coordinate, Direction, ElementId, FeatureId, Form, Length,
+    LineSide, Operation, Reference, Sketch, SketchConstraint, TangentSide,
 };
-use crate::worker::{Worker, WorkerKind};
+use crate::worker::{Stamp, Worker, WorkerKind, identity_of};
 use crate::{Error, ErrorCode};
 
 /// The algorithms a sketch is solved with, in FreeCAD's order (`Sketch::internalSolve`).
@@ -53,7 +53,7 @@ pub const SKETCH_TIMEOUT: Duration = Duration::from_secs(300);
 pub const SKETCH_WORKER_ENV: &str = "SILICO_SKETCH_WORKER";
 
 /// Solves sketches: the sketch worker, or a stand-in in tests.
-pub trait SketchSolver {
+pub trait SketchSolver: Send {
     /// What the solver found for `system`.
     fn solve(&mut self, system: SketchSystem) -> Result<Solved, Error>;
 
@@ -61,6 +61,35 @@ pub trait SketchSolver {
     /// worker is stopped, and the next solve starts another (a stand-in needn't do
     /// anything).
     fn distrust(&mut self) {}
+
+    /// Readies the solver for a solve, and gives a handle that stops that solve from
+    /// another thread (a recompute superseded mid-solve: the solve then fails, and the
+    /// next starts a worker again); none if a solve can't be stopped. Once called, every
+    /// solve begins with it: a solve runs from one call to the next.
+    fn stopper(&mut self) -> Result<Option<SolveStopper>, Error> {
+        Ok(None)
+    }
+}
+
+/// Stops a solve from another thread ([`SketchSolver::stopper`]).
+#[derive(Clone)]
+pub struct SolveStopper(std::sync::Arc<dyn Fn() + Send + Sync>);
+
+impl SolveStopper {
+    pub fn new(stop: impl Fn() + Send + Sync + 'static) -> Self {
+        Self(std::sync::Arc::new(stop))
+    }
+
+    /// Stops the solve, if it's still running.
+    pub fn stop(&self) {
+        (self.0)();
+    }
+}
+
+impl std::fmt::Debug for SolveStopper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SolveStopper")
+    }
 }
 
 /// The sketch worker, one request at a time. One that crashed, hung past its time, or
@@ -68,8 +97,26 @@ pub trait SketchSolver {
 pub struct SketchWorker {
     worker: Worker,
     /// The executable it was started from, to start again; none for a worker handed in.
-    exe: Option<PathBuf>,
+    exe: Option<Executable>,
     timeout: Duration,
+    /// Set by the [`SolveStopper`] it gave out for the solve under way: the worker was
+    /// killed, perhaps after it answered (no call failed to say so). The solve's later
+    /// requests are refused, and the next solve's start starts a worker again.
+    stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Whether solves are begun with [`SketchSolver::stopper`] (as the engine begins every
+    /// one): a solve then runs from one `stopper` call to the next, its requests start no
+    /// worker (the stopper couldn't reach one), and only a `stopper` call does. A caller that
+    /// has called `stopper` once has to begin each solve with it from then on.
+    begun: bool,
+}
+
+/// A sketch worker's executable as it was when the worker started: started again only if
+/// it's still that build, since another would answer differently under the same name.
+struct Executable {
+    path: PathBuf,
+    stamp: Option<Stamp>,
+    /// `sketch worker sha256:…` of its bytes.
+    identity: String,
 }
 
 impl SketchWorker {
@@ -86,8 +133,14 @@ impl SketchWorker {
 
     /// Starts the sketch worker at `exe`.
     pub fn start_worker(exe: &Path) -> Result<Self, Error> {
+        let stamp = Stamp::of(exe);
+        let identity = identity_of(exe, WorkerKind::Sketch)?;
         Ok(Self {
-            exe: Some(exe.to_owned()),
+            exe: Some(Executable {
+                path: exe.to_owned(),
+                stamp,
+                identity,
+            }),
             ..Self::from_worker(Worker::spawn_as(exe, WorkerKind::Sketch)?)
         })
     }
@@ -99,7 +152,36 @@ impl SketchWorker {
             worker,
             exe: None,
             timeout: SKETCH_TIMEOUT,
+            stopped: std::sync::Arc::default(),
+            begun: false,
         }
+    }
+
+    /// Starts the worker again if it was stopped after a failure, or is gone while idle
+    /// (killed from outside), as the kernel pool replaces one: from its executable, if
+    /// that's the build it started from (another would answer under this one's identity).
+    fn ready(&mut self) -> Result<(), Error> {
+        if !(self.worker.is_stopped() || self.worker.has_exited()) {
+            return Ok(());
+        }
+        let Some(exe) = &self.exe else {
+            return Ok(());
+        };
+        let same = (exe.stamp.is_some() && Stamp::of(&exe.path) == exe.stamp)
+            || identity_of(&exe.path, WorkerKind::Sketch)? == exe.identity;
+        if !same {
+            return Err(Error::new(
+                ErrorCode::WorkerCrashed,
+                format!(
+                    "the sketch worker {} changed since it started: another build of it \
+                     isn't started in its place",
+                    exe.path.display()
+                ),
+            )
+            .with_suggestion("restart Silico, so the new worker's solutions are kept as its own"));
+        }
+        self.worker = Worker::spawn_as(&exe.path, WorkerKind::Sketch)?;
+        Ok(())
     }
 
     /// How long each solve may take ([`SKETCH_TIMEOUT`] unless set).
@@ -129,13 +211,51 @@ impl SketchSolver for SketchWorker {
         self.worker.shut_down();
     }
 
+    fn stopper(&mut self) -> Result<Option<SolveStopper>, Error> {
+        // The last solve's stop may have landed after it answered, killing an idle worker
+        // that may not be reaped yet (council, robustness): it's started again here, at the
+        // start of a solve, and only here.
+        if self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+            self.worker.shut_down();
+        }
+        self.ready()?;
+        let killer = self.worker.killer();
+        // A flag of this solve's own, so a stopper given out for an earlier solve marks
+        // nothing of this one. It does kill whatever process its worker still is, so the
+        // engine fires a stopper only during or just after its own solve (it holds them
+        // under its lock, and clears each when its solve ends).
+        let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.stopped = std::sync::Arc::clone(&stopped);
+        self.begun = true;
+        Ok(Some(SolveStopper::new(move || {
+            stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+            killer.kill();
+        })))
+    }
+
     fn solve(&mut self, system: SketchSystem) -> Result<Solved, Error> {
-        // A worker stopped after a failure, or gone while idle (killed from outside), is
-        // started again, as the kernel pool replaces one.
-        if (self.worker.is_stopped() || self.worker.has_exited())
-            && let Some(exe) = &self.exe
-        {
-            self.worker = Worker::spawn_as(exe, WorkerKind::Sketch)?;
+        // A solve that was stopped stays stopped: its later requests (a re-diagnosis from
+        // its solution) aren't run on a new worker (council, robustness, round 2: one ran
+        // 125 s after its recompute was superseded, and the newer waited for it).
+        if self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(Error::new(
+                ErrorCode::WorkerCrashed,
+                "the sketch solve was stopped",
+            ));
+        }
+        if self.begun {
+            // A solve begun with a stopper starts no worker: a new one would be out of the
+            // stopper's reach, and run on after a stop (council, robustness, round 3). One
+            // gone fails the solve as a crash; the next solve's start replaces it.
+            if self.worker.is_stopped() || self.worker.has_exited() {
+                return Err(Error::new(
+                    ErrorCode::WorkerCrashed,
+                    "the sketch worker ended during the solve",
+                )
+                .with_suggestion("solve again: the next solve starts another worker"));
+            }
+        } else {
+            self.ready()?;
         }
         let op = Op::Solve(system);
         let name = op.name();
@@ -185,6 +305,106 @@ impl SketchSolution {
     }
 }
 
+impl SketchSolution {
+    /// `sketch`, whose solution this is, as its file holds it once the solve is written
+    /// back (M3.4): its points where the solve put them, its circles' radii, and its
+    /// reference dimensions' values as the solve measured them, rounded as the file writes
+    /// a value of their kind (a point–line distance's side too). A measure that can't be
+    /// written (not finite) keeps the value stored.
+    pub fn written(&self, sketch: &Sketch) -> Sketch {
+        let mut out = sketch.clone();
+        for p in &mut out.points {
+            if let Some(&[x, y]) = self.points.get(&p.id) {
+                (p.x, p.y) = (x, y);
+            }
+        }
+        for c in &mut out.circles {
+            if let Some(&r) = self.radii.get(&c.id) {
+                c.radius = r;
+            }
+        }
+        for c in &mut out.constraints {
+            if let Some(&measured) = self.references.get(&c.id) {
+                measure_into(&mut c.form, measured);
+            }
+        }
+        out
+    }
+}
+
+/// `form`, a reference dimension, holding `measured`.
+fn measure_into(form: &mut Form, measured: Measured) {
+    let length = |v: f64, value: &mut Length| {
+        if let Some(rounded) = Length::rounded(v) {
+            *value = rounded;
+        }
+    };
+    match (form, measured) {
+        (
+            Form::Length { value, .. }
+            | Form::Distance { value, .. }
+            | Form::DistanceX { value, .. }
+            | Form::DistanceY { value, .. }
+            | Form::Radius { value, .. }
+            | Form::Diameter { value, .. },
+            Measured::Length(v),
+        ) => length(v, value),
+        (
+            Form::PointLineDistance { value, side, .. },
+            Measured::FromLine {
+                distance,
+                side: measured,
+            },
+        ) => {
+            length(distance, value);
+            *side = measured;
+        }
+        (Form::Angle { value, .. }, Measured::Angle(degrees)) => {
+            if let Some(rounded) = DocumentAngle::rounded(degrees) {
+                *value = rounded;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// What a solve written back changes of `stored`: each point, circle, and constraint whose
+/// written form differs, in the file's order, with what changed (`p0000003 x 4 → 4.5`).
+pub(crate) fn moved(stored: &Sketch, written: &Sketch) -> Vec<(ElementId, String)> {
+    let same = |a: Coordinate, b: Coordinate| a.mm().to_bits() == b.mm().to_bits();
+    let mut out = Vec::new();
+    for (s, w) in stored.points.iter().zip(&written.points) {
+        let mut what = Vec::new();
+        if !same(s.x, w.x) {
+            what.push(format!("x {} → {}", s.x.mm(), w.x.mm()));
+        }
+        if !same(s.y, w.y) {
+            what.push(format!("y {} → {}", s.y.mm(), w.y.mm()));
+        }
+        if !what.is_empty() {
+            out.push((s.id.clone(), format!("{} {}", s.id, what.join(", "))));
+        }
+    }
+    for (s, w) in stored.circles.iter().zip(&written.circles) {
+        if !same(s.radius, w.radius) {
+            out.push((
+                s.id.clone(),
+                format!("{} radius {} → {}", s.id, s.radius.mm(), w.radius.mm()),
+            ));
+        }
+    }
+    for (s, w) in stored.constraints.iter().zip(&written.constraints) {
+        if s.form != w.form {
+            let said = match (s.form.value_text(), w.form.value_text()) {
+                (Some(before), Some(after)) => format!("{} value {before} → {after}", s.id),
+                _ => format!("{}", s.id),
+            };
+            out.push((s.id.clone(), said));
+        }
+    }
+    out
+}
+
 /// A reference dimension's value as the solved geometry measures it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Measured {
@@ -226,7 +446,42 @@ pub fn solve(
     let translation = Translation::new(sketch).map_err(|e| e.with_feature(feature.as_str()))?;
     let named = |e: Error| e.with_feature(feature.as_str());
     let answer = translation.solve(solver).map_err(named)?;
-    answer.outcome.map_err(named)
+    let solution = answer.outcome.map_err(named)?;
+    savable(sketch, &solution).map_err(named)?;
+    Ok(solution)
+}
+
+/// Whether `solution`, written into `sketch`, is a sketch the gate takes: a solve can be
+/// met only to rounding, and where a value is at its limit the file's measure of it can
+/// land past (break-it: an arc of radius 1 km solved to points 1 km and an ulp apart, which
+/// the gate, measuring an arc's radius from its points, refuses), so a save of it would
+/// write a file that can't be opened again. Refused as an invalid result, naming what the
+/// gate names.
+fn savable(sketch: &Sketch, solution: &SketchSolution) -> Result<(), Error> {
+    let problems = crate::document::sketch_problems(&solution.written(sketch));
+    let Some(first) = problems.first() else {
+        return Ok(());
+    };
+    let elements: BTreeSet<&str> = problems
+        .iter()
+        .flat_map(|e| e.elements())
+        .map(String::as_str)
+        .collect();
+    let mut error = Error::new(
+        ErrorCode::InvalidResult,
+        format!(
+            "the sketch solves to geometry its file can't hold: {}",
+            first.message()
+        ),
+    )
+    .with_elements(elements)
+    .with_suggestion(
+        "keep the sketch's dimensions inside their limits, not at them: a solve meets them only to rounding",
+    );
+    if let Some(parameter) = first.parameter() {
+        error = error.with_parameter(parameter);
+    }
+    Err(error)
 }
 
 /// What solving a [`Translation`] found: the worker's answer the outcome is read from, and
@@ -1397,10 +1652,15 @@ impl Translation {
                         direction(self.xy(values, lb.from), self.xy(values, lb.to)),
                     );
                     // On the stored value's turn, as 1.1.3's solve leaves it, then reduced
-                    // as it writes it back.
+                    // as it writes it back: the measure plus the whole turns that takes.
+                    // Only the turns come from the stored value, so the result doesn't
+                    // carry its low bits, and a save of it measures it again bit for bit
+                    // (break-it: `fmod(stored + wrap(measured − stored), 2π)` rounded with
+                    // the stored value, and its last nanodegree flipped on every save).
                     let stored = value.degrees().to_radians();
-                    let v = libm::fmod(stored + wrap(measured - stored), TAU);
-                    Measured::Angle(v.to_degrees())
+                    let reduced = libm::fmod(stored + wrap(measured - stored), TAU);
+                    let turns = libm::round((reduced - measured) / TAU);
+                    Measured::Angle((measured + turns * TAU).to_degrees())
                 }
                 Form::Radius {
                     curve,

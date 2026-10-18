@@ -42,8 +42,20 @@ impl Drop for Scratch {
     }
 }
 
-/// `silico ARGS` with the kernel worker beside it and the cache's secret in `scratch`.
+/// `silico ARGS` with the kernel and sketch workers beside it and the cache's secret in `scratch`.
 fn silico(scratch: &Scratch, args: &[&str], file: &Path) -> Output {
+    let exe = Path::new(env!("CARGO_BIN_EXE_silico"));
+    let sketch_worker = exe.with_file_name("silico-sketch-worker");
+    assert!(
+        sketch_worker.exists(),
+        "{} isn't built: build the workspace (pixi run test does)",
+        sketch_worker.display()
+    );
+    silico_with(scratch, args, file, &sketch_worker)
+}
+
+/// `silico ARGS` as [`silico`] runs it, its sketch worker `sketch_worker`.
+fn silico_with(scratch: &Scratch, args: &[&str], file: &Path, sketch_worker: &Path) -> Output {
     let exe = Path::new(env!("CARGO_BIN_EXE_silico"));
     let worker = exe.with_file_name("silico-kernel-worker");
     assert!(
@@ -55,6 +67,7 @@ fn silico(scratch: &Scratch, args: &[&str], file: &Path) -> Output {
         .args(args)
         .arg(file)
         .env("SILICO_KERNEL_WORKER", &worker)
+        .env("SILICO_SKETCH_WORKER", sketch_worker)
         .env("XDG_CACHE_HOME", scratch.0.join("cache-home"))
         .env_remove("SILICO_LOG")
         .stdin(Stdio::null())
@@ -424,4 +437,114 @@ fn check_jsons_lines_are_the_contracts() {
     let contract: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(check_lines(&scratch), contract);
+}
+
+/// M3.4: a 40 × 20 rectangle, fully constrained, its first corner at the origin, drawn
+/// where it solves.
+const RECTANGLE: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "features": [
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Profile", "plane": "xy",
+     "points": [
+       {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+       {"id": "p0000002", "x": 40, "y": 0, "construction": false},
+       {"id": "p0000003", "x": 40, "y": 20, "construction": false},
+       {"id": "p0000004", "x": 0, "y": 20, "construction": false}
+     ],
+     "lines": [
+       {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+       {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false},
+       {"id": "n0000003", "from": "p0000003", "to": "p0000004", "construction": false},
+       {"id": "n0000004", "from": "p0000004", "to": "p0000001", "construction": false}
+     ],
+     "circles": [], "arcs": [],
+     "constraints": [
+       {"id": "k0000001", "type": "horizontal", "line": "n0000001"},
+       {"id": "k0000002", "type": "horizontal", "line": "n0000003"},
+       {"id": "k0000003", "type": "vertical", "line": "n0000002"},
+       {"id": "k0000004", "type": "vertical", "line": "n0000004"},
+       {"id": "k0000005", "type": "length", "line": "n0000001", "value": 40, "driving": true},
+       {"id": "k0000006", "type": "length", "line": "n0000002", "value": 20, "driving": true},
+       {"id": "k0000007", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true},
+       {"id": "k0000008", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}
+     ]}
+  ]
+}
+"#;
+
+#[test]
+fn a_sketch_edited_by_hand_is_drift_until_fmt_writes_its_solve_and_then_nothing_changes() {
+    // The roadmap's M3.4 case: a dimension edited by hand (the rectangle's 40 made 50), so
+    // the corners the file stores no longer solve it. `check` names the sketch and the two
+    // corners that move (x 40 to 50: p2 and p3; p1 is held at the origin, p4 on x = 0);
+    // `fmt` writes the solve and says so; after it, `check` is clean and `fmt` again
+    // changes no byte.
+    let scratch = Scratch::new("sketch-drift");
+    let file = scratch.file(RECTANGLE);
+    let out = silico(&scratch, &["fmt"], &file);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(silico(&scratch, &["check"], &file).status.code(), Some(0));
+    let saved = std::fs::read_to_string(&file).unwrap();
+    let edited = saved.replacen(r#""value": 40,"#, r#""value": 50,"#, 1);
+    assert_ne!(edited, saved);
+    std::fs::write(&file, &edited).unwrap();
+
+    let out = silico(&scratch, &["check", "--json"], &file);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(line["problems"][0]["code"], "drift", "{line}");
+    assert_eq!(line["problems"][0]["feature"], "s0000001");
+    assert_eq!(
+        line["problems"][0]["elements"],
+        serde_json::json!(["p0000002", "p0000003"])
+    );
+    assert_eq!(line["total"], 1);
+
+    let out = silico(&scratch, &["fmt"], &file);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("wrote the solve of sketch s0000001"),
+        "{}",
+        stderr(&out)
+    );
+    let solved = std::fs::read_to_string(&file).unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&solved).unwrap();
+    let points = &doc["features"][0]["points"];
+    for (i, want) in [
+        (0, [0.0, 0.0]),
+        (1, [50.0, 0.0]),
+        (2, [50.0, 20.0]),
+        (3, [0.0, 20.0]),
+    ] {
+        let got = [
+            points[i]["x"].as_f64().unwrap(),
+            points[i]["y"].as_f64().unwrap(),
+        ];
+        assert!(
+            (got[0] - want[0]).abs() < 1e-9 && (got[1] - want[1]).abs() < 1e-9,
+            "point {i}: {got:?}, want {want:?}"
+        );
+    }
+    assert_eq!(silico(&scratch, &["check"], &file).status.code(), Some(0));
+    let out = silico(&scratch, &["fmt"], &file);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(!stderr(&out).contains("wrote"), "{}", stderr(&out));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), solved);
+}
+
+#[test]
+fn a_sketch_worker_that_cant_be_found_is_exit_2_and_nothing_is_written() {
+    // Round 2's architecture and quality lenses: SILICO_SKETCH_WORKER naming no file blamed
+    // the sketch (exit 1, and fmt wrote the file); it's the solver's failure, as the
+    // kernel's is: exit 2, and the file as it was.
+    let scratch = Scratch::new("no-sketch-worker");
+    let file = scratch.file(RECTANGLE);
+    let run = |args: &[&str]| silico_with(&scratch, args, &file, Path::new("/nowhere"));
+    let out = run(&["check"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("worker_crashed"), "{}", stderr(&out));
+    let out = run(&["fmt"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), RECTANGLE);
 }

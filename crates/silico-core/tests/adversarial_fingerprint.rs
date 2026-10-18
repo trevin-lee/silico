@@ -480,7 +480,7 @@ fn a_box_the_gate_admits_has_a_fingerprint_whatever_its_size() {
     ]);
     let (_, model) = rebuilt(&text);
     let fingerprint = model.fingerprint(&id("k7f2qx3m"));
-    let fingerprinted = model.fingerprinted();
+    let fingerprinted = model.saved();
     assert!(
         fingerprinted.features[0].fingerprint.is_some(),
         "no fingerprint for a valid 200 m box: {fingerprint:?}"
@@ -679,7 +679,7 @@ fn a_document_that_opens_near_the_size_limit_and_gains_fingerprints_is_refused_a
     let text = doc(&[&format!(r#"{BLOCK}, "note": "{}"}}"#, "n".repeat(pad))]);
     let (document, model) = rebuilt(&text);
     write(&document).unwrap();
-    let e = write(&model.fingerprinted()).unwrap_err();
+    let e = write(&model.saved()).unwrap_err();
     assert_eq!(e.code(), ErrorCode::InvalidInput);
     assert_eq!(e.feature(), Some("k7f2qx3m"));
     assert!(e.suggestion().is_some());
@@ -701,7 +701,7 @@ fn drift_is_checked_against_the_document_the_model_was_built_from() {
     assert_eq!(errors[0].feature(), Some("k7f2qx3m"));
     assert_eq!(errors[0].parameter(), Some("fingerprint.volume"));
     // Its fingerprints written onto its own document: the block's, rebuilt.
-    let written = model.fingerprinted();
+    let written = model.saved();
     assert_eq!(written.features.len(), 1);
     assert_eq!(
         written.features[0].fingerprint.unwrap().volume.to_string(),
