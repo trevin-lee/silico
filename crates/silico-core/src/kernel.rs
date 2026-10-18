@@ -298,11 +298,7 @@ impl KernelRequest<BuiltData> {
     /// order sent ([`FaceRegions`]). Regions that can't be sent are refused, saying why.
     pub fn make_faces(regions: &FaceRegions) -> Result<Self, Error> {
         if let Err(invalid) = regions.check() {
-            return Err(Error::new(ErrorCode::InvalidInput, invalid.message.clone())
-                .with_parameter(invalid.name(None))
-                .with_suggestion(
-                    "send each region's loops closed, oriented, and within a kilometre: this is a bug in the profile",
-                ));
+            return Err(refused("faces", None, invalid));
         }
         let shape = FacesShape::of(regions);
         let read = read_built(1);
@@ -757,9 +753,13 @@ impl KernelWorker {
 /// An operation's values refused before sending, naming the parameter at fault as a dotted
 /// name (`InvalidParameter::name`, as the worker names it): `under`, the field the checked
 /// value is a part of, if any.
-fn refused(what: &str, under: Option<&str>, invalid: silico_protocol::InvalidParameter) -> Error {
+pub(crate) fn refused(
+    what: &str,
+    under: Option<&str>,
+    invalid: silico_protocol::InvalidParameter,
+) -> Error {
     let words = match invalid.parameter {
-        "points" => "profile",
+        "points" | "regions" => "profile",
         "other" => "other distance",
         parameter => parameter,
     };
@@ -865,8 +865,8 @@ pub(crate) fn cone_caps(radius1: f64, radius2: f64, height: f64) -> (bool, bool)
 mod tests {
     use super::*;
 
-    /// A 4 × 3 rectangle on XY and a circle beside it: two regions, five curves, four
-    /// points.
+    /// A 4 × 3 rectangle on XY with a circle hole, and a circle beside it: two regions,
+    /// six curves, four points.
     fn two_regions() -> FaceRegions {
         let p = [[0.0, 0.0], [4.0, 0.0], [4.0, 3.0], [0.0, 3.0]];
         FaceRegions {
@@ -879,7 +879,10 @@ mod tests {
                             end: p[(i + 1) % 4],
                         })
                         .collect(),
-                    holes: vec![],
+                    holes: vec![vec![Curve::Circle {
+                        center: [2.0, 1.5],
+                        radius: 0.5,
+                    }]],
                 },
                 Region {
                     outer: vec![Curve::Circle {
@@ -893,7 +896,7 @@ mod tests {
     }
 
     /// The faces the kernel makes of [`two_regions`]: each curve kept as the edge of its
-    /// number, each point as its vertex, the circle's seam Vertex5.
+    /// number, each point as its vertex, the circles' seams Vertex5 and Vertex6.
     fn two_faces() -> BuiltData {
         let kept = |n: u32| ElementFate {
             kept: Some(n),
@@ -904,20 +907,27 @@ mod tests {
             history: History {
                 inputs: vec![InputHistory {
                     faces: vec![],
-                    edges: (1..=5).map(kept).collect(),
+                    edges: (1..=6).map(kept).collect(),
                     vertices: (1..=4).map(kept).collect(),
                 }],
                 result: ElementCounts {
                     faces: 2,
-                    edges: 5,
-                    vertices: 5,
+                    edges: 6,
+                    vertices: 6,
                     solids: 0,
                 },
                 ends: Ends::default(),
                 topology: Topology {
-                    face_edges: vec![vec![1, 2, 3, 4], vec![5]],
-                    outer_edges: vec![vec![1, 2, 3, 4], vec![5]],
-                    edge_vertices: vec![vec![1, 2], vec![2, 3], vec![3, 4], vec![4, 1], vec![5]],
+                    face_edges: vec![vec![1, 2, 3, 4, 5], vec![6]],
+                    outer_edges: vec![vec![1, 2, 3, 4], vec![6]],
+                    edge_vertices: vec![
+                        vec![1, 2],
+                        vec![2, 3],
+                        vec![3, 4],
+                        vec![4, 1],
+                        vec![5],
+                        vec![6],
+                    ],
                 },
             },
         }
@@ -937,7 +947,7 @@ mod tests {
         swapped.history.topology.edge_vertices.swap(0, 1);
         assert!(read(swapped).is_ok());
         type Spoil = fn(&mut History);
-        let cases: [(Spoil, &str); 10] = [
+        let cases: [(Spoil, &str); 11] = [
             (
                 |h| h.inputs[0].edges[1].kept = Some(1),
                 "the regions' curve 2 isn't kept as an element of its own",
@@ -959,7 +969,7 @@ mod tests {
                 |h| {
                     h.inputs[0].edges.pop();
                 },
-                "the regions' history has 4 curves, but 5 were sent",
+                "the regions' history has 5 curves, but 6 were sent",
             ),
             (
                 |h| {
@@ -973,10 +983,10 @@ mod tests {
             ),
             (
                 |h| {
-                    h.result.vertices = 4;
-                    h.topology.edge_vertices[4] = vec![4];
+                    h.result.vertices = 5;
+                    h.topology.edge_vertices[5] = vec![5];
                 },
-                "the faces have (2, 5, 4, 0) faces, edges, vertices, and solids, but the regions make (2, 5, 5, 0)",
+                "the faces have (2, 6, 5, 0) faces, edges, vertices, and solids, but the regions make (2, 6, 6, 0)",
             ),
             (
                 |h| h.ends.start = vec![1],
@@ -988,7 +998,16 @@ mod tests {
                     h.topology.face_edges.swap(0, 1);
                     h.topology.outer_edges.swap(0, 1);
                 },
-                "Face1 isn't region 1: its edges are [5] (outer [5]), the region's [1, 2, 3, 4] (outer [1, 2, 3, 4])",
+                "Face1 isn't region 1: its edges are [6] (outer [6]), the region's [1, 2, 3, 4, 5] (outer [1, 2, 3, 4])",
+            ),
+            // The hole's edge on the other face: each face's outer wire is right, its
+            // edges not.
+            (
+                |h| {
+                    h.topology.face_edges[0] = vec![1, 2, 3, 4];
+                    h.topology.face_edges[1] = vec![5, 6];
+                },
+                "Face1 isn't region 1: its edges are [1, 2, 3, 4] (outer [1, 2, 3, 4]), the region's [1, 2, 3, 4, 5] (outer [1, 2, 3, 4])",
             ),
             // A face whose outer wire isn't its outer loop's.
             (

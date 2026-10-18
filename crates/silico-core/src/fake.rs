@@ -527,8 +527,7 @@ fn answer(op: &Op) -> Result<Reply, Error> {
         Op::MakeFaces(regions) => {
             // The request was checked when it was made; checked again, as the worker does.
             if let Err(invalid) = regions.check() {
-                return Err(Error::new(ErrorCode::InvalidInput, invalid.message)
-                    .with_parameter(invalid.parameter));
+                return Err(crate::kernel::refused("faces", None, invalid));
             }
             let layout = FacesLayout::of(regions);
             let kept_as = |numbers: &[u32]| -> Vec<ElementFate> {
@@ -1422,11 +1421,14 @@ impl FacesLayout {
 
 /// A plane's word in a shape's bytes: `xy`, `xz`, `yz`.
 fn plane_word(plane: SketchPlane) -> &'static str {
+    // The document's word for it (D6).
+    use crate::document::Plane;
     match plane {
-        SketchPlane::Xy => "xy",
-        SketchPlane::Xz => "xz",
-        SketchPlane::Yz => "yz",
+        SketchPlane::Xy => Plane::Xy,
+        SketchPlane::Xz => Plane::Xz,
+        SketchPlane::Yz => Plane::Yz,
     }
+    .as_str()
 }
 
 /// Faces as a line of a shape's bytes: `faces xy region loop line 0 0 4 0 ... loop circle 2

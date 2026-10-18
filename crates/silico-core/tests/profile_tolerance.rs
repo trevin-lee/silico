@@ -434,3 +434,30 @@ fn a_corner_arc_of_radius_1e_7_is_too_small_naming_it_and_its_points() {
         errors[0]
     );
 }
+
+#[test]
+fn a_circle_exactly_1e_7_from_a_line_is_refused_and_one_more_f64_away_is_not() {
+    // A circle of radius 2^-21 about (0, 2^-21 + 1e-7), as a hole over the bottom side of
+    // a 16 × 16 square along y = 0: 2^-21 + 1e-7 is exact, so the gap, its centre's height
+    // less its radius, is exactly 1e-7 (checked). Its centre one f64 higher, it's past.
+    let r = f64::from_bits(0x3ea0_0000_0000_0000); // 2^-21
+    let height = r + LENGTH_TOLERANCE;
+    assert_eq!(height - r, LENGTH_TOLERANCE);
+    let layout = |height: f64| {
+        let mut d = Draw::new();
+        let n = d.rectangle(-8.0, 0.0, 8.0, 16.0);
+        let c = d.circle(0.0, height, r);
+        (d, n, c)
+    };
+    let (d, n, c) = layout(height);
+    assert_eq!(
+        named(&d.refused()),
+        vec![(
+            format!("circle {c} and line {} are 1e-7 mm apart: {RULE}", n[0]),
+            vec![c.clone(), n[0].clone()]
+        )]
+    );
+    let (d, ..) = layout(height.next_up());
+    let p = d.made();
+    assert!(close(p.regions[0].area(), 256.0 - PI * r * r, 1e-15));
+}

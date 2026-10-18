@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 4d8d3f544268ae468fbea0751d34e964da13fd5ecd5ae8b7c10657cb33f29dd9 # shrinks to h = Hostile { pieces: [D { r: 3e-7, half: 2.09729230867854, big: false, flip: false, off: 5e-8 }], origin: [0.0, 0.0], angle: 0.0, plane: Xy }

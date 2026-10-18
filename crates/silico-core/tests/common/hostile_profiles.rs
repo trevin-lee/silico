@@ -26,12 +26,16 @@ pub enum Piece {
         flip: [bool; 4],
     },
     /// An arc of radius `r` about the cell's centre between the angles ±`half`, the long
-    /// way round (`big`) or the short, closed by its chord (drawn backwards if `flip`).
+    /// way round (`big`) or the short, closed by its chord (drawn backwards if `flip`), the
+    /// arc's end `off` its circle (outwards; inwards if negative). Its area is the same:
+    /// the arc's radius and angles come from its centre, its start, and its end's
+    /// direction, and its chord adds nothing to a loop of two curves.
     D {
         r: f64,
         half: f64,
         big: bool,
         flip: bool,
+        off: f64,
     },
     /// A circle of radius `r`.
     Circle { r: f64 },
@@ -89,11 +93,22 @@ impl Hostile {
     }
 
     /// How far the profile's area may be from the closed form: a part in 1e9, and the
-    /// rounding of coordinates this far out along the perimeter.
+    /// rounding of coordinates this far out along the perimeter; and for an arc whose end
+    /// is off its circle, the sliver between the arc's own end and the point its chord
+    /// runs to, at most |off| × its chord (2r): the profile's measure is exact for it, the
+    /// faces OCCT builds aren't.
     pub fn area_tolerance(&self) -> f64 {
         let reach = self.origin[0].abs().max(self.origin[1].abs()).max(1.0) + 200.0;
         let perimeter: f64 = self.pieces.iter().map(Piece::perimeter).sum();
-        1e-9 * self.area().max(1e-12) + 8.0 * f64::EPSILON * reach * perimeter
+        let off: f64 = self
+            .pieces
+            .iter()
+            .map(|p| match *p {
+                Piece::D { r, off, .. } => off.abs() * 2.0 * r,
+                _ => 0.0,
+            })
+            .sum();
+        1e-9 * self.area().max(1e-12) + 8.0 * f64::EPSILON * reach * perimeter + off
     }
 
     /// The sketch.
@@ -151,17 +166,25 @@ impl Hostile {
                         }
                     }
                 }
-                Piece::D { r, half, big, flip } => {
+                Piece::D {
+                    r,
+                    half,
+                    big,
+                    flip,
+                    off,
+                } => {
                     let o = point(&mut d, 12.0, 12.0);
+                    // The arc's end is s when it goes the long way round (from e), else e.
+                    let (rs, re) = if big { (r + off, r) } else { (r, r + off) };
                     let s = point(
                         &mut d,
-                        12.0 + r * libm::cos(half),
-                        12.0 - r * libm::sin(half),
+                        12.0 + rs * libm::cos(half),
+                        12.0 - rs * libm::sin(half),
                     );
                     let e = point(
                         &mut d,
-                        12.0 + r * libm::cos(half),
-                        12.0 + r * libm::sin(half),
+                        12.0 + re * libm::cos(half),
+                        12.0 + re * libm::sin(half),
                     );
                     if big {
                         d.arc(&o, &e, &s);
@@ -262,11 +285,20 @@ fn d_shape() -> impl Strategy<Value = Piece> {
         ]),
         1 => 1e-9f64..(PI - 1e-9),
     ];
-    (r, half, any::<bool>(), any::<bool>()).prop_map(|(r, half, big, flip)| Piece::D {
-        r,
-        half,
-        big,
-        flip,
+    // Mostly on its circle; else at the tolerance either side, or well off.
+    let off = prop_oneof![
+        6 => Just(0.0f64),
+        1 => prop::sample::select(vec![5e-8, -5e-8, 1e-7, 2e-7, -2e-7, 1e-6, -1e-6, 1e-5]),
+    ];
+    (r, half, any::<bool>(), any::<bool>(), off).prop_map(|(r, half, big, flip, off)| {
+        Piece::D {
+            r,
+            half,
+            big,
+            flip,
+            // Never through the centre.
+            off: f64::max(off, -r / 2.0),
+        }
     })
 }
 

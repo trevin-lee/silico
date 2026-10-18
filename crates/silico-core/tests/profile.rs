@@ -397,9 +397,14 @@ fn the_profile_is_the_same_on_every_plane() {
     d.rectangle(0.0, 0.0, 4.0, 3.0);
     d.circle(2.0, 1.5, 0.5);
     let on_xy = made(&d);
+    assert_eq!(on_xy.plane, Plane::Xy);
     for plane in [Plane::Xz, Plane::Yz] {
         d.sketch.plane = plane;
-        assert_eq!(made(&d), on_xy);
+        let on = made(&d);
+        // The same regions, on the sketch's plane.
+        assert_eq!(on.regions, on_xy.regions);
+        assert_eq!(on.plane, plane);
+        assert_eq!(on.faces().regions, on_xy.faces().regions);
     }
 }
 
@@ -1480,4 +1485,120 @@ fn a_feature_that_isnt_a_sketch_of_the_document_has_no_profile() {
         format!("feature {FEATURE} isn't a sketch")
     );
     assert_eq!(r.errors()[0].feature(), Some(FEATURE));
+}
+
+#[test]
+fn a_lone_line_just_longer_than_the_tolerance_is_open_at_each_end_not_told_to_share_them() {
+    // Its length by hypot (the request's measure) is just above 1e-7, by a plain square
+    // root of the sum of squares just at or below it: measured both ways, the line passed
+    // the size rule and then its own ends were told to share the point, the line named
+    // twice. Measured one way, its ends are two open ends.
+    let (x, y) = (
+        f64::from_bits(0x3e77c10b900b8100),
+        f64::from_bits(0x3e69016c51facb34),
+    );
+    assert!(libm::hypot(x, y) > 1e-7);
+    assert!((x * x + y * y).sqrt() <= 1e-7);
+    let mut d = Draw::new();
+    let p = d.point(0.0, 0.0);
+    let q = d.point(x, y);
+    let l = d.line(&p, &q);
+    let open = |end: &str| {
+        (
+            format!(
+                "point {end} ends line {l} and no other profile curve, so the profile is open there"
+            ),
+            vec![end.to_owned(), l.clone()],
+        )
+    };
+    let errors = d.refused();
+    assert_eq!(named(&errors), vec![open(&p), open(&q)]);
+}
+
+/// A 10 × 10 square whose lower right corner is rounded by an arc of radius 1 about
+/// (9, 1), from (9, 0) to its end at (10 + `off`, 1): `off` from its circle, outwards.
+fn corner_arc_ending_off_its_circle(d: &mut Draw, off: f64) -> [String; 4] {
+    let a = d.point(0.0, 0.0);
+    let b = d.point(9.0, 0.0);
+    let c = d.point(10.0 + off, 1.0);
+    let top = d.point(10.0, 10.0);
+    let left = d.point(0.0, 10.0);
+    let o = d.point(9.0, 1.0);
+    d.line(&a, &b);
+    let arc = d.arc(&o, &b, &c);
+    d.line(&c, &top);
+    d.line(&top, &left);
+    d.line(&left, &a);
+    [arc, o, b, c]
+}
+
+#[test]
+fn an_arc_whose_end_is_off_its_circle_is_refused_naming_it_its_centre_and_its_ends() {
+    // The request's check refuses an arc whose end is more than 1e-7 from where its angle
+    // and radius (from its centre to its start) put it; the profile names it first. The
+    // end's angle is 0, so it's off by (10 + off) − 10.
+    for off in [2e-7, 1e-6, 1e-5] {
+        let mut d = Draw::new();
+        let named_elements = corner_arc_ending_off_its_circle(&mut d, off);
+        let errors = d.refused();
+        assert_eq!(errors.len(), 1, "{:#?}", named(&errors));
+        let e = &errors[0];
+        assert_eq!(e.elements(), named_elements.as_slice());
+        assert_eq!(e.elements_total(), 4);
+        assert_eq!(
+            e.message(),
+            format!(
+                "arc {}'s end is {} mm from its circle (the circle about its centre through its start): a profile's arcs end within 1e-7 mm of their circles",
+                named_elements[0],
+                silico_protocol::format_number((10.0 + off) - 10.0)
+            )
+        );
+        assert_eq!(
+            e.suggestion(),
+            Some("solve the sketch again, or put the arc's end on its circle")
+        );
+    }
+    // 5e-8 off is within the tolerance: made, and the request takes it.
+    let mut d = Draw::new();
+    corner_arc_ending_off_its_circle(&mut d, 5e-8);
+    let p = made(&d);
+    silico_core::kernel::KernelRequest::make_faces(&p.faces()).unwrap();
+}
+
+#[test]
+fn overlapping_arcs_across_the_circles_seam_at_pi_overlap() {
+    // Two arcs of the circle of radius 25 about one centre, their points integers on it
+    // (so both radii are exactly 25): from (−20, 15), at 143°, round past π to
+    // (−20, −15), at 217°; and from (−24, −7), at −163.7° (its start angle just past −π),
+    // to (−15, −20), at −126.9°. They share 196.3° to 217°.
+    let mut d = Draw::new();
+    let o = d.point(0.0, 0.0);
+    let (s1, e1) = (d.point(-20.0, 15.0), d.point(-20.0, -15.0));
+    let (s2, e2) = (d.point(-24.0, -7.0), d.point(-15.0, -20.0));
+    let a1 = d.arc(&o, &s1, &e1);
+    let a2 = d.arc(&o, &s2, &e2);
+    let got = named(&d.refused());
+    assert!(
+        got.contains(&(
+            format!("arc {a1} and arc {a2} overlap"),
+            vec![a1.clone(), a2.clone()]
+        )),
+        "{got:#?}"
+    );
+}
+
+#[test]
+fn a_sliver_loop_among_a_regions_holes_is_refused_as_a_loop() {
+    // A 20 × 20 square with a circle hole, and a 6 × 1.5e-7 rectangle hole: the
+    // rectangle is the sliver, named by its lines; the region isn't refused as well.
+    let mut d = Draw::new();
+    d.rectangle(0.0, 0.0, 20.0, 20.0);
+    d.circle(5.0, 5.0, 2.0);
+    let thin = d.rectangle(12.0, 10.0, 18.0, 10.0 + 1.5e-7);
+    let errors = d.refused();
+    assert_eq!(errors.len(), 1, "{:#?}", named(&errors));
+    assert!(errors[0].message().starts_with("loop "), "{}", errors[0]);
+    let mut got = errors[0].elements().to_vec();
+    got.sort();
+    assert_eq!(got, thin);
 }

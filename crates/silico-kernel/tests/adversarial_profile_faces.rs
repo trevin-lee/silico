@@ -31,8 +31,8 @@ fn made(d: &Draw) -> Option<Profile> {
 }
 
 /// The regions the core sends for `d`'s profile, through the request's check.
-fn regions(d: &Draw, p: &Profile) -> FaceRegions {
-    let regions = p.faces(d.sketch.plane, &d.solution()).unwrap();
+fn regions(p: &Profile) -> FaceRegions {
+    let regions = p.faces();
     KernelRequest::make_faces(&regions).unwrap();
     regions
 }
@@ -94,7 +94,7 @@ proptest! {
         let Some(p) = made(&d) else {
             return Ok(());
         };
-        let sent = p.faces(d.sketch.plane, &d.solution()).unwrap();
+        let sent = p.faces();
         if KernelRequest::make_faces(&sent).is_err() {
             // The core's own seam (the strip at the sliver boundary): its test's.
             return Ok(());
@@ -135,7 +135,7 @@ fn a_spike_whose_sides_run_within_the_tolerance_near_its_tip_builds_its_area() {
         (0.0, 10.0),
     ]);
     let p = made(&d).expect("the decision takes neighbours near their shared point");
-    let got = area(&regions(&d, &p));
+    let got = area(&regions(&p));
     assert!(
         got.as_ref()
             .is_ok_and(|a| (a - (100.0 + 10.0 * h)).abs() < 1e-12),
@@ -159,7 +159,7 @@ fn a_crack_whose_sides_run_within_the_tolerance_near_its_tip_builds_its_area() {
         (0.0, 10.0),
     ]);
     let p = made(&d).expect("the decision takes neighbours near their shared point");
-    let got = area(&regions(&d, &p));
+    let got = area(&regions(&p));
     assert!(
         got.as_ref()
             .is_ok_and(|a| (a - (100.0 - 9.5 * h / 2.0)).abs() < 1e-12),
@@ -190,7 +190,7 @@ fn two_arcs_from_one_point_on_circles_3e_7_apart_build_their_area() {
     d.line(&e1, &far);
     d.line(&far, &e2);
     let p = made(&d).expect("the decision takes neighbours near their shared point");
-    let regions = regions(&d, &p);
+    let regions = regions(&p);
     let profile_area: f64 = p.regions.iter().map(|r| r.area()).sum();
     let got = area(&regions);
     assert!(
@@ -371,7 +371,7 @@ fn an_arc_starting_at_its_centres_left_is_one_shape_whatever_the_sign_of_its_zer
         d.arc(&o, &s, &e);
         d.line(&e, &s);
         let p = made(&d).unwrap();
-        let sent = regions(&d, &p);
+        let sent = regions(&p);
         (sent.clone(), shape(&pool(), &sent))
     };
     let ((plus, a), (minus, b)) = (shape_of(0.0), shape_of(-0.0));

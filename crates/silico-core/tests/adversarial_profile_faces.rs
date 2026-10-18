@@ -29,8 +29,8 @@ fn profile_of(d: &Draw) -> Option<Result<Profile, silico_core::profile::Refused>
 
 /// The kernel request for the profile's faces, as the core would make it: the error it
 /// refuses them with, if it does.
-fn request(d: &Draw, p: &Profile) -> Result<(), silico_core::Error> {
-    let regions = p.faces(d.sketch.plane, &d.solution())?;
+fn request(p: &Profile) -> Result<(), silico_core::Error> {
+    let regions = p.faces();
     KernelRequest::make_faces(&regions).map(|_| ())
 }
 
@@ -39,7 +39,7 @@ fn request(d: &Draw, p: &Profile) -> Result<(), silico_core::Error> {
 fn made_and_sent_or_refused_naming(d: &Draw, curve: &str) {
     match d.profile() {
         Ok(p) => {
-            if let Err(e) = request(d, &p) {
+            if let Err(e) = request(&p) {
                 panic!(
                     "the profile was made, but the kernel request refuses it: {} ({:?}; suggestion {:?})",
                     e.message(),
@@ -100,7 +100,7 @@ fn a_corner_rounded_by_an_arc_just_above_the_tolerance_is_made_and_sent() {
     let mut d = Draw::new();
     square_with_a_rounded_corner(&mut d, r);
     let p = d.made();
-    request(&d, &p).unwrap();
+    request(&p).unwrap();
     let area: f64 = p.regions.iter().map(Region::area).sum();
     assert!(
         (area - (100.0 - (1.0 - PI / 4.0) * r * r)).abs() < 1e-12,
@@ -176,7 +176,7 @@ fn an_arc_closed_by_a_chord_just_above_the_tolerance_is_made_and_sent() {
     let mut d = Draw::new();
     arc_and_short_chord(&mut d, 1.0, 5.0000001e-8);
     let p = d.made();
-    request(&d, &p).unwrap();
+    request(&p).unwrap();
     let theta = 2.0 * PI - 2.0 * 5.0000001e-8;
     let area = (theta - libm::sin(theta)) / 2.0;
     let got: f64 = p.regions.iter().map(Region::area).sum();
@@ -247,8 +247,8 @@ fn a_strip_at_the_sliver_boundary_the_profile_takes_is_one_the_request_takes() {
                 lo = mid;
             }
         }
-        let (d, p) = takes(hi).unwrap();
-        if let Err(e) = request(&d, &p) {
+        let (_, p) = takes(hi).unwrap();
+        if let Err(e) = request(&p) {
             disagree.push((k, hi, e.message().to_owned()));
         }
     }
@@ -271,7 +271,7 @@ proptest! {
             Ok(p) => {
                 // BREAKS: shrinks to a corner arc of radius 7.1e-8 to 1e-7, or an arc and its
                 // chord 5e-8 long (the targeted tests above).
-                if let Err(e) = request(&d, &p) {
+                if let Err(e) = request(&p) {
                     prop_assert!(false, "made, but the request refuses it: {}", e.message());
                 }
                 let area: f64 = p.regions.iter().map(Region::area).sum();
@@ -311,7 +311,7 @@ proptest! {
         let Some(Ok(p)) = profile_of(&d) else {
             return Ok(());
         };
-        if let Err(e) = request(&d, &p) {
+        if let Err(e) = request(&p) {
             prop_assert!(false, "made, but the request refuses it: {}", e.message());
         }
         let area: f64 = p.regions.iter().map(Region::area).sum();

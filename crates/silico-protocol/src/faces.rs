@@ -139,6 +139,28 @@ impl Curve {
         (length <= LENGTH_TOLERANCE).then_some(SizeProblem::Ends(length))
     }
 
+    /// For an arc, the first of its ends (`"start"`, then `"end"`) more than OCCT's
+    /// tolerance from where its angle and radius put it, and how far. An arc's points are its definition; its radius and angles come from
+    /// them, so an end off its circle is a solve's or an edit's, not the curve's. The
+    /// request's check refuses what this names, and the core's profile refuses it first.
+    pub fn off_circle(&self) -> Option<(&'static str, f64)> {
+        let Curve::Arc {
+            center,
+            start,
+            end,
+            radius,
+            start_angle,
+            end_angle,
+        } = *self
+        else {
+            return None;
+        };
+        [("start", start, start_angle), ("end", end, end_angle)]
+            .into_iter()
+            .map(|(what, p, angle)| (what, distance(p, on_circle(center, radius, angle))))
+            .find(|&(_, off)| off > LENGTH_TOLERANCE)
+    }
+
     /// Where it starts and ends, if it isn't a circle.
     pub fn ends(&self) -> Option<([f64; 2], [f64; 2])> {
         match *self {
@@ -219,7 +241,9 @@ fn within_reach(p: [f64; 2]) -> bool {
     p.iter().all(|c| c.is_finite() && c.abs() <= MAX_LENGTH)
 }
 
-fn distance(a: [f64; 2], b: [f64; 2]) -> f64 {
+/// How far apart `a` and `b` are, by `libm`'s `hypot` (the same on every platform): the
+/// distance every closeness rule of a profile and its request is measured by.
+pub fn distance(a: [f64; 2], b: [f64; 2]) -> f64 {
     libm::hypot(b[0] - a[0], b[1] - a[1])
 }
 
@@ -366,12 +390,10 @@ fn check_curve(c: &Curve, place: &Place) -> Result<(), InvalidParameter> {
     match *c {
         Curve::Line { .. } => ends_short()?,
         Curve::Arc {
-            center,
-            start,
-            end,
             radius,
             start_angle,
             end_angle,
+            ..
         } => {
             check_radius(radius)?;
             for (what, angle) in [("start angle", start_angle), ("end angle", end_angle)] {
@@ -390,14 +412,11 @@ fn check_curve(c: &Curve, place: &Place) -> Result<(), InvalidParameter> {
                 )));
             }
             ends_short()?;
-            for (what, p, angle) in [("start", start, start_angle), ("end", end, end_angle)] {
-                let off = distance(p, on_circle(center, radius, angle));
-                if off > LENGTH_TOLERANCE {
-                    return Err(invalid(format!(
-                        "{place}'s {what} is {} mm from where its angle and radius put it: no more than 1e-7 mm",
-                        format_number(off)
-                    )));
-                }
+            if let Some((what, off)) = c.off_circle() {
+                return Err(invalid(format!(
+                    "{place}'s {what} is {} mm from where its angle and radius put it: no more than 1e-7 mm",
+                    format_number(off)
+                )));
             }
         }
         Curve::Circle { radius, .. } => check_radius(radius)?,
