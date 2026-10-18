@@ -75,7 +75,7 @@ Edges that can't be filleted (seams, degenerate edges, edges between smoothly jo
 |---|---|
 | `src/Mod/PartDesign/PartDesignTests/TestFillet.py` `testFilletCubeToSphere` | Ported: `freecad_fillet_cube_to_sphere` (every edge of a 10 cube at r = 4.999999 gives nearly a sphere of radius 5, places = 3). Bit-identical to FreeCAD. |
 | `tests/src/Mod/Part/App/TopoShapeExpansion.cpp` `makeElementFillet`, geometry | Ported: `freecad_fillet_every_edge_of_a_unit_cube` (area 5.739646, which is also analytic, and the volume). Its wire count (26) isn't: the summary doesn't count wires yet. |
-| The same test's element map, and `src/Mod/Part/parttests/TopoShapeTest.py` `testTopoShapeMakeFillet` (element map size 42) | M2, with topological naming. |
+| The same test's element map, and `src/Mod/Part/parttests/TopoShapeTest.py` `testTopoShapeMakeFillet` (element map size 42) | Ported with naming (M2.7, silico-kernel `tests/naming.rs`); the edit cases wait for references (M2.8). |
 | `tests/src/Mod/Part/App/FeatureFillet.cpp` `testOtherEdges` (125.57079), `testMostEdges` (118.38763) | With refine: they fillet a fused shape with `Refine = true`. |
 | `TestFillet.py`'s other cases (`UseAllEdges`, face selections) | M1/M2, with the Fillet feature. |
 | `TestFillet.py` `testDeletingPreviousFeatureRelinksUniqueMatchingBaseEdge`, `testDeletingPreviousFeatureDoesNotRelinkUnsafeBaseEdge` | M2, with topological naming. |

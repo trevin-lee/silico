@@ -146,7 +146,7 @@ FreeCAD avoids this problem by storing each feature's B-rep in the file and load
 ## Topological naming
 
 - The kernel returns history. The core builds the element map from it, as a port of FreeCAD's `ElementMap` and `TopoShapeExpansion`.
-- Names stored in files are human-readable. No opaque hashes.
+- Names stored in files are human-readable. No opaque hashes. A name is the ID of the feature that made the element, its kind, and how it came about, every source written out: `m3tq8v0z.Edge(G k7f2qx3m.Face6, G a91cw0de.Face1)`, the edge a cut generated from a block's top face and a pin's side (docs/design/m2.7-naming.md). A kept element keeps its name exactly, and so does an element an operation modified one from one, as its sole result (`pppppppp.Face6`, a plate's top face after any number of holes), so a name grows only where elements split, merge, or are generated. A source's position in OCCT's list is written only where two elements' names would otherwise be the same, as the element's rank among them and how many there are (`G1/2`, `M2/3`): OCCT's lists reorder for reasons of their own, and a name that holds no position doesn't change with them.
 - After an upstream edit, a reference either resolves to the geometrically equivalent element or fails loudly with a structured error that lists candidates. It must never silently resolve to a different element.
 
 ## Agent interface (MCP)
@@ -221,7 +221,6 @@ GPL-3.0-or-later. Silico's dependencies are LGPL (FreeCAD, OCCT, PlaneGCS, Ondse
 
 ## Open questions
 
-- The syntax of topological names in files.
 - A semantic git merge driver.
 - IPC transport (pipes or shared memory), and whether an out-of-process sketch solver meets the latency budget for interactive drags.
 - Interfaces: published, semver-versioned geometry contracts that parallel design work builds on. Also CAD CI.

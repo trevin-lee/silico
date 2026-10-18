@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use std::fmt;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
-use silico_protocol::Primitive;
+use silico_protocol::{BooleanOp, Primitive};
 
 use super::fingerprint::Fingerprint;
 use super::quantity::Length;
@@ -248,54 +248,73 @@ pub enum Operation {
     Sketch(Sketch),
 }
 
+/// What a feature makes its solid with ([`Operation::made`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Made {
+    /// A primitive, from nothing.
+    Primitive(Primitive),
+    /// A boolean of its `base` and `tool` features' solids.
+    Boolean(BooleanOp),
+    /// No solid: a sketch (solved in M3.3).
+    Sketch,
+}
+
 impl Operation {
-    /// The primitive the kernel makes for this feature, at the origin, before it's moved to
-    /// its [`position`](Self::position); `None` for a boolean.
-    pub fn primitive(&self) -> Option<Primitive> {
-        Some(match *self {
+    /// What the feature makes its solid with: a primitive from nothing, or a boolean of two
+    /// earlier solids; or, for a sketch, no solid. Every kind of feature is one, so a new
+    /// kind has to say which (and so how its elements are named).
+    pub fn made(&self) -> Made {
+        match *self {
             Operation::Box {
                 length,
                 width,
                 height,
                 ..
-            } => Primitive::Box {
+            } => Made::Primitive(Primitive::Box {
                 dx: length.mm(),
                 dy: width.mm(),
                 dz: height.mm(),
-            },
-            Operation::Cylinder { radius, height, .. } => Primitive::Cylinder {
+            }),
+            Operation::Cylinder { radius, height, .. } => Made::Primitive(Primitive::Cylinder {
                 radius: radius.mm(),
                 height: height.mm(),
-            },
-            Operation::Sphere { radius, .. } => Primitive::Sphere {
+            }),
+            Operation::Sphere { radius, .. } => Made::Primitive(Primitive::Sphere {
                 radius: radius.mm(),
-            },
+            }),
             Operation::Cone {
                 radius1,
                 radius2,
                 height,
                 ..
-            } => Primitive::Cone {
+            } => Made::Primitive(Primitive::Cone {
                 radius1: radius1.mm(),
                 radius2: radius2.mm(),
                 height: height.mm(),
-            },
+            }),
             Operation::Torus {
                 radius1, radius2, ..
-            } => Primitive::Torus {
+            } => Made::Primitive(Primitive::Torus {
                 major_radius: radius1.mm(),
                 minor_radius: radius2.mm(),
-            },
-            Operation::Fuse { .. }
-            | Operation::Cut { .. }
-            | Operation::Common { .. }
-            | Operation::Sketch(_) => {
-                return None;
-            }
-        })
+            }),
+            Operation::Fuse { .. } => Made::Boolean(BooleanOp::Fuse),
+            Operation::Cut { .. } => Made::Boolean(BooleanOp::Cut),
+            Operation::Common { .. } => Made::Boolean(BooleanOp::Common),
+            Operation::Sketch(_) => Made::Sketch,
+        }
     }
 
-    /// Where a primitive sits; `None` for a boolean.
+    /// The primitive the kernel makes for this feature, at the origin, before it's moved to
+    /// its [`position`](Self::position); `None` for a boolean or a sketch.
+    pub fn primitive(&self) -> Option<Primitive> {
+        match self.made() {
+            Made::Primitive(primitive) => Some(primitive),
+            Made::Boolean(_) | Made::Sketch => None,
+        }
+    }
+
+    /// Where a primitive sits; `None` for a boolean or a sketch.
     pub fn position(&self) -> Option<&Position> {
         match self {
             Operation::Box { position, .. }
@@ -353,7 +372,8 @@ impl Operation {
 
     /// Whether the feature makes a solid: every type but a sketch.
     pub fn makes_solid(&self) -> bool {
-        !matches!(self, Operation::Sketch(_))
+        // As `made` says, so the two can't disagree.
+        !matches!(self.made(), Made::Sketch)
     }
 
     /// The `type` the file writes.

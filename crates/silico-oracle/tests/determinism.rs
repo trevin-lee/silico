@@ -1,7 +1,7 @@
 //! determinism_sweep (docs/roadmap/m1-kernel.md, M1.9): every oracle case, and the suite's
 //! generated ones, built twice on fresh kernel workers (the second in reverse order, after
-//! the others) gives byte-identical B-reps, histories, summaries, FreeCAD-style measures,
-//! and meshes.
+//! the others) gives byte-identical B-reps, histories (each result's fates, counts, and
+//! ends, and, beside them, its topology), summaries, FreeCAD-style measures, and meshes.
 //! Their digests match a committed reference, recorded on the Mac, so CI on Linux checks
 //! that both platforms build every case the same, bit for bit. Rerecord (only with the
 //! maintainer's agreement, as for tests/determinism/stress-reference.json) with
@@ -11,7 +11,8 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use silico_core::kernel::KernelWorker;
+use serde::Serialize;
+use silico_core::kernel::{ElementCounts, Ends, History, InputHistory, KernelWorker};
 use silico_oracle::{Case, generate, load, silico::build_with_history};
 
 const CASES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/oracle");
@@ -47,17 +48,48 @@ impl Digest {
     }
 }
 
+/// A history's fates, counts, and ends, serialized as the History before M2.7 was (in
+/// that order), so their digest is the one recorded then.
+#[derive(Serialize)]
+struct Fates<'a> {
+    inputs: &'a [InputHistory],
+    result: &'a ElementCounts,
+    ends: &'a Ends,
+}
+
+/// `value`'s JSON, digested.
+fn digest_json(value: &impl Serialize) -> String {
+    Digest::default()
+        .bytes(&serde_json::to_vec(value).unwrap())
+        .hex()
+}
+
 /// What building `case` on `kernel` gives, digested: its B-rep, the history its last
 /// operation reported (the order of OCCT's lists, which element names are built from, in
-/// M2), its summary, FreeCAD-style measures, and mesh (deflection 0.1), each or the code of
-/// the error that refused it.
+/// M2: its fates, counts, and ends as `history`, and its result's topology as `topology`),
+/// its summary, FreeCAD-style measures, and mesh (deflection 0.1), each or the code of the
+/// error that refused it.
 fn digests(kernel: &mut KernelWorker, case: &Case) -> BTreeMap<String, String> {
     let mut found = BTreeMap::new();
     let shape = match build_with_history(kernel, &case.shape) {
         Ok((shape, history)) => {
             if let Some(history) = history {
-                let json = serde_json::to_vec(&history).unwrap();
-                found.insert("history".to_owned(), Digest::default().bytes(&json).hex());
+                // Exhaustive: a new field must be given a key.
+                let History {
+                    inputs,
+                    result,
+                    ends,
+                    topology,
+                } = &history;
+                found.insert(
+                    "history".to_owned(),
+                    digest_json(&Fates {
+                        inputs,
+                        result,
+                        ends,
+                    }),
+                );
+                found.insert("topology".to_owned(), digest_json(topology));
             }
             shape
         }

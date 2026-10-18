@@ -4,6 +4,7 @@
 
 use silico_protocol::{
     ElementCounts, ElementFate, ElementKind, ElementRef, Ends, History, InputHistory, Reported,
+    Topology,
 };
 
 const RESULT: ElementCounts = ElementCounts {
@@ -12,6 +13,16 @@ const RESULT: ElementCounts = ElementCounts {
     vertices: 4,
     solids: 1,
 };
+
+/// A topology that fits `RESULT`: two faces sharing Edge2 (Face1 bounded by Edges 1 and
+/// 2, Face2 by 2 and 3, a hole of Edge3's in Face1), each edge between two vertices.
+fn topology() -> Topology {
+    Topology {
+        face_edges: vec![vec![2, 1, 3], vec![3, 2]],
+        outer_edges: vec![vec![1, 2], vec![2, 3]],
+        edge_vertices: vec![vec![1, 2], vec![2, 3], vec![4]],
+    }
+}
 
 fn reported(kind: ElementKind, index: u32) -> Reported {
     Reported {
@@ -38,6 +49,7 @@ fn with_face(fate: ElementFate) -> History {
         }],
         result: RESULT,
         ends: Default::default(),
+        topology: topology(),
     }
 }
 
@@ -94,6 +106,7 @@ fn a_history_is_checked_for_every_kind_and_every_input() {
         inputs,
         result: RESULT,
         ends: Default::default(),
+        topology: topology(),
     };
     let edge = history(vec![input(vec![], vec![bad.clone()], vec![])]);
     assert!(edge.validate(1).unwrap_err().starts_with("input 1 Edge1"));
@@ -117,6 +130,7 @@ fn a_history_is_for_as_many_inputs_as_the_operation_had() {
         inputs: vec![],
         result: RESULT,
         ends: Default::default(),
+        topology: topology(),
     };
     assert!(none.validate(1).unwrap_err().contains("for 0 input shapes"));
     let one = with_face(ElementFate::default());
@@ -167,6 +181,7 @@ fn a_fate_is_read_from_its_own_kinds_list() {
         }],
         result: RESULT,
         ends: Default::default(),
+        topology: topology(),
     };
     let first = |kind| ElementRef { kind, index: 1 };
     assert_eq!(h.fate(0, first(ElementKind::Face)).unwrap().kept, Some(1));
@@ -242,5 +257,67 @@ fn a_sweeps_ends_name_only_faces_the_result_has_in_order() {
     ] {
         let err = with_ends(start, end).validate(1).unwrap_err();
         assert!(err.contains(says), "{err}");
+    }
+}
+
+#[test]
+fn a_histories_topology_fits_its_result() {
+    let with = |topology: Topology| History {
+        topology,
+        ..with_face(fate(Some(1), vec![], vec![]))
+    };
+    assert_eq!(with(topology()).validate(1), Ok(()));
+    type Damage = fn(&mut Topology);
+    let cases: [(Damage, &str); 10] = [
+        (
+            |t| {
+                t.face_edges.pop();
+            },
+            "lists 1 faces' edges for a result of 2",
+        ),
+        (
+            |t| t.outer_edges.push(vec![]),
+            "lists 3 faces' outer edges for a result of 2",
+        ),
+        (
+            |t| {
+                t.edge_vertices.pop();
+            },
+            "lists 2 edges' vertices for a result of 3",
+        ),
+        (
+            |t| t.face_edges[1].push(4),
+            "faces' edges for element 2 name 4",
+        ),
+        (
+            |t| t.edge_vertices[0][0] = 0,
+            "edges' vertices for element 1 name 0",
+        ),
+        (
+            |t| t.edge_vertices[2] = vec![5],
+            "edges' vertices for element 3 name 5",
+        ),
+        (
+            |t| t.face_edges[0].push(1),
+            "faces' edges for element 1 repeat one",
+        ),
+        (
+            |t| t.edge_vertices[1] = vec![3, 3],
+            "edges' vertices for element 2 repeat one",
+        ),
+        (
+            |t| t.outer_edges[0] = vec![2, 1],
+            "Face1's outer edges aren't sorted",
+        ),
+        (
+            |t| t.outer_edges[1] = vec![1, 2],
+            "Face2's outer edges name Edge1, which isn't one of its edges",
+        ),
+    ];
+    for (damage, says) in cases {
+        let mut t = topology();
+        damage(&mut t);
+        let err = with(t).validate(1).unwrap_err();
+        assert!(err.contains(says), "{err} (wanted {says})");
     }
 }

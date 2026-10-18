@@ -383,6 +383,37 @@ Counts count_elements(const Shape &shape) {
                 count_distinct(shape.shape, TopAbs_SOLID)};
 }
 
+TopologyFacts topology(const Shape &shape) {
+  ShapeMap faces, edges, vertices;
+  TopExp::MapShapes(shape.shape, TopAbs_FACE, faces);
+  TopExp::MapShapes(shape.shape, TopAbs_EDGE, edges);
+  TopExp::MapShapes(shape.shape, TopAbs_VERTEX, vertices);
+  TopologyFacts facts;
+  // Appends the numbers in `all` of `element`'s sub-shapes of `kind`, in MapShapes order,
+  // and returns how many there were.
+  auto list = [](const TopoDS_Shape &element, TopAbs_ShapeEnum kind, const ShapeMap &all,
+                 rust::Vec<uint32_t> &out) {
+    ShapeMap sub;
+    if (!element.IsNull()) {
+      TopExp::MapShapes(element, kind, sub);
+    }
+    for (int i = 1; i <= sub.Extent(); ++i) {
+      out.push_back(static_cast<uint32_t>(all.FindIndex(sub(i))));
+    }
+    return static_cast<uint32_t>(sub.Extent());
+  };
+  for (int i = 1; i <= faces.Extent(); ++i) {
+    const TopoDS_Face &face = TopoDS::Face(faces(i));
+    facts.face_edge_counts.push_back(list(face, TopAbs_EDGE, edges, facts.face_edges));
+    facts.outer_edge_counts.push_back(
+        list(BRepTools::OuterWire(face), TopAbs_EDGE, edges, facts.outer_edges));
+  }
+  for (int i = 1; i <= edges.Extent(); ++i) {
+    facts.edge_vertex_counts.push_back(list(edges(i), TopAbs_VERTEX, vertices, facts.edge_vertices));
+  }
+  return facts;
+}
+
 EdgeFacts edge_facts(const Shape &shape) {
   ShapeMap edges, vertices, faces;
   TopExp::MapShapes(shape.shape, TopAbs_EDGE, edges);

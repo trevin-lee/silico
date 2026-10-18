@@ -66,4 +66,4 @@ The experiment's original one-off scripts (macOS x86 builds under Rosetta, a sel
 
 ## The oracle cases' reference
 
-`oracle-reference.json` holds digests of every oracle case and the suite's generated ones, as Silico builds them: the B-rep, the history of the last operation, the summary, the FreeCAD-style measures, and the mesh (`crates/silico-oracle/tests/determinism.rs`). It's recorded on the Mac and checked by CI on Linux, so both platforms build every case bit for bit alike. It's protected: re-record it only with the maintainer's agreement (`SILICO_DETERMINISM_RECORD=1`).
+`oracle-reference.json` holds digests of every oracle case and the suite's generated ones, as Silico builds them: the B-rep, the history of the last operation, the topology of its result, the summary, the FreeCAD-style measures, and the mesh (`crates/silico-oracle/tests/determinism.rs`). It's recorded on the Mac and checked by CI on Linux, so both platforms build every case bit for bit alike. It's protected: re-record it only with the maintainer's agreement (`SILICO_DETERMINISM_RECORD=1`).

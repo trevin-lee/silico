@@ -59,7 +59,7 @@ The M1.4 plan's two examples don't match what OCCT reports (verified on OCCT 8.0
 | `tests/src/Mod/Part/App/TopoShapeExpansion.cpp` `makeElementFillet`, `makeElementChamfer`, `makeElementPrism`, `makeElementRevolve`, `makeElementCut`, `makeElementFuse`: the raw relations under their element names | Ported with each operation in M1.4 and M1.5, as relations decoded from the names: fillet (`history.rs`), and booleans, prism and revolve, and chamfer with positions too (`boolean.rs`, `sweep.rs`, `chamfer.rs`). |
 | `TopoShapeExpansion.cpp` `MapperMaker*`, `MapperHistory*` | Not ported: they test FreeCAD's mapper classes, which Silico doesn't have. |
 | `tests/src/Mod/Part/App/PropertyTopoShape.cpp` `testShapeHistory` | Not ported: it tests FreeCAD's legacy history map, whose counts follow from that map's own rules (Edge1's generated face isn't an edge, so it gets no entry), not OCCT's history. |
-| `src/Mod/Part/parttests/TopoShapeTest.py:731` `testTopoShapeMakeFillet` (element map 42); `src/Mod/PartDesign/PartDesignTests/TestTopologicalNamingProblem.py:1043` `testPartDesignElementMapFillet` (26 faces, 56 edges, 24 vertices), `:1822` `testPartDesignTNPFillet` | M2.7 and M2.8, with naming. |
+| `src/Mod/Part/parttests/TopoShapeTest.py:731` `testTopoShapeMakeFillet` (element map 42); `src/Mod/PartDesign/PartDesignTests/TestTopologicalNamingProblem.py:1043` `testPartDesignElementMapFillet` (26 faces, 56 edges, 24 vertices), `:1822` `testPartDesignTNPFillet` | The element maps ported with naming (M2.7, docs/ports/naming.md); `testPartDesignTNPFillet`, an edit, with references (M2.8). |
 
 ## For M1.5
 

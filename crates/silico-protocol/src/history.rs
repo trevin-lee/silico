@@ -121,14 +121,32 @@ pub struct Ends {
     pub end: Vec<u32>,
 }
 
+/// How the result's elements bound each other, as naming needs it (docs/ports/naming.md):
+/// FreeCAD names an element nothing reports from the elements above it (an edge from a
+/// face it bounds) or below it (a face from its edges), so the core needs the result's
+/// topology, which only OCCT can read. Each list numbers elements as the result does.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Topology {
+    /// Each face's edges, in `TopExp::MapShapes(face, EDGE)` order (a seam once): an edge
+    /// named from a face is named by its place among them.
+    pub face_edges: Vec<Vec<u32>>,
+    /// The edges of each face's outer wire, sorted (`BRepTools::OuterWire`): a face is
+    /// named from these, never from a hole's.
+    pub outer_edges: Vec<Vec<u32>>,
+    /// Each edge's vertices, in `TopExp::MapShapes(edge, VERTEX)` order (a closed edge's
+    /// one vertex once).
+    pub edge_vertices: Vec<Vec<u32>>,
+}
+
 /// An operation's history: one [`InputHistory`] per input shape, in the operation's order,
-/// the result's element counts, so every reference can be checked against them, and a
-/// sweep's [`Ends`].
+/// the result's element counts, so every reference can be checked against them, a sweep's
+/// [`Ends`], and the result's [`Topology`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct History {
     pub inputs: Vec<InputHistory>,
     pub result: ElementCounts,
     pub ends: Ends,
+    pub topology: Topology,
 }
 
 impl History {
@@ -148,11 +166,13 @@ impl History {
 
     /// Checks that the history is for `inputs` input shapes, that every element it names is
     /// within the result's counts, and that it keeps its own promises: each `modified` is
-    /// the input element's kind, every position is from 1, and each list is sorted by
-    /// element without repeats. Run it before using a history that came from another
-    /// process. Two things it can't check: how many elements each input has (read fates
-    /// with [`History::fate`]), and that `result` counts the shape that came with it (the
-    /// core can't count without OCCT, so look result elements up with `get`).
+    /// the input element's kind, every position is from 1, each list is sorted by element
+    /// without repeats, and the topology has a list for each face and edge, each without
+    /// repeats, a face's outer edges sorted and among its edges. Run it before using a
+    /// history that came from another process. Two things it can't check: how many
+    /// elements each input has (read fates with [`History::fate`]), and that `result`
+    /// counts the shape that came with it (the core can't count without OCCT, so look
+    /// result elements up with `get`).
     pub fn validate(&self, inputs: usize) -> Result<(), String> {
         if self.inputs.len() != inputs {
             return Err(format!(
@@ -211,6 +231,7 @@ impl History {
                 }
             }
         }
+        self.topology.validate(counts)?;
         for (list, name) in [(&self.ends.start, "start"), (&self.ends.end, "end")] {
             if !list.windows(2).all(|w| w[0] < w[1]) {
                 return Err(format!("the {name} faces aren't sorted, or repeat one"));
@@ -218,6 +239,65 @@ impl History {
             if let Some(face) = list.iter().find(|&&f| !(1..=counts.faces).contains(&f)) {
                 return Err(format!(
                     "the {name} faces name Face{face}, which the result doesn't have"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Topology {
+    /// Checks the topology against the result's counts: see [`History::validate`].
+    pub fn validate(&self, counts: ElementCounts) -> Result<(), String> {
+        let lists = [
+            ("faces' edges", &self.face_edges, counts.faces, counts.edges),
+            (
+                "faces' outer edges",
+                &self.outer_edges,
+                counts.faces,
+                counts.edges,
+            ),
+            (
+                "edges' vertices",
+                &self.edge_vertices,
+                counts.edges,
+                counts.vertices,
+            ),
+        ];
+        for (what, lists, owners, elements) in lists {
+            if lists.len() != owners as usize {
+                return Err(format!(
+                    "the topology lists {} {what} for a result of {owners}",
+                    lists.len()
+                ));
+            }
+            for (n, list) in lists.iter().enumerate() {
+                if let Some(e) = list.iter().find(|&&e| !(1..=elements).contains(&e)) {
+                    return Err(format!(
+                        "the topology's {what} for element {} name {e}, which the result doesn't have",
+                        n + 1
+                    ));
+                }
+                let mut sorted = list.clone();
+                sorted.sort_unstable();
+                if sorted.windows(2).any(|w| w[0] == w[1]) {
+                    return Err(format!(
+                        "the topology's {what} for element {} repeat one",
+                        n + 1
+                    ));
+                }
+            }
+        }
+        for (n, (outer, all)) in self.outer_edges.iter().zip(&self.face_edges).enumerate() {
+            if !outer.windows(2).all(|w| w[0] < w[1]) {
+                return Err(format!("Face{}'s outer edges aren't sorted", n + 1));
+            }
+            let mut all = all.clone();
+            all.sort_unstable();
+            if let Some(e) = outer.iter().find(|e| all.binary_search(e).is_err()) {
+                return Err(format!(
+                    "Face{}'s outer edges name Edge{e}, which isn't one of its edges",
+                    n + 1
                 ));
             }
         }

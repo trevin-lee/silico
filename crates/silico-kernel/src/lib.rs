@@ -139,6 +139,19 @@ mod ffi {
         faces: Vec<u32>,
     }
 
+    /// How a shape's elements bound each other (`silico_protocol::Topology`), flattened: for
+    /// each face in order, its edges (`face_edge_counts` of them) and its outer wire's;
+    /// for each edge, its vertices. Each element numbered from 1 as the shape numbers it
+    /// (0 if it somehow isn't one of the shape's).
+    struct TopologyFacts {
+        face_edges: Vec<u32>,
+        face_edge_counts: Vec<u32>,
+        outer_edges: Vec<u32>,
+        outer_edge_counts: Vec<u32>,
+        edge_vertices: Vec<u32>,
+        edge_vertex_counts: Vec<u32>,
+    }
+
     /// How many distinct faces, edges, vertices, and solids a shape has.
     struct Counts {
         faces: u32,
@@ -223,6 +236,7 @@ mod ffi {
             warnings: &mut Vec<String>,
         ) -> Result<UniquePtr<Shape>>;
         fn count_elements(shape: &Shape) -> Result<Counts>;
+        fn topology(shape: &Shape) -> Result<TopologyFacts>;
         fn rough_amounts(shape: &Shape) -> Result<Amounts>;
         fn measure_as_freecad(shape: &Shape) -> Result<FreecadMeasures>;
         fn is_valid_where_changed(input: &Shape, result: &Shape) -> Result<bool>;
@@ -271,7 +285,7 @@ mod ffi {
 pub use silico_protocol::{
     Axis, BooleanOp, ChamferSize, ElementCounts, ElementFate, ElementKind, ElementRef, Ends,
     History, InputHistory, LENGTH_TOLERANCE, MAX_LENGTH, Mesh, Primitive, Profile, Refusal,
-    Reported, ShapeSummary,
+    Reported, ShapeSummary, Topology,
 };
 use silico_protocol::{BrepDefect, FailureKind, HistoryDefect, Operation, Returned, Role};
 
@@ -945,7 +959,45 @@ fn history_of(
         .iter()
         .map(|input| counts(input))
         .collect::<Result<Vec<_>, _>>()?;
-    assemble_history(&input_counts, counts(result)?, entries)
+    let result_counts = counts(result)?;
+    let mut history = assemble_history(&input_counts, result_counts, entries)?;
+    history.topology = topology(&ffi::topology(result)?, result_counts)?;
+    Ok(history)
+}
+
+/// The result's topology, from the bridge's flattened facts, checked against its counts.
+fn topology(facts: &ffi::TopologyFacts, counts: ElementCounts) -> Result<Topology, KernelError> {
+    let bad = || {
+        KernelError::new(Refusal::MalformedHistory {
+            defect: HistoryDefect::BadTopology,
+        })
+    };
+    // Each element's list, `sizes` long, from `all`, every element used.
+    let split = |all: &[u32], sizes: &[u32]| -> Result<Vec<Vec<u32>>, KernelError> {
+        let mut rest = all;
+        let mut lists = Vec::with_capacity(sizes.len());
+        for &n in sizes {
+            let (list, after) = rest.split_at_checked(n as usize).ok_or_else(bad)?;
+            lists.push(list.to_vec());
+            rest = after;
+        }
+        if rest.is_empty() {
+            Ok(lists)
+        } else {
+            Err(bad())
+        }
+    };
+    let mut outer_edges = split(&facts.outer_edges, &facts.outer_edge_counts)?;
+    for list in &mut outer_edges {
+        list.sort_unstable();
+    }
+    let topology = Topology {
+        face_edges: split(&facts.face_edges, &facts.face_edge_counts)?,
+        outer_edges,
+        edge_vertices: split(&facts.edge_vertices, &facts.edge_vertex_counts)?,
+    };
+    topology.validate(counts).map_err(|_| bad())?;
+    Ok(topology)
 }
 
 /// The history as Silico keeps it, from the bridge's facts: each input element's fate,
@@ -969,6 +1021,7 @@ fn assemble_history(
             .collect(),
         result,
         ends: Ends::default(),
+        topology: Topology::default(),
     };
     let malformed = |defect| KernelError::new(Refusal::MalformedHistory { defect });
     for e in entries {
