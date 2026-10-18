@@ -662,8 +662,9 @@ fn a_redundant_rectangle_kept_through_an_angle_along_a_long_side_is_exact_and_it
     // Decision 5 measures the dropped vertical as an angle, 2.3e-11 rad, and keeps it. But
     // the solution wasn't its own: diagnosed again from it, PlaneGCS dropped the bottom
     // side's horizontal instead, and the corner moved 45 nm on every load (M3.4). Now a
-    // solve that dropped constraints is solved again from its solution until it doesn't
-    // move (Translation::solve), and the corner lands exactly.
+    // solve that dropped constraints is solved as a load solves it, from its solution as
+    // the file holds it, until a load doesn't move it (Translation::solve), and the corner
+    // lands exactly.
     let mut w = worker();
     let r = redundant_rectangle_case(
         0.3794470496640547,
@@ -691,8 +692,8 @@ fn a_flat_redundant_rectangle_far_out_that_needs_two_solves_from_its_solution_is
     // an equal length that fixes the corner's x only through a square root, leaving it
     // 0.67 nm off on an 8 µm side. Solved again from that solution, PlaneGCS called eight
     // constraints conflicting but moved the corner exactly; solved from there, the sketch
-    // solves and doesn't move. One solve again wasn't enough; now it's solved again until
-    // it doesn't move.
+    // solves and doesn't move. One solve again wasn't enough; now it's loaded until a load
+    // doesn't move it.
     let mut w = worker();
     let r = redundant_rectangle_case(
         4.777601430413569,

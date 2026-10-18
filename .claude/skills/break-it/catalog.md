@@ -53,6 +53,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Diagnoses on shared points against FreeCAD's coincident ends, at extreme redimensioning (a square template set to 100,000 × 0.01): FreeCAD finds one redundancy, Silico six conflicts; run the oracle on both
 - Values written back rounded whose measure depends on the value they replace (a reference angle measured on its stored value's turn, `stored + remainder(measured − stored, 2π)`): near a rounding boundary each save flips the last digit; bias directions to within 1e-13 of a half unit, store them a turn away, and save three times
 - Solutions checked by the solver's values while the file stores what those derive from (an arc's radius value against its points, which the gate re-measures): dimensioned to exactly the limit, a quarter of solves save points an ulp past it, and the file is refused when read
+- A save's answer against its load's, whole: solve, write through the file, read, solve again, and compare Ok-ness, bits, and the redundant constraints named; an answer's outcome depends on where it was diagnosed, not only its values (a solution Ok from the drawing that PlaneGCS calls conflicting from itself), and a "solve again from the solution" that starts from the solver's values rather than what a load derives from the file (an arc's radius and angles from its points) isn't a load
+- Redundancies that agree held by an angle at micrometre scale: the solver's absolute convergence on lengths (1e-10) is a relative 1e-8 on a 1.6 µm side, past a scale-free angle tolerance
 
 ## Features
 
