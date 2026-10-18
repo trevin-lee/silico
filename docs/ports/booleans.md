@@ -65,7 +65,7 @@ OCCT sometimes returns a valid solid that's simply wrong, without a warning that
 | A torus (R 1.5, r 0.5) and a torus (R 2, r 1) at (−0.3568, −0.4123, −1.4127) | treated as apart: fuse 46.881, common empty | common 0.1122 (Monte Carlo) |
 | A torus (R 2, r 1) and a 2 mm cube at (0.999999, 0, 0) | treated as apart: fuse 47.478 | as at (1, 0, 0), within a millionth |
 
-OCCT also returns an invalid fuse, which Silico refuses (and FreeCAD's `Shape.fuse` returns as it is, invalid), for a cylinder touching a box's face along a line from outside: one shell, its volume A − B, or below zero. Five of SolidCraft's random boolean identity cases (its kernel's fuzz generator, seeds 424, 753, 768, 773, 817), run through Silico's worker and FreeCAD 1.1.3 alike (2026-10-18):
+OCCT also returns an invalid fuse, which Silico refuses (and FreeCAD's `Shape.fuse` returns as it is, invalid), for a cylinder touching a box's face along a line from outside: one shell, its volume A − B, or below zero. Five of SolidCraft's random boolean identity cases (its kernel's fuzz generator, seeds 424, 753, 768, 773, 817), run through Silico and FreeCAD 1.1.3 alike (2026-10-18). A cylinder along x is a rectangle revolved about its axis, as SolidCraft's generator and Silico's test build it: its seam isn't where `BRepPrimAPI_MakeCylinder` puts it, and the third case depends on that (built by `Part.makeCylinder` along x, OCCT fuses it right, two solids of 15687.776); the first two fail either way. A report to OCCT should give the revolve.
 
 | Inputs | OCCT's fuse (both) | Silico | Right |
 |---|---|---|---|
