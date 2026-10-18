@@ -18,6 +18,7 @@ pub use silico_protocol::{
 use silico_protocol::{DebugOp, Failure, LENGTH_TOLERANCE, Reply};
 
 use crate::pool::Pending;
+use crate::references::EdgeNames;
 use crate::worker::Worker;
 use crate::{Error, ErrorCode};
 
@@ -93,6 +94,8 @@ pub struct KernelRequest<T> {
     /// its refusals leave the worker running.
     decide: Box<dyn FnOnce(&'static str, T) -> Result<T, Error> + Send>,
     timeout: Option<Duration>,
+    /// The document's names for the edges a fillet or chamfer lists, for its errors.
+    names: Option<EdgeNames>,
 }
 
 impl<T> KernelRequest<T> {
@@ -107,6 +110,7 @@ impl<T> KernelRequest<T> {
             read: Box::new(read),
             decide: Box::new(|_, value| Ok(value)),
             timeout: None,
+            names: None,
         }
     }
 
@@ -125,6 +129,15 @@ impl<T> KernelRequest<T> {
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
+        self
+    }
+
+    /// The same request, its errors naming the edges it lists as `names` says (a
+    /// document's fillet or chamfer, whose edges are names) rather than by their numbers.
+    /// A fake kernel's errors are its own, and name none.
+    #[must_use]
+    pub(crate) fn with_edge_names(mut self, names: EdgeNames) -> Self {
+        self.names = Some(names);
         self
     }
 
@@ -154,7 +167,12 @@ impl<T> KernelRequest<T> {
     /// reply out of turn.
     pub(crate) fn run_on(self, worker: &mut Worker, generation: Generation) -> Result<T, Error> {
         let name = self.op.name();
-        let reply = worker.call(generation, self.op, self.timeout.unwrap_or(DEFAULT_TIMEOUT))?;
+        let reply = worker.call_with_edge_names(
+            generation,
+            self.op,
+            self.timeout.unwrap_or(DEFAULT_TIMEOUT),
+            self.names.as_ref(),
+        )?;
         let value = (self.read)(name, reply).inspect_err(|_| worker.shut_down())?;
         (self.decide)(name, value)
     }

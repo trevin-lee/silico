@@ -158,7 +158,7 @@ fn main() -> ExitCode {
 fn check(engines: &mut Engines, file: &Path, json: bool) -> Ended {
     let failed = |error: Error| {
         if json {
-            line(serde_json::json!({"file": shown(file), "ok": false, "error": error}));
+            line(serde_json::json!({"file": named(file), "ok": false, "error": error}));
         } else {
             say!("{}: {error}", shown(file));
         }
@@ -181,7 +181,7 @@ fn check(engines: &mut Engines, file: &Path, json: bool) -> Ended {
     };
     if json {
         line(serde_json::json!({
-            "file": shown(file),
+            "file": named(file),
             "ok": problems.is_empty(),
             "problems": problems.errors(),
             "total": problems.total(),
@@ -363,9 +363,25 @@ fn textconv(file: &Path) -> Ended {
     }
 }
 
-/// A file's name as it's shown (its bytes, any that aren't UTF-8 replaced).
-fn shown(file: &Path) -> String {
+/// A file's name (its bytes, any that aren't UTF-8 replaced), as a JSON line holds it: the
+/// name itself, which JSON escapes only as far as its own controls go (U+0000 to U+001F, a
+/// quote, a backslash); a program reads it, and a person reading the line in a terminal
+/// sees the rest as it is.
+fn named(file: &Path) -> String {
     file.display().to_string()
+}
+
+/// A file's name as a terminal is shown it: as it is, or, if it holds a character a
+/// terminal would act on or draw as nothing (an escape sequence in a cloned repository's
+/// file name), quoted with those escaped, as an outline quotes a document's text.
+fn shown(file: &Path) -> String {
+    let name = named(file);
+    let quoted = silico_core::command::quoted(&name);
+    if quoted.len() == name.len() + 2 {
+        name
+    } else {
+        quoted
+    }
 }
 
 fn line(value: serde_json::Value) {

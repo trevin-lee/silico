@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use silico_core::document::FeatureId;
 use silico_core::kernel::{ElementKind, ElementRef};
-use silico_core::naming::{ElementMap, Name, OpCode, freecad};
+use silico_core::naming::{ElementMap, Name, OpCode, TypeWord, freecad};
 use silico_kernel::{
     BooleanOp, Built, ChamferSize, Primitive, Shape, boolean, chamfer, fillet, make, translate,
 };
@@ -87,8 +87,8 @@ fn written(map: &ElementMap) -> Vec<String> {
 /// (`bbbbbbbb`), by the feature `rrrrrrrr`.
 fn named(operation: OpCode, built: &Built) -> ElementMap {
     built.history.validate(2).unwrap();
-    let base = ElementMap::by_number(id("aaaaaaaa"), BOX);
-    let tool = ElementMap::by_number(id("bbbbbbbb"), BOX);
+    let base = ElementMap::by_number(id("aaaaaaaa"), OpCode::Fuse, BOX);
+    let tool = ElementMap::by_number(id("bbbbbbbb"), OpCode::Fuse, BOX);
     ElementMap::operation(id("rrrrrrrr"), operation, &[&base, &tool], &built.history)
 }
 
@@ -138,8 +138,13 @@ fn positioned(map: &ElementMap) -> Vec<(ElementRef, String, Vec<Place>)> {
             let places: Vec<Place> = std::iter::once(first)
                 .chain(more)
                 .filter_map(|s| {
-                    s.place
-                        .map(|p| (p.rank.get(), p.size.get(), s.position.0.get()))
+                    s.place.map(|p| {
+                        (
+                            p.rank.get(),
+                            p.size.get(),
+                            s.position.0.map_or(0, |p| p.get()),
+                        )
+                    })
                 })
                 .collect();
             (!places.is_empty()).then(|| (element, names[0].to_string(), places))
@@ -179,14 +184,14 @@ fn a_fuse_writes_positions_only_on_the_pieces_of_its_split_edges() {
         })
         .collect();
     let expected: Vec<(String, Vec<u32>)> = [
-        "aaaaaaaa.Edge10",
-        "aaaaaaaa.Edge6",
-        "aaaaaaaa.Edge8",
-        "aaaaaaaa.Edge9",
-        "bbbbbbbb.Edge11",
-        "bbbbbbbb.Edge12",
-        "bbbbbbbb.Edge2",
-        "bbbbbbbb.Edge4",
+        "aaaaaaaa.fuse.Edge10",
+        "aaaaaaaa.fuse.Edge6",
+        "aaaaaaaa.fuse.Edge8",
+        "aaaaaaaa.fuse.Edge9",
+        "bbbbbbbb.fuse.Edge11",
+        "bbbbbbbb.fuse.Edge12",
+        "bbbbbbbb.fuse.Edge2",
+        "bbbbbbbb.fuse.Edge4",
     ]
     .iter()
     .map(|e| (e.to_string(), vec![1, 2]))
@@ -222,8 +227,12 @@ fn a_commons_first_face_is_freecads() {
         })
         .unwrap();
     assert_eq!(freecad::text(&face1), "Face3;:M;CMN");
-    // In Silico's form: the common modified cube 1's Face3.
-    assert_eq!(face1.to_string(), "aaaaaaaa.Face3");
+    // In Silico's form: what the common keeps of cube 1's Face3 lies inside cube 2, a piece,
+    // the common's own (N8), so a common made a fuse takes no reference to it.
+    assert_eq!(
+        face1.to_string(),
+        "rrrrrrrr.common.Face(I aaaaaaaa.fuse.Face3)"
+    );
 }
 
 #[test]
@@ -254,7 +263,7 @@ fn dressed(chamfered: bool) -> Built {
 
 fn named_dressing(operation: OpCode, built: &Built) -> ElementMap {
     built.history.validate(1).unwrap();
-    let cube = ElementMap::by_number(id("aaaaaaaa"), BOX);
+    let cube = ElementMap::by_number(id("aaaaaaaa"), OpCode::Fuse, BOX);
     ElementMap::operation(id("rrrrrrrr"), operation, &[&cube], &built.history)
 }
 
@@ -282,8 +291,8 @@ fn a_fillets_names_are_freecads() {
 #[test]
 fn names_say_how_each_element_came_about_in_silicos_form() {
     // The cut's rim vertex where cube 1's Edge10 meets cube 2's Edge2: FreeCAD's
-    // `Edge10;:G(Edge2;K-1);CUT`, Silico's `rrrrrrrr.Vertex(G aaaaaaaa.Edge10, G
-    // bbbbbbbb.Edge2)`.
+    // `Edge10;:G(Edge2;K-1);CUT`, Silico's `rrrrrrrr.cut.Vertex(G aaaaaaaa.fuse.Edge10, G
+    // bbbbbbbb.fuse.Edge2)` (the cubes' maps are made up by number, as a fuse's).
     let (a, b) = two_cubes();
     let cut = boolean(BooleanOp::Cut, &a, &b).unwrap();
     let map = named(OpCode::Cut, &cut);
@@ -294,10 +303,10 @@ fn names_say_how_each_element_came_about_in_silicos_form() {
     let vertex = &by_text["Edge10;:G(Edge2;K-1);CUT"];
     assert_eq!(
         vertex.to_string(),
-        "rrrrrrrr.Vertex(G aaaaaaaa.Edge10, G bbbbbbbb.Edge2)"
+        "rrrrrrrr.cut.Vertex(G aaaaaaaa.fuse.Edge10, G bbbbbbbb.fuse.Edge2)"
     );
     // A kept element keeps its name exactly (N2).
-    assert_eq!(by_text["Edge1"].to_string(), "aaaaaaaa.Edge1");
+    assert_eq!(by_text["Edge1"].to_string(), "aaaaaaaa.fuse.Edge1");
 }
 
 #[test]
@@ -415,7 +424,7 @@ fn a_primitives_elements_are_named_by_their_numbers() {
         // The core's counts for the primitive are OCCT's.
         let counts = silico_core::kernel::primitive_counts(&primitive);
         assert_eq!(counts, r, "{primitive:?}");
-        let map = ElementMap::by_number(feature.clone(), counts);
+        let map = ElementMap::by_number(feature.clone(), OpCode::Fuse, counts);
         assert_eq!(map.iter().count(), count as usize, "{primitive:?}");
         let mut names = std::collections::BTreeSet::new();
         for (kind, n) in [
@@ -427,7 +436,7 @@ fn a_primitives_elements_are_named_by_their_numbers() {
                 let element = ElementRef { kind, index };
                 let name = map.name(element).unwrap();
                 assert_eq!(map.element(&name), Some(element));
-                assert_eq!(name.to_string(), format!("aaaaaaaa.{element}"));
+                assert_eq!(name.to_string(), format!("aaaaaaaa.fuse.{element}"));
                 names.insert(name);
             }
         }
@@ -440,10 +449,10 @@ fn a_primitives_elements_are_named_by_their_numbers() {
         assert!(map.name(past).is_none());
     }
     // Another feature's element isn't a map's.
-    let map = ElementMap::by_number(feature, BOX);
+    let map = ElementMap::by_number(feature, OpCode::Fuse, BOX);
     let other = Name::Element {
         feature: id("bbbbbbbb"),
-        primitive: None,
+        made: TypeWord::Operation(OpCode::Fuse),
         element: ElementRef {
             kind: ElementKind::Face,
             index: 1,
@@ -475,9 +484,12 @@ fn a_recomputed_holes_names_say_how_each_element_came_about() {
     };
     let hole = model.element_map(&id("m3tq8v0z")).unwrap();
     let all: Vec<String> = hole.iter().map(|(_, names)| names[0].to_string()).collect();
-    // The hole's wall: the pin's side face, modified by the cut (docs/ports/history.md).
+    // The hole's wall: the pin's side face, modified by the cut (docs/ports/history.md),
+    // kept inside the block: a piece, the cut's own (N8), FreeCAD's `Face1;:M;CUT`.
+    let wall = "m3tq8v0z.cut.Face(I a91cw0de.cylinder.Face1)";
+    assert!(all.contains(&wall.to_owned()), "{all:#?}");
     assert!(
-        all.contains(&"a91cw0de.cylinder.Face1".to_owned()),
+        !all.contains(&"a91cw0de.cylinder.Face1".to_owned()),
         "{all:#?}"
     );
     // Its two rims: edges the cut generated from the block's top (Face6) or bottom (Face5)
@@ -612,8 +624,8 @@ fn a_later_holes_rims_keep_their_names_whatever_holes_come_before() {
         rims(&model, "c0000009", "y0000009")
     };
     let expected = [
-        "c0000009.Edge(G pppppppp.box.Face5, G y0000009.cylinder.Face1)",
-        "c0000009.Edge(G pppppppp.box.Face6, G y0000009.cylinder.Face1)",
+        "c0000009.cut.Edge(G pppppppp.box.Face5, G y0000009.cylinder.Face1)",
+        "c0000009.cut.Edge(G pppppppp.box.Face6, G y0000009.cylinder.Face1)",
     ];
     for earlier in [
         vec![],
@@ -631,7 +643,7 @@ fn a_later_holes_rims_keep_their_names_whatever_holes_come_before() {
 #[test]
 fn a_face_split_by_a_cut_keeps_its_pieces_apart() {
     // A slot (2 wide, 1 deep) across the plate's top splits the top face in two: each piece
-    // keeps its level, ranked by OCCT's order among the pieces (`s0000001.Face(M1/2
+    // keeps its level, ranked by OCCT's order among the pieces (`s0000001.cut.Face(M1/2
     // pppppppp.box.Face6)`, `...(M2/2 ...)`), so neither is taken for the face as it was
     // (`pppppppp.box.Face6`, the name of a face only modified, as its sole result): a reference
     // to the top face finds neither piece, and fails, rather than following one. Every
@@ -658,7 +670,7 @@ fn a_face_split_by_a_cut_keeps_its_pieces_apart() {
         .collect();
     assert_eq!(pieces.len(), 2, "{faces:#?}");
     assert!(
-        pieces.contains(&&"s0000001.Face(M1/2 pppppppp.box.Face6)".to_owned()),
+        pieces.contains(&&"s0000001.cut.Face(M1/2 pppppppp.box.Face6)".to_owned()),
         "{faces:#?}"
     );
     assert!(
@@ -666,7 +678,7 @@ fn a_face_split_by_a_cut_keeps_its_pieces_apart() {
         "{faces:#?}"
     );
     assert!(
-        pieces.contains(&&"s0000001.Face(M2/2 pppppppp.box.Face6)".to_owned()),
+        pieces.contains(&&"s0000001.cut.Face(M2/2 pppppppp.box.Face6)".to_owned()),
         "{faces:#?}"
     );
     // One name for each element, and none twice.

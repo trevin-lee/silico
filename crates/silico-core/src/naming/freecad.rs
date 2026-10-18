@@ -29,13 +29,21 @@ fn write(name: &Name, out: &mut String) {
             ..
         } => {
             write(&first.name, out);
+            // Kept whole inside the other operand: FreeCAD's `mapSubElement` writes the
+            // source's name and no op code.
+            let Some(position) = first.position.0 else {
+                return;
+            };
             // Modified, generated, or (sources disagreeing) both, with the first's position.
             out.push_str(";:");
-            if more.iter().any(|o| o.relation != first.relation) {
+            if more
+                .iter()
+                .any(|o| freecads(o.relation) != freecads(first.relation))
+            {
                 out.push_str("MG");
-                out.push_str(&count_text(first.position.0));
+                out.push_str(&count_text(position));
             } else {
-                out.push_str(&relation_text(first.relation, first.position.0));
+                out.push_str(&relation_text(freecads(first.relation), position));
             }
             if !more.is_empty() {
                 out.push('(');
@@ -46,9 +54,9 @@ fn write(name: &Name, out: &mut String) {
                     write(&other.name, out);
                     // FreeCAD's signed position: generated negative; left out for the first
                     // modified.
-                    let position = i64::from(other.position.0.get());
-                    let signed = match other.relation {
-                        Relation::Modified => position,
+                    let position = other.position.0.map_or(1, |p| i64::from(p.get()));
+                    let signed = match freecads(other.relation) {
+                        Relation::Modified | Relation::Inside => position,
                         Relation::Generated => -position,
                     };
                     if signed != 1 {
@@ -104,6 +112,14 @@ fn write(name: &Name, out: &mut String) {
             write(name, out);
             out.push_str(&format!(";D{:x}", ordinal.get()));
         }
+    }
+}
+
+/// FreeCAD's relation for a source: what lies inside the other operand is modified (`;:M`).
+fn freecads(relation: Relation) -> Relation {
+    match relation {
+        Relation::Inside => Relation::Modified,
+        relation => relation,
     }
 }
 

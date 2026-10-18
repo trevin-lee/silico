@@ -34,7 +34,7 @@
       "name": "Round",
       "base": "cccccccc",
       "edges": [
-        "cccccccc.Edge(U cccccccc.Face(G aaaaaaaa.box.Edge7), aaaaaaaa.box.Face2)"
+        "cccccccc.chamfer.Edge(U cccccccc.chamfer.Face(G aaaaaaaa.box.Edge7), aaaaaaaa.box.Face2)"
       ],
       "radius": 0.5,
       "note": "An edge of Edge7's chamfer, FreeCAD's testPartDesignTNPChamfer. The box's vertical edges are alike, so its measures can't tell this edge from its twins: silico-kernel's tests/references.rs holds which edge it is",

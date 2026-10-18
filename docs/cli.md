@@ -9,7 +9,7 @@ Each command is a thin client of the core's commands (`silico_core::command`), w
 | `silico show FILE` | The document's outline: one line per feature, with its values and fingerprint, then its note, for a sketch its points, curves, and constraints, a line each as the file writes them, and for a fillet or chamfer its edges, a line each; then the bodies. Needs no kernel. |
 | `silico textconv FILE` | Git's text conversion: the outline, if the file reads as a document; otherwise the file as it is (conflict markers, a half-made edit), so `git diff` still shows it. |
 
-`--` ends the options, so a file can be named like one.
+`--` ends the options, so a file can be named like one. A file's name is shown as it is, unless it holds a character a terminal would act on or draw as nothing (a control, an invisible character, a space but the plain one), a quote, or a backslash: then it's shown quoted, with those escaped as an outline escapes a document's text (`"bad\u{1b}.silico"`). A JSON line holds the name itself.
 
 **Exit codes:**
 - 0: nothing wrong.

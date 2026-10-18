@@ -28,6 +28,7 @@ use silico_protocol::{
     Request, RequestId, Response, TraceId, WORKER_FD, WORKER_FD_ENV, decode, write_message,
 };
 
+use crate::references::EdgeNames;
 use crate::{Error, ErrorCode};
 
 /// How many of a worker's last log lines a crash report carries.
@@ -380,6 +381,18 @@ impl Worker {
         op: Op,
         timeout: Duration,
     ) -> Result<Reply, Error> {
+        self.call_with_edge_names(generation, op, timeout, None)
+    }
+
+    /// [`call`](Self::call), a refusal's edges named in its error as `names` says, when it
+    /// says (a document's fillet or chamfer, whose edges are its names).
+    pub(crate) fn call_with_edge_names(
+        &mut self,
+        generation: Generation,
+        op: Op,
+        timeout: Duration,
+        names: Option<&EdgeNames>,
+    ) -> Result<Reply, Error> {
         let name = op.name();
         // The edges a refusal may name: those the request lists.
         let listed = match &op {
@@ -473,7 +486,9 @@ impl Worker {
                     // Checked before it's described, so a refusal the request can't explain
                     // (a broken worker's) costs no more than the request does.
                     Err(failure) => match refusal_fits(&failure.refusal, listed.as_deref()) {
-                        Ok(()) => Err(failure_error_from(self.kind, name, failure)),
+                        Ok(()) => Err(failure_error_with_edge_names(
+                            self.kind, name, failure, names,
+                        )),
                         Err(misfit) => Err(self.stop(
                             Error::new(
                                 ErrorCode::ProtocolError,
@@ -1072,16 +1087,35 @@ fn edges_fit(named: &[u32], listed: Option<&[u32]>) -> Result<(), String> {
 }
 
 /// A worker's refusal or failure, as a structured error. The core names the elements at
-/// fault (as FreeCAD does, `Edge3`, until a document's names arrive) and has the refusal
-/// described with those names (`Refusal::describe`). A kernel failure always suggests
-/// something.
+/// fault (as FreeCAD does, `Edge3`, where no document names them: `references::EdgeNames`) and has
+/// the refusal described with those names (`Refusal::describe`). A kernel failure always
+/// suggests something.
 pub(crate) fn failure_error(op: &str, failure: Failure) -> Error {
-    failure_error_from(WorkerKind::Kernel, op, failure)
+    failure_error_with_edge_names(WorkerKind::Kernel, op, failure, None)
 }
 
-/// [`failure_error`] for a worker of the given kind.
-pub(crate) fn failure_error_from(kind: WorkerKind, op: &str, failure: Failure) -> Error {
-    let name = |element: ElementRef| element.to_string();
+/// [`failure_error`] for a worker of the given kind, the edges `names` names (if it's
+/// given) named as the document does: each by its place in `edges` in the words, by its
+/// name among the elements, and the parameter that place, if every edge at fault has one.
+fn failure_error_with_edge_names(
+    kind: WorkerKind,
+    op: &str,
+    failure: Failure,
+    names: Option<&EdgeNames>,
+) -> Error {
+    let named = |element: ElementRef| match (element.kind, names) {
+        (silico_protocol::ElementKind::Edge, Some(names)) => names.get(element.index),
+        _ => None,
+    };
+    let name = |element: ElementRef| match named(element) {
+        Some((position, _)) => format!("edges.{position}"),
+        None => element.to_string(),
+    };
+    let element_name = |element: ElementRef| match named(element) {
+        // As written, cut short as a broken reference's is (`references::resolve`).
+        Some((_, written)) => crate::references::cut_short(written),
+        None => element.to_string(),
+    };
     let described = failure.refusal.describe(failure.cause.as_deref(), &name);
     // Why it failed: OCCT's words where it threw; otherwise the refusal's.
     let why = failure
@@ -1128,10 +1162,22 @@ pub(crate) fn failure_error_from(kind: WorkerKind, op: &str, failure: Failure) -
             SILICO_BUG,
         ),
     };
+    let elements = failure.refusal.elements();
+    // The one place in `edges` every edge at fault is at, if there's one.
+    let places: std::collections::BTreeSet<usize> = elements
+        .iter()
+        .map(|&element| named(element).map(|(position, _)| position))
+        .collect::<Option<_>>()
+        .unwrap_or_default();
+    let parameter = match places.first() {
+        Some(position) if places.len() == 1 => Some(format!("edges.{position}")),
+        Some(_) => Some("edges".to_owned()),
+        None => failure.refusal.parameter().map(str::to_owned),
+    };
     let error = error
-        .with_elements(failure.refusal.elements().into_iter().map(name))
+        .with_elements(elements.into_iter().map(element_name))
         .with_elements_total(failure.refusal.elements_total());
-    let error = match failure.refusal.parameter() {
+    let error = match parameter {
         Some(parameter) => error.with_parameter(parameter),
         None => error,
     };
@@ -1238,10 +1284,11 @@ mod tests {
     use silico_protocol::Failure;
 
     use super::{
-        FAULTS, KillOnDrop, MAX_LOG_LINE, STDERR_TAIL_LINES, crash_advice, describe_exit,
-        failure_error, forward_logs, signal_name,
+        FAULTS, KillOnDrop, MAX_LOG_LINE, STDERR_TAIL_LINES, WorkerKind, crash_advice,
+        describe_exit, failure_error, failure_error_with_edge_names, forward_logs, signal_name,
     };
     use crate::ErrorCode;
+    use crate::references::EdgeNames;
 
     #[test]
     fn a_sketch_workers_crash_advice_names_it_and_its_solver() {
@@ -1497,6 +1544,92 @@ mod tests {
         assert!(fits(&failed(vec![2, 2]), Some(&[2])).is_err());
         assert!(fits(&failed(vec![3]), Some(&[2])).is_err());
         assert!(fits(&failed(vec![2]), None).is_err());
+    }
+
+    #[test]
+    fn a_documents_edges_are_named_by_their_places_and_names_not_their_numbers() {
+        use silico_protocol::{DressingKind, Refusal};
+        let mut names = EdgeNames::default();
+        names.insert(3, 0, "k7f2qx3m.box.Edge1");
+        names.insert(7, 2, "k7f2qx3m.box.Edge5");
+        // Named twice: its first name, and first place, stand.
+        names.insert(7, 4, "k7f2qx3m.box.Edge9");
+        let failed = |edges: Vec<u32>| Failure {
+            refusal: Refusal::EdgesFailed {
+                dressing: DressingKind::Fillet,
+                edges,
+            },
+            cause: None,
+        };
+        let e = failure_error_with_edge_names(
+            WorkerKind::Kernel,
+            "Fillet",
+            failed(vec![3, 7]),
+            Some(&names),
+        );
+        assert_eq!(
+            (e.code(), e.elements(), e.parameter()),
+            (
+                ErrorCode::KernelFailed,
+                &[
+                    "k7f2qx3m.box.Edge1".to_owned(),
+                    "k7f2qx3m.box.Edge5".to_owned()
+                ][..],
+                Some("edges")
+            )
+        );
+        assert_eq!(e.cause(), Some("OCCT couldn't fillet edges.0 and edges.2"));
+        // One edge at fault: the parameter is its place.
+        let e = failure_error_with_edge_names(
+            WorkerKind::Kernel,
+            "Fillet",
+            failed(vec![7]),
+            Some(&names),
+        );
+        assert_eq!(
+            (e.elements(), e.parameter()),
+            (&["k7f2qx3m.box.Edge5".to_owned()][..], Some("edges.2"))
+        );
+        // An edge the document doesn't name (no request lists one, but a refusal is only
+        // checked to fit the request) keeps its number, and the parameter is the refusal's.
+        let e = failure_error_with_edge_names(
+            WorkerKind::Kernel,
+            "Fillet",
+            failed(vec![3, 9]),
+            Some(&names),
+        );
+        assert_eq!(
+            (e.elements(), e.parameter()),
+            (
+                &["k7f2qx3m.box.Edge1".to_owned(), "Edge9".to_owned()][..],
+                None
+            )
+        );
+        assert_eq!(e.cause(), Some("OCCT couldn't fillet edges.0 and Edge9"));
+        // Without names, numbers, as before a document's names.
+        let e =
+            failure_error_with_edge_names(WorkerKind::Kernel, "Fillet", failed(vec![3, 7]), None);
+        assert_eq!(
+            (e.elements(), e.parameter()),
+            (&["Edge3".to_owned(), "Edge7".to_owned()][..], None)
+        );
+        // A long name is cut short among the elements, as a broken reference's is; the
+        // words say only its place.
+        let long = format!(
+            "k7f2qx3m.fillet.Edge({})",
+            "G a91cw0de.cylinder.Face1, ".repeat(20)
+        );
+        let mut names = EdgeNames::default();
+        names.insert(3, 1, &long);
+        let e = failure_error_with_edge_names(
+            WorkerKind::Kernel,
+            "Fillet",
+            failed(vec![3]),
+            Some(&names),
+        );
+        assert_eq!(e.elements(), &[crate::references::cut_short(&long)][..]);
+        assert!(e.elements()[0].chars().count() < long.chars().count());
+        assert_eq!(e.cause(), Some("OCCT couldn't fillet edges.1"));
     }
 
     #[test]

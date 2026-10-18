@@ -4,7 +4,7 @@
 //! reference to an element can follow it through upstream edits.
 //!
 //! A [`Name`] is structured, not a string; it's written in Silico's compact form
-//! (`m3tq8v0z.Edge(G k7f2qx3m.box.Face6, G a91cw0de.cylinder.Face1)`), and [`freecad`]
+//! (`m3tq8v0z.cut.Edge(G k7f2qx3m.box.Face6, G a91cw0de.cylinder.Face1)`), and [`freecad`]
 //! renders FreeCAD's form for comparison with FreeCAD's names. An [`ElementMap`] holds a solid's names, built
 //! by [`ElementMap::primitive`], [`ElementMap::operation`], or kept through a move.
 
@@ -29,11 +29,13 @@ use crate::kernel::{BooleanOp, ElementCounts, ElementKind, ElementRef};
 /// this, and its result is kept on disk, so a result another scheme made, from the edges
 /// its names found then, is never taken for this one's (the review found a warm cache
 /// re-pointing a fillet after the cone's numbers changed).
-pub const NAMING_SCHEME: &[u8] = b"silico naming 2\n";
+pub const NAMING_SCHEME: &[u8] = b"silico naming 4\n";
 
-/// The operation that derived an element, as FreeCAD's op code names it (`FUS`, `CUT`, ...).
-/// It isn't written in Silico's form, where the feature that made the element says it, but
-/// it's part of FreeCAD's names, and of the order in which FreeCAD picks a name's sources.
+/// The operation that derived an element: written in Silico's form as the document's type
+/// (`cut`), as a primitive's element writes its type (N8, 2026-10-18), so a boolean whose
+/// type is changed under its ID names none of its old elements; and FreeCAD's op code
+/// (`CUT`), part of FreeCAD's names and of the order in which FreeCAD picks a name's
+/// sources.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OpCode {
     Fuse,
@@ -54,6 +56,42 @@ impl From<BooleanOp> for OpCode {
 }
 
 impl OpCode {
+    pub const ALL: [OpCode; 5] = [
+        OpCode::Fuse,
+        OpCode::Cut,
+        OpCode::Common,
+        OpCode::Fillet,
+        OpCode::Chamfer,
+    ];
+
+    /// The word a name writes, which is the type the document writes.
+    pub fn word(self) -> &'static str {
+        match self {
+            OpCode::Fuse => "fuse",
+            OpCode::Cut => "cut",
+            OpCode::Common => "common",
+            OpCode::Fillet => "fillet",
+            OpCode::Chamfer => "chamfer",
+        }
+    }
+
+    /// Whether the operation keeps what of input `input` lies outside its other operand
+    /// (its element, less a bite: a cut's base, a fuse's operands, a fillet's or chamfer's
+    /// input), rather than what lies inside it (a piece: a cut's tool, a common's operands).
+    /// The one place a name's side is decided, which its letter writes (N9): what's bitten
+    /// keeps its names, kept whole or modified one from one (N7), and is written `M` where
+    /// it's derived (a split's `M1/2`); every piece, kept whole or trimmed, is the feature's
+    /// own, written `I` (`c.cut.Face(I y.cylinder.Face1)`), so a cut made a common, or its
+    /// base and tool swapped, takes no reference to a piece for another. By the booleans'
+    /// definitions, a fixed table.
+    pub fn bites(self, input: usize) -> bool {
+        match self {
+            OpCode::Cut => input == 0,
+            OpCode::Common => false,
+            OpCode::Fuse | OpCode::Fillet | OpCode::Chamfer => true,
+        }
+    }
+
     /// FreeCAD's op code (`TopoShapeOpCode.h`).
     pub fn code(self) -> &'static str {
         match self {
@@ -108,11 +146,48 @@ impl PrimitiveKind {
     }
 }
 
+/// The type of the feature that made an element, as its name writes it after the feature
+/// (`box`, `cut`): the type the document writes. Read from a name's text, never from what
+/// the feature is now, so a feature whose type changed under its ID names none of its old
+/// elements (a primitive's, Trevin's, 2026-10-17; an operation's, N8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TypeWord {
+    Primitive(PrimitiveKind),
+    Operation(OpCode),
+}
+
+impl TypeWord {
+    /// Every type word, primitives first.
+    pub fn all() -> impl Iterator<Item = TypeWord> {
+        PrimitiveKind::ALL
+            .into_iter()
+            .map(TypeWord::Primitive)
+            .chain(OpCode::ALL.into_iter().map(TypeWord::Operation))
+    }
+
+    /// The word.
+    pub fn word(self) -> &'static str {
+        match self {
+            TypeWord::Primitive(kind) => kind.word(),
+            TypeWord::Operation(op) => op.word(),
+        }
+    }
+}
+
+impl fmt::Display for TypeWord {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.word())
+    }
+}
+
 /// How a source element became the element named: OCCT's `Modified` or `Generated`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Relation {
     Modified,
     Generated,
+    /// What of the source lies inside the other operand (a cut's tool, a common's
+    /// operands), kept whole or trimmed: the feature's own piece of it, `I`.
+    Inside,
 }
 
 /// One of the elements an element came from, and how; and, if other elements came about
@@ -126,8 +201,9 @@ pub struct Source {
     /// for reasons of its own (it reordered a hole's rims once the plate had another hole).
     pub place: Option<Place>,
     /// Where OCCT's list for the source had it, from 1, counting entries the result doesn't
-    /// have: FreeCAD writes it (`;:G2`), Silico only where `place` is. Not part of the name.
-    pub position: Raw,
+    /// have: FreeCAD writes it (`;:G2`), Silico only where `place` is. None for an element
+    /// kept whole inside the other operand, which no list holds. Not part of the name.
+    pub position: Raw<Option<NonZeroU32>>,
     pub name: Arc<Name>,
 }
 
@@ -142,29 +218,29 @@ pub struct Place {
 /// OCCT's position for a source, for FreeCAD's form of a name and nothing else: two names are
 /// the same name whatever positions OCCT gave, as their Silico form says.
 #[derive(Debug, Clone, Copy)]
-pub struct Raw(pub NonZeroU32);
+pub struct Raw<T = NonZeroU32>(pub T);
 
-impl PartialEq for Raw {
+impl<T> PartialEq for Raw<T> {
     fn eq(&self, _: &Self) -> bool {
         true
     }
 }
 
-impl Eq for Raw {}
+impl<T> Eq for Raw<T> {}
 
-impl PartialOrd for Raw {
+impl<T> PartialOrd for Raw<T> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for Raw {
+impl<T> Ord for Raw<T> {
     fn cmp(&self, _: &Self) -> std::cmp::Ordering {
         std::cmp::Ordering::Equal
     }
 }
 
-impl std::hash::Hash for Raw {
+impl<T> std::hash::Hash for Raw<T> {
     fn hash<H: std::hash::Hasher>(&self, _: &mut H) {}
 }
 
@@ -174,14 +250,14 @@ impl std::hash::Hash for Raw {
 /// source's only result is equal to its source's name (`Modified`).
 #[derive(Debug, Clone)]
 pub enum Name {
-    /// The element numbered so in what `feature` made: a primitive's own `Face3`, with the
-    /// kind of primitive it is (`k7f2qx3m.box.Face3`: Trevin's, 2026-10-17, so a primitive
+    /// The element numbered so in what `feature` made, with the type `feature` is: a
+    /// primitive's own `Face3` (`k7f2qx3m.box.Face3`: Trevin's, 2026-10-17, so a primitive
     /// whose type is changed under its ID names none of its old elements). Also, as
-    /// FreeCAD's unmapped names are, the last resort for an element nothing else names, with
-    /// no kind (`m3tq8v0z.Edge5`).
+    /// FreeCAD's unmapped names are, the last resort for an element nothing else names
+    /// (`m3tq8v0z.cut.Edge5`), unstable.
     Element {
         feature: FeatureId,
-        primitive: Option<PrimitiveKind>,
+        made: TypeWord,
         element: ElementRef,
     },
     /// An element `feature`'s operation made from its inputs' elements, as OCCT reported
@@ -195,8 +271,9 @@ pub enum Name {
         more: Vec<Source>,
     },
     /// An element modified from one element, `name`, as its only result (OCCT's first,
-    /// none other modified or generated of its kind), by one feature or by a run of them
-    /// (Trevin's decision, 2026-10-16): it is its source's own name, written and compared
+    /// none other modified or generated of its kind), by one feature or by a run of them,
+    /// each keeping what of it lies outside its other operand ([`OpCode::bites`]: Trevin's
+    /// decision, 2026-10-16, as N8 and N9 narrowed it; what lies inside is written `I`): it is its source's own name, written and compared
     /// as that name, so a plate's top face is `pppppppp.box.Face6` after any number of
     /// holes, and a hole's rim named from it doesn't change when an earlier hole is added,
     /// removed, or moved. Unique: such a step makes one element of one, and an element and what it
@@ -323,15 +400,15 @@ impl Ord for Name {
             (
                 Name::Element {
                     feature,
-                    primitive,
+                    made,
                     element,
                 },
                 Name::Element {
                     feature: f,
-                    primitive: p,
+                    made: m,
                     element: e,
                 },
-            ) => feature.cmp(f).then(primitive.cmp(p)).then(element.cmp(e)),
+            ) => feature.cmp(f).then(made.cmp(m)).then(element.cmp(e)),
             (
                 Name::Derived {
                     feature,
@@ -435,11 +512,11 @@ impl std::hash::Hash for Name {
         match name {
             Name::Element {
                 feature,
-                primitive,
+                made,
                 element,
             } => {
                 feature.hash(state);
-                primitive.hash(state);
+                made.hash(state);
                 element.hash(state);
             }
             Name::Derived {
@@ -515,6 +592,7 @@ fn relation_letter(relation: Relation) -> &'static str {
     match relation {
         Relation::Modified => "M",
         Relation::Generated => "G",
+        Relation::Inside => "I",
     }
 }
 
@@ -523,28 +601,24 @@ fn relation_text(relation: Relation, position: NonZeroU32) -> String {
     format!("{}{}", relation_letter(relation), count_text(position))
 }
 
-/// Silico's form (N1): the feature that made the element, its kind, and how it came about.
+/// Silico's form (N1): the feature that made the element, its type, the element's kind,
+/// and how it came about.
 impl fmt::Display for Name {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Name::Element {
                 feature,
-                primitive: Some(primitive),
+                made,
                 element,
-            } => write!(f, "{feature}.{}.{element}", primitive.word()),
-            Name::Element {
-                feature,
-                primitive: None,
-                element,
-            } => write!(f, "{feature}.{element}"),
+            } => write!(f, "{feature}.{made}.{element}"),
             Name::Derived {
                 feature,
+                operation,
                 kind,
                 first,
                 more,
-                ..
             } => {
-                write!(f, "{feature}.{}(", kind_word(*kind))?;
+                write!(f, "{feature}.{}.{}(", operation.word(), kind_word(*kind))?;
                 for (i, source) in std::iter::once(first).chain(more).enumerate() {
                     if i > 0 {
                         f.write_str(", ")?;
@@ -561,13 +635,14 @@ impl fmt::Display for Name {
             }
             Name::Upper {
                 feature,
+                operation,
                 kind,
                 upper,
                 more,
                 place,
                 ..
             } => {
-                write!(f, "{feature}.{}(U", kind_word(*kind))?;
+                write!(f, "{feature}.{}.{}(U", operation.word(), kind_word(*kind))?;
                 if let Some(place) = place {
                     write!(f, "{}/{}", place.rank, place.size)?;
                 }
@@ -579,12 +654,12 @@ impl fmt::Display for Name {
             }
             Name::Lower {
                 feature,
+                operation,
                 kind,
                 first,
                 more,
-                ..
             } => {
-                write!(f, "{feature}.{}(L ", kind_word(*kind))?;
+                write!(f, "{feature}.{}.{}(L ", operation.word(), kind_word(*kind))?;
                 for (i, lower) in std::iter::once(first).chain(more).enumerate() {
                     if i > 0 {
                         f.write_str(", ")?;
@@ -604,9 +679,10 @@ impl fmt::Display for Name {
 /// way. Every name names one element; every face, edge, and vertex has a name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ElementMap {
-    /// The feature that made the solid; any map names an element nothing else names by
-    /// its number, `feature.Face7`.
+    /// The feature that made the solid, and its type; any map names an element nothing
+    /// else names by its number, `feature.cut.Face7`.
     feature: FeatureId,
+    made: TypeWord,
     names: BTreeMap<ElementRef, Vec<Arc<Name>>>,
     elements: BTreeMap<Arc<Name>, ElementRef>,
     /// Its names that are unstable ([`ElementMap::is_unstable`]), decided when it was made:
@@ -624,6 +700,7 @@ impl ElementMap {
     pub fn primitive(feature: FeatureId, primitive: &crate::kernel::Primitive) -> Self {
         let mut map = ElementMap {
             feature,
+            made: TypeWord::Primitive(PrimitiveKind::of(primitive)),
             names: BTreeMap::new(),
             elements: BTreeMap::new(),
             unstable: BTreeSet::new(),
@@ -633,7 +710,7 @@ impl ElementMap {
                 let element = ElementRef { kind, index };
                 let name = Arc::new(Name::Element {
                     feature: map.feature.clone(),
-                    primitive: Some(PrimitiveKind::of(primitive)),
+                    made: map.made,
                     element: ElementRef {
                         kind,
                         index: number,
@@ -647,12 +724,13 @@ impl ElementMap {
     }
 
     /// A map of `counts` faces, edges, and vertices, each named by OCCT's number for it
-    /// (`k7f2qx3m.Face3`), as an operation names an element no history names: a solid made
-    /// up for a test, of any counts. A primitive's map is [`ElementMap::primitive`], its
-    /// names saying its type, numbered as in its fullest form.
-    pub fn by_number(feature: FeatureId, counts: ElementCounts) -> Self {
+    /// (`k7f2qx3m.cut.Face3`), as `operation` names an element no history names: a solid
+    /// made up for a test, of any counts. A primitive's map is [`ElementMap::primitive`],
+    /// numbered as in its fullest form.
+    pub fn by_number(feature: FeatureId, operation: OpCode, counts: ElementCounts) -> Self {
         let mut map = ElementMap {
             feature,
+            made: TypeWord::Operation(operation),
             names: BTreeMap::new(),
             elements: BTreeMap::new(),
             unstable: BTreeSet::new(),
@@ -671,6 +749,11 @@ impl ElementMap {
     /// The feature that made the solid.
     pub fn feature(&self) -> &FeatureId {
         &self.feature
+    }
+
+    /// The type of the feature that made the solid, as its names write it.
+    pub fn made(&self) -> TypeWord {
+        self.made
     }
 
     /// The element's own name (its first).
@@ -717,7 +800,7 @@ impl ElementMap {
     fn element_name(&self, element: ElementRef) -> Name {
         Name::Element {
             feature: self.feature.clone(),
-            primitive: None,
+            made: self.made,
             element,
         }
     }

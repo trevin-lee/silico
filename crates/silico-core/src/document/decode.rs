@@ -538,7 +538,7 @@ fn element_names(fields: &mut Fields, key: &str) -> Result<Vec<ElementName>, Err
                         &parameter,
                         item.at,
                         format!("{parameter} is empty"),
-                        "write the element's name, as Silico names it (feature.Kind(...))",
+                        "write the element's name, as Silico names it (feature.type.Kind(...))",
                     )
                 }),
                 _ => Err(wrong_kind(

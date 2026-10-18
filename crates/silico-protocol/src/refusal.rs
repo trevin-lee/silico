@@ -934,6 +934,24 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_booleans_advice_fits_its_operation() {
+        // The real kernel's tests reach a cut's and a common's (silico-kernel's
+        // tests/boolean.rs); a fuse of two solids OCCT loses isn't reproduced, so its
+        // words are held here.
+        let said = |op| {
+            Refusal::BooleanResultEmpty { op }
+                .describe(None, &|e| e.to_string())
+                .suggestion
+        };
+        let fuse = said(BooleanOp::Fuse).unwrap();
+        assert!(fuse.starts_with("OCCT lost both shapes"), "{fuse}");
+        let cut = said(BooleanOp::Cut).unwrap();
+        assert!(cut.contains("removes all of the base"), "{cut}");
+        let common = said(BooleanOp::Common).unwrap();
+        assert!(common.starts_with("OCCT found no overlap"), "{common}");
+    }
+
+    #[test]
     fn the_elements_at_fault_are_named_only_as_the_namer_names_them() {
         // The core names elements (later, as the document does): every name in the words
         // comes from the namer it gives, and every element at fault is named.

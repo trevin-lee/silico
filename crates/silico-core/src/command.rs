@@ -329,8 +329,9 @@ fn bodies(document: &Document) -> Vec<String> {
 }
 
 /// `text` in double quotes, its quotes, backslashes, and control and invisible characters
-/// escaped, so a name or note can't break the outline's lines or hide in them.
-fn quoted(text: &str) -> String {
+/// escaped, so a name or note can't break the outline's lines or hide in them; and a client
+/// printing other text (a file's name) can do the same.
+pub fn quoted(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
     out.push('"');
     for c in text.chars() {

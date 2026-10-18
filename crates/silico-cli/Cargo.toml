@@ -11,10 +11,12 @@ name = "silico"
 path = "src/main.rs"
 
 [dependencies]
-libc.workspace = true
 serde_json.workspace = true
 silico-core.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+libc.workspace = true
 
 [lints]
 workspace = true

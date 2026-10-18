@@ -26,6 +26,11 @@ tracing-subscriber.workspace = true
 # The in-memory kernel for tests.
 fake = []
 
+[[bench]]
+name = "plan"
+harness = false
+required-features = ["fake"]
+
 [dev-dependencies]
 cpu-time.workspace = true
 jsonschema.workspace = true

@@ -35,7 +35,7 @@
       "type": "string"
     },
     "ElementName": {
-      "description": "An element of an earlier feature's solid, by its name in Silico's form (feature.Kind(...)), never by its number.",
+      "description": "An element of an earlier feature's solid, by its name in Silico's form (feature.type.Kind(...)), never by its number.",
       "minLength": 1,
       "type": "string"
     },

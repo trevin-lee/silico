@@ -13,12 +13,7 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 [profile.ci]
 fail-fast = false
 test-threads = 15
-slow-timeout = { period = "30s", terminate-after = 4 }
-
-[[profile.ci.overrides]]
-filter = 'test(/stress|oracle/)'
-slow-timeout = { period = "60s", terminate-after = 10 }
-
+# The default profile's timeouts and overrides hold here too: nextest takes them from it.
 
 # The document reader's timed tests (named `..._promptly`) measure their own thread's CPU
 # time, so load doesn't fail them; they and its memory-heavy tests (named here: renaming
@@ -32,28 +27,15 @@ filter = 'package(silico-core) & test(/_promptly$|size_or_memory_limits|opens_ex
 test-group = 'document-heavy'
 slow-timeout = { period = "60s", terminate-after = 10 }
 
-[[profile.ci.overrides]]
-filter = 'package(silico-core) & test(/_promptly$|size_or_memory_limits|opens_exactly_when|exactly_the_size|exponent_past_i128|loosely_spelled|exactly_when_it_takes_more|exactly_when_they_take_more/)'
-test-group = 'document-heavy'
-slow-timeout = { period = "60s", terminate-after = 10 }
-
 # The fake kernel compared with the real one over 2,000 generated primitives: a minute
 # alone, longer on a loaded machine.
 [[profile.default.overrides]]
 filter = 'package(silico-kernel) & test(the_fake_answers_as_the_real_kernel_does_at_the_edges)'
 slow-timeout = { period = "60s", terminate-after = 10 }
 
-[[profile.ci.overrides]]
-filter = 'package(silico-kernel) & test(the_fake_answers_as_the_real_kernel_does_at_the_edges)'
-slow-timeout = { period = "60s", terminate-after = 10 }
-
 # A pool of the most workers (silico-kernel adversarial_worker): bounded by its CPU time
 # and, for a hang, by 9 minutes of its own; a loaded machine stretches its wall time.
 [[profile.default.overrides]]
-filter = 'package(silico-kernel) & test(=a_pool_of_the_most_workers_starts_and_stops_cleanly)'
-slow-timeout = { period = "60s", terminate-after = 10 }
-
-[[profile.ci.overrides]]
 filter = 'package(silico-kernel) & test(=a_pool_of_the_most_workers_starts_and_stops_cleanly)'
 slow-timeout = { period = "60s", terminate-after = 10 }
 
@@ -65,10 +47,6 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 filter = 'package(silico-kernel) & test(=dropping_the_pool_while_a_slot_replaces_its_dead_worker_stops_at_once)'
 slow-timeout = { period = "60s", terminate-after = 10 }
 
-[[profile.ci.overrides]]
-filter = 'package(silico-kernel) & test(=dropping_the_pool_while_a_slot_replaces_its_dead_worker_stops_at_once)'
-slow-timeout = { period = "60s", terminate-after = 10 }
-
 # A sketch no algorithm solves, at the most unknowns the worker takes (silico-sketch
 # adversarial_document): every algorithm tried in turn, 74 s to 206 s by the machine's load,
 # and given up to 900 s so it tests the answer, not the speed.
@@ -76,6 +54,3 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 filter = 'package(silico-sketch) & test(=an_impossible_chain_of_the_largest_size_fails_as_solve_failed_not_a_timeout)'
 slow-timeout = { period = "60s", terminate-after = 17 }
 
-[[profile.ci.overrides]]
-filter = 'package(silico-sketch) & test(=an_impossible_chain_of_the_largest_size_fails_as_solve_failed_not_a_timeout)'
-slow-timeout = { period = "60s", terminate-after = 17 }

@@ -1,25 +1,27 @@
 //! Silico's form of a name read back (M2.8): exactly the grammar [`Name`]'s `Display` writes,
 //! nothing looser, so a name a document stores is either one a map can hold or refused,
 //! saying where. The form leaves out what isn't a name's identity (OCCT's raw positions,
-//! an element's last operation) and the operation a feature names its elements by, which is
-//! the feature's own: `operation_of` says what each feature is, so the name read is the
-//! name a map holds, found by identity. A modified element's name is its source's (N7), so
-//! a name read is never [`Name::Modified`].
+//! an element's last operation). Each feature's type is read from the text (N8), never
+//! taken from what the feature is now: a name whose feature has another type now reads,
+//! and finds nothing (`reference_broken`). `operation_of` says only which features there
+//! are, and which make no solid. A modified element's name is its source's (N7), so a name
+//! read is never [`Name::Modified`].
 //!
 //! Bounded as the builder bounds names: at most 256 levels deep, a `~n` a level, and at
 //! most 4,096 names written out.
 //!
 //! ```text
 //! name     = base ( "~" count )*
-//! base     = feature "." [ primitive "." ] kind index        an element by its number:
-//!                                                            a primitive's says its kind
-//!          | feature "." kind "(" source ( ", " source )* ")"    derived (1 to 5 sources)
-//!          | feature "." kind "(U" [ place ] " " name ( ", " name )* ")"
+//! base     = feature "." type "." kind index                         by its number
+//!          | feature "." type "." kind "(" source ( ", " source )* ")"   derived (1 to 5)
+//!          | feature "." type "." kind "(U" [ place ] " " name ( ", " name )* ")"
 //!                                                  from the elements above (1 to 5)
-//!          | feature "." kind "(L " name ( ", " name )* ")"     from those below (1 to 5)
-//! source   = ( "M" | "G" ) [ place ] " " name
+//!          | feature "." type "." kind "(L " name ( ", " name )* ")"  from those below (1 to 5)
+//! source   = ( "M" | "G" | "I" ) [ place ] " " name
 //! place    = count "/" count                                 rank/size, size >= 2
-//! primitive = "box" | "cylinder" | "sphere" | "cone" | "torus"   a primitive feature's
+//! type     = "box" | "cylinder" | "sphere" | "cone" | "torus"   a primitive's: by number only
+//!          | "cut" | "fuse" | "common" | "fillet" | "chamfer"   an operation's: any form, its
+//!                                                               number the last resort, unstable
 //! kind     = "Vertex" | "Edge" | "Face" | "Solid"
 //! count    = a number from 1, no leading zero, at most 2^32 - 1
 //! ```
@@ -28,7 +30,7 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use super::build::{MOST_DEPTH, MOST_SOURCES, MOST_WEIGHT};
-use super::{Name, OpCode, Place, PrimitiveKind, Raw, Relation, Source};
+use super::{Name, OpCode, Place, PrimitiveKind, Raw, Relation, Source, TypeWord};
 use crate::document::{FeatureId, Made, Operation};
 use crate::kernel::{ElementKind, ElementRef};
 
@@ -47,10 +49,10 @@ impl std::fmt::Display for NameError {
 }
 
 impl Name {
-    /// The name `text` writes, if it's one: every feature it names makes its elements as
-    /// `operation_of` says (a primitive itself, an operation by deriving them, a sketch
-    /// not at all), and `None` for a feature there's no such thing as, whose names are
-    /// refused.
+    /// The name `text` writes, if it's one: `operation_of` says what each feature it names
+    /// is (`None` for a feature there's no such thing as, and a sketch, which makes no
+    /// solid: their names are refused). The type each name writes is read as written,
+    /// whatever the feature is now.
     pub fn parse(
         text: &str,
         operation_of: &dyn Fn(&FeatureId) -> Option<Maker>,
@@ -70,9 +72,9 @@ impl Name {
     }
 }
 
-/// How a feature makes the elements a name says it made: by its number (a primitive, of
-/// this kind), or derived from its inputs' by an operation; or not at all (a sketch, which
-/// makes no solid).
+/// What a feature is now: a primitive, of this kind, or an operation; or a sketch, which
+/// makes no solid. A name's own type is read from its text (N8); this says only which
+/// features there are, which make no solid, and, for messages, what each is now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Maker {
     Itself(PrimitiveKind),
@@ -81,6 +83,15 @@ pub enum Maker {
 }
 
 impl Maker {
+    /// The type the feature is now, as its elements' names write it; none for a sketch.
+    pub fn type_word(self) -> Option<TypeWord> {
+        match self {
+            Maker::Itself(kind) => Some(TypeWord::Primitive(kind)),
+            Maker::By(op) => Some(TypeWord::Operation(op)),
+            Maker::Nothing => None,
+        }
+    }
+
     /// How a document's feature makes its elements.
     pub fn of(operation: &Operation) -> Maker {
         match operation.made() {
@@ -91,6 +102,14 @@ impl Maker {
             Made::Sketch => Maker::Nothing,
         }
     }
+}
+
+/// Every type word, as a message lists them: `box`, ..., `chamfer`.
+fn words() -> String {
+    TypeWord::all()
+        .map(|made| format!("`{}`", made.word()))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 struct Reader<'a> {
@@ -169,6 +188,20 @@ impl Reader<'_> {
         Ok(name)
     }
 
+    /// The text, `word` and a `.` put in where the reader is, as an example of what to write:
+    /// the name as given, with what it lacks, if it's short; or its start, if not (an
+    /// example quotes a name, and a name can be long).
+    fn with_word(&self, word: &str) -> String {
+        const SHOWN: usize = 200;
+        let before = String::from_utf8_lossy(self.text.get(..self.at).unwrap_or_default());
+        let after = String::from_utf8_lossy(self.text.get(self.at..).unwrap_or_default());
+        if self.text.len() <= SHOWN {
+            format!("{before}{word}.{after}")
+        } else {
+            format!("{before}{word}.…")
+        }
+    }
+
     /// A name deeper than [`MOST_DEPTH`], counting its `~n`s: deeper than a reference can
     /// be, though a map can hold one a level deeper, a duplicate (`~n`) of a name at the
     /// bound, which no reference may name.
@@ -199,43 +232,40 @@ impl Reader<'_> {
             )));
         }
         self.expect(".")?;
-        // A primitive's element says the kind of primitive (`box.`), and only a primitive's.
-        let primitive = self.primitive_kind();
-        match (maker, primitive) {
-            (Maker::Itself(made), None) => {
-                let word = made.word();
-                return Err(self.error(&format!(
-                    "{feature} is a primitive: its elements say which (`{feature}.{word}.Edge1`)"
-                )));
-            }
-            (Maker::By(_), Some(_)) => {
-                self.at = start;
-                return Err(self.error(&format!(
-                    "{feature} isn't a primitive: its elements don't say a primitive's kind"
-                )));
-            }
-            _ => {}
-        }
+        // Every element says the type of the feature that made it (`box.`, `cut.`).
+        let Some(made) = self.type_word() else {
+            let word = match maker.type_word() {
+                Some(made) => made.word(),
+                // (A sketch's name is refused above.)
+                None => "",
+            };
+            return Err(self.error(&format!(
+                "expected the type of the feature that made the element ({}), as `{}`",
+                words(),
+                self.with_word(word)
+            )));
+        };
+        let kind_at = self.at;
         let kind = self.kind()?;
         if !self.eat("(") {
             let index = self.count()?;
             self.height = 1;
             return Ok(Name::Element {
                 feature,
-                primitive,
+                made,
                 element: ElementRef {
                     kind,
                     index: index.get(),
                 },
             });
         }
-        let operation = match maker {
-            Maker::By(operation) => operation,
-            // (`Nothing` can't be here: a sketch's name is refused above.)
-            Maker::Itself(_) | Maker::Nothing => {
-                self.at = start;
+        let operation = match made {
+            TypeWord::Operation(operation) => operation,
+            TypeWord::Primitive(primitive) => {
+                self.at = kind_at;
                 return Err(self.error(&format!(
-                    "{feature} makes its elements itself: it names them by their numbers"
+                    "a {} makes its elements itself: it names them by their numbers",
+                    primitive.word()
                 )));
             }
         };
@@ -316,8 +346,10 @@ impl Reader<'_> {
             Relation::Modified
         } else if self.eat("G") {
             Relation::Generated
+        } else if self.eat("I") {
+            Relation::Inside
         } else {
-            return Err(self.error("expected a source: `M` or `G`"));
+            return Err(self.error("expected a source: `M`, `G`, or `I`"));
         };
         let place = self.place()?;
         self.expect(" ")?;
@@ -326,7 +358,7 @@ impl Reader<'_> {
             relation,
             place,
             // Not a name's identity: what OCCT's list said, which the text doesn't hold.
-            position: Raw(NonZeroU32::MIN),
+            position: Raw(None),
             name: Arc::new(name),
         })
     }
@@ -360,11 +392,9 @@ impl Reader<'_> {
         Ok(id)
     }
 
-    /// A primitive's kind and its `.`, if the text says one here.
-    fn primitive_kind(&mut self) -> Option<PrimitiveKind> {
-        PrimitiveKind::ALL
-            .into_iter()
-            .find(|kind| self.eat(&format!("{}.", kind.word())))
+    /// A feature's type and its `.`, if the text says one here.
+    fn type_word(&mut self) -> Option<TypeWord> {
+        TypeWord::all().find(|made| self.eat(&format!("{}.", made.word())))
     }
 
     fn kind(&mut self) -> Result<ElementKind, NameError> {

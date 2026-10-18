@@ -138,7 +138,7 @@ fn an_outline_says_a_fillets_or_chamfers_edges_a_line_each() {
     // and radius, a chamfer's its base and distance, then each edge on a line of its own,
     // quoted, so an edit to one edge changes its line alone.
     let more = r#",
-    {"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "m3tq8v0z", "edges": ["k7f2qx3m.box.Edge1", "m3tq8v0z.Edge(G k7f2qx3m.box.Face6, G a91cw0de.cylinder.Face1)"], "radius": 0.5},
+    {"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "m3tq8v0z", "edges": ["k7f2qx3m.box.Edge1", "m3tq8v0z.cut.Edge(G k7f2qx3m.box.Face6, G a91cw0de.cylinder.Face1)"], "radius": 0.5},
     {"id": "c0000001", "type": "chamfer", "v": 1, "name": "Bevel", "base": "f0000001", "edges": ["k7f2qx3m.box.Edge5"], "size": {"distance": 1}}
   ]"#;
     let at = EXAMPLE.rfind("\n  ]").unwrap();
@@ -150,7 +150,7 @@ fn an_outline_says_a_fillets_or_chamfers_edges_a_line_each() {
         [
             r#"f0000001 "Round" fillet base m3tq8v0z, radius 0.5"#,
             r#"  edge "k7f2qx3m.box.Edge1""#,
-            r#"  edge "m3tq8v0z.Edge(G k7f2qx3m.box.Face6, G a91cw0de.cylinder.Face1)""#,
+            r#"  edge "m3tq8v0z.cut.Edge(G k7f2qx3m.box.Face6, G a91cw0de.cylinder.Face1)""#,
             r#"c0000001 "Bevel" chamfer base f0000001, size.distance 1"#,
             r#"  edge "k7f2qx3m.box.Edge5""#,
             "bodies c0000001",

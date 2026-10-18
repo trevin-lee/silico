@@ -18,7 +18,7 @@ use silico_core::kernel::{
     ElementCounts, ElementFate, ElementKind, ElementRef, History, InputHistory, Op, Primitive,
     Reported, Topology,
 };
-use silico_core::naming::{ElementMap, Name, OpCode, freecad};
+use silico_core::naming::{ElementMap, Name, OpCode, TypeWord, freecad};
 use silico_core::recompute::Recompute;
 
 /// A box's faces, edges, and vertices, as OCCT makes it.
@@ -71,13 +71,13 @@ fn two_elements_that_come_about_alike_are_numbered_and_marked() {
         },
     };
     history.validate(1).unwrap();
-    let input = ElementMap::by_number(id("aaaaaaaa"), BOX);
+    let input = ElementMap::by_number(id("aaaaaaaa"), OpCode::Fuse, BOX);
     let map = ElementMap::operation(id("rrrrrrrr"), OpCode::Fuse, &[&input], &history);
     assert_eq!(
         names(&map, ElementKind::Edge, 2),
         [
-            "rrrrrrrr.Edge(L aaaaaaaa.Vertex1, aaaaaaaa.Vertex2)",
-            "rrrrrrrr.Edge(L aaaaaaaa.Vertex1, aaaaaaaa.Vertex2)~1",
+            "rrrrrrrr.fuse.Edge(L aaaaaaaa.fuse.Vertex1, aaaaaaaa.fuse.Vertex2)",
+            "rrrrrrrr.fuse.Edge(L aaaaaaaa.fuse.Vertex1, aaaaaaaa.fuse.Vertex2)~1",
         ]
     );
     let first = map.name(element(ElementKind::Edge, 1)).unwrap();
@@ -134,7 +134,7 @@ fn one_input(
 }
 
 fn cut_of_box(history: &History) -> ElementMap {
-    let input = ElementMap::by_number(id("aaaaaaaa"), BOX);
+    let input = ElementMap::by_number(id("aaaaaaaa"), OpCode::Fuse, BOX);
     ElementMap::operation(id("rrrrrrrr"), OpCode::Cut, &[&input], history)
 }
 
@@ -158,7 +158,38 @@ fn an_edge_named_from_above_counts_only_the_unnamed_edges_before_it() {
         .name(element(ElementKind::Edge, 2))
         .unwrap();
     assert_eq!(freecad::text(&edge2), "Face1;:M;CUT;:U;CUT");
-    assert_eq!(edge2.to_string(), "rrrrrrrr.Edge(U aaaaaaaa.Face1)");
+    assert_eq!(
+        edge2.to_string(),
+        "rrrrrrrr.cut.Edge(U aaaaaaaa.fuse.Face1)"
+    );
+}
+
+#[test]
+fn a_source_that_both_modified_and_generated_an_element_named_it_by_generating() {
+    // Found by the milestone's tests review: no history had one source both modify and
+    // generate one element, so which relation counts was untested. Generated, as FreeCAD's
+    // map takes the last it's told (TopoShapeExpansion.cpp:1508-1555, generated after
+    // modified): Face1 modified into the result's Face1 first in its list, and generated
+    // it second.
+    let history = one_input(
+        vec![ElementFate {
+            modified: vec![reported(ElementKind::Face, 1, 1)],
+            generated: vec![reported(ElementKind::Face, 1, 2)],
+            ..ElementFate::default()
+        }],
+        vec![],
+        (1, 0),
+        vec![vec![]],
+        vec![vec![]],
+    );
+    let face1 = cut_of_box(&history)
+        .name(element(ElementKind::Face, 1))
+        .unwrap();
+    assert_eq!(freecad::text(&face1), "Face1;:G2;CUT");
+    assert_eq!(
+        face1.to_string(),
+        "rrrrrrrr.cut.Face(G aaaaaaaa.fuse.Face1)"
+    );
 }
 
 #[test]
@@ -179,8 +210,8 @@ fn each_sources_place_is_its_rank_in_that_sources_own_list() {
     assert_eq!(
         names(&map, ElementKind::Edge, 2),
         [
-            "rrrrrrrr.Edge(G1/2 aaaaaaaa.Face1, G2/2 aaaaaaaa.Face2)",
-            "rrrrrrrr.Edge(G2/2 aaaaaaaa.Face1, G1/2 aaaaaaaa.Face2)",
+            "rrrrrrrr.cut.Edge(G1/2 aaaaaaaa.fuse.Face1, G2/2 aaaaaaaa.fuse.Face2)",
+            "rrrrrrrr.cut.Edge(G2/2 aaaaaaaa.fuse.Face1, G1/2 aaaaaaaa.fuse.Face2)",
         ]
     );
     for index in [1, 2] {
@@ -207,7 +238,7 @@ fn a_face_keeps_its_sources_name_only_as_its_first_and_only_result_of_its_kind()
         .name(element(ElementKind::Face, 1))
         .unwrap();
     assert_eq!(freecad::text(&face), "Face1;:M2;CUT");
-    assert_eq!(face.to_string(), "rrrrrrrr.Face(M aaaaaaaa.Face1)");
+    assert_eq!(face.to_string(), "rrrrrrrr.cut.Face(M aaaaaaaa.fuse.Face1)");
     // ...and modified into Face1 while it generated Face2 too, it's one of two results of
     // its kind, so derived.
     let also_generated = one_input(
@@ -225,8 +256,8 @@ fn a_face_keeps_its_sources_name_only_as_its_first_and_only_result_of_its_kind()
     assert_eq!(
         names(&map, ElementKind::Face, 2),
         [
-            "rrrrrrrr.Face(M aaaaaaaa.Face1)",
-            "rrrrrrrr.Face(G aaaaaaaa.Face1)",
+            "rrrrrrrr.cut.Face(M aaaaaaaa.fuse.Face1)",
+            "rrrrrrrr.cut.Face(G aaaaaaaa.fuse.Face1)",
         ]
     );
     // ...but an edge it generated is of another kind: the face is still its sole result
@@ -243,10 +274,10 @@ fn a_face_keeps_its_sources_name_only_as_its_first_and_only_result_of_its_kind()
         vec![vec![1]],
     );
     let map = cut_of_box(&and_an_edge);
-    assert_eq!(names(&map, ElementKind::Face, 1), ["aaaaaaaa.Face1"]);
+    assert_eq!(names(&map, ElementKind::Face, 1), ["aaaaaaaa.fuse.Face1"]);
     assert_eq!(
         names(&map, ElementKind::Edge, 1),
-        ["rrrrrrrr.Edge(G aaaaaaaa.Face1)"]
+        ["rrrrrrrr.cut.Edge(G aaaaaaaa.fuse.Face1)"]
     );
 }
 
@@ -265,7 +296,7 @@ fn a_face_is_named_from_below_only_when_every_edge_of_its_outer_wire_is_named() 
     );
     let map = cut_of_box(&history);
     let face = map.name(element(ElementKind::Face, 1)).unwrap();
-    assert_eq!(face.to_string(), "rrrrrrrr.Face1");
+    assert_eq!(face.to_string(), "rrrrrrrr.cut.Face1");
     assert!(map.is_unstable(&face));
 }
 
@@ -303,11 +334,11 @@ fn a_face_kept_and_modified_too_is_a_duplicate_and_both_are_marked() {
         },
     };
     history.validate(1).unwrap();
-    let input = ElementMap::by_number(id("aaaaaaaa"), BOX);
+    let input = ElementMap::by_number(id("aaaaaaaa"), OpCode::Fuse, BOX);
     let map = ElementMap::operation(id("rrrrrrrr"), OpCode::Cut, &[&input], &history);
     assert_eq!(
         names(&map, ElementKind::Face, 2),
-        ["aaaaaaaa.Face1", "aaaaaaaa.Face1~1"]
+        ["aaaaaaaa.fuse.Face1", "aaaaaaaa.fuse.Face1~1"]
     );
     for index in [1, 2] {
         let name = map.name(element(ElementKind::Face, index)).unwrap();
@@ -353,24 +384,24 @@ fn an_element_named_from_above_is_named_by_every_named_element_it_bounds() {
         },
     };
     history.validate(1).unwrap();
-    let input = ElementMap::by_number(id("aaaaaaaa"), BOX);
+    let input = ElementMap::by_number(id("aaaaaaaa"), OpCode::Fuse, BOX);
     let map = ElementMap::operation(id("ffffffff"), OpCode::Fillet, &[&input], &history);
     assert_eq!(
         names(&map, ElementKind::Face, 2),
         [
             // Modified from it alone, first in OCCT's list: the face as modified.
-            "aaaaaaaa.Face1",
-            "ffffffff.Face(G aaaaaaaa.Edge1)",
+            "aaaaaaaa.fuse.Face1",
+            "ffffffff.fillet.Face(G aaaaaaaa.fuse.Edge1)",
         ]
     );
-    let generated = "ffffffff.Face(G aaaaaaaa.Edge1)";
-    let modified = "aaaaaaaa.Face1";
+    let generated = "ffffffff.fillet.Face(G aaaaaaaa.fuse.Edge1)";
+    let modified = "aaaaaaaa.fuse.Face1";
     assert_eq!(
         names(&map, ElementKind::Edge, 3),
         [
-            format!("ffffffff.Edge(U {modified})"),
-            format!("ffffffff.Edge(U {generated})"),
-            format!("ffffffff.Edge(U {generated}, {modified})"),
+            format!("ffffffff.fillet.Edge(U {modified})"),
+            format!("ffffffff.fillet.Edge(U {generated})"),
+            format!("ffffffff.fillet.Edge(U {generated}, {modified})"),
         ]
     );
 }
@@ -394,9 +425,9 @@ fn an_element_with_no_name_from_history_or_neighbours_is_named_by_its_number() {
             edge_vertices: vec![],
         },
     };
-    let input = ElementMap::by_number(id("aaaaaaaa"), BOX);
+    let input = ElementMap::by_number(id("aaaaaaaa"), OpCode::Fuse, BOX);
     let map = ElementMap::operation(id("rrrrrrrr"), OpCode::Cut, &[&input], &history);
-    assert_eq!(names(&map, ElementKind::Face, 1), ["rrrrrrrr.Face1"]);
+    assert_eq!(names(&map, ElementKind::Face, 1), ["rrrrrrrr.cut.Face1"]);
 }
 
 #[test]
@@ -428,10 +459,22 @@ fn each_built_feature_has_its_solids_names_from_its_inputs() {
     assert_eq!(hole.iter().count(), 26 + 8);
     for (kind, index, name) in [
         (ElementKind::Face, 1, "k7f2qx3m.box.Face1"),
-        (ElementKind::Face, 7, "a91cw0de.cylinder.Face1"),
+        (
+            ElementKind::Face,
+            7,
+            "m3tq8v0z.cut.Face(I a91cw0de.cylinder.Face1)",
+        ),
         (ElementKind::Edge, 12, "k7f2qx3m.box.Edge12"),
-        (ElementKind::Edge, 13, "a91cw0de.cylinder.Edge1"),
-        (ElementKind::Vertex, 10, "a91cw0de.cylinder.Vertex2"),
+        (
+            ElementKind::Edge,
+            13,
+            "m3tq8v0z.cut.Edge(I a91cw0de.cylinder.Edge1)",
+        ),
+        (
+            ElementKind::Vertex,
+            10,
+            "m3tq8v0z.cut.Vertex(I a91cw0de.cylinder.Vertex2)",
+        ),
     ] {
         let named = hole.name(element(kind, index)).unwrap();
         assert_eq!(named.to_string(), name);
@@ -453,7 +496,7 @@ fn renaming_a_feature_renames_its_elements_without_asking_the_kernel() {
         hole.name(element(ElementKind::Face, 7))
             .unwrap()
             .to_string(),
-        "pqrs2345.cylinder.Face1"
+        "m3tq8v0z.cut.Face(I pqrs2345.cylinder.Face1)"
     );
 }
 
@@ -475,11 +518,11 @@ fn a_feature_that_doesnt_build_has_no_names() {
 fn a_primitives_map_names_each_of_its_elements_and_no_others() {
     // A box: its 6 faces, 12 edges, and 8 vertices, each by its number, and nothing past
     // them (the review found a primitive's map answering for any number).
-    let map = ElementMap::by_number(id("aaaaaaaa"), BOX);
+    let map = ElementMap::by_number(id("aaaaaaaa"), OpCode::Fuse, BOX);
     assert_eq!(map.iter().count(), 26);
     let vertex = |index| Name::Element {
         feature: id("aaaaaaaa"),
-        primitive: None,
+        made: TypeWord::Operation(OpCode::Fuse),
         element: element(ElementKind::Vertex, index),
     };
     assert_eq!(
@@ -576,11 +619,11 @@ fn a_name_lists_at_most_five_sources() {
         },
     };
     history.validate(1).unwrap();
-    let input = ElementMap::by_number(id("aaaaaaaa"), BOX);
+    let input = ElementMap::by_number(id("aaaaaaaa"), OpCode::Fuse, BOX);
     let map = ElementMap::operation(id("rrrrrrrr"), OpCode::Fuse, &[&input], &history);
     assert_eq!(
         map.name(element(ElementKind::Face, 1)).unwrap().to_string(),
-        "rrrrrrrr.Face(M aaaaaaaa.Face1, M aaaaaaaa.Face2, M aaaaaaaa.Face3, M aaaaaaaa.Face4, M aaaaaaaa.Face5)"
+        "rrrrrrrr.fuse.Face(M aaaaaaaa.fuse.Face1, M aaaaaaaa.fuse.Face2, M aaaaaaaa.fuse.Face3, M aaaaaaaa.fuse.Face4, M aaaaaaaa.fuse.Face5)"
     );
 }
 
@@ -608,11 +651,11 @@ fn a_face_named_from_below_lists_at_most_five_edges() {
         },
     };
     history.validate(1).unwrap();
-    let input = ElementMap::by_number(id("aaaaaaaa"), BOX);
+    let input = ElementMap::by_number(id("aaaaaaaa"), OpCode::Fuse, BOX);
     let map = ElementMap::operation(id("rrrrrrrr"), OpCode::Fuse, &[&input], &history);
     assert_eq!(
         map.name(element(ElementKind::Face, 1)).unwrap().to_string(),
-        "rrrrrrrr.Face(L aaaaaaaa.Edge1, aaaaaaaa.Edge2, aaaaaaaa.Edge3, aaaaaaaa.Edge4, aaaaaaaa.Edge5)"
+        "rrrrrrrr.fuse.Face(L aaaaaaaa.fuse.Edge1, aaaaaaaa.fuse.Edge2, aaaaaaaa.fuse.Edge3, aaaaaaaa.fuse.Edge4, aaaaaaaa.fuse.Edge5)"
     );
 }
 
@@ -641,7 +684,7 @@ fn a_name_derived_from_an_ambiguous_name_is_ambiguous() {
         ends: Default::default(),
         topology: topology.clone(),
     };
-    let input = ElementMap::by_number(id("aaaaaaaa"), BOX);
+    let input = ElementMap::by_number(id("aaaaaaaa"), OpCode::Fuse, BOX);
     let first = ElementMap::operation(id("pppppppp"), OpCode::Fuse, &[&input], &first_history);
     let x = first.name(element(ElementKind::Edge, 1)).unwrap();
     assert!(first.is_unstable(&x));
@@ -824,8 +867,8 @@ fn a_place_is_a_rank_among_the_members_not_occts_position() {
     assert_eq!(
         got[1..3],
         [
-            "rrrrrrrr.Edge(G1/2 aaaaaaaa.Face1, G2/2 aaaaaaaa.Face2)",
-            "rrrrrrrr.Edge(G2/2 aaaaaaaa.Face1, G1/2 aaaaaaaa.Face2)",
+            "rrrrrrrr.cut.Edge(G1/2 aaaaaaaa.fuse.Face1, G2/2 aaaaaaaa.fuse.Face2)",
+            "rrrrrrrr.cut.Edge(G2/2 aaaaaaaa.fuse.Face1, G1/2 aaaaaaaa.fuse.Face2)",
         ]
     );
 }
@@ -857,8 +900,8 @@ fn a_place_skips_the_non_members_between_members() {
     assert_eq!(
         got[1..3],
         [
-            "rrrrrrrr.Edge(G1/2 aaaaaaaa.Face1, G2/2 aaaaaaaa.Face2)",
-            "rrrrrrrr.Edge(G2/2 aaaaaaaa.Face1, G1/2 aaaaaaaa.Face2)",
+            "rrrrrrrr.cut.Edge(G1/2 aaaaaaaa.fuse.Face1, G2/2 aaaaaaaa.fuse.Face2)",
+            "rrrrrrrr.cut.Edge(G2/2 aaaaaaaa.fuse.Face1, G1/2 aaaaaaaa.fuse.Face2)",
         ]
     );
 }
@@ -893,9 +936,9 @@ fn a_non_member_before_a_middle_member_doesnt_move_its_rank() {
     assert_eq!(
         got[1..4],
         [
-            "rrrrrrrr.Edge(G1/3 aaaaaaaa.Face1, G3/3 aaaaaaaa.Face2)",
-            "rrrrrrrr.Edge(G2/3 aaaaaaaa.Face1, G2/3 aaaaaaaa.Face2)",
-            "rrrrrrrr.Edge(G3/3 aaaaaaaa.Face1, G1/3 aaaaaaaa.Face2)",
+            "rrrrrrrr.cut.Edge(G1/3 aaaaaaaa.fuse.Face1, G3/3 aaaaaaaa.fuse.Face2)",
+            "rrrrrrrr.cut.Edge(G2/3 aaaaaaaa.fuse.Face1, G2/3 aaaaaaaa.fuse.Face2)",
+            "rrrrrrrr.cut.Edge(G3/3 aaaaaaaa.fuse.Face1, G1/3 aaaaaaaa.fuse.Face2)",
         ]
     );
 }
@@ -934,9 +977,21 @@ fn a_sketch_in_the_timeline_has_no_map_and_changes_no_other_features_names() {
     assert_eq!(map.iter().count(), 26 + 8);
     for (kind, index, name) in [
         (ElementKind::Face, 1, "k7f2qx3m.box.Face1"),
-        (ElementKind::Face, 7, "a91cw0de.cylinder.Face1"),
-        (ElementKind::Edge, 13, "a91cw0de.cylinder.Edge1"),
-        (ElementKind::Vertex, 10, "a91cw0de.cylinder.Vertex2"),
+        (
+            ElementKind::Face,
+            7,
+            "m3tq8v0z.cut.Face(I a91cw0de.cylinder.Face1)",
+        ),
+        (
+            ElementKind::Edge,
+            13,
+            "m3tq8v0z.cut.Edge(I a91cw0de.cylinder.Edge1)",
+        ),
+        (
+            ElementKind::Vertex,
+            10,
+            "m3tq8v0z.cut.Vertex(I a91cw0de.cylinder.Vertex2)",
+        ),
     ] {
         assert_eq!(map.name(element(kind, index)).unwrap().to_string(), name);
     }
@@ -986,23 +1041,32 @@ fn edges_or_vertices_bounding_the_same_named_elements_are_ranked_by_freecads_cou
         },
     );
     let map = ElementMap::operation(id("ffffffff"), OpCode::Fillet, &[&cube], &history);
-    let (g, m) = ("ffffffff.Face(G aaaaaaaa.box.Edge1)", "aaaaaaaa.box.Face1");
+    let (g, m) = (
+        "ffffffff.fillet.Face(G aaaaaaaa.box.Edge1)",
+        "aaaaaaaa.box.Face1",
+    );
     assert_eq!(
         names(&map, ElementKind::Edge, 3),
         [
-            format!("ffffffff.Edge(U2/2 {g}, {m})"),
-            format!("ffffffff.Edge(U1/2 {g}, {m})"),
-            format!("ffffffff.Edge(U {g})"),
+            format!("ffffffff.fillet.Edge(U2/2 {g}, {m})"),
+            format!("ffffffff.fillet.Edge(U1/2 {g}, {m})"),
+            format!("ffffffff.fillet.Edge(U {g})"),
         ]
     );
     let vertices = names(&map, ElementKind::Vertex, 2);
     for (vertex, rank) in vertices.iter().zip(["1/2", "2/2"]) {
         assert!(
-            vertex.starts_with(&format!("ffffffff.Vertex(U{rank} ffffffff.Edge(U")),
+            vertex.starts_with(&format!(
+                "ffffffff.fillet.Vertex(U{rank} ffffffff.fillet.Edge(U"
+            )),
             "{vertices:?}"
         );
         // From both edges.
-        assert_eq!(vertex.matches("ffffffff.Edge(U").count(), 2, "{vertex}");
+        assert_eq!(
+            vertex.matches("ffffffff.fillet.Edge(U").count(),
+            2,
+            "{vertex}"
+        );
     }
     for kind in [ElementKind::Edge, ElementKind::Vertex] {
         for (element, names) in map.iter().filter(|(e, _)| e.kind == kind) {
@@ -1051,12 +1115,12 @@ fn a_vertex_ending_six_named_edges_is_named_by_the_first_five() {
     );
     let map = ElementMap::operation(id("ffffffff"), OpCode::Fillet, &[&cube], &history);
     let edges: Vec<String> = (1..=5)
-        .map(|f| format!("ffffffff.Edge(G aaaaaaaa.box.Face{f})"))
+        .map(|f| format!("ffffffff.fillet.Edge(G aaaaaaaa.box.Face{f})"))
         .collect();
     let vertex = map.name(element(ElementKind::Vertex, 1)).unwrap();
     assert_eq!(
         vertex.to_string(),
-        format!("ffffffff.Vertex(U {})", edges.join(", "))
+        format!("ffffffff.fillet.Vertex(U {})", edges.join(", "))
     );
     let maker = |f: &silico_core::document::FeatureId| {
         Some(match f.as_str() {
@@ -1173,4 +1237,259 @@ fn a_modified_names_hash_is_its_sources() {
     assert_eq!(built.to_string(), "aaaaaaaa.box.Face1");
     assert_eq!(*built, *source);
     assert_eq!(hash(&built), hash(&source));
+}
+
+#[test]
+fn which_operations_keep_an_inputs_outside_is_a_fixed_table() {
+    // N8, by the booleans' definitions: a cut keeps its base's outside and its tool's
+    // inside; a common both insides; a fuse both outsides; a fillet or chamfer its input's
+    // outside.
+    for (op, base, tool) in [
+        (OpCode::Cut, true, false),
+        (OpCode::Common, false, false),
+        (OpCode::Fuse, true, true),
+    ] {
+        assert_eq!((op.bites(0), op.bites(1)), (base, tool), "{op:?}");
+    }
+    for op in [OpCode::Fillet, OpCode::Chamfer] {
+        assert!(op.bites(0), "{op:?}");
+    }
+    let words: Vec<&str> = OpCode::ALL.iter().map(|op| op.word()).collect();
+    assert_eq!(words, ["fuse", "cut", "common", "fillet", "chamfer"]);
+}
+
+#[test]
+fn an_element_modified_one_from_one_keeps_its_name_only_where_it_is_bitten() {
+    // A two-input operation whose result's Face1 is input `from`'s Face1 modified, its sole
+    // result: the base's (`pppppppp`) and the tool's (`tttttttt`) maps by number, as a
+    // fuse's. Where the operation keeps that input's outside (bitten), the face is its
+    // source's name; where it keeps its inside (a piece), the feature's own, `I` (N9),
+    // written in FreeCAD's form alike (`Face1;:M;CUT`).
+    let named = |op: OpCode, from: usize| {
+        let modified = ElementFate {
+            modified: vec![reported(ElementKind::Face, 1, 1)],
+            ..ElementFate::default()
+        };
+        let fates = |i: usize| InputHistory {
+            faces: if i == from {
+                vec![modified.clone()]
+            } else {
+                vec![]
+            },
+            edges: vec![],
+            vertices: vec![],
+        };
+        let history = History {
+            inputs: vec![fates(0), fates(1)],
+            result: ElementCounts {
+                faces: 1,
+                edges: 0,
+                vertices: 0,
+                solids: 1,
+            },
+            ends: Default::default(),
+            topology: Topology {
+                face_edges: vec![vec![]],
+                outer_edges: vec![vec![]],
+                edge_vertices: vec![],
+            },
+        };
+        history.validate(2).unwrap();
+        let base = ElementMap::by_number(id("pppppppp"), OpCode::Fuse, BOX);
+        let tool = ElementMap::by_number(id("tttttttt"), OpCode::Fuse, BOX);
+        let map = ElementMap::operation(id("rrrrrrrr"), op, &[&base, &tool], &history);
+        let face = map.name(element(ElementKind::Face, 1)).unwrap();
+        (face.to_string(), freecad::text(&face))
+    };
+    let bare = |input: &str| format!("{input}.fuse.Face1");
+    let piece = |op: &str, input: &str| format!("rrrrrrrr.{op}.Face(I {input}.fuse.Face1)");
+    for (op, from, name) in [
+        (OpCode::Cut, 0, bare("pppppppp")),
+        (OpCode::Cut, 1, piece("cut", "tttttttt")),
+        (OpCode::Common, 0, piece("common", "pppppppp")),
+        (OpCode::Common, 1, piece("common", "tttttttt")),
+        (OpCode::Fuse, 0, bare("pppppppp")),
+        (OpCode::Fuse, 1, bare("tttttttt")),
+    ] {
+        let (written, freecad) = named(op, from);
+        assert_eq!(written, name, "{op:?} of input {from}");
+        assert_eq!(
+            freecad,
+            format!("Face1;:M;{}", op.code()),
+            "{op:?} of input {from}"
+        );
+    }
+}
+
+#[test]
+fn an_element_kept_whole_keeps_its_name_only_where_it_is_bitten() {
+    // N9: step 1 asks `bites` as step 2 does. A two-input operation whose result's Face1 is
+    // input `from`'s Face1 kept whole: where the operation keeps that input's outside, the
+    // face keeps its name (N2); where it keeps its inside, it's the feature's own, `I`, with
+    // no OCCT position, so FreeCAD's form writes it as the source, as FreeCAD's
+    // `mapSubElement` does. Read back, the `I` name is the name built.
+    let named = |op: OpCode, from: usize| {
+        let fates = |i: usize| InputHistory {
+            faces: if i == from {
+                vec![ElementFate {
+                    kept: Some(1),
+                    ..ElementFate::default()
+                }]
+            } else {
+                vec![]
+            },
+            edges: vec![],
+            vertices: vec![],
+        };
+        let history = History {
+            inputs: vec![fates(0), fates(1)],
+            result: ElementCounts {
+                faces: 1,
+                edges: 0,
+                vertices: 0,
+                solids: 1,
+            },
+            ends: Default::default(),
+            topology: Topology {
+                face_edges: vec![vec![]],
+                outer_edges: vec![vec![]],
+                edge_vertices: vec![],
+            },
+        };
+        history.validate(2).unwrap();
+        let base = ElementMap::by_number(id("pppppppp"), OpCode::Fuse, BOX);
+        let tool = ElementMap::by_number(id("tttttttt"), OpCode::Fuse, BOX);
+        let map = ElementMap::operation(id("rrrrrrrr"), op, &[&base, &tool], &history);
+        map.name(element(ElementKind::Face, 1)).unwrap()
+    };
+    let bare = |input: &str| format!("{input}.fuse.Face1");
+    let inside = |op: &str, input: &str| format!("rrrrrrrr.{op}.Face(I {input}.fuse.Face1)");
+    for (op, from, name) in [
+        (OpCode::Cut, 0, bare("pppppppp")),
+        (OpCode::Cut, 1, inside("cut", "tttttttt")),
+        (OpCode::Common, 0, inside("common", "pppppppp")),
+        (OpCode::Common, 1, inside("common", "tttttttt")),
+        (OpCode::Fuse, 0, bare("pppppppp")),
+        (OpCode::Fuse, 1, bare("tttttttt")),
+    ] {
+        let face = named(op, from);
+        assert_eq!(face.to_string(), name, "{op:?} of input {from}");
+        assert_eq!(freecad::text(&face), "Face1", "{op:?} of input {from}");
+        let any = |_: &silico_core::document::FeatureId| Some(silico_core::naming::Maker::By(op));
+        assert_eq!(Name::parse(&name, &any).unwrap(), *face, "{name}");
+    }
+}
+
+#[test]
+fn a_source_the_operation_keeps_inside_is_written_i_beside_one_it_generated_from() {
+    // N9: an edge modified from the tool's Edge1 and generated from the base's Face1 (an edge
+    // lying in a face). Under a cut, the tool's source is what lies inside the base, `I`, the
+    // base's `G`; under a fuse it bites, `M`. Sources by kind, edges before faces; FreeCAD's
+    // form writes `I` as `M`, both relations, `MG`.
+    let named = |op: OpCode| {
+        let base = InputHistory {
+            faces: vec![ElementFate {
+                generated: vec![reported(ElementKind::Edge, 1, 1)],
+                ..ElementFate::default()
+            }],
+            edges: vec![],
+            vertices: vec![],
+        };
+        let tool = InputHistory {
+            faces: vec![],
+            edges: vec![ElementFate {
+                modified: vec![reported(ElementKind::Edge, 1, 1)],
+                ..ElementFate::default()
+            }],
+            vertices: vec![],
+        };
+        let history = History {
+            inputs: vec![base, tool],
+            result: ElementCounts {
+                faces: 0,
+                edges: 1,
+                vertices: 0,
+                solids: 1,
+            },
+            ends: Default::default(),
+            topology: Topology {
+                face_edges: vec![],
+                outer_edges: vec![],
+                edge_vertices: vec![vec![]],
+            },
+        };
+        history.validate(2).unwrap();
+        let base = ElementMap::by_number(id("pppppppp"), OpCode::Fuse, BOX);
+        let tool = ElementMap::by_number(id("tttttttt"), OpCode::Fuse, BOX);
+        let map = ElementMap::operation(id("rrrrrrrr"), op, &[&base, &tool], &history);
+        map.name(element(ElementKind::Edge, 1)).unwrap()
+    };
+    let cut = named(OpCode::Cut);
+    assert_eq!(
+        cut.to_string(),
+        "rrrrrrrr.cut.Edge(I tttttttt.fuse.Edge1, G pppppppp.fuse.Face1)"
+    );
+    assert_eq!(freecad::text(&cut), "Edge1;:MG(Face1;K-1);CUT");
+    assert_eq!(
+        named(OpCode::Fuse).to_string(),
+        "rrrrrrrr.fuse.Edge(M tttttttt.fuse.Edge1, G pppppppp.fuse.Face1)"
+    );
+}
+
+#[test]
+fn an_edge_modified_from_both_operands_says_m_for_a_bitten_one_and_i_for_the_other() {
+    // Found by the milestone's third round: coincident edges of the two operands made one,
+    // modified from each. Each source's letter is its own input's side: a cut bites its base
+    // (`M`) and not its tool (`I`); a fuse both; a common neither. FreeCAD's form writes `I`
+    // as `M`, so both sources are modified, `;:M`, never `;:MG`.
+    let named = |op: OpCode| {
+        let fate = || ElementFate {
+            modified: vec![reported(ElementKind::Edge, 1, 1)],
+            ..ElementFate::default()
+        };
+        let input = || InputHistory {
+            faces: vec![],
+            edges: vec![fate()],
+            vertices: vec![],
+        };
+        let history = History {
+            inputs: vec![input(), input()],
+            result: ElementCounts {
+                faces: 0,
+                edges: 1,
+                vertices: 0,
+                solids: 1,
+            },
+            ends: Default::default(),
+            topology: Topology {
+                face_edges: vec![],
+                outer_edges: vec![],
+                edge_vertices: vec![vec![]],
+            },
+        };
+        history.validate(2).unwrap();
+        let base = ElementMap::by_number(id("pppppppp"), OpCode::Fuse, BOX);
+        let tool = ElementMap::by_number(id("tttttttt"), OpCode::Fuse, BOX);
+        let map = ElementMap::operation(id("rrrrrrrr"), op, &[&base, &tool], &history);
+        map.name(element(ElementKind::Edge, 1)).unwrap()
+    };
+    for (op, base, tool) in [
+        (OpCode::Cut, "M", "I"),
+        (OpCode::Fuse, "M", "M"),
+        (OpCode::Common, "I", "I"),
+    ] {
+        let name = named(op);
+        assert_eq!(
+            name.to_string(),
+            format!(
+                "rrrrrrrr.{}.Edge({base} pppppppp.fuse.Edge1, {tool} tttttttt.fuse.Edge1)",
+                op.word()
+            )
+        );
+        assert_eq!(
+            freecad::text(&name),
+            format!("Edge1;:M(Edge1);{}", op.code()),
+            "{op:?}"
+        );
+    }
 }

@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crate::document::{ElementName, FeatureId, PROBLEMS_LISTED};
 use crate::kernel::{ElementKind, ElementRef};
-use crate::naming::{ElementMap, Maker, Name};
+use crate::naming::{ElementMap, Maker, Name, TypeWord};
 use crate::{Error, ErrorCode};
 
 /// A feature's broken references: the first [`PROBLEMS_LISTED`], each its
@@ -40,14 +40,39 @@ const CANDIDATES: usize = 5;
 const SHOWN: usize = 200;
 
 /// `text` as it is, or its first [`SHOWN`] characters and `…`.
-fn cut_short(text: &str) -> String {
+pub(crate) fn cut_short(text: &str) -> String {
     match text.char_indices().nth(SHOWN) {
         Some((at, _)) => format!("{}…", &text[..at]),
         None => text.to_owned(),
     }
 }
 
-/// The edge numbers `edges` (feature `feature`'s, in order) name in `map`, each once; or
+/// A document's names for the edges a fillet or chamfer lists, by the number each finds in
+/// its base: so an error names the edges at fault as the document does, the names as its
+/// elements and their places in `edges` in its words, rather than by numbers no document
+/// holds.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct EdgeNames(std::collections::BTreeMap<u32, (usize, String)>);
+
+impl EdgeNames {
+    /// Edge `edge` named `name`, the `position`th of the feature's `edges`. An edge named
+    /// more than once keeps its first name, as the fillet takes it once.
+    pub(crate) fn insert(&mut self, edge: u32, position: usize, name: &str) {
+        self.0
+            .entry(edge)
+            .or_insert_with(|| (position, name.to_owned()));
+    }
+
+    /// Edge `edge`'s place in `edges` and its name, if the document names it.
+    pub(crate) fn get(&self, edge: u32) -> Option<(usize, &str)> {
+        self.0
+            .get(&edge)
+            .map(|(position, name)| (*position, name.as_str()))
+    }
+}
+
+/// The edge numbers `edges` (feature `feature`'s, in order) name in `map`, each once, with
+/// the names that find them (for the kernel's errors to name them as the document does); or
 /// the broken ones' errors, the first [`PROBLEMS_LISTED`], each with its candidates, and
 /// how many are broken, listed or not (as the gate lists its problems and counts them). `makers` says
 /// how each feature makes its elements, to read the names. An edge two names find is
@@ -58,9 +83,10 @@ pub(crate) fn resolve(
     edges: &[ElementName],
     map: &ElementMap,
     makers: &dyn Fn(&FeatureId) -> Option<Maker>,
-) -> Result<Vec<u32>, Broken> {
+) -> Result<(Vec<u32>, EdgeNames), Broken> {
     let mut found = Vec::with_capacity(edges.len());
     let mut seen = BTreeSet::new();
+    let mut names = EdgeNames::default();
     let mut broken = Vec::new();
     let mut more = 0u64;
     // The map's edges by the elements their names are made from, built once, the first
@@ -80,13 +106,14 @@ pub(crate) fn resolve(
                     if seen.insert(element.index) {
                         found.push(element.index);
                     }
+                    names.insert(element.index, i, edge.as_str());
                     continue;
                 }
                 Some(element) => format!("names {}, not an edge", element_word(element)),
                 None => match retyped(name, makers) {
                     Some((feature, said, made)) => format!(
-                        "names an element of a {said}, but {feature} is a {made} now: its \
-                         elements are another primitive's"
+                        "names an element a {said} made, but {feature} is a {made} now: its \
+                         elements are another's"
                     ),
                     None => format!(
                         "names no element of {}'s solid: it isn't one of the elements that \
@@ -125,7 +152,7 @@ pub(crate) fn resolve(
         );
     }
     if broken.is_empty() {
-        Ok(found)
+        Ok((found, names))
     } else {
         let total = broken.len() as u64 + more;
         Err(Broken {
@@ -186,23 +213,40 @@ impl Index {
     }
 }
 
-/// The primitive `name` names an element of, the type `name` says it is, and the type it
-/// is now, if they differ (a box made a cylinder under its ID).
+/// A feature `name` names an element of (itself, or one it's made from, the nearest first),
+/// the type `name` says it is, and the type it is now, if they differ (a box made a
+/// cylinder, a cut made a common, under its ID).
 fn retyped<'a>(
     name: &'a Name,
     makers: &dyn Fn(&FeatureId) -> Option<Maker>,
 ) -> Option<(&'a FeatureId, &'static str, &'static str)> {
-    match name {
-        Name::Element {
-            feature,
-            primitive: Some(said),
-            ..
-        } => match makers(feature) {
-            Some(Maker::Itself(made)) if made != *said => Some((feature, said.word(), made.word())),
-            _ => None,
-        },
-        _ => None,
+    let mut stack = vec![name];
+    while let Some(name) = stack.pop() {
+        let (feature, said) = match name {
+            Name::Element { feature, made, .. } => (feature, *made),
+            Name::Derived {
+                feature, operation, ..
+            }
+            | Name::Upper {
+                feature, operation, ..
+            }
+            | Name::Lower {
+                feature, operation, ..
+            } => (feature, TypeWord::Operation(*operation)),
+            Name::Duplicate { name, .. } | Name::Modified { name, .. } => {
+                stack.push(name);
+                continue;
+            }
+        };
+        match makers(feature).map(Maker::type_word) {
+            Some(Some(now)) if now != said => return Some((feature, said.word(), now.word())),
+            Some(None) => return Some((feature, said.word(), "sketch")),
+            _ => {}
+        }
+        // The parts after, the first nearest the top.
+        stack.extend(name.parts().into_iter().rev().map(Arc::as_ref));
     }
+    None
 }
 
 /// `a face`, `an edge`, `a vertex`, `a solid`.
@@ -264,10 +308,12 @@ mod tests {
 
     fn resolved(map: &ElementMap, edges: &[&str]) -> Result<Vec<u32>, Vec<Error>> {
         let edges: Vec<ElementName> = edges.iter().map(|e| ElementName::new(e).unwrap()).collect();
-        resolve(&id("ffffffff"), &edges, map, &makers).map_err(|broken| {
-            assert_eq!(broken.total, broken.errors.len() as u64);
-            broken.errors
-        })
+        resolve(&id("ffffffff"), &edges, map, &makers)
+            .map(|(found, _)| found)
+            .map_err(|broken| {
+                assert_eq!(broken.total, broken.errors.len() as u64);
+                broken.errors
+            })
     }
 
     fn reported(kind: ElementKind, index: u32) -> Reported {
@@ -321,7 +367,7 @@ mod tests {
             .iter()
             .map(|f| format!("G aaaaaaaa.box.Face{f}"))
             .collect();
-        format!("rrrrrrrr.Edge({})", sources.join(", "))
+        format!("rrrrrrrr.fuse.Edge({})", sources.join(", "))
     }
 
     #[test]
@@ -332,7 +378,7 @@ mod tests {
         // either to the other.
         let map = generated(&[&[1, 3], &[1, 6], &[1, 6]]);
         let duplicated =
-            "rrrrrrrr.Edge(G1/2 aaaaaaaa.box.Face1, G1/2 aaaaaaaa.box.Face6)".to_owned();
+            "rrrrrrrr.fuse.Edge(G1/2 aaaaaaaa.box.Face1, G1/2 aaaaaaaa.box.Face6)".to_owned();
         let second = format!("{duplicated}~1");
         for name in [&duplicated, &second] {
             assert!(map.element(&Name::parse(name, &makers).unwrap()).is_some());
@@ -389,19 +435,55 @@ mod tests {
     }
 
     #[test]
+    fn a_nested_broken_names_candidates_share_the_elements_it_is_made_from_all_the_way_down() {
+        // Found by the milestone's tests review: every broken name tested was made of plain
+        // elements, so candidates by a name's direct parts passed. This one is made from a
+        // face made from Face1 and Face2, and from Face3: the edge from Face1 and Face3
+        // shares two of those, the one from Face2 and Face4 one, the one from Face5 and
+        // Face6 none.
+        let map = generated(&[&[1, 3], &[2, 4], &[5, 6]]);
+        let nested = "rrrrrrrr.fuse.Edge(G rrrrrrrr.fuse.Face(G aaaaaaaa.box.Face1, G aaaaaaaa.box.Face2), \
+                      G aaaaaaaa.box.Face3)";
+        let errors = resolved(&map, &[nested]).unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].candidates(), [edge(&[1, 3]), edge(&[2, 4])]);
+    }
+
+    #[test]
+    fn each_edge_found_is_named_by_its_place_among_the_names_not_among_the_edges() {
+        // Found by the tests review: an edge named twice is taken once, so the edges found
+        // are fewer than the names; an error about the edge after must say its own place in
+        // `edges` (2), not its place among the edges found (1).
+        let map = generated(&[&[1, 3], &[1, 4]]);
+        let (a, b) = (edge(&[1, 3]), edge(&[1, 4]));
+        let edges: Vec<ElementName> = [&a, &a, &b]
+            .iter()
+            .map(|e| ElementName::new(e).unwrap())
+            .collect();
+        let Ok((found, names)) = resolve(&id("ffffffff"), &edges, &map, &makers) else {
+            panic!("broken");
+        };
+        assert_eq!(found, [1, 2]);
+        let mut expected = EdgeNames::default();
+        expected.insert(1, 0, &a);
+        expected.insert(2, 2, &b);
+        assert_eq!(names, expected);
+    }
+
+    #[test]
     fn a_broken_reference_says_what_it_found() {
         // Found by mutation testing: the element a broken name found wasn't said in a
         // tested message. A face's name: "names a face, not an edge"; a duplicated edge's:
         // "names an edge, whose name is unstable".
         let map = generated(&[&[1, 6], &[1, 6]]);
-        let face = "rrrrrrrr.Face(G aaaaaaaa.box.Face1)";
+        let face = "rrrrrrrr.fuse.Face(G aaaaaaaa.box.Face1)";
         let errors = resolved(&map, &[face]).unwrap_err();
         assert!(
             errors[0].message().contains("names a face, not an edge"),
             "{}",
             errors[0]
         );
-        let duplicated = "rrrrrrrr.Edge(G1/2 aaaaaaaa.box.Face1, G1/2 aaaaaaaa.box.Face6)";
+        let duplicated = "rrrrrrrr.fuse.Edge(G1/2 aaaaaaaa.box.Face1, G1/2 aaaaaaaa.box.Face6)";
         let errors = resolved(&map, &[duplicated]).unwrap_err();
         assert!(
             errors[0]

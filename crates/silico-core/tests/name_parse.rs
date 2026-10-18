@@ -10,7 +10,7 @@ use proptest::prelude::*;
 use silico_core::document::FeatureId;
 use silico_core::kernel::{ElementKind, ElementRef};
 use silico_core::naming::{
-    Maker, Name, NameError, OpCode, Place, PrimitiveKind, Raw, Relation, Source,
+    Maker, Name, NameError, OpCode, Place, PrimitiveKind, Raw, Relation, Source, TypeWord,
 };
 
 fn id(text: &str) -> FeatureId {
@@ -36,13 +36,16 @@ fn n(k: u32) -> NonZeroU32 {
     NonZeroU32::new(k).unwrap()
 }
 
-/// `feature`'s element by its number: a primitive's (`aaaaaaaa` and `bbbbbbbb` are boxes)
-/// says its kind.
+/// `feature`'s element by its number, with the type `feature` is (`makers`').
 fn element(feature: &str, kind: ElementKind, index: u32) -> Arc<Name> {
-    let primitive = matches!(feature, "aaaaaaaa" | "bbbbbbbb").then_some(PrimitiveKind::Box);
+    let made = match makers(&id(feature)) {
+        Some(Maker::Itself(kind)) => TypeWord::Primitive(kind),
+        Some(Maker::By(op)) => TypeWord::Operation(op),
+        other => panic!("{feature}: {other:?}"),
+    };
     Arc::new(Name::Element {
         feature: id(feature),
-        primitive,
+        made,
         element: ElementRef { kind, index },
     })
 }
@@ -54,7 +57,7 @@ fn source(relation: Relation, place: Option<(u32, u32)>, name: Arc<Name>) -> Sou
             rank: n(rank),
             size: n(size),
         }),
-        position: Raw(n(7)),
+        position: Raw(Some(n(7))),
         name,
     }
 }
@@ -74,11 +77,11 @@ fn each_kind_of_name_reads_as_the_name_it_writes() {
     let cases: Vec<(&str, Name)> = vec![
         ("aaaaaaaa.box.Face6", (*face6).clone()),
         (
-            "cccccccc.Edge(G aaaaaaaa.box.Face6, G2/3 bbbbbbbb.box.Face1)",
+            "cccccccc.cut.Edge(G aaaaaaaa.box.Face6, G2/3 bbbbbbbb.box.Face1)",
             (*rim).clone(),
         ),
         (
-            "ffffffff.Face(G cccccccc.Edge(G aaaaaaaa.box.Face6, G2/3 bbbbbbbb.box.Face1))",
+            "ffffffff.fillet.Face(G cccccccc.cut.Edge(G aaaaaaaa.box.Face6, G2/3 bbbbbbbb.box.Face1))",
             Name::Derived {
                 feature: id("ffffffff"),
                 operation: OpCode::Fillet,
@@ -88,7 +91,7 @@ fn each_kind_of_name_reads_as_the_name_it_writes() {
             },
         ),
         (
-            "ffffffff.Edge(U aaaaaaaa.box.Face6)",
+            "ffffffff.fillet.Edge(U aaaaaaaa.box.Face6)",
             Name::Upper {
                 feature: id("ffffffff"),
                 operation: OpCode::Fillet,
@@ -100,7 +103,7 @@ fn each_kind_of_name_reads_as_the_name_it_writes() {
             },
         ),
         (
-            "ffffffff.Vertex(U2/3 aaaaaaaa.box.Face6, aaaaaaaa.box.Edge1)",
+            "ffffffff.fillet.Vertex(U2/3 aaaaaaaa.box.Face6, aaaaaaaa.box.Edge1)",
             Name::Upper {
                 feature: id("ffffffff"),
                 operation: OpCode::Fillet,
@@ -115,7 +118,7 @@ fn each_kind_of_name_reads_as_the_name_it_writes() {
             },
         ),
         (
-            "ffffffff.Face(L aaaaaaaa.box.Edge1, aaaaaaaa.box.Edge2)",
+            "ffffffff.fillet.Face(L aaaaaaaa.box.Edge1, aaaaaaaa.box.Edge2)",
             Name::Lower {
                 feature: id("ffffffff"),
                 operation: OpCode::Fillet,
@@ -125,7 +128,7 @@ fn each_kind_of_name_reads_as_the_name_it_writes() {
             },
         ),
         (
-            "cccccccc.Edge(M1/2 aaaaaaaa.box.Edge10)~1~2",
+            "cccccccc.cut.Edge(M1/2 aaaaaaaa.box.Edge10)~1~2",
             Name::Duplicate {
                 name: Arc::new(Name::Duplicate {
                     name: Arc::new(Name::Derived {
@@ -145,7 +148,7 @@ fn each_kind_of_name_reads_as_the_name_it_writes() {
             },
         ),
         (
-            "cccccccc.Solid1",
+            "cccccccc.cut.Solid1",
             (*element("cccccccc", ElementKind::Solid, 1)).clone(),
         ),
     ];
@@ -158,6 +161,77 @@ fn each_kind_of_name_reads_as_the_name_it_writes() {
 }
 
 #[test]
+fn what_an_operation_keeps_inside_its_other_operand_reads_as_i() {
+    // N9's letter: `I`, alone or with a place, reads back as written, an `Inside` source.
+    for (text, place) in [
+        ("cccccccc.cut.Edge(I aaaaaaaa.box.Edge9)", None),
+        ("cccccccc.cut.Edge(I1/2 aaaaaaaa.box.Edge9)", Some((1, 2))),
+        (
+            "cccccccc.cut.Face(I aaaaaaaa.box.Face1, G aaaaaaaa.box.Edge1)",
+            None,
+        ),
+    ] {
+        let name = parse(text).unwrap();
+        assert_eq!(name.to_string(), text);
+        let Name::Derived { first, .. } = &name else {
+            panic!("{name:?}");
+        };
+        assert_eq!(first.relation, Relation::Inside, "{text}");
+        assert_eq!(
+            first.place.map(|p| (p.rank.get(), p.size.get())),
+            place,
+            "{text}"
+        );
+    }
+    let error = parse("cccccccc.cut.Edge(X aaaaaaaa.box.Edge9)").unwrap_err();
+    assert!(error.why.contains("`I`"), "{error}");
+}
+
+#[test]
+fn a_name_reads_its_features_type_as_written_whatever_the_feature_is_now() {
+    // N8: the type is read from the text, never taken from the feature. A box's word on a
+    // cut's element, and a cut's on a fillet's, read as written: names no map of theirs
+    // holds (the lookup breaks the reference, with candidates: references.rs). An
+    // operation's element by its number reads, and is unstable (the gate refuses it).
+    for (text, made) in [
+        (
+            "cccccccc.box.Edge1",
+            TypeWord::Primitive(PrimitiveKind::Box),
+        ),
+        ("cccccccc.cut.Edge1", TypeWord::Operation(OpCode::Cut)),
+        ("cccccccc.common.Edge7", TypeWord::Operation(OpCode::Common)),
+        (
+            "aaaaaaaa.cylinder.Face3",
+            TypeWord::Primitive(PrimitiveKind::Cylinder),
+        ),
+    ] {
+        let name = parse(text).unwrap();
+        assert!(
+            matches!(name, Name::Element { made: m, .. } if m == made),
+            "{text}: {name:?}"
+        );
+        assert_eq!(name.to_string(), text);
+    }
+    let name = parse("ffffffff.chamfer.Edge(G aaaaaaaa.box.Face1)").unwrap();
+    assert!(
+        matches!(
+            name,
+            Name::Derived {
+                operation: OpCode::Chamfer,
+                ..
+            }
+        ),
+        "{name:?}"
+    );
+    // Every one of the ten words, on an element by its number.
+    for made in TypeWord::all() {
+        let text = format!("cccccccc.{made}.Face2");
+        assert_eq!(parse(&text).unwrap().to_string(), text);
+    }
+    assert_eq!(TypeWord::all().count(), 10);
+}
+
+#[test]
 fn a_name_that_isnt_one_is_refused_saying_where() {
     // (text, column, words in the reason)
     let cases = [
@@ -165,10 +239,21 @@ fn a_name_that_isnt_one_is_refused_saying_where() {
         ("aaaaaaa.Face1", 1, "a feature's ID"),
         ("AAAAAAAA.Face1", 1, "a feature's ID"),
         ("aaaaaaaa", 9, "\".\""),
-        ("aaaaaaaa.face1", 10, "its elements say which"),
+        // Every element says its feature's type, listing them, and an operation's too.
+        (
+            "aaaaaaaa.face1",
+            10,
+            "`box`, `cylinder`, `sphere`, `cone`, `torus`, `fuse`, `cut`",
+        ),
+        ("aaaaaaaa.Face1", 10, "as `aaaaaaaa.box.Face1`"),
+        ("cccccccc.Edge1", 10, "as `cccccccc.cut.Edge1`"),
+        (
+            "cccccccc.Edge(G aaaaaaaa.box.Face1)",
+            10,
+            "the type of the feature",
+        ),
+        ("cccccccc.Cut.Edge1", 10, "the type of the feature"),
         ("aaaaaaaa.box.face1", 14, "`Vertex`, `Edge`"),
-        // A primitive's kind only on a primitive's elements.
-        ("cccccccc.box.Edge1", 1, "isn't a primitive"),
         ("aaaaaaaa.box.Face", 18, "a number"),
         ("aaaaaaaa.box.Face0", 18, "without a leading zero"),
         ("aaaaaaaa.box.Face01", 18, "without a leading zero"),
@@ -179,52 +264,65 @@ fn a_name_that_isnt_one_is_refused_saying_where() {
         // A primitive names its elements by number; an unknown feature is no one's.
         (
             "aaaaaaaa.box.Edge(G aaaaaaaa.box.Face1)",
-            1,
-            "by their numbers",
+            14,
+            "a box makes its elements itself",
+        ),
+        (
+            "cccccccc.cylinder.Edge(G aaaaaaaa.box.Face1)",
+            19,
+            "a cylinder makes its elements itself",
         ),
         (
             "zzzzzzzz.Edge(G aaaaaaaa.box.Face1)",
             1,
             "no feature zzzzzzzz",
         ),
-        ("cccccccc.Edge(G aaaaaaaa.box.Face1", 35, "\")\""),
-        ("cccccccc.Edge(X aaaaaaaa.box.Face1)", 15, "`M` or `G`"),
-        ("cccccccc.Edge(G  aaaaaaaa.box.Face1)", 17, "a feature's ID"),
-        ("cccccccc.Edge(Gaaaaaaaa.Face1)", 16, "\" \""),
-        ("cccccccc.Edge(G1 aaaaaaaa.box.Face1)", 17, "\"/\""),
+        ("cccccccc.cut.Edge(G aaaaaaaa.box.Face1", 39, "\")\""),
         (
-            "cccccccc.Edge(G1/1 aaaaaaaa.box.Face1)",
+            "cccccccc.cut.Edge(X aaaaaaaa.box.Face1)",
             19,
+            "`M`, `G`, or `I`",
+        ),
+        (
+            "cccccccc.cut.Edge(G  aaaaaaaa.box.Face1)",
+            21,
+            "a feature's ID",
+        ),
+        ("cccccccc.cut.Edge(Gaaaaaaaa.Face1)", 20, "\" \""),
+        ("cccccccc.cut.Edge(G1 aaaaaaaa.box.Face1)", 21, "\"/\""),
+        (
+            "cccccccc.cut.Edge(G1/1 aaaaaaaa.box.Face1)",
+            23,
             "among 2 or more",
         ),
         (
-            "cccccccc.Edge(G3/2 aaaaaaaa.box.Face1)",
-            19,
+            "cccccccc.cut.Edge(G3/2 aaaaaaaa.box.Face1)",
+            23,
             "at most its group's size",
         ),
         (
-            "cccccccc.Edge(G0/2 aaaaaaaa.box.Face1)",
-            16,
+            "cccccccc.cut.Edge(G0/2 aaaaaaaa.box.Face1)",
+            20,
             "without a leading zero",
         ),
         (
-            "cccccccc.Edge(G aaaaaaaa.box.Face1,aaaaaaaa.box.Face2)",
-            35,
+            "cccccccc.cut.Edge(G aaaaaaaa.box.Face1,aaaaaaaa.box.Face2)",
+            39,
             "\")\"",
         ),
         // `U` takes a place, as a source does, not FreeCAD's count.
-        ("ffffffff.Edge(U1 aaaaaaaa.box.Face1)", 17, "\"/\""),
+        ("ffffffff.fillet.Edge(U1 aaaaaaaa.box.Face1)", 24, "\"/\""),
         (
-            "ffffffff.Edge(U1/1 aaaaaaaa.box.Face1)",
-            19,
+            "ffffffff.fillet.Edge(U1/1 aaaaaaaa.box.Face1)",
+            26,
             "among 2 or more",
         ),
         (
-            "ffffffff.Edge(U aaaaaaaa.box.Face1,aaaaaaaa.box.Face2)",
-            35,
+            "ffffffff.fillet.Edge(U aaaaaaaa.box.Face1,aaaaaaaa.box.Face2)",
+            42,
             "\")\"",
         ),
-        ("ffffffff.Face(L)", 15, "`M` or `G`"),
+        ("ffffffff.fillet.Face(L)", 22, "`M`, `G`, or `I`"),
     ];
     for (text, column, why) in cases {
         let error = match parse(text) {
@@ -244,8 +342,8 @@ fn a_name_lists_at_most_five_sources_or_five_elements_below() {
             .collect::<Vec<_>>()
             .join(", ")
     };
-    assert!(parse(&format!("cccccccc.Edge({})", sources(5))).is_ok());
-    let error = parse(&format!("cccccccc.Edge({})", sources(6))).unwrap_err();
+    assert!(parse(&format!("cccccccc.cut.Edge({})", sources(5))).is_ok());
+    let error = parse(&format!("cccccccc.cut.Edge({})", sources(6))).unwrap_err();
     assert!(error.why.contains("more than 5 sources"), "{error}");
     let below = |k: usize| {
         (1..=k)
@@ -253,8 +351,8 @@ fn a_name_lists_at_most_five_sources_or_five_elements_below() {
             .collect::<Vec<_>>()
             .join(", ")
     };
-    assert!(parse(&format!("ffffffff.Face(L {})", below(5))).is_ok());
-    let error = parse(&format!("ffffffff.Face(L {})", below(6))).unwrap_err();
+    assert!(parse(&format!("ffffffff.fillet.Face(L {})", below(5))).is_ok());
+    let error = parse(&format!("ffffffff.fillet.Face(L {})", below(6))).unwrap_err();
     assert!(error.why.contains("more than 5 elements below"), "{error}");
     // And above (found by the tests review: untested), with or without a place.
     let above = |k: usize| {
@@ -264,8 +362,8 @@ fn a_name_lists_at_most_five_sources_or_five_elements_below() {
             .join(", ")
     };
     for place in ["", "2/3"] {
-        assert!(parse(&format!("ffffffff.Edge(U{place} {})", above(5))).is_ok());
-        let error = parse(&format!("ffffffff.Edge(U{place} {})", above(6))).unwrap_err();
+        assert!(parse(&format!("ffffffff.fillet.Edge(U{place} {})", above(5))).is_ok());
+        let error = parse(&format!("ffffffff.fillet.Edge(U{place} {})", above(6))).unwrap_err();
         assert!(error.why.contains("more than 5 elements above"), "{error}");
     }
 }
@@ -277,7 +375,7 @@ fn a_name_nested_deeper_than_any_map_holds_is_refused_without_a_deep_stack() {
     let nested = |depth: usize| {
         format!(
             "{}aaaaaaaa.box.Face1{}",
-            "cccccccc.Face(M ".repeat(depth - 1),
+            "cccccccc.cut.Face(M ".repeat(depth - 1),
             ")".repeat(depth - 1)
         )
     };
@@ -343,23 +441,122 @@ proptest! {
 
     #[test]
     fn text_from_the_grammars_own_pieces_reads_back_as_written_or_is_refused(
-        pieces in proptest::collection::vec(
-            prop_oneof![
-                Just("aaaaaaaa"), Just("cccccccc"), Just("ffffffff"), Just("."), Just("Face"),
-                Just("Edge"), Just("Vertex"), Just("1"), Just("2"), Just("0"), Just("("),
-                Just(")"), Just("G"), Just("M"), Just("U"), Just("L"), Just(" "), Just(", "),
-                Just("/"), Just("~"),
-            ],
-            0..40,
-        )
+        text in grammar_pieces()
     ) {
-        let text: String = pieces.concat();
         match parse(&text) {
             // A name read writes back as its text, exactly: the form is canonical.
             Ok(name) => prop_assert_eq!(name.to_string(), text),
             Err(error) => prop_assert!(error.column >= 1 && error.column <= text.len() + 1),
         }
     }
+}
+
+/// The grammar's own pieces, type words among them (N8: a name without one never reads).
+const PIECES: [&str; 29] = [
+    "aaaaaaaa",
+    "cccccccc",
+    "ffffffff",
+    ".",
+    "box.",
+    "cut.",
+    "fillet.",
+    "common.",
+    "aaaaaaaa.box.",
+    "cccccccc.cut.",
+    "ffffffff.fillet.",
+    "Face",
+    "Edge",
+    "Vertex",
+    "1",
+    "2",
+    "0",
+    "(",
+    ")",
+    "G",
+    "M",
+    "I",
+    "U",
+    "L",
+    " ",
+    ", ",
+    ",",
+    "/",
+    "~",
+];
+
+/// A name's text, as pieces: a primitive's element by number, or an operation's derived
+/// from one or two, from above, or from below.
+fn name_pieces() -> impl Strategy<Value = Vec<&'static str>> {
+    let kind = prop_oneof![Just("Face"), Just("Edge"), Just("Vertex")];
+    let number = prop_oneof![Just("1"), Just("2"), Just("12")];
+    let leaf = (kind.clone(), number.clone()).prop_map(|(k, n)| vec!["aaaaaaaa.box.", k, n]);
+    let op = prop_oneof![Just("cccccccc.cut."), Just("ffffffff.fillet.")];
+    prop_oneof![
+        leaf.clone(),
+        (op.clone(), kind.clone(), number).prop_map(|(o, k, n)| vec![o, k, n]),
+        (
+            op.clone(),
+            kind.clone(),
+            prop_oneof![Just("M"), Just("G"), Just("I"), Just("I1/2")],
+            leaf.clone()
+        )
+            .prop_map(|(o, k, r, l)| [vec![o, k, "(", r, " "], l, vec![")"]].concat()),
+        (op.clone(), kind.clone(), leaf.clone(), leaf.clone()).prop_map(|(o, k, a, b)| [
+            vec![o, k, "(", "G", " "],
+            a,
+            vec![", ", "G", " "],
+            b,
+            vec![")"]
+        ]
+        .concat()),
+        (op, kind, prop_oneof![Just("U"), Just("L")], leaf).prop_map(|(o, k, w, l)| [
+            vec![o, k, "(", w, " "],
+            l,
+            vec![")"]
+        ]
+        .concat()),
+    ]
+}
+
+/// A name's text, or a near miss: one of its pieces replaced by another of the grammar's,
+/// or dropped, or one put in; so text close to a name is read exactly or refused.
+fn grammar_pieces() -> impl Strategy<Value = String> {
+    (
+        name_pieces(),
+        0usize..32,
+        0usize..4,
+        proptest::sample::select(PIECES.to_vec()),
+    )
+        .prop_map(|(mut pieces, at, edit, piece)| {
+            let at = at % (pieces.len() + 1);
+            match edit {
+                1 if at < pieces.len() => pieces[at] = piece,
+                2 if at < pieces.len() => {
+                    pieces.remove(at);
+                }
+                3 => pieces.insert(at, piece),
+                _ => {}
+            }
+            pieces.concat()
+        })
+}
+
+#[test]
+fn some_text_from_the_grammars_pieces_is_a_name() {
+    // So the property above reads names, not only refusals (found by the milestone's tests
+    // review: under N8 its pieces could spell no type word, and every case was refused).
+    use proptest::strategy::ValueTree;
+    let mut runner = proptest::test_runner::TestRunner::deterministic();
+    let strategy = grammar_pieces();
+    let mut read = 0;
+    for _ in 0..3000 {
+        let text = strategy.new_tree(&mut runner).unwrap().current();
+        if let Ok(name) = parse(&text) {
+            assert_eq!(name.to_string(), text);
+            read += 1;
+        }
+    }
+    assert!(read >= 20, "only {read} of 3000 read");
 }
 
 #[test]
@@ -394,7 +591,7 @@ fn a_name_of_more_names_than_any_map_holds_is_refused() {
         }
         let inner = wide(depth - 1);
         let sources: Vec<String> = (0..5).map(|_| format!("G {inner}")).collect();
-        format!("cccccccc.Face({})", sources.join(", "))
+        format!("cccccccc.cut.Face({})", sources.join(", "))
     }
     assert!(parse(&wide(3)).is_ok());
     let error = parse(&wide(6)).unwrap_err();
@@ -411,14 +608,14 @@ fn tilde_chains_inside_upper_lower_and_later_sources_count_toward_the_bound() {
     // The deep one first too (found by the round-4 review): the tallest slot counts, not
     // the last.
     for outer in [
-        format!("ffffffff.Edge(U {inside})"),
-        format!("ffffffff.Edge(U {other}, {inside})"),
-        format!("ffffffff.Edge(U {inside}, {other})"),
-        format!("ffffffff.Edge(L {inside})"),
-        format!("ffffffff.Edge(L {other}, {inside})"),
-        format!("ffffffff.Edge(L {inside}, {other})"),
-        format!("cccccccc.Face(M {other}, G {inside})"),
-        format!("cccccccc.Face(M {inside}, G {other})"),
+        format!("ffffffff.fillet.Edge(U {inside})"),
+        format!("ffffffff.fillet.Edge(U {other}, {inside})"),
+        format!("ffffffff.fillet.Edge(U {inside}, {other})"),
+        format!("ffffffff.fillet.Edge(L {inside})"),
+        format!("ffffffff.fillet.Edge(L {other}, {inside})"),
+        format!("ffffffff.fillet.Edge(L {inside}, {other})"),
+        format!("cccccccc.cut.Face(M {other}, G {inside})"),
+        format!("cccccccc.cut.Face(M {inside}, G {other})"),
     ] {
         let at = format!("{outer}{}", "~1".repeat(127));
         assert!(parse(&at).is_ok(), "{at}");
@@ -438,11 +635,11 @@ fn a_name_nested_too_deep_through_any_slot_is_refused_without_a_deep_stack() {
     // passed, and read 100,000 levels on its stack. Each slot, on a 2 MB thread.
     let leaf = "aaaaaaaa.box.Face1";
     let forms: [(&str, &str); 5] = [
-        ("ffffffff.Edge(U ", ")"),
-        ("ffffffff.Edge(U bbbbbbbb.box.Face1, ", ")"),
-        ("ffffffff.Edge(L ", ")"),
-        ("ffffffff.Edge(L bbbbbbbb.box.Face1, ", ")"),
-        ("cccccccc.Face(M bbbbbbbb.box.Face1, G ", ")"),
+        ("ffffffff.fillet.Edge(U ", ")"),
+        ("ffffffff.fillet.Edge(U bbbbbbbb.box.Face1, ", ")"),
+        ("ffffffff.fillet.Edge(L ", ")"),
+        ("ffffffff.fillet.Edge(L bbbbbbbb.box.Face1, ", ")"),
+        ("cccccccc.cut.Face(M bbbbbbbb.box.Face1, G ", ")"),
     ];
     for (open, close) in forms {
         let deep = format!("{}{leaf}{}", open.repeat(100_000), close.repeat(100_000));
@@ -468,7 +665,7 @@ fn wide(level: u32) -> String {
     }
     let inner = wide(level - 1);
     let sources: Vec<String> = (0..5).map(|_| format!("M {inner}")).collect();
-    format!("cccccccc.Face({})", sources.join(", "))
+    format!("cccccccc.cut.Face({})", sources.join(", "))
 }
 
 #[test]
@@ -483,14 +680,14 @@ fn a_name_of_exactly_the_most_names_a_map_holds_is_read_and_one_more_is_not() {
     // Names alone: one of 3,906, one of 156, one of 31, and two leaves, under one: 4,096.
     let sources = |last: &str| {
         format!(
-            "cccccccc.Face(M {}, M {}, M {}, M aaaaaaaa.box.Face1, M {last})",
+            "cccccccc.cut.Face(M {}, M {}, M {}, M aaaaaaaa.box.Face1, M {last})",
             wide(5),
             wide(3),
             wide(2)
         )
     };
     assert!(parse(&sources("aaaaaaaa.box.Face1")).is_ok());
-    let past = sources("cccccccc.Face(M aaaaaaaa.box.Face1)");
+    let past = sources("cccccccc.cut.Face(M aaaaaaaa.box.Face1)");
     let error = parse(&past).unwrap_err();
     assert!(error.why.contains("more than 4096 names"), "{error}");
 }
@@ -502,11 +699,11 @@ fn a_name_256_deep_through_any_slot_is_read_and_one_deeper_is_not() {
     // that holds a name, 256 deep and 257.
     let leaf = "aaaaaaaa.box.Face1";
     let forms: [(&str, &str); 5] = [
-        ("ffffffff.Edge(U ", ")"),
-        ("ffffffff.Edge(U bbbbbbbb.box.Face1, ", ")"),
-        ("ffffffff.Edge(L ", ")"),
-        ("ffffffff.Edge(L bbbbbbbb.box.Face1, ", ")"),
-        ("cccccccc.Face(M bbbbbbbb.box.Face1, G ", ")"),
+        ("ffffffff.fillet.Edge(U ", ")"),
+        ("ffffffff.fillet.Edge(U bbbbbbbb.box.Face1, ", ")"),
+        ("ffffffff.fillet.Edge(L ", ")"),
+        ("ffffffff.fillet.Edge(L bbbbbbbb.box.Face1, ", ")"),
+        ("cccccccc.cut.Face(M bbbbbbbb.box.Face1, G ", ")"),
     ];
     for (open, close) in forms {
         let at = format!("{}{leaf}{}", open.repeat(255), close.repeat(255));

@@ -611,6 +611,28 @@ fn every_feature_type_is_read_written_and_in_the_schema() {
     ];
     let names: Vec<&str> = samples.iter().map(Operation::type_name).collect();
     assert_eq!(names, FEATURE_TYPES);
+    // A primitive's word in its elements' names (`k7f2qx3m.box.Edge1`) is its type, as the
+    // file writes it and the kernel names it: a name the parser reads as of that type.
+    let mut primitives = 0;
+    for operation in &samples {
+        if let silico_core::document::Made::Primitive(primitive) = operation.made() {
+            let word = silico_core::naming::PrimitiveKind::of(&primitive).word();
+            assert_eq!(word, operation.type_name());
+            assert_eq!(word, primitive.name());
+            primitives += 1;
+        }
+    }
+    assert_eq!(primitives, silico_core::naming::PrimitiveKind::ALL.len());
+    // And every feature's word in its elements' names, an operation's too (N8): the type the
+    // file writes, from what the feature is.
+    let mut solids = 0;
+    for operation in &samples {
+        if let Some(made) = silico_core::naming::Maker::of(operation).type_word() {
+            assert_eq!(made.word(), operation.type_name());
+            solids += 1;
+        }
+    }
+    assert_eq!(solids, silico_core::naming::TypeWord::all().count());
     let validator = &*VALIDATOR;
     for operation in samples {
         let document = Document {
@@ -1294,4 +1316,20 @@ fn the_schema_takes_fingerprints_as_the_reader_does() {
         assert!(read(text.as_bytes()).is_err(), "{to}");
         assert!(!valid(validator, &text), "{to}");
     }
+}
+
+#[test]
+fn of_several_unknown_keys_the_first_written_is_named() {
+    // Found by the milestone's tests review: unknown keys were only ever tested one at a
+    // time, so naming the last passed.
+    let text = EXAMPLE.replacen(
+        r#""height": 10"#,
+        r#""height": 10, "depth": 3, "angle": 4"#,
+        1,
+    );
+    assert_ne!(text, EXAMPLE);
+    let error = read(text.as_bytes()).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::InvalidInput);
+    assert!(error.message().contains("\"depth\""), "{error}");
+    assert!(!error.message().contains("\"angle\""), "{error}");
 }

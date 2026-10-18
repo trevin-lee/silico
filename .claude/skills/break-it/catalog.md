@@ -101,6 +101,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A long timeline of disjoint fuses (bolts fused one at a time): every feature's element map holds all its solid's names and all are rebuilt each publish, so time and memory grow with the square of the timeline
 - Renumber a result's elements (permute faces, edges, vertices consistently through the history and topology): names that aren't duplicates or bare numbers must not change
 - Primitives whose numbering follows their values (a cone whose top radius goes to 0: OCCT drops the top cap and numbers the base Face2, the top's number): a name derived from `cone.Face2` (a hole's top rim) finds the base rim; check where a fillet of it takes material, before and after
+- Elements a boolean keeps whole (a pin wholly inside a block: the void's rim is the pin's circle) under the boolean retyped (cut to common) or its operands swapped: a rule about which side an operation keeps that's applied only to modified elements lets the kept one keep its bare name in both solids, and a fillet of the void's concave rim silently rounds the pin's convex one; check where the fillet takes material
+- Examples an error message gives ("as `m3tq8v0z.cut.Edge1`"): feed each back through the same gate; an example in a form the gate refuses (an operation's element by its number) sends an agent from one refusal to another
 
 ## Files
 
