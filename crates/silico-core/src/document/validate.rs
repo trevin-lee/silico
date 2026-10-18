@@ -7,18 +7,32 @@
 //! kernel's own rules, every sketch holds together (`sketch_gate`), and every element a
 //! fillet or chamfer names is named as Silico names an edge (docs/ports/naming.md), by
 //! features before it. Whether a name finds its edge is the rebuild's to say: it's in the
-//! base's solid, which only a rebuild makes.
+//! base's solid, which only a rebuild makes. A pad, pocket, revolve, or groove
+//! (docs/design/m3.6-sketch-features.md, S1) sweeps a sketch before it, which it uses
+//! without consuming (any number of features may sweep one sketch), goes a length above 0
+//! and at most a kilometre or turns an angle above 0° and at most 360°, and turns about the
+//! sketch's x or y axis or a line of the sketch. What only a solve can tell (an axis whose
+//! ends the solve brings together) is the rebuild's.
 
 use silico_protocol::{ChamferSize, MAX_LENGTH, check_fillet_radius, check_offset, format_number};
 
 use super::json::shown;
-use super::model::{Document, FeatureId, ID_LENGTH, Operation};
+use super::model::{Axis, Document, ExtentValue, FeatureId, ID_LENGTH, Operation};
+use super::quantity::Length;
+use super::sketch::ElementKind as SketchElement;
 use crate::kernel::ElementKind;
 use crate::naming::{Maker, Name, TypeWord};
 use crate::{Error, ErrorCode};
 
 /// How many of a document's problems [`Invalid`] lists; it counts the rest.
 pub const PROBLEMS_LISTED: usize = 100;
+
+/// The farthest a pad or pocket may go, in nanometres: [`MAX_LENGTH`], a kilometre, each
+/// length and a two-sided prism's whole length alike.
+const MAX_SWEEP_NM: i64 = (MAX_LENGTH * 1e6) as i64;
+
+/// The most a revolve or groove may turn, in nanodegrees: a whole turn.
+const MAX_TURN_NDEG: i64 = 360 * 1_000_000_000;
 
 /// Why a document isn't valid: its problems, in timeline order, as `invalid_input` errors
 /// naming the feature and the field.
@@ -185,6 +199,57 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
                     format!("give the {what} a valid {}", invalid.parameter),
                 )
             });
+        }
+        // A sweep's extent: each length above 0 and at most a kilometre, and a two-sided
+        // prism's whole length too; an angle above 0° and at most a whole turn. Exactly, in
+        // the file's integers.
+        if let Some(extent) = feature.operation.extent() {
+            let mut lengths = Vec::new();
+            for (field, value) in extent.values() {
+                let parameter = format!("extent.{field}");
+                match value {
+                    ExtentValue::Length(length) if (1..=MAX_SWEEP_NM).contains(&length.nm()) => {
+                        lengths.push(length.nm());
+                    }
+                    ExtentValue::Length(length) => problems.add(|| {
+                        refuse(
+                            &parameter,
+                            format!(
+                                "{what} {parameter} must be a length above 0 mm and at most {} mm (a kilometre), got {length}",
+                                format_number(MAX_LENGTH)
+                            ),
+                            format!("give the {what} a valid {parameter}"),
+                        )
+                    }),
+                    ExtentValue::Angle(angle) if (1..=MAX_TURN_NDEG).contains(&angle.ndeg()) => {}
+                    ExtentValue::Angle(angle) => problems.add(|| {
+                        refuse(
+                            &parameter,
+                            format!(
+                                "{what} {parameter} must be an angle above 0° and at most 360°, got {angle}°"
+                            ),
+                            format!("give the {what} a valid {parameter}"),
+                        )
+                    }),
+                    ExtentValue::Reversed(_) => {}
+                }
+            }
+            // Two sides, each valid alone: the prism is as long as both.
+            if let [length, length2] = lengths[..]
+                && length + length2 > MAX_SWEEP_NM
+            {
+                problems.add(|| {
+                    refuse(
+                        "extent",
+                        format!(
+                            "{what} extent.length and extent.length2 together must be at most {} mm (a kilometre), the prism's length, got {}",
+                            format_number(MAX_LENGTH),
+                            Length::from_nm(length + length2)
+                        ),
+                        "shorten extent.length or extent.length2".to_owned(),
+                    )
+                });
+            }
         }
         // The edges a fillet or chamfer names: at least one, each an edge's name, by
         // features before it, none twice.
@@ -368,6 +433,89 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
                     }),
                     None => consumer[used] = Some(index),
                 }
+            }
+        }
+
+        // The sketch a sweep uses: a sketch before it. It isn't consumed, so any number of
+        // features may use it.
+        let Some(target) = feature.operation.sketch() else {
+            continue;
+        };
+        let sketch_advice = || "use the ID of a sketch before this feature".to_owned();
+        let used = holder(target);
+        match used {
+            None => problems.add(|| {
+                refuse(
+                    "sketch",
+                    format!("sketch {target} isn't the ID of any feature"),
+                    sketch_advice(),
+                )
+            }),
+            Some(used) if used == index => problems.add(|| {
+                refuse(
+                    "sketch",
+                    format!("sketch {target} is this feature: a feature can't use itself"),
+                    sketch_advice(),
+                )
+            }),
+            Some(used) if !matches!(features[used].operation, Operation::Sketch(_)) => problems
+                .add(|| {
+                    refuse(
+                        "sketch",
+                        format!(
+                            "sketch {target} is {}, a {}, not a sketch",
+                            described(used),
+                            features[used].operation.type_name()
+                        ),
+                        sketch_advice(),
+                    )
+                }),
+            Some(used) if used > index => problems.add(|| {
+                refuse(
+                    "sketch",
+                    format!(
+                        "sketch {target} is {}, which comes after this feature: a feature may use only features before it",
+                        described(used)
+                    ),
+                    "move this feature after the sketch it uses, or use a sketch before it"
+                        .to_owned(),
+                )
+            }),
+            Some(_) => {}
+        }
+        // The line it turns about: one of that sketch's, construction or not. (An axis
+        // naming an element of a sketch the feature can't use is still checked against it.)
+        let sketch =
+            used.filter(|&used| used != index)
+                .and_then(|used| match &features[used].operation {
+                    Operation::Sketch(sketch) => Some((used, sketch)),
+                    _ => None,
+                });
+        if let (Some(Axis::Line(line)), Some((used, sketch))) = (feature.operation.axis(), sketch) {
+            let advice = || "name a line of the sketch, x_axis, or y_axis".to_owned();
+            match sketch.elements().find(|(id, _)| *id == line) {
+                Some((_, SketchElement::Line)) => {}
+                Some((_, kind)) => problems.add(|| {
+                    refuse(
+                        "axis",
+                        format!(
+                            "axis {line} is a {} of sketch {}: a {what} turns about a line",
+                            kind.noun(),
+                            label(used)
+                        ),
+                        advice(),
+                    )
+                }),
+                None => problems.add(|| {
+                    refuse(
+                        "axis",
+                        format!(
+                            "axis {line} isn't an element of sketch {}: a {what} turns about a line of its sketch, x_axis, or y_axis",
+                            label(used)
+                        ),
+                        advice(),
+                    )
+                }),
             }
         }
     }
