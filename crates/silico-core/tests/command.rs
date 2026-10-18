@@ -47,6 +47,46 @@ fn an_outline_says_each_feature_on_a_line_of_its_own() {
 }
 
 #[test]
+fn an_outline_says_a_sketchs_elements_a_line_each_and_no_sketch_is_a_body() {
+    // M3.2's sketches, in an outline (found on rebasing M2.9 onto them): the sketch's line
+    // says its plane, then each point, curve, and constraint on a line of its own, as the
+    // file writes it, so an edit to one element changes its line alone. A sketch makes no
+    // solid, so it isn't among the bodies.
+    let sketch = r#"{"id": "s0000001", "type": "sketch", "v": 1, "name": "Profile", "plane": "xy", "points": [{"id": "pb000000", "x": 10, "y": 0, "construction": false}, {"id": "pa000000", "x": 0, "y": 0, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}], "circles": [], "arcs": [], "constraints": [{"id": "c0000001", "type": "horizontal", "line": "na000000"}]},"#;
+    let text = EXAMPLE.replacen(
+        "    {\"id\": \"k7f2qx3m\"",
+        &format!("    {sketch}\n    {{\"id\": \"k7f2qx3m\""),
+        1,
+    );
+    assert_ne!(text, EXAMPLE);
+    let expected = format!(
+        r#"s0000001 "Profile" sketch plane xy
+  point {{"id": "pa000000", "x": 0, "y": 0, "construction": false}}
+  point {{"id": "pb000000", "x": 10, "y": 0, "construction": false}}
+  line {{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}}
+  constraint {{"id": "c0000001", "type": "horizontal", "line": "na000000"}}
+{OUTLINE}"#
+    );
+    let outline = command::outline(&read(text.as_bytes()).unwrap());
+    assert_eq!(outline, expected);
+    // One point moved: its line alone.
+    let moved = text.replace(r#""x": 10, "y": 0"#, r#""x": 12, "y": 0"#);
+    let after = command::outline(&read(moved.as_bytes()).unwrap());
+    let changed: Vec<(&str, &str)> = outline
+        .lines()
+        .zip(after.lines())
+        .filter(|(a, b)| a != b)
+        .collect();
+    assert_eq!(
+        changed,
+        [(
+            r#"  point {"id": "pb000000", "x": 10, "y": 0, "construction": false}"#,
+            r#"  point {"id": "pb000000", "x": 12, "y": 0, "construction": false}"#
+        )]
+    );
+}
+
+#[test]
 fn an_outline_has_each_features_fingerprint_on_its_line() {
     let saved = formatted(EXAMPLE).text;
     let outline = command::outline(&read(saved.as_bytes()).unwrap());

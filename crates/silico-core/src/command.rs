@@ -197,6 +197,13 @@ pub fn outline(document: &Document) -> String {
         if let Some(note) = note {
             let _ = writeln!(out, "  note {}", quoted(note));
         }
+        // A sketch's points, curves, and constraints, a line each, as the file writes them,
+        // so an edit to one changes its line alone.
+        if let Operation::Sketch(sketch) = operation {
+            for (kind, text) in document::sketch_elements(sketch) {
+                let _ = writeln!(out, "  {kind} {text}");
+            }
+        }
     }
     let bodies = bodies(document);
     let _ = writeln!(
@@ -247,6 +254,8 @@ fn values(operation: &Operation) -> String {
         Operation::Fuse { base, tool }
         | Operation::Cut { base, tool }
         | Operation::Common { base, tool } => format!("base {base}, tool {tool}"),
+        // Its elements follow, a line each.
+        Operation::Sketch(sketch) => format!("plane {}", sketch.plane.as_str()),
     }
 }
 
@@ -265,8 +274,8 @@ fn measures(f: &Fingerprint) -> String {
     )
 }
 
-/// The features no later feature consumes, in timeline order: the solids the timeline
-/// ends with, if every feature builds.
+/// The features that make a solid and that no later feature consumes, in timeline order:
+/// the solids the timeline ends with, if every feature builds.
 fn bodies(document: &Document) -> Vec<String> {
     let consumed: std::collections::BTreeSet<&document::FeatureId> = document
         .features
@@ -277,7 +286,8 @@ fn bodies(document: &Document) -> Vec<String> {
     document
         .features
         .iter()
-        .filter(|f| !consumed.contains(&f.id))
+        // A sketch makes no solid, so it's no body.
+        .filter(|f| f.operation.makes_solid() && !consumed.contains(&f.id))
         .map(|f| f.id.to_string())
         .collect()
 }

@@ -279,6 +279,32 @@ fn sketch(sketch: &Sketch) -> Vec<(&'static str, Out<'_>)> {
     ]
 }
 
+/// Each of a sketch's points, lines, circles, arcs, and constraints, in the order the file
+/// writes them, as its kind (`point`, ...) and its one line of canonical JSON: for an
+/// outline, where an edit to one element changes its line alone.
+pub(crate) fn sketch_elements(sketch: &Sketch) -> Vec<(&'static str, String)> {
+    let mut elements = Vec::new();
+    for (key, list) in self::sketch(sketch) {
+        let kind = match key {
+            "points" => "point",
+            "lines" => "line",
+            "circles" => "circle",
+            "arcs" => "arc",
+            "constraints" => "constraint",
+            _ => continue,
+        };
+        let Out::Array(items) = list else { continue };
+        for item in &items {
+            let mut writer = Writer::new(usize::MAX, true);
+            // Unbounded, so it can't be too long.
+            if writer.put(item, 0).is_ok() {
+                elements.push((kind, writer.out));
+            }
+        }
+    }
+    elements
+}
+
 /// A constraint: its ID, its type, then its form's fields in schema order.
 fn constraint(constraint: &SketchConstraint) -> Out<'_> {
     let mut members = vec![
