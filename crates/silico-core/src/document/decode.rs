@@ -9,7 +9,7 @@ use super::fingerprint::{Fingerprint, MEASURE_DECIMALS, Measure};
 use super::json::{At, Member, Node, SHOWN_CHARS, SyntaxError, Value, shown};
 use super::model::{
     Axis, ChamferSize, Document, ElementName, FEATURE_TYPES, Feature, FeatureId, FeatureVersion,
-    FormatVersion, ID_LENGTH, Name, Operation, PadExtent, PocketExtent, Position, SweepKind,
+    FormatVersion, ID_LENGTH, Name, Operation, PadExtent, PocketExtent, Position, SweepFeature,
     TurnExtent, Units,
 };
 use super::quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
@@ -520,14 +520,14 @@ fn operation(type_name: &str, fields: &mut Fields) -> Result<Operation, Error> {
         "revolve" => Operation::Revolve {
             base: optional_reference(fields, "base")?,
             sketch: reference(fields, "sketch")?,
-            axis: axis(fields, SweepKind::Revolve)?,
-            extent: turn_extent(fields, SweepKind::Revolve)?,
+            axis: axis(fields, SweepFeature::Revolve)?,
+            extent: turn_extent(fields, SweepFeature::Revolve)?,
         },
         "groove" => Operation::Groove {
             base: reference(fields, "base")?,
             sketch: reference(fields, "sketch")?,
-            axis: axis(fields, SweepKind::Groove)?,
-            extent: turn_extent(fields, SweepKind::Groove)?,
+            axis: axis(fields, SweepFeature::Groove)?,
+            extent: turn_extent(fields, SweepFeature::Groove)?,
         },
         // A type in FEATURE_TYPES with no arm here: Silico's bug, not the document's.
         other => {
@@ -600,7 +600,7 @@ fn optional_reference(fields: &mut Fields, key: &str) -> Result<Option<FeatureId
 /// What a revolve or groove turns about: `x_axis`, `y_axis`, or an element's ID (whether
 /// it's a line of the sketch is the gate's to say). The origin is a point, so it's refused
 /// here.
-fn axis(fields: &mut Fields, kind: SweepKind) -> Result<Axis, Error> {
+fn axis(fields: &mut Fields, kind: SweepFeature) -> Result<Axis, Error> {
     let node = fields.take("axis")?;
     let at = node.at;
     let text = string(node, fields.feature(), "axis")?;
@@ -633,7 +633,7 @@ fn axis(fields: &mut Fields, kind: SweepKind) -> Result<Axis, Error> {
 /// `forms`. A pad's `through_all` is refused saying it's a pocket's.
 fn extent_form(
     fields: &mut Fields,
-    kind: SweepKind,
+    kind: SweepFeature,
     forms: &[&str],
 ) -> Result<(Fields, String), Error> {
     let node = fields.take("extent")?;
@@ -645,7 +645,7 @@ fn extent_form(
         return Ok((extent, form));
     }
     let what = kind.word();
-    let (message, suggestion) = if kind == SweepKind::Pad && form == "through_all" {
+    let (message, suggestion) = if kind == SweepFeature::Pad && form == "through_all" {
         (
             "extent.type through_all is a pocket's: a pad goes a length from its sketch".to_owned(),
             "write extent.type as one_side, symmetric, or two_sides".to_owned(),
@@ -673,7 +673,7 @@ fn extent_form(
 fn pad_extent(fields: &mut Fields) -> Result<PadExtent, Error> {
     let (mut extent, form) = extent_form(
         fields,
-        SweepKind::Pad,
+        SweepFeature::Pad,
         &["one_side", "symmetric", "two_sides"],
     )?;
     let read = match form.as_str() {
@@ -697,7 +697,7 @@ fn pad_extent(fields: &mut Fields) -> Result<PadExtent, Error> {
 fn pocket_extent(fields: &mut Fields) -> Result<PocketExtent, Error> {
     let (mut extent, form) = extent_form(
         fields,
-        SweepKind::Pocket,
+        SweepFeature::Pocket,
         &["one_side", "symmetric", "two_sides", "through_all"],
     )?;
     let read = match form.as_str() {
@@ -721,7 +721,7 @@ fn pocket_extent(fields: &mut Fields) -> Result<PocketExtent, Error> {
 }
 
 /// A revolve's or groove's `extent`: one side, or symmetric.
-fn turn_extent(fields: &mut Fields, kind: SweepKind) -> Result<TurnExtent, Error> {
+fn turn_extent(fields: &mut Fields, kind: SweepFeature) -> Result<TurnExtent, Error> {
     let (mut extent, form) = extent_form(fields, kind, &["one_side", "symmetric"])?;
     let read = match form.as_str() {
         "one_side" => TurnExtent::OneSide {

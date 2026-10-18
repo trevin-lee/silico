@@ -31,7 +31,7 @@ use std::sync::Arc;
 
 use super::build::{MOST_DEPTH, MOST_SOURCES, MOST_WEIGHT};
 use super::{Name, OpCode, Place, PrimitiveKind, Raw, Relation, Source, TypeWord};
-use crate::document::{FeatureId, Made, Operation, SweepKind};
+use crate::document::{FeatureId, Made, Operation, SweepFeature};
 use crate::kernel::{ElementKind, ElementRef};
 
 /// Why a name's text isn't a name: what's wrong, and where (the column, from 1, in
@@ -82,7 +82,7 @@ pub enum Maker {
     Itself(PrimitiveKind),
     By(OpCode),
     Nothing,
-    Unnamed(SweepKind),
+    Unnamed(SweepFeature),
 }
 
 impl Maker {

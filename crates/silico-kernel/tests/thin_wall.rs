@@ -14,7 +14,8 @@ mod numbers;
 use close::assert_close;
 use silico_core::ErrorCode;
 use silico_core::document::FeatureId;
-use silico_core::sweep::{Measured, SweepFeature, check_result};
+use silico_core::document::SweepFeature;
+use silico_core::sweep::{Measured, check_result};
 use silico_kernel::{
     BooleanOp, Curve, FaceRegions, Region, ShapeSummary, SketchPlane, boolean, make, make_faces,
     prism, summarize,

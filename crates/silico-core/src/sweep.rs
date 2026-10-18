@@ -7,7 +7,7 @@
 
 use silico_protocol::{MEASURE_PRECISION, format_number};
 
-use crate::document::{Axis, Checked, FeatureId, Operation, PROBLEMS_LISTED};
+use crate::document::{Axis, Checked, FeatureId, Operation, PROBLEMS_LISTED, SweepFeature};
 use crate::profile::Profile;
 use crate::sketch::SketchSolution;
 use crate::{Error, ErrorCode};
@@ -85,41 +85,6 @@ fn unchecked(what: String) -> Error {
         format!("a revolve's axis was checked against a document or solution that {what}"),
     )
     .with_suggestion(crate::worker::SILICO_BUG)
-}
-
-/// A sketch feature's type: what it does with its sweep.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SweepFeature {
-    Pad,
-    Pocket,
-    Revolve,
-    Groove,
-}
-
-impl SweepFeature {
-    /// Every sketch feature.
-    pub const ALL: [SweepFeature; 4] = [
-        SweepFeature::Pad,
-        SweepFeature::Pocket,
-        SweepFeature::Revolve,
-        SweepFeature::Groove,
-    ];
-
-    /// The document's word for it: `pad`, `pocket`, `revolve`, `groove`.
-    pub fn word(self) -> &'static str {
-        match self {
-            SweepFeature::Pad => "pad",
-            SweepFeature::Pocket => "pocket",
-            SweepFeature::Revolve => "revolve",
-            SweepFeature::Groove => "groove",
-        }
-    }
-
-    /// Whether it fuses its sweep with its base (a pad, a revolve), rather than cutting it
-    /// away (a pocket, a groove).
-    pub fn adds(self) -> bool {
-        matches!(self, SweepFeature::Pad | SweepFeature::Revolve)
-    }
 }
 
 /// A solid as a sketch feature's checks see it: its volume, by the precise measure, and how

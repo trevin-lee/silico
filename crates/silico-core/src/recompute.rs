@@ -1066,7 +1066,7 @@ struct Planned {
 
 /// A pad's, pocket's, revolve's, or groove's refusal: the gate checks them, but recompute
 /// doesn't build them yet (docs/design/m3.6-sketch-features.md, *Implementation order*).
-fn unbuilt_sweep(id: &FeatureId, kind: crate::document::SweepKind) -> Error {
+fn unbuilt_sweep(id: &FeatureId, kind: crate::document::SweepFeature) -> Error {
     let word = kind.word();
     Error::new(
         ErrorCode::InvalidInput,

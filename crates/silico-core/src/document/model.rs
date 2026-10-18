@@ -489,24 +489,39 @@ impl JsonSchema for Axis {
     }
 }
 
-/// Which of the features that sweep a sketch's profile a feature is.
+/// Which of the features that sweep a sketch's profile a feature is: what it does with its
+/// sweep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum SweepKind {
+pub enum SweepFeature {
     Pad,
     Pocket,
     Revolve,
     Groove,
 }
 
-impl SweepKind {
-    /// The `type` the file writes.
+impl SweepFeature {
+    /// Every sketch feature.
+    pub const ALL: [SweepFeature; 4] = [
+        SweepFeature::Pad,
+        SweepFeature::Pocket,
+        SweepFeature::Revolve,
+        SweepFeature::Groove,
+    ];
+
+    /// The `type` the file writes: `pad`, `pocket`, `revolve`, `groove`.
     pub fn word(self) -> &'static str {
         match self {
-            SweepKind::Pad => "pad",
-            SweepKind::Pocket => "pocket",
-            SweepKind::Revolve => "revolve",
-            SweepKind::Groove => "groove",
+            SweepFeature::Pad => "pad",
+            SweepFeature::Pocket => "pocket",
+            SweepFeature::Revolve => "revolve",
+            SweepFeature::Groove => "groove",
         }
+    }
+
+    /// Whether it fuses its sweep with its base (a pad, a revolve), rather than cutting it
+    /// away (a pocket, a groove).
+    pub fn adds(self) -> bool {
+        matches!(self, SweepFeature::Pad | SweepFeature::Revolve)
     }
 }
 
@@ -524,7 +539,7 @@ pub enum Made {
     /// Its `base` feature's solid with edges cut back, by the distance.
     Chamfer { distance: f64 },
     /// A sketch's profile swept, and fused with or cut from its `base`, if it has one.
-    Sweep(SweepKind),
+    Sweep(SweepFeature),
 }
 
 impl Operation {
@@ -577,10 +592,10 @@ impl Operation {
             Operation::Chamfer { size, .. } => Made::Chamfer {
                 distance: size.distance.mm(),
             },
-            Operation::Pad { .. } => Made::Sweep(SweepKind::Pad),
-            Operation::Pocket { .. } => Made::Sweep(SweepKind::Pocket),
-            Operation::Revolve { .. } => Made::Sweep(SweepKind::Revolve),
-            Operation::Groove { .. } => Made::Sweep(SweepKind::Groove),
+            Operation::Pad { .. } => Made::Sweep(SweepFeature::Pad),
+            Operation::Pocket { .. } => Made::Sweep(SweepFeature::Pocket),
+            Operation::Revolve { .. } => Made::Sweep(SweepFeature::Revolve),
+            Operation::Groove { .. } => Made::Sweep(SweepFeature::Groove),
         }
     }
 

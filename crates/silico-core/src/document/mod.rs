@@ -17,7 +17,7 @@ pub use fingerprint::{Difference, Fingerprint, MEASURE_DECIMALS, Measure};
 pub use model::{
     Axis, ChamferSize, Document, ElementName, Extent, ExtentValue, FEATURE_TYPES, Feature,
     FeatureId, FeatureVersion, FormatVersion, ID_ALPHABET, ID_LENGTH, Made, Name, Operation,
-    PadExtent, PocketExtent, Position, SweepKind, TurnExtent, Units,
+    PadExtent, PocketExtent, Position, SweepFeature, TurnExtent, Units,
 };
 pub use quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
 pub use sketch::{

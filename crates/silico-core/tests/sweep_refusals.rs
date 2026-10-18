@@ -5,9 +5,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use silico_core::ErrorCode;
+use silico_core::document::SweepFeature;
 use silico_core::document::{ElementId, FeatureId, Plane};
 use silico_core::profile::{CurveKind, Edge, Loop, Profile, Region};
-use silico_core::sweep::{Measured, SweepFeature, check_regions, check_result};
+use silico_core::sweep::{Measured, check_regions, check_result};
 use silico_protocol::{Curve, MEASURE_PRECISION};
 
 fn fid(text: &str) -> FeatureId {
