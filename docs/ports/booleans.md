@@ -65,6 +65,18 @@ OCCT sometimes returns a valid solid that's simply wrong, without a warning that
 | A torus (R 1.5, r 0.5) and a torus (R 2, r 1) at (−0.3568, −0.4123, −1.4127) | treated as apart: fuse 46.881, common empty | common 0.1122 (Monte Carlo) |
 | A torus (R 2, r 1) and a 2 mm cube at (0.999999, 0, 0) | treated as apart: fuse 47.478 | as at (1, 0, 0), within a millionth |
 
+OCCT also returns an invalid fuse, which Silico refuses (and FreeCAD's `Shape.fuse` returns as it is, invalid), for a cylinder touching a box's face along a line from outside: one shell, its volume A − B, or below zero. Five of SolidCraft's random boolean identity cases (its kernel's fuzz generator, seeds 424, 753, 768, 773, 817), run through Silico's worker and FreeCAD 1.1.3 alike (2026-10-18):
+
+| Inputs | OCCT's fuse (both) | Silico | Right |
+|---|---|---|---|
+| A box 30 × 12.5 × 15 at (2.5, 5, 7.5); a cylinder r 7.5 along x from (27.5, 12.5, 30), 20 long, on the box's top | invalid, volume 2090.708 | refused, invalid result | 9159.292 |
+| A box 30 × 10 × 10 at (0, 7.5, 17.5); a cylinder r 2.5 along x from (17.5, 20, 22.5), 20 long, on the face y = 17.5 | invalid, 2607.301 | refused, invalid result | 3392.699 |
+| A cylinder r 7.5 along x from (27.5, 17.5, 20), 27.5 long; a box 22.5 × 27.5 × 17.5 at (10, 10, 27.5), on the cylinder's top | invalid, −5968.474 | refused, empty (a negative volume, above) | 15687.776 |
+| A box 15 × 27.5 × 27.5 at (22.5, 12.5, 0); a cylinder r 5 along z at (27.5, 7.5, 10), 25 high, on the face y = 12.5 | invalid, 9380.255 | refused, invalid result | 13307.245 |
+| A box 17.5 × 22.5 × 12.5 at (7.5, 30, 17.5); a cylinder r 7.5 along z at (22.5, 22.5, 15), 7.5 high, on the face y = 30 | invalid, 3596.516 | refused, invalid result | 6247.234 |
+
+Their commons are empty and refused as empty, and their cuts are the first shape whole, as they should be (`a_cylinder_tangent_to_a_boxs_face_along_a_line_never_fuses_wrong`). A cylinder inscribed in a box, touching it from inside, OCCT gets right (`cylinder_inscribed_in_a_box_tangent_to_four_faces`). These are for reporting to OCCT too.
+
 The tori moved along y cross Silico's torus's seam, which is on its inner equator, as `Part::Torus` builds it; along x, OCCT gets most of them right, but not all (0.3 above). OCCT's own torus (seamed on the outer equator) gets some of these right and fails others, so the seam isn't shown to be the cause. These are for reporting to OCCT.
 
 Silico ran OCCT 8.0.1 until M1.5. It gets all of these wrong too, and one more that 7.9.3 and 7.8.1 get right: a box cut across the slit of a revolve within about 1.5e-6 degrees of a full turn (the rectangle x 100..200, y 0..1 about y by 360 − 1e-7, and a 0.5 × 0.5 × 1 box at (120, 0.2, −0.5)) removes nothing, in a stock 8.0.1 build and in FreeCAD 26.3 on it alike. That regression is why Silico runs 7.9.3, the same release as its FreeCAD oracle (`a_cut_across_a_large_nearly_full_ring_removes_what_it_covers` checks 7.9.3 cuts it right).
