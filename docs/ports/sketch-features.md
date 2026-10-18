@@ -189,7 +189,15 @@ docs/ports/profile.md measured two, near the profile's tolerance, through FreeCA
 - a pad fused onto a 10 × 10 × 10 base, its profile with a wall g from the outer side: for g ≤ 3e-7, the fuse is the base alone (volume 1000, 6 faces), the pad silently dropped; right from 4e-7;
 - the pocket of the same: its volume off by about 30 × g, up to g = 3e-7; right at 1e-6.
 
-FreeCAD's PartDesign booleans use an automatic fuzzy value (1e-6 × the diagonal, about 1.7e-5 on that cube), and Silico's don't, so Silico's own results for these walls are measured on its kernel in M3.6, and recorded here then. Design S7's rule holds whatever the cause: a sweep feature whose result measures as its base is refused, and a volume error that leaves a valid solid is accepted and documented, as FreeCAD accepts both.
+FreeCAD's PartDesign booleans use an automatic fuzzy value (1e-6 × the diagonal, about 1.7e-5 on that cube), and Silico's don't. So the same cases were measured again on FreeCAD 1.1.3's Part booleans (OCCT 7.9.3), once with no fuzzy value, as Silico's booleans run, and once with PartDesign's. The base is a 10 mm cube. The profile is a 5 mm prism with a square hole, the hole g from the outer side. g runs from 1e-7 to 1e-5. Each face and prism is valid, with the right area.
+
+| Where the wall is | Fuzzy value | Pad | Pocket |
+|---|---|---|---|
+| The pad's outer square is the cube's top face, so the thin wall lies flush with the cube's side | none, as Silico's | for g ≤ 3e-7 the base alone (1000 mm³, 6 faces), valid; right (15 faces) from 4e-7 | off by 20 × g up to 3e-7; right to 1e-13 from 4e-7 |
+| The same | 1.7e-5, as PartDesign's | the base alone at every g measured, up to 1e-5 | off by 20 × g at every g measured |
+| The pad's outer square inset 2 mm, so no face of the wall is near a face of the cube | either | right at every g, to 5e-13 | right at every g, to 3e-13 |
+
+So the wrong results need the thin wall to lie flush with a face of the base. Without the fuzzy value, the band is the 1e-7 < g ≤ 3e-7 that the earlier measurement found. PartDesign's fuzzy value widens it to at least 1e-5: FreeCAD drops a flush pad whose wall is up to about the fuzzy value thick. Silico's worker sets the same options as Part's booleans, non-destructive and no fuzzy value, except that it runs single-threaded where FreeCAD runs in parallel (`FCBRepAlgoAPI_BooleanOperation.cpp:43-44`). So Silico is expected to match the first row. M3.6's kernel tests pin it on Silico's own booleans (S9). Design S7's rule holds whatever the cause: a sweep feature whose result measures as its base is refused, and a volume error that leaves a valid solid is accepted and documented, as FreeCAD accepts both.
 
 ## Refine
 
