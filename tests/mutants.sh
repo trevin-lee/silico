@@ -20,9 +20,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/committed-tree.sh"
 pixi run occt
 pixi install -e oracle
 # cargo-mutants' baseline builds and tests only the mutated packages, and their tests start
-# other packages' workers (silico-oracle's start the kernel's): build every binary first,
-# since target/debug may start cold (committed-tree.sh).
-cargo build --workspace --bins
+# other packages' workers (silico-oracle's start the kernel's): build the whole workspace's
+# tests first, as the gate and each mutant build them, since target/debug may start cold
+# (committed-tree.sh).
+cargo nextest run --workspace --no-run
 echo "mutants: testing $commit"
 # Without the tests that hold to a wall clock: on a machine the shards saturate they fail
 # the unmutated baseline, and a failing baseline stops cargo-mutants before it tests any

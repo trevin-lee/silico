@@ -30,8 +30,9 @@ permissions:
   contents: read
 
 env:
-  # As the gate builds (gate.yml), in the same worktree: incremental compilation's caches
-  # grew to about 19 GB on each runner, and the two share one build only if they build alike.
+  # As the gate builds (gate.yml), in the same worktree, so the two share one build: each
+  # mutant's rebuild loses incremental compilation's speed-up, but its caches grew to about
+  # 19 GB on each runner.
   CARGO_INCREMENTAL: "0"
 
 jobs:
