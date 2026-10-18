@@ -125,7 +125,7 @@ pub struct Model {
     /// Built features whose solids couldn't be measured, in timeline order: why.
     unmeasured: Vec<(FeatureId, Error)>,
     /// How each feature's solid's elements are named, in timeline order: none for one that
-    /// didn't build.
+    /// didn't build, or a sketch, which makes no solid.
     naming: Vec<Option<FeatureNaming>>,
     /// Each feature's element names: named in the background once the model is published
     /// (after its recompute has replied, so publishing doesn't wait for them: naming every

@@ -910,9 +910,11 @@ fn a_sketch_in_the_timeline_has_no_map_and_changes_no_other_features_names() {
         1,
     );
     assert_ne!(with, EXAMPLE);
-    let engine = Recompute::new(FakeKernel::new(2).unwrap());
-    let plain = published(&engine, checked(EXAMPLE));
-    let sketched = published(&engine, checked(&with));
+    // Each on its own engine, so neither borrows the other's names (found by the review:
+    // on one engine the second model took the first's map, so this compared a map with
+    // itself).
+    let model = |text: &str| published(&Recompute::new(FakeKernel::new(2).unwrap()), checked(text));
+    let (plain, sketched) = (model(EXAMPLE), model(&with));
     assert!(sketched.errors().next().is_none());
     assert!(sketched.element_map(&id("s0000001")).is_none());
     let hole = |model: &silico_core::recompute::Model| {
@@ -922,4 +924,15 @@ fn a_sketch_in_the_timeline_has_no_map_and_changes_no_other_features_names() {
             .collect::<Vec<_>>()
     };
     assert_eq!(hole(&sketched), hole(&plain));
+    // And as pinned: the block's elements first, then the pin's.
+    let map = sketched.element_map(&id("m3tq8v0z")).unwrap();
+    assert_eq!(map.iter().count(), 26 + 8);
+    for (kind, index, name) in [
+        (ElementKind::Face, 1, "k7f2qx3m.Face1"),
+        (ElementKind::Face, 7, "a91cw0de.Face1"),
+        (ElementKind::Edge, 13, "a91cw0de.Edge1"),
+        (ElementKind::Vertex, 10, "a91cw0de.Vertex2"),
+    ] {
+        assert_eq!(map.name(element(kind, index)).unwrap().to_string(), name);
+    }
 }

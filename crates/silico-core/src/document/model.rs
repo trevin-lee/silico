@@ -306,7 +306,7 @@ impl Operation {
     }
 
     /// The primitive the kernel makes for this feature, at the origin, before it's moved to
-    /// its [`position`](Self::position); `None` for a boolean.
+    /// its [`position`](Self::position); `None` for a boolean or a sketch.
     pub fn primitive(&self) -> Option<Primitive> {
         match self.made() {
             Made::Primitive(primitive) => Some(primitive),
@@ -314,7 +314,7 @@ impl Operation {
         }
     }
 
-    /// Where a primitive sits; `None` for a boolean.
+    /// Where a primitive sits; `None` for a boolean or a sketch.
     pub fn position(&self) -> Option<&Position> {
         match self {
             Operation::Box { position, .. }
@@ -372,7 +372,8 @@ impl Operation {
 
     /// Whether the feature makes a solid: every type but a sketch.
     pub fn makes_solid(&self) -> bool {
-        !matches!(self, Operation::Sketch(_))
+        // As `made` says, so the two can't disagree.
+        !matches!(self.made(), Made::Sketch)
     }
 
     /// The `type` the file writes.
