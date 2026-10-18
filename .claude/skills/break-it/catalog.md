@@ -110,6 +110,16 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - What the core adds to a document on save (fingerprints, metadata) when it opened just under the size limit: it opens, but can't be saved again
 - Error advice written before a new feature kind existed: a sketch of 30,000 points at `5e-324` (6 bytes each in the file, 326 written in full) is too large to save, and is told to shorten its name or note
 - Several bad values in one entity at once (a box with length, width, and height all 0) given to a checker that promises every problem: a rule returning `Result` stops at the first, so the user fixes one value per round trip
+- Names and notes shown to people (an outline, a diff view) with every bidi control, not only U+202A..202E and U+200E/F: the isolates U+2066..2069 and U+061C slip past most hand lists, and General_Category=Cf (soft hyphen, tag characters U+E0020..E007F) prints as nothing
+
+## Command line
+
+- Arguments that aren't UTF-8 (`caf\xe9.silico`): `std::env::args()` panics; Linux file systems allow such names (APFS refuses them, but the argument still panics)
+- `--` and file names that start with `--`, `-`, or a space: a parser that takes every `--x` as an option can't name some files
+- A document named as a FIFO with no writer, `/dev/zero`, or a FIFO fed past the reader's limit: `std::fs::read` blocks forever or reads without bound before the reader's size check runs
+- A rewrite by rename-over (write beside, then rename): a symlink becomes a regular file and its target is never written, a hard link is split, and a 0444 file is rewritten since rename needs only the directory writable
+- A file edited while a command that rewrites it computes (a slow worker wrapper script: `sleep 3; exec worker "$@"`): the edit saved meanwhile is overwritten without a word
+- Environment failures (a worker that exits at once, or is missing) through each command and `--json`: they must be "couldn't run" (exit 2), not problems with the document, and every file named needs a result line, even one that couldn't be read
 
 ## MCP and agent input
 

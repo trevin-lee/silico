@@ -968,7 +968,7 @@ fn broken_worker(kind: WorkerKind) -> String {
 }
 
 /// What to try after an internal error: a bug, not the request's values.
-pub(crate) const SILICO_BUG: &str = "this is a bug in Silico, not in the request: report it";
+pub const SILICO_BUG: &str = "this is a bug in Silico, not in the request: report it";
 
 /// Whether a refusal fits the request it answers (`listed`, the edges a fillet or chamfer
 /// lists): every edge it names is one the request lists, each once and in increasing

@@ -4,15 +4,19 @@
 //! ([`pool::KernelPool`]) or an in-memory fake for tests (`fake::FakeKernel`, with the
 //! `fake` feature), the document's types, read and written exactly and checked
 //! ([`document`]), recompute ([`recompute::Recompute`]), and the rebuild cache
-//! ([`cache::Cache`]), with each feature's fingerprint ([`document::Fingerprint`]), and
-//! topological naming ([`naming`]: each element's name, from the kernel's history); the
-//! command API every client uses arrives later in M2.
+//! ([`cache::Cache`]), with each feature's fingerprint ([`document::Fingerprint`]),
+//! topological naming ([`naming`]: each element's name, from the kernel's history), and the
+//! first of the commands every client runs ([`command`]: gate, rebuild, check, format, outline), and a
+//! document's file read and saved safely ([`file`]);
+//! the rest of the command API arrives later.
 
 pub mod cache;
+pub mod command;
 pub mod document;
 mod error;
 #[cfg(feature = "fake")]
 pub mod fake;
+pub mod file;
 pub mod kernel;
 pub mod logging;
 pub mod naming;

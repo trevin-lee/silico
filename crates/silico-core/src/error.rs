@@ -61,6 +61,31 @@ error_codes! {
     /// A feature rebuilt, but measures otherwise than the fingerprint stored with it: a
     /// determinism bug or a kernel change, for a person to look at, never smoothed over.
     Drift = "drift",
+    /// A file couldn't be read or written (missing, not a regular file, not permitted, a
+    /// disk full): the client's, not the document's or the kernel's.
+    IoFailed = "io_failed",
+}
+
+impl ErrorCode {
+    /// Whether the code is the kernel's own trouble, which says nothing about what was
+    /// asked of it: a worker that crashed or hung, a reply that couldn't be read, a
+    /// shortage, or a bug in Silico. A command reports one as its own failure (it couldn't
+    /// run), not as a problem of the document, and the oracle as a case it couldn't
+    /// finish. Every code answers here, so a new code has to say.
+    pub fn is_kernel_fault(self) -> bool {
+        match self {
+            ErrorCode::WorkerCrashed
+            | ErrorCode::WorkerTimeout
+            | ErrorCode::ProtocolError
+            | ErrorCode::ResourceExhausted
+            | ErrorCode::Internal => true,
+            ErrorCode::InvalidInput
+            | ErrorCode::KernelFailed
+            | ErrorCode::InvalidResult
+            | ErrorCode::Drift
+            | ErrorCode::IoFailed => false,
+        }
+    }
 }
 
 impl Serialize for ErrorCode {
