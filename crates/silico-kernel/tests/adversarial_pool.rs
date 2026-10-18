@@ -358,7 +358,27 @@ fn a_worker_executable_deleted_and_restored_under_a_running_pool() {
         assert!(err.message().contains(&*exe.to_string_lossy()), "{err}");
         assert!(err.cause().is_some(), "{err}");
     }
-    assert!(pool.pids().is_empty(), "{:?}", pool.pids());
+    // Every slot ends up with no worker, but not necessarily by now: a slot drops its
+    // dead worker when it takes a request or at its idle check (IDLE_CHECK), and the six
+    // requests may all have gone to one slot (on Linux they did, now and then, failing a
+    // gate under load). So wait for it, a few idle checks at most. Meanwhile only the
+    // killed workers may be held: none can start while the executable is gone.
+    let deadline = Instant::now() + 3 * silico_core::pool::IDLE_CHECK + HANG;
+    loop {
+        let held = pool.pids();
+        assert!(
+            held.iter().all(|pid| before.contains(pid)),
+            "a worker started while its executable was gone: {held:?}, before {before:?}"
+        );
+        if held.is_empty() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the pool still holds its killed workers {held:?}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
     std::os::unix::fs::symlink(TEST_WORKER, &exe).unwrap();
     assert!(done(pool.submit(Generation(1), sleep(1))).is_ok());
     // Full again, whenever the slots' waits let them start: that they start at once is
