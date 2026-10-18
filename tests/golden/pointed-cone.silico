@@ -36,13 +36,13 @@
       "id": "ffffffff",
       "type": "fillet",
       "v": 1,
-      "name": "Base rim",
+      "name": "Bore rim",
       "base": "hhhhhhhh",
       "edges": [
         "hhhhhhhh.Edge(G kkkkkkkk.cone.Face3, G pppppppp.cylinder.Face1)"
       ],
       "radius": 0.2,
-      "note": "A pointed cone keeps its base cap as Face3",
+      "note": "The bore's rim on the base cap, which a pointed cone keeps as Face3",
       "fingerprint": {"volume": 234.515907, "area": 293.7377, "bbox": [-5, -5, 0, 5, 5, 8], "faces": 4, "edges": 7, "vertices": 4}
     }
   ]

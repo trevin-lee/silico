@@ -5,7 +5,10 @@
 //! the measures stored with it; `silico fmt --check` finds it canonical; and `silico fmt`
 //! leaves its bytes as they are. The fingerprints' volumes were checked by hand when the
 //! models were recorded: a chamfer of three edges, a fillet of an edge between a chamfer and
-//! a side, an inside corner's fillet, holes' rims, a pointed cone's bore.
+//! a side, an inside corner's fillet, holes' rims, a pointed cone's bore. The plate's holes
+//! are each their own size, so a fillet of the wrong rim measures otherwise; the chamfered
+//! box's vertical edges are alike, so which of them its fillet takes is held by
+//! silico-kernel's tests/references.rs, not here.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};
@@ -66,9 +69,12 @@ fn silico(scratch: &Scratch, args: &[&str], file: &Path) -> Output {
 #[test]
 fn every_golden_model_is_listed_here() {
     // A model added to tests/golden/ is checked only once it's listed.
+    // (Not a dotfile: a `.silico-cache/` a run of silico on a model in place leaves, or
+    // Finder's `.DS_Store`, both ignored by git.)
     let mut found: Vec<String> = std::fs::read_dir(golden())
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| !name.starts_with('.'))
         .collect();
     found.sort();
     assert_eq!(found, MODELS);
@@ -98,7 +104,7 @@ fn every_golden_model_rebuilds_to_its_fingerprints_and_formats_to_its_own_bytes(
             "{model}: {}",
             String::from_utf8_lossy(&canonical.stderr)
         );
-        // And a save writes it back byte for byte.
+        // And a save leaves it as it is: `fmt` exits clean and writes nothing over it.
         let saved = silico(&scratch, &["fmt"], &file);
         assert_eq!(
             saved.status.code(),
