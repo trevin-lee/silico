@@ -15,8 +15,8 @@ use proptest::prelude::*;
 use silico_core::ErrorCode;
 use silico_core::kernel::{KernelWorker, ShapeData};
 use silico_kernel::{
-    BooleanOp, Built, History, KernelErrorKind, MAX_LENGTH, Primitive, Shape, ShapeSummary,
-    boolean, from_brep, make, summarize, to_brep, translate,
+    Axis, BooleanOp, Built, History, KernelErrorKind, MAX_LENGTH, Primitive, Profile, Refusal,
+    Shape, ShapeSummary, boolean, from_brep, make, revolve, summarize, to_brep, translate,
 };
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-worker");
@@ -849,5 +849,157 @@ proptest! {
                 }
             }
         }
+    }
+}
+
+/// A cylinder of `radius` along x from `base`, `length` long: a rectangle in the plane
+/// z = base's revolved a full turn about the line through `base` along x.
+fn cylinder_along_x(base: [f64; 3], radius: f64, length: f64) -> Shape {
+    let [x, y, z] = base;
+    let points = vec![
+        [x, y, z],
+        [x + length, y, z],
+        [x + length, y + radius, z],
+        [x, y + radius, z],
+    ];
+    let axis = Axis {
+        origin: base,
+        direction: [1.0, 0.0, 0.0],
+    };
+    revolve(&Profile { points }, &axis, 360.0).unwrap().shape
+}
+
+/// How OCCT's invalid fuse of a case is refused: as an invalid result, or, below zero, as
+/// empty (docs/ports/booleans.md: a negative volume is refused as empty).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Fused {
+    Invalid,
+    Empty,
+}
+
+#[test]
+fn a_cylinder_tangent_to_a_boxs_face_along_a_line_never_fuses_wrong() {
+    // SolidCraft's random boolean identity (its kernel's fuzz generator, seeds 424, 753,
+    // 768, 773, 817), in process: each a cylinder touching a box's face along a line from
+    // outside, a cylinder along x built as a rectangle revolved about it. OCCT 7.9.3's fuse
+    // of each is invalid, one shell of volume A − B or below zero, in FreeCAD 1.1.3 too
+    // (docs/ports/booleans.md, known wrong results): Silico refuses it, as each seed's
+    // column says, never returning it. Should OCCT get one right, it's accepted only as
+    // A + B. The common is empty, a line, refused as empty; the cut is A, whole, sound.
+    // Volumes by hand.
+    let cases: [(&str, Shape, Shape, f64, f64, Fused); 5] = [
+        (
+            "424",
+            at(
+                Primitive::Box {
+                    dx: 30.0,
+                    dy: 12.5,
+                    dz: 15.0,
+                },
+                [2.5, 5.0, 7.5],
+            ),
+            cylinder_along_x([27.5, 12.5, 30.0], 7.5, 20.0),
+            30.0 * 12.5 * 15.0,
+            PI * 7.5 * 7.5 * 20.0,
+            Fused::Invalid,
+        ),
+        (
+            "753",
+            at(
+                Primitive::Box {
+                    dx: 30.0,
+                    dy: 10.0,
+                    dz: 10.0,
+                },
+                [0.0, 7.5, 17.5],
+            ),
+            cylinder_along_x([17.5, 20.0, 22.5], 2.5, 20.0),
+            30.0 * 10.0 * 10.0,
+            PI * 2.5 * 2.5 * 20.0,
+            Fused::Invalid,
+        ),
+        (
+            "768",
+            cylinder_along_x([27.5, 17.5, 20.0], 7.5, 27.5),
+            at(
+                Primitive::Box {
+                    dx: 22.5,
+                    dy: 27.5,
+                    dz: 17.5,
+                },
+                [10.0, 10.0, 27.5],
+            ),
+            PI * 7.5 * 7.5 * 27.5,
+            22.5 * 27.5 * 17.5,
+            Fused::Empty,
+        ),
+        (
+            "773",
+            at(
+                Primitive::Box {
+                    dx: 15.0,
+                    dy: 27.5,
+                    dz: 27.5,
+                },
+                [22.5, 12.5, 0.0],
+            ),
+            at(
+                Primitive::Cylinder {
+                    radius: 5.0,
+                    height: 25.0,
+                },
+                [27.5, 7.5, 10.0],
+            ),
+            15.0 * 27.5 * 27.5,
+            PI * 5.0 * 5.0 * 25.0,
+            Fused::Invalid,
+        ),
+        (
+            "817",
+            at(
+                Primitive::Box {
+                    dx: 17.5,
+                    dy: 22.5,
+                    dz: 12.5,
+                },
+                [7.5, 30.0, 17.5],
+            ),
+            at(
+                Primitive::Cylinder {
+                    radius: 7.5,
+                    height: 7.5,
+                },
+                [22.5, 22.5, 15.0],
+            ),
+            17.5 * 22.5 * 12.5,
+            PI * 7.5 * 7.5 * 7.5,
+            Fused::Invalid,
+        ),
+    ];
+    for (seed, a, b, va, vb, fused) in cases {
+        let what = format!("seed {seed}");
+        match boolean(BooleanOp::Fuse, &a, &b) {
+            Ok(built) => {
+                let v = summarize(&built.shape).unwrap().volume;
+                assert!(
+                    close(v, va + vb, 1e-6),
+                    "{what}: fuse {v}, A + B {}",
+                    va + vb
+                );
+            }
+            Err(e) => {
+                let got = match e.refusal() {
+                    Refusal::ResultInvalid { .. } => Some(Fused::Invalid),
+                    Refusal::BooleanResultEmpty {
+                        op: BooleanOp::Fuse,
+                    } => Some(Fused::Empty),
+                    _ => None,
+                };
+                assert_eq!(got, Some(fused), "{what}: {e}");
+                assert!(e.suggestion().is_some(), "{what}: {e}");
+            }
+        }
+        refused_empty(&what, BooleanOp::Common, &a, &b);
+        sound(&what, BooleanOp::Cut, &a, &b, va);
     }
 }
