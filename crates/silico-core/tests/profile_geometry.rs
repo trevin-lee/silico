@@ -1,3 +1,9 @@
+//! M3.5's geometric predicates at their harder cases (round 1 of the review's proof tests):
+//! a hole nested inside an arc that passes both its circle's top and bottom, lines and arcs
+//! from a shared point that cross again, arcs crossing at one of their circles' two
+//! crossings, a line crossing a circle once from outside, a circle tangent to a side's line
+//! beyond the side, open ends grouped across x, and which hundred crossings are listed.
+//! Each failed on a mutant of the code before it was added; expected values are by hand.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 #[path = "common/profile.rs"]

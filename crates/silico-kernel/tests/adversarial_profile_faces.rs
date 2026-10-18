@@ -105,8 +105,8 @@ proptest! {
         let s = summarize(&built.shape).unwrap();
         prop_assert!(s.valid, "not valid");
         prop_assert!(
-            (s.area - h.area()).abs() <= h.area_tolerance().max(1e-9 * h.area()),
-            "OCCT's area {} against {} (±{})", s.area, h.area(), h.area_tolerance()
+            (s.area - h.area()).abs() <= h.occt_area_tolerance().max(1e-9 * h.area()),
+            "OCCT's area {} against {} (±{})", s.area, h.area(), h.occt_area_tolerance()
         );
         let faked = fake()
             .submit(fake().generation(), KernelRequest::make_faces(&sent).unwrap())

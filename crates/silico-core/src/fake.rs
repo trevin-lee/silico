@@ -527,7 +527,7 @@ fn answer(op: &Op) -> Result<Reply, Error> {
         Op::MakeFaces(regions) => {
             // The request was checked when it was made; checked again, as the worker does.
             if let Err(invalid) = regions.check() {
-                return Err(crate::kernel::refused("faces", None, invalid));
+                return Err(crate::kernel::faces_refused(invalid));
             }
             let layout = FacesLayout::of(regions);
             let kept_as = |numbers: &[u32]| -> Vec<ElementFate> {

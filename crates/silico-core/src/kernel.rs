@@ -298,7 +298,7 @@ impl KernelRequest<BuiltData> {
     /// order sent ([`FaceRegions`]). Regions that can't be sent are refused, saying why.
     pub fn make_faces(regions: &FaceRegions) -> Result<Self, Error> {
         if let Err(invalid) = regions.check() {
-            return Err(refused("faces", None, invalid));
+            return Err(faces_refused(invalid));
         }
         let shape = FacesShape::of(regions);
         let read = read_built(1);
@@ -759,13 +759,21 @@ pub(crate) fn refused(
     invalid: silico_protocol::InvalidParameter,
 ) -> Error {
     let words = match invalid.parameter {
-        "points" | "regions" => "profile",
+        "points" => "profile",
         "other" => "other distance",
         parameter => parameter,
     };
     Error::new(ErrorCode::InvalidInput, invalid.message.clone())
         .with_parameter(invalid.name(under))
         .with_suggestion(format!("give the {what} a valid {words}"))
+}
+
+/// Regions the faces request refuses, worded as [`refused`] words any request's values,
+/// with the advice that fits: the regions come from a profile the core made, which
+/// refuses by name all the request does, so a refusal here is Silico's bug.
+pub(crate) fn faces_refused(invalid: silico_protocol::InvalidParameter) -> Error {
+    refused("faces", None, invalid)
+        .with_suggestion("send the faces of a profile the core made: this is a bug in the profile")
 }
 
 /// The kernel worker executable: [`KERNEL_WORKER_ENV`], or `silico-kernel-worker` next to

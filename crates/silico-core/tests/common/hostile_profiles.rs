@@ -93,13 +93,20 @@ impl Hostile {
     }
 
     /// How far the profile's area may be from the closed form: a part in 1e9, and the
-    /// rounding of coordinates this far out along the perimeter; and for an arc whose end
-    /// is off its circle, the sliver between the arc's own end and the point its chord
-    /// runs to, at most |off| × its chord (2r): the profile's measure is exact for it, the
-    /// faces OCCT builds aren't.
+    /// rounding of coordinates this far out along the perimeter. The profile's measure is
+    /// exact for an arc whose end is off its circle: its radius and angles come from its
+    /// centre, its start, and its end's direction.
     pub fn area_tolerance(&self) -> f64 {
         let reach = self.origin[0].abs().max(self.origin[1].abs()).max(1.0) + 200.0;
         let perimeter: f64 = self.pieces.iter().map(Piece::perimeter).sum();
+        1e-9 * self.area().max(1e-12) + 8.0 * f64::EPSILON * reach * perimeter
+    }
+
+    /// How far the area of the faces OCCT builds may be from the closed form: as
+    /// [`Hostile::area_tolerance`], and for an arc whose end is off its circle, the sliver
+    /// between the arc's own end and the point its chord runs to, at most |off| × its
+    /// chord (2r).
+    pub fn occt_area_tolerance(&self) -> f64 {
         let off: f64 = self
             .pieces
             .iter()
@@ -108,7 +115,7 @@ impl Hostile {
                 _ => 0.0,
             })
             .sum();
-        1e-9 * self.area().max(1e-12) + 8.0 * f64::EPSILON * reach * perimeter + off
+        self.area_tolerance() + off
     }
 
     /// The sketch.

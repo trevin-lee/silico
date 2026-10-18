@@ -856,6 +856,11 @@ fn regions_that_cant_make_faces_never_reach_the_kernel() {
         let error = KernelRequest::make_faces(faces).err().unwrap();
         assert_eq!(error.code(), ErrorCode::InvalidInput, "{error:?}");
         assert_eq!(error.parameter(), Some("regions"));
+        // Regions come from a profile, which refuses by name all the request does.
+        assert_eq!(
+            error.suggestion(),
+            Some("send the faces of a profile the core made: this is a bug in the profile")
+        );
     }
     assert!(kernel.calls().is_empty());
 }

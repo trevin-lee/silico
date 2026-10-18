@@ -52,16 +52,10 @@ fn document(
     Checked::new(read(text.as_bytes()).unwrap()).unwrap()
 }
 
-/// The faces' total area, and their count, from the document's sketch: solved, its
-/// profile found, sent through the core's request check, and built.
+/// The faces' total area, and their count ([`built`]).
 fn faces(doc: &Checked) -> (f64, usize) {
-    let feature = FeatureId::new(FEATURE).unwrap();
-    let solution = solve(doc, &feature, &mut FakeSketches::new()).unwrap();
-    let found = profile(doc, &feature, &solution).unwrap_or_else(|r| panic!("{:?}", r.errors()));
-    let regions = found.faces();
-    KernelRequest::make_faces(&regions).unwrap();
-    let built = make_faces(&regions).unwrap();
-    (summarize(&built.shape).unwrap().area, regions.regions.len())
+    let (summary, areas, _) = built(doc);
+    (summary.area, areas.len())
 }
 
 fn assert_area(got: f64, want: f64) {
@@ -209,10 +203,20 @@ fn a_slot_as_a_hole_walks_its_arcs_against_their_drawing() {
 
 #[test]
 fn a_rectangle_on_each_plane_is_its_area() {
-    for plane in ["xy", "xz", "yz"] {
+    // The 4 × 3 rectangle from the origin, its x and y along the plane's (D6): on XY +X
+    // and +Y, on XZ +X and +Z, on YZ +Y and +Z.
+    for (plane, far) in [
+        ("xy", [4.0, 3.0, 0.0]),
+        ("xz", [4.0, 0.0, 3.0]),
+        ("yz", [0.0, 4.0, 3.0]),
+    ] {
         let (points, lines) = rectangle(false);
-        let (area, _) = faces(&document(plane, &points, &lines, &[], &[]));
-        assert_area(area, 12.0);
+        let (summary, ..) = built(&document(plane, &points, &lines, &[], &[]));
+        assert_area(summary.area, 12.0);
+        let [low, high] = summary.bounds.unwrap();
+        for (got, want) in low.iter().zip([0.0; 3]).chain(high.iter().zip(far)) {
+            assert!((got - want).abs() <= 1e-9, "{plane}: {low:?} to {high:?}");
+        }
     }
 }
 
@@ -239,7 +243,8 @@ fn slot_plate() -> (Vec<String>, Vec<String>, Vec<String>) {
     )
 }
 
-/// The sketch's faces built: their summary, and the profile's regions' areas.
+/// The document's sketch solved, its profile found, sent through the core's request
+/// check, and built: the faces' summary, and the profile's regions' areas and holes.
 fn built(doc: &Checked) -> (silico_protocol::ShapeSummary, Vec<f64>, Vec<usize>) {
     let feature = FeatureId::new(FEATURE).unwrap();
     let solution = solve(doc, &feature, &mut FakeSketches::new()).unwrap();
@@ -278,8 +283,7 @@ fn freecads_slot_plate_with_its_inner_set_is_one_face_with_two_holes() {
     // an arc; the shape has 9 edges, one face with two holes. The inner set has 9 degrees
     // of freedom, so where it solves depends on where the solve starts: FreeCAD's face is
     // 8607.71344, and Silico's solve from FreeCAD's drawing, its shared points starting
-    // where the lines end, puts the hole as drawn here (its area by the kernel then agrees
-    // with the profile's closed form).
+    // where the lines end, puts the hole as drawn here.
     let (mut points, mut lines, mut arcs) = slot_plate();
     points.extend([
         point("p0000010", 195.055893, 39.562252),
@@ -299,5 +303,28 @@ fn freecads_slot_plate_with_its_inner_set_is_one_face_with_two_holes() {
     let (summary, areas, holes) = built(&document("xy", &points, &lines, &circles, &arcs));
     assert_eq!((summary.faces, summary.edges), (1, 9));
     assert_eq!(holes, [2]);
+    // By hand: the plate, less the circle, less the hole of lines and arc: the trapezoid
+    // between its two horizontal sides, less the arc's segment, which bulges into it from
+    // its right side. 15828.155303 − 2798.497956 − (4612.934232 − 233.608346).
+    let apex = 80.0 / libm::tan(50f64.to_radians());
+    let plate = 80.0 * (400.0 - apex) / 2.0 + 800.0 * PI;
+    let circle = PI * 29.846098 * 29.846098;
+    let (bottom, top) = (
+        150.16951703902004 - 36.70045615522816,
+        148.15210260767645 - 79.11862023739202,
+    );
+    let trapezoid = (63.602452384044234 - 13.050452947874792) * (bottom + top) / 2.0;
+    let c = [192.5722413533035, 40.05890339848491];
+    let (start, end) = (
+        [148.15210260767645 - c[0], 63.602452384044234 - c[1]],
+        [150.16951703902004 - c[0], 13.050452947874792 - c[1]],
+    );
+    let r = libm::hypot(start[0], start[1]);
+    let theta = libm::atan2(end[1], end[0]) + 2.0 * PI - libm::atan2(start[1], start[0]);
+    let segment = r * r / 2.0 * (theta - libm::sin(theta));
+    let want = plate - circle - (trapezoid - segment);
+    assert!((want - 8650.331462).abs() < 1e-6, "{want}");
+    assert_area(summary.area, want);
+    // And the profile's own measure agrees with OCCT's.
     assert_area(summary.area, areas[0]);
 }

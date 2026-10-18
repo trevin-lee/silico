@@ -107,6 +107,23 @@ pub enum Curve {
     Circle { center: [f64; 2], radius: f64 },
 }
 
+/// One of an arc's two ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArcEnd {
+    Start,
+    End,
+}
+
+impl ArcEnd {
+    /// As messages say it: `start`, `end`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ArcEnd::Start => "start",
+            ArcEnd::End => "end",
+        }
+    }
+}
+
 /// What's too small about a curve for OCCT to build ([`Curve::size_problem`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SizeProblem {
@@ -139,11 +156,12 @@ impl Curve {
         (length <= LENGTH_TOLERANCE).then_some(SizeProblem::Ends(length))
     }
 
-    /// For an arc, the first of its ends (`"start"`, then `"end"`) more than OCCT's
-    /// tolerance from where its angle and radius put it, and how far. An arc's points are its definition; its radius and angles come from
-    /// them, so an end off its circle is a solve's or an edit's, not the curve's. The
-    /// request's check refuses what this names, and the core's profile refuses it first.
-    pub fn off_circle(&self) -> Option<(&'static str, f64)> {
+    /// For an arc, the first of its ends (its start, then its end) more than OCCT's
+    /// tolerance from where its angle and radius put it, and how far. An arc's points are
+    /// its definition; its radius and angles come from them, so an end off its circle is a
+    /// solve's or an edit's, not the curve's. The request's check refuses what this names,
+    /// and the core's profile refuses it first.
+    pub fn off_circle(&self) -> Option<(ArcEnd, f64)> {
         let Curve::Arc {
             center,
             start,
@@ -155,10 +173,13 @@ impl Curve {
         else {
             return None;
         };
-        [("start", start, start_angle), ("end", end, end_angle)]
-            .into_iter()
-            .map(|(what, p, angle)| (what, distance(p, on_circle(center, radius, angle))))
-            .find(|&(_, off)| off > LENGTH_TOLERANCE)
+        [
+            (ArcEnd::Start, start, start_angle),
+            (ArcEnd::End, end, end_angle),
+        ]
+        .into_iter()
+        .map(|(what, p, angle)| (what, distance(p, on_circle(center, radius, angle))))
+        .find(|&(_, off)| off > LENGTH_TOLERANCE)
     }
 
     /// Where it starts and ends, if it isn't a circle.
@@ -412,9 +433,10 @@ fn check_curve(c: &Curve, place: &Place) -> Result<(), InvalidParameter> {
                 )));
             }
             ends_short()?;
-            if let Some((what, off)) = c.off_circle() {
+            if let Some((end, off)) = c.off_circle() {
                 return Err(invalid(format!(
-                    "{place}'s {what} is {} mm from where its angle and radius put it: no more than 1e-7 mm",
+                    "{place}'s {} is {} mm from where its angle and radius put it: no more than 1e-7 mm",
+                    end.as_str(),
                     format_number(off)
                 )));
             }

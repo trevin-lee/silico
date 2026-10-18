@@ -23,12 +23,13 @@
 //! and face the kernel builds carries it, so two curves within it are one place in the
 //! B-rep (the maintainer's decision, 2026-10-18, on the design's open question 1). Every
 //! closeness question measures by the request's `distance` (`libm`'s `hypot`) and asks
-//! whether it's within the tolerance (two curves that are meet, and two open ends that are
-//! should share a point), or whether a loop or region is a sliver (the request's `sliver`).
-//! Nothing is joined or moved. Every rule the kernel's faces request checks
+//! whether it's within the tolerance (two curves that close meet, and two open ends that
+//! close should share a point), or whether a loop or region is a sliver (the request's
+//! `sliver`). Nothing is joined or moved. Every rule the kernel's faces request checks
 //! (`silico_protocol::FaceRegions::check`) the profile applies first, by the request's own
-//! code on the request's own numbers: each curve is converted to the request's form once,
-//! and kept on its loop ([`Loop::sent`], which [`Profile::faces`] sends as it is); its size
+//! code on the request's own numbers: each curve is converted to the request's form by
+//! one conversion, and kept on its edge ([`Edge::sent`], which [`Profile::faces`] sends as
+//! it is); its size
 //! by `Curve::size_problem`, an arc's ends by `Curve::off_circle`, and each loop's area and
 //! perimeter by `area_and_perimeter`, so a profile made is a request taken. Nothing here
 //! depends on the order the sketch lists its geometry: loops, regions, and refusals are
@@ -48,7 +49,7 @@ use crate::{Error, ErrorCode};
 
 /// Whether two things `distance` apart (by `silico_protocol::distance`, the request's own
 /// measure) are one place to OCCT: within [`LENGTH_TOLERANCE`], inclusive. Two curves that
-/// are meet, and two open ends that are should share a point (D2).
+/// close meet, and two open ends that close should share a point (D2).
 fn touching(distance: f64) -> bool {
     distance <= LENGTH_TOLERANCE
 }
@@ -73,7 +74,7 @@ impl CurveKind {
 }
 
 /// One curve of a loop, as the loop walks it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Edge {
     /// The sketch's curve.
     pub curve: ElementId,
@@ -85,6 +86,10 @@ pub struct Edge {
     /// Whether the walk runs against the curve as drawn: a line from its `to` to its
     /// `from`, an arc clockwise from its end to its start, a circle clockwise.
     pub reversed: bool,
+    /// The curve as the kernel's faces request takes it, walked this way: by the one
+    /// conversion, and what its loop's area and perimeter were measured from
+    /// (`silico_protocol::area_and_perimeter`, the request's own measure).
+    pub sent: silico_protocol::Curve,
 }
 
 /// A closed outline: its curves in walking order, from the one with the smallest ID, each
@@ -97,10 +102,14 @@ pub struct Loop {
     pub area: f64,
     /// Its length, in mm.
     pub perimeter: f64,
-    /// Its curves as the kernel's faces request takes them, in walking order: the one
-    /// conversion of each curve, which `area` and `perimeter` were measured from
-    /// (`silico_protocol::area_and_perimeter`, the request's own measure).
-    pub sent: Vec<silico_protocol::Curve>,
+}
+
+impl Loop {
+    /// Its curves as the kernel's faces request takes them, in walking order
+    /// ([`Edge::sent`]).
+    pub fn sent(&self) -> Vec<silico_protocol::Curve> {
+        self.curves.iter().map(|e| e.sent).collect()
+    }
 }
 
 /// A face to be: an outer loop, counter-clockwise, and the holes in it, clockwise.
@@ -451,9 +460,6 @@ fn of_sketch(
             continue;
         };
         let (problem, off) = (as_sent.size_problem(), as_sent.off_circle());
-        if problem.is_none() && off.is_none() {
-            continue;
-        }
         let mut elements = vec![curve.id.to_string()];
         for p in curve
             .center
@@ -469,26 +475,25 @@ fn of_sketch(
             "a profile's lines and arcs are longer than {} mm between their ends",
             format_number(LENGTH_TOLERANCE)
         );
-        let error = match (problem, curve.kind) {
-            (None, _) => {
-                let (what, d) = off.unwrap_or(("end", 0.0));
-                refuse(
-                    format!(
-                        "{}'s {what} is {} mm from its circle (the circle about its centre through its start): a profile's arcs end within {} mm of their circles",
-                        curve.named(),
-                        format_number(d),
-                        format_number(LENGTH_TOLERANCE)
-                    ),
-                    elements,
-                    "solve the sketch again, or put the arc's end on its circle",
-                )
-            }
-            (Some(SizeProblem::Ends(d)), CurveKind::Line) => refuse(
+        let error = match (problem, off, curve.kind) {
+            (None, None, _) => continue,
+            (None, Some((end, d)), _) => refuse(
+                format!(
+                    "{}'s {} is {} mm from its circle (the circle about its centre through its start): a profile's arcs end within {} mm of their circles",
+                    curve.named(),
+                    end.as_str(),
+                    format_number(d),
+                    format_number(LENGTH_TOLERANCE)
+                ),
+                elements,
+                "solve the sketch again, or put the arc's end on its circle",
+            ),
+            (Some(SizeProblem::Ends(d)), _, CurveKind::Line) => refuse(
                 format!("{} is {} mm long: {rule}", curve.named(), format_number(d)),
                 elements,
                 "lengthen it, or remove it and end its neighbours at one point",
             ),
-            (Some(SizeProblem::Ends(d)), _) => refuse(
+            (Some(SizeProblem::Ends(d)), _, _) => refuse(
                 format!(
                     "{}'s ends are {} mm apart: {rule}",
                     curve.named(),
@@ -497,7 +502,7 @@ fn of_sketch(
                 elements,
                 "draw a circle instead, or open the arc",
             ),
-            (Some(SizeProblem::Radius(r)), _) => refuse(
+            (Some(SizeProblem::Radius(r)), _, _) => refuse(
                 format!(
                     "{}'s radius is {} mm: a profile's arcs and circles have a radius above {} mm",
                     curve.named(),
@@ -566,6 +571,28 @@ fn of_sketch(
             });
         } else {
             let names: Vec<String> = group.iter().map(|&p| point_name(p)).collect();
+            // A curve with both its ends here would shrink to nothing if they shared a
+            // point: it's to be lengthened, not closed up.
+            let mut both_ends: Vec<String> = Vec::new();
+            for &c in group.iter().flat_map(|&p| &at_point[p]) {
+                let curve = &curves[c];
+                let named = curve.named();
+                if curve
+                    .ends
+                    .is_some_and(|ends| ends.iter().all(|p| group.contains(p)))
+                    && !both_ends.contains(&named)
+                {
+                    both_ends.push(named);
+                }
+            }
+            let suggestion = if both_ends.is_empty() {
+                "share the point: end the curves at one point".to_owned()
+            } else {
+                format!(
+                    "lengthen {}, or end the curves at one point",
+                    both_ends.join(" and ")
+                )
+            };
             found.add(|| {
                 refuse(
                     format!(
@@ -574,7 +601,7 @@ fn of_sketch(
                         format_number(LENGTH_TOLERANCE)
                     ),
                     names.iter().cloned().chain(curves_there).collect(),
-                    "share the point: end the curves at one point",
+                    &suggestion,
                 )
             });
         }
@@ -1544,9 +1571,18 @@ fn regions(
                 }
             }
         }
+        // Measured as the request will measure what it's sent.
+        let sent = sent_loop(curves, &walked).ok_or_else(|| {
+            Error::new(
+                ErrorCode::Internal,
+                "a profile's loop has a curve it can't send",
+            )
+        })?;
+        let (area, perimeter) = (loop_area(&sent, outer), area_and_perimeter(&sent).1);
         let edges = walked
             .iter()
-            .map(|&(c, reversed)| {
+            .zip(sent)
+            .map(|(&(c, reversed), sent)| {
                 let curve = &curves[c];
                 Edge {
                     curve: curve.id.clone(),
@@ -1557,21 +1593,14 @@ fn regions(
                         if reversed { [b, a] } else { [a, b] }
                     }),
                     reversed,
+                    sent,
                 }
             })
             .collect();
-        // Measured as the request will measure what it's sent.
-        let sent = sent_loop(curves, &walked).ok_or_else(|| {
-            Error::new(
-                ErrorCode::Internal,
-                "a profile's loop has a curve it can't send",
-            )
-        })?;
         Ok(Loop {
             curves: edges,
-            area: loop_area(&sent, outer),
-            perimeter: area_and_perimeter(&sent).1,
-            sent,
+            area,
+            perimeter,
         })
     };
 
@@ -1610,7 +1639,7 @@ fn regions(
 
 impl Profile {
     /// The profile as the kernel's faces request takes it (`KernelRequest::make_faces`):
-    /// its plane, and its regions in order, each loop's curves as walked ([`Loop::sent`]),
+    /// its plane, and its regions in order, each loop's curves as walked ([`Edge::sent`]),
     /// outer loops counter-clockwise and holes clockwise, exactly as the profile measured
     /// them.
     pub fn faces(&self) -> silico_protocol::FaceRegions {
@@ -1620,8 +1649,8 @@ impl Profile {
                 .regions
                 .iter()
                 .map(|r| silico_protocol::Region {
-                    outer: r.outer.sent.clone(),
-                    holes: r.holes.iter().map(|h| h.sent.clone()).collect(),
+                    outer: r.outer.sent(),
+                    holes: r.holes.iter().map(Loop::sent).collect(),
                 })
                 .collect(),
         }

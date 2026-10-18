@@ -16,6 +16,7 @@ use proptest::prelude::*;
 use silico_core::ErrorCode;
 use silico_core::document::{Coordinate, ElementId, Plane};
 use silico_core::profile::{CurveKind, Edge, Loop, Profile, Region, profile};
+use silico_protocol::Curve;
 
 const EPS: f64 = 1e-12;
 
@@ -27,13 +28,20 @@ fn id(text: &str) -> ElementId {
     ElementId::new(text).unwrap()
 }
 
-fn line(curve: &str, from: &str, to: &str, reversed: bool) -> Edge {
+/// A line walked from point `from`, at `start`, to point `to`, at `end`.
+fn line(
+    curve: &str,
+    (from, start): (&str, [f64; 2]),
+    (to, end): (&str, [f64; 2]),
+    reversed: bool,
+) -> Edge {
     Edge {
         curve: id(curve),
         kind: CurveKind::Line,
         center: None,
         ends: Some([id(from), id(to)]),
         reversed,
+        sent: Curve::Line { start, end },
     }
 }
 
@@ -99,10 +107,30 @@ fn a_4_by_3_rectangle_either_way_round_is_one_region_of_12_walked_counter_clockw
     assert_eq!(
         p.regions[0].outer.curves,
         vec![
-            line(&n[0], "p0000001", "p0000002", false),
-            line(&n[1], "p0000002", "p0000003", false),
-            line(&n[2], "p0000003", "p0000004", false),
-            line(&n[3], "p0000004", "p0000001", false),
+            line(
+                &n[0],
+                ("p0000001", [0.0, 0.0]),
+                ("p0000002", [4.0, 0.0]),
+                false
+            ),
+            line(
+                &n[1],
+                ("p0000002", [4.0, 0.0]),
+                ("p0000003", [4.0, 3.0]),
+                false
+            ),
+            line(
+                &n[2],
+                ("p0000003", [4.0, 3.0]),
+                ("p0000004", [0.0, 3.0]),
+                false
+            ),
+            line(
+                &n[3],
+                ("p0000004", [0.0, 3.0]),
+                ("p0000001", [0.0, 0.0]),
+                false
+            ),
         ]
     );
 
@@ -115,10 +143,30 @@ fn a_4_by_3_rectangle_either_way_round_is_one_region_of_12_walked_counter_clockw
     assert_eq!(
         p.regions[0].outer.curves,
         vec![
-            line(&n[0], "p0000002", "p0000001", true),
-            line(&n[3], "p0000001", "p0000004", true),
-            line(&n[2], "p0000004", "p0000003", true),
-            line(&n[1], "p0000003", "p0000002", true),
+            line(
+                &n[0],
+                ("p0000002", [0.0, 3.0]),
+                ("p0000001", [0.0, 0.0]),
+                true
+            ),
+            line(
+                &n[3],
+                ("p0000001", [0.0, 0.0]),
+                ("p0000004", [4.0, 0.0]),
+                true
+            ),
+            line(
+                &n[2],
+                ("p0000004", [4.0, 0.0]),
+                ("p0000003", [4.0, 3.0]),
+                true
+            ),
+            line(
+                &n[1],
+                ("p0000003", [4.0, 3.0]),
+                ("p0000002", [0.0, 3.0]),
+                true
+            ),
         ]
     );
 }
@@ -144,10 +192,10 @@ fn a_loop_walks_from_its_smallest_curve_id_whatever_the_order_and_direction_draw
     assert_eq!(
         p.regions[0].outer.curves,
         vec![
-            line("n0000003", b, c, true),
-            line("n0000007", c, e, false),
-            line("n0000005", e, a, true),
-            line("n0000009", a, b, false),
+            line("n0000003", (b, [4.0, 0.0]), (c, [4.0, 3.0]), true),
+            line("n0000007", (c, [4.0, 3.0]), (e, [0.0, 3.0]), false),
+            line("n0000005", (e, [0.0, 3.0]), (a, [0.0, 0.0]), true),
+            line("n0000009", (a, [0.0, 0.0]), (b, [4.0, 0.0]), false),
         ]
     );
 }
@@ -168,6 +216,10 @@ fn a_circle_is_a_loop_by_itself_counter_clockwise_outside_and_clockwise_as_a_hol
             center: Some(id("p0000001")),
             ends: None,
             reversed: false,
+            sent: Curve::Circle {
+                center: [0.0, 0.0],
+                radius: 5.0,
+            },
         }]
     );
 
@@ -234,8 +286,17 @@ fn an_arc_and_its_chord_enclose_the_half_disc() {
                 center: Some(id(&o)),
                 ends: Some([id(&s), id(&e)]),
                 reversed: false,
+                // From angle 0 round to π.
+                sent: Curve::Arc {
+                    center: [0.0, 0.0],
+                    start: [2.0, 0.0],
+                    end: [-2.0, 0.0],
+                    radius: 2.0,
+                    start_angle: 0.0,
+                    end_angle: PI,
+                },
             },
-            line(&chord, &e, &s, false),
+            line(&chord, (&e, [-2.0, 0.0]), (&s, [2.0, 0.0]), false),
         ]
     );
 
@@ -398,6 +459,7 @@ fn the_profile_is_the_same_on_every_plane() {
     d.circle(2.0, 1.5, 0.5);
     let on_xy = made(&d);
     assert_eq!(on_xy.plane, Plane::Xy);
+    assert_eq!(on_xy.faces().plane, silico_protocol::SketchPlane::Xy);
     for plane in [Plane::Xz, Plane::Yz] {
         d.sketch.plane = plane;
         let on = made(&d);
@@ -405,6 +467,7 @@ fn the_profile_is_the_same_on_every_plane() {
         assert_eq!(on.regions, on_xy.regions);
         assert_eq!(on.plane, plane);
         assert_eq!(on.faces().regions, on_xy.faces().regions);
+        assert_eq!(on.faces().plane, silico_protocol::SketchPlane::from(plane));
     }
 }
 
@@ -1601,4 +1664,42 @@ fn a_sliver_loop_among_a_regions_holes_is_refused_as_a_loop() {
     let mut got = errors[0].elements().to_vec();
     got.sort();
     assert_eq!(got, thin);
+}
+
+#[test]
+fn open_ends_grouped_with_both_ends_of_one_line_name_each_curve_once_and_say_lengthen_it() {
+    // L1 from p (0, 0) to q (1.5e-7, 0), longer than the tolerance; L2 from r (0.75e-7, 0)
+    // to (5, 5). r is within 1e-7 of both p and q, so the three open ends are one group,
+    // though p and q aren't within it of each other. L1 has both its ends in the group:
+    // sharing one point would shrink it to nothing, so the advice is to lengthen it.
+    let mut d = Draw::new();
+    let p = d.point(0.0, 0.0);
+    let r = d.point(0.75e-7, 0.0);
+    let q = d.point(1.5e-7, 0.0);
+    let s = d.point(5.0, 5.0);
+    let l1 = d.line(&p, &q);
+    let l2 = d.line(&r, &s);
+    let errors = d.refused();
+    assert_eq!(
+        named(&errors),
+        vec![
+            (
+                format!(
+                    "points {p}, {r}, {q} end curves within 1e-7 mm of each other, but aren't one point, so the profile is open there"
+                ),
+                vec![p.clone(), r.clone(), q.clone(), l1.clone(), l2.clone()]
+            ),
+            (
+                format!(
+                    "point {s} ends line {l2} and no other profile curve, so the profile is open there"
+                ),
+                vec![s.clone(), l2.clone()]
+            ),
+        ]
+    );
+    assert_eq!(errors[0].elements_total(), 5);
+    assert_eq!(
+        errors[0].suggestion(),
+        Some(format!("lengthen line {l1}, or end the curves at one point").as_str())
+    );
 }
