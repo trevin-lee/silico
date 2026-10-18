@@ -15,7 +15,9 @@ use super::model::{
     Document, Feature, FeatureId, FeatureVersion, FormatVersion, Operation, Position, Units,
 };
 use super::quantity::{Angle, Length};
-use super::sketch::{Coordinate, ElementId, Form, Reference, Sketch, SketchConstraint};
+use super::sketch::{
+    Coordinate, ElementId, ElementKind, Form, Plane, Reference, Sketch, SketchConstraint,
+};
 
 /// The text passed the limit it was written to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,7 +207,10 @@ fn fields(operation: &Operation) -> Vec<(&'static str, Out<'_>)> {
 
 /// A sketch's fields (D5 of docs/design/m3.2-sketch-format.md): each list sorted by ID,
 /// one element per line.
-fn sketch(sketch: &Sketch) -> Vec<(&'static str, Out<'_>)> {
+/// A sketch's plane, and each of its lists as the file writes it, by the kind of element
+/// it holds: taken apart whole, so a field added to a sketch is a compile error here until
+/// the file, and the outline, say it.
+fn sketch_lists(sketch: &Sketch) -> (&Plane, [(ElementKind, Vec<Out<'_>>); 5]) {
     let Sketch {
         plane,
         points,
@@ -269,37 +274,41 @@ fn sketch(sketch: &Sketch) -> Vec<(&'static str, Out<'_>)> {
         .into_iter()
         .map(constraint)
         .collect();
-    vec![
-        ("plane", Out::Str(plane.as_str())),
-        ("points", Out::Array(points)),
-        ("lines", Out::Array(lines)),
-        ("circles", Out::Array(circles)),
-        ("arcs", Out::Array(arcs)),
-        ("constraints", Out::Array(constraints)),
-    ]
+    (
+        plane,
+        [
+            (ElementKind::Point, points),
+            (ElementKind::Line, lines),
+            (ElementKind::Circle, circles),
+            (ElementKind::Arc, arcs),
+            (ElementKind::Constraint, constraints),
+        ],
+    )
+}
+
+fn sketch(sketch: &Sketch) -> Vec<(&'static str, Out<'_>)> {
+    let (plane, lists) = sketch_lists(sketch);
+    let mut fields = vec![("plane", Out::Str(plane.as_str()))];
+    fields.extend(
+        lists
+            .into_iter()
+            .map(|(kind, items)| (kind.list(), Out::Array(items))),
+    );
+    fields
 }
 
 /// Each of a sketch's points, lines, circles, arcs, and constraints, in the order the file
 /// writes them, as its kind (`point`, ...) and its one line of canonical JSON: for an
 /// outline, where an edit to one element changes its line alone.
 pub(crate) fn sketch_elements(sketch: &Sketch) -> Vec<(&'static str, String)> {
+    let (_, lists) = sketch_lists(sketch);
     let mut elements = Vec::new();
-    for (key, list) in self::sketch(sketch) {
-        let kind = match key {
-            "points" => "point",
-            "lines" => "line",
-            "circles" => "circle",
-            "arcs" => "arc",
-            "constraints" => "constraint",
-            _ => continue,
-        };
-        let Out::Array(items) = list else { continue };
+    for (kind, items) in lists {
         for item in &items {
             let mut writer = Writer::new(usize::MAX, true);
-            // Unbounded, so it can't be too long.
-            if writer.put(item, 0).is_ok() {
-                elements.push((kind, writer.out));
-            }
+            // With no limit, writing can't fail: it fails only past its limit.
+            let _ = writer.put(item, 0);
+            elements.push((kind.noun(), writer.out));
         }
     }
     elements

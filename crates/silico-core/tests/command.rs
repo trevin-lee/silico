@@ -87,6 +87,52 @@ fn an_outline_says_a_sketchs_elements_a_line_each_and_no_sketch_is_a_body() {
 }
 
 #[test]
+fn an_outline_says_a_sketchs_circles_and_arcs_by_kind() {
+    // Found by the review: no outline test had a circle or an arc. A sketch alone, on yz:
+    // its points, circle, arc, and constraint, each by its kind, and no bodies.
+    let sketch = r#"{"id": "s0000001", "type": "sketch", "v": 1, "name": "P", "plane": "yz", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 3, "y": 0, "construction": false}, {"id": "pc000000", "x": 0, "y": 3, "construction": false}], "lines": [], "circles": [{"id": "ca000000", "center": "pa000000", "radius": 2.5, "construction": true}], "arcs": [{"id": "aa000000", "center": "pa000000", "start": "pb000000", "end": "pc000000", "construction": false}], "constraints": [{"id": "c0000001", "type": "radius", "curve": "ca000000", "value": 2.5, "driving": false}]}"#;
+    let text = format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "features": [{sketch}]}}"#
+    );
+    assert_eq!(
+        command::outline(&read(text.as_bytes()).unwrap()),
+        r#"s0000001 "P" sketch plane yz
+  point {"id": "pa000000", "x": 0, "y": 0, "construction": false}
+  point {"id": "pb000000", "x": 3, "y": 0, "construction": false}
+  point {"id": "pc000000", "x": 0, "y": 3, "construction": false}
+  circle {"id": "ca000000", "center": "pa000000", "radius": 2.5, "construction": true}
+  arc {"id": "aa000000", "center": "pa000000", "start": "pb000000", "end": "pc000000", "construction": false}
+  constraint {"id": "c0000001", "type": "radius", "curve": "ca000000", "value": 2.5, "driving": false}
+bodies none
+"#
+    );
+}
+
+#[test]
+fn a_document_with_a_sketch_formats_with_the_solids_fingerprints_alone_and_checks_clean() {
+    // Found by the review: nothing formatted or checked a document with a sketch. A sketch
+    // has no solid, so no fingerprint (the gate would refuse one): `format` writes the
+    // solids' alone, and its text checks clean.
+    let sketch = r#"{"id": "s0000001", "type": "sketch", "v": 1, "name": "Profile", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": []},"#;
+    let text = EXAMPLE.replacen(
+        "    {\"id\": \"k7f2qx3m\"",
+        &format!("    {sketch}\n    {{\"id\": \"k7f2qx3m\""),
+        1,
+    );
+    let done = formatted(&text);
+    let written: Vec<String> = done
+        .refingerprinted
+        .iter()
+        .map(|(id, _)| id.to_string())
+        .collect();
+    assert_eq!(written, ["k7f2qx3m", "a91cw0de", "m3tq8v0z"]);
+    let written_back = read(done.text.as_bytes()).unwrap();
+    assert!(written_back.features[0].fingerprint.is_none());
+    let checked = check_bytes(&engine(), done.text.as_bytes()).unwrap();
+    assert!(checked.is_empty(), "{checked:?}");
+}
+
+#[test]
 fn an_outline_has_each_features_fingerprint_on_its_line() {
     let saved = formatted(EXAMPLE).text;
     let outline = command::outline(&read(saved.as_bytes()).unwrap());

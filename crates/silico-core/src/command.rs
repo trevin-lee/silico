@@ -156,9 +156,10 @@ pub fn format(model: &Model) -> Result<Result<Formatted, Problems>, Error> {
 
 /// The document's outline, for reading and for `git diff` (`silico show`): one line per
 /// feature, in timeline order, saying what it is, its values as the file writes them,
-/// and its fingerprint, if stored; its note, if any, on the line after; and the bodies
-/// the timeline ends with. Nothing is aligned in columns, so an edit to one feature
-/// changes its lines alone.
+/// and its fingerprint, if stored; its note, if any, on the line after; for a sketch, its
+/// points, curves, and constraints after that, a line each as the file writes them; and
+/// the bodies the timeline ends with. Nothing is aligned in columns, so an edit to one
+/// feature, or one of a sketch's elements, changes its lines alone.
 pub fn outline(document: &Document) -> String {
     // Every field taken apart, so one added to a document or a feature is a compile error
     // here until the outline says it or says why not: what it leaves out, `git diff`
