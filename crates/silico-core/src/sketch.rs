@@ -37,8 +37,9 @@ pub const ALGORITHMS: [Algorithm; 4] = [
 /// tightest circle tangency (at least [`LEAST_TANGENCY`]), whichever is most: a kept row's
 /// slack reaches only the unknowns of its own part
 /// ([`SketchSystem::parts`](silico_protocol::SketchSystem::parts)), which PlaneGCS solves
-/// apart from the rest.
-pub const LENGTH_TOLERANCE: f64 = 1e-8;
+/// apart from the rest. Only for that: how close geometry may come is OCCT's tolerance,
+/// `silico_protocol::LENGTH_TOLERANCE`.
+pub const REDUNDANCY_GAP_MM: f64 = 1e-8;
 
 /// How much a redundant constraint's gap may grow per millimetre of the extent of the part
 /// of the sketch it's in, the diagonal of the box around the part's points (decision 5):
@@ -53,7 +54,7 @@ pub const EXTENT_TOLERANCE: f64 = 1e-9;
 /// (decision 5). PlaneGCS measures such a tangency as `d² − (r1 ± r2)²`
 /// (`ConstraintTangentCircumf::error`), its one row in mm², and a solve holds it within
 /// 1e-10 mm², which holds `|d − (r1 ± r2)|` only within 1e-10 / (d + r1 ± r2) mm. Ten times that, the margin [`EXTENT_TOLERANCE`]
-/// has. Above [`LENGTH_TOLERANCE`] only when d + r1 ± r2 is under 0.1 mm: an inside
+/// has. Above [`REDUNDANCY_GAP_MM`] only when d + r1 ± r2 is under 0.1 mm: an inside
 /// tangency nearly concentric, or an outside one between tiny circles. At most 1e-4 mm:
 /// the tangency counts as [`LEAST_TANGENCY`] at the least.
 pub const TANGENCY_TOLERANCE: f64 = 1e-9;
@@ -1576,7 +1577,7 @@ impl Translation {
             return Err(Error::new(
                 ErrorCode::OverConstrained,
                 format!(
-                    "constraints repeat others but disagree with them, by up to {worst:e} mm ({id}), past the {tolerance:e} mm of the part of the sketch it's in ({EXTENT_TOLERANCE:e} of the part's {extent:e} mm extent, {tangency}or {LENGTH_TOLERANCE:e} mm at least)"
+                    "constraints repeat others but disagree with them, by up to {worst:e} mm ({id}), past the {tolerance:e} mm of the part of the sketch it's in ({EXTENT_TOLERANCE:e} of the part's {extent:e} mm extent, {tangency}or {REDUNDANCY_GAP_MM:e} mm at least)"
                 ),
             )
             .with_elements(self.ids(&disagreeing)?)
@@ -1595,7 +1596,7 @@ impl Translation {
             .filter_map(|c| match *c {
                 SolverConstraint::MidpointOnLine { tag, a, b, line } => {
                     let whole = SolverConstraint::SymmetricLine { tag, a, b, line };
-                    (!met(self.gap(&whole, values), LENGTH_TOLERANCE)).then_some(tag)
+                    (!met(self.gap(&whole, values), REDUNDANCY_GAP_MM)).then_some(tag)
                 }
                 _ => None,
             })
@@ -1963,7 +1964,7 @@ impl Translation {
     fn window(&self, values: &[f64], parts: &Parts, part: Option<Part>) -> Window {
         let extent = self.extent(values, parts, part);
         let tightest = self.tightest_tangency(values, parts, part);
-        let tolerance = LENGTH_TOLERANCE
+        let tolerance = REDUNDANCY_GAP_MM
             .max(EXTENT_TOLERANCE * extent)
             .max(tightest.map_or(0.0, |t| TANGENCY_TOLERANCE / t.max(LEAST_TANGENCY)));
         Window {

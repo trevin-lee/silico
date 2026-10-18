@@ -185,7 +185,22 @@ The input is the sketch and its `SketchSolution` (points by ID, circles' radii).
    - A loop's depth is how many loops contain it. A loop at even depth is a region's outer loop. A loop at odd depth is a hole of the smallest even loop around it.
 5. **Regions**, in an exact order. Each region has its outer loop counter-clockwise and its holes clockwise. Each loop lists its curves in walking order, and curves that share a point share a vertex. The worker makes one edge per curve and one vertex per point, and builds the face on the sketch's plane. It checks the face (`BRepCheck_Analyzer`) and reports what it built, and nothing else.
 
-**The tolerance.** Recommended: 1e-7 mm, inclusive, wherever M3.5 asks whether two things meet: near-closed ends, touching, and slivers. It's `LENGTH_TOLERANCE`, OCCT's `Precision::Confusion()`, FreeCAD's joining distance, and what `Profile::check` already uses. It moves nothing and joins nothing (`exactness-over-heuristics`). It refuses geometry closer than OCCT's own tolerance, where OCCT, whose edges and vertices carry 1e-7, would build two curves as touching. Exact predicates with no tolerance would decide crossings exactly. But they'd still accept a hole 1e-9 from its boundary, which OCCT builds as touching, so they'd need the distance test anyway.
+**The tolerance.** Decided (the maintainer's side, 2026-10-18): 1e-7 mm, inclusive, wherever M3.5 asks whether two things meet: near-closed ends, two curves within it of each other away from a point they share, and slivers (a loop's |area|, or a region's net area against its total perimeter, at most 1e-7 × the perimeter). It's `silico_protocol::LENGTH_TOLERANCE`, OCCT's `Precision::Confusion()`, FreeCAD's joining distance, and what `Profile::check` already uses. It moves nothing and joins nothing (`exactness-over-heuristics`). Every vertex, edge, and face the kernel builds carries that tolerance, so two curves within it are one place in the B-rep; refusing them is `check_length` refusing a 1e-8 box. The message states the gap as measured (`line a and line b are 5e-8 mm apart: …`), and says "cross" or "overlap" only where they do.
+
+What OCCT does with closer geometry, measured on the oracle (FreeCAD 1.1.3, OCCT 7.9.3: `Part.Face([wires])`, which is `BRepBuilderAPI_MakeFace` and `Add` with no ShapeFix, then `isValid()`), is not "builds them as touching", as this note said before:
+- A square hole 1e-9 to 1e-5 from the outer side: the face is **valid with exactly the right area**, and so is its prism. Exactly touching, crossing, or a hole's corner on the side are invalid (the last with area 108 for 92).
+- A circular hole 1e-9 from the sides: invalid; at 5e-8, valid. OCCT's 2D intersector (`BRepCheck`'s 1e-10), not `Confusion()`, decides, and its answer flips inside the band.
+- A 10 × w rectangle: the face is valid down to w = 1e-9; its prism from w = 1.01e-7.
+
+So exact predicates would let near loops reach the kernel, which builds them and calls them valid, and then (below) the sweep comes back valid and wrong. And no predicate is exact for arcs: an arc's end lies on its circle only to the solve's convergence (about 1e-10), so even "the shared point's intersection" needs a tolerance.
+
+**Known OCCT wrong results, for M3.6** (measured as above; OCCT calls each result valid):
+- A pad fused onto a 10 × 10 × 10 base, its profile a hole a wall g from the outer side: for g ≤ 3e-7 the fuse is "valid" with volume 1000 and 6 faces, the whole pad silently dropped. Right from 4e-7.
+- The pocket's cut of the same: "valid", with its volume off by about 30 × g, up to g = 3e-7. Right at 1e-6.
+
+The profile refuses walls up to 1e-7 (and slivers up to about 2e-7 wide on a thin rectangle), so walls between those and about 3e-7 still reach them. Recommended for M3.6: refuse a pad whose fused result has the base's volume (an empty result, the cheap "is it anything" check FreeCAD's behavior keeps); otherwise only the fingerprint records it.
+
+**An OCCT trap, for the worker:** `BRepBuilderAPI_MakeEdge` given a circle and an arc's parameter range of under 1e-9 rad builds the full circle: a 0.05 mm arc of radius 100 m became a "valid" face of 3.1e10 mm². Silico's worker builds each arc on exactly the parameter range the core sends (found by M3.5's faces work, branch `m3.5-faces` at `a12fcf4`, `crates/silico-kernel/tests/adversarial_faces.rs`).
 
 ## Tests
 

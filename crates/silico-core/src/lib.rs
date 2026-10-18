@@ -7,8 +7,9 @@
 //! ([`cache::Cache`]), with each feature's fingerprint ([`document::Fingerprint`]),
 //! topological naming ([`naming`]: each element's name, from the kernel's history), and the
 //! first of the commands every client runs ([`command`]: gate, rebuild, check, format, outline), and a
-//! document's file read and saved safely ([`file`]);
-//! the rest of the command API arrives later.
+//! document's file read and saved safely ([`file`]); and a solved sketch's profile
+//! ([`profile`]: its loops, nested into regions and oriented, or what keeps it from being
+//! one, named); the rest of the command API arrives later.
 
 pub mod cache;
 pub mod command;
@@ -21,6 +22,7 @@ pub mod kernel;
 pub mod logging;
 pub mod naming;
 pub mod pool;
+pub mod profile;
 pub mod recompute;
 mod references;
 pub mod sketch;
