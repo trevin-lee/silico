@@ -450,8 +450,10 @@ fn an_impossible_chain_of_the_largest_size_fails_as_solve_failed_not_a_timeout()
     let doc = checked(&impossible_chain(512, 2560.0));
     let started = Instant::now();
     let given = Duration::from_secs(900);
-    let e = within(given + Duration::from_secs(60), move || {
-        solved(&doc, &mut worker().with_timeout(given)).unwrap_err()
+    let (e, cpu) = within(given + Duration::from_secs(60), move || {
+        let mut w = worker().with_timeout(given);
+        let e = solved(&doc, &mut w).unwrap_err();
+        (e, cpu_time(w.pid()))
     });
     let took = started.elapsed();
     assert_eq!(
@@ -459,6 +461,31 @@ fn an_impossible_chain_of_the_largest_size_fails_as_solve_failed_not_a_timeout()
         ErrorCode::SolveFailed,
         "after {took:?}: {e} / {e:?}"
     );
+    // That SKETCH_TIMEOUT covers it, held to what load can't move much: the worker's own
+    // CPU time for the whole solve (about 64 s at loads of 55 to 97, round 2's skeptic),
+    // within the default with room to spare, so the shipped time answers what the gate
+    // admits (round 3's tests lens: a default of 60 s, break-it's bug, would fail here).
+    assert!(
+        cpu < silico_core::sketch::SKETCH_TIMEOUT / 2,
+        "the worker spent {cpu:?} of CPU, {took:?} in all"
+    );
+}
+
+/// The CPU time process `pid` has used, as `ps` reports it (`[[dd-]hh:]mm:ss[.ss]`).
+fn cpu_time(pid: u32) -> Duration {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "time=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    let text = text.trim();
+    let (days, clock) = text
+        .split_once('-')
+        .map_or((0.0, text), |(d, c)| (d.parse::<f64>().unwrap(), c));
+    let seconds = clock.split(':').fold(0.0, |total, part| {
+        total * 60.0 + part.parse::<f64>().unwrap()
+    });
+    Duration::from_secs_f64(days * 86_400.0 + seconds)
 }
 
 // --- Decision 5's tolerances at the edges of what the gate admits --------------------------

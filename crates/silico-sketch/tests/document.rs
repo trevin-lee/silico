@@ -728,3 +728,24 @@ fn a_sketch_worker_waits_its_own_time_and_the_time_it_is_given() {
     assert_eq!(s.dofs, 4);
     assert_ne!(w.pid(), stopped, "a new worker");
 }
+
+#[test]
+fn a_distrusted_sketch_worker_is_stopped_and_the_next_solve_starts_another() {
+    // Round 3's tests lens: SketchWorker::distrust had no test.
+    use silico_core::sketch::SketchSolver;
+    let mut w = worker();
+    let first = w.pid();
+    assert!(systems::process_exists(first));
+    w.distrust();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while systems::process_exists(first) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the distrusted worker still runs"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let s = solved(&free_line(&[]), &mut w).unwrap();
+    assert_eq!(s.dofs, 4);
+    assert_ne!(w.pid(), first);
+}

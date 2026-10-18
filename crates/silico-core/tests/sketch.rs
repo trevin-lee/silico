@@ -839,6 +839,13 @@ fn a_sketch_larger_than_the_solver_takes_is_refused() {
         "points",
         "the sketch has 1026 unknowns (two for each point, one for each circle, three for each arc), more than the 1024 the sketch solver takes",
     );
+    // Advice a single profile past the limit can follow too (round 3's tests lens).
+    assert_eq!(
+        problem(&text).suggestion(),
+        Some(
+            "split the sketch into smaller sketches: a single profile past this is more work than the sketch solver takes"
+        )
+    );
     // 512 points: 1,024 unknowns, exactly the limit.
     let text = document(&fields(&points[..512].join(", "), "", "", "", ""));
     assert!(problems(&text).is_empty());

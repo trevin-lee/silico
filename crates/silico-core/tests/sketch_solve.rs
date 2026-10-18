@@ -804,8 +804,9 @@ fn every_form_redundant_and_met_is_kept_and_a_nanometre_off_is_over_constrained(
     // kept, and named redundant. Then one value it reads moved, chosen by hand so the move
     // is the form's own measure: a millimetre gap as large as the move, or a radian gap a
     // tenth of it over a 10 mm line. A move of 1e-8 is then exactly decision 5's tolerance
-    // (1e-8 mm, 1e-9 rad): half of it is kept, twice it is over-constrained, naming it. A
-    // measure off by any factor fails one or the other (round 2's tests lens).
+    // (1e-8 mm, 1e-9 rad): 1% within it is kept, 1% past it is over-constrained, naming it.
+    // A measure off by more than 1% either way fails one or the other (round 2's and 3's
+    // tests lens; doubles at 10 mm are 1.8e-15 apart, far inside the margin).
     let cases: [(&str, usize); 28] = [
         (r#""type": "horizontal", "line": "n0000001""#, 9),
         (r#""type": "vertical", "line": "n0000002""#, 10),
@@ -926,8 +927,11 @@ fn every_form_redundant_and_met_is_kept_and_a_nanometre_off_is_over_constrained(
             off.values[moved] += step;
             read_back(&t, &off)
         };
-        assert!(moved_by(0.5e-8).is_ok(), "{form}: half the tolerance off");
-        let e = moved_by(2e-8).unwrap_err();
+        assert!(
+            moved_by(0.99e-8).is_ok(),
+            "{form}: just within the tolerance"
+        );
+        let e = moved_by(1.01e-8).unwrap_err();
         assert_eq!(
             (e.code(), e.elements()),
             (ErrorCode::OverConstrained, &["k0000001".to_owned()][..]),
@@ -1166,6 +1170,12 @@ fn the_second_solve_stands_only_when_it_solves_and_happens_only_after_a_solved_c
     short.values.pop();
     let (got, _) = run(vec![Ok(conflict(SolveStatus::Success)), Ok(short)]);
     assert_eq!(got.unwrap_err().code(), ErrorCode::ProtocolError);
+    // An untrusted first reply is the error, and the worker distrusted (the closure checks).
+    let mut short_first = answer(&t, t.system.values.clone(), SolveStatus::Success);
+    short_first.values.pop();
+    let (got, sent) = run(vec![Ok(short_first)]);
+    assert_eq!(got.unwrap_err().code(), ErrorCode::ProtocolError);
+    assert_eq!(sent.len(), 1);
     // No second solve after a conflict the solver didn't solve, or a refusal of another
     // kind.
     for first in [
