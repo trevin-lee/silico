@@ -660,13 +660,25 @@ const STDERR_FD: i32 = 2;
 
 /// Each worker's sockets and pipes that `allowed` doesn't allow it, in round `round` of a
 /// test. `allowed` is given each one and the worker's socket's address (the socket at
-/// descriptor 3, which it may copy).
+/// descriptor 3, which it may copy). A process caught mid-exec (a script that execs
+/// another program) lists no descriptors for a moment, so the listing is taken again, for
+/// up to five seconds, until it shows every worker's socket.
 fn not_allowed(
     round: usize,
     pids: &[u32],
     allowed: impl Fn(&Descriptor, Option<&String>) -> bool,
 ) -> Vec<Descriptor> {
-    let open = sockets_and_pipes(pids);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let open = loop {
+        let open = sockets_and_pipes(pids);
+        let listed = pids
+            .iter()
+            .all(|&pid| open.iter().any(|o| o.pid == pid && o.fd == SOCKET_FD));
+        if listed || Instant::now() >= deadline {
+            break open;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
     let mut extra = Vec::new();
     for &pid in pids {
         let mine: Vec<_> = open.iter().filter(|o| o.pid == pid).collect();
