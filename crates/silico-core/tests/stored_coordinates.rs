@@ -612,3 +612,33 @@ fn a_dropped_engine_stops_its_solve_before_the_drop_returns() {
         Ok(Ok(RunOutcome::Superseded))
     ));
 }
+
+#[test]
+fn a_cancelled_solve_runs_its_grace_before_its_stopped() {
+    // Round 4's tests lens: a cancel stops a solve as superseded work is stopped, after its
+    // grace (ARCHITECTURE.md); stopping it at once passed every test. Its grace, and not
+    // much more, as the start path's test bounds it.
+    let sketches = FakeSketches::new();
+    let engine = engine(&sketches);
+    sketches.hold();
+    let run = engine.start(checked(&sketch("10", HORIZONTAL)));
+    assert!(sketches.wait_held(Duration::from_secs(10)));
+    engine.cancel();
+    assert!(matches!(
+        run.wait_timeout(Duration::from_secs(10)),
+        Ok(Ok(RunOutcome::Superseded))
+    ));
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while sketches.stop_waits().is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let waits = sketches.stop_waits();
+    assert_eq!(waits.len(), 1, "{waits:?}");
+    assert!(
+        waits[0] >= silico_core::recompute::SKETCH_STOP_AFTER
+            && waits[0] < silico_core::recompute::SKETCH_STOP_AFTER + Duration::from_millis(250),
+        "stopped {:?} after it started",
+        waits[0]
+    );
+    sketches.release();
+}
