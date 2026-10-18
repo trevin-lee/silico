@@ -123,8 +123,8 @@ impl JsonSchema for FeatureId {
 pub type Position = [Length; 3];
 
 /// An element of a feature's solid, by its name in Silico's form as written
-/// (docs/ports/naming.md, `m3tq8v0z.Edge(G k7f2qx3m.box.Face6, G a91cw0de.cylinder.Face1)`): never an
-/// element's number, which an upstream edit can make another's. The gate reads it back
+/// (docs/ports/naming.md, `m3tq8v0z.Edge(G k7f2qx3m.box.Face6, G a91cw0de.cylinder.Face1)`):
+/// never an element's number, which an upstream edit can make another's. The gate reads it back
 /// (`naming::Name::parse`), knowing what each feature before it is; recompute finds the
 /// element it names, or fails the feature saying so.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -380,7 +380,7 @@ impl Operation {
     }
 
     /// The primitive the kernel makes for this feature, at the origin, before it's moved to
-    /// its [`position`](Self::position); `None` for a boolean or a sketch.
+    /// its [`position`](Self::position); `None` for any other feature.
     pub fn primitive(&self) -> Option<Primitive> {
         match self.made() {
             Made::Primitive(primitive) => Some(primitive),
@@ -388,7 +388,7 @@ impl Operation {
         }
     }
 
-    /// Where a primitive sits; `None` for a boolean or a sketch.
+    /// Where a primitive sits; `None` for any other feature.
     pub fn position(&self) -> Option<&Position> {
         match self {
             Operation::Box { position, .. }
@@ -434,7 +434,7 @@ impl Operation {
     }
 
     /// The features this one consumes, by field: a boolean's `base` then `tool`, a fillet's
-    /// or chamfer's `base`; none for a primitive.
+    /// or chamfer's `base`; none for a primitive or a sketch.
     pub fn inputs(&self) -> Vec<(&'static str, &FeatureId)> {
         match self {
             Operation::Fuse { base, tool }

@@ -108,7 +108,7 @@ fn every_name_that_finds_nothing_is_said_and_the_feature_fails_and_its_users_wai
         chamfer("c0000001", "f0000001", &["k7f2qx3m.box.Edge2"], "0.1"),
     );
     let model = published(&engine, checked(&text));
-    let Some(FeatureOutcome::Broken(errors)) = model.outcome(&id("f0000001")) else {
+    let Some(FeatureOutcome::Broken { errors, .. }) = model.outcome(&id("f0000001")) else {
         panic!("{:?}", model.outcome(&id("f0000001")));
     };
     let said: Vec<About> = errors
@@ -519,7 +519,7 @@ fn a_primitive_made_another_kind_under_its_id_breaks_a_reference_to_its_elements
                 );
                 continue;
             }
-            let Some(FeatureOutcome::Broken(errors)) = outcome else {
+            let Some(FeatureOutcome::Broken { errors, .. }) = outcome else {
                 panic!("{made}, {edge}: {outcome:?}");
             };
             let about: Vec<_> = errors
@@ -598,7 +598,7 @@ fn a_merge_of_a_kind_change_and_a_new_fillet_on_other_lines_breaks_the_fillet() 
         assert!(model.errors().next().is_none(), "{text}");
     }
     let model = published(&engine, checked(&merged));
-    let Some(FeatureOutcome::Broken(errors)) = model.outcome(&id("f0000001")) else {
+    let Some(FeatureOutcome::Broken { errors, .. }) = model.outcome(&id("f0000001")) else {
         panic!("{merged}: {:?}", model.outcome(&id("f0000001")));
     };
     assert_eq!(

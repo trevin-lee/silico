@@ -256,7 +256,7 @@ fn a_cone_brought_to_a_point_breaks_a_reference_to_the_rim_it_lost_and_keeps_the
     }
     for (r1, r2, lost, kept) in [("5", "0", top, base), ("0", "5", base, top)] {
         let model = publish(&engine, &drilled_cone(r1, r2, lost));
-        let Some(FeatureOutcome::Broken(errors)) =
+        let Some(FeatureOutcome::Broken { errors, .. }) =
             model.outcome(&FeatureId::new("ffffffff").unwrap())
         else {
             panic!(

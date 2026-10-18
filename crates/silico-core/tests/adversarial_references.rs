@@ -780,7 +780,7 @@ fn fillet_name_nested_to_the_limit_is_resolved_on_a_recompute_thread() {
     let engine = engine();
     let text = document(&[&fillet("f0000001", "m3tq8v0z", &[&deep_edge], "0.5")]);
     let model = published(&engine, checked(&text));
-    let Some(FeatureOutcome::Broken(errors)) = model.outcome(&id("f0000001")) else {
+    let Some(FeatureOutcome::Broken { errors, .. }) = model.outcome(&id("f0000001")) else {
         panic!("{:?}", model.outcome(&id("f0000001")));
     };
     assert_eq!(errors.len(), 1);
@@ -833,22 +833,20 @@ fn fillet_with_many_broken_names_says_each_without_running_away() {
     let engine = engine();
     let model = published(&engine, document);
     let spent = start.elapsed();
-    // The first hundred listed, each in place, and one counting the rest (found by the
-    // review: 500,000 errors from an 11 MB document, 231 MB of JSON), as the gate lists.
+    // The first hundred listed, each in place, and how many there are, as the gate lists
+    // its problems and counts them (found by the review: 500,000 errors from an 11 MB
+    // document, 231 MB of JSON; and by the rebase's review: a summary error counted as one).
     let errors: Vec<&Error> = model.errors().collect();
-    assert_eq!(errors.len(), 101);
-    for (i, error) in errors[..100].iter().enumerate() {
+    assert_eq!(errors.len(), 100);
+    for (i, error) in errors.iter().enumerate() {
         assert_eq!(error.code(), ErrorCode::ReferenceBroken);
         assert_eq!(error.parameter(), Some(format!("edges.{i}").as_str()));
     }
-    assert_eq!(errors[100].code(), ErrorCode::ReferenceBroken);
-    assert_eq!(errors[100].parameter(), Some("edges"));
-    assert_eq!(errors[100].elements_total(), 19_900);
-    assert!(
-        errors[100].message().contains("19900 more"),
-        "{}",
-        errors[100]
-    );
+    let Some(FeatureOutcome::Broken { total, .. }) = model.outcome(&id("f0000001")) else {
+        panic!("{:?}", model.outcome(&id("f0000001")));
+    };
+    assert_eq!(*total, 20_000);
+    assert_eq!(model.error_count(), 20_000);
     assert!(spent < Duration::from_secs(20), "{spent:?}");
 }
 
@@ -1028,6 +1026,21 @@ fn many_broken_names_on_a_big_base_list_a_hundred_and_count_the_rest() {
     let engine = engine();
     let model = published(&engine, checked(&text));
     let errors: Vec<&Error> = model.errors().collect();
-    assert_eq!(errors.len(), 101);
-    assert_eq!(errors[100].elements_total(), 50_000 - 100);
+    assert_eq!(errors.len(), 100);
+    assert_eq!(model.error_count(), 50_000);
+}
+
+#[test]
+fn fillet_too_large_to_save_is_told_to_name_fewer_or_shorter_edges() {
+    // Found by the rebase's review: the advice for a feature too large to write said to
+    // shorten its name or note, which for a fillet of 300 long edge names isn't the cause.
+    let edge = format!("\"{}\"", "x".repeat(60_000));
+    let edges = vec![edge; 300].join(", ");
+    let text = format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "features": [{{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}}, {{"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": [{edges}], "radius": 1}}]}}"#
+    );
+    let error = read(text.as_bytes()).unwrap_err();
+    assert_eq!(error.feature(), Some("f0000001"));
+    let advice = error.suggestion().unwrap_or_default();
+    assert!(advice.contains("fewer edges"), "{advice}");
 }

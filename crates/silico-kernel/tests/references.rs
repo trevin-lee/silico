@@ -149,7 +149,7 @@ fn a_rim_an_edit_takes_away_breaks_the_fillet_naming_the_rim_still_there() {
         r#""position": [20, 10, 2], "radius": 2.5, "height": 7"#,
     );
     let model = publish(&engine, &text);
-    let Some(FeatureOutcome::Broken(errors)) = model.outcome(&id("f0000001")) else {
+    let Some(FeatureOutcome::Broken { errors, .. }) = model.outcome(&id("f0000001")) else {
         panic!("{:?}", model.outcome(&id("f0000001")));
     };
     assert_eq!(errors.len(), 1);
@@ -396,7 +396,7 @@ fn an_edge_named_by_its_faces_breaks_when_an_edit_takes_it_away_and_never_moves(
     ] {
         let chamfer = ["aaaaaaaa.box.Edge7", added];
         let model = publish(&engine, &chamfered(&chamfer, lost));
-        let Some(FeatureOutcome::Broken(errors)) = model.outcome(&id("ffffffff")) else {
+        let Some(FeatureOutcome::Broken { errors, .. }) = model.outcome(&id("ffffffff")) else {
             panic!("{added}: {:?}", model.outcome(&id("ffffffff")));
         };
         assert_eq!(errors.len(), 1, "{added}: {errors:?}");

@@ -28,8 +28,8 @@ fn cut_short(text: &str) -> String {
 }
 
 /// The edge numbers `edges` (feature `feature`'s, in order) name in `map`, each once; or
-/// the broken ones' errors: the first [`PROBLEMS_LISTED`], each with its candidates, and, if
-/// there are more, one more counting them (as the gate lists its problems). `makers` says
+/// the broken ones' errors, the first [`PROBLEMS_LISTED`], each with its candidates, and
+/// how many are broken, listed or not (as the gate lists its problems and counts them). `makers` says
 /// how each feature makes its elements, to read the names. An edge two names find is
 /// filleted once, as FreeCAD's PartDesign takes it (each name still finds it: nothing
 /// re-points).
@@ -38,7 +38,7 @@ pub(crate) fn resolve(
     edges: &[ElementName],
     map: &ElementMap,
     makers: &dyn Fn(&FeatureId) -> Option<Maker>,
-) -> Result<Vec<u32>, Vec<Error>> {
+) -> Result<Vec<u32>, (Vec<Error>, u64)> {
     let mut found = Vec::with_capacity(edges.len());
     let mut seen = BTreeSet::new();
     let mut broken = Vec::new();
@@ -104,22 +104,11 @@ pub(crate) fn resolve(
             ),
         );
     }
-    if more > 0 {
-        broken.push(
-            Error::new(
-                ErrorCode::ReferenceBroken,
-                format!("and {more} more of the edges name no edge it can use"),
-            )
-            .with_feature(feature.as_str())
-            .with_parameter("edges")
-            .with_elements_total(more)
-            .with_suggestion("fix those listed, then check again for the rest"),
-        );
-    }
     if broken.is_empty() {
         Ok(found)
     } else {
-        Err(broken)
+        let total = broken.len() as u64 + more;
+        Err((broken, total))
     }
 }
 
@@ -252,7 +241,10 @@ mod tests {
 
     fn resolved(map: &ElementMap, edges: &[&str]) -> Result<Vec<u32>, Vec<Error>> {
         let edges: Vec<ElementName> = edges.iter().map(|e| ElementName::new(e).unwrap()).collect();
-        resolve(&id("ffffffff"), &edges, map, &makers)
+        resolve(&id("ffffffff"), &edges, map, &makers).map_err(|(errors, total)| {
+            assert_eq!(total, errors.len() as u64);
+            errors
+        })
     }
 
     fn reported(kind: ElementKind, index: u32) -> Reported {

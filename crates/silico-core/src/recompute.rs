@@ -109,8 +109,9 @@ pub enum FeatureOutcome {
     Failed(Error),
     /// References it holds (a fillet's or chamfer's edges, by name) name nothing it can
     /// use: each broken one's `reference_broken` error, in the order the feature holds them
-    /// (N6: every one, at once). Its step isn't run.
-    Broken(Vec<Error>),
+    /// (N6: every one, at once), the first [`PROBLEMS_LISTED`](crate::document::PROBLEMS_LISTED)
+    /// of them, and how many there are, listed or not. Its step isn't run.
+    Broken { errors: Vec<Error>, total: u64 },
     /// Not built, since it uses a feature that failed: that feature (the first failure
     /// along its base, then its tool).
     Blocked { on: FeatureId },
@@ -193,13 +194,28 @@ impl Model {
         &self.bodies
     }
 
+    /// How many errors the failed features have, listed in [`Model::errors`] or not: one
+    /// for a failure, and every broken reference of a feature whose references broke.
+    pub fn error_count(&self) -> u64 {
+        self.features
+            .iter()
+            .map(|(_, outcome)| match outcome {
+                FeatureOutcome::Failed(_) => 1,
+                FeatureOutcome::Broken { total, .. } => *total,
+                FeatureOutcome::Built { .. }
+                | FeatureOutcome::Blocked { .. }
+                | FeatureOutcome::Sketch => 0,
+            })
+            .sum()
+    }
+
     /// Why each failed feature failed, in timeline order, each error naming its feature:
     /// one for a failure, and one for each broken reference of a feature whose references
-    /// broke.
+    /// broke (its first hundred: [`Model::error_count`] counts them all).
     pub fn errors(&self) -> impl Iterator<Item = &Error> {
         self.features.iter().flat_map(|(_, outcome)| match outcome {
             FeatureOutcome::Failed(error) => std::slice::from_ref(error),
-            FeatureOutcome::Broken(errors) => errors.as_slice(),
+            FeatureOutcome::Broken { errors, .. } => errors.as_slice(),
             FeatureOutcome::Built { .. }
             | FeatureOutcome::Blocked { .. }
             | FeatureOutcome::Sketch => &[],
@@ -285,7 +301,7 @@ impl Model {
         match self.outcome(id)? {
             FeatureOutcome::Built { built, .. } => built.summary().and_then(Fingerprint::of),
             FeatureOutcome::Failed(_)
-            | FeatureOutcome::Broken(_)
+            | FeatureOutcome::Broken { .. }
             | FeatureOutcome::Blocked { .. }
             | FeatureOutcome::Sketch => None,
         }
@@ -1040,8 +1056,8 @@ impl Job {
 enum Ran {
     Made(Outcome<Built>),
     /// A fillet's or chamfer's edges that name none of its base's: every one, each its
-    /// `reference_broken` error. The step isn't run.
-    Unresolved(Vec<Error>),
+    /// `reference_broken` error (the first hundred), and how many. The step isn't run.
+    Unresolved((Vec<Error>, u64)),
     /// The solid, measured: a copy, made outside the schedule's lock.
     Measured(Outcome<Built>),
 }
@@ -1068,7 +1084,7 @@ struct Schedule {
     broken: Option<Error>,
     /// Fillets' and chamfers' steps whose edges didn't all resolve, by key: every broken
     /// reference's error.
-    unresolved: BTreeMap<Key, Vec<Error>>,
+    unresolved: BTreeMap<Key, (Vec<Error>, u64)>,
 }
 
 impl<K: Kernel + 'static> Engine<K> {
@@ -1335,14 +1351,14 @@ impl<K: Kernel + 'static> Engine<K> {
                 Ran::Made(Outcome::Superseded) | Ran::Measured(Outcome::Superseded) => {
                     s.superseded = true;
                 }
-                Ran::Unresolved(errors) => {
+                Ran::Unresolved(broken) => {
                     // The step fails on its first broken reference, so nothing that uses it
                     // runs; the feature says them all.
-                    let first = errors.first().cloned().unwrap_or_else(|| {
+                    let first = broken.0.first().cloned().unwrap_or_else(|| {
                         silico_bug("a fillet's edges were refused, though none is broken")
                     });
                     s.done.insert(key, Err(first));
-                    s.unresolved.insert(key, errors);
+                    s.unresolved.insert(key, broken);
                 }
                 Ran::Made(Outcome::Done(result)) => {
                     if result.is_ok() {
@@ -1460,16 +1476,19 @@ impl<K: Kernel + 'static> Engine<K> {
         plan: &Plan,
         dress: &Dress,
         lineage: &BTreeMap<usize, Arc<Built>>,
-    ) -> Result<Vec<u32>, Vec<Error>> {
+    ) -> Result<Vec<u32>, (Vec<Error>, u64)> {
         let _span = tracing::debug_span!("resolve", edges = dress.edges.len()).entered();
         let known = Arc::clone(&lock(&self.state).known);
         let Some(map) = plan.map_of(dress.base, lineage, &known) else {
-            return Err(vec![silico_bug(
-                "a fillet's base was built, but its elements couldn't be named",
-            )]);
+            return Err((
+                vec![silico_bug(
+                    "a fillet's base was built, but its elements couldn't be named",
+                )],
+                1,
+            ));
         };
         let Some(feature) = plan.feature_id(dress.feature) else {
-            return Err(vec![silico_bug("a fillet's feature wasn't planned")]);
+            return Err((vec![silico_bug("a fillet's feature wasn't planned")], 1));
         };
         crate::references::resolve(feature, &dress.edges, &map, &|f| {
             plan.makers.get(f).copied()
@@ -1555,7 +1574,9 @@ fn model(
     for (planned, feature) in plan.features.iter().zip(&source.document().features) {
         // A feature it uses that didn't build blocks it, on the failure at the root.
         let blocked = planned.uses.iter().find_map(|&i| match features.get(i) {
-            Some((id, FeatureOutcome::Failed(_) | FeatureOutcome::Broken(_))) => Some(id.clone()),
+            Some((id, FeatureOutcome::Failed(_) | FeatureOutcome::Broken { .. })) => {
+                Some(id.clone())
+            }
             Some((_, FeatureOutcome::Blocked { on })) => Some(on.clone()),
             Some((_, FeatureOutcome::Built { .. } | FeatureOutcome::Sketch)) | None => None,
         });
@@ -1594,7 +1615,7 @@ fn model(
                 .get(key)
                 .map(|error| (id.clone(), error.clone().with_feature(id.as_str()))),
             FeatureOutcome::Failed(_)
-            | FeatureOutcome::Broken(_)
+            | FeatureOutcome::Broken { .. }
             | FeatureOutcome::Blocked { .. }
             | FeatureOutcome::Sketch => None,
         })
@@ -1700,7 +1721,7 @@ fn naming_key(key: Key, id: &FeatureId, how: Naming, inputs: &[NamingKey]) -> Na
 fn feature_outcome(
     planned: &Planned,
     done: &BTreeMap<Key, StepResult>,
-    unresolved: &BTreeMap<Key, Vec<Error>>,
+    unresolved: &BTreeMap<Key, (Vec<Error>, u64)>,
 ) -> FeatureOutcome {
     let unbuilt = || {
         FeatureOutcome::Failed(
@@ -1715,8 +1736,11 @@ fn feature_outcome(
     for key in &planned.steps {
         match done.get(key) {
             Some(Ok(_)) => {}
-            Some(Err(_)) if let Some(errors) = unresolved.get(key) => {
-                return FeatureOutcome::Broken(errors.clone());
+            Some(Err(_)) if let Some((errors, total)) = unresolved.get(key) => {
+                return FeatureOutcome::Broken {
+                    errors: errors.clone(),
+                    total: *total,
+                };
             }
             Some(Err(error)) => {
                 return FeatureOutcome::Failed(error.clone().with_feature(planned.id.as_str()));

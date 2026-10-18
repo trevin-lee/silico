@@ -47,9 +47,10 @@ impl std::fmt::Display for NameError {
 }
 
 impl Name {
-    /// The name `text` writes, if it's one: every feature it names derives elements as
-    /// `operation_of` says (`None` for a feature that makes its elements, a primitive,
-    /// and for a feature there's no such thing as, whose names are refused).
+    /// The name `text` writes, if it's one: every feature it names makes its elements as
+    /// `operation_of` says (a primitive itself, an operation by deriving them, a sketch
+    /// not at all), and `None` for a feature there's no such thing as, whose names are
+    /// refused.
     pub fn parse(
         text: &str,
         operation_of: &dyn Fn(&FeatureId) -> Option<Maker>,
@@ -230,6 +231,7 @@ impl Reader<'_> {
         }
         let operation = match maker {
             Maker::By(operation) => operation,
+            // (`Nothing` can't be here: a sketch's name is refused above.)
             Maker::Itself(_) | Maker::Nothing => {
                 self.at = start;
                 return Err(self.error(&format!(

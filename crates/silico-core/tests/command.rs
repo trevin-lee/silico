@@ -151,7 +151,7 @@ fn an_outline_says_a_fillets_or_chamfers_edges_a_line_each() {
             r#"f0000001 "Round" fillet base m3tq8v0z, radius 0.5"#,
             r#"  edge "k7f2qx3m.box.Edge1""#,
             r#"  edge "m3tq8v0z.Edge(G k7f2qx3m.box.Face6, G a91cw0de.cylinder.Face1)""#,
-            r#"c0000001 "Bevel" chamfer base f0000001, distance 1"#,
+            r#"c0000001 "Bevel" chamfer base f0000001, size.distance 1"#,
             r#"  edge "k7f2qx3m.box.Edge5""#,
             "bodies c0000001",
         ]
@@ -545,4 +545,29 @@ fn engines_sharing_a_kernel_in_turn_dont_supersede_each_other() {
         rebuilt(&second);
     }
     rebuilt(&first);
+}
+
+#[test]
+fn a_checks_total_counts_every_broken_reference_listed_or_not() {
+    // Found by the rebase's review: a feature lists its first hundred broken references,
+    // and a check's total counted a summary of the rest as one problem, so 150 broken
+    // references were `total: 101`. The total is every one, as the gate's is.
+    let edges: Vec<String> = (13..163)
+        .map(|n| format!("\"k7f2qx3m.box.Edge{n}\""))
+        .collect();
+    let text = format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "features": [
+{{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}},
+{{"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": [{}], "radius": 1}}]}}"#,
+        edges.join(", ")
+    );
+    let problems = check_bytes(&engine(), text.as_bytes()).unwrap();
+    assert_eq!(problems.errors().len(), 100);
+    assert_eq!(problems.total(), 150);
+    assert!(
+        problems
+            .errors()
+            .iter()
+            .all(|e| e.code() == ErrorCode::ReferenceBroken)
+    );
 }

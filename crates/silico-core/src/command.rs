@@ -17,7 +17,7 @@ use crate::{Error, ErrorCode};
 /// What was wrong with a document: every problem found, in the order found (reading, then
 /// the gate, then each failed feature and each fingerprint that doesn't hold, in timeline
 /// order), and how many there are, more than [`Problems::errors`] lists only when the gate
-/// found too many to list.
+/// found too many to list, or a feature more broken references than it lists.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Problems {
     errors: Vec<Error>,
@@ -27,6 +27,13 @@ pub struct Problems {
 impl Problems {
     fn of(errors: Vec<Error>) -> Self {
         let total = errors.len() as u64;
+        Problems { errors, total }
+    }
+
+    /// `errors`, of which there are `unlisted` more than it lists (a feature's broken
+    /// references past the first hundred).
+    fn with_unlisted(errors: Vec<Error>, unlisted: u64) -> Self {
+        let total = errors.len() as u64 + unlisted;
         Problems { errors, total }
     }
 
@@ -87,8 +94,15 @@ pub fn rebuild<K: Kernel + 'static>(
 pub fn check(model: &Model) -> Result<Problems, Error> {
     let _span = tracing::info_span!("check").entered();
     let mut problems = failures(model)?;
+    let unlisted = unlisted(model, &problems);
     problems.extend(own(model.drift())?);
-    Ok(Problems::of(problems))
+    Ok(Problems::with_unlisted(problems, unlisted))
+}
+
+/// How many of the model's failures `listed` (its failures, as listed) leaves out: broken
+/// references past the hundred each feature lists.
+fn unlisted(model: &Model, listed: &[Error]) -> u64 {
+    model.error_count().saturating_sub(listed.len() as u64)
 }
 
 /// The model's failed features, as problems of the document; or, if one failed for a
@@ -127,6 +141,7 @@ pub struct Formatted {
 pub fn format(model: &Model) -> Result<Result<Formatted, Problems>, Error> {
     let _span = tracing::info_span!("format").entered();
     let mut problems = failures(model)?;
+    let unlisted = unlisted(model, &problems);
     let written = model.fingerprinted();
     let refingerprinted = model
         .document()
@@ -150,7 +165,7 @@ pub fn format(model: &Model) -> Result<Result<Formatted, Problems>, Error> {
     Ok(Ok(Formatted {
         text,
         refingerprinted,
-        problems: Problems::of(problems),
+        problems: Problems::with_unlisted(problems, unlisted),
     }))
 }
 
@@ -158,8 +173,9 @@ pub fn format(model: &Model) -> Result<Result<Formatted, Problems>, Error> {
 /// feature, in timeline order, saying what it is, its values as the file writes them,
 /// and its fingerprint, if stored; its note, if any, on the line after; for a sketch, its
 /// points, curves, and constraints after that, a line each as the file writes them, and
-/// for a fillet or chamfer, its edges, a line each; and the bodies the timeline ends with. Nothing is aligned in columns, so an edit to one
-/// feature, or one of a sketch's elements, changes its lines alone.
+/// for a fillet or chamfer, its edges, a line each; and the bodies the timeline ends
+/// with. Nothing is aligned in columns, so an edit to one feature, one of a sketch's
+/// elements, or one edge, changes its lines alone.
 pub fn outline(document: &Document) -> String {
     // Every field taken apart, so one added to a document or a feature is a compile error
     // here until the outline says it or says why not: what it leaves out, `git diff`
@@ -265,7 +281,7 @@ fn values(operation: &Operation) -> String {
         // Its edges follow, a line each.
         Operation::Fillet { base, radius, .. } => format!("base {base}, radius {radius}"),
         Operation::Chamfer { base, size, .. } => {
-            format!("base {base}, distance {}", size.distance)
+            format!("base {base}, size.distance {}", size.distance)
         }
     }
 }
