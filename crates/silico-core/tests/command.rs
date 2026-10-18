@@ -602,13 +602,13 @@ fn a_formats_total_counts_every_broken_reference_and_a_failure_counts_once() {
 }
 
 #[test]
-fn two_fillets_broken_past_the_hundred_and_a_failure_count_every_one() {
+fn two_fillets_broken_past_the_hundred_and_a_failure_each_list_their_own_and_count_every_one() {
     // Found by the review: no test had two features with broken references, so a count of
-    // the first feature's alone passed. Two fillets, 150 broken edges each, and a cylinder
-    // the kernel refuses: 300 broken references and a failure, 301; listed, the first
-    // hundred of each fillet's and the failure.
-    let names = |base: &str| -> String {
-        (13..163)
+    // the first feature's alone passed, and so did a second feature listing the first's
+    // errors. Two fillets, 150 and 130 broken edges, and a cylinder the kernel refuses:
+    // listed, the first hundred of each fillet's own and the failure, 201; counted, 281.
+    let names = |base: &str, count: u32| -> String {
+        (13..13 + count)
             .map(|n| format!("\"{base}.box.Edge{n}\""))
             .collect::<Vec<_>>()
             .join(", ")
@@ -620,8 +620,8 @@ fn two_fillets_broken_past_the_hundred_and_a_failure_count_every_one() {
 {{"id": "b0000002", "type": "box", "v": 1, "name": "Block2", "position": [100, 0, 0], "length": 40, "width": 20, "height": 10}},
 {{"id": "f0000002", "type": "fillet", "v": 1, "name": "Round2", "base": "b0000002", "edges": [{}], "radius": 1}},
 {{"id": "y0000001", "type": "cylinder", "v": 1, "name": "Pin", "position": [0, 0, 0], "radius": 1, "height": 1}}]}}"#,
-        names("k7f2qx3m"),
-        names("b0000002")
+        names("k7f2qx3m", 150),
+        names("b0000002", 130)
     );
     let refusing = engine();
     refusing.kernel().refuse(|op| {
@@ -629,6 +629,19 @@ fn two_fillets_broken_past_the_hundred_and_a_failure_count_every_one() {
             .then(|| Error::new(ErrorCode::KernelFailed, "MakeCylinder failed"))
     });
     let problems = check_bytes(&refusing, text.as_bytes()).unwrap();
+    let of = |f: &str| {
+        problems
+            .errors()
+            .iter()
+            .filter(|e| e.feature() == Some(f))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(of("f0000001").len(), 100);
+    assert_eq!(of("f0000002").len(), 100);
+    assert_eq!(of("y0000001").len(), 1);
+    // Each fillet's errors are its own names.
+    assert_eq!(of("f0000001")[0].elements(), ["k7f2qx3m.box.Edge13"]);
+    assert_eq!(of("f0000002")[0].elements(), ["b0000002.box.Edge13"]);
     assert_eq!(problems.errors().len(), 201);
-    assert_eq!(problems.total(), 301);
+    assert_eq!(problems.total(), 150 + 130 + 1);
 }
