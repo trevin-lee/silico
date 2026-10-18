@@ -2,7 +2,7 @@
 //! tests/oracle/sketch-features.silico (protected), each built by FreeCAD 1.1.3's PartDesign
 //! and checked against its analytic expected values; that the harness sees a FreeCAD model
 //! built otherwise than the document says; and Silico's rebuild of them, compared with
-//! FreeCAD's, which waits on recompute building sweep features (the design's step iv).
+//! FreeCAD's and the expected values.
 //! Needs the FreeCAD oracle (`pixi install -e oracle`) and the workers built
 //! (`cargo nextest run --workspace` builds them).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -12,8 +12,8 @@ use std::path::Path;
 
 use silico_oracle::Outcome;
 use silico_oracle::features::{
-    self, Cases, Extrusion, FeatureCase, Ours, PartDesignFeature, Revolution, RevolutionAxis,
-    SketchGeometry, against_expected, compare, is_unbuilt,
+    self, Cases, Extrusion, FeatureCase, PartDesignFeature, Revolution, RevolutionAxis,
+    SketchGeometry, against_expected, compare,
 };
 
 const CASES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/oracle");
@@ -468,70 +468,28 @@ fn every_expected_value_is_checked() {
 }
 
 #[test]
-fn every_sketch_feature_case_matches_freecad_once_recompute_builds_it() {
-    // Silico's rebuild of the document through the core's commands, each case compared
-    // with FreeCAD's and with its expected values. Recompute reads and checks pads,
-    // pockets, revolves, and grooves, but builds them only from M3.6's step iv; until then
-    // each case is refused as one it can't build yet, or blocked on a base refused so, and
-    // waits. Once recompute builds any of them, the last assertion fails, naming them:
-    // then take the wait out of this test, so every case is compared.
+fn every_sketch_feature_case_matches_freecad() {
+    // Silico's rebuild of the document through the core's commands (M3.6, step iv), each
+    // case compared with FreeCAD's and with its expected values: every one of them.
     let cases = cases();
-    let ours = features::silico(&cases).unwrap();
-    let theirs = features::freecad(&cases.cases).unwrap();
-    let unbuilt: BTreeSet<_> = cases
-        .cases
+    let differ: Vec<String> = features::run(&cases)
+        .unwrap()
         .iter()
-        .zip(&ours)
-        .filter(|(_, o)| matches!(o, Ours::Failed(e) if is_unbuilt(e)))
-        .map(|(c, _)| c.feature.clone())
+        .map(ToString::to_string)
         .collect();
-    let (mut waiting, mut built, mut differ) = (Vec::new(), Vec::new(), Vec::new());
-    for ((case, ours), theirs) in cases.cases.iter().zip(&ours).zip(&theirs) {
-        match ours {
-            Ours::Failed(e) if is_unbuilt(e) => waiting.push(&case.name),
-            Ours::Blocked(on) if unbuilt.contains(on) => waiting.push(&case.name),
-            _ => {
-                if matches!(ours, Ours::Built(_)) {
-                    built.push(&case.name);
-                }
-                let ours = ours.outcome();
-                let mut how = compare(case, &ours, theirs);
-                how.extend(
-                    against_expected(case, &ours)
-                        .into_iter()
-                        .map(|h| format!("Silico's {h}")),
-                );
-                if !how.is_empty() {
-                    differ.push(format!("{}: {}", case.name, how.join("; ")));
-                }
-            }
-        }
-    }
     assert!(differ.is_empty(), "{}", report(&differ));
-    assert_eq!(
-        waiting.len(),
-        cases.cases.len(),
-        "recompute builds {built:?} now (M3.6's step iv): take the wait out of this test, so every case is compared with FreeCAD"
-    );
 }
 
 #[test]
-fn a_rebuild_refusing_a_case_for_another_reason_is_a_difference_not_a_wait() {
-    // The wait above covers exactly recompute's refusal of a type it can't build yet: a
-    // refusal of the same feature for anything else (here, a bad axis) isn't it.
-    let unbuilt = silico_core::Error::new(
-        silico_core::ErrorCode::InvalidInput,
-        "q0000001 is a pocket, which this Silico reads and checks but can't build yet",
-    )
-    .with_parameter("type");
-    assert!(is_unbuilt(&unbuilt));
-    let other = silico_core::Error::new(
-        silico_core::ErrorCode::InvalidInput,
-        "axis 0a1b2c3d is a point of sketch s0000003: a revolve turns about a line",
-    )
-    .with_parameter("axis");
-    assert!(!is_unbuilt(&other));
-    let kernel = silico_core::Error::new(silico_core::ErrorCode::KernelFailed, "can't build yet")
-        .with_parameter("type");
-    assert!(!is_unbuilt(&kernel));
+fn a_silico_rebuild_that_differs_from_freecad_or_its_values_is_reported() {
+    // The comparison can fail: a case Silico refuses where FreeCAD builds it differs, and
+    // so does one whose volume isn't the expected.
+    let cases = cases();
+    let case = case(&cases, "pocket_in_box");
+    let theirs = Outcome::Built(measured(&case));
+    let refused = Outcome::Failed("refused".to_owned());
+    assert!(!compare(&case, &refused, &theirs).is_empty());
+    let mut off = measured(&case);
+    off.volume += 1.0;
+    assert!(!against_expected(&case, &Outcome::Built(off)).is_empty());
 }

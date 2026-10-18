@@ -5,13 +5,14 @@
 //! the same sketches, at the coordinates the document stores, and its measures are checked
 //! against the expected values ([`against_expected`]): the cases are checked independently
 //! of Silico. Silico rebuilds the document through the core's commands ([`silico`]), and its
-//! measures are compared with FreeCAD's ([`compare`]) once recompute builds sweep features
-//! (the design's step iv); until then it refuses them as features it can't build yet.
+//! measures are compared with FreeCAD's ([`compare`]) and with the expected values
+//! ([`run`], which `silico-oracle run` reports).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use serde::Serialize;
+use silico_core::Error;
 use silico_core::command::rebuild;
 use silico_core::document::{
     Axis, Checked, Feature, FeatureId, Operation, PadExtent, Plane, PocketExtent, Position, Sketch,
@@ -20,7 +21,6 @@ use silico_core::document::{
 use silico_core::kernel::KernelWorker;
 use silico_core::pool::KernelPool;
 use silico_core::recompute::{FeatureOutcome, Recompute};
-use silico_core::{Error, ErrorCode};
 use silico_protocol::arc_from_points;
 
 use crate::compare::{Measured, Outcome, Tolerance, boxes_close, close, differences, size};
@@ -670,14 +670,6 @@ impl Ours {
     }
 }
 
-/// Whether `e` is recompute's refusal of a sweep feature it reads and checks but doesn't
-/// build yet (docs/design/m3.6-sketch-features.md, *Implementation order*, step iv).
-pub fn is_unbuilt(e: &Error) -> bool {
-    e.code() == ErrorCode::InvalidInput
-        && e.parameter() == Some("type")
-        && e.message().contains("can't build yet")
-}
-
 /// Silico's outcome for each case: the document rebuilt through the core's commands (on a
 /// pool of kernel workers, its sketches on the sketch worker), and each case's solid
 /// measured on a kernel worker as FreeCAD measures.
@@ -778,4 +770,39 @@ pub fn against_expected(case: &FeatureCase, outcome: &Outcome) -> Vec<String> {
 /// How Silico's outcome of `case` differs from FreeCAD's, to the case's tolerance.
 pub fn compare(case: &FeatureCase, ours: &Outcome, theirs: &Outcome) -> Vec<String> {
     differences(ours, theirs, case.tolerance)
+}
+
+/// Every case of `cases` that differs: Silico's rebuild of the document (M3.6, step iv)
+/// compared with FreeCAD's build of each case, and with the case's expected values (each
+/// such difference said as Silico's), for `silico-oracle run` and the test alike.
+pub fn run(cases: &Cases) -> Result<Vec<crate::Difference>, String> {
+    let ours = silico(cases)?;
+    let theirs = freecad(&cases.cases)?;
+    if ours.len() != cases.cases.len() || theirs.len() != cases.cases.len() {
+        return Err(format!(
+            "{} sketch-feature cases gave {} outcomes from Silico and {} from FreeCAD",
+            cases.cases.len(),
+            ours.len(),
+            theirs.len()
+        ));
+    }
+    let mut found = Vec::new();
+    for ((case, ours), theirs) in cases.cases.iter().zip(&ours).zip(theirs) {
+        let ours = ours.outcome();
+        let mut how = compare(case, &ours, &theirs);
+        how.extend(
+            against_expected(case, &ours)
+                .into_iter()
+                .map(|h| format!("Silico's {h}")),
+        );
+        if !how.is_empty() {
+            found.push(crate::Difference {
+                case: case.name.clone(),
+                ours,
+                theirs,
+                how,
+            });
+        }
+    }
+    Ok(found)
 }

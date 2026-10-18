@@ -1,7 +1,10 @@
 //! `silico-oracle`: compares Silico with FreeCAD, case by case.
 //!
-//! - `silico-oracle run [DIR]`: the cases in DIR (default `tests/oracle`), and its sketch
-//!   cases (`sketches.silico`), each solved by Silico's sketch worker and by FreeCAD.
+//! - `silico-oracle run [DIR]`: the cases in DIR (default `tests/oracle`), its sketch
+//!   cases (`sketches.silico`), each solved by Silico's sketch worker and by FreeCAD, and
+//!   its sketch-feature cases (`sketch-features.silico`: pads, pockets, revolves, and
+//!   grooves), the document rebuilt by Silico's recompute and each case built by FreeCAD's
+//!   PartDesign, compared with each other and with the case's expected values.
 //! - `silico-oracle sweep [--count N] [--seed S]`: N generated cases (default 500) from seed
 //!   S (default 1).
 //! - `silico-oracle corpus DIR`: the STEP files in DIR, as FreeCAD reads them, each as it is
@@ -25,18 +28,29 @@ const MAX_SWEEP: usize = 1_000_000;
 
 fn main() -> ExitCode {
     let mut out = std::io::stdout().lock();
-    let ran = cases().and_then(|(cases, corpus, sketches)| {
-        // A directory may hold sketch cases alone.
-        let mut report = if cases.is_empty() && !sketches.is_empty() {
+    let ran = cases().and_then(|(cases, corpus, sketches, features)| {
+        // A directory may hold sketch or sketch-feature cases alone.
+        let mut report = if cases.is_empty() && (!sketches.is_empty() || features.is_some()) {
             silico_oracle::Report::default()
         } else {
             run(&cases)?
         };
-        let sketch_differences = if sketches.is_empty() {
+        let mut sketch_differences = if sketches.is_empty() {
             Vec::new()
         } else {
             sketch::run(&sketches)?
+                .into_iter()
+                .map(|d| d.to_string())
+                .collect()
         };
+        let feature_count = features.as_ref().map_or(0, |f| f.cases.len());
+        if let Some(features) = &features {
+            sketch_differences.extend(
+                silico_oracle::features::run(features)?
+                    .into_iter()
+                    .map(|d| d.to_string()),
+            );
+        }
         let (mut problems, mut known, mut notes) = (Vec::new(), Vec::new(), Vec::new());
         if let Some(CorpusNotes { unread, breps }) = corpus {
             problems = unread;
@@ -53,7 +67,7 @@ fn main() -> ExitCode {
             notes = breps;
         }
         Ok((
-            cases.len() + sketches.len(),
+            cases.len() + sketches.len() + feature_count,
             report,
             problems,
             known,
@@ -110,8 +124,13 @@ struct CorpusNotes {
 }
 
 /// The cases the command line asks for, for the corpus its files FreeCAD couldn't read and
-/// the B-reps it wrote, and the sketch cases.
-type Asked = (Vec<Case>, Option<CorpusNotes>, Vec<sketch::SketchCase>);
+/// the B-reps it wrote, the sketch cases, and the sketch-feature cases.
+type Asked = (
+    Vec<Case>,
+    Option<CorpusNotes>,
+    Vec<sketch::SketchCase>,
+    Option<silico_oracle::features::Cases>,
+);
 
 fn cases() -> Result<Asked, String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -123,7 +142,12 @@ fn cases() -> Result<Asked, String> {
             let dir = args
                 .get(1)
                 .map_or_else(|| PathBuf::from("tests/oracle"), PathBuf::from);
-            Ok((load(&dir)?, None, sketch::load(&dir)?))
+            Ok((
+                load(&dir)?,
+                None,
+                sketch::load(&dir)?,
+                silico_oracle::features::load(&dir)?,
+            ))
         }
         Some("corpus") => match &args[1..] {
             [dir] => {
@@ -132,7 +156,7 @@ fn cases() -> Result<Asked, String> {
                     unread: corpus.unread,
                     breps: corpus.breps,
                 };
-                Ok((corpus.cases, Some(notes), Vec::new()))
+                Ok((corpus.cases, Some(notes), Vec::new(), None))
             }
             _ => Err(format!("corpus takes one directory\n{USAGE}")),
         },
@@ -160,7 +184,7 @@ fn cases() -> Result<Asked, String> {
             if count > MAX_SWEEP {
                 return Err(format!("--count {count}: at most {MAX_SWEEP}\n{USAGE}"));
             }
-            Ok((generate::cases(seed, count), None, Vec::new()))
+            Ok((generate::cases(seed, count), None, Vec::new(), None))
         }
         _ => Err(USAGE.to_owned()),
     }

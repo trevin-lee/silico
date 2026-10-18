@@ -181,6 +181,14 @@
     "summary": "d4feb2e18f32a84e",
     "topology": "7ed143dfef7e4a5c"
   },
+  "flush_pad": {
+    "brep": "4c5eb4c75918322f",
+    "history": "f65ab5f342db8d6b",
+    "measures": "68cff23a02c93307",
+    "mesh": "f19693e37013924c",
+    "summary": "0ba4733bdf87f134",
+    "topology": "8231b701b2b49e0f"
+  },
   "fuse_box_cylinder": {
     "brep": "05bd4a237f15442f",
     "history": "c687401699597cb1",
@@ -517,6 +525,526 @@
     "summary": "93c1526a61d5a66d",
     "topology": "d8e78c810b2b47ba"
   },
+  "groove_360_one_side_xy": {
+    "brep": "ae1fa2ed5b86fa3d",
+    "history": "32956bc90a9f87cd",
+    "measures": "cadf13157f75b8ce",
+    "mesh": "1f4afbda10861091",
+    "summary": "d1f4eff292995ce6",
+    "topology": "9cb8dc476e80130f"
+  },
+  "groove_360_one_side_xy_cylinder": {
+    "brep": "eea1a565f24cda48",
+    "history": "b548aa10b1629529",
+    "measures": "2058edecfbc4c08e",
+    "mesh": "8de71643a4055311",
+    "summary": "c8540f928f285339",
+    "topology": "a852e1d1394f0ff4"
+  },
+  "groove_360_one_side_xz": {
+    "brep": "dd1782e2247a39ae",
+    "history": "32956bc90a9f87cd",
+    "measures": "f2f47c3a51148bbe",
+    "mesh": "6521e11dc39143c1",
+    "summary": "60403e8ea4ef2d8e",
+    "topology": "9cb8dc476e80130f"
+  },
+  "groove_360_one_side_xz_cylinder": {
+    "brep": "334c9fe4ace17c14",
+    "history": "b548aa10b1629529",
+    "measures": "d627ca842c67a1f6",
+    "mesh": "c4a2a61cdfb8c7b9",
+    "summary": "cbee1167b8c01f45",
+    "topology": "a852e1d1394f0ff4"
+  },
+  "groove_360_one_side_yz": {
+    "brep": "ba958f3dce54ef30",
+    "history": "32956bc90a9f87cd",
+    "measures": "e0a9e96b22e95f26",
+    "mesh": "1d6866185e0e5fb9",
+    "summary": "3511f212920a419e",
+    "topology": "9cb8dc476e80130f"
+  },
+  "groove_360_one_side_yz_cylinder": {
+    "brep": "ccf05d1d4eeee545",
+    "history": "b548aa10b1629529",
+    "measures": "1bab0ec24b4c50f6",
+    "mesh": "91dfdd53c213ac01",
+    "summary": "dbc68fd3253aeb69",
+    "topology": "a852e1d1394f0ff4"
+  },
+  "groove_90_one_side_reversed_xy": {
+    "brep": "c8548080726d3af0",
+    "history": "6106fafededcdfb4",
+    "measures": "e5f63873f210dcfd",
+    "mesh": "68fd4b49a97d754b",
+    "summary": "c2fb47c4c94565dd",
+    "topology": "46642e7befb93627"
+  },
+  "groove_90_one_side_reversed_xy_cylinder": {
+    "brep": "eea1a565f24cda48",
+    "history": "b548aa10b1629529",
+    "measures": "2058edecfbc4c08e",
+    "mesh": "8de71643a4055311",
+    "summary": "c8540f928f285339",
+    "topology": "a852e1d1394f0ff4"
+  },
+  "groove_90_one_side_reversed_xz": {
+    "brep": "8f66275714e1f3cd",
+    "history": "6106fafededcdfb4",
+    "measures": "64bc886bf5a5410d",
+    "mesh": "91f7510877c74a6b",
+    "summary": "3cec89b4a6fbf59d",
+    "topology": "46642e7befb93627"
+  },
+  "groove_90_one_side_reversed_xz_cylinder": {
+    "brep": "334c9fe4ace17c14",
+    "history": "b548aa10b1629529",
+    "measures": "d627ca842c67a1f6",
+    "mesh": "c4a2a61cdfb8c7b9",
+    "summary": "cbee1167b8c01f45",
+    "topology": "a852e1d1394f0ff4"
+  },
+  "groove_90_one_side_reversed_yz": {
+    "brep": "ac61c43bab76f6c9",
+    "history": "6106fafededcdfb4",
+    "measures": "6e404fc320376489",
+    "mesh": "9e1da121e021b3a3",
+    "summary": "5a8e57a5a0235a25",
+    "topology": "46642e7befb93627"
+  },
+  "groove_90_one_side_reversed_yz_cylinder": {
+    "brep": "ccf05d1d4eeee545",
+    "history": "b548aa10b1629529",
+    "measures": "1bab0ec24b4c50f6",
+    "mesh": "91dfdd53c213ac01",
+    "summary": "dbc68fd3253aeb69",
+    "topology": "a852e1d1394f0ff4"
+  },
+  "groove_90_one_side_xy": {
+    "brep": "aeb6efd117f41555",
+    "history": "535e9e92ac0b56f8",
+    "measures": "b3a55ab1b6c2d093",
+    "mesh": "9d6bf48c8c7cad11",
+    "summary": "c3c384bdd14e655b",
+    "topology": "825faabac988dd6b"
+  },
+  "groove_90_one_side_xy_cylinder": {
+    "brep": "eea1a565f24cda48",
+    "history": "b548aa10b1629529",
+    "measures": "2058edecfbc4c08e",
+    "mesh": "8de71643a4055311",
+    "summary": "c8540f928f285339",
+    "topology": "a852e1d1394f0ff4"
+  },
+  "groove_90_one_side_xz": {
+    "brep": "aed8a5419122b5e9",
+    "history": "535e9e92ac0b56f8",
+    "measures": "55e56c740cdb33ff",
+    "mesh": "4f7585c32707c1c9",
+    "summary": "e7e07f74c03963f3",
+    "topology": "825faabac988dd6b"
+  },
+  "groove_90_one_side_xz_cylinder": {
+    "brep": "334c9fe4ace17c14",
+    "history": "b548aa10b1629529",
+    "measures": "d627ca842c67a1f6",
+    "mesh": "c4a2a61cdfb8c7b9",
+    "summary": "cbee1167b8c01f45",
+    "topology": "a852e1d1394f0ff4"
+  },
+  "groove_90_one_side_yz": {
+    "brep": "977f60acfd0b5549",
+    "history": "535e9e92ac0b56f8",
+    "measures": "63e6d89d7c3b467f",
+    "mesh": "5ec189f93a697fb1",
+    "summary": "d90ae8943121444b",
+    "topology": "825faabac988dd6b"
+  },
+  "groove_90_one_side_yz_cylinder": {
+    "brep": "ccf05d1d4eeee545",
+    "history": "b548aa10b1629529",
+    "measures": "1bab0ec24b4c50f6",
+    "mesh": "91dfdd53c213ac01",
+    "summary": "dbc68fd3253aeb69",
+    "topology": "a852e1d1394f0ff4"
+  },
+  "groove_90_symmetric_xy": {
+    "brep": "d3ce9457e585b476",
+    "history": "535e9e92ac0b56f8",
+    "measures": "a892adbbc3d61103",
+    "mesh": "5ab63626744ce384",
+    "summary": "46ac9fe5f24303f6",
+    "topology": "825faabac988dd6b"
+  },
+  "groove_90_symmetric_xy_cylinder": {
+    "brep": "eea1a565f24cda48",
+    "history": "b548aa10b1629529",
+    "measures": "2058edecfbc4c08e",
+    "mesh": "8de71643a4055311",
+    "summary": "c8540f928f285339",
+    "topology": "a852e1d1394f0ff4"
+  },
+  "groove_90_symmetric_xz": {
+    "brep": "cfa8f0c1f21e6354",
+    "history": "535e9e92ac0b56f8",
+    "measures": "616018cbd7472327",
+    "mesh": "3b0474bc81b77d3c",
+    "summary": "871aaaeb9af669c2",
+    "topology": "825faabac988dd6b"
+  },
+  "groove_90_symmetric_xz_cylinder": {
+    "brep": "334c9fe4ace17c14",
+    "history": "b548aa10b1629529",
+    "measures": "d627ca842c67a1f6",
+    "mesh": "c4a2a61cdfb8c7b9",
+    "summary": "cbee1167b8c01f45",
+    "topology": "a852e1d1394f0ff4"
+  },
+  "groove_90_symmetric_yz": {
+    "brep": "f4766d7e2a035260",
+    "history": "535e9e92ac0b56f8",
+    "measures": "0f2d7cde25fce76b",
+    "mesh": "c00b94bd13136194",
+    "summary": "f68dd3723b4cbd7e",
+    "topology": "825faabac988dd6b"
+  },
+  "groove_90_symmetric_yz_cylinder": {
+    "brep": "ccf05d1d4eeee545",
+    "history": "b548aa10b1629529",
+    "measures": "1bab0ec24b4c50f6",
+    "mesh": "91dfdd53c213ac01",
+    "summary": "dbc68fd3253aeb69",
+    "topology": "a852e1d1394f0ff4"
+  },
+  "groove_control": {
+    "brep": "f8e9511dfecd0969",
+    "history": "12805f56a645be41",
+    "measures": "e8c08b910adc2c77",
+    "mesh": "1d29d9fcc70e13f6",
+    "summary": "3ebc89be493c53b8",
+    "topology": "9a255f93be531c94"
+  },
+  "groove_control_cylinder": {
+    "brep": "2196d95b06d32a5a",
+    "history": "616cc19e20092a6b",
+    "measures": "b6cc79907b60e23b",
+    "mesh": "6498a7503bf20f33",
+    "summary": "eeb0a687105f3a95",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "pad_one_side_reversed_xy": {
+    "brep": "26c7f001cfc2bad2",
+    "history": "f8233f40d30f41a9",
+    "measures": "a7bfa52ddba5c886",
+    "mesh": "74c69c551e3d5b85",
+    "summary": "4d6c17fc036491b1",
+    "topology": "fa5d97668685fada"
+  },
+  "pad_one_side_reversed_xz": {
+    "brep": "1ace0c5b9954d4ab",
+    "history": "f8233f40d30f41a9",
+    "measures": "ef720b7e4e7b938e",
+    "mesh": "33c1f45995520d85",
+    "summary": "3ed04ccfb5d4e331",
+    "topology": "fa5d97668685fada"
+  },
+  "pad_one_side_reversed_yz": {
+    "brep": "f25cdbd2f5cf843e",
+    "history": "f8233f40d30f41a9",
+    "measures": "244e8f055ab4eec6",
+    "mesh": "7d0bd47be5e81f05",
+    "summary": "bfc08678f25f7631",
+    "topology": "fa5d97668685fada"
+  },
+  "pad_one_side_xy": {
+    "brep": "336aec5bb65eb5c8",
+    "history": "f8233f40d30f41a9",
+    "measures": "910810dce0925486",
+    "mesh": "5358af06c0bed145",
+    "summary": "94abb00fac60e531",
+    "topology": "fa5d97668685fada"
+  },
+  "pad_one_side_xz": {
+    "brep": "18dfd50c27063880",
+    "history": "f8233f40d30f41a9",
+    "measures": "abe91bad0f001c0e",
+    "mesh": "fda97a062ee21445",
+    "summary": "4debf51908ab1fb1",
+    "topology": "fa5d97668685fada"
+  },
+  "pad_one_side_yz": {
+    "brep": "76304c63fbbbda34",
+    "history": "f8233f40d30f41a9",
+    "measures": "dcdae2dd3d50aac6",
+    "mesh": "ac7d5a9395f4c0c5",
+    "summary": "3236bebe08fa42b1",
+    "topology": "fa5d97668685fada"
+  },
+  "pad_symmetric_xy": {
+    "brep": "de97319062cd344e",
+    "history": "f8233f40d30f41a9",
+    "measures": "63a33bcfa05c1e16",
+    "mesh": "8beeef308f52c745",
+    "summary": "722ae80102d7becb",
+    "topology": "fa5d97668685fada"
+  },
+  "pad_symmetric_xz": {
+    "brep": "680615b6b4d1773a",
+    "history": "f8233f40d30f41a9",
+    "measures": "2fb0faa7c269a836",
+    "mesh": "bd95589b640afa45",
+    "summary": "baed97858c045c3b",
+    "topology": "fa5d97668685fada"
+  },
+  "pad_symmetric_yz": {
+    "brep": "f2be1148d3d1e2da",
+    "history": "f8233f40d30f41a9",
+    "measures": "67ebeb5a7aeff396",
+    "mesh": "e7e51fa7ce6f6a45",
+    "summary": "8e04db769a8a108b",
+    "topology": "fa5d97668685fada"
+  },
+  "pad_two_dimensions": {
+    "brep": "428596391194fa44",
+    "history": "e1ca7180aae9fecb",
+    "measures": "ce81d103866f05c8",
+    "mesh": "292c9033d9c1e3f5",
+    "summary": "2872d94b72c1e43d",
+    "topology": "fab5b26ddea5f8ec"
+  },
+  "pad_two_dimensions_cube": {
+    "brep": "13b60a6ca104a414",
+    "history": "f8233f40d30f41a9",
+    "measures": "d97e5eb7ecffa15d",
+    "mesh": "af934d924f7aee45",
+    "summary": "10220da829b2ab96",
+    "topology": "fa5d97668685fada"
+  },
+  "pad_two_lengths_circle": {
+    "brep": "fc3db57439f2203c",
+    "history": "616cc19e20092a6b",
+    "measures": "232909a8dc4521f6",
+    "mesh": "a3f0cb1a3158c4e7",
+    "summary": "7d80331199e934be",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "pad_two_sides_xy": {
+    "brep": "310b31bf1009b424",
+    "history": "f8233f40d30f41a9",
+    "measures": "4c712a3097b9d0eb",
+    "mesh": "5ac64cc7ae4967e5",
+    "summary": "20bb34bb957c6757",
+    "topology": "fa5d97668685fada"
+  },
+  "pad_two_sides_xz": {
+    "brep": "2137c71bb29d4c35",
+    "history": "f8233f40d30f41a9",
+    "measures": "bb50b6353237252b",
+    "mesh": "71a3dfa237c8e5e5",
+    "summary": "4f0b9be189f64cd7",
+    "topology": "fa5d97668685fada"
+  },
+  "pad_two_sides_yz": {
+    "brep": "ca5d53a4054c5a90",
+    "history": "f8233f40d30f41a9",
+    "measures": "8b686b475ce92f4b",
+    "mesh": "c138237f34d9eae5",
+    "summary": "9f2f34951aa336ff",
+    "topology": "fa5d97668685fada"
+  },
+  "pocket_dimension": {
+    "brep": "555fe891b33c947d",
+    "history": "023c14ba7648ce0d",
+    "measures": "2ae2fbd75f4c077f",
+    "mesh": "2b63024b040313d1",
+    "summary": "d4e580c5cb10c1a6",
+    "topology": "eddc1df85b242684"
+  },
+  "pocket_dimension_plate": {
+    "brep": "a1b3eabbbfc05ee2",
+    "history": "f8233f40d30f41a9",
+    "measures": "cffbcec80352fb65",
+    "mesh": "c2511c7bfb8f9e85",
+    "summary": "59c5d4daead2051a",
+    "topology": "fa5d97668685fada"
+  },
+  "pocket_in_box": {
+    "brep": "fa3d889daa617e9e",
+    "history": "87b55f2faf4ba549",
+    "measures": "2c9f8ceaaf612272",
+    "mesh": "448b29798f929d6c",
+    "summary": "51029f8daf944d1d",
+    "topology": "02f7dfcc9dfec975"
+  },
+  "pocket_one_side_reversed_xy": {
+    "brep": "81c9d3f7e9bed38b",
+    "history": "026d719541fb45ce",
+    "measures": "6f16605ff5ba767f",
+    "mesh": "d9bc34c5a80ed07d",
+    "summary": "dc1a069ec561bb36",
+    "topology": "c6882ef8a10951fb"
+  },
+  "pocket_one_side_reversed_xz": {
+    "brep": "ebfdaae2b7087880",
+    "history": "026d719541fb45ce",
+    "measures": "3139f8d1f410a593",
+    "mesh": "13a5e3db5f47915d",
+    "summary": "a7825a83b61c2f6a",
+    "topology": "c6882ef8a10951fb"
+  },
+  "pocket_one_side_reversed_yz": {
+    "brep": "ac5a5bb13dde5895",
+    "history": "e6992bcaa36174d0",
+    "measures": "2ae37ead574a249a",
+    "mesh": "d7c4af4db358208d",
+    "summary": "828dad595f553e1a",
+    "topology": "12512bc0947ea9e1"
+  },
+  "pocket_one_side_xy": {
+    "brep": "9623caaac38b7c66",
+    "history": "dca9d8c0c2d86eba",
+    "measures": "e60830f757609595",
+    "mesh": "b17887a0aa1df0fc",
+    "summary": "1a4fd44129bd5afd",
+    "topology": "72305bcecfbb9adf"
+  },
+  "pocket_one_side_xz": {
+    "brep": "085b2362f095a370",
+    "history": "dca9d8c0c2d86eba",
+    "measures": "6937b97da4ecbe78",
+    "mesh": "15484f9efe7bd3cc",
+    "summary": "02e4a5ab52569b09",
+    "topology": "72305bcecfbb9adf"
+  },
+  "pocket_one_side_yz": {
+    "brep": "7a86689397d9a947",
+    "history": "2eef7b985394ccec",
+    "measures": "1204b774bca21609",
+    "mesh": "b90a243aeea4357c",
+    "summary": "e55c7140e6ab59bc",
+    "topology": "e9f9cabcbcadec35"
+  },
+  "pocket_symmetric_xy": {
+    "brep": "a36de6da02e3b792",
+    "history": "dca9d8c0c2d86eba",
+    "measures": "7b900de698f338ff",
+    "mesh": "cfb5e98ff5216e6c",
+    "summary": "1c76bb8b28063d7d",
+    "topology": "72305bcecfbb9adf"
+  },
+  "pocket_symmetric_xz": {
+    "brep": "f2af2d87f63f89ca",
+    "history": "dca9d8c0c2d86eba",
+    "measures": "883f2ea363533b35",
+    "mesh": "639d886f122b5c4f",
+    "summary": "3a30e29f9eb79fa7",
+    "topology": "72305bcecfbb9adf"
+  },
+  "pocket_symmetric_yz": {
+    "brep": "acdbf1e74ea2d639",
+    "history": "2eef7b985394ccec",
+    "measures": "e12f33cc08393a34",
+    "mesh": "8c0e6c7c1d23791c",
+    "summary": "d8e197b4504b7816",
+    "topology": "e9f9cabcbcadec35"
+  },
+  "pocket_through_all": {
+    "brep": "a58de8060c2c7dc4",
+    "history": "c5b253a539aac177",
+    "measures": "712f837b149d9632",
+    "mesh": "1ce210580329fffc",
+    "summary": "84ff72bcf830c9b3",
+    "topology": "64ee72566afb2d45"
+  },
+  "pocket_through_all_reversed_xy": {
+    "brep": "2bc9f475e05ead9f",
+    "history": "8ec2540204ade7f7",
+    "measures": "6200084f59442971",
+    "mesh": "b2fb706867705290",
+    "summary": "ee18acc2578d60ee",
+    "topology": "6bbaf65127fd6bc9"
+  },
+  "pocket_through_all_reversed_xz": {
+    "brep": "bb7dc4875c089ff3",
+    "history": "0c37cd8b72ab74ec",
+    "measures": "4ca8e6b319c8dc55",
+    "mesh": "874417492d5e6cf4",
+    "summary": "4917d509909b2603",
+    "topology": "5f992f5289c707af"
+  },
+  "pocket_through_all_reversed_yz": {
+    "brep": "76f6dc43022abc58",
+    "history": "acdcafd43e747277",
+    "measures": "8fab97e4cb3ce75f",
+    "mesh": "8d61d479134d21a0",
+    "summary": "1de2a7373d4b6475",
+    "topology": "c11ac2da0226ab61"
+  },
+  "pocket_through_all_xy": {
+    "brep": "6043f2b257edac43",
+    "history": "fda8bfe0cbba2a5b",
+    "measures": "39904446b0a229bd",
+    "mesh": "72c000590c9ccdb0",
+    "summary": "5aed42929b75abfe",
+    "topology": "d7c124223a71f5dd"
+  },
+  "pocket_through_all_xz": {
+    "brep": "7969eb888dc22f77",
+    "history": "511af52cd8ce8205",
+    "measures": "db02b0a6c1bfda16",
+    "mesh": "50dc3e0922e80ae0",
+    "summary": "95b3429f64d74857",
+    "topology": "d31a7e6ccd3308cb"
+  },
+  "pocket_through_all_yz": {
+    "brep": "77294160d3079813",
+    "history": "9da62e89e842c3af",
+    "measures": "b2e5704209b10463",
+    "mesh": "a8b03fdb1f71bde0",
+    "summary": "f9480b710230b222",
+    "topology": "64f423b05f35a9ab"
+  },
+  "pocket_two_sides_xy": {
+    "brep": "8df64e34e88d930c",
+    "history": "dca9d8c0c2d86eba",
+    "measures": "11f2f3b01b914ba4",
+    "mesh": "b6911482dc53eebc",
+    "summary": "62f0b19a12e52036",
+    "topology": "72305bcecfbb9adf"
+  },
+  "pocket_two_sides_xz": {
+    "brep": "9ee52cd89cf0d2db",
+    "history": "dca9d8c0c2d86eba",
+    "measures": "6c938c56a8b1a6fd",
+    "mesh": "0a49cf76ca7e9dfc",
+    "summary": "8901b15944857eb5",
+    "topology": "72305bcecfbb9adf"
+  },
+  "pocket_two_sides_yz": {
+    "brep": "0292ba1043640f3f",
+    "history": "2eef7b985394ccec",
+    "measures": "d57dac924fc12b4f",
+    "mesh": "ad630a546210307c",
+    "summary": "03e62b85b669903e",
+    "topology": "e9f9cabcbcadec35"
+  },
+  "rectangle_about_its_side_360_xy": {
+    "brep": "9f9053d6e7f48419",
+    "history": "b548aa10b1629529",
+    "measures": "0d64daf8d8fdc9ff",
+    "mesh": "fd91e43cceae1fde",
+    "summary": "e03c50426194aa36",
+    "topology": "a852e1d1394f0ff4"
+  },
+  "rectangle_about_its_side_90_yz": {
+    "brep": "c268144f2a821189",
+    "history": "7b7a10dfa86174a1",
+    "measures": "c4c3980c2b7e0cb3",
+    "mesh": "156de5767d73323a",
+    "summary": "1b5fbd86e52bd96d",
+    "topology": "c86b3b74228cb2ef"
+  },
   "revolve_ring": {
     "brep": "f0cc5f9c47ea15fc",
     "history": "1d2f99f9631de0e9",
@@ -541,6 +1069,22 @@
     "summary": "87a23d34d93dcb19",
     "topology": "beb131353f8ebf30"
   },
+  "slot_plate": {
+    "brep": "bd49627ee3895986",
+    "history": "f8233f40d30f41a9",
+    "measures": "12aa7cf7ea95f4a9",
+    "mesh": "96e87410c90792d2",
+    "summary": "3bdd3eaa29b03f36",
+    "topology": "fa5d97668685fada"
+  },
+  "sphere": {
+    "brep": "bc376e1fa5a1db75",
+    "history": "f556752b9125bf9c",
+    "measures": "3491480fa2a8444e",
+    "mesh": "4379d2ebd94e5ab2",
+    "summary": "23d67a4b679b36e4",
+    "topology": "5b2b1ec0087b34ec"
+  },
   "sphere_5": {
     "brep": "15a28f45a59dc184",
     "measures": "e895dcc53f0fbe3f",
@@ -559,11 +1103,355 @@
     "mesh": "2b44da78cbc2efe2",
     "summary": "d4656028bb29f436"
   },
+  "through_rim": {
+    "brep": "05970ec0451a46d0",
+    "history": "7fb6531c00ac5458",
+    "measures": "6714d85e3567ad1a",
+    "mesh": "c4b0d4acc4ba8e95",
+    "summary": "b5f5d9644fa9d0ad",
+    "topology": "bd697baa5099fe94"
+  },
   "torus_10_2": {
     "brep": "9f5f7e54b74fc10b",
     "measures": "1d5a42a45df3d938",
     "mesh": "40e70423bfc2576b",
     "summary": "ccb875858aff5d44"
+  },
+  "torus_180_one_side_reversed_xy": {
+    "brep": "6a8f8fa0c41a43a2",
+    "history": "616cc19e20092a6b",
+    "measures": "b0ccffece33fe5a6",
+    "mesh": "675eec87985c70fd",
+    "summary": "895fefd611dbb115",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_180_one_side_reversed_xy_about_a_line": {
+    "brep": "c2f6c935bf6b8c81",
+    "history": "616cc19e20092a6b",
+    "measures": "c58c7096d3d29ddd",
+    "mesh": "22550d0af908574a",
+    "summary": "a7b601ba4cc2b28d",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_180_one_side_reversed_xz": {
+    "brep": "8faedfb4483a20ec",
+    "history": "616cc19e20092a6b",
+    "measures": "e929ae4f9ee60309",
+    "mesh": "aa29214c1bfae245",
+    "summary": "c092fe9e323891c8",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_180_one_side_reversed_xz_about_a_line": {
+    "brep": "9a2aeef4f87830d1",
+    "history": "616cc19e20092a6b",
+    "measures": "97f5b436ce432227",
+    "mesh": "61be983248c94652",
+    "summary": "99c5021dacef25c1",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_180_one_side_reversed_yz": {
+    "brep": "a27ca2869298ed37",
+    "history": "616cc19e20092a6b",
+    "measures": "3cc4313dc534989f",
+    "mesh": "2dfb7537fbe73235",
+    "summary": "898c32571e6f3e7c",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_180_one_side_reversed_yz_about_a_line": {
+    "brep": "267be4120547a2c3",
+    "history": "616cc19e20092a6b",
+    "measures": "71676d8aa066d517",
+    "mesh": "016bdc6abaa5a786",
+    "summary": "f8633fd6ea2a8c69",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_180_one_side_xy": {
+    "brep": "659f3e4aee091268",
+    "history": "616cc19e20092a6b",
+    "measures": "1ff7c50c26373ade",
+    "mesh": "d0e5bb99fb1548c9",
+    "summary": "422057c268df5d95",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_180_one_side_xy_about_a_line": {
+    "brep": "dc6d9f7b624fe7b0",
+    "history": "616cc19e20092a6b",
+    "measures": "df6a030f2f9f583d",
+    "mesh": "7338b65f28208076",
+    "summary": "eef599cdf5bf060d",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_180_one_side_xz": {
+    "brep": "f5ddf70beeef3fd5",
+    "history": "616cc19e20092a6b",
+    "measures": "4f839e817b96b493",
+    "mesh": "77f77e4ab5e9fc41",
+    "summary": "45a627ce647de348",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_180_one_side_xz_about_a_line": {
+    "brep": "d519691bf236cd86",
+    "history": "616cc19e20092a6b",
+    "measures": "04b96732b844a07d",
+    "mesh": "52b060b43d60001e",
+    "summary": "80bf03f6ab7ba841",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_180_one_side_yz": {
+    "brep": "1d18c264ffe18b97",
+    "history": "616cc19e20092a6b",
+    "measures": "6b21e61b9f7dc2f7",
+    "mesh": "e249cc14c4cd7211",
+    "summary": "d0fcbfb4928894fc",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_180_one_side_yz_about_a_line": {
+    "brep": "f82b7411be64202b",
+    "history": "616cc19e20092a6b",
+    "measures": "c92c5e567f714d07",
+    "mesh": "522574155c667ce2",
+    "summary": "bccf17eab9772ce9",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_180_symmetric_xy": {
+    "brep": "86e888a89eed40a4",
+    "history": "616cc19e20092a6b",
+    "measures": "35444da94586e34b",
+    "mesh": "3a5c2935914e7ec0",
+    "summary": "82b412edacdeece8",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_180_symmetric_xy_about_a_line": {
+    "brep": "dbb0278435574ff3",
+    "history": "616cc19e20092a6b",
+    "measures": "3f954cf01f637369",
+    "mesh": "8b6bb8038a408901",
+    "summary": "511e6a9c01009369",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_180_symmetric_xz": {
+    "brep": "d991eecbaa693b5a",
+    "history": "616cc19e20092a6b",
+    "measures": "3272794ccd12eeb8",
+    "mesh": "e84446847c8e2aac",
+    "summary": "8063f9f30c05b568",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_180_symmetric_xz_about_a_line": {
+    "brep": "e93df35c46be25f0",
+    "history": "616cc19e20092a6b",
+    "measures": "375b4f78dcfc51ca",
+    "mesh": "586f498394ee25c4",
+    "summary": "be59ac59a2a0d2d0",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_180_symmetric_yz": {
+    "brep": "60504e3498ba93c8",
+    "history": "616cc19e20092a6b",
+    "measures": "4c19d670d69f1438",
+    "mesh": "9a3c91a2cdd4f9b8",
+    "summary": "6e9610358ea5bf6c",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_180_symmetric_yz_about_a_line": {
+    "brep": "8ce993c0d919d79b",
+    "history": "616cc19e20092a6b",
+    "measures": "a2fa79b890d76ccf",
+    "mesh": "10ef36fa8807cadc",
+    "summary": "3bd424c634a247f0",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_360_one_side_xy": {
+    "brep": "28db514149ede28c",
+    "history": "673499aefde5371c",
+    "measures": "e517a1913d054bd5",
+    "mesh": "b5cb40f2e5248dbd",
+    "summary": "71bf0bc98c820fdb",
+    "topology": "62995adc1d08417e"
+  },
+  "torus_360_one_side_xy_about_a_line": {
+    "brep": "a2582267dc4b6605",
+    "history": "673499aefde5371c",
+    "measures": "3a2998aefad49a30",
+    "mesh": "48005caccbd79c87",
+    "summary": "5a4c9a2b893fe822",
+    "topology": "62995adc1d08417e"
+  },
+  "torus_360_one_side_xz": {
+    "brep": "be2d08c1a431e812",
+    "history": "673499aefde5371c",
+    "measures": "f5d9589778cbc801",
+    "mesh": "2229debc21b830ed",
+    "summary": "67a9309766d62088",
+    "topology": "62995adc1d08417e"
+  },
+  "torus_360_one_side_xz_about_a_line": {
+    "brep": "348007626081feca",
+    "history": "673499aefde5371c",
+    "measures": "5e0ec8c1b415d208",
+    "mesh": "c2fd76ed0c5bdbb3",
+    "summary": "440af89914850c47",
+    "topology": "62995adc1d08417e"
+  },
+  "torus_360_one_side_yz": {
+    "brep": "db0c68b24827e985",
+    "history": "673499aefde5371c",
+    "measures": "6c92b016a1b02241",
+    "mesh": "497e2468df7c13c1",
+    "summary": "5fedb632060c6cc8",
+    "topology": "62995adc1d08417e"
+  },
+  "torus_360_one_side_yz_about_a_line": {
+    "brep": "f0bcc76bde0130e9",
+    "history": "673499aefde5371c",
+    "measures": "f0987a055485be72",
+    "mesh": "4636b55abdf8bc87",
+    "summary": "9f467113b7df3403",
+    "topology": "62995adc1d08417e"
+  },
+  "torus_90_one_side_reversed_xy": {
+    "brep": "1e99f3749ed03827",
+    "history": "616cc19e20092a6b",
+    "measures": "66a8eba99681783d",
+    "mesh": "1781d972be3710dd",
+    "summary": "778b6696422078ff",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_90_one_side_reversed_xy_about_a_line": {
+    "brep": "39770202a5abbc19",
+    "history": "616cc19e20092a6b",
+    "measures": "d09cc2bed597c5e4",
+    "mesh": "c901e3a89719470b",
+    "summary": "91ab9e71ac1814d4",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_90_one_side_reversed_xz": {
+    "brep": "531e7d21bf911c4a",
+    "history": "616cc19e20092a6b",
+    "measures": "250ad4203b919ad2",
+    "mesh": "b0275cb6cae7b959",
+    "summary": "0e5610b27a78347f",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_90_one_side_reversed_xz_about_a_line": {
+    "brep": "7b2e359586805fd5",
+    "history": "616cc19e20092a6b",
+    "measures": "f2f50e3e1ace9118",
+    "mesh": "709cd9d70092c163",
+    "summary": "895e057e7de8d424",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_90_one_side_reversed_yz": {
+    "brep": "e192ba47510d002d",
+    "history": "616cc19e20092a6b",
+    "measures": "4dbe8e98b1f5c09a",
+    "mesh": "eeb4a0782655e461",
+    "summary": "c88900803009aa2f",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_90_one_side_reversed_yz_about_a_line": {
+    "brep": "59392eb05d8bf2c8",
+    "history": "616cc19e20092a6b",
+    "measures": "c5ff9be55adba15f",
+    "mesh": "bd99e3afb27d1263",
+    "summary": "2c90aec039dbf64c",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_90_one_side_xy": {
+    "brep": "5840e951c9f69ddb",
+    "history": "616cc19e20092a6b",
+    "measures": "b98298d4a9e7d4f5",
+    "mesh": "c887442bec39a001",
+    "summary": "becafea9eb1ccc7f",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_90_one_side_xy_about_a_line": {
+    "brep": "0b41dc01befaabf4",
+    "history": "616cc19e20092a6b",
+    "measures": "34b27ba8bc862823",
+    "mesh": "900004be1d51640f",
+    "summary": "d8eb368555146854",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_90_one_side_xz": {
+    "brep": "a85f0d2245fbc6ce",
+    "history": "616cc19e20092a6b",
+    "measures": "8cdd4c7630343cfc",
+    "mesh": "759c632e9eb00eed",
+    "summary": "b9ce5618cb6ce6ff",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_90_one_side_xz_about_a_line": {
+    "brep": "86681ab185bba136",
+    "history": "616cc19e20092a6b",
+    "measures": "35db4a75bfe87693",
+    "mesh": "39fad6f12eb0d407",
+    "summary": "e21aceeda66a04a4",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_90_one_side_yz": {
+    "brep": "760e98ff54dbf97c",
+    "history": "616cc19e20092a6b",
+    "measures": "34e042ddaae14a64",
+    "mesh": "be82add0790f0675",
+    "summary": "d4ed9f7e631fa8af",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_90_one_side_yz_about_a_line": {
+    "brep": "bc90f96e26e92bb8",
+    "history": "616cc19e20092a6b",
+    "measures": "300f8dc6927fdcc0",
+    "mesh": "a312a457a7ed4007",
+    "summary": "f452ce62e87590cc",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_90_symmetric_xy": {
+    "brep": "8e4c7bef91af4657",
+    "history": "616cc19e20092a6b",
+    "measures": "1702676e582e4ff3",
+    "mesh": "a2023af14959a3ea",
+    "summary": "16ecfe24ee3cd648",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_90_symmetric_xy_about_a_line": {
+    "brep": "d0528da9c482daf2",
+    "history": "616cc19e20092a6b",
+    "measures": "f7b73b934e60fb89",
+    "mesh": "a27e46f9d69db3d6",
+    "summary": "9f15f522510e0a9e",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_90_symmetric_xz": {
+    "brep": "f25b2251cfcc2846",
+    "history": "616cc19e20092a6b",
+    "measures": "883f7d918ad92007",
+    "mesh": "e43a6c6869ed2756",
+    "summary": "ea0d6b4511723b98",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_90_symmetric_xz_about_a_line": {
+    "brep": "89c1a0e5092c8fef",
+    "history": "616cc19e20092a6b",
+    "measures": "feb1f79b9d3232ee",
+    "mesh": "b7c699bf4f7d317d",
+    "summary": "db70db82eedeb6a4",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_90_symmetric_yz": {
+    "brep": "bc71cb4adcc24599",
+    "history": "616cc19e20092a6b",
+    "measures": "d6faf8f3973c98d3",
+    "mesh": "277ed7789c8daf12",
+    "summary": "c68dd1c60acd7ba0",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_90_symmetric_yz_about_a_line": {
+    "brep": "3343256d72776d92",
+    "history": "616cc19e20092a6b",
+    "measures": "dcd649dffe53bd9d",
+    "mesh": "d31711e41068eed1",
+    "summary": "586fbd46dcbda940",
+    "topology": "b7fe2b2d96d27620"
   },
   "torus_fat": {
     "brep": "369fc4453afed8fc",
@@ -600,5 +1488,29 @@
     "mesh": "704a0ff1f872afc4",
     "summary": "d257cd2e27932ff4",
     "topology": "62995adc1d08417e"
+  },
+  "two_holes": {
+    "brep": "9ee1b7953cc8dba4",
+    "history": "ce8b5fc21a5eec8f",
+    "measures": "7dba4efe982f2220",
+    "mesh": "96e8254caf7093e0",
+    "summary": "8ae7804a9804bce4",
+    "topology": "9048360ce7f53ada"
+  },
+  "two_holes_block": {
+    "brep": "336aec5bb65eb5c8",
+    "history": "f8233f40d30f41a9",
+    "measures": "910810dce0925486",
+    "mesh": "5358af06c0bed145",
+    "summary": "94abb00fac60e531",
+    "topology": "fa5d97668685fada"
+  },
+  "unit_square_pad": {
+    "brep": "bd888096f4921b23",
+    "history": "f8233f40d30f41a9",
+    "measures": "5bb311e270a0e8c4",
+    "mesh": "ddd32d7ccaef8dc5",
+    "summary": "a4ceff9cc5a2354d",
+    "topology": "fa5d97668685fada"
   }
 }
