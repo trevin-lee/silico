@@ -49,13 +49,24 @@ fn axis_case(type_name: &str, axis: &str, pa: [f64; 2], pb: [f64; 2]) -> (Checke
 }
 
 #[test]
-fn an_axis_whose_solved_ends_coincide_exactly_is_refused() {
+fn an_axis_of_no_length_as_the_solver_measures_it_is_refused() {
+    // No length is M3.2's zero-size rule: dx² + dy² is exactly 0. Ends at one place, and
+    // ends so close their squared distance underflows to 0 (5e-324² and 1e-162² are both 0
+    // in doubles, worked by hand: 1e-324 is below half the least subnormal, 4.9e-324), where
+    // OCCT's direction would throw.
     for type_name in ["revolve", "groove"] {
         for (pa, pb) in [
             ([0.0, 3.0], [0.0, 3.0]),
             ([-7.25, 1e-300], [-7.25, 1e-300]),
             // -0 and 0 are one place.
             ([0.0, -0.0], [-0.0, 0.0]),
+            // One subnormal step apart, either way.
+            ([0.0, 0.0], [5e-324, 0.0]),
+            ([0.0, 0.0], [0.0, -5e-324]),
+            ([0.0, 3.0], [f64::from_bits(1), 3.0]),
+            // Apart in both, each square underflowing.
+            ([0.0, 0.0], [1e-162, 1e-162]),
+            ([3.0, 1e-200], [3.0, 0.0]),
         ] {
             let (document, solution) = axis_case(type_name, "na000000", pa, pb);
             let error = check_axis_length(&document, &id("r0000001"), &solution).unwrap_err();
@@ -76,13 +87,18 @@ fn an_axis_whose_solved_ends_coincide_exactly_is_refused() {
 }
 
 #[test]
-fn an_axis_whose_ends_are_an_ulp_apart_passes() {
+fn an_axis_whose_squared_length_isnt_0_passes_however_short() {
+    // An ulp apart away from 0 squares to a normal number; 1e-154 apart squares to 1e-308,
+    // subnormal (below 2.2250738585072014e-308) but not 0; 1.5e-154 to 2.25e-308, normal;
+    // 2e-162 to 4e-324, which rounds up to the least subnormal, 4.9e-324.
     let next = |v: f64| f64::from_bits(v.to_bits() + 1);
     for (pa, pb) in [
         ([0.0, 3.0], [0.0, next(3.0)]),
-        ([0.0, 3.0], [next(0.0), 3.0]),
         ([1e6, -1e6], [next(1e6), -1e6]),
         ([0.0, 0.0], [0.0, 10.0]),
+        ([0.0, 0.0], [1e-154, 0.0]),
+        ([0.0, 0.0], [0.0, 1.5e-154]),
+        ([0.0, 0.0], [2e-162, 0.0]),
     ] {
         let (document, solution) = axis_case("revolve", "na000000", pa, pb);
         assert_eq!(
@@ -142,7 +158,10 @@ fn config() -> ProptestConfig {
 proptest! {
     #![proptest_config(config())]
 
-    /// An axis line's ends pass exactly when they're at two places.
+    /// An axis line's ends pass exactly when their squared distance isn't 0. Here the ends
+    /// are a few ulps apart in each coordinate: near 0 that's a few multiples of 5e-324,
+    /// whose squares are 0; anywhere else in ±1e6 it's at least an ulp of a normal number
+    /// far above 1e-161, whose square isn't.
     #[test]
     fn an_axis_passes_exactly_when_its_ends_differ(
         x in prop_oneof![Just(0.0), Just(-0.0), -1e6f64..1e6],
@@ -161,6 +180,7 @@ proptest! {
         let (bx, by) = (step(x, dx), step(y, dy));
         let (document, solution) = axis_case("revolve", "na000000", [x, y], [bx, by]);
         let result = check_axis_length(&document, &id("r0000001"), &solution);
-        prop_assert_eq!(result.is_ok(), x != bx || y != by);
+        let apart = (bx - x).abs() > 1e-161 || (by - y).abs() > 1e-161;
+        prop_assert_eq!(result.is_ok(), apart, "{:?} {:?}", [x, y], [bx, by]);
     }
 }

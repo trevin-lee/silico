@@ -5,7 +5,7 @@
 //! and a pad or revolve of more than one region (decision 3); and from the built result, more
 //! than one solid (D2), or a volume that shows the feature changed nothing (S7).
 
-use silico_protocol::{MEASURE_PRECISION, format_number};
+use silico_protocol::{MEASURE_PRECISION, format_number, no_distance};
 
 use crate::document::{Axis, Checked, FeatureId, Operation, PROBLEMS_LISTED, SweepFeature};
 use crate::profile::Profile;
@@ -14,10 +14,13 @@ use crate::{Error, ErrorCode};
 
 /// Whether revolve or groove `feature`'s axis gives a direction to turn about, its sketch
 /// solved as `solution`: `x_axis` and `y_axis` always do; a line does unless its solved ends
-/// are at one point, exactly, which the gate can't see (a solve can bring two points
-/// together). Refused as `invalid_input`, naming the feature and its `axis`. Ends any
-/// distance apart pass, however small: whether the profile can be turned about them is the
-/// kernel's to say.
+/// are no distance apart by M3.2's zero-size rule, the solver's own squared length
+/// (`dx² + dy²`, exactly 0: [`silico_protocol::no_distance`]), which the gate can't see (a
+/// solve can bring two points together). So ends at one place are refused, and so are ends
+/// so close their squared distance underflows to 0 (5e-324 apart), where OCCT's direction
+/// would throw. Refused as `invalid_input`, naming the feature and its `axis`. Ends whose
+/// squared distance isn't 0 pass, however small: whether the profile can be turned about
+/// them is the kernel's to say.
 pub fn check_axis_length(
     document: &Checked,
     feature: &FeatureId,
@@ -63,8 +66,8 @@ pub fn check_axis_length(
         })
     };
     let (from, to) = (end(&line.from)?, end(&line.to)?);
-    // Exactly: by value, so -0 and 0 are one place.
-    if from == to {
+    // As the gate and the solver measure a line of no size: -0 and 0 are one place.
+    if no_distance(from, to) {
         return Err(Error::new(
             ErrorCode::InvalidInput,
             format!(
