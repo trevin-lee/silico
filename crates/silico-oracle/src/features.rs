@@ -175,13 +175,13 @@ fn cases(features: &[Feature]) -> Result<Vec<FeatureCase>, String> {
     for feature in features {
         let id = &feature.id;
         let note = feature.note.clone().unwrap_or_default();
-        if !is_sweep(&feature.operation) {
+        if feature.operation.sketch().is_none() {
             if note.contains(EXPECTED) {
                 return Err(format!(
                     "{id} isn't a pad, pocket, revolve, or groove, so it isn't a case, but its note says what it's expected to measure"
                 ));
             }
-            if makes_solid(&feature.operation) && !used.contains(id) {
+            if feature.operation.makes_solid() && !used.contains(id) {
                 return Err(format!(
                     "{id} makes a solid that isn't a case and that no case uses"
                 ));
@@ -211,31 +211,6 @@ fn cases(features: &[Feature]) -> Result<Vec<FeatureCase>, String> {
     Ok(found)
 }
 
-fn is_sweep(operation: &Operation) -> bool {
-    matches!(
-        operation,
-        Operation::Pad { .. }
-            | Operation::Pocket { .. }
-            | Operation::Revolve { .. }
-            | Operation::Groove { .. }
-    )
-}
-
-fn makes_solid(operation: &Operation) -> bool {
-    !matches!(operation, Operation::Sketch(_))
-}
-
-/// The sketch a sweep feature uses.
-fn sweep_sketch(operation: &Operation) -> Option<&FeatureId> {
-    match operation {
-        Operation::Pad { sketch, .. }
-        | Operation::Pocket { sketch, .. }
-        | Operation::Revolve { sketch, .. }
-        | Operation::Groove { sketch, .. } => Some(sketch),
-        _ => None,
-    }
-}
-
 /// The features `id` is built from, and it, in timeline order: its bases, back to a
 /// primitive or a sweep with none, and the sketches each sweep uses. A case's bases are one
 /// line, as a PartDesign body's features are.
@@ -255,7 +230,7 @@ fn chain<'a>(
     while let Some(i) = at {
         wanted.insert(i);
         let feature = &features[i];
-        if let Some(sketch) = sweep_sketch(&feature.operation) {
+        if let Some(sketch) = feature.operation.sketch() {
             wanted.insert(place(sketch)?);
         }
         at = match &feature.operation {
@@ -272,32 +247,12 @@ fn chain<'a>(
                 return Err(format!(
                     "{} is a {}, which a sketch-feature case doesn't build",
                     feature.id,
-                    operation_word(other)
+                    other.type_name()
                 ));
             }
         };
     }
     Ok(wanted.into_iter().map(|i| &features[i]).collect())
-}
-
-fn operation_word(operation: &Operation) -> &'static str {
-    match operation {
-        Operation::Box { .. } => "box",
-        Operation::Cylinder { .. } => "cylinder",
-        Operation::Sphere { .. } => "sphere",
-        Operation::Cone { .. } => "cone",
-        Operation::Torus { .. } => "torus",
-        Operation::Fuse { .. } => "fuse",
-        Operation::Cut { .. } => "cut",
-        Operation::Common { .. } => "common",
-        Operation::Sketch(_) => "sketch",
-        Operation::Fillet { .. } => "fillet",
-        Operation::Chamfer { .. } => "chamfer",
-        Operation::Pad { .. } => "pad",
-        Operation::Pocket { .. } => "pocket",
-        Operation::Revolve { .. } => "revolve",
-        Operation::Groove { .. } => "groove",
-    }
 }
 
 /// The case's tolerance: a sweep of a sketch with an arc or circle, a revolve, a groove, or
@@ -570,7 +525,7 @@ fn part_design(
         other => Err(format!(
             "{} is a {}, which a sketch-feature case doesn't build",
             feature.id,
-            operation_word(other)
+            other.type_name()
         )),
     }
 }

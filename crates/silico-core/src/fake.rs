@@ -583,6 +583,7 @@ fn answer(op: &Op) -> Result<Reply, Error> {
             // and a length that makes no prism the rules admit is the base's doing.
             let regions = swept_faces(faces)?;
             flat_check(
+                "PrismThroughAll",
                 silico_protocol::check_leaves_plane(
                     "direction",
                     regions.plane.normal(),
@@ -647,10 +648,12 @@ fn swept(faces: &ShapeData, sweep: Sweep) -> Result<Reply, Error> {
     let normal = regions.plane.normal();
     match sweep {
         Sweep::Prism { vector, .. } => flat_check(
+            "Prism",
             silico_protocol::check_leaves_plane("vector", normal, vector),
             "vector",
         )?,
         Sweep::Revolution { axis, .. } => flat_check(
+            "Revolution",
             silico_protocol::check_axis_in_plane(normal, axis.direction),
             "axis",
         )?,
@@ -687,19 +690,22 @@ fn swept_faces(faces: &ShapeData) -> Result<FaceRegions, Error> {
     }
 }
 
-/// A sweep the plane checks refuse, as the kernel refuses it (`Refusal::SweepFlat`).
+/// A sweep the plane checks refuse, as the kernel refuses it: its `Refusal::SweepFlat`,
+/// worded by the same path a worker's reply takes (`worker::failure_error`), so the two
+/// can't drift.
 fn flat_check(
+    op: &str,
     checked: Result<(), silico_protocol::InvalidParameter>,
     parameter: &str,
 ) -> Result<(), Error> {
     checked.map_err(|invalid| {
-        Error::new(ErrorCode::InvalidInput, invalid.message)
-            .with_parameter(parameter)
-            .with_suggestion(if parameter == "axis" {
-                "turn the faces about a line in their plane"
-            } else {
-                "sweep the faces along a vector out of their plane"
-            })
+        crate::worker::failure_error(
+            op,
+            silico_protocol::Failure::new(silico_protocol::Refusal::SweepFlat {
+                parameter: parameter.to_owned(),
+                message: invalid.message,
+            }),
+        )
     })
 }
 

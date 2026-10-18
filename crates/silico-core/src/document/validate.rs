@@ -552,9 +552,6 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
     problems.into_result()
 }
 
-/// Whether `name` is one no map holds stable: a duplicate's (`~n`), or names, at its top or
-/// anywhere inside, an operation's element by its number (as the name writes it:
-/// `m3tq8v0z.cut.Edge5`).
 /// Where `text` names a sketch's edge whole (`s.sketch.Edge.<id>`, which the parser
 /// refuses: its elements are in no solid), and the fillet's or chamfer's base sweeps that
 /// sketch, what to write instead. Where the sweep starts at the sketch's plane (one side,
@@ -610,6 +607,9 @@ fn made_of_sketch(
     }
 }
 
+/// Whether `name` is one no map holds stable: a duplicate's (`~n`), or names, at its top or
+/// anywhere inside, an operation's element by its number (as the name writes it:
+/// `m3tq8v0z.cut.Edge5`).
 fn unstable(name: &Name) -> bool {
     let mut stack = vec![name];
     while let Some(name) = stack.pop() {
