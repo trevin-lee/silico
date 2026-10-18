@@ -38,6 +38,10 @@ pub const LENGTH_TOLERANCE: f64 = 1e-8;
 /// others (decision 5): ten times the solver's convergence, 57 nanodegrees.
 pub const ANGLE_TOLERANCE: f64 = 1e-9;
 
+/// How many times a sketch is solved again from its solution, at most, to reach one a solve
+/// leaves where it is ([`Translation::solve`]).
+pub const AGAIN: usize = 3;
+
 /// How long a solve may take before the worker is stopped. A sketch the constraints can't
 /// solve is tried by every algorithm in turn, and at the most unknowns the worker takes
 /// (1,024, a chain of 512 points held too far apart), break-it measured DogLeg 11.5 s,
@@ -45,8 +49,7 @@ pub const ANGLE_TOLERANCE: f64 = 1e-9;
 /// 74 s, past the kernel's 60. The time grows with the equations the diagnosis keeps
 /// too: the same chain with one line given `horizontal` 2,000 times took DogLeg 8.7× as
 /// long, and passes 300 s with all four (`MAX_SKETCH_UNKNOWNS`'s doc). A sketch solved
-/// again from its solution
-/// ([`Translation::solve`]) takes it twice at most.
+/// again from its solution ([`Translation::solve`]) takes it 1 + [`AGAIN`] times at most.
 pub const SKETCH_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// The environment variable that names the sketch worker executable.
@@ -1152,15 +1155,18 @@ impl Translation {
     /// solver that couldn't answer (a crash, a timeout), is the error; what the answer says
     /// about the sketch is the outcome.
     ///
-    /// PlaneGCS diagnoses where the sketch is drawn, as FreeCAD does, and tells redundant
-    /// from conflicting by solving from there: a sketch drawn far from its solution (a
+    /// PlaneGCS diagnoses where the sketch is drawn, as FreeCAD does, and drops the
+    /// redundant constraints it picks there; so a sketch drawn far from its solution (a
     /// template redimensioned a thousandfold) can be called conflicting, and one whose kept
-    /// constraints fix a value only to the square root of their convergence can leave an
-    /// agreeing redundancy measurably off (M3.3's break-it). When the outcome is
-    /// over-constrained but the solver reached a solution anyway, the sketch is diagnosed
-    /// and solved again from it (the solve M3.4's re-solve on load would make), and that
-    /// answer stands if it solves: SolidWorks solves such a sketch. Otherwise the first
-    /// stands.
+    /// constraints fix a value only loosely (through a square root of their convergence, or
+    /// an angle along a long side) can leave a dropped constraint measurably off (M3.3's
+    /// break-it). Diagnosed again from that solution, PlaneGCS can drop another, and the
+    /// solve moves: M3.4's re-solve on load would move it on every load. So when the solver
+    /// reached a solution and either called the sketch over-constrained or dropped
+    /// redundant constraints, the sketch is solved again from each solution until a solve
+    /// leaves it where it was, at most [`AGAIN`] times; the earliest answer that solves on
+    /// such a solution stands: it is what every later load gives. Otherwise the first
+    /// stands. SolidWorks solves such a sketch.
     pub fn solve(&self, solver: &mut dyn SketchSolver) -> Result<Answer, Error> {
         let solved = solver.solve(self.system.clone())?;
         if let Err(e) = self.check_reply(&solved) {
@@ -1171,39 +1177,54 @@ impl Translation {
             outcome: self.read(&solved),
             solved,
         };
-        let again_from = match &first.outcome {
-            Err(e)
-                if e.code() == ErrorCode::OverConstrained
-                    && matches!(
-                        first.solved.status,
-                        SolveStatus::Success | SolveStatus::SolvedExceptRedundant
-                    ) =>
-            {
-                first.solved.values.clone()
-            }
-            _ => return Ok(first),
-        };
-        let mut again = self.clone();
-        again.system.values = again_from;
-        // The worker refusing the solution as a start, or a second outcome that doesn't
-        // stand: the first answer stands. A worker that failed (crashed, timed out, ran short)
-        // or a reply that can't be trusted is the error, as it is for the first solve.
-        let resolved = match solver.solve(again.system.clone()) {
-            Ok(resolved) => resolved,
-            Err(e) if e.code() == ErrorCode::InvalidInput => return Ok(first),
-            Err(e) => return Err(e),
-        };
-        if let Err(e) = again.check_reply(&resolved) {
-            solver.distrust();
-            return Err(e);
+        if !reached(&first.solved) {
+            return Ok(first);
         }
-        Ok(match again.read(&resolved) {
-            Ok(solution) => Answer {
+        let dropped =
+            !first.solved.redundant.is_empty() || !first.solved.partially_redundant.is_empty();
+        match &first.outcome {
+            Ok(_) if dropped => {}
+            Err(e) if e.code() == ErrorCode::OverConstrained => {}
+            _ => return Ok(first),
+        }
+        let mut again = self.clone();
+        let mut last: Option<Answer> = None;
+        for _ in 0..AGAIN {
+            let previous = last.as_ref().unwrap_or(&first);
+            again.system.values = previous.solved.values.clone();
+            // The worker refusing the solution as a start, or a solve that reaches no
+            // solution: the first answer stands. A worker that failed (crashed, timed out,
+            // ran short) or a reply that can't be trusted is the error, as it is for the
+            // first solve.
+            let resolved = match solver.solve(again.system.clone()) {
+                Ok(resolved) => resolved,
+                Err(e) if e.code() == ErrorCode::InvalidInput => return Ok(first),
+                Err(e) => return Err(e),
+            };
+            if let Err(e) = again.check_reply(&resolved) {
+                solver.distrust();
+                return Err(e);
+            }
+            if !reached(&resolved) {
+                return Ok(first);
+            }
+            let here = Answer {
+                outcome: again.read(&resolved),
                 solved: resolved,
-                outcome: Ok(solution),
-            },
-            Err(_) => first,
-        })
+            };
+            if same_bits(&here.solved.values, &previous.solved.values) {
+                // `previous`'s solution is its own: solved from it, it doesn't move.
+                return Ok(if previous.outcome.is_ok() {
+                    last.unwrap_or(first)
+                } else if here.outcome.is_ok() {
+                    here
+                } else {
+                    first
+                });
+            }
+            last = Some(here);
+        }
+        Ok(first)
     }
 
     /// The tags sent, in increasing order.
@@ -1910,6 +1931,19 @@ impl Gap {
             rad: self.rad.max(other.rad),
         }
     }
+}
+
+/// Whether `solved` reached a solution, one that can be built or not.
+fn reached(solved: &Solved) -> bool {
+    matches!(
+        solved.status,
+        SolveStatus::Success | SolveStatus::SolvedExceptRedundant
+    )
+}
+
+/// Whether `a` and `b` are the same values, bit for bit.
+fn same_bits(a: &[f64], b: &[f64]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
 }
 
 fn at(values: &[f64], v: Value) -> f64 {

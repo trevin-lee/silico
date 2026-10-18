@@ -12,7 +12,9 @@ use std::f64::consts::PI;
 
 use silico_core::ErrorCode;
 use silico_core::document::{Checked, FeatureId, LineSide, Operation, Sketch, read};
-use silico_core::sketch::{ALGORITHMS, Measured, SketchSolution, SketchSolver, Translation, solve};
+use silico_core::sketch::{
+    AGAIN, ALGORITHMS, Answer, Measured, SketchSolution, SketchSolver, Translation, solve,
+};
 use silico_protocol::{
     Algorithm, Geometry, PointOf, PointValues, SketchGeometry, SketchSystem, SolveStatus, Solved,
     SolverConstraint, Tag, Value,
@@ -1210,7 +1212,7 @@ impl SketchSolver for Scripted {
 }
 
 #[test]
-fn the_second_solve_stands_only_when_it_solves_and_happens_only_after_a_solved_conflict() {
+fn after_a_solved_conflict_the_second_solve_stands_only_when_it_solves() {
     let t = translate(&ten(&[
         r#"{"id": "k0000003", "type": "length", "line": "n0000001", "value": 11, "driving": true}"#,
     ]));
@@ -1289,6 +1291,104 @@ fn the_second_solve_stands_only_when_it_solves_and_happens_only_after_a_solved_c
         let (_, sent) = run(vec![Ok(first)]);
         assert_eq!(sent.len(), 1);
     }
+}
+
+#[test]
+fn a_solve_that_dropped_constraints_is_solved_again_until_it_doesnt_move() {
+    // M3.4: a sketch is solved on every load from the solution its file stores, so the
+    // answer that stands must be one a solve from its own solution leaves where it is.
+    // PlaneGCS picks what it drops where it diagnoses: the line horizontal twice, k0000003
+    // dropped from the drawing, may be kept from the solution, and the solve move. p3, free,
+    // is values 10 and 11: the scripted solves move it.
+    let t = translate(&ten(&[
+        r#"{"id": "k0000003", "type": "horizontal", "line": "n0000001"}"#,
+    ]));
+    let at = |y: f64| {
+        let mut v = t.system.values.clone();
+        v[11] = y;
+        v
+    };
+    let dropping = |tag: u32, y: f64| {
+        let mut a = answer(&t, at(y), SolveStatus::SolvedExceptRedundant);
+        a.redundant = vec![Tag(tag)];
+        a
+    };
+    let conflict = |y: f64| {
+        let mut a = answer(&t, at(y), SolveStatus::Success);
+        a.conflicting = vec![Tag(1), Tag(3)];
+        a
+    };
+    let run = |answers: Vec<Solved>| {
+        let mut s = Scripted {
+            answers: answers.into_iter().map(Ok).collect(),
+            sent: Vec::new(),
+            distrusted: 0,
+        };
+        let got = t.solve(&mut s).unwrap();
+        assert_eq!(s.distrusted, 0);
+        let starts: Vec<f64> = s.sent.iter().map(|system| system.values[11]).collect();
+        (got, starts)
+    };
+    let redundant_of = |got: &Answer| {
+        let s = got.outcome.as_ref().unwrap();
+        (
+            s.point(&silico_core::document::ElementId::new("p0000003").unwrap())
+                .unwrap()[1],
+            s.redundant
+                .iter()
+                .map(|id| id.as_str().to_owned())
+                .collect::<Vec<_>>(),
+        )
+    };
+    // Dropped, and the solve from its solution doesn't move it: the first stands, as it
+    // was diagnosed (the second's diagnosis dropped k0000001 instead), after two solves.
+    let (got, starts) = run(vec![dropping(3, 4.0), dropping(1, 4.0)]);
+    assert_eq!(redundant_of(&got), (4.0, vec!["k0000003".to_owned()]));
+    assert_eq!(starts, [3.0, 4.0]);
+    // Moved by the second solve, which the third doesn't move: the second stands.
+    let (got, starts) = run(vec![dropping(3, 4.0), dropping(1, 5.0), dropping(3, 5.0)]);
+    assert_eq!(redundant_of(&got), (5.0, vec!["k0000001".to_owned()]));
+    assert_eq!(starts, [3.0, 4.0, 5.0]);
+    // Called conflicting, then conflicting again but moved, then not moved and solved: the
+    // third stands (one solve again wasn't enough, M3.3's break-it).
+    let (got, starts) = run(vec![conflict(4.0), conflict(5.0), dropping(1, 5.0)]);
+    assert_eq!(redundant_of(&got), (5.0, vec!["k0000001".to_owned()]));
+    assert_eq!(starts, [3.0, 4.0, 5.0]);
+    // Settled, but refused both before and after: the first's refusal stands, naming its
+    // constraints.
+    let mut other = conflict(5.0);
+    other.conflicting = vec![Tag(3)];
+    let (got, starts) = run(vec![conflict(4.0), conflict(5.0), other]);
+    let e = got.outcome.unwrap_err();
+    assert_eq!(
+        (e.code(), e.elements()),
+        (
+            ErrorCode::OverConstrained,
+            &["k0000001".to_owned(), "k0000003".to_owned()][..]
+        )
+    );
+    assert_eq!(starts, [3.0, 4.0, 5.0]);
+    // Moving on every solve: AGAIN solves again at most, and then the first stands.
+    let moving: Vec<Solved> = (0..=AGAIN).map(|i| dropping(3, 4.0 + i as f64)).collect();
+    let (got, starts) = run(moving);
+    assert_eq!(redundant_of(&got), (4.0, vec!["k0000003".to_owned()]));
+    assert_eq!(starts.len(), 1 + AGAIN);
+    // Moved by the second solve, which reaches no solution: the first stands.
+    let (got, starts) = run(vec![
+        dropping(3, 4.0),
+        answer(&t, at(4.0), SolveStatus::Failed),
+    ]);
+    assert_eq!(redundant_of(&got), (4.0, vec!["k0000003".to_owned()]));
+    assert_eq!(starts, [3.0, 4.0]);
+    // Nothing dropped, or a refusal of another kind: no solve again.
+    let (got, starts) = run(vec![answer(&t, at(4.0), SolveStatus::Success)]);
+    assert_eq!(redundant_of(&got), (4.0, Vec::new()));
+    assert_eq!(starts, [3.0]);
+    let mut flat = dropping(3, 4.0);
+    flat.values[8] = 0.0;
+    let (got, starts) = run(vec![flat]);
+    assert_eq!(got.outcome.unwrap_err().code(), ErrorCode::InvalidResult);
+    assert_eq!(starts, [3.0]);
 }
 
 /// `t` answered met with its one constraint dropped as redundant, its values `values`.
