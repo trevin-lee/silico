@@ -239,3 +239,38 @@ fn a_sweep_feature_leaving_more_than_one_solid_is_refused_fresh_and_from_the_cac
         assert_eq!(second.kernel().asked(), 0);
     }
 }
+
+#[test]
+fn nothing_more_is_asked_for_a_fillet_on_a_fuse_once_the_fuse_is_refused() {
+    // The M2 one-solid verdict on the real kernel, where a fuse can make two solids: cubes
+    // 10 mm apart, and cubes meeting only at a corner (the second from (10, 10, 10)). The
+    // fuse alone first, refused; then, on the same engine, with a fillet on it: the fuse's
+    // verdict is known, so the fillet's step is never started and the kernel is asked for
+    // nothing more. (A verdict that passes two solids starts it.)
+    for (n, at) in [[20.0, 0.0, 0.0], [10.0, 10.0, 10.0]]
+        .into_iter()
+        .enumerate()
+    {
+        let a = box_at("b0000001", [0.0; 3], 10.0, 10.0, 10.0);
+        let b = box_at("b0000002", at, 10.0, 10.0, 10.0);
+        let fuse = boolean("f0000001", "fuse", "b0000001", "b0000002");
+        let fillet = fillet_of("f0000001");
+        let engine = Recompute::new(Counted::new(env!("CARGO_BIN_EXE_silico-kernel-worker"), 2));
+        let alone = publish(&engine, &[&a, &b, &fuse]);
+        let said = "fuse f0000001 makes 2 solids: its base b0000001 and tool b0000002 don't touch, or meet only along an edge or at a point";
+        assert_eq!(refused(&alone, "f0000001").message(), said, "case {n}");
+        let asked = engine.kernel().asked();
+        let filleted = publish(&engine, &[&a, &b, &fuse, &fillet]);
+        assert_eq!(refused(&filleted, "f0000001").message(), said, "case {n}");
+        assert_eq!(
+            filleted.outcome(&id("ffffffff")),
+            Some(&FeatureOutcome::Blocked { on: id("f0000001") }),
+            "case {n}"
+        );
+        assert_eq!(
+            engine.kernel().asked(),
+            asked,
+            "case {n}: the fillet's step was asked for once the fuse was refused"
+        );
+    }
+}

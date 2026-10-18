@@ -502,7 +502,7 @@ pub fn check_result(
 
 /// Whether [`check_result`] passes a result, whatever feature it's for: the verdict is the
 /// measures', the same for every feature sharing the step (only the words are each
-/// feature's), so the scheduler releases a refused result's users by it.
+/// feature's), so the scheduler stops the work only a refused feature's users need by it.
 pub fn result_holds(kind: SweepFeature, before: &Measured, after: &Measured) -> bool {
     judged("", kind, "", before, after).is_ok()
 }

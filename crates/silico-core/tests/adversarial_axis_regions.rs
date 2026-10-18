@@ -2,8 +2,7 @@
 //! every test before): the axis is checked region by region (the crossing for each region
 //! alone, naming only its curves; the angle against the farthest point of all), in both
 //! orders of the regions; and a sweep feature whose solid, or whose base's, can't be
-//! measured can't be checked, so it fails with the measure's error, naming itself. Each
-//! case stays clear of the 180° rule for regions on both sides of the axis.
+//! measured can't be checked, so it fails with the measure's error, naming itself.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[path = "common/sweeps.rs"]
 mod sweeps;

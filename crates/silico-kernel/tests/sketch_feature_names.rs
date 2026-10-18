@@ -1008,31 +1008,42 @@ fn a_groove_of_regions_either_side_of_its_axis_turned_whole_cuts_what_both_sweep
     // 2748.893572. Cut as separate tools, as FreeCAD's makeElementBoolean expands a compound
     // tool (docs/ports/sketch-features.md), the groove removes the union, the ring 15..20
     // from z 5 to 12: π (20² − 15²) × 7, leaving 21284.290228, FreeCAD 1.1.3's measure.
+    // And two regions on one side (x 15..25, z 5..10 and z 12..15), whose solids don't
+    // overlap: the rings 15..20 from z 5 to 10 and 12 to 15, π (20² − 15²) × 8.
     let engine = engine();
-    let model = publish(
-        &engine,
-        &[
-            &circles("cccccccc", "xy", &[([0.0, 0.0], 20.0)]),
-            &pad("pppppppp", None, "cccccccc", &one_side("20")),
-            &rectangles(
-                "ssssssss",
-                "xz",
-                &[[15.0, 5.0, 25.0, 10.0], [-25.0, 7.0, -15.0, 12.0]],
-            ),
-            &turned(
-                "gggggggg",
-                "groove",
-                Some("pppppppp"),
-                "ssssssss",
-                "y_axis",
-                TURN,
-            ),
-        ],
-    );
-    assert_eq!(errors(&model), []);
-    let want = PI * 400.0 * 20.0 - PI * 175.0 * 7.0;
+    let groove = |rects: &[[f64; 4]]| {
+        let model = publish(
+            &engine,
+            &[
+                &circles("cccccccc", "xy", &[([0.0, 0.0], 20.0)]),
+                &pad("pppppppp", None, "cccccccc", &one_side("20")),
+                &rectangles("ssssssss", "xz", rects),
+                &turned(
+                    "gggggggg",
+                    "groove",
+                    Some("pppppppp"),
+                    "ssssssss",
+                    "y_axis",
+                    TURN,
+                ),
+            ],
+        );
+        assert_eq!(errors(&model), []);
+        volume(&model, "gggggggg")
+    };
+    let cylinder = PI * 400.0 * 20.0;
+    let want = cylinder - PI * 175.0 * 7.0;
     assert!((want - 21284.290228).abs() < 1e-6);
-    assert_close(volume(&model, "gggggggg"), want, "the whole turn");
+    assert_close(
+        groove(&[[15.0, 5.0, 25.0, 10.0], [-25.0, 7.0, -15.0, 12.0]]),
+        want,
+        "the whole turn",
+    );
+    assert_close(
+        groove(&[[15.0, 5.0, 25.0, 10.0], [15.0, 12.0, 25.0, 15.0]]),
+        cylinder - PI * 175.0 * 8.0,
+        "the whole turn of two regions on one side",
+    );
 }
 
 #[test]
