@@ -130,7 +130,7 @@ Not in M3.6: the up-to modes, through all both ways, a second side of another mo
 | a groove whose regions lie on opposite sides of its axis, neither crossing it | built: each face is checked alone (measured: two rectangles x 15..25 and −25..−15, z 5..10, a quarter turn into a cylinder r 20, remove 1374.446786) | the same (S6), its volume pinned on the real kernel |
 | an axis along a side of the profile, or touching a corner | allowed | allowed: within 1e-7 is on the axis |
 | a side exactly 1e-7 from the axis | OCCT fails (docs/ports/extrude-revolve.md) | the same failure, passed on with M1's suggestion |
-| a whole turn | the start face isn't in the result, no ends | the same; its seams named from above |
+| a whole turn | the start face isn't in the result, no ends | the same; each seam named by history, `Edge(M c)`, as FreeCAD keeps the profile edge's name |
 | a sketch on XZ | the normal is −Y: a pad goes toward −Y | the same (D6) |
 | a profile wall 1e-7 < g ≤ 3e-7 wide, flush with a face of the base, padded onto it | measured: the pad dropped, the result the base alone, valid (*Known OCCT wrong results*) | the same on Silico's kernel (measured at 2e-7: the cube alone, exactly), refused: adds nothing (S7) |
 | the same, pocketed | measured: valid, the volume off by about 20 × g without the fuzzy value | accepted, documented (S7) |
@@ -141,7 +141,7 @@ Each confirmed against its diff.
 
 | Commit | What broke, and the fix | In Silico |
 |---|---|---|
-| `8371982dfc` (2012-11), `f9cff4c8a2`, `22cfda67de`, `9cbb88941f` (2012-12), `f712f5e4ac` (2016) | A revolve about an axis through its profile made a self-intersecting solid. Refused, by sampling for a sign change; then for every face. | Refused exactly from the solved 2D geometry (decision 2): every curve on one side, touching allowed. |
+| `8371982dfc` (2012-11), `f9cff4c8a2`, `22cfda67de`, `9cbb88941f` (2012-12), `f712f5e4ac` (2016), `83ce80f133` | A revolve about an axis through its profile made a self-intersecting solid. Refused, by sampling for a sign change; then for every face (`83ce80f133`, multi-face tools). | Refused exactly from the solved 2D geometry (decision 2): each region's outer loop on one side, touching allowed; regions may lie on either side, as FreeCAD checks each face. |
 | `fdf66b3e88` (2017-08) | The perpendicular-axis check missed an antiparallel axis; `updateAxis` errors were thrown, not returned. | Moot: an axis is a line of the sketch, so it lies in its plane. |
 | `d29bed15d1` (2017-08) | An axis perpendicular to the sketch threw in `suggestReversed`. | Moot. |
 | `4cad62e315` (2020-09) | A custom direction's length factor wasn't applied to the second length. | Not in M3.6 (no custom directions); lengths go along the normal. |
