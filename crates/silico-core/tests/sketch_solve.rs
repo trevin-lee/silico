@@ -1290,3 +1290,163 @@ fn the_second_solve_stands_only_when_it_solves_and_happens_only_after_a_solved_c
         assert_eq!(sent.len(), 1);
     }
 }
+
+/// `t` answered met with its one constraint dropped as redundant, its values `values`.
+fn redundant(t: &Translation, values: Vec<f64>) -> Solved {
+    let mut met = answer(t, values, SolveStatus::SolvedExceptRedundant);
+    met.redundant = vec![Tag(1)];
+    met
+}
+
+#[test]
+fn a_symmetry_about_a_slanted_line_off_the_origin_is_measured_as_its_mirror() {
+    // Round 1's mutants: the mirror's arithmetic ran only about lines from the origin, or
+    // along an axis, where q − a and q + a project alike. Here the line runs from (1, 2)
+    // along (3, 4); q (1, 7) mirrors to (5.8, 3.4) (q − a = (0, 5), along the line 20/25 =
+    // 0.8 of (3, 4), so the foot is (3.4, 5.2), and the mirror 2 · foot − q).
+    let t = translate(&text(
+        &[
+            point("p0000001", 1.0, 2.0),
+            point("p0000002", 4.0, 6.0),
+            point("p0000003", 1.0, 7.0),
+            point("p0000004", 5.8, 3.4),
+        ],
+        &[line("n0000001", "p0000001", "p0000002")],
+        &[],
+        &[],
+        &[r#"{"id": "k0000001", "type": "symmetric", "a": "p0000003", "b": "p0000004", "about": "n0000001"}"#.to_owned()],
+    ));
+    let met = redundant(&t, t.system.values.clone());
+    read_back(&t, &met).unwrap_or_else(|e| panic!("met: {e}"));
+    // p4's x is value 12 (points by ID from 6): moved past decision 5's 1e-8 mm, it isn't.
+    let mut off = met.clone();
+    off.values[12] += 1.01e-8;
+    let e = read_back(&t, &off).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::OverConstrained, "{e}");
+    let mut within = met;
+    within.values[12] += 0.99e-8;
+    read_back(&t, &within).unwrap();
+}
+
+#[test]
+fn a_midpoint_on_a_slanted_line_is_measured_from_the_lines_middle() {
+    // Round 1's mutants: the middle's y was taken only of lines along y = 0. Here the line
+    // runs from (2, 4) to (8, 10); its middle is (5, 7).
+    let t = translate(&text(
+        &[
+            point("p0000001", 2.0, 4.0),
+            point("p0000002", 8.0, 10.0),
+            point("p0000003", 5.0, 7.0),
+        ],
+        &[line("n0000001", "p0000001", "p0000002")],
+        &[],
+        &[],
+        &[
+            r#"{"id": "k0000001", "type": "midpoint", "point": "p0000003", "line": "n0000001"}"#
+                .to_owned(),
+        ],
+    ));
+    let met = redundant(&t, t.system.values.clone());
+    read_back(&t, &met).unwrap_or_else(|e| panic!("met: {e}"));
+    // p3's y (value 11) a micrometre off the middle: over-constrained.
+    let mut off = met;
+    off.values[11] += 1e-6;
+    assert_eq!(
+        read_back(&t, &off).unwrap_err().code(),
+        ErrorCode::OverConstrained
+    );
+}
+
+#[test]
+fn an_arcs_own_ends_mirrored_about_a_slanted_line_off_the_origin_are_measured_by_their_middle() {
+    // Round 1's mutants: the arc's ends' middle (MidpointOnLine) was taken only about lines
+    // through the origin, where the middle scaled stays on the line. Here the arc is about
+    // c (3, 4), on a line from c along (2, 1); its ends are c ± √5 (−1, 2), a radius 5
+    // either side of the line, mirrored about it, their middle c.
+    let r5 = 5f64.sqrt();
+    let t = translate(&text(
+        &[
+            point("p0000001", 3.0, 4.0),
+            point("p0000002", 5.0, 5.0),
+            point("p0000003", 3.0 + r5, 4.0 - 2.0 * r5),
+            point("p0000004", 3.0 - r5, 4.0 + 2.0 * r5),
+        ],
+        &[line("n0000001", "p0000001", "p0000002")],
+        &[],
+        &[arc("a0000001", "p0000001", "p0000003", "p0000004")],
+        &[r#"{"id": "k0000001", "type": "symmetric", "a": "p0000003", "b": "p0000004", "about": "n0000001"}"#.to_owned()],
+    ));
+    assert!(
+        matches!(sent(&t)[0], SolverConstraint::MidpointOnLine { .. }),
+        "{:?}",
+        sent(&t)
+    );
+    let met = redundant(&t, t.system.values.clone());
+    read_back(&t, &met).unwrap_or_else(|e| panic!("met: {e}"));
+    // p3's x (value 10) a micrometre off: its middle leaves the line.
+    let mut off = met;
+    off.values[10] += 1e-6;
+    assert_eq!(
+        read_back(&t, &off).unwrap_err().code(),
+        ErrorCode::OverConstrained
+    );
+}
+
+#[test]
+fn an_arc_ending_tangent_on_a_line_is_measured_against_the_line() {
+    // Round 1's mutants: a tangency ending on a line (`off_curve` of a line) was never
+    // measured. The arc about (5, 5) runs counter-clockwise from (0, 5) to (5, 0), the
+    // circle's bottom, where it runs along +x, as the line from (0, 0) to (10, 0) does.
+    let points = [
+        point("p0000001", 0.0, 0.0),
+        point("p0000002", 10.0, 0.0),
+        point("p0000003", 5.0, 5.0),
+        point("p0000004", 0.0, 5.0),
+        point("p0000005", 5.0, 0.0),
+    ];
+    let mut kept = Vec::new();
+    for direction in ["same", "opposite"] {
+        let t = translate(&text(
+            &points,
+            &[line("n0000001", "p0000001", "p0000002")],
+            &[],
+            &[arc("a0000001", "p0000003", "p0000004", "p0000005")],
+            &[format!(
+                r#"{{"id": "k0000001", "type": "tangent_on", "a": "a0000001", "at": "p0000005", "b": "n0000001", "direction": "{direction}"}}"#
+            )],
+        ));
+        let met = redundant(&t, t.system.values.clone());
+        if read_back(&t, &met).is_ok() {
+            kept.push(direction);
+            // p5's y (value 15) a micrometre off the line: over-constrained.
+            let mut off = met;
+            off.values[15] += 1e-6;
+            assert_eq!(
+                read_back(&t, &off).unwrap_err().code(),
+                ErrorCode::OverConstrained,
+                "{direction}"
+            );
+        }
+    }
+    // The arc meets the line one way: tangent in that direction, opposite to the other.
+    assert_eq!(kept.len(), 1, "{kept:?}");
+}
+
+#[test]
+fn a_reference_distance_to_a_point_on_its_line_keeps_its_stored_side() {
+    // Round 1's mutants: a point exactly on its line is on neither side, so the side
+    // stored stays (left here); nothing tested it.
+    let t = translate(&ten(&[
+        r#"{"id": "r0000001", "type": "point_line_distance", "point": "p0000003", "line": "n0000001", "value": 3, "side": "left", "driving": false}"#,
+    ]));
+    let mut values = t.system.values.clone();
+    values[11] = 0.0; // p3 onto n1
+    let s = read_back(&t, &answer(&t, values, SolveStatus::Success)).unwrap();
+    assert_eq!(
+        s.references[&silico_core::document::ElementId::new("r0000001").unwrap()],
+        Measured::FromLine {
+            distance: 0.0,
+            side: LineSide::Left
+        }
+    );
+}

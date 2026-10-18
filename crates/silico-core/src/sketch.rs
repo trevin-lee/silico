@@ -1442,7 +1442,8 @@ impl Translation {
         out
     }
 
-    /// Where `p`, a point the system's geometry has, is.
+    /// Where `p`, a point the system's geometry has, is: a point, or a line's or an arc's end
+    /// (what the translation sends).
     fn point_of(&self, values: &[f64], p: PointOf) -> [f64; 2] {
         let (PointOf::Point(g) | PointOf::Start(g) | PointOf::End(g) | PointOf::Center(g)) = p;
         let v = match (self.system.geometry.get(g.0 as usize), p) {
@@ -1455,10 +1456,8 @@ impl Translation {
                 Some(SketchGeometry::Line { end, .. } | SketchGeometry::Arc { end, .. }),
                 PointOf::End(_),
             ) => *end,
-            (
-                Some(SketchGeometry::Circle { center, .. } | SketchGeometry::Arc { center, .. }),
-                PointOf::Center(_),
-            ) => *center,
+            // A centre is a point of the sketch's own (shared, D2): the translation sends
+            // it as that `Point`, never as a curve's `Center`.
             _ => return [f64::NAN; 2],
         };
         self.xy(values, v)
