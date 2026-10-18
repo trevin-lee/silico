@@ -245,8 +245,8 @@ fn reading_stops_at_the_most_a_document_may_be() {
     // Both ends opened here, before silico runs: a read end of the test's own, held until
     // silico has finished, and the write end the writer feeds. An open in the writer's
     // thread raced silico (which opens the FIFO, refuses it, and closes it): opened after,
-    // with no reader left, it waited forever. Dropping the read end ends the writer, whose
-    // next write fails (EPIPE).
+    // with no reader left, it waited forever. Dropping the read end ends the writer: the
+    // write it's waiting in, or the next, fails (EPIPE).
     let held = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
@@ -272,12 +272,13 @@ fn reading_stops_at_the_most_a_document_may_be() {
     let out = finish(child, Duration::from_secs(60));
     drop(held);
     let written = writer.join().unwrap();
-    let limit = silico_core::document::json::MAX_INPUT_LEN;
     assert!(out.status.is_some(), "hung");
+    // Nothing read before it's refused: what was written is at most a chunk and a pipe's
+    // buffer, which the test's own read end (never read) holds. (Found by the review: a
+    // bound of the 64 MiB a document may be passed a silico that read that much first.)
     assert!(
-        written <= limit + (2 << 20),
-        "silico read {written} bytes, {} past the {limit} it may read",
-        written - limit
+        written <= 2 << 20,
+        "silico read {written} bytes of the FIFO before refusing it"
     );
     assert_eq!(out.code(), Some(2), "{}", out.stderr);
     assert!(
