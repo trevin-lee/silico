@@ -519,8 +519,12 @@ fn a_solution_is_read_back_by_id() {
     values[11] = 4.5; // p3's y, moved by the solve
     let solution = read_back(&t, &answer(&t, values, SolveStatus::Success)).unwrap();
     let id = |s: &str| silico_core::document::ElementId::new(s).unwrap();
-    assert_eq!(solution.points[&id("p0000003")], [4.0, 4.5]);
-    assert_eq!(solution.points[&id("p0000002")], [10.0, 0.0]);
+    assert_eq!(solution.point(&id("p0000003")), Some([4.0, 4.5]));
+    assert_eq!(solution.point(&id("p0000002")), Some([10.0, 0.0]));
+    // As the file holds them: coordinates, -0 kept apart from 0.
+    let c = |v: f64| silico_core::document::Coordinate::new(v).unwrap();
+    assert_eq!(solution.points[&id("p0000003")], [c(4.0), c(4.5)]);
+    assert_ne!(solution.points[&id("p0000001")], [c(-0.0), c(0.0)]);
     assert_eq!(solution.algorithm, Algorithm::DogLeg);
     assert!(solution.redundant.is_empty() && solution.references.is_empty());
 }
@@ -748,4 +752,385 @@ fn solving_a_documents_sketch_names_the_feature_in_its_errors() {
         solve(&checked, &missing, &mut solves).unwrap_err().code(),
         ErrorCode::InvalidInput
     );
+}
+
+// ---------------------------------------------------------------------------------------
+// The council's round 1: every form's gap, references on moved geometry, the second
+// solve's branches, and a symmetry collapsed.
+
+/// The square p1 (0, 0), p2 (10, 0), p3 (10, 10), p4 (0, 10) with sides n1 to n4 running
+/// round it; p5 (5, 0), the middle of n1; p6 (20, 0); p7 (5, 10); n5 from p5 to p7. Circles
+/// c1 about p1 of radius 10, c2 about p6 of radius 10 (outside c1, touching), c3 about p5 of
+/// radius 5 (inside c1, touching); the arc a1 about p1 from p2 to p4. With `constraint`.
+/// Values: the origin and axes (0..6), p1..p7 (6..20), c1, c2, c3 (20, 21, 22), a1's
+/// radius and angles (23..26), then the constraint's dimensions.
+fn shapes2(constraint: &str) -> String {
+    let p = |i: u32, x: f64, y: f64| point(&format!("p000000{i}"), x, y);
+    text(
+        &[
+            p(1, 0.0, 0.0),
+            p(2, 10.0, 0.0),
+            p(3, 10.0, 10.0),
+            p(4, 0.0, 10.0),
+            p(5, 5.0, 0.0),
+            p(6, 20.0, 0.0),
+            p(7, 5.0, 10.0),
+        ],
+        &[
+            line("n0000001", "p0000001", "p0000002"),
+            line("n0000002", "p0000002", "p0000003"),
+            line("n0000003", "p0000003", "p0000004"),
+            line("n0000004", "p0000004", "p0000001"),
+            line("n0000005", "p0000005", "p0000007"),
+        ],
+        &[
+            circle("c0000001", "p0000001", 10.0),
+            circle("c0000002", "p0000006", 10.0),
+            circle("c0000003", "p0000005", 5.0),
+        ],
+        &[arc("a0000001", "p0000001", "p0000002", "p0000004")],
+        &[constraint.to_owned()],
+    )
+}
+
+#[test]
+fn every_form_redundant_and_met_is_kept_and_a_nanometre_off_is_over_constrained() {
+    // Each form alone, drawn exactly met, answered as PlaneGCS dropping it as redundant:
+    // kept, and named redundant. Then one value it reads moved by a nanometre (1e-6 mm), by
+    // hand chosen to move the form's own measure (a millimetre gap of 1e-6, or a radian gap
+    // of 1e-7 over a 10 mm line): past decision 5's 1e-8 mm and 1e-9 rad, over-constrained,
+    // naming it.
+    let cases: [(&str, usize); 26] = [
+        (r#""type": "horizontal", "line": "n0000001""#, 9),
+        (r#""type": "vertical", "line": "n0000002""#, 10),
+        (
+            r#""type": "horizontal_points", "a": "p0000001", "b": "p0000002""#,
+            9,
+        ),
+        (
+            r#""type": "vertical_points", "a": "p0000002", "b": "p0000003""#,
+            10,
+        ),
+        (
+            r#""type": "length", "line": "n0000001", "value": 10, "driving": true"#,
+            8,
+        ),
+        (
+            r#""type": "distance", "a": "p0000001", "b": "p0000002", "value": 10, "driving": true"#,
+            8,
+        ),
+        (
+            r#""type": "distance_x", "a": "p0000001", "b": "p0000002", "value": 10, "driving": true"#,
+            8,
+        ),
+        (
+            r#""type": "distance_y", "a": "p0000002", "b": "p0000003", "value": 10, "driving": true"#,
+            11,
+        ),
+        (
+            r#""type": "point_line_distance", "point": "p0000004", "line": "n0000001", "value": 10, "side": "left", "driving": true"#,
+            13,
+        ),
+        (
+            r#""type": "on", "point": "p0000005", "curve": "n0000001""#,
+            15,
+        ),
+        (
+            r#""type": "on", "point": "p0000002", "curve": "c0000001""#,
+            8,
+        ),
+        (
+            r#""type": "parallel", "a": "n0000001", "b": "n0000003""#,
+            11,
+        ),
+        (
+            r#""type": "perpendicular", "a": "n0000001", "b": "n0000002""#,
+            10,
+        ),
+        (
+            r#""type": "angle", "a": "n0000001", "b": "n0000002", "value": 90, "driving": true"#,
+            10,
+        ),
+        (
+            r#""type": "radius", "curve": "c0000001", "value": 10, "driving": true"#,
+            20,
+        ),
+        (
+            r#""type": "diameter", "curve": "c0000001", "value": 20, "driving": true"#,
+            20,
+        ),
+        (r#""type": "equal", "a": "n0000001", "b": "n0000002""#, 11),
+        (r#""type": "equal", "a": "c0000001", "b": "c0000002""#, 21),
+        (
+            r#""type": "tangent", "a": "n0000003", "b": "c0000001", "side": "left""#,
+            20,
+        ),
+        (
+            r#""type": "tangent", "a": "c0000001", "b": "c0000002", "side": "outside""#,
+            21,
+        ),
+        (
+            r#""type": "tangent", "a": "c0000001", "b": "c0000003", "side": "inside""#,
+            22,
+        ),
+        // n3 ends at p4, on c1's top, leaving it along +x where c1 runs along −x.
+        (
+            r#""type": "tangent_on", "a": "n0000003", "at": "p0000004", "b": "c0000001", "direction": "opposite""#,
+            13,
+        ),
+        // n2 and a1 both start at p2, both running along +y: a cusp.
+        (
+            r#""type": "tangent_at", "a": "n0000002", "b": "a0000001", "at": "p0000002", "direction": "opposite""#,
+            10,
+        ),
+        (
+            r#""type": "symmetric", "a": "p0000001", "b": "p0000006", "about": "p0000002""#,
+            17,
+        ),
+        (
+            r#""type": "symmetric", "a": "p0000001", "b": "p0000002", "about": "n0000005""#,
+            8,
+        ),
+        (
+            r#""type": "midpoint", "point": "p0000005", "line": "n0000001""#,
+            14,
+        ),
+    ];
+    for (form, moved) in cases {
+        let t = translate(&shapes2(&format!(r#"{{"id": "k0000001", {form}}}"#)));
+        let mut met = answer(
+            &t,
+            t.system.values.clone(),
+            SolveStatus::SolvedExceptRedundant,
+        );
+        met.redundant = vec![Tag(1)];
+        let kept = read_back(&t, &met).unwrap_or_else(|e| panic!("{form}: {e}"));
+        assert_eq!(kept.redundant.len(), 1, "{form}");
+        let mut off = met.clone();
+        off.values[moved] += 1e-6;
+        let e = read_back(&t, &off).unwrap_err();
+        assert_eq!(
+            (e.code(), e.elements()),
+            (ErrorCode::OverConstrained, &["k0000001".to_owned()][..]),
+            "{form}: {e}"
+        );
+    }
+}
+
+#[test]
+fn a_tangency_inside_is_sent_internal_and_outside_not() {
+    for (side, internal) in [("inside", true), ("outside", false)] {
+        let t = translate(&shapes2(&format!(
+            r#"{{"id": "k0000001", "type": "tangent", "a": "c0000001", "b": "c0000003", "side": "{side}"}}"#
+        )));
+        match sent(&t)[..] {
+            [SolverConstraint::TangentCircles { internal: got, .. }] => {
+                assert_eq!(got, internal, "{side}")
+            }
+            ref other => panic!("{other:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_circle_left_on_the_other_side_of_its_tangent_line_is_an_invalid_result() {
+    // c1 is left of n3 (n3 runs −x at y 10, c1 below it); held right of it, a solve that
+    // leaves it there is refused, naming the tangency; held left, it stands.
+    for (side, refused) in [("right", true), ("left", false)] {
+        let t = translate(&shapes2(&format!(
+            r#"{{"id": "k0000001", "type": "tangent", "a": "n0000003", "b": "c0000001", "side": "{side}"}}"#
+        )));
+        let got = read_back(
+            &t,
+            &answer(&t, t.system.values.clone(), SolveStatus::Success),
+        );
+        match got {
+            Err(e) => {
+                assert!(refused, "{side}: {e}");
+                assert_eq!(
+                    (e.code(), e.elements()),
+                    (ErrorCode::InvalidResult, &["k0000001".to_owned()][..])
+                );
+            }
+            Ok(_) => assert!(!refused, "{side}"),
+        }
+    }
+}
+
+#[test]
+fn every_reference_form_is_measured_on_the_solution_not_the_drawing() {
+    // p3 drawn at (10, 10) solved to (4, 7), c1's radius drawn 10 solved to 6: each
+    // reference reads the solution. By hand: p1 → p3 is (4, 7), so distance_y 7, distance
+    // √65, distance_x 4; n1 (p1 → p2) is 10 long; p3 is 7 left of n1; n1 to n2 (p2 → p3,
+    // (−6, 7)) turns atan2(7, −6); c1's radius 6, diameter 12.
+    let refs = [
+        r#"{"id": "r0000001", "type": "distance_y", "a": "p0000001", "b": "p0000003", "value": 0, "driving": false}"#,
+        r#"{"id": "r0000002", "type": "distance", "a": "p0000001", "b": "p0000003", "value": 0, "driving": false}"#,
+        r#"{"id": "r0000003", "type": "radius", "curve": "c0000001", "value": 0, "driving": false}"#,
+        r#"{"id": "r0000004", "type": "diameter", "curve": "c0000001", "value": 0, "driving": false}"#,
+        r#"{"id": "r0000005", "type": "distance_x", "a": "p0000001", "b": "p0000003", "value": 0, "driving": false}"#,
+        r#"{"id": "r0000006", "type": "length", "line": "n0000001", "value": 0, "driving": false}"#,
+        r#"{"id": "r0000007", "type": "point_line_distance", "point": "p0000003", "line": "n0000001", "value": 0, "side": "right", "driving": false}"#,
+        r#"{"id": "r0000008", "type": "angle", "a": "n0000001", "b": "n0000002", "value": 0, "driving": false}"#,
+    ];
+    let mut text = shapes2(refs[0]);
+    for r in &refs[1..] {
+        text = text.replace("]}]}", &format!(", {r}]}}]}}"));
+    }
+    let t = translate(&text);
+    assert!(sent(&t).is_empty(), "references are never sent");
+    let mut values = t.system.values.clone();
+    (values[10], values[11], values[20]) = (4.0, 7.0, 6.0);
+    let s = read_back(&t, &answer(&t, values, SolveStatus::Success)).unwrap();
+    let r = |id: &str| s.references[&silico_core::document::ElementId::new(id).unwrap()];
+    assert_eq!(r("r0000001"), Measured::Length(7.0));
+    assert_eq!(r("r0000002"), Measured::Length(65f64.sqrt()));
+    assert_eq!(r("r0000003"), Measured::Length(6.0));
+    assert_eq!(r("r0000004"), Measured::Length(12.0));
+    assert_eq!(r("r0000005"), Measured::Length(4.0));
+    assert_eq!(r("r0000006"), Measured::Length(10.0));
+    assert_eq!(
+        r("r0000007"),
+        Measured::FromLine {
+            distance: 7.0,
+            side: LineSide::Left
+        }
+    );
+    assert_eq!(
+        r("r0000008"),
+        Measured::Angle(libm::atan2(7.0, -6.0).to_degrees())
+    );
+}
+
+#[test]
+fn a_symmetry_the_solution_collapses_is_an_invalid_result_naming_it() {
+    // p1 and p6 mirrored about p7; a solution putting p6 and p7 on p1 (the robustness
+    // review's way there: a point held on what it's mirrored about) can't be solved from
+    // again: refused, naming it.
+    let t = translate(&shapes2(
+        r#"{"id": "k0000001", "type": "symmetric", "a": "p0000001", "b": "p0000006", "about": "p0000007"}"#,
+    ));
+    let mut values = t.system.values.clone();
+    (values[16], values[17], values[18], values[19]) = (0.0, 0.0, 0.0, 0.0);
+    let e = read_back(&t, &answer(&t, values, SolveStatus::Success)).unwrap_err();
+    assert_eq!(
+        (e.code(), e.elements()),
+        (ErrorCode::InvalidResult, &["k0000001".to_owned()][..])
+    );
+}
+
+#[test]
+fn a_circle_or_arc_that_cant_be_built_is_named_and_a_free_circle_listed() {
+    let t = translate(&shapes2(
+        r#"{"id": "k0000001", "type": "horizontal", "line": "n0000001"}"#,
+    ));
+    for (at, value, named) in [
+        (20, 0.0, "c0000001"),
+        (21, -1.0, "c0000002"),
+        (23, 0.0, "a0000001"),
+    ] {
+        let mut v = t.system.values.clone();
+        v[at] = value;
+        let e = read_back(&t, &answer(&t, v, SolveStatus::Success)).unwrap_err();
+        assert_eq!(
+            (e.code(), e.elements()),
+            (ErrorCode::InvalidResult, &[named.to_owned()][..]),
+            "{at}"
+        );
+    }
+    // An arc whose ends the solution puts at one place.
+    let mut v = t.system.values.clone();
+    (v[12], v[13]) = (10.0, 0.0);
+    let e = read_back(&t, &answer(&t, v, SolveStatus::Success)).unwrap_err();
+    assert!(e.elements().contains(&"a0000001".to_owned()), "{e}");
+    // A circle whose radius the solver finds free is free geometry.
+    let mut free = answer(&t, t.system.values.clone(), SolveStatus::Success);
+    free.free = vec![Value(21)];
+    let s = read_back(&t, &free).unwrap();
+    assert_eq!(
+        s.free.into_iter().collect::<Vec<_>>(),
+        [silico_core::document::ElementId::new("c0000002").unwrap()]
+    );
+    // Free values out of order are a reply that can't be trusted.
+    let mut unordered = answer(&t, t.system.values.clone(), SolveStatus::Success);
+    unordered.free = vec![Value(21), Value(20)];
+    assert_eq!(
+        t.check_reply(&unordered).unwrap_err().code(),
+        ErrorCode::ProtocolError
+    );
+}
+
+/// A stand-in worker that answers from a script, one answer per request, and records what
+/// it was sent.
+struct Scripted {
+    answers: Vec<Result<Solved, silico_core::Error>>,
+    sent: Vec<SketchSystem>,
+}
+
+impl SketchSolver for Scripted {
+    fn solve(&mut self, system: SketchSystem) -> Result<Solved, silico_core::Error> {
+        self.sent.push(system);
+        if self.answers.is_empty() {
+            panic!("asked once too often");
+        }
+        self.answers.remove(0)
+    }
+}
+
+#[test]
+fn the_second_solve_stands_only_when_it_solves_and_happens_only_after_a_solved_conflict() {
+    let t = translate(&ten(&[
+        r#"{"id": "k0000003", "type": "length", "line": "n0000001", "value": 11, "driving": true}"#,
+    ]));
+    let conflict = |status| {
+        let mut a = answer(&t, t.system.values.clone(), status);
+        a.conflicting = vec![Tag(2), Tag(3)];
+        a
+    };
+    let mut moved = t.system.values.clone();
+    moved[11] = 2.5;
+    let clean = answer(&t, moved.clone(), SolveStatus::Success);
+    let run = |answers: Vec<Result<Solved, silico_core::Error>>| {
+        let mut s = Scripted {
+            answers,
+            sent: Vec::new(),
+        };
+        let got = t.solve(&mut s).map(|a| a.outcome);
+        (got, s.sent)
+    };
+    // The first conflicting but solved, the second clean: the second stands, sent from the
+    // first's solution.
+    let mut first = conflict(SolveStatus::Success);
+    first.values = moved.clone();
+    let (got, sent) = run(vec![Ok(first), Ok(clean.clone())]);
+    assert!(got.unwrap().is_ok());
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[1].values, moved);
+    // The second conflicting too, or failing, or the solver failing outright: the first's
+    // refusal stands, naming its constraints.
+    for second in [
+        Ok(conflict(SolveStatus::Success)),
+        Ok(answer(&t, t.system.values.clone(), SolveStatus::Failed)),
+        Err(silico_core::Error::new(ErrorCode::WorkerCrashed, "gone")),
+    ] {
+        let (got, sent) = run(vec![Ok(conflict(SolveStatus::Success)), second]);
+        let e = got.unwrap().unwrap_err();
+        assert_eq!(
+            (e.code(), e.elements()),
+            (
+                ErrorCode::OverConstrained,
+                &["k0000002".to_owned(), "k0000003".to_owned()][..]
+            )
+        );
+        assert_eq!(sent.len(), 2);
+    }
+    // No second solve after a conflict the solver didn't solve, or a refusal of another
+    // kind.
+    for first in [
+        conflict(SolveStatus::Failed),
+        answer(&t, t.system.values.clone(), SolveStatus::Failed),
+    ] {
+        let (_, sent) = run(vec![Ok(first)]);
+        assert_eq!(sent.len(), 1);
+    }
 }

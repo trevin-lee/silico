@@ -621,15 +621,17 @@ fn compare_solutions(
 ) -> Vec<String> {
     let mut how = Vec::new();
     let near = |a: f64, b: f64| (a - b).abs() <= TOLERANCE;
-    for (id, p) in &ours.points {
+    for (id, [x, y]) in &ours.points {
+        let p = [x.mm(), y.mm()];
         match theirs.points.get(id.as_str()) {
             Some(q) if near(p[0], q[0]) && near(p[1], q[1]) => {}
             other => how.push(format!("point {id} at {p:?}, FreeCAD's at {other:?}")),
         }
     }
     for (id, r) in &ours.radii {
+        let r = r.mm();
         match theirs.radii.get(id.as_str()) {
-            Some(q) if near(*r, *q) => {}
+            Some(q) if near(r, *q) => {}
             other => how.push(format!("circle {id}'s radius {r}, FreeCAD's {other:?}")),
         }
     }

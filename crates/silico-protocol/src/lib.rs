@@ -40,7 +40,7 @@ pub use sketch::{
     MAX_SKETCH_CONSTRAINTS, MAX_SKETCH_GEOMETRY, MAX_SKETCH_UNKNOWNS, MAX_SKETCH_VALUES, MAX_TAG,
     Moved, PointOf, PointValues, SketchGeometry, SketchSystem, SolveStatus, Solved,
     SolverConstraint, Tag, Value, arc_from_points, check_drag_target, no_distance,
-    squared_distance, within_reach,
+    squared_distance, unbuildable, within_reach,
 };
 
 /// The file descriptor a worker inherits its end of the socket pair as.

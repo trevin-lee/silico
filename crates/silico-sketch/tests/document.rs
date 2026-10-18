@@ -71,7 +71,7 @@ fn id(s: &str) -> ElementId {
 }
 
 fn assert_at(solution: &SketchSolution, p: &str, want: [f64; 2]) {
-    let got = solution.points[&id(p)];
+    let got = solution.point(&id(p)).unwrap();
     assert!(
         (got[0] - want[0]).abs() <= CLOSE && (got[1] - want[1]).abs() <= CLOSE,
         "{p}: got {got:?}, want {want:?}"
@@ -240,7 +240,7 @@ fn freecads_circle_to_line_distance_and_its_reference() {
     );
     let s = solved(&doc, &mut worker()).unwrap();
     for p in ["p0000002", "p0000003"] {
-        let y = s.points[&id(p)][1];
+        let y = s.point(&id(p)).unwrap()[1];
         assert!((y - 30.0).abs() <= CLOSE, "{p} at y {y}");
     }
     let doc = document(
@@ -480,7 +480,7 @@ fn a_line_ending_tangent_on_a_circle_lands_at_the_analytic_point() {
     );
     let s = solved(&doc, &mut worker()).unwrap();
     assert_eq!(s.dofs, 0);
-    let t = s.points[&id("p0000003")];
+    let t = s.point(&id("p0000003")).unwrap();
     assert!((t[0] - 0.248_380_314_661).abs() < 1e-11, "{t:?}");
     assert!((t[1] - 9.996_914_885_068).abs() < 1e-11, "{t:?}");
 }
@@ -542,7 +542,10 @@ fn a_solution_that_cant_be_built_is_passed_over_for_the_next_algorithms() {
     );
     let s = solved(&doc, &mut worker()).unwrap();
     assert_eq!(s.algorithm, Algorithm::LevenbergMarquardt);
-    let (a, b) = (s.points[&id("p0000001")], s.points[&id("p0000002")]);
+    let (a, b) = (
+        s.point(&id("p0000001")).unwrap(),
+        s.point(&id("p0000002")).unwrap(),
+    );
     assert!(a != b, "{a:?} {b:?}");
     assert!(
         (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9,
@@ -587,4 +590,100 @@ fn every_algorithm_is_offered_in_freecads_order() {
             Algorithm::AnchoredSqp
         ]
     );
+}
+
+#[test]
+fn a_symmetry_its_constraints_collapse_is_an_invalid_result_naming_it() {
+    // The robustness review's case: a held on the x axis and mirrored about it, so b's only
+    // place is a's, (5, 0): two points at one place, which no later solve could start from.
+    let doc = document(
+        &[point("p0000001", 5.0, 3.0), point("p0000002", 5.0, -4.0)],
+        &[],
+        &[],
+        &[],
+        &[
+            r#"{"id": "c0000001", "type": "on", "point": "p0000001", "curve": "x_axis"}"#,
+            r#"{"id": "c0000002", "type": "symmetric", "a": "p0000001", "b": "p0000002", "about": "x_axis"}"#,
+            r#"{"id": "c0000003", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 5, "driving": true}"#,
+        ],
+    );
+    let e = solved(&doc, &mut worker()).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::InvalidResult, "{e}");
+    assert_eq!(e.elements(), ["c0000002"]);
+}
+
+/// A line held from the origin to (10, 0), a circle of radius 2 whose centre is drawn at
+/// (5, `y`), tangent to the line on `side`.
+fn tangent_to_a_line(y: f64, side: &str) -> Checked {
+    let c = format!(
+        r#"{{"id": "k0000006", "type": "tangent", "a": "n0000001", "b": "c0000001", "side": "{side}"}}"#
+    );
+    document(
+        &[
+            point("p0000001", 0.0, 0.0),
+            point("p0000002", 10.0, 0.0),
+            point("p0000003", 5.0, y),
+        ],
+        &[line("n0000001", "p0000001", "p0000002")],
+        &[circle("c0000001", "p0000003", 2.0)],
+        &[],
+        &[
+            r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000003", "type": "distance_x", "a": "origin", "b": "p0000002", "value": 10, "driving": true}"#,
+            r#"{"id": "k0000004", "type": "distance_y", "a": "origin", "b": "p0000002", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000005", "type": "radius", "curve": "c0000001", "value": 2, "driving": true}"#,
+            &c,
+        ],
+    )
+}
+
+#[test]
+fn a_circle_tangent_to_a_line_lands_on_the_side_given() {
+    // Left of the line (running +x) is +y: drawn above, the centre lands 2 above; drawn
+    // below and held right, 2 below. Drawn below but held left, 1.1.3's unsigned tangency
+    // keeps it below, which is refused, naming the tangency.
+    for (y, side, want) in [(3.0, "left", 2.0), (-3.0, "right", -2.0)] {
+        let s = solved(&tangent_to_a_line(y, side), &mut worker()).unwrap();
+        assert_at(&s, "p0000003", [5.0, want]);
+    }
+    let e = solved(&tangent_to_a_line(-3.0, "left"), &mut worker()).unwrap_err();
+    assert_eq!(
+        (e.code(), e.elements()),
+        (ErrorCode::InvalidResult, &["k0000006".to_owned()][..])
+    );
+}
+
+#[test]
+fn two_circles_tangent_outside_and_inside_land_their_radii_apart() {
+    // A circle of radius 3 held at the origin, and one of radius 2 whose centre is drawn at
+    // (10, 0.5) and held on the x axis: outside, the centres end 5 apart; inside, 1.
+    for (side, want) in [("outside", 5.0), ("inside", 1.0)] {
+        let c = format!(
+            r#"{{"id": "k0000006", "type": "tangent", "a": "c0000001", "b": "c0000002", "side": "{side}"}}"#
+        );
+        let doc = document(
+            &[point("p0000001", 0.0, 0.0), point("p0000002", 10.0, 0.5)],
+            &[],
+            &[
+                circle("c0000001", "p0000001", 3.0),
+                circle("c0000002", "p0000002", 2.0),
+            ],
+            &[],
+            &[
+                r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+                r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+                r#"{"id": "k0000003", "type": "radius", "curve": "c0000001", "value": 3, "driving": true}"#,
+                r#"{"id": "k0000004", "type": "radius", "curve": "c0000002", "value": 2, "driving": true}"#,
+                r#"{"id": "k0000005", "type": "on", "point": "p0000002", "curve": "x_axis"}"#,
+                &c,
+            ],
+        );
+        let s = solved(&doc, &mut worker()).unwrap();
+        let p = s.point(&id("p0000002")).unwrap();
+        assert!(
+            (p[0].abs() - want).abs() <= CLOSE && p[1].abs() <= CLOSE,
+            "{side}: {p:?}"
+        );
+    }
 }

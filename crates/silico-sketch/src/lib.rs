@@ -15,7 +15,7 @@ pub mod worker;
 use silico_protocol::{
     Algorithm, DragBegin, Failure, InvalidParameter, Moved, PointOf, Refusal, SketchGeometry,
     SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value, check_drag_target,
-    no_distance, within_reach,
+    unbuildable, within_reach,
 };
 
 #[cxx::bridge(namespace = "silico_sketch")]
@@ -272,7 +272,8 @@ pub fn solve(system: &SketchSystem) -> Result<Solved, Failure> {
             }
             // A solution out of reach can't be built either: the next solve couldn't start
             // from it.
-            if check_reach(&attempt.values).is_ok() && buildable(&system.geometry, &attempt.values)
+            if check_reach(&attempt.values).is_ok()
+                && system.unbuildable(&attempt.values).is_empty()
             {
                 status = if dropped {
                     SolveStatus::SolvedExceptRedundant
@@ -413,8 +414,14 @@ impl Drag {
             ffi::Status::Failed => SolveStatus::Failed,
             _ => return Err(internal("the bridge returned a status a move can't have")),
         };
-        // A solution stands only if its geometry can be built.
-        let status = if status == SolveStatus::Success && !buildable(&self.geometry, &out.values) {
+        // A solution out of reach is refused, as M3.7 does (the drag goes on from its last
+        // good frame); one in reach stands only if its geometry can be built.
+        if status == SolveStatus::Success {
+            check_reach(&out.values)?;
+        }
+        let status = if status == SolveStatus::Success
+            && !unbuildable(&self.geometry, &out.values).is_empty()
+        {
             SolveStatus::SolvedInvalid
         } else {
             status
@@ -427,28 +434,6 @@ impl Drag {
         };
         Ok(Moved { status, values })
     }
-}
-
-/// Whether geometry solved to `values` can be built, as FreeCAD's `Sketch::updateGeometry`
-/// finds when it makes its curves: a line has length to the solver ([`no_distance`], the
-/// rule the sketch worker's check applies; FreeCAD's `GeomLineSegment::setPoints`, "Both
-/// points are equal"), a circle or an arc a radius above 0 (FreeCAD's `gp_Circ` refuses one
-/// below 0 and keeps 0; Silico draws nothing of no size), and an arc its start and end at
-/// two places. Which way an arc's angles went in the solve doesn't matter: FreeCAD trims the
-/// arc's circle from its start angle to its end angle taken a whole number of turns past it
-/// (OCCT's periodic trim), the counter-clockwise arc from its solved start to its solved
-/// end, which is how Silico defines an arc.
-fn buildable(geometry: &[SketchGeometry], values: &[f64]) -> bool {
-    let at = |v: Value| values.get(v.0 as usize).copied().unwrap_or(f64::NAN);
-    let point = |p: silico_protocol::PointValues| [at(p.x), at(p.y)];
-    geometry.iter().all(|g| match *g {
-        SketchGeometry::Line { start, end } => !no_distance(point(start), point(end)),
-        SketchGeometry::Circle { radius, .. } => at(radius) > 0.0,
-        SketchGeometry::Arc {
-            radius, start, end, ..
-        } => at(radius) > 0.0 && !no_distance(point(start), point(end)),
-        SketchGeometry::Point(_) => true,
-    })
 }
 
 /// What the bridge threw, as a refusal.

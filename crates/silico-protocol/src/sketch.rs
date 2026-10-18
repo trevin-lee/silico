@@ -1193,6 +1193,45 @@ pub fn no_distance(a: [f64; 2], b: [f64; 2]) -> bool {
     squared_distance(a, b) == 0.0
 }
 
+/// The pieces of `geometry` that values solved to `values` can't build, by their places
+/// in it, in order: one with a value out of reach ([`within_reach`]), a line of no length
+/// ([`no_distance`]: FreeCAD's `GeomLineSegment::setPoints`, "Both points are equal"), a
+/// circle or an arc whose radius isn't above 0 (FreeCAD's `gp_Circ` refuses one below 0 and
+/// keeps 0; Silico draws nothing of no size), or an arc whose start and end are at one
+/// place. Which way an arc's angles went doesn't matter: FreeCAD trims the arc's circle from
+/// its start angle to its end angle taken a whole number of turns past it (OCCT's periodic
+/// trim), the counter-clockwise arc from its solved start to its solved end, which is how
+/// Silico defines an arc. The rule the sketch worker passes a solution over by, and the
+/// core names what can't be built by (docs/design/m3.3-solving.md).
+pub fn unbuildable(geometry: &[SketchGeometry], values: &[f64]) -> Vec<Geometry> {
+    let at = |v: Value| values.get(v.0 as usize).copied().unwrap_or(f64::NAN);
+    let point = |p: PointValues| [at(p.x), at(p.y)];
+    let builds = |g: &SketchGeometry| {
+        g.values().into_iter().all(|v| within_reach(at(v)))
+            && match *g {
+                SketchGeometry::Point(_) => true,
+                SketchGeometry::Line { start, end } => !no_distance(point(start), point(end)),
+                SketchGeometry::Circle { radius, .. } => at(radius) > 0.0,
+                SketchGeometry::Arc {
+                    radius, start, end, ..
+                } => at(radius) > 0.0 && !no_distance(point(start), point(end)),
+            }
+    };
+    geometry
+        .iter()
+        .enumerate()
+        .filter(|(_, g)| !builds(g))
+        .map(|(i, _)| Geometry(i as u32))
+        .collect()
+}
+
+impl SketchSystem {
+    /// This system's geometry that `values` can't build ([`unbuildable`]).
+    pub fn unbuildable(&self, values: &[f64]) -> Vec<Geometry> {
+        unbuildable(&self.geometry, values)
+    }
+}
+
 /// An arc's radius, start angle, and end angle (radians), worked out from its centre, start,
 /// and end as the core starts a solve from them (docs/design/m3.3-solving.md): the
 /// radius from the centre to the start (the square root of [`squared_distance`]), and the
@@ -2229,6 +2268,42 @@ mod tests {
         assert_eq!(
             message,
             "constraint 4 (tag 4): a tangency at an end needs a line or an arc, but geometry 1 is a circle"
+        );
+    }
+
+    #[test]
+    fn geometry_a_solution_cant_build_is_named_by_its_place() {
+        // `system()`: a line (0, 0) to (10, 0), a circle about (0, 5) of radius 2, and an arc
+        // about (1, 1) of radius 1 from (2, 1) to (1, 2), each built.
+        let s = system();
+        assert!(s.unbuildable(&s.values).is_empty());
+        let spoilt = |at: usize, v: f64| {
+            let mut values = s.values.clone();
+            values[at] = v;
+            s.unbuildable(&values)
+        };
+        // The line's end on its start: no length.
+        let mut values = s.values.clone();
+        values[2] = 0.0;
+        assert_eq!(s.unbuildable(&values), [Geometry(0)]);
+        // A circle's radius of 0, below 0, and not a number; past a kilometre.
+        for r in [0.0, -1.0, f64::NAN, 1e6 + 1.0] {
+            assert_eq!(spoilt(6, r), [Geometry(1)], "{r}");
+        }
+        // An arc's radius of 0; its end on its start; an angle out of reach.
+        assert_eq!(spoilt(9, 0.0), [Geometry(2)]);
+        let mut values = s.values.clone();
+        (values[14], values[15]) = (2.0, 1.0);
+        assert_eq!(s.unbuildable(&values), [Geometry(2)]);
+        assert_eq!(spoilt(11, f64::INFINITY), [Geometry(2)]);
+        // A point past a kilometre, in the line and so in it.
+        assert_eq!(spoilt(0, -2e6), [Geometry(0)]);
+        // Each named once, in order.
+        let mut values = s.values.clone();
+        (values[2], values[6], values[9]) = (0.0, 0.0, 0.0);
+        assert_eq!(
+            s.unbuildable(&values),
+            [Geometry(0), Geometry(1), Geometry(2)]
         );
     }
 }

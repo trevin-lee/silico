@@ -156,7 +156,9 @@ fn a_sloppy_but_consistent_redundant_rectangle_solves_where_freecad_refuses_it()
         ("p0000003", [w, h]),
         ("p0000004", [0.0, h]),
     ] {
-        let got = solution.points[&silico_core::document::ElementId::new(p).unwrap()];
+        let got = solution
+            .point(&silico_core::document::ElementId::new(p).unwrap())
+            .unwrap();
         assert!(
             (got[0] - want[0]).abs() < 1e-8 && (got[1] - want[1]).abs() < 1e-8,
             "{p}: {got:?}"

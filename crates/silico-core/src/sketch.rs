@@ -15,8 +15,8 @@ use silico_protocol::{
 };
 
 use crate::document::{
-    Checked, Direction, ElementId, FeatureId, Form, LineSide, Operation, Reference, Sketch,
-    SketchConstraint, TangentSide,
+    Checked, Coordinate, Direction, ElementId, FeatureId, Form, LineSide, Operation, Reference,
+    Sketch, SketchConstraint, TangentSide,
 };
 use crate::worker::{Worker, WorkerKind};
 use crate::{Error, ErrorCode};
@@ -123,10 +123,10 @@ impl SketchSolver for SketchWorker {
 /// What a solved sketch is: where everything is, and what the solve found.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SketchSolution {
-    /// Each point's coordinates, by ID.
-    pub points: BTreeMap<ElementId, [f64; 2]>,
+    /// Each point's coordinates, by ID, as the file holds them (M3.4 writes them back).
+    pub points: BTreeMap<ElementId, [Coordinate; 2]>,
     /// Each circle's radius, by ID.
-    pub radii: BTreeMap<ElementId, f64>,
+    pub radii: BTreeMap<ElementId, Coordinate>,
     /// Each reference dimension's value as the solved geometry measures it, by the
     /// constraint's ID.
     pub references: BTreeMap<ElementId, Measured>,
@@ -139,6 +139,18 @@ pub struct SketchSolution {
     pub redundant: BTreeSet<ElementId>,
     /// The algorithm that solved.
     pub algorithm: Algorithm,
+}
+
+impl SketchSolution {
+    /// Where point `id` is, in millimetres, if the sketch has it.
+    pub fn point(&self, id: &ElementId) -> Option<[f64; 2]> {
+        self.points.get(id).map(|[x, y]| [x.mm(), y.mm()])
+    }
+
+    /// Circle `id`'s radius, in millimetres, if the sketch has it.
+    pub fn radius(&self, id: &ElementId) -> Option<f64> {
+        self.radii.get(id).map(|r| r.mm())
+    }
 }
 
 /// A reference dimension's value as the solved geometry measures it.
@@ -202,6 +214,8 @@ pub struct Translation {
     /// one.
     constraints: Vec<SketchConstraint>,
     points: BTreeMap<ElementId, PointValues>,
+    /// Each point's own geometry, which constraints name it by.
+    point_geometry: BTreeMap<ElementId, Geometry>,
     lines: BTreeMap<ElementId, Line>,
     circles: BTreeMap<ElementId, Round>,
     arcs: BTreeMap<ElementId, Arc>,
@@ -231,8 +245,6 @@ struct Arc {
     round: Round,
     start: ElementId,
     end: ElementId,
-    start_values: PointValues,
-    end_values: PointValues,
     angles: [Value; 2],
 }
 
@@ -408,8 +420,6 @@ impl Translation {
                     },
                     start: a.start.clone(),
                     end: a.end.clone(),
-                    start_values: start,
-                    end_values: end,
                     angles,
                 },
             );
@@ -436,6 +446,7 @@ impl Translation {
             },
             constraints: Vec::new(),
             points,
+            point_geometry: point_geometry.clone(),
             lines,
             circles,
             arcs,
@@ -875,16 +886,19 @@ impl Translation {
         };
         let mut again = self.clone();
         again.system.values = again_from;
-        let resolved = solver.solve(again.system.clone())?;
-        again.check_reply(&resolved)?;
-        let second = again.read(&resolved);
-        Ok(if second.is_ok() {
-            Answer {
-                solved: resolved,
-                outcome: second,
-            }
-        } else {
-            first
+        // Whatever stops the second (a refusal of the solution as a start, a reply that
+        // can't be trusted, an outcome that doesn't stand), the first answer stands.
+        let second = solver.solve(again.system.clone()).and_then(|resolved| {
+            again.check_reply(&resolved)?;
+            let outcome = again.read(&resolved)?;
+            Ok((resolved, outcome))
+        });
+        Ok(match second {
+            Ok((solved, solution)) => Answer {
+                solved,
+                outcome: Ok(solution),
+            },
+            Err(_) => first,
         })
     }
 
@@ -1051,6 +1065,31 @@ impl Translation {
         if !unbuildable.is_empty() {
             return Err(unbuildable_error(unbuildable));
         }
+        // A symmetry whose two points the solution puts at one place: the solver measures a
+        // symmetry by the line between them, so no later solve could start from it
+        // (robustness review: a point held on the line it's mirrored about).
+        let collapsed: Vec<Tag> = self
+            .system
+            .constraints
+            .iter()
+            .filter_map(|c| match *c {
+                SolverConstraint::SymmetricLine { tag, a, b, .. }
+                | SolverConstraint::SymmetricPoint { tag, a, b, .. } => {
+                    no_distance(self.point_of(values, a), self.point_of(values, b)).then_some(tag)
+                }
+                _ => None,
+            })
+            .collect();
+        if !collapsed.is_empty() {
+            return Err(Error::new(
+                ErrorCode::InvalidResult,
+                "the solution puts a symmetry's two points at one place, where the next solve can't measure it",
+            )
+            .with_elements(self.ids(&collapsed)?)
+            .with_suggestion(
+                "share one point instead, or change the constraints that bring the two together",
+            ));
+        }
         // Decision 5: a redundant constraint is kept only if it's met on the solution.
         let mut dropped: Vec<Tag> = solved
             .redundant
@@ -1117,17 +1156,31 @@ impl Translation {
             .iter()
             .map(|&t| self.id(t).cloned())
             .collect::<Result<_, _>>()?;
+        // Finite, as check_reply and the buildable check above have made sure.
+        let coordinate = |v: f64| {
+            Coordinate::new(v).ok_or_else(|| {
+                Error::new(
+                    ErrorCode::Internal,
+                    format!("a solution the core checked has a value that isn't a number: {v}"),
+                )
+            })
+        };
+        let points = self
+            .points
+            .iter()
+            .map(|(id, &p)| {
+                let [x, y] = self.xy(values, p);
+                Ok((id.clone(), [coordinate(x)?, coordinate(y)?]))
+            })
+            .collect::<Result<_, Error>>()?;
+        let radii = self
+            .circles
+            .iter()
+            .map(|(id, c)| Ok((id.clone(), coordinate(at(values, c.radius))?)))
+            .collect::<Result<_, Error>>()?;
         Ok(SketchSolution {
-            points: self
-                .points
-                .iter()
-                .map(|(id, &p)| (id.clone(), self.xy(values, p)))
-                .collect(),
-            radii: self
-                .circles
-                .iter()
-                .map(|(id, c)| (id.clone(), at(values, c.radius)))
-                .collect(),
+            points,
+            radii,
             references: self.references(values)?,
             dofs: solved.dofs,
             free: self.free(solved),
@@ -1150,39 +1203,22 @@ impl Translation {
             })
     }
 
-    /// The points, lines, circles, and arcs `values` can't build, by ID: past reach (a
-    /// kilometre), of no length or radius, or an arc whose ends meet.
+    /// The points, lines, circles, and arcs `values` can't build, by ID, in order: the
+    /// protocol's rule ([`silico_protocol::unbuildable`]), which the worker passes a
+    /// solution over by.
     fn unbuildable(&self, values: &[f64]) -> Vec<String> {
-        let mut out = BTreeSet::new();
-        let reach = |v: f64| silico_protocol::within_reach(v);
-        for (id, p) in &self.points {
-            if !reach(at(values, p.x)) || !reach(at(values, p.y)) {
-                out.insert(id.as_str().to_owned());
-            }
-        }
-        for (id, l) in &self.lines {
-            if no_distance(self.xy(values, l.from), self.xy(values, l.to)) {
-                out.insert(id.as_str().to_owned());
-            }
-        }
-        for (id, c) in &self.circles {
-            let r = at(values, c.radius);
-            if !reach(r) || r <= 0.0 {
-                out.insert(id.as_str().to_owned());
-            }
-        }
-        for (id, a) in &self.arcs {
-            let r = at(values, a.round.radius);
-            let meet = no_distance(
-                self.xy(values, a.start_values),
-                self.xy(values, a.end_values),
-            );
-            let angles = a.angles.iter().all(|&v| reach(at(values, v)));
-            if !reach(r) || r <= 0.0 || meet || !angles {
-                out.insert(id.as_str().to_owned());
-            }
-        }
-        out.into_iter().collect()
+        let mut names: BTreeMap<u32, &ElementId> = BTreeMap::new();
+        names.extend(self.point_geometry.iter().map(|(id, g)| (g.0, id)));
+        names.extend(self.lines.iter().map(|(id, l)| (l.geometry.0, id)));
+        names.extend(self.circles.iter().map(|(id, c)| (c.geometry.0, id)));
+        names.extend(self.arcs.iter().map(|(id, a)| (a.round.geometry.0, id)));
+        let named: BTreeSet<&str> = self
+            .system
+            .unbuildable(values)
+            .iter()
+            .filter_map(|g| names.get(&g.0).map(|id| id.as_str()))
+            .collect();
+        named.into_iter().map(str::to_owned).collect()
     }
 
     /// The driving constraints that hold a point, or a circle's centre, on one side of a

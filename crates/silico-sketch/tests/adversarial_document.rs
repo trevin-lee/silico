@@ -118,7 +118,10 @@ fn half_circle_ends_symmetric_about_a_line_through_its_centre_are_mirrored() {
     let doc = checked(&half_circle_symmetric_about_y(210.0));
     match solved(&doc, &mut worker()) {
         Ok(s) => {
-            let (a, b) = (s.points[&id("pa000000")], s.points[&id("pb000000")]);
+            let (a, b) = (
+                s.point(&id("pa000000")).unwrap(),
+                s.point(&id("pb000000")).unwrap(),
+            );
             assert!(
                 (a[0] + b[0]).abs() <= CLOSE && (a[1] - b[1]).abs() <= CLOSE,
                 "symmetric ends not mirrored about the y axis: a {a:?}, b {b:?}, {s:?}"
@@ -147,7 +150,10 @@ fn nearly_half_circle_ends_symmetric_about_a_line_through_its_centre_are_mirrore
     let doc = checked(&half_circle_symmetric_about_y(209.0));
     match solved(&doc, &mut worker()) {
         Ok(s) => {
-            let (a, b) = (s.points[&id("pa000000")], s.points[&id("pb000000")]);
+            let (a, b) = (
+                s.point(&id("pa000000")).unwrap(),
+                s.point(&id("pb000000")).unwrap(),
+            );
             assert!(
                 (a[0] + b[0]).abs() <= CLOSE && (a[1] - b[1]).abs() <= CLOSE,
                 "a {a:?}, b {b:?}, {s:?}"
@@ -521,7 +527,7 @@ proptest! {
             Ok(s) => {
                 // The analytic corners, either way up or round: a length has no direction,
                 // so a rough drawing may land on the rectangle's mirror image.
-                let at = |p: &str| s.points[&id(p)];
+                let at = |p: &str| s.point(&id(p)).unwrap();
                 let (p1, p2, p3, p4) = (at("p0000001"), at("p0000002"), at("p0000003"), at("p0000004"));
                 let near = |a: f64, b: f64| (a - b).abs() <= CLOSE;
                 prop_assert!(near(p1[0], x0) && near(p1[1], y0), "{p1:?}");
@@ -594,7 +600,7 @@ fn a_square_template_redimensioned_keeps_its_agreeing_redundancies() {
         let doc = checked(&redimensioned_square(a, b));
         match solved(&doc, &mut w) {
             Ok(s) => {
-                let p3 = s.points[&id("p0000003")];
+                let p3 = s.point(&id("p0000003")).unwrap();
                 assert!(
                     // Either way up: lengths have no direction.
                     (p3[0].abs() - a).abs() <= CLOSE && (p3[1].abs() - b).abs() <= CLOSE,
@@ -622,7 +628,10 @@ fn arcs_drawn_anywhere_with_ends_symmetric_about_a_line_through_their_centre_are
     for end in (100..=330).step_by(10) {
         let doc = checked(&half_circle_symmetric_about_y(end as f64));
         if let Ok(s) = solved(&doc, &mut w) {
-            let (a, b) = (s.points[&id("pa000000")], s.points[&id("pb000000")]);
+            let (a, b) = (
+                s.point(&id("pa000000")).unwrap(),
+                s.point(&id("pb000000")).unwrap(),
+            );
             if (a[0] + b[0]).abs() > CLOSE || (a[1] - b[1]).abs() > CLOSE {
                 unmet.push(format!("drawn to {end}°: a {a:?}, b {b:?}"));
             }
@@ -680,7 +689,7 @@ fn a_point_drawn_on_its_line_held_off_it_to_a_side_lands_on_that_side_or_says_wh
         for (side, want) in [("left", 3.0), ("right", -3.0)] {
             match solved(&checked(&point_from_line(y, side)), &mut w) {
                 Ok(s) => {
-                    let p = s.points[&id("pp000000")];
+                    let p = s.point(&id("pp000000")).unwrap();
                     assert!(
                         (p[0] - 5.0).abs() <= CLOSE && (p[1] - want).abs() <= CLOSE,
                         "{y} {side}: {p:?}"
