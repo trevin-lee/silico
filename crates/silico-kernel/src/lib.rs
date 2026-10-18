@@ -844,8 +844,10 @@ pub fn revolve(profile: &Profile, axis: &Axis, angle: f64) -> Result<Built, Kern
 /// shape with nothing in it is refused, as either input (OCCT would fuse it, or cut it
 /// away, as if nothing were wrong) or as the result (a common of shapes that don't
 /// overlap, a cut that removes everything) or as a result of solids with no volume to
-/// speak of. A valid result is otherwise accepted as OCCT gives it, as FreeCAD accepts it,
-/// though OCCT gets some wrong (the port note lists them).
+/// speak of; and a result of solids turned inside out (a volume well below none) is
+/// refused as invalid, whatever OCCT's own check says of it. A valid result is otherwise
+/// accepted as OCCT gives it, as FreeCAD accepts it, though OCCT gets some wrong (the port
+/// note lists them).
 pub fn boolean(op: BooleanOp, base: &Shape, tool: &Shape) -> Result<Built, KernelError> {
     let name = op.name().to_lowercase();
     let operation = Operation::Boolean { op };
@@ -941,8 +943,9 @@ fn amount_of(result: &ffi::Shape, inputs: &[&ffi::Shape]) -> Result<Amount, Kern
         return Ok(Amount::None);
     }
     // The quick measure clears most results, against their size: on these broken shapes
-    // its error grows with the model (it read the cut above as 4e-6, and the same cut 100
-    // times larger as 1.9, both really negative), so it's compared with the cube of the
+    // its error grows with the model (it read the cut above as 4e-6, and the cut of a torus
+    // of radii 200 and 100 by a copy moved 30 as 1.9, where its volume is -1.7e-4: both
+    // really negative), so it's compared with the cube of the
     // bounding diagonal, not the area. What it doesn't clear (results that fill little of
     // their box, too) is measured precisely, and judged by its mean thickness.
     let rough = ffi::rough_amounts(result)?;

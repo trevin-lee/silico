@@ -941,10 +941,8 @@ fn a_result_with_no_volume_is_refused_as_empty() {
     // moved 0.3 across it a solid of 4e-13 with its center 5e12 away. None of them is
     // anything: each is refused as empty.
     // And the same at a hundredth and a hundred times the size, where the quick measure's
-    // error on such shapes is larger or smaller. At a hundred times, OCCT's first cut isn't
-    // nothing but a solid turned inside out, its volume -3.15e6 for an area of 7.9e5: not
-    // empty, an invalid result, and refused as one (a volume within OCCT's tolerance of
-    // none, either side, is empty; one further below none is inside out).
+    // error on such shapes is larger or smaller; but for the first cut at a hundred times,
+    // which isn't nothing (`a_result_turned_inside_out_is_refused_as_invalid`).
     let mut cases = Vec::new();
     for scale in [0.01, 1.0, 100.0] {
         for (major, minor, op, y) in [
@@ -953,26 +951,19 @@ fn a_result_with_no_volume_is_refused_as_empty() {
             (1.5, 0.5, BooleanOp::Cut, 0.5),
             (1.5, 0.5, BooleanOp::Common, 0.3),
         ] {
-            let inside_out = scale == 100.0 && (major, op, y) == (2.0, BooleanOp::Cut, 0.5);
-            cases.push((
-                major * scale,
-                minor * scale,
-                op,
-                [0.0, y * scale, 0.0],
-                inside_out,
-            ));
+            if scale == 100.0 && (major, op, y) == (2.0, BooleanOp::Cut, 0.5) {
+                continue;
+            }
+            cases.push((major * scale, minor * scale, op, [0.0, y * scale, 0.0]));
         }
     }
-    for (major, minor, op, offset, inside_out) in cases {
+    for (major, minor, op, offset) in cases {
         let t = Primitive::Torus {
             major_radius: major,
             minor_radius: minor,
         };
         let case = format!("{t:?} moved {offset:?}: {op:?}");
         match boolean(op, &make(&t).unwrap(), &at(t, offset)) {
-            Err(e) if inside_out => {
-                assert_eq!(e.kind(), KernelErrorKind::InvalidResult, "{case}: {e}");
-            }
             Err(e) => {
                 assert_eq!(e.kind(), KernelErrorKind::Failed, "{case}: {e}");
                 assert!(e.message().ends_with("result is empty"), "{case}: {e}");
@@ -985,6 +976,30 @@ fn a_result_with_no_volume_is_refused_as_empty() {
                     2.0 * std::f64::consts::PI * std::f64::consts::PI * major * minor * minor;
                 assert!(v > 1e-7 * torus, "{case}: accepted with volume {v}");
             }
+        }
+    }
+}
+
+#[test]
+fn a_result_turned_inside_out_is_refused_as_invalid() {
+    // A torus of radii 200 and 100 cut by a copy of itself moved 50 across its seam: OCCT's
+    // cut is a solid turned inside out, its volume -3.15e6 for an area of 7.9e5, which
+    // OCCT's own check passes. Not empty (a volume within OCCT's tolerance of none, either
+    // side, is), and not a solid: refused as an invalid result.
+    let t = Primitive::Torus {
+        major_radius: 200.0,
+        minor_radius: 100.0,
+    };
+    match boolean(BooleanOp::Cut, &make(&t).unwrap(), &at(t, [0.0, 50.0, 0.0])) {
+        Err(e) => {
+            assert_eq!(e.kind(), KernelErrorKind::InvalidResult, "{e}");
+            assert!(e.suggestion().is_some(), "{e}");
+        }
+        // Should OCCT get it right one day, it has a volume, as the scaled cases above.
+        Ok(built) => {
+            let v = summarize(&built.shape).unwrap().volume;
+            let torus = 2.0 * std::f64::consts::PI * std::f64::consts::PI * 200.0 * 100.0 * 100.0;
+            assert!(v > 1e-7 * torus, "accepted with volume {v}");
         }
     }
 }
