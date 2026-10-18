@@ -880,13 +880,27 @@ pub fn boolean(op: BooleanOp, base: &Shape, tool: &Shape) -> Result<Built, Kerne
             alerts.into_iter().collect::<Vec<_>>().join(", ")
         );
     }
-    if let Some(result) = built.as_ref()
-        && (is_empty(result)? || has_no_volume(result, &[base_inner, tool_inner])?)
-    {
-        // OCCT found nothing (or a result with no volume), which it can do for shapes that
-        // do overlap (where faces or edges nearly meet, or across a torus's seam): the
-        // refusal's suggestion doesn't claim more than that.
-        return Err(KernelError::new(Refusal::BooleanResultEmpty { op }));
+    if let Some(result) = built.as_ref() {
+        let amount = if is_empty(result)? {
+            Amount::None
+        } else {
+            amount_of(result, &[base_inner, tool_inner])?
+        };
+        match amount {
+            // OCCT found nothing (or a result with no volume), which it can do for shapes
+            // that do overlap (where faces or edges nearly meet, or across a torus's seam):
+            // the refusal's suggestion doesn't claim more than that.
+            Amount::None => return Err(KernelError::new(Refusal::BooleanResultEmpty { op })),
+            // A solid turned inside out, its volume well below none: not empty, a result
+            // that isn't a solid, whatever OCCT's check says of it.
+            Amount::InsideOut => {
+                return Err(KernelError::new(Refusal::ResultInvalid {
+                    operation,
+                    edges: Vec::new(),
+                }));
+            }
+            Amount::Some => {}
+        }
     }
     let result = checked_result(&[base, tool], built, operation)?;
     let history = history_of(&[base_inner, tool_inner], result.get()?, &entries)?;
@@ -896,22 +910,35 @@ pub fn boolean(op: BooleanOp, base: &Shape, tool: &Shape) -> Result<Built, Kerne
     })
 }
 
-/// Whether a boolean of solids gave a result with no volume to speak of: no solid at all,
-/// or a mean thickness (volume over area) of at most OCCT's length tolerance, or less
-/// than none. OCCT returns such results for some booleans it gets wrong (a torus cut by
-/// a copy of itself moved 0.5 across its seam: two whole torus surfaces of volume
-/// -8e-11, a center 2.5e11 away), and they're as empty as an empty compound; their mean
-/// thickness is under 1e-11. A real result is far thicker, however little of its
-/// bounding box it fills: a 1 × 2 × 3 box's common with a copy 1e-4 into it is 5e-5
-/// thick on average, a 0.01 mm wire 0.005. Not judged when an input has no solid in it.
-fn has_no_volume(result: &ffi::Shape, inputs: &[&ffi::Shape]) -> Result<bool, KernelError> {
+/// How much a boolean's result holds.
+enum Amount {
+    /// A volume to speak of (or its inputs aren't solids, so it isn't judged).
+    Some,
+    /// No volume to speak of: empty.
+    None,
+    /// A volume well below none: a solid turned inside out.
+    InsideOut,
+}
+
+/// How much a boolean of solids gave: no volume to speak of if it has no solid at all,
+/// or a mean thickness (volume over area) within OCCT's length tolerance of none, either
+/// side; or a solid turned inside out, if its volume is further below none than that. OCCT
+/// returns empty-as-good results for some booleans it gets wrong (a torus cut by a copy of
+/// itself moved 0.5 across its seam: two whole torus surfaces of volume -8e-11, a center
+/// 2.5e11 away), and they're as empty as an empty compound; their mean thickness is under
+/// 1e-11. A real result is far thicker, however little of its bounding box it fills: a
+/// 1 × 2 × 3 box's common with a copy 1e-4 into it is 5e-5 thick on average, a 0.01 mm
+/// wire 0.005. A solid inside out isn't empty (a cylinder fused with a box it touches
+/// along a line came back one shell of volume -5968): it's invalid. Not judged when an
+/// input has no solid in it.
+fn amount_of(result: &ffi::Shape, inputs: &[&ffi::Shape]) -> Result<Amount, KernelError> {
     for input in inputs {
         if ffi::count_elements(input)?.solids == 0 {
-            return Ok(false);
+            return Ok(Amount::Some);
         }
     }
     if ffi::count_elements(result)?.solids == 0 {
-        return Ok(true);
+        return Ok(Amount::None);
     }
     // The quick measure clears most results, against their size: on these broken shapes
     // its error grows with the model (it read the cut above as 4e-6, and the same cut 100
@@ -921,10 +948,17 @@ fn has_no_volume(result: &ffi::Shape, inputs: &[&ffi::Shape]) -> Result<bool, Ke
     let rough = ffi::rough_amounts(result)?;
     let diagonal = ffi::bounding_diagonal(result)?;
     if rough.volume > 1e-5 * diagonal * diagonal * diagonal {
-        return Ok(false);
+        return Ok(Amount::Some);
     }
     let precise = ffi::measure(result)?;
-    Ok(precise.volume.is_nan() || precise.volume <= LENGTH_TOLERANCE * precise.area)
+    let thin = LENGTH_TOLERANCE * precise.area;
+    Ok(if precise.volume.is_nan() || precise.volume.abs() <= thin {
+        Amount::None
+    } else if precise.volume < -thin {
+        Amount::InsideOut
+    } else {
+        Amount::Some
+    })
 }
 
 /// Whether the shape has nothing in it: no faces, edges, or vertices.

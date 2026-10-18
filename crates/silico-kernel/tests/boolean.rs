@@ -941,7 +941,10 @@ fn a_result_with_no_volume_is_refused_as_empty() {
     // moved 0.3 across it a solid of 4e-13 with its center 5e12 away. None of them is
     // anything: each is refused as empty.
     // And the same at a hundredth and a hundred times the size, where the quick measure's
-    // error on such shapes is larger or smaller.
+    // error on such shapes is larger or smaller. At a hundred times, OCCT's first cut isn't
+    // nothing but a solid turned inside out, its volume -3.15e6 for an area of 7.9e5: not
+    // empty, an invalid result, and refused as one (a volume within OCCT's tolerance of
+    // none, either side, is empty; one further below none is inside out).
     let mut cases = Vec::new();
     for scale in [0.01, 1.0, 100.0] {
         for (major, minor, op, y) in [
@@ -950,16 +953,26 @@ fn a_result_with_no_volume_is_refused_as_empty() {
             (1.5, 0.5, BooleanOp::Cut, 0.5),
             (1.5, 0.5, BooleanOp::Common, 0.3),
         ] {
-            cases.push((major * scale, minor * scale, op, [0.0, y * scale, 0.0]));
+            let inside_out = scale == 100.0 && (major, op, y) == (2.0, BooleanOp::Cut, 0.5);
+            cases.push((
+                major * scale,
+                minor * scale,
+                op,
+                [0.0, y * scale, 0.0],
+                inside_out,
+            ));
         }
     }
-    for (major, minor, op, offset) in cases {
+    for (major, minor, op, offset, inside_out) in cases {
         let t = Primitive::Torus {
             major_radius: major,
             minor_radius: minor,
         };
         let case = format!("{t:?} moved {offset:?}: {op:?}");
         match boolean(op, &make(&t).unwrap(), &at(t, offset)) {
+            Err(e) if inside_out => {
+                assert_eq!(e.kind(), KernelErrorKind::InvalidResult, "{case}: {e}");
+            }
             Err(e) => {
                 assert_eq!(e.kind(), KernelErrorKind::Failed, "{case}: {e}");
                 assert!(e.message().ends_with("result is empty"), "{case}: {e}");
