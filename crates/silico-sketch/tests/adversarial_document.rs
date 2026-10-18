@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use proptest::prelude::*;
 use silico_core::ErrorCode;
-use silico_core::document::{Checked, ElementId, FeatureId, Operation, read};
+use silico_core::document::{Checked, ElementId, FeatureId, Operation, read, write};
 use silico_core::sketch::{SketchSolution, SketchSolver, SketchWorker, Translation, solve};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-worker");
@@ -561,6 +561,157 @@ fn a_small_redundant_rectangle_far_out_keeps_its_agreeing_constraints() {
     assert!(!s.redundant.is_empty(), "{s:?}");
 }
 
+/// `doc`'s sketch with its points where `solution` puts them, through the file's text: the
+/// sketch M3.4's re-solve on load starts from.
+fn written_back(doc: &Checked, solution: &SketchSolution) -> Checked {
+    let mut document = doc.document().clone();
+    let Operation::Sketch(sketch) = &mut document.features[0].operation else {
+        panic!("not a sketch")
+    };
+    for p in &mut sketch.points {
+        [p.x, p.y] = solution.points[&p.id];
+    }
+    checked(&write(&document).unwrap())
+}
+
+/// The bits of each point's coordinates, by ID.
+fn point_bits(solution: &SketchSolution) -> Vec<u64> {
+    solution
+        .points
+        .values()
+        .flat_map(|[x, y]| [x.mm().to_bits(), y.mm().to_bits()])
+        .collect()
+}
+
+/// A redundant rectangle from the property's inputs (sizes as powers of ten, a place, and
+/// the jitter it's drawn off by), solved: Ok if it solves to the analytic corners within
+/// CLOSE and is its own solution (M3.4: solved again from its solution as the file stores
+/// it, it doesn't move), or if PlaneGCS's diagnosis on the drawing refuses it as
+/// conflicting; otherwise what went wrong.
+fn redundant_rectangle_case(
+    log_w: f64,
+    log_h: f64,
+    place: f64,
+    jitter: [f64; 6],
+    rough: bool,
+    w: &mut dyn SketchSolver,
+) -> Result<(), String> {
+    let (wide, high) = (nm(libm::pow(10.0, log_w)), nm(libm::pow(10.0, log_h)));
+    let room = 1e6 - 2.0 * (wide + high);
+    let (x0, y0) = (
+        nm(place.clamp(-room, room)),
+        nm((-place).clamp(-room, room)),
+    );
+    let doc = checked(&redundant_rectangle(x0, y0, wide, high, jitter, rough));
+    let case = format!("w {wide}, h {high}, at ({x0}, {y0}), jitter {jitter:?}, rough {rough}");
+    let s = match solved(&doc, w) {
+        Ok(s) => s,
+        // PlaneGCS's diagnosis, on the drawing, can call agreeing redundancies conflicting;
+        // FreeCAD 1.1.3 says the same (adversarial_sketch_oracle.rs), so that's a spec
+        // question, not this property's. Decision 5's own refusal of redundancies the
+        // diagnosis found is.
+        Err(e)
+            if e.code() == ErrorCode::OverConstrained
+                && e.message().starts_with("the sketch's constraints conflict") =>
+        {
+            return Ok(());
+        }
+        Err(e) => return Err(format!("{case}: {e} / {:?}", e.elements())),
+    };
+    // The analytic corners, either way up or round: a length has no direction, so a rough
+    // drawing may land on the rectangle's mirror image.
+    let at = |p: &str| s.point(&id(p)).unwrap();
+    let (p1, p2, p3, p4) = (
+        at("p0000001"),
+        at("p0000002"),
+        at("p0000003"),
+        at("p0000004"),
+    );
+    let near = |a: f64, b: f64| (a - b).abs() <= CLOSE;
+    let corners = near(p1[0], x0)
+        && near(p1[1], y0)
+        && near((p2[0] - x0).abs(), wide)
+        && near(p2[1], y0)
+        && near(p3[0], p2[0])
+        && near((p3[1] - y0).abs(), high)
+        && near(p4[0], x0)
+        && near(p4[1], p3[1]);
+    if !corners {
+        return Err(format!(
+            "{case}: corners {p1:?} {p2:?} {p3:?} {p4:?}, redundant {:?}",
+            s.redundant
+        ));
+    }
+    match solved(&written_back(&doc, &s), w) {
+        Ok(again) if point_bits(&again) == point_bits(&s) => Ok(()),
+        Ok(again) => Err(format!(
+            "{case}: solved again from its solution, it moved: {s:?} to {again:?}"
+        )),
+        Err(e) => Err(format!("{case}: solved, then not from its solution: {e}")),
+    }
+}
+
+#[test]
+fn a_redundant_rectangle_kept_through_an_angle_along_a_long_side_is_exact_and_its_own_solution() {
+    // Found by the property below, in CI, fixed: a 2.395781 × 1,984.774709 rectangle at the
+    // origin solved, its redundancies agreeing, with its top-right corner 45 nm off the
+    // vertical through the bottom-right one. PlaneGCS, diagnosing on the drawing, dropped
+    // that vertical (whose residual is the corner's x offset, 4.5e-8 mm) and kept the
+    // perpendicular, whose residual is a sine scaled by the sides' drawn lengths: DogLeg
+    // stops once it's below 1e-10, and 3.1e-11 of it is 45 nm at the end of a 1,985 mm side.
+    // Decision 5 measures the dropped vertical as an angle, 2.3e-11 rad, and keeps it. But
+    // the solution wasn't its own: diagnosed again from it, PlaneGCS dropped the bottom
+    // side's horizontal instead, and the corner moved 45 nm on every load (M3.4). Now a
+    // solve that dropped constraints is solved again from its solution until it doesn't
+    // move (Translation::solve), and the corner lands exactly.
+    let mut w = worker();
+    let r = redundant_rectangle_case(
+        0.3794470496640547,
+        3.2977112173238883,
+        0.0,
+        [
+            -0.28134042662659664,
+            -0.06908254986966719,
+            -0.2873223268194091,
+            0.0,
+            0.16938440505469204,
+            -0.221262413456824,
+        ],
+        false,
+        &mut w,
+    );
+    assert_eq!(r, Ok(()));
+}
+
+#[test]
+fn a_flat_redundant_rectangle_far_out_that_needs_two_solves_from_its_solution_is_kept() {
+    // Found while fixing the case above, by 500,000 cases of the property below: a
+    // 59,924.087627 × 0.008231 rectangle, drawn roughly 786 m out, was refused as
+    // over_constrained, its left side's vertical "disagreeing by 8.1e-5 rad". PlaneGCS kept
+    // an equal length that fixes the corner's x only through a square root, leaving it
+    // 0.67 nm off on an 8 µm side. Solved again from that solution, PlaneGCS called eight
+    // constraints conflicting but moved the corner exactly; solved from there, the sketch
+    // solves and doesn't move. One solve again wasn't enough; now it's solved again until
+    // it doesn't move.
+    let mut w = worker();
+    let r = redundant_rectangle_case(
+        4.777601430413569,
+        -2.0845302759679507,
+        786_269.243_248_198_8,
+        [
+            -0.06600214974689472,
+            -0.04202863432615801,
+            0.26719447145621483,
+            -0.09911831107945834,
+            -0.0685890538671934,
+            0.20701873743368476,
+        ],
+        true,
+        &mut w,
+    );
+    assert_eq!(r, Ok(()));
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 1000, .. ProptestConfig::default() })]
 
@@ -574,7 +725,9 @@ proptest! {
     // decision 5 blames the constraint it dropped. Removing it, as the advice says, would
     // leave the same 12 nm silently. Now a sketch called over-constrained that the solver
     // solved anyway is diagnosed and solved again from its solution, where PlaneGCS drops a
-    // different constraint and the corner lands within 1e-15 (Translation::solve).
+    // different constraint and the corner lands within 1e-15 (Translation::solve). The
+    // same mechanism, through a kept angle, and through a solve again that wasn't yet its
+    // own solution: the two tests above.
     #[test]
     fn redundant_rectangles_that_agree_are_kept_at_every_scale_and_place(
         // Log-uniform sizes from a micrometre to 100 m, places out to a kilometre, biased
@@ -587,35 +740,11 @@ proptest! {
     ) {
         let (w, h) = (nm(libm::pow(10.0, log_w)), nm(libm::pow(10.0, log_h)));
         prop_assume!(w > 0.0 && h > 0.0 && (log_w - log_h).abs() <= 8.0);
-        let room = 1e6 - 2.0 * (w + h);
-        let (x0, y0) = (nm(place.clamp(-room, room)), nm((-place).clamp(-room, room)));
-        let doc = checked(&redundant_rectangle(x0, y0, w, h, jitter, rough));
         thread_local!(static W: std::cell::RefCell<SketchWorker> = std::cell::RefCell::new(worker()));
-        let got = W.with(|w| solved(&doc, &mut *w.borrow_mut()));
-        match got {
-            Ok(s) => {
-                // The analytic corners, either way up or round: a length has no direction,
-                // so a rough drawing may land on the rectangle's mirror image.
-                let at = |p: &str| s.point(&id(p)).unwrap();
-                let (p1, p2, p3, p4) = (at("p0000001"), at("p0000002"), at("p0000003"), at("p0000004"));
-                let near = |a: f64, b: f64| (a - b).abs() <= CLOSE;
-                prop_assert!(near(p1[0], x0) && near(p1[1], y0), "{p1:?}");
-                prop_assert!(near((p2[0] - x0).abs(), w) && near(p2[1], y0), "{p2:?}");
-                prop_assert!(near(p3[0], p2[0]) && near((p3[1] - y0).abs(), h), "{p3:?}");
-                prop_assert!(near(p4[0], x0) && near(p4[1], p3[1]), "{p4:?}");
-            }
-            // PlaneGCS's diagnosis, on the drawing, can call agreeing redundancies
-            // conflicting; FreeCAD 1.1.3 says the same (adversarial_sketch_oracle.rs), so
-            // that's a spec question, not this property's. Decision 5's own refusal of
-            // redundancies the diagnosis found is.
-            Err(e) if e.code() == ErrorCode::OverConstrained
-                && e.message().starts_with("the sketch's constraints conflict") => {}
-            Err(e) => prop_assert!(
-                false,
-                "w {w}, h {h}, at ({x0}, {y0}), jitter {jitter:?}, rough {rough}: {e} / {:?}",
-                e.elements()
-            ),
-        }
+        let got = W.with(|w| {
+            redundant_rectangle_case(log_w, log_h, place, jitter, rough, &mut *w.borrow_mut())
+        });
+        prop_assert!(got.is_ok(), "{}", got.unwrap_err());
     }
 }
 
