@@ -126,6 +126,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - References quoted whole into an error's `elements`: the name grammar takes five sources at seven levels, 1.3 MB of one name, and each broken one's error carries it again
 - Invisible characters where whitespace may go (U+00A0, U+200B, U+FEFF after the start, U+2028): errors that print the character itself show ` ` or nothing; check they name it by code point
 - Memory amplification of a parsed tree: a 100 MB array of `0` under an unknown key, measured with `/usr/bin/time -l` (a tree of nodes and a `Vec<char>` cost 33x here), and no size cap to refuse it with
+- Many features each naming an element of one large entity (20,000 revolves whose `axis` a 10,000-point sketch hasn't): a gate that finds each by scanning the entity takes features × elements; time it against the same features naming a built-in (`x_axis`)
 - Schemas generated from Rust integers (schemars writes `"format": "uint32"`, `"minimum": 0`, no `"maximum"`; formats are annotations): the schema takes 4294967296 where the reader refuses it
 - What the core adds to a document on save (fingerprints, metadata) when it opened just under the size limit: it opens, but can't be saved again
 - Error advice written before a new feature kind existed: a sketch of 30,000 points at `5e-324` (6 bytes each in the file, 326 written in full) is too large to save, and is told to shorten its name or note

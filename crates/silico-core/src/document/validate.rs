@@ -104,6 +104,33 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
         )
     };
 
+    // Each sketch's elements by ID, sorted once (stably, so each ID's first element heads
+    // its run), so an axis is found in its sketch by a search, not a scan: a scan per
+    // revolve took revolves × elements (break-it).
+    let elements: Vec<Vec<(u64, SketchElement)>> = features
+        .iter()
+        .map(|feature| match &feature.operation {
+            Operation::Sketch(sketch) => {
+                let mut elements: Vec<(u64, SketchElement)> = sketch
+                    .elements()
+                    .map(|(id, kind)| (bytes_key(id.as_str()), kind))
+                    .collect();
+                elements.sort_by_key(|&(key, _)| key);
+                elements
+            }
+            _ => Vec::new(),
+        })
+        .collect();
+    // The kind of sketch `used`'s first element with ID `id`, if it has one.
+    let element_of = |used: usize, id: &str| {
+        let list = elements.get(used)?;
+        let key = bytes_key(id);
+        let at = list.partition_point(|&(k, _)| k < key);
+        list.get(at)
+            .filter(|&&(k, _)| k == key)
+            .map(|&(_, kind)| kind)
+    };
+
     let mut problems = Problems::default();
     // The feature that consumed each feature's solid, if one has.
     let mut consumer: Vec<Option<usize>> = vec![None; features.len()];
@@ -485,17 +512,17 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
         }
         // The line it turns about: one of that sketch's, construction or not. (An axis
         // naming an element of a sketch the feature can't use is still checked against it.)
-        let sketch =
+        let swept =
             used.filter(|&used| used != index)
                 .and_then(|used| match &features[used].operation {
-                    Operation::Sketch(sketch) => Some((used, sketch)),
+                    Operation::Sketch(_) => Some(used),
                     _ => None,
                 });
-        if let (Some(Axis::Line(line)), Some((used, sketch))) = (feature.operation.axis(), sketch) {
+        if let (Some(Axis::Line(line)), Some(used)) = (feature.operation.axis(), swept) {
             let advice = || "name a line of the sketch, x_axis, or y_axis".to_owned();
-            match sketch.elements().find(|(id, _)| *id == line) {
-                Some((_, SketchElement::Line)) => {}
-                Some((_, kind)) => problems.add(|| {
+            match element_of(used, line.as_str()) {
+                Some(SketchElement::Line) => {}
+                Some(kind) => problems.add(|| {
                     refuse(
                         "axis",
                         format!(
@@ -547,9 +574,13 @@ fn unstable(name: &Name) -> bool {
 const _: () = assert!(ID_LENGTH <= 8);
 
 fn key(id: &FeatureId) -> u64 {
-    id.as_str()
-        .bytes()
-        .fold(0, |key, byte| (key << 8) | u64::from(byte))
+    bytes_key(id.as_str())
+}
+
+/// An ID's characters' bytes as one number, a feature's or a sketch element's alike: the
+/// reader takes only IDs of [`ID_LENGTH`] ASCII characters.
+fn bytes_key(id: &str) -> u64 {
+    id.bytes().fold(0, |key, byte| (key << 8) | u64::from(byte))
 }
 
 /// A document the validation gate passed: the only kind recompute takes, so nothing is
