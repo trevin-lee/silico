@@ -55,6 +55,25 @@ if [ ! -e "$tree/.git" ]; then
   git -C "$root" worktree remove --force "$tree" 2>/dev/null || true
   git -C "$root" worktree add --detach --quiet "$tree" "$commit"
 fi
+# target/debug keeps a copy of each crate for each set of dependencies and features it was
+# built with (each branch's Cargo.lock, cargo-mutants' baselines of a few packages), and
+# Cargo never removes them: past a bound, start it again, cold (target/occt and the other
+# caches stay). One whole gate's build is about 12 GiB, or 14 GiB with incremental
+# compilation, which CI turns off.
+target_limit_gib=30
+if [ -d "$tree/target/debug" ]; then
+  target_kib=$(du -sk "$tree/target/debug" | cut -f1) || {
+    echo "gate: can't measure $tree/target/debug (above); delete it by hand" >&2
+    exit 1
+  }
+  target_gib=$((target_kib / 1024 / 1024))
+  if [ "$target_gib" -gt "$target_limit_gib" ]; then
+    echo "gate: target/debug is $target_gib GiB, past $target_limit_gib GiB: deleting it, so this build starts cold" >&2
+    rm -rf "$tree/target/debug"
+  else
+    echo "gate: target/debug is $target_gib GiB: kept (deleted past $target_limit_gib GiB)" >&2
+  fi
+fi
 git -C "$tree" checkout --detach --quiet --force "$commit"
 git -C "$tree" clean -fdx --quiet -e /target/ -e /.pixi/
 cd "$tree"
