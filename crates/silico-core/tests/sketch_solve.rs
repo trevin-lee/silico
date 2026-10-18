@@ -273,6 +273,20 @@ fn a_tangency_at_an_end_holds_the_angle_its_direction_and_end_give() {
 }
 
 #[test]
+fn each_tangencys_angle_is_its_own_and_another_constraint_has_none() {
+    // Sorted by ID: k1 at p1, `same` (θ 0); k2 a horizontal; k3 at p2, `same` (π).
+    let t = translate(&shapes(&[
+        r#"{"id": "k0000001", "type": "tangent_on", "a": "n0000001", "at": "p0000001", "b": "c0000001", "direction": "same"}"#,
+        r#"{"id": "k0000002", "type": "horizontal", "line": "n0000001"}"#,
+        r#"{"id": "k0000003", "type": "tangent_on", "a": "n0000001", "at": "p0000002", "b": "c0000001", "direction": "same"}"#,
+    ]));
+    assert_eq!(t.sent_angle(0), Some(0.0));
+    assert_eq!(t.sent_angle(1), None);
+    assert_eq!(t.sent_angle(2), Some(PI));
+    assert_eq!(t.sent_angle(3), None);
+}
+
+#[test]
 fn a_tangency_where_two_curves_meet_holds_the_angle_their_ends_give() {
     // Lines n1 from p1 to p2 and, each case, n2 between p2 and p3 one way or the other, or
     // n2 from p1: smooth (`same`) is θ = 0 when the shared point is one's end and the
@@ -349,6 +363,35 @@ fn an_arcs_own_ends_mirror_about_a_line_its_centre_is_held_on_by_one_equation() 
             "{first:?}"
         );
     }
+    // The arc's ends named end first are its ends too; one of them with another point isn't.
+    for (a, b, one) in [
+        ("p0000004", "p0000002", true),
+        ("p0000002", "p0000006", false),
+        ("p0000006", "p0000002", false),
+        ("p0000004", "p0000006", false),
+        ("p0000006", "p0000004", false),
+    ] {
+        let t = translate(&text(
+            &points,
+            &[line("n0000001", "p0000003", "p0000005")],
+            &[],
+            &arcs,
+            &[format!(
+                r#"{{"id": "k0000001", "type": "symmetric", "a": "{a}", "b": "{b}", "about": "n0000001"}}"#
+            )],
+        ));
+        let first = sent(&t)[0];
+        assert_eq!(
+            matches!(first, SolverConstraint::MidpointOnLine { .. }),
+            one,
+            "{a} {b}: {first:?}"
+        );
+        assert_eq!(
+            matches!(first, SolverConstraint::SymmetricLine { .. }),
+            !one,
+            "{a} {b}: {first:?}"
+        );
+    }
     // The same ends about a point: two equations, whatever holds the centre.
     let t = translate(&text(
         &points,
@@ -361,6 +404,25 @@ fn an_arcs_own_ends_mirror_about_a_line_its_centre_is_held_on_by_one_equation() 
         sent(&t)[0],
         SolverConstraint::SymmetricPoint { .. }
     ));
+    // About the origin: mirrored through the sketch's origin, geometry 0.
+    let t = translate(&text(
+        &points,
+        &[],
+        &[],
+        &arcs,
+        &[r#"{"id": "k0000001", "type": "symmetric", "a": "p0000002", "b": "p0000004", "about": "origin"}"#.to_owned()],
+    ));
+    assert!(
+        matches!(
+            sent(&t)[0],
+            SolverConstraint::SymmetricPoint {
+                center: PointOf::Point(Geometry(0)),
+                ..
+            }
+        ),
+        "{:?}",
+        sent(&t)
+    );
 }
 
 #[test]
@@ -683,6 +745,21 @@ fn a_solution_on_the_wrong_side_of_a_line_is_an_invalid_result_naming_the_constr
     let mut values = t.system.values.clone();
     values[11] = -3.0;
     read_back(&t, &answer(&t, values, SolveStatus::Success)).unwrap();
+    // Exactly on the line is on neither side: a driving distance is above 0 (the gate), so
+    // held on either side, a solution there is refused.
+    for side in ["left", "right"] {
+        let t = translate(&ten(&[&format!(
+            r#"{{"id": "k0000003", "type": "point_line_distance", "point": "p0000003", "line": "n0000001", "value": 3, "side": "{side}", "driving": true}}"#
+        )]));
+        let mut values = t.system.values.clone();
+        values[11] = 0.0;
+        let e = read_back(&t, &answer(&t, values, SolveStatus::Success)).unwrap_err();
+        assert_eq!(
+            (e.code(), e.elements()),
+            (ErrorCode::InvalidResult, &["k0000003".to_owned()][..]),
+            "{side}"
+        );
+    }
 }
 
 #[test]
@@ -959,9 +1036,14 @@ fn a_tangency_inside_is_sent_internal_and_outside_not() {
 fn a_circle_left_on_the_other_side_of_its_tangent_line_is_an_invalid_result() {
     // c1 is left of n3 (n3 runs −x at y 10, c1 below it); held right of it, a solve that
     // leaves it there is refused, naming the tangency; held left, it stands.
-    for (side, refused) in [("right", true), ("left", false)] {
+    for (side, refused, (a, b)) in [
+        ("right", true, ("n0000003", "c0000001")),
+        ("left", false, ("n0000003", "c0000001")),
+        ("right", true, ("c0000001", "n0000003")),
+        ("left", false, ("c0000001", "n0000003")),
+    ] {
         let t = translate(&shapes2(&format!(
-            r#"{{"id": "k0000001", "type": "tangent", "a": "n0000003", "b": "c0000001", "side": "{side}"}}"#
+            r#"{{"id": "k0000001", "type": "tangent", "a": "{a}", "b": "{b}", "side": "{side}"}}"#
         )));
         let got = read_back(
             &t,
@@ -995,6 +1077,8 @@ fn every_reference_form_is_measured_on_the_solution_not_the_drawing() {
         r#"{"id": "r0000006", "type": "length", "line": "n0000001", "value": 0, "driving": false}"#,
         r#"{"id": "r0000007", "type": "point_line_distance", "point": "p0000003", "line": "n0000001", "value": 0, "side": "right", "driving": false}"#,
         r#"{"id": "r0000008", "type": "angle", "a": "n0000001", "b": "n0000002", "value": 0, "driving": false}"#,
+        r#"{"id": "r0000009", "type": "distance_y", "a": "p0000003", "b": "p0000002", "value": 0, "driving": false}"#,
+        r#"{"id": "r0000010", "type": "distance_x", "a": "p0000003", "b": "p0000002", "value": 0, "driving": false}"#,
     ];
     let mut text = shapes2(refs[0]);
     for r in &refs[1..] {
@@ -1023,6 +1107,15 @@ fn every_reference_form_is_measured_on_the_solution_not_the_drawing() {
         r("r0000008"),
         Measured::Angle(libm::atan2(7.0, -6.0).to_degrees())
     );
+    // Signed, b's less a's, from a point off the origin: p3 (4, 7) to p2 (10, 0).
+    assert_eq!(r("r0000009"), Measured::Length(-7.0));
+    assert_eq!(r("r0000010"), Measured::Length(6.0));
+    // The solved radii, by ID: c1's 6, c3's 5 as drawn; nothing for an ID that isn't a
+    // circle's.
+    let id = |s: &str| silico_core::document::ElementId::new(s).unwrap();
+    assert_eq!(s.radius(&id("c0000001")), Some(6.0));
+    assert_eq!(s.radius(&id("c0000003")), Some(5.0));
+    assert_eq!(s.radius(&id("p0000001")), None);
 }
 
 #[test]
@@ -1074,6 +1167,17 @@ fn a_circle_or_arc_that_cant_be_built_is_named_and_a_free_circle_listed() {
         s.free.into_iter().collect::<Vec<_>>(),
         [silico_core::document::ElementId::new("c0000002").unwrap()]
     );
+    // A point with either coordinate free is free: p3's x alone, then its y alone.
+    for at in [10, 11] {
+        let mut free = answer(&t, t.system.values.clone(), SolveStatus::Success);
+        free.free = vec![Value(at)];
+        let s = read_back(&t, &free).unwrap();
+        assert_eq!(
+            s.free.into_iter().collect::<Vec<_>>(),
+            [silico_core::document::ElementId::new("p0000003").unwrap()],
+            "{at}"
+        );
+    }
     // Free values out of order are a reply that can't be trusted.
     let mut unordered = answer(&t, t.system.values.clone(), SolveStatus::Success);
     unordered.free = vec![Value(21), Value(20)];
