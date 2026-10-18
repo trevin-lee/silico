@@ -361,9 +361,10 @@ fn a_worker_executable_deleted_and_restored_under_a_running_pool() {
     // Every slot ends up with no worker, but not necessarily by now: a slot drops its
     // dead worker when it takes a request or at its idle check (IDLE_CHECK), and the six
     // requests may all have gone to one slot (on Linux they did, now and then, failing a
-    // gate under load). So wait for it, a few idle checks at most. Meanwhile only the
-    // killed workers may be held: none can start while the executable is gone.
-    let deadline = Instant::now() + 3 * silico_core::pool::IDLE_CHECK + HANG;
+    // gate under load). So wait for it: within an idle check or so (IDLE_CHECK); HANG only
+    // guards against a hang. Meanwhile only the killed workers may be held: none can
+    // start while the executable is gone.
+    let deadline = Instant::now() + HANG;
     loop {
         let held = pool.pids();
         assert!(
