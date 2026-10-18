@@ -219,18 +219,18 @@ pub fn differences(ours: &Outcome, theirs: &Outcome, tolerance: Tolerance) -> Ve
 }
 
 /// A box's largest side, or 1 mm if that's smaller.
-fn size([low, high]: [[f64; 3]; 2]) -> f64 {
+pub(crate) fn size([low, high]: [[f64; 3]; 2]) -> f64 {
     (0..3).map(|k| high[k] - low[k]).fold(1.0, f64::max)
 }
 
 /// Whether `a` and `b` are within `relative` of the larger.
-fn close(a: f64, b: f64, relative: f64) -> bool {
+pub(crate) fn close(a: f64, b: f64, relative: f64) -> bool {
     (a - b).abs() <= relative * a.abs().max(b.abs())
 }
 
 /// Whether every corner coordinate of `a` is within `tolerance` of `b`'s, relative to the
 /// larger box's largest side (at least 1 mm).
-fn boxes_close(a: [[f64; 3]; 2], b: [[f64; 3]; 2], tolerance: f64) -> bool {
+pub(crate) fn boxes_close(a: [[f64; 3]; 2], b: [[f64; 3]; 2], tolerance: f64) -> bool {
     let allowed = tolerance * size(a).max(size(b));
     (0..2).all(|corner| (0..3).all(|k| (a[corner][k] - b[corner][k]).abs() <= allowed))
 }

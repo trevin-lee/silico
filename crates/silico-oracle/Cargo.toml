@@ -13,6 +13,7 @@ serde_json.workspace = true
 sha2.workspace = true
 silico-core.workspace = true
 silico-protocol.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

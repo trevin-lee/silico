@@ -4,11 +4,14 @@
 //! name, and compares what each measures: volume, area, bounding box, center of mass,
 //! topology counts, and validity (see [`compare`]). A case that one side refuses and the other builds is a
 //! difference too. The hand-written cases live in `tests/oracle/`, which is protected;
-//! [`generate`] makes random valid ones.
+//! [`generate`] makes random valid ones. Sketches ([`sketch`]) and sketch features
+//! ([`features`]: pad, pocket, revolve, groove) have cases of their own there, as Silico
+//! documents.
 
 pub mod case;
 pub mod compare;
 pub mod corpus;
+pub mod features;
 pub mod freecad;
 pub mod generate;
 pub mod silico;

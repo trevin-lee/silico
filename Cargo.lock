@@ -4230,6 +4230,7 @@ dependencies = [
  "silico-core",
  "silico-protocol",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]
