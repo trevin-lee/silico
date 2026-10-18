@@ -202,8 +202,8 @@ fn fillet_of_an_edge_ending_where_two_boxes_touch_at_a_corner_fails_the_feature_
     // (10, 10, 0) to (10, 10, 10), ends there. OCCT segfaults filleting it, as FreeCAD
     // does. Two cubes meeting at a point are two solids to OCCT, so since Fable's decision
     // of 2026-10-18 (D2 at M2's booleans) the fuse is refused, naming itself, and the
-    // fillet is blocked on it (its step may still run, and crash a worker: nothing of it is
-    // reported but the block); and the engine rebuilds the next document.
+    // fillet is blocked on it (its step never runs: a refused boolean's users wait on its
+    // verdict); and the engine rebuilds the next document.
     let engine = engine();
     let text = format!(
         r#"{HEAD}

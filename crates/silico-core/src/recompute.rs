@@ -1223,6 +1223,23 @@ struct Plan {
     sketches: Vec<(FeatureId, Key)>,
     /// Each sweep feature's own check of its result, by ID, until its `Planned` takes it.
     checks_of: BTreeMap<FeatureId, SweepCheck>,
+    /// The steps whose users wait on their result's verdict ([`Gate`]), by key.
+    gates: BTreeMap<Key, Gate>,
+    /// The sweep features' gated steps, by their base's key, to judge once it's measured.
+    gated_by_base: BTreeMap<Key, Vec<Key>>,
+}
+
+/// What a step's users wait for beside its result: its verdict, which is the step's (the
+/// same key, base, and result give the same answer for every feature sharing it; only the
+/// words are each feature's, in `model`), so nothing is built on a refused result (the
+/// review's round 2 found a chain of refused pockets each making its cut).
+#[derive(Debug, Clone, Copy)]
+enum Gate {
+    /// An M2 boolean's: its result one solid at most (D2).
+    Solids,
+    /// A sweep feature's fuse or cut: `sweep::check_result`, once it and its base are
+    /// measured.
+    Sweep { base: Key, kind: SweepFeature },
 }
 
 /// A pad's, pocket's, revolve's, or groove's fuse or cut: its feature, what it is, and its
@@ -1541,6 +1558,8 @@ impl Plan {
                 .collect(),
             sketches: Vec::new(),
             checks_of: BTreeMap::new(),
+            gates: BTreeMap::new(),
+            gated_by_base: BTreeMap::new(),
         };
         for feature in features {
             let mut own = Vec::new();
@@ -1576,7 +1595,9 @@ impl Plan {
                             uses = vec![b, t];
                             let key = |i: usize| plan.features.get(i).and_then(Planned::key);
                             if let (Some(base), Some(tool)) = (key(b), key(t)) {
-                                own.push(plan.add(Step::Boolean { op, base, tool }, &feature.id));
+                                let step = plan.add(Step::Boolean { op, base, tool }, &feature.id);
+                                plan.gate(step, Gate::Solids);
+                                own.push(step);
                             }
                         }
                     }
@@ -1737,6 +1758,7 @@ impl Plan {
                 },
                 &feature.id,
             );
+            self.gate(key, Gate::Sweep { base, kind });
             if let Some(base_id) = self.feature_id(b).cloned() {
                 self.checks_of.insert(
                     feature.id.clone(),
@@ -1753,6 +1775,38 @@ impl Plan {
             steps,
             Arc::new(SweepNaming::of(kind, sketch, profile, faces)),
         )
+    }
+
+    /// Gates step `key`'s users on `gate` (the first feature's: a shared step's verdict is
+    /// the same for all).
+    fn gate(&mut self, key: Key, gate: Gate) {
+        if self.gates.contains_key(&key) {
+            return;
+        }
+        if let Gate::Sweep { base, .. } = gate {
+            self.gated_by_base.entry(base).or_default().push(key);
+        }
+        self.gates.insert(key, gate);
+    }
+
+    /// Whether step `key`'s users may use its result, by its gate: yes, no, or not yet
+    /// (it, or its base, not yet built or measured). A step with no gate: yes, once built.
+    fn verdict(&self, key: &Key, done: &BTreeMap<Key, StepResult>) -> Option<bool> {
+        let Some(Ok(built)) = done.get(key) else {
+            return None;
+        };
+        match self.gates.get(key) {
+            None => Some(true),
+            Some(Gate::Solids) => Some(built.history.as_ref().map_or(1, |h| h.result.solids) <= 1),
+            Some(Gate::Sweep { base, kind }) => {
+                let after = measured_of(built)?;
+                let before = match done.get(base) {
+                    Some(Ok(base)) => measured_of(base)?,
+                    _ => return None,
+                };
+                Some(crate::sweep::result_holds(*kind, &before, &after))
+            }
+        }
     }
 
     /// The step of a fillet or chamfer `feature` (the next feature planned), of its base:
@@ -2119,7 +2173,9 @@ impl<K: Kernel + 'static> Engine<K> {
             }
             let inputs = plan.steps.get(key).map(Step::inputs).unwrap_or_default();
             let cant = inputs.iter().any(|input| {
-                doomed.contains(input) || matches!(schedule.done.get(input), Some(Err(_)))
+                doomed.contains(input)
+                    || matches!(schedule.done.get(input), Some(Err(_)))
+                    || plan.verdict(input, &schedule.done) == Some(false)
             });
             if cant {
                 doomed.insert(*key);
@@ -2127,7 +2183,8 @@ impl<K: Kernel + 'static> Engine<K> {
             }
             let mut unbuilt = 0;
             for input in inputs {
-                if !schedule.done.contains_key(&input) {
+                // Not built, or built but not yet judged (it or its base to be measured).
+                if plan.verdict(&input, &schedule.done).is_none() {
                     unbuilt += 1;
                     schedule.users.entry(input).or_default().push(*key);
                 }
@@ -2614,25 +2671,7 @@ impl<K: Kernel + 'static> Engine<K> {
                     s.unresolved.insert(key, broken);
                 }
                 Ran::Made(Outcome::Done(result)) => {
-                    if result.is_ok() {
-                        for user in s.users.remove(&key).unwrap_or_default() {
-                            let now_ready = s.waiting.get_mut(&user).is_some_and(|n| {
-                                *n = n.saturating_sub(1);
-                                *n == 0
-                            });
-                            if now_ready {
-                                s.waiting.remove(&user);
-                                s.ready.push_back(Job::Make(user));
-                                woken += 1;
-                            }
-                        }
-                        // A feature's solid is measured once it's made, by a job of its own:
-                        // what uses it doesn't wait for that.
-                        if plan.results.contains(&key) {
-                            s.ready.push_back(Job::Measure(key));
-                            woken += 1;
-                        }
-                    }
+                    let made = result.is_ok();
                     let result = result.map(Arc::new);
                     // A feature's solid is kept on disk once it's measured, with its
                     // summary (written now too, it could land after, and over, that).
@@ -2642,6 +2681,17 @@ impl<K: Kernel + 'static> Engine<K> {
                         to_keep = Some(Arc::clone(built));
                     }
                     s.done.insert(key, result);
+                    if made {
+                        // Its users, if its verdict allows them (a sweep feature's waits for
+                        // the measures below).
+                        woken += release(plan, &mut s, key);
+                        // A feature's solid is measured once it's made, by a job of its own:
+                        // what uses it doesn't wait for that, unless its gate does.
+                        if plan.results.contains(&key) {
+                            s.ready.push_back(Job::Measure(key));
+                            woken += 1;
+                        }
+                    }
                 }
                 Ran::Measured(Outcome::Done(Ok(measured))) => {
                     // The measured copy takes the result's place, here and once kept; the
@@ -2649,6 +2699,13 @@ impl<K: Kernel + 'static> Engine<K> {
                     let measured = Arc::new(measured);
                     to_keep = Some(Arc::clone(&measured));
                     s.done.insert(key, Ok(measured));
+                    // A gated step waiting on this measure (its own, or its base's).
+                    let judged: Vec<Key> = std::iter::once(key)
+                        .chain(plan.gated_by_base.get(&key).into_iter().flatten().copied())
+                        .collect();
+                    for gated in judged {
+                        woken += release(plan, &mut s, gated);
+                    }
                 }
                 Ran::Measured(Outcome::Done(Err(error))) => {
                     // A solid that couldn't be measured is kept on disk all the same, so the
@@ -2871,6 +2928,27 @@ fn panic_text(panic: &(dyn std::any::Any + Send)) -> String {
         .map(|said| (*said).to_owned())
         .or_else(|| panic.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "a panic with no message".to_owned())
+}
+
+/// Releases step `key`'s users waiting on it, if its verdict allows them now (`Plan::
+/// verdict`): each made ready once nothing else holds it. How many were.
+fn release(plan: &Plan, s: &mut Schedule, key: Key) -> usize {
+    if plan.verdict(&key, &s.done) != Some(true) {
+        return 0;
+    }
+    let mut woken = 0;
+    for user in s.users.remove(&key).unwrap_or_default() {
+        let now_ready = s.waiting.get_mut(&user).is_some_and(|n| {
+            *n = n.saturating_sub(1);
+            *n == 0
+        });
+        if now_ready {
+            s.waiting.remove(&user);
+            s.ready.push_back(Job::Make(user));
+            woken += 1;
+        }
+    }
+    woken
 }
 
 fn map<T, U>(outcome: Outcome<T>, f: impl FnOnce(T) -> U) -> Outcome<U> {

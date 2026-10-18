@@ -716,8 +716,7 @@ fn a_sweep_feature_that_changes_nothing_is_refused_and_blocks_what_uses_it() {
         model.outcome(&id("ffffffff")),
         Some(&FeatureOutcome::Blocked { on: id("qqqqqqqq") })
     );
-    // (The check is the pocket's, decided with its outcome, so the fillet's step may have
-    // run; what's reported is blocked: the council's round 1.)
+    assert!(!names(&engine).contains(&"Fillet"));
     let reversed = r#"{"type": "one_side", "length": 10, "reversed": true}"#;
     let model = published(
         &engine,
@@ -1006,6 +1005,47 @@ fn an_axis_crossing_its_profile_and_an_angle_too_small_are_refused_in_full() {
     );
     assert!(error.elements().is_empty());
     assert_eq!(error.suggestion(), Some("turn it by a larger angle"));
+}
+
+#[test]
+fn nothing_is_built_on_a_refused_pocket() {
+    // Council round 2 (proven): the result check decided only a feature's outcome, so the
+    // steps of what used a refused feature still ran. Three pockets chained on the cube
+    // above the XY plane, each of the last, all going down and missing it: the first's cut
+    // is made and refused, and nothing is made on it.
+    let cube_above = box_at("bbbbbbbb", [-1.0, -1.0, 1.0], 10.0, 10.0, 10.0);
+    let engine = engine();
+    let model = published(
+        &engine,
+        &[
+            &cube_above,
+            &sketch("xy"),
+            &pocket("qqqqqqqq", "bbbbbbbb", "ssssssss", TEN),
+            &pocket("rrrrrrrr", "qqqqqqqq", "ssssssss", TEN),
+            &pocket("tttttttt", "rrrrrrrr", "ssssssss", TEN),
+        ],
+    );
+    assert_eq!(failed(&model, "qqqqqqqq").code(), ErrorCode::KernelFailed);
+    for feature in ["rrrrrrrr", "tttttttt"] {
+        assert_eq!(
+            model.outcome(&id(feature)),
+            Some(&FeatureOutcome::Blocked { on: id("qqqqqqqq") })
+        );
+    }
+    let cuts = names(&engine).iter().filter(|n| **n == "Cut").count();
+    assert_eq!(cuts, 1);
+    // Warm, and again nothing more.
+    published(
+        &engine,
+        &[
+            &cube_above,
+            &sketch("xy"),
+            &pocket("qqqqqqqq", "bbbbbbbb", "ssssssss", TEN),
+            &pocket("rrrrrrrr", "qqqqqqqq", "ssssssss", TEN),
+            &pocket("tttttttt", "rrrrrrrr", "ssssssss", TEN),
+        ],
+    );
+    assert_eq!(names(&engine).iter().filter(|n| **n == "Cut").count(), 1);
 }
 
 #[test]
