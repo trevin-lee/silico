@@ -220,6 +220,25 @@ fn every_op() -> Vec<Op> {
                 },
             ],
         }),
+        Op::Prism {
+            faces: ShapeData::checked(Blob::inline(vec![1, 2, 3]), true),
+            start: [0.0, -0.0, -5.000_000_000_000_001],
+            vector: [0.0, 0.0, 1e6],
+        },
+        Op::PrismThroughAll {
+            faces: ShapeData::unchecked(Blob::inline(vec![4])),
+            base: ShapeData::checked(Blob::inline(vec![5, 6]), false),
+            direction: [0.0, -1.0, 0.0],
+        },
+        Op::Revolution {
+            faces: ShapeData::checked(Blob::inline(vec![7]), true),
+            axis: Axis {
+                origin: [1e-300, 0.0, -1e6],
+                direction: [0.6, 0.8, 0.0],
+            },
+            start: -std::f64::consts::PI,
+            angle: std::f64::consts::TAU,
+        },
     ];
     let indices: std::collections::BTreeSet<usize> = ops
         .iter()
@@ -277,9 +296,12 @@ fn every_op() -> Vec<Op> {
             Op::DragMove { .. } => 33,
             Op::DragEnd => 34,
             Op::MakeFaces(_) => 35,
+            Op::Prism { .. } => 36,
+            Op::PrismThroughAll { .. } => 37,
+            Op::Revolution { .. } => 38,
         })
         .collect();
-    assert_eq!(indices, (0..36).collect(), "an operation has no case");
+    assert_eq!(indices, (0..39).collect(), "an operation has no case");
     ops
 }
 
@@ -857,7 +879,10 @@ fn every_op_has_its_own_name() {
             "DragBegin",
             "DragMove",
             "DragEnd",
-            "MakeFaces"
+            "MakeFaces",
+            "Prism",
+            "PrismThroughAll",
+            "Revolution"
         ]
     );
 }

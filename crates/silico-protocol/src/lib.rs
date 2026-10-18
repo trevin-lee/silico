@@ -15,6 +15,7 @@ mod primitive;
 mod profile;
 mod refusal;
 mod sketch;
+mod sweep;
 
 use serde::{Deserialize, Serialize};
 
@@ -46,6 +47,10 @@ pub use sketch::{
     Moved, Part, Parts, PointOf, PointValues, SketchGeometry, SketchSystem, SolveStatus, Solved,
     SolverConstraint, Tag, Value, arc_from_points, check_drag_target, no_distance,
     squared_distance, unbuildable, within_reach,
+};
+pub use sweep::{
+    ANGULAR_TOLERANCE, MEASURE_PRECISION, SweepKind, THROUGH_ALL_FACTOR, check_prism,
+    check_revolution, check_through_all, is_whole_turn, through_all_length,
 };
 
 /// The file descriptor a worker inherits its end of the socket pair as.
@@ -166,6 +171,36 @@ pub enum Op {
     /// compound of them in the regions' order. Replies with [`Reply::Built`], whose history
     /// is the regions' ([`FaceRegions`]).
     MakeFaces(FaceRegions),
+    /// `faces` (a profile's, as [`Op::MakeFaces`] makes them) moved by `start`, then swept
+    /// along `vector` into a solid for each face: one solid, or a compound of them. Replies
+    /// with [`Reply::Built`], whose history has the faces as its one input, each element's
+    /// start counterpart `modified`, and its end and sides `generated`
+    /// ([`History::sweep_fault`], docs/ports/history.md).
+    Prism {
+        faces: ShapeData,
+        start: [f64; 3],
+        vector: [f64; 3],
+    },
+    /// `faces` swept from where they are along `direction` (a unit vector) through all of
+    /// `base`: [`THROUGH_ALL_FACTOR`] times the diagonal of the tight box around both
+    /// ([`through_all_length`]). `base` only sizes the prism: the history is the faces'
+    /// alone, as [`Op::Prism`]'s.
+    PrismThroughAll {
+        faces: ShapeData,
+        base: ShapeData,
+        direction: [f64; 3],
+    },
+    /// `faces` turned `start` radians about `axis` (whose direction is a unit vector), then
+    /// swept `angle` radians about it, right-handed: a whole turn when `angle` is one
+    /// ([`is_whole_turn`]). Replies with [`Reply::Built`], whose history is as
+    /// [`Op::Prism`]'s, but for an element on the axis, whose end is its start, and a whole
+    /// turn, which has no ends.
+    Revolution {
+        faces: ShapeData,
+        axis: Axis,
+        start: f64,
+        angle: f64,
+    },
 }
 
 impl Op {
@@ -187,6 +222,9 @@ impl Op {
             Op::DragMove { .. } => "DragMove",
             Op::DragEnd => "DragEnd",
             Op::MakeFaces(_) => "MakeFaces",
+            Op::Prism { .. } => "Prism",
+            Op::PrismThroughAll { .. } => "PrismThroughAll",
+            Op::Revolution { .. } => "Revolution",
             Op::Echo { .. } => "Echo",
             Op::Debug(op) => op.name(),
         }

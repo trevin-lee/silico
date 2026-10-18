@@ -67,6 +67,32 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
             angle,
         } => built_reply(crate::revolve(&profile, &axis, angle).map_err(failure)?),
         Op::MakeFaces(regions) => built_reply(crate::make_faces(&regions).map_err(failure)?),
+        Op::Prism {
+            faces,
+            start,
+            vector,
+        } => {
+            let faces = shape_of(&faces)?;
+            built_reply(crate::prism(&faces, start, vector).map_err(failure)?)
+        }
+        Op::PrismThroughAll {
+            faces,
+            base,
+            direction,
+        } => {
+            let faces = shape_of(&faces)?;
+            let base = shape_of(&base)?;
+            built_reply(crate::prism_through_all(&faces, &base, direction).map_err(failure)?)
+        }
+        Op::Revolution {
+            faces,
+            axis,
+            start,
+            angle,
+        } => {
+            let faces = shape_of(&faces)?;
+            built_reply(crate::revolution(&faces, &axis, start, angle).map_err(failure)?)
+        }
         Op::Boolean { op, base, tool } => {
             let base = shape_of(&base)?;
             let tool = shape_of(&tool)?;
