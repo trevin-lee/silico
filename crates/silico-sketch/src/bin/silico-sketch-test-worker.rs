@@ -7,9 +7,10 @@
 use silico_protocol::{DebugOp, Failure, Op, Refusal, Reply};
 
 fn main() -> std::process::ExitCode {
+    let mut state = silico_sketch::worker::State::default();
     silico_worker::run(
         &silico_sketch::worker::PLATFORM,
-        |id, generation, op, socket| match op {
+        move |id, generation, op, socket| match op {
             Op::Debug(op) => match silico_worker::test_ops::answer(id, generation, op, socket) {
                 Ok(result) => result,
                 Err(DebugOp::Segfault) => {
@@ -23,7 +24,7 @@ fn main() -> std::process::ExitCode {
                     op: Op::Debug(other).name().to_owned(),
                 })),
             },
-            other => silico_sketch::worker::handle(other),
+            other => state.handle(other),
         },
     )
 }

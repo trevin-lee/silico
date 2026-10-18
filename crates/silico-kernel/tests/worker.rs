@@ -146,27 +146,38 @@ fn kernel_and_input_errors_are_structured_and_the_worker_lives_on() {
 }
 
 #[test]
-fn a_sketch_solve_is_refused_as_another_workers() {
+fn a_sketch_solve_or_drag_is_refused_as_another_workers() {
     let mut w = worker();
-    let err = w
-        .call(
-            Generation(1),
-            Op::Solve(silico_protocol::SketchSystem {
-                values: vec![],
-                unknowns: vec![],
-                geometry: vec![],
-                constraints: vec![],
-                algorithms: vec![silico_protocol::Algorithm::DogLeg],
+    let system = silico_protocol::SketchSystem {
+        values: vec![],
+        unknowns: vec![],
+        geometry: vec![],
+        constraints: vec![],
+        algorithms: vec![silico_protocol::Algorithm::DogLeg],
+    };
+    for (op, name) in [
+        (Op::Solve(system.clone()), "Solve"),
+        (
+            Op::DragBegin(silico_protocol::DragBegin {
+                system,
+                point: silico_protocol::PointOf::Point(silico_protocol::Geometry(0)),
             }),
-            TIMEOUT,
-        )
-        .unwrap_err();
-    assert_eq!(err.code(), ErrorCode::Internal, "{err}");
-    assert_eq!(err.message(), "the kernel worker couldn't do Solve");
-    assert_eq!(
-        err.cause(),
-        Some("Solve is answered by another kind of worker, not this one")
-    );
+            "DragBegin",
+        ),
+        (Op::DragMove { to: [1.0, 2.0] }, "DragMove"),
+        (Op::DragEnd, "DragEnd"),
+    ] {
+        let err = w.call(Generation(1), op, TIMEOUT).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::Internal, "{err}");
+        assert_eq!(
+            err.message(),
+            format!("the kernel worker couldn't do {name}")
+        );
+        assert_eq!(
+            err.cause(),
+            Some(format!("{name} is answered by another kind of worker, not this one").as_str())
+        );
+    }
     assert!(make_box(&mut w, 1.0, 1.0, 1.0).is_ok());
 }
 

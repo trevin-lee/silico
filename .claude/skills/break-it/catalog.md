@@ -44,6 +44,9 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Sizes the check bounds by the wrong product: Levenberg–Marquardt's JᵀJ is unknowns², not rows × unknowns (2,000 lines chained by parallels, half the Jacobian limit, runs for many minutes)
 - Counts a limit misses because entries may share values (a million points on the same two values): bound every list, not only the values
 - Solutions past the check's own reach (a point dimensioned 1e6 from one at 1e6): the solve succeeds and the next solve, started from it, is refused
+- Drag frames taken as solved without building their geometry: a line's end dragged onto its other end (or a horizontal line's end to a cursor square above its start) is a Success with a line of no length the next solve refuses, an arc's end dragged onto its centre a radius of -8e-13; FreeCAD undoes such a frame (`Sketch::internalSolve`, `updateGeometry`)
+- Drags of the largest system the check admits: the pin puts the component under SQP, dense unknowns² matrices every iteration (2,048 unknowns: 45 s a frame, the solve 1.9 s); limits sized by the solve don't bound a drag
+- Constraints redundant only where a drag starts (a point's Distance and DistanceX from a fixed point, drawn at (5, 0)): the dropped one is never looked at again, and moves break it with Success (FreeCAD too); a redundant one unmet there makes every move fail
 
 ## Features
 

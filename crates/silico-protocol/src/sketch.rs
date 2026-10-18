@@ -25,6 +25,15 @@ pub const MAX_SKETCH_GEOMETRY: usize = 10_000;
 /// the cube: about 13 s for 2,000 unknowns, 100 s for 4,000.
 pub const MAX_SKETCH_UNKNOWNS: usize = 2048;
 
+/// At most this many unknowns in the part of a sketch a drag moves (the unknowns its
+/// constraints join to the points its pins hold: [`DragBegin::part`]): while the cursor holds a point, PlaneGCS
+/// solves that part with SQP, on dense matrices, up to 100 iterations, so one move can cost
+/// far more than a solve. A chain the cursor pulls far from where it began, linked end to
+/// end: 0.76 s a move at 256 unknowns on a loaded M4 Pro, 6 s at 512, 64 s at 1024, past a
+/// request's time. A larger part solves, but doesn't drag; parts the point isn't in don't
+/// count (a 1,936-unknown grid of rectangles drags in 0.2 ms a move).
+pub const MAX_DRAG_UNKNOWNS: usize = 256;
+
 /// At most this many entries in the solver's Jacobian (rows × unknowns): PlaneGCS's
 /// diagnosis builds it dense, so this bounds it to 256 MiB.
 pub const MAX_JACOBIAN_ENTRIES: usize = 1 << 25;
@@ -141,7 +150,8 @@ pub enum PointOf {
 }
 
 impl PointOf {
-    fn geometry(self) -> Geometry {
+    /// The geometry the point is of.
+    pub fn geometry(self) -> Geometry {
         match self {
             PointOf::Point(g) | PointOf::Start(g) | PointOf::End(g) | PointOf::Center(g) => g,
         }
@@ -299,6 +309,14 @@ pub enum SolveStatus {
     Converged,
     /// The solver failed.
     Failed,
+    /// The solver met the constraints, but on geometry that can't be built: a line of no
+    /// length (dx² + dy² is 0), or a circle or arc whose radius isn't above 0. Nothing is
+    /// kept. FreeCAD undoes such a solution too (`Sketch::internalSolve`, "Invalid
+    /// solution"), but during a drag still reports it as a success and draws the drag's
+    /// start for that frame; Silico reports it, and the client keeps its last good frame. A
+    /// radius of exactly 0 FreeCAD keeps; Silico draws nothing of no size. A drag's move
+    /// gives it; a solve's comes with M3.3.
+    SolvedInvalid,
 }
 
 /// What the sketch worker found: the diagnosis, then the solve.
@@ -335,6 +353,101 @@ pub struct Solved {
     /// (PlaneGCS fixes the scale when it builds the constraint). `None` where it isn't a
     /// number (geometry of no size).
     pub residuals: Vec<(Tag, Option<f64>)>,
+}
+
+/// A drag's start (docs/ports/sketcher.md, Dragging): the sketch where the drag starts, and
+/// the point the cursor holds. The sketch worker diagnoses the sketch once and, unless it
+/// finds constraints in conflict, keeps a session: the sketch, and the point pinned to the
+/// cursor by rows of lower priority than the sketch's own constraints (FreeCAD's
+/// `Sketch::initMove`, for one point, moved to where the cursor is). Dragging an arc's
+/// start or end pins its centre too, where it starts, a hundred times more weakly, so the
+/// end moves before the centre does (FreeCAD `4d7a9435c1`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DragBegin {
+    /// The sketch, its values where the drag starts: every move solves from them. Its
+    /// algorithms aren't used (but are checked, as a solve's are): a drag solves with
+    /// DogLeg alone, as FreeCAD's does.
+    pub system: SketchSystem,
+    /// The point dragged.
+    pub point: PointOf,
+}
+
+impl DragBegin {
+    /// Whether the worker can start this drag: the system passes
+    /// [`SketchSystem::check`], the point is one its geometry has, as a constraint's points
+    /// must be, and the part of the sketch its pins hold ([`DragBegin::pins`],
+    /// [`SketchSystem::part`]) has at most [`MAX_DRAG_UNKNOWNS`] unknowns.
+    pub fn check(&self) -> Result<(), InvalidParameter> {
+        self.system.check()?;
+        self.system.check_point(self.point, "point", "the drag")?;
+        let n = self.part().unknowns.len();
+        if n > MAX_DRAG_UNKNOWNS {
+            return Err(invalid(
+                "point",
+                format!(
+                    "the part of the sketch the drag moves has {n} unknowns, and a drag takes at most {MAX_DRAG_UNKNOWNS} there: each move of a larger part takes too long"
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The points the drag pins, with their weights, as FreeCAD's `Sketch::initMove` pins
+    /// one point: the point itself, held to the cursor; and for an arc's start or end, the
+    /// arc's centre too, where it starts, a hundred times more weakly, so the end moves
+    /// before the centre does (`4d7a9435c1`).
+    pub fn pins(&self) -> Vec<(PointOf, f64)> {
+        let mut pins = vec![(self.point, 1.0)];
+        if let (Some(SketchGeometry::Arc { .. }), PointOf::Start(g) | PointOf::End(g)) = (
+            self.system.geometry.get(self.point.geometry().0 as usize),
+            self.point,
+        ) {
+            pins.push((PointOf::Center(g), 0.01));
+        }
+        pins
+    }
+
+    /// The part of the sketch the drag moves: the system reduced to the part its pins are
+    /// in ([`SketchSystem::part`]). Each move solves only that, so no other part is solved
+    /// again each frame; the rest stays where the drag began.
+    pub fn part(&self) -> SketchSystem {
+        let points: Vec<PointOf> = self.pins().into_iter().map(|(p, _)| p).collect();
+        self.system.part(&points)
+    }
+}
+
+/// Whether a drag's target, the cursor (`to` of a drag move), is a place a sketch may hold
+/// a point: both coordinates finite and within reach ([`within_reach`]).
+pub fn check_drag_target(to: [f64; 2]) -> Result<(), InvalidParameter> {
+    for (axis, v) in ["x", "y"].into_iter().zip(to) {
+        if !within_reach(v) {
+            return Err(invalid(
+                "to",
+                format!(
+                    "the drag's target's {axis} must be finite and within {} of 0, got {}",
+                    format_number(MAX_LENGTH),
+                    format_number(v)
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Where a drag's move left the sketch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Moved {
+    /// PlaneGCS's status, as it gave it: `Success`, `Converged`, or `Failed`, never
+    /// `SolvedExceptRedundant`; or `SolvedInvalid`, Silico's verdict on a `Success` whose
+    /// geometry can't be built (the values withheld). A solve's reading of redundancy doesn't apply: the pin is
+    /// of lower priority, so the part of the sketch it's in is solved by SQP, which can end
+    /// `Converged` on its own (the cursor somewhere the constraints don't let the point
+    /// reach), and FreeCAD's drag takes only `Success`.
+    pub status: SolveStatus,
+    /// Every value, in the system's order, when the status is `Success`; otherwise none, and
+    /// the sketch stays where the last move that succeeded left it (FreeCAD's view keeps
+    /// showing that).
+    pub values: Option<Vec<f64>>,
 }
 
 impl SketchSystem {
@@ -531,28 +644,7 @@ impl SketchSystem {
                 ))
             }
         };
-        let point = |p: PointOf| -> Result<(), InvalidParameter> {
-            let k = kind(p.geometry())?;
-            let fits = match p {
-                PointOf::Point(_) => k == GeometryKind::Point,
-                PointOf::Start(_) | PointOf::End(_) => {
-                    matches!(k, GeometryKind::Line | GeometryKind::Arc)
-                }
-                PointOf::Center(_) => matches!(k, GeometryKind::Circle | GeometryKind::Arc),
-            };
-            if fits {
-                Ok(())
-            } else {
-                Err(invalid(
-                    "constraints",
-                    format!(
-                        "{what} names {p}, but geometry {} is {}",
-                        p.geometry().0,
-                        k.word()
-                    ),
-                ))
-            }
-        };
+        let point = |p: PointOf| self.check_point(p, "constraints", what);
         // A dimension's value is fixed: reference dimensions, whose value is evaluated after
         // the solve, come with the document's sketches (M3.3).
         let dimension = |v: Value| -> Result<(), InvalidParameter> {
@@ -631,6 +723,160 @@ impl SketchSystem {
 }
 
 impl SketchSystem {
+    /// The part of the system `points` are in: the unknowns the constraints join to theirs
+    /// (PlaneGCS splits a system into parts that share no unknown and solves each apart,
+    /// each constraint joining the unknowns it reads), and the constraints that read them;
+    /// every other value is held where it is, as a fixed value. At least the parts PlaneGCS
+    /// would solve them in: it drops redundant equations first, so its parts can be
+    /// smaller. Points that don't name a point their geometry has join nothing.
+    pub fn part(&self, points: &[PointOf]) -> SketchSystem {
+        let n = self.unknowns.len();
+        let index = |v: Value| self.unknowns.binary_search(&v).ok();
+        let mut parent: Vec<usize> = (0..n).collect();
+        fn root(parent: &mut [usize], mut i: usize) -> usize {
+            while parent[i] != i {
+                parent[i] = parent[parent[i]];
+                i = parent[i];
+            }
+            i
+        }
+        for c in &self.constraints {
+            let mut joined = self.reads(c).into_iter().filter_map(index);
+            if let Some(first) = joined.next() {
+                for other in joined {
+                    let (a, b) = (root(&mut parent, first), root(&mut parent, other));
+                    parent[a] = b;
+                }
+            }
+        }
+        let mut roots: Vec<usize> = points
+            .iter()
+            .filter_map(|&p| self.point_values(p))
+            .flat_map(|v| [v.x, v.y])
+            .filter_map(index)
+            .map(|i| root(&mut parent, i))
+            .collect();
+        roots.sort_unstable();
+        roots.dedup();
+        let mut held = vec![false; n];
+        for (i, h) in held.iter_mut().enumerate() {
+            *h = roots.binary_search(&root(&mut parent, i)).is_ok();
+        }
+        let in_part = |v: Value| index(v).is_some_and(|i| held[i]);
+        SketchSystem {
+            values: self.values.clone(),
+            unknowns: self
+                .unknowns
+                .iter()
+                .copied()
+                .filter(|&v| in_part(v))
+                .collect(),
+            geometry: self.geometry.clone(),
+            constraints: self
+                .constraints
+                .iter()
+                .copied()
+                .filter(|c| self.reads(c).into_iter().any(in_part))
+                .collect(),
+            algorithms: self.algorithms.clone(),
+        }
+    }
+
+    /// The values constraint `c` reads, as PlaneGCS's rows for it do.
+    fn reads(&self, c: &SolverConstraint) -> Vec<Value> {
+        let geometry = |g: Geometry| {
+            self.geometry
+                .get(g.0 as usize)
+                .map(SketchGeometry::values)
+                .unwrap_or_default()
+        };
+        let point = |p: PointOf| {
+            self.point_values(p)
+                .map(|v| vec![v.x, v.y])
+                .unwrap_or_default()
+        };
+        match *c {
+            SolverConstraint::ArcRules { arc } => geometry(arc),
+            SolverConstraint::Coincident { a, b, .. } => [point(a), point(b)].concat(),
+            SolverConstraint::DistanceX { a, b, value, .. }
+            | SolverConstraint::DistanceY { a, b, value, .. }
+            | SolverConstraint::Distance { a, b, value, .. } => {
+                [point(a), point(b), vec![value]].concat()
+            }
+            SolverConstraint::PointOnLine { point: q, line, .. } => {
+                [point(q), geometry(line)].concat()
+            }
+            SolverConstraint::Horizontal { line, .. } | SolverConstraint::Vertical { line, .. } => {
+                geometry(line)
+            }
+            SolverConstraint::Parallel { a, b, .. }
+            | SolverConstraint::Perpendicular { a, b, .. }
+            | SolverConstraint::EqualLength { a, b, .. } => [geometry(a), geometry(b)].concat(),
+            SolverConstraint::Angle { a, b, value, .. } => {
+                [geometry(a), geometry(b), vec![value]].concat()
+            }
+            SolverConstraint::Radius { circle, value, .. } => {
+                let radius = match self.geometry.get(circle.0 as usize) {
+                    Some(
+                        SketchGeometry::Circle { radius, .. } | SketchGeometry::Arc { radius, .. },
+                    ) => vec![*radius],
+                    _ => Vec::new(),
+                };
+                [radius, vec![value]].concat()
+            }
+        }
+    }
+
+    /// The values of the point `p` names, if its geometry has it.
+    fn point_values(&self, p: PointOf) -> Option<PointValues> {
+        match (self.geometry.get(p.geometry().0 as usize)?, p) {
+            (SketchGeometry::Point(v), PointOf::Point(_)) => Some(*v),
+            (
+                SketchGeometry::Line { start, .. } | SketchGeometry::Arc { start, .. },
+                PointOf::Start(_),
+            ) => Some(*start),
+            (
+                SketchGeometry::Line { end, .. } | SketchGeometry::Arc { end, .. },
+                PointOf::End(_),
+            ) => Some(*end),
+            (
+                SketchGeometry::Circle { center, .. } | SketchGeometry::Arc { center, .. },
+                PointOf::Center(_),
+            ) => Some(*center),
+            _ => None,
+        }
+    }
+
+    /// That `p` names geometry there is, at a point that kind has: a point is only itself,
+    /// a line has ends, a circle a centre, an arc all three. `what` names what names it.
+    fn check_point(
+        &self,
+        p: PointOf,
+        parameter: &'static str,
+        what: &str,
+    ) -> Result<(), InvalidParameter> {
+        let g = p.geometry();
+        let Some(k) = self.geometry.get(g.0 as usize).map(SketchGeometry::kind) else {
+            return Err(invalid(
+                parameter,
+                format!(
+                    "{what} names geometry {}, but there are {}",
+                    g.0,
+                    self.geometry.len()
+                ),
+            ));
+        };
+        let fits = self.point_values(p).is_some();
+        if fits {
+            Ok(())
+        } else {
+            Err(invalid(
+                parameter,
+                format!("{what} names {p}, but geometry {} is {}", g.0, k.word()),
+            ))
+        }
+    }
+
     /// An arc's rules are four equations, the start's x and y and the end's from the
     /// centre, radius, and angle: each must involve an unknown (FreeCAD `c6de527391`).
     fn check_arc_rules(&self, arc: Geometry) -> Result<(), InvalidParameter> {
@@ -1229,6 +1475,125 @@ mod tests {
         // 1e-150 squared is 1e-300: a length.
         s.values[2] = 1e-150;
         s.check().unwrap();
+        // 1e-160 squared is 1e-320, below the smallest normal float but not 0: a length.
+        s.values[2] = 1e-160;
+        s.check().unwrap();
+    }
+
+    fn drag(point: PointOf) -> DragBegin {
+        DragBegin {
+            system: system(),
+            point,
+        }
+    }
+
+    #[test]
+    fn a_drag_of_a_point_the_geometry_has_passes() {
+        // The line's ends, the circle's centre, and the arc's ends and centre.
+        for point in [
+            PointOf::Start(Geometry(0)),
+            PointOf::End(Geometry(0)),
+            PointOf::Center(Geometry(1)),
+            PointOf::Start(Geometry(2)),
+            PointOf::End(Geometry(2)),
+            PointOf::Center(Geometry(2)),
+        ] {
+            drag(point).check().unwrap();
+        }
+        let mut with_point = drag(PointOf::Point(Geometry(3)));
+        with_point
+            .system
+            .geometry
+            .push(SketchGeometry::Point(PointValues {
+                x: Value(0),
+                y: Value(1),
+            }));
+        with_point.check().unwrap();
+    }
+
+    #[test]
+    fn a_drag_of_geometry_there_isnt_or_a_point_it_lacks_is_refused_naming_the_point() {
+        for (point, words) in [
+            (
+                PointOf::Start(Geometry(3)),
+                "the drag names geometry 3, but there are 3",
+            ),
+            (
+                PointOf::Point(Geometry(u32::MAX)),
+                "the drag names geometry 4294967295, but there are 3",
+            ),
+            (
+                PointOf::Center(Geometry(0)),
+                "the drag names the centre of geometry 0, but geometry 0 is a line",
+            ),
+            (
+                PointOf::Point(Geometry(0)),
+                "the drag names point 0, but geometry 0 is a line",
+            ),
+            (
+                PointOf::Start(Geometry(1)),
+                "the drag names the start of geometry 1, but geometry 1 is a circle",
+            ),
+            (
+                PointOf::End(Geometry(1)),
+                "the drag names the end of geometry 1, but geometry 1 is a circle",
+            ),
+            (
+                PointOf::Point(Geometry(2)),
+                "the drag names point 2, but geometry 2 is an arc",
+            ),
+        ] {
+            let e = drag(point).check().unwrap_err();
+            assert_eq!((e.parameter, e.message.as_str()), ("point", words));
+        }
+    }
+
+    #[test]
+    fn a_drag_checks_its_system_first() {
+        // A system that fails its check is refused as a solve's would be, whatever the
+        // point.
+        for point in [PointOf::Start(Geometry(0)), PointOf::Start(Geometry(9))] {
+            let mut d = drag(point);
+            d.system.values[5] = f64::NAN;
+            let e = d.check().unwrap_err();
+            assert_eq!(e.parameter, "values");
+            assert_eq!(
+                e.message,
+                "value 5 must be finite and within 1000000 of 0, got NaN"
+            );
+        }
+    }
+
+    #[test]
+    fn a_drag_target_must_be_finite_and_within_reach() {
+        for to in [[0.0, 0.0], [-1e6, 1e6], [f64::MIN_POSITIVE, -0.0]] {
+            check_drag_target(to).unwrap();
+        }
+        for (to, words) in [
+            (
+                [f64::NAN, 0.0],
+                "the drag's target's x must be finite and within 1000000 of 0, got NaN",
+            ),
+            (
+                [0.0, f64::INFINITY],
+                "the drag's target's y must be finite and within 1000000 of 0, got inf",
+            ),
+            (
+                [1.0, f64::NEG_INFINITY],
+                "the drag's target's y must be finite and within 1000000 of 0, got -inf",
+            ),
+            (
+                [-1.000_000_1e6, 0.0],
+                "the drag's target's x must be finite and within 1000000 of 0, got -1000000.1",
+            ),
+            (
+                [f64::NAN, f64::NAN],
+                "the drag's target's x must be finite and within 1000000 of 0, got NaN",
+            ),
+        ] {
+            let e = check_drag_target(to).unwrap_err();
+            assert_eq!((e.parameter, e.message.as_str()), ("to", words), "{to:?}");
+        }
     }
 
     #[test]
@@ -1237,5 +1602,183 @@ mod tests {
         let bytes = postcard::to_stdvec(&s).unwrap();
         let back: SketchSystem = postcard::from_bytes(&bytes).unwrap();
         assert_eq!(back, s);
+    }
+
+    /// Two free lines, l0 (values 0..4) and l1 (4..8), a free circle (8..11), and a free
+    /// arc (11..20), with one constraint `c` (values from 20 fixed), dimensions at 20.
+    fn two_lines_with(c: Option<SolverConstraint>) -> SketchSystem {
+        let p = |x: u32, y: u32| PointValues {
+            x: Value(x),
+            y: Value(y),
+        };
+        let mut values: Vec<f64> = (0..20).map(|i| f64::from(i) + 1.0).collect();
+        values.push(3.0);
+        SketchSystem {
+            values,
+            unknowns: (0..20).map(Value).collect(),
+            geometry: vec![
+                SketchGeometry::Line {
+                    start: p(0, 1),
+                    end: p(2, 3),
+                },
+                SketchGeometry::Line {
+                    start: p(4, 5),
+                    end: p(6, 7),
+                },
+                SketchGeometry::Circle {
+                    center: p(8, 9),
+                    radius: Value(10),
+                },
+                SketchGeometry::Arc {
+                    center: p(11, 12),
+                    radius: Value(13),
+                    start_angle: Value(14),
+                    end_angle: Value(15),
+                    start: p(16, 17),
+                    end: p(18, 19),
+                },
+            ],
+            constraints: c.into_iter().collect(),
+            algorithms: vec![Algorithm::DogLeg],
+        }
+    }
+
+    #[test]
+    fn a_part_is_what_each_kind_of_constraint_joins() {
+        let (l0, l1, c, a) = (Geometry(0), Geometry(1), Geometry(2), Geometry(3));
+        let (t, v) = (Tag(1), Value(20));
+        let end = PointOf::End(l0);
+        // Counted by hand: l0's end alone is 2; with l0's start 4; with l1's start 4; with all
+        // of l1 6; both lines 8.
+        let cases = [
+            (None, end, 2),
+            (
+                Some(SolverConstraint::Coincident {
+                    tag: t,
+                    a: end,
+                    b: PointOf::Start(l1),
+                }),
+                end,
+                4,
+            ),
+            (
+                Some(SolverConstraint::DistanceX {
+                    tag: t,
+                    a: end,
+                    b: PointOf::Start(l1),
+                    value: v,
+                }),
+                end,
+                4,
+            ),
+            (
+                Some(SolverConstraint::DistanceY {
+                    tag: t,
+                    a: end,
+                    b: PointOf::Start(l1),
+                    value: v,
+                }),
+                end,
+                4,
+            ),
+            (
+                Some(SolverConstraint::Distance {
+                    tag: t,
+                    a: PointOf::Start(l0),
+                    b: end,
+                    value: v,
+                }),
+                end,
+                4,
+            ),
+            (
+                Some(SolverConstraint::PointOnLine {
+                    tag: t,
+                    point: end,
+                    line: l1,
+                }),
+                end,
+                6,
+            ),
+            (
+                Some(SolverConstraint::Horizontal { tag: t, line: l0 }),
+                end,
+                4,
+            ),
+            (
+                Some(SolverConstraint::Vertical { tag: t, line: l0 }),
+                end,
+                4,
+            ),
+            (
+                Some(SolverConstraint::Parallel {
+                    tag: t,
+                    a: l0,
+                    b: l1,
+                }),
+                end,
+                8,
+            ),
+            (
+                Some(SolverConstraint::Perpendicular {
+                    tag: t,
+                    a: l0,
+                    b: l1,
+                }),
+                end,
+                8,
+            ),
+            (
+                Some(SolverConstraint::EqualLength {
+                    tag: t,
+                    a: l0,
+                    b: l1,
+                }),
+                end,
+                8,
+            ),
+            (
+                Some(SolverConstraint::Angle {
+                    tag: t,
+                    a: l0,
+                    b: l1,
+                    value: v,
+                }),
+                end,
+                8,
+            ),
+            // A radius reads the radius only: the circle's centre stays its own 2.
+            (
+                Some(SolverConstraint::Radius {
+                    tag: t,
+                    circle: c,
+                    value: v,
+                }),
+                PointOf::Center(c),
+                2,
+            ),
+            // An arc's rules read all nine of its values.
+            (
+                Some(SolverConstraint::ArcRules { arc: a }),
+                PointOf::End(a),
+                9,
+            ),
+            (None, PointOf::End(a), 2),
+        ];
+        for (c, point, want) in cases {
+            let s = two_lines_with(c);
+            s.check().unwrap();
+            assert_eq!(s.part(&[point]).unknowns.len(), want, "{c:?}");
+        }
+        // Two points' parts together, and a point its geometry hasn't, which joins nothing.
+        let s = two_lines_with(None);
+        assert_eq!(s.part(&[end, PointOf::Start(l1)]).unknowns.len(), 4);
+        assert_eq!(s.part(&[PointOf::Center(l0)]).unknowns.len(), 0);
+        // The part keeps every value, held, and only the constraints that read it.
+        let s = two_lines_with(Some(SolverConstraint::Horizontal { tag: t, line: l1 }));
+        let part = s.part(&[end]);
+        assert_eq!(part.values, s.values);
+        assert_eq!(part.unknowns, [Value(2), Value(3)]);
+        assert!(part.constraints.is_empty());
     }
 }

@@ -63,6 +63,8 @@ Once M2, M3, refine, and the `import` feature (with a deterministic STEP writer)
 ### After the slice: the rest of stage 1
 The full feature set (holes, loft, sweep, helix, draft, shell, patterns, mirror). Multi-body booleans. Parameters and their UX. Measure. Assembly with OndselSolver. STEP import.
 
+Deferred, not a milestone: **sketch solver quality, maybe later.** Decomposition into rigid clusters in the core, ahead of PlaneGCS; constructive solving with stable root selection; structural degree-of-freedom analysis and minimal-motion drags. The gap to commercial solvers (D-Cubed DCM) is algorithmic, not transport: M3.7 measured the worker's round trip at about 0.05 ms and dense SQP on a 120-link chain at 166 ms per frame.
+
 ## Stage 2
 Surface modeling, mesh editing, text-to-geometry, and DXF/SVG import into sketches.
 

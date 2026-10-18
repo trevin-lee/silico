@@ -4,8 +4,8 @@
 
 use proptest::prelude::*;
 use silico_protocol::{
-    Algorithm, Geometry, PointOf, PointValues, SketchGeometry, SketchSystem, SolveStatus, Solved,
-    SolverConstraint, Tag, Value,
+    Algorithm, DragBegin, Geometry, Moved, PointOf, PointValues, SketchGeometry, SketchSystem,
+    SolveStatus, Solved, SolverConstraint, Tag, Value,
 };
 use silico_protocol::{
     Axis, Blob, BooleanOp, BuiltData, ChamferSize, DebugOp, DressingKind, ElementCounts,
@@ -157,6 +157,32 @@ fn every_op() -> Vec<Op> {
             ],
             algorithms: vec![Algorithm::LevenbergMarquardt, Algorithm::DogLeg],
         }),
+        Op::DragBegin(DragBegin {
+            system: SketchSystem {
+                values: vec![-0.5, 2.0, 7.25, 2.0],
+                unknowns: vec![Value(2), Value(3)],
+                geometry: vec![SketchGeometry::Line {
+                    start: PointValues {
+                        x: Value(0),
+                        y: Value(1),
+                    },
+                    end: PointValues {
+                        x: Value(2),
+                        y: Value(3),
+                    },
+                }],
+                constraints: vec![SolverConstraint::Horizontal {
+                    tag: Tag(1),
+                    line: Geometry(0),
+                }],
+                algorithms: vec![Algorithm::DogLeg],
+            },
+            point: PointOf::End(Geometry(0)),
+        }),
+        Op::DragMove {
+            to: [-1e6, 3.000_000_000_000_000_4],
+        },
+        Op::DragEnd,
     ];
     let indices: std::collections::BTreeSet<usize> = ops
         .iter()
@@ -210,9 +236,12 @@ fn every_op() -> Vec<Op> {
             Op::MeasureAsFreecad { .. } => 29,
             Op::Debug(DebugOp::Misbehave(Misbehavior::ForgedRefusal)) => 30,
             Op::Solve(_) => 31,
+            Op::DragBegin(_) => 32,
+            Op::DragMove { .. } => 33,
+            Op::DragEnd => 34,
         })
         .collect();
-    assert_eq!(indices, (0..32).collect(), "an operation has no case");
+    assert_eq!(indices, (0..35).collect(), "an operation has no case");
     ops
 }
 
@@ -321,6 +350,21 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
                 (Tag(5), Some(0.0)),
             ],
         })),
+        Ok(Reply::DragStarted {
+            dofs: 3,
+            conflicting: vec![Tag(1), Tag(u32::MAX)],
+        }),
+        Ok(Reply::Moved(Moved {
+            status: SolveStatus::Success,
+            values: Some(vec![-0.0, 5e-324, 1e6]),
+        })),
+        Ok(Reply::Moved(Moved {
+            status: SolveStatus::Failed,
+            values: None,
+        })),
+        Err(Failure::new(Refusal::NoDragSession {
+            op: "DragEnd".to_owned(),
+        })),
         Err(Failure::new(Refusal::InvalidParameter {
             parameter: "dx".to_owned(),
             message: "box dx must be a finite length above 1e-7, got -1".to_owned(),
@@ -361,6 +405,8 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             Ok(Reply::Built(_)) => 10,
             Ok(Reply::FreecadMeasures(_)) => 11,
             Ok(Reply::Solved(_)) => 13,
+            Ok(Reply::DragStarted { .. }) => 14,
+            Ok(Reply::Moved(_)) => 15,
             Err(failure) => match failure.kind() {
                 FailureKind::InvalidInput => 5,
                 FailureKind::KernelFailed => 6,
@@ -373,7 +419,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         .collect();
     assert_eq!(
         indices,
-        (0..14).collect(),
+        (0..16).collect(),
         "a reply or failure kind has no case"
     );
     results
@@ -769,7 +815,10 @@ fn every_op_has_its_own_name() {
             "DebugMisbehaveBadHistory",
             "DebugMisbehaveHistoryForNoInputs",
             "DebugMisbehaveForgedRefusal",
-            "Solve"
+            "Solve",
+            "DragBegin",
+            "DragMove",
+            "DragEnd"
         ]
     );
 }

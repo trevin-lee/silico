@@ -1,0 +1,51 @@
+# The drag latency benchmark (crates/silico-sketch/benches/drag.rs, M3.7) on the
+# self-hosted Linux runner, on request: its table in the run's summary, and the table and
+# its JSON lines as an artifact. It records times; it fails on none.
+#
+#   gh workflow run bench.yml --ref main -f ref=<branch>
+name: bench
+run-name: "drag bench ${{ inputs.ref || github.ref_name }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag, or commit to measure (empty: the branch this runs on)"
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  drag:
+    runs-on: [self-hosted, linux, x64, pve]
+    # A full solve a frame at the largest sizes takes seconds: each mode stops after a
+    # minute, so the whole run is some minutes, after the build.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Toolchains
+        run: bash .github/tools.sh
+      - name: Drag bench
+        env:
+          SILICO_DRAG_BENCH_OUT: ${{ runner.temp }}/bench/drag.jsonl
+        run: |
+          mkdir -p "$RUNNER_TEMP/bench"
+          echo "Measuring $(git log -1 --format='%h %s')"
+          pixi run occt
+          set -o pipefail
+          pixi run cargo bench -p silico-sketch --bench drag | tee "$RUNNER_TEMP/bench/drag.txt"
+          {
+            echo "## Drag latency: $(git log -1 --format='%h %s')"
+            echo
+            echo '```'
+            sed '/^--- json$/q' "$RUNNER_TEMP/bench/drag.txt"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: drag-bench
+          path: ${{ runner.temp }}/bench

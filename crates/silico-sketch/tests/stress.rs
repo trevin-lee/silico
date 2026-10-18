@@ -327,6 +327,7 @@ fn line(name: &str, system: &SketchSystem, solved: &Solved) -> String {
         SolveStatus::Converged => "Converged",
         SolveStatus::SolvedExceptRedundant => "SolvedExceptRedundant",
         SolveStatus::Failed => "Failed",
+        SolveStatus::SolvedInvalid => "SolvedInvalid",
     };
     let free: Vec<String> = solved.free.iter().map(|v| v.0.to_string()).collect();
     format!(
@@ -374,7 +375,7 @@ fn corpus() -> Vec<(String, SketchSystem)> {
 #[test]
 fn generated_sketches_solve_to_the_references_bits() {
     let mut lines = BTreeMap::new();
-    let mut statuses = [false; 4];
+    let mut statuses = [false; 5];
     let (mut conflicts, mut redundancies, mut deepest) = (0, 0, 0usize);
     for (name, system) in corpus() {
         system

@@ -4,7 +4,8 @@
 //! this one.
 //!
 //! The bridge builds a PlaneGCS system from a [`SketchSystem`] exactly as given, diagnoses
-//! it, and solves it; what that means is the core's to decide (docs/ports/sketcher.md).
+//! it, and solves it, or keeps it for a drag ([`Drag`]); what that means is the core's to
+//! decide (docs/ports/sketcher.md).
 
 // FFI crate: `unsafe` is permitted here and nowhere else (see ARCHITECTURE.md).
 #![allow(unsafe_code)]
@@ -12,8 +13,9 @@
 pub mod worker;
 
 use silico_protocol::{
-    Algorithm, Failure, PointOf, Refusal, SketchGeometry, SketchSystem, SolveStatus, Solved,
-    SolverConstraint, Tag, Value, within_reach,
+    Algorithm, DragBegin, Failure, InvalidParameter, Moved, PointOf, Refusal, SketchGeometry,
+    SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value, check_drag_target,
+    no_distance, within_reach,
 };
 
 #[cxx::bridge(namespace = "silico_sketch")]
@@ -123,10 +125,40 @@ mod ffi {
         residuals: Vec<f64>,
     }
 
+    /// A point a drag pins (never `None` or `Geometry`), its geometry, and the weight of its
+    /// pin's two rows (1, or less to let it give way first). The first pin is the dragged
+    /// point, held to the cursor; the rest are held where they start.
+    struct Pin {
+        position: Position,
+        geometry: u32,
+        scale: f64,
+    }
+
+    /// What a diagnosis found: the degrees of freedom, and the tags of the constraints in
+    /// conflict.
+    struct Diagnosis {
+        dofs: i32,
+        conflicting: Vec<i32>,
+    }
+
+    /// How a drag's move ended: PlaneGCS's status (never `SolvedExceptRedundant`), and every
+    /// value when it's `Success` (otherwise none).
+    struct MoveOutput {
+        status: Status,
+        values: Vec<f64>,
+    }
+
     unsafe extern "C++" {
         include!("silico-sketch/cpp/bridge.h");
 
         fn solve(input: &SolveInput) -> Result<SolveOutput>;
+
+        /// A drag under way: the PlaneGCS system of the part a drag moves, kept between moves.
+        type DragSession;
+        fn drag_begin(input: &SolveInput, pins: &[Pin]) -> Result<UniquePtr<DragSession>>;
+        fn diagnose(input: &SolveInput) -> Result<Diagnosis>;
+        fn drag_move(session: Pin<&mut DragSession>, x: f64, y: f64) -> Result<MoveOutput>;
+
         fn fp_trap_mask() -> u32;
         fn disable_fp_traps() -> Result<()>;
         fn fix_eigen_cache_sizes();
@@ -139,23 +171,39 @@ mod ffi {
         fn debug_enable_fp_traps() -> Result<()>;
         #[cfg(feature = "test_ops")]
         fn debug_throw_bad_alloc() -> Result<()>;
+        #[cfg(feature = "test_ops")]
+        fn debug_eigen_cache_sizes() -> Vec<u64>;
     }
+}
+
+/// Fixes Eigen's cache sizes before any product it computes, in whatever process solves.
+fn prepare_eigen() {
+    static EIGEN_CACHES: std::sync::Once = std::sync::Once::new();
+    EIGEN_CACHES.call_once(ffi::fix_eigen_cache_sizes);
+}
+
+/// Tags as PlaneGCS reported them, which are never negative for the core's constraints.
+fn tags(tags: &[i32]) -> Result<Vec<Tag>, Failure> {
+    tags.iter()
+        .map(|&t| u32::try_from(t).map(Tag))
+        .collect::<Result<_, _>>()
+        .map_err(|_| internal("PlaneGCS reported a negative tag"))
+}
+
+/// A value refused by the protocol's check, as the worker refuses it.
+pub fn invalid(e: InvalidParameter) -> Failure {
+    Failure::new(Refusal::InvalidParameter {
+        parameter: e.parameter.to_owned(),
+        message: e.message,
+    })
 }
 
 /// Diagnoses `system`, which must have passed [`SketchSystem::check`], and solves it with
 /// each of its algorithms in turn until one solves. A solution out of reach is refused.
 pub fn solve(system: &SketchSystem) -> Result<Solved, Failure> {
-    // Before any product Eigen computes, in whatever process solves.
-    static EIGEN_CACHES: std::sync::Once = std::sync::Once::new();
-    EIGEN_CACHES.call_once(ffi::fix_eigen_cache_sizes);
+    prepare_eigen();
     let out = ffi::solve(&encode(system)).map_err(bridge_threw)?;
     check_reach(&out.values)?;
-    let tags = |tags: &[i32]| -> Result<Vec<Tag>, Failure> {
-        tags.iter()
-            .map(|&t| u32::try_from(t).map(Tag))
-            .collect::<Result<_, _>>()
-            .map_err(|_| internal("PlaneGCS reported a negative tag"))
-    };
     Ok(Solved {
         dofs: out.dofs,
         conflicting: tags(&out.conflicting)?,
@@ -180,6 +228,133 @@ pub fn solve(system: &SketchSystem) -> Result<Solved, Failure> {
             .zip(&out.residuals)
             .map(|(&tag, &r)| (Tag(tag), r.is_finite().then_some(r)))
             .collect(),
+    })
+}
+
+/// A drag under way (docs/ports/sketcher.md, Dragging): the part of the sketch its pins
+/// move ([`DragBegin::part`]) as PlaneGCS holds it, every other value held where it began
+/// (the whole sketch diagnosed at the start for conflicts and degrees of freedom), with the
+/// dragged point pinned to the cursor by rows of lower priority than the sketch's
+/// constraints. Every move solves from the values at the
+/// start, never from the last move's, so a move's result is a function of the start and
+/// the cursor alone: frames dropped or reordered can't change where the sketch ends up.
+///
+/// FreeCAD 1.1.3 instead starts again from the current values once the cursor has gone 20
+/// times its first step from where it started (`RecalculateInitialSolutionWhileMovingPoint`),
+/// but measures from a point its GUI never sets (`initToPoint`), so whether it does depends
+/// on earlier drags; Silico doesn't port that.
+pub struct Drag {
+    session: cxx::UniquePtr<ffi::DragSession>,
+    /// The geometry the drag moves (any with a value in its part), to check each move's
+    /// against.
+    geometry: Vec<SketchGeometry>,
+}
+
+/// What a drag's start found: the diagnosis, and the drag, unless constraints conflict.
+pub struct DragStart {
+    /// Degrees of freedom left: negative when over-constrained.
+    pub dofs: i32,
+    /// Constraints in conflict, by tag, in increasing order. FreeCAD doesn't drag a sketch
+    /// with any, so then there's no drag.
+    pub conflicting: Vec<Tag>,
+    pub drag: Option<Drag>,
+}
+
+impl Drag {
+    /// Checks `begin` ([`DragBegin::check`]), builds and diagnoses its sketch, and, unless
+    /// constraints conflict, pins its point where it is.
+    pub fn begin(begin: &DragBegin) -> Result<DragStart, Failure> {
+        begin.check().map_err(invalid)?;
+        prepare_eigen();
+        // The whole sketch's diagnosis, as FreeCAD's: a conflict anywhere refuses the drag.
+        let whole = ffi::diagnose(&encode(&begin.system)).map_err(bridge_threw)?;
+        let conflicting = tags(&whole.conflicting)?;
+        if !conflicting.is_empty() {
+            return Ok(DragStart {
+                dofs: whole.dofs,
+                conflicting,
+                drag: None,
+            });
+        }
+        // The session holds only the part the pins move; the rest stays where it is.
+        let part = begin.part();
+        let pins: Vec<ffi::Pin> = begin
+            .pins()
+            .into_iter()
+            .map(|(p, scale)| {
+                let (position, geometry) = point(p);
+                ffi::Pin {
+                    position,
+                    geometry,
+                    scale,
+                }
+            })
+            .collect();
+        let session = ffi::drag_begin(&encode(&part), &pins).map_err(bridge_threw)?;
+        if session.is_null() {
+            return Err(internal("the bridge started no drag"));
+        }
+        let moved = |g: &SketchGeometry| {
+            g.values()
+                .into_iter()
+                .any(|v| part.unknowns.binary_search(&v).is_ok())
+        };
+        Ok(DragStart {
+            dofs: whole.dofs,
+            conflicting,
+            drag: Some(Drag {
+                session,
+                geometry: part.geometry.iter().copied().filter(moved).collect(),
+            }),
+        })
+    }
+
+    /// Moves the cursor to `to` ([`check_drag_target`]) and solves from the drag's start
+    /// with DogLeg alone, as FreeCAD drags. A solution out of reach is refused.
+    pub fn move_to(&mut self, to: [f64; 2]) -> Result<Moved, Failure> {
+        check_drag_target(to).map_err(invalid)?;
+        let Some(session) = self.session.as_mut() else {
+            return Err(internal("the drag has no session"));
+        };
+        let out = ffi::drag_move(session, to[0], to[1]).map_err(bridge_threw)?;
+        let status = match out.status {
+            ffi::Status::Success => SolveStatus::Success,
+            ffi::Status::Converged => SolveStatus::Converged,
+            ffi::Status::Failed => SolveStatus::Failed,
+            _ => return Err(internal("the bridge returned a status a move can't have")),
+        };
+        // A solution stands only if its geometry can be built.
+        let status = if status == SolveStatus::Success && !buildable(&self.geometry, &out.values) {
+            SolveStatus::SolvedInvalid
+        } else {
+            status
+        };
+        let values = if status == SolveStatus::Success {
+            check_reach(&out.values)?;
+            Some(out.values)
+        } else {
+            None
+        };
+        Ok(Moved { status, values })
+    }
+}
+
+/// Whether geometry solved to `values` can be built, as FreeCAD's `Sketch::updateGeometry`
+/// finds when it makes its curves: a line has length to the solver ([`no_distance`], the
+/// rule the sketch worker's check applies; FreeCAD's `GeomLineSegment::setPoints`, "Both
+/// points are equal"),
+/// and a circle or an arc a radius above 0 (FreeCAD's `gp_Circ` refuses one below 0 and
+/// keeps 0; Silico draws nothing of no size).
+fn buildable(geometry: &[SketchGeometry], values: &[f64]) -> bool {
+    let at = |v: Value| values.get(v.0 as usize).copied().unwrap_or(f64::NAN);
+    geometry.iter().all(|g| match *g {
+        SketchGeometry::Line { start, end } => {
+            !no_distance([at(start.x), at(start.y)], [at(end.x), at(end.y)])
+        }
+        SketchGeometry::Circle { radius, .. } | SketchGeometry::Arc { radius, .. } => {
+            at(radius) > 0.0
+        }
+        SketchGeometry::Point(_) => true,
     })
 }
 
@@ -331,6 +506,11 @@ pub mod test_ops {
         ffi::debug_enable_fp_traps().map_err(|e| e.what().to_owned())
     }
 
+    /// The cache sizes Eigen blocks its matrix products by: L1, L2, L3, in bytes.
+    pub fn eigen_cache_sizes() -> Vec<u64> {
+        ffi::debug_eigen_cache_sizes()
+    }
+
     /// Throws `std::bad_alloc`, as a C++ allocation that fails does, and reads it as a
     /// solve does.
     pub fn throw_bad_alloc() -> Result<(), super::Failure> {
@@ -357,6 +537,31 @@ mod tests {
             assert_eq!(failure.refusal, Refusal::SolutionOutOfReach { value: at });
             assert_eq!(failure.cause, None);
         }
+    }
+
+    #[test]
+    fn a_solve_fixes_the_cache_sizes_eigen_blocks_its_products_by() {
+        // Eigen asks an x86 CPU for its caches and blocks matrix products deeper than its
+        // L1 allows by them, so two machines would sum in different orders; a solve fixes
+        // them first to the sizes it assumes where it can't ask (ARM's). On ARM, then, a
+        // missing fix leaves the same sizes, and this is caught on x86 (the CI runner):
+        // the M3.7 mutation run's one miss.
+        use silico_protocol::{Algorithm, PointValues, SketchGeometry, SketchSystem, Value};
+        let system = SketchSystem {
+            values: vec![0.0, 0.0],
+            unknowns: vec![Value(0), Value(1)],
+            geometry: vec![SketchGeometry::Point(PointValues {
+                x: Value(0),
+                y: Value(1),
+            })],
+            constraints: Vec::new(),
+            algorithms: vec![Algorithm::DogLeg],
+        };
+        super::solve(&system).unwrap();
+        assert_eq!(
+            super::test_ops::eigen_cache_sizes(),
+            [16 * 1024, 512 * 1024, 512 * 1024]
+        );
     }
 
     #[test]
