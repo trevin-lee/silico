@@ -600,3 +600,35 @@ fn a_formats_total_counts_every_broken_reference_and_a_failure_counts_once() {
     assert_eq!(model.unlisted_errors(), 0);
     assert_eq!(command::check(&model).unwrap().total(), 1);
 }
+
+#[test]
+fn two_fillets_broken_past_the_hundred_and_a_failure_count_every_one() {
+    // Found by the review: no test had two features with broken references, so a count of
+    // the first feature's alone passed. Two fillets, 150 broken edges each, and a cylinder
+    // the kernel refuses: 300 broken references and a failure, 301; listed, the first
+    // hundred of each fillet's and the failure.
+    let names = |base: &str| -> String {
+        (13..163)
+            .map(|n| format!("\"{base}.box.Edge{n}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let text = format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "features": [
+{{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}},
+{{"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": [{}], "radius": 1}},
+{{"id": "b0000002", "type": "box", "v": 1, "name": "Block2", "position": [100, 0, 0], "length": 40, "width": 20, "height": 10}},
+{{"id": "f0000002", "type": "fillet", "v": 1, "name": "Round2", "base": "b0000002", "edges": [{}], "radius": 1}},
+{{"id": "y0000001", "type": "cylinder", "v": 1, "name": "Pin", "position": [0, 0, 0], "radius": 1, "height": 1}}]}}"#,
+        names("k7f2qx3m"),
+        names("b0000002")
+    );
+    let refusing = engine();
+    refusing.kernel().refuse(|op| {
+        matches!(op, Op::MakePrimitive(Primitive::Cylinder { .. }))
+            .then(|| Error::new(ErrorCode::KernelFailed, "MakeCylinder failed"))
+    });
+    let problems = check_bytes(&refusing, text.as_bytes()).unwrap();
+    assert_eq!(problems.errors().len(), 201);
+    assert_eq!(problems.total(), 301);
+}

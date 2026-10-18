@@ -96,8 +96,8 @@ fn too_long(document: &Document, what: &str) -> Error {
                 })
         }
         None => error.with_suggestion(
-            "make it smaller: fewer features, smaller sketches, fewer or shorter edge names, or \
-             shorter names and notes",
+            "make it smaller: fewer features, smaller sketches, fewer edges named, or shorter \
+             names and notes",
         ),
     }
 }

@@ -14,7 +14,9 @@ use crate::naming::{ElementMap, Maker, Name};
 use crate::{Error, ErrorCode};
 
 /// A feature's broken references: the first [`PROBLEMS_LISTED`], each its
-/// `reference_broken` error, and how many there are, listed or not.
+/// `reference_broken` error, and how many there are, listed or not; or, in their place, a
+/// bug in Silico's ([`Broken::bug`]), an `internal` error, which a command reports as its
+/// own failure.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Broken {
     pub(crate) errors: Vec<Error>,

@@ -214,16 +214,7 @@ impl Model {
     /// How many errors the failed features have, listed in [`Model::errors`] or not: one
     /// for a failure, and every broken reference of a feature whose references broke.
     pub fn error_count(&self) -> u64 {
-        self.features
-            .iter()
-            .map(|(_, outcome)| match outcome {
-                FeatureOutcome::Failed(_) => 1,
-                FeatureOutcome::Broken { total, .. } => *total,
-                FeatureOutcome::Built { .. }
-                | FeatureOutcome::Blocked { .. }
-                | FeatureOutcome::Sketch => 0,
-            })
-            .sum()
+        self.errors().count() as u64 + self.unlisted_errors()
     }
 
     /// Why each failed feature failed, in timeline order, each error naming its feature:
@@ -1325,7 +1316,7 @@ impl<K: Kernel + 'static> Engine<K> {
                                 Ok(edges) => {
                                     Ran::Made(self.dressed(*step, &inputs, &edges, generation))
                                 }
-                                Err(errors) => Ran::Unresolved(errors),
+                                Err(broken) => Ran::Unresolved(broken),
                             }
                         }
                         (Some(step), None) => Ran::Made(self.step(*step, &inputs, generation)),

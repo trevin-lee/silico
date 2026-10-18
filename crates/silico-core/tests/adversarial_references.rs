@@ -1031,7 +1031,7 @@ fn many_broken_names_on_a_big_base_list_a_hundred_and_count_the_rest() {
 }
 
 #[test]
-fn fillet_too_large_to_save_is_told_to_name_fewer_or_shorter_edges() {
+fn fillet_too_large_to_save_is_told_to_name_fewer_edges() {
     // Found by the rebase's review: the advice for a feature too large to write said to
     // shorten its name or note, which for a fillet of 300 long edge names isn't the cause.
     let edge = format!("\"{}\"", "x".repeat(60_000));
