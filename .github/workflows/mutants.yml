@@ -23,8 +23,8 @@ on:
         description: "Only mutants in these packages, space-separated (empty: every package)"
         default: ""
       shards:
-        description: "Number of runners to share the work (1 to 16; the default leaves two of the eight for gates)"
-        default: "6"
+        description: "Number of shards to share the work (1 to 16; at most three run at once)"
+        default: "3"
 
 permissions:
   contents: read
@@ -65,10 +65,14 @@ jobs:
     timeout-minutes: 1440
     strategy:
       fail-fast: false
-      # At most four at once, whatever the shard count: the eight runners share one VM, so
-      # free runners alone don't keep its CPU free for gates (a saturated machine fails
-      # wall-clock tests).
-      max-parallel: 4
+      # At most three at once, whatever the shard count. A run's cap doesn't count other
+      # runs' shards, so two runs together take six of the eight runners and leave two for
+      # gates and the other workflows (bench, whose timings a busy machine skews, and the
+      # nightly oracle sweep); a third run at once would take the rest, and they would wait
+      # for a shard to finish. (Runner labels could reserve runners for gates, but the VM's
+      # runners are single-use and minted with fixed labels.) The runners share one VM, and
+      # free runners don't keep its CPU free: see the shard's share below.
+      max-parallel: 3
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:
@@ -99,11 +103,13 @@ jobs:
             args+=(--in-diff "$RUNNER_TEMP/change.diff")
           fi
           for package in $PACKAGES; do args+=(-p "$package"); done
-          # Share the machine with the other shards (and any gate), so timing tests don't
-          # fail under load; and retry a failed test, since one that fails only under load
-          # would fail the baseline or count a mutant as caught. A mutant that breaks a test
-          # fails it every time.
-          running=$(( SHARDS < 6 ? SHARDS : 6 ))
+          # A sixth of the machine each: the most shards that run at once, two runs of three.
+          # One run alone uses half of it. Two use all of it, and a gate then runs on a full
+          # machine, where a test still held to a wall clock (tests/mutants.sh lists them)
+          # can fail: re-run the gate. Retry a failed test here, since one that fails only
+          # under load would fail the baseline or count a mutant as caught; a mutant that
+          # breaks a test fails it every time.
+          running=6
           share=$(( $(nproc) / running > 2 ? $(nproc) / running : 2 ))
           export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share NEXTEST_RETRIES=2
           args+=(--jobserver-tasks "$share")
