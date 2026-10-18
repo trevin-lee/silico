@@ -39,11 +39,24 @@ const DOCUMENTS: &[&str] = &[
 {"id": "t0000001", "type": "torus", "v": 1, "name": "T", "position": [20, 0, 0], "radius1": 3, "radius2": 1},
 {"id": "f0000004", "type": "fuse", "v": 1, "name": "F4", "base": "f0000003", "tool": "t0000001"},
 {"id": "c0000003", "type": "chamfer", "v": 1, "name": "Ch", "base": "f0000004", "edges": ["f0000003.common.Edge(I b0000001.box.Edge1)"], "size": {"distance": 0.1}}]}"#,
+    // M3.6's features: a square with a round hole padded, two circles pocketed up into it,
+    // a ring revolved onto it whole, grooved a quarter turn, and a fillet of the pad's top
+    // edge by name.
+    r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "features": [
+{"id": "s0000001", "type": "sketch", "v": 1, "name": "Plate", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 10, "y": 0, "construction": false}, {"id": "pa000003", "x": 10, "y": 10, "construction": false}, {"id": "pa000004", "x": 0, "y": 10, "construction": false}, {"id": "pc000001", "x": 5, "y": 5, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}], "circles": [{"id": "ca000001", "center": "pc000001", "radius": 2, "construction": false}], "arcs": [], "constraints": []},
+{"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "sketch": "s0000001", "extent": {"type": "one_side", "length": 5, "reversed": false}},
+{"id": "s0000002", "type": "sketch", "v": 1, "name": "Holes", "plane": "xy", "points": [{"id": "pc000001", "x": 2, "y": 2, "construction": false}, {"id": "pc000002", "x": 8, "y": 8, "construction": false}], "lines": [], "circles": [{"id": "ca000001", "center": "pc000001", "radius": 1, "construction": false}, {"id": "ca000002", "center": "pc000002", "radius": 1, "construction": false}], "arcs": [], "constraints": []},
+{"id": "q0000001", "type": "pocket", "v": 1, "name": "Pocket", "base": "p0000001", "sketch": "s0000002", "extent": {"type": "one_side", "length": 2, "reversed": true}},
+{"id": "s0000003", "type": "sketch", "v": 1, "name": "Ring", "plane": "xz", "points": [{"id": "pa000001", "x": 12, "y": 0, "construction": false}, {"id": "pa000002", "x": 14, "y": 0, "construction": false}, {"id": "pa000003", "x": 14, "y": 2, "construction": false}, {"id": "pa000004", "x": 12, "y": 2, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}], "circles": [], "arcs": [], "constraints": []},
+{"id": "r0000001", "type": "revolve", "v": 1, "name": "Ring", "base": "q0000001", "sketch": "s0000003", "axis": "y_axis", "extent": {"type": "one_side", "angle": 360, "reversed": false}},
+{"id": "g0000001", "type": "groove", "v": 1, "name": "Groove", "base": "r0000001", "sketch": "s0000003", "axis": "y_axis", "extent": {"type": "symmetric", "angle": 90}},
+{"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "g0000001", "edges": ["p0000001.pad.Edge(G s0000001.sketch.Edge.na000003)"], "radius": 0.5}]}"#,
 ];
 
 /// Every element name of every feature of every document, in timeline and element order.
 fn names() -> String {
-    let engine = Recompute::new(FakeKernel::new(2).unwrap());
+    let engine = Recompute::new(FakeKernel::new(2).unwrap())
+        .with_sketches(silico_core::fake::FakeSketches::new());
     let mut out = String::new();
     for text in DOCUMENTS {
         let document = Checked::new(read(text.as_bytes()).unwrap()).unwrap();
@@ -55,7 +68,11 @@ fn names() -> String {
             "{:?}",
             model.errors().collect::<Vec<_>>()
         );
-        for (feature, _) in model.features() {
+        for (feature, outcome) in model.features() {
+            // A sketch makes no solid: its elements are named in what sweeps it.
+            if matches!(outcome, silico_core::recompute::FeatureOutcome::Sketch(_)) {
+                continue;
+            }
             let map = model.element_map(feature).unwrap();
             for (element, names) in map.iter() {
                 for name in names {
@@ -278,6 +295,28 @@ fn the_histories_take_every_step_of_the_builder() {
 }
 
 #[test]
+fn the_documents_take_every_form_of_a_sweep_features_names() {
+    // So the digest holds M3.6's forms (design S4): a sketch's curve, point, circle's vertex
+    // (from above), only region, and one of several (from below), each as a source of a
+    // sweep feature's element, M uncollapsed and G.
+    let names = names();
+    for needle in [
+        "p0000001.pad.Face(G s0000001.sketch.Edge.na000001)",
+        "p0000001.pad.Edge(M s0000001.sketch.Edge.ca000001)",
+        "p0000001.pad.Edge(G s0000001.sketch.Vertex.pa000002)",
+        "p0000001.pad.Face(G s0000001.sketch.Face1)",
+        "p0000001.pad.Edge(G s0000001.sketch.Vertex(U s0000001.sketch.Edge.ca000001))",
+        "q0000001.pocket.Face(G s0000002.sketch.Face(L s0000002.sketch.Edge.ca000002))",
+        "r0000001.revolve.Edge(M s0000003.sketch.Edge.na000002)",
+        "g0000001.groove.Face(G s0000003.sketch.Face1)",
+        // The fillet, built, its base's names kept (the fake's fillet keeps every element).
+        "f0000001 ElementRef { kind: Edge",
+    ] {
+        assert!(names.contains(needle), "no {needle} in:\n{names}");
+    }
+}
+
+#[test]
 fn the_names_a_scheme_gives_are_pinned_with_its_version() {
     let digest: String = Sha256::digest((names() + &built()).as_bytes())
         .iter()
@@ -286,8 +325,8 @@ fn the_names_a_scheme_gives_are_pinned_with_its_version() {
     assert_eq!(
         (std::str::from_utf8(NAMING_SCHEME).unwrap(), digest.as_str()),
         (
-            "silico naming 4\n",
-            "12bcfe352b85b86355775f4528b268ab828d822a396e4a0f0c6b26d64fbda38e"
+            "silico naming 5\n",
+            "3a8e05eda1c6037fbf62de53747ad102f8fdfde25c4defe95e4a2049f9de80a8"
         ),
         "the names changed: bump NAMING_SCHEME, then pin the new digest"
     );

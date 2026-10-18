@@ -812,10 +812,14 @@ fn a_pocket_on_a_pad_is_blocked_on_the_pad() {
             &pocket("q0000001", "p0000001", "s0000001", TEN),
         ]),
     );
-    assert!(matches!(
-        model.outcome(&id("p0000001")),
-        Some(FeatureOutcome::Failed(_))
-    ));
+    // An empty sketch makes no profile (M3.5): the pad fails with the sketch's refusal,
+    // naming the sketch (design S3), and the pocket on it is blocked on the pad.
+    let Some(FeatureOutcome::Broken { errors, total }) = model.outcome(&id("p0000001")) else {
+        panic!("{:?}", model.outcome(&id("p0000001")));
+    };
+    assert_eq!(*total, 1);
+    assert_eq!(errors[0].code(), ErrorCode::InvalidInput);
+    assert_eq!(errors[0].feature(), Some("s0000001"));
     assert_eq!(
         model.outcome(&id("q0000001")),
         Some(&FeatureOutcome::Blocked { on: id("p0000001") })
@@ -842,12 +846,13 @@ fn format_keeps_a_sweeps_stored_fingerprint_and_says_why() {
         formatted.text
     );
     assert!(formatted.refingerprinted.is_empty(), "{formatted:?}");
-    // The pad's refusal is among the problems, naming it.
+    // The pad's refusal is among the problems: its empty sketch makes no profile, which
+    // names the sketch (design S3).
     let errors = formatted.problems.errors();
     assert!(
         errors
             .iter()
-            .any(|e| e.feature() == Some("p0000001") && e.parameter() == Some("type")),
+            .any(|e| e.feature() == Some("s0000001") && e.code() == ErrorCode::InvalidInput),
         "{errors:#?}"
     );
     // And what's written reads back as the document it was.

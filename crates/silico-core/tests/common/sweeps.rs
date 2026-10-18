@@ -102,3 +102,97 @@ pub const TURN: &str = r#"{"type": "one_side", "angle": 360, "reversed": false}"
 pub fn checked_document(features: &[&str]) -> Checked {
     Checked::new(read(document(features).as_bytes()).unwrap()).unwrap()
 }
+
+/// A number as a document writes it.
+fn number(v: f64) -> String {
+    format!("{v}")
+}
+
+/// A sketch `id` on `plane` holding the rectangle from `at`, `w` by `h`: its corners
+/// pa000001 to pa000004 counter-clockwise from `at`, and its sides na000001 (along the
+/// bottom, from pa000001 to pa000002), na000002 (the right), na000003 (the top), and
+/// na000004 (the left, back to pa000001). No constraints: its stored coordinates are its
+/// solve.
+pub fn rectangle(id: &str, plane: &str, at: [f64; 2], w: f64, h: f64) -> String {
+    let [x, y] = at;
+    polygon(id, plane, &[[x, y], [x + w, y], [x + w, y + h], [x, y + h]])
+}
+
+/// A sketch `id` on `plane` holding the closed polygon through `corners`, in order: its
+/// corners pa000001, pa000002, ..., and its sides na000001 (from the first corner to the
+/// second), na000002, ..., the last back to the first. At most 9 corners.
+pub fn polygon(id: &str, plane: &str, corners: &[[f64; 2]]) -> String {
+    let points: Vec<String> = corners
+        .iter()
+        .enumerate()
+        .map(|(i, [x, y])| {
+            format!(
+                r#"{{"id": "pa00000{}", "x": {}, "y": {}, "construction": false}}"#,
+                i + 1,
+                number(*x),
+                number(*y)
+            )
+        })
+        .collect();
+    let n = corners.len();
+    let lines: Vec<String> = (0..n)
+        .map(|i| {
+            format!(
+                r#"{{"id": "na00000{}", "from": "pa00000{}", "to": "pa00000{}", "construction": false}}"#,
+                i + 1,
+                i + 1,
+                (i + 1) % n + 1
+            )
+        })
+        .collect();
+    format!(
+        r#"{{"id": "{id}", "type": "sketch", "v": 1, "name": "Sketch", "plane": "{plane}", "points": [{}], "lines": [{}], "circles": [], "arcs": [], "constraints": []}}"#,
+        points.join(", "),
+        lines.join(", ")
+    )
+}
+
+/// A sketch `id` on `plane` holding circles, each its centre and radius: centre pc00000n,
+/// circle ca00000n, from 1.
+pub fn circles(id: &str, plane: &str, circles: &[([f64; 2], f64)]) -> String {
+    let points: Vec<String> = circles
+        .iter()
+        .enumerate()
+        .map(|(i, ([x, y], _))| {
+            format!(
+                r#"{{"id": "pc00000{}", "x": {}, "y": {}, "construction": false}}"#,
+                i + 1,
+                number(*x),
+                number(*y)
+            )
+        })
+        .collect();
+    let curves: Vec<String> = circles
+        .iter()
+        .enumerate()
+        .map(|(i, (_, r))| {
+            format!(
+                r#"{{"id": "ca00000{}", "center": "pc00000{}", "radius": {}, "construction": false}}"#,
+                i + 1,
+                i + 1,
+                number(*r)
+            )
+        })
+        .collect();
+    format!(
+        r#"{{"id": "{id}", "type": "sketch", "v": 1, "name": "Sketch", "plane": "{plane}", "points": [{}], "lines": [], "circles": [{}], "arcs": [], "constraints": []}}"#,
+        points.join(", "),
+        curves.join(", ")
+    )
+}
+
+/// A box `id` from `position`, `l` by `w` by `h`.
+pub fn box_at(id: &str, position: [f64; 3], l: f64, w: f64, h: f64) -> String {
+    let [x, y, z] = position.map(number);
+    format!(
+        r#"{{"id": "{id}", "type": "box", "v": 1, "name": "Box", "position": [{x}, {y}, {z}], "length": {}, "width": {}, "height": {}}}"#,
+        number(l),
+        number(w),
+        number(h)
+    )
+}

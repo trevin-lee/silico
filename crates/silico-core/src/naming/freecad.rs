@@ -112,6 +112,17 @@ fn write(name: &Name, out: &mut String) {
             write(name, out);
             out.push_str(&format!(";D{:x}", ordinal.get()));
         }
+        // FreeCAD names a sketch's geometry by its facade ID, `g<id>`, a vertex by its
+        // geometry's and its place (`g4v2`), with the sketch's op code: Silico's point has
+        // its own ID, so `g<id>v`.
+        Name::Sketch { kind, id, .. } => {
+            out.push('g');
+            out.push_str(id.as_str());
+            if *kind == crate::kernel::ElementKind::Vertex {
+                out.push('v');
+            }
+            out.push_str(";SKT");
+        }
     }
 }
 

@@ -19,7 +19,7 @@ use std::fmt;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use crate::document::FeatureId;
+use crate::document::{ElementId, FeatureId};
 use crate::kernel::{BooleanOp, ElementCounts, ElementKind, ElementRef};
 
 /// The naming scheme: what names a map gives its elements (the grammar, the map's builder,
@@ -29,13 +29,14 @@ use crate::kernel::{BooleanOp, ElementCounts, ElementKind, ElementRef};
 /// this, and its result is kept on disk, so a result another scheme made, from the edges
 /// its names found then, is never taken for this one's (the review found a warm cache
 /// re-pointing a fillet after the cone's numbers changed).
-pub const NAMING_SCHEME: &[u8] = b"silico naming 4\n";
+pub const NAMING_SCHEME: &[u8] = b"silico naming 5\n";
 
 /// The operation that derived an element: written in Silico's form as the document's type
 /// (`cut`), as a primitive's element writes its type (N8, 2026-10-18), so a boolean whose
 /// type is changed under its ID names none of its old elements; and FreeCAD's op code
 /// (`CUT`), part of FreeCAD's names and of the order in which FreeCAD picks a name's
-/// sources.
+/// sources. A pad, pocket, revolve, or groove names every element of its solid as its own
+/// (docs/design/m3.6-sketch-features.md, S4), and a sketch its elements by their IDs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OpCode {
     Fuse,
@@ -43,6 +44,44 @@ pub enum OpCode {
     Common,
     Fillet,
     Chamfer,
+    Pad,
+    Pocket,
+    Revolve,
+    Groove,
+    /// A sketch's faces, made of its profile: named by its elements' IDs, its only region
+    /// `Face1` (S4).
+    Sketch,
+}
+
+/// Which of a feature's steps names its elements (design S4): the sweep of a pad's,
+/// pocket's, revolve's, or groove's profile, or a feature's last step, its only one for any
+/// other feature, and a sweep feature's fuse or cut.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Stage {
+    Sweep,
+    Last,
+}
+
+/// What of an input an operation keeps, as its names write it (N9, and M3.6's third value):
+/// what lies outside its other operand (bitten: kept names collapse to their source's), what
+/// lies inside it (a piece, the feature's own, `I`), or neither side (a sweep's profile,
+/// which is in no solid: the feature's own, one `M`, never collapsed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Side {
+    Outside,
+    Inside,
+    Neither,
+}
+
+impl From<crate::document::SweepFeature> for OpCode {
+    fn from(kind: crate::document::SweepFeature) -> Self {
+        match kind {
+            crate::document::SweepFeature::Pad => OpCode::Pad,
+            crate::document::SweepFeature::Pocket => OpCode::Pocket,
+            crate::document::SweepFeature::Revolve => OpCode::Revolve,
+            crate::document::SweepFeature::Groove => OpCode::Groove,
+        }
+    }
 }
 
 impl From<BooleanOp> for OpCode {
@@ -56,12 +95,17 @@ impl From<BooleanOp> for OpCode {
 }
 
 impl OpCode {
-    pub const ALL: [OpCode; 5] = [
+    pub const ALL: [OpCode; 10] = [
         OpCode::Fuse,
         OpCode::Cut,
         OpCode::Common,
         OpCode::Fillet,
         OpCode::Chamfer,
+        OpCode::Pad,
+        OpCode::Pocket,
+        OpCode::Revolve,
+        OpCode::Groove,
+        OpCode::Sketch,
     ];
 
     /// The word a name writes, which is the type the document writes.
@@ -72,6 +116,11 @@ impl OpCode {
             OpCode::Common => "common",
             OpCode::Fillet => "fillet",
             OpCode::Chamfer => "chamfer",
+            OpCode::Pad => "pad",
+            OpCode::Pocket => "pocket",
+            OpCode::Revolve => "revolve",
+            OpCode::Groove => "groove",
+            OpCode::Sketch => "sketch",
         }
     }
 
@@ -83,16 +132,44 @@ impl OpCode {
     /// it's derived (a split's `M1/2`); every piece, kept whole or trimmed, is the feature's
     /// own, written `I` (`c.cut.Face(I y.cylinder.Face1)`), so a cut made a common, or its
     /// base and tool swapped, takes no reference to a piece for another. By the booleans'
-    /// definitions, a fixed table.
+    /// definitions, a fixed table. Of a feature's last step: [`OpCode::side`] has every step.
     pub fn bites(self, input: usize) -> bool {
-        match self {
-            OpCode::Cut => input == 0,
-            OpCode::Common => false,
-            OpCode::Fuse | OpCode::Fillet | OpCode::Chamfer => true,
+        self.side(Stage::Last, input) == Side::Outside
+    }
+
+    /// What step `stage` of the operation keeps of input `input` (N9; M3.6's S4, the table
+    /// in docs/design/m3.6-sketch-features.md): per type word, step, and input, a fixed
+    /// table. A cut keeps its base's outside and its tool's inside, a common both insides,
+    /// a fuse both outsides, a fillet or chamfer its input's outside. A pad's or revolve's
+    /// fuse, and a pocket's or groove's cut, bite both their base and their own sweep: its
+    /// elements already say the feature and its type, and nothing else operates on it. A
+    /// sweep keeps neither side of its profile, which is in no solid. A sketch's faces are
+    /// named by their IDs, never through this; outside, were they asked.
+    pub fn side(self, stage: Stage, input: usize) -> Side {
+        match (self, stage) {
+            (OpCode::Pad | OpCode::Pocket | OpCode::Revolve | OpCode::Groove, Stage::Sweep) => {
+                Side::Neither
+            }
+            (OpCode::Cut, _) if input == 0 => Side::Outside,
+            (OpCode::Cut | OpCode::Common, _) => Side::Inside,
+            (
+                OpCode::Fuse
+                | OpCode::Fillet
+                | OpCode::Chamfer
+                | OpCode::Pad
+                | OpCode::Pocket
+                | OpCode::Revolve
+                | OpCode::Groove
+                | OpCode::Sketch,
+                _,
+            ) => Side::Outside,
         }
     }
 
-    /// FreeCAD's op code (`TopoShapeOpCode.h`).
+    /// FreeCAD's op code (`TopoShapeOpCode.h`). A sweep feature writes its sweep's
+    /// (`XTR`, `RVL`) for every element it names, its fuse's or cut's too, where FreeCAD
+    /// writes `FUS` or `CUT` for those: one word names every step of the feature (S4), so
+    /// FreeCAD's form, held for comparison and FreeCAD's orders, says the feature's.
     pub fn code(self) -> &'static str {
         match self {
             OpCode::Fuse => "FUS",
@@ -100,6 +177,9 @@ impl OpCode {
             OpCode::Common => "CMN",
             OpCode::Fillet => "FLT",
             OpCode::Chamfer => "CHF",
+            OpCode::Pad | OpCode::Pocket => "XTR",
+            OpCode::Revolve | OpCode::Groove => "RVL",
+            OpCode::Sketch => "SKT",
         }
     }
 }
@@ -312,6 +392,16 @@ pub enum Name {
         name: Arc<Name>,
         ordinal: NonZeroU32,
     },
+    /// A sketch's curve's edge or point's vertex in the faces made of its profile, by the
+    /// element's ID, which never moves when the geometry is dragged or the sketch's lists
+    /// reordered (`s0000001.sketch.Edge.6t7v8w9x`; design S4). Never a whole reference: a
+    /// sketch's elements are in no solid, and appear only as sources in what a pad, pocket,
+    /// revolve, or groove made of them.
+    Sketch {
+        feature: FeatureId,
+        kind: ElementKind,
+        id: ElementId,
+    },
 }
 
 /// The operation that last modified a [`Name::Modified`] element, for its FreeCAD form
@@ -349,9 +439,10 @@ impl Name {
     pub fn kind(&self) -> ElementKind {
         match self {
             Name::Element { element, .. } => element.kind,
-            Name::Derived { kind, .. } | Name::Upper { kind, .. } | Name::Lower { kind, .. } => {
-                *kind
-            }
+            Name::Derived { kind, .. }
+            | Name::Upper { kind, .. }
+            | Name::Lower { kind, .. }
+            | Name::Sketch { kind, .. } => *kind,
             Name::Duplicate { name, .. } | Name::Modified { name, .. } => name.kind(),
         }
     }
@@ -369,7 +460,7 @@ impl Name {
     /// The names it's made of, one level down.
     pub(crate) fn parts(&self) -> Vec<&Arc<Name>> {
         match self {
-            Name::Element { .. } => Vec::new(),
+            Name::Element { .. } | Name::Sketch { .. } => Vec::new(),
             Name::Derived { first, more, .. } => std::iter::once(first)
                 .chain(more)
                 .map(|source| &source.name)
@@ -395,6 +486,7 @@ impl Ord for Name {
             Name::Lower { .. } => 3,
             Name::Duplicate { .. } => 4,
             Name::Modified { .. } => 5,
+            Name::Sketch { .. } => 6,
         };
         variant(a).cmp(&variant(b)).then_with(|| match (a, b) {
             (
@@ -484,6 +576,14 @@ impl Ord for Name {
                     ordinal: o,
                 },
             ) => name.cmp(n).then(ordinal.cmp(o)),
+            (
+                Name::Sketch { feature, kind, id },
+                Name::Sketch {
+                    feature: f,
+                    kind: k,
+                    id: i,
+                },
+            ) => feature.cmp(f).then(kind.cmp(k)).then_with(|| id.cmp(i)),
             // Different variants are ordered above; a `Modified` is never an identity.
             _ => std::cmp::Ordering::Equal,
         })
@@ -564,6 +664,11 @@ impl std::hash::Hash for Name {
             Name::Duplicate { name, ordinal } => {
                 name.hash(state);
                 ordinal.hash(state);
+            }
+            Name::Sketch { feature, kind, id } => {
+                feature.hash(state);
+                kind.hash(state);
+                id.hash(state);
             }
             Name::Modified { .. } => {}
         }
@@ -670,6 +775,12 @@ impl fmt::Display for Name {
             }
             Name::Duplicate { name, ordinal } => write!(f, "{name}~{ordinal}"),
             Name::Modified { name, .. } => write!(f, "{name}"),
+            Name::Sketch { feature, kind, id } => write!(
+                f,
+                "{feature}.{}.{}.{id}",
+                OpCode::Sketch.word(),
+                kind_word(*kind)
+            ),
         }
     }
 }

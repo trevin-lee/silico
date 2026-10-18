@@ -17,21 +17,28 @@
 //!          | feature "." type "." kind "(U" [ place ] " " name ( ", " name )* ")"
 //!                                                  from the elements above (1 to 5)
 //!          | feature "." type "." kind "(L " name ( ", " name )* ")"  from those below (1 to 5)
+//!          | feature ".sketch." ( "Edge" | "Vertex" ) "." id     a sketch's curve or point
 //! source   = ( "M" | "G" | "I" ) [ place ] " " name
 //! place    = count "/" count                                 rank/size, size >= 2
 //! type     = "box" | "cylinder" | "sphere" | "cone" | "torus"   a primitive's: by number only
 //!          | "cut" | "fuse" | "common" | "fillet" | "chamfer"   an operation's: any form, its
-//!                                                               number the last resort, unstable
+//!          | "pad" | "pocket" | "revolve" | "groove"            number the last resort, unstable
+//!          | "sketch"                    `Face1` (its only region), its IDs, `U` and `L` only
 //! kind     = "Vertex" | "Edge" | "Face" | "Solid"
+//! id       = 8 characters of the ID alphabet
 //! count    = a number from 1, no leading zero, at most 2^32 - 1
 //! ```
+//!
+//! A sketch's elements are in no solid, so a name that is one, whole, is refused: they
+//! appear only as sources in what a feature made of them (docs/design/m3.6-sketch-features.md,
+//! S4).
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use super::build::{MOST_DEPTH, MOST_SOURCES, MOST_WEIGHT};
 use super::{Name, OpCode, Place, PrimitiveKind, Raw, Relation, Source, TypeWord};
-use crate::document::{FeatureId, Made, Operation, SweepFeature};
+use crate::document::{ElementId, FeatureId, Made, Operation};
 use crate::kernel::{ElementKind, ElementRef};
 
 /// Why a name's text isn't a name: what's wrong, and where (the column, from 1, in
@@ -72,27 +79,22 @@ impl Name {
     }
 }
 
-/// What a feature is now: a primitive, of this kind, or an operation; or a sketch, which
-/// makes no solid; or a feature that sweeps a sketch, whose names this Silico doesn't read
-/// yet (docs/design/m3.6-sketch-features.md, S4). A name's own type is read from its text
-/// (N8); this says only which features there are, which make no solid, and, for messages,
-/// what each is now.
+/// What a feature is now: a primitive, of this kind, or an operation (a sketch's is its
+/// faces'). A name's own type is read from its text (N8); this says only which features
+/// there are, which is a sketch (whose elements are in no solid), and, for messages, what
+/// each is now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Maker {
     Itself(PrimitiveKind),
     By(OpCode),
-    Nothing,
-    Unnamed(SweepFeature),
 }
 
 impl Maker {
-    /// The type the feature is now, as its elements' names write it; none for a sketch, or
-    /// for a feature that sweeps one, whose names aren't read yet.
-    pub fn type_word(self) -> Option<TypeWord> {
+    /// The type the feature is now, as its elements' names write it.
+    pub fn type_word(self) -> TypeWord {
         match self {
-            Maker::Itself(kind) => Some(TypeWord::Primitive(kind)),
-            Maker::By(op) => Some(TypeWord::Operation(op)),
-            Maker::Nothing | Maker::Unnamed(_) => None,
+            Maker::Itself(kind) => TypeWord::Primitive(kind),
+            Maker::By(op) => TypeWord::Operation(op),
         }
     }
 
@@ -103,8 +105,8 @@ impl Maker {
             Made::Boolean(op) => Maker::By(op.into()),
             Made::Fillet { .. } => Maker::By(OpCode::Fillet),
             Made::Chamfer { .. } => Maker::By(OpCode::Chamfer),
-            Made::Sketch => Maker::Nothing,
-            Made::Sweep(kind) => Maker::Unnamed(kind),
+            Made::Sketch => Maker::By(OpCode::Sketch),
+            Made::Sweep(kind) => Maker::By(kind.into()),
         }
     }
 }
@@ -115,6 +117,13 @@ fn words() -> String {
         .map(|made| format!("`{}`", made.word()))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// How a base name begins: a whole name (by number, or a sketch's by ID), or the feature,
+/// operation, and kind of one whose sources or elements above or below follow.
+enum Head {
+    Whole(Name),
+    Parts(FeatureId, OpCode, ElementKind),
 }
 
 struct Reader<'a> {
@@ -217,69 +226,12 @@ impl Reader<'_> {
     }
 
     fn base(&mut self, depth: u32) -> Result<Name, NameError> {
-        let start = self.at;
-        // Every name written out counts, as the builder's bound counts them.
-        self.weight += 1;
-        if self.weight > MOST_WEIGHT {
-            return Err(self.error(&format!(
-                "a name of more than {MOST_WEIGHT} names written out, which no map holds"
-            )));
-        }
-        let feature = self.feature()?;
-        let Some(maker) = (self.operation_of)(&feature) else {
-            self.at = start;
-            return Err(self.error(&format!("no feature {feature} before this one")));
-        };
-        if maker == Maker::Nothing {
-            self.at = start;
-            return Err(self.error(&format!(
-                "{feature} makes no solid (a sketch): it has no faces, edges, or vertices"
-            )));
-        }
-        if let Maker::Unnamed(kind) = maker {
-            self.at = start;
-            let word = kind.word();
-            return Err(self.error(&format!(
-                "{feature} is a {word}: this Silico doesn't name a {word}'s faces, edges, or vertices yet"
-            )));
-        }
-        self.expect(".")?;
-        // Every element says the type of the feature that made it (`box.`, `cut.`).
-        let Some(made) = self.type_word() else {
-            let word = match maker.type_word() {
-                Some(made) => made.word(),
-                // (A sketch's name is refused above.)
-                None => "",
-            };
-            return Err(self.error(&format!(
-                "expected the type of the feature that made the element ({}), as `{}`",
-                words(),
-                self.with_word(word)
-            )));
-        };
-        let kind_at = self.at;
-        let kind = self.kind()?;
-        if !self.eat("(") {
-            let index = self.count()?;
-            self.height = 1;
-            return Ok(Name::Element {
-                feature,
-                made,
-                element: ElementRef {
-                    kind,
-                    index: index.get(),
-                },
-            });
-        }
-        let operation = match made {
-            TypeWord::Operation(operation) => operation,
-            TypeWord::Primitive(primitive) => {
-                self.at = kind_at;
-                return Err(self.error(&format!(
-                    "a {} makes its elements itself: it names them by their numbers",
-                    primitive.word()
-                )));
-            }
+        // What comes before any name inside this one, read by a function of its own, so this
+        // one's frame, which every level of a nested name holds, stays small (a 256-deep
+        // name's frames overflowed a 2 MB stack once this read sketches' forms too).
+        let (feature, operation, kind) = match self.head(depth)? {
+            Head::Whole(name) => return Ok(name),
+            Head::Parts(feature, operation, kind) => (feature, operation, kind),
         };
         let mut tallest = 0;
         let name = if self.eat("U") {
@@ -352,6 +304,97 @@ impl Reader<'_> {
         Ok(name)
     }
 
+    /// A base name's feature, type, and kind, and, for a name by number or by ID, the whole
+    /// name; refused where they can't begin a name.
+    #[inline(never)]
+    fn head(&mut self, depth: u32) -> Result<Head, NameError> {
+        let start = self.at;
+        // Every name written out counts, as the builder's bound counts them.
+        self.weight += 1;
+        if self.weight > MOST_WEIGHT {
+            return Err(self.error(&format!(
+                "a name of more than {MOST_WEIGHT} names written out, which no map holds"
+            )));
+        }
+        let feature = self.feature()?;
+        let Some(maker) = (self.operation_of)(&feature) else {
+            self.at = start;
+            return Err(self.error(&format!("no feature {feature} before this one")));
+        };
+        // A sketch's elements are in no solid: a name that's one, whole, names nothing a
+        // reference can take (S4).
+        if depth == 0 && maker == Maker::By(OpCode::Sketch) {
+            self.at = start;
+            return Err(self.error(&format!(
+                "{feature} is a sketch: its elements are in no solid; name what a feature made of it"
+            )));
+        }
+        self.expect(".")?;
+        // Every element says the type of the feature that made it (`box.`, `cut.`).
+        let Some(made) = self.type_word() else {
+            return Err(self.error(&format!(
+                "expected the type of the feature that made the element ({}), as `{}`",
+                words(),
+                self.with_word(maker.type_word().word())
+            )));
+        };
+        let sketch = made == TypeWord::Operation(OpCode::Sketch);
+        let kind_at = self.at;
+        let kind = self.kind()?;
+        if self.peek() == Some(b'.') {
+            if !sketch {
+                return Err(self.error(&format!(
+                    "a {} names its elements by number or by how they came about; only a sketch's are by ID",
+                    made.word()
+                )));
+            }
+            if !matches!(kind, ElementKind::Edge | ElementKind::Vertex) {
+                self.at = kind_at;
+                return Err(self.error(
+                    "a sketch names its curves (`Edge.`) and points (`Vertex.`) by ID; its only region is `Face1`",
+                ));
+            }
+            self.at += 1;
+            let id = self.element_id()?;
+            self.height = 1;
+            return Ok(Head::Whole(Name::Sketch { feature, kind, id }));
+        }
+        if !self.eat("(") {
+            let index = self.count()?;
+            if sketch && !(kind == ElementKind::Face && index.get() == 1) {
+                self.at = kind_at;
+                return Err(self.error(
+                    "a sketch names its curves and points by ID (`Edge.<id>`, `Vertex.<id>`), and its only region `Face1`: no other number",
+                ));
+            }
+            self.height = 1;
+            return Ok(Head::Whole(Name::Element {
+                feature,
+                made,
+                element: ElementRef {
+                    kind,
+                    index: index.get(),
+                },
+            }));
+        }
+        // A sketch derives nothing: its forms in parentheses are from above or below.
+        if sketch && !matches!(self.peek(), Some(b'U' | b'L')) {
+            return Err(self.error(
+                "a sketch derives nothing: only a circle's vertex (`U`) and a region of several (`L`) are named in parentheses",
+            ));
+        }
+        match made {
+            TypeWord::Operation(operation) => Ok(Head::Parts(feature, operation, kind)),
+            TypeWord::Primitive(primitive) => {
+                self.at = kind_at;
+                Err(self.error(&format!(
+                    "a {} makes its elements itself: it names them by their numbers",
+                    primitive.word()
+                )))
+            }
+        }
+    }
+
     /// A source, `depth` names inside another; [`Reader::height`] its name's.
     fn source(&mut self, depth: u32) -> Result<Source, NameError> {
         let relation = if self.eat("M") {
@@ -390,6 +433,19 @@ impl Reader<'_> {
             return Err(self.error("a place's rank is at most its group's size"));
         }
         Ok(Some(Place { rank, size }))
+    }
+
+    /// A sketch element's ID.
+    fn element_id(&mut self) -> Result<ElementId, NameError> {
+        let end = (self.at + crate::document::ID_LENGTH).min(self.text.len());
+        let id = self
+            .text
+            .get(self.at..end)
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .and_then(ElementId::new)
+            .ok_or_else(|| self.error("expected a sketch element's ID"))?;
+        self.at = end;
+        Ok(id)
     }
 
     fn feature(&mut self) -> Result<FeatureId, NameError> {

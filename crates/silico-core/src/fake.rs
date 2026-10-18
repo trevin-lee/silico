@@ -19,7 +19,10 @@
 //! keeps them all. A summary is exact for a primitive (its volume, area, center, and box by
 //! formula, where it sits as the kernel makes it) and a move; a boolean's, its own model's
 //! again, is its inputs' together, as if they didn't touch: their volumes and areas added,
-//! their centers weighed by volume, and the box around both. Faces made from a profile's
+//! their centers weighed by volume, and the box around both. A boolean whose tool is a
+//! sweep of faces (a sketch feature's fuse or cut) is one solid, or its base's, as if they
+//! met, and such a cut is its base less the share of its tool inside the base's box
+//! (`Measured::less`), so a pad adds and a pocket removes. Faces made from a profile's
 //! regions are numbered and kept as the kernel keeps them (each curve its edge, each point
 //! its vertex), with their area by formula and the box around their curves. A sweep of
 //! faces (a prism, through all or not, or a revolution) reports each element as the kernel
@@ -503,10 +506,11 @@ fn answer(op: &Op) -> Result<Reply, Error> {
         Op::Boolean { op, base, tool } => {
             let (base, tool) = (Symbolic::read(base)?, Symbolic::read(tool)?);
             let (a, b) = (base.counts(), tool.counts());
+            let swept = matches!(tool.0.last(), Some(Step::Sweep { .. }));
             let made = Symbolic::boolean(*op, base, tool);
             let history = History {
                 inputs: vec![kept(a, ElementCounts::default()), kept(b, a)],
-                result: sum(a, b),
+                result: boolean_counts(*op, a, b, swept),
                 ends: Ends::default(),
                 topology: made.topology(),
             };
@@ -968,6 +972,24 @@ fn sum(a: ElementCounts, b: ElementCounts) -> ElementCounts {
     }
 }
 
+/// A boolean's counts, as the fake models it: both inputs' faces, edges, and vertices, and
+/// their solids, as if they didn't touch; but where the tool is a sweep of faces (a pad's,
+/// pocket's, revolve's, or groove's fuse or cut), the solids of one that met: a fuse's one,
+/// a cut's and a common's its base's. So those are one solid, as the kernel's are, and a
+/// pocket of several regions cuts one base.
+fn boolean_counts(op: BooleanOp, a: ElementCounts, b: ElementCounts, swept: bool) -> ElementCounts {
+    if !swept {
+        return sum(a, b);
+    }
+    ElementCounts {
+        solids: match op {
+            BooleanOp::Fuse => u32::from(a.solids > 0 || b.solids > 0),
+            BooleanOp::Cut | BooleanOp::Common => a.solids,
+        },
+        ..sum(a, b)
+    }
+}
+
 /// How OCCT's primitive's elements bound each other, as the kernel reports it: each face's
 /// edges in OCCT's order, its outer wire's (sorted), and each edge's vertices.
 fn primitive_topology(primitive: &Primitive) -> Topology {
@@ -1400,7 +1422,13 @@ impl Symbolic {
                 Step::Primitive(primitive) => Measured::primitive(primitive),
                 Step::Faces(regions) => Measured::faces(regions),
                 Step::Translate { input, offset } => of(*input).moved(*offset),
-                Step::Boolean { base, tool, .. } => of(*base).with(of(*tool)),
+                Step::Boolean { op, base, tool } => {
+                    let swept = matches!(self.0.get(*tool), Some(Step::Sweep { .. }));
+                    match op {
+                        BooleanOp::Cut if swept => of(*base).less(of(*tool)),
+                        _ => of(*base).with(of(*tool)),
+                    }
+                }
                 Step::Dress { input, .. } => of(*input),
                 Step::Sweep { input, sweep } => match self.0.get(*input) {
                     Some(Step::Faces(regions)) => Measured::swept(regions, sweep),
@@ -1491,7 +1519,12 @@ fn step_counts(steps: &[Step], step: &Step, of: impl Fn(usize) -> ElementCounts)
         Step::Primitive(primitive) => primitive_counts(primitive),
         Step::Faces(regions) => FacesLayout::of(regions).counts,
         Step::Translate { input, .. } | Step::Dress { input, .. } => of(*input),
-        Step::Boolean { base, tool, .. } => sum(of(*base), of(*tool)),
+        Step::Boolean { op, base, tool } => boolean_counts(
+            *op,
+            of(*base),
+            of(*tool),
+            matches!(steps.get(*tool), Some(Step::Sweep { .. })),
+        ),
         Step::Sweep { input, sweep } => match steps.get(*input) {
             Some(Step::Faces(regions)) => {
                 SweepNumbers::of(&FacesLayout::of(regions), sweep.kind()).counts
@@ -1722,6 +1755,30 @@ impl Measured {
                 [0, 1, 2].map(|i| high[i] + offset[i]),
             ],
             ..self
+        }
+    }
+
+    /// A shape's measures less what of `tool` lies in its box, as if the tool were spread
+    /// evenly through its own box and the shape filled its: its volume and moment less the
+    /// tool's in proportion to the share of the tool's box inside the shape's, its area
+    /// more by that share of the tool's, its box its own. Exact for a prism of a rectangle
+    /// cut square into a box (a pocket); the fake's own model otherwise.
+    fn less(self, tool: Measured) -> Self {
+        let ([a_low, a_high], [b_low, b_high]) = (self.bounds, tool.bounds);
+        let size = |low: [f64; 3], high: [f64; 3]| -> f64 {
+            (0..3).map(|k| (high[k] - low[k]).max(0.0)).product()
+        };
+        let inside = size(
+            [0, 1, 2].map(|k| a_low[k].max(b_low[k])),
+            [0, 1, 2].map(|k| a_high[k].min(b_high[k])),
+        );
+        let whole = size(b_low, b_high);
+        let share = if whole > 0.0 { inside / whole } else { 0.0 };
+        Measured {
+            volume: self.volume - share * tool.volume,
+            area: self.area + share * tool.area,
+            moment: [0, 1, 2].map(|i| self.moment[i] - share * tool.moment[i]),
+            bounds: self.bounds,
         }
     }
 

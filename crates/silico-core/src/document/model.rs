@@ -149,7 +149,7 @@ impl JsonSchema for ElementName {
 
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         json_schema!({
-            "description": "An element of an earlier feature's solid, by its name in Silico's form (feature.type.Kind(...)), never by its number.",
+            "description": "An element of an earlier feature's solid, by its name in Silico's form (feature.type.Kind(...)), never by its number. A sketch's elements appear only as sources in what a feature made of them, by ID (sketch.sketch.Edge.<id>, sketch.sketch.Vertex.<id>), its only region sketch.sketch.Face1: a pad's side face is pad.pad.Face(G sketch.sketch.Edge.<id>).",
             "type": "string",
             "minLength": 1
         })

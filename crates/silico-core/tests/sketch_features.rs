@@ -623,9 +623,11 @@ fn the_schema_takes_the_example_and_refuses_what_the_reader_refuses_by_shape() {
 }
 
 #[test]
-fn a_fillet_naming_a_sweeps_element_is_refused_until_sweeps_are_named() {
-    // Naming of sketch features waits for M3.6's step 5: refused, as a sketch's element is.
-    let sketch = empty_sketch("s0000001", "S", "xy");
+fn a_fillet_naming_a_sweeps_element_says_the_sweeps_type_and_reads_its_names() {
+    // M3.6, step v: a pad's, pocket's, revolve's, or groove's elements are named (design
+    // S4), each saying its type: a name without it is refused, saying what to write, and
+    // one with it reads.
+    let sketch = rectangle("s0000001", "xy", [0.0, 0.0], 4.0, 2.0);
     let invalid = checked(&[
         &sketch,
         &pad("p0000001", None, "s0000001", TEN),
@@ -633,13 +635,19 @@ fn a_fillet_naming_a_sweeps_element_is_refused_until_sweeps_are_named() {
     ])
     .unwrap_err();
     assert_eq!(invalid.total(), 1);
-    assert_refused(
-        &invalid.errors()[0],
-        "f0000001",
-        "edges.0",
-        "edges.0, \"p0000001.Edge(G s0000001.Edge1)\", isn't an edge's name: p0000001 is a pad: this Silico doesn't name a pad's faces, edges, or vertices yet, at column 1",
-        "write the edge's name as Silico names it (feature.type.Edge(...)), of a feature before this one",
+    assert!(
+        invalid.errors()[0]
+            .message()
+            .contains("as `p0000001.pad.Edge(G s0000001.Edge1)`"),
+        "{}",
+        invalid.errors()[0].message()
     );
+    checked(&[
+        &sketch,
+        &pad("p0000001", None, "s0000001", TEN),
+        r#"{"id": "f0000001", "type": "fillet", "v": 1, "name": "F", "base": "p0000001", "edges": ["p0000001.pad.Edge(G s0000001.sketch.Edge.na000003)"], "radius": 1}"#,
+    ])
+    .unwrap();
     // Each type says what it is.
     for (feature, word) in [
         (pocket("q0000001", "k7f2qx3m", "s0000001", TEN), "pocket"),
@@ -665,9 +673,9 @@ fn a_fillet_naming_a_sweeps_element_is_refused_until_sweeps_are_named() {
         assert_eq!(invalid.total(), 1, "{:#?}", invalid.errors());
         assert_eq!(invalid.errors()[0].parameter(), Some("edges.1"));
         assert!(
-            invalid.errors()[0].message().ends_with(&format!(
-                "isn't an edge's name: q0000001 is a {word}: this Silico doesn't name a {word}'s faces, edges, or vertices yet, at column 1"
-            )),
+            invalid.errors()[0]
+                .message()
+                .contains(&format!("as `q0000001.{word}.Edge2`")),
             "{}",
             invalid.errors()[0].message()
         );
@@ -677,52 +685,68 @@ fn a_fillet_naming_a_sweeps_element_is_refused_until_sweeps_are_named() {
 // Recompute and the outline.
 
 #[test]
-fn recompute_refuses_to_build_a_sweep_yet_and_blocks_what_uses_it() {
+fn recompute_builds_a_sweep_from_its_sketch_and_what_uses_it() {
+    // M3.6, step iv (design S3): a pad onto a base is its faces, its prism, and its fuse,
+    // and a feature using it builds on it. Each sweep feature alike, with its own steps.
     let engine = Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(FakeSketches::new());
-    let sketch = empty_sketch("s0000001", "S", "xy");
+    let sketch = rectangle("s0000001", "xy", [0.0, 0.0], 4.0, 2.0);
+    // A 10 mm cube under the sketch's plane: a pad goes up from its top, a pocket down into
+    // it, and a turn about the sketch's x axis passes through it.
+    let base = box_at("k7f2qx3m", [-1.0, -1.0, -10.0], 10.0, 10.0, 10.0);
     let model = published(
         &engine,
         checked_document(&[
             &sketch,
-            &block("k7f2qx3m"),
+            &base,
             &pad("p0000001", Some("k7f2qx3m"), "s0000001", TEN),
             &block("a91cw0de"),
             r#"{"id": "f0000001", "type": "fuse", "v": 1, "name": "F", "base": "p0000001", "tool": "a91cw0de"}"#,
         ]),
     );
-    let Some(FeatureOutcome::Failed(error)) = model.outcome(&id("p0000001")) else {
-        panic!("{:?}", model.outcome(&id("p0000001")));
-    };
-    assert_eq!(error.code(), ErrorCode::InvalidInput);
-    assert_eq!(error.feature(), Some("p0000001"));
-    assert_eq!(error.parameter(), Some("type"));
-    assert_eq!(
-        error.message(),
-        "p0000001 is a pad, which this Silico reads and checks but can't build yet"
-    );
-    assert!(error.suggestion().is_some());
-    assert_eq!(
-        model.outcome(&id("f0000001")),
-        Some(&FeatureOutcome::Blocked { on: id("p0000001") })
-    );
-    assert!(matches!(
-        model.outcome(&id("k7f2qx3m")),
-        Some(FeatureOutcome::Built { .. })
-    ));
+    for feature in ["k7f2qx3m", "p0000001", "f0000001"] {
+        assert!(
+            matches!(
+                model.outcome(&id(feature)),
+                Some(FeatureOutcome::Built { .. })
+            ),
+            "{feature}: {:?}",
+            model.outcome(&id(feature))
+        );
+    }
     assert!(matches!(
         model.outcome(&id("s0000001")),
         Some(FeatureOutcome::Sketch(_))
     ));
-    // Nothing was asked of the kernel for it: the box alone was made (both boxes are one
-    // step).
-    let made = made(&engine);
-    assert_eq!(made, ["MakeBox"], "{made:?}");
-    // Each type alike.
-    for (feature, word) in [
-        (pocket("x0000001", "k7f2qx3m", "s0000001", TEN), "pocket"),
+    assert_eq!(model.bodies(), [id("f0000001")]);
+    // The cube made and moved, the small box made, the pad's three steps, and the fuse,
+    // in whatever order they ran.
+    let mut calls = made(&engine);
+    calls.sort_unstable();
+    assert_eq!(
+        calls,
+        [
+            "Fuse",
+            "Fuse",
+            "MakeBox",
+            "MakeBox",
+            "MakeFaces",
+            "Prism",
+            "Translate"
+        ],
+        "{calls:?}"
+    );
+    // Each type alike: a pocket and a groove cut, a revolve with no base is its faces and
+    // its revolution alone.
+    for (feature, word, steps) in [
+        (
+            pocket("x0000001", "k7f2qx3m", "s0000001", TEN),
+            "pocket",
+            &["MakeFaces", "Prism", "Cut"][..],
+        ),
         (
             turned("x0000001", "revolve", None, "s0000001", "x_axis", TURN),
             "revolve",
+            &["MakeFaces", "Revolution"][..],
         ),
         (
             turned(
@@ -730,23 +754,31 @@ fn recompute_refuses_to_build_a_sweep_yet_and_blocks_what_uses_it() {
                 "groove",
                 Some("k7f2qx3m"),
                 "s0000001",
-                "y_axis",
+                "x_axis",
                 TURN,
             ),
             "groove",
+            &["MakeFaces", "Revolution", "Cut"][..],
         ),
     ] {
-        let model = published(
-            &engine,
-            checked_document(&[&sketch, &block("k7f2qx3m"), &feature]),
+        let engine = Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(FakeSketches::new());
+        let model = published(&engine, checked_document(&[&sketch, &base, &feature]));
+        assert!(
+            matches!(
+                model.outcome(&id("x0000001")),
+                Some(FeatureOutcome::Built { .. })
+            ),
+            "{word}: {:?}",
+            model.outcome(&id("x0000001"))
         );
-        let Some(FeatureOutcome::Failed(error)) = model.outcome(&id("x0000001")) else {
-            panic!("{word}");
-        };
-        assert_eq!(
-            error.message(),
-            format!("x0000001 is a {word}, which this Silico reads and checks but can't build yet")
-        );
+        // The feature's own steps, which run one after another.
+        let made = made(&engine);
+        let own: Vec<&str> = made
+            .iter()
+            .copied()
+            .filter(|m| !["MakeBox", "Translate"].contains(m))
+            .collect();
+        assert_eq!(own, steps, "{word}");
     }
 }
 

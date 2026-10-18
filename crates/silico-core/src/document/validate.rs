@@ -21,7 +21,7 @@ use super::model::{Axis, Document, ExtentValue, FeatureId, ID_LENGTH, Operation}
 use super::quantity::Length;
 use super::sketch::ElementKind as SketchElement;
 use crate::kernel::ElementKind;
-use crate::naming::{Maker, Name, TypeWord};
+use crate::naming::{Maker, Name, OpCode, TypeWord};
 use crate::{Error, ErrorCode};
 
 /// How many of a document's problems [`Invalid`] lists; it counts the rest.
@@ -310,8 +310,11 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
                     refuse(
                         &parameter,
                         format!(
-                            "{parameter}, {}, isn't an edge's name: {error}",
-                            shown(edge.as_str())
+                            "{parameter}, {}, isn't an edge's name: {}{}, at column {}",
+                            shown(edge.as_str()),
+                            error.why,
+                            made_of_sketch(edge.as_str(), &feature.operation, features, &makers),
+                            error.column
                         ),
                         advice.to_owned(),
                     )
@@ -552,15 +555,47 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
 /// Whether `name` is one no map holds stable: a duplicate's (`~n`), or names, at its top or
 /// anywhere inside, an operation's element by its number (as the name writes it:
 /// `m3tq8v0z.cut.Edge5`).
+/// Where `text` names a sketch's edge whole (`s.sketch.Edge.<id>`, which the parser
+/// refuses: its elements are in no solid), and the fillet's or chamfer's base sweeps that
+/// sketch, what to write instead, as the base names the edge it made from that curve at its
+/// start (design S4): ` (p.pad.Edge(M s.sketch.Edge.<id>))`. Otherwise nothing.
+fn made_of_sketch(
+    text: &str,
+    operation: &Operation,
+    features: &[crate::document::Feature],
+    makers: &dyn Fn(&FeatureId) -> Option<Maker>,
+) -> String {
+    let sketch = text.get(..ID_LENGTH).and_then(FeatureId::new);
+    let Some(sketch) = sketch.filter(|s| makers(s) == Some(Maker::By(OpCode::Sketch))) else {
+        return String::new();
+    };
+    let is_edge = text
+        .strip_prefix(sketch.as_str())
+        .and_then(|rest| rest.strip_prefix(".sketch.Edge."))
+        .is_some_and(|id| crate::document::ElementId::new(id).is_some());
+    let base = operation
+        .inputs()
+        .first()
+        .and_then(|(_, base)| features.iter().find(|f| &f.id == *base));
+    match base {
+        Some(base) if is_edge && base.operation.sketch() == Some(&sketch) => {
+            let word = Maker::of(&base.operation).type_word();
+            format!(" ({}.{word}.Edge(M {text}))", base.id)
+        }
+        _ => String::new(),
+    }
+}
+
 fn unstable(name: &Name) -> bool {
     let mut stack = vec![name];
     while let Some(name) = stack.pop() {
         match name {
             Name::Duplicate { .. } => return true,
+            // A sketch's only region is named `Face1`, by design (S4): stable.
             Name::Element {
-                made: TypeWord::Operation(_),
+                made: TypeWord::Operation(op),
                 ..
-            } => {
+            } if *op != OpCode::Sketch => {
                 return true;
             }
             _ => stack.extend(name.parts().into_iter().map(std::sync::Arc::as_ref)),

@@ -459,13 +459,15 @@ fn config(cases: u32) -> Config {
 #[test]
 fn every_name_any_operation_gives_reads_back_from_its_text_and_finds_its_element() {
     // Under every operation (common and chamfer included, which the grammar's own round trip
-    // never builds), each name a map holds is written with its type words and read back as a
-    // name that finds the same element.
+    // never builds, and the sweep features' last steps), each name a map holds is written
+    // with its type words and read back as a name that finds the same element. (Not a
+    // sketch's: its map is named by its IDs, `ElementMap::sketch`, and its whole names are
+    // refused as references, its elements being in no solid.)
     TestRunner::new(config(1500))
         .run(&histories(), |history| {
             let maps = inputs(&history);
             let refs: Vec<&ElementMap> = maps.iter().collect();
-            for op in OpCode::ALL {
+            for op in OpCode::ALL.into_iter().filter(|op| *op != OpCode::Sketch) {
                 let map = ElementMap::operation(id("rrrrrrrr"), op, &refs, &history);
                 let makers = makers_for(op);
                 for (element, names) in map.iter() {

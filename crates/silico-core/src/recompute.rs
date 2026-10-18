@@ -1,15 +1,22 @@
 //! Recompute: a checked document's features rebuilt on a [`Kernel`] (docs/ports/recompute.md).
 //!
-//! Each feature is one or two kernel steps (a primitive made at the origin, then moved to its
-//! position; a boolean of two earlier features' solids), and each step has a [`Key`]: a hash
-//! of exactly what it computes and of its inputs' keys, never of a feature's ID, name, note,
-//! or place in the timeline. The keys are all known before anything runs, so a recompute
-//! runs only the steps whose keys it has no result for: an unchanged document runs nothing,
-//! a rename runs nothing, and a value edit runs that feature's steps and those below it.
-//! Identical steps run once.
+//! Each feature is one or more kernel steps (a primitive made at the origin, then moved to
+//! its position; a boolean of two earlier features' solids; a pad's, pocket's, revolve's, or
+//! groove's faces of its sketch's profile, their sweep, and its fuse or cut with its base:
+//! docs/design/m3.6-sketch-features.md, S3), and each step has a [`Key`]: a hash of exactly
+//! what it computes and of its inputs' keys, never of a feature's ID, name, note, or place
+//! in the timeline. The keys are all known before anything runs, so a recompute runs only
+//! the steps whose keys it has no result for: an unchanged document runs nothing, a rename
+//! runs nothing, and a value edit runs that feature's steps and those below it. Identical
+//! steps run once.
 //!
-//! A pad, pocket, revolve, or groove isn't built yet (M3.6's steps come later): it fails,
-//! saying so, and what uses it is blocked on it.
+//! A sweep's steps depend on its sketch's profile, so every sketch a feature sweeps is
+//! solved, and its profile made, before the plan (both kept by the sketch's key, so an
+//! unchanged sketch costs nothing); a sketch that doesn't solve blocks what sweeps it, and
+//! one that makes no profile fails it with every refusal of its profile. Its checks before
+//! any kernel step (several regions, a revolve's axis) and of its result (one solid, a
+//! change of volume, measured as its fuse or cut is made: `sweep`) fail it as a step's
+//! refusal does.
 //!
 //! Steps run as soon as their inputs are built, several at once, so independent branches
 //! overlap on the kernel; nothing depends on the order they finish in. A step the kernel
@@ -28,7 +35,8 @@
 //! (docs/design/m3.4-stored-coordinates.md), on the engine's [`SketchSolver`] (the sketch
 //! worker, started at the first sketch, unless [`Recompute::with_sketches`] or
 //! [`Recompute::with_sketch_starter`] gave another),
-//! one at a time, beside the kernel's steps. A solve is keyed by its feature's ID and the
+//! one at a time: those a feature sweeps before the plan, the rest beside the kernel's
+//! steps. A solve is keyed by its feature's ID and the
 //! sketch's canonical text, and kept as steps' results are, so an unchanged sketch isn't
 //! solved again; a superseded recompute's solve is stopped.
 
@@ -41,13 +49,17 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 
 use crate::cache::Cache;
-use crate::document::{Checked, Document, ElementName, FeatureId, Fingerprint, Made, Operation};
+use crate::document::{
+    Checked, Document, ElementId, ElementName, FeatureId, Fingerprint, Made, Operation,
+    SweepFeature,
+};
 use crate::kernel::{
-    BooleanOp, BuiltData, Generation, History, Kernel, KernelRequest, Primitive, ShapeData,
-    ShapeSummary,
+    BooleanOp, BuiltData, FaceRegions, Generation, History, Kernel, KernelRequest, Primitive,
+    ShapeData, ShapeSummary, SweepKind,
 };
 use crate::naming::{ElementMap, Maker, NAMING_SCHEME, OpCode};
 use crate::pool::Outcome;
+use crate::profile::Profile;
 use crate::references::EdgeNames;
 use crate::sketch::{SketchSolution, SketchSolver, SketchWorker, SolveStopper};
 use crate::worker::lock;
@@ -154,7 +166,10 @@ pub enum FeatureOutcome {
     /// References it holds (a fillet's or chamfer's edges, by name) name nothing it can
     /// use: each broken one's `reference_broken` error, in the order the feature holds them
     /// (N6: every one, at once), the first [`PROBLEMS_LISTED`](crate::document::PROBLEMS_LISTED)
-    /// of them, and how many there are, listed or not. Its step isn't run.
+    /// of them, and how many there are, listed or not. Its step isn't run. Or the sketch a
+    /// pad, pocket, revolve, or groove sweeps solved but makes no profile: each of the
+    /// profile's refusals, an `invalid_input` naming the sketch and its elements, listed and
+    /// counted alike (docs/design/m3.6-sketch-features.md, S3).
     Broken { errors: Vec<Error>, total: u64 },
     /// Not built, since it uses a feature that failed: that feature (the first failure
     /// along its base, then its tool).
@@ -198,6 +213,9 @@ struct FeatureNaming {
     how: Naming,
     /// The features whose solids it's made from, by index.
     uses: Vec<usize>,
+    /// Its own steps' results, in order: the last its solid, and a sweep feature's faces
+    /// and sweep before it, which it's named from too.
+    steps: Vec<Arc<Built>>,
 }
 
 /// Models are equal when they're of the same document, built in the same generation, and
@@ -328,17 +346,13 @@ impl Model {
         if let Some(map) = lock(&self.known).get(&naming.key) {
             return Some(Arc::clone(map));
         }
-        let (id, outcome) = self.features.get(j)?;
-        let history = match outcome {
-            FeatureOutcome::Built { built, .. } => built.history.as_ref(),
-            _ => None,
-        };
+        let (id, _) = self.features.get(j)?;
         let inputs: Option<Vec<&ElementMap>> = naming
             .uses
             .iter()
             .map(|&u| self.maps.get(u)?.get()?.as_deref())
             .collect();
-        let map = named_as(id, naming.how, &inputs?, history)?;
+        let map = named_as(id, &naming.how, &inputs?, &naming.steps, &self.known)?;
         Some(kept_in(&self.known, naming.key, map))
     }
 
@@ -603,6 +617,8 @@ struct EngineState {
     results: BTreeMap<Key, StepResult>,
     /// Each sketch solved, by its key, kept as step results are.
     solutions: BTreeMap<Key, SketchResult>,
+    /// The profile of each sketch a feature sweeps, by its solve's key, kept as solves are.
+    profiles: BTreeMap<Key, ProfileResult>,
     solver: Solver,
     /// The sketch being solved, and how to stop it once a newer recompute starts.
     solving: Option<Solving>,
@@ -626,6 +642,7 @@ impl EngineState {
         let EngineState {
             results,
             solutions,
+            profiles,
             published_plans,
             newest_plan,
             ..
@@ -638,6 +655,7 @@ impl EngineState {
         };
         results.retain(|key, _| used(key));
         solutions.retain(|key, _| used(key));
+        profiles.retain(|key, _| used(key));
     }
 
     /// Stops the sketch solve running, if a recompute older than `generation` is running
@@ -790,6 +808,7 @@ impl<K: Kernel + 'static> Recompute<K> {
                     dropped: false,
                     results: BTreeMap::new(),
                     solutions: BTreeMap::new(),
+                    profiles: BTreeMap::new(),
                     solver: Solver::Unstarted,
                     solving: None,
                     solves: 0,
@@ -930,7 +949,7 @@ impl<K: Kernel + 'static> Drop for Recompute<K> {
 }
 
 /// What a step computes.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum Step {
     Make(Primitive),
     Translate {
@@ -941,6 +960,31 @@ enum Step {
         op: BooleanOp,
         base: Key,
         tool: Key,
+    },
+    /// A sketch's profile's faces, as `KernelRequest::make_faces` sends them (design S3):
+    /// no inputs, and a history of one, the regions.
+    Faces(Arc<FaceRegions>),
+    /// `faces` moved by `start`, then swept along `vector`.
+    Prism {
+        faces: Key,
+        start: [f64; 3],
+        vector: [f64; 3],
+    },
+    /// `faces` swept along `direction` through all of `base`, which only sizes it: a
+    /// history of one input, the faces.
+    PrismThroughAll {
+        faces: Key,
+        base: Key,
+        direction: [f64; 3],
+    },
+    /// `faces` turned `start` radians about the axis through `origin` along `direction`,
+    /// then swept `angle` radians about it.
+    Revolution {
+        faces: Key,
+        origin: [f64; 3],
+        direction: [f64; 3],
+        start: f64,
+        angle: f64,
     },
     /// A fillet or chamfer of `base`'s solid: of the edges its feature names, which the
     /// plan holds (`Plan::dresses`), found by name in the base feature's element map when
@@ -976,7 +1020,8 @@ struct Dress {
 /// maps first).
 enum MapSource {
     Named(Arc<ElementMap>),
-    Built(Arc<Built>),
+    /// Its own steps' results, in order.
+    Built(Vec<Arc<Built>>),
 }
 
 impl Step {
@@ -991,22 +1036,45 @@ impl Step {
                 .map(|v| format!(" {:016x}", v.to_bits()))
                 .collect()
         };
-        let line = match *self {
+        let line = match self {
             Step::Make(primitive) => {
                 format!("make {}{}", primitive.name(), bits(&primitive.values()))
             }
-            Step::Translate { input, offset } => format!("translate {input}{}", bits(&offset)),
+            Step::Translate { input, offset } => format!("translate {input}{}", bits(offset)),
             Step::Boolean { op, base, tool } => format!("{} {base} {tool}", op.word()),
+            Step::Faces(regions) => faces_line(regions),
+            Step::Prism {
+                faces,
+                start,
+                vector,
+            } => format!("prism {faces}{}{}", bits(start), bits(vector)),
+            Step::PrismThroughAll {
+                faces,
+                base,
+                direction,
+            } => format!("prism-through-all {faces} {base}{}", bits(direction)),
+            Step::Revolution {
+                faces,
+                origin,
+                direction,
+                start,
+                angle,
+            } => format!(
+                "revolution {faces}{}{}{}",
+                bits(origin),
+                bits(direction),
+                bits(&[*start, *angle])
+            ),
             Step::Dress {
                 dressing,
                 base,
                 names,
-            } => match dressing {
+            } => match *dressing {
                 Dressing::Fillet { radius } => {
-                    format!("fillet {base} {}{}", crate::hex(&names), bits(&[radius]))
+                    format!("fillet {base} {}{}", crate::hex(names), bits(&[radius]))
                 }
                 Dressing::Chamfer { distance } => {
-                    format!("chamfer {base} {}{}", crate::hex(&names), bits(&[distance]))
+                    format!("chamfer {base} {}{}", crate::hex(names), bits(&[distance]))
                 }
             },
         };
@@ -1016,14 +1084,109 @@ impl Step {
         Key(hash.finalize().into())
     }
 
+    /// The steps whose results it takes, in order.
     fn inputs(&self) -> Vec<Key> {
         match *self {
-            Step::Make(_) => Vec::new(),
+            Step::Make(_) | Step::Faces(_) => Vec::new(),
             Step::Translate { input, .. } => vec![input],
             Step::Boolean { base, tool, .. } => vec![base, tool],
             Step::Dress { base, .. } => vec![base],
+            Step::Prism { faces, .. } | Step::Revolution { faces, .. } => vec![faces],
+            // The base only sizes the prism.
+            Step::PrismThroughAll { faces, base, .. } => vec![faces, base],
         }
     }
+
+    /// How many inputs its result's history has: none for a primitive, which has no
+    /// history; one for faces (the regions), which take no step's result; one for a
+    /// through-all prism (its faces), whose base only sizes it.
+    fn history_inputs(&self) -> usize {
+        match self {
+            Step::Make(_) => 0,
+            Step::Boolean { .. } => 2,
+            Step::Translate { .. }
+            | Step::Dress { .. }
+            | Step::Faces(_)
+            | Step::Prism { .. }
+            | Step::PrismThroughAll { .. }
+            | Step::Revolution { .. } => 1,
+        }
+    }
+
+    /// The sweep it is, for the rule its history keeps (`History::sweep_fault`).
+    fn sweep_kind(&self) -> Option<SweepKind> {
+        match *self {
+            Step::Prism { .. } | Step::PrismThroughAll { .. } => Some(SweepKind::Prism),
+            Step::Revolution { angle, .. } => Some(SweepKind::of_turn(angle)),
+            Step::Make(_)
+            | Step::Translate { .. }
+            | Step::Boolean { .. }
+            | Step::Dress { .. }
+            | Step::Faces(_) => None,
+        }
+    }
+}
+
+/// A faces step's line (design S3): `faces` and its plane, then, region by region and loop
+/// by loop (each region's outer loop, then its holes), each curve as sent, every number by
+/// its bits: `line x0 y0 x1 y1`, `arc cx cy sx sy ex ey r a0 a1`, `circle cx cy r`. Each
+/// region starts `region` and each loop `loop`, so regions and holes of the same curves
+/// are other lines. No ID: two sketches of one profile share the step, and a construction
+/// line toggled, added, or moved leaves it alone. The bits are as sent, a zero of either
+/// sign its own: −0 and +0 can be different requests (an arc's angle of ±π).
+fn faces_line(regions: &FaceRegions) -> String {
+    use std::fmt::Write as _;
+    let mut line = format!(
+        "faces {}",
+        match regions.plane {
+            silico_protocol::SketchPlane::Xy => "xy",
+            silico_protocol::SketchPlane::Xz => "xz",
+            silico_protocol::SketchPlane::Yz => "yz",
+        }
+    );
+    for region in &regions.regions {
+        line.push_str(" region");
+        for curves in region.loops() {
+            line.push_str(" loop");
+            for curve in curves {
+                let (word, values): (&str, Vec<f64>) = match *curve {
+                    silico_protocol::Curve::Line { start, end } => {
+                        ("line", vec![start[0], start[1], end[0], end[1]])
+                    }
+                    silico_protocol::Curve::Arc {
+                        center,
+                        start,
+                        end,
+                        radius,
+                        start_angle,
+                        end_angle,
+                    } => (
+                        "arc",
+                        vec![
+                            center[0],
+                            center[1],
+                            start[0],
+                            start[1],
+                            end[0],
+                            end[1],
+                            radius,
+                            start_angle,
+                            end_angle,
+                        ],
+                    ),
+                    silico_protocol::Curve::Circle { center, radius } => {
+                        ("circle", vec![center[0], center[1], radius])
+                    }
+                };
+                line.push(' ');
+                line.push_str(word);
+                for v in values {
+                    let _ = write!(line, " {:016x}", v.to_bits());
+                }
+            }
+        }
+    }
+    line
 }
 
 /// A document's steps, all keyed before anything runs.
@@ -1044,7 +1207,30 @@ struct Plan {
     makers: BTreeMap<FeatureId, Maker>,
     /// Each sketch to solve, in timeline order: its feature, and its solve's key.
     sketches: Vec<(FeatureId, Key)>,
+    /// Each sweep feature's fuse or cut, by key: what its result is checked for (design S5,
+    /// S7), once it's built.
+    checks: BTreeMap<Key, SweepCheck>,
 }
+
+/// A pad's, pocket's, revolve's, or groove's fuse or cut: its feature, what it is, and its
+/// base, for `sweep::check_result`.
+#[derive(Debug, Clone)]
+struct SweepCheck {
+    feature: FeatureId,
+    kind: SweepFeature,
+    base: FeatureId,
+}
+
+/// A sketch some pad, pocket, revolve, or groove sweeps, solved before the plan is made
+/// (design S3): its solve, and its profile, or why it makes none.
+#[derive(Debug, Clone)]
+struct Swept {
+    solution: Arc<SketchSolution>,
+    profile: ProfileResult,
+}
+
+/// A sketch's profile, or why it makes none, kept by its solve's key as solves are.
+type ProfileResult = Result<Arc<Profile>, Arc<crate::profile::Refused>>;
 
 struct Planned {
     id: FeatureId,
@@ -1060,24 +1246,118 @@ struct Planned {
     naming_key: Option<NamingKey>,
     /// A sketch's solve's key.
     sketch: Option<Key>,
-    /// Why it isn't built, though what it uses is, if this Silico can't build its type.
+    /// The sketch a pad, pocket, revolve, or groove sweeps, by index: a sketch that doesn't
+    /// solve blocks it.
+    sweeps: Option<usize>,
+    /// Why it isn't built, though what it uses is: a refusal of its sketch's profile or its
+    /// axis, found before any step (design S5, S6).
     refused: Option<Error>,
+    /// Why a pad, pocket, revolve, or groove isn't built, its sketch solved: every refusal
+    /// of the sketch's profile (the first hundred), and how many there are (design S3).
+    unprofiled: Option<(Vec<Error>, u64)>,
 }
 
-/// A pad's, pocket's, revolve's, or groove's refusal: the gate checks them, but recompute
-/// doesn't build them yet (docs/design/m3.6-sketch-features.md, *Implementation order*).
-fn unbuilt_sweep(id: &FeatureId, kind: crate::document::SweepFeature) -> Error {
-    let word = kind.word();
-    Error::new(
-        ErrorCode::InvalidInput,
-        format!("{id} is a {word}, which this Silico reads and checks but can't build yet"),
-    )
-    .with_feature(id.as_str())
-    .with_parameter("type")
-    .with_suggestion(
-        "build the document with a Silico that builds pads, pockets, revolves, and grooves; \
-         until then, make the solid from primitives and booleans",
-    )
+/// What a sweep feature's plan came to.
+enum SweepPlan {
+    /// Its steps, and how its elements are named.
+    Steps(Vec<Key>, Arc<SweepNaming>),
+    /// Refused before any step: its sketch's regions, or its axis.
+    Refused(Error),
+    /// Its sketch makes no profile: its refusals (the first hundred), and how many.
+    Unprofiled(Vec<Error>, u64),
+    /// Its sketch didn't solve, or its base can't be built: blocked on that.
+    Waits,
+}
+
+/// `value`, a zero of either sign as +0: the requests' zeros are all +0 (design S3).
+fn plus_zero(value: f64) -> f64 {
+    value + 0.0
+}
+
+/// The sweep step of `feature`, a pad, pocket, revolve, or groove of type `kind` sweeping
+/// `profile`, whose faces step is `faces`, onto `base`'s solid if it has one: the start
+/// offset, direction, and axis worked out from the sketch's plane and the extent, from the
+/// document's integers, so each is exact or rounded once (design S3).
+///
+/// A pad goes along the sketch's normal, a pocket against it, and either the other way when
+/// `reversed`; the normal is a unit axis, so a length along it is exact. `one_side` starts
+/// on the plane; `symmetric` half its length back (halving is exact); `two_sides` `length2`
+/// back, swept their sum, taken in nanometres. `through_all` sweeps from the plane through
+/// all of the base. A revolve turns right-handed about its axis (left-handed `reversed`),
+/// its angle by FreeCAD's conversion, `symmetric` from minus half of it.
+fn sweep_step(
+    feature: &crate::document::Feature,
+    kind: SweepFeature,
+    profile: &Profile,
+    axis: Option<([f64; 2], [f64; 2])>,
+    faces: Key,
+    base: Option<Key>,
+) -> Result<Step, Error> {
+    use crate::document::{Extent, PadExtent, PocketExtent, TurnExtent};
+    let plane = silico_protocol::SketchPlane::from(profile.plane);
+    let along = |d: [f64; 3], length: f64| d.map(|c| plus_zero(c * length));
+    let direction = |reversed: bool| {
+        let sign = if kind.adds() != reversed { 1.0 } else { -1.0 };
+        plane.normal().map(|c| plus_zero(c * sign))
+    };
+    let prism = |d: [f64; 3], back: f64, length: f64| Step::Prism {
+        faces,
+        start: along(d, -back),
+        vector: along(d, length),
+    };
+    let unchecked = || {
+        silico_bug("a sketch feature's extent isn't one its type takes, though the gate checked it")
+            .with_feature(feature.id.as_str())
+    };
+    let length = |l: crate::document::Length| l.mm();
+    Ok(match feature.operation.extent().ok_or_else(unchecked)? {
+        Extent::Pad(PadExtent::OneSide {
+            length: l,
+            reversed,
+        })
+        | Extent::Pocket(PocketExtent::OneSide {
+            length: l,
+            reversed,
+        }) => prism(direction(reversed), 0.0, length(l)),
+        Extent::Pad(PadExtent::Symmetric { length: l })
+        | Extent::Pocket(PocketExtent::Symmetric { length: l }) => {
+            prism(direction(false), length(l) / 2.0, length(l))
+        }
+        Extent::Pad(PadExtent::TwoSides { length: l, length2 })
+        | Extent::Pocket(PocketExtent::TwoSides { length: l, length2 }) => {
+            let total = crate::document::Length::from_nm(l.nm().saturating_add(length2.nm()));
+            prism(direction(false), length(length2), length(total))
+        }
+        Extent::Pocket(PocketExtent::ThroughAll { reversed }) => Step::PrismThroughAll {
+            faces,
+            base: base.ok_or_else(unchecked)?,
+            direction: direction(reversed),
+        },
+        Extent::Turn(extent) => {
+            let (origin, line) = axis.ok_or_else(unchecked)?;
+            let (angle, reversed, symmetric) = match extent {
+                TurnExtent::OneSide { angle, reversed } => (angle, reversed, false),
+                TurnExtent::Symmetric { angle } => (angle, false, true),
+            };
+            // The sketch's axes are unit axes of model space, so the line's direction in
+            // it is its direction in the sketch, exactly.
+            let (x, y) = (plane.x_axis(), plane.y_axis());
+            let sign = if reversed { -1.0 } else { 1.0 };
+            let direction = [0, 1, 2].map(|k| plus_zero(sign * (x[k] * line[0] + y[k] * line[1])));
+            let angle = silico_protocol::radians(angle.degrees());
+            Step::Revolution {
+                faces,
+                origin: plane.place(origin),
+                direction,
+                start: if symmetric {
+                    plus_zero(-(angle / 2.0))
+                } else {
+                    0.0
+                },
+                angle,
+            }
+        }
+    })
 }
 
 /// A sketch's solve's key: SHA-256 of a domain line (`silico sketch 1`), its feature's ID
@@ -1101,11 +1381,73 @@ fn sketch_key(id: &FeatureId, sketch: &crate::document::Sketch) -> Key {
 }
 
 /// How a feature's solid's elements are named: a primitive's by their numbers (a move
-/// keeps them), an operation's from its history.
-#[derive(Debug, Clone, Copy)]
+/// keeps them), an operation's from its history, and a sweep feature's from its sketch's
+/// IDs and its steps' histories (design S4).
+#[derive(Debug, Clone)]
 enum Naming {
     Primitive(Primitive),
     Operation(OpCode),
+    Sweep(Arc<SweepNaming>),
+}
+
+/// What a pad's, pocket's, revolve's, or groove's names come from beside its steps'
+/// histories: its type, its sketch, the IDs of the curves and points in the order its
+/// faces step sends them, and of each region's outer loop's smallest curve; and the naming
+/// key of its faces' map, which every feature of the same faces and IDs shares.
+#[derive(Debug)]
+struct SweepNaming {
+    operation: OpCode,
+    sketch: FeatureId,
+    curves: Vec<ElementId>,
+    points: Vec<ElementId>,
+    regions: Vec<ElementId>,
+    faces: NamingKey,
+}
+
+impl SweepNaming {
+    /// `profile`'s IDs, for `feature` of type `kind`, sweeping `sketch`, whose faces are made
+    /// by step `faces`.
+    fn of(kind: SweepFeature, sketch: &FeatureId, profile: &Profile, faces: Key) -> Self {
+        let mut curves = Vec::new();
+        let mut points = Vec::new();
+        for region in &profile.regions {
+            for edge in std::iter::once(&region.outer)
+                .chain(&region.holes)
+                .flat_map(|l| &l.curves)
+            {
+                curves.push(edge.curve.clone());
+                // Each curve's start, as the faces request sends its points; a circle has
+                // none.
+                if let Some([start, _]) = &edge.ends {
+                    points.push(start.clone());
+                }
+            }
+        }
+        let regions: Vec<ElementId> = profile
+            .regions
+            .iter()
+            .filter_map(|r| r.outer.curves.first().map(|e| e.curve.clone()))
+            .collect();
+        let mut hash = Sha256::new();
+        hash.update(NAMING_SCHEME);
+        hash.update(b"faces\n");
+        hash.update(faces.0);
+        hash.update(sketch.as_str().as_bytes());
+        for list in [&curves, &points, &regions] {
+            hash.update((list.len() as u64).to_be_bytes());
+            for id in list {
+                hash.update(id.as_str().as_bytes());
+            }
+        }
+        SweepNaming {
+            operation: kind.into(),
+            sketch: sketch.clone(),
+            curves,
+            points,
+            regions,
+            faces: NamingKey(hash.finalize().into()),
+        }
+    }
 }
 
 impl Planned {
@@ -1115,7 +1457,27 @@ impl Planned {
 }
 
 impl Plan {
-    fn of(document: &Checked) -> Plan {
+    /// Each sketch's solve's key, in timeline order, and which of them a pad, pocket,
+    /// revolve, or groove sweeps: those are solved before the plan is made (design S3).
+    fn sketches_of(document: &Checked) -> (Vec<(FeatureId, Key)>, BTreeSet<FeatureId>) {
+        let features = &document.document().features;
+        let sketches = features
+            .iter()
+            .filter_map(|f| match &f.operation {
+                Operation::Sketch(sketch) => Some((f.id.clone(), sketch_key(&f.id, sketch))),
+                _ => None,
+            })
+            .collect();
+        let swept = features
+            .iter()
+            .filter_map(|f| f.operation.sketch().cloned())
+            .collect();
+        (sketches, swept)
+    }
+
+    /// `document`'s steps, every sketch a feature sweeps solved and profiled in `swept`
+    /// (one that didn't solve is missing).
+    fn of(document: &Checked, swept: &BTreeMap<FeatureId, Swept>) -> Plan {
         let features = &document.document().features;
         let index: BTreeMap<&FeatureId, usize> = features
             .iter()
@@ -1134,11 +1496,14 @@ impl Plan {
                 .map(|f| (f.id.clone(), Maker::of(&f.operation)))
                 .collect(),
             sketches: Vec::new(),
+            checks: BTreeMap::new(),
         };
         for feature in features {
             let mut own = Vec::new();
             let mut uses = Vec::new();
             let mut refused = None;
+            let mut sweeps = None;
+            let mut unprofiled = None;
             let naming = match feature.operation.made() {
                 Made::Primitive(primitive) => {
                     let made = plan.add(Step::Make(primitive), &feature.id);
@@ -1185,9 +1550,6 @@ impl Plan {
                     (own, uses) = plan.dress(&index, feature, dressing);
                     Some(Naming::Operation(OpCode::Chamfer))
                 }
-                // Not built yet (M3.6's steps come later): refused, as a document asking for
-                // what this Silico can't make. It still uses its base, so a base that fails
-                // blocks it, and is blocked on, as any feature's would.
                 Made::Sweep(kind) => {
                     uses = feature
                         .operation
@@ -1195,8 +1557,26 @@ impl Plan {
                         .iter()
                         .filter_map(|(_, base)| index.get(*base).copied())
                         .collect();
-                    refused = Some(unbuilt_sweep(&feature.id, kind));
-                    None
+                    sweeps = feature
+                        .operation
+                        .sketch()
+                        .and_then(|sketch| index.get(sketch).copied());
+                    let planned = plan.sweep(document, feature, kind, &uses, swept);
+                    match planned {
+                        SweepPlan::Steps(steps, naming) => {
+                            own = steps;
+                            Some(Naming::Sweep(naming))
+                        }
+                        SweepPlan::Refused(error) => {
+                            refused = Some(error);
+                            None
+                        }
+                        SweepPlan::Unprofiled(errors, total) => {
+                            unprofiled = Some((errors, total));
+                            None
+                        }
+                        SweepPlan::Waits => None,
+                    }
                 }
             };
             if let Some(result) = own.last() {
@@ -1209,7 +1589,7 @@ impl Plan {
             let naming_key = own
                 .last()
                 .zip(inputs)
-                .zip(naming)
+                .zip(naming.as_ref())
                 .map(|((key, inputs), naming)| naming_key(*key, &feature.id, naming, &inputs));
             let sketch = match &feature.operation {
                 Operation::Sketch(sketch) => {
@@ -1226,10 +1606,98 @@ impl Plan {
                 naming,
                 naming_key,
                 sketch,
+                sweeps,
                 refused,
+                unprofiled,
             });
         }
         plan
+    }
+
+    /// The steps of `feature`, a pad, pocket, revolve, or groove of type `kind` (the next
+    /// feature planned), whose base is `uses` (if it has one), its sketch solved in
+    /// `swept` (design S3): the checks its solved sketch must pass before any kernel step
+    /// (S5, S6), then its faces, its sweep, and, with a base, its fuse or cut.
+    fn sweep(
+        &mut self,
+        document: &Checked,
+        feature: &crate::document::Feature,
+        kind: SweepFeature,
+        uses: &[usize],
+        swept: &BTreeMap<FeatureId, Swept>,
+    ) -> SweepPlan {
+        let operation = &feature.operation;
+        // A sketch that didn't solve blocks it; one that made no profile fails it.
+        let Some((sketch, solved)) = operation
+            .sketch()
+            .and_then(|sketch| swept.get(sketch).map(|solved| (sketch, solved)))
+        else {
+            return SweepPlan::Waits;
+        };
+        let profile = match &solved.profile {
+            Ok(profile) => profile,
+            Err(refused) => {
+                return SweepPlan::Unprofiled(refused.errors().to_vec(), refused.total());
+            }
+        };
+        if let Err(error) = crate::sweep::check_regions(&feature.id, kind, sketch, profile) {
+            return SweepPlan::Refused(error);
+        }
+        let mut axis = None;
+        if matches!(kind, SweepFeature::Revolve | SweepFeature::Groove) {
+            let checked = crate::sweep::check_axis_length(document, &feature.id, &solved.solution)
+                .and_then(|()| {
+                    crate::sweep::check_axis_turn(document, &feature.id, &solved.solution, profile)
+                })
+                .and_then(|()| crate::sweep::axis_line(document, &feature.id, &solved.solution));
+            match checked {
+                Ok(line) => axis = Some((line.origin, line.direction)),
+                Err(error) => return SweepPlan::Refused(error),
+            }
+        }
+        // The base's solid, if it has one: a base that can't be planned has failed, and
+        // blocks it.
+        let base = match uses.first() {
+            Some(&b) => match self.features.get(b).and_then(Planned::key) {
+                Some(key) => Some((b, key)),
+                None => return SweepPlan::Waits,
+            },
+            None => None,
+        };
+        let faces = self.add(Step::Faces(Arc::new(profile.faces())), &feature.id);
+        let step = match sweep_step(feature, kind, profile, axis, faces, base.map(|b| b.1)) {
+            Ok(step) => step,
+            Err(error) => return SweepPlan::Refused(error),
+        };
+        let sweep = self.add(step, &feature.id);
+        let mut steps = vec![faces, sweep];
+        if let Some((b, base)) = base {
+            let op = if kind.adds() {
+                BooleanOp::Fuse
+            } else {
+                BooleanOp::Cut
+            };
+            let key = self.add(
+                Step::Boolean {
+                    op,
+                    base,
+                    tool: sweep,
+                },
+                &feature.id,
+            );
+            if let Some(base_id) = self.feature_id(b).cloned() {
+                self.checks.entry(key).or_insert(SweepCheck {
+                    feature: feature.id.clone(),
+                    kind,
+                    base: base_id,
+                });
+            }
+            steps.push(key);
+        }
+        SweepPlan::Steps(
+            steps,
+            Arc::new(SweepNaming::of(kind, sketch, profile, faces)),
+        )
     }
 
     /// The step of a fillet or chamfer `feature` (the next feature planned), of its base:
@@ -1312,7 +1780,7 @@ impl Plan {
             let Some(planned) = self.features.get(i) else {
                 continue;
             };
-            let (Some(naming), Some(solid)) = (planned.naming_key, planned.key()) else {
+            let (Some(naming), Some(_)) = (planned.naming_key, planned.key()) else {
                 continue;
             };
             let named = lock(known).get(&naming).map(Arc::clone);
@@ -1320,14 +1788,19 @@ impl Plan {
                 sources.insert(i, MapSource::Named(map));
                 continue;
             }
-            match done.get(&solid) {
-                Some(Ok(built)) => {
-                    sources.insert(i, MapSource::Built(Arc::clone(built)));
-                    stack.extend(planned.uses.iter().copied());
+            // Every one of its own steps, since a sweep feature's map is named from each
+            // (design S3, MA1): the first not built yet is waited for (a cache can hold the
+            // last without the others, which the schedule then runs: they're planned).
+            let mut steps = Vec::with_capacity(planned.steps.len());
+            for key in &planned.steps {
+                match done.get(key) {
+                    Some(Ok(built)) => steps.push(Arc::clone(built)),
+                    // Not built yet, or failed (which blocks the fillet: it never runs).
+                    _ => return Err(*key),
                 }
-                // Not built yet, or failed (which blocks the fillet: it never runs).
-                _ => return Err(solid),
             }
+            sources.insert(i, MapSource::Built(steps));
+            stack.extend(planned.uses.iter().copied());
         }
         Ok(sources)
     }
@@ -1345,12 +1818,12 @@ impl Plan {
         let mut named: BTreeMap<usize, Arc<ElementMap>> = BTreeMap::new();
         // Ascending, so each feature comes after those it's made from.
         for (&i, source) in sources.range(..=j) {
-            let built = match source {
+            let steps = match source {
                 MapSource::Named(map) => {
                     named.insert(i, Arc::clone(map));
                     continue;
                 }
-                MapSource::Built(built) => built,
+                MapSource::Built(steps) => steps,
             };
             let planned = self.features.get(i)?;
             let key = planned.naming_key?;
@@ -1367,9 +1840,10 @@ impl Plan {
                 .collect();
             let map = named_as(
                 &planned.id,
-                planned.naming?,
+                planned.naming.as_ref()?,
                 &inputs?,
-                built.history.as_ref(),
+                steps,
+                known,
             )?;
             let map = kept_in(known, key, map);
             named.insert(i, map);
@@ -1388,13 +1862,21 @@ impl Plan {
     }
 }
 
-/// Whether `built` could be what `step` makes: no history for a step with no inputs (a
-/// primitive), and for one with inputs, a history of that many that holds together.
+/// Whether `built` could be what `step` makes: no history for a primitive, and for any
+/// other step a history of as many inputs as it has ([`Step::history_inputs`]: one for a
+/// faces step, which takes no step's result, and one for a through-all prism, whose base
+/// only sizes it) that holds together, and, for a sweep, keeps the sweep's rule
+/// (`History::sweep_fault`).
 fn fits(step: &Step, built: &Built) -> bool {
-    let inputs = step.inputs().len();
-    match &built.history {
-        None => inputs == 0,
-        Some(history) => inputs > 0 && history.validate(inputs).is_ok(),
+    match (step.history_inputs(), &built.history) {
+        (0, None) => true,
+        (inputs, Some(history)) if inputs > 0 => {
+            history.validate(inputs).is_ok()
+                && step
+                    .sweep_kind()
+                    .is_none_or(|kind| history.sweep_fault(kind).is_none())
+        }
+        _ => false,
     }
 }
 
@@ -1498,7 +1980,14 @@ struct Schedule {
 
 impl<K: Kernel + 'static> Engine<K> {
     fn run(&self, document: &Arc<Checked>, generation: Generation) -> Result<RunOutcome, Error> {
-        let plan = Plan::of(document);
+        // Every sketch a feature sweeps is solved, and its profile made, before the plan
+        // (design S3): a sweep's steps depend on its profile. Unchanged sketches cost
+        // nothing (their solves and profiles are kept by key).
+        let swept = match self.solve_swept(document, generation)? {
+            Some(swept) => swept,
+            None => return Ok(RunOutcome::Superseded),
+        };
+        let plan = Plan::of(document, &swept);
         let keys: Arc<BTreeSet<Key>> = Arc::new(
             plan.steps
                 .keys()
@@ -1642,13 +2131,8 @@ impl<K: Kernel + 'static> Engine<K> {
                 Ok(Ok(solved)) => Ok(solved),
                 // A panic under a solve is a bug in Silico, as under a step.
                 Ok(Err(panic)) | Err(panic) => {
-                    let said = panic
-                        .downcast_ref::<&str>()
-                        .map(|said| (*said).to_owned())
-                        .or_else(|| panic.downcast_ref::<String>().cloned())
-                        .unwrap_or_else(|| "a panic with no message".to_owned());
                     Err(Error::new(ErrorCode::Internal, "a sketch's solve panicked")
-                        .with_cause(said)
+                        .with_cause(panic_text(panic.as_ref()))
                         .with_suggestion(crate::worker::SILICO_BUG))
                 }
             }
@@ -1677,8 +2161,20 @@ impl<K: Kernel + 'static> Engine<K> {
         if state.generation != generation || state.cancelled {
             return Ok(RunOutcome::Superseded);
         }
-        // Maps only the models worth keeping name are kept.
-        let named: BTreeSet<NamingKey> = model.naming.iter().flatten().map(|n| n.key).collect();
+        // Maps only the models worth keeping name are kept: theirs, and their sketches'
+        // faces'.
+        let named: BTreeSet<NamingKey> = model
+            .naming
+            .iter()
+            .flatten()
+            .flat_map(|n| {
+                let faces = match &n.how {
+                    Naming::Sweep(sweep) => Some(sweep.faces),
+                    Naming::Primitive(_) | Naming::Operation(_) => None,
+                };
+                std::iter::once(n.key).chain(faces)
+            })
+            .collect();
         state.published_keys.push_front(named);
         state.published_keys.truncate(PUBLISHED_KEPT);
         let kept: BTreeSet<NamingKey> = state.published_keys.iter().flatten().copied().collect();
@@ -1688,6 +2184,89 @@ impl<K: Kernel + 'static> Engine<K> {
         state.published_plans.truncate(PUBLISHED_KEPT);
         state.trim();
         Ok(RunOutcome::Published(model))
+    }
+
+    /// The sketches `document`'s pads, pockets, revolves, and grooves sweep, each solved
+    /// (those not solved before, now, for `generation`) and its profile made: by sketch,
+    /// those that solved. None if a newer recompute supersedes this one meanwhile.
+    fn solve_swept(
+        &self,
+        document: &Checked,
+        generation: Generation,
+    ) -> Result<Option<BTreeMap<FeatureId, Swept>>, Error> {
+        let (sketches, swept) = Plan::sketches_of(document);
+        let used: Vec<(FeatureId, Key)> = sketches
+            .into_iter()
+            .filter(|(id, _)| swept.contains(id))
+            .collect();
+        if used.is_empty() {
+            return Ok(Some(BTreeMap::new()));
+        }
+        let _span = tracing::debug_span!("solve_swept", sketches = used.len()).entered();
+        let (mut solutions, mut profiles): (SketchResults, BTreeMap<Key, ProfileResult>) = {
+            let state = lock(&self.state);
+            let solutions = used
+                .iter()
+                .filter_map(|(_, key)| state.solutions.get(key).map(|r| (*key, r.clone())))
+                .collect();
+            let profiles = used
+                .iter()
+                .filter_map(|(_, key)| state.profiles.get(key).map(|p| (*key, p.clone())))
+                .collect();
+            (solutions, profiles)
+        };
+        let to_solve: Vec<(FeatureId, Key)> = used
+            .iter()
+            .filter(|(_, key)| !solutions.contains_key(key))
+            .cloned()
+            .collect();
+        if !to_solve.is_empty() {
+            // A panic under a solve is a bug in Silico, as under a step.
+            let solved = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.solve_sketches(document, &to_solve, generation)
+            }))
+            .map_err(|panic| {
+                Error::new(ErrorCode::Internal, "a sketch's solve panicked")
+                    .with_cause(panic_text(panic.as_ref()))
+                    .with_suggestion(crate::worker::SILICO_BUG)
+            })?;
+            let Some(solved) = solved else {
+                return Ok(None);
+            };
+            self.keep_solutions(&solved);
+            solutions.extend(solved.into_iter().map(|(key, s)| (key, s.result())));
+        }
+        let mut swept_sketches = BTreeMap::new();
+        let mut made = Vec::new();
+        for (id, key) in &used {
+            let Some(Ok(solution)) = solutions.get(key) else {
+                continue;
+            };
+            let profile = match profiles.get(key) {
+                Some(profile) => profile.clone(),
+                None => {
+                    let profile = crate::profile::profile(document, id, solution)
+                        .map(Arc::new)
+                        .map_err(Arc::new);
+                    made.push((*key, profile.clone()));
+                    profiles.insert(*key, profile.clone());
+                    profile
+                }
+            };
+            swept_sketches.insert(
+                id.clone(),
+                Swept {
+                    solution: Arc::clone(solution),
+                    profile,
+                },
+            );
+        }
+        if !made.is_empty() {
+            let mut state = lock(&self.state);
+            state.profiles.extend(made);
+            state.trim();
+        }
+        Ok(Some(swept_sketches))
     }
 
     /// Keeps a recompute's results by key, but for failures that might not happen again,
@@ -1912,13 +2491,22 @@ impl<K: Kernel + 'static> Engine<K> {
                         (Some(step), Some(dress)) => {
                             let sources = sources.unwrap_or_default();
                             match self.resolve(plan, dress, &sources, &known) {
-                                Ok((edges, names)) => Ran::Made(
-                                    self.dressed(*step, &inputs, &edges, names, generation),
-                                ),
+                                Ok((edges, names)) => Ran::Made(self.dressed(
+                                    step.clone(),
+                                    &inputs,
+                                    &edges,
+                                    names,
+                                    generation,
+                                )),
                                 Err(broken) => Ran::Unresolved(broken),
                             }
                         }
-                        (Some(step), None) => Ran::Made(self.step(*step, &inputs, generation)),
+                        (Some(step), None) => match plan.checks.get(&key) {
+                            Some(check) => {
+                                Ran::Made(self.checked(step.clone(), &inputs, check, generation))
+                            }
+                            None => Ran::Made(self.step(step.clone(), &inputs, generation)),
+                        },
                         (None, _) => Ran::Made(Outcome::Done(Err(silico_bug(
                             "a recompute step wasn't planned",
                         )))),
@@ -1981,8 +2569,10 @@ impl<K: Kernel + 'static> Engine<K> {
                             }
                         }
                         // A feature's solid is measured once it's made, by a job of its own:
-                        // what uses it doesn't wait for that.
-                        if plan.results.contains(&key) {
+                        // what uses it doesn't wait for that. (A sweep feature's fuse or cut
+                        // is measured as it's made, to be checked.)
+                        let measured = result.as_ref().is_ok_and(|b| b.summary().is_some());
+                        if plan.results.contains(&key) && !measured {
                             s.ready.push_back(Job::Measure(key));
                             woken += 1;
                         }
@@ -1991,7 +2581,7 @@ impl<K: Kernel + 'static> Engine<K> {
                     // A feature's solid is kept on disk once it's measured, with its
                     // summary (written now too, it could land after, and over, that).
                     if let Ok(built) = &result
-                        && !plan.results.contains(&key)
+                        && (!plan.results.contains(&key) || built.summary().is_some())
                     {
                         to_keep = Some(Arc::clone(built));
                     }
@@ -2050,6 +2640,65 @@ impl<K: Kernel + 'static> Engine<K> {
         map(self.make(step, inputs, generation), |(shape, history)| {
             Built::new(shape, history, None)
         })
+    }
+
+    /// Runs a pad's, pocket's, revolve's, or groove's fuse or cut on the kernel, for
+    /// `generation`, and checks what it made (design S5, S7: `sweep::check_result`): one
+    /// solid, and a change to its base's volume. Both are measured to be checked (the base
+    /// as its own measure left it, if it has), so the result comes measured. A refusal is
+    /// the step's: kept with its key, as a kernel's refusal is, and what uses the feature
+    /// is blocked on it.
+    fn checked(
+        &self,
+        step: Step,
+        inputs: &[Arc<Built>],
+        check: &SweepCheck,
+        generation: Generation,
+    ) -> Outcome<Built> {
+        let (shape, history) = match self.make(step, inputs, generation) {
+            Outcome::Done(Ok(made)) => made,
+            Outcome::Done(Err(error)) => return Outcome::Done(Err(error)),
+            Outcome::Superseded => return Outcome::Superseded,
+        };
+        let Some(base) = inputs.first() else {
+            return Outcome::Done(Err(silico_bug(
+                "a sketch feature's fuse or cut ran before its base was built",
+            )));
+        };
+        let measure = |shape: &ShapeData| {
+            self.kernel
+                .submit(generation, KernelRequest::summarize(shape))
+                .wait()
+        };
+        let before = match base.summary() {
+            Some(summary) => summary.clone(),
+            None => match measure(&base.shape) {
+                Outcome::Done(Ok(summary)) => summary,
+                Outcome::Done(Err(error)) => return Outcome::Done(Err(error)),
+                Outcome::Superseded => return Outcome::Superseded,
+            },
+        };
+        let after = match measure(&shape) {
+            Outcome::Done(Ok(summary)) => summary,
+            Outcome::Done(Err(error)) => return Outcome::Done(Err(error)),
+            Outcome::Superseded => return Outcome::Superseded,
+        };
+        let solids = history.as_ref().map_or(1, |h| h.result.solids);
+        let measured = |summary: &ShapeSummary, solids: u32| crate::sweep::Measured {
+            volume: summary.volume,
+            solids,
+            faces: summary.faces,
+            edges: summary.edges,
+            vertices: summary.vertices,
+        };
+        let checked = crate::sweep::check_result(
+            &check.feature,
+            check.kind,
+            &check.base,
+            &measured(&before, 1),
+            &measured(&after, solids),
+        );
+        Outcome::Done(checked.map(|()| Built::new(shape, history, Some(after))))
     }
 
     /// Runs a fillet's or chamfer's step on the kernel, of `edges` (resolved, the document
@@ -2178,8 +2827,53 @@ impl<K: Kernel + 'static> Engine<K> {
             Step::Dress { .. } => Outcome::Done(Err(silico_bug(
                 "a fillet's step ran without its edges resolved",
             ))),
+            Step::Faces(regions) => match KernelRequest::make_faces(&regions) {
+                Ok(request) => map(self.kernel.submit(generation, request).wait(), built),
+                Err(e) => Outcome::Done(Err(e)),
+            },
+            Step::Prism { start, vector, .. } => match shape(0) {
+                Some(faces) => match KernelRequest::prism(faces, start, vector) {
+                    Ok(request) => map(self.kernel.submit(generation, request).wait(), built),
+                    Err(e) => Outcome::Done(Err(e)),
+                },
+                None => missing(),
+            },
+            Step::PrismThroughAll { direction, .. } => match (shape(0), shape(1)) {
+                (Some(faces), Some(base)) => {
+                    match KernelRequest::prism_through_all(faces, base, direction) {
+                        Ok(request) => map(self.kernel.submit(generation, request).wait(), built),
+                        Err(e) => Outcome::Done(Err(e)),
+                    }
+                }
+                _ => missing(),
+            },
+            Step::Revolution {
+                origin,
+                direction,
+                start,
+                angle,
+                ..
+            } => match shape(0) {
+                Some(faces) => {
+                    let axis = crate::kernel::Axis { origin, direction };
+                    match KernelRequest::revolution(faces, axis, start, angle) {
+                        Ok(request) => map(self.kernel.submit(generation, request).wait(), built),
+                        Err(e) => Outcome::Done(Err(e)),
+                    }
+                }
+                None => missing(),
+            },
         }
     }
+}
+
+/// What a panic said, if it said anything.
+fn panic_text(panic: &(dyn std::any::Any + Send)) -> String {
+    panic
+        .downcast_ref::<&str>()
+        .map(|said| (*said).to_owned())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a panic with no message".to_owned())
 }
 
 fn map<T, U>(outcome: Outcome<T>, f: impl FnOnce(T) -> U) -> Outcome<U> {
@@ -2201,14 +2895,22 @@ fn model(
     let done = &schedule.done;
     let mut features: Vec<(FeatureId, FeatureOutcome)> = Vec::with_capacity(plan.features.len());
     for planned in &plan.features {
-        // A feature it uses that didn't build blocks it, on the failure at the root.
-        let blocked = planned.uses.iter().find_map(|&i| match features.get(i) {
-            Some((id, FeatureOutcome::Failed(_) | FeatureOutcome::Broken { .. })) => {
-                Some(id.clone())
-            }
-            Some((_, FeatureOutcome::Blocked { on })) => Some(on.clone()),
-            Some((_, FeatureOutcome::Built { .. } | FeatureOutcome::Sketch(_))) | None => None,
-        });
+        // A feature it uses that didn't build blocks it, on the failure at the root: its
+        // base, then the sketch it sweeps.
+        let blocked =
+            planned
+                .uses
+                .iter()
+                .chain(&planned.sweeps)
+                .find_map(|&i| match features.get(i) {
+                    Some((id, FeatureOutcome::Failed(_) | FeatureOutcome::Broken { .. })) => {
+                        Some(id.clone())
+                    }
+                    Some((_, FeatureOutcome::Blocked { on })) => Some(on.clone()),
+                    Some((_, FeatureOutcome::Built { .. } | FeatureOutcome::Sketch(_))) | None => {
+                        None
+                    }
+                });
         let outcome = match (blocked, planned.sketch) {
             (Some(on), _) => FeatureOutcome::Blocked { on },
             (None, Some(key)) => match solutions.get(&key) {
@@ -2218,9 +2920,13 @@ fn model(
                     silico_bug("a sketch wasn't solved").with_feature(planned.id.as_str()),
                 ),
             },
-            (None, None) => match &planned.refused {
-                Some(error) => FeatureOutcome::Failed(error.clone()),
-                None => feature_outcome(planned, done, &schedule.unresolved),
+            (None, None) => match (&planned.refused, &planned.unprofiled) {
+                (Some(error), _) => FeatureOutcome::Failed(error.clone()),
+                (None, Some((errors, total))) => FeatureOutcome::Broken {
+                    errors: errors.clone(),
+                    total: *total,
+                },
+                (None, None) => feature_outcome(planned, done, &schedule.unresolved),
             },
         };
         features.push((planned.id.clone(), outcome));
@@ -2257,7 +2963,7 @@ fn model(
             | FeatureOutcome::Sketch(_) => None,
         })
         .collect();
-    let naming = naming(plan, &features);
+    let naming = naming(plan, &features, done);
     let maps = (0..features.len()).map(|_| OnceLock::new()).collect();
     Model {
         source: Arc::clone(source),
@@ -2288,40 +2994,88 @@ impl fmt::Debug for NamingKey {
 /// How each built feature's elements are named, in timeline order: a primitive's by their
 /// numbers, a boolean's from its inputs' names and its step's history
 /// (docs/ports/naming.md), each with its naming key.
-fn naming(plan: &Plan, features: &[(FeatureId, FeatureOutcome)]) -> Vec<Option<FeatureNaming>> {
+fn naming(
+    plan: &Plan,
+    features: &[(FeatureId, FeatureOutcome)],
+    done: &BTreeMap<Key, StepResult>,
+) -> Vec<Option<FeatureNaming>> {
     let mut naming: Vec<Option<FeatureNaming>> = Vec::with_capacity(features.len());
     for (planned, (id, outcome)) in plan.features.iter().zip(features) {
-        let (FeatureOutcome::Built { key, .. }, Some(how)) = (outcome, planned.naming) else {
+        let (FeatureOutcome::Built { key, .. }, Some(how)) = (outcome, planned.naming.as_ref())
+        else {
             naming.push(None);
             continue;
         };
+        // Its own steps' results: a built feature's are all built.
+        let steps: Option<Vec<Arc<Built>>> = planned
+            .steps
+            .iter()
+            .map(|step| match done.get(step) {
+                Some(Ok(built)) => Some(Arc::clone(built)),
+                _ => None,
+            })
+            .collect();
         // (A feature whose inputs aren't named isn't either: naming it needs their maps.)
         let planned_key = planned
             .naming_key
             .filter(|_| planned.key() == Some(*key) && planned.id == *id);
-        naming.push(planned_key.map(|key| FeatureNaming {
+        naming.push(planned_key.zip(steps).map(|(key, steps)| FeatureNaming {
             key,
-            how,
+            how: how.clone(),
             uses: planned.uses.clone(),
+            steps,
         }));
     }
     naming
 }
 
 /// Feature `id`'s element map, as `how` names it: a primitive's by its numbers, an
-/// operation's from its inputs' maps and its step's `history` (none for an operation: no
-/// map). The one place maps are made, so the names a model gives and those a fillet's
-/// references are found among are always the same.
+/// operation's from its inputs' maps and its last step's history, and a sweep feature's in
+/// three passes, one a step (design S3): its sketch's faces (that map kept in `known` by its
+/// own key, so features sharing a sketch name it once), their sweep, and, with a base, its
+/// fuse or cut of the base's map and the sweep's. `steps` are the feature's own steps'
+/// results, in order (none with no history: no map). The one place maps are made, so the
+/// names a model gives and those a fillet's references are found among are always the same.
 fn named_as(
     id: &FeatureId,
-    how: Naming,
+    how: &Naming,
     inputs: &[&ElementMap],
-    history: Option<&History>,
+    steps: &[Arc<Built>],
+    known: &NamedMaps,
 ) -> Option<ElementMap> {
+    let history = |i: usize| steps.get(i).and_then(|built| built.history.as_ref());
     Some(match how {
-        Naming::Primitive(primitive) => ElementMap::primitive(id.clone(), &primitive),
-        Naming::Operation(operation) => {
-            ElementMap::operation(id.clone(), operation, inputs, history?)
+        Naming::Primitive(primitive) => ElementMap::primitive(id.clone(), primitive),
+        Naming::Operation(operation) => ElementMap::operation(
+            id.clone(),
+            *operation,
+            inputs,
+            history(steps.len().checked_sub(1)?)?,
+        ),
+        Naming::Sweep(sweep) => {
+            let named = lock(known).get(&sweep.faces).map(Arc::clone);
+            let faces = match named {
+                Some(map) => map,
+                None => kept_in(
+                    known,
+                    sweep.faces,
+                    ElementMap::sketch(
+                        sweep.sketch.clone(),
+                        &sweep.curves,
+                        &sweep.points,
+                        &sweep.regions,
+                        history(0)?,
+                    ),
+                ),
+            };
+            let swept = ElementMap::swept(id.clone(), sweep.operation, &faces, history(1)?);
+            match (inputs, steps.len()) {
+                ([], 2) => swept,
+                ([base], 3) => {
+                    ElementMap::operation(id.clone(), sweep.operation, &[base, &swept], history(2)?)
+                }
+                _ => return None,
+            }
         }
     })
 }
@@ -2334,15 +3088,21 @@ fn kept_in(known: &NamedMaps, key: NamingKey, map: ElementMap) -> Arc<ElementMap
 
 /// A feature's naming key: of the naming scheme, its solid's step `key`, its ID, how it
 /// names, and its inputs' naming keys.
-fn naming_key(key: Key, id: &FeatureId, how: Naming, inputs: &[NamingKey]) -> NamingKey {
+fn naming_key(key: Key, id: &FeatureId, how: &Naming, inputs: &[NamingKey]) -> NamingKey {
     let mut hash = Sha256::new();
     hash.update(NAMING_SCHEME);
     hash.update(key.0);
     hash.update(id.as_str().as_bytes());
     hash.update([match how {
         Naming::Primitive(_) => 0,
-        Naming::Operation(op) => op as u8 + 1,
+        Naming::Operation(op) => *op as u8 + 1,
+        Naming::Sweep(sweep) => sweep.operation as u8 + 1,
     }]);
+    // A sweep feature's names come from its sketch's IDs too, which its steps' keys leave
+    // out (design S3): two profiles alike but for an ID make one faces step and two maps.
+    if let Naming::Sweep(sweep) = how {
+        hash.update(sweep.faces.0);
+    }
     for input in inputs {
         hash.update(input.0);
     }
@@ -2513,8 +3273,8 @@ mod tests {
 
     /// A naming key holds the naming scheme, so a change to how elements are named makes a
     /// fillet's step another step: pinned, computed by hand with Python's hashlib from the
-    /// scheme's line, the step's key, the ID, how it names (0 a primitive, 1 + the op code),
-    /// and the inputs' naming keys.
+    /// scheme's line (`silico naming 5`, M3.6's), the step's key, the ID, how it names (0 a
+    /// primitive, 1 + the op code), and the inputs' naming keys.
     #[test]
     fn naming_keys_are_the_sha256_of_the_scheme_the_step_the_id_and_the_inputs() {
         let made = Step::Make(Primitive::Box {
@@ -2527,7 +3287,7 @@ mod tests {
         let block = naming_key(
             made,
             &id("aaaaaaaa"),
-            Naming::Primitive(Primitive::Box {
+            &Naming::Primitive(Primitive::Box {
                 dx: 10.0,
                 dy: 20.0,
                 dz: 30.0,
@@ -2536,18 +3296,145 @@ mod tests {
         );
         assert_eq!(
             crate::hex(&block.0),
-            "de3ee4548d35b48d0d61573b7f80ea0626b41ec44efcaf6c6e2c9d163ee6e364"
+            "a032aa1bd93fd19700c2b7615d4bd5aa87281e4ef8a292ac607a610c888f95f3"
         );
         let cut = naming_key(
             made,
             &id("bbbbbbbb"),
-            Naming::Operation(OpCode::Cut),
+            &Naming::Operation(OpCode::Cut),
             &[block],
         );
         assert_eq!(
             crate::hex(&cut.0),
-            "b5616c3441bd1ecfe2f33fe8b5ec10af1993c2af4b7377b75301c2218e7aeed9"
+            "3aa8bf27792db5e33382f34bc8e60d6ef30415c50f5ec28070857bf1a54019ae"
         );
+    }
+
+    /// M3.6's step kinds' keys (design S3), pinned, computed by hand with Python's hashlib
+    /// from the lines their doc describes: a faces step's plane, its regions and loops
+    /// marked, each curve by its kind and its values' bits; a prism's faces key, start, and
+    /// vector; a through-all prism's faces and base keys and direction; a revolution's faces
+    /// key, axis, start, and angle.
+    #[test]
+    fn a_sweeps_keys_are_the_sha256_of_the_lines_their_doc_describes() {
+        use silico_protocol::{Curve, Region, SketchPlane};
+        let regions = FaceRegions {
+            plane: SketchPlane::Xz,
+            regions: vec![Region {
+                outer: vec![
+                    Curve::Line {
+                        start: [0.0, 0.0],
+                        end: [2.0, 0.0],
+                    },
+                    Curve::Arc {
+                        center: [1.0, 0.0],
+                        start: [2.0, 0.0],
+                        end: [0.0, 0.0],
+                        radius: 1.0,
+                        start_angle: 0.0,
+                        end_angle: std::f64::consts::PI,
+                    },
+                ],
+                holes: vec![vec![Curve::Circle {
+                    center: [1.0, 0.5],
+                    radius: 0.25,
+                }]],
+            }],
+        };
+        let faces = Step::Faces(Arc::new(regions.clone())).key();
+        assert_eq!(
+            faces.to_string(),
+            "30cb738ebdb757b3da923e9d2070c3994472dacd4310635157a6eb5f3fce59e1"
+        );
+        let prism = Step::Prism {
+            faces,
+            start: [0.0, 0.0, -1.5],
+            vector: [0.0, 0.0, 3.0],
+        };
+        assert_eq!(
+            prism.key().to_string(),
+            "c0951601a3fb50cd77220b21c7d3861e869aa6431eec4afa38d232c0c8bb6875"
+        );
+        let made = Step::Make(Primitive::Box {
+            dx: 10.0,
+            dy: 20.0,
+            dz: 30.0,
+        })
+        .key();
+        let through = Step::PrismThroughAll {
+            faces,
+            base: made,
+            direction: [0.0, 0.0, -1.0],
+        };
+        assert_eq!(
+            through.key().to_string(),
+            "12c919661abe58ba096937fc445b89fe7b6749843be15897d478b8bff743f41c"
+        );
+        let revolution = Step::Revolution {
+            faces,
+            origin: [1.0, 0.0, 0.0],
+            direction: [0.0, 0.0, 1.0],
+            start: -std::f64::consts::FRAC_PI_4,
+            angle: std::f64::consts::FRAC_PI_2,
+        };
+        assert_eq!(
+            revolution.key().to_string(),
+            "4194e7ed4f32a2955a5b4314e5c4c5dd36fc2410941529b21a91e5b06775e751"
+        );
+        // Their inputs, and the histories they make.
+        assert_eq!(Step::Faces(Arc::new(regions)).inputs(), []);
+        assert_eq!(through.inputs(), [faces, made]);
+        assert_eq!(through.history_inputs(), 1);
+        assert_eq!(prism.history_inputs(), 1);
+    }
+
+    /// A −0 in a faces step is another request than +0 (an arc's angle from atan2(±0, −1)
+    /// is ±π), so another key (design S3): nothing is normalized. And a region with a hole
+    /// is another line than two regions of the same curves.
+    #[test]
+    fn a_faces_key_tells_minus_zero_and_regions_apart() {
+        use silico_protocol::{Curve, Region, SketchPlane};
+        let square = |x0: f64| {
+            vec![
+                Curve::Line {
+                    start: [x0, 0.0],
+                    end: [1.0, 0.0],
+                },
+                Curve::Line {
+                    start: [1.0, 0.0],
+                    end: [1.0, 1.0],
+                },
+                Curve::Line {
+                    start: [1.0, 1.0],
+                    end: [x0, 1.0],
+                },
+                Curve::Line {
+                    start: [x0, 1.0],
+                    end: [x0, 0.0],
+                },
+            ]
+        };
+        let key = |regions: Vec<Region>| {
+            Step::Faces(Arc::new(FaceRegions {
+                plane: SketchPlane::Xy,
+                regions,
+            }))
+            .key()
+        };
+        let one = |outer| Region {
+            outer,
+            holes: Vec::new(),
+        };
+        assert_ne!(key(vec![one(square(0.0))]), key(vec![one(square(-0.0))]));
+        let circle = vec![Curve::Circle {
+            center: [0.5, 0.5],
+            radius: 0.25,
+        }];
+        let holed = Region {
+            outer: square(0.0),
+            holes: vec![circle.clone()],
+        };
+        assert_ne!(key(vec![holed]), key(vec![one(square(0.0)), one(circle)]));
     }
 
     /// Keys outlive a run, so their spelling is pinned: computed by hand with Python's

@@ -408,3 +408,71 @@ fn a_curve_whose_own_ends_are_within_the_tolerance_is_not_told_to_share_the_poin
         );
     }
 }
+
+/// Every number a faces request holds: each curve's values, as `Curve` holds them.
+fn sent_values(p: &Profile) -> Vec<f64> {
+    use silico_protocol::Curve;
+    p.faces()
+        .curves()
+        .flat_map(|c| match *c {
+            Curve::Line { start, end } => vec![start[0], start[1], end[0], end[1]],
+            Curve::Arc {
+                center,
+                start,
+                end,
+                radius,
+                start_angle,
+                end_angle,
+            } => vec![
+                center[0],
+                center[1],
+                start[0],
+                start[1],
+                end[0],
+                end[1],
+                radius,
+                start_angle,
+                end_angle,
+            ],
+            Curve::Circle { center, radius } => vec![center[0], center[1], radius],
+        })
+        .collect()
+}
+
+#[test]
+fn a_profile_drawn_on_minus_zeros_sends_none() {
+    // M3.6, design S3: the faces step's key takes the request's bits as sent, so the
+    // request must never hold a −0 (a solve can leave one): two requests of one profile would
+    // then be two steps, and an arc's angle from atan2(±0, −1) ±π. A half disc and a
+    // square drawn with every zero a −0, the half disc's arc from (1, −0) about (0, −0) to
+    // (−1, −0), whose angles would be −0 and −π from the −0s, π and 0 from +0s.
+    let mut d = Draw::new();
+    let (east, west, center) = (d.point(1.0, -0.0), d.point(-1.0, -0.0), d.point(-0.0, -0.0));
+    d.arc(&center, &east, &west);
+    d.line(&west, &east);
+    d.polygon(&[(-0.0, 3.0), (2.0, 3.0), (2.0, 5.0), (-0.0, 5.0)]);
+    let p = profile_of(&d).unwrap().unwrap();
+    let values = sent_values(&p);
+    assert!(values.contains(&0.0));
+    for v in &values {
+        assert!(*v != 0.0 || v.is_sign_positive(), "a −0 sent: {values:?}");
+    }
+    // The arc's angles are +0's: 0 and π, counter-clockwise.
+    assert!(values.contains(&std::f64::consts::PI), "{values:?}");
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(1000))]
+
+    /// Every hostile sketch's profile sends no −0 (design S3).
+    #[test]
+    fn no_profile_sends_a_minus_zero(h in hostile()) {
+        let d = h.draw();
+        let Some(Ok(p)) = profile_of(&d) else {
+            return Ok(());
+        };
+        for v in sent_values(&p) {
+            prop_assert!(v != 0.0 || v.is_sign_positive(), "a −0 sent");
+        }
+    }
+}

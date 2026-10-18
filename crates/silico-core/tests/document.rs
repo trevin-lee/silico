@@ -654,16 +654,16 @@ fn every_feature_type_is_read_written_and_in_the_schema() {
         }
     }
     assert_eq!(primitives, silico_core::naming::PrimitiveKind::ALL.len());
-    // And every feature's word in its elements' names, an operation's too (N8): the type the
-    // file writes, from what the feature is.
-    let mut solids = 0;
+    // And every feature's word in its elements' names, an operation's too (N8), and a
+    // sketch's and a sweep feature's (M3.6, S4): the type the file writes, from what the
+    // feature is.
+    let mut words = 0;
     for operation in &samples {
-        if let Some(made) = silico_core::naming::Maker::of(operation).type_word() {
-            assert_eq!(made.word(), operation.type_name());
-            solids += 1;
-        }
+        let made = silico_core::naming::Maker::of(operation).type_word();
+        assert_eq!(made.word(), operation.type_name());
+        words += 1;
     }
-    assert_eq!(solids, silico_core::naming::TypeWord::all().count());
+    assert_eq!(words, silico_core::naming::TypeWord::all().count());
     let validator = &*VALIDATOR;
     for operation in samples {
         let document = Document {
