@@ -94,6 +94,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Counters that count from 1 and print a 1 as nothing (positions, `nth`, `G2` vs `G`): 0 prints as 1 does, so a name's text no longer says which name it is; compare `Display` of every constructible value
 - A long timeline of disjoint fuses (bolts fused one at a time): every feature's element map holds all its solid's names and all are rebuilt each publish, so time and memory grow with the square of the timeline
 - Renumber a result's elements (permute faces, edges, vertices consistently through the history and topology): names that aren't duplicates or bare numbers must not change
+- Primitives whose numbering follows their values (a cone whose top radius goes to 0: OCCT drops the top cap and numbers the base Face2, the top's number): a name derived from `cone.Face2` (a hole's top rim) finds the base rim; check where a fillet of it takes material, before and after
 
 ## Files
 
@@ -107,12 +108,15 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Values the in-memory type holds but the reader refuses (an empty name, a feature version other than 1): `write` saves a file that won't open; test `read(write(d)) == d` over every constructible value, not only generated valid ones
 - Version numbers past the reading type (2^32 + 1 read into a u32 wraps to 1, FreeCAD 913e409b24; 2^64 fails u64 parsing and is called "not a whole number"): refuse as an unknown version
 - Errors that quote the input: a 1 MB number, key, or string echoed into the message, parameter, and suggestion makes a multi-MB error; keys holding ESC sequences or newlines reach terminals and logs raw, and an empty key reads as nothing
+- References quoted whole into an error's `elements`: the name grammar takes five sources at seven levels, 1.3 MB of one name, and each broken one's error carries it again
 - Invisible characters where whitespace may go (U+00A0, U+200B, U+FEFF after the start, U+2028): errors that print the character itself show ` ` or nothing; check they name it by code point
 - Memory amplification of a parsed tree: a 100 MB array of `0` under an unknown key, measured with `/usr/bin/time -l` (a tree of nodes and a `Vec<char>` cost 33x here), and no size cap to refuse it with
 - Schemas generated from Rust integers (schemars writes `"format": "uint32"`, `"minimum": 0`, no `"maximum"`; formats are annotations): the schema takes 4294967296 where the reader refuses it
 - What the core adds to a document on save (fingerprints, metadata) when it opened just under the size limit: it opens, but can't be saved again
 - Error advice written before a new feature kind existed: a sketch of 30,000 points at `5e-324` (6 bytes each in the file, 326 written in full) is too large to save, and is told to shorten its name or note
 - Several bad values in one entity at once (a box with length, width, and height all 0) given to a checker that promises every problem: a rule returning `Result` stops at the first, so the user fixes one value per round trip
+- Lists only the document's size bounds, checked for repeats by `list[..i].contains(x)`: 40,000 names take 15 s in the gate, a 16 MB document's 600,000 about an hour
+- Values nested in an object (`size.distance`) refused by a helper that names its own key: the reader says `distance`, the gate and schema `size.distance`
 - Names and notes shown to people (an outline, a diff view) with every bidi control, not only U+202A..202E and U+200E/F: the isolates U+2066..2069 and U+061C slip past most hand lists, and General_Category=Cf (soft hyphen, tag characters U+E0020..E007F) prints as nothing
 
 ## Command line
@@ -157,6 +161,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Generation counters at their end (a kernel already at `u64::MAX`): a `+ 1` panics (or wraps to 0 in release, so every request is superseded), and a `saturating_add` leaves the generation where it was, so a cancel cancels nothing
 - A panic under one of several threads that count themselves running under a shared condvar (a kernel bug in `submit`, say): the others wait for it forever, the scope never joins, and the handling for a dead thread is never reached; wrap a test kernel that panics on one op
 - A naive sequential evaluator as the oracle: random timelines with value-based refusals (kept and not kept), several edits in a row, comparing every feature's outcome, the bodies, which keys are equal, and exactly which steps each edit ran
+- Results taken from the cache or memory without their inputs' (an entry lost, a subdirectory that's a link): a step that reads more than its inputs (a fillet naming its base's elements from the whole lineage) runs before they're rebuilt
 
 ## Oracles and comparisons
 
@@ -180,6 +185,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Callbacks a test hands the fake (hold and refusal rules) that panic: the serving thread dies with the lock held and its request counted as running, its caller is told the kernel stopped, and every later request hangs
 - Waits of "forever" (`Duration::MAX`) added to `Instant::now()` unchecked, and sizes of `usize::MAX` collected into a Vec: panics where the real component returns an error
 - IDs parsed with `from_str_radix`, which takes upper-case digits and a leading '+': bytes the component never made are taken as one of its own
+- A fake's step read by its grammar but not its values (a fillet of edge 13 of a box, a radius of -1, an edge listed twice): bytes no request could make are taken as its own
 - Hand-written topology tables (each face's edges, each edge's vertices) for primitives: compare with the real kernel's move history, cones whose cap OCCT drops included
 
 ## Caches and files the core writes

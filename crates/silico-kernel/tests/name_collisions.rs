@@ -131,23 +131,23 @@ fn a_balls_through_hole_has_two_rims_and_two_seam_points_told_apart_by_rank() {
     assert_eq!(
         names_of(map, ElementKind::Edge),
         [
-            "bbbbbbbb.Edge2",
-            "cccccccc.Edge(G1/2 bbbbbbbb.Face1, G1/2 pppppppp.Face1)",
-            "cccccccc.Edge(G2/2 bbbbbbbb.Face1, G2/2 pppppppp.Face1)",
-            "pppppppp.Edge1",
+            "bbbbbbbb.sphere.Edge2",
+            "cccccccc.Edge(G1/2 bbbbbbbb.sphere.Face1, G1/2 pppppppp.cylinder.Face1)",
+            "cccccccc.Edge(G2/2 bbbbbbbb.sphere.Face1, G2/2 pppppppp.cylinder.Face1)",
+            "pppppppp.cylinder.Edge1",
         ]
     );
     assert_eq!(
         names_of(map, ElementKind::Vertex),
         [
-            "cccccccc.Vertex(G1/2 bbbbbbbb.Edge2, G1/2 pppppppp.Edge1)",
-            "cccccccc.Vertex(G2/2 bbbbbbbb.Edge2, G2/2 pppppppp.Edge1)",
+            "cccccccc.Vertex(G1/2 bbbbbbbb.sphere.Edge2, G1/2 pppppppp.cylinder.Edge1)",
+            "cccccccc.Vertex(G2/2 bbbbbbbb.sphere.Edge2, G2/2 pppppppp.cylinder.Edge1)",
         ]
     );
     // FreeCAD's form still writes OCCT's positions, which the ranks are.
     let mut texts: Vec<(String, String)> = map
         .iter()
-        .filter(|(_, names)| names[0].to_string().contains("/2 bbbbbbbb.Face1"))
+        .filter(|(_, names)| names[0].to_string().contains("/2 bbbbbbbb.sphere.Face1"))
         .map(|(_, names)| (names[0].to_string(), freecad::text(&names[0])))
         .collect();
     texts.sort();
@@ -155,11 +155,13 @@ fn a_balls_through_hole_has_two_rims_and_two_seam_points_told_apart_by_rank() {
         texts,
         [
             (
-                "cccccccc.Edge(G1/2 bbbbbbbb.Face1, G1/2 pppppppp.Face1)".to_owned(),
+                "cccccccc.Edge(G1/2 bbbbbbbb.sphere.Face1, G1/2 pppppppp.cylinder.Face1)"
+                    .to_owned(),
                 "Face1;:G(Face1;K-1);CUT".to_owned()
             ),
             (
-                "cccccccc.Edge(G2/2 bbbbbbbb.Face1, G2/2 pppppppp.Face1)".to_owned(),
+                "cccccccc.Edge(G2/2 bbbbbbbb.sphere.Face1, G2/2 pppppppp.cylinder.Face1)"
+                    .to_owned(),
                 "Face1;:G2(Face1;K-2);CUT".to_owned()
             ),
         ]
@@ -167,7 +169,7 @@ fn a_balls_through_hole_has_two_rims_and_two_seam_points_told_apart_by_rank() {
     // The faces, each modified as its sole result, keep their own names.
     assert_eq!(
         names_of(map, ElementKind::Face),
-        ["bbbbbbbb.Face1", "pppppppp.Face1"]
+        ["bbbbbbbb.sphere.Face1", "pppppppp.cylinder.Face1"]
     );
 }
 
@@ -188,15 +190,19 @@ fn a_pin_through_a_torus_tube_has_four_loops_told_apart_by_rank() {
     all_referenceable(map);
     let edges = names_of(map, ElementKind::Edge);
     for n in 1..=4 {
-        let rim = format!("cccccccc.Edge(G{n}/4 tttttttt.Face1, G{n}/4 pppppppp.Face1)");
+        let rim =
+            format!("cccccccc.Edge(G{n}/4 tttttttt.torus.Face1, G{n}/4 pppppppp.cylinder.Face1)");
         assert!(edges.contains(&rim), "{rim}: {edges:#?}");
     }
     for n in 1..=3 {
-        let piece = format!("cccccccc.Edge(M{n}/3 tttttttt.Edge2)");
+        let piece = format!("cccccccc.Edge(M{n}/3 tttttttt.torus.Edge2)");
         assert!(edges.contains(&piece), "{piece}: {edges:#?}");
     }
     // The seam is gone as it was.
-    assert!(!edges.contains(&"tttttttt.Edge2".to_owned()), "{edges:#?}");
+    assert!(
+        !edges.contains(&"tttttttt.torus.Edge2".to_owned()),
+        "{edges:#?}"
+    );
 }
 
 #[test]
@@ -216,14 +222,17 @@ fn a_slot_splits_the_top_and_its_edges_into_ranked_pieces() {
     all_referenceable(map);
     let faces = names_of(map, ElementKind::Face);
     for piece in [
-        "s0000001.Face(M1/2 pppppppp.Face6)",
-        "s0000001.Face(M2/2 pppppppp.Face6)",
+        "s0000001.Face(M1/2 pppppppp.box.Face6)",
+        "s0000001.Face(M2/2 pppppppp.box.Face6)",
     ] {
         assert!(faces.contains(&piece.to_owned()), "{faces:#?}");
     }
-    assert!(!faces.contains(&"pppppppp.Face6".to_owned()), "{faces:#?}");
+    assert!(
+        !faces.contains(&"pppppppp.box.Face6".to_owned()),
+        "{faces:#?}"
+    );
     let edges = names_of(map, ElementKind::Edge);
-    for edge in ["pppppppp.Edge10", "pppppppp.Edge12"] {
+    for edge in ["pppppppp.box.Edge10", "pppppppp.box.Edge12"] {
         for n in [1, 2] {
             let piece = format!("s0000001.Edge(M{n}/2 {edge})");
             assert!(edges.contains(&piece), "{piece}: {edges:#?}");
@@ -250,10 +259,10 @@ fn a_piece_keeps_its_name_through_a_hole_before_the_split_and_one_after() {
     .concat();
     let model = publish(&engine(), &features);
     let after_first = model.element_map(&id("c0000001")).unwrap();
-    assert!(names_of(after_first, ElementKind::Face).contains(&"pppppppp.Face6".to_owned()));
+    assert!(names_of(after_first, ElementKind::Face).contains(&"pppppppp.box.Face6".to_owned()));
     let pieces = [
-        "s0000001.Face(M1/2 pppppppp.Face6)",
-        "s0000001.Face(M2/2 pppppppp.Face6)",
+        "s0000001.Face(M1/2 pppppppp.box.Face6)",
+        "s0000001.Face(M2/2 pppppppp.box.Face6)",
     ];
     let slotted = model.element_map(&id("s0000001")).unwrap();
     let last = model.element_map(&id("c0000002")).unwrap();
@@ -273,7 +282,8 @@ fn a_piece_keeps_its_name_through_a_hole_before_the_split_and_one_after() {
     let edges = names_of(last, ElementKind::Edge);
     assert!(
         edges.contains(
-            &"c0000002.Edge(G s0000001.Face(M2/2 pppppppp.Face6), G y0000002.Face1)".to_owned()
+            &"c0000002.Edge(G s0000001.Face(M2/2 pppppppp.box.Face6), G y0000002.cylinder.Face1)"
+                .to_owned()
         ),
         "{edges:#?}"
     );
@@ -295,19 +305,19 @@ fn a_groove_across_a_u_shaped_face_leaves_three_ranked_pieces() {
         ],
     );
     let notched = model.element_map(&id("vvvvvvvv")).unwrap();
-    assert!(names_of(notched, ElementKind::Face).contains(&"pppppppp.Face6".to_owned()));
+    assert!(names_of(notched, ElementKind::Face).contains(&"pppppppp.box.Face6".to_owned()));
     let map = model.element_map(&id("rrrrrrrr")).unwrap();
     all_referenceable(map);
     let tops: Vec<String> = names_of(map, ElementKind::Face)
         .into_iter()
-        .filter(|f| f.contains("pppppppp.Face6"))
+        .filter(|f| f.contains("pppppppp.box.Face6"))
         .collect();
     assert_eq!(
         tops,
         [
-            "rrrrrrrr.Face(M1/3 pppppppp.Face6)",
-            "rrrrrrrr.Face(M2/3 pppppppp.Face6)",
-            "rrrrrrrr.Face(M3/3 pppppppp.Face6)",
+            "rrrrrrrr.Face(M1/3 pppppppp.box.Face6)",
+            "rrrrrrrr.Face(M2/3 pppppppp.box.Face6)",
+            "rrrrrrrr.Face(M3/3 pppppppp.box.Face6)",
         ]
     );
 }

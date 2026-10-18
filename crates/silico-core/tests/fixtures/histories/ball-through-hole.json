@@ -1,0 +1,266 @@
+{
+  "history": {
+    "ends": {
+      "end": [],
+      "start": []
+    },
+    "inputs": [
+      {
+        "edges": [
+          {
+            "generated": [],
+            "kept": null,
+            "modified": []
+          },
+          {
+            "generated": [
+              {
+                "element": {
+                  "index": 1,
+                  "kind": "Vertex"
+                },
+                "position": 2
+              },
+              {
+                "element": {
+                  "index": 2,
+                  "kind": "Vertex"
+                },
+                "position": 1
+              }
+            ],
+            "kept": null,
+            "modified": [
+              {
+                "element": {
+                  "index": 2,
+                  "kind": "Edge"
+                },
+                "position": 1
+              }
+            ]
+          },
+          {
+            "generated": [],
+            "kept": null,
+            "modified": []
+          }
+        ],
+        "faces": [
+          {
+            "generated": [
+              {
+                "element": {
+                  "index": 1,
+                  "kind": "Edge"
+                },
+                "position": 2
+              },
+              {
+                "element": {
+                  "index": 3,
+                  "kind": "Edge"
+                },
+                "position": 1
+              }
+            ],
+            "kept": null,
+            "modified": [
+              {
+                "element": {
+                  "index": 1,
+                  "kind": "Face"
+                },
+                "position": 1
+              }
+            ]
+          }
+        ],
+        "vertices": [
+          {
+            "generated": [],
+            "kept": null,
+            "modified": []
+          },
+          {
+            "generated": [],
+            "kept": null,
+            "modified": []
+          }
+        ]
+      },
+      {
+        "edges": [
+          {
+            "generated": [
+              {
+                "element": {
+                  "index": 1,
+                  "kind": "Vertex"
+                },
+                "position": 2
+              },
+              {
+                "element": {
+                  "index": 2,
+                  "kind": "Vertex"
+                },
+                "position": 1
+              }
+            ],
+            "kept": null,
+            "modified": [
+              {
+                "element": {
+                  "index": 4,
+                  "kind": "Edge"
+                },
+                "position": 1
+              }
+            ]
+          },
+          {
+            "generated": [],
+            "kept": null,
+            "modified": []
+          },
+          {
+            "generated": [],
+            "kept": null,
+            "modified": []
+          }
+        ],
+        "faces": [
+          {
+            "generated": [
+              {
+                "element": {
+                  "index": 1,
+                  "kind": "Edge"
+                },
+                "position": 2
+              },
+              {
+                "element": {
+                  "index": 3,
+                  "kind": "Edge"
+                },
+                "position": 1
+              }
+            ],
+            "kept": null,
+            "modified": [
+              {
+                "element": {
+                  "index": 2,
+                  "kind": "Face"
+                },
+                "position": 1
+              }
+            ]
+          },
+          {
+            "generated": [],
+            "kept": null,
+            "modified": []
+          },
+          {
+            "generated": [],
+            "kept": null,
+            "modified": []
+          }
+        ],
+        "vertices": [
+          {
+            "generated": [],
+            "kept": null,
+            "modified": []
+          },
+          {
+            "generated": [],
+            "kept": null,
+            "modified": []
+          }
+        ]
+      }
+    ],
+    "result": {
+      "edges": 4,
+      "faces": 2,
+      "solids": 1,
+      "vertices": 2
+    },
+    "topology": {
+      "edge_vertices": [
+        [
+          1
+        ],
+        [
+          2,
+          1
+        ],
+        [
+          2
+        ],
+        [
+          2,
+          1
+        ]
+      ],
+      "face_edges": [
+        [
+          1,
+          2,
+          3
+        ],
+        [
+          3,
+          4,
+          1
+        ]
+      ],
+      "outer_edges": [
+        [
+          1,
+          2,
+          3
+        ],
+        [
+          1,
+          3,
+          4
+        ]
+      ]
+    }
+  },
+  "inputs": [
+    {
+      "at": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "id": "bbbbbbbb",
+      "primitive": {
+        "Sphere": {
+          "radius": 10.0
+        }
+      }
+    },
+    {
+      "at": [
+        0.0,
+        0.0,
+        -15.0
+      ],
+      "id": "pppppppp",
+      "primitive": {
+        "Cylinder": {
+          "height": 30.0,
+          "radius": 2.0
+        }
+      }
+    }
+  ],
+  "op": "Cut"
+}

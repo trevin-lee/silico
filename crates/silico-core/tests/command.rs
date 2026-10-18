@@ -133,6 +133,32 @@ fn a_document_with_a_sketch_formats_with_the_solids_fingerprints_alone_and_check
 }
 
 #[test]
+fn an_outline_says_a_fillets_or_chamfers_edges_a_line_each() {
+    // M2.8's dressings, met on rebasing onto M2.9's outline: a fillet's line says its base
+    // and radius, a chamfer's its base and distance, then each edge on a line of its own,
+    // quoted, so an edit to one edge changes its line alone.
+    let more = r#",
+    {"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "m3tq8v0z", "edges": ["k7f2qx3m.box.Edge1", "m3tq8v0z.Edge(G k7f2qx3m.box.Face6, G a91cw0de.cylinder.Face1)"], "radius": 0.5},
+    {"id": "c0000001", "type": "chamfer", "v": 1, "name": "Bevel", "base": "f0000001", "edges": ["k7f2qx3m.box.Edge5"], "size": {"distance": 1}}
+  ]"#;
+    let at = EXAMPLE.rfind("\n  ]").unwrap();
+    let text = format!("{}{more}{}", &EXAMPLE[..at], &EXAMPLE[at + 4..]);
+    let outline = command::outline(&read(text.as_bytes()).unwrap());
+    let tail: Vec<&str> = outline.lines().skip(4).collect();
+    assert_eq!(
+        tail,
+        [
+            r#"f0000001 "Round" fillet base m3tq8v0z, radius 0.5"#,
+            r#"  edge "k7f2qx3m.box.Edge1""#,
+            r#"  edge "m3tq8v0z.Edge(G k7f2qx3m.box.Face6, G a91cw0de.cylinder.Face1)""#,
+            r#"c0000001 "Bevel" chamfer base f0000001, size.distance 1"#,
+            r#"  edge "k7f2qx3m.box.Edge5""#,
+            "bodies c0000001",
+        ]
+    );
+}
+
+#[test]
 fn an_outline_has_each_features_fingerprint_on_its_line() {
     let saved = formatted(EXAMPLE).text;
     let outline = command::outline(&read(saved.as_bytes()).unwrap());
@@ -519,4 +545,103 @@ fn engines_sharing_a_kernel_in_turn_dont_supersede_each_other() {
         rebuilt(&second);
     }
     rebuilt(&first);
+}
+
+#[test]
+fn a_checks_total_counts_every_broken_reference_listed_or_not() {
+    // Found by the rebase's review: a feature lists its first hundred broken references,
+    // and a check's total counted a summary of the rest as one problem, so 150 broken
+    // references were `total: 101`. The total is every one, as the gate's is.
+    let edges: Vec<String> = (13..163)
+        .map(|n| format!("\"k7f2qx3m.box.Edge{n}\""))
+        .collect();
+    let text = format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "features": [
+{{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}},
+{{"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": [{}], "radius": 1}}]}}"#,
+        edges.join(", ")
+    );
+    let problems = check_bytes(&engine(), text.as_bytes()).unwrap();
+    assert_eq!(problems.errors().len(), 100);
+    assert_eq!(problems.total(), 150);
+    assert!(
+        problems
+            .errors()
+            .iter()
+            .all(|e| e.code() == ErrorCode::ReferenceBroken)
+    );
+}
+
+#[test]
+fn a_formats_total_counts_every_broken_reference_and_a_failure_counts_once() {
+    // Found by the review: only a check's total was tested. A format's counts every
+    // broken reference too, and a failed feature is one error, listed and counted.
+    let edges: Vec<String> = (13..163)
+        .map(|n| format!("\"k7f2qx3m.box.Edge{n}\""))
+        .collect();
+    let text = format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "features": [
+{{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}},
+{{"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": [{}], "radius": 1}}]}}"#,
+        edges.join(", ")
+    );
+    let done = format_bytes(&engine(), text.as_bytes()).unwrap().unwrap();
+    assert_eq!(done.problems.errors().len(), 100);
+    assert_eq!(done.problems.total(), 150);
+    let refusing = engine();
+    refusing.kernel().refuse(|op| {
+        matches!(op, Op::MakePrimitive(Primitive::Cylinder { .. }))
+            .then(|| Error::new(ErrorCode::KernelFailed, "MakeCylinder failed"))
+    });
+    let model = command::rebuild(&refusing, command::gate(EXAMPLE.as_bytes()).unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(model.error_count(), 1);
+    assert_eq!(model.unlisted_errors(), 0);
+    assert_eq!(command::check(&model).unwrap().total(), 1);
+}
+
+#[test]
+fn two_fillets_broken_past_the_hundred_and_a_failure_each_list_their_own_and_count_every_one() {
+    // Found by the review: no test had two features with broken references, so a count of
+    // the first feature's alone passed, and so did a second feature listing the first's
+    // errors. Two fillets, 150 and 130 broken edges, and a cylinder the kernel refuses:
+    // listed, the first hundred of each fillet's own and the failure, 201; counted, 281.
+    let names = |base: &str, count: u32| -> String {
+        (13..13 + count)
+            .map(|n| format!("\"{base}.box.Edge{n}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let text = format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "features": [
+{{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}},
+{{"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": [{}], "radius": 1}},
+{{"id": "b0000002", "type": "box", "v": 1, "name": "Block2", "position": [100, 0, 0], "length": 40, "width": 20, "height": 10}},
+{{"id": "f0000002", "type": "fillet", "v": 1, "name": "Round2", "base": "b0000002", "edges": [{}], "radius": 1}},
+{{"id": "y0000001", "type": "cylinder", "v": 1, "name": "Pin", "position": [0, 0, 0], "radius": 1, "height": 1}}]}}"#,
+        names("k7f2qx3m", 150),
+        names("b0000002", 130)
+    );
+    let refusing = engine();
+    refusing.kernel().refuse(|op| {
+        matches!(op, Op::MakePrimitive(Primitive::Cylinder { .. }))
+            .then(|| Error::new(ErrorCode::KernelFailed, "MakeCylinder failed"))
+    });
+    let problems = check_bytes(&refusing, text.as_bytes()).unwrap();
+    let of = |f: &str| {
+        problems
+            .errors()
+            .iter()
+            .filter(|e| e.feature() == Some(f))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(of("f0000001").len(), 100);
+    assert_eq!(of("f0000002").len(), 100);
+    assert_eq!(of("y0000001").len(), 1);
+    // Each fillet's errors are its own names.
+    assert_eq!(of("f0000001")[0].elements(), ["k7f2qx3m.box.Edge13"]);
+    assert_eq!(of("f0000002")[0].elements(), ["b0000002.box.Edge13"]);
+    assert_eq!(problems.errors().len(), 201);
+    assert_eq!(problems.total(), 150 + 130 + 1);
 }

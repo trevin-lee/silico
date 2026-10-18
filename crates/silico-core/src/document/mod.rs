@@ -15,8 +15,8 @@ mod write;
 
 pub use fingerprint::{Difference, Fingerprint, MEASURE_DECIMALS, Measure};
 pub use model::{
-    Document, FEATURE_TYPES, Feature, FeatureId, FeatureVersion, FormatVersion, ID_ALPHABET,
-    ID_LENGTH, Made, Name, Operation, Position, Units,
+    ChamferSize, Document, ElementName, FEATURE_TYPES, Feature, FeatureId, FeatureVersion,
+    FormatVersion, ID_ALPHABET, ID_LENGTH, Made, Name, Operation, Position, Units,
 };
 pub use quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
 pub use sketch::{
@@ -74,16 +74,31 @@ fn too_long(document: &Document, what: &str) -> Error {
         .iter()
         .find(|f| !write::feature_fits(f, limit / 2));
     match large {
-        Some(feature) => error.with_feature(feature.id.as_str()).with_suggestion(
-            if matches!(feature.operation, Operation::Sketch(_)) {
-                "make this sketch smaller: split it into several sketches"
-            } else {
-                "make this feature's name or note shorter"
-            },
-        ),
-        None => {
-            error.with_suggestion("make it smaller: fewer features, or shorter names and notes")
+        // By what can make the feature large, every type saying, so a new one has to.
+        Some(feature) => {
+            error
+                .with_feature(feature.id.as_str())
+                .with_suggestion(match feature.operation {
+                    Operation::Sketch(_) => {
+                        "make this sketch smaller: split it into several sketches"
+                    }
+                    Operation::Fillet { .. } | Operation::Chamfer { .. } => {
+                        "name fewer edges, or shorten this feature's name or note"
+                    }
+                    Operation::Box { .. }
+                    | Operation::Cylinder { .. }
+                    | Operation::Sphere { .. }
+                    | Operation::Cone { .. }
+                    | Operation::Torus { .. }
+                    | Operation::Fuse { .. }
+                    | Operation::Cut { .. }
+                    | Operation::Common { .. } => "make this feature's name or note shorter",
+                })
         }
+        None => error.with_suggestion(
+            "make it smaller: fewer features, smaller sketches, fewer edges named, or shorter \
+             names and notes",
+        ),
     }
 }
 

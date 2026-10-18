@@ -10,8 +10,8 @@ use example::EXAMPLE;
 use proptest::prelude::*;
 use silico_core::ErrorCode;
 use silico_core::document::{
-    Document, Feature, FeatureId, FeatureVersion, FormatVersion, ID_ALPHABET, Length, Name,
-    Operation, Units, read, schema, write,
+    ChamferSize, Document, ElementName, Feature, FeatureId, FeatureVersion, FormatVersion,
+    ID_ALPHABET, Length, Name, Operation, Units, read, schema, write,
 };
 
 fn mm(nm: i64) -> Length {
@@ -595,6 +595,19 @@ fn every_feature_type_is_read_written_and_in_the_schema() {
             arcs: Vec::new(),
             constraints: Vec::new(),
         }),
+        Operation::Fillet {
+            base: id("00000000"),
+            edges: vec![
+                ElementName::new("00000000.Edge1").unwrap(),
+                ElementName::new("11111111.Edge(G 00000000.Face1, G 33333333.Face1)").unwrap(),
+            ],
+            radius: one,
+        },
+        Operation::Chamfer {
+            base: id("00000000"),
+            edges: vec![ElementName::new("00000000.Edge1").unwrap()],
+            size: ChamferSize { distance: one },
+        },
     ];
     let names: Vec<&str> = samples.iter().map(Operation::type_name).collect();
     assert_eq!(names, FEATURE_TYPES);

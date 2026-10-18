@@ -35,7 +35,7 @@
 //! Tests can hold requests until they're released ([`FakeKernel::hold`]), to see what runs
 //! at once or to supersede a request while it runs, and have requests refused.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
@@ -491,6 +491,23 @@ fn answer(op: &Op) -> Result<Reply, Error> {
             let shape = made.shape();
             Ok(Reply::Built(BuiltData { shape, history }))
         }
+        Op::Fillet {
+            shape,
+            edges,
+            radius,
+        } => dressed(shape, edges, *radius, false),
+        Op::Chamfer {
+            shape, edges, size, ..
+        } => match size {
+            silico_protocol::ChamferSize::Equal { distance } => {
+                dressed(shape, edges, *distance, true)
+            }
+            _ => Err(Error::new(
+                ErrorCode::Internal,
+                "the fake kernel chamfers by one distance only",
+            )
+            .with_suggestion("run this test on a real kernel worker")),
+        },
         Op::Summarize { shape } => Ok(Reply::Summary(Symbolic::read(shape)?.summary())),
         Op::Echo { data } => Ok(Reply::Echo { data: data.clone() }),
         other => Err(Error::new(
@@ -499,6 +516,41 @@ fn answer(op: &Op) -> Result<Reply, Error> {
         )
         .with_suggestion("run this test on a real kernel worker")),
     }
+}
+
+/// The fake's fillet or chamfer of `edges` of `shape`: every element kept, as numbered;
+/// edges the shape doesn't have refused, as the kernel refuses them.
+fn dressed(shape: &ShapeData, edges: &[u32], size: f64, chamfer: bool) -> Result<Reply, Error> {
+    let made = Symbolic::read(shape)?;
+    let counts = made.counts();
+    if edges.is_empty() || edges.iter().any(|&e| e == 0 || e > counts.edges) {
+        return Err(Error::new(
+            ErrorCode::KernelFailed,
+            format!(
+                "the fake kernel can't dress edges {edges:?} of a shape with {} edges",
+                counts.edges
+            ),
+        )
+        .with_parameter("edges"));
+    }
+    let history = History {
+        inputs: vec![kept(counts, ElementCounts::default())],
+        result: counts,
+        ends: Ends::default(),
+        topology: made.topology(),
+    };
+    let Symbolic(mut steps) = made;
+    let input = steps.len() - 1;
+    steps.push(Step::Dress {
+        chamfer,
+        input,
+        size,
+        edges: edges.to_vec(),
+    });
+    Ok(Reply::Built(BuiltData {
+        shape: Symbolic(steps).shape(),
+        history,
+    }))
 }
 
 /// Whether a move by `offset` is a move by nothing: every component zero, of either sign.
@@ -637,7 +689,7 @@ fn moved(counts: ElementCounts) -> InputHistory {
 const HEADER: &str = "silico fake shape 1";
 
 /// One step of making a shape: a primitive, or an operation on earlier steps, by index.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 enum Step {
     Primitive(Primitive),
     Translate {
@@ -648,6 +700,15 @@ enum Step {
         op: BooleanOp,
         base: usize,
         tool: usize,
+    },
+    /// The fake's fillet or chamfer of the step before it: of `edges`, by `size` (a
+    /// fillet's radius, an equal chamfer's distance). Every element is kept, as numbered;
+    /// its measures are its input's.
+    Dress {
+        chamfer: bool,
+        input: usize,
+        size: f64,
+        edges: Vec<u32>,
     },
 }
 
@@ -709,6 +770,17 @@ impl Symbolic {
                 base: base + shift,
                 tool: tool + shift,
             },
+            Step::Dress {
+                chamfer,
+                input,
+                size,
+                edges,
+            } => Step::Dress {
+                chamfer,
+                input: input + shift,
+                size,
+                edges,
+            },
         }));
         let tool = steps.len() - 1;
         steps.push(Step::Boolean {
@@ -735,6 +807,19 @@ impl Symbolic {
                 } => text.push_str(&format!("translate {input} {x} {y} {z}")),
                 Step::Boolean { op, base, tool } => {
                     text.push_str(&format!("{} {base} {tool}", op.word()));
+                }
+                Step::Dress {
+                    chamfer,
+                    input,
+                    size,
+                    edges,
+                } => {
+                    let edges: Vec<String> = edges.iter().map(u32::to_string).collect();
+                    text.push_str(&format!(
+                        "{} {input} {size} {}",
+                        if *chamfer { "chamfer" } else { "fillet" },
+                        edges.join(",")
+                    ));
                 }
             }
             text.push('\n');
@@ -766,27 +851,62 @@ impl Symbolic {
         for line in lines {
             let index = steps.len();
             let step = parse_step(line).ok_or_else(refused)?;
-            let size = match step {
+            let size = match &step {
                 Step::Primitive(_) => Some(1),
                 Step::Translate { input, offset } => (index > 0
-                    && input == index - 1
-                    && !nothing(&offset)
-                    && !matches!(steps.get(input), Some(Step::Translate { .. })))
-                .then(|| sizes.get(input).map(|s| s + 1))
+                    && *input == index - 1
+                    && !nothing(offset)
+                    && !matches!(steps.get(*input), Some(Step::Translate { .. })))
+                .then(|| sizes.get(*input).map(|s| s + 1))
                 .flatten(),
-                Step::Boolean { base, tool, .. } => (index > 0 && tool == index - 1)
+                Step::Boolean { base, tool, .. } => (index > 0 && *tool == index - 1)
                     .then(|| {
-                        let tool_size = *sizes.get(tool)?;
-                        let base_size = *sizes.get(base)?;
-                        (index.checked_sub(1 + tool_size) == Some(base))
+                        let tool_size = *sizes.get(*tool)?;
+                        let base_size = *sizes.get(*base)?;
+                        (index.checked_sub(1 + tool_size) == Some(*base))
                             .then_some(base_size + tool_size + 1)
                     })
+                    .flatten(),
+                Step::Dress { input, .. } => (index > 0 && *input == index - 1)
+                    .then(|| sizes.get(*input).map(|s| s + 1))
                     .flatten(),
             };
             sizes.push(size.ok_or_else(refused)?);
             steps.push(step);
         }
         let made = Symbolic(steps);
+        // A fillet or chamfer only as a request could have asked: a size the kernel's rules
+        // accept, and each edge one of its input's, once.
+        let mut counts: Vec<ElementCounts> = Vec::with_capacity(made.0.len());
+        for step in &made.0 {
+            let of = |i: usize| counts.get(i).copied().unwrap_or_default();
+            if let Step::Dress {
+                chamfer,
+                input,
+                size,
+                edges,
+            } = step
+            {
+                let sized = if *chamfer {
+                    silico_protocol::ChamferSize::Equal { distance: *size }.check()
+                } else {
+                    silico_protocol::check_fillet_radius(*size)
+                };
+                let mut seen = BTreeSet::new();
+                let edges_ok = !edges.is_empty()
+                    && edges
+                        .iter()
+                        .all(|&e| e > 0 && e <= of(*input).edges && seen.insert(e));
+                if sized.is_err() || !edges_ok {
+                    return Err(refused());
+                }
+            }
+            counts.push(match step {
+                Step::Primitive(primitive) => primitive_counts(primitive),
+                Step::Translate { input, .. } | Step::Dress { input, .. } => of(*input),
+                Step::Boolean { base, tool, .. } => sum(of(*base), of(*tool)),
+            });
+        }
         // One shape, every step part of it, and every number as `text` writes it.
         if sizes.last() != Some(&made.0.len()) || made.text().as_bytes() != bytes {
             return Err(refused());
@@ -800,7 +920,7 @@ impl Symbolic {
             let of = |i: usize| counts.get(i).copied().unwrap_or_default();
             let made = match step {
                 Step::Primitive(primitive) => primitive_counts(primitive),
-                Step::Translate { input, .. } => of(*input),
+                Step::Translate { input, .. } | Step::Dress { input, .. } => of(*input),
                 Step::Boolean { base, tool, .. } => sum(of(*base), of(*tool)),
             };
             counts.push(made);
@@ -822,7 +942,7 @@ impl Symbolic {
                 Step::Primitive(primitive) => {
                     (primitive_topology(primitive), primitive_counts(primitive))
                 }
-                Step::Translate { input, .. } => of(*input),
+                Step::Translate { input, .. } | Step::Dress { input, .. } => of(*input),
                 Step::Boolean { base, tool, .. } => {
                     let ((mut topology, a), (tool, b)) = (of(*base), of(*tool));
                     let tool = shifted(&tool, a);
@@ -846,6 +966,7 @@ impl Symbolic {
                 Step::Primitive(primitive) => Measured::primitive(primitive),
                 Step::Translate { input, offset } => of(*input).moved(*offset),
                 Step::Boolean { base, tool, .. } => of(*base).with(of(*tool)),
+                Step::Dress { input, .. } => of(*input),
             };
             measured.push(made);
         }
@@ -896,6 +1017,17 @@ impl Symbolic {
                         parts.push(Part::Step(*tool));
                         parts.push(Part::Text(", ".to_owned()));
                         parts.push(Part::Step(*base));
+                    }
+                    Some(Step::Dress {
+                        chamfer,
+                        input,
+                        size,
+                        edges,
+                    }) => {
+                        out.push_str(if *chamfer { "chamfer(" } else { "fillet(" });
+                        let edges: Vec<String> = edges.iter().map(u32::to_string).collect();
+                        parts.push(Part::Text(format!(", {size}, [{}])", edges.join(", "))));
+                        parts.push(Part::Step(*input));
                     }
                     None => {}
                 },
@@ -1066,6 +1198,16 @@ fn parse_step(line: &str) -> Option<Step> {
         ("translate", [input, x, y, z]) => Step::Translate {
             input: index(input)?,
             offset: [number(x)?, number(y)?, number(z)?],
+        },
+        ("fillet" | "chamfer", [input, size, edges]) => Step::Dress {
+            chamfer: name == "chamfer",
+            input: index(input)?,
+            size: number(size)?,
+            // Which are the input's, [`Symbolic::read`] checks.
+            edges: edges
+                .split(',')
+                .map(|e| e.parse::<u32>().ok())
+                .collect::<Option<_>>()?,
         },
         _ => Step::Primitive(parse_primitive(name, &numbers()?)?),
     })

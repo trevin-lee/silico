@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use silico_core::ErrorCode;
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::{
-    Blob, BooleanOp, Generation, Kernel, KernelRequest, Op, Primitive, ShapeData,
+    Blob, BooleanOp, ChamferSize, Generation, Kernel, KernelRequest, Op, Primitive, ShapeData,
 };
 use silico_core::pool::{Outcome, Pending};
 
@@ -565,9 +565,18 @@ fn every_operation_the_fake_does_not_do_is_a_structured_internal_error() {
         within(
             kernel.submit(
                 Generation(0),
-                KernelRequest::fillet(&shape, &[1], 0.1).unwrap(),
+                KernelRequest::chamfer(
+                    &shape,
+                    &[1],
+                    ChamferSize::TwoDistances {
+                        distance: 0.1,
+                        other: 0.2,
+                    },
+                    false,
+                )
+                .unwrap(),
             ),
-            "fillet",
+            "uneven chamfer",
         )
         .done()
         .unwrap()
@@ -593,4 +602,74 @@ fn every_operation_the_fake_does_not_do_is_a_structured_internal_error() {
         assert!(error.suggestion().is_some());
     }
     run(&kernel, KernelRequest::make(block(1.0, 1.0, 1.0)).unwrap());
+}
+
+// --- Dressings ----------------------------------------------------------------------------
+
+#[test]
+fn a_dressing_of_edges_the_shape_hasnt_is_refused_and_its_last_edge_taken() {
+    // Found by mutation testing: nothing held the fake's refusal of edges a shape hasn't.
+    // A box has 12 edges: none, the 0th, and the 13th are refused, as the kernel refuses
+    // them; the 12th is filleted.
+    let kernel = FakeKernel::new(1).unwrap();
+    let made = run(&kernel, KernelRequest::make(block(1.0, 1.0, 1.0)).unwrap());
+    for edges in [&[][..], &[0], &[13], &[1, 13]] {
+        let outcome = within(
+            kernel.submit(
+                kernel.generation(),
+                KernelRequest::fillet(&made, edges, 0.1).unwrap(),
+            ),
+            "a fillet of edges a box hasn't",
+        );
+        let Outcome::Done(Err(error)) = outcome else {
+            panic!("{edges:?}: {outcome:?}")
+        };
+        assert_eq!(error.code(), ErrorCode::KernelFailed, "{edges:?}");
+    }
+    let built = run(&kernel, KernelRequest::fillet(&made, &[12], 0.1).unwrap());
+    assert_eq!(
+        FakeKernel::describe(&built.shape).as_deref(),
+        Some("fillet(box(1, 1, 1), 0.1, [12])")
+    );
+}
+
+#[test]
+fn a_boolean_of_a_dressed_tool_keeps_the_tools_steps_in_place() {
+    // Found by mutation testing: a tool's steps are shifted after the base's when a boolean
+    // joins them, and nothing held that a dressing's input is shifted too. The fuse reads
+    // back, and says the fillet is of the tool's box.
+    let kernel = FakeKernel::new(1).unwrap();
+    let base = run(&kernel, KernelRequest::make(block(1.0, 1.0, 1.0)).unwrap());
+    let other = run(&kernel, KernelRequest::make(block(2.0, 2.0, 2.0)).unwrap());
+    let tool = run(&kernel, KernelRequest::fillet(&other, &[3], 0.5).unwrap()).shape;
+    let fused = run(
+        &kernel,
+        KernelRequest::boolean(BooleanOp::Fuse, &base, &tool),
+    )
+    .shape;
+    assert_eq!(
+        FakeKernel::describe(&fused).as_deref(),
+        Some("fuse(box(1, 1, 1), fillet(box(2, 2, 2), 0.5, [3]))")
+    );
+}
+
+#[test]
+fn a_dressing_in_shape_bytes_of_no_edge_a_repeated_one_or_one_past_the_shapes_is_refused() {
+    // Found by mutation testing: shape bytes naming the 0th edge read as a shape. A fake's
+    // dressing names edges of its input from 1, each once, at most its count.
+    let kernel = FakeKernel::new(1).unwrap();
+    let made = run(&kernel, KernelRequest::make(block(1.0, 1.0, 1.0)).unwrap());
+    let built = run(&kernel, KernelRequest::fillet(&made, &[1], 0.5).unwrap()).shape;
+    let real = std::str::from_utf8(built.brep().as_bytes())
+        .unwrap()
+        .to_owned();
+    assert!(real.ends_with(" 1\n"), "{real:?}");
+    assert!(FakeKernel::describe(&built).is_some());
+    let stem = &real[..real.len() - 2];
+    for edges in ["0", "1,1", "13", "1,0"] {
+        let bytes = format!("{stem}{edges}\n");
+        let shape = ShapeData::checked(Blob::inline(bytes.clone().into_bytes()), true);
+        assert_eq!(FakeKernel::describe(&shape), None, "{bytes:?}");
+        assert_eq!(FakeKernel::counts(&shape), None, "{bytes:?}");
+    }
 }

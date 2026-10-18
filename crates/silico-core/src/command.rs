@@ -17,7 +17,7 @@ use crate::{Error, ErrorCode};
 /// What was wrong with a document: every problem found, in the order found (reading, then
 /// the gate, then each failed feature and each fingerprint that doesn't hold, in timeline
 /// order), and how many there are, more than [`Problems::errors`] lists only when the gate
-/// found too many to list.
+/// found too many to list, or a feature more broken references than it lists.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Problems {
     errors: Vec<Error>,
@@ -30,8 +30,16 @@ impl Problems {
         Problems { errors, total }
     }
 
-    /// The problems listed: every one, or the first [`document::PROBLEMS_LISTED`] the gate
-    /// found.
+    /// `errors`, of which there are `unlisted` more than it lists (a feature's broken
+    /// references past the first hundred).
+    fn with_unlisted(errors: Vec<Error>, unlisted: u64) -> Self {
+        let total = errors.len() as u64 + unlisted;
+        Problems { errors, total }
+    }
+
+    /// The problems listed: every one; or, where there are more, the first
+    /// [`document::PROBLEMS_LISTED`] the gate found, or each feature's first hundred broken
+    /// references.
     pub fn errors(&self) -> &[Error] {
         &self.errors
     }
@@ -87,8 +95,9 @@ pub fn rebuild<K: Kernel + 'static>(
 pub fn check(model: &Model) -> Result<Problems, Error> {
     let _span = tracing::info_span!("check").entered();
     let mut problems = failures(model)?;
+    let unlisted = model.unlisted_errors();
     problems.extend(own(model.drift())?);
-    Ok(Problems::of(problems))
+    Ok(Problems::with_unlisted(problems, unlisted))
 }
 
 /// The model's failed features, as problems of the document; or, if one failed for a
@@ -127,6 +136,7 @@ pub struct Formatted {
 pub fn format(model: &Model) -> Result<Result<Formatted, Problems>, Error> {
     let _span = tracing::info_span!("format").entered();
     let mut problems = failures(model)?;
+    let unlisted = model.unlisted_errors();
     let written = model.fingerprinted();
     let refingerprinted = model
         .document()
@@ -150,16 +160,17 @@ pub fn format(model: &Model) -> Result<Result<Formatted, Problems>, Error> {
     Ok(Ok(Formatted {
         text,
         refingerprinted,
-        problems: Problems::of(problems),
+        problems: Problems::with_unlisted(problems, unlisted),
     }))
 }
 
 /// The document's outline, for reading and for `git diff` (`silico show`): one line per
 /// feature, in timeline order, saying what it is, its values as the file writes them,
 /// and its fingerprint, if stored; its note, if any, on the line after; for a sketch, its
-/// points, curves, and constraints after that, a line each as the file writes them; and
-/// the bodies the timeline ends with. Nothing is aligned in columns, so an edit to one
-/// feature, or one of a sketch's elements, changes its lines alone.
+/// points, curves, and constraints after that, a line each as the file writes them, and
+/// for a fillet or chamfer, its edges, a line each; and the bodies the timeline ends
+/// with. Nothing is aligned in columns, so an edit to one feature, one of a sketch's
+/// elements, or one edge, changes its lines alone.
 pub fn outline(document: &Document) -> String {
     // Every field taken apart, so one added to a document or a feature is a compile error
     // here until the outline says it or says why not: what it leaves out, `git diff`
@@ -204,6 +215,11 @@ pub fn outline(document: &Document) -> String {
             for (kind, text) in document::sketch_elements(sketch) {
                 let _ = writeln!(out, "  {kind} {text}");
             }
+        }
+        // A fillet's or chamfer's edges, a line each, quoted (a name can be long, and in a
+        // document the gate hasn't passed, anything), so an edit to one changes its line.
+        for edge in operation.edges() {
+            let _ = writeln!(out, "  edge {}", quoted(edge.as_str()));
         }
     }
     let bodies = bodies(document);
@@ -257,6 +273,11 @@ fn values(operation: &Operation) -> String {
         | Operation::Common { base, tool } => format!("base {base}, tool {tool}"),
         // Its elements follow, a line each.
         Operation::Sketch(sketch) => format!("plane {}", sketch.plane.as_str()),
+        // Its edges follow, a line each.
+        Operation::Fillet { base, radius, .. } => format!("base {base}, radius {radius}"),
+        Operation::Chamfer { base, size, .. } => {
+            format!("base {base}, size.distance {}", size.distance)
+        }
     }
 }
 
@@ -281,8 +302,7 @@ fn bodies(document: &Document) -> Vec<String> {
     let consumed: std::collections::BTreeSet<&document::FeatureId> = document
         .features
         .iter()
-        .filter_map(|f| f.operation.inputs())
-        .flat_map(|inputs| inputs.into_iter().map(|(_, id)| id))
+        .flat_map(|f| f.operation.inputs().into_iter().map(|(_, id)| id))
         .collect();
     document
         .features
