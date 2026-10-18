@@ -15,7 +15,7 @@ pub mod worker;
 use silico_protocol::{
     Algorithm, DragBegin, Failure, InvalidParameter, Moved, PointOf, Refusal, SketchGeometry,
     SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value, check_drag_target,
-    no_distance, within_reach,
+    unbuildable, within_reach,
 };
 
 #[cxx::bridge(namespace = "silico_sketch")]
@@ -64,11 +64,24 @@ mod ffi {
         Angle,
         EqualLength,
         Radius,
+        HorizontalPoints,
+        VerticalPoints,
+        PointLineDistance,
+        PointOnCircle,
+        EqualRadius,
+        TangentLine,
+        TangentCircles,
+        TangentOn,
+        AngleViaPoint,
+        SymmetricLine,
+        MidpointOnLine,
+        SymmetricPoint,
     }
 
     /// A constraint: its kind, its tag (0 for an arc's rules), what it names (`b_position`
-    /// `None` for a constraint of one operand, whose `b` is then never read), and its value
-    /// (if it has one; otherwise 0, never read).
+    /// `None` for a constraint of one operand, and `c_position` for one of two, whose
+    /// operands are then never read), its value (if it has one; otherwise 0, never read), and
+    /// a choice of two (a tangency of circles' `internal`; otherwise false, never read).
     struct ConstraintIn {
         kind: ConstraintKind,
         tag: u32,
@@ -76,7 +89,10 @@ mod ffi {
         a: u32,
         b_position: Position,
         b: u32,
+        c_position: Position,
+        c: u32,
         value: u32,
+        flag: bool,
     }
 
     /// PlaneGCS's algorithms.
@@ -85,18 +101,16 @@ mod ffi {
         DogLeg,
         LevenbergMarquardt,
         Bfgs,
+        AnchoredSqp,
     }
 
     /// How a solve ended: PlaneGCS's `SolveStatus` (it never returns its fourth,
-    /// `SuccessfulSolutionInvalid`, which only FreeCAD's sketch sets), and the bridge's
-    /// reading of a Converged that can only be its redundancy check.
+    /// `SuccessfulSolutionInvalid`, which only FreeCAD's sketch sets).
     #[repr(u8)]
     enum Status {
         Success,
         Converged,
         Failed,
-        /// See [`SolveStatus::SolvedExceptRedundant`](super::SolveStatus).
-        SolvedExceptRedundant,
     }
 
     struct SolveInput {
@@ -107,22 +121,21 @@ mod ffi {
         algorithms: Vec<AlgorithmIn>,
     }
 
-    /// What PlaneGCS found, as [`Solved`](super::Solved) has it.
-    struct SolveOutput {
+    /// What PlaneGCS's diagnosis found, as [`Solved`](super::Solved) has it.
+    struct Diagnosed {
         dofs: i32,
         conflicting: Vec<i32>,
         redundant: Vec<i32>,
         partially_redundant: Vec<i32>,
         free: Vec<u32>,
         no_equations: bool,
+    }
+
+    /// One algorithm's solve: PlaneGCS's status, and every value of its solution unless it
+    /// failed (otherwise none).
+    struct Attempt {
         status: Status,
-        /// The index in `algorithms` of the one that solved (Success or
-        /// SolvedExceptRedundant), or -1.
-        succeeded: i32,
         values: Vec<f64>,
-        /// Each tagged constraint's residual, by tag in increasing order.
-        residual_tags: Vec<u32>,
-        residuals: Vec<f64>,
     }
 
     /// A point a drag pins (never `None` or `Geometry`), its geometry, and the weight of its
@@ -141,8 +154,8 @@ mod ffi {
         conflicting: Vec<i32>,
     }
 
-    /// How a drag's move ended: PlaneGCS's status (never `SolvedExceptRedundant`), and every
-    /// value when it's `Success` (otherwise none).
+    /// How a drag's move ended: PlaneGCS's status, and every value when it's `Success`
+    /// (otherwise none).
     struct MoveOutput {
         status: Status,
         values: Vec<f64>,
@@ -151,7 +164,16 @@ mod ffi {
     unsafe extern "C++" {
         include!("silico-sketch/cpp/bridge.h");
 
-        fn solve(input: &SolveInput) -> Result<SolveOutput>;
+        /// A sketch built and diagnosed once, to be solved by one algorithm after another.
+        type Solver;
+        fn solver_new(input: &SolveInput) -> Result<UniquePtr<Solver>>;
+        fn solver_diagnosis(solver: &Solver) -> Diagnosed;
+        fn solver_try(solver: Pin<&mut Solver>, algorithm: AlgorithmIn) -> Result<Attempt>;
+        fn solver_residuals(
+            solver: Pin<&mut Solver>,
+            values: &[f64],
+            tags: &[u32],
+        ) -> Result<Vec<f64>>;
 
         /// A drag under way: the PlaneGCS system of the part a drag moves, kept between moves.
         type DragSession;
@@ -199,33 +221,98 @@ pub fn invalid(e: InvalidParameter) -> Failure {
 }
 
 /// Diagnoses `system`, which must have passed [`SketchSystem::check`], and solves it with
-/// each of its algorithms in turn until one solves. A solution out of reach is refused.
+/// each of its algorithms in turn, each from the values it gives, until one solves on
+/// geometry that can be built ([`SketchSystem::unbuildable`]): FreeCAD's
+/// `Sketch::internalSolve`, which undoes a solution its geometry refuses and tries the next
+/// (`fc128d357d`); a solution out of reach is one of those.
+///
+/// With equations dropped as redundant, PlaneGCS's `System::solve` checks the dropped ones on
+/// the values it started from, before its solution is written back, and turns `Success` into
+/// `Converged` if they miss there; so whether it says `Success` depends on where the sketch
+/// was drawn, not on the solution. A solve with equations dropped is reported as solved
+/// except them either way: everything it kept is met, and the dropped ones' residuals on the
+/// solution say whether they agree, the core's to judge (docs/roadmap/m3-sketcher.md,
+/// decision 5). DogLeg and Levenberg–Marquardt end only in `Success` or `Failed` (GCS.cpp,
+/// `solve_DL` and `solve_LM`), so their `Converged` is that check: that holds while every
+/// constraint is driving with a tag of 0 or more, so there's no auxiliary subsystem. BFGS
+/// and anchored SQP can end `Converged` of their own accord, so theirs stays unsolved, as
+/// FreeCAD reads it.
 pub fn solve(system: &SketchSystem) -> Result<Solved, Failure> {
     prepare_eigen();
-    let out = ffi::solve(&encode(system)).map_err(bridge_threw)?;
-    check_reach(&out.values)?;
-    Ok(Solved {
-        dofs: out.dofs,
-        conflicting: tags(&out.conflicting)?,
-        redundant: tags(&out.redundant)?,
-        partially_redundant: tags(&out.partially_redundant)?,
-        free: out.free.iter().map(|&v| Value(v)).collect(),
-        no_equations: out.no_equations,
-        status: match out.status {
-            ffi::Status::Success => SolveStatus::Success,
-            ffi::Status::Converged => SolveStatus::Converged,
-            ffi::Status::Failed => SolveStatus::Failed,
-            ffi::Status::SolvedExceptRedundant => SolveStatus::SolvedExceptRedundant,
+    let mut solver = ffi::solver_new(&encode(system)).map_err(bridge_threw)?;
+    let diagnosed = ffi::solver_diagnosis(&solver);
+    let conflicting = tags(&diagnosed.conflicting)?;
+    let redundant = tags(&diagnosed.redundant)?;
+    let partially_redundant = tags(&diagnosed.partially_redundant)?;
+    let dropped = !redundant.is_empty() || !partially_redundant.is_empty();
+    let mut status = SolveStatus::Failed;
+    let mut solution: Option<(Algorithm, Vec<f64>)> = None;
+    let mut invalid: Option<(Algorithm, Vec<f64>)> = None;
+    // FreeCAD doesn't solve a sketch whose constraints conflict; the worker does, as M3.1's
+    // did, and the core reads the conflict first.
+    for &algorithm in &system.algorithms {
+        let attempt =
+            ffi::solver_try(solver.pin_mut(), encode_algorithm(algorithm)).map_err(bridge_threw)?;
+        let solved = match attempt.status {
+            ffi::Status::Success => true,
+            ffi::Status::Converged => {
+                dropped && matches!(algorithm, Algorithm::DogLeg | Algorithm::LevenbergMarquardt)
+            }
+            ffi::Status::Failed => false,
             _ => return Err(internal("the bridge returned a status Rust doesn't know")),
-        },
-        algorithm: usize::try_from(out.succeeded)
-            .ok()
-            .and_then(|i| system.algorithms.get(i).copied()),
-        values: out.values,
-        residuals: out
-            .residual_tags
+        };
+        if !solved {
+            status = if attempt.status == ffi::Status::Converged {
+                SolveStatus::Converged
+            } else {
+                SolveStatus::Failed
+            };
+            continue;
+        }
+        // A solution out of reach can't be built either: the next solve couldn't start
+        // from it.
+        if check_reach(&attempt.values).is_ok() && system.unbuildable(&attempt.values).is_empty() {
+            status = if dropped {
+                SolveStatus::SolvedExceptRedundant
+            } else {
+                SolveStatus::Success
+            };
+            solution = Some((algorithm, attempt.values));
+            break;
+        }
+        invalid.get_or_insert((algorithm, attempt.values));
+    }
+    if solution.is_none() && invalid.is_some() {
+        status = SolveStatus::SolvedInvalid;
+    }
+    let (algorithm, values) = match solution.or(invalid) {
+        Some((algorithm, values)) => (Some(algorithm), values),
+        None => (None, system.values.clone()),
+    };
+    // Every tagged constraint's residual on those values: PlaneGCS solves only the parts
+    // with unknowns, so this is how a constraint among fixed values alone shows whether it
+    // holds.
+    let mut tagged: Vec<u32> = system
+        .constraints
+        .iter()
+        .filter_map(|c| c.tag().map(|t| t.0))
+        .collect();
+    tagged.sort_unstable();
+    let residuals =
+        ffi::solver_residuals(solver.pin_mut(), &values, &tagged).map_err(bridge_threw)?;
+    Ok(Solved {
+        dofs: diagnosed.dofs,
+        conflicting,
+        redundant,
+        partially_redundant,
+        free: diagnosed.free.iter().map(|&v| Value(v)).collect(),
+        no_equations: diagnosed.no_equations,
+        status,
+        algorithm,
+        values,
+        residuals: tagged
             .iter()
-            .zip(&out.residuals)
+            .zip(&residuals)
             .map(|(&tag, &r)| (Tag(tag), r.is_finite().then_some(r)))
             .collect(),
     })
@@ -323,8 +410,14 @@ impl Drag {
             ffi::Status::Failed => SolveStatus::Failed,
             _ => return Err(internal("the bridge returned a status a move can't have")),
         };
-        // A solution stands only if its geometry can be built.
-        let status = if status == SolveStatus::Success && !buildable(&self.geometry, &out.values) {
+        // A solution out of reach is refused, as M3.7 does (the drag goes on from its last
+        // good frame); one in reach stands only if its geometry can be built.
+        if status == SolveStatus::Success {
+            check_reach(&out.values)?;
+        }
+        let status = if status == SolveStatus::Success
+            && !unbuildable(&self.geometry, &out.values).is_empty()
+        {
             SolveStatus::SolvedInvalid
         } else {
             status
@@ -337,25 +430,6 @@ impl Drag {
         };
         Ok(Moved { status, values })
     }
-}
-
-/// Whether geometry solved to `values` can be built, as FreeCAD's `Sketch::updateGeometry`
-/// finds when it makes its curves: a line has length to the solver ([`no_distance`], the
-/// rule the sketch worker's check applies; FreeCAD's `GeomLineSegment::setPoints`, "Both
-/// points are equal"),
-/// and a circle or an arc a radius above 0 (FreeCAD's `gp_Circ` refuses one below 0 and
-/// keeps 0; Silico draws nothing of no size).
-fn buildable(geometry: &[SketchGeometry], values: &[f64]) -> bool {
-    let at = |v: Value| values.get(v.0 as usize).copied().unwrap_or(f64::NAN);
-    geometry.iter().all(|g| match *g {
-        SketchGeometry::Line { start, end } => {
-            !no_distance([at(start.x), at(start.y)], [at(end.x), at(end.y)])
-        }
-        SketchGeometry::Circle { radius, .. } | SketchGeometry::Arc { radius, .. } => {
-            at(radius) > 0.0
-        }
-        SketchGeometry::Point(_) => true,
-    })
 }
 
 /// What the bridge threw, as a refusal.
@@ -427,12 +501,17 @@ fn encode(system: &SketchSystem) -> ffi::SolveInput {
         algorithms: system
             .algorithms
             .iter()
-            .map(|a| match a {
-                Algorithm::DogLeg => ffi::AlgorithmIn::DogLeg,
-                Algorithm::LevenbergMarquardt => ffi::AlgorithmIn::LevenbergMarquardt,
-                Algorithm::Bfgs => ffi::AlgorithmIn::Bfgs,
-            })
+            .map(|&a| encode_algorithm(a))
             .collect(),
+    }
+}
+
+fn encode_algorithm(a: Algorithm) -> ffi::AlgorithmIn {
+    match a {
+        Algorithm::DogLeg => ffi::AlgorithmIn::DogLeg,
+        Algorithm::LevenbergMarquardt => ffi::AlgorithmIn::LevenbergMarquardt,
+        Algorithm::Bfgs => ffi::AlgorithmIn::Bfgs,
+        Algorithm::AnchoredSqp => ffi::AlgorithmIn::AnchoredSqp,
     }
 }
 
@@ -450,28 +529,108 @@ fn encode_constraint(c: &SolverConstraint) -> ffi::ConstraintIn {
     let tag = c.tag().map_or(0, |t| t.0);
     let whole = |g: silico_protocol::Geometry| (ffi::Position::Geometry, g.0);
     let none = (ffi::Position::None, 0);
-    let (kind, a, b, value) = match *c {
-        SolverConstraint::ArcRules { arc } => (K::ArcRules, whole(arc), none, 0),
-        SolverConstraint::Coincident { a, b, .. } => (K::Coincident, point(a), point(b), 0),
-        SolverConstraint::Horizontal { line, .. } => (K::Horizontal, whole(line), none, 0),
-        SolverConstraint::Vertical { line, .. } => (K::Vertical, whole(line), none, 0),
+    let (kind, a, b, c3, value, flag) = match *c {
+        SolverConstraint::ArcRules { arc } => (K::ArcRules, whole(arc), none, none, 0, false),
+        SolverConstraint::Coincident { a, b, .. } => {
+            (K::Coincident, point(a), point(b), none, 0, false)
+        }
+        SolverConstraint::Horizontal { line, .. } => {
+            (K::Horizontal, whole(line), none, none, 0, false)
+        }
+        SolverConstraint::Vertical { line, .. } => (K::Vertical, whole(line), none, none, 0, false),
         SolverConstraint::DistanceX { a, b, value, .. } => {
-            (K::DistanceX, point(a), point(b), value.0)
+            (K::DistanceX, point(a), point(b), none, value.0, false)
         }
         SolverConstraint::DistanceY { a, b, value, .. } => {
-            (K::DistanceY, point(a), point(b), value.0)
+            (K::DistanceY, point(a), point(b), none, value.0, false)
         }
         SolverConstraint::Distance { a, b, value, .. } => {
-            (K::Distance, point(a), point(b), value.0)
+            (K::Distance, point(a), point(b), none, value.0, false)
         }
         SolverConstraint::PointOnLine { point: p, line, .. } => {
-            (K::PointOnLine, point(p), whole(line), 0)
+            (K::PointOnLine, point(p), whole(line), none, 0, false)
         }
-        SolverConstraint::Parallel { a, b, .. } => (K::Parallel, whole(a), whole(b), 0),
-        SolverConstraint::Perpendicular { a, b, .. } => (K::Perpendicular, whole(a), whole(b), 0),
-        SolverConstraint::Angle { a, b, value, .. } => (K::Angle, whole(a), whole(b), value.0),
-        SolverConstraint::EqualLength { a, b, .. } => (K::EqualLength, whole(a), whole(b), 0),
-        SolverConstraint::Radius { circle, value, .. } => (K::Radius, whole(circle), none, value.0),
+        SolverConstraint::Parallel { a, b, .. } => {
+            (K::Parallel, whole(a), whole(b), none, 0, false)
+        }
+        SolverConstraint::Perpendicular { a, b, .. } => {
+            (K::Perpendicular, whole(a), whole(b), none, 0, false)
+        }
+        SolverConstraint::Angle { a, b, value, .. } => {
+            (K::Angle, whole(a), whole(b), none, value.0, false)
+        }
+        SolverConstraint::EqualLength { a, b, .. } => {
+            (K::EqualLength, whole(a), whole(b), none, 0, false)
+        }
+        SolverConstraint::Radius { circle, value, .. } => {
+            (K::Radius, whole(circle), none, none, value.0, false)
+        }
+        SolverConstraint::HorizontalPoints { a, b, .. } => {
+            (K::HorizontalPoints, point(a), point(b), none, 0, false)
+        }
+        SolverConstraint::VerticalPoints { a, b, .. } => {
+            (K::VerticalPoints, point(a), point(b), none, 0, false)
+        }
+        SolverConstraint::PointLineDistance {
+            point: p,
+            line,
+            value,
+            ..
+        } => (
+            K::PointLineDistance,
+            point(p),
+            whole(line),
+            none,
+            value.0,
+            false,
+        ),
+        SolverConstraint::PointOnCircle {
+            point: p, circle, ..
+        } => (K::PointOnCircle, point(p), whole(circle), none, 0, false),
+        SolverConstraint::EqualRadius { a, b, .. } => {
+            (K::EqualRadius, whole(a), whole(b), none, 0, false)
+        }
+        SolverConstraint::TangentLine { line, circle, .. } => {
+            (K::TangentLine, whole(line), whole(circle), none, 0, false)
+        }
+        SolverConstraint::TangentCircles { a, b, internal, .. } => {
+            (K::TangentCircles, whole(a), whole(b), none, 0, internal)
+        }
+        SolverConstraint::TangentOn {
+            a,
+            point: p,
+            b,
+            angle,
+            ..
+        } => (K::TangentOn, whole(a), whole(b), point(p), angle.0, false),
+        SolverConstraint::AngleViaPoint {
+            a,
+            b,
+            point: p,
+            angle,
+            ..
+        } => (
+            K::AngleViaPoint,
+            whole(a),
+            whole(b),
+            point(p),
+            angle.0,
+            false,
+        ),
+        SolverConstraint::SymmetricLine { a, b, line, .. } => {
+            (K::SymmetricLine, point(a), point(b), whole(line), 0, false)
+        }
+        SolverConstraint::MidpointOnLine { a, b, line, .. } => {
+            (K::MidpointOnLine, point(a), point(b), whole(line), 0, false)
+        }
+        SolverConstraint::SymmetricPoint { a, b, center, .. } => (
+            K::SymmetricPoint,
+            point(a),
+            point(b),
+            point(center),
+            0,
+            false,
+        ),
     };
     ffi::ConstraintIn {
         kind,
@@ -480,7 +639,10 @@ fn encode_constraint(c: &SolverConstraint) -> ffi::ConstraintIn {
         a: a.1,
         b_position: b.0,
         b: b.1,
+        c_position: c3.0,
+        c: c3.1,
         value,
+        flag,
     }
 }
 

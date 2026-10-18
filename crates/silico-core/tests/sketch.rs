@@ -829,19 +829,34 @@ fn a_sketch_makes_no_solid_for_a_boolean_or_a_fingerprint() {
 
 #[test]
 fn a_sketch_larger_than_the_solver_takes_is_refused() {
-    // 1025 points: 2050 unknowns, past the solver's 2048.
-    let points: Vec<String> = (0..1025)
+    // 513 points: 1,026 unknowns, past the solver's 1,024.
+    let points: Vec<String> = (0..513)
         .map(|i| format!(r#"{{"id": "p{i:07}", "x": {i}, "y": 0, "construction": false}}"#))
         .collect();
     let text = document(&fields(&points.join(", "), "", "", "", ""));
     assert_error(
         &problem(&text),
         "points",
-        "the sketch has 2050 unknowns (two for each point, one for each circle, three for each arc), more than the 2048 the sketch solver takes",
+        "the sketch has 1026 unknowns (two for each point, one for each circle, three for each arc), more than the 1024 the sketch solver takes",
     );
-    // 1024 points: 2048 unknowns, exactly the limit.
-    let text = document(&fields(&points[..1024].join(", "), "", "", "", ""));
+    // Advice a single profile past the limit can follow too (round 3's tests lens).
+    assert_eq!(
+        problem(&text).suggestion(),
+        Some(
+            "split the sketch into smaller sketches: a single profile past this is more work than the sketch solver takes"
+        )
+    );
+    // 512 points: 1,024 unknowns, exactly the limit.
+    let text = document(&fields(&points[..512].join(", "), "", "", "", ""));
     assert!(problems(&text).is_empty());
+    // And a circle about one of them: 1,025, one past it.
+    let circle = r#"{"id": "c0000000", "center": "p0000000", "radius": 1, "construction": false}"#;
+    let text = document(&fields(&points[..512].join(", "), "", circle, "", ""));
+    assert_error(
+        &problem(&text),
+        "points",
+        "the sketch has 1025 unknowns (two for each point, one for each circle, three for each arc), more than the 1024 the sketch solver takes",
+    );
 }
 
 #[test]

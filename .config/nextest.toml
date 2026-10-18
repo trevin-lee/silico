@@ -68,3 +68,14 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 [[profile.ci.overrides]]
 filter = 'package(silico-kernel) & test(=dropping_the_pool_while_a_slot_replaces_its_dead_worker_stops_at_once)'
 slow-timeout = { period = "60s", terminate-after = 10 }
+
+# A sketch no algorithm solves, at the most unknowns the worker takes (silico-sketch
+# adversarial_document): every algorithm tried in turn, 74 s to 206 s by the machine's load,
+# and given up to 900 s so it tests the answer, not the speed.
+[[profile.default.overrides]]
+filter = 'package(silico-sketch) & test(=an_impossible_chain_of_the_largest_size_fails_as_solve_failed_not_a_timeout)'
+slow-timeout = { period = "60s", terminate-after = 17 }
+
+[[profile.ci.overrides]]
+filter = 'package(silico-sketch) & test(=an_impossible_chain_of_the_largest_size_fails_as_solve_failed_not_a_timeout)'
+slow-timeout = { period = "60s", terminate-after = 17 }

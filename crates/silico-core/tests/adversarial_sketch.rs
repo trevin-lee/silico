@@ -821,51 +821,6 @@ fn every_kind_in_every_place_is_taken_exactly_where_the_design_says() {
 // Size.
 
 #[test]
-fn a_sketch_past_the_jacobians_limit_by_its_two_row_constraints_is_refused_promptly() {
-    // 1024 points (2048 unknowns, the most) and 8,193 symmetric constraints, two rows each:
-    // 16,386 rows × 2048 = 33,558,528 entries, past 2^25 = 33,554,432; 8,192 is 2^25
-    // exactly. Each count alone is within its own limit.
-    let points: Vec<String> = (0..1024)
-        .map(|i| format!(r#"{{"id": "p{i:07}", "x": {i}, "y": 0, "construction": false}}"#))
-        .collect();
-    let symmetric = |n: usize| -> Vec<String> {
-        (0..n)
-            .map(|i| {
-                format!(
-                    r#"{{"id": "k{i:07}", "type": "symmetric", "a": "p0000001", "b": "p0000002", "about": "p0000003"}}"#
-                )
-            })
-            .collect()
-    };
-    let over = document(&fields(
-        &points.join(","),
-        "",
-        "",
-        "",
-        &symmetric(8193).join(","),
-    ));
-    let all = within(Duration::from_secs(10), move || problems(&over));
-    let error = all
-        .iter()
-        .find(|e| e.message().contains("Jacobian"))
-        .unwrap_or_else(|| panic!("{all:#?}"));
-    assert_eq!(error.parameter(), Some("constraints"), "{error:?}");
-    assert!(error.message().contains("33558528"), "{error:?}");
-    let at = document(&fields(
-        &points.join(","),
-        "",
-        "",
-        "",
-        &symmetric(8192).join(","),
-    ));
-    let all = problems(&at);
-    assert!(
-        !all.iter().any(|e| e.message().contains("Jacobian")),
-        "{all:#?}"
-    );
-}
-
-#[test]
 fn a_huge_sketch_of_nothing_but_problems_is_checked_promptly() {
     // 120,000 constraints, each naming nothing that exists: read and checked within a few
     // seconds of CPU, every problem counted, a hundred listed.
@@ -880,7 +835,7 @@ fn a_huge_sketch_of_nothing_but_problems_is_checked_promptly() {
     });
     assert_eq!(invalid.errors().len(), PROBLEMS_LISTED);
     // Two dangling references each, and two sizes: 120,000 constraints past 10,000, and
-    // their 120,000 values (each a dimension's) and the origin's two past 10,000.
+    // their 120,000 values (each a dimension's) and the origin's and axes' six past 10,000.
     assert_eq!(invalid.total(), 2 * 120_000 + 2);
 }
 
@@ -893,8 +848,9 @@ fn ten_thousand_elements_sharing_one_id_are_each_named_once_promptly() {
     let invalid = within(Duration::from_secs(10), move || {
         validate(&read(text.as_bytes()).unwrap()).unwrap_err()
     });
-    // 9,999 duplicates, and 20,000 unknowns past 2048, and 20,002 values past 10,000.
-    assert_eq!(invalid.total(), 9_999 + 2);
+    // 9,999 duplicates, and 20,000 unknowns past 1024, 20,006 values past 10,000, and
+    // 10,003 pieces of geometry (the origin and the axes with them) past 10,000.
+    assert_eq!(invalid.total(), 9_999 + 3);
     assert_eq!(invalid.errors()[0].parameter(), Some("points.1.id"));
 }
 

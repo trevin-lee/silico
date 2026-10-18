@@ -6,7 +6,7 @@
 //! Each sketch is under-constrained so a drag moves something: a chain of links whose
 //! lengths and every other angle are fixed, its last end free; and a grid of rectangles,
 //! the last one's size left free. Sizes run from the stress corpus's (tens of constraints)
-//! to the worker's limit (2,048 unknowns). A drag takes at most `MAX_DRAG_UNKNOWNS` (256)
+//! to the worker's limit (1,024 unknowns: chain-256 and grid-8x8). A drag takes at most `MAX_DRAG_UNKNOWNS` (256)
 //! in the part it moves (chain-64; a grid's parts are small), so past that only the full
 //! solve is timed, and the table says the drag was refused. The dragged point follows a
 //! smooth path, 300 steps of 0.05 mm along a circle of radius 10 mm, each frame timed four
@@ -443,7 +443,7 @@ fn ms(d: Duration) -> f64 {
 
 fn main() -> Result<()> {
     let mut cases = Vec::new();
-    for links in [4, 40, 64, 120, 500] {
+    for links in [4, 40, 64, 120, 256] {
         let (system, point) = chain(links);
         cases.push(Case {
             name: format!("chain-{links}"),
@@ -451,7 +451,7 @@ fn main() -> Result<()> {
             point,
         });
     }
-    for n in [2, 3, 6, 11] {
+    for n in [2, 3, 6, 8] {
         let (system, point) = grid(n);
         cases.push(Case {
             name: format!("grid-{n}x{n}"),

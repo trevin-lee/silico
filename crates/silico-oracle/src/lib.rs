@@ -12,6 +12,7 @@ pub mod corpus;
 pub mod freecad;
 pub mod generate;
 pub mod silico;
+pub mod sketch;
 
 pub use case::{Case, Chamfer, Shape, load};
 pub use compare::{Measured, Outcome, Tolerance, differences};

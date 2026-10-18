@@ -20,18 +20,32 @@ pub const MAX_SKETCH_CONSTRAINTS: usize = 10_000;
 /// At most this many pieces of geometry in a system.
 pub const MAX_SKETCH_GEOMETRY: usize = 10_000;
 
-/// At most this many unknowns (about 500 lines): Levenberg–Marquardt forms a dense
-/// unknowns × unknowns matrix (32 MiB at this limit) and factors it in time that grows as
-/// the cube: about 13 s for 2,000 unknowns, 100 s for 4,000.
-pub const MAX_SKETCH_UNKNOWNS: usize = 2048;
+/// At most this many unknowns in a whole sketch (2 per point, 1 per circle, 3 per arc:
+/// 512 points, or about 250 lines). With `MAX_SKETCH_CONSTRAINTS` it bounds the worker's
+/// work, not its time: each algorithm runs at most 100 iterations, each a dense
+/// factorization of the equations the diagnosis kept by the unknowns (about equations ×
+/// unknowns² a step), and a sketch no algorithm solves is tried by all four (DogLeg,
+/// Levenberg–Marquardt, BFGS, anchored SQP). The time that work takes is the machine's, and
+/// `SKETCH_TIMEOUT` bounds it. Measured: a chain of 512 points held too far apart (514
+/// equations) took 74 s on a loaded M4 Pro and 206 s at a load of 80, and at 2,048 unknowns
+/// about 1,660 s; the same chain with one line given `horizontal` 2,000 times (2,514
+/// equations, every one kept, since the diagnosis's trial solve fails and so calls none of
+/// them redundant) took DogLeg alone 135 s at a load of 97 and all four past 300 s, which
+/// ends as `worker_timeout` naming the sketch (M3.3's reviews; decided on the maintainer's
+/// behalf, 2026-10-17). A count of the whole sketch; counting only its largest part
+/// (`SketchSystem::part`'s union-find), which PlaneGCS solves apart, is the next step when
+/// imports bring bigger sketches.
+pub const MAX_SKETCH_UNKNOWNS: usize = 1024;
 
 /// At most this many unknowns in the part of a sketch a drag moves (the unknowns its
-/// constraints join to the points its pins hold: [`DragBegin::part`]): while the cursor holds a point, PlaneGCS
-/// solves that part with SQP, on dense matrices, up to 100 iterations, so one move can cost
+/// constraints join to the points its pins hold: [`DragBegin::part`]): while the cursor
+/// holds a point, PlaneGCS solves that part with SQP, on dense matrices, up to 100
+/// iterations, so one move can cost
 /// far more than a solve. A chain the cursor pulls far from where it began, linked end to
 /// end: 0.76 s a move at 256 unknowns on a loaded M4 Pro, 6 s at 512, 64 s at 1024, past a
 /// request's time. A larger part solves, but doesn't drag; parts the point isn't in don't
-/// count (a 1,936-unknown grid of rectangles drags in 0.2 ms a move).
+/// count (a grid of rectangles drags in 0.2 ms a move, measured at 1,936 unknowns before
+/// a sketch was held to 1,024).
 pub const MAX_DRAG_UNKNOWNS: usize = 256;
 
 /// At most this many entries in the solver's Jacobian (rows × unknowns): PlaneGCS's
@@ -67,7 +81,9 @@ pub enum SketchGeometry {
         radius: Value,
     },
     /// An arc of a circle, counter-clockwise from `start_angle` to `end_angle` (radians),
-    /// with its end points: [`SolverConstraint::ArcRules`] ties them to the angles.
+    /// with its end points: [`SolverConstraint::ArcRules`] ties them to the angles. A
+    /// document's arc is defined by its points: the core works its radius and angles out
+    /// from them ([`arc_from_points`]) before it sends them.
     Arc {
         center: PointValues,
         radius: Value,
@@ -255,6 +271,106 @@ pub enum SolverConstraint {
         circle: Geometry,
         value: Value,
     },
+    /// Two points level: y(a) = y(b).
+    HorizontalPoints {
+        tag: Tag,
+        a: PointOf,
+        b: PointOf,
+    },
+    /// One point above the other: x(a) = x(b).
+    VerticalPoints {
+        tag: Tag,
+        a: PointOf,
+        b: PointOf,
+    },
+    /// A point's distance from a line (extended past its ends), on whichever side it is:
+    /// 1.1.3's PlaneGCS has no signed distance, so the point stays on the side it starts.
+    PointLineDistance {
+        tag: Tag,
+        point: PointOf,
+        line: Geometry,
+        value: Value,
+    },
+    /// A point on a circle, or on an arc's whole circle.
+    PointOnCircle {
+        tag: Tag,
+        point: PointOf,
+        circle: Geometry,
+    },
+    /// Two circles or arcs of the same radius.
+    EqualRadius {
+        tag: Tag,
+        a: Geometry,
+        b: Geometry,
+    },
+    /// A line tangent to a circle or arc along their edges: the centre as far from the line
+    /// (extended) as the radius, on whichever side it is, as for [`PointLineDistance`].
+    ///
+    /// [`PointLineDistance`]: SolverConstraint::PointLineDistance
+    TangentLine {
+        tag: Tag,
+        line: Geometry,
+        circle: Geometry,
+    },
+    /// Two circles or arcs tangent along their edges: their centres the sum of their radii
+    /// apart, or, `internal`, the difference (PlaneGCS's `TangentCircumf`).
+    TangentCircles {
+        tag: Tag,
+        a: Geometry,
+        b: Geometry,
+        internal: bool,
+    },
+    /// `point`, an end of `a`, on `b` (a line extended, or a circle, or an arc's whole
+    /// circle), and the angle from `a`'s normal to `b`'s there `angle`: FreeCAD's
+    /// endpoint-to-edge tangency, two equations under one tag. A curve's normal is its own
+    /// direction (a line's from start to end, a circle's or arc's counter-clockwise) turned a
+    /// quarter counter-clockwise, so an `angle` of 0 holds the two directions the same there,
+    /// and π opposite.
+    TangentOn {
+        tag: Tag,
+        a: Geometry,
+        point: PointOf,
+        b: Geometry,
+        angle: Value,
+    },
+    /// The angle from `a`'s normal to `b`'s at `point` (as for [`TangentOn`]): FreeCAD's
+    /// endpoint-to-endpoint tangency, where the point is both curves' end, so they need no
+    /// coincidence.
+    ///
+    /// [`TangentOn`]: SolverConstraint::TangentOn
+    AngleViaPoint {
+        tag: Tag,
+        a: Geometry,
+        b: Geometry,
+        point: PointOf,
+        angle: Value,
+    },
+    /// `a` and `b` mirror each other about a line: the segment between them perpendicular to
+    /// the line, and its middle on the line (extended). Two equations.
+    SymmetricLine {
+        tag: Tag,
+        a: PointOf,
+        b: PointOf,
+        line: Geometry,
+    },
+    /// The middle of `a` and `b` on a line (extended): what's left of [`SymmetricLine`] for
+    /// an arc's own ends about a line its centre is held on (FreeCAD `365af33fc6`).
+    ///
+    /// [`SymmetricLine`]: SolverConstraint::SymmetricLine
+    MidpointOnLine {
+        tag: Tag,
+        a: PointOf,
+        b: PointOf,
+        line: Geometry,
+    },
+    /// `a` and `b` mirror each other about `center`: it's on the line through them, and
+    /// equally far from both. Two equations.
+    SymmetricPoint {
+        tag: Tag,
+        a: PointOf,
+        b: PointOf,
+        center: PointOf,
+    },
 }
 
 /// The number a constraint is reported by: from 1 (PlaneGCS never reports tag 0).
@@ -267,6 +383,11 @@ pub enum Algorithm {
     DogLeg,
     LevenbergMarquardt,
     Bfgs,
+    /// FreeCAD's last resort (`Sketch::internalSolve`): every unknown anchored at its
+    /// starting value by a row of lower priority (tag −1), so each part with unknowns is
+    /// solved by SQP, keeping the sketch's constraints and staying as near the start as they
+    /// let it.
+    AnchoredSqp,
 }
 
 /// What the sketch worker solves.
@@ -278,9 +399,10 @@ pub struct SketchSystem {
     pub unknowns: Vec<Value>,
     pub geometry: Vec<SketchGeometry>,
     pub constraints: Vec<SolverConstraint>,
-    /// The algorithms to try, in order, after one diagnosis, until one solves (FreeCAD's
-    /// fallback: DogLeg, then Levenberg–Marquardt, then BFGS; its last step, SQP on a system
-    /// anchored at the given values, comes with M3.3): one to three, each once.
+    /// The algorithms to try, in order, after one diagnosis, until one solves on geometry
+    /// that can be built (FreeCAD's fallback: DogLeg, then Levenberg–Marquardt, then BFGS,
+    /// then SQP anchored at the given values): one to four, each once. They're tried even
+    /// when constraints conflict, which FreeCAD doesn't solve: the core reads the conflict.
     pub algorithms: Vec<Algorithm>,
 }
 
@@ -310,12 +432,14 @@ pub enum SolveStatus {
     /// The solver failed.
     Failed,
     /// The solver met the constraints, but on geometry that can't be built: a line of no
-    /// length (dx² + dy² is 0), or a circle or arc whose radius isn't above 0. Nothing is
-    /// kept. FreeCAD undoes such a solution too (`Sketch::internalSolve`, "Invalid
-    /// solution"), but during a drag still reports it as a success and draws the drag's
-    /// start for that frame; Silico reports it, and the client keeps its last good frame. A
-    /// radius of exactly 0 FreeCAD keeps; Silico draws nothing of no size. A drag's move
-    /// gives it; a solve's comes with M3.3.
+    /// length (dx² + dy² is 0), a circle or arc whose radius isn't above 0, an arc whose
+    /// start and end are at one place (dx² + dy² is 0), or (a solve's) any value out of reach
+    /// ([`within_reach`]), which the next solve couldn't start from. Nothing
+    /// is kept. FreeCAD undoes such a solution too and tries its next algorithm
+    /// (`Sketch::internalSolve`, "Invalid solution", `fc128d357d`), as a solve does, but
+    /// during a drag still reports it as a success and draws the drag's start for that
+    /// frame; Silico reports it, and the client keeps its last good frame. A radius of
+    /// exactly 0 FreeCAD keeps; Silico draws nothing of no size.
     SolvedInvalid,
 }
 
@@ -336,14 +460,17 @@ pub struct Solved {
     pub free: Vec<Value>,
     /// The diagnosis had no equations: no constraint touches an unknown.
     pub no_equations: bool,
-    /// How the solve ended: the first algorithm to solve (`Success` or
-    /// `SolvedExceptRedundant`), or the last tried.
+    /// How the solve ended: the first algorithm to solve on geometry that can be built
+    /// (`Success` or `SolvedExceptRedundant`); otherwise `SolvedInvalid` if any solved on
+    /// geometry that can't, or the last tried's.
     pub status: SolveStatus,
-    /// The algorithm that solved, exactly when the status is `Success` or
-    /// `SolvedExceptRedundant`.
+    /// The algorithm whose solution `values` holds: the one that solved, or for
+    /// `SolvedInvalid` the first whose solution can't be built.
     pub algorithm: Option<Algorithm>,
-    /// Every value after the solve: the solution when the status is `Success` or
-    /// `SolvedExceptRedundant`, otherwise as given.
+    /// Every value: the solution when the status is `Success` or `SolvedExceptRedundant`,
+    /// the first solution that can't be built for
+    /// `SolvedInvalid` (so the core can say what can't; its values may be out of reach, or
+    /// not numbers), and otherwise as given.
     pub values: Vec<f64>,
     /// Each tagged constraint's residual on those values, by tag in increasing order, as
     /// PlaneGCS measures it: its error for a constraint of one equation, the root mean
@@ -486,12 +613,12 @@ impl SketchSystem {
         }
         let algorithms = &self.algorithms;
         if algorithms.is_empty()
-            || algorithms.len() > 3
+            || algorithms.len() > 4
             || (1..algorithms.len()).any(|i| algorithms[..i].contains(&algorithms[i]))
         {
             return Err(invalid(
                 "algorithms",
-                format!("algorithms must be one to three different ones, got {algorithms:?}"),
+                format!("algorithms must be one to four different ones, got {algorithms:?}"),
             ));
         }
         // A kilometre, or as many radians: everything the kernel can make is within reach.
@@ -700,6 +827,82 @@ impl SketchSystem {
                 want(b, &[Line])?;
                 dimension(v)?;
             }
+            SolverConstraint::HorizontalPoints { a, b, .. }
+            | SolverConstraint::VerticalPoints { a, b, .. } => {
+                point(a)?;
+                point(b)?;
+            }
+            SolverConstraint::PointLineDistance {
+                point: p,
+                line,
+                value: v,
+                ..
+            } => {
+                point(p)?;
+                want(line, &[Line])?;
+                dimension(v)?;
+            }
+            SolverConstraint::PointOnCircle {
+                point: p, circle, ..
+            } => {
+                point(p)?;
+                want(circle, &[Circle, Arc])?;
+            }
+            SolverConstraint::EqualRadius { a, b, .. }
+            | SolverConstraint::TangentCircles { a, b, .. } => {
+                want(a, &[Circle, Arc])?;
+                want(b, &[Circle, Arc])?;
+            }
+            SolverConstraint::TangentLine { line, circle, .. } => {
+                want(line, &[Line])?;
+                want(circle, &[Circle, Arc])?;
+            }
+            SolverConstraint::TangentOn {
+                a,
+                point: p,
+                b,
+                angle,
+                ..
+            } => {
+                want(a, &[Line, Arc])?;
+                want(b, &[Line, Circle, Arc])?;
+                if !matches!(p, PointOf::Start(g) | PointOf::End(g) if g == a) {
+                    return Err(invalid(
+                        "constraints",
+                        format!("{what}'s point must be an end of geometry {}, got {p}", a.0),
+                    ));
+                }
+                dimension(angle)?;
+            }
+            SolverConstraint::AngleViaPoint {
+                a,
+                b,
+                point: p,
+                angle,
+                ..
+            } => {
+                want(a, &[Line, Circle, Arc])?;
+                want(b, &[Line, Circle, Arc])?;
+                point(p)?;
+                dimension(angle)?;
+            }
+            SolverConstraint::SymmetricLine { a, b, line, .. } => {
+                point(a)?;
+                point(b)?;
+                want(line, &[Line])?;
+                self.apart(a, b, what)?;
+            }
+            SolverConstraint::MidpointOnLine { a, b, line, .. } => {
+                point(a)?;
+                point(b)?;
+                want(line, &[Line])?;
+            }
+            SolverConstraint::SymmetricPoint { a, b, center, .. } => {
+                point(a)?;
+                point(b)?;
+                point(center)?;
+                self.apart(a, b, what)?;
+            }
             SolverConstraint::Radius {
                 circle, value: v, ..
             } => {
@@ -795,6 +998,14 @@ impl SketchSystem {
                 .map(|v| vec![v.x, v.y])
                 .unwrap_or_default()
         };
+        // A circle's or arc's centre and radius.
+        let round = |g: Geometry| match self.geometry.get(g.0 as usize) {
+            Some(
+                SketchGeometry::Circle { center, radius }
+                | SketchGeometry::Arc { center, radius, .. },
+            ) => vec![center.x, center.y, *radius],
+            _ => Vec::new(),
+        };
         match *c {
             SolverConstraint::ArcRules { arc } => geometry(arc),
             SolverConstraint::Coincident { a, b, .. } => [point(a), point(b)].concat(),
@@ -824,6 +1035,43 @@ impl SketchSystem {
                 };
                 [radius, vec![value]].concat()
             }
+            SolverConstraint::HorizontalPoints { a, b, .. }
+            | SolverConstraint::VerticalPoints { a, b, .. } => [point(a), point(b)].concat(),
+            SolverConstraint::PointLineDistance {
+                point: q,
+                line,
+                value,
+                ..
+            } => [point(q), geometry(line), vec![value]].concat(),
+            SolverConstraint::PointOnCircle {
+                point: q, circle, ..
+            } => [point(q), round(circle)].concat(),
+            SolverConstraint::EqualRadius { a, b, .. }
+            | SolverConstraint::TangentCircles { a, b, .. } => [round(a), round(b)].concat(),
+            SolverConstraint::TangentLine { line, circle, .. } => {
+                [geometry(line), round(circle)].concat()
+            }
+            SolverConstraint::TangentOn {
+                a,
+                point: q,
+                b,
+                angle,
+                ..
+            }
+            | SolverConstraint::AngleViaPoint {
+                a,
+                b,
+                point: q,
+                angle,
+                ..
+            } => [point(q), geometry(a), geometry(b), vec![angle]].concat(),
+            SolverConstraint::SymmetricLine { a, b, line, .. }
+            | SolverConstraint::MidpointOnLine { a, b, line, .. } => {
+                [point(a), point(b), geometry(line)].concat()
+            }
+            SolverConstraint::SymmetricPoint { a, b, center, .. } => {
+                [point(a), point(b), point(center)].concat()
+            }
         }
     }
 
@@ -844,6 +1092,32 @@ impl SketchSystem {
                 PointOf::Center(_),
             ) => Some(*center),
             _ => None,
+        }
+    }
+
+    /// That a symmetry's two points, which exist, are drawn at two places: PlaneGCS measures
+    /// both kinds of symmetry by the line between them (its direction, scaled by its length
+    /// where the system is built), which two points at one place don't have, so the solve
+    /// would start from 0/0.
+    fn apart(&self, a: PointOf, b: PointOf, what: &str) -> Result<(), InvalidParameter> {
+        let at = |p: PointOf| {
+            self.point_values(p).map(|v| {
+                [
+                    self.values.get(v.x.0 as usize).copied().unwrap_or(f64::NAN),
+                    self.values.get(v.y.0 as usize).copied().unwrap_or(f64::NAN),
+                ]
+            })
+        };
+        match (at(a), at(b)) {
+            (Some(pa), Some(pb)) if no_distance(pa, pb) => Err(invalid(
+                "constraints",
+                format!(
+                    "{what} of {a} and {b}, drawn at one place, ({}, {}): the solver measures it by the line between them",
+                    format_number(pa[0]),
+                    format_number(pa[1])
+                ),
+            )),
+            _ => Ok(()),
         }
     }
 
@@ -933,6 +1207,65 @@ pub fn no_distance(a: [f64; 2], b: [f64; 2]) -> bool {
     squared_distance(a, b) == 0.0
 }
 
+/// The pieces of `geometry` that values solved to `values` can't build, by their places
+/// in it, in order: one with a value out of reach ([`within_reach`]), a line of no length
+/// ([`no_distance`]: FreeCAD's `GeomLineSegment::setPoints`, "Both points are equal"), a
+/// circle or an arc whose radius isn't above 0 (FreeCAD's `gp_Circ` refuses one below 0 and
+/// keeps 0; Silico draws nothing of no size), or an arc whose start and end are at one
+/// place. Which way an arc's angles went doesn't matter: FreeCAD trims the arc's circle from
+/// its start angle to its end angle taken a whole number of turns past it (OCCT's periodic
+/// trim), the counter-clockwise arc from its solved start to its solved end, which is how
+/// Silico defines an arc. The rule the sketch worker passes a solution over by, and the
+/// core names what can't be built by (docs/design/m3.3-solving.md).
+pub fn unbuildable(geometry: &[SketchGeometry], values: &[f64]) -> Vec<Geometry> {
+    let at = |v: Value| values.get(v.0 as usize).copied().unwrap_or(f64::NAN);
+    let point = |p: PointValues| [at(p.x), at(p.y)];
+    let builds = |g: &SketchGeometry| {
+        g.values().into_iter().all(|v| within_reach(at(v)))
+            && match *g {
+                SketchGeometry::Point(_) => true,
+                SketchGeometry::Line { start, end } => !no_distance(point(start), point(end)),
+                SketchGeometry::Circle { radius, .. } => at(radius) > 0.0,
+                SketchGeometry::Arc {
+                    radius, start, end, ..
+                } => at(radius) > 0.0 && !no_distance(point(start), point(end)),
+            }
+    };
+    geometry
+        .iter()
+        .enumerate()
+        .filter(|(_, g)| !builds(g))
+        .map(|(i, _)| Geometry(i as u32))
+        .collect()
+}
+
+impl SketchSystem {
+    /// This system's geometry that `values` can't build ([`unbuildable`]).
+    pub fn unbuildable(&self, values: &[f64]) -> Vec<Geometry> {
+        unbuildable(&self.geometry, values)
+    }
+}
+
+/// An arc's radius, start angle, and end angle (radians), worked out from its centre, start,
+/// and end as the core starts a solve from them (docs/design/m3.3-solving.md): the
+/// radius from the centre to the start (the square root of [`squared_distance`]), and the
+/// angles of the start and the end about the centre (`atan2`, the `libm` crate's, so the
+/// same on every platform), the end's taken a turn further when it isn't above the start's,
+/// so the arc runs counter-clockwise from start to end. None when the two angles come out
+/// the same: a sweep of nothing, or of a whole turn, which no arc has. That includes a start
+/// and end on the circle's far side either side of −0 (`atan2` gives π and −π, and −π a turn
+/// on is π again).
+pub fn arc_from_points(center: [f64; 2], start: [f64; 2], end: [f64; 2]) -> Option<[f64; 3]> {
+    let radius = squared_distance(center, start).sqrt();
+    let angle = |p: [f64; 2]| libm::atan2(p[1] - center[1], p[0] - center[0]);
+    let (start_angle, mut end_angle) = (angle(start), angle(end));
+    if end_angle < start_angle {
+        end_angle += std::f64::consts::TAU;
+    }
+    let sweep = end_angle - start_angle;
+    (sweep > 0.0 && sweep < std::f64::consts::TAU).then_some([radius, start_angle, end_angle])
+}
+
 impl SolverConstraint {
     /// The tag it's reported by: every constraint but an arc's rules has one.
     pub fn tag(&self) -> Option<Tag> {
@@ -949,7 +1282,19 @@ impl SolverConstraint {
             | SolverConstraint::Perpendicular { tag, .. }
             | SolverConstraint::Angle { tag, .. }
             | SolverConstraint::EqualLength { tag, .. }
-            | SolverConstraint::Radius { tag, .. } => Some(tag),
+            | SolverConstraint::Radius { tag, .. }
+            | SolverConstraint::HorizontalPoints { tag, .. }
+            | SolverConstraint::VerticalPoints { tag, .. }
+            | SolverConstraint::PointLineDistance { tag, .. }
+            | SolverConstraint::PointOnCircle { tag, .. }
+            | SolverConstraint::EqualRadius { tag, .. }
+            | SolverConstraint::TangentLine { tag, .. }
+            | SolverConstraint::TangentCircles { tag, .. }
+            | SolverConstraint::TangentOn { tag, .. }
+            | SolverConstraint::AngleViaPoint { tag, .. }
+            | SolverConstraint::SymmetricLine { tag, .. }
+            | SolverConstraint::MidpointOnLine { tag, .. }
+            | SolverConstraint::SymmetricPoint { tag, .. } => Some(tag),
         }
     }
 
@@ -957,7 +1302,10 @@ impl SolverConstraint {
     fn rows(&self) -> usize {
         match self {
             SolverConstraint::ArcRules { .. } => 4,
-            SolverConstraint::Coincident { .. } => 2,
+            SolverConstraint::Coincident { .. }
+            | SolverConstraint::TangentOn { .. }
+            | SolverConstraint::SymmetricLine { .. }
+            | SolverConstraint::SymmetricPoint { .. } => 2,
             _ => 1,
         }
     }
@@ -978,6 +1326,18 @@ fn constraint_word(c: &SolverConstraint) -> &'static str {
         SolverConstraint::Angle { .. } => "an angle",
         SolverConstraint::EqualLength { .. } => "an equal length",
         SolverConstraint::Radius { .. } => "a radius",
+        SolverConstraint::HorizontalPoints { .. } => "a horizontal constraint on two points",
+        SolverConstraint::VerticalPoints { .. } => "a vertical constraint on two points",
+        SolverConstraint::PointLineDistance { .. } => "a point's distance from a line",
+        SolverConstraint::PointOnCircle { .. } => "a point on a circle",
+        SolverConstraint::EqualRadius { .. } => "an equal radius",
+        SolverConstraint::TangentLine { .. } => "a line's tangency",
+        SolverConstraint::TangentCircles { .. } => "a tangency of circles",
+        SolverConstraint::TangentOn { .. } => "a tangency at an end",
+        SolverConstraint::AngleViaPoint { .. } => "an angle at a point",
+        SolverConstraint::SymmetricLine { .. } => "a symmetry about a line",
+        SolverConstraint::MidpointOnLine { .. } => "a midpoint on a line",
+        SolverConstraint::SymmetricPoint { .. } => "a symmetry about a point",
     }
 }
 
@@ -1304,12 +1664,14 @@ mod tests {
     }
 
     #[test]
-    fn algorithms_are_one_to_three_different_ones() {
-        use Algorithm::{Bfgs, DogLeg, LevenbergMarquardt};
+    fn algorithms_are_one_to_four_different_ones() {
+        use Algorithm::{AnchoredSqp, Bfgs, DogLeg, LevenbergMarquardt};
         for algorithms in [
             vec![DogLeg],
             vec![LevenbergMarquardt, DogLeg],
             vec![DogLeg, LevenbergMarquardt, Bfgs],
+            vec![DogLeg, LevenbergMarquardt, Bfgs, AnchoredSqp],
+            vec![AnchoredSqp],
         ] {
             let mut s = system();
             s.algorithms = algorithms;
@@ -1319,12 +1681,14 @@ mod tests {
             vec![],
             vec![DogLeg, DogLeg],
             vec![Bfgs, DogLeg, Bfgs, LevenbergMarquardt],
+            vec![AnchoredSqp, AnchoredSqp],
+            vec![DogLeg, LevenbergMarquardt, Bfgs, AnchoredSqp, DogLeg],
         ] {
             let (parameter, message) = refused(|s| s.algorithms = algorithms.clone());
             assert_eq!(parameter, "algorithms");
             assert_eq!(
                 message,
-                format!("algorithms must be one to three different ones, got {algorithms:?}")
+                format!("algorithms must be one to four different ones, got {algorithms:?}")
             );
         }
     }
@@ -1368,29 +1732,30 @@ mod tests {
 
     #[test]
     fn a_jacobian_past_the_limit_is_refused_and_one_at_it_passes() {
-        // The limit is on rows × unknowns, PlaneGCS's dense Jacobian. A coincidence is two
-        // rows: 8,192 of them on 2,048 unknowns is 2^25 exactly; one more is past it.
-        let with = |coincidences: u32| {
+        // The limit is on rows × unknowns, PlaneGCS's dense Jacobian. An arc's rules are four
+        // rows: 8,192 arcs (one geometry each, sharing the base arc's values), each with its
+        // rules, on 1,024 unknowns is 2^25 exactly; one more is past it.
+        let with = |arcs: u32| {
             let mut s = system();
             s.values.resize(MAX_SKETCH_UNKNOWNS, 1.0);
             s.unknowns = (0..MAX_SKETCH_UNKNOWNS as u32).map(Value).collect();
-            s.constraints = vec![SolverConstraint::ArcRules { arc: Geometry(2) }];
-            s.constraints
-                .extend((1..=coincidences).map(|t| SolverConstraint::Coincident {
-                    tag: Tag(t),
-                    a: PointOf::Start(Geometry(0)),
-                    b: PointOf::End(Geometry(0)),
-                }));
+            let arc = s.geometry[2];
+            s.geometry.extend((1..arcs).map(|_| arc));
+            s.constraints = (0..arcs)
+                .map(|i| SolverConstraint::ArcRules {
+                    arc: Geometry(2 + i),
+                })
+                .collect();
             s
         };
-        // The arc's rules are 4 rows too.
-        with(8190).check().unwrap();
-        let e = with(8191).check().unwrap_err();
+        assert_eq!(4 * 8192 * MAX_SKETCH_UNKNOWNS, MAX_JACOBIAN_ENTRIES);
+        with(8192).check().unwrap();
+        let e = with(8193).check().unwrap_err();
         assert_eq!(e.parameter, "constraints");
         assert_eq!(
             e.message,
             format!(
-                "16386 equations in 2048 unknowns is more than the solver can diagnose (at most {MAX_JACOBIAN_ENTRIES} entries)"
+                "32772 equations in 1024 unknowns is more than the solver can diagnose (at most {MAX_JACOBIAN_ENTRIES} entries)"
             )
         );
     }
@@ -1410,7 +1775,7 @@ mod tests {
         assert_eq!(e.parameter, "unknowns");
         assert_eq!(
             e.message,
-            format!("a sketch may have at most {MAX_SKETCH_UNKNOWNS} unknowns, got 2049")
+            format!("a sketch may have at most {MAX_SKETCH_UNKNOWNS} unknowns, got 1025")
         );
 
         let mut s = system();
@@ -1780,5 +2145,180 @@ mod tests {
         assert_eq!(part.values, s.values);
         assert_eq!(part.unknowns, [Value(2), Value(3)]);
         assert!(part.constraints.is_empty());
+    }
+
+    #[test]
+    fn an_arcs_radius_and_angles_come_from_its_points_counter_clockwise() {
+        use std::f64::consts::{FRAC_PI_2, PI, TAU};
+        // A quarter from (1, 0) to (0, 1) about the origin; the radius is the start's
+        // distance, whatever the end's.
+        assert_eq!(
+            arc_from_points([0.0, 0.0], [1.0, 0.0], [0.0, 2.0]),
+            Some([1.0, 0.0, FRAC_PI_2])
+        );
+        // From (−1, 0) at π to (0, −1) at −π/2: the end taken a turn on, so the arc runs
+        // counter-clockwise, a quarter.
+        assert_eq!(
+            arc_from_points([0.0, 0.0], [-1.0, 0.0], [0.0, -1.0]),
+            Some([1.0, PI, -FRAC_PI_2 + TAU])
+        );
+        // The other way round, three quarters.
+        assert_eq!(
+            arc_from_points([0.0, 0.0], [0.0, 1.0], [1.0, 0.0]),
+            Some([1.0, FRAC_PI_2, TAU])
+        );
+        // About another centre: the start 5 off at (4, 3), the end at (−3, 4).
+        let [r, a, b] = arc_from_points([1.0, 1.0], [5.0, 4.0], [-2.0, 5.0]).unwrap();
+        assert_eq!(r, 5.0);
+        assert!((a - 0.643_501_108_793_284_4).abs() < 1e-15, "{a}");
+        assert!((b - 2.214_297_435_588_181).abs() < 1e-15, "{b}");
+    }
+
+    #[test]
+    fn an_arc_whose_ends_are_at_one_angle_has_none() {
+        // The end further out along the start's direction: no sweep, or a whole turn.
+        assert_eq!(arc_from_points([0.0, 0.0], [2.0, 0.0], [1.0, 0.0]), None);
+        assert_eq!(arc_from_points([1.0, 1.0], [2.0, 2.0], [3.0, 3.0]), None);
+        // On the far side, either side of −0: atan2 gives π and −π, a turn apart.
+        assert_eq!(arc_from_points([0.0, 0.0], [-1.0, 0.0], [-2.0, -0.0]), None);
+        assert_eq!(arc_from_points([0.0, 0.0], [-1.0, -0.0], [-2.0, 0.0]), None);
+        // Just past it either way is an arc: nearly all of the circle, or nearly none.
+        let tiny = arc_from_points([0.0, 0.0], [1.0, 0.0], [1.0, 1e-9]).unwrap();
+        assert!(
+            tiny[2] - tiny[1] > 0.0 && tiny[2] - tiny[1] < 1e-8,
+            "{tiny:?}"
+        );
+        let most = arc_from_points([0.0, 0.0], [1.0, 1e-9], [1.0, 0.0]).unwrap();
+        assert!(most[2] - most[1] > std::f64::consts::TAU - 1e-8, "{most:?}");
+    }
+
+    #[test]
+    fn a_symmetry_of_two_points_drawn_at_one_place_is_refused() {
+        // The solver measures a symmetry by the line between its points: none for two at
+        // one place. The circle's centre moved onto the line's start, (0, 0).
+        for (word, about) in [
+            ("a symmetry about a line", Some(Geometry(0))),
+            ("a symmetry about a point", None),
+        ] {
+            let (parameter, message) = refused(|s| {
+                s.values[4] = 0.0;
+                s.values[5] = 0.0;
+                let (a, b) = (PointOf::Start(Geometry(0)), PointOf::Center(Geometry(1)));
+                s.constraints.push(match about {
+                    Some(line) => SolverConstraint::SymmetricLine {
+                        tag: Tag(4),
+                        a,
+                        b,
+                        line,
+                    },
+                    None => SolverConstraint::SymmetricPoint {
+                        tag: Tag(4),
+                        a,
+                        b,
+                        center: PointOf::End(Geometry(0)),
+                    },
+                });
+            });
+            assert_eq!(parameter, "constraints");
+            assert_eq!(
+                message,
+                format!(
+                    "constraint 4 (tag 4): {word} of the start of geometry 0 and the centre of geometry 1, drawn at one place, (0, 0): the solver measures it by the line between them"
+                )
+            );
+        }
+        // A midpoint's two points are a line's ends, which have length: it measures by the
+        // line it's on.
+        let mut s = system();
+        s.values[4] = 0.0;
+        s.values[5] = 0.0;
+        s.constraints.push(SolverConstraint::MidpointOnLine {
+            tag: Tag(4),
+            a: PointOf::Start(Geometry(0)),
+            b: PointOf::Center(Geometry(1)),
+            line: Geometry(0),
+        });
+        s.check().unwrap();
+    }
+
+    #[test]
+    fn a_tangency_at_an_end_names_an_end_of_its_first_curve_and_a_fixed_angle() {
+        let tangent_on = |point: PointOf, angle: Value| SolverConstraint::TangentOn {
+            tag: Tag(4),
+            a: Geometry(0),
+            point,
+            b: Geometry(1),
+            angle,
+        };
+        let mut s = system();
+        s.constraints
+            .push(tangent_on(PointOf::End(Geometry(0)), Value(16)));
+        s.check().unwrap();
+        let (_, message) = refused(|s| {
+            s.constraints
+                .push(tangent_on(PointOf::Center(Geometry(1)), Value(16)))
+        });
+        assert_eq!(
+            message,
+            "constraint 4 (tag 4): a tangency at an end's point must be an end of geometry 0, got the centre of geometry 1"
+        );
+        let (_, message) = refused(|s| {
+            s.constraints
+                .push(tangent_on(PointOf::End(Geometry(0)), Value(3)))
+        });
+        assert_eq!(
+            message,
+            "constraint 4 (tag 4): a tangency at an end's value 3 is an unknown: a dimension's value must be fixed"
+        );
+        // A circle has no ends to be tangent at.
+        let (_, message) = refused(|s| {
+            s.constraints.push(SolverConstraint::TangentOn {
+                tag: Tag(4),
+                a: Geometry(1),
+                point: PointOf::Center(Geometry(1)),
+                b: Geometry(0),
+                angle: Value(16),
+            })
+        });
+        assert_eq!(
+            message,
+            "constraint 4 (tag 4): a tangency at an end needs a line or an arc, but geometry 1 is a circle"
+        );
+    }
+
+    #[test]
+    fn geometry_a_solution_cant_build_is_named_by_its_place() {
+        // `system()`: a line (0, 0) to (10, 0), a circle about (0, 5) of radius 2, and an arc
+        // about (1, 1) of radius 1 from (2, 1) to (1, 2), each built.
+        let s = system();
+        assert!(s.unbuildable(&s.values).is_empty());
+        let spoilt = |at: usize, v: f64| {
+            let mut values = s.values.clone();
+            values[at] = v;
+            s.unbuildable(&values)
+        };
+        // The line's end on its start: no length.
+        let mut values = s.values.clone();
+        values[2] = 0.0;
+        assert_eq!(s.unbuildable(&values), [Geometry(0)]);
+        // A circle's radius of 0, below 0, and not a number; past a kilometre.
+        for r in [0.0, -1.0, f64::NAN, 1e6 + 1.0] {
+            assert_eq!(spoilt(6, r), [Geometry(1)], "{r}");
+        }
+        // An arc's radius of 0; its end on its start; an angle out of reach.
+        assert_eq!(spoilt(9, 0.0), [Geometry(2)]);
+        let mut values = s.values.clone();
+        (values[14], values[15]) = (2.0, 1.0);
+        assert_eq!(s.unbuildable(&values), [Geometry(2)]);
+        assert_eq!(spoilt(11, f64::INFINITY), [Geometry(2)]);
+        // A point past a kilometre, in the line and so in it.
+        assert_eq!(spoilt(0, -2e6), [Geometry(0)]);
+        // Each named once, in order.
+        let mut values = s.values.clone();
+        (values[2], values[6], values[9]) = (0.0, 0.0, 0.0);
+        assert_eq!(
+            s.unbuildable(&values),
+            [Geometry(0), Geometry(1), Geometry(2)]
+        );
     }
 }

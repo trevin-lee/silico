@@ -37,6 +37,13 @@ echo "mutants: testing $commit"
 core_wall_clock=(
   a_name_reported_for_many_elements_is_written_once
 )
+# The largest sketch no algorithm solves, bounded by its wall clock (a minute or two loaded,
+# against SKETCH_TIMEOUT): what it alone tests is that the worker's time covers every
+# algorithm at MAX_SKETCH_UNKNOWNS; that the time is SketchWorker's own is tested apart
+# (silico-sketch's document.rs).
+sketch_wall_clock=(
+  an_impossible_chain_of_the_largest_size_fails_as_solve_failed_not_a_timeout
+)
 # package(p) & (test(=a) | test(=b) | ...), for a package and its tests.
 tests_of() {
   local package=$1 tests="" t
@@ -44,5 +51,5 @@ tests_of() {
   for t in "$@"; do tests="${tests:+$tests | }test(=$t)"; done
   echo "package($package) & ($tests)"
 }
-filter="not ($(tests_of silico-core "${core_wall_clock[@]}"))"
+filter="not ($(tests_of silico-core "${core_wall_clock[@]}") | $(tests_of silico-sketch "${sketch_wall_clock[@]}"))"
 cargo mutants --in-place --minimum-test-timeout 300 --cargo-test-arg=-E --cargo-test-arg="$filter" "$@"

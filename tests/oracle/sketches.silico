@@ -1,0 +1,402 @@
+{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "features": [
+    {
+      "id": "s0000000",
+      "type": "sketch",
+      "v": 1,
+      "name": "rectangle_40_by_20",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0.3, "y": -0.2, "construction": false},
+        {"id": "p0000002", "x": -0.5, "y": 19, "construction": false},
+        {"id": "p0000003", "x": 41, "y": 0.5, "construction": false},
+        {"id": "p0000004", "x": 39, "y": 21, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000003", "construction": false},
+        {"id": "n0000002", "from": "p0000003", "to": "p0000004", "construction": false},
+        {"id": "n0000003", "from": "p0000004", "to": "p0000002", "construction": false},
+        {"id": "n0000004", "from": "p0000002", "to": "p0000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [
+        {"id": "k0000001", "type": "horizontal", "line": "n0000001"},
+        {"id": "k0000002", "type": "length", "line": "n0000001", "value": 40, "driving": true},
+        {"id": "k0000003", "type": "vertical", "line": "n0000002"},
+        {"id": "k0000004", "type": "length", "line": "n0000002", "value": 20, "driving": true},
+        {"id": "k0000005", "type": "horizontal", "line": "n0000003"},
+        {"id": "k0000006", "type": "vertical", "line": "n0000004"},
+        {"id": "k0000007", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true},
+        {"id": "k0000008", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}
+      ],
+      "note": "FreeCAD's CreateRectangleSketch (TestSketcherSolver.py): a 40 by 20 rectangle, its corner at the origin, drawn off true; fully constrained."
+    },
+    {
+      "id": "s0000001",
+      "type": "sketch",
+      "v": 1,
+      "name": "box_from_two_datums",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": -99.230339, "y": 36.960674, "construction": false},
+        {"id": "p0000002", "x": 69.432587, "y": 36.960674, "construction": false},
+        {"id": "p0000003", "x": 69.432587, "y": -53.196629, "construction": false},
+        {"id": "p0000004", "x": -99.230339, "y": -53.196629, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false},
+        {"id": "n0000003", "from": "p0000003", "to": "p0000004", "construction": false},
+        {"id": "n0000004", "from": "p0000004", "to": "p0000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [
+        {"id": "k0000001", "type": "horizontal", "line": "n0000001"},
+        {"id": "k0000002", "type": "horizontal", "line": "n0000003"},
+        {"id": "k0000003", "type": "vertical", "line": "n0000002"},
+        {"id": "k0000004", "type": "vertical", "line": "n0000004"},
+        {"id": "k0000005", "type": "length", "line": "n0000002", "value": 81.370787, "driving": true},
+        {"id": "k0000006", "type": "length", "line": "n0000001", "value": 187.573036, "driving": true},
+        {"id": "k0000007", "type": "distance_x", "a": "origin", "b": "p0000003", "value": 90, "driving": true},
+        {"id": "k0000008", "type": "distance_y", "a": "origin", "b": "p0000003", "value": -50, "driving": true}
+      ],
+      "note": "FreeCAD's testBoxCase: a box drawn at FreeCAD's coordinates, 81.370787 by 187.573036, its bottom-right corner put at (90, -50)."
+    },
+    {
+      "id": "s0000002",
+      "type": "sketch",
+      "v": 1,
+      "name": "slot_plate_apex",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000000", "x": 60.029362, "y": -30.27936, "construction": false},
+        {"id": "p0000001", "x": -120.376335, "y": -30.27936, "construction": false},
+        {"id": "p0000002", "x": -70.193062, "y": 38.113884, "construction": false},
+        {"id": "p0000003", "x": 60.241116, "y": 37.478645, "construction": false},
+        {"id": "p0000004", "x": 60.039921, "y": 3.811391, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000000", "from": "p0000000", "to": "p0000001", "construction": false},
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [
+        {"id": "a0000003", "center": "p0000004", "start": "p0000000", "end": "p0000003", "construction": false}
+      ],
+      "constraints": [
+        {"id": "k0000001", "type": "horizontal", "line": "n0000000"},
+        {"id": "k0000002", "type": "horizontal", "line": "n0000002"},
+        {"id": "k0000003", "type": "tangent_at", "a": "n0000002", "b": "a0000003", "at": "p0000003", "direction": "same"},
+        {"id": "k0000004", "type": "tangent_at", "a": "n0000000", "b": "a0000003", "at": "p0000000", "direction": "same"},
+        {"id": "k0000005", "type": "angle", "a": "n0000000", "b": "n0000001", "value": -130, "driving": true},
+        {"id": "k0000006", "type": "length", "line": "n0000000", "value": 200, "driving": true},
+        {"id": "k0000007", "type": "radius", "curve": "a0000003", "value": 40, "driving": true},
+        {"id": "k0000008", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true},
+        {"id": "k0000009", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}
+      ],
+      "note": "FreeCAD's testSlotCase, its outer slot: a 200 bottom ending at the origin, a side at 50 degrees, a horizontal top, and a 40-radius arc tangent to both; apex (80 / tan 50, 80)."
+    },
+    {
+      "id": "s0000003",
+      "type": "sketch",
+      "v": 1,
+      "name": "free_line",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 1, "y": 2, "construction": false},
+        {"id": "p0000002", "x": 11, "y": 3, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "A line with no constraints: four degrees of freedom."
+    },
+    {
+      "id": "s0000004",
+      "type": "sketch",
+      "v": 1,
+      "name": "right_angle_redundant",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 10, "y": 0, "construction": false},
+        {"id": "p0000003", "x": 0, "y": 8, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000002", "from": "p0000001", "to": "p0000003", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [
+        {"id": "k0000001", "type": "horizontal", "line": "n0000001"},
+        {"id": "k0000002", "type": "vertical", "line": "n0000002"},
+        {"id": "k0000003", "type": "angle", "a": "n0000001", "b": "n0000002", "value": 90, "driving": true}
+      ],
+      "note": "A horizontal and a vertical line from one point, and a 90 degree angle between them: the angle is redundant."
+    },
+    {
+      "id": "s0000005",
+      "type": "sketch",
+      "v": 1,
+      "name": "eighty_degrees_conflicting",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 10, "y": 0, "construction": false},
+        {"id": "p0000003", "x": 0, "y": 8, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000002", "from": "p0000001", "to": "p0000003", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [
+        {"id": "k0000001", "type": "horizontal", "line": "n0000001"},
+        {"id": "k0000002", "type": "vertical", "line": "n0000002"},
+        {"id": "k0000003", "type": "angle", "a": "n0000001", "b": "n0000002", "value": 80, "driving": true}
+      ],
+      "note": "The same with an 80 degree angle: conflicting."
+    },
+    {
+      "id": "s0000006",
+      "type": "sketch",
+      "v": 1,
+      "name": "dimension_too_many",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 1, "y": 2, "construction": false},
+        {"id": "p0000002", "x": 11, "y": 3, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [
+        {"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 1, "driving": true},
+        {"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 2, "driving": true},
+        {"id": "k0000003", "type": "distance_x", "a": "origin", "b": "p0000002", "value": 11, "driving": true},
+        {"id": "k0000004", "type": "distance_y", "a": "origin", "b": "p0000002", "value": 3, "driving": true},
+        {"id": "k0000005", "type": "length", "line": "n0000001", "value": 12, "driving": true}
+      ],
+      "note": "A line held at both ends, and a length it doesn't have: conflicting."
+    },
+    {
+      "id": "s0000007",
+      "type": "sketch",
+      "v": 1,
+      "name": "lengths_a_nanometre_apart",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 9, "y": 1, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [
+        {"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true},
+        {"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true},
+        {"id": "k0000003", "type": "horizontal", "line": "n0000001"},
+        {"id": "k0000004", "type": "length", "line": "n0000001", "value": 10, "driving": true},
+        {"id": "k0000006", "type": "distance_x", "a": "p0000001", "b": "p0000002", "value": 10.000001, "driving": true}
+      ],
+      "note": "A line held at its start, horizontal, 10 long, and 10.000001 along x: FreeCAD calls the second redundant (within 1e-5) and refuses the sketch; Silico refuses it as over-constrained (decision 5)."
+    },
+    {
+      "id": "s0000008",
+      "type": "sketch",
+      "v": 1,
+      "name": "triangle_30_60_90",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 10.7, "y": -0.6, "construction": false},
+        {"id": "p0000003", "x": 8.1, "y": 3.9, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false},
+        {"id": "n0000003", "from": "p0000003", "to": "p0000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [
+        {"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true},
+        {"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true},
+        {"id": "k0000003", "type": "horizontal", "line": "n0000001"},
+        {"id": "k0000004", "type": "length", "line": "n0000001", "value": 10, "driving": true},
+        {"id": "k0000005", "type": "angle", "a": "n0000001", "b": "n0000003", "value": -150, "driving": true},
+        {"id": "k0000006", "type": "angle", "a": "n0000001", "b": "n0000002", "value": 120, "driving": true},
+        {"id": "k0000007", "type": "angle", "a": "n0000002", "b": "n0000003", "value": 90, "driving": true}
+      ],
+      "note": "A triangle with corner angles 30, 60, and 90 degrees, its base horizontal and 10 long: the third angle is implied, and redundant."
+    },
+    {
+      "id": "s0000009",
+      "type": "sketch",
+      "v": 1,
+      "name": "tangent_on_circle",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": -20, "y": 10.5, "construction": false},
+        {"id": "p0000003", "x": 0.5, "y": 10.2, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000002", "to": "p0000003", "construction": false}
+      ],
+      "circles": [
+        {"id": "c0000001", "center": "p0000001", "radius": 10, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": [
+        {"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true},
+        {"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true},
+        {"id": "k0000003", "type": "radius", "curve": "c0000001", "value": 10, "driving": true},
+        {"id": "k0000004", "type": "distance_x", "a": "origin", "b": "p0000002", "value": -20, "driving": true},
+        {"id": "k0000005", "type": "distance_y", "a": "origin", "b": "p0000002", "value": 10.5, "driving": true},
+        {"id": "k0000006", "type": "tangent_on", "a": "n0000001", "at": "p0000003", "b": "c0000001", "direction": "same"}
+      ],
+      "note": "A line from (-20, 10.5) ending tangent on a circle of radius 10 about the origin: (0.248380314661, 9.996914885068)."
+    },
+    {
+      "id": "s000000a",
+      "type": "sketch",
+      "v": 1,
+      "name": "circle_to_line_reference",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": -20, "y": 10, "construction": false},
+        {"id": "p0000003", "x": 20, "y": 10, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000002", "to": "p0000003", "construction": false}
+      ],
+      "circles": [
+        {"id": "c0000001", "center": "p0000001", "radius": 20, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": [
+        {"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true},
+        {"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true},
+        {"id": "k0000003", "type": "distance_x", "a": "origin", "b": "p0000002", "value": -20, "driving": true},
+        {"id": "k0000004", "type": "distance_y", "a": "origin", "b": "p0000002", "value": 10, "driving": true},
+        {"id": "k0000005", "type": "distance_x", "a": "origin", "b": "p0000003", "value": 20, "driving": true},
+        {"id": "k0000006", "type": "distance_y", "a": "origin", "b": "p0000003", "value": 10, "driving": true},
+        {"id": "k0000007", "type": "radius", "curve": "c0000001", "value": 20, "driving": true},
+        {"id": "k0000008", "type": "point_line_distance", "point": "p0000001", "line": "n0000001", "value": 0, "side": "right", "driving": false}
+      ],
+      "note": "FreeCAD's testCircleToLineDistance_Reference_Secant, in Silico's forms: a circle of radius 20 and a line across it at y 10, held; the centre's reference distance from the line reads 10."
+    },
+    {
+      "id": "s000000b",
+      "type": "sketch",
+      "v": 1,
+      "name": "on_repeats_a_midpoint",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 10, "y": 0, "construction": false},
+        {"id": "p0000003", "x": 5.2, "y": 0.3, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [
+        {"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true},
+        {"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true},
+        {"id": "k0000003", "type": "distance_x", "a": "origin", "b": "p0000002", "value": 10, "driving": true},
+        {"id": "k0000004", "type": "distance_y", "a": "origin", "b": "p0000002", "value": 0, "driving": true},
+        {"id": "k0000005", "type": "midpoint", "point": "p0000003", "line": "n0000001"},
+        {"id": "k0000006", "type": "on", "point": "p0000003", "curve": "n0000001"}
+      ],
+      "note": "A line held at both ends and a point at its middle that an on constraint also holds on the line: the on repeats one of the midpoint's two equations, and is the one redundant (the popularity contest's tie-break: fewer equations)."
+    },
+    {
+      "id": "s000000c",
+      "type": "sketch",
+      "v": 1,
+      "name": "symmetric_arc_held_centre",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 8.66, "y": 5, "construction": false},
+        {"id": "p0000003", "x": -8.66, "y": 5, "construction": false},
+        {"id": "p0000004", "x": 0, "y": 12, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000004", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [
+        {"id": "a0000001", "center": "p0000001", "start": "p0000002", "end": "p0000003", "construction": false}
+      ],
+      "constraints": [
+        {"id": "k0000001", "type": "symmetric", "a": "p0000002", "b": "p0000003", "about": "n0000001"}
+      ],
+      "note": "An arc's own ends mirrored about a line from its centre: one equation (FreeCAD 365af33fc6)."
+    },
+    {
+      "id": "s000000d",
+      "type": "sketch",
+      "v": 1,
+      "name": "reference_angle_on_its_turn",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 10, "y": 0, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [
+        {"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true},
+        {"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true},
+        {"id": "k0000003", "type": "distance_x", "a": "origin", "b": "p0000002", "value": 10, "driving": true},
+        {"id": "k0000004", "type": "distance_y", "a": "origin", "b": "p0000002", "value": 0, "driving": true},
+        {"id": "k0000005", "type": "angle", "a": "n0000001", "b": "y_axis", "value": -270, "driving": false}
+      ],
+      "note": "A line held from the origin to (10, 0) and a reference angle from it to the y axis stored as -270: 1.1.3 keeps it on that turn, -270."
+    },
+    {
+      "id": "s000000e",
+      "type": "sketch",
+      "v": 1,
+      "name": "reference_diameter",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "c0000001", "center": "p0000001", "radius": 5, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": [
+        {"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true},
+        {"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true},
+        {"id": "k0000003", "type": "radius", "curve": "c0000001", "value": 5, "driving": true},
+        {"id": "k0000004", "type": "diameter", "curve": "c0000001", "value": 0, "driving": false}
+      ],
+      "note": "A circle held at the origin with its radius 5: its reference diameter reads 10 (FreeCAD 727dc9fa9e)."
+    }
+  ]
+}

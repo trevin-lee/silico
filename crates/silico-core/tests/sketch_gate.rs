@@ -113,7 +113,7 @@ fn two_lines_equal_are_admitted() {
 }
 
 #[test]
-fn symmetric_about_its_b_is_refused_and_about_a_line_through_one_end_admitted() {
+fn symmetric_about_its_b_or_a_line_through_one_of_them_is_refused() {
     only(
         &with_two_lines(
             r#"{"id": "k0000000", "type": "symmetric", "a": "pb000000", "b": "pc000000", "about": "pc000000"}"#,
@@ -121,10 +121,17 @@ fn symmetric_about_its_b_is_refused_and_about_a_line_through_one_end_admitted() 
         "constraints.0.about",
         "is one of the points it mirrors",
     );
-    // FreeCAD refuses only both ends of the line (CommandConstraints.cpp, GeoId1 == GeoId2 == GeoId3).
-    none(&with_two_lines(
-        r#"{"id": "k0000000", "type": "symmetric", "a": "pa000000", "b": "pc000000", "about": "na000000"}"#,
-    ));
+    // FreeCAD refuses only both ends of the line (CommandConstraints.cpp, GeoId1 == GeoId2 ==
+    // GeoId3), and solves one end's mirror onto that end, two points at one place. With
+    // shared points that's a joint the sketch doesn't have, which the next solve refuses
+    // (M3.3's break-it): refused here, naming the end.
+    only(
+        &with_two_lines(
+            r#"{"id": "k0000000", "type": "symmetric", "a": "pa000000", "b": "pc000000", "about": "na000000"}"#,
+        ),
+        "constraints.0.about",
+        "a symmetric's pa000000 is an end of na000000, so it mirrors onto itself",
+    );
 }
 
 #[test]
@@ -143,52 +150,30 @@ fn an_arcs_own_end_on_the_arc_is_refused() {
 // E9: each arc is three unknowns.
 #[test]
 fn arcs_count_three_unknowns_each() {
-    // 3 points (6) and 681 arcs (2043): 2049, past 2048.
-    let arcs: Vec<String> = (0..681).map(|i| format!(r#"{{"id": "a{i:07}", "center": "pa000000", "start": "pb000000", "end": "pc000000", "construction": false}}"#)).collect();
+    // 3 points (6) and 340 arcs (1,020): 1,026, past 1,024; 339 arcs, 1,023, admitted.
+    let arcs = |n: usize| -> String {
+        (0..n).map(|i| format!(r#"{{"id": "a{i:07}", "center": "pa000000", "start": "pb000000", "end": "pc000000", "construction": false}}"#)).collect::<Vec<_>>().join(",")
+    };
     only(
-        &document(&fields(POINTS, "", "", &arcs.join(","), "")),
+        &document(&fields(POINTS, "", "", &arcs(340), "")),
         "points",
-        "the sketch has 2049 unknowns",
+        "the sketch has 1026 unknowns",
     );
+    none(&document(&fields(POINTS, "", "", &arcs(339), "")));
 }
 
 // E9: each arc's rules count as a constraint.
 #[test]
 fn arcs_count_as_constraints() {
-    // 680 arcs and 9,321 constraints: 10,001.
-    let arcs: Vec<String> = (0..680).map(|i| format!(r#"{{"id": "a{i:07}", "center": "pa000000", "start": "pb000000", "end": "pc000000", "construction": false}}"#)).collect();
-    let cs: Vec<String> = (0..9321)
+    // 339 arcs and 9,662 constraints: 10,001.
+    let arcs: Vec<String> = (0..339).map(|i| format!(r#"{{"id": "a{i:07}", "center": "pa000000", "start": "pb000000", "end": "pc000000", "construction": false}}"#)).collect();
+    let cs: Vec<String> = (0..9662)
         .map(|i| format!(r#"{{"id": "k{i:07}", "type": "horizontal", "line": "na000000"}}"#))
         .collect();
     only(
         &document(&fields(POINTS, LINE, "", &arcs.join(","), &cs.join(","))),
         "constraints",
         "the sketch has 10001 constraints",
-    );
-}
-
-// E9: each arc is four rows; each midpoint two.
-#[test]
-fn arcs_and_midpoints_count_their_rows_in_the_jacobian() {
-    // 680 arcs (2046 unknowns), 8,000 symmetric (16,000 rows) and the arcs' 2,720:
-    // 18,720 × 2046 = 38,301,120, past 2^25; without the arcs' rows, 32,736,000.
-    let arcs: Vec<String> = (0..680).map(|i| format!(r#"{{"id": "a{i:07}", "center": "pa000000", "start": "pb000000", "end": "pc000000", "construction": false}}"#)).collect();
-    let cs: Vec<String> = (0..8000).map(|i| format!(r#"{{"id": "k{i:07}", "type": "symmetric", "a": "pb000000", "b": "pc000000", "about": "pa000000"}}"#)).collect();
-    only(
-        &document(&fields(POINTS, "", "", &arcs.join(","), &cs.join(","))),
-        "constraints",
-        "38301120",
-    );
-    // 1024 points (2048 unknowns) and 8,193 midpoints, two rows each: 33,558,528.
-    let points: Vec<String> = (0..1024)
-        .map(|i| format!(r#"{{"id": "p{i:07}", "x": {i}, "y": 0, "construction": false}}"#))
-        .collect();
-    let line = r#"{"id": "n0000000", "from": "p0000000", "to": "p0000001", "construction": false}"#;
-    let cs: Vec<String> = (0..8193).map(|i| format!(r#"{{"id": "k{i:07}", "type": "midpoint", "point": "p0000002", "line": "n0000000"}}"#)).collect();
-    only(
-        &document(&fields(&points.join(","), line, "", "", &cs.join(","))),
-        "constraints",
-        "33558528",
     );
 }
 
@@ -599,57 +584,41 @@ fn each_tangent_on_direction_reads_as_its_own_value_and_writes_back() {
 
 #[test]
 fn reference_dimensions_arent_the_solvers_values() {
-    // The base points (6 unknowns) and the origin's 2: 9,992 values to spare. As many
-    // reference lengths as that, and one more, are admitted; as many driving ones, refused.
+    // The base points (6 unknowns), and the origin's and the axes' ends 6: 9,988 values to
+    // spare. As many reference lengths as that, and one more, are admitted; one more driving
+    // one, refused.
     let lengths = |n: usize, driving: bool| {
         let all: Vec<String> = (0..n)
             .map(|i| format!(r#"{{"id": "k{i:07}", "type": "length", "line": "na000000", "value": 10, "driving": {driving}}}"#))
             .collect();
         document(&fields(POINTS, LINE, "", "", &all.join(", ")))
     };
-    none(&lengths(9993, false));
-    none(&lengths(9992, true));
+    none(&lengths(9989, false));
+    none(&lengths(9988, true));
     only(
-        &lengths(9993, true),
+        &lengths(9989, true),
         "points",
         "the sketch has 10001 values, more than the 10000 the sketch solver takes",
     );
 }
 
 #[test]
-fn a_tangent_on_is_two_equations_and_a_fixed_angle() {
-    // 1,023 points (2,046 unknowns), a circle about one (2,047), a line between two, and
-    // 8,197 tangent_ons: 16,394 equations × 2,047 unknowns = 33,558,518 entries, past 2^25
-    // (33,554,432); and 2,047 + 8,197 angles + 2 = 10,246 values, past 10,000.
-    let points: Vec<String> = (0..1023)
-        .map(|i| format!(r#"{{"id": "p{i:07}", "x": {i}, "y": 0, "construction": false}}"#))
-        .collect();
-    let line = r#"{"id": "n0000000", "from": "p0000000", "to": "p0000001", "construction": false}"#;
-    let circle = r#"{"id": "c0000000", "center": "p0000005", "radius": 3, "construction": false}"#;
-    let tangents: Vec<String> = (0..8197)
-        .map(|i| format!(r#"{{"id": "k{i:07}", "type": "tangent_on", "a": "n0000000", "at": "p0000001", "b": "c0000000", "direction": "same"}}"#))
-        .collect();
-    let all = problems(&document(&fields(
-        &points.join(", "),
-        line,
-        circle,
-        "",
-        &tangents.join(", "),
-    )));
-    let messages: Vec<&str> = all.iter().map(|e| e.message()).collect();
-    assert!(
-        messages
-            .iter()
-            .any(|m| m.starts_with("the sketch has 33558518 entries")),
-        "{messages:#?}"
+fn a_tangent_on_is_a_fixed_angle() {
+    // POINTS (6 unknowns) and CIRCLE (1), and 9,988 tangent_ons of the line's end on the
+    // circle, each with its fixed angle: 7 + 9,988 + 6 (the origin, the axes' ends) =
+    // 10,001 values, past 10,000; one fewer, 10,000, admitted.
+    let tangents = |n: usize| {
+        let all: Vec<String> = (0..n)
+            .map(|i| format!(r#"{{"id": "k{i:07}", "type": "tangent_on", "a": "na000000", "at": "pb000000", "b": "ca000000", "direction": "same"}}"#))
+            .collect();
+        document(&fields(POINTS, LINE, CIRCLE, "", &all.join(", ")))
+    };
+    none(&tangents(9987));
+    only(
+        &tangents(9988),
+        "points",
+        "the sketch has 10001 values, more than the 10000 the sketch solver takes",
     );
-    assert!(
-        messages
-            .iter()
-            .any(|m| m.starts_with("the sketch has 10246 values")),
-        "{messages:#?}"
-    );
-    assert_eq!(all.len(), 2, "{messages:#?}");
 }
 
 #[test]
@@ -707,17 +676,18 @@ fn a_tangent_on_whose_end_is_bs_own_point_or_whose_curves_are_one_is_refused() {
 
 #[test]
 fn a_tangent_at_is_a_fixed_angle_too() {
-    // POINTS (6 unknowns) and ARC (3): 9 unknowns, and the origin's 2: 9,989 values to
-    // spare. As many tangent_ats, each with its fixed angle, are admitted; one more, refused.
+    // POINTS (6 unknowns) and ARC (3): 9 unknowns, and the origin's and the axes' ends 6:
+    // 9,985 values to spare. As many tangent_ats, each with its fixed angle, are admitted;
+    // one more, refused.
     let tangents = |n: usize| {
         let all: Vec<String> = (0..n)
             .map(|i| format!(r#"{{"id": "k{i:07}", "type": "tangent_at", "a": "na000000", "b": "aa000000", "at": "pb000000", "direction": "same"}}"#))
             .collect();
         document(&fields(POINTS, LINE, "", ARC, &all.join(", ")))
     };
-    none(&tangents(9989));
+    none(&tangents(9985));
     only(
-        &tangents(9990),
+        &tangents(9986),
         "points",
         "the sketch has 10001 values, more than the 10000 the sketch solver takes",
     );

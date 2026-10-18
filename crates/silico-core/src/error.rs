@@ -68,6 +68,13 @@ error_codes! {
     /// it's of: an upstream edit removed or remade the element. The `candidates` are the
     /// elements it most likely meant, never taken for it.
     ReferenceBroken = "reference_broken",
+    /// A sketch's constraints conflict, or some repeat others and disagree with them: the
+    /// error's elements are the constraints to remove or change (a shared point is never
+    /// among them).
+    OverConstrained = "over_constrained",
+    /// No solver algorithm could meet a sketch's constraints, starting from where its
+    /// geometry is drawn.
+    SolveFailed = "solve_failed",
 }
 
 impl ErrorCode {
@@ -88,7 +95,9 @@ impl ErrorCode {
             | ErrorCode::InvalidResult
             | ErrorCode::Drift
             | ErrorCode::IoFailed
-            | ErrorCode::ReferenceBroken => false,
+            | ErrorCode::ReferenceBroken
+            | ErrorCode::OverConstrained
+            | ErrorCode::SolveFailed => false,
         }
     }
 }

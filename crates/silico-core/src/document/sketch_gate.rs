@@ -19,8 +19,8 @@
 use std::collections::BTreeMap;
 
 use silico_protocol::{
-    MAX_JACOBIAN_ENTRIES, MAX_LENGTH, MAX_SKETCH_CONSTRAINTS, MAX_SKETCH_GEOMETRY,
-    MAX_SKETCH_UNKNOWNS, MAX_SKETCH_VALUES, format_number, no_distance, squared_distance,
+    MAX_LENGTH, MAX_SKETCH_CONSTRAINTS, MAX_SKETCH_GEOMETRY, MAX_SKETCH_UNKNOWNS,
+    MAX_SKETCH_VALUES, format_number, no_distance, squared_distance,
 };
 
 use super::sketch::{ElementId, ElementKind, Form, Reference, Sketch, Takes, TangentSide};
@@ -550,6 +550,17 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                     "mirror the points about another line or a point".to_owned(),
                 ));
             }
+            // A point on the line mirrors onto itself: the other would have to be the same
+            // point, which two of the sketch's points can't be (break-it: it solves once,
+            // then the next solve finds them at one place).
+            Form::Symmetric { a, b, about } if own(a, about) || own(b, about) => {
+                let end = if own(a, about) { a } else { b };
+                add(refuse(
+                    &format!("{at}.about"),
+                    format!("a symmetric's {end} is an end of {about}, so it mirrors onto itself"),
+                    "share the point instead, or mirror about another line or a point".to_owned(),
+                ));
+            }
             _ => {}
         }
 
@@ -617,7 +628,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
             add(refuse(
                 key,
                 format!("the sketch has {n} {what}, more than the {most} the sketch solver takes"),
-                "split the sketch into smaller sketches".to_owned(),
+                "split the sketch into smaller sketches: a single profile past this is more work than the sketch solver takes".to_owned(),
             ));
         }
     }
@@ -736,17 +747,20 @@ fn ends_of<'a>(
 
 /// The sketch as the sketch worker will take it, at most (M3.3's translation stays within
 /// these): each limit's field, the count, the limit, and what's counted. Every point's x
-/// and y, a circle's radius, and an arc's radius and two angles are unknowns; each
-/// constraint is one or two equations (a symmetry, a midpoint, and a tangent_on two), and an arc's rules
-/// four; the values are the unknowns, the driving dimensions', a tangency's fixed angle
-/// for each `tangent_on` and `tangent_at` (FreeCAD's translation fixes one), and the
-/// origin's. A reference dimension's value isn't the solver's: it's evaluated from the
-/// solved geometry, as FreeCAD's main does (`92894ea3a8`), not solved for as 1.1.3 does
-/// (docs/ports/sketcher.md), so it may be past what the worker takes.
-pub(super) fn size(sketch: &Sketch) -> [(&'static str, usize, usize, &'static str); 5] {
+/// and y, a circle's radius, and an arc's radius and two angles are unknowns; the values
+/// are the unknowns, the driving dimensions', a tangency's fixed angle for each
+/// `tangent_on` and `tangent_at` (FreeCAD's translation fixes one), and the origin's and
+/// the axes' ends (the translation's, silico_core::sketch). A reference dimension's value
+/// isn't the solver's: it's evaluated from the solved geometry, as FreeCAD's main does
+/// (`92894ea3a8`), not solved for as 1.1.3 does (docs/ports/sketcher.md), so it may be past
+/// what the worker takes. The worker's Jacobian limit can't be reached within these: at
+/// most two equations for each of 10,000 constraints and four for each arc's rules, times
+/// 1,024 unknowns, is under 2^25 entries.
+pub(super) fn size(sketch: &Sketch) -> [(&'static str, usize, usize, &'static str); 4] {
     let unknowns = 2 * sketch.points.len() + sketch.circles.len() + 3 * sketch.arcs.len();
+    // The origin and the two axes are geometry too.
     let geometry =
-        sketch.points.len() + sketch.lines.len() + sketch.circles.len() + sketch.arcs.len();
+        sketch.points.len() + sketch.lines.len() + sketch.circles.len() + sketch.arcs.len() + 3;
     let constraints = sketch.constraints.len() + sketch.arcs.len();
     let dimensions = sketch
         .constraints
@@ -758,17 +772,8 @@ pub(super) fn size(sketch: &Sketch) -> [(&'static str, usize, usize, &'static st
         .iter()
         .filter(|c| matches!(c.form, Form::TangentOn { .. } | Form::TangentAt { .. }))
         .count();
-    let values = unknowns + dimensions + angles + 2;
-    let equations: usize = sketch
-        .constraints
-        .iter()
-        .map(|c| match c.form {
-            Form::Symmetric { .. } | Form::Midpoint { .. } | Form::TangentOn { .. } => 2,
-            _ => 1,
-        })
-        .sum::<usize>()
-        + 4 * sketch.arcs.len();
-    let entries = equations.saturating_mul(unknowns);
+    // The origin and the axes' far ends, fixed values all three.
+    let values = unknowns + dimensions + angles + 6;
     [
         (
             "points",
@@ -788,12 +793,6 @@ pub(super) fn size(sketch: &Sketch) -> [(&'static str, usize, usize, &'static st
             constraints,
             MAX_SKETCH_CONSTRAINTS,
             "constraints (counting each arc's rules as one)",
-        ),
-        (
-            "constraints",
-            entries,
-            MAX_JACOBIAN_ENTRIES,
-            "entries in its equations' Jacobian (equations × unknowns)",
         ),
     ]
 }

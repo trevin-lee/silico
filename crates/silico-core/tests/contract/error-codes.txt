@@ -11,3 +11,5 @@ resource_exhausted
 drift
 io_failed
 reference_broken
+over_constrained
+solve_failed

@@ -28,6 +28,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Thousands of entities, or a sketch entirely outside its own bounding region
 - Constraints that force geometry of no size through shared points (a line's two ends mirrored about the line itself, a circle's or arc's center on it, a line's midpoint at its own end, a line tangent to a circle centered on its end): FreeCAD's GUI refuses some, and its solve says success with a zero-length line or a radius of 0
 - Degeneracy a check compares by ID that's there by value (a line between two distinct points at the same place), and values derived from checked ones past the solver's reach (an arc's radius from points each within a kilometre is up to 2√2 km)
+- A symmetry of a line's own end and another point about that line (the gate refuses both ends, not one): the solve puts the point on the end, and the next solve refuses two points drawn at one place
 
 ## Sketch solver
 
@@ -47,6 +48,9 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Drag frames taken as solved without building their geometry: a line's end dragged onto its other end (or a horizontal line's end to a cursor square above its start) is a Success with a line of no length the next solve refuses, an arc's end dragged onto its centre a radius of -8e-13; FreeCAD undoes such a frame (`Sketch::internalSolve`, `updateGeometry`)
 - Drags of the largest system the check admits: the pin puts the component under SQP, dense unknowns² matrices every iteration (2,048 unknowns: 45 s a frame, the solve 1.9 s); limits sized by the solve don't bound a drag
 - Constraints redundant only where a drag starts (a point's Distance and DistanceX from a fixed point, drawn at (5, 0)): the dropped one is never looked at again, and moves break it with Success (FreeCAD too); a redundant one unmet there makes every move fail
+- Special cases that send fewer rows because "the rest is implied" (an arc's ends symmetric about a line its centre is held on: the midpoint row only): find the solution the reduced system has that the full one doesn't (a half circle, whose chord's midpoint is its centre), and draw toward it; any arc drawn past a half turn solves there with its ends unmirrored, Ok (FreeCAD too)
+- A dropped redundancy that was the well-conditioned one (a vertical, where an equal length fixes the same x only through a square root): the solve lands √residual off (12 nm on a 1 mm side), and an agreement check blames the constraint PlaneGCS dropped
+- Diagnoses on shared points against FreeCAD's coincident ends, at extreme redimensioning (a square template set to 100,000 × 0.01): FreeCAD finds one redundancy, Silico six conflicts; run the oracle on both
 
 ## Features
 
@@ -118,6 +122,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Lists only the document's size bounds, checked for repeats by `list[..i].contains(x)`: 40,000 names take 15 s in the gate, a 16 MB document's 600,000 about an hour
 - Values nested in an object (`size.distance`) refused by a helper that names its own key: the reader says `distance`, the gate and schema `size.distance`
 - Names and notes shown to people (an outline, a diff view) with every bidi control, not only U+202A..202E and U+200E/F: the isolates U+2066..2069 and U+061C slip past most hand lists, and General_Category=Cf (soft hyphen, tag characters U+E0020..E007F) prints as nothing
+- Size limits a gate counts against what the translation really sends (the origin's 2 values, while the axes' ends add 4 more and 3 pieces of geometry): a sketch at the gate's limit passes, and the worker refuses it
 
 ## Command line
 
@@ -155,6 +160,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - The app at its descriptor limit (`setrlimit(RLIMIT_NOFILE, open + k)` for k = 0..16) while starting a worker: each k fails at a different step; check code, suggestion, and that no process or descriptor is left
 - Executables that can't be started every way: missing, a directory, mode 0644, a script whose `#!` interpreter is missing, an empty path, and the same named through an environment variable; each error must say what to fix
 - A worker held at launch: macOS holds a newly written executable at `_dyld_start` while it assesses it, at times past a minute, so the first request times out blaming itself (in tests, link worker binaries rather than copy them)
+- A fallback step appended to a chain of attempts: time the whole chain on one failing component at a fraction of the size limit (an impossible chain of 1,024 unknowns: DogLeg 11 s, LM 29 s, BFGS 0.2 s, anchored SQP 33 s, past a 60 s request), not each step alone
+- Worker refusals passed up as they came (a value index, `kernel_failed`, no feature): check the core adds the feature and maps indices to the elements it knows
 
 ## Recompute and scheduling
 

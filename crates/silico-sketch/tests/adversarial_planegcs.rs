@@ -211,9 +211,12 @@ fn a_residual_that_isnt_a_number_is_reported_as_none() {
     };
     let solved = solve(&system);
     // Equations repeat (the point on the line, stated twice, among them), so some are
-    // dropped, and the solve is reported as solved except them.
+    // dropped. DogLeg solves what's left, but on a line of no length, which FreeCAD can't
+    // build and undoes (`fc128d357d`): solved invalid, with that solution, so its residuals
+    // are read on it.
     assert!(!solved.redundant.is_empty(), "{solved:?}");
-    assert_eq!(solved.status, SolveStatus::SolvedExceptRedundant);
+    assert_eq!(solved.status, SolveStatus::SolvedInvalid);
+    assert_eq!(solved.algorithm, Some(Algorithm::DogLeg));
     let v = &solved.values;
     assert_eq!((v[0], v[1]), (v[2], v[3]), "the line collapsed");
     assert_eq!(
@@ -544,8 +547,8 @@ fn the_largest_system_the_check_admits_is_answered() {
     // check, half its Jacobian limit, and ran for many minutes: Levenberg–Marquardt forms
     // JᵀJ, unknowns × unknowns, and factors it in O(unknowns³) (measured in release: 500
     // lines 13 s, 1,000 lines about 100 s). The check now refuses more than
-    // MAX_SKETCH_UNKNOWNS, and the most it admits is answered: 512 free lines, each
-    // parallel to the next, are 2,048 unknowns less 511 independent equations.
+    // MAX_SKETCH_UNKNOWNS, and the most it admits is answered: 256 free lines, each
+    // parallel to the next, are 1,024 unknowns less 255 independent equations.
     assert!(
         parallel_chain(2000, Algorithm::LevenbergMarquardt)
             .check()
@@ -558,7 +561,10 @@ fn the_largest_system_the_check_admits_is_answered() {
     match w.call(Generation(1), Op::Solve(system), Duration::from_secs(60)) {
         Ok(Reply::Solved(solved)) => {
             assert_eq!(solved.status, SolveStatus::Success);
-            assert_eq!(solved.dofs, 2048 - 511);
+            assert_eq!(
+                solved.dofs,
+                (silico_protocol::MAX_SKETCH_UNKNOWNS - (lines - 1)) as i32
+            );
             assert!(solved.conflicting.is_empty() && solved.redundant.is_empty());
         }
         other => panic!("the largest admitted system wasn't solved: {other:?}"),
@@ -647,7 +653,9 @@ fn a_solution_is_one_the_next_solve_accepts() {
     // solution puts it at x = 2e6, past the check's reach (1e6).
     // Found by break-it: the worker returned it as a Success, and the next solve, started
     // from it (a drag, an edit), was refused: "value 2 must be finite and within 1e6 of 0,
-    // got 2000000". The worker now refuses such a solution itself, as out of reach.
+    // got 2000000". The worker refused such a solution itself, as out of reach; since M3.3
+    // it's a solution that can't be built, passed over for the next algorithm and given as
+    // solved invalid, with its values, so the core can name the point that went there.
     let mut b = Builder::default();
     let p = b.fixed_point(1e6, 0.0);
     let q = b.point_values(1e6 - 1.0, 0.5);
@@ -668,19 +676,16 @@ fn a_solution_is_one_the_next_solve_accepts() {
     });
     let system = b.system(Algorithm::DogLeg);
     system.check().unwrap();
-    match silico_sketch::solve(&system) {
-        Err(failure) => assert_eq!(
-            failure.refusal,
-            Refusal::SolutionOutOfReach { value: 2 },
-            "{failure:?}"
-        ),
-        Ok(solved) => {
-            let mut next = system.clone();
-            next.values = solved.values;
-            if let Err(e) = next.check() {
-                panic!("solved, then refused: {}", e.message);
-            }
+    let solved = silico_sketch::solve(&system).unwrap();
+    if solved.status == SolveStatus::Success {
+        let mut next = system.clone();
+        next.values = solved.values;
+        if let Err(e) = next.check() {
+            panic!("solved, then refused: {}", e.message);
         }
+    } else {
+        assert_eq!(solved.status, SolveStatus::SolvedInvalid);
+        assert_eq!(solved.values[2], 2e6, "{solved:?}");
     }
 }
 
@@ -825,7 +830,31 @@ fn constraint_values(s: &SketchSystem, c: &SolverConstraint, out: &mut Vec<Value
             });
             out.push(value);
         }
+        // Not generated here: M3.3's forms have their own tests.
+        other => panic!("not a form this test generates: {other:?}"),
     }
+}
+
+/// Whether geometry at `values` can be built, written out here: every value is finite and
+/// within a kilometre, every line has length (dx² + dy² isn't 0), every circle and arc a
+/// radius above 0, and every arc its ends at two places.
+fn can_build(system: &SketchSystem, values: &[f64]) -> bool {
+    if values.iter().any(|v| !v.is_finite() || v.abs() > 1e6) {
+        return false;
+    }
+    let apart = |a: PointValues, b: PointValues| {
+        let dx = values[b.x.0 as usize] - values[a.x.0 as usize];
+        let dy = values[b.y.0 as usize] - values[a.y.0 as usize];
+        dx * dx + dy * dy != 0.0
+    };
+    system.geometry.iter().all(|g| match *g {
+        SketchGeometry::Point(_) => true,
+        SketchGeometry::Line { start, end } => apart(start, end),
+        SketchGeometry::Circle { radius, .. } => values[radius.0 as usize] > 0.0,
+        SketchGeometry::Arc {
+            radius, start, end, ..
+        } => values[radius.0 as usize] > 0.0 && apart(start, end),
+    })
 }
 
 /// Every promise `Solved` makes about `system`, checked independently of the solver.
@@ -906,11 +935,24 @@ fn check_promises(system: &SketchSystem) -> Result<(), String> {
         solved.status,
         SolveStatus::Success | SolveStatus::SolvedExceptRedundant
     );
-    if solved_it != solved.algorithm.is_some() {
+    let invalid = solved.status == SolveStatus::SolvedInvalid;
+    if (solved_it || invalid) != solved.algorithm.is_some() {
         return Err(format!(
             "{:?} with algorithm {:?}",
             solved.status, solved.algorithm
         ));
+    }
+    // A solution stands only on geometry that can be built; one that can't is given as
+    // solved invalid, with that solution (M3.3, FreeCAD's `fc128d357d`).
+    if (solved_it || invalid) && can_build(system, &solved.values) != solved_it {
+        return Err(format!(
+            "{:?} on geometry that {} be built",
+            solved.status,
+            if solved_it { "can't" } else { "can" }
+        ));
+    }
+    if invalid {
+        return Ok(());
     }
     if !solved_it {
         if solved.values != system.values {

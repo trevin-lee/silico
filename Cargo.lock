@@ -4219,16 +4219,19 @@ dependencies = [
 name = "silico-oracle"
 version = "0.0.0"
 dependencies = [
+ "libm",
  "serde",
  "serde_json",
  "sha2",
  "silico-core",
+ "silico-protocol",
 ]
 
 [[package]]
 name = "silico-protocol"
 version = "0.0.0"
 dependencies = [
+ "libm",
  "postcard",
  "proptest",
  "serde",

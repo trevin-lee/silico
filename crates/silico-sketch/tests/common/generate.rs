@@ -330,5 +330,123 @@ pub fn residuals(s: &SketchSystem, v: &[f64], c: &SolverConstraint) -> Vec<f64> 
         SolverConstraint::Radius { circle, value, .. } => {
             vec![radius(s, v, circle) - v[value.0 as usize]]
         }
+        SolverConstraint::HorizontalPoints { a, b, .. } => vec![xy(s, v, a).1 - xy(s, v, b).1],
+        SolverConstraint::VerticalPoints { a, b, .. } => vec![xy(s, v, a).0 - xy(s, v, b).0],
+        SolverConstraint::PointLineDistance {
+            point, line, value, ..
+        } => vec![from_line(s, v, xy(s, v, point), line).abs() - v[value.0 as usize]],
+        SolverConstraint::PointOnCircle { point, circle, .. } => {
+            vec![off_circle(s, v, xy(s, v, point), circle)]
+        }
+        SolverConstraint::EqualRadius { a, b, .. } => {
+            // As the bridge sends it: a circle's radius before an arc's.
+            let arc = |g: Geometry| matches!(s.geometry[g.0 as usize], SketchGeometry::Arc { .. });
+            let (a, b) = if arc(a) && !arc(b) { (b, a) } else { (a, b) };
+            vec![radius(s, v, a) - radius(s, v, b)]
+        }
+        SolverConstraint::TangentLine { line, circle, .. } => vec![
+            from_line(s, v, xy(s, v, PointOf::Center(circle)), line).abs() - radius(s, v, circle),
+        ],
+        SolverConstraint::TangentCircles { a, b, internal, .. } => {
+            let (ca, cb) = (xy(s, v, PointOf::Center(a)), xy(s, v, PointOf::Center(b)));
+            let (dx, dy) = (ca.0 - cb.0, ca.1 - cb.1);
+            let d_sq = dx * dx + dy * dy;
+            let (ra, rb) = (radius(s, v, a), radius(s, v, b));
+            let r = if internal { ra - rb } else { ra + rb };
+            vec![if d_sq < 1e-14 { ra - rb } else { d_sq - r * r }]
+        }
+        SolverConstraint::TangentOn {
+            a, point, b, angle, ..
+        } => {
+            let p = xy(s, v, point);
+            let on = match s.geometry[b.0 as usize] {
+                SketchGeometry::Line { .. } => from_line(s, v, p, b),
+                _ => off_circle(s, v, p, b),
+            };
+            vec![on, angle_via_point(s, v, a, b, p, v[angle.0 as usize])]
+        }
+        SolverConstraint::AngleViaPoint {
+            a, b, point, angle, ..
+        } => vec![angle_via_point(
+            s,
+            v,
+            a,
+            b,
+            xy(s, v, point),
+            v[angle.0 as usize],
+        )],
+        SolverConstraint::SymmetricLine { a, b, line, .. } => {
+            let (pa, pb) = (xy(s, v, a), xy(s, v, b));
+            let ab = (pa.0 - pb.0, pa.1 - pb.1);
+            let l = dir(s, v, line);
+            let (sa, sb) = (xy(s, &s.values, a), xy(s, &s.values, b));
+            let scale = len((sa.0 - sb.0, sa.1 - sb.1)) * len(dir(s, &s.values, line));
+            let mid = ((pa.0 + pb.0) / 2.0, (pa.1 + pb.1) / 2.0);
+            vec![
+                (ab.0 * -l.0 + ab.1 * -l.1) / scale,
+                from_line(s, v, mid, line),
+            ]
+        }
+        SolverConstraint::MidpointOnLine { a, b, line, .. } => {
+            let (pa, pb) = (xy(s, v, a), xy(s, v, b));
+            vec![from_line(
+                s,
+                v,
+                ((pa.0 + pb.0) / 2.0, (pa.1 + pb.1) / 2.0),
+                line,
+            )]
+        }
+        SolverConstraint::SymmetricPoint { a, b, center, .. } => {
+            let (pa, pb, m) = (xy(s, v, a), xy(s, v, b), xy(s, v, center));
+            let d = len((pb.0 - pa.0, pb.1 - pa.1));
+            let u = ((pb.0 - pa.0) / d, (pb.1 - pa.1) / d);
+            let along = |q: (f64, f64)| (m.0 - q.0) * u.0 + (m.1 - q.1) * u.1;
+            let (dx, dy) = (pb.0 - pa.0, pb.1 - pa.1);
+            let off = (-m.0 * dy + m.1 * dx + pa.0 * pb.1 - pb.0 * pa.1) / d;
+            vec![along(pa) + along(pb), off]
+        }
     }
+}
+
+/// The signed distance of `p` from line `l` (extended), left of its direction positive, as
+/// PlaneGCS's `PointOnLine` measures it.
+pub fn from_line(s: &SketchSystem, v: &[f64], p: (f64, f64), l: Geometry) -> f64 {
+    let (x1, y1) = xy(s, v, PointOf::Start(l));
+    let (x2, y2) = xy(s, v, PointOf::End(l));
+    let (dx, dy) = (x2 - x1, y2 - y1);
+    (-p.0 * dy + p.1 * dx + x1 * y2 - x2 * y1) / (dx * dx + dy * dy).sqrt()
+}
+
+/// How far `p` is from circle (or arc) `c`'s circle, outward positive.
+pub fn off_circle(s: &SketchSystem, v: &[f64], p: (f64, f64), c: Geometry) -> f64 {
+    let o = xy(s, v, PointOf::Center(c));
+    let (dx, dy) = (p.0 - o.0, p.1 - o.1);
+    (dx * dx + dy * dy).sqrt() - radius(s, v, c)
+}
+
+/// PlaneGCS's angle at a point: from `a`'s normal at `p`, turned by `angle`, to `b`'s. A
+/// line's normal is its direction turned a quarter counter-clockwise; a circle's or arc's
+/// points from `p` to its centre.
+pub fn angle_via_point(
+    s: &SketchSystem,
+    v: &[f64],
+    a: Geometry,
+    b: Geometry,
+    p: (f64, f64),
+    angle: f64,
+) -> f64 {
+    let normal = |g: Geometry| match s.geometry[g.0 as usize] {
+        SketchGeometry::Line { .. } => {
+            let d = dir(s, v, g);
+            (-d.1, d.0)
+        }
+        _ => {
+            let o = xy(s, v, PointOf::Center(g));
+            (o.0 - p.0, o.1 - p.1)
+        }
+    };
+    let (n1, n2) = (normal(a), normal(b));
+    let (c, sn) = (libm::cos(angle), libm::sin(angle));
+    let r = (n1.0 * c - n1.1 * sn, n1.0 * sn + n1.1 * c);
+    libm::atan2(-n2.0 * r.1 + n2.1 * r.0, n2.0 * r.0 + n2.1 * r.1)
 }
