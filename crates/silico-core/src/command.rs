@@ -37,8 +37,9 @@ impl Problems {
         Problems { errors, total }
     }
 
-    /// The problems listed: every one, or the first [`document::PROBLEMS_LISTED`] the gate
-    /// found.
+    /// The problems listed: every one; or, where there are more, the first
+    /// [`document::PROBLEMS_LISTED`] the gate found, or each feature's first hundred broken
+    /// references.
     pub fn errors(&self) -> &[Error] {
         &self.errors
     }
@@ -94,15 +95,9 @@ pub fn rebuild<K: Kernel + 'static>(
 pub fn check(model: &Model) -> Result<Problems, Error> {
     let _span = tracing::info_span!("check").entered();
     let mut problems = failures(model)?;
-    let unlisted = unlisted(model, &problems);
+    let unlisted = model.unlisted_errors();
     problems.extend(own(model.drift())?);
     Ok(Problems::with_unlisted(problems, unlisted))
-}
-
-/// How many of the model's failures `listed` (its failures, as listed) leaves out: broken
-/// references past the hundred each feature lists.
-fn unlisted(model: &Model, listed: &[Error]) -> u64 {
-    model.error_count().saturating_sub(listed.len() as u64)
 }
 
 /// The model's failed features, as problems of the document; or, if one failed for a
@@ -141,7 +136,7 @@ pub struct Formatted {
 pub fn format(model: &Model) -> Result<Result<Formatted, Problems>, Error> {
     let _span = tracing::info_span!("format").entered();
     let mut problems = failures(model)?;
-    let unlisted = unlisted(model, &problems);
+    let unlisted = model.unlisted_errors();
     let written = model.fingerprinted();
     let refingerprinted = model
         .document()

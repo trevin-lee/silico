@@ -13,6 +13,24 @@ use crate::kernel::{ElementKind, ElementRef};
 use crate::naming::{ElementMap, Maker, Name};
 use crate::{Error, ErrorCode};
 
+/// A feature's broken references: the first [`PROBLEMS_LISTED`], each its
+/// `reference_broken` error, and how many there are, listed or not.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Broken {
+    pub(crate) errors: Vec<Error>,
+    pub(crate) total: u64,
+}
+
+impl Broken {
+    /// One error, a bug in Silico's, in place of a feature's references.
+    pub(crate) fn bug(error: Error) -> Broken {
+        Broken {
+            errors: vec![error],
+            total: 1,
+        }
+    }
+}
+
 /// At most this many candidates for a broken name.
 const CANDIDATES: usize = 5;
 
@@ -38,7 +56,7 @@ pub(crate) fn resolve(
     edges: &[ElementName],
     map: &ElementMap,
     makers: &dyn Fn(&FeatureId) -> Option<Maker>,
-) -> Result<Vec<u32>, (Vec<Error>, u64)> {
+) -> Result<Vec<u32>, Broken> {
     let mut found = Vec::with_capacity(edges.len());
     let mut seen = BTreeSet::new();
     let mut broken = Vec::new();
@@ -108,7 +126,10 @@ pub(crate) fn resolve(
         Ok(found)
     } else {
         let total = broken.len() as u64 + more;
-        Err((broken, total))
+        Err(Broken {
+            errors: broken,
+            total,
+        })
     }
 }
 
@@ -241,9 +262,9 @@ mod tests {
 
     fn resolved(map: &ElementMap, edges: &[&str]) -> Result<Vec<u32>, Vec<Error>> {
         let edges: Vec<ElementName> = edges.iter().map(|e| ElementName::new(e).unwrap()).collect();
-        resolve(&id("ffffffff"), &edges, map, &makers).map_err(|(errors, total)| {
-            assert_eq!(total, errors.len() as u64);
-            errors
+        resolve(&id("ffffffff"), &edges, map, &makers).map_err(|broken| {
+            assert_eq!(broken.total, broken.errors.len() as u64);
+            broken.errors
         })
     }
 

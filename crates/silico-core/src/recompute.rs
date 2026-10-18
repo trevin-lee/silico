@@ -194,6 +194,23 @@ impl Model {
         &self.bodies
     }
 
+    /// How many errors the failed features have that [`Model::errors`] doesn't list: a
+    /// feature's broken references past its first hundred.
+    pub fn unlisted_errors(&self) -> u64 {
+        self.features
+            .iter()
+            .map(|(_, outcome)| match outcome {
+                FeatureOutcome::Broken { errors, total } => {
+                    total.saturating_sub(errors.len() as u64)
+                }
+                FeatureOutcome::Built { .. }
+                | FeatureOutcome::Failed(_)
+                | FeatureOutcome::Blocked { .. }
+                | FeatureOutcome::Sketch => 0,
+            })
+            .sum()
+    }
+
     /// How many errors the failed features have, listed in [`Model::errors`] or not: one
     /// for a failure, and every broken reference of a feature whose references broke.
     pub fn error_count(&self) -> u64 {
@@ -1055,9 +1072,9 @@ impl Job {
 /// What a job came to.
 enum Ran {
     Made(Outcome<Built>),
-    /// A fillet's or chamfer's edges that name none of its base's: every one, each its
-    /// `reference_broken` error (the first hundred), and how many. The step isn't run.
-    Unresolved((Vec<Error>, u64)),
+    /// A fillet's or chamfer's edges that name none of its base's: the first hundred,
+    /// each its `reference_broken` error, and how many there are. The step isn't run.
+    Unresolved(crate::references::Broken),
     /// The solid, measured: a copy, made outside the schedule's lock.
     Measured(Outcome<Built>),
 }
@@ -1082,9 +1099,9 @@ struct Schedule {
     superseded: bool,
     /// A step that panicked, a bug in Silico: the recompute stops, and fails with this.
     broken: Option<Error>,
-    /// Fillets' and chamfers' steps whose edges didn't all resolve, by key: every broken
-    /// reference's error.
-    unresolved: BTreeMap<Key, (Vec<Error>, u64)>,
+    /// Fillets' and chamfers' steps whose edges didn't all resolve, by key: their broken
+    /// references' errors (the first hundred), and how many there are.
+    unresolved: BTreeMap<Key, crate::references::Broken>,
 }
 
 impl<K: Kernel + 'static> Engine<K> {
@@ -1354,7 +1371,7 @@ impl<K: Kernel + 'static> Engine<K> {
                 Ran::Unresolved(broken) => {
                     // The step fails on its first broken reference, so nothing that uses it
                     // runs; the feature says them all.
-                    let first = broken.0.first().cloned().unwrap_or_else(|| {
+                    let first = broken.errors.first().cloned().unwrap_or_else(|| {
                         silico_bug("a fillet's edges were refused, though none is broken")
                     });
                     s.done.insert(key, Err(first));
@@ -1476,19 +1493,18 @@ impl<K: Kernel + 'static> Engine<K> {
         plan: &Plan,
         dress: &Dress,
         lineage: &BTreeMap<usize, Arc<Built>>,
-    ) -> Result<Vec<u32>, (Vec<Error>, u64)> {
+    ) -> Result<Vec<u32>, crate::references::Broken> {
         let _span = tracing::debug_span!("resolve", edges = dress.edges.len()).entered();
         let known = Arc::clone(&lock(&self.state).known);
         let Some(map) = plan.map_of(dress.base, lineage, &known) else {
-            return Err((
-                vec![silico_bug(
-                    "a fillet's base was built, but its elements couldn't be named",
-                )],
-                1,
-            ));
+            return Err(crate::references::Broken::bug(silico_bug(
+                "a fillet's base was built, but its elements couldn't be named",
+            )));
         };
         let Some(feature) = plan.feature_id(dress.feature) else {
-            return Err((vec![silico_bug("a fillet's feature wasn't planned")], 1));
+            return Err(crate::references::Broken::bug(silico_bug(
+                "a fillet's feature wasn't planned",
+            )));
         };
         crate::references::resolve(feature, &dress.edges, &map, &|f| {
             plan.makers.get(f).copied()
@@ -1721,7 +1737,7 @@ fn naming_key(key: Key, id: &FeatureId, how: Naming, inputs: &[NamingKey]) -> Na
 fn feature_outcome(
     planned: &Planned,
     done: &BTreeMap<Key, StepResult>,
-    unresolved: &BTreeMap<Key, (Vec<Error>, u64)>,
+    unresolved: &BTreeMap<Key, crate::references::Broken>,
 ) -> FeatureOutcome {
     let unbuilt = || {
         FeatureOutcome::Failed(
@@ -1736,10 +1752,10 @@ fn feature_outcome(
     for key in &planned.steps {
         match done.get(key) {
             Some(Ok(_)) => {}
-            Some(Err(_)) if let Some((errors, total)) = unresolved.get(key) => {
+            Some(Err(_)) if let Some(broken) = unresolved.get(key) => {
                 return FeatureOutcome::Broken {
-                    errors: errors.clone(),
-                    total: *total,
+                    errors: broken.errors.clone(),
+                    total: broken.total,
                 };
             }
             Some(Err(error)) => {

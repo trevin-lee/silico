@@ -571,3 +571,32 @@ fn a_checks_total_counts_every_broken_reference_listed_or_not() {
             .all(|e| e.code() == ErrorCode::ReferenceBroken)
     );
 }
+
+#[test]
+fn a_formats_total_counts_every_broken_reference_and_a_failure_counts_once() {
+    // Found by the review: only a check's total was tested. A format's counts every
+    // broken reference too, and a failed feature is one error, listed and counted.
+    let edges: Vec<String> = (13..163)
+        .map(|n| format!("\"k7f2qx3m.box.Edge{n}\""))
+        .collect();
+    let text = format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "features": [
+{{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}},
+{{"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": [{}], "radius": 1}}]}}"#,
+        edges.join(", ")
+    );
+    let done = format_bytes(&engine(), text.as_bytes()).unwrap().unwrap();
+    assert_eq!(done.problems.errors().len(), 100);
+    assert_eq!(done.problems.total(), 150);
+    let refusing = engine();
+    refusing.kernel().refuse(|op| {
+        matches!(op, Op::MakePrimitive(Primitive::Cylinder { .. }))
+            .then(|| Error::new(ErrorCode::KernelFailed, "MakeCylinder failed"))
+    });
+    let model = command::rebuild(&refusing, command::gate(EXAMPLE.as_bytes()).unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(model.error_count(), 1);
+    assert_eq!(model.unlisted_errors(), 0);
+    assert_eq!(command::check(&model).unwrap().total(), 1);
+}

@@ -75,23 +75,26 @@ fn too_long(document: &Document, what: &str) -> Error {
         .find(|f| !write::feature_fits(f, limit / 2));
     match large {
         // By what can make the feature large, every type saying, so a new one has to.
-        Some(feature) => error.with_feature(feature.id.as_str()).with_suggestion(
-            match feature.operation {
-                Operation::Sketch(_) => "make this sketch smaller: split it into several sketches",
-                Operation::Fillet { .. } | Operation::Chamfer { .. } => {
-                    "name fewer edges, or shorter names of them (as their feature names them), or \
-                     shorten this feature's name or note"
-                }
-                Operation::Box { .. }
-                | Operation::Cylinder { .. }
-                | Operation::Sphere { .. }
-                | Operation::Cone { .. }
-                | Operation::Torus { .. }
-                | Operation::Fuse { .. }
-                | Operation::Cut { .. }
-                | Operation::Common { .. } => "make this feature's name or note shorter",
-            },
-        ),
+        Some(feature) => {
+            error
+                .with_feature(feature.id.as_str())
+                .with_suggestion(match feature.operation {
+                    Operation::Sketch(_) => {
+                        "make this sketch smaller: split it into several sketches"
+                    }
+                    Operation::Fillet { .. } | Operation::Chamfer { .. } => {
+                        "name fewer edges, or shorten this feature's name or note"
+                    }
+                    Operation::Box { .. }
+                    | Operation::Cylinder { .. }
+                    | Operation::Sphere { .. }
+                    | Operation::Cone { .. }
+                    | Operation::Torus { .. }
+                    | Operation::Fuse { .. }
+                    | Operation::Cut { .. }
+                    | Operation::Common { .. } => "make this feature's name or note shorter",
+                })
+        }
         None => error.with_suggestion(
             "make it smaller: fewer features, smaller sketches, fewer or shorter edge names, or \
              shorter names and notes",
