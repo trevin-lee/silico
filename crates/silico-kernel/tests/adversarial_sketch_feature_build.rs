@@ -106,10 +106,10 @@ fn fillet(base: &str, edge: &str) -> String {
 
 #[test]
 fn a_pad_onto_one_of_a_bases_two_separate_solids_isnt_said_to_miss_its_base() {
-    // M2's fuse of two boxes apart is two solids, and accepted. A pad from the first
-    // box's top (the cube below the XY plane) reaches it, flush: the result is the base's
-    // two solids, the first with the pad on it. Refusing it may be right (D2), but "pad
-    // pppppppp doesn't reach its base" is false, and "lengthen the pad" can't help.
+    // M2's fuse of two boxes apart was two solids, and accepted; a pad from the first box's
+    // top, which reaches it, was refused as "pad pppppppp doesn't reach its base f0000001".
+    // Found by break-it, fixed by Fable's decision (design S5): D2 holds at M2's booleans
+    // too, so the fuse is refused naming itself, and the pad is blocked on it.
     let engine = engine();
     let model = publish(
         &engine,
@@ -121,26 +121,16 @@ fn a_pad_onto_one_of_a_bases_two_separate_solids_isnt_said_to_miss_its_base() {
             &pad("pppppppp", Some("f0000001"), "ssssssss", TEN),
         ],
     );
-    assert_close(volume(&model, "f0000001"), 2000.0, 1e-9, "the two boxes");
-    // Found by break-it, fixed: "pad pppppppp doesn't reach its base f0000001: the result
-    // is 2 solids", the base taken as one solid. Whether such a pad is refused at all is
-    // open (design S12, `sweep::solids_allowed`), so only the words are held: no false
-    // claim, and the base's own count said.
-    if let Some(FeatureOutcome::Failed(error)) = model.outcome(&id("pppppppp")) {
-        assert!(
-            !error.message().contains("doesn't reach"),
-            "{} ({:?})",
-            error.message(),
-            error.suggestion()
-        );
-        assert!(
-            error
-                .message()
-                .contains("f0000001, which is already 2 solids"),
-            "{}",
-            error.message()
-        );
-    }
+    let error = failed(&model, "f0000001");
+    assert_eq!(error.code(), silico_core::ErrorCode::KernelFailed);
+    assert_eq!(
+        error.message(),
+        "fuse f0000001 makes 2 solids: its base bbbbbbbb and tool b0000002 don't touch, or meet only along an edge or at a point"
+    );
+    assert_eq!(
+        model.outcome(&id("pppppppp")),
+        Some(&FeatureOutcome::Blocked { on: id("f0000001") })
+    );
 }
 
 #[test]

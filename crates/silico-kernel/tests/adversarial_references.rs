@@ -200,8 +200,10 @@ fn degenerate_and_seam_edges_named_in_a_document_are_refused_naming_the_feature(
 fn fillet_of_an_edge_ending_where_two_boxes_touch_at_a_corner_fails_the_feature_cleanly() {
     // Two cubes fused corner to corner at (10, 10, 10): the first box's Edge7, from
     // (10, 10, 0) to (10, 10, 10), ends there. OCCT segfaults filleting it, as FreeCAD
-    // does; named in a document, it fails the fillet with a structured error, and the
-    // engine rebuilds the next document.
+    // does. Two cubes meeting at a point are two solids to OCCT, so since Fable's decision
+    // of 2026-10-18 (D2 at M2's booleans) the fuse is refused, naming itself, and the
+    // fillet is blocked on it (its step may still run, and crash a worker: nothing of it is
+    // reported but the block); and the engine rebuilds the next document.
     let engine = engine();
     let text = format!(
         r#"{HEAD}
@@ -212,14 +214,18 @@ fn fillet_of_an_edge_ending_where_two_boxes_touch_at_a_corner_fails_the_feature_
 ]}}"#
     );
     let model = publish(&engine, &text);
-    match model.outcome(&id("ffffffff")) {
+    match model.outcome(&id("rrrrrrrr")) {
         Some(FeatureOutcome::Failed(error)) => {
-            assert_eq!(error.feature(), Some("ffffffff"), "{error:?}");
-            assert_ne!(error.code(), ErrorCode::Internal, "{error:?}");
-            assert!(error.suggestion().is_some(), "{error:?}");
+            assert_eq!(error.feature(), Some("rrrrrrrr"), "{error:?}");
+            assert_eq!(error.code(), ErrorCode::KernelFailed, "{error:?}");
+            assert!(error.message().contains("2 solids"), "{error:?}");
         }
         other => panic!("{other:?}"),
     }
+    assert_eq!(
+        model.outcome(&id("ffffffff")),
+        Some(&FeatureOutcome::Blocked { on: id("rrrrrrrr") })
+    );
     let model = publish(
         &engine,
         &dressed(

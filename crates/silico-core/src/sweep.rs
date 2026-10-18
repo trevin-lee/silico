@@ -3,7 +3,10 @@
 //! already has, for recompute to call (M3.6's step iv): from the solved sketch, before the
 //! kernel is asked for anything (decision 2), a revolve's or groove's axis of no length (S6),
 //! and a pad or revolve of more than one region (decision 3); and from the built result, more
-//! than one solid (D2), or a volume that shows the feature changed nothing (S7).
+//! than one solid (D2), or a volume that shows the feature changed nothing (S7). And M2's
+//! booleans' one-solid rule (D2), which keeps every base one solid. Recompute asks the
+//! result's checks of each feature when its outcome is decided, from its solid's stored
+//! measures, however the solid was had (made, kept, or read from the cache).
 
 use silico_protocol::{MEASURE_PRECISION, format_number, no_distance};
 
@@ -313,7 +316,7 @@ fn unchecked(what: String) -> Error {
 }
 
 /// A solid as a sketch feature's checks see it: its volume, by the precise measure, and how
-/// many solids, faces, edges, and vertices it has (a base's solids as its last step made it).
+/// many solids, faces, edges, and vertices it has.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Measured {
     pub volume: f64,
@@ -404,24 +407,56 @@ fn and_list(items: &[String]) -> String {
     }
 }
 
-/// How many solids a sketch feature's result may have, its base being `base_solids`: one
-/// (design S5, D2, as approved). A base already of several solids (M2's fuse of two solids
-/// apart) is the open question of S12: whether a feature onto it may leave as many as its
-/// base had is with the maintainer, and this is the one place the answer goes.
-pub fn solids_allowed(base_solids: u32, kind: SweepFeature) -> u32 {
-    let _ = (base_solids, kind);
-    1
+/// D2's letter for M2's booleans (Fable's decision, 2026-10-18; design S5): a `fuse`, `cut`,
+/// or `common` feature whose result holds more than one solid is refused, `kernel_failed`,
+/// naming the feature: two boxes apart fused, a box cut in two, two pieces in common. A
+/// solid nothing can address can't be made until bodies exist; the kernel's boolean
+/// returns what OCCT builds, and the feature layer refuses it here.
+pub fn check_boolean_solids(
+    feature: &FeatureId,
+    op: silico_protocol::BooleanOp,
+    base: &FeatureId,
+    tool: &FeatureId,
+    solids: u32,
+) -> Result<(), Error> {
+    use silico_protocol::BooleanOp;
+    if solids <= 1 {
+        return Ok(());
+    }
+    let (message, suggestion) = match op {
+        BooleanOp::Fuse => (
+            format!(
+                "fuse {feature} makes {solids} solids: its base {base} and tool {tool} don't touch, or meet only along an edge or at a point"
+            ),
+            "move them to overlap or share a face; a solid nothing can address can't be made until bodies exist",
+        ),
+        BooleanOp::Cut => (
+            format!(
+                "cut {feature} cuts its base {base} in {}: the result is {solids} solids",
+                pieces(solids)
+            ),
+            "shorten or move the tool so the base stays one piece",
+        ),
+        BooleanOp::Common => (
+            format!(
+                "common {feature} makes {solids} solids of base {base} and tool {tool}: they overlap in {} places",
+                pieces(solids)
+            ),
+            "move them so they overlap in one place",
+        ),
+    };
+    Err(Error::new(ErrorCode::KernelFailed, message)
+        .with_feature(feature.as_str())
+        .with_suggestion(suggestion))
 }
 
-/// What a sketch feature's result must be, once its boolean is built (design S5, S7): no
-/// more solids than [`solids_allowed`], and a change to its base's volume. Both
-/// `kernel_failed`, naming the feature: the geometry is valid and so is the input, but the
-/// feature didn't do what it's for. `before` is the base, its `solids` the base's count.
+/// What a sketch feature's result must be, once its boolean is built (design S5, S7): one
+/// solid, and a change to its base's volume. Both `kernel_failed`, naming the feature: the
+/// geometry is valid and so is the input, but the feature didn't do what it's for.
 ///
-/// - **Solids** (D2): more than allowed is refused: a pad that misses its base, a pocket that
-///   cuts it in two, said so where the base was one solid, and where it was already several,
-///   said so instead, so the feature isn't blamed for its base. None is refused, as the
-///   kernel's empty boolean refuses it first.
+/// - **One solid** (D2): more than one is refused (a pad that misses its base, a pocket that
+///   cuts it in two), and so is none, which the kernel's empty boolean refuses first. A base
+///   is always one solid: M2's booleans hold to D2 too ([`check_boolean_solids`]).
 /// - **A change**: a pad or revolve is refused when V(result) − V(base) is at most
 ///   [`MEASURE_PRECISION`] × V(base), and a pocket or groove when V(base) − V(result) is: the
 ///   change within the precise measure's own precision is no change. By volume alone: a fuse
@@ -447,7 +482,6 @@ pub fn check_result(
             .with_feature(id)
             .with_suggestion(suggestion))
     };
-    let allowed = solids_allowed(before.solids, kind);
     match after.solids {
         0 => {
             return failed(
@@ -459,16 +493,7 @@ pub fn check_result(
                 },
             );
         }
-        n if n <= allowed => {}
-        n if before.solids > 1 => {
-            return failed(
-                format!(
-                    "{word} {id} makes {n} solids of its base {base_id}, which is already {} solids: a {word}'s result is one solid",
-                    before.solids
-                ),
-                &format!("{word} a feature of one solid, or {word} each solid of it apart"),
-            );
-        }
+        1 => {}
         n => {
             return if kind.adds() {
                 failed(

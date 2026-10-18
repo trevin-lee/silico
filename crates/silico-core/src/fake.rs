@@ -19,10 +19,10 @@
 //! keeps them all. A summary is exact for a primitive (its volume, area, center, and box by
 //! formula, where it sits as the kernel makes it) and a move; a boolean's, its own model's
 //! again, is its inputs' together, as if they didn't touch: their volumes and areas added,
-//! their centers weighed by volume, and the box around both. A boolean whose tool is a
-//! sweep of faces (a sketch feature's fuse or cut) is one solid, or its base's, as if they
-//! met, and such a cut is its base less the share of its tool inside the base's box
-//! (`Measured::less`), so a pad adds and a pocket removes. Faces made from a profile's
+//! their centers weighed by volume, and the box around both. A boolean is one solid (a
+//! fuse's) or its base's (a cut's and a common's), as if they met, and a cut whose tool is a
+//! sweep of faces (a sketch feature's) is its base less the share of its tool inside the
+//! base's box (`Measured::less`), so a pad adds and a pocket removes. Faces made from a profile's
 //! regions are numbered and kept as the kernel keeps them (each curve its edge, each point
 //! its vertex), with their area by formula and the box around their curves. A sweep of
 //! faces (a prism, through all or not, or a revolution) reports each element as the kernel
@@ -506,11 +506,10 @@ fn answer(op: &Op) -> Result<Reply, Error> {
         Op::Boolean { op, base, tool } => {
             let (base, tool) = (Symbolic::read(base)?, Symbolic::read(tool)?);
             let (a, b) = (base.counts(), tool.counts());
-            let swept = matches!(tool.0.last(), Some(Step::Sweep { .. }));
             let made = Symbolic::boolean(*op, base, tool);
             let history = History {
                 inputs: vec![kept(a, ElementCounts::default()), kept(b, a)],
-                result: boolean_counts(*op, a, b, swept),
+                result: boolean_counts(*op, a, b),
                 ends: Ends::default(),
                 topology: made.topology(),
             };
@@ -973,14 +972,11 @@ fn sum(a: ElementCounts, b: ElementCounts) -> ElementCounts {
 }
 
 /// A boolean's counts, as the fake models it: both inputs' faces, edges, and vertices, and
-/// their solids, as if they didn't touch; but where the tool is a sweep of faces (a pad's,
-/// pocket's, revolve's, or groove's fuse or cut), the solids of one that met: a fuse's one,
-/// a cut's and a common's its base's. So those are one solid, as the kernel's are, and a
-/// pocket of several regions cuts one base.
-fn boolean_counts(op: BooleanOp, a: ElementCounts, b: ElementCounts, swept: bool) -> ElementCounts {
-    if !swept {
-        return sum(a, b);
-    }
+/// the solids of one that met: a fuse's one (none of none), a cut's and a common's its
+/// base's. So a boolean of the fake is one solid, as D2 holds them (`sweep`'s checks): the
+/// fake can't model a split, which tests of that rule build on the real kernel or write by
+/// hand.
+fn boolean_counts(op: BooleanOp, a: ElementCounts, b: ElementCounts) -> ElementCounts {
     ElementCounts {
         solids: match op {
             BooleanOp::Fuse => u32::from(a.solids > 0 || b.solids > 0),
@@ -1519,12 +1515,7 @@ fn step_counts(steps: &[Step], step: &Step, of: impl Fn(usize) -> ElementCounts)
         Step::Primitive(primitive) => primitive_counts(primitive),
         Step::Faces(regions) => FacesLayout::of(regions).counts,
         Step::Translate { input, .. } | Step::Dress { input, .. } => of(*input),
-        Step::Boolean { op, base, tool } => boolean_counts(
-            *op,
-            of(*base),
-            of(*tool),
-            matches!(steps.get(*tool), Some(Step::Sweep { .. })),
-        ),
+        Step::Boolean { op, base, tool } => boolean_counts(*op, of(*base), of(*tool)),
         Step::Sweep { input, sweep } => match steps.get(*input) {
             Some(Step::Faces(regions)) => {
                 SweepNumbers::of(&FacesLayout::of(regions), sweep.kind()).counts

@@ -440,36 +440,65 @@ fn a_change_under_the_precision_is_said_as_the_change_and_the_limit() {
 }
 
 #[test]
-fn a_base_already_of_several_solids_is_said_so_and_never_blamed_on_the_feature() {
-    // Found by break-it: a pad onto M2's fuse of two boxes apart was told it "doesn't reach
-    // its base", a pocket into it that it "cuts its base in two". Whether such a feature
-    // may leave as many solids as its base is open (design S12, `solids_allowed`); held
-    // here only: whatever it decides, a refusal says the base's own count and makes no such
-    // claim.
-    let base = Measured {
-        solids: 2,
-        ..cube()
+fn an_m2_boolean_of_more_than_one_solid_is_refused_naming_itself_and_the_cause() {
+    // D2's letter for M2's booleans (Fable's decision; design S5), on histories written by
+    // hand: a result of one solid passes, of two or more is refused, `kernel_failed`, in
+    // the words Fable gave each operation.
+    use silico_core::kernel::{ElementCounts, History};
+    use silico_core::sweep::check_boolean_solids;
+    use silico_protocol::BooleanOp;
+    let history = |solids: u32| History {
+        inputs: Vec::new(),
+        result: ElementCounts {
+            faces: 12,
+            edges: 24,
+            vertices: 16,
+            solids,
+        },
+        ends: Default::default(),
+        topology: Default::default(),
     };
-    for kind in SweepFeature::ALL {
-        for solids in [2, 3] {
-            let after = Measured {
-                solids,
-                volume: if kind.adds() { 1100.0 } else { 900.0 },
-                ..result(1000.0)
-            };
-            if let Err(e) = check(kind, base, after) {
-                assert!(
-                    e.message().contains("b0000001, which is already 2 solids"),
-                    "{}",
-                    e.message()
-                );
-                assert!(!e.message().contains("doesn't reach"), "{}", e.message());
-                assert!(!e.message().contains(" in two"), "{}", e.message());
-            }
-        }
+    let check = |op, solids: u32| {
+        check_boolean_solids(
+            &fid("f0000001"),
+            op,
+            &fid("b0000001"),
+            &fid("b0000002"),
+            history(solids).result.solids,
+        )
+    };
+    for op in [BooleanOp::Fuse, BooleanOp::Cut, BooleanOp::Common] {
+        assert_eq!(check(op, 1), Ok(()), "{op:?}");
+        // None is the kernel's empty boolean's to refuse, before this.
+        assert_eq!(check(op, 0), Ok(()), "{op:?}");
+        let refused = check(op, 2).unwrap_err();
+        assert_eq!(refused.code(), ErrorCode::KernelFailed);
+        assert_eq!(refused.feature(), Some("f0000001"));
     }
-    // A base of one solid keeps the approved rule: one solid, its misses said as before.
-    for kind in SweepFeature::ALL {
-        assert_eq!(silico_core::sweep::solids_allowed(1, kind), 1);
-    }
+    let said = |op, solids| {
+        let e = check(op, solids).unwrap_err();
+        (e.message().to_owned(), e.suggestion().unwrap().to_owned())
+    };
+    assert_eq!(
+        said(BooleanOp::Fuse, 2),
+        (
+            "fuse f0000001 makes 2 solids: its base b0000001 and tool b0000002 don't touch, or meet only along an edge or at a point".to_owned(),
+            "move them to overlap or share a face; a solid nothing can address can't be made until bodies exist".to_owned()
+        )
+    );
+    assert_eq!(
+        said(BooleanOp::Cut, 2),
+        (
+            "cut f0000001 cuts its base b0000001 in two: the result is 2 solids".to_owned(),
+            "shorten or move the tool so the base stays one piece".to_owned()
+        )
+    );
+    assert_eq!(
+        said(BooleanOp::Common, 2).0,
+        "common f0000001 makes 2 solids of base b0000001 and tool b0000002: they overlap in two places"
+    );
+    assert_eq!(
+        said(BooleanOp::Cut, 3).0,
+        "cut f0000001 cuts its base b0000001 in three: the result is 3 solids"
+    );
 }

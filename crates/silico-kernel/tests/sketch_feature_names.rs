@@ -845,3 +845,123 @@ fn a_fillet_of_a_flush_pads_rim_adds_the_concave_share() {
         "the fillet",
     );
 }
+
+/// The area a fillet of radius `r` takes from the corner where a plane through a cylinder's
+/// axis meets the cylinder (radius `big`) square: worked by hand. The fillet's circle is
+/// tangent to the plane at distance `c` = √((R − r)² − r²) from the axis and to the
+/// cylinder at angle θ = atan(r / c), along its centre's direction; the corner's region
+/// is the cylinder's sector to θ less the triangle (axis, tangent point on the plane,
+/// centre) and the fillet's sector from the plane round to the cylinder (π/2 + θ):
+/// R²θ/2 − c·r/2 − r²(π/2 + θ)/2. (A square corner's (1 − π/4) r² is its limit as R
+/// grows; at R = 4, r = 0.5 it's 0.0665 against 0.0537.)
+fn rim_on_a_cylinder(big: f64, r: f64) -> f64 {
+    let c = ((big - r) * (big - r) - r * r).sqrt();
+    let theta = libm::atan2(r, c);
+    big * big * theta / 2.0 - c * r / 2.0 - r * r * (PI / 2.0 + theta) / 2.0
+}
+
+#[test]
+fn a_whole_turns_seam_is_the_start_edge_a_turn_short_of_whole_names_alike() {
+    // Fable's decision (design S4): a whole turn's seam is `Edge(M c)`, OCCT's FirstShape of
+    // the curve, the same object a partial turn's start edge is. One document, the tube of
+    // the whole-turn test, at 360°, 359°, and 360° again, one side: the outer side's seam
+    // and the 359° turn's start edge are one name at x = 4, y = 0, z 0..3; the end edge and
+    // the caps exist only short of a whole turn. A fillet of that edge (r 0.5) builds at
+    // 359°, taking the cap-and-cylinder corner's area along its 3 mm (`rim_on_a_cylinder`),
+    // and at 360° is refused as the kernel refuses a seam, naming it; fillets of the end
+    // edge and of an edge square to the axis break, as their edges are gone.
+    let engine = engine();
+    let ring = rectangle("ssssssss", "xz", [2.0, 0.0], 2.0, 3.0);
+    let start = "rrrrrrrr.revolve.Edge(M ssssssss.sketch.Edge.na000002)";
+    let end = "rrrrrrrr.revolve.Edge(G ssssssss.sketch.Edge.na000002)";
+    let square = "rrrrrrrr.revolve.Edge(M ssssssss.sketch.Edge.na000001)";
+    let fillet = |edge: &str| {
+        format!(
+            r#"{{"id": "ffffffff", "type": "fillet", "v": 1, "name": "F", "base": "rrrrrrrr", "edges": ["{edge}"], "radius": 0.5}}"#
+        )
+    };
+    let revolve = |angle_text: &str| {
+        turned(
+            "rrrrrrrr",
+            "revolve",
+            None,
+            "ssssssss",
+            "y_axis",
+            &angle(angle_text),
+        )
+    };
+    let mut whole_names = None;
+    for angle_text in ["360", "359", "360"] {
+        let turn = revolve(angle_text);
+        let model = publish(&engine, &[&ring, &turn]);
+        assert_eq!(errors(&model), []);
+        let names = named(&model, "rrrrrrrr");
+        assert_at(&names, start, [4.0, 0.0, 0.0], [4.0, 0.0, 3.0]);
+        let whole = angle_text == "360";
+        for partial in [
+            end,
+            "rrrrrrrr.revolve.Face(M ssssssss.sketch.Face1)",
+            "rrrrrrrr.revolve.Face(G ssssssss.sketch.Face1)",
+            square,
+        ] {
+            assert_eq!(
+                names.contains_key(partial),
+                !whole,
+                "{partial} at {angle_text}°"
+            );
+        }
+        if whole {
+            // The same names, element for element, both times.
+            match &whole_names {
+                None => whole_names = Some(names),
+                Some(before) => assert_eq!(&names, before),
+            }
+            let model = publish(&engine, &[&ring, &turn, &fillet(start)]);
+            let Some(FeatureOutcome::Failed(error)) = model.outcome(&id("ffffffff")) else {
+                panic!("{:?}", model.outcome(&id("ffffffff")));
+            };
+            // As the kernel refuses a seam (`Trouble::Smooth`): its input, naming the edge
+            // by its name, never a broken reference.
+            assert_eq!(error.code(), ErrorCode::InvalidInput, "{error:?}");
+            assert_eq!(error.elements(), [start]);
+            assert!(error.message().contains("at a seam"), "{error:?}");
+            for gone in [end, square] {
+                let model = publish(&engine, &[&ring, &turn, &fillet(gone)]);
+                let Some(FeatureOutcome::Broken { errors, .. }) = model.outcome(&id("ffffffff"))
+                else {
+                    panic!("{gone}: {:?}", model.outcome(&id("ffffffff")));
+                };
+                assert_eq!(errors[0].code(), ErrorCode::ReferenceBroken);
+            }
+        } else {
+            let model = publish(&engine, &[&ring, &turn, &fillet(start)]);
+            assert_eq!(errors(&model), []);
+            let turned = PI * (16.0 - 4.0) * 3.0 * 359.0 / 360.0;
+            assert_close(volume(&model, "rrrrrrrr"), turned, "the turn");
+            assert_close(
+                volume(&model, "ffffffff"),
+                turned - rim_on_a_cylinder(4.0, 0.5) * 3.0,
+                "the fillet of the start edge",
+            );
+        }
+    }
+}
+
+#[test]
+fn a_symmetric_whole_turns_seam_and_its_start_edge_short_of_whole_name_alike() {
+    // The same, symmetric: the turn starts at minus half its angle, so at 360° the seam is
+    // at −180° (x = −4) and at 359° the start edge at −179.5°, both `Edge(M c)`.
+    let engine = engine();
+    let ring = rectangle("ssssssss", "xz", [2.0, 0.0], 2.0, 3.0);
+    let start = "rrrrrrrr.revolve.Edge(M ssssssss.sketch.Edge.na000002)";
+    for degrees in [360.0f64, 359.0] {
+        let extent = format!(r#"{{"type": "symmetric", "angle": {degrees}}}"#);
+        let turn = turned("rrrrrrrr", "revolve", None, "ssssssss", "y_axis", &extent);
+        let model = publish(&engine, &[&ring, &turn]);
+        assert_eq!(errors(&model), []);
+        let names = named(&model, "rrrrrrrr");
+        let at = -(degrees * (PI / 180.0)) / 2.0;
+        let (x, y) = (4.0 * libm::cos(at), 4.0 * libm::sin(at));
+        assert_at(&names, start, [x, y, 0.0], [x, y, 3.0]);
+    }
+}

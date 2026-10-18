@@ -434,9 +434,29 @@ fn layouts() -> Vec<(&'static str, Vec<String>)> {
 fn every_map_a_recompute_publishes_names_each_element_once_for_hostile_layouts() {
     let engine = Recompute::new(pool());
     let mut failures = Vec::new();
+    // Layouts whose result is several solids are refused since Fable's decision of
+    // 2026-10-18 (D2 at M2's booleans: docs/design/m3.6-sketch-features.md, S5), naming the
+    // boolean; boxes meeting only along an edge or at a corner are two solids to OCCT.
+    let several = [
+        "disjoint boxes fused (a compound of two solids)",
+        "boxes touching along an edge, fused",
+        "boxes touching at a corner, fused",
+        "a cut that splits the body in two",
+    ];
     for (case, features) in layouts() {
         let model = publish(&engine, document(&features));
-        // Every layout here builds (none is empty), so a map check can't pass vacuously.
+        if several.contains(&case) {
+            match model.outcome(&id("rrrrrrrr")) {
+                Some(FeatureOutcome::Failed(e))
+                    if e.code() == silico_core::ErrorCode::KernelFailed
+                        && e.feature() == Some("rrrrrrrr")
+                        && e.message().contains("2 solids") => {}
+                other => failures.push(format!("{case}: not refused as two solids: {other:?}")),
+            }
+            continue;
+        }
+        // Every other layout here builds (none is empty), so a map check can't pass
+        // vacuously.
         if !matches!(
             model.outcome(&id("rrrrrrrr")),
             Some(FeatureOutcome::Built { .. })

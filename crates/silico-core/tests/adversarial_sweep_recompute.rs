@@ -141,12 +141,13 @@ fn two_identical_pads_on_identical_boxes_both_build_and_name_their_own_elements(
 }
 
 #[test]
-fn a_pocket_into_a_base_of_two_separate_solids_isnt_said_to_cut_it_in_two() {
-    // M2's fuse of two boxes apart is a compound of two solids, accepted (design S5: "M2's
-    // booleans are untouched"). A pocket of a small hole in the first box leaves both
-    // solids: two, as the base was. Whatever the rule for such a base (refuse it, or take
-    // a result of as many solids as the base), the pocket didn't cut anything in two, and
-    // "move the sketch or shorten the pocket" can't fix it.
+fn a_pocket_into_a_fuse_of_two_boxes_apart_isnt_said_to_cut_it_in_two() {
+    // M2's fuse of two boxes apart was a compound of two solids, accepted, and a pocket of a
+    // small hole in the first box was refused as cutting its base "in two". Found by
+    // break-it, fixed by Fable's decision (design S5): the fuse is refused at its own
+    // feature (D2's letter for M2's booleans; on the real kernel, silico-kernel
+    // tests/boolean_solids.rs), so no base of several solids exists. The fake's fuse is one
+    // solid, so here the pocket builds, and is never blamed for its base.
     let engine = engine();
     let model = published(
         &engine,
@@ -159,25 +160,11 @@ fn a_pocket_into_a_base_of_two_separate_solids_isnt_said_to_cut_it_in_two() {
         ],
     );
     assert!(built(&model, "f0000001"));
-    // Found by break-it, fixed: refused as "pocket qqqqqqqq cuts its base f0000001 in two",
-    // the base taken as one solid. Whether such a pocket is refused at all is open (design
-    // S12, `sweep::solids_allowed`), so only the words are held: no false claim, and the
-    // base's own count said.
-    if let Some(FeatureOutcome::Failed(error)) = model.outcome(&id("qqqqqqqq")) {
-        assert!(
-            !error.message().contains("in two"),
-            "the pocket is blamed for its base's solids: {} ({:?})",
-            error.message(),
-            error.suggestion()
-        );
-        assert!(
-            error
-                .message()
-                .contains("f0000001, which is already 2 solids"),
-            "{}",
-            error.message()
-        );
-    }
+    assert!(
+        built(&model, "qqqqqqqq"),
+        "{:?}",
+        model.outcome(&id("qqqqqqqq"))
+    );
 }
 
 #[test]

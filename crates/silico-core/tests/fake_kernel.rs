@@ -73,8 +73,9 @@ fn a_part_is_built_symbolically_and_described_as_built() {
         Some("cut(box(40, 20, 10), translate(cylinder(2.5, 12), 20, 10, -1))")
     );
     assert_eq!(hole.shape.valid(), Some(true));
-    // A box's 6, 12, 8 and a cylinder's 3, 3, 2, side by side.
-    assert_eq!(FakeKernel::counts(&hole.shape), Some(counts(9, 15, 10, 2)));
+    // A box's 6, 12, 8 and a cylinder's 3, 3, 2, side by side, one solid (D2: the fake's
+    // booleans are one solid, Fable's decision of 2026-10-18; it was two).
+    assert_eq!(FakeKernel::counts(&hole.shape), Some(counts(9, 15, 10, 1)));
 }
 
 #[test]
@@ -165,7 +166,9 @@ fn a_boolean_keeps_the_base_then_numbers_the_tools_elements_after_it() {
     assert_eq!(tool.faces[0].kept, Some(7));
     assert_eq!(tool.edges[2].kept, Some(15));
     assert_eq!(tool.vertices[1].kept, Some(10));
-    assert_eq!(hole.history.result, counts(9, 15, 10, 2));
+    // One solid: the fake's booleans hold to D2, as a feature's must (Fable's decision,
+    // 2026-10-18; it was two, the inputs side by side).
+    assert_eq!(hole.history.result, counts(9, 15, 10, 1));
 }
 
 #[test]
@@ -425,7 +428,8 @@ fn a_boolean_of_booleans_reads_back_as_built() {
 #[test]
 fn a_boolean_of_booleans_counts_every_input() {
     // A box (6, 12, 8), a sphere (1, 3, 2), a cylinder (3, 3, 2): every boolean has both
-    // inputs' elements, so the counts are sums of those, by hand.
+    // inputs' elements, so the counts are sums of those, by hand; and one solid, D2's (the
+    // fake's booleans are one solid since Fable's decision of 2026-10-18).
     let kernel = FakeKernel::new(1).unwrap();
     let a = run(&kernel, KernelRequest::make(block(1.0, 2.0, 3.0)).unwrap());
     let b = run(
@@ -441,20 +445,21 @@ fn a_boolean_of_booleans_counts_every_input() {
         .unwrap(),
     );
     let inner = run(&kernel, KernelRequest::boolean(BooleanOp::Cut, &b, &c));
-    assert_eq!(inner.history.result, counts(4, 6, 4, 2));
+    // One solid, its base's (D2, as above).
+    assert_eq!(inner.history.result, counts(4, 6, 4, 1));
     let outer = run(
         &kernel,
         KernelRequest::boolean(BooleanOp::Fuse, &a, &inner.shape),
     );
-    assert_eq!(outer.history.result, counts(10, 18, 12, 3));
+    assert_eq!(outer.history.result, counts(10, 18, 12, 1));
     let again = run(
         &kernel,
         KernelRequest::boolean(BooleanOp::Common, &outer.shape, &outer.shape),
     );
-    assert_eq!(again.history.result, counts(20, 36, 24, 6));
+    assert_eq!(again.history.result, counts(20, 36, 24, 1));
     assert_eq!(
         FakeKernel::counts(&again.shape),
-        Some(counts(20, 36, 24, 6))
+        Some(counts(20, 36, 24, 1))
     );
     let [base, tool] = &again.history.inputs[..] else {
         panic!("{:?}", again.history)
@@ -471,7 +476,7 @@ fn a_boolean_of_booleans_counts_every_input() {
         &kernel,
         KernelRequest::boolean(BooleanOp::Cut, &moved.shape, &a),
     );
-    assert_eq!(last.history.result, counts(16, 30, 20, 4));
+    assert_eq!(last.history.result, counts(16, 30, 20, 1));
 }
 
 #[test]

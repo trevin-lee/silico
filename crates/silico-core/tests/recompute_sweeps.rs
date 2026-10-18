@@ -716,7 +716,8 @@ fn a_sweep_feature_that_changes_nothing_is_refused_and_blocks_what_uses_it() {
         model.outcome(&id("ffffffff")),
         Some(&FeatureOutcome::Blocked { on: id("qqqqqqqq") })
     );
-    assert!(!names(&engine).contains(&"Fillet"));
+    // (The check is the pocket's, decided with its outcome, so the fillet's step may have
+    // run; what's reported is blocked: the council's round 1.)
     let reversed = r#"{"type": "one_side", "length": 10, "reversed": true}"#;
     let model = published(
         &engine,
