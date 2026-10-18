@@ -1703,3 +1703,97 @@ fn open_ends_grouped_with_both_ends_of_one_line_name_each_curve_once_and_say_len
         Some(format!("lengthen line {l1}, or end the curves at one point").as_str())
     );
 }
+
+#[test]
+fn an_arc_with_both_ends_in_an_open_group_is_to_be_lengthened() {
+    // An arc of radius 10 about the origin, counter-clockwise from s (10, 0) round to e at
+    // the angle −1.5e-8, so its ends are 1.5e-7 apart; a line from r (10, −0.75e-7),
+    // within 1e-7 of both ends, out to (20, 20). The arc has both its ends in the group,
+    // so it's the arc that's to be lengthened, as a line would be.
+    let mut d = Draw::new();
+    let o = d.point(0.0, 0.0);
+    let delta: f64 = 1.5e-8;
+    let s = d.point(10.0, 0.0);
+    let e = d.point(10.0 * libm::cos(delta), -10.0 * libm::sin(delta));
+    let r = d.point(10.0, -0.75e-7);
+    let far = d.point(20.0, 20.0);
+    let a = d.arc(&o, &s, &e);
+    let l = d.line(&r, &far);
+    let errors = d.refused();
+    assert_eq!(
+        named(&errors),
+        vec![
+            (
+                format!(
+                    "points {s}, {e}, {r} end curves within 1e-7 mm of each other, but aren't one point, so the profile is open there"
+                ),
+                vec![s.clone(), e.clone(), r.clone(), a.clone(), l.clone()]
+            ),
+            (
+                format!(
+                    "point {far} ends line {l} and no other profile curve, so the profile is open there"
+                ),
+                vec![far.clone(), l.clone()]
+            ),
+        ]
+    );
+    assert_eq!(
+        errors[0].suggestion(),
+        Some(format!("lengthen arc {a}, or end the curves at one point").as_str())
+    );
+}
+
+#[test]
+fn two_lines_with_both_ends_in_one_open_group_are_both_to_be_lengthened() {
+    // L1 from p (0, 0) to q (1.5e-7, 0), and L3 0.9e-7 above it, from a (0, 0.9e-7) to
+    // b (1.5e-7, 0.9e-7); L2 from r (0.75e-7, 0.45e-7), within 1e-7 of all four, out to
+    // (−5, 5). The five ends are one group, and L1 and L3 each have both ends in it: both
+    // are named, once each. L1 and L3 are also too close.
+    let mut d = Draw::new();
+    let p = d.point(0.0, 0.0);
+    let q = d.point(1.5e-7, 0.0);
+    let a = d.point(0.0, 0.9e-7);
+    let b = d.point(1.5e-7, 0.9e-7);
+    let r = d.point(0.75e-7, 0.45e-7);
+    let far = d.point(-5.0, 5.0);
+    let l1 = d.line(&p, &q);
+    let l2 = d.line(&r, &far);
+    let l3 = d.line(&a, &b);
+    let errors = d.refused();
+    assert_eq!(
+        named(&errors),
+        vec![
+            (
+                format!(
+                    "points {p}, {q}, {a}, {b}, {r} end curves within 1e-7 mm of each other, but aren't one point, so the profile is open there"
+                ),
+                vec![
+                    p.clone(),
+                    q.clone(),
+                    a.clone(),
+                    b.clone(),
+                    r.clone(),
+                    l1.clone(),
+                    l3.clone(),
+                    l2.clone()
+                ]
+            ),
+            (
+                format!(
+                    "point {far} ends line {l2} and no other profile curve, so the profile is open there"
+                ),
+                vec![far.clone(), l2.clone()]
+            ),
+            (
+                format!(
+                    "line {l1} and line {l3} are 9e-8 mm apart: a profile's curves must be more than 1e-7 mm apart except at a point they share"
+                ),
+                vec![l1.clone(), l3.clone()]
+            ),
+        ]
+    );
+    assert_eq!(
+        errors[0].suggestion(),
+        Some(format!("lengthen line {l1} and line {l3}, or end the curves at one point").as_str())
+    );
+}
