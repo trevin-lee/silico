@@ -1,5 +1,6 @@
 //! For tests of sketches in the document: a document of one sketch from its lists, a base
 //! sketch to constrain, and what the gate finds.
+#![allow(dead_code)]
 
 use silico_core::Error;
 use silico_core::document::{read, validate};

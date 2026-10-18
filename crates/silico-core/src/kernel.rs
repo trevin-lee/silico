@@ -575,51 +575,14 @@ fn refused(what: &str, under: Option<&str>, invalid: silico_protocol::InvalidPar
 }
 
 /// The kernel worker executable: [`KERNEL_WORKER_ENV`], or `silico-kernel-worker` next to
-/// the running executable. Cargo puts test binaries in a `deps` directory below the
-/// worker's, so from there it looks one directory up.
+/// the running executable ([`worker::worker_path`](crate::worker::worker_path)).
 pub(crate) fn worker_path() -> Result<PathBuf, Error> {
-    if let Some(value) = std::env::var_os(KERNEL_WORKER_ENV) {
-        // Absolute, so the file checked is the one run: a bare name would otherwise be
-        // checked in the working directory and looked up on PATH.
-        let path = std::path::absolute(&value).unwrap_or_else(|_| PathBuf::from(&value));
-        if path.is_file() {
-            return Ok(path);
-        }
-        return Err(Error::new(
-            ErrorCode::InvalidInput,
-            format!(
-                "{KERNEL_WORKER_ENV} names {:?}, which isn't a file",
-                value.to_string_lossy()
-            ),
-        )
-        .with_suggestion(format!(
-            "point {KERNEL_WORKER_ENV} at the silico-kernel-worker binary, or unset it to use \
-             the one beside Silico"
-        )));
-    }
-    let exe = std::env::current_exe().map_err(|e| {
-        Error::new(ErrorCode::Internal, "can't find the running executable")
-            .with_cause(e.to_string())
-    })?;
-    let name = format!("silico-kernel-worker{}", std::env::consts::EXE_SUFFIX);
-    let dir = exe.parent().unwrap_or(Path::new("."));
-    let dir = if dir.file_name().is_some_and(|n| n == "deps") {
-        dir.parent().unwrap_or(dir)
-    } else {
-        dir
-    };
-    let worker = dir.join(&name);
-    if worker.is_file() {
-        Ok(worker)
-    } else {
-        Err(Error::new(
-            ErrorCode::Internal,
-            format!("no kernel worker at {}", worker.display()),
-        )
-        .with_suggestion(format!(
-            "build it (cargo build -p silico-kernel --bin silico-kernel-worker), or name it in {KERNEL_WORKER_ENV}"
-        )))
-    }
+    crate::worker::worker_path(
+        KERNEL_WORKER_ENV,
+        "silico-kernel-worker",
+        "kernel worker",
+        "cargo build -p silico-kernel --bin silico-kernel-worker",
+    )
 }
 
 /// The faces, edges, vertices, and solids OCCT gives a primitive: a primitive's element map

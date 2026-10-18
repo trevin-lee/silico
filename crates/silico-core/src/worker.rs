@@ -15,7 +15,7 @@ use std::io::{self, BufRead, BufReader, Read};
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::ExitStatusExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
@@ -1135,6 +1135,56 @@ pub(crate) fn shortage(e: &io::Error, message: &str) -> Option<Error> {
             .with_cause(e.to_string())
             .with_suggestion(advice),
     )
+}
+
+/// A worker executable: the one `env` names, or `binary` next to the running executable.
+/// Cargo puts test binaries in a `deps` directory below the worker's, so from there it looks
+/// one directory up. `noun` names the worker in errors, and `build` says how to build it.
+pub(crate) fn worker_path(
+    env: &str,
+    binary: &str,
+    noun: &str,
+    build: &str,
+) -> Result<PathBuf, Error> {
+    if let Some(value) = std::env::var_os(env) {
+        // Absolute, so the file checked is the one run: a bare name would otherwise be
+        // checked in the working directory and looked up on PATH.
+        let path = std::path::absolute(&value).unwrap_or_else(|_| PathBuf::from(&value));
+        if path.is_file() {
+            return Ok(path);
+        }
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            format!(
+                "{env} names {:?}, which isn't a file",
+                value.to_string_lossy()
+            ),
+        )
+        .with_suggestion(format!(
+            "point {env} at the {binary} binary, or unset it to use the one beside Silico"
+        )));
+    }
+    let exe = std::env::current_exe().map_err(|e| {
+        Error::new(ErrorCode::Internal, "can't find the running executable")
+            .with_cause(e.to_string())
+    })?;
+    let name = format!("{binary}{}", std::env::consts::EXE_SUFFIX);
+    let dir = exe.parent().unwrap_or(Path::new("."));
+    let dir = if dir.file_name().is_some_and(|n| n == "deps") {
+        dir.parent().unwrap_or(dir)
+    } else {
+        dir
+    };
+    let worker = dir.join(&name);
+    if worker.is_file() {
+        Ok(worker)
+    } else {
+        Err(Error::new(
+            ErrorCode::Internal,
+            format!("no {noun} at {}", worker.display()),
+        )
+        .with_suggestion(format!("build it ({build}), or name it in {env}")))
+    }
 }
 
 #[cfg(test)]

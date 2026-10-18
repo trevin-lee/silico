@@ -23,6 +23,7 @@ pub mod naming;
 pub mod pool;
 pub mod recompute;
 mod references;
+pub mod sketch;
 pub mod worker;
 
 pub use error::{Error, ErrorCode};
