@@ -152,6 +152,30 @@ mod ffi {
         edge_vertex_counts: Vec<u32>,
     }
 
+    /// What kind of curve a [`FaceCurve`] is.
+    #[repr(u8)]
+    enum CurveKind {
+        Line,
+        Arc,
+        Circle,
+    }
+
+    /// One curve of a profile's loop, in model space, for `make_faces`: a line from point
+    /// `start` to point `end` (numbered from 0 in the points given); an arc of the circle of
+    /// `radius` about `center`, turning counter-clockwise about `axis` from the plane's x
+    /// axis, from point `start` at parameter `first` to point `end` at `last`; or a whole
+    /// circle about `axis` (its points and parameters unused).
+    struct FaceCurve {
+        kind: CurveKind,
+        start: u32,
+        end: u32,
+        center: Point3,
+        axis: Point3,
+        radius: f64,
+        first: f64,
+        last: f64,
+    }
+
     /// How many distinct faces, edges, vertices, and solids a shape has.
     struct Counts {
         faces: u32,
@@ -210,6 +234,15 @@ mod ffi {
             history: &mut Vec<HistoryEntry>,
         ) -> Result<UniquePtr<Shape>>;
         fn make_polygon_face(points: &[Point3]) -> Result<UniquePtr<Shape>>;
+        fn make_faces(
+            normal: Point3,
+            x_axis: Point3,
+            points: &[Point3],
+            curves: &[FaceCurve],
+            loop_curves: &[u32],
+            region_loops: &[u32],
+            history: &mut Vec<HistoryEntry>,
+        ) -> Result<UniquePtr<Shape>>;
         fn extrude(
             face: &Shape,
             dx: f64,
@@ -283,9 +316,9 @@ mod ffi {
 }
 
 pub use silico_protocol::{
-    Axis, BooleanOp, ChamferSize, ElementCounts, ElementFate, ElementKind, ElementRef, Ends,
-    History, InputHistory, LENGTH_TOLERANCE, MAX_LENGTH, Mesh, Primitive, Profile, Refusal,
-    Reported, ShapeSummary, Topology,
+    Axis, BooleanOp, ChamferSize, Curve, ElementCounts, ElementFate, ElementKind, ElementRef, Ends,
+    FaceRegions, History, InputHistory, LENGTH_TOLERANCE, MAX_LENGTH, Mesh, Primitive, Profile,
+    Refusal, Region, Reported, ShapeSummary, SketchPlane, Topology,
 };
 use silico_protocol::{BrepDefect, FailureKind, HistoryDefect, Operation, Returned, Role};
 
@@ -835,6 +868,139 @@ pub fn revolve(profile: &Profile, axis: &Axis, angle: f64) -> Result<Built, Kern
     history.ends = ends(start, end);
     Ok(Built {
         shape: result,
+        history,
+    })
+}
+
+/// A face for each of `regions`' regions, on its sketch's plane, as the core sends them
+/// (docs/design/m3.5-profile.md): each curve one edge, each point one vertex the curves that
+/// meet there share, each loop a wire of its curves in the order and direction given, and
+/// each region a face of its outer loop and its holes, as FreeCAD's FaceMakerBullseye builds
+/// one (its plane, its outer wire, its holes added, no fix-up). One region gives its face;
+/// several, a compound of their faces in order. Nothing is classified or reoriented: the
+/// regions are checked first ([`FaceRegions::check`]), and the result must be valid, or
+/// it's refused (an invalid result).
+///
+/// The history has the regions as its one input, with no faces: its edges are the curves
+/// and its vertices the points, in the order sent ([`FaceRegions`]), each kept as one of the
+/// result's.
+pub fn make_faces(regions: &FaceRegions) -> Result<Built, KernelError> {
+    regions.check().map_err(|invalid| refused(None, invalid))?;
+    let plane = regions.plane;
+    let point3 = |[x, y, z]: [f64; 3]| ffi::Point3 { x, y, z };
+    let normal = plane.normal();
+    let reversed = normal.map(|c| -c);
+    let mut points = Vec::new();
+    let mut curves = Vec::new();
+    let mut loop_curves = Vec::new();
+    let mut region_loops = Vec::new();
+    let number = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    for region in &regions.regions {
+        region_loops.push(number(1 + region.holes.len()));
+        for (contour, loop_) in region.loops().enumerate() {
+            loop_curves.push(number(loop_.len()));
+            // A loop of lines and arcs has a point at each curve's start; the last curve
+            // ends at the first's.
+            let first = points.len();
+            for (i, curve) in loop_.iter().enumerate() {
+                let start = number(first + i);
+                let end = number(first + (i + 1) % loop_.len());
+                let made = match *curve {
+                    Curve::Line { start: from, .. } => {
+                        points.push(point3(plane.place(from)));
+                        ffi::FaceCurve {
+                            kind: ffi::CurveKind::Line,
+                            start,
+                            end,
+                            center: point3([0.0; 3]),
+                            axis: point3(normal),
+                            radius: 0.0,
+                            first: 0.0,
+                            last: 0.0,
+                        }
+                    }
+                    Curve::Arc {
+                        center,
+                        start: from,
+                        radius,
+                        start_angle,
+                        end_angle,
+                        ..
+                    } => {
+                        points.push(point3(plane.place(from)));
+                        // Counter-clockwise about the normal, or clockwise: about the
+                        // reversed normal, whose angles from the x axis run the other way.
+                        let (axis, first, last) = if end_angle > start_angle {
+                            (normal, start_angle, end_angle)
+                        } else {
+                            (reversed, -start_angle, -end_angle)
+                        };
+                        ffi::FaceCurve {
+                            kind: ffi::CurveKind::Arc,
+                            start,
+                            end,
+                            center: point3(plane.place(center)),
+                            axis: point3(axis),
+                            radius,
+                            first,
+                            last,
+                        }
+                    }
+                    Curve::Circle { center, radius } => ffi::FaceCurve {
+                        kind: ffi::CurveKind::Circle,
+                        start: 0,
+                        end: 0,
+                        center: point3(plane.place(center)),
+                        // Counter-clockwise as an outer loop, clockwise as a hole.
+                        axis: point3(if contour == 0 { normal } else { reversed }),
+                        radius,
+                        first: 0.0,
+                        last: 0.0,
+                    },
+                };
+                curves.push(made);
+            }
+        }
+    }
+    let mut entries = Vec::new();
+    let made = ffi::make_faces(
+        point3(normal),
+        point3(plane.x_axis()),
+        &points,
+        &curves,
+        &loop_curves,
+        &region_loops,
+        &mut entries,
+    )
+    .map_err(|e| KernelError::from(e).during(Operation::MakeFaces))?;
+    let result = made.as_ref().ok_or_else(|| {
+        KernelError::new(Refusal::NothingReturned {
+            what: Returned::Shape,
+        })
+    })?;
+    if !ffi::is_valid(result)? {
+        return Err(KernelError::new(Refusal::ResultInvalid {
+            operation: Operation::MakeFaces,
+            edges: Vec::new(),
+        }));
+    }
+    let c = ffi::count_elements(result)?;
+    let counts = ElementCounts {
+        faces: c.faces,
+        edges: c.edges,
+        vertices: c.vertices,
+        solids: c.solids,
+    };
+    let sent = ElementCounts {
+        faces: 0,
+        edges: number(curves.len()),
+        vertices: number(points.len()),
+        solids: 0,
+    };
+    let mut history = assemble_history(&[sent], counts, &entries)?;
+    history.topology = topology(&ffi::topology(result)?, counts)?;
+    Ok(Built {
+        shape: Shape::new(made).with_validity(true),
         history,
     })
 }

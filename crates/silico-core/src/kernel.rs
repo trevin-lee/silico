@@ -11,9 +11,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub use silico_protocol::{
-    Axis, Blob, BooleanOp, BuiltData, ChamferSize, ElementCounts, ElementFate, ElementKind,
-    ElementRef, Ends, FreecadMeasures, Generation, History, InputHistory, Mesh, Op, Primitive,
-    Profile, Reported, ShapeData, ShapeSummary, Topology,
+    Axis, Blob, BooleanOp, BuiltData, ChamferSize, Curve, ElementCounts, ElementFate, ElementKind,
+    ElementRef, Ends, FaceRegions, FreecadMeasures, Generation, History, InputHistory, Mesh, Op,
+    Primitive, Profile, Region, Reported, ShapeData, ShapeSummary, SketchPlane, Topology,
 };
 use silico_protocol::{DebugOp, Failure, LENGTH_TOLERANCE, Reply};
 
@@ -291,6 +291,40 @@ impl KernelRequest<BuiltData> {
         Ok(Self::new(op, read_built(1)))
     }
 
+    /// A face for each of `regions`' regions, on its sketch's plane: each curve an edge and
+    /// each point a vertex the curves meeting there share; one face, or a compound of them
+    /// in the regions' order (docs/design/m3.5-profile.md). The history has the regions as
+    /// its one input: each curve kept as one edge, and each point as one vertex, in the
+    /// order sent ([`FaceRegions`]). Regions that can't be sent are refused, saying why.
+    pub fn make_faces(regions: &FaceRegions) -> Result<Self, Error> {
+        if let Err(invalid) = regions.check() {
+            return Err(Error::new(ErrorCode::InvalidInput, invalid.message.clone())
+                .with_parameter(invalid.name(None))
+                .with_suggestion(
+                    "send each region's loops closed, oriented, and within a kilometre: this is a bug in the profile",
+                ));
+        }
+        let shape = FacesShape::of(regions);
+        let read = read_built(1);
+        Ok(Self::new(
+            Op::MakeFaces(regions.clone()),
+            move |name, reply| {
+                let built = read(name, reply)?;
+                match shape.fault(&built.history) {
+                    None => Ok(built),
+                    Some(problem) => Err(Error::new(
+                        ErrorCode::ProtocolError,
+                        format!(
+                            "the kernel worker sent faces that don't fit the regions for {name}"
+                        ),
+                    )
+                    .with_cause(problem)
+                    .with_suggestion("start a new kernel worker")),
+                }
+            },
+        ))
+    }
+
     /// Fuses `tool` with `base`, cuts it from `base`, or keeps what they share, and says
     /// what became of both: `base` is the history's input 0, `tool` its input 1.
     pub fn boolean(op: BooleanOp, base: &ShapeData, tool: &ShapeData) -> Self {
@@ -447,6 +481,143 @@ fn read_built(inputs: usize) -> impl FnOnce(&'static str, Reply) -> Result<Built
     }
 }
 
+/// What faces made from regions must be, to be read by curve and point: each region's
+/// loops, by their curves' numbers in the order sent (from 1), and how many points and
+/// circles there are.
+struct FacesShape {
+    /// For each region, each loop's curves' numbers, its outer loop first.
+    regions: Vec<Vec<std::ops::Range<u32>>>,
+    curves: u32,
+    points: u32,
+    circles: u32,
+}
+
+impl FacesShape {
+    fn of(regions: &FaceRegions) -> Self {
+        let number = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+        let mut next = 1u32;
+        let shape = regions
+            .regions
+            .iter()
+            .map(|region| {
+                region
+                    .loops()
+                    .map(|curves| {
+                        let first = next;
+                        next = next.saturating_add(number(curves.len()));
+                        first..next
+                    })
+                    .collect()
+            })
+            .collect();
+        let circles = regions
+            .curves()
+            .filter(|c| matches!(c, Curve::Circle { .. }))
+            .count();
+        Self {
+            regions: shape,
+            curves: next - 1,
+            points: number(regions.points().count()),
+            circles: number(circles),
+        }
+    }
+
+    /// What's wrong with `history` (already checked by `History::validate`) for these
+    /// regions, if anything: it must keep each curve as an edge of its own and each point
+    /// as a vertex of its own, have no other element than those and one vertex for each
+    /// circle, no faces and no ends of its input, and its face `n` must be region `n`, its
+    /// outer edges the outer loop's curves' and its edges all its loops'.
+    fn fault(&self, history: &History) -> Option<String> {
+        let input = history.inputs.first()?;
+        let counts = history.result;
+        if !input.faces.is_empty() {
+            return Some(format!(
+                "the regions' history has {} faces, but regions have none",
+                input.faces.len()
+            ));
+        }
+        let want = (
+            self.regions.len() as u64,
+            u64::from(self.curves),
+            u64::from(self.points) + u64::from(self.circles),
+            0,
+        );
+        let got = (
+            u64::from(counts.faces),
+            u64::from(counts.edges),
+            u64::from(counts.vertices),
+            u64::from(counts.solids),
+        );
+        if got != want {
+            return Some(format!(
+                "the faces have {got:?} faces, edges, vertices, and solids, but the regions make {want:?}"
+            ));
+        }
+        if !history.ends.start.is_empty() || !history.ends.end.is_empty() {
+            return Some("the faces have ends, but they aren't a sweep".to_owned());
+        }
+        // Each curve and point kept as an element of its own, and nothing else said of it.
+        let kept = |fates: &[ElementFate], count: u32, what: &str| -> Result<Vec<u32>, String> {
+            if fates.len() != count as usize {
+                return Err(format!(
+                    "the regions' history has {} {what}s, but {count} were sent",
+                    fates.len()
+                ));
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            fates
+                .iter()
+                .enumerate()
+                .map(|(n, fate)| match fate.kept {
+                    Some(kept)
+                        if fate.modified.is_empty()
+                            && fate.generated.is_empty()
+                            && seen.insert(kept) =>
+                    {
+                        Ok(kept)
+                    }
+                    _ => Err(format!(
+                        "the regions' {what} {} isn't kept as an element of its own: {fate:?}",
+                        n + 1
+                    )),
+                })
+                .collect()
+        };
+        let edges = match kept(&input.edges, self.curves, "curve")
+            .and_then(|edges| kept(&input.vertices, self.points, "point").map(|_| edges))
+        {
+            Ok(edges) => edges,
+            Err(problem) => return Some(problem),
+        };
+        // Face n is region n: its outer edges its outer loop's, its edges all its loops'.
+        let topology = &history.topology;
+        for (n, loops) in self.regions.iter().enumerate() {
+            let of = |range: &std::ops::Range<u32>| -> Vec<u32> {
+                range
+                    .clone()
+                    .filter_map(|curve| edges.get(curve as usize - 1).copied())
+                    .collect()
+            };
+            let sorted = |mut list: Vec<u32>| {
+                list.sort_unstable();
+                list
+            };
+            let outer = loops.first().map(of).map(sorted).unwrap_or_default();
+            let all = sorted(loops.iter().flat_map(of).collect());
+            let face_outer = topology.outer_edges.get(n).cloned().unwrap_or_default();
+            let face_all = sorted(topology.face_edges.get(n).cloned().unwrap_or_default());
+            if face_outer != outer || face_all != all {
+                return Some(format!(
+                    "Face{} isn't region {}: its edges are {face_all:?} (outer {face_outer:?}), the region's {all:?} (outer {outer:?})",
+                    n + 1,
+                    n + 1
+                ));
+            }
+        }
+        None
+    }
+}
+
 /// A reply of the wrong kind: the worker is broken (and `run_on` stops it, as a worker that
 /// replies out of turn is stopped).
 fn unexpected(op: &str, reply: &Reply) -> Error {
@@ -550,6 +721,11 @@ impl KernelWorker {
         angle: f64,
     ) -> Result<BuiltData, Error> {
         self.run(KernelRequest::revolve(profile, axis, angle)?)
+    }
+
+    /// Faces from a profile's regions ([`KernelRequest::make_faces`]).
+    pub fn make_faces(&mut self, regions: &FaceRegions) -> Result<BuiltData, Error> {
+        self.run(KernelRequest::make_faces(regions)?)
     }
 
     /// A boolean ([`KernelRequest::boolean`]).
@@ -688,6 +864,175 @@ pub(crate) fn cone_caps(radius1: f64, radius2: f64, height: f64) -> (bool, bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 4 × 3 rectangle on XY and a circle beside it: two regions, five curves, four
+    /// points.
+    fn two_regions() -> FaceRegions {
+        let p = [[0.0, 0.0], [4.0, 0.0], [4.0, 3.0], [0.0, 3.0]];
+        FaceRegions {
+            plane: SketchPlane::Xy,
+            regions: vec![
+                Region {
+                    outer: (0..4)
+                        .map(|i| Curve::Line {
+                            start: p[i],
+                            end: p[(i + 1) % 4],
+                        })
+                        .collect(),
+                    holes: vec![],
+                },
+                Region {
+                    outer: vec![Curve::Circle {
+                        center: [10.0, 0.0],
+                        radius: 1.0,
+                    }],
+                    holes: vec![],
+                },
+            ],
+        }
+    }
+
+    /// The faces the kernel makes of [`two_regions`]: each curve kept as the edge of its
+    /// number, each point as its vertex, the circle's seam Vertex5.
+    fn two_faces() -> BuiltData {
+        let kept = |n: u32| ElementFate {
+            kept: Some(n),
+            ..ElementFate::default()
+        };
+        BuiltData {
+            shape: ShapeData::checked(Blob::inline(vec![]), true),
+            history: History {
+                inputs: vec![InputHistory {
+                    faces: vec![],
+                    edges: (1..=5).map(kept).collect(),
+                    vertices: (1..=4).map(kept).collect(),
+                }],
+                result: ElementCounts {
+                    faces: 2,
+                    edges: 5,
+                    vertices: 5,
+                    solids: 0,
+                },
+                ends: Ends::default(),
+                topology: Topology {
+                    face_edges: vec![vec![1, 2, 3, 4], vec![5]],
+                    outer_edges: vec![vec![1, 2, 3, 4], vec![5]],
+                    edge_vertices: vec![vec![1, 2], vec![2, 3], vec![3, 4], vec![4, 1], vec![5]],
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn faces_that_dont_fit_their_regions_are_refused_as_a_protocol_error_saying_why() {
+        let read = |built: BuiltData| {
+            let request = KernelRequest::make_faces(&two_regions()).unwrap();
+            (request.read)("MakeFaces", Reply::Built(built))
+        };
+        assert_eq!(read(two_faces()), Ok(two_faces()));
+        // The edges in another order, each still the curve's own, are fine: naming reads
+        // the history, not the numbers.
+        let mut swapped = two_faces();
+        swapped.history.inputs[0].edges.swap(0, 1);
+        swapped.history.topology.edge_vertices.swap(0, 1);
+        assert!(read(swapped).is_ok());
+        type Spoil = fn(&mut History);
+        let cases: [(Spoil, &str); 10] = [
+            (
+                |h| h.inputs[0].edges[1].kept = Some(1),
+                "the regions' curve 2 isn't kept as an element of its own",
+            ),
+            (
+                |h| h.inputs[0].vertices[3].kept = None,
+                "the regions' point 4 isn't kept as an element of its own",
+            ),
+            (
+                |h| {
+                    h.inputs[0].edges[0].generated.push(Reported {
+                        element: ElementRef::face(1),
+                        position: 1,
+                    });
+                },
+                "the regions' curve 1 isn't kept as an element of its own",
+            ),
+            (
+                |h| {
+                    h.inputs[0].edges.pop();
+                },
+                "the regions' history has 4 curves, but 5 were sent",
+            ),
+            (
+                |h| {
+                    h.inputs[0].vertices.pop();
+                },
+                "the regions' history has 3 points, but 4 were sent",
+            ),
+            (
+                |h| h.inputs[0].faces.push(ElementFate::default()),
+                "the regions' history has 1 faces, but regions have none",
+            ),
+            (
+                |h| {
+                    h.result.vertices = 4;
+                    h.topology.edge_vertices[4] = vec![4];
+                },
+                "the faces have (2, 5, 4, 0) faces, edges, vertices, and solids, but the regions make (2, 5, 5, 0)",
+            ),
+            (
+                |h| h.ends.start = vec![1],
+                "the faces have ends, but they aren't a sweep",
+            ),
+            // The faces the other way round: Face1 is the circle's.
+            (
+                |h| {
+                    h.topology.face_edges.swap(0, 1);
+                    h.topology.outer_edges.swap(0, 1);
+                },
+                "Face1 isn't region 1: its edges are [5] (outer [5]), the region's [1, 2, 3, 4] (outer [1, 2, 3, 4])",
+            ),
+            // A face whose outer wire isn't its outer loop's.
+            (
+                |h| h.topology.outer_edges[0] = vec![1, 2],
+                "Face1 isn't region 1",
+            ),
+        ];
+        for (spoil, why) in cases {
+            let mut bad = two_faces();
+            spoil(&mut bad.history);
+            let error = read(bad).unwrap_err();
+            assert_eq!(error.code(), ErrorCode::ProtocolError, "{why}");
+            assert!(
+                error.cause().unwrap_or_default().starts_with(why),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_documents_plane_is_the_kernels_with_the_normal_d6_gives_it() {
+        use crate::document::Plane;
+        let cases = [
+            (Plane::Xy, [0.0, 0.0, 1.0]),
+            (Plane::Xz, [0.0, -1.0, 0.0]),
+            (Plane::Yz, [1.0, 0.0, 0.0]),
+        ];
+        for (plane, normal) in cases {
+            let kernel = SketchPlane::from(plane);
+            assert_eq!(kernel.normal(), normal, "{plane:?}");
+            assert_eq!(format!("{kernel:?}").to_lowercase(), plane.as_str());
+        }
+    }
+
+    #[test]
+    fn regions_that_cant_be_sent_are_refused_naming_the_regions() {
+        let mut open = two_regions();
+        open.regions[0].outer.pop();
+        let error = KernelRequest::make_faces(&open).err().unwrap();
+        assert_eq!(error.code(), ErrorCode::InvalidInput);
+        assert_eq!(error.parameter(), Some("regions"));
+        assert!(error.message().contains("doesn't close"), "{error:?}");
+        assert!(error.suggestion().is_some());
+    }
 
     fn summary() -> ShapeSummary {
         ShapeSummary {

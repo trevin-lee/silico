@@ -9,8 +9,8 @@ use std::time::Duration;
 use silico_core::ErrorCode;
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::{
-    Blob, BooleanOp, BuiltData, ElementCounts, ElementKind, Generation, Kernel, KernelRequest, Op,
-    Primitive, ShapeData,
+    Blob, BooleanOp, BuiltData, Curve, ElementCounts, ElementKind, FaceRegions, Generation, Kernel,
+    KernelRequest, Op, Primitive, Region, ShapeData, SketchPlane,
 };
 use silico_core::pool::Outcome;
 
@@ -671,4 +671,191 @@ fn the_fake_summarizes_a_cone_and_a_torus_of_any_radii_by_formula() {
     assert!(close(torus.area, 60.0 * PI * PI), "{torus:?}");
     assert_eq!(torus.center, [0.0; 3]);
     assert_eq!(torus.bounds, Some([[-8.0, -8.0, -3.0], [8.0, 8.0, 3.0]]));
+}
+
+fn line(start: [f64; 2], end: [f64; 2]) -> Curve {
+    Curve::Line { start, end }
+}
+
+fn circle(center: [f64; 2], radius: f64) -> Curve {
+    Curve::Circle { center, radius }
+}
+
+/// The `w` × `h` rectangle from the origin, counter-clockwise.
+fn rectangle(w: f64, h: f64) -> Vec<Curve> {
+    let p = [[0.0, 0.0], [w, 0.0], [w, h], [0.0, h]];
+    (0..4).map(|i| line(p[i], p[(i + 1) % 4])).collect()
+}
+
+/// A slot of half circles r 1 about (0, 0) and (4, 0), counter-clockwise: 8 + π.
+fn slot() -> Vec<Curve> {
+    use std::f64::consts::FRAC_PI_2;
+    let arc = |center: [f64; 2], start, end, start_angle, end_angle| Curve::Arc {
+        center,
+        start,
+        end,
+        radius: 1.0,
+        start_angle,
+        end_angle,
+    };
+    vec![
+        line([0.0, -1.0], [4.0, -1.0]),
+        arc([4.0, 0.0], [4.0, -1.0], [4.0, 1.0], -FRAC_PI_2, FRAC_PI_2),
+        line([4.0, 1.0], [0.0, 1.0]),
+        arc(
+            [0.0, 0.0],
+            [0.0, 1.0],
+            [0.0, -1.0],
+            FRAC_PI_2,
+            3.0 * FRAC_PI_2,
+        ),
+    ]
+}
+
+fn regions(plane: SketchPlane, regions: Vec<(Vec<Curve>, Vec<Vec<Curve>>)>) -> FaceRegions {
+    FaceRegions {
+        plane,
+        regions: regions
+            .into_iter()
+            .map(|(outer, holes)| Region { outer, holes })
+            .collect(),
+    }
+}
+
+#[test]
+fn faces_are_made_symbolically_with_their_areas_by_formula() {
+    use std::f64::consts::PI;
+    let kernel = FakeKernel::new(1).unwrap();
+    // FreeCAD's FaceMakerBullseye cases, with their areas worked out by hand.
+    let cases = [
+        (
+            vec![(rectangle(4.0, 3.0), vec![])],
+            12.0,
+            counts(1, 4, 4, 0),
+        ),
+        (
+            vec![(rectangle(4.0, 3.0), vec![vec![circle([2.0, 1.5], 0.5)]])],
+            12.0 - PI / 4.0,
+            counts(1, 5, 5, 0),
+        ),
+        (
+            vec![(
+                rectangle(10.0, 6.0),
+                vec![
+                    vec![circle([2.0, 3.0], 0.5)],
+                    vec![circle([5.0, 3.0], 1.0)],
+                    vec![circle([8.0, 3.0], 0.75)],
+                ],
+            )],
+            60.0 - 1.8125 * PI,
+            counts(1, 7, 7, 0),
+        ),
+        (
+            vec![
+                (rectangle(10.0, 10.0), vec![vec![circle([5.0, 5.0], 4.0)]]),
+                (vec![circle([5.0, 5.0], 2.0)], vec![]),
+            ],
+            100.0 - 12.0 * PI,
+            counts(2, 6, 6, 0),
+        ),
+        (
+            vec![(vec![circle([0.0, 0.0], 1.0)], vec![])],
+            PI,
+            counts(1, 1, 1, 0),
+        ),
+        (vec![(slot(), vec![])], 8.0 + PI, counts(1, 4, 4, 0)),
+    ];
+    for (sent, area, want) in cases {
+        for plane in SketchPlane::ALL {
+            let faces = regions(plane, sent.clone());
+            let built = run(&kernel, KernelRequest::make_faces(&faces).unwrap());
+            assert_eq!(FakeKernel::counts(&built.shape), Some(want));
+            assert_eq!(built.history.result, want);
+            let summary = run(&kernel, KernelRequest::summarize(&built.shape));
+            assert!(
+                (summary.area - area).abs() <= 1e-12 * area,
+                "{plane:?}: {} for {area}",
+                summary.area
+            );
+            assert_eq!(summary.volume, 0.0);
+            // Every curve kept as the edge of its number; every point as a vertex.
+            let input = &built.history.inputs[0];
+            assert!(input.faces.is_empty());
+            for (n, fate) in input.edges.iter().enumerate() {
+                assert_eq!(fate.kept, Some(n as u32 + 1));
+            }
+            assert_eq!(input.vertices.len(), faces.points().count());
+        }
+    }
+    // The rectangle with a hole, described, on XZ, where the sketch's y is +Z: its box.
+    let faces = regions(
+        SketchPlane::Xz,
+        vec![(rectangle(4.0, 3.0), vec![vec![circle([2.0, 1.5], 0.5)]])],
+    );
+    let built = run(&kernel, KernelRequest::make_faces(&faces).unwrap());
+    assert_eq!(
+        FakeKernel::describe(&built.shape).as_deref(),
+        Some("faces(xz, 1 regions, 5 curves)")
+    );
+    let summary = run(&kernel, KernelRequest::summarize(&built.shape));
+    assert_eq!(summary.bounds, Some([[0.0, 0.0, 0.0], [4.0, 0.0, 3.0]]));
+    // The slot's arcs reach past its points, to x = -1 and x = 5.
+    let slotted = run(
+        &kernel,
+        KernelRequest::make_faces(&regions(SketchPlane::Yz, vec![(slot(), vec![])])).unwrap(),
+    );
+    let summary = run(&kernel, KernelRequest::summarize(&slotted.shape));
+    assert_eq!(summary.bounds, Some([[0.0, -1.0, -1.0], [0.0, 5.0, 1.0]]));
+}
+
+#[test]
+fn faces_read_back_and_move_as_any_fake_shape() {
+    let kernel = FakeKernel::new(1).unwrap();
+    let faces = regions(SketchPlane::Xy, vec![(slot(), vec![])]);
+    let built = run(&kernel, KernelRequest::make_faces(&faces).unwrap());
+    // The same request, the same bytes, on another fake kernel.
+    let other = FakeKernel::new(1).unwrap();
+    assert_eq!(
+        run(&other, KernelRequest::make_faces(&faces).unwrap()),
+        built
+    );
+    let moved = run(
+        &kernel,
+        KernelRequest::translate(&built.shape, [0.0, 0.0, 2.0]).unwrap(),
+    );
+    let summary = run(&kernel, KernelRequest::summarize(&moved.shape));
+    assert_eq!(summary.bounds, Some([[-1.0, -1.0, 2.0], [5.0, 1.0, 2.0]]));
+    assert_eq!(
+        FakeKernel::describe(&moved.shape).as_deref(),
+        Some("translate(faces(xy, 1 regions, 4 curves), 0, 0, 2)")
+    );
+}
+
+#[test]
+fn regions_that_cant_make_faces_never_reach_the_kernel() {
+    let kernel = FakeKernel::new(1).unwrap();
+    let mut open = rectangle(4.0, 3.0);
+    open.pop();
+    let mut nan = rectangle(4.0, 3.0);
+    nan[0] = line([0.0, 0.0], [f64::NAN, 0.0]);
+    let mut clockwise = rectangle(4.0, 3.0);
+    clockwise.reverse();
+    for c in &mut clockwise {
+        if let Curve::Line { start, end } = c {
+            std::mem::swap(start, end);
+        }
+    }
+    let bad = [
+        regions(SketchPlane::Xy, vec![]),
+        regions(SketchPlane::Xy, vec![(open, vec![])]),
+        regions(SketchPlane::Xy, vec![(nan, vec![])]),
+        regions(SketchPlane::Xy, vec![(clockwise, vec![])]),
+        regions(SketchPlane::Xy, vec![(vec![], vec![])]),
+    ];
+    for faces in &bad {
+        let error = KernelRequest::make_faces(faces).err().unwrap();
+        assert_eq!(error.code(), ErrorCode::InvalidInput, "{error:?}");
+        assert_eq!(error.parameter(), Some("regions"));
+    }
+    assert!(kernel.calls().is_empty());
 }

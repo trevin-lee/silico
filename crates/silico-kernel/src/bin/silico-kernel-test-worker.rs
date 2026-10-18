@@ -43,6 +43,7 @@ fn main() -> std::process::ExitCode {
         | Op::Boolean { .. }
         | Op::Extrude { .. }
         | Op::Revolve { .. }
+        | Op::MakeFaces(_)
             if matches!(
                 misbehavior,
                 Some(Misbehavior::BadHistory | Misbehavior::HistoryForNoInputs)
@@ -52,13 +53,12 @@ fn main() -> std::process::ExitCode {
             if let Reply::Built(built) = &mut reply {
                 if misbehavior == Some(Misbehavior::HistoryForNoInputs) {
                     built.history.inputs.clear();
-                } else if let Some(face) = built
-                    .history
-                    .inputs
-                    .first_mut()
-                    .and_then(|i| i.faces.first_mut())
-                {
-                    face.kept = Some(99);
+                } else if let Some(input) = built.history.inputs.first_mut() {
+                    // Its first face, or (for faces made from regions, which have none) its
+                    // first edge.
+                    if let Some(fate) = input.faces.first_mut().or(input.edges.first_mut()) {
+                        fate.kept = Some(99);
+                    }
                 }
             }
             Ok(reply)

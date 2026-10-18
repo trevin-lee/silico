@@ -1,7 +1,8 @@
 //! M2.3: the in-memory kernel (silico_core::fake) answers as the real one does where it
 //! claims to. The same requests go through the `Kernel` trait to the worker pool and to the
-//! fake: each primitive has the same faces, edges, and vertices, and a move reports the same
-//! history, element for element. (A fake boolean keeps both inputs whole, which the real
+//! fake: each primitive has the same faces, edges, and vertices, a move reports the same
+//! history, element for element, and so do faces made from a profile's regions, whose area
+//! and box the fake works out by formula. (A fake boolean keeps both inputs whole, which the real
 //! one doesn't claim; that's the fake's own model, tested in silico-core.)
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -9,7 +10,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use silico_core::fake::FakeKernel;
-use silico_core::kernel::{BuiltData, Kernel, KernelRequest, Primitive, ShapeData, ShapeSummary};
+use silico_core::kernel::{
+    BuiltData, Curve, FaceRegions, Kernel, KernelRequest, Primitive, Region, ShapeData,
+    ShapeSummary, SketchPlane,
+};
 use silico_core::pool::{KernelPool, Pending};
 
 fn pool() -> KernelPool {
@@ -96,6 +100,131 @@ fn a_move_has_the_real_kernels_history() {
             assert_eq!(
                 fake_moved.history, real_moved.history,
                 "{primitive:?} by {offset:?}"
+            );
+        }
+    }
+}
+
+/// Regions with every kind of curve, an arc each way, holes, and an island: a 10 × 6
+/// rectangle with a slot hole (walked clockwise) and a circle hole; a circle; and the slot
+/// moved along, counter-clockwise.
+fn regions(plane: SketchPlane) -> FaceRegions {
+    use std::f64::consts::FRAC_PI_2;
+    let line = |start, end| Curve::Line { start, end };
+    let rectangle = vec![
+        line([-3.0, -3.0], [7.0, -3.0]),
+        line([7.0, -3.0], [7.0, 3.0]),
+        line([7.0, 3.0], [-3.0, 3.0]),
+        line([-3.0, 3.0], [-3.0, -3.0]),
+    ];
+    let arc = |center: [f64; 2], start, end, start_angle, end_angle| Curve::Arc {
+        center,
+        start,
+        end,
+        radius: 1.0,
+        start_angle,
+        end_angle,
+    };
+    let slot = |dx: f64| {
+        vec![
+            line([dx, -1.0], [dx + 4.0, -1.0]),
+            arc(
+                [dx + 4.0, 0.0],
+                [dx + 4.0, -1.0],
+                [dx + 4.0, 1.0],
+                -FRAC_PI_2,
+                FRAC_PI_2,
+            ),
+            line([dx + 4.0, 1.0], [dx, 1.0]),
+            arc([dx, 0.0], [dx, 1.0], [dx, -1.0], FRAC_PI_2, 3.0 * FRAC_PI_2),
+        ]
+    };
+    let slot_hole = vec![
+        arc(
+            [0.0, 0.0],
+            [0.0, -1.0],
+            [0.0, 1.0],
+            3.0 * FRAC_PI_2,
+            FRAC_PI_2,
+        ),
+        line([0.0, 1.0], [4.0, 1.0]),
+        arc([4.0, 0.0], [4.0, 1.0], [4.0, -1.0], FRAC_PI_2, -FRAC_PI_2),
+        line([4.0, -1.0], [0.0, -1.0]),
+    ];
+    FaceRegions {
+        plane,
+        regions: vec![
+            Region {
+                outer: rectangle,
+                holes: vec![
+                    slot_hole,
+                    vec![Curve::Circle {
+                        center: [6.0, 2.0],
+                        radius: 0.5,
+                    }],
+                ],
+            },
+            Region {
+                outer: vec![Curve::Circle {
+                    center: [20.0, 0.0],
+                    radius: 2.0,
+                }],
+                holes: vec![],
+            },
+            Region {
+                outer: slot(30.0),
+                holes: vec![],
+            },
+        ],
+    }
+}
+
+#[test]
+fn faces_have_the_real_kernels_history_area_and_box() {
+    let real = pool();
+    let fake = FakeKernel::new(2).unwrap();
+    for plane in SketchPlane::ALL {
+        let request = || KernelRequest::make_faces(&regions(plane)).unwrap();
+        let real_faces = done(real.submit(real.generation(), request()));
+        let fake_faces = done(fake.submit(fake.generation(), request()));
+        assert_eq!(fake_faces.history, real_faces.history, "{plane:?}");
+        let summary = |kernel: &dyn Fn(KernelRequest<ShapeSummary>) -> ShapeSummary,
+                       shape: &ShapeData| {
+            kernel(KernelRequest::summarize(shape))
+        };
+        let real_summary = summary(
+            &|r| done(real.submit(real.generation(), r)),
+            &real_faces.shape,
+        );
+        let fake_summary = summary(
+            &|r| done(fake.submit(fake.generation(), r)),
+            &fake_faces.shape,
+        );
+        assert_eq!(
+            (
+                fake_summary.faces,
+                fake_summary.edges,
+                fake_summary.vertices
+            ),
+            (
+                real_summary.faces,
+                real_summary.edges,
+                real_summary.vertices
+            )
+        );
+        assert_eq!(fake_summary.volume, real_summary.volume);
+        assert_eq!(fake_summary.center, real_summary.center);
+        assert!(
+            (fake_summary.area - real_summary.area).abs() < 1e-9 * real_summary.area,
+            "{plane:?}: {} and {}",
+            fake_summary.area,
+            real_summary.area
+        );
+        let (fake_box, real_box) = (fake_summary.bounds.unwrap(), real_summary.bounds.unwrap());
+        for (f, r) in fake_box.iter().flatten().zip(real_box.iter().flatten()) {
+            assert!(
+                (f - r).abs() < 1e-9,
+                "{plane:?}: {fake_box:?}, {real_box:?}"
             );
         }
     }
