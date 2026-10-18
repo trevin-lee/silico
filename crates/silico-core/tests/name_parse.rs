@@ -430,3 +430,67 @@ fn tilde_chains_inside_upper_lower_and_later_sources_count_toward_the_bound() {
         );
     }
 }
+
+#[test]
+fn a_name_nested_too_deep_through_any_slot_is_refused_without_a_deep_stack() {
+    // Found by mutation testing: only a derived name's first source was nested deep, so a
+    // reader that didn't count a name above's, a name below's, or a later source's level
+    // passed, and read 100,000 levels on its stack. Each slot, on a 2 MB thread.
+    let leaf = "aaaaaaaa.box.Face1";
+    let forms: [(&str, &str); 5] = [
+        ("ffffffff.Edge(U ", ")"),
+        ("ffffffff.Edge(U bbbbbbbb.box.Face1, ", ")"),
+        ("ffffffff.Edge(L ", ")"),
+        ("ffffffff.Edge(L bbbbbbbb.box.Face1, ", ")"),
+        ("cccccccc.Face(M bbbbbbbb.box.Face1, G ", ")"),
+    ];
+    for (open, close) in forms {
+        let deep = format!("{}{leaf}{}", open.repeat(100_000), close.repeat(100_000));
+        let refused = std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(move || parse(&deep).map(|_| ()))
+            .unwrap()
+            .join()
+            .unwrap();
+        let error = refused.unwrap_err();
+        assert!(
+            error.why.contains("nested more than 256"),
+            "{open}: {error}"
+        );
+    }
+}
+
+/// A derived name of five sources, each one `level - 1` levels down, to `level` 0, a leaf:
+/// (5^(level+1) - 1) / 4 names written out.
+fn wide(level: u32) -> String {
+    if level == 0 {
+        return "aaaaaaaa.box.Face1".to_owned();
+    }
+    let inner = wide(level - 1);
+    let sources: Vec<String> = (0..5).map(|_| format!("M {inner}")).collect();
+    format!("cccccccc.Face({})", sources.join(", "))
+}
+
+#[test]
+fn a_name_of_exactly_the_most_names_a_map_holds_is_read_and_one_more_is_not() {
+    // Found by mutation testing: the bound of 4,096 names written out was tested at 156
+    // and 19,531, never at its edge. Each `~n` counts as a name, as the builder counts it.
+    // wide(5) is 3,906 names; with 190 `~1`s, 4,096.
+    let at = format!("{}{}", wide(5), "~1".repeat(190));
+    assert!(parse(&at).is_ok());
+    let error = parse(&format!("{at}~1")).unwrap_err();
+    assert!(error.why.contains("more than 4096 names"), "{error}");
+    // Names alone: one of 3,906, one of 156, one of 31, and two leaves, under one: 4,096.
+    let sources = |last: &str| {
+        format!(
+            "cccccccc.Face(M {}, M {}, M {}, M aaaaaaaa.box.Face1, M {last})",
+            wide(5),
+            wide(3),
+            wide(2)
+        )
+    };
+    assert!(parse(&sources("aaaaaaaa.box.Face1")).is_ok());
+    let past = sources("cccccccc.Face(M aaaaaaaa.box.Face1)");
+    let error = parse(&past).unwrap_err();
+    assert!(error.why.contains("more than 4096 names"), "{error}");
+}

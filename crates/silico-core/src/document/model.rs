@@ -142,12 +142,6 @@ impl ElementName {
     }
 }
 
-impl fmt::Display for ElementName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
 impl JsonSchema for ElementName {
     fn schema_name() -> Cow<'static, str> {
         "ElementName".into()

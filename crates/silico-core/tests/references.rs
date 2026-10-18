@@ -340,7 +340,7 @@ fn refused(text: &str) -> Vec<(String, String)> {
 
 #[test]
 fn the_gate_refuses_a_fillet_whose_edges_or_radius_cant_be() {
-    let cases: [(String, &str, &str); 9] = [
+    let cases: [(String, &str, &str); 10] = [
         (
             fillet("f0000001", "m3tq8v0z", &[], "1"),
             "edges",
@@ -375,6 +375,17 @@ fn the_gate_refuses_a_fillet_whose_edges_or_radius_cant_be() {
             fillet("f0000001", "m3tq8v0z", &["zzzzzzzz.Edge1"], "1"),
             "edges.0",
             "isn't an edge's name",
+        ),
+        (
+            // Found by mutation testing: a feature's own elements aren't its base's.
+            fillet(
+                "f0000001",
+                "m3tq8v0z",
+                &["f0000001.Edge(G k7f2qx3m.box.Face1)"],
+                "1",
+            ),
+            "edges.0",
+            "no feature f0000001 before this one",
         ),
         (
             fillet("f0000001", "m3tq8v0z", &["k7f2qx3m.box.Edge 1"], "1"),

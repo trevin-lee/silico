@@ -1203,9 +1203,10 @@ fn parse_step(line: &str) -> Option<Step> {
             chamfer: name == "chamfer",
             input: index(input)?,
             size: number(size)?,
+            // Which are the input's, [`Symbolic::read`] checks.
             edges: edges
                 .split(',')
-                .map(|e| e.parse::<u32>().ok().filter(|&e| e > 0))
+                .map(|e| e.parse::<u32>().ok())
                 .collect::<Option<_>>()?,
         },
         _ => Step::Primitive(parse_primitive(name, &numbers()?)?),

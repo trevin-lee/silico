@@ -1665,14 +1665,10 @@ fn naming(plan: &Plan, features: &[(FeatureId, FeatureOutcome)]) -> Vec<Option<F
             naming.push(None);
             continue;
         };
-        // Named only if what it's made from is.
-        let inputs_named = planned
-            .uses
-            .iter()
-            .all(|&i| naming.get(i).is_some_and(Option::is_some));
+        // (A feature whose inputs aren't named isn't either: naming it needs their maps.)
         let planned_key = planned
             .naming_key
-            .filter(|_| inputs_named && planned.key() == Some(*key) && planned.id == *id);
+            .filter(|_| planned.key() == Some(*key) && planned.id == *id);
         naming.push(planned_key.map(|key| FeatureNaming {
             key,
             how,

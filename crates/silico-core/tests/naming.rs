@@ -1065,3 +1065,61 @@ fn a_vertex_ending_six_named_edges_is_named_by_the_first_five() {
     let read = Name::parse(&vertex.to_string(), &maker).unwrap();
     assert_eq!(map.element(&read), Some(element(ElementKind::Vertex, 1)));
 }
+
+#[test]
+fn a_names_hash_is_its_identitys() {
+    // Found by mutation testing: nothing held `Hash` to `Eq`, which leaves OCCT's raw
+    // positions out. A name built from history and the same name read from its text (which
+    // holds no positions) are equal and hash alike; names that differ hash apart.
+    use std::hash::{BuildHasher, BuildHasherDefault};
+    let hash = |name: &Name| {
+        BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default().hash_one(name)
+    };
+    let history = History {
+        inputs: vec![InputHistory {
+            faces: vec![ElementFate {
+                generated: vec![reported(ElementKind::Edge, 1, 7)],
+                ..ElementFate::default()
+            }],
+            edges: vec![],
+            vertices: vec![],
+        }],
+        result: ElementCounts {
+            faces: 0,
+            edges: 2,
+            vertices: 0,
+            solids: 1,
+        },
+        ends: Default::default(),
+        topology: Topology {
+            face_edges: vec![],
+            outer_edges: vec![],
+            edge_vertices: vec![vec![], vec![]],
+        },
+    };
+    history.validate(1).unwrap();
+    let cube = ElementMap::primitive(
+        id("aaaaaaaa"),
+        &Primitive::Box {
+            dx: 1.0,
+            dy: 1.0,
+            dz: 1.0,
+        },
+    );
+    let map = ElementMap::operation(id("ffffffff"), OpCode::Fillet, &[&cube], &history);
+    let built = map.name(element(ElementKind::Edge, 1)).unwrap();
+    let maker = |f: &silico_core::document::FeatureId| {
+        Some(match f.as_str() {
+            "aaaaaaaa" => {
+                silico_core::naming::Maker::Itself(silico_core::naming::PrimitiveKind::Box)
+            }
+            _ => silico_core::naming::Maker::By(OpCode::Fillet),
+        })
+    };
+    let read = Name::parse(&built.to_string(), &maker).unwrap();
+    assert_eq!(read, *built);
+    assert_eq!(hash(&read), hash(&built));
+    let other = map.name(element(ElementKind::Edge, 2)).unwrap();
+    assert_ne!(*other, *built);
+    assert_ne!(hash(&other), hash(&built));
+}

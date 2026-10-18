@@ -377,6 +377,42 @@ mod tests {
     }
 
     #[test]
+    fn a_candidate_sharing_more_comes_first_though_its_name_sorts_after() {
+        // Found by mutation testing: the candidates test's order was name order too, so a
+        // count of shared elements that stayed 0 passed. The broken name is made from Face5
+        // and Face6; the edge from Face1, Face5, and Face6 shares both, the edge from Face1
+        // and Face5 one, though it sorts first by name.
+        let map = generated(&[&[1, 5], &[1, 5, 6]]);
+        let errors = resolved(&map, &[&edge(&[5, 6])]).unwrap_err();
+        assert!(edge(&[1, 5]) < edge(&[1, 5, 6]));
+        assert_eq!(errors[0].candidates(), [edge(&[1, 5, 6]), edge(&[1, 5])]);
+    }
+
+    #[test]
+    fn a_broken_reference_says_what_it_found() {
+        // Found by mutation testing: the element a broken name found wasn't said in a
+        // tested message. A face's name: "names a face, not an edge"; a duplicated edge's:
+        // "names an edge, whose name is unstable".
+        let map = generated(&[&[1, 6], &[1, 6]]);
+        let face = "rrrrrrrr.Face(G aaaaaaaa.box.Face1)";
+        let errors = resolved(&map, &[face]).unwrap_err();
+        assert!(
+            errors[0].message().contains("names a face, not an edge"),
+            "{}",
+            errors[0]
+        );
+        let duplicated = "rrrrrrrr.Edge(G1/2 aaaaaaaa.box.Face1, G1/2 aaaaaaaa.box.Face6)";
+        let errors = resolved(&map, &[duplicated]).unwrap_err();
+        assert!(
+            errors[0]
+                .message()
+                .contains("names an edge, whose name is unstable"),
+            "{}",
+            errors[0]
+        );
+    }
+
+    #[test]
     fn an_edge_two_names_find_is_filleted_once() {
         // Found by the tests review: two cubes fused where one edge of each is the same edge
         // of the result, so it has both names (N2). Named both ways, it's one edge in the
