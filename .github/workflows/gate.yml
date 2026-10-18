@@ -20,6 +20,9 @@ permissions:
 
 env:
   NEXTEST_PROFILE: ci
+  # Each runner keeps one build (tests/committed-tree.sh); incremental compilation's caches
+  # grew to about 19 GB on each (2026-10-18), for rebuilds that rarely reuse them.
+  CARGO_INCREMENTAL: "0"
 
 jobs:
   gate:

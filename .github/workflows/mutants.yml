@@ -29,6 +29,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # As the gate builds (gate.yml), in the same worktree: incremental compilation's caches
+  # grew to about 19 GB on each runner, and the two share one build only if they build alike.
+  CARGO_INCREMENTAL: "0"
+
 jobs:
   plan:
     runs-on: [self-hosted, linux, x64, pve]

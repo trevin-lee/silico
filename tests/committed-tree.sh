@@ -55,6 +55,20 @@ if [ ! -e "$tree/.git" ]; then
   git -C "$root" worktree remove --force "$tree" 2>/dev/null || true
   git -C "$root" worktree add --detach --quiet "$tree" "$commit"
 fi
+# target/debug keeps the artifacts of every commit built here, each branch's and each
+# mutant's, and Cargo never removes them: past a bound, start it again, cold (target/occt
+# and the other caches stay). One whole gate's build is about 12 GB, or 14 GB with
+# incremental compilation, which CI turns off.
+target_limit_gb=30
+if [ -d "$tree/target/debug" ]; then
+  target_gb=$(($(du -sk "$tree/target/debug" | cut -f1) / 1024 / 1024))
+  if [ "$target_gb" -gt "$target_limit_gb" ]; then
+    echo "gate: target/debug is $target_gb GB, past $target_limit_gb GB: deleting it, so this build starts cold" >&2
+    rm -rf "$tree/target/debug"
+  else
+    echo "gate: target/debug is $target_gb GB (deleted past $target_limit_gb GB)" >&2
+  fi
+fi
 git -C "$tree" checkout --detach --quiet --force "$commit"
 git -C "$tree" clean -fdx --quiet -e /target/ -e /.pixi/
 cd "$tree"
