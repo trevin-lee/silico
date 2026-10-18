@@ -1,20 +1,21 @@
 //! `silico-oracle`: compares Silico with FreeCAD, case by case.
 //!
-//! - `silico-oracle run [DIR]`: the cases in DIR (default `tests/oracle`).
+//! - `silico-oracle run [DIR]`: the cases in DIR (default `tests/oracle`), and its sketch
+//!   cases (`sketches.silico`), each solved by Silico's sketch worker and by FreeCAD.
 //! - `silico-oracle sweep [--count N] [--seed S]`: N generated cases (default 500) from seed
 //!   S (default 1).
 //! - `silico-oracle corpus DIR`: the STEP files in DIR, as FreeCAD reads them, each as it is
 //!   and moved; Silico also meshes each (`pixi run corpus` fetches them first).
 //!
 //! Prints each case that differs, and exits 1 if any does. Needs the kernel worker beside
-//! it (`pixi run oracle` and `pixi run oracle-sweep` build it) and the FreeCAD oracle
-//! (`pixi install -e oracle`).
+//! it (`pixi run oracle` and `pixi run oracle-sweep` build it), the sketch worker for sketch
+//! cases (`pixi run oracle` builds it), and the FreeCAD oracle (`pixi install -e oracle`).
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use silico_oracle::{Case, corpus, generate, load, run};
+use silico_oracle::{Case, corpus, generate, load, run, sketch};
 
 const USAGE: &str = "usage: silico-oracle run [DIR] | silico-oracle sweep [--count N] [--seed S] | silico-oracle corpus DIR";
 
@@ -24,8 +25,18 @@ const MAX_SWEEP: usize = 1_000_000;
 
 fn main() -> ExitCode {
     let mut out = std::io::stdout().lock();
-    let ran = cases().and_then(|(cases, corpus)| {
-        let mut report = run(&cases)?;
+    let ran = cases().and_then(|(cases, corpus, sketches)| {
+        // A directory may hold sketch cases alone.
+        let mut report = if cases.is_empty() && !sketches.is_empty() {
+            silico_oracle::Report::default()
+        } else {
+            run(&cases)?
+        };
+        let sketch_differences = if sketches.is_empty() {
+            Vec::new()
+        } else {
+            sketch::run(&sketches)?
+        };
         let (mut problems, mut known, mut notes) = (Vec::new(), Vec::new(), Vec::new());
         if let Some(CorpusNotes { unread, breps }) = corpus {
             problems = unread;
@@ -41,11 +52,21 @@ fn main() -> ExitCode {
             // What each platform's FreeCAD wrote, so two platforms' runs can be compared.
             notes = breps;
         }
-        Ok((cases.len(), report, problems, known, notes))
+        Ok((
+            cases.len() + sketches.len(),
+            report,
+            problems,
+            known,
+            notes,
+            sketch_differences,
+        ))
     });
     match ran {
-        Ok((count, report, problems, known, notes)) => {
+        Ok((count, report, problems, known, notes, sketch_differences)) => {
             for d in &report.differences {
+                let _ = writeln!(out, "{d}");
+            }
+            for d in &sketch_differences {
                 let _ = writeln!(out, "{d}");
             }
             for k in &known {
@@ -57,7 +78,7 @@ fn main() -> ExitCode {
             for p in &problems {
                 let _ = writeln!(out, "{p}");
             }
-            let found = report.differences.len();
+            let found = report.differences.len() + sketch_differences.len();
             let _ = match report.refused.len() {
                 0 => writeln!(out, "{found} of {count} cases differ from FreeCAD"),
                 refused => writeln!(
@@ -88,9 +109,11 @@ struct CorpusNotes {
     breps: Vec<String>,
 }
 
-/// The cases the command line asks for, and for the corpus, its files FreeCAD couldn't
-/// read and the B-reps it wrote.
-fn cases() -> Result<(Vec<Case>, Option<CorpusNotes>), String> {
+/// The cases the command line asks for, for the corpus its files FreeCAD couldn't read and
+/// the B-reps it wrote, and the sketch cases.
+type Asked = (Vec<Case>, Option<CorpusNotes>, Vec<sketch::SketchCase>);
+
+fn cases() -> Result<Asked, String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("run") => {
@@ -100,7 +123,7 @@ fn cases() -> Result<(Vec<Case>, Option<CorpusNotes>), String> {
             let dir = args
                 .get(1)
                 .map_or_else(|| PathBuf::from("tests/oracle"), PathBuf::from);
-            Ok((load(&dir)?, None))
+            Ok((load(&dir)?, None, sketch::load(&dir)?))
         }
         Some("corpus") => match &args[1..] {
             [dir] => {
@@ -109,7 +132,7 @@ fn cases() -> Result<(Vec<Case>, Option<CorpusNotes>), String> {
                     unread: corpus.unread,
                     breps: corpus.breps,
                 };
-                Ok((corpus.cases, Some(notes)))
+                Ok((corpus.cases, Some(notes), Vec::new()))
             }
             _ => Err(format!("corpus takes one directory\n{USAGE}")),
         },
@@ -137,7 +160,7 @@ fn cases() -> Result<(Vec<Case>, Option<CorpusNotes>), String> {
             if count > MAX_SWEEP {
                 return Err(format!("--count {count}: at most {MAX_SWEEP}\n{USAGE}"));
             }
-            Ok((generate::cases(seed, count), None))
+            Ok((generate::cases(seed, count), None, Vec::new()))
         }
         _ => Err(USAGE.to_owned()),
     }

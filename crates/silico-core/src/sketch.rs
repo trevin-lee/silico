@@ -893,6 +893,29 @@ impl Translation {
         Ok(())
     }
 
+    /// The ID of the constraint the solver reports as `tag`, if one is.
+    pub fn constraint_id(&self, tag: Tag) -> Option<&ElementId> {
+        (tag.0 as usize)
+            .checked_sub(1)
+            .and_then(|i| self.constraints.get(i))
+            .map(|c| &c.id)
+    }
+
+    /// The angle sent for the `i`th constraint (sorted by ID), if it's a tangency at an end
+    /// or where two curves meet: 0 or π.
+    pub fn sent_angle(&self, i: usize) -> Option<f64> {
+        let tag = Tag(u32::try_from(i).ok()?.checked_add(1)?);
+        self.system.constraints.iter().find_map(|c| match *c {
+            SolverConstraint::TangentOn { tag: t, angle, .. }
+            | SolverConstraint::AngleViaPoint { tag: t, angle, .. }
+                if t == tag =>
+            {
+                self.system.values.get(angle.0 as usize).copied()
+            }
+            _ => None,
+        })
+    }
+
     /// The constraint tagged `tag`'s ID.
     fn id(&self, tag: Tag) -> Result<&ElementId, Error> {
         (tag.0 as usize)
