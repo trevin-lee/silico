@@ -26,7 +26,7 @@ FreeCAD's wrapper sets three options on every boolean:
 | `488c1a1fdf` (2017), `c107ca3100` (2021) | A refine failure keeps the unrefined result | Refine is deferred (below). |
 | `dfd3d86b22` (2018, #3333), `10d95b9ce9` | A result made only of loose faces is turned into a shell | Not needed yet: both inputs are solids from Silico's own operations. |
 | `27c9c9d0ac`, `648bb8f5e4`, `f8f525e62d` (#17497), `abacccb690`, `c664e93bf4` | Compound tools and arguments: a compound argument is cut child by child; a compound tool is fused first; infinite recursion and single-leaf cases fixed | Not needed yet: inputs are single shapes. Compound inputs come with multi-body documents (M2); these are the cases to port then. |
-| `883a726d52`, `eb52dd4a9a`, `84afc15c91` | The single-solid rule (PartDesign; off by default since 2025) | Feature layer (M2). The kernel operation returns whatever OCCT builds: a fuse of separate boxes is a compound of two solids. |
+| `883a726d52`, `eb52dd4a9a`, `84afc15c91` | The single-solid rule (PartDesign; off by default since 2025) | The feature layer refuses it (Fable's decision, 2026-10-18; docs/design/m3.6-sketch-features.md, S5): a `fuse`, `cut`, or `common` feature whose result is more than one solid is `kernel_failed`, naming it, and what uses it is blocked (`sweep::check_boolean_solids`). The kernel operation returns whatever OCCT builds: a fuse of separate boxes is a compound of two solids. |
 
 ## Where Silico differs on purpose
 
