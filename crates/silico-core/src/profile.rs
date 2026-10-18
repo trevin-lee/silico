@@ -1496,3 +1496,99 @@ fn regions(curves: &[Curve<'_>], ids: &[&ElementId], loops: &[Walked]) -> Result
     }
     Ok(Profile { regions })
 }
+
+impl Profile {
+    /// The profile as the kernel's faces request takes it (`KernelRequest::make_faces`), on
+    /// `plane`, from `solution` (the sketch's, which made it): its regions in order, each
+    /// loop's curves as walked, outer loops counter-clockwise and holes clockwise. A line
+    /// goes from its walk's first point to its second; an arc as drawn has its radius and
+    /// angles from its own points, as M3.3's translation has them (`arc_from_points`, the
+    /// libm crate's), and one walked against its drawing is sent end first with its angles
+    /// swapped, so it turns clockwise; a circle has its solved radius, and no direction
+    /// (the request runs it with its loop's). An error is a bug: a solution without a
+    /// point or a radius the profile names.
+    pub fn faces(
+        &self,
+        plane: crate::document::Plane,
+        solution: &SketchSolution,
+    ) -> Result<silico_protocol::FaceRegions, Error> {
+        let missing = |what: &str, id: &ElementId| {
+            Error::new(
+                ErrorCode::Internal,
+                format!("a profile names {what} {id}, which the sketch's solution hasn't"),
+            )
+            .with_suggestion(crate::worker::SILICO_BUG)
+        };
+        let point = |id: &ElementId| solution.point(id).ok_or_else(|| missing("point", id));
+        let curve = |edge: &Edge| -> Result<silico_protocol::Curve, Error> {
+            let center = || {
+                edge.center
+                    .as_ref()
+                    .ok_or_else(|| missing("a centre of", &edge.curve))
+                    .and_then(point)
+            };
+            match (edge.kind, &edge.ends) {
+                (CurveKind::Line, Some([from, to])) => Ok(silico_protocol::Curve::Line {
+                    start: point(from)?,
+                    end: point(to)?,
+                }),
+                (CurveKind::Arc, Some([from, to])) => {
+                    let (from_at, to_at, c) = (point(from)?, point(to)?, center()?);
+                    // The arc as drawn runs counter-clockwise from its start to its end: the
+                    // walk's first point, unless the walk runs against it.
+                    let (start, end) = if edge.reversed {
+                        (to_at, from_at)
+                    } else {
+                        (from_at, to_at)
+                    };
+                    let [radius, start_angle, end_angle] = arc_from_points(c, start, end)
+                        .ok_or_else(|| missing("an arc with a sweep of", &edge.curve))?;
+                    Ok(if edge.reversed {
+                        silico_protocol::Curve::Arc {
+                            center: c,
+                            start: end,
+                            end: start,
+                            radius,
+                            start_angle: end_angle,
+                            end_angle: start_angle,
+                        }
+                    } else {
+                        silico_protocol::Curve::Arc {
+                            center: c,
+                            start,
+                            end,
+                            radius,
+                            start_angle,
+                            end_angle,
+                        }
+                    })
+                }
+                (CurveKind::Circle, None) => Ok(silico_protocol::Curve::Circle {
+                    center: center()?,
+                    radius: solution
+                        .radius(&edge.curve)
+                        .ok_or_else(|| missing("the radius of", &edge.curve))?,
+                }),
+                _ => Err(missing(
+                    "a curve shaped otherwise than its kind,",
+                    &edge.curve,
+                )),
+            }
+        };
+        let curves = |l: &Loop| l.curves.iter().map(curve).collect::<Result<Vec<_>, _>>();
+        let regions = self
+            .regions
+            .iter()
+            .map(|r| {
+                Ok(silico_protocol::Region {
+                    outer: curves(&r.outer)?,
+                    holes: r.holes.iter().map(curves).collect::<Result<_, Error>>()?,
+                })
+            })
+            .collect::<Result<_, Error>>()?;
+        Ok(silico_protocol::FaceRegions {
+            plane: silico_protocol::SketchPlane::from(plane),
+            regions,
+        })
+    }
+}
