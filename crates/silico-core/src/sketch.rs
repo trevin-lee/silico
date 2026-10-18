@@ -109,11 +109,9 @@ impl SketchWorker {
 
 impl SketchSolver for SketchWorker {
     fn solve(&mut self, system: SketchSystem) -> Result<Solved, Error> {
-        let name = "Solve";
-        match self
-            .worker
-            .call(Generation(0), Op::Solve(system), self.timeout)?
-        {
+        let op = Op::Solve(system);
+        let name = op.name();
+        match self.worker.call(Generation(0), op, self.timeout)? {
             Reply::Solved(solved) => Ok(solved),
             other => {
                 self.worker.shut_down();
@@ -459,34 +457,35 @@ impl Translation {
             },
             constraints: Vec::new(),
             points,
-            point_geometry: point_geometry.clone(),
+            point_geometry,
             lines,
             circles,
             arcs,
             on,
         };
-        // Points are geometry of their own, so a constraint names one as `Point(g)`.
-        let point_of = |r: &Reference| -> Result<PointOf, Error> {
-            match r {
-                Reference::Origin => Ok(PointOf::Point(ORIGIN_GEOMETRY)),
-                Reference::Element(id) => point_geometry
-                    .get(id)
-                    .map(|&g| PointOf::Point(g))
-                    .ok_or_else(|| unchecked(format!("names {id} as a point"))),
-                Reference::XAxis | Reference::YAxis => {
-                    Err(unchecked(format!("names {r} as a point")))
-                }
-            }
-        };
         for (i, c) in constraints.iter().enumerate() {
             let tag = Tag(i as u32 + 1);
             let sent = translation
-                .constraint(c, tag, &point_of)
+                .constraint(c, tag)
                 .map_err(|e| e.with_element(c.id.as_str()))?;
             translation.system.constraints.extend(sent);
         }
         translation.constraints = constraints;
         Ok(translation)
+    }
+
+    /// The point a constraint names: points are geometry of their own, so it's `Point(g)`;
+    /// the origin is the fixed point every sketch has.
+    fn point_ref(&self, r: &Reference) -> Result<PointOf, Error> {
+        match r {
+            Reference::Origin => Ok(PointOf::Point(ORIGIN_GEOMETRY)),
+            Reference::Element(id) => self
+                .point_geometry
+                .get(id)
+                .map(|&g| PointOf::Point(g))
+                .ok_or_else(|| unchecked(format!("names {id} as a point"))),
+            Reference::XAxis | Reference::YAxis => Err(unchecked(format!("names {r} as a point"))),
+        }
     }
 
     /// A value the solver keeps.
@@ -550,9 +549,9 @@ impl Translation {
         &mut self,
         c: &SketchConstraint,
         tag: Tag,
-        point_of: &dyn Fn(&Reference) -> Result<PointOf, Error>,
     ) -> Result<Option<SolverConstraint>, Error> {
         use SolverConstraint as S;
+        let point_of = |r: &Reference| self.point_ref(r);
         let sent = match &c.form {
             Form::Horizontal { line } => S::Horizontal {
                 tag,
