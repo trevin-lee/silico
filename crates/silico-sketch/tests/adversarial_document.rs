@@ -396,6 +396,44 @@ fn impossible_chain(n: usize, reach: f64) -> String {
     text(&points, &[], &[], &[], &constraints)
 }
 
+/// `impossible_chain(8, 50.0)` with one more line, m1 from q1 (0, 20) to q2 (5, 21), given
+/// `horizontal` `n` times.
+fn impossible_chain_and_a_line(horizontals: usize) -> String {
+    let chain = impossible_chain(8, 50.0);
+    let line = line("m0000001", "q0000001", "q0000002");
+    let points = format!(
+        "{}, {}",
+        point("q0000001", 0.0, 20.0),
+        point("q0000002", 5.0, 21.0)
+    );
+    let constraints: Vec<String> = (1..=horizontals)
+        .map(|i| format!(r#"{{"id": "h000000{i}", "type": "horizontal", "line": "m0000001"}}"#))
+        .collect();
+    let mut text = chain.replacen("\"points\": [", &format!("\"points\": [{points}, "), 1);
+    text = text.replacen("\"lines\": []", &format!("\"lines\": [{line}]"), 1);
+    for c in constraints {
+        text = text.replacen("\"constraints\": [", &format!("\"constraints\": [{c}, "), 1);
+    }
+    text
+}
+
+#[test]
+fn a_constraint_given_twice_beside_an_impossible_chain_conflicts_and_once_fails() {
+    // Fable's case (2026-10-17): the two horizontals are one row twice, so one dependent
+    // group; PlaneGCS's trial solve without one of them is the impossible chain, which
+    // fails, so neither is redundant (GCS.cpp:5578) and both are conflicting, which the core
+    // reads first: over_constrained, naming exactly them. With one, nothing repeats, and
+    // the impossible chain is solve_failed. FreeCAD 1.1.3 gives -3 with both conflicting.
+    let mut w = worker();
+    let e = solved(&checked(&impossible_chain_and_a_line(2)), &mut w).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::OverConstrained, "{e}");
+    assert_eq!(e.elements(), ["h0000001", "h0000002"]);
+    assert_eq!(e.elements_total(), 2);
+    assert_eq!(e.feature(), Some(FEATURE));
+    let e = solved(&checked(&impossible_chain_and_a_line(1)), &mut w).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::SolveFailed, "{e}");
+}
+
 #[test]
 fn an_impossible_chain_of_the_largest_size_fails_as_solve_failed_not_a_timeout() {
     // 512 points (1,024 unknowns, at MAX_SKETCH_UNKNOWNS) in one chain of unit links held

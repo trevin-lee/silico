@@ -628,7 +628,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
             add(refuse(
                 key,
                 format!("the sketch has {n} {what}, more than the {most} the sketch solver takes"),
-                "split the sketch into smaller sketches: a single profile past this is more than the sketch solver answers in bounded time".to_owned(),
+                "split the sketch into smaller sketches: a single profile past this is more work than the sketch solver takes".to_owned(),
             ));
         }
     }

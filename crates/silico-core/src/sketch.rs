@@ -42,7 +42,10 @@ pub const ANGLE_TOLERANCE: f64 = 1e-9;
 /// solve is tried by every algorithm in turn, and at the most unknowns the worker takes
 /// (1,024, a chain of 512 points held too far apart), break-it measured DogLeg 11.5 s,
 /// Levenberg–Marquardt 28.9 s, BFGS 0.2 s, and anchored SQP 33.2 s on a loaded machine:
-/// 74 s, past the kernel's 60. A sketch solved again from its solution
+/// 74 s, past the kernel's 60. The time grows with the equations the diagnosis keeps
+/// too: the same chain with one line given `horizontal` 2,000 times took DogLeg 8.7× as
+/// long, and passes 300 s with all four (`MAX_SKETCH_UNKNOWNS`'s doc). A sketch solved
+/// again from its solution
 /// ([`Translation::solve`]) takes it twice at most.
 pub const SKETCH_TIMEOUT: Duration = Duration::from_secs(300);
 

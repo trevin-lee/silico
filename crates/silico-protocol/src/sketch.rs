@@ -21,14 +21,20 @@ pub const MAX_SKETCH_CONSTRAINTS: usize = 10_000;
 pub const MAX_SKETCH_GEOMETRY: usize = 10_000;
 
 /// At most this many unknowns in a whole sketch (2 per point, 1 per circle, 3 per arc:
-/// 512 points, or about 250 lines), so whatever is admitted gets an answer in bounded time.
-/// A sketch no algorithm solves is tried by all four (DogLeg, Levenberg–Marquardt, BFGS,
-/// anchored SQP), each up to 100 iterations on dense matrices: at 1,024 unknowns that took
-/// 74 s on a loaded M4 Pro (DogLeg 11.5 s, Levenberg–Marquardt 28.9 s, BFGS 0.2 s, SQP
-/// 33.2 s), within the core's 300 s; at 2,048, about 1,660 s (M3.3's review; decided on the
-/// maintainer's behalf, 2026-10-17). A count of the whole sketch; counting only its largest
-/// part (`SketchSystem::part`'s union-find), which PlaneGCS solves apart, is the next step
-/// when imports bring bigger sketches.
+/// 512 points, or about 250 lines). With `MAX_SKETCH_CONSTRAINTS` it bounds the worker's
+/// work, not its time: each algorithm runs at most 100 iterations, each a dense
+/// factorization of the equations the diagnosis kept by the unknowns (about equations ×
+/// unknowns² a step), and a sketch no algorithm solves is tried by all four (DogLeg,
+/// Levenberg–Marquardt, BFGS, anchored SQP). The time that work takes is the machine's, and
+/// `SKETCH_TIMEOUT` bounds it. Measured: a chain of 512 points held too far apart (514
+/// equations) took 74 s on a loaded M4 Pro and 206 s at a load of 80, and at 2,048 unknowns
+/// about 1,660 s; the same chain with one line given `horizontal` 2,000 times (2,514
+/// equations, every one kept, since the diagnosis's trial solve fails and so calls none of
+/// them redundant) took DogLeg alone 135 s at a load of 97 and all four past 300 s, which
+/// ends as `worker_timeout` naming the sketch (M3.3's reviews; decided on the maintainer's
+/// behalf, 2026-10-17). A count of the whole sketch; counting only its largest part
+/// (`SketchSystem::part`'s union-find), which PlaneGCS solves apart, is the next step when
+/// imports bring bigger sketches.
 pub const MAX_SKETCH_UNKNOWNS: usize = 1024;
 
 /// At most this many unknowns in the part of a sketch a drag moves (the unknowns its
