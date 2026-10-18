@@ -494,3 +494,30 @@ fn a_name_of_exactly_the_most_names_a_map_holds_is_read_and_one_more_is_not() {
     let error = parse(&past).unwrap_err();
     assert!(error.why.contains("more than 4096 names"), "{error}");
 }
+
+#[test]
+fn a_name_256_deep_through_any_slot_is_read_and_one_deeper_is_not() {
+    // Found by the review: only a derived name's first source was read at the bound, so a
+    // reader counting another slot's depth too fast refused names a map holds. Each slot
+    // that holds a name, 256 deep and 257.
+    let leaf = "aaaaaaaa.box.Face1";
+    let forms: [(&str, &str); 5] = [
+        ("ffffffff.Edge(U ", ")"),
+        ("ffffffff.Edge(U bbbbbbbb.box.Face1, ", ")"),
+        ("ffffffff.Edge(L ", ")"),
+        ("ffffffff.Edge(L bbbbbbbb.box.Face1, ", ")"),
+        ("cccccccc.Face(M bbbbbbbb.box.Face1, G ", ")"),
+    ];
+    for (open, close) in forms {
+        let at = format!("{}{leaf}{}", open.repeat(255), close.repeat(255));
+        assert!(parse(&at).is_ok(), "{open}: {:?}", parse(&at).err());
+        let past = format!("{}{leaf}{}", open.repeat(256), close.repeat(256));
+        assert!(
+            parse(&past)
+                .unwrap_err()
+                .why
+                .contains("nested more than 256"),
+            "{open}"
+        );
+    }
+}

@@ -1123,3 +1123,50 @@ fn a_names_hash_is_its_identitys() {
     assert_ne!(*other, *built);
     assert_ne!(hash(&other), hash(&built));
 }
+
+#[test]
+fn a_modified_names_hash_is_its_sources() {
+    // Found by the review: a face modified one from one is its source's name, equal to it
+    // through `identity`, so it hashes as its source does.
+    use std::hash::{BuildHasher, BuildHasherDefault};
+    let hash = |name: &Name| {
+        BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default().hash_one(name)
+    };
+    let history = History {
+        inputs: vec![InputHistory {
+            faces: vec![ElementFate {
+                modified: vec![reported(ElementKind::Face, 1, 1)],
+                ..ElementFate::default()
+            }],
+            edges: vec![],
+            vertices: vec![],
+        }],
+        result: ElementCounts {
+            faces: 1,
+            edges: 0,
+            vertices: 0,
+            solids: 1,
+        },
+        ends: Default::default(),
+        topology: Topology {
+            face_edges: vec![vec![]],
+            outer_edges: vec![vec![]],
+            edge_vertices: vec![],
+        },
+    };
+    history.validate(1).unwrap();
+    let cube = ElementMap::primitive(
+        id("aaaaaaaa"),
+        &Primitive::Box {
+            dx: 1.0,
+            dy: 1.0,
+            dz: 1.0,
+        },
+    );
+    let map = ElementMap::operation(id("ffffffff"), OpCode::Fillet, &[&cube], &history);
+    let built = map.name(element(ElementKind::Face, 1)).unwrap();
+    let source = cube.name(element(ElementKind::Face, 1)).unwrap();
+    assert_eq!(built.to_string(), "aaaaaaaa.box.Face1");
+    assert_eq!(*built, *source);
+    assert_eq!(hash(&built), hash(&source));
+}
