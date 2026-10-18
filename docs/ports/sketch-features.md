@@ -79,7 +79,7 @@ Op codes (`src/Mod/Part/App/TopoShapeOpCode.h:54–101`): `FUS`, `CUT`, `CMN`, `
 - **The profile's face** is named after its outer wire's edges by `FaceMaker::postBuild` with `minElementNames = 1`: one edge, the first in history order, then `FAC`. So the face's name survives edits to its other edges.
 - **The prism** (`makeShapeWithElementMap`, 113: `TopoShapeExpansion.cpp:1403–1985`): each side face generated from a profile edge (`Edge1;:G;XTR`); each side edge from a vertex (`Vertex1;:G;XTR`); the bottom face is the input face, kept, with the feature's tag; the top face, from the solid the profile face generates, is the first face parallel to the profile, `;:G0` (`checkForParallelOrCoplanar`, 113:1346; `;:G00` for a coplanar one); the top edges and vertices are named from above (`;:U;XTR`, `;:U2;XTR`). Main's `makeElementPrism` test lists them (`tests/src/Mod/Part/App/TopoShapeExpansion.cpp:2959–3004`, a subset check, so the top face isn't listed). `;:G0` was never written for months: `d43fe277a7` (2024-01) passed `parallelFace` by value, fixed by `8fff92618c` (2024-05).
 - **A revolve** names alike with `RVL` (main's test at `:2912–2957`). A whole turn's faces from below can carry stale text (docs/ports/naming.md).
-- **The boolean** names with `FUS` or `CUT`, base first; refine with `RFI`. A real 1.1.3 name, a pad to first: `;g815v1;SKT;:H976,V;:L#2;PSM;:H976:9,E;:L#8;PSM;:H976:9,F;:H-977,F` (`TestTopologicalNamingProblem.py:3082`).
+- **The boolean** names with `FUS` or `CUT`, base first; refine with `RFI`. Measured on the oracle (Fable's review, a 10 mm box with a 4 × 4 square sketched in its top face, padded or pocketed 5): a blind pocket's walls come back modified one from one though nothing trims them (`#16:n;:M;CUT`), its floor kept (`#24:1;:H`); the rims of a profile drawn in the base's face are the sweep's start edges, modified one from one (`#d:n;:M;FUS`, `#d:n;:M;CUT`), where a sweep through a face gives section edges; the box's top is `Face6;:M;FUS` or `;:M;CUT`, one source. A real 1.1.3 name, a pad to first: `;g815v1;SKT;:H976,V;:L#2;PSM;:H976:9,E;:L#8;PSM;:H976:9,F;:H-977,F` (`TestTopologicalNamingProblem.py:3082`).
 - **A defect in 1.1.3's groove:** it passes `sketchshape.getShape()`, a bare `TopoDS_Shape`, to `generateRevolution` (113: Groove 227–229), so the profile's names are lost. `c01b12044a` (#23342) fixed it for the revolution only.
 - Face numbers, from the tests: a pad of a 4-edge profile has its sides as `Face1`–`Face4`, its bottom `Face5`, its top `Face6`; a hexagon's top is `Face8`. That's the index a sketch attached to the top follows, and what `testConstructionToggleTNP` is about.
 
@@ -106,7 +106,7 @@ Not in M3.6: the up-to modes, through all both ways, a second side of another mo
 | a length of 0 | refused, a total of zero | refused by the gate: a length above 0 |
 | a negative length | extrudes the other way | refused by the gate; `reversed` says the other way (SolidWorks) |
 | *Two sides* summing to 0 (10 and −10) | refused, a total of zero | can't be written: both lengths are above 0 |
-| *Two sides* with `Reversed` | the same prism as the lengths swapped | no `reversed` in `two_sides`: one spelling |
+| *Two sides* with `Reversed` | the same prism as the lengths swapped | no `reversed` in `two_sides`, so that spelling is gone (`two_sides` of L and L is still `symmetric` of 2L, harmlessly) |
 | *Symmetric* with `Reversed` | the same prism, its faces in the other order | no `reversed` in `symmetric` |
 | *Symmetric* with a length of 0 | not caught | refused by the gate |
 | a pocket with no base | its tool, a positive solid, no error (`ecf7e51ab3`) | refused: `base` is required |
@@ -115,21 +115,24 @@ Not in M3.6: the up-to modes, through all both ways, a second side of another mo
 | a through-all pocket that misses its base | the base unchanged, no error | refused: removes nothing (S7) |
 | a pocket that removes everything | "Resulting shape is not a solid" | refused: the result is empty (M2's boolean) |
 | a pad wholly inside its base | the base unchanged, no error | refused: adds nothing (S7) |
-| a pad that doesn't touch its base | two solids in one compound (`AllowCompound` true) | the same, as M2's fuse of separate boxes |
-| a pocket that cuts its base in two | two solids in one compound | the same |
+| a pad reversed into its base from a sketch in its top face, or a pocket reversed out of it | measured (Fable's review): 7 faces at the base's volume, the top split along the outline, no error | refused by volume: adds (removes) nothing (S7); counts alone would pass it |
+| a pad that doesn't touch its base | two solids in one compound (`AllowCompound` true) | refused: the result is 2 solids (S5) |
+| a pocket that cuts its base in two | two solids in one compound | refused: the result is 2 solids (S5) |
+| a pad of two regions onto a base that joins them | one solid | refused (decision 3, strict) |
 | a pad of two separate regions | two solids | refused, naming both regions (decision 3) |
 | a pocket of two separate regions | both cut | the same |
 | a revolution of two separate regions | two solids | refused, naming both (decision 3) |
 | a revolve angle of 0, or above 360 | refused ("too small", "too large") | refused by the gate |
 | an angle that moves the profile's far point less than 1e-7 | built if above 1e-12 rad | refused, as M1's revolve |
 | an axis perpendicular to the sketch | `N_Axis` isn't checked; an edge is refused | not expressible: every axis is a line of the sketch |
+| an axis line whose solved ends coincide | OCCT throws on the null direction | refused in the core, `invalid_input`, parameter `axis` (S6) |
 | an axis crossing the profile | "Revolve axis intersects the sketch", by sampling the outer wire | refused exactly, naming the curves on both sides (S6) |
 | an axis along a side of the profile, or touching a corner | allowed | allowed: within 1e-7 is on the axis |
 | a side exactly 1e-7 from the axis | OCCT fails (docs/ports/extrude-revolve.md) | the same failure, passed on with M1's suggestion |
 | a whole turn | the start face isn't in the result, no ends | the same; its seams named from above |
 | a sketch on XZ | the normal is −Y: a pad goes toward −Y | the same (D6) |
-| a profile wall 1e-7 < g ≤ 3e-7 wide, padded onto a cube | measured: the pad dropped, the result the cube alone, valid | refused: adds nothing (S7); Silico's own OCCT result measured in M3.6 |
-| the same, pocketed | measured: valid, the volume off by about 30 × g | accepted, documented (S7) |
+| a profile wall 1e-7 < g ≤ 3e-7 wide, flush with a face of the base, padded onto it | measured: the pad dropped, the result the base alone, valid (*Known OCCT wrong results*) | refused: adds nothing (S7) |
+| the same, pocketed | measured: valid, the volume off by about 20 × g without the fuzzy value | accepted, documented (S7) |
 
 ## Bug fixes from FreeCAD's history
 
@@ -151,7 +154,7 @@ Each confirmed against its diff.
 | `0e22ada9dd` (2022-07), `e5b2d8c874` (2024-10) | *TwoLengths* with *Midplane* centred on (L + L2)/2, which no one expected. Removed. | `symmetric` and `two_sides` are separate forms. |
 | `b2520d489a` (2023-06) | Pad's and pocket's own "too small" checks refused valid negative lengths. | Moot: no negative lengths. |
 | `d43fe277a7` (2024-01), `8fff92618c` (2024-05) | A refactor passed `parallelFace` by value, so an extrusion's top face lost `;:G0`, and fillets on a pad's top broke. | The ends are OCCT's own `LastShape` (S4), never found by plane. |
-| `f8c47b55cb` (2024-05), `406c3ba42c` (2025-09) | `AllowCompound` added, then made the default: a body may hold several solids. | A result's solids aren't counted, as M2's booleans; decision 3 refuses a pad of several regions. |
+| `f8c47b55cb` (2024-05), `406c3ba42c` (2025-09) | `AllowCompound` added, then made the default: a body may hold several solids. | A sketch feature's result of more than one solid is refused (S5), and decision 3 refuses a pad of several regions; M2's booleans still accept a compound. |
 | `ecf7e51ab3` (2024-05) | The TNP port removed the pre-TNP pocket code, and with it the "no material to be removed" error: a pocket with no base became its tool. | A pocket needs a base. |
 | `12619b2c2d` (2024-05) | The multiple-solid checks lost in the TNP port restored. | As above. |
 | `e490531510` (2024-07) | `RefineModel` true by default. | No refine yet; oracle cases set `Refine = False`. |
@@ -168,19 +171,19 @@ Each confirmed against its diff.
 | `a01cab21cc`, `94750baa6b` (2025-09) | *Two sides* was two prisms joined; one prism from +L back L + L2. | One prism, from −L2. |
 | `c01b12044a` (2025-09, #23342) | A revolution lost its profile's names (a bare `TopoDS_Shape` passed). Fixed for revolution; groove still has it in 1.1.3. | Groove names alike. |
 | `8c399e1fd0` (2025-12) | After TNP the fuse order became result first; base first restored (1.0 files kept feature-first, since order changes refine). | Base first (input 0). |
-| `49d7d77274`, `bdea174d13`, `e07d1b074b` (2026-03, 2026-04) | Migrating *TwoLengths* kept the old face order by swapping lengths and toggling `Reversed`. | Moot: one spelling per solid. |
+| `49d7d77274`, `bdea174d13`, `e07d1b074b` (2026-03, 2026-04) | Migrating *TwoLengths* kept the old face order by swapping lengths and toggling `Reversed`. | Moot: `two_sides` has no `reversed`. |
 
 ## Where Silico differs on purpose
 
 - **Lengths and angles above 0, with `reversed`** (SolidWorks), never negative. `reversed` only where it changes the solid.
-- **One spelling per solid**: `two_sides` and `symmetric` have no `reversed`.
+- **`reversed` only where it changes the solid**: `two_sides` and `symmetric` have none. (`two_sides` of L and L and `symmetric` of 2L remain two spellings of one prism.)
 - **A pocket and a groove need a base.** FreeCAD makes their tools positive solids.
-- **A pad or revolve of several regions is refused** (decision 3). FreeCAD makes several solids.
+- **A pad or revolve of several regions is refused** (decision 3, even onto a base that would join them), **and any sketch feature whose result is more than one solid** (S5). FreeCAD makes several solids.
 - **The profile is the core's** (M3.5): crossing, touching, and open profiles refused, naming their elements, where FreeCAD's face maker builds what it can.
 - **The axis check is exact**, from the solved geometry, on every curve.
-- **A feature that leaves its base unchanged is refused** (S7). FreeCAD builds it.
+- **A feature that leaves its base unchanged is refused**, by its volume alone (S7). FreeCAD builds it.
 - **No refine yet, and no fuzzy value**, as M2's booleans.
-- **Names**: a sketch's elements by their IDs, as FreeCAD's by facade IDs; a profile's only region as `Face1`, its several regions by their outer loops' smallest curve IDs; every element of a sweep the feature's own, the ends from OCCT's `LastShape` (S4).
+- **Names**: a sketch's elements by their IDs, as FreeCAD's by facade IDs; a profile's only region as `Face1`, its several regions by their outer loops' smallest curve IDs; every element of a sweep the feature's own (the start reported `modified`, so the sweep bites nothing), the ends from OCCT's `LastShape`, and a pocket's and groove's cut biting their own sweep as their base (S4).
 
 ## Known OCCT wrong results
 
