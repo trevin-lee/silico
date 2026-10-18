@@ -53,6 +53,11 @@ pub const SKETCH_WORKER_ENV: &str = "SILICO_SKETCH_WORKER";
 pub trait SketchSolver {
     /// What the solver found for `system`.
     fn solve(&mut self, system: SketchSystem) -> Result<Solved, Error>;
+
+    /// The last reply didn't answer what was asked, so the solver can't be trusted: a
+    /// worker is stopped, and the next solve starts another (a stand-in needn't do
+    /// anything).
+    fn distrust(&mut self) {}
 }
 
 /// The sketch worker, one request at a time.
@@ -108,6 +113,10 @@ impl SketchWorker {
 }
 
 impl SketchSolver for SketchWorker {
+    fn distrust(&mut self) {
+        self.worker.shut_down();
+    }
+
     fn solve(&mut self, system: SketchSystem) -> Result<Solved, Error> {
         let op = Op::Solve(system);
         let name = op.name();
@@ -880,7 +889,10 @@ impl Translation {
     /// stands.
     pub fn solve(&self, solver: &mut dyn SketchSolver) -> Result<Answer, Error> {
         let solved = solver.solve(self.system.clone())?;
-        self.check_reply(&solved)?;
+        if let Err(e) = self.check_reply(&solved) {
+            solver.distrust();
+            return Err(e);
+        }
         let first = Answer {
             outcome: self.read(&solved),
             solved,
@@ -899,16 +911,21 @@ impl Translation {
         };
         let mut again = self.clone();
         again.system.values = again_from;
-        // Whatever stops the second (a refusal of the solution as a start, a reply that
-        // can't be trusted, an outcome that doesn't stand), the first answer stands.
-        let second = solver.solve(again.system.clone()).and_then(|resolved| {
-            again.check_reply(&resolved)?;
-            let outcome = again.read(&resolved)?;
-            Ok((resolved, outcome))
-        });
-        Ok(match second {
-            Ok((solved, solution)) => Answer {
-                solved,
+        // The worker refusing the solution as a start, or a second outcome that doesn't
+        // stand: the first answer stands. A worker that failed (crashed, timed out, ran short)
+        // or a reply that can't be trusted is the error, as it is for the first solve.
+        let resolved = match solver.solve(again.system.clone()) {
+            Ok(resolved) => resolved,
+            Err(e) if e.code() == ErrorCode::InvalidInput => return Ok(first),
+            Err(e) => return Err(e),
+        };
+        if let Err(e) = again.check_reply(&resolved) {
+            solver.distrust();
+            return Err(e);
+        }
+        Ok(match again.read(&resolved) {
+            Ok(solution) => Answer {
+                solved: resolved,
                 outcome: Ok(solution),
             },
             Err(_) => first,

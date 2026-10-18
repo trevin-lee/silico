@@ -1106,12 +1106,12 @@ fn the_second_solve_stands_only_when_it_solves_and_happens_only_after_a_solved_c
     assert!(got.unwrap().is_ok());
     assert_eq!(sent.len(), 2);
     assert_eq!(sent[1].values, moved);
-    // The second conflicting too, or failing, or the solver failing outright: the first's
+    // The second conflicting too, or failing, or the worker refusing its start: the first's
     // refusal stands, naming its constraints.
     for second in [
         Ok(conflict(SolveStatus::Success)),
         Ok(answer(&t, t.system.values.clone(), SolveStatus::Failed)),
-        Err(silico_core::Error::new(ErrorCode::WorkerCrashed, "gone")),
+        Err(silico_core::Error::new(ErrorCode::InvalidInput, "refused")),
     ] {
         let (got, sent) = run(vec![Ok(conflict(SolveStatus::Success)), second]);
         let e = got.unwrap().unwrap_err();
@@ -1124,6 +1124,18 @@ fn the_second_solve_stands_only_when_it_solves_and_happens_only_after_a_solved_c
         );
         assert_eq!(sent.len(), 2);
     }
+    // The worker failing on the second (a crash, a timeout), or a second reply that can't
+    // be trusted: that's the error, as for the first, not hidden behind the first's (round
+    // 2's robustness review).
+    let (got, _) = run(vec![
+        Ok(conflict(SolveStatus::Success)),
+        Err(silico_core::Error::new(ErrorCode::WorkerCrashed, "gone")),
+    ]);
+    assert_eq!(got.unwrap_err().code(), ErrorCode::WorkerCrashed);
+    let mut short = answer(&t, t.system.values.clone(), SolveStatus::Success);
+    short.values.pop();
+    let (got, _) = run(vec![Ok(conflict(SolveStatus::Success)), Ok(short)]);
+    assert_eq!(got.unwrap_err().code(), ErrorCode::ProtocolError);
     // No second solve after a conflict the solver didn't solve, or a refusal of another
     // kind.
     for first in [
