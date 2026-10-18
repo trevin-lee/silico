@@ -156,10 +156,12 @@ fn an_arc_dimensioned_to_the_reach_saved_solves_to_the_same_file() {
 
 // --- Started again only from the same build ----------------------------------------------
 
-/// A fresh directory under the system's temporary one.
+/// A fresh directory in cargo's temporary directory for tests, under the target directory:
+/// on the build's filesystem, so the worker can be hard-linked into it (the system's
+/// temporary directory is another filesystem on the Linux runners: EXDEV).
 fn scratch(name: &str) -> PathBuf {
-    let dir =
-        std::env::temp_dir().join(format!("silico-break-it-m34-{name}-{}", std::process::id()));
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("silico-break-it-m34-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
