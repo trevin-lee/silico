@@ -1023,14 +1023,17 @@ std::unique_ptr<Shape> boolean(BooleanOp op, const Shape &base, const Shape &too
   NCollection_List<TopoDS_Shape> arguments;
   arguments.Append(base.shape);
   NCollection_List<TopoDS_Shape> tools;
-  // A cut's or fuse's tool that's a compound of several shapes (a pocket's or groove's
-  // sweep of several regions) is given as that many tools, as FreeCAD 1.1.3's
+  // A cut's tool that's a compound of several shapes (a pocket's or groove's sweep of
+  // several regions) is given as that many tools, as FreeCAD 1.1.3's
   // TopoShape::makeElementBoolean expands it (expandCompound, TopoShapeExpansion.cpp
   // 122-134 and 5905-5940): one compound of tools that overlap is a self-intersecting
   // argument, which OCCT cuts wrongly. A compound of one is given as it is, so every
   // single-tool boolean is unchanged. The history is still the tool's, by its own
-  // numbering, whatever order the tools are in.
-  if (op != BooleanOp::Common && tool.shape.ShapeType() == TopAbs_COMPOUND &&
+  // numbering, whatever order the tools are in. FreeCAD expands a fuse's tool the same
+  // way; no fuse here has a tool of several shapes yet (a pad or revolve of several
+  // regions is refused, and an M2 boolean's tool is one solid), so a fuse's tool is
+  // expanded too once multi-region pads or revolves exist.
+  if (op == BooleanOp::Cut && tool.shape.ShapeType() == TopAbs_COMPOUND &&
       tool.shape.NbChildren() > 1) {
     expand_compound(tool.shape, tools);
   } else {
