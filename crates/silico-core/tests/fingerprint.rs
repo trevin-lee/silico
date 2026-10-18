@@ -33,7 +33,7 @@ fn engine() -> Recompute<FakeKernel> {
 fn saved(text: &str) -> String {
     let document = read(text.as_bytes()).unwrap();
     let model = published(&engine(), Checked::new(document.clone()).unwrap());
-    write(&model.fingerprinted()).unwrap()
+    write(&model.saved()).unwrap()
 }
 
 /// The line of `text` holding the feature `feature`'s fingerprint.
@@ -275,7 +275,7 @@ fn a_feature_that_doesnt_build_isnt_drift_and_keeps_its_fingerprint() {
         // The pin failed and the hole was blocked: no drift, the failure says why.
         assert!(model.drift().is_empty(), "{code}");
         // Written back: the block's as rebuilt, the others' as stored, the same bytes.
-        let written = model.fingerprinted();
+        let written = model.saved();
         assert_eq!(written, document, "{code}");
         assert_eq!(write(&written).unwrap(), saved(EXAMPLE), "{code}");
     }
@@ -322,7 +322,7 @@ fn a_solid_that_cant_be_measured_is_built_but_says_why_and_keeps_its_fingerprint
         ["k7f2qx3m", "a91cw0de", "m3tq8v0z"].map(|f| (ErrorCode::KernelFailed, f.to_owned()))
     );
     // And a save keeps what was stored.
-    assert_eq!(model.fingerprinted(), document);
+    assert_eq!(model.saved(), document);
     // Asked again (the failure isn't kept), it's measured.
     let again = Recompute::new(FakeKernel::new(2).unwrap());
     let model = published(&again, Checked::new(document.clone()).unwrap());
@@ -403,7 +403,7 @@ fn a_published_model_doesnt_change_when_a_later_recompute_measures_its_solids() 
             .then(|| Error::new(ErrorCode::WorkerTimeout, "the worker hung"))
     });
     let first = published(&engine, checked(EXAMPLE));
-    let written = write(&first.fingerprinted()).unwrap();
+    let written = write(&first.saved()).unwrap();
     assert_eq!(first.fingerprint(&id("k7f2qx3m")), None);
     assert_eq!(first.drift().len(), 3);
     failing.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -418,7 +418,7 @@ fn a_published_model_doesnt_change_when_a_later_recompute_measures_its_solids() 
         assert_eq!(built.summary(), None, "{feature}");
     }
     assert_eq!(first.drift().len(), 3);
-    assert_eq!(write(&first.fingerprinted()).unwrap(), written);
+    assert_eq!(write(&first.saved()).unwrap(), written);
 }
 
 #[test]

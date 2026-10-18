@@ -92,6 +92,47 @@ impl WorkerKind {
     }
 }
 
+/// A file's size, modification time, and inode: what changes when it's rebuilt or replaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Stamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    inode: u64,
+}
+
+impl Stamp {
+    pub(crate) fn of(path: &Path) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(path).ok()?;
+        Some(Self {
+            len: meta.len(),
+            modified: meta.modified().ok(),
+            inode: meta.ino(),
+        })
+    }
+}
+
+/// The identity of the worker executable at `exe`, a `kind` of worker: its noun (`kernel
+/// worker`), `sha256:`, and its bytes' SHA-256, so a rebuilt or replaced worker is another
+/// kernel or solver. Results kept by key carry it (M2.5's cache keeps the kernel's on disk,
+/// so its spelling doesn't change).
+pub(crate) fn identity_of(exe: &Path, kind: WorkerKind) -> Result<String, Error> {
+    use sha2::{Digest, Sha256};
+    let noun = kind.noun();
+    let bytes = std::fs::read(exe).map_err(|e| {
+        Error::new(
+            ErrorCode::WorkerCrashed,
+            format!("couldn't read the {noun} {}", exe.display()),
+        )
+        .with_cause(e.to_string())
+        .with_suggestion(format!("check Silico's install: rebuild the {noun}"))
+    })?;
+    Ok(format!(
+        "{noun} sha256:{}",
+        crate::hex(&Sha256::digest(&bytes))
+    ))
+}
+
 /// A running worker. Dropping it kills and reaps the process.
 pub struct Worker {
     kind: WorkerKind,

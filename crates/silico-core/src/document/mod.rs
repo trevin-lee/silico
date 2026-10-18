@@ -58,6 +58,19 @@ pub fn write(document: &Document) -> Result<String, Error> {
         .map_err(|write::TooLong| too_long(document, "the document is too large to write"))
 }
 
+/// What the gate refuses of `sketch` on its own (`sketch_gate`): M3.4 checks a solve's
+/// result as its file would hold it, so a save never writes what the gate refuses.
+pub(crate) fn sketch_problems(sketch: &Sketch) -> Vec<Error> {
+    let refuse = |parameter: &str, message: String, suggestion: String| {
+        Error::new(ErrorCode::InvalidInput, message)
+            .with_parameter(parameter)
+            .with_suggestion(suggestion)
+    };
+    let mut problems = Vec::new();
+    sketch_gate::check(sketch, &refuse, &mut |error| problems.push(error));
+    problems
+}
+
 /// A document whose canonical text would pass the limit, naming the first feature (in
 /// timeline order) whose own text is more than half the limit, if one is: it alone is
 /// most of the text.

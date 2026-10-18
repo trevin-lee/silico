@@ -456,3 +456,50 @@ fn a_failed_algorithm_falls_back_to_the_next() {
     let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
     assert_eq!(bits(&both.values), bits(&dl.values));
 }
+
+/// M3.4: every sketch of the corpus that solves is its own solution, solved as a load
+/// solves it. A document's sketch is solved on every load from the coordinates its file
+/// stores, the last solve's, with the core's whole fallback order; a solution that solve
+/// moved from would show drift on every load. Each case is solved with its own algorithm
+/// and with the whole order, and each solution, solved again from itself with the whole
+/// order, comes back bit for bit. BFGS alone isn't a fixed point (from its own solution it
+/// steps again, by up to about 1e-11 relative); DogLeg, first in the order, takes its
+/// solution as it is. The documents' side, through the file's text, is tests/fixed_point.rs.
+#[test]
+fn every_generated_sketch_that_solves_comes_back_unchanged_from_a_load() {
+    let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    let (mut solved, mut by_bfgs, mut tried) = (0, 0, 0);
+    for (name, system) in corpus() {
+        let mut every = system.clone();
+        every.algorithms = silico_core::sketch::ALGORITHMS.to_vec();
+        for (how, first_system) in [
+            ("its own algorithm", system),
+            ("every algorithm", every.clone()),
+        ] {
+            tried += 1;
+            let first =
+                silico_sketch::solve(&first_system).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+            if !matches!(
+                first.status,
+                SolveStatus::Success | SolveStatus::SolvedExceptRedundant
+            ) {
+                continue;
+            }
+            solved += 1;
+            by_bfgs += usize::from(first.algorithm == Some(Algorithm::Bfgs));
+            let mut load = every.clone();
+            load.values = first.values.clone();
+            let again = silico_sketch::solve(&load).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+            assert_eq!(again.status, first.status, "{name}, solved with {how}");
+            assert_eq!(
+                bits(&again.values),
+                bits(&first.values),
+                "{name}, solved with {how}: a load moved it"
+            );
+        }
+    }
+    assert!(
+        solved >= 300 && by_bfgs >= 20,
+        "{solved} of {tried} solved, {by_bfgs} by BFGS"
+    );
+}

@@ -1,15 +1,19 @@
 //! The core's commands on a document's bytes, as a client without a live model runs them:
 //! through the gate, rebuilt on a fake kernel, then the command.
+#![allow(dead_code)]
 
 use silico_core::Error;
 use silico_core::command::{self, Formatted, Problems};
 use silico_core::document::Checked;
-use silico_core::fake::FakeKernel;
+use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::kernel::Kernel;
 use silico_core::recompute::{Model, Recompute};
 
+/// On the fake kernel, and the fake sketch solver: a core test never needs the sketch
+/// worker's binary (found by the council: two tests ran whatever build of it `target/` held,
+/// or failed without one).
 pub fn engine() -> Recompute<FakeKernel> {
-    Recompute::new(FakeKernel::new(2).unwrap())
+    Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(FakeSketches::new())
 }
 
 fn rebuilt<K: Kernel + 'static>(

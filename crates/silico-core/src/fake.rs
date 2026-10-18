@@ -41,7 +41,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use silico_protocol::{Reply, ShapeSummary};
+use silico_protocol::{Algorithm, Reply, ShapeSummary, SketchSystem, SolveStatus, Solved, Tag};
 
 use crate::kernel::{
     Blob, BooleanOp, BuiltData, ElementCounts, ElementFate, ElementKind, ElementRef, Ends,
@@ -49,6 +49,7 @@ use crate::kernel::{
     Topology, cone_caps, primitive_counts,
 };
 use crate::pool::{MAX_WORKERS, Outcome, Pending, deliver, thread_error};
+use crate::sketch::{SketchSolver, SolveStopper};
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
@@ -1260,5 +1261,168 @@ mod tests {
         let text = read.describe();
         assert!(text.starts_with("fuse(fuse(fuse("));
         assert_eq!(text.matches("sphere(1)").count(), depth + 1);
+    }
+}
+
+// --- Sketches ---------------------------------------------------------------------------
+
+/// An in-memory sketch solver for tests: the [`SketchSolver`] core tests run recomputes
+/// with, so they need no sketch worker and can see what was asked of it. Unless told how to
+/// answer ([`FakeSketches::answer`]), it answers every sketch with the values it was sent,
+/// as solved ([`FakeSketches::as_sent`]), whether they meet the constraints or not. Clones
+/// share one record, so a test keeps one while a recompute owns another.
+///
+/// Solves can be held until released ([`FakeSketches::hold`]), to supersede a recompute
+/// while it solves: a held solve that's stopped ([`SketchSolver::stopper`]) fails as a
+/// worker that was killed does.
+#[derive(Clone, Default)]
+pub struct FakeSketches {
+    shared: Arc<SketchShared>,
+}
+
+#[derive(Default)]
+struct SketchShared {
+    state: Mutex<SketchState>,
+    changed: Condvar,
+}
+
+/// How the fake answers a sketch.
+type SketchAnswer = Arc<dyn Fn(&SketchSystem) -> Result<Solved, Error> + Send + Sync>;
+
+#[derive(Default)]
+struct SketchState {
+    requests: Vec<SketchSystem>,
+    answer: Option<SketchAnswer>,
+    held: bool,
+    /// Solves waiting in a hold now.
+    waiting: usize,
+    /// Each solve's number, from 1; and the newest stopped.
+    solves: u64,
+    stopped: u64,
+    stops: usize,
+    /// Each stop's wait: from when its stopper was given out to when it stopped.
+    stop_waits: Vec<Duration>,
+}
+
+impl FakeSketches {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Every sketch it was asked to solve, in order.
+    pub fn requests(&self) -> Vec<SketchSystem> {
+        lock(&self.shared.state).requests.clone()
+    }
+
+    /// Answers each sketch from now on with `answer`'s.
+    pub fn answer(
+        &self,
+        answer: impl Fn(&SketchSystem) -> Result<Solved, Error> + Send + Sync + 'static,
+    ) {
+        lock(&self.shared.state).answer = Some(Arc::new(answer));
+    }
+
+    /// Holds every solve from now on until [`release`](Self::release) or a stop.
+    pub fn hold(&self) {
+        lock(&self.shared.state).held = true;
+    }
+
+    /// Lets held solves, and later ones, go.
+    pub fn release(&self) {
+        lock(&self.shared.state).held = false;
+        self.shared.changed.notify_all();
+    }
+
+    /// Waits until a solve is held, up to `timeout`: whether one is.
+    pub fn wait_held(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut state = lock(&self.shared.state);
+        while state.waiting == 0 {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            state = self
+                .shared
+                .changed
+                .wait_timeout(state, left)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        true
+    }
+
+    /// How many solves were stopped while they ran.
+    pub fn stops(&self) -> usize {
+        lock(&self.shared.state).stops
+    }
+
+    /// For each stop, in order, how long after its stopper was given out it came.
+    pub fn stop_waits(&self) -> Vec<Duration> {
+        lock(&self.shared.state).stop_waits.clone()
+    }
+
+    /// `system` solved where it was sent: every value as given, each constraint met.
+    pub fn as_sent(system: &SketchSystem) -> Solved {
+        let mut tags: Vec<Tag> = system.constraints.iter().filter_map(|c| c.tag()).collect();
+        tags.sort_unstable();
+        Solved {
+            dofs: 0,
+            conflicting: Vec::new(),
+            redundant: Vec::new(),
+            partially_redundant: Vec::new(),
+            free: Vec::new(),
+            no_equations: false,
+            status: SolveStatus::Success,
+            algorithm: Some(Algorithm::DogLeg),
+            values: system.values.clone(),
+            residuals: tags.into_iter().map(|t| (t, Some(0.0))).collect(),
+        }
+    }
+}
+
+impl SketchSolver for FakeSketches {
+    fn stopper(&mut self) -> Result<Option<SolveStopper>, Error> {
+        let shared = Arc::clone(&self.shared);
+        let solve = lock(&self.shared.state).solves + 1;
+        let given = Instant::now();
+        Ok(Some(SolveStopper::new(move || {
+            let mut state = lock(&shared.state);
+            state.stopped = state.stopped.max(solve);
+            state.stop_waits.push(given.elapsed());
+            shared.changed.notify_all();
+        })))
+    }
+
+    fn solve(&mut self, system: SketchSystem) -> Result<Solved, Error> {
+        let mut state = lock(&self.shared.state);
+        state.solves += 1;
+        let solve = state.solves;
+        state.requests.push(system.clone());
+        if state.held {
+            state.waiting += 1;
+            self.shared.changed.notify_all();
+            while state.held && state.stopped < solve {
+                state = self
+                    .shared
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+            state.waiting -= 1;
+        }
+        if state.stopped >= solve {
+            state.stops += 1;
+            return Err(Error::new(
+                ErrorCode::WorkerCrashed,
+                "the fake sketch solver was stopped mid-solve",
+            ));
+        }
+        let answer = state.answer.clone();
+        drop(state);
+        match answer {
+            Some(answer) => answer(&system),
+            None => Ok(Self::as_sent(&system)),
+        }
     }
 }

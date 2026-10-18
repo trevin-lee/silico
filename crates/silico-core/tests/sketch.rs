@@ -897,7 +897,8 @@ fn a_document_with_a_sketch_rebuilds_its_solids_and_the_sketch_makes_none() {
     let text = format!(
         "{{\"silico\": 1, \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}}, \"features\": [{sketch}, {block}]}}"
     );
-    let engine = Recompute::new(FakeKernel::new(2).unwrap());
+    let engine = Recompute::new(FakeKernel::new(2).unwrap())
+        .with_sketches(silico_core::fake::FakeSketches::new());
     let checked = Checked::new(read(text.as_bytes()).unwrap()).unwrap();
     let model = match engine
         .start(checked)
@@ -908,10 +909,10 @@ fn a_document_with_a_sketch_rebuilds_its_solids_and_the_sketch_makes_none() {
         Err(_) => panic!("the recompute didn't finish"),
     };
     let id = |t: &str| FeatureId::new(t).unwrap();
-    assert_eq!(
+    assert!(matches!(
         model.outcome(&id("k7f2qx3m")),
-        Some(&FeatureOutcome::Sketch)
-    );
+        Some(FeatureOutcome::Sketch(_))
+    ));
     assert!(matches!(
         model.outcome(&id("b0000000")),
         Some(FeatureOutcome::Built { .. })

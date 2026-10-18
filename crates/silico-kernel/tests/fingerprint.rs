@@ -102,12 +102,12 @@ fn the_examples_features_measure_as_their_formulas() {
 fn a_saved_document_rebuilds_to_the_same_bytes_with_a_cache_or_without() {
     let document = read(example::EXAMPLE.as_bytes()).unwrap();
     let first = published(&Recompute::new(pool()), &document);
-    let saved = write(&first.fingerprinted()).unwrap();
+    let saved = write(&first.saved()).unwrap();
     let saved_document = read(saved.as_bytes()).unwrap();
     // Another session, on another pool.
     let again = published(&Recompute::new(pool()), &saved_document);
     assert!(again.drift().is_empty());
-    assert_eq!(write(&again.fingerprinted()).unwrap(), saved);
+    assert_eq!(write(&again.saved()).unwrap(), saved);
     // Through a cache: built into it, then taken from it.
     let dir = Scratch::new("fingerprint");
     for (pass, asks) in [(1, 7), (2, 0)] {
@@ -116,6 +116,6 @@ fn a_saved_document_rebuilds_to_the_same_bytes_with_a_cache_or_without() {
         // Four steps made, three features' solids measured; then nothing.
         assert_eq!(engine.kernel().asked(), asks, "pass {pass}");
         assert!(cached.drift().is_empty());
-        assert_eq!(write(&cached.fingerprinted()).unwrap(), saved);
+        assert_eq!(write(&cached.saved()).unwrap(), saved);
     }
 }

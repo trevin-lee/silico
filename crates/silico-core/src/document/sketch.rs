@@ -546,6 +546,24 @@ pub(crate) enum Takes {
 }
 
 impl Form {
+    /// A dimension's value as the file writes it (a point–line distance's with its side);
+    /// none for a form with no value.
+    pub fn value_text(&self) -> Option<String> {
+        match self {
+            Form::Length { value, .. }
+            | Form::Distance { value, .. }
+            | Form::DistanceX { value, .. }
+            | Form::DistanceY { value, .. }
+            | Form::Radius { value, .. }
+            | Form::Diameter { value, .. } => Some(value.to_string()),
+            Form::PointLineDistance { value, side, .. } => {
+                Some(format!("{value} {}", side.as_str()))
+            }
+            Form::Angle { value, .. } => Some(value.to_string()),
+            _ => None,
+        }
+    }
+
     /// The `type` the file writes.
     pub fn type_name(&self) -> &'static str {
         match self {

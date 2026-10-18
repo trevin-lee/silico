@@ -20,6 +20,14 @@
 //! supersedes the one before: its steps waiting are dropped and those running stopped. A
 //! recompute builds its [`Model`] aside and publishes it whole, only if no newer one has
 //! started, so a superseded recompute leaves the published model as it was.
+//!
+//! Every sketch is solved too, from the coordinates its document stores
+//! (docs/design/m3.4-stored-coordinates.md), on the engine's [`SketchSolver`] (the sketch
+//! worker, started at the first sketch, unless [`Recompute::with_sketches`] or
+//! [`Recompute::with_sketch_starter`] gave another),
+//! one at a time, beside the kernel's steps. A solve is keyed by its feature's ID and the
+//! sketch's canonical text, and kept as steps' results are, so an unchanged sketch isn't
+//! solved again; a superseded recompute's solve is stopped.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
@@ -30,13 +38,14 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 
 use crate::cache::Cache;
-use crate::document::{Checked, Document, ElementName, FeatureId, Fingerprint, Made};
+use crate::document::{Checked, Document, ElementName, FeatureId, Fingerprint, Made, Operation};
 use crate::kernel::{
     BooleanOp, BuiltData, Generation, History, Kernel, KernelRequest, Primitive, ShapeData,
     ShapeSummary,
 };
 use crate::naming::{ElementMap, Maker, NAMING_SCHEME, OpCode};
 use crate::pool::Outcome;
+use crate::sketch::{SketchSolution, SketchSolver, SketchWorker, SolveStopper};
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
@@ -115,8 +124,8 @@ pub enum FeatureOutcome {
     /// Not built, since it uses a feature that failed: that feature (the first failure
     /// along its base, then its tool).
     Blocked { on: FeatureId },
-    /// A sketch, which makes no solid. (Solving it comes in M3.3.)
-    Sketch,
+    /// A sketch, solved: it makes no solid. One that didn't solve is `Failed`, with why.
+    Sketch(Arc<SketchSolution>),
 }
 
 /// A document as rebuilt: what became of each feature, in timeline order, and its bodies.
@@ -206,7 +215,7 @@ impl Model {
                 FeatureOutcome::Built { .. }
                 | FeatureOutcome::Failed(_)
                 | FeatureOutcome::Blocked { .. }
-                | FeatureOutcome::Sketch => 0,
+                | FeatureOutcome::Sketch(_) => 0,
             })
             .sum()
     }
@@ -226,7 +235,7 @@ impl Model {
             FeatureOutcome::Broken { errors, .. } => errors.as_slice(),
             FeatureOutcome::Built { .. }
             | FeatureOutcome::Blocked { .. }
-            | FeatureOutcome::Sketch => &[],
+            | FeatureOutcome::Sketch(_) => &[],
         })
     }
 
@@ -311,19 +320,46 @@ impl Model {
             FeatureOutcome::Failed(_)
             | FeatureOutcome::Broken { .. }
             | FeatureOutcome::Blocked { .. }
-            | FeatureOutcome::Sketch => None,
+            | FeatureOutcome::Sketch(_) => None,
         }
     }
 
-    /// Each feature of its document whose fingerprint doesn't hold, in timeline order: one
-    /// whose solid couldn't be measured (that error, naming it), and one whose rebuild
-    /// measures otherwise than the fingerprint stored with it (a `drift` error naming the
-    /// feature and what moved). A feature with no fingerprint stored isn't drift (the next
-    /// save writes one), nor is one that didn't build (its failure says why).
+    /// Each feature of its document whose record doesn't hold, in timeline order: one
+    /// whose solid couldn't be measured (that error, naming it); one whose rebuild measures
+    /// otherwise than the fingerprint stored with it (a `drift` error naming the feature
+    /// and what moved); and a sketch whose solve differs from what its file holds (a
+    /// `drift` error naming the sketch and, as elements, every point, circle, and reference
+    /// dimension the solve changes). A feature with no fingerprint stored isn't drift (the
+    /// next save writes one), nor is one that didn't build or solve (its failure says why).
     pub fn drift(&self) -> Vec<Error> {
         let mut errors = Vec::new();
         let mut unmeasured = self.unmeasured.iter().peekable();
         for (feature, (_, outcome)) in self.document().features.iter().zip(&self.features) {
+            if let (Operation::Sketch(stored), FeatureOutcome::Sketch(solution)) =
+                (&feature.operation, outcome)
+            {
+                let moved = crate::sketch::moved(stored, &solution.written(stored));
+                if let Some((first, _)) = moved.first() {
+                    let said: Vec<&str> = moved.iter().take(5).map(|(_, s)| s.as_str()).collect();
+                    let more = if moved.len() > 5 { ", …" } else { "" };
+                    errors.push(
+                        Error::new(
+                            ErrorCode::Drift,
+                            format!(
+                                "sketch {} solves to other values than its file holds: {}{more} ({} in all)",
+                                feature.id,
+                                said.join(", "),
+                                moved.len()
+                            ),
+                        )
+                        .with_feature(feature.id.as_str())
+                        .with_elements(moved.iter().map(|(id, _)| id.as_str()))
+                        .with_parameter(first.as_str())
+                        .with_suggestion(SKETCH_DRIFT),
+                    );
+                }
+                continue;
+            }
             if let Some((_, error)) = unmeasured.next_if(|(id, _)| *id == feature.id) {
                 errors.push(error.clone());
                 continue;
@@ -374,18 +410,30 @@ impl Model {
         errors
     }
 
-    /// Its document with each feature's fingerprint as it rebuilt. A feature that didn't
-    /// rebuild, or whose solid couldn't be measured or written, keeps the fingerprint
-    /// stored with it: there's nothing to put in its place, and a failure that passes (a
-    /// worker that hung, say) mustn't lose the record a later rebuild is checked against.
-    pub fn fingerprinted(&self) -> Document {
+    /// Its document as a save writes it: each feature's fingerprint as it rebuilt, and each
+    /// sketch as it solved (its points, circles' radii, and reference dimensions' values:
+    /// [`SketchSolution::written`]). A feature that didn't rebuild or solve, or whose solid
+    /// couldn't be measured or written, keeps what's stored with it: there's nothing to put
+    /// in its place, and a failure that passes (a worker that hung, say) mustn't lose the
+    /// record a later rebuild is checked against.
+    pub fn saved(&self) -> Document {
         let mut document = self.document().clone();
         // The model's features are its document's, in order.
         for (feature, (_, outcome)) in document.features.iter_mut().zip(&self.features) {
-            if let FeatureOutcome::Built { built, .. } = outcome
-                && let Some(rebuilt) = built.summary().and_then(Fingerprint::of)
-            {
-                feature.fingerprint = Some(rebuilt);
+            match outcome {
+                FeatureOutcome::Built { built, .. } => {
+                    if let Some(rebuilt) = built.summary().and_then(Fingerprint::of) {
+                        feature.fingerprint = Some(rebuilt);
+                    }
+                }
+                FeatureOutcome::Sketch(solution) => {
+                    if let Operation::Sketch(sketch) = &mut feature.operation {
+                        *sketch = solution.written(sketch);
+                    }
+                }
+                FeatureOutcome::Failed(_)
+                | FeatureOutcome::Broken { .. }
+                | FeatureOutcome::Blocked { .. } => {}
             }
         }
         document
@@ -395,6 +443,9 @@ impl Model {
 /// What to do about drift: most often the feature, or one it uses, was edited (by hand, or
 /// in a merge) since it was saved; otherwise the kernel's results changed.
 const DRIFT: &str = "if this feature or one it uses was edited by hand or in a merge since it was saved, save the document (or run `silico fmt`) to write its new fingerprint; if not, this is a determinism bug or a change in the kernel: find which, and once the new measures are right, save to write them";
+
+/// What to do about a sketch's drift: as for a fingerprint's ([`DRIFT`]), for a sketch.
+const SKETCH_DRIFT: &str = "if this sketch was edited by hand or in a merge since it was saved, save the document (or run `silico fmt`) to write its solved coordinates; if not, this is a determinism bug or a change in the sketch solver: find which, and once the new solve is right, save to write it";
 
 /// What a recompute came to.
 #[derive(Debug, Clone, PartialEq)]
@@ -455,6 +506,49 @@ struct Engine<K> {
     /// Where results are kept on disk, if anywhere.
     cache: Option<Cache>,
     state: Mutex<EngineState>,
+    /// Signalled when the sketch solver is given back, or a recompute starts or is
+    /// cancelled: a recompute waiting for the solver wakes to take it, or to find it's
+    /// superseded and wait no longer.
+    sketch_turn: Condvar,
+    /// Starts the sketch solver for the first sketch: the sketch worker, unless
+    /// [`Recompute::with_sketch_starter`] gave another. Called only by the recompute the
+    /// solver is lent to.
+    start_solver: Mutex<SolverStarter>,
+}
+
+/// Starts a sketch solver.
+type SolverStarter = Box<dyn FnMut() -> Result<Box<dyn SketchSolver>, Error> + Send>;
+
+/// The engine's sketch solver: one recompute's at a time, for all its sketches.
+enum Solver {
+    /// None yet: the first sketch starts one with the engine's starter (the sketch worker,
+    /// unless [`Recompute::with_sketch_starter`] gave another).
+    Unstarted,
+    Here(Box<dyn SketchSolver>),
+    /// A recompute's sketch thread has it.
+    Lent,
+}
+
+/// The solver, lent to a recompute's sketch thread: given back when it's dropped, even by
+/// a panic under a solve, so the next recompute doesn't wait for it forever.
+struct LentSolver<'a> {
+    state: &'a Mutex<EngineState>,
+    turn: &'a Condvar,
+    solver: Option<Box<dyn SketchSolver>>,
+}
+
+impl Drop for LentSolver<'_> {
+    fn drop(&mut self) {
+        let mut state = lock(self.state);
+        // A solve that panicked left its stop handle: nothing of it runs now.
+        state.solving = None;
+        state.solver = match self.solver.take() {
+            Some(solver) => Solver::Here(solver),
+            None => Solver::Unstarted,
+        };
+        drop(state);
+        self.turn.notify_all();
+    }
 }
 
 struct EngineState {
@@ -472,6 +566,13 @@ struct EngineState {
     /// recompute's uses, so a superseded one's work isn't lost to the next; nothing more, so
     /// a run of superseded recomputes holds no more than one's.
     results: BTreeMap<Key, StepResult>,
+    /// Each sketch solved, by its key, kept as step results are.
+    solutions: BTreeMap<Key, SketchResult>,
+    solver: Solver,
+    /// The sketch being solved, and how to stop it once a newer recompute starts.
+    solving: Option<Solving>,
+    /// How many solves have been started: each solve's number.
+    solves: u64,
     published_plans: VecDeque<Arc<BTreeSet<Key>>>,
     newest_plan: Option<Arc<BTreeSet<Key>>>,
     published: Option<Arc<Model>>,
@@ -489,20 +590,106 @@ impl EngineState {
     fn trim(&mut self) {
         let EngineState {
             results,
+            solutions,
             published_plans,
             newest_plan,
             ..
         } = self;
-        results.retain(|key, _| {
+        let used = |key: &Key| {
             published_plans
                 .iter()
                 .chain(newest_plan.iter())
                 .any(|plan| plan.contains(key))
-        });
+        };
+        results.retain(|key, _| used(key));
+        solutions.retain(|key, _| used(key));
+    }
+
+    /// Stops the sketch solve running, if a recompute older than `generation` is running
+    /// it, once it has run [`SKETCH_STOP_AFTER`]: now, if it has; otherwise this says how
+    /// much longer it may run, and which solve, for [`Engine::stop_later`].
+    fn stop_older_solve(&mut self, generation: Generation) -> Option<(Duration, u64)> {
+        let solving = self.solving.as_ref()?;
+        if solving.generation.0 >= generation.0 {
+            return None;
+        }
+        let ran = solving.started.elapsed();
+        if ran < SKETCH_STOP_AFTER {
+            return Some((SKETCH_STOP_AFTER - ran, solving.number));
+        }
+        self.stop_solve();
+        None
+    }
+
+    /// Stops the sketch solve running, if any, now.
+    fn stop_solve(&mut self) {
+        if let Some(solving) = self.solving.take() {
+            solving.stopper.stop();
+        }
     }
 }
 
+/// A sketch solve running: its recompute's generation, its number among the engine's
+/// solves, when it started, and how to stop it.
+struct Solving {
+    generation: Generation,
+    number: u64,
+    started: std::time::Instant,
+    stopper: SolveStopper,
+}
+
+/// How long a superseded sketch solve may run before it's stopped, as ARCHITECTURE.md's
+/// rule for superseded work has it (stopped once it has run longer than replacing its
+/// worker takes, unless it finishes first): starting a sketch worker again and solving
+/// took 6 to 8 ms (the council's skeptic, unloaded). A kernel worker takes about 30 ms to
+/// replace, and the pool's grace is `pool::STOP_AFTER`, 50 ms.
+pub const SKETCH_STOP_AFTER: Duration = Duration::from_millis(10);
+
 type StepResult = Result<Arc<Built>, Error>;
+type SketchResult = Result<Arc<SketchSolution>, Error>;
+/// A recompute's sketches' results, by key.
+type SketchResults = BTreeMap<Key, SketchResult>;
+
+/// A sketch's result in a recompute: its solve's, or the solver's failure, not the
+/// sketch's (a worker that couldn't start), which isn't kept, so the next recompute tries
+/// again.
+enum SketchOutcome {
+    Solved(SketchResult),
+    SolverFailed(Error),
+}
+
+impl SketchOutcome {
+    fn result(self) -> SketchResult {
+        match self {
+            SketchOutcome::Solved(result) => result,
+            SketchOutcome::SolverFailed(error) => Err(error),
+        }
+    }
+}
+
+/// What a recompute's sketch thread came to, by key.
+type SketchRun = BTreeMap<Key, SketchOutcome>;
+
+/// A failure of the sketch solver, not the sketch: as the kernel's own failures, a fault
+/// a client reports as its own (`check` and `fmt` exit 2), not the document's. A missing
+/// or misnamed worker comes as `invalid_input` from finding it, which would blame the sketch
+/// (the council: `check` exited 1, and `fmt` wrote the file); it's kept as the cause.
+fn solver_failure(error: Error, feature: &FeatureId) -> SketchOutcome {
+    let error = if error.code().is_kernel_fault() {
+        error
+    } else {
+        let mut wrapped = Error::new(
+            ErrorCode::WorkerCrashed,
+            "the sketch worker couldn't be started",
+        )
+        .with_cause(error.message().to_owned());
+        if let Some(suggestion) = error.suggestion() {
+            wrapped = wrapped.with_suggestion(suggestion.to_owned());
+        }
+        wrapped
+    };
+    SketchOutcome::SolverFailed(error.with_feature(feature.as_str()))
+}
 
 impl<K: Kernel + 'static> Recompute<K> {
     pub fn new(kernel: K) -> Self {
@@ -515,18 +702,44 @@ impl<K: Kernel + 'static> Recompute<K> {
         Self::build(kernel, Some(cache))
     }
 
+    /// Solves sketches with `sketches` rather than the sketch worker (a stand-in, in tests).
+    pub fn with_sketches(self, sketches: impl SketchSolver + 'static) -> Self {
+        lock(&self.engine.state).solver = Solver::Here(Box::new(sketches));
+        self
+    }
+
+    /// Starts the sketch solver with `start` at the first sketch, rather than the sketch
+    /// worker (a stand-in that fails to start, in tests). It replaces a solver given with
+    /// [`with_sketches`](Self::with_sketches): whichever is called last holds.
+    pub fn with_sketch_starter(
+        self,
+        start: impl FnMut() -> Result<Box<dyn SketchSolver>, Error> + Send + 'static,
+    ) -> Self {
+        lock(&self.engine.state).solver = Solver::Unstarted;
+        *lock(&self.engine.start_solver) = Box::new(start);
+        self
+    }
+
     fn build(kernel: K, cache: Option<Cache>) -> Self {
         let generation = kernel.generation();
         Self {
             engine: Arc::new(Engine {
                 kernel,
                 cache,
+                sketch_turn: Condvar::new(),
+                start_solver: Mutex::new(Box::new(|| {
+                    SketchWorker::start().map(|worker| Box::new(worker) as Box<dyn SketchSolver>)
+                })),
                 state: Mutex::new(EngineState {
                     generation,
                     newest_started: generation,
                     cancelled: false,
                     dropped: false,
                     results: BTreeMap::new(),
+                    solutions: BTreeMap::new(),
+                    solver: Solver::Unstarted,
+                    solving: None,
+                    solves: 0,
                     published_plans: VecDeque::new(),
                     newest_plan: None,
                     published: None,
@@ -550,7 +763,7 @@ impl<K: Kernel + 'static> Recompute<K> {
     /// if any; returns at once.
     pub fn start(&self, document: Checked) -> Run {
         let (reply, outcome) = mpsc::sync_channel(1);
-        let generation = {
+        let (generation, later) = {
             let mut state = lock(&self.engine.state);
             let newest = state.generation.0.max(self.engine.kernel.generation().0);
             let Some(next) = newest.checked_add(1) else {
@@ -564,8 +777,14 @@ impl<K: Kernel + 'static> Recompute<K> {
             state.generation = Generation(next);
             state.newest_started = Generation(next);
             state.cancelled = false;
-            state.generation
+            let later = state.stop_older_solve(Generation(next));
+            (state.generation, later)
         };
+        if let Some((after, number)) = later {
+            Engine::stop_later(&self.engine, after, number);
+        }
+        // A superseded recompute waiting for the sketch solver stops waiting.
+        self.engine.sketch_turn.notify_all();
         self.engine.kernel.advance(generation);
         let engine = Arc::clone(&self.engine);
         // The caller's span, then the recompute's: should the recompute's be filtered out,
@@ -611,16 +830,41 @@ impl<K: Kernel + 'static> Recompute<K> {
 
     /// Supersedes the recompute running, if any: nothing of it is published.
     pub fn cancel(&self) {
+        self.supersede(false);
+    }
+
+    /// Supersedes the recompute running. Its sketch solve, if it's solving one, is stopped
+    /// as superseded work is (ARCHITECTURE.md: once it has run [`SKETCH_STOP_AFTER`]); or,
+    /// `at_once`, now (a dropped engine: nothing is left to stop it later, and the process
+    /// may be ending).
+    fn supersede(&self, at_once: bool) {
         let mut state = lock(&self.engine.state);
-        match state.generation.0.checked_add(1) {
+        let next = state.generation.0.checked_add(1);
+        let later = match next {
             Some(next) => {
                 state.generation = Generation(next);
-                drop(state);
-                self.engine.kernel.advance(Generation(next));
+                if at_once {
+                    state.stop_solve();
+                    None
+                } else {
+                    state.stop_older_solve(Generation(next))
+                }
             }
             // No newer generation to stop its steps with: they run on, but it publishes
-            // nothing.
-            None => state.cancelled = true,
+            // nothing; its solve, if it's solving a sketch, is stopped.
+            None => {
+                state.cancelled = true;
+                state.stop_solve();
+                None
+            }
+        };
+        drop(state);
+        if let Some((after, number)) = later {
+            Engine::stop_later(&self.engine, after, number);
+        }
+        self.engine.sketch_turn.notify_all();
+        if let Some(next) = next {
+            self.engine.kernel.advance(Generation(next));
         }
     }
 }
@@ -628,7 +872,7 @@ impl<K: Kernel + 'static> Recompute<K> {
 impl<K: Kernel + 'static> Drop for Recompute<K> {
     fn drop(&mut self) {
         lock(&self.engine.state).dropped = true;
-        self.cancel();
+        self.supersede(true);
     }
 }
 
@@ -741,6 +985,8 @@ struct Plan {
     dresses: BTreeMap<Key, Dress>,
     /// How each feature makes its elements, for reading names back.
     makers: BTreeMap<FeatureId, Maker>,
+    /// Each sketch to solve, in timeline order: its feature, and its solve's key.
+    sketches: Vec<(FeatureId, Key)>,
 }
 
 struct Planned {
@@ -755,6 +1001,28 @@ struct Planned {
     /// planned: of its solid's step, its ID, how it names, and its inputs' naming keys,
     /// so two features whose maps are alike have one.
     naming_key: Option<NamingKey>,
+    /// A sketch's solve's key.
+    sketch: Option<Key>,
+}
+
+/// A sketch's solve's key: SHA-256 of a domain line (`silico sketch 1`), its feature's ID
+/// (a solve's errors name it), and the sketch as the file writes it, plane and elements:
+/// what the solve reads, the stored coordinates included. In memory only, on one engine,
+/// whose solver doesn't change (a worker is started again only from the same build), so
+/// the solver's identity needn't be in it.
+fn sketch_key(id: &FeatureId, sketch: &crate::document::Sketch) -> Key {
+    let mut hash = Sha256::new();
+    hash.update(b"silico sketch 1\n");
+    hash.update(id.as_str().as_bytes());
+    hash.update(b"\nplane ");
+    hash.update(sketch.plane.as_str().as_bytes());
+    for (kind, text) in crate::document::sketch_elements(sketch) {
+        hash.update(b"\n");
+        hash.update(kind.as_bytes());
+        hash.update(b" ");
+        hash.update(text.as_bytes());
+    }
+    Key(hash.finalize().into())
 }
 
 /// How a feature's solid's elements are named: a primitive's by their numbers (a move
@@ -790,6 +1058,7 @@ impl Plan {
                 .iter()
                 .map(|f| (f.id.clone(), Maker::of(&f.operation)))
                 .collect(),
+            sketches: Vec::new(),
         };
         for feature in features {
             let mut own = Vec::new();
@@ -853,12 +1122,21 @@ impl Plan {
                 .zip(inputs)
                 .zip(naming)
                 .map(|((key, inputs), naming)| naming_key(*key, &feature.id, naming, &inputs));
+            let sketch = match &feature.operation {
+                Operation::Sketch(sketch) => {
+                    let key = sketch_key(&feature.id, sketch);
+                    plan.sketches.push((feature.id.clone(), key));
+                    Some(key)
+                }
+                _ => None,
+            };
             plan.features.push(Planned {
                 id: feature.id.clone(),
                 steps: own,
                 uses,
                 naming,
                 naming_key,
+                sketch,
             });
         }
         plan
@@ -1098,19 +1376,39 @@ struct Schedule {
 impl<K: Kernel + 'static> Engine<K> {
     fn run(&self, document: &Arc<Checked>, generation: Generation) -> Result<RunOutcome, Error> {
         let plan = Plan::of(document);
-        let keys: Arc<BTreeSet<Key>> = Arc::new(plan.steps.keys().copied().collect());
-        let mut done: BTreeMap<Key, StepResult> = {
+        let keys: Arc<BTreeSet<Key>> = Arc::new(
+            plan.steps
+                .keys()
+                .copied()
+                .chain(plan.sketches.iter().map(|(_, key)| *key))
+                .collect(),
+        );
+        let (mut done, mut solutions): (BTreeMap<Key, StepResult>, BTreeMap<Key, SketchResult>) = {
             let mut state = lock(&self.state);
             // The newest recompute's plan is worth keeping results for, whether or not it
             // finishes: an older one finishing later keeps what this one will use.
             if state.newest_started == generation {
                 state.newest_plan = Some(Arc::clone(&keys));
             }
-            plan.order
+            let done = plan
+                .order
                 .iter()
                 .filter_map(|key| state.results.get(key).map(|r| (*key, r.clone())))
-                .collect()
+                .collect();
+            let solutions = plan
+                .sketches
+                .iter()
+                .filter_map(|(_, key)| state.solutions.get(key).map(|r| (*key, r.clone())))
+                .collect();
+            (done, solutions)
         };
+        // The sketches not solved before, solved on a thread of their own.
+        let to_solve: Vec<(FeatureId, Key)> = plan
+            .sketches
+            .iter()
+            .filter(|(_, key)| !solutions.contains_key(key))
+            .cloned()
+            .collect();
         // What's kept on disk for this kernel, for the steps not kept in memory.
         if let Some(cache) = &self.cache {
             let kernel = self.kernel.identity();
@@ -1184,7 +1482,21 @@ impl<K: Kernel + 'static> Engine<K> {
         // The recompute's span, for its threads' steps: so a worker's call traces back to
         // the recompute, and the edit that started it (ARCHITECTURE.md, invariant 9).
         let parent = tracing::Span::current();
-        std::thread::scope(|scope| -> Result<(), Error> {
+        let solved = std::thread::scope(|scope| -> Result<Option<SketchRun>, Error> {
+            let sketches = if to_solve.is_empty() {
+                None
+            } else {
+                let spawned = std::thread::Builder::new()
+                    .name(format!("recompute-{}-sketches", generation.0))
+                    .spawn_scoped(scope, || {
+                        let _entered = parent.enter();
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            self.solve_sketches(document, &to_solve, generation)
+                        }))
+                    })
+                    .map_err(|e| crate::pool::thread_error("recompute", &e))?;
+                Some(spawned)
+            };
             let mut started = 0;
             for n in 0..threads {
                 let spawned = std::thread::Builder::new()
@@ -1202,7 +1514,23 @@ impl<K: Kernel + 'static> Engine<K> {
                     Err(_) => break,
                 }
             }
-            Ok(())
+            let Some(sketches) = sketches else {
+                return Ok(Some(SketchRun::new()));
+            };
+            match sketches.join() {
+                Ok(Ok(solved)) => Ok(solved),
+                // A panic under a solve is a bug in Silico, as under a step.
+                Ok(Err(panic)) | Err(panic) => {
+                    let said = panic
+                        .downcast_ref::<&str>()
+                        .map(|said| (*said).to_owned())
+                        .or_else(|| panic.downcast_ref::<String>().cloned())
+                        .unwrap_or_else(|| "a panic with no message".to_owned());
+                    Err(Error::new(ErrorCode::Internal, "a sketch's solve panicked")
+                        .with_cause(said)
+                        .with_suggestion(crate::worker::SILICO_BUG))
+                }
+            }
         })?;
         let schedule = schedule
             .into_inner()
@@ -1211,11 +1539,19 @@ impl<K: Kernel + 'static> Engine<K> {
             return Err(error);
         }
         self.keep(&schedule.done);
+        // A superseded solve gives nothing to keep or publish.
+        let Some(solved) = solved else {
+            return Ok(RunOutcome::Superseded);
+        };
+        self.keep_solutions(&solved);
+        solutions.extend(solved.into_iter().map(|(key, s)| (key, s.result())));
         if schedule.superseded {
             return Ok(RunOutcome::Superseded);
         }
         let known = Arc::clone(&lock(&self.state).known);
-        let model = Arc::new(model(document, &plan, &schedule, generation, known));
+        let model = Arc::new(model(
+            document, &plan, &schedule, &solutions, generation, known,
+        ));
         let mut state = lock(&self.state);
         if state.generation != generation || state.cancelled {
             return Ok(RunOutcome::Superseded);
@@ -1248,6 +1584,139 @@ impl<K: Kernel + 'static> Engine<K> {
             }
         }
         state.trim();
+    }
+
+    /// Stops solve `number` after `after`, if it's still running then (a superseded solve
+    /// that hadn't run [`SKETCH_STOP_AFTER`] when a newer recompute started). On a thread of
+    /// its own, which holds the engine no longer than that; if none can start, the solve is
+    /// stopped now.
+    fn stop_later(engine: &Arc<Self>, after: Duration, number: u64) {
+        let stop = move |engine: &Self| {
+            let mut state = lock(&engine.state);
+            if state.solving.as_ref().is_some_and(|s| s.number == number) {
+                state.stop_solve();
+            }
+        };
+        let held = Arc::clone(engine);
+        let spawned = std::thread::Builder::new()
+            .name("recompute-stop-solve".to_owned())
+            .spawn(move || {
+                std::thread::sleep(after);
+                stop(&held);
+            });
+        if spawned.is_err() {
+            stop(engine);
+        }
+    }
+
+    /// Keeps a recompute's solves by key, as [`keep`](Self::keep) keeps steps' results: a
+    /// failure only if it follows from the sketch (it would fail again).
+    fn keep_solutions(&self, solved: &SketchRun) {
+        let mut state = lock(&self.state);
+        for (key, outcome) in solved {
+            let SketchOutcome::Solved(result) = outcome else {
+                continue;
+            };
+            let keep = match result {
+                Ok(_) => true,
+                Err(error) => matches!(
+                    error.code(),
+                    ErrorCode::InvalidInput
+                        | ErrorCode::InvalidResult
+                        | ErrorCode::OverConstrained
+                        | ErrorCode::SolveFailed
+                ),
+            };
+            if keep {
+                state.solutions.insert(*key, result.clone());
+            }
+        }
+        state.trim();
+    }
+
+    /// Solves `to_solve`'s sketches of `document`, one at a time, for `generation`: each
+    /// solve's result by key; or none, once a newer recompute supersedes this one (the
+    /// solve it was in is stopped then, [`EngineState::stop_older_solve`]).
+    fn solve_sketches(
+        &self,
+        document: &Checked,
+        to_solve: &[(FeatureId, Key)],
+        generation: Generation,
+    ) -> Option<SketchRun> {
+        let mut solved = SketchRun::new();
+        let superseded = |state: &EngineState| state.generation != generation || state.cancelled;
+        // The solver, once no other recompute has it; or none, once this one is superseded
+        // (a newer recompute's start wakes the wait), never waiting for a newer one's solve.
+        let here = {
+            let mut state = lock(&self.state);
+            loop {
+                if superseded(&state) {
+                    return None;
+                }
+                match std::mem::replace(&mut state.solver, Solver::Lent) {
+                    Solver::Here(solver) => break Some(solver),
+                    Solver::Unstarted => break None,
+                    Solver::Lent => {
+                        state = self
+                            .sketch_turn
+                            .wait(state)
+                            .unwrap_or_else(PoisonError::into_inner);
+                    }
+                }
+            }
+        };
+        let mut lent = LentSolver {
+            state: &self.state,
+            turn: &self.sketch_turn,
+            solver: here,
+        };
+        if lent.solver.is_none() {
+            let started = (lock(&self.start_solver))();
+            match started {
+                Ok(solver) => lent.solver = Some(solver),
+                // Every sketch fails with it, not kept: the next recompute tries again.
+                Err(error) => {
+                    for (id, key) in to_solve {
+                        solved.insert(*key, solver_failure(error.clone(), id));
+                    }
+                    return Some(solved);
+                }
+            }
+        }
+        let solver = lent.solver.as_mut()?;
+        for (id, key) in to_solve {
+            let stopper = match solver.stopper() {
+                Ok(stopper) => stopper,
+                // The solver's failure, not the sketch's: not kept.
+                Err(error) => {
+                    solved.insert(*key, solver_failure(error, id));
+                    continue;
+                }
+            };
+            {
+                let mut state = lock(&self.state);
+                if superseded(&state) {
+                    return None;
+                }
+                state.solves += 1;
+                let number = state.solves;
+                state.solving = stopper.map(|stopper| Solving {
+                    generation,
+                    number,
+                    started: std::time::Instant::now(),
+                    stopper,
+                });
+            }
+            let result = crate::sketch::solve(document, id, solver.as_mut());
+            let mut state = lock(&self.state);
+            state.solving = None;
+            if superseded(&state) {
+                return None;
+            }
+            drop(state);
+            solved.insert(*key, SketchOutcome::Solved(result.map(Arc::new)));
+        }
+        Some(solved)
     }
 
     /// One of a recompute's threads: runs ready jobs (steps, and measures of features'
@@ -1572,26 +2041,31 @@ fn model(
     source: &Arc<Checked>,
     plan: &Plan,
     schedule: &Schedule,
+    solutions: &SketchResults,
     generation: Generation,
     known: NamedMaps,
 ) -> Model {
     let done = &schedule.done;
     let mut features: Vec<(FeatureId, FeatureOutcome)> = Vec::with_capacity(plan.features.len());
-    // The plan has one entry for each of the document's features, in its order.
-    for (planned, feature) in plan.features.iter().zip(&source.document().features) {
+    for planned in &plan.features {
         // A feature it uses that didn't build blocks it, on the failure at the root.
         let blocked = planned.uses.iter().find_map(|&i| match features.get(i) {
             Some((id, FeatureOutcome::Failed(_) | FeatureOutcome::Broken { .. })) => {
                 Some(id.clone())
             }
             Some((_, FeatureOutcome::Blocked { on })) => Some(on.clone()),
-            Some((_, FeatureOutcome::Built { .. } | FeatureOutcome::Sketch)) | None => None,
+            Some((_, FeatureOutcome::Built { .. } | FeatureOutcome::Sketch(_))) | None => None,
         });
-        let makes_solid = feature.operation.makes_solid();
-        let outcome = match blocked {
-            Some(on) => FeatureOutcome::Blocked { on },
-            None if !makes_solid => FeatureOutcome::Sketch,
-            None => feature_outcome(planned, done, &schedule.unresolved),
+        let outcome = match (blocked, planned.sketch) {
+            (Some(on), _) => FeatureOutcome::Blocked { on },
+            (None, Some(key)) => match solutions.get(&key) {
+                Some(Ok(solution)) => FeatureOutcome::Sketch(Arc::clone(solution)),
+                Some(Err(error)) => FeatureOutcome::Failed(error.clone()),
+                None => FeatureOutcome::Failed(
+                    silico_bug("a sketch wasn't solved").with_feature(planned.id.as_str()),
+                ),
+            },
+            (None, None) => feature_outcome(planned, done, &schedule.unresolved),
         };
         features.push((planned.id.clone(), outcome));
     }
@@ -1624,7 +2098,7 @@ fn model(
             FeatureOutcome::Failed(_)
             | FeatureOutcome::Broken { .. }
             | FeatureOutcome::Blocked { .. }
-            | FeatureOutcome::Sketch => None,
+            | FeatureOutcome::Sketch(_) => None,
         })
         .collect();
     let naming = naming(plan, &features);
