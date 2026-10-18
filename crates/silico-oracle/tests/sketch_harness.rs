@@ -337,17 +337,22 @@ fn ended(
 fn how_each_side_ended_is_compared_as_the_harness_says_they_agree() {
     // M3.3's round-1 mutants: the outcome arms that let two endings agree were tested only
     // where they agree. Each pair here, with the lists equal, either agrees or is a
-    // difference, as compare's comment has it.
+    // difference, as compare's comment has it (and docs/ports/sketcher.md for −3 and −4).
     use silico_core::{Error, ErrorCode};
     let m = model(&corner(""));
     let failed = |code| Err(Error::new(code, "made up here"));
+    // A solution of nothing: the (−1, solved) row never reaches compare_solutions, so only
+    // that Silico solved matters.
     let solved = || {
-        let s = corner("");
-        let translation = Translation::new(&s).unwrap();
-        let answer = translation
-            .solve(&mut SketchWorker::start().unwrap())
-            .unwrap();
-        answer.outcome
+        Ok(silico_core::sketch::SketchSolution {
+            points: Default::default(),
+            radii: Default::default(),
+            references: Default::default(),
+            dofs: 0,
+            free: Default::default(),
+            redundant: Default::default(),
+            algorithm: silico_protocol::Algorithm::DogLeg,
+        })
     };
     for (code, outcome, agrees, why) in [
         (

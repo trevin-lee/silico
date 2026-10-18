@@ -590,6 +590,8 @@ pub fn compare(model: &FreecadSketch, ours: &Ours, theirs: &FreecadSolved) -> Ve
     // (PlaneGCS checks them on the starting values). Silico solves it if they agree on the
     // solution (decision 5) and refuses it as over-constrained if they don't: either is
     // Silico's, and only the lists above are compared then.
+    // FreeCAD's conflicting (−3) and over-constrained (−4) agree only with Silico's
+    // over-constrained refusal (docs/ports/sketcher.md, Solving).
     let code = |e: &Error| e.code();
     let redundant =
         !ids(&theirs.redundant).is_empty() || !ids(&theirs.partially_redundant).is_empty();
