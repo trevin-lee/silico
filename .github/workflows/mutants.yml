@@ -24,7 +24,7 @@ on:
         description: "Only mutants in these packages, space-separated (empty: every package)"
         default: ""
       files:
-        description: "Only mutants in these source files, space-separated paths or globs from the repository's root, each a --file (empty: every file)"
+        description: "Only mutants in these source files, space-separated, each a --file: a path from the repository's root, with * (not crossing /) or ** for globs; a word without / matches that name anywhere (empty: every file)"
         default: ""
       shards:
         description: "Number of shards to share the work (1 to 16; at most three run at once)"
@@ -65,7 +65,7 @@ jobs:
           set -f
           for file in $FILES; do
             case $file in
-            /* | *..* | *[!A-Za-z0-9_./*-]*) echo "::error::not a path from the repository's root: '$file'"; exit 1 ;;
+            /* | -* | *..* | *[!A-Za-z0-9_./*-]*) echo "::error::not a path from the repository's root: '$file'"; exit 1 ;;
             esac
           done
           echo "shards=[$(seq -s, 0 $((SHARDS - 1)))]" >>"$GITHUB_OUTPUT"
@@ -170,6 +170,7 @@ jobs:
             cat shards/*/"$outcome.txt" 2>/dev/null | sort >"all/$outcome.txt" || true
           done
           count() { grep -c . "all/$1.txt" || true; }
+          tested=$(( $(count caught) + $(count missed) + $(count timeout) + $(count unviable) ))
           # A shard that finished writes its marker; a stopped one uploads what it reached
           # without it.
           reported=$(find shards -mindepth 2 -maxdepth 2 -name shard 2>/dev/null | wc -l)
@@ -191,7 +192,15 @@ jobs:
           } >>"$GITHUB_STEP_SUMMARY"
           cat "$GITHUB_STEP_SUMMARY"
           if [ "$SHARD_RESULT" != success ] || [ "$reported" -ne "$SHARDS" ]; then
-            echo "::error::a shard failed or didn't report: the results are incomplete"
+            # A shard stopped mid-mutant may list that mutant as caught by a test it killed.
+            echo "::error::a shard failed or didn't report: the results are incomplete, and a stopped shard's caught list may hold a mutant whose tests were killed"
+            exit 1
+          fi
+          # cargo-mutants passes a run that finds no mutants: a misspelt file would pass
+          # having tested nothing. (With a base, a change that touches none of the files
+          # also finds none.)
+          if [ -n "$FILES" ] && [ "$tested" -eq 0 ]; then
+            echo "::error::the files matched no mutants${BASE:+ changed since $BASE}: check each is a path from the repository's root in the packages given"
             exit 1
           fi
           if [ -s all/missed.txt ]; then
