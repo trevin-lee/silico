@@ -11,9 +11,7 @@ use std::time::{Duration, Instant};
 use proptest::prelude::*;
 use silico_core::ErrorCode;
 use silico_core::document::{Checked, ElementId, FeatureId, Operation, read};
-use silico_core::sketch::{
-    SKETCH_TIMEOUT, SketchSolution, SketchSolver, SketchWorker, Translation, solve,
-};
+use silico_core::sketch::{SketchSolution, SketchSolver, SketchWorker, Translation, solve};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-worker");
 const FEATURE: &str = "k7f2qx3m";
@@ -401,8 +399,11 @@ fn impossible_chain(n: usize, reach: f64) -> String {
 #[test]
 fn an_impossible_chain_of_the_largest_size_fails_as_solve_failed_not_a_timeout() {
     // 512 points (1,024 unknowns, at MAX_SKETCH_UNKNOWNS) in one chain of unit links held
-    // 2,560 apart: the gate admits it, and every algorithm fails. The answer must be
-    // solve_failed within a sketch solve's time, SKETCH_TIMEOUT.
+    // 2,560 apart: the gate admits it, and every algorithm fails. The answer is
+    // solve_failed, not a timeout. The worker is given 900 s, so this tests what the answer
+    // is, not the machine's speed: the default, SKETCH_TIMEOUT's 300 s, is a measurement
+    // (74 s on a quiet-ish M4 Pro, 206 s at a load average of 80; ~/.cache/silico-review's
+    // m3-open notes), and that a worker waits the time it's given is document.rs's.
     // Found by break-it: worker_timeout after 60 s, the kernel's request time. Measured one
     // algorithm at a time on this chain (silico_sketch::solve, a loaded M4 Pro): DogLeg
     // 11.5 s, Levenberg–Marquardt 28.9 s, BFGS 0.2 s, anchored SQP 33.2 s: 74 s in all, where
@@ -410,8 +411,9 @@ fn an_impossible_chain_of_the_largest_size_fails_as_solve_failed_not_a_timeout()
     // silico_core::sketch::SKETCH_TIMEOUT (300 s), which SketchWorker::with_timeout sets.
     let doc = checked(&impossible_chain(512, 2560.0));
     let started = Instant::now();
-    let e = within(SKETCH_TIMEOUT + Duration::from_secs(60), move || {
-        solved(&doc, &mut worker()).unwrap_err()
+    let given = Duration::from_secs(900);
+    let e = within(given + Duration::from_secs(60), move || {
+        solved(&doc, &mut worker().with_timeout(given)).unwrap_err()
     });
     let took = started.elapsed();
     assert_eq!(
