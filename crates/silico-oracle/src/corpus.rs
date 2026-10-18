@@ -7,14 +7,16 @@ use std::path::{Path, PathBuf};
 
 use silico_core::kernel::KernelWorker;
 
-use crate::Difference;
 use crate::case::{Case, Shape};
 use crate::freecad;
 use crate::silico;
+use crate::{Difference, Validity};
 
-/// The cases for every STEP file directly in `dir`, in name order, and the files FreeCAD
-/// couldn't read (with why). Each file's B-rep is written beside it, in `dir/brep/`.
-pub fn cases(dir: &Path) -> Result<(Vec<Case>, Vec<String>), String> {
+/// The cases for every STEP file directly in `dir`, in name order, the files FreeCAD
+/// couldn't read (with why), and each B-rep FreeCAD wrote, with its SHA-256 (a part's
+/// B-rep is this platform's FreeCAD's reading of it, so two platforms' can differ). Each
+/// file's B-rep is written beside it, in `dir/brep/`.
+pub fn cases(dir: &Path) -> Result<Corpus, String> {
     let entries =
         std::fs::read_dir(dir).map_err(|e| format!("can't read {}: {e}", dir.display()))?;
     let mut files: Vec<PathBuf> = entries
@@ -28,7 +30,7 @@ pub fn cases(dir: &Path) -> Result<(Vec<Case>, Vec<String>), String> {
     files.sort();
     let out = dir.join("brep");
     std::fs::create_dir_all(&out).map_err(|e| format!("can't make {}: {e}", out.display()))?;
-    let (mut cases, mut unread) = (Vec::new(), Vec::new());
+    let (mut cases, mut unread, mut breps) = (Vec::new(), Vec::new(), Vec::new());
     for file in files {
         // Named for the whole file name, so `a.stp` and `a.step` don't share a case.
         let stem = file
@@ -60,6 +62,9 @@ print("SILICO_ORACLE " + json.dumps(out))
         );
         match freecad::script(&script)? {
             serde_json::Value::Null => {
+                let bytes = std::fs::read(&brep)
+                    .map_err(|e| format!("can't read {}: {e}", brep.display()))?;
+                breps.push(format!("{stem}: B-rep SHA-256 {}", sha256(&bytes)));
                 let path = brep.to_string_lossy().into_owned();
                 let part = Shape::Brep { path };
                 cases.push(case(&stem, part.clone()));
@@ -74,7 +79,44 @@ print("SILICO_ORACLE " + json.dumps(out))
             why => unread.push(format!("{stem}: FreeCAD can't read it: {why}")),
         }
     }
-    Ok((cases, unread))
+    Ok(Corpus {
+        cases,
+        unread,
+        breps,
+    })
+}
+
+/// What [`cases`] found in a directory of STEP files.
+pub struct Corpus {
+    pub cases: Vec<Case>,
+    /// The files FreeCAD couldn't read, with why.
+    pub unread: Vec<String>,
+    /// Each B-rep FreeCAD wrote, `name: B-rep SHA-256 hex`.
+    pub breps: Vec<String>,
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// The platform this runs on, as [`Known::platforms`] names it: the architecture and the
+/// operating system (`aarch64-macos`, `x86_64-linux`).
+pub fn platform() -> String {
+    format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS)
+}
+
+/// A difference the corpus shows that's understood: the case, the difference as it's
+/// written, why, and the platforms it shows on (a part's B-rep is the platform's FreeCAD's
+/// reading of its STEP file, so a borderline check can fall either way by platform).
+pub struct Known {
+    pub case: &'static str,
+    pub difference: &'static str,
+    pub why: &'static str,
+    pub platforms: &'static [&'static str],
 }
 
 fn case(name: &str, shape: Shape) -> Case {
@@ -131,54 +173,95 @@ fn replace_if_lost(kernel: &mut KernelWorker, error: &silico_core::Error) -> Res
     Ok(())
 }
 
-/// Differences the corpus shows that are understood, each with why: reported as known, not
-/// failed. A known difference that changes, or goes away, is reported as it is.
-pub const KNOWN: &[(&str, &str, &str)] = &[(
-    "nist_stc_07_asme1_ap242-e3.stp",
-    "valid: Silico false, FreeCAD true",
-    "OCCT's analyzer finds four faces' wires unorientable in Silico's build of OCCT 7.9.3, \
-     and the part valid in FreeCAD's, reading the same B-rep: a borderline numeric check, \
-     most likely the exact math Silico's build uses",
-)];
+/// Differences the corpus shows that are understood, each with why and where: reported as
+/// known, not failed, on the platforms they show on. A known difference that changes, goes
+/// away, or shows on another platform, is reported as it is.
+pub const KNOWN: &[Known] = &[Known {
+    case: "nist_stc_07_asme1_ap242-e3.stp",
+    difference: "valid: Silico false, FreeCAD true",
+    why: "OCCT's analyzer finds four faces' wires unorientable in Silico's build of OCCT \
+          7.9.3, and the part valid in FreeCAD's, reading the same B-rep: a borderline \
+          numeric check, most likely the exact math Silico's build uses. On the Mac only: on \
+          the x64 Linux runner, each reading that platform's FreeCAD's B-rep, they agree",
+    platforms: &["aarch64-macos"],
+}];
 
-/// `differences` without those `known` lists, the known ones found (in words), and the
-/// known ones not found: a problem, since the list should say what the corpus shows.
+/// `differences` without those `known` lists on `platform`, the known ones found (in
+/// words), and the known ones not found there, with what each side said of the case's
+/// validity (`validity`, by case): a problem, since the list should say what the corpus
+/// shows.
 pub fn without_known(
     differences: Vec<Difference>,
-    known: &[(&str, &str, &str)],
+    known: &[Known],
+    platform: &str,
+    validity: &[Validity],
 ) -> (Vec<Difference>, Vec<String>, Vec<String>) {
+    let here: Vec<&Known> = known
+        .iter()
+        .filter(|k| k.platforms.contains(&platform))
+        .collect();
     let mut found = Vec::new();
-    let mut seen = vec![false; known.len()];
+    let mut seen = vec![false; here.len()];
     let rest = differences
         .into_iter()
         .filter(|d| {
             let how = d.how.join("; ");
-            match known
+            match here
                 .iter()
-                .position(|(case, what, _)| *case == d.case && *what == how)
+                .position(|k| k.case == d.case && k.difference == how)
             {
                 Some(i) => {
                     seen[i] = true;
-                    found.push(format!("{d} (known: {})", known[i].2));
+                    found.push(format!("{d} (known: {})", here[i].why));
                     false
                 }
                 None => true,
             }
         })
         .collect();
-    let missing = known
+    let said =
+        |valid: Option<bool>| valid.map_or("didn't build it".to_owned(), |v| format!("valid {v}"));
+    let missing = here
         .iter()
         .zip(seen)
         .filter(|(_, seen)| !seen)
-        .map(|((case, what, _), _)| format!("{case}: a known difference didn't show: {what}"))
+        .map(|(k, _)| {
+            let verdicts = validity.iter().find(|v| v.case == k.case).map_or_else(
+                || "no such case".to_owned(),
+                |v| format!("Silico {}, FreeCAD {}", said(v.silico), said(v.freecad)),
+            );
+            format!(
+                "{}: a known difference didn't show on {platform}: {} ({verdicts})",
+                k.case, k.difference
+            )
+        })
         .collect();
     (rest, found, missing)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::without_known;
-    use crate::{Difference, Outcome};
+    use super::{KNOWN, Known, without_known};
+    use crate::{Difference, Outcome, Validity};
+
+    fn validity(case: &str, silico: Option<bool>, freecad: Option<bool>) -> Validity {
+        Validity {
+            case: case.to_owned(),
+            silico,
+            freecad,
+        }
+    }
+
+    const WHY: &str = "why";
+
+    fn known(platforms: &'static [&'static str]) -> [Known; 1] {
+        [Known {
+            case: "a",
+            difference: "valid: Silico false, FreeCAD true",
+            why: WHY,
+            platforms,
+        }]
+    }
 
     fn difference(case: &str, how: &str) -> Difference {
         Difference {
@@ -191,31 +274,103 @@ mod tests {
 
     #[test]
     fn only_a_known_difference_exactly_as_listed_is_set_aside() {
-        let known = [("a", "valid: Silico false, FreeCAD true", "why")];
         let (rest, found, missing) = without_known(
             vec![
                 difference("a", "valid: Silico false, FreeCAD true"),
                 difference("a", "valid: Silico true, FreeCAD false"),
                 difference("b", "valid: Silico false, FreeCAD true"),
             ],
-            &known,
+            &known(&["here"]),
+            "here",
+            &[],
         );
         assert_eq!(rest.len(), 2);
         assert_eq!(rest[0].how, ["valid: Silico true, FreeCAD false"]);
         assert_eq!(rest[1].case, "b");
-        assert_eq!(found, ["a: valid: Silico false, FreeCAD true (known: why)"]);
+        assert_eq!(
+            found,
+            [format!(
+                "a: valid: Silico false, FreeCAD true (known: {WHY})"
+            )]
+        );
         assert!(missing.is_empty());
     }
 
     #[test]
     fn a_known_difference_that_didnt_show_is_a_problem() {
-        let known = [("a", "valid: Silico false, FreeCAD true", "why")];
-        let (rest, found, missing) = without_known(vec![difference("b", "x")], &known);
+        let validity = [validity("a", Some(true), Some(true))];
+        let (rest, found, missing) = without_known(
+            vec![difference("b", "x")],
+            &known(&["here"]),
+            "here",
+            &validity,
+        );
         assert_eq!(rest.len(), 1);
         assert!(found.is_empty());
         assert_eq!(
             missing,
-            ["a: a known difference didn't show: valid: Silico false, FreeCAD true"]
+            [
+                "a: a known difference didn't show on here: valid: Silico false, FreeCAD true (Silico valid true, FreeCAD valid true)"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_known_difference_is_expected_only_where_it_shows() {
+        // Elsewhere, it's not looked for: absent, nothing's missing; shown, it's a difference.
+        let (rest, found, missing) = without_known(Vec::new(), &known(&["there"]), "here", &[]);
+        assert!(rest.is_empty() && found.is_empty() && missing.is_empty());
+        let (rest, found, missing) = without_known(
+            vec![difference("a", "valid: Silico false, FreeCAD true")],
+            &known(&["there"]),
+            "here",
+            &[],
+        );
+        assert_eq!(rest.len(), 1);
+        assert!(found.is_empty() && missing.is_empty());
+    }
+
+    #[test]
+    fn a_known_difference_on_a_case_that_didnt_build_says_so() {
+        let validity = [validity("a", None, Some(true))];
+        let (_, _, missing) = without_known(Vec::new(), &known(&["here"]), "here", &validity);
+        assert_eq!(
+            missing,
+            [
+                "a: a known difference didn't show on here: valid: Silico false, FreeCAD true (Silico didn't build it, FreeCAD valid true)"
+            ]
+        );
+    }
+
+    #[test]
+    fn every_known_differences_platforms_are_ones_this_code_names() {
+        // `platform()` writes `std::env::consts`' architecture and system: a platform
+        // listed some other way (`arm64-macos`, `aarch64-apple-darwin`) never matches.
+        const ARCHES: [&str; 3] = ["aarch64", "x86_64", "riscv64"];
+        const SYSTEMS: [&str; 3] = ["macos", "linux", "windows"];
+        for known in KNOWN {
+            for platform in known.platforms {
+                let (arch, os) = platform.split_once('-').unwrap();
+                assert!(
+                    ARCHES.contains(&arch) && SYSTEMS.contains(&os),
+                    "{platform}"
+                );
+            }
+        }
+        #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+        assert_eq!(super::platform(), "aarch64-macos");
+        #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+        assert_eq!(super::platform(), "x86_64-linux");
+    }
+
+    #[test]
+    fn a_known_difference_on_a_case_the_corpus_hasnt_says_so() {
+        let (_, _, missing) = without_known(Vec::new(), &known(&["here"]), "here", &[]);
+        assert_eq!(
+            missing,
+            [
+                "a: a known difference didn't show on here: valid: Silico false, FreeCAD true (no such case)"
+            ]
         );
     }
 }

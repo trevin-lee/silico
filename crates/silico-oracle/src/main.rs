@@ -26,24 +26,33 @@ fn main() -> ExitCode {
     let mut out = std::io::stdout().lock();
     let ran = cases().and_then(|(cases, corpus)| {
         let mut report = run(&cases)?;
-        let (mut problems, mut known) = (Vec::new(), Vec::new());
-        if let Some(unread) = corpus {
+        let (mut problems, mut known, mut notes) = (Vec::new(), Vec::new(), Vec::new());
+        if let Some(CorpusNotes { unread, breps }) = corpus {
             problems = unread;
             problems.extend(corpus::meshes(&cases)?);
             let missing;
-            (report.differences, known, missing) =
-                corpus::without_known(report.differences, corpus::KNOWN);
+            (report.differences, known, missing) = corpus::without_known(
+                report.differences,
+                corpus::KNOWN,
+                &corpus::platform(),
+                &report.validity,
+            );
             problems.extend(missing);
+            // What each platform's FreeCAD wrote, so two platforms' runs can be compared.
+            notes = breps;
         }
-        Ok((cases.len(), report, problems, known))
+        Ok((cases.len(), report, problems, known, notes))
     });
     match ran {
-        Ok((count, report, problems, known)) => {
+        Ok((count, report, problems, known, notes)) => {
             for d in &report.differences {
                 let _ = writeln!(out, "{d}");
             }
             for k in &known {
                 let _ = writeln!(out, "{k}");
+            }
+            for n in &notes {
+                let _ = writeln!(out, "{n}");
             }
             for p in &problems {
                 let _ = writeln!(out, "{p}");
@@ -73,9 +82,15 @@ fn main() -> ExitCode {
     }
 }
 
+/// For the corpus: its files FreeCAD couldn't read, and the B-reps it wrote.
+struct CorpusNotes {
+    unread: Vec<String>,
+    breps: Vec<String>,
+}
+
 /// The cases the command line asks for, and for the corpus, its files FreeCAD couldn't
-/// read.
-fn cases() -> Result<(Vec<Case>, Option<Vec<String>>), String> {
+/// read and the B-reps it wrote.
+fn cases() -> Result<(Vec<Case>, Option<CorpusNotes>), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("run") => {
@@ -89,8 +104,12 @@ fn cases() -> Result<(Vec<Case>, Option<Vec<String>>), String> {
         }
         Some("corpus") => match &args[1..] {
             [dir] => {
-                let (cases, unread) = corpus::cases(Path::new(dir))?;
-                Ok((cases, Some(unread)))
+                let corpus = corpus::cases(Path::new(dir))?;
+                let notes = CorpusNotes {
+                    unread: corpus.unread,
+                    breps: corpus.breps,
+                };
+                Ok((corpus.cases, Some(notes)))
             }
             _ => Err(format!("corpus takes one directory\n{USAGE}")),
         },
