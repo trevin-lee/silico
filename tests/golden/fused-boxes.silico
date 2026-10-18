@@ -1,0 +1,50 @@
+{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "features": [
+    {
+      "id": "aaaaaaaa",
+      "type": "box",
+      "v": 1,
+      "name": "Box",
+      "position": [0, 0, 0],
+      "length": 10,
+      "width": 10,
+      "height": 10,
+      "fingerprint": {"volume": 1000, "area": 600, "bbox": [0, 0, 0, 10, 10, 10], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "bbbbbbbb",
+      "type": "box",
+      "v": 1,
+      "name": "Step",
+      "position": [10, 0, 0],
+      "length": 10,
+      "width": 10,
+      "height": 5,
+      "fingerprint": {"volume": 500, "area": 400, "bbox": [10, 0, 0, 20, 10, 5], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "rrrrrrrr",
+      "type": "fuse",
+      "v": 1,
+      "name": "Fusion",
+      "base": "aaaaaaaa",
+      "tool": "bbbbbbbb",
+      "fingerprint": {"volume": 1500, "area": 900, "bbox": [0, 0, 0, 20, 10, 10], "faces": 11, "edges": 23, "vertices": 14}
+    },
+    {
+      "id": "ffffffff",
+      "type": "fillet",
+      "v": 1,
+      "name": "Inside corner",
+      "base": "rrrrrrrr",
+      "edges": [
+        "bbbbbbbb.box.Edge2"
+      ],
+      "radius": 1,
+      "note": "FreeCAD's testBaseFeatureAttachmentSupport",
+      "fingerprint": {"volume": 1502.146018, "area": 896.137167, "bbox": [0, 0, 0, 20, 10, 10], "faces": 12, "edges": 28, "vertices": 18}
+    }
+  ]
+}

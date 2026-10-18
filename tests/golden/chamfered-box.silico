@@ -1,0 +1,44 @@
+{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "features": [
+    {
+      "id": "aaaaaaaa",
+      "type": "box",
+      "v": 1,
+      "name": "Box",
+      "position": [0, 0, 0],
+      "length": 10,
+      "width": 10,
+      "height": 10,
+      "fingerprint": {"volume": 1000, "area": 600, "bbox": [0, 0, 0, 10, 10, 10], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "cccccccc",
+      "type": "chamfer",
+      "v": 1,
+      "name": "Chamfer",
+      "base": "aaaaaaaa",
+      "edges": [
+        "aaaaaaaa.box.Edge1",
+        "aaaaaaaa.box.Edge5",
+        "aaaaaaaa.box.Edge7"
+      ],
+      "size": {"distance": 1},
+      "fingerprint": {"volume": 985, "area": 579.426407, "bbox": [0, 0, 0, 10, 10, 10], "faces": 9, "edges": 21, "vertices": 14}
+    },
+    {
+      "id": "ffffffff",
+      "type": "fillet",
+      "v": 1,
+      "name": "Round",
+      "base": "cccccccc",
+      "edges": [
+        "cccccccc.Edge(U cccccccc.Face(G aaaaaaaa.box.Edge7), aaaaaaaa.box.Face2)"
+      ],
+      "radius": 0.5,
+      "note": "An edge of Edge7's chamfer, FreeCAD's testPartDesignTNPChamfer",
+      "fingerprint": {"volume": 984.946214, "area": 579.200505, "bbox": [0, 0, 0, 10, 10, 10], "faces": 10, "edges": 24, "vertices": 16}
+    }
+  ]
+}

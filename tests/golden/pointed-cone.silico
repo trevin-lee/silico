@@ -1,0 +1,49 @@
+{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "features": [
+    {
+      "id": "kkkkkkkk",
+      "type": "cone",
+      "v": 1,
+      "name": "Cone",
+      "position": [0, 0, 0],
+      "radius1": 5,
+      "radius2": 0,
+      "height": 10,
+      "fingerprint": {"volume": 261.799388, "area": 254.160185, "bbox": [-5, -5, 0, 5, 5, 10], "faces": 2, "edges": 3, "vertices": 2}
+    },
+    {
+      "id": "pppppppp",
+      "type": "cylinder",
+      "v": 1,
+      "name": "Pin",
+      "position": [0, 0, -1],
+      "radius": 1,
+      "height": 12,
+      "fingerprint": {"volume": 37.699112, "area": 81.681409, "bbox": [-1, -1, -1, 1, 1, 11], "faces": 3, "edges": 3, "vertices": 2}
+    },
+    {
+      "id": "hhhhhhhh",
+      "type": "cut",
+      "v": 1,
+      "name": "Bore",
+      "base": "kkkkkkkk",
+      "tool": "pppppppp",
+      "fingerprint": {"volume": 234.572251, "area": 294.25926, "bbox": [-5, -5, 0, 5, 5, 8], "faces": 3, "edges": 5, "vertices": 3}
+    },
+    {
+      "id": "ffffffff",
+      "type": "fillet",
+      "v": 1,
+      "name": "Base rim",
+      "base": "hhhhhhhh",
+      "edges": [
+        "hhhhhhhh.Edge(G kkkkkkkk.cone.Face3, G pppppppp.cylinder.Face1)"
+      ],
+      "radius": 0.2,
+      "note": "A pointed cone keeps its base cap as Face3",
+      "fingerprint": {"volume": 234.515907, "area": 293.7377, "bbox": [-5, -5, 0, 5, 5, 8], "faces": 4, "edges": 7, "vertices": 4}
+    }
+  ]
+}
