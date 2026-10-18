@@ -71,7 +71,7 @@ fn two_elements_that_come_about_alike_are_numbered_and_marked() {
         },
     };
     history.validate(1).unwrap();
-    let input = ElementMap::primitive(id("aaaaaaaa"), BOX);
+    let input = ElementMap::by_number(id("aaaaaaaa"), BOX);
     let map = ElementMap::operation(id("rrrrrrrr"), OpCode::Fuse, &[&input], &history);
     assert_eq!(
         names(&map, ElementKind::Edge, 2),
@@ -134,7 +134,7 @@ fn one_input(
 }
 
 fn cut_of_box(history: &History) -> ElementMap {
-    let input = ElementMap::primitive(id("aaaaaaaa"), BOX);
+    let input = ElementMap::by_number(id("aaaaaaaa"), BOX);
     ElementMap::operation(id("rrrrrrrr"), OpCode::Cut, &[&input], history)
 }
 
@@ -303,7 +303,7 @@ fn a_face_kept_and_modified_too_is_a_duplicate_and_both_are_marked() {
         },
     };
     history.validate(1).unwrap();
-    let input = ElementMap::primitive(id("aaaaaaaa"), BOX);
+    let input = ElementMap::by_number(id("aaaaaaaa"), BOX);
     let map = ElementMap::operation(id("rrrrrrrr"), OpCode::Cut, &[&input], &history);
     assert_eq!(
         names(&map, ElementKind::Face, 2),
@@ -317,11 +317,12 @@ fn a_face_kept_and_modified_too_is_a_duplicate_and_both_are_marked() {
 }
 
 #[test]
-fn an_element_named_from_above_takes_the_first_named_by_freecads_order() {
+fn an_element_named_from_above_is_named_by_every_named_element_it_bounds() {
     // One input face (Face1) modified into the result's Face1; the result's Face2 generated
-    // from the input's Edge1. Edge3 bounds both faces, unnamed: named from the face whose
-    // name sorts first by FreeCAD's comparator, `Edge1;:G;FLT` before `Face1;:M;FLT`, as
-    // the 1st unnamed edge of it. Edge1 and Edge2 are each in one face only.
+    // from the input's Edge1. The edges are unnamed: each is named from every named face it
+    // bounds (Trevin's, 2026-10-17, departing from FreeCAD's first face only), those in
+    // FreeCAD's order, `Edge1;:G;FLT` before `Face1;:M;FLT`. Edge1 is in Face1 only, Edge2
+    // in Face2 only, Edge3 in both: each the only edge of its set, so none has a place.
     let reported = |kind, index| Reported {
         element: element(kind, index),
         position: 1,
@@ -352,7 +353,7 @@ fn an_element_named_from_above_takes_the_first_named_by_freecads_order() {
         },
     };
     history.validate(1).unwrap();
-    let input = ElementMap::primitive(id("aaaaaaaa"), BOX);
+    let input = ElementMap::by_number(id("aaaaaaaa"), BOX);
     let map = ElementMap::operation(id("ffffffff"), OpCode::Fillet, &[&input], &history);
     assert_eq!(
         names(&map, ElementKind::Face, 2),
@@ -367,10 +368,9 @@ fn an_element_named_from_above_takes_the_first_named_by_freecads_order() {
     assert_eq!(
         names(&map, ElementKind::Edge, 3),
         [
-            // Face1's 1st unnamed edge, Face2's 2nd (Edge3 its 1st, taken by its order).
             format!("ffffffff.Edge(U {modified})"),
-            format!("ffffffff.Edge(U2 {generated})"),
             format!("ffffffff.Edge(U {generated})"),
+            format!("ffffffff.Edge(U {generated}, {modified})"),
         ]
     );
 }
@@ -394,7 +394,7 @@ fn an_element_with_no_name_from_history_or_neighbours_is_named_by_its_number() {
             edge_vertices: vec![],
         },
     };
-    let input = ElementMap::primitive(id("aaaaaaaa"), BOX);
+    let input = ElementMap::by_number(id("aaaaaaaa"), BOX);
     let map = ElementMap::operation(id("rrrrrrrr"), OpCode::Cut, &[&input], &history);
     assert_eq!(names(&map, ElementKind::Face, 1), ["rrrrrrrr.Face1"]);
 }
@@ -410,12 +410,12 @@ fn each_built_feature_has_its_solids_names_from_its_inputs() {
             .name(element(ElementKind::Face, 6))
             .unwrap()
             .to_string(),
-        "k7f2qx3m.Face6"
+        "k7f2qx3m.box.Face6"
     );
     let pin = model.element_map(&id("a91cw0de")).unwrap();
     assert_eq!(
         pin.name(element(ElementKind::Edge, 3)).unwrap().to_string(),
-        "a91cw0de.Edge3"
+        "a91cw0de.cylinder.Edge3"
     );
     // The fake's cut keeps both solids whole, the pin's elements after the block's: so each
     // keeps its name (N2), and the map has the block's 6 faces, 12 edges, 8 vertices, then
@@ -427,11 +427,11 @@ fn each_built_feature_has_its_solids_names_from_its_inputs() {
     );
     assert_eq!(hole.iter().count(), 26 + 8);
     for (kind, index, name) in [
-        (ElementKind::Face, 1, "k7f2qx3m.Face1"),
-        (ElementKind::Face, 7, "a91cw0de.Face1"),
-        (ElementKind::Edge, 12, "k7f2qx3m.Edge12"),
-        (ElementKind::Edge, 13, "a91cw0de.Edge1"),
-        (ElementKind::Vertex, 10, "a91cw0de.Vertex2"),
+        (ElementKind::Face, 1, "k7f2qx3m.box.Face1"),
+        (ElementKind::Face, 7, "a91cw0de.cylinder.Face1"),
+        (ElementKind::Edge, 12, "k7f2qx3m.box.Edge12"),
+        (ElementKind::Edge, 13, "a91cw0de.cylinder.Edge1"),
+        (ElementKind::Vertex, 10, "a91cw0de.cylinder.Vertex2"),
     ] {
         let named = hole.name(element(kind, index)).unwrap();
         assert_eq!(named.to_string(), name);
@@ -453,7 +453,7 @@ fn renaming_a_feature_renames_its_elements_without_asking_the_kernel() {
         hole.name(element(ElementKind::Face, 7))
             .unwrap()
             .to_string(),
-        "pqrs2345.Face1"
+        "pqrs2345.cylinder.Face1"
     );
 }
 
@@ -475,10 +475,11 @@ fn a_feature_that_doesnt_build_has_no_names() {
 fn a_primitives_map_names_each_of_its_elements_and_no_others() {
     // A box: its 6 faces, 12 edges, and 8 vertices, each by its number, and nothing past
     // them (the review found a primitive's map answering for any number).
-    let map = ElementMap::primitive(id("aaaaaaaa"), BOX);
+    let map = ElementMap::by_number(id("aaaaaaaa"), BOX);
     assert_eq!(map.iter().count(), 26);
     let vertex = |index| Name::Element {
         feature: id("aaaaaaaa"),
+        primitive: None,
         element: element(ElementKind::Vertex, index),
     };
     assert_eq!(
@@ -575,7 +576,7 @@ fn a_name_lists_at_most_five_sources() {
         },
     };
     history.validate(1).unwrap();
-    let input = ElementMap::primitive(id("aaaaaaaa"), BOX);
+    let input = ElementMap::by_number(id("aaaaaaaa"), BOX);
     let map = ElementMap::operation(id("rrrrrrrr"), OpCode::Fuse, &[&input], &history);
     assert_eq!(
         map.name(element(ElementKind::Face, 1)).unwrap().to_string(),
@@ -607,7 +608,7 @@ fn a_face_named_from_below_lists_at_most_five_edges() {
         },
     };
     history.validate(1).unwrap();
-    let input = ElementMap::primitive(id("aaaaaaaa"), BOX);
+    let input = ElementMap::by_number(id("aaaaaaaa"), BOX);
     let map = ElementMap::operation(id("rrrrrrrr"), OpCode::Fuse, &[&input], &history);
     assert_eq!(
         map.name(element(ElementKind::Face, 1)).unwrap().to_string(),
@@ -640,7 +641,7 @@ fn a_name_derived_from_an_ambiguous_name_is_ambiguous() {
         ends: Default::default(),
         topology: topology.clone(),
     };
-    let input = ElementMap::primitive(id("aaaaaaaa"), BOX);
+    let input = ElementMap::by_number(id("aaaaaaaa"), BOX);
     let first = ElementMap::operation(id("pppppppp"), OpCode::Fuse, &[&input], &first_history);
     let x = first.name(element(ElementKind::Edge, 1)).unwrap();
     assert!(first.is_unstable(&x));
@@ -935,4 +936,131 @@ fn a_sketch_in_the_timeline_has_no_map_and_changes_no_other_features_names() {
     ] {
         assert_eq!(map.name(element(kind, index)).unwrap().to_string(), name);
     }
+}
+
+fn edges_or_vertices_bounding_the_same_named_elements_are_ranked_by_freecads_count() {
+    // Found by the tests review: no map gave an element from above a place. Face1 modified
+    // from the cube's Face1; Face2 generated from its Edge1. Edge1 and Edge2 bound both
+    // faces, Edge3 Face2 alone; Vertex1 and Vertex2 each end both Edge1 and Edge2. Named
+    // from the same faces, Edge1 and Edge2 are ranked by their count in the first face's
+    // edges, Face2's (it sorts first, `Edge1;:G;FLT`), where Edge2 comes first: 2/2 and
+    // 1/2. Their vertices likewise, by the first edge's vertices. Each stable, so each a
+    // reference of its own.
+    let history = History {
+        inputs: vec![InputHistory {
+            faces: vec![ElementFate {
+                modified: vec![reported(ElementKind::Face, 1, 1)],
+                ..ElementFate::default()
+            }],
+            edges: vec![ElementFate {
+                generated: vec![reported(ElementKind::Face, 2, 1)],
+                ..ElementFate::default()
+            }],
+            vertices: vec![],
+        }],
+        result: ElementCounts {
+            faces: 2,
+            edges: 3,
+            vertices: 2,
+            solids: 1,
+        },
+        ends: Default::default(),
+        topology: Topology {
+            face_edges: vec![vec![1, 2], vec![2, 1, 3]],
+            outer_edges: vec![vec![1, 2], vec![1, 2, 3]],
+            edge_vertices: vec![vec![1, 2], vec![1, 2], vec![]],
+        },
+    };
+    history.validate(1).unwrap();
+    let cube = ElementMap::primitive(
+        id("aaaaaaaa"),
+        &Primitive::Box {
+            dx: 1.0,
+            dy: 1.0,
+            dz: 1.0,
+        },
+    );
+    let map = ElementMap::operation(id("ffffffff"), OpCode::Fillet, &[&cube], &history);
+    let (g, m) = ("ffffffff.Face(G aaaaaaaa.box.Edge1)", "aaaaaaaa.box.Face1");
+    assert_eq!(
+        names(&map, ElementKind::Edge, 3),
+        [
+            format!("ffffffff.Edge(U2/2 {g}, {m})"),
+            format!("ffffffff.Edge(U1/2 {g}, {m})"),
+            format!("ffffffff.Edge(U {g})"),
+        ]
+    );
+    let vertices = names(&map, ElementKind::Vertex, 2);
+    for (vertex, rank) in vertices.iter().zip(["1/2", "2/2"]) {
+        assert!(
+            vertex.starts_with(&format!("ffffffff.Vertex(U{rank} ffffffff.Edge(U")),
+            "{vertices:?}"
+        );
+        // From both edges.
+        assert_eq!(vertex.matches("ffffffff.Edge(U").count(), 2, "{vertex}");
+    }
+    for kind in [ElementKind::Edge, ElementKind::Vertex] {
+        for (element, names) in map.iter().filter(|(e, _)| e.kind == kind) {
+            assert!(!map.is_unstable(&names[0]), "{element} {}", names[0]);
+        }
+    }
+}
+
+#[test]
+fn a_vertex_ending_six_named_edges_is_named_by_the_first_five() {
+    // Found by the tests review: the bound of five elements above was untested. Six edges,
+    // each generated from one of the cube's faces, all ending Vertex1: its name lists five
+    // of them, the first five in FreeCAD's order (Face1's to Face5's), and reads back.
+    let history = History {
+        inputs: vec![InputHistory {
+            faces: (1..=6)
+                .map(|e| ElementFate {
+                    generated: vec![reported(ElementKind::Edge, e, 1)],
+                    ..ElementFate::default()
+                })
+                .collect(),
+            edges: vec![],
+            vertices: vec![],
+        }],
+        result: ElementCounts {
+            faces: 0,
+            edges: 6,
+            vertices: 1,
+            solids: 1,
+        },
+        ends: Default::default(),
+        topology: Topology {
+            face_edges: vec![],
+            outer_edges: vec![],
+            edge_vertices: vec![vec![1]; 6],
+        },
+    };
+    history.validate(1).unwrap();
+    let cube = ElementMap::primitive(
+        id("aaaaaaaa"),
+        &Primitive::Box {
+            dx: 1.0,
+            dy: 1.0,
+            dz: 1.0,
+        },
+    );
+    let map = ElementMap::operation(id("ffffffff"), OpCode::Fillet, &[&cube], &history);
+    let edges: Vec<String> = (1..=5)
+        .map(|f| format!("ffffffff.Edge(G aaaaaaaa.box.Face{f})"))
+        .collect();
+    let vertex = map.name(element(ElementKind::Vertex, 1)).unwrap();
+    assert_eq!(
+        vertex.to_string(),
+        format!("ffffffff.Vertex(U {})", edges.join(", "))
+    );
+    let maker = |f: &silico_core::document::FeatureId| {
+        Some(match f.as_str() {
+            "aaaaaaaa" => {
+                silico_core::naming::Maker::Itself(silico_core::naming::PrimitiveKind::Box)
+            }
+            _ => silico_core::naming::Maker::By(OpCode::Fillet),
+        })
+    };
+    let read = Name::parse(&vertex.to_string(), &maker).unwrap();
+    assert_eq!(map.element(&read), Some(element(ElementKind::Vertex, 1)));
 }

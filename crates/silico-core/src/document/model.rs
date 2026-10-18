@@ -122,6 +122,55 @@ impl JsonSchema for FeatureId {
 /// A point, `[x, y, z]`, in millimetres.
 pub type Position = [Length; 3];
 
+/// An element of a feature's solid, by its name in Silico's form as written
+/// (docs/ports/naming.md, `m3tq8v0z.Edge(G k7f2qx3m.box.Face6, G a91cw0de.cylinder.Face1)`): never an
+/// element's number, which an upstream edit can make another's. The gate reads it back
+/// (`naming::Name::parse`), knowing what each feature before it is; recompute finds the
+/// element it names, or fails the feature saying so.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ElementName(String);
+
+impl ElementName {
+    /// The name `text` writes, if it's not empty (whether it's a name, and whose, is the
+    /// gate's to say).
+    pub fn new(text: &str) -> Option<Self> {
+        (!text.is_empty()).then(|| ElementName(text.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ElementName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl JsonSchema for ElementName {
+    fn schema_name() -> Cow<'static, str> {
+        "ElementName".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "description": "An element of an earlier feature's solid, by its name in Silico's form (feature.Kind(...)), never by its number.",
+            "type": "string",
+            "minLength": 1
+        })
+    }
+}
+
+/// How far a chamfer cuts each edge back: along both its faces alike. (The uneven forms,
+/// measured from one of each edge's faces, are left for later: which face is the document's
+/// to name, not OCCT's order to pick.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ChamferSize {
+    pub distance: Length,
+}
+
 /// One feature of the timeline: what it is, its version, and its name.
 #[derive(Debug, Clone, PartialEq, Eq, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -246,6 +295,20 @@ pub enum Operation {
     Common { base: FeatureId, tool: FeatureId },
     /// A constrained 2D sketch (docs/design/m3.2-sketch-format.md).
     Sketch(Sketch),
+    /// `base`'s solid with `edges` rounded to `radius`.
+    Fillet {
+        base: FeatureId,
+        #[schemars(length(min = 1))]
+        edges: Vec<ElementName>,
+        radius: Length,
+    },
+    /// `base`'s solid with `edges` cut back by `size`.
+    Chamfer {
+        base: FeatureId,
+        #[schemars(length(min = 1))]
+        edges: Vec<ElementName>,
+        size: ChamferSize,
+    },
 }
 
 /// What a feature makes its solid with ([`Operation::made`]).
@@ -257,12 +320,17 @@ pub enum Made {
     Boolean(BooleanOp),
     /// No solid: a sketch (solved in M3.3).
     Sketch,
+    /// Its `base` feature's solid with edges rounded, to the radius.
+    Fillet { radius: f64 },
+    /// Its `base` feature's solid with edges cut back, by the distance.
+    Chamfer { distance: f64 },
 }
 
 impl Operation {
-    /// What the feature makes its solid with: a primitive from nothing, or a boolean of two
-    /// earlier solids; or, for a sketch, no solid. Every kind of feature is one, so a new
-    /// kind has to say which (and so how its elements are named).
+    /// What the feature makes its solid with: a primitive from nothing, a boolean of two
+    /// earlier solids, or a fillet or chamfer of one; or, for a sketch, no solid. Every
+    /// kind of feature is one, so a new kind has to say which (and so how its elements are
+    /// named).
     pub fn made(&self) -> Made {
         match *self {
             Operation::Box {
@@ -302,6 +370,12 @@ impl Operation {
             Operation::Cut { .. } => Made::Boolean(BooleanOp::Cut),
             Operation::Common { .. } => Made::Boolean(BooleanOp::Common),
             Operation::Sketch(_) => Made::Sketch,
+            Operation::Fillet { radius, .. } => Made::Fillet {
+                radius: radius.mm(),
+            },
+            Operation::Chamfer { size, .. } => Made::Chamfer {
+                distance: size.distance.mm(),
+            },
         }
     }
 
@@ -310,7 +384,7 @@ impl Operation {
     pub fn primitive(&self) -> Option<Primitive> {
         match self.made() {
             Made::Primitive(primitive) => Some(primitive),
-            Made::Boolean(_) | Made::Sketch => None,
+            Made::Boolean(_) | Made::Fillet { .. } | Made::Chamfer { .. } | Made::Sketch => None,
         }
     }
 
@@ -325,7 +399,9 @@ impl Operation {
             Operation::Fuse { .. }
             | Operation::Cut { .. }
             | Operation::Common { .. }
-            | Operation::Sketch(_) => None,
+            | Operation::Sketch(_)
+            | Operation::Fillet { .. }
+            | Operation::Chamfer { .. } => None,
         }
     }
 
@@ -351,22 +427,44 @@ impl Operation {
             | Operation::Fuse { .. }
             | Operation::Cut { .. }
             | Operation::Common { .. }
-            | Operation::Sketch(_) => parameter,
+            | Operation::Sketch(_)
+            | Operation::Fillet { .. }
+            | Operation::Chamfer { .. } => parameter,
         }
     }
 
-    /// The features this one consumes, `base` then `tool`, by field; none for a primitive.
-    pub fn inputs(&self) -> Option<[(&'static str, &FeatureId); 2]> {
+    /// The features this one consumes, by field: a boolean's `base` then `tool`, a fillet's
+    /// or chamfer's `base`; none for a primitive.
+    pub fn inputs(&self) -> Vec<(&'static str, &FeatureId)> {
         match self {
             Operation::Fuse { base, tool }
             | Operation::Cut { base, tool }
-            | Operation::Common { base, tool } => Some([("base", base), ("tool", tool)]),
+            | Operation::Common { base, tool } => vec![("base", base), ("tool", tool)],
+            Operation::Fillet { base, .. } | Operation::Chamfer { base, .. } => {
+                vec![("base", base)]
+            }
             Operation::Box { .. }
             | Operation::Cylinder { .. }
             | Operation::Sphere { .. }
             | Operation::Cone { .. }
             | Operation::Torus { .. }
-            | Operation::Sketch(_) => None,
+            | Operation::Sketch(_) => Vec::new(),
+        }
+    }
+
+    /// The elements a fillet or chamfer names, by name; none for another feature.
+    pub fn edges(&self) -> &[ElementName] {
+        match self {
+            Operation::Fillet { edges, .. } | Operation::Chamfer { edges, .. } => edges,
+            Operation::Box { .. }
+            | Operation::Cylinder { .. }
+            | Operation::Sphere { .. }
+            | Operation::Cone { .. }
+            | Operation::Torus { .. }
+            | Operation::Fuse { .. }
+            | Operation::Cut { .. }
+            | Operation::Common { .. }
+            | Operation::Sketch(_) => &[],
         }
     }
 
@@ -388,11 +486,14 @@ impl Operation {
             Operation::Cut { .. } => "cut",
             Operation::Common { .. } => "common",
             Operation::Sketch(_) => "sketch",
+            Operation::Fillet { .. } => "fillet",
+            Operation::Chamfer { .. } => "chamfer",
         }
     }
 }
 
 /// Every feature type, as the file writes it.
-pub const FEATURE_TYPES: [&str; 9] = [
-    "box", "cylinder", "sphere", "cone", "torus", "fuse", "cut", "common", "sketch",
+pub const FEATURE_TYPES: [&str; 11] = [
+    "box", "cylinder", "sphere", "cone", "torus", "fuse", "cut", "common", "sketch", "fillet",
+    "chamfer",
 ];

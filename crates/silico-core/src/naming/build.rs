@@ -28,7 +28,7 @@ use crate::document::FeatureId;
 use crate::kernel::{ElementKind, ElementRef, History};
 
 /// The most sources a name lists, the first and four more, as FreeCAD's do.
-const MOST_SOURCES: usize = 5;
+pub(crate) const MOST_SOURCES: usize = 5;
 
 /// The deepest a name may nest, and the most names it may be made of, counted as written
 /// out (a name used twice counts twice). Every walk over a name (writing it, comparing it)
@@ -38,8 +38,8 @@ const MOST_SOURCES: usize = 5;
 /// review found both). FreeCAD bounds the same growth with its string table, which Silico
 /// doesn't have (N1). An element whose name would be past either is named by its number,
 /// and that name is unstable.
-const MOST_DEPTH: u32 = 256;
-const MOST_WEIGHT: u64 = 4096;
+pub(crate) const MOST_DEPTH: u32 = 256;
+pub(crate) const MOST_WEIGHT: u64 = 4096;
 
 /// The kinds of element named, from the lowest: FreeCAD walks sources in this order.
 const KINDS: [ElementKind; 3] = [ElementKind::Vertex, ElementKind::Edge, ElementKind::Face];
@@ -139,6 +139,7 @@ impl Builder {
     fn numbered(&mut self, feature: &FeatureId, element: ElementRef) -> Arc<Name> {
         let name = Arc::new(Name::Element {
             feature: feature.clone(),
+            primitive: None,
             element,
         });
         self.numbered.insert(Arc::clone(&name));
@@ -374,9 +375,11 @@ impl Builder {
         }
     }
 
-    /// Step 3: each unnamed edge from a named face it bounds, then each unnamed vertex from
-    /// a named edge, as the `n`th unnamed one in the face's (edge's) own order, from the
-    /// face (edge) whose name sorts first.
+    /// Step 3: each unnamed edge by every named face it bounds, then each unnamed vertex by
+    /// every named edge it ends (Trevin's, 2026-10-17): the first by FreeCAD's comparator,
+    /// then up to four more. Where elements of a kind share their elements above, each is
+    /// ranked among them by FreeCAD's count, its place among the first's unnamed elements
+    /// in the first's own order, which is also kept, as FreeCAD's `;:U`, for FreeCAD's form.
     fn named_from_above(&mut self, history: &History) {
         let t = &history.topology;
         for (upper_kind, lower_kind, lists) in [
@@ -402,20 +405,32 @@ impl Builder {
                     nth = nth.saturating_add(1);
                 }
             }
+            let mut named: Vec<(ElementRef, usize, Name)> = Vec::new();
             for (lower, mut uppers) in candidates {
                 uppers.sort_by(|a, b| a.0.cmp(&b.0));
-                let Some((upper, nth)) = uppers.into_iter().next() else {
+                uppers.dedup_by(|a, b| a.0.name == b.0.name);
+                let mut uppers = uppers.into_iter().take(MOST_SOURCES);
+                let Some((first, nth)) = uppers.next() else {
                     continue;
                 };
-                let name = Name::Upper {
-                    feature: self.map.feature.clone(),
-                    operation: self.operation,
-                    kind: lower_kind,
-                    upper: upper.name,
-                    nth,
-                };
+                named.push((
+                    lower,
+                    first.input,
+                    Name::Upper {
+                        feature: self.map.feature.clone(),
+                        operation: self.operation,
+                        kind: lower_kind,
+                        upper: first.name,
+                        more: uppers.map(|(c, _)| c.name).collect(),
+                        place: None,
+                        nth: Raw(nth),
+                    },
+                ));
+            }
+            upper_places(&mut named);
+            for (lower, input, name) in named {
                 let name = self.bounded(lower, name);
-                self.inputs.entry(lower).or_insert(upper.input);
+                self.inputs.entry(lower).or_insert(input);
                 self.set(lower, name);
             }
         }
@@ -537,23 +552,14 @@ impl PartialOrd for Candidate {
 /// positions, but only where they need telling apart: OCCT reorders its lists for reasons of
 /// its own, and a name that doesn't hold a position doesn't change with them.
 fn places(named: &mut [(ElementRef, usize, Name)]) {
-    let mut groups: BTreeMap<Name, Vec<usize>> = BTreeMap::new();
-    for (i, (_, _, name)) in named.iter().enumerate() {
-        if matches!(name, Name::Derived { .. }) {
-            groups.entry(name.clone()).or_default().push(i);
-        }
-    }
-    for members in groups.into_values().filter(|members| members.len() > 1) {
-        let size = NonZeroU32::new(u32::try_from(members.len()).unwrap_or(u32::MAX))
-            .unwrap_or(NonZeroU32::MIN);
+    for (members, size) in collisions(named, |name| matches!(name, Name::Derived { .. })) {
         let count = members
             .first()
             .and_then(|&i| named.get(i))
             .map_or(0, |(_, _, name)| sources(name).len());
         for s in 0..count {
-            // The members by their positions in this source's list (then element order), so
-            // the members before one are found by bisection.
-            let mut order: Vec<(NonZeroU32, ElementRef, usize)> = members
+            // The members by their positions in this source's list (then element order).
+            let order = members
                 .iter()
                 .filter_map(|&i| {
                     let (element, _, name) = named.get(i)?;
@@ -561,15 +567,7 @@ fn places(named: &mut [(ElementRef, usize, Name)]) {
                     Some((source.position.0, *element, i))
                 })
                 .collect();
-            order.sort();
-            let positions: Vec<NonZeroU32> = order.iter().map(|&(p, _, _)| p).collect();
-            for (position, _, i) in order {
-                // One more than the members before it in the list: members OCCT lists at
-                // one position (a history from a broken worker) share a rank, and so the
-                // name, and are told apart as duplicates, never by their numbers.
-                let before = positions.partition_point(|&p| p < position);
-                let rank = NonZeroU32::new(u32::try_from(before + 1).unwrap_or(u32::MAX))
-                    .unwrap_or(NonZeroU32::MIN);
+            for (i, rank) in ranked(order) {
                 if let Some((_, _, name)) = named.get_mut(i)
                     && let Some(source) = sources_mut(name).into_iter().nth(s)
                 {
@@ -578,6 +576,67 @@ fn places(named: &mut [(ElementRef, usize, Name)]) {
             }
         }
     }
+}
+
+/// Each name in `named` (elements named from above) that another shares, written the same
+/// but for its place, given its rank among them, by FreeCAD's count in its first element
+/// above, and how many there are.
+fn upper_places(named: &mut [(ElementRef, usize, Name)]) {
+    // Every name here is from above.
+    for (members, size) in collisions(named, |_| true) {
+        let order = members
+            .iter()
+            .filter_map(|&i| match named.get(i)? {
+                (element, _, Name::Upper { nth, .. }) => Some((nth.0, *element, i)),
+                _ => None,
+            })
+            .collect();
+        for (i, rank) in ranked(order) {
+            if let Some((_, _, Name::Upper { place, .. })) = named.get_mut(i) {
+                *place = Some(Place { rank, size });
+            }
+        }
+    }
+}
+
+/// The names in `named` that `which` takes and another shares: each group's members, by
+/// their index in `named`, and how many there are.
+fn collisions(
+    named: &[(ElementRef, usize, Name)],
+    which: impl Fn(&Name) -> bool,
+) -> Vec<(Vec<usize>, NonZeroU32)> {
+    let mut groups: BTreeMap<&Name, Vec<usize>> = BTreeMap::new();
+    for (i, (_, _, name)) in named.iter().enumerate() {
+        if which(name) {
+            groups.entry(name).or_default().push(i);
+        }
+    }
+    groups
+        .into_values()
+        .filter(|members| members.len() > 1)
+        .map(|members| {
+            let size = NonZeroU32::new(u32::try_from(members.len()).unwrap_or(u32::MAX))
+                .unwrap_or(NonZeroU32::MIN);
+            (members, size)
+        })
+        .collect()
+}
+
+/// Each member of a group, `(key, element, index)`, with its rank by its key: one more
+/// than the members before it. Members at one key (a history from a broken worker) share a
+/// rank, and so the name, and are told apart as duplicates, never by their numbers.
+fn ranked(mut order: Vec<(NonZeroU32, ElementRef, usize)>) -> Vec<(usize, NonZeroU32)> {
+    order.sort();
+    let keys: Vec<NonZeroU32> = order.iter().map(|&(key, _, _)| key).collect();
+    order
+        .into_iter()
+        .map(|(key, _, i)| {
+            let before = keys.partition_point(|&k| k < key);
+            let rank = NonZeroU32::new(u32::try_from(before + 1).unwrap_or(u32::MAX))
+                .unwrap_or(NonZeroU32::MIN);
+            (i, rank)
+        })
+        .collect()
 }
 
 /// A derived name's sources, the first first.

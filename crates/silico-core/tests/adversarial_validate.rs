@@ -164,7 +164,7 @@ fn each_primitive_maps_its_fields_to_the_kernels_parameters_by_hand() {
     for (operation, primitive) in cases {
         assert_eq!(operation.primitive(), Some(primitive), "{operation:?}");
         assert_eq!(operation.position(), Some(&p));
-        assert_eq!(operation.inputs(), None);
+        assert!(operation.inputs().is_empty());
     }
     for boolean in [
         Operation::Fuse {
@@ -180,7 +180,7 @@ fn each_primitive_maps_its_fields_to_the_kernels_parameters_by_hand() {
         assert_eq!(boolean.primitive(), None);
         assert_eq!(boolean.position(), None);
         let (a, b) = (id("aaaaaaaa"), id("bbbbbbbb"));
-        assert_eq!(boolean.inputs(), Some([("base", &a), ("tool", &b)]));
+        assert_eq!(boolean.inputs(), [("base", &a), ("tool", &b)]);
     }
 }
 

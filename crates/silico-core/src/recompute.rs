@@ -30,12 +30,12 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 
 use crate::cache::Cache;
-use crate::document::{Checked, Document, FeatureId, Fingerprint, Made};
+use crate::document::{Checked, Document, ElementName, FeatureId, Fingerprint, Made};
 use crate::kernel::{
     BooleanOp, BuiltData, Generation, History, Kernel, KernelRequest, Primitive, ShapeData,
     ShapeSummary,
 };
-use crate::naming::{ElementMap, OpCode};
+use crate::naming::{ElementMap, Maker, NAMING_SCHEME, OpCode};
 use crate::pool::Outcome;
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
@@ -107,6 +107,10 @@ pub enum FeatureOutcome {
     Built { key: Key, built: Arc<Built> },
     /// The kernel refused one of its steps: why, naming the feature.
     Failed(Error),
+    /// References it holds (a fillet's or chamfer's edges, by name) name nothing it can
+    /// use: each broken one's `reference_broken` error, in the order the feature holds them
+    /// (N6: every one, at once). Its step isn't run.
+    Broken(Vec<Error>),
     /// Not built, since it uses a feature that failed: that feature (the first failure
     /// along its base, then its tool).
     Blocked { on: FeatureId },
@@ -189,17 +193,17 @@ impl Model {
         &self.bodies
     }
 
-    /// Why each failed feature failed, in timeline order: one error per failure, each
-    /// naming its feature.
+    /// Why each failed feature failed, in timeline order, each error naming its feature:
+    /// one for a failure, and one for each broken reference of a feature whose references
+    /// broke.
     pub fn errors(&self) -> impl Iterator<Item = &Error> {
-        self.features
-            .iter()
-            .filter_map(|(_, outcome)| match outcome {
-                FeatureOutcome::Failed(error) => Some(error),
-                FeatureOutcome::Built { .. }
-                | FeatureOutcome::Blocked { .. }
-                | FeatureOutcome::Sketch => None,
-            })
+        self.features.iter().flat_map(|(_, outcome)| match outcome {
+            FeatureOutcome::Failed(error) => std::slice::from_ref(error),
+            FeatureOutcome::Broken(errors) => errors.as_slice(),
+            FeatureOutcome::Built { .. }
+            | FeatureOutcome::Blocked { .. }
+            | FeatureOutcome::Sketch => &[],
+        })
     }
 
     /// The names of the elements of the feature `id`'s solid, if it built. The recompute
@@ -257,31 +261,17 @@ impl Model {
             return Some(Arc::clone(map));
         }
         let (id, outcome) = self.features.get(j)?;
-        let map = match naming.how {
-            Naming::Primitive(primitive) => {
-                ElementMap::primitive(id.clone(), crate::kernel::primitive_counts(&primitive))
-            }
-            Naming::Operation(operation) => {
-                let FeatureOutcome::Built { built, .. } = outcome else {
-                    return None;
-                };
-                let history = built.history.as_ref()?;
-                let inputs: Option<Vec<&ElementMap>> = naming
-                    .uses
-                    .iter()
-                    .map(|&u| self.maps.get(u)?.get()?.as_deref())
-                    .collect();
-                ElementMap::operation(id.clone(), operation, &inputs?, history)
-            }
+        let history = match outcome {
+            FeatureOutcome::Built { built, .. } => built.history.as_ref(),
+            _ => None,
         };
-        let map = Arc::new(map);
-        // The first named is kept, so a map named in two threads at once is one map.
-        let known = Arc::clone(
-            lock(&self.known)
-                .entry(naming.key)
-                .or_insert_with(|| Arc::clone(&map)),
-        );
-        Some(known)
+        let inputs: Option<Vec<&ElementMap>> = naming
+            .uses
+            .iter()
+            .map(|&u| self.maps.get(u)?.get()?.as_deref())
+            .collect();
+        let map = named_as(id, naming.how, &inputs?, history)?;
+        Some(kept_in(&self.known, naming.key, map))
     }
 
     /// The document it was built from.
@@ -294,9 +284,10 @@ impl Model {
     pub fn fingerprint(&self, id: &FeatureId) -> Option<Fingerprint> {
         match self.outcome(id)? {
             FeatureOutcome::Built { built, .. } => built.summary().and_then(Fingerprint::of),
-            FeatureOutcome::Failed(_) | FeatureOutcome::Blocked { .. } | FeatureOutcome::Sketch => {
-                None
-            }
+            FeatureOutcome::Failed(_)
+            | FeatureOutcome::Broken(_)
+            | FeatureOutcome::Blocked { .. }
+            | FeatureOutcome::Sketch => None,
         }
     }
 
@@ -621,8 +612,46 @@ impl<K: Kernel + 'static> Drop for Recompute<K> {
 #[derive(Debug, Clone, Copy)]
 enum Step {
     Make(Primitive),
-    Translate { input: Key, offset: [f64; 3] },
-    Boolean { op: BooleanOp, base: Key, tool: Key },
+    Translate {
+        input: Key,
+        offset: [f64; 3],
+    },
+    Boolean {
+        op: BooleanOp,
+        base: Key,
+        tool: Key,
+    },
+    /// A fillet or chamfer of `base`'s solid: of the edges its feature names, which the
+    /// plan holds (`Plan::dresses`), found by name in the base feature's element map when
+    /// the step runs. `names` is the digest of what decides which edges those are: the
+    /// base feature's naming key and the names as written.
+    Dress {
+        dressing: Dressing,
+        base: Key,
+        names: [u8; 32],
+    },
+}
+
+/// What a fillet or chamfer does to each edge.
+#[derive(Debug, Clone, Copy)]
+enum Dressing {
+    Fillet { radius: f64 },
+    Chamfer { distance: f64 },
+}
+
+/// A fillet's or chamfer's edges, as its feature names them, and the feature whose solid's
+/// elements they name.
+#[derive(Debug, Clone)]
+struct Dress {
+    /// The fillet's or chamfer's own feature, by index.
+    feature: usize,
+    /// Its base feature, by index.
+    base: usize,
+    edges: Vec<ElementName>,
+    /// The solids of its base and every feature its base is made from, by step: the step
+    /// waits for all of them, since naming the base's elements reads them all (a cache can
+    /// hold the base's solid without those it was made from).
+    lineage: Vec<Key>,
 }
 
 impl Step {
@@ -643,6 +672,18 @@ impl Step {
             }
             Step::Translate { input, offset } => format!("translate {input}{}", bits(&offset)),
             Step::Boolean { op, base, tool } => format!("{} {base} {tool}", op.word()),
+            Step::Dress {
+                dressing,
+                base,
+                names,
+            } => match dressing {
+                Dressing::Fillet { radius } => {
+                    format!("fillet {base} {}{}", crate::hex(&names), bits(&[radius]))
+                }
+                Dressing::Chamfer { distance } => {
+                    format!("chamfer {base} {}{}", crate::hex(&names), bits(&[distance]))
+                }
+            },
         };
         let mut hash = Sha256::new();
         hash.update(b"silico recompute 1\n");
@@ -655,6 +696,7 @@ impl Step {
             Step::Make(_) => Vec::new(),
             Step::Translate { input, .. } => vec![input],
             Step::Boolean { base, tool, .. } => vec![base, tool],
+            Step::Dress { base, .. } => vec![base],
         }
     }
 }
@@ -671,6 +713,10 @@ struct Plan {
     features: Vec<Planned>,
     /// The steps that make features' solids, which are measured once they're made.
     results: BTreeSet<Key>,
+    /// Each fillet's or chamfer's step, by key: the edges it names, and of what.
+    dresses: BTreeMap<Key, Dress>,
+    /// How each feature makes its elements, for reading names back.
+    makers: BTreeMap<FeatureId, Maker>,
 }
 
 struct Planned {
@@ -681,6 +727,10 @@ struct Planned {
     uses: Vec<usize>,
     /// How its solid's elements are named; `None` for a sketch, which makes no solid.
     naming: Option<Naming>,
+    /// Its naming key, if its steps and those of every feature it's made from could be
+    /// planned: of its solid's step, its ID, how it names, and its inputs' naming keys,
+    /// so two features whose maps are alike have one.
+    naming_key: Option<NamingKey>,
 }
 
 /// How a feature's solid's elements are named: a primitive's by their numbers (a move
@@ -711,6 +761,11 @@ impl Plan {
             first_feature: BTreeMap::new(),
             features: Vec::with_capacity(features.len()),
             results: BTreeSet::new(),
+            dresses: BTreeMap::new(),
+            makers: features
+                .iter()
+                .map(|f| (f.id.clone(), Maker::of(&f.operation)))
+                .collect(),
         };
         for feature in features {
             let mut own = Vec::new();
@@ -737,7 +792,7 @@ impl Plan {
                 Made::Boolean(op) => {
                     // The gate has checked that both are earlier features, so both are
                     // planned.
-                    if let Some([(_, base), (_, tool)]) = feature.operation.inputs() {
+                    if let [(_, base), (_, tool)] = feature.operation.inputs().as_slice() {
                         let input = |id: &FeatureId| index.get(id).copied();
                         if let (Some(b), Some(t)) = (input(base), input(tool)) {
                             uses = vec![b, t];
@@ -751,18 +806,97 @@ impl Plan {
                 }
                 // A sketch makes no solid: nothing to build or name.
                 Made::Sketch => None,
+                Made::Fillet { radius } => {
+                    let dressing = Dressing::Fillet { radius };
+                    (own, uses) = plan.dress(&index, feature, dressing);
+                    Some(Naming::Operation(OpCode::Fillet))
+                }
+                Made::Chamfer { distance } => {
+                    let dressing = Dressing::Chamfer { distance };
+                    (own, uses) = plan.dress(&index, feature, dressing);
+                    Some(Naming::Operation(OpCode::Chamfer))
+                }
             };
             if let Some(result) = own.last() {
                 plan.results.insert(*result);
             }
+            let inputs: Option<Vec<NamingKey>> = uses
+                .iter()
+                .map(|&i| plan.features.get(i).and_then(|p| p.naming_key))
+                .collect();
+            let naming_key = own
+                .last()
+                .zip(inputs)
+                .zip(naming)
+                .map(|((key, inputs), naming)| naming_key(*key, &feature.id, naming, &inputs));
             plan.features.push(Planned {
                 id: feature.id.clone(),
                 steps: own,
                 uses,
                 naming,
+                naming_key,
             });
         }
         plan
+    }
+
+    /// The step of a fillet or chamfer `feature` (the next feature planned), of its base:
+    /// its steps, and the features it uses.
+    fn dress(
+        &mut self,
+        index: &BTreeMap<&FeatureId, usize>,
+        feature: &crate::document::Feature,
+        dressing: Dressing,
+    ) -> (Vec<Key>, Vec<usize>) {
+        // The gate has checked that the base is an earlier feature, so it's planned.
+        let Some(b) = feature
+            .operation
+            .inputs()
+            .first()
+            .and_then(|(_, base)| index.get(*base).copied())
+        else {
+            return (Vec::new(), Vec::new());
+        };
+        let planned = self.features.get(b);
+        let (Some(base), Some(naming)) = (
+            planned.and_then(Planned::key),
+            planned.and_then(|p| p.naming_key),
+        ) else {
+            return (Vec::new(), vec![b]);
+        };
+        let edges = feature.operation.edges().to_vec();
+        let mut digest = Sha256::new();
+        digest.update(naming.0);
+        for edge in &edges {
+            digest.update((edge.as_str().len() as u64).to_be_bytes());
+            digest.update(edge.as_str().as_bytes());
+        }
+        let step = Step::Dress {
+            dressing,
+            base,
+            names: digest.finalize().into(),
+        };
+        let key = self.add(step, &feature.id);
+        let mut lineage = BTreeSet::new();
+        let mut stack = vec![b];
+        while let Some(i) = stack.pop() {
+            if let Some(planned) = self.features.get(i)
+                && let Some(solid) = planned.key()
+                && lineage.insert(solid)
+            {
+                stack.extend(planned.uses.iter().copied());
+            }
+        }
+        self.dresses.insert(
+            key,
+            Dress {
+                feature: self.features.len(),
+                base: b,
+                edges,
+                lineage: lineage.into_iter().collect(),
+            },
+        );
+        (vec![key], vec![b])
     }
 
     fn add(&mut self, step: Step, feature: &FeatureId) -> Key {
@@ -772,6 +906,87 @@ impl Plan {
             self.first_feature.insert(key, feature.clone());
         }
         key
+    }
+
+    /// The built solids of feature `base` and every feature it's made from, by index, from
+    /// `done`.
+    fn lineage(
+        &self,
+        base: usize,
+        done: &BTreeMap<Key, StepResult>,
+    ) -> BTreeMap<usize, Arc<Built>> {
+        let mut lineage = BTreeMap::new();
+        let mut stack = vec![base];
+        while let Some(i) = stack.pop() {
+            if lineage.contains_key(&i) {
+                continue;
+            }
+            let Some(planned) = self.features.get(i) else {
+                continue;
+            };
+            if let Some(Some(Ok(built))) = planned.key().map(|key| done.get(&key)) {
+                lineage.insert(i, Arc::clone(built));
+                stack.extend(planned.uses.iter().copied());
+            }
+        }
+        lineage
+    }
+
+    /// Feature `j`'s element map, its lineage's solids in `lineage`: from `known` by its
+    /// naming key, or named from its history and its inputs' maps (each named first, in
+    /// timeline order, and kept in `known`), as a published model names them.
+    fn map_of(
+        &self,
+        j: usize,
+        lineage: &BTreeMap<usize, Arc<Built>>,
+        known: &NamedMaps,
+    ) -> Option<Arc<ElementMap>> {
+        let mut named: BTreeMap<usize, Arc<ElementMap>> = BTreeMap::new();
+        // Ascending, so each feature comes after those it's made from.
+        for (&i, built) in lineage.range(..=j) {
+            let planned = self.features.get(i)?;
+            let key = planned.naming_key?;
+            if let Some(map) = lock(known).get(&key) {
+                named.insert(i, Arc::clone(map));
+                continue;
+            }
+            let inputs: Option<Vec<&ElementMap>> = planned
+                .uses
+                .iter()
+                .map(|u| named.get(u).map(Arc::as_ref))
+                .collect();
+            let map = named_as(
+                &planned.id,
+                planned.naming?,
+                &inputs?,
+                built.history.as_ref(),
+            )?;
+            let map = kept_in(known, key, map);
+            named.insert(i, map);
+        }
+        named.remove(&j)
+    }
+
+    /// Feature `i`'s ID.
+    fn feature_id(&self, i: usize) -> Option<&FeatureId> {
+        self.features.get(i).map(|p| &p.id)
+    }
+
+    /// What step `key` waits for: its inputs, and, for a fillet or chamfer, the solids its
+    /// base's names are read from.
+    fn needs(&self, key: &Key) -> Vec<Key> {
+        let mut needs = self.steps.get(key).map(Step::inputs).unwrap_or_default();
+        if let Some(dress) = self.dresses.get(key) {
+            needs.extend(
+                dress
+                    .lineage
+                    .iter()
+                    .filter(|k| !needs.contains(k))
+                    .copied()
+                    .collect::<Vec<_>>(),
+            );
+        }
+        needs
     }
 
     /// The feature to name for step `key`.
@@ -824,6 +1039,9 @@ impl Job {
 /// What a job came to.
 enum Ran {
     Made(Outcome<Built>),
+    /// A fillet's or chamfer's edges that name none of its base's: every one, each its
+    /// `reference_broken` error. The step isn't run.
+    Unresolved(Vec<Error>),
     /// The solid, measured: a copy, made outside the schedule's lock.
     Measured(Outcome<Built>),
 }
@@ -848,6 +1066,9 @@ struct Schedule {
     superseded: bool,
     /// A step that panicked, a bug in Silico: the recompute stops, and fails with this.
     broken: Option<Error>,
+    /// Fillets' and chamfers' steps whose edges didn't all resolve, by key: every broken
+    /// reference's error.
+    unresolved: BTreeMap<Key, Vec<Error>>,
 }
 
 impl<K: Kernel + 'static> Engine<K> {
@@ -890,6 +1111,7 @@ impl<K: Kernel + 'static> Engine<K> {
             users: BTreeMap::new(),
             ready: VecDeque::new(),
             unmeasured: BTreeMap::new(),
+            unresolved: BTreeMap::new(),
             running: 0,
             superseded: false,
             broken: None,
@@ -901,7 +1123,7 @@ impl<K: Kernel + 'static> Engine<K> {
             if schedule.done.contains_key(key) {
                 continue;
             }
-            let inputs = plan.steps.get(key).map(Step::inputs).unwrap_or_default();
+            let inputs = plan.needs(key);
             let cant = inputs.iter().any(|input| {
                 doomed.contains(input) || matches!(schedule.done.get(input), Some(Err(_)))
             });
@@ -1014,7 +1236,7 @@ impl<K: Kernel + 'static> Engine<K> {
         generation: Generation,
     ) {
         loop {
-            let (job, inputs) = {
+            let (job, inputs, lineage) = {
                 let mut s = lock(schedule);
                 let job = loop {
                     if s.superseded || s.broken.is_some() || (s.ready.is_empty() && s.running == 0)
@@ -1040,7 +1262,16 @@ impl<K: Kernel + 'static> Engine<K> {
                         _ => None,
                     })
                     .collect();
-                (job, inputs)
+                // A fillet's or chamfer's base is built, so every feature it's made from is:
+                // their solids, to name the base's elements by.
+                let lineage = match job {
+                    Job::Make(key) => plan
+                        .dresses
+                        .get(&key)
+                        .map(|dress| plan.lineage(dress.base, &s.done)),
+                    Job::Measure(_) => None,
+                };
+                (job, inputs, lineage)
             };
             let key = job.key();
             // A panic under a job is a bug in Silico: caught, so the recompute ends with an
@@ -1054,9 +1285,18 @@ impl<K: Kernel + 'static> Engine<K> {
                 )
                 .entered();
                 match job {
-                    Job::Make(key) => match plan.steps.get(&key) {
-                        Some(step) => Ran::Made(self.step(*step, &inputs, generation)),
-                        None => Ran::Made(Outcome::Done(Err(silico_bug(
+                    Job::Make(key) => match (plan.steps.get(&key), plan.dresses.get(&key)) {
+                        (Some(step), Some(dress)) => {
+                            let lineage = lineage.unwrap_or_default();
+                            match self.resolve(plan, dress, &lineage) {
+                                Ok(edges) => {
+                                    Ran::Made(self.dressed(*step, &inputs, &edges, generation))
+                                }
+                                Err(errors) => Ran::Unresolved(errors),
+                            }
+                        }
+                        (Some(step), None) => Ran::Made(self.step(*step, &inputs, generation)),
+                        (None, _) => Ran::Made(Outcome::Done(Err(silico_bug(
                             "a recompute step wasn't planned",
                         )))),
                     },
@@ -1094,6 +1334,15 @@ impl<K: Kernel + 'static> Engine<K> {
             match ran {
                 Ran::Made(Outcome::Superseded) | Ran::Measured(Outcome::Superseded) => {
                     s.superseded = true;
+                }
+                Ran::Unresolved(errors) => {
+                    // The step fails on its first broken reference, so nothing that uses it
+                    // runs; the feature says them all.
+                    let first = errors.first().cloned().unwrap_or_else(|| {
+                        silico_bug("a fillet's edges were refused, though none is broken")
+                    });
+                    s.done.insert(key, Err(first));
+                    s.unresolved.insert(key, errors);
                 }
                 Ran::Made(Outcome::Done(result)) => {
                     if result.is_ok() {
@@ -1169,6 +1418,64 @@ impl<K: Kernel + 'static> Engine<K> {
         })
     }
 
+    /// Runs a fillet's or chamfer's step on the kernel, of `edges` (resolved), for
+    /// `generation`.
+    fn dressed(
+        &self,
+        step: Step,
+        inputs: &[Arc<Built>],
+        edges: &[u32],
+        generation: Generation,
+    ) -> Outcome<Built> {
+        let Step::Dress { dressing, .. } = step else {
+            return self.step(step, inputs, generation);
+        };
+        let Some(base) = inputs.first() else {
+            return Outcome::Done(Err(silico_bug(
+                "a fillet's step ran before its base was built",
+            )));
+        };
+        let request = match dressing {
+            Dressing::Fillet { radius } => KernelRequest::fillet(&base.shape, edges, radius),
+            Dressing::Chamfer { distance } => KernelRequest::chamfer(
+                &base.shape,
+                edges,
+                crate::kernel::ChamferSize::Equal { distance },
+                false,
+            ),
+        };
+        match request {
+            Ok(request) => map(self.kernel.submit(generation, request).wait(), |data| {
+                Built::new(data.shape, Some(data.history), None)
+            }),
+            Err(e) => Outcome::Done(Err(e)),
+        }
+    }
+
+    /// The edge numbers `dress`'s names find in its base feature's solid, its lineage's
+    /// solids in `lineage`; or, for every name that finds none (or an edge whose name is
+    /// unstable, N3), its `reference_broken` error, with candidates (N4, N6).
+    fn resolve(
+        &self,
+        plan: &Plan,
+        dress: &Dress,
+        lineage: &BTreeMap<usize, Arc<Built>>,
+    ) -> Result<Vec<u32>, Vec<Error>> {
+        let _span = tracing::debug_span!("resolve", edges = dress.edges.len()).entered();
+        let known = Arc::clone(&lock(&self.state).known);
+        let Some(map) = plan.map_of(dress.base, lineage, &known) else {
+            return Err(vec![silico_bug(
+                "a fillet's base was built, but its elements couldn't be named",
+            )]);
+        };
+        let Some(feature) = plan.feature_id(dress.feature) else {
+            return Err(vec![silico_bug("a fillet's feature wasn't planned")]);
+        };
+        crate::references::resolve(feature, &dress.edges, &map, &|f| {
+            plan.makers.get(f).copied()
+        })
+    }
+
     /// Measures `built`, a feature's solid, on the kernel, for `generation`: a copy of it
     /// with its summary.
     fn measure(&self, built: &Built, generation: Generation) -> Outcome<Built> {
@@ -1219,6 +1526,10 @@ impl<K: Kernel + 'static> Engine<K> {
                 ),
                 _ => missing(),
             },
+            // Run by `dressed`, once its edges are resolved.
+            Step::Dress { .. } => Outcome::Done(Err(silico_bug(
+                "a fillet's step ran without its edges resolved",
+            ))),
         }
     }
 }
@@ -1244,7 +1555,7 @@ fn model(
     for (planned, feature) in plan.features.iter().zip(&source.document().features) {
         // A feature it uses that didn't build blocks it, on the failure at the root.
         let blocked = planned.uses.iter().find_map(|&i| match features.get(i) {
-            Some((id, FeatureOutcome::Failed(_))) => Some(id.clone()),
+            Some((id, FeatureOutcome::Failed(_) | FeatureOutcome::Broken(_))) => Some(id.clone()),
             Some((_, FeatureOutcome::Blocked { on })) => Some(on.clone()),
             Some((_, FeatureOutcome::Built { .. } | FeatureOutcome::Sketch)) | None => None,
         });
@@ -1252,7 +1563,7 @@ fn model(
         let outcome = match blocked {
             Some(on) => FeatureOutcome::Blocked { on },
             None if !makes_solid => FeatureOutcome::Sketch,
-            None => feature_outcome(planned, done),
+            None => feature_outcome(planned, done, &schedule.unresolved),
         };
         features.push((planned.id.clone(), outcome));
     }
@@ -1282,9 +1593,10 @@ fn model(
                 .unmeasured
                 .get(key)
                 .map(|error| (id.clone(), error.clone().with_feature(id.as_str()))),
-            FeatureOutcome::Failed(_) | FeatureOutcome::Blocked { .. } | FeatureOutcome::Sketch => {
-                None
-            }
+            FeatureOutcome::Failed(_)
+            | FeatureOutcome::Broken(_)
+            | FeatureOutcome::Blocked { .. }
+            | FeatureOutcome::Sketch => None,
         })
         .collect();
     let naming = naming(plan, &features);
@@ -1325,27 +1637,16 @@ fn naming(plan: &Plan, features: &[(FeatureId, FeatureOutcome)]) -> Vec<Option<F
             naming.push(None);
             continue;
         };
-        let inputs: Option<Vec<NamingKey>> = planned
+        // Named only if what it's made from is.
+        let inputs_named = planned
             .uses
             .iter()
-            .map(|&i| naming.get(i).and_then(Option::as_ref).map(|n| n.key))
-            .collect();
-        let Some(inputs) = inputs else {
-            naming.push(None);
-            continue;
-        };
-        let mut hash = Sha256::new();
-        hash.update(key.0);
-        hash.update(id.as_str().as_bytes());
-        hash.update([match how {
-            Naming::Primitive(_) => 0,
-            Naming::Operation(op) => op as u8 + 1,
-        }]);
-        for input in &inputs {
-            hash.update(input.0);
-        }
-        naming.push(Some(FeatureNaming {
-            key: NamingKey(hash.finalize().into()),
+            .all(|&i| naming.get(i).is_some_and(Option::is_some));
+        let planned_key = planned
+            .naming_key
+            .filter(|_| inputs_named && planned.key() == Some(*key) && planned.id == *id);
+        naming.push(planned_key.map(|key| FeatureNaming {
+            key,
             how,
             uses: planned.uses.clone(),
         }));
@@ -1353,9 +1654,54 @@ fn naming(plan: &Plan, features: &[(FeatureId, FeatureOutcome)]) -> Vec<Option<F
     naming
 }
 
+/// Feature `id`'s element map, as `how` names it: a primitive's by its numbers, an
+/// operation's from its inputs' maps and its step's `history` (none for an operation: no
+/// map). The one place maps are made, so the names a model gives and those a fillet's
+/// references are found among are always the same.
+fn named_as(
+    id: &FeatureId,
+    how: Naming,
+    inputs: &[&ElementMap],
+    history: Option<&History>,
+) -> Option<ElementMap> {
+    Some(match how {
+        Naming::Primitive(primitive) => ElementMap::primitive(id.clone(), &primitive),
+        Naming::Operation(operation) => {
+            ElementMap::operation(id.clone(), operation, inputs, history?)
+        }
+    })
+}
+
+/// `map`, kept in `known` by its naming key; or the one kept there first, so a map named in
+/// two threads at once is one map.
+fn kept_in(known: &NamedMaps, key: NamingKey, map: ElementMap) -> Arc<ElementMap> {
+    Arc::clone(lock(known).entry(key).or_insert_with(|| Arc::new(map)))
+}
+
+/// A feature's naming key: of the naming scheme, its solid's step `key`, its ID, how it
+/// names, and its inputs' naming keys.
+fn naming_key(key: Key, id: &FeatureId, how: Naming, inputs: &[NamingKey]) -> NamingKey {
+    let mut hash = Sha256::new();
+    hash.update(NAMING_SCHEME);
+    hash.update(key.0);
+    hash.update(id.as_str().as_bytes());
+    hash.update([match how {
+        Naming::Primitive(_) => 0,
+        Naming::Operation(op) => op as u8 + 1,
+    }]);
+    for input in inputs {
+        hash.update(input.0);
+    }
+    NamingKey(hash.finalize().into())
+}
+
 /// A feature whose inputs built: built, if its own steps did, or failed on the first that
 /// didn't.
-fn feature_outcome(planned: &Planned, done: &BTreeMap<Key, StepResult>) -> FeatureOutcome {
+fn feature_outcome(
+    planned: &Planned,
+    done: &BTreeMap<Key, StepResult>,
+    unresolved: &BTreeMap<Key, Vec<Error>>,
+) -> FeatureOutcome {
     let unbuilt = || {
         FeatureOutcome::Failed(
             Error::new(
@@ -1369,6 +1715,9 @@ fn feature_outcome(planned: &Planned, done: &BTreeMap<Key, StepResult>) -> Featu
     for key in &planned.steps {
         match done.get(key) {
             Some(Ok(_)) => {}
+            Some(Err(_)) if let Some(errors) = unresolved.get(key) => {
+                return FeatureOutcome::Broken(errors.clone());
+            }
             Some(Err(error)) => {
                 return FeatureOutcome::Failed(error.clone().with_feature(planned.id.as_str()));
             }
@@ -1387,6 +1736,45 @@ fn feature_outcome(planned: &Planned, done: &BTreeMap<Key, StepResult>) -> Featu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A naming key holds the naming scheme, so a change to how elements are named makes a
+    /// fillet's step another step: pinned, computed by hand with Python's hashlib from the
+    /// scheme's line, the step's key, the ID, how it names (0 a primitive, 1 + the op code),
+    /// and the inputs' naming keys.
+    #[test]
+    fn naming_keys_are_the_sha256_of_the_scheme_the_step_the_id_and_the_inputs() {
+        let made = Step::Make(Primitive::Box {
+            dx: 10.0,
+            dy: 20.0,
+            dz: 30.0,
+        })
+        .key();
+        let id = |text: &str| FeatureId::new(text).unwrap();
+        let block = naming_key(
+            made,
+            &id("aaaaaaaa"),
+            Naming::Primitive(Primitive::Box {
+                dx: 10.0,
+                dy: 20.0,
+                dz: 30.0,
+            }),
+            &[],
+        );
+        assert_eq!(
+            crate::hex(&block.0),
+            "2a2f126374bb1252b1843e9c5d8a149e8cfce3af9d7b91421402d0173982113a"
+        );
+        let cut = naming_key(
+            made,
+            &id("bbbbbbbb"),
+            Naming::Operation(OpCode::Cut),
+            &[block],
+        );
+        assert_eq!(
+            crate::hex(&cut.0),
+            "35db188d9e9aa263e00cf6d1ab8bcfc2787444ef039fb8a86679bff2da8e9d8c"
+        );
+    }
 
     /// Keys outlive a run, so their spelling is pinned: computed by hand with Python's
     /// hashlib from the lines the key doc describes (`make box`, then each value's bits).

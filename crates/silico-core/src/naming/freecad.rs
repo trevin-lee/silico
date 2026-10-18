@@ -69,7 +69,7 @@ fn write(name: &Name, out: &mut String) {
         } => {
             write(upper, out);
             out.push_str(";:U");
-            out.push_str(&count_text(*nth));
+            out.push_str(&count_text(nth.0));
             out.push(';');
             out.push_str(operation.code());
         }

@@ -1,0 +1,444 @@
+{
+  "history": {
+    "ends": {
+      "end": [],
+      "start": []
+    },
+    "inputs": [
+      {
+        "edges": [
+          {
+            "generated": [],
+            "kept": 7,
+            "modified": []
+          },
+          {
+            "generated": [],
+            "kept": 13,
+            "modified": []
+          },
+          {
+            "generated": [],
+            "kept": 17,
+            "modified": []
+          },
+          {
+            "generated": [],
+            "kept": 16,
+            "modified": []
+          },
+          {
+            "generated": [],
+            "kept": null,
+            "modified": [
+              {
+                "element": {
+                  "index": 1,
+                  "kind": "Edge"
+                },
+                "position": 1
+              }
+            ]
+          },
+          {
+            "generated": [],
+            "kept": null,
+            "modified": [
+              {
+                "element": {
+                  "index": 3,
+                  "kind": "Edge"
+                },
+                "position": 1
+              }
+            ]
+          },
+          {
+            "generated": [
+              {
+                "element": {
+                  "index": 5,
+                  "kind": "Face"
+                },
+                "position": 1
+              }
+            ],
+            "kept": null,
+            "modified": []
+          },
+          {
+            "generated": [
+              {
+                "element": {
+                  "index": 3,
+                  "kind": "Face"
+                },
+                "position": 1
+              }
+            ],
+            "kept": null,
+            "modified": []
+          },
+          {
+            "generated": [],
+            "kept": null,
+            "modified": [
+              {
+                "element": {
+                  "index": 5,
+                  "kind": "Edge"
+                },
+                "position": 1
+              }
+            ]
+          },
+          {
+            "generated": [],
+            "kept": 8,
+            "modified": []
+          },
+          {
+            "generated": [],
+            "kept": null,
+            "modified": [
+              {
+                "element": {
+                  "index": 15,
+                  "kind": "Edge"
+                },
+                "position": 1
+              }
+            ]
+          },
+          {
+            "generated": [],
+            "kept": null,
+            "modified": [
+              {
+                "element": {
+                  "index": 11,
+                  "kind": "Edge"
+                },
+                "position": 1
+              }
+            ]
+          }
+        ],
+        "faces": [
+          {
+            "generated": [],
+            "kept": 7,
+            "modified": []
+          },
+          {
+            "generated": [],
+            "kept": null,
+            "modified": [
+              {
+                "element": {
+                  "index": 1,
+                  "kind": "Face"
+                },
+                "position": 1
+              }
+            ]
+          },
+          {
+            "generated": [],
+            "kept": null,
+            "modified": [
+              {
+                "element": {
+                  "index": 2,
+                  "kind": "Face"
+                },
+                "position": 1
+              }
+            ]
+          },
+          {
+            "generated": [],
+            "kept": null,
+            "modified": [
+              {
+                "element": {
+                  "index": 8,
+                  "kind": "Face"
+                },
+                "position": 1
+              }
+            ]
+          },
+          {
+            "generated": [],
+            "kept": null,
+            "modified": [
+              {
+                "element": {
+                  "index": 6,
+                  "kind": "Face"
+                },
+                "position": 1
+              }
+            ]
+          },
+          {
+            "generated": [],
+            "kept": null,
+            "modified": [
+              {
+                "element": {
+                  "index": 4,
+                  "kind": "Face"
+                },
+                "position": 1
+              }
+            ]
+          }
+        ],
+        "vertices": [
+          {
+            "generated": [],
+            "kept": 7,
+            "modified": []
+          },
+          {
+            "generated": [],
+            "kept": 6,
+            "modified": []
+          },
+          {
+            "generated": [],
+            "kept": 10,
+            "modified": []
+          },
+          {
+            "generated": [],
+            "kept": 11,
+            "modified": []
+          },
+          {
+            "generated": [],
+            "kept": 2,
+            "modified": []
+          },
+          {
+            "generated": [],
+            "kept": null,
+            "modified": []
+          },
+          {
+            "generated": [],
+            "kept": null,
+            "modified": []
+          },
+          {
+            "generated": [],
+            "kept": null,
+            "modified": []
+          }
+        ]
+      }
+    ],
+    "result": {
+      "edges": 17,
+      "faces": 8,
+      "solids": 1,
+      "vertices": 11
+    },
+    "topology": {
+      "edge_vertices": [
+        [
+          1,
+          2
+        ],
+        [
+          1,
+          3
+        ],
+        [
+          4,
+          2
+        ],
+        [
+          3,
+          4
+        ],
+        [
+          5,
+          6
+        ],
+        [
+          1,
+          5
+        ],
+        [
+          7,
+          6
+        ],
+        [
+          2,
+          7
+        ],
+        [
+          5,
+          8
+        ],
+        [
+          3,
+          8
+        ],
+        [
+          9,
+          10
+        ],
+        [
+          4,
+          9
+        ],
+        [
+          10,
+          7
+        ],
+        [
+          8,
+          9
+        ],
+        [
+          8,
+          11
+        ],
+        [
+          11,
+          6
+        ],
+        [
+          10,
+          11
+        ]
+      ],
+      "face_edges": [
+        [
+          1,
+          2,
+          3,
+          4
+        ],
+        [
+          5,
+          6,
+          7,
+          1,
+          8
+        ],
+        [
+          6,
+          2,
+          9,
+          10
+        ],
+        [
+          11,
+          12,
+          13,
+          3,
+          8
+        ],
+        [
+          10,
+          4,
+          14,
+          12
+        ],
+        [
+          15,
+          9,
+          16,
+          5
+        ],
+        [
+          7,
+          13,
+          17,
+          16
+        ],
+        [
+          15,
+          14,
+          17,
+          11
+        ]
+      ],
+      "outer_edges": [
+        [
+          1,
+          2,
+          3,
+          4
+        ],
+        [
+          1,
+          5,
+          6,
+          7,
+          8
+        ],
+        [
+          2,
+          6,
+          9,
+          10
+        ],
+        [
+          3,
+          8,
+          11,
+          12,
+          13
+        ],
+        [
+          4,
+          10,
+          12,
+          14
+        ],
+        [
+          5,
+          9,
+          15,
+          16
+        ],
+        [
+          7,
+          13,
+          16,
+          17
+        ],
+        [
+          11,
+          14,
+          15,
+          17
+        ]
+      ]
+    }
+  },
+  "inputs": [
+    {
+      "at": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "id": "aaaaaaaa",
+      "primitive": {
+        "Box": {
+          "dx": 10.0,
+          "dy": 10.0,
+          "dz": 10.0
+        }
+      }
+    }
+  ],
+  "op": "Chamfer"
+}

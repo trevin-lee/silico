@@ -87,8 +87,8 @@ fn written(map: &ElementMap) -> Vec<String> {
 /// (`bbbbbbbb`), by the feature `rrrrrrrr`.
 fn named(operation: OpCode, built: &Built) -> ElementMap {
     built.history.validate(2).unwrap();
-    let base = ElementMap::primitive(id("aaaaaaaa"), BOX);
-    let tool = ElementMap::primitive(id("bbbbbbbb"), BOX);
+    let base = ElementMap::by_number(id("aaaaaaaa"), BOX);
+    let tool = ElementMap::by_number(id("bbbbbbbb"), BOX);
     ElementMap::operation(id("rrrrrrrr"), operation, &[&base, &tool], &built.history)
 }
 
@@ -254,7 +254,7 @@ fn dressed(chamfered: bool) -> Built {
 
 fn named_dressing(operation: OpCode, built: &Built) -> ElementMap {
     built.history.validate(1).unwrap();
-    let cube = ElementMap::primitive(id("aaaaaaaa"), BOX);
+    let cube = ElementMap::by_number(id("aaaaaaaa"), BOX);
     ElementMap::operation(id("rrrrrrrr"), operation, &[&cube], &built.history)
 }
 
@@ -351,7 +351,9 @@ fn coincident_solids_fused_are_named_from_both_the_base_first() {
         let from: Vec<String> = std::iter::once(first)
             .chain(more)
             .map(|s| match &*s.name {
-                Name::Element { feature, element } => format!("{feature}.{:?}", element.kind),
+                Name::Element {
+                    feature, element, ..
+                } => format!("{feature}.{:?}", element.kind),
                 other => panic!("{other}"),
             })
             .collect();
@@ -413,7 +415,7 @@ fn a_primitives_elements_are_named_by_their_numbers() {
         // The core's counts for the primitive are OCCT's.
         let counts = silico_core::kernel::primitive_counts(&primitive);
         assert_eq!(counts, r, "{primitive:?}");
-        let map = ElementMap::primitive(feature.clone(), counts);
+        let map = ElementMap::by_number(feature.clone(), counts);
         assert_eq!(map.iter().count(), count as usize, "{primitive:?}");
         let mut names = std::collections::BTreeSet::new();
         for (kind, n) in [
@@ -438,9 +440,10 @@ fn a_primitives_elements_are_named_by_their_numbers() {
         assert!(map.name(past).is_none());
     }
     // Another feature's element isn't a map's.
-    let map = ElementMap::primitive(feature, BOX);
+    let map = ElementMap::by_number(feature, BOX);
     let other = Name::Element {
         feature: id("bbbbbbbb"),
+        primitive: None,
         element: ElementRef {
             kind: ElementKind::Face,
             index: 1,
@@ -473,7 +476,10 @@ fn a_recomputed_holes_names_say_how_each_element_came_about() {
     let hole = model.element_map(&id("m3tq8v0z")).unwrap();
     let all: Vec<String> = hole.iter().map(|(_, names)| names[0].to_string()).collect();
     // The hole's wall: the pin's side face, modified by the cut (docs/ports/history.md).
-    assert!(all.contains(&"a91cw0de.Face1".to_owned()), "{all:#?}");
+    assert!(
+        all.contains(&"a91cw0de.cylinder.Face1".to_owned()),
+        "{all:#?}"
+    );
     // Its two rims: edges the cut generated from the block's top (Face6) or bottom (Face5)
     // and the pin's side, as FreeCAD names a cylinder's hole (`Face6;:G2(Face1;K-2);CUT`).
     let rims: Vec<String> = hole
@@ -487,7 +493,10 @@ fn a_recomputed_holes_names_say_how_each_element_came_about() {
     assert_eq!(tops, ["Face5", "Face6"], "{rims:?}");
     // The block's untouched faces keep their names: its four sides.
     for face in 1..=4 {
-        assert!(all.contains(&format!("k7f2qx3m.Face{face}")), "{all:#?}");
+        assert!(
+            all.contains(&format!("k7f2qx3m.box.Face{face}")),
+            "{all:#?}"
+        );
     }
 }
 
@@ -575,7 +584,7 @@ fn published_on(
 /// The names of the edges of `cut`'s solid made from pin `pin`'s side: the hole's rims.
 fn rims(model: &silico_core::recompute::Model, cut: &str, pin: &str) -> Vec<String> {
     let map = model.element_map(&id(cut)).unwrap();
-    let side = format!("{pin}.Face1");
+    let side = format!("{pin}.cylinder.Face1");
     let mut rims: Vec<String> = map
         .iter()
         .filter(|(e, _)| e.kind == ElementKind::Edge)
@@ -589,7 +598,7 @@ fn rims(model: &silico_core::recompute::Model, cut: &str, pin: &str) -> Vec<Stri
 #[test]
 fn a_later_holes_rims_keep_their_names_whatever_holes_come_before() {
     // Trevin's decision: the plate's top and bottom faces, modified by each cut as its sole
-    // result, keep their own names (`pppppppp.Face6`, `pppppppp.Face5`) however many cuts
+    // result, keep their own names (`pppppppp.box.Face6`, `pppppppp.box.Face5`) however many cuts
     // came before, and a source's position in OCCT's list is written only where names
     // would otherwise collide, so the last hole's rims, named from them and the pin, are the
     // same with no earlier hole, or with one added, removed, or moved, and the earlier holes
@@ -603,8 +612,8 @@ fn a_later_holes_rims_keep_their_names_whatever_holes_come_before() {
         rims(&model, "c0000009", "y0000009")
     };
     let expected = [
-        "c0000009.Edge(G pppppppp.Face5, G y0000009.Face1)",
-        "c0000009.Edge(G pppppppp.Face6, G y0000009.Face1)",
+        "c0000009.Edge(G pppppppp.box.Face5, G y0000009.cylinder.Face1)",
+        "c0000009.Edge(G pppppppp.box.Face6, G y0000009.cylinder.Face1)",
     ];
     for earlier in [
         vec![],
@@ -623,8 +632,8 @@ fn a_later_holes_rims_keep_their_names_whatever_holes_come_before() {
 fn a_face_split_by_a_cut_keeps_its_pieces_apart() {
     // A slot (2 wide, 1 deep) across the plate's top splits the top face in two: each piece
     // keeps its level, ranked by OCCT's order among the pieces (`s0000001.Face(M1/2
-    // pppppppp.Face6)`, `...(M2/2 ...)`), so neither is taken for the face as it was
-    // (`pppppppp.Face6`, the name of a face only modified, as its sole result): a reference
+    // pppppppp.box.Face6)`, `...(M2/2 ...)`), so neither is taken for the face as it was
+    // (`pppppppp.box.Face6`, the name of a face only modified, as its sole result): a reference
     // to the top face finds neither piece, and fails, rather than following one. Every
     // name is unique.
     let engine = occt_engine();
@@ -645,16 +654,19 @@ fn a_face_split_by_a_cut_keeps_its_pieces_apart() {
         .collect();
     let pieces: Vec<&String> = faces
         .iter()
-        .filter(|f| f.contains("pppppppp.Face6"))
+        .filter(|f| f.contains("pppppppp.box.Face6"))
         .collect();
     assert_eq!(pieces.len(), 2, "{faces:#?}");
     assert!(
-        pieces.contains(&&"s0000001.Face(M1/2 pppppppp.Face6)".to_owned()),
+        pieces.contains(&&"s0000001.Face(M1/2 pppppppp.box.Face6)".to_owned()),
         "{faces:#?}"
     );
-    assert!(!faces.contains(&"pppppppp.Face6".to_owned()), "{faces:#?}");
     assert!(
-        pieces.contains(&&"s0000001.Face(M2/2 pppppppp.Face6)".to_owned()),
+        !faces.contains(&"pppppppp.box.Face6".to_owned()),
+        "{faces:#?}"
+    );
+    assert!(
+        pieces.contains(&&"s0000001.Face(M2/2 pppppppp.box.Face6)".to_owned()),
         "{faces:#?}"
     );
     // One name for each element, and none twice.

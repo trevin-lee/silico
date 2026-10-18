@@ -8,8 +8,10 @@ use silico_core::fake::{Call, FakeKernel};
 use silico_core::kernel::Kernel;
 use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 
-/// Long enough for any recompute here, so one that hangs fails instead.
-pub const WAIT: Duration = Duration::from_secs(10);
+/// Long enough for any recompute here, so one that hangs fails instead: a minute, since a
+/// debug build of a test of thousands of broken references takes ten seconds on a loaded
+/// machine.
+pub const WAIT: Duration = Duration::from_secs(60);
 
 pub fn checked(text: &str) -> Checked {
     Checked::new(read(text.as_bytes()).unwrap()).unwrap()

@@ -157,8 +157,8 @@ pub fn format(model: &Model) -> Result<Result<Formatted, Problems>, Error> {
 /// The document's outline, for reading and for `git diff` (`silico show`): one line per
 /// feature, in timeline order, saying what it is, its values as the file writes them,
 /// and its fingerprint, if stored; its note, if any, on the line after; for a sketch, its
-/// points, curves, and constraints after that, a line each as the file writes them; and
-/// the bodies the timeline ends with. Nothing is aligned in columns, so an edit to one
+/// points, curves, and constraints after that, a line each as the file writes them, and
+/// for a fillet or chamfer, its edges, a line each; and the bodies the timeline ends with. Nothing is aligned in columns, so an edit to one
 /// feature, or one of a sketch's elements, changes its lines alone.
 pub fn outline(document: &Document) -> String {
     // Every field taken apart, so one added to a document or a feature is a compile error
@@ -204,6 +204,11 @@ pub fn outline(document: &Document) -> String {
             for (kind, text) in document::sketch_elements(sketch) {
                 let _ = writeln!(out, "  {kind} {text}");
             }
+        }
+        // A fillet's or chamfer's edges, a line each, quoted (a name can be long, and in a
+        // document the gate hasn't passed, anything), so an edit to one changes its line.
+        for edge in operation.edges() {
+            let _ = writeln!(out, "  edge {}", quoted(edge.as_str()));
         }
     }
     let bodies = bodies(document);
@@ -257,6 +262,11 @@ fn values(operation: &Operation) -> String {
         | Operation::Common { base, tool } => format!("base {base}, tool {tool}"),
         // Its elements follow, a line each.
         Operation::Sketch(sketch) => format!("plane {}", sketch.plane.as_str()),
+        // Its edges follow, a line each.
+        Operation::Fillet { base, radius, .. } => format!("base {base}, radius {radius}"),
+        Operation::Chamfer { base, size, .. } => {
+            format!("base {base}, distance {}", size.distance)
+        }
     }
 }
 
@@ -281,8 +291,7 @@ fn bodies(document: &Document) -> Vec<String> {
     let consumed: std::collections::BTreeSet<&document::FeatureId> = document
         .features
         .iter()
-        .filter_map(|f| f.operation.inputs())
-        .flat_map(|inputs| inputs.into_iter().map(|(_, id)| id))
+        .flat_map(|f| f.operation.inputs().into_iter().map(|(_, id)| id))
         .collect();
     document
         .features

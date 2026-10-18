@@ -4,12 +4,15 @@
 //! reference to an element can follow it through upstream edits.
 //!
 //! A [`Name`] is structured, not a string; it's written in Silico's compact form
-//! (`m3tq8v0z.Edge(G k7f2qx3m.Face6, G a91cw0de.Face1)`), and [`freecad`] renders FreeCAD's
-//! form for comparison with FreeCAD's names. An [`ElementMap`] holds a solid's names, built
+//! (`m3tq8v0z.Edge(G k7f2qx3m.box.Face6, G a91cw0de.cylinder.Face1)`), and [`freecad`]
+//! renders FreeCAD's form for comparison with FreeCAD's names. An [`ElementMap`] holds a solid's names, built
 //! by [`ElementMap::primitive`], [`ElementMap::operation`], or kept through a move.
 
 mod build;
 pub mod freecad;
+mod parse;
+
+pub use parse::{Maker, NameError};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -18,6 +21,15 @@ use std::sync::Arc;
 
 use crate::document::FeatureId;
 use crate::kernel::{BooleanOp, ElementCounts, ElementKind, ElementRef};
+
+/// The naming scheme: what names a map gives its elements (the grammar, the map's builder,
+/// a primitive's numbers). Its number changes with any change to them, and
+/// tests/naming_scheme.rs, which pins with it the names a set of documents and histories
+/// get, fails until it does: a fillet's step is keyed by its base's naming key, which holds
+/// this, and its result is kept on disk, so a result another scheme made, from the edges
+/// its names found then, is never taken for this one's (the review found a warm cache
+/// re-pointing a fillet after the cone's numbers changed).
+pub const NAMING_SCHEME: &[u8] = b"silico naming 2\n";
 
 /// The operation that derived an element, as FreeCAD's op code names it (`FUS`, `CUT`, ...).
 /// It isn't written in Silico's form, where the feature that made the element says it, but
@@ -50,6 +62,48 @@ impl OpCode {
             OpCode::Common => "CMN",
             OpCode::Fillet => "FLT",
             OpCode::Chamfer => "CHF",
+        }
+    }
+}
+
+/// The kind of primitive that made an element, as its name says it (`box`, ...): the type
+/// the document writes for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PrimitiveKind {
+    Box,
+    Cylinder,
+    Sphere,
+    Cone,
+    Torus,
+}
+
+impl PrimitiveKind {
+    pub const ALL: [PrimitiveKind; 5] = [
+        PrimitiveKind::Box,
+        PrimitiveKind::Cylinder,
+        PrimitiveKind::Sphere,
+        PrimitiveKind::Cone,
+        PrimitiveKind::Torus,
+    ];
+
+    pub fn of(primitive: &crate::kernel::Primitive) -> PrimitiveKind {
+        match primitive {
+            crate::kernel::Primitive::Box { .. } => PrimitiveKind::Box,
+            crate::kernel::Primitive::Cylinder { .. } => PrimitiveKind::Cylinder,
+            crate::kernel::Primitive::Sphere { .. } => PrimitiveKind::Sphere,
+            crate::kernel::Primitive::Cone { .. } => PrimitiveKind::Cone,
+            crate::kernel::Primitive::Torus { .. } => PrimitiveKind::Torus,
+        }
+    }
+
+    /// The word a name writes, which is the type the document writes.
+    pub fn word(self) -> &'static str {
+        match self {
+            PrimitiveKind::Box => "box",
+            PrimitiveKind::Cylinder => "cylinder",
+            PrimitiveKind::Sphere => "sphere",
+            PrimitiveKind::Cone => "cone",
+            PrimitiveKind::Torus => "torus",
         }
     }
 }
@@ -120,10 +174,14 @@ impl std::hash::Hash for Raw {
 /// source's only result is equal to its source's name (`Modified`).
 #[derive(Debug, Clone)]
 pub enum Name {
-    /// The element numbered so in what `feature` made: a primitive's own `Face3`. Also, as
-    /// FreeCAD's unmapped names are, the last resort for an element nothing else names.
+    /// The element numbered so in what `feature` made: a primitive's own `Face3`, with the
+    /// kind of primitive it is (`k7f2qx3m.box.Face3`: Trevin's, 2026-10-17, so a primitive
+    /// whose type is changed under its ID names none of its old elements). Also, as
+    /// FreeCAD's unmapped names are, the last resort for an element nothing else names, with
+    /// no kind (`m3tq8v0z.Edge5`).
     Element {
         feature: FeatureId,
+        primitive: Option<PrimitiveKind>,
         element: ElementRef,
     },
     /// An element `feature`'s operation made from its inputs' elements, as OCCT reported
@@ -139,20 +197,27 @@ pub enum Name {
     /// An element modified from one element, `name`, as its only result (OCCT's first,
     /// none other modified or generated of its kind), by one feature or by a run of them
     /// (Trevin's decision, 2026-10-16): it is its source's own name, written and compared
-    /// as that name, so a plate's top face is `pppppppp.Face6` after any number of holes,
-    /// and a hole's rim named from it doesn't change when an earlier hole is added, removed,
-    /// or moved. Unique: such a step makes one element of one, and an element and what it
+    /// as that name, so a plate's top face is `pppppppp.box.Face6` after any number of
+    /// holes, and a hole's rim named from it doesn't change when an earlier hole is added,
+    /// removed, or moved. Unique: such a step makes one element of one, and an element and what it
     /// became are never both in a solid (were they, the second would be `~1`, unstable).
     /// The operation is kept for FreeCAD's form (`Face6;:M;CUT`) and nothing else.
     Modified { name: Arc<Name>, last: LastOp },
-    /// An element nothing reported, named as the `nth` unnamed element of its kind in the
-    /// element above it named `upper` (FreeCAD's `;:U`).
+    /// An element nothing reported, named by every named element above it (an edge by the
+    /// faces it bounds, a vertex by the edges it ends), `upper` first by FreeCAD's order,
+    /// then up to four `more` (Trevin's, 2026-10-17); and, where elements above are alike
+    /// for two or more of them, its `place` among those, by FreeCAD's count in `upper`.
+    /// `nth` is FreeCAD's own: the element's count among `upper`'s unnamed elements of its
+    /// kind (`;:U2`), kept for FreeCAD's form, not the name's identity, since it moves when
+    /// an edit changes what else `upper` bounds (FreeCAD 1.1.3 re-points a reference there).
     Upper {
         feature: FeatureId,
         operation: OpCode,
         kind: ElementKind,
         upper: Arc<Name>,
-        nth: NonZeroU32,
+        more: Vec<Arc<Name>>,
+        place: Option<Place>,
+        nth: Raw,
     },
     /// An element named from the elements below it (an edge from its vertices, a face from
     /// its outer wire's edges): the first in FreeCAD's order, then up to four more
@@ -232,7 +297,7 @@ impl Name {
                 .chain(more)
                 .map(|source| &source.name)
                 .collect(),
-            Name::Upper { upper, .. } => vec![upper],
+            Name::Upper { upper, more, .. } => std::iter::once(upper).chain(more).collect(),
             Name::Lower { first, more, .. } => std::iter::once(first).chain(more).collect(),
             Name::Duplicate { name, .. } | Name::Modified { name, .. } => vec![name],
         }
@@ -256,12 +321,17 @@ impl Ord for Name {
         };
         variant(a).cmp(&variant(b)).then_with(|| match (a, b) {
             (
-                Name::Element { feature, element },
+                Name::Element {
+                    feature,
+                    primitive,
+                    element,
+                },
                 Name::Element {
                     feature: f,
+                    primitive: p,
                     element: e,
                 },
-            ) => feature.cmp(f).then(element.cmp(e)),
+            ) => feature.cmp(f).then(primitive.cmp(p)).then(element.cmp(e)),
             (
                 Name::Derived {
                     feature,
@@ -289,21 +359,26 @@ impl Ord for Name {
                     operation,
                     kind,
                     upper,
-                    nth,
+                    more,
+                    place,
+                    ..
                 },
                 Name::Upper {
                     feature: f,
                     operation: o,
                     kind: k,
                     upper: u,
-                    nth: n,
+                    more: m,
+                    place: p,
+                    ..
                 },
             ) => feature
                 .cmp(f)
                 .then(operation.cmp(o))
                 .then(kind.cmp(k))
                 .then_with(|| upper.cmp(u))
-                .then(nth.cmp(n)),
+                .then_with(|| more.cmp(m))
+                .then(place.cmp(p)),
             (
                 Name::Lower {
                     feature,
@@ -358,8 +433,13 @@ impl std::hash::Hash for Name {
         let name = self.identity();
         std::mem::discriminant(name).hash(state);
         match name {
-            Name::Element { feature, element } => {
+            Name::Element {
+                feature,
+                primitive,
+                element,
+            } => {
                 feature.hash(state);
+                primitive.hash(state);
                 element.hash(state);
             }
             Name::Derived {
@@ -380,13 +460,16 @@ impl std::hash::Hash for Name {
                 operation,
                 kind,
                 upper,
-                nth,
+                more,
+                place,
+                ..
             } => {
                 feature.hash(state);
                 operation.hash(state);
                 kind.hash(state);
                 upper.hash(state);
-                nth.hash(state);
+                more.hash(state);
+                place.hash(state);
             }
             Name::Lower {
                 feature,
@@ -444,7 +527,16 @@ fn relation_text(relation: Relation, position: NonZeroU32) -> String {
 impl fmt::Display for Name {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Name::Element { feature, element } => write!(f, "{feature}.{element}"),
+            Name::Element {
+                feature,
+                primitive: Some(primitive),
+                element,
+            } => write!(f, "{feature}.{}.{element}", primitive.word()),
+            Name::Element {
+                feature,
+                primitive: None,
+                element,
+            } => write!(f, "{feature}.{element}"),
             Name::Derived {
                 feature,
                 kind,
@@ -471,14 +563,20 @@ impl fmt::Display for Name {
                 feature,
                 kind,
                 upper,
-                nth,
+                more,
+                place,
                 ..
-            } => write!(
-                f,
-                "{feature}.{}(U{} {upper})",
-                kind_word(*kind),
-                count_text(*nth)
-            ),
+            } => {
+                write!(f, "{feature}.{}(U", kind_word(*kind))?;
+                if let Some(place) = place {
+                    write!(f, "{}/{}", place.rank, place.size)?;
+                }
+                write!(f, " {upper}")?;
+                for name in more {
+                    write!(f, ", {name}")?;
+                }
+                f.write_str(")")
+            }
             Name::Lower {
                 feature,
                 kind,
@@ -519,10 +617,40 @@ pub struct ElementMap {
 }
 
 impl ElementMap {
-    /// A primitive's map: each of its `counts` faces, edges, and vertices named by its
-    /// number (`k7f2qx3m.Face3`), as the kernel made it, which is OCCT's order (and
-    /// FreeCAD's `Face3`).
-    pub fn primitive(feature: FeatureId, counts: ElementCounts) -> Self {
+    /// A primitive's map: each of its faces, edges, and vertices named by its type and its
+    /// number (`k7f2qx3m.box.Face3`, so a name says what made it), as in the primitive's fullest form (`kernel::primitive_numbers`:
+    /// a pointed cone's base cap is its Face3, as a cone's always is), so a number never
+    /// names another element after an edit of the primitive's values.
+    pub fn primitive(feature: FeatureId, primitive: &crate::kernel::Primitive) -> Self {
+        let mut map = ElementMap {
+            feature,
+            names: BTreeMap::new(),
+            elements: BTreeMap::new(),
+            unstable: BTreeSet::new(),
+        };
+        for kind in [ElementKind::Face, ElementKind::Edge, ElementKind::Vertex] {
+            for (index, number) in (1..).zip(crate::kernel::primitive_numbers(primitive, kind)) {
+                let element = ElementRef { kind, index };
+                let name = Arc::new(Name::Element {
+                    feature: map.feature.clone(),
+                    primitive: Some(PrimitiveKind::of(primitive)),
+                    element: ElementRef {
+                        kind,
+                        index: number,
+                    },
+                });
+                map.elements.insert(Arc::clone(&name), element);
+                map.names.insert(element, vec![name]);
+            }
+        }
+        map
+    }
+
+    /// A map of `counts` faces, edges, and vertices, each named by OCCT's number for it
+    /// (`k7f2qx3m.Face3`), as an operation names an element no history names: a solid made
+    /// up for a test, of any counts. A primitive's map is [`ElementMap::primitive`], its
+    /// names saying its type, numbered as in its fullest form.
+    pub fn by_number(feature: FeatureId, counts: ElementCounts) -> Self {
         let mut map = ElementMap {
             feature,
             names: BTreeMap::new(),
@@ -589,6 +717,7 @@ impl ElementMap {
     fn element_name(&self, element: ElementRef) -> Name {
         Name::Element {
             feature: self.feature.clone(),
+            primitive: None,
             element,
         }
     }

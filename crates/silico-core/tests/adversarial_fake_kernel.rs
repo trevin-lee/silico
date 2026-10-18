@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use silico_core::ErrorCode;
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::{
-    Blob, BooleanOp, Generation, Kernel, KernelRequest, Op, Primitive, ShapeData,
+    Blob, BooleanOp, ChamferSize, Generation, Kernel, KernelRequest, Op, Primitive, ShapeData,
 };
 use silico_core::pool::{Outcome, Pending};
 
@@ -565,9 +565,18 @@ fn every_operation_the_fake_does_not_do_is_a_structured_internal_error() {
         within(
             kernel.submit(
                 Generation(0),
-                KernelRequest::fillet(&shape, &[1], 0.1).unwrap(),
+                KernelRequest::chamfer(
+                    &shape,
+                    &[1],
+                    ChamferSize::TwoDistances {
+                        distance: 0.1,
+                        other: 0.2,
+                    },
+                    false,
+                )
+                .unwrap(),
             ),
-            "fillet",
+            "uneven chamfer",
         )
         .done()
         .unwrap()

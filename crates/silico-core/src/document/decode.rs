@@ -8,8 +8,8 @@ use std::fmt;
 use super::fingerprint::{Fingerprint, MEASURE_DECIMALS, Measure};
 use super::json::{At, Member, Node, SHOWN_CHARS, SyntaxError, Value, shown};
 use super::model::{
-    Document, FEATURE_TYPES, Feature, FeatureId, FeatureVersion, FormatVersion, ID_LENGTH, Name,
-    Operation, Position, Units,
+    ChamferSize, Document, ElementName, FEATURE_TYPES, Feature, FeatureId, FeatureVersion,
+    FormatVersion, ID_LENGTH, Name, Operation, Position, Units,
 };
 use super::quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
 use super::sketch::{
@@ -496,6 +496,16 @@ fn operation(type_name: &str, fields: &mut Fields) -> Result<Operation, Error> {
             tool: reference(fields, "tool")?,
         },
         "sketch" => Operation::Sketch(sketch(fields)?),
+        "fillet" => Operation::Fillet {
+            base: reference(fields, "base")?,
+            edges: element_names(fields, "edges")?,
+            radius: length(fields, "radius")?,
+        },
+        "chamfer" => Operation::Chamfer {
+            base: reference(fields, "base")?,
+            edges: element_names(fields, "edges")?,
+            size: chamfer_size(fields)?,
+        },
         // A type in FEATURE_TYPES with no arm here: Silico's bug, not the document's.
         other => {
             return Err(Error::new(
@@ -507,6 +517,50 @@ fn operation(type_name: &str, fields: &mut Fields) -> Result<Operation, Error> {
     })
 }
 
+/// An array of element names (`edges`): strings, each not empty. Whether each is a name, and
+/// of what, is the gate's to say: it knows the features before this one.
+fn element_names(fields: &mut Fields, key: &str) -> Result<Vec<ElementName>, Error> {
+    let node = fields.take(key)?;
+    let feature = fields.feature();
+    let want = "an array of element names, each a string";
+    let Value::Array(items) = node.value else {
+        return Err(wrong_kind(feature, key, &node, want));
+    };
+    items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let parameter = format!("{key}.{i}");
+            match &item.value {
+                Value::String(text) => ElementName::new(text).ok_or_else(|| {
+                    refuse(
+                        feature,
+                        &parameter,
+                        item.at,
+                        format!("{parameter} is empty"),
+                        "write the element's name, as Silico names it (feature.Kind(...))",
+                    )
+                }),
+                _ => Err(wrong_kind(
+                    feature,
+                    &parameter,
+                    item,
+                    "an element's name, a string",
+                )),
+            }
+        })
+        .collect()
+}
+
+/// A chamfer's `size`: `{"distance": d}`.
+fn chamfer_size(fields: &mut Fields) -> Result<ChamferSize, Error> {
+    let node = fields.take("size")?;
+    let mut size = Fields::of(node, fields.feature(), Some("size"), "size")?.under("size");
+    let distance = length(&mut size, "distance")?;
+    size.finish()?;
+    Ok(ChamferSize { distance })
+}
+
 fn reference(fields: &mut Fields, key: &str) -> Result<FeatureId, Error> {
     let node = fields.take(key)?;
     id(node, fields.feature(), key)
@@ -514,7 +568,8 @@ fn reference(fields: &mut Fields, key: &str) -> Result<FeatureId, Error> {
 
 fn length(fields: &mut Fields, key: &str) -> Result<Length, Error> {
     let node = fields.take(key)?;
-    length_value(&node, fields.feature(), key)
+    // Named by its path: a chamfer's `size.distance`, a feature's own `radius`.
+    length_value(&node, fields.feature(), &fields.name(key))
 }
 
 fn length_value(node: &Node, feature: Option<&str>, parameter: &str) -> Result<Length, Error> {

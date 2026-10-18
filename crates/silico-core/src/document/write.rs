@@ -12,7 +12,8 @@ use std::fmt::Write as _;
 
 use super::fingerprint::Fingerprint;
 use super::model::{
-    Document, Feature, FeatureId, FeatureVersion, FormatVersion, Operation, Position, Units,
+    Document, ElementName, Feature, FeatureId, FeatureVersion, FormatVersion, Operation, Position,
+    Units,
 };
 use super::quantity::{Angle, Length};
 use super::sketch::{
@@ -50,6 +51,8 @@ enum Out<'a> {
     Raw(String),
     Str(&'a str),
     Array(Vec<Out<'a>>),
+    /// An array written an item to a line, whatever it holds.
+    Lines(Vec<Out<'a>>),
     Object(Vec<(&'static str, Out<'a>)>),
 }
 
@@ -58,7 +61,8 @@ impl Out<'_> {
     fn holds_object(&self) -> bool {
         match self {
             Out::Raw(_) | Out::Str(_) => false,
-            Out::Object(_) => true,
+            // Written over lines, as an object is.
+            Out::Object(_) | Out::Lines(_) => true,
             Out::Array(items) => items.iter().any(Out::holds_object),
         }
     }
@@ -69,6 +73,7 @@ impl Out<'_> {
         match self {
             Out::Raw(_) | Out::Str(_) => true,
             Out::Array(items) => !items.iter().any(Out::holds_object),
+            Out::Lines(items) => items.is_empty(),
             Out::Object(members) => !members.iter().any(|(_, v)| v.holds_object()),
         }
     }
@@ -202,6 +207,23 @@ fn fields(operation: &Operation) -> Vec<(&'static str, Out<'_>)> {
             vec![("base", reference(base)), ("tool", reference(tool))]
         }
         Operation::Sketch(sketch) => self::sketch(sketch),
+        Operation::Fillet {
+            base,
+            edges,
+            radius,
+        } => vec![
+            ("base", reference(base)),
+            ("edges", names(edges)),
+            ("radius", number(*radius)),
+        ],
+        Operation::Chamfer { base, edges, size } => vec![
+            ("base", reference(base)),
+            ("edges", names(edges)),
+            (
+                "size",
+                Out::Object(vec![("distance", number(size.distance))]),
+            ),
+        ],
     }
 }
 
@@ -458,6 +480,11 @@ fn point(position: &Position) -> Out<'static> {
     Out::Array(position.iter().map(|&l| number(l)).collect())
 }
 
+/// Element names, one to a line, so an edit to one is a line of the diff.
+fn names(names: &[ElementName]) -> Out<'_> {
+    Out::Lines(names.iter().map(|n| Out::Str(n.as_str())).collect())
+}
+
 fn reference(id: &FeatureId) -> Out<'_> {
     Out::Str(id.as_str())
 }
@@ -509,7 +536,7 @@ impl Writer {
         match value {
             Out::Raw(text) => self.push(text),
             Out::Str(text) => self.quote(text),
-            Out::Array(items) => {
+            Out::Array(items) | Out::Lines(items) => {
                 if items.is_empty() {
                     self.push("[]")
                 } else if value.one_line() {

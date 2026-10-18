@@ -4,6 +4,19 @@
       "description": "An angle in degrees: a number, to at most 9 decimals (nanodegrees). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
       "type": "number"
     },
+    "ChamferSize": {
+      "additionalProperties": false,
+      "description": "How far a chamfer cuts each edge back: along both its faces alike. (The uneven forms,\nmeasured from one of each edge's faces, are left for later: which face is the document's\nto name, not OCCT's order to pick.)",
+      "properties": {
+        "distance": {
+          "$ref": "#/$defs/Length"
+        }
+      },
+      "required": [
+        "distance"
+      ],
+      "type": "object"
+    },
     "Coordinate": {
       "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
       "type": "number"
@@ -19,6 +32,11 @@
     "ElementId": {
       "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
       "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+      "type": "string"
+    },
+    "ElementName": {
+      "description": "An element of an earlier feature's solid, by its name in Silico's form (feature.Kind(...)), never by its number.",
+      "minLength": 1,
       "type": "string"
     },
     "Feature": {
@@ -291,6 +309,64 @@
             "circles",
             "arcs",
             "constraints"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "`base`'s solid with `edges` rounded to `radius`.",
+          "properties": {
+            "base": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "edges": {
+              "items": {
+                "$ref": "#/$defs/ElementName"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "radius": {
+              "$ref": "#/$defs/Length"
+            },
+            "type": {
+              "const": "fillet",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "base",
+            "edges",
+            "radius"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "`base`'s solid with `edges` cut back by `size`.",
+          "properties": {
+            "base": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "edges": {
+              "items": {
+                "$ref": "#/$defs/ElementName"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "size": {
+              "$ref": "#/$defs/ChamferSize"
+            },
+            "type": {
+              "const": "chamfer",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "base",
+            "edges",
+            "size"
           ],
           "type": "object"
         }

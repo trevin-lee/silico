@@ -3,13 +3,18 @@
 //! own; the gate checks what features say about each other: every ID names one feature,
 //! every reference is to a feature before the one making it (so the timeline has no
 //! cycles), every solid is consumed at most once (and is a solid: a sketch makes none),
-//! every primitive's values are ones the kernel accepts, by the kernel's own rules, and
-//! every sketch holds together (`sketch_gate`).
+//! every primitive's, fillet's, and chamfer's values are ones the kernel accepts, by the
+//! kernel's own rules, every sketch holds together (`sketch_gate`), and every element a
+//! fillet or chamfer names is named as Silico names an edge (docs/ports/naming.md), by
+//! features before it. Whether a name finds its edge is the rebuild's to say: it's in the
+//! base's solid, which only a rebuild makes.
 
-use silico_protocol::{MAX_LENGTH, check_offset, format_number};
+use silico_protocol::{ChamferSize, MAX_LENGTH, check_fillet_radius, check_offset, format_number};
 
 use super::json::shown;
 use super::model::{Document, FeatureId, ID_LENGTH, Operation};
+use crate::kernel::ElementKind;
+use crate::naming::{Maker, Name};
 use crate::{Error, ErrorCode};
 
 /// How many of a document's problems [`Invalid`] lists; it counts the rest.
@@ -157,7 +162,112 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
             }
         }
 
-        for (field, target) in feature.operation.inputs().into_iter().flatten() {
+        // A fillet's radius and a chamfer's size, by the kernel's rules.
+        let size = match &feature.operation {
+            Operation::Fillet { radius, .. } => Some(check_fillet_radius(radius.mm())),
+            Operation::Chamfer { size, .. } => Some(
+                ChamferSize::Equal {
+                    distance: size.distance.mm(),
+                }
+                .check()
+                .map_err(|mut invalid| {
+                    invalid.parameter = "size.distance";
+                    invalid
+                }),
+            ),
+            _ => None,
+        };
+        if let Some(Err(invalid)) = size {
+            problems.add(|| {
+                refuse(
+                    invalid.parameter,
+                    invalid.message.clone(),
+                    format!("give the {what} a valid {}", invalid.parameter),
+                )
+            });
+        }
+        // The edges a fillet or chamfer names: at least one, each an edge's name, by
+        // features before it, none twice.
+        if matches!(
+            feature.operation,
+            Operation::Fillet { .. } | Operation::Chamfer { .. }
+        ) && feature.operation.edges().is_empty()
+        {
+            problems.add(|| {
+                refuse(
+                    "edges",
+                    format!("the {what} names no edges"),
+                    format!("name the edges to {what}, as Silico names them"),
+                )
+            });
+        }
+        let makers = |id: &FeatureId| {
+            holder(id)
+                .filter(|&h| h < index)
+                .and_then(|h| features.get(h))
+                .map(|f| Maker::of(&f.operation))
+        };
+        // Each name's first place, to say which an edge named twice repeats.
+        let mut first_place: std::collections::BTreeMap<&str, usize> =
+            std::collections::BTreeMap::new();
+        for (i, edge) in feature.operation.edges().iter().enumerate() {
+            let parameter = format!("edges.{i}");
+            let advice = "write the edge's name as Silico names it (feature.Edge(...)), of a feature before this one";
+            match Name::parse(edge.as_str(), &makers) {
+                Err(error) => problems.add(|| {
+                    refuse(
+                        &parameter,
+                        format!(
+                            "{parameter}, {}, isn't an edge's name: {error}",
+                            shown(edge.as_str())
+                        ),
+                        advice.to_owned(),
+                    )
+                }),
+                Ok(name) if name.kind() != ElementKind::Edge => problems.add(|| {
+                    refuse(
+                        &parameter,
+                        format!(
+                            "{parameter}, {}, names a {}, not an edge",
+                            shown(edge.as_str()),
+                            match name.kind() {
+                                ElementKind::Face => "face",
+                                ElementKind::Vertex => "vertex",
+                                ElementKind::Solid => "solid",
+                                ElementKind::Edge => "edge",
+                            }
+                        ),
+                        advice.to_owned(),
+                    )
+                }),
+                // Names a rebuild never takes (N3): a duplicate's, and an operation's element
+                // by its number, which says nothing of how it came about.
+                Ok(name) if unstable(&name, &makers) => problems.add(|| {
+                    refuse(
+                        &parameter,
+                        format!(
+                            "{parameter}, {}, names an edge by a name that doesn't say which: a duplicate (~n) or an operation's element by its number",
+                            shown(edge.as_str())
+                        ),
+                        "name the edge by how it came about, as Silico names it now".to_owned(),
+                    )
+                }),
+                Ok(_) => {}
+            }
+            if let Some(&j) = first_place.get(edge.as_str()) {
+                problems.add(|| {
+                    refuse(
+                        &parameter,
+                        format!("{parameter} names the edge edges.{j} names"),
+                        "name each edge once".to_owned(),
+                    )
+                });
+            } else {
+                first_place.insert(edge.as_str(), i);
+            }
+        }
+
+        for (field, target) in feature.operation.inputs() {
             let Some(used) = holder(target) else {
                 problems.add(|| {
                     refuse(
@@ -238,6 +348,22 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
         }
     }
     problems.into_result()
+}
+
+/// Whether `name` is one no map holds stable: a duplicate's (`~n`), or names, at its top or
+/// anywhere inside, an operation's element by its number.
+fn unstable(name: &Name, makers: &dyn Fn(&FeatureId) -> Option<Maker>) -> bool {
+    let mut stack = vec![name];
+    while let Some(name) = stack.pop() {
+        match name {
+            Name::Duplicate { .. } => return true,
+            Name::Element { feature, .. } if matches!(makers(feature), Some(Maker::By(_))) => {
+                return true;
+            }
+            _ => stack.extend(name.parts().into_iter().map(std::sync::Arc::as_ref)),
+        }
+    }
+    false
 }
 
 // An ID's key is its characters' bytes as one number, so no two IDs share a key and keys

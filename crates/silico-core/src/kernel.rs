@@ -648,6 +648,44 @@ pub fn primitive_counts(primitive: &Primitive) -> ElementCounts {
     }
 }
 
+/// The numbers a primitive's elements are named by, of `kind`, by OCCT's number (the
+/// first is `Face1`'s): each element numbered as in the primitive's fullest form, whatever
+/// its values remove (Trevin's, 2026-10-17), so one number always names one element and an
+/// edit that removes an element never gives its number to another. Only a cone's elements
+/// depend on its values: always Face1 its side, Face2 its top cap, Face3 its base cap;
+/// Edge1 the top circle, Edge2 the seam, Edge3 the base circle; Vertex1 the top circle's,
+/// Vertex2 the base circle's. A pointed cone's apex, which its fullest form hasn't, is
+/// numbered after them: Edge4 and Vertex3 at the top, Edge5 and Vertex4 at the base.
+/// Every other primitive's are OCCT's own numbers.
+pub fn primitive_numbers(primitive: &Primitive, kind: ElementKind) -> Vec<u32> {
+    let counts = primitive_counts(primitive);
+    if let Primitive::Cone {
+        radius1,
+        radius2,
+        height,
+    } = *primitive
+    {
+        let (faces, edges, vertices): (&[u32], &[u32], &[u32]) =
+            match cone_caps(radius1, radius2, height) {
+                (true, true) => (&[1, 2, 3], &[1, 2, 3], &[1, 2]),
+                // To a point at the top: the side, the base cap; the apex's edge, the seam,
+                // the base circle; the apex, the base circle's vertex.
+                (true, false) => (&[1, 3], &[4, 2, 3], &[3, 2]),
+                // To a point at the base: the side, the top cap; the top circle, the seam,
+                // the apex's edge; the top circle's vertex, the apex.
+                (false, _) => (&[1, 2], &[1, 2, 5], &[1, 4]),
+            };
+        return match kind {
+            ElementKind::Face => faces,
+            ElementKind::Edge => edges,
+            ElementKind::Vertex => vertices,
+            ElementKind::Solid => &[1],
+        }
+        .to_vec();
+    }
+    (1..=counts.of(kind)).collect()
+}
+
 /// Whether OCCT gives a cone its base cap and its top cap. OCCT leaves out a cap where the
 /// cone's meridian meets the axis, within its tolerance (BRepPrim_OneAxis::MeridianOnAxis):
 /// at the base, radius1 from it; at the top, the meridian's end, computed as BRepPrim_Cone

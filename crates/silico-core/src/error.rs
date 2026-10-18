@@ -64,6 +64,10 @@ error_codes! {
     /// A file couldn't be read or written (missing, not a regular file, not permitted, a
     /// disk full): the client's, not the document's or the kernel's.
     IoFailed = "io_failed",
+    /// A reference to an element (a fillet's edge, by its name) names none of the solid
+    /// it's of: an upstream edit removed or remade the element. The `candidates` are the
+    /// elements it most likely meant, never taken for it.
+    ReferenceBroken = "reference_broken",
 }
 
 impl ErrorCode {
@@ -83,7 +87,8 @@ impl ErrorCode {
             | ErrorCode::KernelFailed
             | ErrorCode::InvalidResult
             | ErrorCode::Drift
-            | ErrorCode::IoFailed => false,
+            | ErrorCode::IoFailed
+            | ErrorCode::ReferenceBroken => false,
         }
     }
 }
