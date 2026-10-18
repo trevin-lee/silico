@@ -38,8 +38,8 @@ pub const LENGTH_TOLERANCE: f64 = 1e-8;
 /// others (decision 5): ten times the solver's convergence, 57 nanodegrees.
 pub const ANGLE_TOLERANCE: f64 = 1e-9;
 
-/// How many times a sketch is solved again from its solution, at most, to reach one a solve
-/// leaves where it is ([`Translation::solve`]).
+/// How many times, at most, a solution is solved again as a load solves it, to reach one a
+/// load leaves where it is ([`Translation::solve`]).
 pub const AGAIN: usize = 3;
 
 /// How long a solve may take before the worker is stopped. A sketch the constraints can't
@@ -511,6 +511,9 @@ pub struct Translation {
     arcs: BTreeMap<ElementId, Arc>,
     /// The points the sketch's `on` constraints hold on curves, and those curves.
     on: Vec<(ElementId, Reference)>,
+    /// The sketch this translates, as its file holds it: what a solution is written into
+    /// for a load to start from ([`Translation::solve`]).
+    sketch: Sketch,
 }
 
 /// A line, or an axis, as the solver holds it.
@@ -748,6 +751,7 @@ impl Translation {
             circles,
             arcs,
             on,
+            sketch: sketch.clone(),
         };
         for (i, c) in constraints.iter().enumerate() {
             let tag = Tag(i as u32 + 1);
@@ -1160,23 +1164,20 @@ impl Translation {
     /// template redimensioned a thousandfold) can be called conflicting, and one whose kept
     /// constraints fix a value only loosely (through a square root of their convergence, or
     /// an angle along a long side) can leave a dropped constraint measurably off (M3.3's
-    /// break-it). Diagnosed again from that solution, PlaneGCS can drop another, and the
-    /// solve moves: M3.4's re-solve on load would move it on every load. So when the solver
-    /// reached a solution and either called the sketch over-constrained or dropped
-    /// redundant constraints, the sketch is solved again from each solution until a solve
-    /// leaves it where it was, at most [`AGAIN`] times; the earliest answer that solves on
-    /// such a solution stands: it is what every later load gives. Otherwise the first
-    /// stands. SolidWorks solves such a sketch.
+    /// break-it). A load (M3.4) solves the sketch from the solution its file stores, and
+    /// diagnoses there: it can drop other constraints, call them conflicting, or move the
+    /// solution. So when the solver reached a solution and either called the sketch
+    /// over-constrained or dropped redundant constraints, the solution is written into the
+    /// sketch as its file would hold it and solved as a load solves it (translated again,
+    /// each arc's radius and angles worked out from its points), until a load leaves the
+    /// sketch where it started, bit for bit, at most [`AGAIN`] times. That load's answer
+    /// stands, a refusal or not, with the constraints it names: it is what every later
+    /// load gives. So does a load that reaches no solution from a solution a save would
+    /// write: it leaves the file as it is, so every load refuses it the same way. If no load
+    /// settles, or one fails from a refusal, the first answer stands. SolidWorks solves such
+    /// a sketch.
     pub fn solve(&self, solver: &mut dyn SketchSolver) -> Result<Answer, Error> {
-        let solved = solver.solve(self.system.clone())?;
-        if let Err(e) = self.check_reply(&solved) {
-            solver.distrust();
-            return Err(e);
-        }
-        let first = Answer {
-            outcome: self.read(&solved),
-            solved,
-        };
+        let first = self.answer(solver)?;
         if !reached(&first.solved) {
             return Ok(first);
         }
@@ -1187,44 +1188,67 @@ impl Translation {
             Err(e) if e.code() == ErrorCode::OverConstrained => {}
             _ => return Ok(first),
         }
-        let mut again = self.clone();
-        let mut last: Option<Answer> = None;
+        // A solution a load can't start from (a translation the gate's rules refuse, which a
+        // save refuses too), the worker refusing it as a start, or a load that reaches no
+        // solution: the first answer stands. A worker that failed (crashed, timed out, ran
+        // short) or a reply that can't be trusted is the error, as it is for the first solve.
+        let Some(mut stored) = self.stored(&first.solved.values) else {
+            return Ok(first);
+        };
+        // Whether the answer `stored` was written from solved: one a save would write.
+        let mut saved = first.outcome.is_ok();
         for _ in 0..AGAIN {
-            let previous = last.as_ref().unwrap_or(&first);
-            again.system.values = previous.solved.values.clone();
-            // The worker refusing the solution as a start, or a solve that reaches no
-            // solution: the first answer stands. A worker that failed (crashed, timed out,
-            // ran short) or a reply that can't be trusted is the error, as it is for the
-            // first solve.
-            let resolved = match solver.solve(again.system.clone()) {
-                Ok(resolved) => resolved,
+            let Ok(load) = Translation::new(&stored) else {
+                return Ok(first);
+            };
+            let here = match load.answer(solver) {
+                Ok(here) => here,
                 Err(e) if e.code() == ErrorCode::InvalidInput => return Ok(first),
                 Err(e) => return Err(e),
             };
-            if let Err(e) = again.check_reply(&resolved) {
-                solver.distrust();
-                return Err(e);
+            if !reached(&here.solved) {
+                // A load that reaches no solution leaves the file as it is, so every load
+                // gives this refusal: a solution a save would write stands refused with it.
+                // From a refusal, nothing is saved, and the first answer stands.
+                return Ok(if saved { here } else { first });
             }
-            if !reached(&resolved) {
+            let Some(next) = load.stored(&here.solved.values) else {
                 return Ok(first);
-            }
-            let here = Answer {
-                outcome: again.read(&resolved),
-                solved: resolved,
             };
-            if same_bits(&here.solved.values, &previous.solved.values) {
-                // `previous`'s solution is its own: solved from it, it doesn't move.
-                return Ok(if previous.outcome.is_ok() {
-                    last.unwrap_or(first)
-                } else if here.outcome.is_ok() {
-                    here
-                } else {
-                    first
-                });
+            if same_place(&next, &stored) {
+                return Ok(here);
             }
-            last = Some(here);
+            saved = here.outcome.is_ok();
+            stored = next;
         }
         Ok(first)
+    }
+
+    /// Solves this with `solver`, checks the reply, and reads it.
+    fn answer(&self, solver: &mut dyn SketchSolver) -> Result<Answer, Error> {
+        let solved = solver.solve(self.system.clone())?;
+        if let Err(e) = self.check_reply(&solved) {
+            solver.distrust();
+            return Err(e);
+        }
+        Ok(Answer {
+            outcome: self.read(&solved),
+            solved,
+        })
+    }
+
+    /// The sketch as its file holds it with its points and circles' radii at `values`;
+    /// none if one isn't a finite number.
+    fn stored(&self, values: &[f64]) -> Option<Sketch> {
+        let mut out = self.sketch.clone();
+        for p in &mut out.points {
+            let [x, y] = self.xy(values, *self.points.get(&p.id)?);
+            (p.x, p.y) = (Coordinate::new(x)?, Coordinate::new(y)?);
+        }
+        for c in &mut out.circles {
+            c.radius = Coordinate::new(at(values, self.circles.get(&c.id)?.radius))?;
+        }
+        Some(out)
     }
 
     /// The tags sent, in increasing order.
@@ -1941,9 +1965,20 @@ fn reached(solved: &Solved) -> bool {
     )
 }
 
-/// Whether `a` and `b` are the same values, bit for bit.
-fn same_bits(a: &[f64], b: &[f64]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+/// Whether `a` and `b` have their points and circles' radii at the same places, bit for
+/// bit (a file keeps `-0` and `0` apart).
+fn same_place(a: &Sketch, b: &Sketch) -> bool {
+    let bits = |c: Coordinate| c.mm().to_bits();
+    a.points.len() == b.points.len()
+        && a.circles.len() == b.circles.len()
+        && a.points
+            .iter()
+            .zip(&b.points)
+            .all(|(p, q)| p.id == q.id && bits(p.x) == bits(q.x) && bits(p.y) == bits(q.y))
+        && a.circles
+            .iter()
+            .zip(&b.circles)
+            .all(|(c, d)| c.id == d.id && bits(c.radius) == bits(d.radius))
 }
 
 fn at(values: &[f64], v: Value) -> f64 {

@@ -1296,10 +1296,10 @@ fn after_a_solved_conflict_the_second_solve_stands_only_when_it_solves() {
 #[test]
 fn a_solve_that_dropped_constraints_is_solved_again_until_it_doesnt_move() {
     // M3.4: a sketch is solved on every load from the solution its file stores, so the
-    // answer that stands must be one a solve from its own solution leaves where it is.
-    // PlaneGCS picks what it drops where it diagnoses: the line horizontal twice, k0000003
-    // dropped from the drawing, may be kept from the solution, and the solve move. p3, free,
-    // is values 10 and 11: the scripted solves move it.
+    // answer that stands must be the one a load gives: a load that leaves the solution where
+    // it is. PlaneGCS picks what it drops where it diagnoses: the line horizontal twice,
+    // k0000003 dropped from the drawing, may be kept from the solution, and the solve move.
+    // p3, free, is values 10 and 11: the scripted solves move it.
     let t = translate(&ten(&[
         r#"{"id": "k0000003", "type": "horizontal", "line": "n0000001"}"#,
     ]));
@@ -1340,46 +1340,60 @@ fn a_solve_that_dropped_constraints_is_solved_again_until_it_doesnt_move() {
                 .collect::<Vec<_>>(),
         )
     };
-    // Dropped, and the solve from its solution doesn't move it: the first stands, as it
-    // was diagnosed (the second's diagnosis dropped k0000001 instead), after two solves.
+    // Dropped, and the load from its solution doesn't move it: the load's answer stands,
+    // naming what the load's diagnosis dropped (k0000001), as every later load will; not the
+    // drawing's pick (break-it on dc18c28: a save and its load named different ones).
     let (got, starts) = run(vec![dropping(3, 4.0), dropping(1, 4.0)]);
-    assert_eq!(redundant_of(&got), (4.0, vec!["k0000003".to_owned()]));
+    assert_eq!(redundant_of(&got), (4.0, vec!["k0000001".to_owned()]));
     assert_eq!(starts, [3.0, 4.0]);
-    // Moved by the second solve, which the third doesn't move: the second stands.
+    // Moved by the first load, which the second doesn't move: the second load stands.
     let (got, starts) = run(vec![dropping(3, 4.0), dropping(1, 5.0), dropping(3, 5.0)]);
-    assert_eq!(redundant_of(&got), (5.0, vec!["k0000001".to_owned()]));
+    assert_eq!(redundant_of(&got), (5.0, vec!["k0000003".to_owned()]));
     assert_eq!(starts, [3.0, 4.0, 5.0]);
     // Called conflicting, then conflicting again but moved, then not moved and solved: the
     // third stands (one solve again wasn't enough, M3.3's break-it).
     let (got, starts) = run(vec![conflict(4.0), conflict(5.0), dropping(1, 5.0)]);
     assert_eq!(redundant_of(&got), (5.0, vec!["k0000001".to_owned()]));
     assert_eq!(starts, [3.0, 4.0, 5.0]);
-    // Settled, but refused both before and after: the first's refusal stands, naming its
-    // constraints.
+    // Settled, but refused: the settled load's refusal stands, naming what it names, since
+    // every load gives it (break-it on dc18c28: a save Ok whose every load was refused).
     let mut other = conflict(5.0);
     other.conflicting = vec![Tag(3)];
     let (got, starts) = run(vec![conflict(4.0), conflict(5.0), other]);
     let e = got.outcome.unwrap_err();
     assert_eq!(
         (e.code(), e.elements()),
-        (
-            ErrorCode::OverConstrained,
-            &["k0000001".to_owned(), "k0000003".to_owned()][..]
-        )
+        (ErrorCode::OverConstrained, &["k0000003".to_owned()][..])
     );
     assert_eq!(starts, [3.0, 4.0, 5.0]);
+    // Solved Ok on the drawing, and refused by the load that doesn't move it: refused.
+    let (got, starts) = run(vec![dropping(3, 4.0), conflict(4.0)]);
+    assert_eq!(got.outcome.unwrap_err().code(), ErrorCode::OverConstrained);
+    assert_eq!(starts, [3.0, 4.0]);
     // Moving on every solve: AGAIN solves again at most, and then the first stands.
     let moving: Vec<Solved> = (0..=AGAIN).map(|i| dropping(3, 4.0 + i as f64)).collect();
     let (got, starts) = run(moving);
     assert_eq!(redundant_of(&got), (4.0, vec!["k0000003".to_owned()]));
     assert_eq!(starts.len(), 1 + AGAIN);
-    // Moved by the second solve, which reaches no solution: the first stands.
+    // Solved Ok on the drawing, and the load from its solution reaches none: that load's
+    // refusal stands, since it leaves the file as it is and every load gives it (break-it
+    // on dc18c28: a far triangle saved Ok whose every load failed).
     let (got, starts) = run(vec![
         dropping(3, 4.0),
         answer(&t, at(4.0), SolveStatus::Failed),
     ]);
-    assert_eq!(redundant_of(&got), (4.0, vec!["k0000003".to_owned()]));
+    assert_eq!(got.outcome.unwrap_err().code(), ErrorCode::SolveFailed);
     assert_eq!(starts, [3.0, 4.0]);
+    // Moved and refused by the first load, and the load from that refusal reaches none: no
+    // load settled, so the first answer stands, the documented fallback (no sweep has
+    // reached it; after_a_solved_conflict_... has it from a first answer refused).
+    let (got, starts) = run(vec![
+        dropping(3, 4.0),
+        conflict(5.0),
+        answer(&t, at(5.0), SolveStatus::Failed),
+    ]);
+    assert_eq!(redundant_of(&got), (4.0, vec!["k0000003".to_owned()]));
+    assert_eq!(starts, [3.0, 4.0, 5.0]);
     // Nothing dropped, or a refusal of another kind: no solve again.
     let (got, starts) = run(vec![answer(&t, at(4.0), SolveStatus::Success)]);
     assert_eq!(redundant_of(&got), (4.0, Vec::new()));
