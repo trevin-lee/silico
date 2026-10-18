@@ -14,6 +14,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Counts from a command line fed to `(0..n).map(..).collect()`: `collect` sizes the Vec up front, so `usize::MAX` panics (capacity overflow) and 1e15 aborts on allocation
 - Derived measures in fixed point sized for their inputs' units (millionths of a mm³ in an i64 hold 9.2e12 mm³, a cube 21 m on a side, while the gate admits 1 km sides): take the largest values the gate admits through every derived quantity (volume, area, products of lengths)
 - Absolute tolerances on quantities that scale with the part (OCCT's `GeomLib::NormEstim` orients a pole's or apex's normal only when \|dP/du × dP/dv\| a 1e-5 step away is over 1e-8): a ball under 0.0316 mm radius or a cone slenderer than 1:1000 gets a normal pointing into the solid
+- Two rules composed into a third (a direction within 4ε of unit length times a length up to the limit, then checked as a vector at most the limit): the product lands a few ulps past it and is refused naming a parameter the caller never sent; search the boundary with `next_up`/`next_down`
+- Refusals written as `change <= k * before`: NaN makes every comparison false, so the refusal is skipped; an infinite result or a negative (inverted) base passes too
 - Angles from `atan2` at a signed zero (a point at its centre's left with y = −0 gives −π, +0 gives π): a request whose points are placed with zeros as 0 still differs by a turn, and the kernel's bytes with it
 - One rule computed twice, by the core and again by a worker (a sliver's |area| ≤ tol × perimeter about different first points, sqrt against hypot): bisect a turned thin strip's width to the core's boundary and send it; a shoelace sum of coordinates ~10 cancels to ~1e-8 relative
 
@@ -74,6 +76,9 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - The same object passed as both operands, or operands sharing geometry (a shape and its moved copy), against the same shapes read separately from bytes: results and history must match
 - Revolve with an axis that crosses the profile, or angles of 0°, 360°, or more than 360°
 - Revolve a side leaning just off parallel to the axis (its length within 1e-7 of its length along the axis): OCCT makes a cylinder, not a cone, and calls the solid valid
+- Revolve a profile that touches its axis only at a corner (a cone's apex where its slanted side meets the side on the axis, a diamond's tip): OCCT generates a degenerate edge from that vertex (two, when MakeRevol copies one two faces share), so a history rule of "on the axis, it generates nothing" refuses the commonest revolve
+- A sweep's vector, or a revolution's axis, in the faces' own plane, given to a kernel operation that leaves the plane to the core: OCCT builds a solid of volume 0 that `BRepCheck` calls valid
+- OCCT makers that share their input's topology (`MakePrism`, `MakeRevol` without copying): they add curves and locations to the input's edges, so the input's bytes change and each later sweep of the same shape in one process writes different bytes; compare the input's bytes before and after, and sweep it twice
 - Revolve with a side or corner exactly 1e-7 from the axis, or across it by less than 1e-7: OCCT throws (`NCollection_Sequence::Value`, `BRep_API: command not done`)
 - Revolve by less than `Precision::Angular()` (1e-12 rad) far enough from the axis to move the profile, and by 360° − ε, which OCCT sweeps as a partial turn whose ends coincide
 - Patterns with count 0, count 1, count 100,000, or instances that overlap each other
