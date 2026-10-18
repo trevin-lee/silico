@@ -621,6 +621,36 @@ mod tests {
     }
 
     #[test]
+    fn a_file_of_exactly_the_most_an_entry_may_be_is_read_whole_and_one_byte_more_isnt_promptly() {
+        // Found by the milestone's mutation run: the limit's three edges (the stat's `>`,
+        // the read's `MAX_ENTRY + 1`, the read's `>`) were never met, so each one off by one
+        // passed every test. A sparse file of exactly 1 GiB is read whole (zeros, about
+        // 0.15 s of CPU), and one byte more is refused by its size, unread. Each buffer is
+        // dropped at once.
+        let scratch = Scratch::new("most");
+        let file = scratch.0.join("entry");
+        let f = std::fs::File::create(&file).unwrap();
+        f.set_len(MAX_ENTRY).unwrap();
+        let start = cpu_time::ThreadTime::now();
+        match read_file(&file) {
+            FileRead::Bytes(bytes) => assert_eq!(bytes.len() as u64, MAX_ENTRY),
+            FileRead::Missing => panic!("missing"),
+            FileRead::Unusable(why) => panic!("unusable: {why}"),
+            FileRead::Failed(e) => panic!("failed: {e}"),
+        }
+        f.set_len(MAX_ENTRY + 1).unwrap();
+        assert!(matches!(
+            read_file(&file),
+            FileRead::Unusable("is too large")
+        ));
+        let spent = start.elapsed();
+        assert!(
+            spent < std::time::Duration::from_secs(10),
+            "took {spent:?} of CPU"
+        );
+    }
+
+    #[test]
     fn a_file_larger_than_any_entry_is_refused_without_reading_it_promptly() {
         // Found by the milestone's mutation run: a sparse file of 64 GiB was refused by the
         // read's own limit after reading 1 GiB of it, which passed every test: refused by

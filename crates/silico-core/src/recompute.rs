@@ -166,8 +166,8 @@ struct FeatureNaming {
     uses: Vec<usize>,
 }
 
-/// Models are equal when they're of the same document and every feature came to the same:
-/// names are a function of those.
+/// Models are equal when they're of the same document, built in the same generation, and
+/// every feature came to the same: names are a function of those.
 impl PartialEq for Model {
     fn eq(&self, other: &Self) -> bool {
         self.source == other.source

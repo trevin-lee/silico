@@ -755,6 +755,50 @@ fn steps_one_result_makes_ready_run_at_once() {
     assert!(together, "the two moves didn't run at once");
 }
 
+#[test]
+fn a_solid_made_is_measured_at_once_while_what_uses_it_runs() {
+    // Found by the milestone's mutation run: the measure a make makes ready didn't wake an
+    // idle thread (it was counted as one fewer job, not one more), so it waited for the
+    // thread that made it, which passed every test. A block and a tool are made (the
+    // block's make held until the tool is measured), then the cut that uses them is held:
+    // the block is still measured, by another thread, while the cut runs.
+    let engine = engine(4);
+    let block = engine
+        .kernel()
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx == 2.0));
+    let cut = engine.kernel().hold(|op| op.name() == "Cut");
+    let run = engine.start(document(&[
+        r#"{"id": "aaaaaaaa", "type": "box", "v": 1, "name": "A", "position": [0, 0, 0], "length": 2, "width": 1, "height": 1}"#,
+        r#"{"id": "tttttttt", "type": "box", "v": 1, "name": "T", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1}"#,
+        r#"{"id": "bbbbbbbb", "type": "cut", "v": 1, "name": "B", "base": "aaaaaaaa", "tool": "tttttttt"}"#,
+    ]));
+    let summaries = || {
+        engine
+            .kernel()
+            .calls()
+            .iter()
+            .filter(|call| call.op.name() == "Summarize")
+            .count()
+    };
+    let until = |what: &str, done: &dyn Fn() -> bool| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !done() {
+            assert!(std::time::Instant::now() < deadline, "{what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    until("the tool was never measured", &|| summaries() == 1);
+    block.release();
+    until("the cut never ran", &|| {
+        engine.kernel().wait_running(1, Duration::ZERO)
+    });
+    until("the block wasn't measured while the cut ran", &|| {
+        summaries() == 2
+    });
+    cut.release();
+    assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
+}
+
 /// The fake kernel, with the first recompute's `advance` held until let go: so a newer
 /// recompute can start, and get ahead, before the older one has.
 struct SlowAdvance {
