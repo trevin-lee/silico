@@ -1828,43 +1828,67 @@ impl Plan {
     }
 
     /// The features refused so far, from `done`, and every feature made from one (its base,
-    /// tool, or sketch one, all the way down): nothing is built for them alone.
-    fn refused_and_after(&self, done: &BTreeMap<Key, StepResult>) -> BTreeSet<usize> {
-        let mut dead = BTreeSet::new();
+    /// tool, or sketch one, all the way down).
+    fn refusals(&self, done: &BTreeMap<Key, StepResult>) -> Refusals {
+        let mut refusals = Refusals::default();
         for (i, planned) in self.features.iter().enumerate() {
             let after = planned
                 .uses
                 .iter()
                 .chain(&planned.sweeps)
-                .any(|u| dead.contains(u));
-            if after || self.verdict(i, done) == Some(false) {
-                dead.insert(i);
+                .any(|u| refusals.dead.contains(u));
+            let refused = self.verdict(i, done) == Some(false);
+            if refused {
+                refusals.refused.insert(i);
+            }
+            if after || refused {
+                refusals.dead.insert(i);
             }
         }
-        dead
+        refusals
     }
 
-    /// Adds to `dead` the features `key`'s result (or measure) refuses, now that `done` holds
-    /// it, and every feature made from one.
-    fn judge(&self, key: &Key, done: &BTreeMap<Key, StepResult>, dead: &mut BTreeSet<usize>) {
+    /// Adds to `refusals` the features `key`'s result (or measure) refuses, now that `done`
+    /// holds it, and every feature made from one.
+    fn judge(&self, key: &Key, done: &BTreeMap<Key, StepResult>, refusals: &mut Refusals) {
         for &f in self.judged_by.get(key).into_iter().flatten() {
-            if dead.contains(&f) || self.verdict(f, done) != Some(false) {
+            if refusals.refused.contains(&f) || self.verdict(f, done) != Some(false) {
                 continue;
             }
+            refusals.refused.insert(f);
             let mut stack = vec![f];
             while let Some(i) = stack.pop() {
-                if dead.insert(i) {
+                if refusals.dead.insert(i) {
                     stack.extend(self.dependants.get(i).into_iter().flatten().copied());
                 }
             }
         }
     }
 
-    /// Whether step `key` serves a feature not in `dead`, so it's to be run.
-    fn needed(&self, key: &Key, dead: &BTreeSet<usize>) -> bool {
-        self.owners
-            .get(key)
-            .is_none_or(|owners| owners.iter().any(|f| !dead.contains(f)))
+    /// Whether step `key` is to be run: it serves a feature that isn't dead, or a refused
+    /// feature that's reported as its own refusal (made from no other refused one), whose
+    /// outcome is read from every one of its steps. A refused feature's last step may be
+    /// kept or cached without its earlier ones (a cache entry dropped, a write that
+    /// failed), so those are built again, as a fresh recompute builds them.
+    fn needed(&self, key: &Key, refusals: &Refusals) -> bool {
+        self.owners.get(key).is_none_or(|owners| {
+            owners.iter().any(|&f| {
+                !refusals.dead.contains(&f)
+                    || (refusals.refused.contains(&f) && !self.made_from_dead(f, refusals))
+            })
+        })
+    }
+
+    /// Whether feature `i` is made from a dead feature: then it's blocked on it, and its
+    /// own steps aren't read.
+    fn made_from_dead(&self, i: usize, refusals: &Refusals) -> bool {
+        self.features.get(i).is_some_and(|planned| {
+            planned
+                .uses
+                .iter()
+                .chain(&planned.sweeps)
+                .any(|u| refusals.dead.contains(u))
+        })
     }
 
     /// The step of a fillet or chamfer `feature` (the next feature planned), of its base:
@@ -2143,8 +2167,18 @@ struct Schedule {
     /// Fillets' and chamfers' steps whose edges didn't all resolve, by key: their broken
     /// references' errors (the first hundred), and how many there are.
     unresolved: BTreeMap<Key, crate::references::Broken>,
-    /// Features refused by their result's check, and every feature made from one, by
-    /// index: a step only these need isn't started (one already running finishes, unused).
+    /// Features refused by their result's check, and every feature made from one: a step
+    /// only these need isn't started (one already running finishes, unused).
+    refusals: Refusals,
+}
+
+/// Features refused by their result's check, and what's made from them, by index.
+#[derive(Default)]
+struct Refusals {
+    /// Each feature its own check refused.
+    refused: BTreeSet<usize>,
+    /// Those and every feature made from one (its base, tool, or sketch one, all the way
+    /// down).
     dead: BTreeSet<usize>,
 }
 
@@ -2221,13 +2255,13 @@ impl<K: Kernel + 'static> Engine<K> {
             ready: VecDeque::new(),
             unmeasured: BTreeMap::new(),
             unresolved: BTreeMap::new(),
-            dead: BTreeSet::new(),
+            refusals: Refusals::default(),
             running: 0,
             superseded: false,
             broken: None,
         };
         // Features refused already, by results kept or read from the cache.
-        schedule.dead = plan.refused_and_after(&schedule.done);
+        schedule.refusals = plan.refusals(&schedule.done);
         // Steps that can't run, since an input failed in an earlier recompute (and its
         // failure was kept): left out, and decided blocked or failed from `done`.
         let mut doomed: BTreeSet<Key> = BTreeSet::new();
@@ -2621,10 +2655,10 @@ impl<K: Kernel + 'static> Engine<K> {
                         s = changed.wait(s).unwrap_or_else(PoisonError::into_inner);
                         continue;
                     };
-                    // A step only refused features (and what's made from them) need isn't
-                    // started: they're reported blocked, whatever ran.
+                    // A step only refused features' users need isn't started: they're
+                    // reported blocked, whatever ran.
                     if let Job::Make(key) = job
-                        && !plan.needed(&key, &s.dead)
+                        && !plan.needed(&key, &s.refusals)
                     {
                         continue;
                     }
@@ -2751,8 +2785,8 @@ impl<K: Kernel + 'static> Engine<K> {
                     s.done.insert(key, result);
                     if made {
                         woken += release(&mut s, key);
-                        let Schedule { done, dead, .. } = &mut *s;
-                        plan.judge(&key, done, dead);
+                        let Schedule { done, refusals, .. } = &mut *s;
+                        plan.judge(&key, done, refusals);
                         // A feature's solid is measured once it's made, by a job of its own:
                         // what uses it doesn't wait for that.
                         if plan.results.contains(&key) {
@@ -2769,8 +2803,8 @@ impl<K: Kernel + 'static> Engine<K> {
                     s.done.insert(key, Ok(measured));
                     // The checks this measure decides (its feature's, and those whose base it
                     // is): what only refused features need is no longer started.
-                    let Schedule { done, dead, .. } = &mut *s;
-                    plan.judge(&key, done, dead);
+                    let Schedule { done, refusals, .. } = &mut *s;
+                    plan.judge(&key, done, refusals);
                 }
                 Ran::Measured(Outcome::Done(Err(error))) => {
                     // A solid that couldn't be measured is kept on disk all the same, so the
