@@ -1053,8 +1053,10 @@ fn nothing_is_built_on_a_refused_pocket() {
     let fresh = engine();
     let all = chain(TEN, TEN);
     let refs: Vec<&str> = all.iter().map(String::as_str).collect();
+    // How many cuts ran fresh depends on when the verdict lands, so it isn't pinned here;
+    // shared_step_verdicts.rs's a_verdict_that_lands_mid_recompute_stops_what_hasnt_started
+    // pins it with the order held.
     check(&published(&fresh, &refs));
-    assert!((1..=3).contains(&cuts(&fresh)));
     // The verdict known before anything is planned: the pockets on it, new steps (other
     // lengths), are never started.
     let engine = engine();

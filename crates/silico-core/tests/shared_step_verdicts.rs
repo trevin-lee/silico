@@ -121,19 +121,10 @@ fn nothing_is_built_on_a_refused_pocket_sharing_an_m2_cuts_step() {
         model.outcome(&id("rrrrrrrr")),
         Some(&FeatureOutcome::Blocked { on: id("qqqqqqqq") })
     );
-    let cuts = |engine: &Recompute<FakeKernel>| {
-        engine
-            .kernel()
-            .calls()
-            .into_iter()
-            .filter(|call| call.op.name() == "Cut")
-            .count()
-    };
-    // The shared step, and perhaps the pocket on the refused pocket, which may start before
-    // the verdict lands (its users start as soon as the shared cut is built, beside its
-    // measure: round 3); none after it.
-    assert!((1..=2).contains(&cuts(&engine)));
-    // With the verdict known before the plan (the same document, kept), a pocket on the
+    // Fresh, the pocket on the refused one may start before the verdict lands (its users
+    // start as soon as the shared cut is built, beside its measure: round 3), so how many
+    // cuts ran isn't pinned here; a_verdict_that_lands_mid_recompute_stops_what_hasnt_started
+    // pins it with the order held. With the verdict known before the plan (the same document, kept), a pocket on the
     // refused one, another step, is never started.
     let warm = self::engine();
     let f = features(true);
@@ -197,4 +188,140 @@ fn robust_proof_an_m2_cuts_user_runs_whatever_pocket_shares_its_step() {
             }
         }
     }
+}
+
+/// The number of cuts `engine`'s kernel was asked for.
+fn cuts(engine: &Recompute<FakeKernel>) -> usize {
+    engine
+        .kernel()
+        .calls()
+        .iter()
+        .filter(|call| call.op.name() == "Cut")
+        .count()
+}
+
+/// Whether the cache under `dir` holds an entry whose shape's description has `word`
+/// (`"\ncut "`, `"\nbox "`). A feature's solid is written to the cache only once it's
+/// measured, after its measure's verdict is decided: so an entry there means the scheduler
+/// has judged it.
+fn cached(dir: &std::path::Path, word: &[u8]) -> bool {
+    let Ok(dirs) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    dirs.flatten()
+        .filter(|e| e.path().is_dir())
+        .flat_map(|e| std::fs::read_dir(e.path()).into_iter().flatten().flatten())
+        .filter_map(|e| std::fs::read(e.path()).ok())
+        .any(|bytes| bytes.windows(word.len()).any(|w| w == word))
+}
+
+/// Waits up to 30 s for `ready`.
+fn wait_for(what: &str, ready: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !ready() {
+        assert!(std::time::Instant::now() < deadline, "{what}");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn a_verdict_that_lands_mid_recompute_stops_what_hasnt_started() {
+    // The council's round 4: three pockets chained on the cube above the XY plane, each
+    // going down and missing it. The first's cut is made; its users start at once, so the
+    // second's cut starts (held) while the first's measure is held. The measure is let go,
+    // and once the cube's and the first cut's entries are on disk (written after their
+    // measures are judged), the first pocket is refused and the second's cut let go: the
+    // third's cut, which only refused features need, is never started. Exactly two cuts.
+    let dir = std::env::temp_dir().join(format!(
+        "silico-verdict-mid-recompute-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let kernel = FakeKernel::new(3).unwrap();
+    let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let second = kernel.hold(move |op| {
+        op.name() == "Cut" && seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1
+    });
+    let measure = kernel.hold(|op| match op {
+        silico_protocol::Op::Summarize { shape } => {
+            FakeKernel::describe(shape).is_some_and(|made| made.starts_with("cut("))
+        }
+        _ => false,
+    });
+    let engine = Recompute::with_cache(
+        kernel,
+        silico_core::cache::Cache::with_secret(dir.join("cache"), &dir.join("secret")),
+    )
+    .with_sketches(FakeSketches::new());
+    let cube_above = box_at("bbbbbbbb", [-1.0, -1.0, 1.0], 10.0, 10.0, 10.0);
+    let s = rectangle("ssssssss", "xy", [0.0, 0.0], 4.0, 2.0);
+    let q = pocket("qqqqqqqq", "bbbbbbbb", "ssssssss", TEN);
+    let r = pocket("rrrrrrrr", "qqqqqqqq", "ssssssss", TEN);
+    let t = pocket("tttttttt", "rrrrrrrr", "ssssssss", TEN);
+    let run = engine.start(checked_document(&[&cube_above, &s, &q, &r, &t]));
+    wait_for("the second cut didn't start", || cuts(&engine) == 2);
+    drop(measure);
+    wait_for("the cube and the first cut weren't measured", || {
+        cached(&dir.join("cache"), b"\ncut ") && cached(&dir.join("cache"), b"\nbox ")
+    });
+    drop(second);
+    let Ok(Ok(RunOutcome::Published(model))) = run.wait_timeout(Duration::from_secs(60)) else {
+        panic!("not published");
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(matches!(
+        model.outcome(&id("qqqqqqqq")),
+        Some(FeatureOutcome::Failed(_))
+    ));
+    for blocked in ["rrrrrrrr", "tttttttt"] {
+        assert_eq!(
+            model.outcome(&id(blocked)),
+            Some(&FeatureOutcome::Blocked { on: id("qqqqqqqq") })
+        );
+    }
+    assert_eq!(cuts(&engine), 2, "the third cut started after the verdict");
+}
+
+#[test]
+fn a_step_a_live_feature_shares_with_a_dead_one_is_run() {
+    // The council's round 4: boxes B and C alike above XY, sketch S, a baseless reversed pad
+    // P (the pocket's prism), the M2 cut K = cut(C, P) (built: M2 checks only its solids),
+    // and the pocket Q on B (refused: it removes nothing; K's step). Then, on the same
+    // engine, the same reversed pocket G on Q and F on K: one cut step, which F (alive)
+    // needs and G (dead) doesn't. It's run once; G is blocked on Q, F built.
+    let engine = engine();
+    let base = [
+        box_at("bbbbbbbb", [-1.0, -1.0, 1.0], 10.0, 10.0, 10.0),
+        box_at("cccccccc", [-1.0, -1.0, 1.0], 10.0, 10.0, 10.0),
+        rectangle("ssssssss", "xy", [0.0, 0.0], 4.0, 2.0),
+        pad("pppppppp", None, "ssssssss", REVERSED),
+        r#"{"id": "kkkkkkkk", "type": "cut", "v": 1, "name": "K", "base": "cccccccc", "tool": "pppppppp"}"#.to_owned(),
+        pocket("qqqqqqqq", "bbbbbbbb", "ssssssss", TEN),
+    ];
+    let refs: Vec<&str> = base.iter().map(String::as_str).collect();
+    let model = published(&engine, &refs);
+    assert!(matches!(
+        model.outcome(&id("qqqqqqqq")),
+        Some(FeatureOutcome::Failed(_))
+    ));
+    let before = cuts(&engine);
+    let g = pocket("gggggggg", "qqqqqqqq", "ssssssss", REVERSED);
+    let f = pocket("ffffffff", "kkkkkkkk", "ssssssss", REVERSED);
+    let mut more = refs.clone();
+    more.extend([g.as_str(), f.as_str()]);
+    let model = published(&engine, &more);
+    assert_eq!(cuts(&engine) - before, 1, "the shared cut, once");
+    assert_eq!(
+        model.outcome(&id("gggggggg")),
+        Some(&FeatureOutcome::Blocked { on: id("qqqqqqqq") })
+    );
+    assert!(
+        matches!(
+            model.outcome(&id("ffffffff")),
+            Some(FeatureOutcome::Built { .. })
+        ),
+        "{:?}",
+        model.outcome(&id("ffffffff"))
+    );
 }
