@@ -5,10 +5,11 @@
 # into the run's summary and one artifact, and fails if any mutant was missed.
 #
 #   gh workflow run mutants.yml --ref main -f ref=<branch> -f base=main -f packages="silico-core"
+#   gh workflow run mutants.yml --ref main -f files="crates/silico-core/src/cache.rs crates/silico-core/src/naming/*.rs"
 name: mutants
-# The ref, base, and packages, so concurrent runs can be told apart (review-tests finds its
-# run by this title).
-run-name: "mutants ${{ inputs.ref || github.ref_name }} since ${{ inputs.base || 'nothing' }} in ${{ inputs.packages || 'every package' }}"
+# The ref, base, packages, and files, so concurrent runs can be told apart (review-tests
+# finds its run by this title).
+run-name: "mutants ${{ inputs.ref || github.ref_name }} since ${{ inputs.base || 'nothing' }} in ${{ inputs.packages || 'every package' }}${{ inputs.files && format(' files {0}', inputs.files) || '' }}"
 
 on:
   workflow_dispatch:
@@ -21,6 +22,9 @@ on:
         default: ""
       packages:
         description: "Only mutants in these packages, space-separated (empty: every package)"
+        default: ""
+      files:
+        description: "Only mutants in these source files, space-separated, each a --file: a path from the repository's root, with * (not crossing /) or ** for globs; a word without / matches that name anywhere (empty: every file)"
         default: ""
       shards:
         description: "Number of shards to share the work (1 to 16; at most three run at once)"
@@ -46,6 +50,7 @@ jobs:
         env:
           SHARDS: ${{ inputs.shards }}
           PACKAGES: ${{ inputs.packages }}
+          FILES: ${{ inputs.files }}
         run: |
           case $SHARDS in
           [1-9] | 1[0-6]) ;;
@@ -54,6 +59,13 @@ jobs:
           for package in $PACKAGES; do
             case $package in
             *[!a-z0-9_-]*) echo "::error::not a package name: '$package'"; exit 1 ;;
+            esac
+          done
+          # Globs are cargo-mutants' to match, not the shell's.
+          set -f
+          for file in $FILES; do
+            case $file in
+            /* | -* | *..* | *[!A-Za-z0-9_./*-]*) echo "::error::not a path from the repository's root: '$file'"; exit 1 ;;
             esac
           done
           echo "shards=[$(seq -s, 0 $((SHARDS - 1)))]" >>"$GITHUB_OUTPUT"
@@ -86,6 +98,7 @@ jobs:
           REF: ${{ inputs.ref }}
           BASE: ${{ inputs.base }}
           PACKAGES: ${{ inputs.packages }}
+          FILES: ${{ inputs.files }}
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ inputs.shards }}
         run: |
@@ -103,6 +116,10 @@ jobs:
             args+=(--in-diff "$RUNNER_TEMP/change.diff")
           fi
           for package in $PACKAGES; do args+=(-p "$package"); done
+          # Paths from the tree's root, which cargo-mutants matches in the gate's worktree.
+          set -f
+          for file in $FILES; do args+=(--file "$file"); done
+          set +f
           # A sixth of the machine each: the most shards that run at once, two runs of three.
           # One run alone uses half of it. Two use all of it, and a gate then runs on a full
           # machine, where a test still held to a wall clock (tests/mutants.sh lists them)
@@ -120,15 +137,18 @@ jobs:
           # A shard with no mutants writes nothing; it still reports.
           mkdir -p "$RUNNER_TEMP/out/mutants.out"
           echo "$SHARD" >"$RUNNER_TEMP/out/mutants.out/shard"
+      # Even when the run is cancelled or times out: cargo-mutants writes each outcome as it
+      # goes, so a stopped shard's harvest is kept (and the summary says it's incomplete).
       - uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
+        if: ${{ always() }}
         with:
           name: mutants-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/out/mutants.out
 
   summary:
     needs: [plan, shard]
-    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    # Even when the run is cancelled, to gather what the shards finished.
+    if: ${{ always() && needs.plan.result == 'success' }}
     runs-on: [self-hosted, linux, x64, pve]
     timeout-minutes: 10
     steps:
@@ -143,15 +163,19 @@ jobs:
           REF: ${{ inputs.ref || github.ref_name }}
           BASE: ${{ inputs.base }}
           PACKAGES: ${{ inputs.packages }}
+          FILES: ${{ inputs.files }}
         run: |
           mkdir -p all
           for outcome in caught missed timeout unviable; do
             cat shards/*/"$outcome.txt" 2>/dev/null | sort >"all/$outcome.txt" || true
           done
           count() { grep -c . "all/$1.txt" || true; }
-          reported=$(find shards -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+          tested=$(( $(count caught) + $(count missed) + $(count timeout) + $(count unviable) ))
+          # A shard that finished writes its marker; a stopped one uploads what it reached
+          # without it.
+          reported=$(find shards -mindepth 2 -maxdepth 2 -name shard 2>/dev/null | wc -l)
           {
-            echo "## Mutants: $REF${BASE:+ since $BASE}${PACKAGES:+ ($PACKAGES)}"
+            echo "## Mutants: $REF${BASE:+ since $BASE}${PACKAGES:+ ($PACKAGES)}${FILES:+ in $FILES}"
             echo
             echo "| Caught | Missed | Timed out | Unviable | Shards reported |"
             echo "|---|---|---|---|---|"
@@ -168,7 +192,15 @@ jobs:
           } >>"$GITHUB_STEP_SUMMARY"
           cat "$GITHUB_STEP_SUMMARY"
           if [ "$SHARD_RESULT" != success ] || [ "$reported" -ne "$SHARDS" ]; then
-            echo "::error::a shard failed or didn't report: the results are incomplete"
+            # A shard stopped mid-mutant may list that mutant as caught by a test it killed.
+            echo "::error::a shard failed or didn't report: the results are incomplete, and a stopped shard's caught list may hold a mutant whose tests were killed"
+            exit 1
+          fi
+          # cargo-mutants passes a run that finds no mutants: a misspelt file would pass
+          # having tested nothing. (With a base, a change that touches none of the files
+          # also finds none.)
+          if [ -n "$FILES" ] && [ "$tested" -eq 0 ]; then
+            echo "::error::the files matched no mutants${BASE:+ changed since $BASE}: check each is a path from the repository's root in the packages given"
             exit 1
           fi
           if [ -s all/missed.txt ]; then
@@ -176,7 +208,7 @@ jobs:
             exit 1
           fi
       - uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
+        if: ${{ always() }}
         with:
           name: mutants
           path: all

@@ -6,8 +6,8 @@
 # workspace test. If a run is killed mid-mutant, the next gate or mutants run restores the
 # tree.
 #
-# Arguments go to cargo mutants; paths in them must be absolute, since it runs in the
-# worktree. Without --output, the results (mutants.out) land in the worktree, which the next
+# Arguments go to cargo mutants; paths to files (--in-diff, --output) must be absolute,
+# since it runs in the worktree, while --file names source files from the tree's root. Without --output, the results (mutants.out) land in the worktree, which the next
 # gate or mutants run cleans: pass --output. CI shards it over the runners
 # (.github/workflows/mutants.yml).
 #
