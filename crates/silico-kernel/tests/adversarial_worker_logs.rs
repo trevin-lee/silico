@@ -49,8 +49,8 @@ fn burst_then(name: &str, count: usize, then: &str) -> PathBuf {
     )
 }
 
-/// More lines than the queue to the sink holds (4 MiB, each line's message and 64 bytes):
-/// about 57,000 of these.
+/// More lines than the queue to the sink holds (4 MiB, each line its message, the item's
+/// own size, and 64 bytes): about 24,000 of these.
 const PAST_THE_QUEUE: usize = 100_000;
 
 /// What the sink was given of the worker's: a line's message, or a count dropped.
@@ -244,7 +244,8 @@ fn a_stalled_sink_has_every_line_given_or_counted_and_in_order() {
     let seen = sink.seen();
     assert_eq!(sink.accounted(), total, "accounted {accounted} of {total}");
     // The queue held what it holds, no more: the stalled first, then at most 4 MiB of
-    // lines, each its message and 64 bytes (`line N` is at least 6).
+    // lines, each its message and more than 64 bytes (`line N` is at least 6); a loose
+    // bound, so it doesn't depend on the item's size.
     let given = seen.iter().filter(|s| matches!(s, Seen::Line(_))).count();
     assert!(given > 1 && given < PAST_THE_QUEUE, "{given} lines given");
     assert!(
@@ -641,7 +642,7 @@ fn span_close_case(stall: bool, body: &str, calls: u64) {
         .unwrap();
     let exe = script(&format!("worker-logs-span-close-{calls}"), body);
     let (answers, answered) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    let caller = std::thread::spawn(move || {
         let mut worker = Worker::spawn(&exe).unwrap();
         for i in 0..calls {
             let span = tracing::info_span!("asked", i);
@@ -667,8 +668,42 @@ fn span_close_case(stall: bool, body: &str, calls: u64) {
         assert_eq!(asked, i);
         assert_eq!(answer, Ok(silico_protocol::Reply::Done), "call {i}");
     }
-    // The first request's span did close as the log thread let it go, on the sink thread,
-    // so the case was the one meant, and never on the log thread itself.
+    // The worker gone too (the last request's span, never said done, is let go then) and
+    // its log read to the end: the first request's span did close as the log thread let it
+    // go, on the sink thread, so the case was the one meant, and none on the log thread.
+    caller.join().unwrap();
+    std::thread::sleep(Duration::from_millis(500));
     assert!(exporter.on_sink.load(Ordering::SeqCst));
     assert!(!exporter.on_reader.load(Ordering::SeqCst));
+}
+
+#[test]
+fn a_timed_out_requests_span_never_closes_on_the_log_thread() {
+    // Found in review, against an earlier version of the hand-off: a request that timed out
+    // never has its done line, so its span stays with the log thread's; with a child of the
+    // worker holding the log open, the log thread outlived the worker, and let the span go
+    // last, closing it there (where a stalled exporter would have kept it forever).
+    let exporter = StalledExporter::default();
+    tracing::subscriber::set_global_default(tracing_subscriber::registry().with(exporter.clone()))
+        .unwrap();
+    let exe = script(
+        "worker-logs-timed-out-span",
+        "( exec 3>&-; /bin/sleep 1 ) &\nexec /bin/sleep 30",
+    );
+    let mut worker = Worker::spawn(&exe).unwrap();
+    let span = tracing::info_span!("asked");
+    let err = span
+        .in_scope(|| worker.call(Generation(1), echo(), Duration::from_millis(300)))
+        .unwrap_err();
+    assert_eq!(err.code(), ErrorCode::WorkerTimeout, "{err}");
+    drop(span);
+    drop(worker);
+    // The child lets the log close a second on; then the span goes.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !exporter.on_sink.load(Ordering::SeqCst) && !exporter.on_reader.load(Ordering::SeqCst) {
+        assert!(Instant::now() < deadline, "the request's span never closed");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!exporter.on_reader.load(Ordering::SeqCst));
+    assert!(exporter.on_sink.load(Ordering::SeqCst));
 }
