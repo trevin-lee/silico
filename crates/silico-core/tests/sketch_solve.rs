@@ -2301,3 +2301,97 @@ fn a_reference_distance_to_a_point_on_its_line_keeps_its_stored_side() {
         }
     );
 }
+
+// Council round 6 (tests): the concentric-outside refusal on an arc, once per curve when two
+// tangencies share one, and with the centres apart along y as well as x.
+
+#[test]
+fn an_arc_held_outside_tangent_on_its_circles_centre_is_an_invalid_result() {
+    // Circle c1 r 10 and arc a1 r 12, both about p1 at the origin, held tangent outside: on
+    // one centre they can't touch outside.
+    let t = translate(&text(
+        &[
+            point("p0000001", 0.0, 0.0),
+            point("p0000002", 12.0, 0.0),
+            point("p0000003", 0.0, 12.0),
+        ],
+        &[],
+        &[circle("c0000001", "p0000001", 10.0)],
+        &[arc("a0000001", "p0000001", "p0000002", "p0000003")],
+        &[r#"{"id": "k0000001", "type": "tangent", "a": "c0000001", "b": "a0000001", "side": "outside"}"#.to_owned()],
+    ));
+    let e = read_back(
+        &t,
+        &answer(&t, t.system.values.clone(), SolveStatus::Success),
+    )
+    .unwrap_err();
+    assert_eq!(
+        (e.code(), e.elements()),
+        (
+            ErrorCode::InvalidResult,
+            &[
+                "k0000001".to_owned(),
+                "c0000001".to_owned(),
+                "a0000001".to_owned()
+            ][..]
+        ),
+        "{e}"
+    );
+}
+
+#[test]
+fn two_concentric_outside_tangencies_name_each_curve_once() {
+    // c1, c2, c3 about one centre, c1 held outside tangent to c2 and to c3: both refused,
+    // c1 named once.
+    let t = translate(&text(
+        &[point("p0000001", 0.0, 0.0)],
+        &[],
+        &[
+            circle("c0000001", "p0000001", 10.0),
+            circle("c0000002", "p0000001", 12.0),
+            circle("c0000003", "p0000001", 14.0),
+        ],
+        &[],
+        &[
+            r#"{"id": "k0000001", "type": "tangent", "a": "c0000001", "b": "c0000002", "side": "outside"}"#.to_owned(),
+            r#"{"id": "k0000002", "type": "tangent", "a": "c0000001", "b": "c0000003", "side": "outside"}"#.to_owned(),
+        ],
+    ));
+    let e = read_back(
+        &t,
+        &answer(&t, t.system.values.clone(), SolveStatus::Success),
+    )
+    .unwrap_err();
+    assert_eq!(
+        (e.code(), e.elements()),
+        (
+            ErrorCode::InvalidResult,
+            &[
+                "k0000001".to_owned(),
+                "c0000001".to_owned(),
+                "c0000002".to_owned(),
+                "k0000002".to_owned(),
+                "c0000003".to_owned()
+            ][..]
+        ),
+        "{e}"
+    );
+}
+
+#[test]
+fn an_outside_tangency_with_its_centres_apart_along_y_is_kept() {
+    // r 10 and 12, their centres 30 apart vertically: not concentric, kept.
+    let t = tangent_pair(
+        [0.0, 30.0],
+        [10.0, 12.0],
+        "p0000002",
+        "outside",
+        false,
+        [5.0, 5.0],
+    );
+    read_back(
+        &t,
+        &answer(&t, t.system.values.clone(), SolveStatus::Success),
+    )
+    .unwrap();
+}
