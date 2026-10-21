@@ -137,21 +137,20 @@ fn entry_replaced_by_a_fifo_is_a_miss_not_a_hang() {
     let run = second.start(checked(EXAMPLE));
     let outcome = run.wait_timeout(Duration::from_secs(5));
     let hung = outcome.is_err();
-    // Free the blocked reader whatever happened, so the test's threads end: open the FIFO
-    // for writing (pairing with the reader) and close it, giving it end of file.
-    let unblock = {
-        let path = path.clone();
-        std::thread::spawn(move || {
-            let _ = std::fs::OpenOptions::new().write(true).open(&path);
-        })
-    };
+    // Free a recompute blocked opening the FIFO, whatever happened, and close it, giving its
+    // read end of file. Opened for reading and writing, a FIFO pairs with a reader or a
+    // writer and never waits for one itself on Linux and macOS (POSIX leaves it undefined),
+    // unlike an open for writing alone, which waits for a reader: one that never came, from
+    // a recompute hung for another reason, would hang the test rather than fail it.
+    drop(
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path),
+    );
     if let Err(run) = outcome {
         let _ = run.wait_timeout(Duration::from_secs(5));
-    } else {
-        // The cache didn't open it: open it ourselves so the writer above returns.
-        let _ = std::fs::File::open(&path);
     }
-    let _ = unblock.join();
     assert!(
         !hung,
         "a FIFO in place of an entry hung the recompute (still waiting after 5 s)"
