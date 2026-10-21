@@ -1747,9 +1747,9 @@ mod tests {
     fn an_executables_stamp_is_its_files_and_is_renewed_when_a_change_keeps_its_bytes() {
         // Found by review: dropping the renewal, or the stamp's shortcut, only made every
         // check hash the file again, which no test could see. The stamp taken with the hash
-        // is the file's (from its path); a change that keeps the bytes (a chmod) is hashed,
-        // found the same, and renews the stamp, so the next check is the shortcut's.
-        use std::os::unix::fs::PermissionsExt;
+        // is the file's (from its path); a change that keeps the bytes (a relink: the same
+        // bytes as a new file, renamed over it, so another inode) is hashed, found the same,
+        // and renews the stamp.
         let dir = std::env::temp_dir().join(format!("silico-stamp-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1758,15 +1758,17 @@ mod tests {
         let exe = super::Executable::of(&path, WorkerKind::Kernel).unwrap();
         assert_eq!(Some(*lock(&exe.stamp)), super::Stamp::of(&path));
         let before = *lock(&exe.stamp);
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let changed = super::Stamp::of(&path);
+        let beside = dir.join("worker.new");
+        std::fs::write(&beside, b"#!/bin/sh\n").unwrap();
+        std::fs::rename(&beside, &path).unwrap();
+        let relinked = super::Stamp::of(&path);
         assert_ne!(
-            changed,
+            relinked,
             Some(before),
-            "a chmod changes the stamp (its change time)"
+            "a relink changes the stamp (its inode)"
         );
         exe.check().unwrap();
-        assert_eq!(Some(*lock(&exe.stamp)), changed);
+        assert_eq!(Some(*lock(&exe.stamp)), relinked);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
