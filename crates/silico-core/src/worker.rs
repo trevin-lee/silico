@@ -1385,6 +1385,10 @@ fn edges_fit(named: &[u32], listed: Option<&[u32]>) -> Result<(), String> {
 /// fault (as FreeCAD does, `Edge3`, where no document names them: `references::EdgeNames`) and has
 /// the refusal described with those names (`Refusal::describe`). A kernel failure always
 /// suggests something.
+/// The operation whose refusals an error keeps as data: a measure's, which the rebuild
+/// cache keeps.
+const MEASURE: &str = "Summarize";
+
 pub(crate) fn failure_error(op: &str, failure: Failure) -> Error {
     failure_error_with_edge_names(WorkerKind::Kernel, op, failure, None)
 }
@@ -1411,9 +1415,10 @@ fn failure_error_with_edge_names(
         Some((_, written)) => crate::references::cut_short(written),
         None => element.to_string(),
     };
-    // A kernel worker's failure, the edges unnamed (a measure's, say), is kept with the
-    // error, so the rebuild cache keeps it as data, for the core that reads it to word.
-    let words = (kind == WorkerKind::Kernel && names.is_none()).then(|| failure.clone());
+    // A kernel worker's refusal of a measure is kept with the error, so the rebuild cache
+    // keeps it as data, for the core that reads it to word (no other error is cached).
+    let words =
+        (kind == WorkerKind::Kernel && op == MEASURE && names.is_none()).then(|| failure.clone());
     let described = failure.refusal.describe(failure.cause.as_deref(), &name);
     // Why it failed: OCCT's words where it threw; otherwise the refusal's.
     let why = failure
@@ -1481,7 +1486,7 @@ fn failure_error_with_edge_names(
     };
     let error = error.with_suggestion(described.suggestion.unwrap_or_else(|| fallback.to_owned()));
     match words {
-        Some(failure) => error.with_worker_words(op, &failure),
+        Some(failure) => error.with_worker_failure(op, failure),
         None => error,
     }
 }
@@ -1593,6 +1598,58 @@ mod tests {
     use crate::ErrorCode;
     use crate::references::EdgeNames;
     use tracing_subscriber::layer::SubscriberExt;
+
+    #[test]
+    fn only_a_kernel_workers_refusal_of_a_measure_keeps_its_failure_and_it_words_the_same() {
+        // What the rebuild cache keeps of a refusal, so the core reading it words it: only a
+        // kernel worker's refusal of a measure keeps the worker's failure, and wording that
+        // again gives the same error.
+        let failure = Failure {
+            refusal: silico_protocol::Refusal::ResultInvalid {
+                operation: silico_protocol::Operation::Other,
+                edges: vec![u32::MAX],
+            },
+            cause: Some("OCCT's words".to_owned()),
+        };
+        let measure = failure_error("Summarize", failure.clone());
+        let (op, kept) = measure.worker_failure().unwrap();
+        assert_eq!((op, kept), ("Summarize", &failure));
+        let again = failure_error(op, kept.clone());
+        assert_eq!(again, measure);
+        assert_eq!(again.elements(), ["Edge4294967295"]);
+        // Another operation's, a named fillet's, and the sketch worker's keep none.
+        assert!(
+            failure_error("Fillet", failure.clone())
+                .worker_failure()
+                .is_none()
+        );
+        let names = EdgeNames::default();
+        let named = failure_error_with_edge_names(
+            WorkerKind::Kernel,
+            "Summarize",
+            failure.clone(),
+            Some(&names),
+        );
+        assert!(named.worker_failure().is_none());
+        let sketch = failure_error_with_edge_names(WorkerKind::Sketch, "Summarize", failure, None);
+        assert!(sketch.worker_failure().is_none());
+        // Keeping it is no part of what the error is: the same fields, built by hand, are
+        // equal to it.
+        let mut built = crate::Error::new(measure.code(), measure.message())
+            .with_elements(measure.elements().iter().cloned())
+            .with_elements_total(measure.elements_total());
+        if let Some(cause) = measure.cause() {
+            built = built.with_cause(cause);
+        }
+        if let Some(suggestion) = measure.suggestion() {
+            built = built.with_suggestion(suggestion);
+        }
+        if let Some(parameter) = measure.parameter() {
+            built = built.with_parameter(parameter);
+        }
+        assert!(built.worker_failure().is_none());
+        assert_eq!(built, measure);
+    }
 
     #[test]
     fn a_sketch_workers_crash_advice_names_it_and_its_solver() {

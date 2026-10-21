@@ -36,7 +36,7 @@ use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 use silico_core::{Error, ErrorCode};
 use silico_protocol::{Failure, Operation, Refusal};
 
-const MAGIC: &[u8] = b"silico cache 5\n";
+const MAGIC: &[u8] = b"silico cache 6\n";
 
 fn built(model: &Model, id: &str) -> (String, Arc<silico_core::recompute::Built>) {
     match model.outcome(&FeatureId::new(id).unwrap()) {
@@ -132,7 +132,7 @@ fn decode(bytes: &[u8]) -> Entry {
 
 /// An entry's bytes, as the module documents them: the magic, the payload's HMAC-SHA-256
 /// under `secret`, and the payload.
-fn encode_with(secret: &[u8], entry: &Entry) -> Vec<u8> {
+fn encode_with(secret: &[u8], entry: &impl Serialize) -> Vec<u8> {
     let payload = postcard::to_allocvec(entry).unwrap();
     let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(secret).unwrap();
     mac.update(&payload);
@@ -143,7 +143,7 @@ fn encode_with(secret: &[u8], entry: &Entry) -> Vec<u8> {
 }
 
 /// An entry's bytes, sealed with the secret of the cache in `dir`, as its own writer would.
-fn encode(dir: &Path, entry: &Entry) -> Vec<u8> {
+fn encode(dir: &Path, entry: &impl Serialize) -> Vec<u8> {
     encode_with(&std::fs::read(secret_of(dir)).unwrap(), entry)
 }
 
@@ -946,8 +946,9 @@ fn a_refusal_kept_on_disk_is_written_as_the_worker_said_it_and_kernel_failed_is_
             }
         }
     }
-    // A refusal that isn't a worker's (a hang, here): nothing to word it from, so unmeasured.
-    let dir = Scratch::new("written-timeout");
+    // A refusal that isn't a worker's (a fake's own error, of a code the cache would keep):
+    // nothing to word it again from, so unmeasured.
+    let dir = Scratch::new("written-not-a-workers");
     let engine = session(&dir.0);
     engine.kernel().refuse(|op| {
         (op.name() == "Summarize").then(|| Error::new(ErrorCode::InvalidInput, "not a worker's"))
@@ -1031,8 +1032,9 @@ fn a_kept_refusal_is_worded_by_the_core_that_reads_it() {
 
 #[test]
 fn a_kept_refusal_of_a_kind_this_silico_doesnt_know_is_an_entry_that_doesnt_hold_together() {
-    // A later Silico's refusal (a variant past this one's last) doesn't parse: the entry
-    // is rebuilt, and written over in this one's terms.
+    // A later Silico's refusal (a variant past this one's last) doesn't parse: the entry is
+    // rebuilt, and written over in this one's terms. The same entry with a variant this one
+    // knows (a damaged B-rep, by its number) is taken back, kept: so only the variant fails.
     #[derive(Serialize)]
     enum LaterMeasure {
         _Unmeasured,
@@ -1041,7 +1043,7 @@ fn a_kept_refusal_of_a_kind_this_silico_doesnt_know_is_an_entry_that_doesnt_hold
     }
     #[derive(Serialize)]
     struct LaterFailure {
-        /// A refusal's variant, by number: past every one this Silico knows.
+        /// A refusal's variant, by number.
         refusal: u32,
         cause: Option<String>,
     }
@@ -1053,40 +1055,44 @@ fn a_kept_refusal_of_a_kind_this_silico_doesnt_know_is_an_entry_that_doesnt_hold
         history: Option<History>,
         measure: LaterMeasure,
     }
-    let dir = Scratch::new("later-refusal");
-    let model = seed(&dir.0);
-    let (key, _) = built(&model, "k7f2qx3m");
-    let path = entry_path(&dir.0, &key);
-    let entry = decode(&std::fs::read(&path).unwrap());
-    let later = LaterEntry {
-        key: entry.key,
-        brep: entry.brep,
-        valid: entry.valid,
-        history: entry.history,
-        measure: LaterMeasure::Refused {
-            op: "Summarize".to_owned(),
-            failure: LaterFailure {
-                refusal: 10_000,
-                cause: None,
+    // The variant number postcard gives a damaged B-rep's refusal (no fields of its own).
+    let known = postcard::to_allocvec(&Refusal::BrepCorrupted).unwrap();
+    assert_eq!(known.len(), 1);
+    for (refusal, taken) in [(10_000, false), (u32::from(known[0]), true)] {
+        let dir = Scratch::new(&format!("later-refusal-{refusal}"));
+        let model = seed(&dir.0);
+        let (key, _) = built(&model, "k7f2qx3m");
+        let path = entry_path(&dir.0, &key);
+        let entry = decode(&std::fs::read(&path).unwrap());
+        let later = LaterEntry {
+            key: entry.key,
+            brep: entry.brep,
+            valid: entry.valid,
+            history: entry.history,
+            measure: LaterMeasure::Refused {
+                op: "Summarize".to_owned(),
+                failure: LaterFailure {
+                    refusal,
+                    cause: None,
+                },
             },
-        },
-    };
-    let payload = postcard::to_allocvec(&later).unwrap();
-    let secret = std::fs::read(secret_of(&dir.0)).unwrap();
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&secret).unwrap();
-    mac.update(&payload);
-    let mut bytes = MAGIC.to_vec();
-    bytes.extend_from_slice(&mac.finalize().into_bytes());
-    bytes.extend_from_slice(&payload);
-    std::fs::write(&path, bytes).unwrap();
-    let next = session(&dir.0);
-    let again = published(&next, checked(EXAMPLE));
-    assert_eq!(calls(&next), ["MakeBox"]);
-    assert!(again.drift().is_empty());
-    assert!(matches!(
-        decode(&std::fs::read(&path).unwrap()).measure,
-        Measure::Summary(_)
-    ));
+        };
+        std::fs::write(&path, encode(&dir.0, &later)).unwrap();
+        let next = session(&dir.0);
+        let again = published(&next, checked(EXAMPLE));
+        if taken {
+            assert!(next.kernel().calls().is_empty(), "{:?}", calls(&next));
+            assert_eq!(again.drift().len(), 1);
+            assert_eq!(again.drift()[0].code(), ErrorCode::InvalidInput);
+        } else {
+            assert_eq!(calls(&next), ["MakeBox"]);
+            assert!(again.drift().is_empty());
+            assert!(matches!(
+                decode(&std::fs::read(&path).unwrap()).measure,
+                Measure::Summary(_)
+            ));
+        }
+    }
 }
 
 #[test]
@@ -1114,8 +1120,8 @@ fn a_kept_summary_no_shape_has_is_measured_again() {
 #[test]
 fn an_entry_of_the_format_before_is_never_looked_for_and_a_name_of_this_one_holding_it_is_rebuilt()
 {
-    // Each format's magic is part of every entry's key: the format before's entry for a
-    // step ("silico cache 4") lives elsewhere, so this one never reads it. Planted where the
+    // Each format's magic is part of every entry's key: an older format's entry for a step
+    // (main's before this, "silico cache 4") lives elsewhere, so this one never reads it. Planted where the
     // format before keeps the block, it's left as it was (the cache's bound evicts it in
     // time), and the block is made and written in this format.
     let dir = Scratch::new("format-before");

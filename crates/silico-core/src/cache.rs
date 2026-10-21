@@ -48,7 +48,7 @@ use silico_protocol::Failure;
 
 /// The first bytes of every entry, naming its format: a change to the format changes it.
 /// It's part of every entry's key too, so an entry of another format is never looked for.
-const MAGIC: &[u8] = b"silico cache 5\n";
+const MAGIC: &[u8] = b"silico cache 6\n";
 
 /// What the cache's directory holds besides its entries: it ignores itself.
 const GITIGNORE: &[u8] =
@@ -185,7 +185,8 @@ enum Measure {
     Summary(ShapeSummary),
     /// The kernel worker's refusal, as data, and the operation it was for (`Summarize`):
     /// the core reading it back words it, so its words are always that core's (the entry's
-    /// key holds the worker's identity, not the core's).
+    /// key holds the worker's identity, not the core's). Only a worker's refusal of a
+    /// measure is kept so (`worker::failure_error_with_edge_names` keeps no other's).
     Refused {
         op: String,
         failure: Failure,
@@ -295,10 +296,10 @@ impl Cache {
             history: built.history.clone(),
             measure: match (built.summary(), built.measure_refused()) {
                 (Some(summary), _) => Measure::Summary(summary.clone()),
-                (None, Some(refused)) if lasting(refused) => match refused.worker_words() {
+                (None, Some(refused)) if lasting(refused) => match refused.worker_failure() {
                     Some((op, failure)) => Measure::Refused {
                         op: op.to_owned(),
-                        failure,
+                        failure: failure.clone(),
                     },
                     // Not a worker's (a fake kernel's): nothing to word it again from.
                     None => Measure::Unmeasured,

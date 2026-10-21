@@ -246,8 +246,12 @@ fn a_refusal_with_every_field_at_its_edge_comes_back_from_disk_as_it_was_said() 
     let dir = Scratch::new("every-field");
     let mut cause = "line one\nline two\0after a NUL \u{1F4A5} ".to_owned();
     cause.push_str(&"x".repeat(1 << 20));
+    // With an edge at the end of the range, which the error names as its element.
     let failure = Failure {
-        refusal: Refusal::BrepCorrupted,
+        refusal: Refusal::ResultInvalid {
+            operation: Operation::Other,
+            edges: vec![u32::MAX],
+        },
         cause: Some(cause.clone()),
     };
     let first = session(&dir.0);
@@ -258,9 +262,10 @@ fn a_refusal_with_every_field_at_its_edge_comes_back_from_disk_as_it_was_said() 
     let fresh = model.drift();
     assert_eq!(fresh.len(), 3);
     for (error, feature) in fresh.iter().zip(["k7f2qx3m", "a91cw0de", "m3tq8v0z"]) {
-        assert_eq!(error.code(), ErrorCode::InvalidInput);
+        assert_eq!(error.code(), ErrorCode::InvalidResult);
         assert_eq!(error.feature(), Some(feature));
-        assert_eq!(error.cause(), Some(cause.as_str()));
+        assert_eq!(error.elements(), ["Edge4294967295"]);
+        assert_eq!(error.elements_total(), 1);
     }
     let second = session(&dir.0);
     let again = published(&second, checked(EXAMPLE));
