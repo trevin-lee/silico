@@ -7,6 +7,8 @@
 //! kernel calls a session makes, and the fake's description of each shape.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/bound.rs"]
+mod bound;
 #[path = "common/cache.rs"]
 mod cache;
 #[path = "common/example.rs"]
@@ -18,59 +20,12 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use cache::{HOLE, Scratch, cache, calls, example_with_pin, files, hole, session};
+use bound::{bounded, bounded_on, set_time, set_time_at, total};
+use cache::{HOLE, Scratch, calls, example_with_pin, files, hole, session};
 use example::EXAMPLE;
 use model::{checked, published};
 use silico_core::cache::{DEFAULT_BOUND, STALE_PARTIAL};
 use silico_core::document::Checked;
-use silico_core::fake::FakeKernel;
-use silico_core::recompute::Recompute;
-
-/// A fresh session over the cache in `dir`, bounded at `bound` bytes, on a fake of `size`.
-fn bounded_on(dir: &Path, bound: u64, size: usize) -> Recompute<FakeKernel> {
-    Recompute::with_cache(FakeKernel::new(size).unwrap(), cache(dir).with_bound(bound))
-}
-
-fn bounded(dir: &Path, bound: u64) -> Recompute<FakeKernel> {
-    bounded_on(dir, bound, 2)
-}
-
-/// The bytes of every file in the cache's subdirectories (by length, links' own).
-fn total(dir: &Path) -> u64 {
-    files(dir)
-        .iter()
-        .map(|file| std::fs::symlink_metadata(file).unwrap().len())
-        .sum()
-}
-
-/// Sets `path`'s modification time, a link's own, to `secs` (and `nanos`) from the epoch,
-/// negative for before it.
-fn set_time_at(path: &Path, secs: i64, nanos: i64) {
-    use rustix::fs::{AtFlags, CWD, Timespec, Timestamps, utimensat};
-    let at = Timespec {
-        tv_sec: secs,
-        tv_nsec: nanos,
-    };
-    utimensat(
-        CWD,
-        path,
-        &Timestamps {
-            last_access: at,
-            last_modification: at,
-        },
-        AtFlags::SYMLINK_NOFOLLOW,
-    )
-    .unwrap();
-}
-
-fn set_time(path: &Path, time: SystemTime) {
-    let since = time.duration_since(SystemTime::UNIX_EPOCH).unwrap();
-    set_time_at(
-        path,
-        since.as_secs() as i64,
-        i64::from(since.subsec_nanos()),
-    );
-}
 
 /// A name the cache would give an entry: 62 hex digits, in the subdirectory `sub`.
 fn entry_name(dir: &Path, sub: &str, n: u64) -> PathBuf {
@@ -514,6 +469,9 @@ fn a_read_only_subdirectory_over_the_bound_fails_nothing_and_the_rest_is_evicted
     }
     assert!(stuck.iter().all(|path| path.exists()));
     assert!(movable.iter().all(|path| !path.exists()));
+    // The stuck entries alone are past the bound, so no put found room: nothing new was
+    // written (a removal that failed isn't room made).
+    assert_eq!(files(&dir.0), stuck);
 }
 
 // ---------------------------------------------------------------------------------------

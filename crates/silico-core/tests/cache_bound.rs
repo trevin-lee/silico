@@ -7,6 +7,8 @@
 //! which kernel calls each session makes.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/bound.rs"]
+mod bound;
 #[path = "common/cache.rs"]
 mod cache;
 #[path = "common/example.rs"]
@@ -15,53 +17,24 @@ mod example;
 mod model;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
-use cache::{HOLE, Scratch, cache, calls, example_with_pin, files, hole, session};
+use bound::{bounded, set_time, total};
+use cache::{HOLE, Scratch, calls, example_with_pin, files, hole, session};
 use example::EXAMPLE;
 use model::{checked, published};
 use silico_core::cache::{DEFAULT_BOUND, STALE_PARTIAL};
-use silico_core::fake::FakeKernel;
-use silico_core::recompute::Recompute;
 
-/// A fresh session over the cache in `dir`, bounded at `bound` bytes.
-fn bounded(dir: &Path, bound: u64) -> Recompute<FakeKernel> {
-    Recompute::with_cache(FakeKernel::new(2).unwrap(), cache(dir).with_bound(bound))
-}
-
-/// The bytes of every file in the cache's subdirectories: its entries and partial files.
-fn total(dir: &Path) -> u64 {
-    files(dir)
-        .iter()
-        .map(|file| std::fs::symlink_metadata(file).unwrap().len())
-        .sum()
-}
-
-/// The bytes one build of the example with the pin's radius `radius` keeps, alone.
+/// The bytes one build of the example with the pin's radius `radius` keeps, alone: in a
+/// directory of its own each time, since tests running as threads of one process measure
+/// at once.
 fn one_document(radius: &str) -> u64 {
-    let dir = Scratch::new(&format!("measure-{radius}"));
+    static MEASURES: AtomicUsize = AtomicUsize::new(0);
+    let n = MEASURES.fetch_add(1, Ordering::Relaxed);
+    let dir = Scratch::new(&format!("measure-{radius}-{n}"));
     published(&session(&dir.0), example_with_pin(radius));
     total(&dir.0)
-}
-
-/// Sets `path`'s modification time (a link's own, not what it points at).
-fn set_time(path: &Path, time: SystemTime) {
-    use rustix::fs::{AtFlags, CWD, Timespec, Timestamps, utimensat};
-    let since = time.duration_since(SystemTime::UNIX_EPOCH).unwrap();
-    let at = Timespec {
-        tv_sec: since.as_secs() as i64,
-        tv_nsec: i64::from(since.subsec_nanos()),
-    };
-    utimensat(
-        CWD,
-        path,
-        &Timestamps {
-            last_access: at,
-            last_modification: at,
-        },
-        AtFlags::SYMLINK_NOFOLLOW,
-    )
-    .unwrap();
 }
 
 #[test]
@@ -155,8 +128,8 @@ fn eviction_goes_by_last_use_then_by_path() {
     let dir = Scratch::new("order");
     std::fs::create_dir_all(dir.0.join("ab")).unwrap();
     // Eight entries of 4 KiB, 32 KiB in all: exactly the bound, so the first put passes it.
-    // Their last uses, oldest first: 5; 2 and 6 at once (2 first, by path); then 7, 0, 1,
-    // 3, 4.
+    // Their last uses, oldest first: 5; 7; 2 and 6 at once (2 first, by path); then 0, 1,
+    // 3, 4. Three go, so the cut falls between the two used at once.
     let now = SystemTime::now();
     let ago = |secs: u64| now - Duration::from_secs(secs);
     let used = [
@@ -167,7 +140,7 @@ fn eviction_goes_by_last_use_then_by_path() {
         ago(27),
         ago(50),
         ago(40),
-        ago(31),
+        ago(45),
     ];
     for (n, time) in used.iter().enumerate() {
         let entry = planted_entry(&dir.0, n as u64);
@@ -190,7 +163,7 @@ fn eviction_goes_by_last_use_then_by_path() {
     // The first put, of at most 2 KiB, leaves what's kept and itself at most three quarters
     // of the bound, 24 KiB: five planted entries stay (20 KiB), so three go, the oldest.
     let gone: Vec<u64> = (0..8).filter(|&n| !planted[n as usize].exists()).collect();
-    assert_eq!(gone, [2, 5, 6]);
+    assert_eq!(gone, [2, 5, 7]);
     assert!(total(&dir.0) <= bound);
 }
 
@@ -304,4 +277,60 @@ fn a_writers_partial_counts_toward_the_bound() {
         calls(&again),
         ["Cut", "MakeBox", "MakeCylinder", "Translate"]
     );
+}
+
+#[test]
+fn one_session_building_document_after_document_keeps_within_its_bound_between_scans() {
+    // Found by review: a session scans after each eighth of the bound it writes, and in
+    // between counts what it writes; a put that its count says would pass the bound must
+    // scan and evict then, not wait for the next eighth. One session (its block kept in
+    // memory, so three entries a document), a bound of about sixteen entries, sixty
+    // documents.
+    let dir = Scratch::new("between-scans");
+    let bound = 4 * one_document("1");
+    let engine = bounded(&dir.0, bound);
+    for radius in 1..=60 {
+        published(&engine, example_with_pin(&radius.to_string()));
+        let kept = total(&dir.0);
+        assert!(
+            kept <= bound,
+            "{kept} bytes kept after pin {radius}, past {bound}"
+        );
+    }
+    // And by evicting, not by refusing what comes: the newest document's own steps are
+    // kept. Its block isn't: the session took it from memory after its first build, which
+    // renews nothing on disk, so it was the least recently used.
+    let last = bounded(&dir.0, bound);
+    published(&last, example_with_pin("60"));
+    assert_eq!(calls(&last), ["MakeBox"]);
+}
+
+#[test]
+fn a_partial_dated_an_hour_ahead_is_stale_and_one_half_an_hour_ahead_is_kept() {
+    // Found by review: a partial dated in the future (a clock that was wrong, a server's
+    // ahead) was never stale, and one the size of the bound kept every put out until the
+    // clock caught up. One more than an hour ahead is removed; one half an hour ahead, as
+    // fresh as a clock a little off can say, is kept.
+    let dir = Scratch::new("future-partial");
+    published(&session(&dir.0), checked(EXAMPLE));
+    let sub = files(&dir.0)[0].parent().unwrap().to_owned();
+    let bound = 4 * one_document("3");
+    let ahead = sub.join(".partial-1-1");
+    std::fs::write(&ahead, vec![0; bound as usize]).unwrap();
+    set_time(
+        &ahead,
+        SystemTime::now() + STALE_PARTIAL + Duration::from_secs(60),
+    );
+    let near = sub.join(".partial-1-2");
+    std::fs::write(&near, b"being written").unwrap();
+    set_time(&near, SystemTime::now() + STALE_PARTIAL / 2);
+    let edit = bounded(&dir.0, bound);
+    published(&edit, example_with_pin("3"));
+    assert!(!ahead.exists());
+    assert!(near.exists());
+    // Nothing was evicted or refused: both documents are kept whole.
+    let both = bounded(&dir.0, bound);
+    published(&both, checked(EXAMPLE));
+    published(&both, example_with_pin("3"));
+    assert!(calls(&both).is_empty(), "{:?}", calls(&both));
 }

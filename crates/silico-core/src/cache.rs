@@ -31,7 +31,7 @@ use std::io::{Read as _, Write as _};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use hmac::{Hmac, Mac};
@@ -50,10 +50,12 @@ const GITIGNORE: &[u8] =
 
 /// The most bytes a cache keeps unless it's given another bound: twice the largest entry
 /// ([`MAX_ENTRY`]), so even that is kept.
-pub const DEFAULT_BOUND: u64 = 2 << 30;
+pub const DEFAULT_BOUND: u64 = 2 * MAX_ENTRY;
 
 /// How long after its last write a partial file is taken for a write that was killed, and
-/// removed: a writer renames its partial within moments of writing its last byte.
+/// removed: a writer renames its partial within moments of writing its last byte. One
+/// dated this far in the future (a clock that was wrong, a server's ahead) is taken for one
+/// too.
 pub const STALE_PARTIAL: Duration = Duration::from_secs(60 * 60);
 
 /// A directory of kept results, for one platform, sealed with one secret.
@@ -68,20 +70,35 @@ pub struct Cache {
     said_linked: Arc<AtomicBool>,
     /// The most bytes the directory's entries and partial files may take.
     bound: u64,
-    /// What this cache and its clones know of the directory's size.
-    usage: Arc<Mutex<Usage>>,
+    /// What this cache and its clones know of the directory's size, and the condition its
+    /// first scan's end is told by.
+    usage: Arc<(Mutex<Usage>, Condvar)>,
+    /// Whether this cache (or a clone) has said it's full of files it can't evict.
+    said_full: Arc<AtomicBool>,
 }
 
 /// What a cache knows of its directory's size: the bytes its last scan found, plus those
 /// it has written or is writing since (which `since_scan` counts too).
 #[derive(Default)]
 struct Usage {
-    /// None until the first put scans.
+    /// None until the first scan ends.
     known: Option<u64>,
     since_scan: u64,
     /// The bytes of the entries being written: a scan may not see them yet (a job's
     /// dependents run, and put, while its entry is written).
     writing: u64,
+    /// Whether a put is scanning the directory (without the lock).
+    scanning: bool,
+}
+
+/// Whether a put may write its entry.
+enum Room {
+    Made,
+    /// Not even eviction leaves room beside what it can't evict: entries being written,
+    /// or (`foreign`) partial files not yet stale and files it couldn't remove.
+    None {
+        foreign: bool,
+    },
 }
 
 impl std::fmt::Debug for Cache {
@@ -189,11 +206,14 @@ impl Cache {
             said_linked: Arc::default(),
             bound: DEFAULT_BOUND,
             usage: Arc::default(),
+            said_full: Arc::default(),
         }
     }
 
     /// This cache, keeping at most `bound` bytes of entries and partial files (rather than
-    /// [`DEFAULT_BOUND`]): an entry larger than that isn't kept.
+    /// [`DEFAULT_BOUND`]): an entry larger than that isn't kept. The bound is exact for one
+    /// session; each other session on the directory may take it past by what it writes
+    /// before its next scan (docs/design/m2.5-cache-bound.md).
     #[must_use]
     pub fn with_bound(mut self, bound: u64) -> Self {
         self.bound = bound;
@@ -278,17 +298,32 @@ impl Cache {
             );
             return;
         }
-        if !self.make_room(size) {
-            tracing::debug!(
-                size,
-                bound = self.bound,
-                "no room for a cache entry beside those being written: not kept"
-            );
-            return;
+        match self.make_room(size) {
+            Room::Made => {}
+            Room::None { foreign: true } => {
+                if !self.said_full.swap(true, Ordering::Relaxed) {
+                    tracing::warn!(
+                        dir = %self.dir.display(),
+                        bound = self.bound,
+                        "the cache is full of files it can't evict (partial files of writes \
+                         under way, or files it couldn't remove): keeping no more results \
+                         until they're gone"
+                    );
+                }
+                return;
+            }
+            Room::None { foreign: false } => {
+                tracing::debug!(
+                    size,
+                    bound = self.bound,
+                    "no room for a cache entry beside those being written: not kept"
+                );
+                return;
+            }
         }
         let written = write_entry(&self.dir, &path, &seal, &payload);
         {
-            let mut usage = self.usage.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut usage = self.usage();
             usage.writing = usage.writing.saturating_sub(size);
             if written.is_err() {
                 usage.known = usage.known.map(|known| known.saturating_sub(size));
@@ -304,52 +339,80 @@ impl Cache {
     /// directory at the first put, once an eighth of the bound has been written since the
     /// last scan (so other sessions' writes are seen), and when the entry would take the
     /// cache past its bound; then evicts the entries least recently used, until what's left
-    /// and the entry take at most three quarters of the bound. Returns false, counting
-    /// nothing, if even then the entry would take the cache past its bound: the entries
-    /// being written (by this cache's other puts at once) can't be evicted, so it's refused.
-    fn make_room(&self, size: u64) -> bool {
-        let mut usage = self.usage.lock().unwrap_or_else(PoisonError::into_inner);
-        let due = usage
-            .known
-            .is_none_or(|known| known.saturating_add(size) > self.bound)
-            || usage.since_scan.saturating_add(size) > self.bound / 8;
-        if due {
-            let span = tracing::debug_span!(
-                "cache.evict",
-                dir = %self.dir.display(),
-                entries = tracing::field::Empty,
-                bytes = tracing::field::Empty,
-                evicted = tracing::field::Empty,
-                evicted_bytes = tracing::field::Empty,
-                partials_removed = tracing::field::Empty,
-            );
-            let _entered = span.enter();
-            let mut scan = scan(&self.dir, SystemTime::now());
-            span.record("entries", scan.entries.len());
-            span.record("bytes", scan.bytes);
-            span.record("partials_removed", scan.partials_removed);
-            // What's being written counts as kept, whether or not the scan saw it.
-            let coming = u128::from(size) + u128::from(usage.writing);
-            let bound = u128::from(self.bound);
-            let target = (bound - bound / 4).saturating_sub(coming);
-            let (evicted, evicted_bytes) = if scan.bytes + coming > bound {
-                evict(&mut scan, target)
-            } else {
-                (0, 0)
-            };
-            span.record("evicted", evicted);
-            span.record("evicted_bytes", evicted_bytes);
-            let found = u64::try_from(scan.bytes).unwrap_or(u64::MAX);
-            usage.known = Some(found.saturating_add(usage.writing));
+    /// and the entry take at most three quarters of the bound. The scan runs without the
+    /// lock: other puts that fit by what's known go on meanwhile, and those that don't wait
+    /// for it (as all do for the first, before which nothing is known). Refuses, counting
+    /// nothing, if even then the entry would take the cache
+    /// past its bound, beside what can't be evicted: entries being written, partial files
+    /// not yet stale, and files it couldn't remove.
+    fn make_room(&self, size: u64) -> Room {
+        let (_, scanned) = &*self.usage;
+        let over = |known: u64| known.saturating_add(size) > self.bound;
+        let mut usage = self.usage();
+        // While another put scans, one that fits by what's known goes on; one that doesn't
+        // (or before the first scan, when nothing is known) waits for the scan to end.
+        while usage.scanning && usage.known.is_none_or(over) {
+            usage = scanned.wait(usage).unwrap_or_else(PoisonError::into_inner);
+        }
+        let due =
+            usage.known.is_none_or(over) || usage.since_scan.saturating_add(size) > self.bound / 8;
+        if due && !usage.scanning {
+            usage.scanning = true;
             usage.since_scan = 0;
-            if scan.bytes + coming > bound {
-                return false;
+            let writing = usage.writing;
+            drop(usage);
+            let left = self.scan_and_evict(size, writing);
+            usage = self.usage();
+            usage.scanning = false;
+            scanned.notify_all();
+            // What was being written as the scan began, and all that's begun since, which
+            // the scan may or may not have seen: counted as kept.
+            let coming = u128::from(writing) + u128::from(usage.since_scan);
+            let known = left.bytes + coming;
+            usage.known = Some(u64::try_from(known).unwrap_or(u64::MAX));
+            if known + u128::from(size) > u128::from(self.bound) {
+                let foreign = left.bytes + u128::from(size) > u128::from(self.bound);
+                return Room::None { foreign };
             }
         }
         usage.known = usage.known.map(|known| known.saturating_add(size));
         usage.since_scan = usage.since_scan.saturating_add(size);
         usage.writing = usage.writing.saturating_add(size);
-        true
+        Room::Made
+    }
+
+    /// Scans the directory, removing stale partial files, and, if what it holds, `writing`
+    /// bytes being written, and an entry of `size` would pass the bound, evicts until those
+    /// take at most three quarters of it. Returns what's left.
+    fn scan_and_evict(&self, size: u64, writing: u64) -> Scan {
+        let span = tracing::debug_span!(
+            "cache.evict",
+            dir = %self.dir.display(),
+            entries = tracing::field::Empty,
+            bytes = tracing::field::Empty,
+            evicted = tracing::field::Empty,
+            evicted_bytes = tracing::field::Empty,
+            partials_removed = tracing::field::Empty,
+        );
+        let _entered = span.enter();
+        let mut found = scan(&self.dir, SystemTime::now());
+        span.record("entries", found.entries.len());
+        span.record("bytes", found.bytes);
+        span.record("partials_removed", found.partials_removed);
+        let coming = u128::from(size) + u128::from(writing);
+        let bound = u128::from(self.bound);
+        if found.bytes + coming > bound {
+            let (evicted, evicted_bytes) =
+                evict(&mut found, (bound - bound / 4).saturating_sub(coming));
+            span.record("evicted", evicted);
+            span.record("evicted_bytes", evicted_bytes);
+        }
+        found
+    }
+
+    /// What this cache knows of its directory's size, locked.
+    fn usage(&self) -> MutexGuard<'_, Usage> {
+        self.usage.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The secret to key and seal entries with, if the cache keeps any: not when its
@@ -414,19 +477,23 @@ struct Scan {
     bytes: u128,
     /// How many partial files, last written [`STALE_PARTIAL`] ago or more, it removed.
     partials_removed: usize,
+    /// Whether it has warned of a file it couldn't remove (once a scan).
+    warned: bool,
 }
 
 /// Lists the entries of the cache in `dir`, and removes its partial files last written
-/// [`STALE_PARTIAL`] before `now` or earlier. Reads metadata only, and follows no link: an
-/// entry is a regular file named by 62 hex digits in a subdirectory named by two; a partial
-/// is a file named `.partial-…` in either. Anything else is left, and not counted.
+/// [`STALE_PARTIAL`] or more from `now`. Reads metadata only, and follows no link: an entry
+/// is a regular file named by 62 hex digits in a subdirectory named by two; a partial is a
+/// file named `.partial-…` in either. Anything else is left, and not counted; nor are this
+/// process's own partials not yet stale, which its puts count as being written.
 fn scan(dir: &Path, now: SystemTime) -> Scan {
-    let mut scan = Scan {
+    let mut found = Scan {
         entries: Vec::new(),
         bytes: 0,
         partials_removed: 0,
+        warned: false,
     };
-    let mut warned = false;
+    let own = format!(".partial-{}-", std::process::id());
     for item in list(dir) {
         let name = item.file_name();
         let path = item.path();
@@ -434,7 +501,7 @@ fn scan(dir: &Path, now: SystemTime) -> Scan {
             continue;
         };
         if is_partial(&name) {
-            scan.partial(&path, &meta, now, &mut warned);
+            found.remove_or_count_partial(&path, &meta, now, &own);
         } else if meta.is_dir() && is_hex(&name, 2) {
             for file in list(&path) {
                 let name = file.file_name();
@@ -443,91 +510,82 @@ fn scan(dir: &Path, now: SystemTime) -> Scan {
                     continue;
                 };
                 if is_partial(&name) {
-                    scan.partial(&path, &meta, now, &mut warned);
+                    found.remove_or_count_partial(&path, &meta, now, &own);
                 } else if meta.is_file() && is_hex(&name, 62) {
                     let used = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                    scan.bytes = scan.bytes.saturating_add(u128::from(meta.len()));
-                    scan.entries.push((used, path, meta.len()));
+                    found.bytes = found.bytes.saturating_add(u128::from(meta.len()));
+                    found.entries.push((used, path, meta.len()));
                 }
             }
         }
     }
-    scan
+    found
 }
 
 impl Scan {
-    /// Removes the partial file at `path` if it was last written [`STALE_PARTIAL`] before
-    /// `now` or earlier (a link that's named as one, by its own time: never what it points
-    /// at); otherwise counts it.
-    fn partial(
+    /// Removes the partial file at `path` if it was last written [`STALE_PARTIAL`] or more
+    /// from `now`, before or after (a link that's named as one, by its own time: never what
+    /// it points at); otherwise counts it, unless it's this process's (named from `own`).
+    fn remove_or_count_partial(
         &mut self,
         path: &Path,
         meta: &std::fs::Metadata,
         now: SystemTime,
-        warned: &mut bool,
+        own: &str,
     ) {
         let written = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        let stale = now
-            .duration_since(written)
-            .is_ok_and(|age| age >= STALE_PARTIAL);
-        if stale && !meta.is_dir() {
-            match remove(path, warned) {
-                Removed::Yes | Removed::Gone => self.partials_removed += 1,
-                Removed::No => {
-                    if meta.is_file() {
-                        self.bytes = self.bytes.saturating_add(u128::from(meta.len()));
-                    }
-                }
-            }
-        } else if meta.is_file() {
+        let apart = match now.duration_since(written) {
+            Ok(age) => age,
+            Err(ahead) => ahead.duration(),
+        };
+        if apart >= STALE_PARTIAL && !meta.is_dir() && self.remove(path) {
+            self.partials_removed += 1;
+        } else if meta.is_file()
+            && !path
+                .file_name()
+                .is_some_and(|name| name.as_encoded_bytes().starts_with(own.as_bytes()))
+        {
             self.bytes = self.bytes.saturating_add(u128::from(meta.len()));
         }
     }
+
+    /// Removes the file (or link) at `path`, warning of a failure (once a scan): whether
+    /// it's gone, as it is if another session removed it first.
+    fn remove(&mut self, path: &Path) -> bool {
+        match std::fs::remove_file(path) {
+            Ok(()) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+            Err(e) => {
+                if !std::mem::replace(&mut self.warned, true) {
+                    tracing::warn!(path = %path.display(), "couldn't remove a cache file: {e}");
+                }
+                false
+            }
+        }
+    }
 }
 
-/// Evicts `scan`'s entries, least recently used first (by path, of two used at once), until
-/// its bytes are at most `target` or no entry is left. Returns how many it evicted, and
-/// their bytes.
-fn evict(scan: &mut Scan, target: u128) -> (usize, u128) {
-    scan.entries.sort();
-    let mut warned = false;
+/// Evicts `found`'s entries, least recently used first (by path, of two used at once),
+/// until its bytes are at most `target` or no entry is left. Returns how many it evicted,
+/// and their bytes.
+fn evict(found: &mut Scan, target: u128) -> (usize, u128) {
+    let mut entries = std::mem::take(&mut found.entries);
+    entries.sort();
     let (mut evicted, mut evicted_bytes) = (0, 0_u128);
-    for (_, path, size) in &scan.entries {
-        if scan.bytes <= target {
-            break;
-        }
-        match remove(path, &mut warned) {
-            // Gone already: another session evicted it, or rebuilt it after a bad read.
-            Removed::Yes | Removed::Gone => {
-                scan.bytes = scan.bytes.saturating_sub(u128::from(*size));
-                evicted += 1;
-                evicted_bytes = evicted_bytes.saturating_add(u128::from(*size));
-            }
-            Removed::No => {}
+    let mut kept = Vec::new();
+    for (used, path, size) in entries {
+        // Gone already counts as evicted: another session evicted it, or rebuilt it after a
+        // bad read.
+        if found.bytes > target && found.remove(&path) {
+            found.bytes = found.bytes.saturating_sub(u128::from(size));
+            evicted += 1;
+            evicted_bytes = evicted_bytes.saturating_add(u128::from(size));
+        } else {
+            kept.push((used, path, size));
         }
     }
+    found.entries = kept;
     (evicted, evicted_bytes)
-}
-
-/// What removing a cache's file came to.
-enum Removed {
-    Yes,
-    Gone,
-    No,
-}
-
-/// Removes the file (or link) at `path`, warning of a failure (once for each `warned`).
-fn remove(path: &Path, warned: &mut bool) -> Removed {
-    match std::fs::remove_file(path) {
-        Ok(()) => Removed::Yes,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Removed::Gone,
-        Err(e) => {
-            if !std::mem::replace(warned, true) {
-                tracing::warn!(path = %path.display(), "couldn't remove a cache file: {e}");
-            }
-            Removed::No
-        }
-    }
 }
 
 /// The items in the directory `dir`, or none if it can't be read.
@@ -549,13 +607,18 @@ fn is_hex(name: &std::ffi::OsStr, digits: usize) -> bool {
 /// Marks the entry at `path` as used now, so it's evicted after those used before it. A
 /// hit whose time can't be set (a read-only cache, say) is still a hit.
 fn renew(path: &Path) {
-    let opened = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path);
-    if let Ok(file) = opened {
+    if let Ok(file) = open_to_read(path) {
         let _ = file.set_modified(SystemTime::now());
     }
+}
+
+/// The file at `path`, opened to read without following a symbolic link or waiting on a
+/// pipe.
+fn open_to_read(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
 }
 
 /// The user's secret file: `silico/cache-secret` in `$XDG_CACHE_HOME`, if that's an absolute
@@ -640,11 +703,7 @@ enum FileRead {
 /// The bytes of the regular file at `path`, read without following a symbolic link or
 /// waiting on a pipe, and no more than [`MAX_ENTRY`] of them.
 fn read_file(path: &Path) -> FileRead {
-    let opened = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path);
-    let file = match opened {
+    let file = match open_to_read(path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return FileRead::Missing,
         Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
@@ -708,8 +767,10 @@ fn write_entry(root: &Path, path: &Path, seal: &Seal, payload: &[u8]) -> std::io
     let written = file
         .write_all(MAGIC)
         .and_then(|()| file.write_all(&seal.0))
-        .and_then(|()| file.write_all(payload))
-        .and_then(|()| file.set_modified(SystemTime::now()));
+        .and_then(|()| file.write_all(payload));
+    // Where the file system won't take a time (vfat, some network shares), it keeps its
+    // own: the entry is still kept.
+    let _ = file.set_modified(SystemTime::now());
     let renamed = written.and_then(|()| std::fs::rename(&partial, path));
     if renamed.is_err() {
         let _ = std::fs::remove_file(&partial);
@@ -807,20 +868,44 @@ mod tests {
         let scratch = Scratch::new("refused");
         let cache =
             Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32]))).with_bound(100);
-        *cache.usage.lock().unwrap() = Usage {
+        *cache.usage() = Usage {
             known: Some(60),
             since_scan: 60,
             writing: 60,
+            scanning: false,
         };
-        // 60 + 50 is past 100: refused, and nothing counted for it.
-        assert!(!cache.make_room(50));
-        let usage = cache.usage.lock().unwrap();
+        // 60 + 50 is past 100: refused, for what's being written, and nothing counted.
+        assert!(matches!(cache.make_room(50), Room::None { foreign: false }));
+        let usage = cache.usage();
         assert_eq!((usage.known, usage.writing), (Some(60), 60));
         drop(usage);
         // 60 + 40 is exactly 100: kept, and counted.
-        assert!(cache.make_room(40));
-        let usage = cache.usage.lock().unwrap();
+        assert!(matches!(cache.make_room(40), Room::Made));
+        let usage = cache.usage();
         assert_eq!((usage.known, usage.writing), (Some(100), 100));
+    }
+
+    #[test]
+    fn a_put_kept_out_by_another_processs_partial_is_refused_as_foreign_and_by_its_own_isnt() {
+        // Found by review: a refusal for files the cache can't evict (here, another
+        // process's partial, not yet stale, past the bound alone) is warned of, unlike one
+        // for its own entries being written. This process's own partials aren't counted:
+        // its puts count them as being written.
+        let scratch = Scratch::new("foreign");
+        let sub = scratch.0.join("ab");
+        std::fs::create_dir_all(&sub).unwrap();
+        let own = sub.join(format!(".partial-{}-0", std::process::id()));
+        std::fs::write(&own, vec![0; 200]).unwrap();
+        let cache =
+            Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32]))).with_bound(100);
+        assert!(matches!(cache.make_room(10), Room::Made));
+        assert_eq!(cache.usage().known, Some(10));
+        let theirs = sub.join(".partial-1-0");
+        std::fs::write(&theirs, vec![0; 200]).unwrap();
+        let fresh =
+            Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32]))).with_bound(100);
+        assert!(matches!(fresh.make_room(10), Room::None { foreign: true }));
+        assert!(own.exists() && theirs.exists());
     }
 
     #[test]
@@ -837,10 +922,13 @@ mod tests {
                 .collect(),
             bytes: 3 * u128::from(half),
             partials_removed: 0,
+            warned: false,
         };
         assert_eq!(evict(&mut scan, u128::from(half)), (2, 1_u128 << 64));
         assert_eq!(scan.bytes, u128::from(half));
-        assert_eq!(scan.entries[2].1, gone(2));
+        // What's left is the newest.
+        assert_eq!(scan.entries.len(), 1);
+        assert_eq!(scan.entries[0].1, gone(2));
     }
 
     #[test]

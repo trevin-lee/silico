@@ -90,7 +90,7 @@ M2.0 is built in parts, each reviewed on its own:
 - **Only results, never failures**: a failure's cause may not last (memory, say), so a refusal recompute keeps by key stays in memory, and another session asks the kernel again.
 - **Read and written safely** (`/break-it` found these): an entry is read only if it's a regular file, without following a symbolic link or waiting on a pipe, and no larger than an entry could be; a partial file is always a new one (a link planted at its name isn't followed); an entry's key hashes each part after its length; and a hit whose history doesn't fit its step (none for a step with no inputs, a primitive; one for each input otherwise) is a miss, as a worker's reply with one would be refused.
 - **Nothing fails a recompute**: an entry that can't be read is a miss, and one that can't be written is left unwritten, each with a warning. Entries are written whole (to a file of their own, then renamed over), so a reader never sees part of one and two sessions writing the same entry leave one of them. They aren't synced to the disk (one a crash cuts short doesn't hold together, so it's a miss), and a step's dependents run while it's written: a full flush per entry made a chain of steps several times slower, and serialized parallel branches.
-- **Not yet**: no bound on the cache's size, and no eviction (an item for M2's end).
+- **Not yet**: no client can set, clear, or inspect the cache's bound (M4's cache control).
 
 ### M2.6 – Fingerprints (done)
 
