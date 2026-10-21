@@ -55,6 +55,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Solutions checked by the solver's values while the file stores what those derive from (an arc's radius value against its points, which the gate re-measures): dimensioned to exactly the limit, a quarter of solves save points an ulp past it, and the file is refused when read
 - A save's answer against its load's, whole: solve, write through the file, read, solve again, and compare Ok-ness, bits, and the redundant constraints named; an answer's outcome depends on where it was diagnosed, not only its values (a solution Ok from the drawing that PlaneGCS calls conflicting from itself), and a "solve again from the solution" that starts from the solver's values rather than what a load derives from the file (an arc's radius and angles from its points) isn't a load
 - Redundancies that agree held by an angle at micrometre scale: the solver's absolute convergence on lengths (1e-10) is a relative 1e-8 on a 1.6 µm side, past a scale-free angle tolerance
+- Tolerances taken over parts that the dropped row itself joins: a redundant row bridging two rigid, linearly held points far apart gets the bridged box's extent though PlaneGCS solved each apart exactly (5 nm kept at 10 m, refused at 1 mm); and per-part windows each recomputed over every constraint (512 parts × 9,000 rows: 0.4 s a read in release, 13× one part's)
 
 ## Features
 
