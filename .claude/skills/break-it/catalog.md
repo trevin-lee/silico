@@ -211,3 +211,5 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A sound entry re-encoded with an inconsistent payload and its checksum fixed (a checksum isn't a signature): whatever the core validates from a worker (a history's inputs and element numbers) must be validated when read back from disk
 - Keys hashing parts joined by a separator the parts may contain (a newline in a kernel identity or platform): two different keys hash the same bytes
 - A kernel identity that hashes only the executable: libraries it loads at run time (OCCT's dylibs through an rpath symlink) change results without changing the identity; a worker binary replaced under a running pool is relaunched under the old identity
+- Directory sizes summed from file lengths: sparse files cost no disk, so a few hundred planted at the file system's longest (APFS: 2^55 bytes) sum past `u64::MAX`; a plain `+=` panics in debug and wraps in release
+- Bounds kept by "scan, evict, then write" across threads: entries other threads are writing aren't on disk to evict, so N puts at once leave N entries; bound every entry above half the bound and run parallel leaves

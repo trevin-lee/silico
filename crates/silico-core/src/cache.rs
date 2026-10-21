@@ -278,7 +278,14 @@ impl Cache {
             );
             return;
         }
-        self.make_room(size);
+        if !self.make_room(size) {
+            tracing::debug!(
+                size,
+                bound = self.bound,
+                "no room for a cache entry beside those being written: not kept"
+            );
+            return;
+        }
         let written = write_entry(&self.dir, &path, &seal, &payload);
         {
             let mut usage = self.usage.lock().unwrap_or_else(PoisonError::into_inner);
@@ -297,8 +304,10 @@ impl Cache {
     /// directory at the first put, once an eighth of the bound has been written since the
     /// last scan (so other sessions' writes are seen), and when the entry would take the
     /// cache past its bound; then evicts the entries least recently used, until what's left
-    /// and the entry take at most three quarters of the bound.
-    fn make_room(&self, size: u64) {
+    /// and the entry take at most three quarters of the bound. Returns false, counting
+    /// nothing, if even then the entry would take the cache past its bound: the entries
+    /// being written (by this cache's other puts at once) can't be evicted, so it's refused.
+    fn make_room(&self, size: u64) -> bool {
         let mut usage = self.usage.lock().unwrap_or_else(PoisonError::into_inner);
         let due = usage
             .known
@@ -320,21 +329,27 @@ impl Cache {
             span.record("bytes", scan.bytes);
             span.record("partials_removed", scan.partials_removed);
             // What's being written counts as kept, whether or not the scan saw it.
-            let coming = size.saturating_add(usage.writing);
-            let target = (self.bound - self.bound / 4).saturating_sub(coming);
-            let (evicted, evicted_bytes) = if scan.bytes.saturating_add(coming) > self.bound {
+            let coming = u128::from(size) + u128::from(usage.writing);
+            let bound = u128::from(self.bound);
+            let target = (bound - bound / 4).saturating_sub(coming);
+            let (evicted, evicted_bytes) = if scan.bytes + coming > bound {
                 evict(&mut scan, target)
             } else {
                 (0, 0)
             };
             span.record("evicted", evicted);
             span.record("evicted_bytes", evicted_bytes);
-            usage.known = Some(scan.bytes.saturating_add(usage.writing));
+            let found = u64::try_from(scan.bytes).unwrap_or(u64::MAX);
+            usage.known = Some(found.saturating_add(usage.writing));
             usage.since_scan = 0;
+            if scan.bytes + coming > bound {
+                return false;
+            }
         }
         usage.known = usage.known.map(|known| known.saturating_add(size));
         usage.since_scan = usage.since_scan.saturating_add(size);
         usage.writing = usage.writing.saturating_add(size);
+        true
     }
 
     /// The secret to key and seal entries with, if the cache keeps any: not when its
@@ -394,8 +409,9 @@ fn plain(path: PathBuf) -> PathBuf {
 struct Scan {
     /// Every entry, as its last use (its modification time), its path, and its size.
     entries: Vec<(SystemTime, PathBuf, u64)>,
-    /// The bytes of its entries and of the partial files it left.
-    bytes: u64,
+    /// The bytes of its entries and of the partial files it left, by their lengths: wider
+    /// than they are, since lengths (of sparse files) can sum past what a `u64` holds.
+    bytes: u128,
     /// How many partial files, last written [`STALE_PARTIAL`] ago or more, it removed.
     partials_removed: usize,
 }
@@ -430,7 +446,7 @@ fn scan(dir: &Path, now: SystemTime) -> Scan {
                     scan.partial(&path, &meta, now, &mut warned);
                 } else if meta.is_file() && is_hex(&name, 62) {
                     let used = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                    scan.bytes += meta.len();
+                    scan.bytes = scan.bytes.saturating_add(u128::from(meta.len()));
                     scan.entries.push((used, path, meta.len()));
                 }
             }
@@ -459,12 +475,12 @@ impl Scan {
                 Removed::Yes | Removed::Gone => self.partials_removed += 1,
                 Removed::No => {
                     if meta.is_file() {
-                        self.bytes += meta.len();
+                        self.bytes = self.bytes.saturating_add(u128::from(meta.len()));
                     }
                 }
             }
         } else if meta.is_file() {
-            self.bytes += meta.len();
+            self.bytes = self.bytes.saturating_add(u128::from(meta.len()));
         }
     }
 }
@@ -472,10 +488,10 @@ impl Scan {
 /// Evicts `scan`'s entries, least recently used first (by path, of two used at once), until
 /// its bytes are at most `target` or no entry is left. Returns how many it evicted, and
 /// their bytes.
-fn evict(scan: &mut Scan, target: u64) -> (usize, u64) {
+fn evict(scan: &mut Scan, target: u128) -> (usize, u128) {
     scan.entries.sort();
     let mut warned = false;
-    let (mut evicted, mut evicted_bytes) = (0, 0);
+    let (mut evicted, mut evicted_bytes) = (0, 0_u128);
     for (_, path, size) in &scan.entries {
         if scan.bytes <= target {
             break;
@@ -483,9 +499,9 @@ fn evict(scan: &mut Scan, target: u64) -> (usize, u64) {
         match remove(path, &mut warned) {
             // Gone already: another session evicted it, or rebuilt it after a bad read.
             Removed::Yes | Removed::Gone => {
-                scan.bytes -= size;
+                scan.bytes = scan.bytes.saturating_sub(u128::from(*size));
                 evicted += 1;
-                evicted_bytes += size;
+                evicted_bytes = evicted_bytes.saturating_add(u128::from(*size));
             }
             Removed::No => {}
         }
@@ -782,6 +798,50 @@ mod tests {
     /// The cache's tests that make partial files, one at a time: [`new_file`]'s counter is
     /// the process's, and a test that plants names after it needs it to itself.
     static PARTIAL_FILES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn a_put_beside_entries_being_written_that_would_pass_the_bound_is_refused() {
+        // Found by break-it: a put that a scan can't make room for (the entries being
+        // written can't be evicted) was written anyway, so a session's puts at once passed
+        // the bound. An empty directory, a bound of 100, and a put of 60 being written.
+        let scratch = Scratch::new("refused");
+        let cache =
+            Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32]))).with_bound(100);
+        *cache.usage.lock().unwrap() = Usage {
+            known: Some(60),
+            since_scan: 60,
+            writing: 60,
+        };
+        // 60 + 50 is past 100: refused, and nothing counted for it.
+        assert!(!cache.make_room(50));
+        let usage = cache.usage.lock().unwrap();
+        assert_eq!((usage.known, usage.writing), (Some(60), 60));
+        drop(usage);
+        // 60 + 40 is exactly 100: kept, and counted.
+        assert!(cache.make_room(40));
+        let usage = cache.usage.lock().unwrap();
+        assert_eq!((usage.known, usage.writing), (Some(100), 100));
+    }
+
+    #[test]
+    fn eviction_counts_entries_whose_lengths_sum_past_u64_max_exactly() {
+        // Found by break-it: sparse entries' lengths can sum past what a u64 holds (a
+        // plain add panicked; a saturating one undercounts, and leaves a planted entry).
+        // Three entries of 2^63 bytes (gone already, so each is evicted as if by another
+        // session), 3 * 2^63 in all, evicted to 2^63: the oldest two go, 2^64 bytes.
+        let half = 1_u64 << 63;
+        let gone = |n: u8| PathBuf::from(format!("/nonexistent-silico-cache/{n}"));
+        let mut scan = Scan {
+            entries: (0..3)
+                .map(|n| (SystemTime::UNIX_EPOCH, gone(n), half))
+                .collect(),
+            bytes: 3 * u128::from(half),
+            partials_removed: 0,
+        };
+        assert_eq!(evict(&mut scan, u128::from(half)), (2, 1_u128 << 64));
+        assert_eq!(scan.bytes, u128::from(half));
+        assert_eq!(scan.entries[2].1, gone(2));
+    }
 
     #[test]
     fn a_cache_through_a_link_says_so_once_for_itself_and_its_clones() {
