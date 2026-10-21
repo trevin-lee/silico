@@ -686,6 +686,84 @@ fn a_document_that_opens_near_the_size_limit_and_gains_fingerprints_is_refused_a
 }
 
 #[test]
+fn a_fingerprinted_document_opens_up_to_the_size_limit_and_not_a_byte_past() {
+    // The maintainer, 2026-10-21: fingerprints count toward the limit, reading as writing.
+    // A block with its fingerprint and a note sized so its canonical text is the limit less
+    // one, the limit, and the limit and one.
+    let limit = silico_core::document::json::MAX_DOCUMENT_LEN;
+    let block = |note: usize, fingerprint: &str| {
+        doc(&[&format!(
+            r#"{BLOCK}, "note": "{}"{fingerprint}}}"#,
+            "n".repeat(note)
+        )])
+    };
+    let stored = format!(r#", "fingerprint": {{{GOOD}}}"#);
+    let base = write(&read(block(0, &stored).as_bytes()).unwrap())
+        .unwrap()
+        .len();
+    for size in [limit - 1, limit] {
+        let text = block(size - base, &stored);
+        let document = read(text.as_bytes()).unwrap_or_else(|e| panic!("{size}: {e}"));
+        assert!(document.features[0].fingerprint.is_some());
+        assert_eq!(write(&document).unwrap().len(), size);
+    }
+    let past = block(limit + 1 - base, &stored);
+    let err = read(past.as_bytes()).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
+    assert!(
+        err.message().contains("too large for Silico to read"),
+        "{err}"
+    );
+    assert_eq!(err.feature(), Some("k7f2qx3m"), "{err}");
+    // It's the fingerprint that takes it past: the same document without it opens.
+    let unprinted = block(limit + 1 - base, "");
+    assert!(
+        read(unprinted.as_bytes()).unwrap().features[0]
+            .fingerprint
+            .is_none()
+    );
+}
+
+#[test]
+fn a_save_is_refused_exactly_when_the_fingerprints_it_writes_take_the_document_past_the_limit() {
+    // A block with no fingerprint stored, opening with room to spare; its save writes the
+    // fingerprint its rebuild measured, and the note is sized so the saved text is the
+    // limit less one, the limit, and the limit and one.
+    let limit = silico_core::document::json::MAX_DOCUMENT_LEN;
+    let block = |note: usize| doc(&[&format!(r#"{BLOCK}, "note": "{}"}}"#, "n".repeat(note))]);
+    let (_, model) = rebuilt(&block(0));
+    let base = write(&model.saved()).unwrap().len();
+    for size in [limit - 1, limit] {
+        let (document, model) = rebuilt(&block(size - base));
+        assert!(document.features[0].fingerprint.is_none());
+        let formatted = silico_core::command::format(&model)
+            .unwrap()
+            .unwrap_or_else(|p| panic!("{size}: {:?}", p.errors()));
+        assert_eq!(formatted.text.len(), size);
+        // And what it saved opens, fingerprint and all.
+        let saved = read(formatted.text.as_bytes()).unwrap();
+        assert_eq!(
+            saved.features[0].fingerprint.unwrap().volume.to_string(),
+            "8000"
+        );
+    }
+    let (document, model) = rebuilt(&block(limit + 1 - base));
+    assert!(write(&document).is_ok(), "as it was read, it fits");
+    let problems = silico_core::command::format(&model).unwrap().unwrap_err();
+    assert_eq!(problems.total(), 1);
+    let err = &problems.errors()[0];
+    assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
+    assert!(err.message().contains("too large to write"), "{err}");
+    assert!(err.message().contains(&limit.to_string()), "{err}");
+    assert_eq!(err.feature(), Some("k7f2qx3m"), "{err}");
+    assert!(
+        err.cause().is_some_and(|c| c.contains("fingerprints")),
+        "{err}"
+    );
+    assert!(err.suggestion().is_some(), "{err}");
+}
+
+#[test]
 fn drift_is_checked_against_the_document_the_model_was_built_from() {
     // Once drift and fingerprinted took any document, and matched features by ID alone: a
     // model of one document stamped its measures onto another. Now a model checks and

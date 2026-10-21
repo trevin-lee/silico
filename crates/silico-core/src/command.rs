@@ -162,7 +162,19 @@ pub fn format(model: &Model) -> Result<Result<Formatted, Problems>, Error> {
         .collect();
     let text = match document::write(&written) {
         Ok(text) => text,
-        Err(error) => return Ok(Err(Problems::of(vec![error]))),
+        Err(error) => {
+            // What the save writes, fingerprints and solved sketches, counts as the rest
+            // does (the maintainer, 2026-10-21): said when it's what takes the document past.
+            let error = if document::fits(model.document()) {
+                error.with_cause(
+                    "the fingerprints and solved sketches a save writes take its canonical \
+                     text past the limit; as it was read, it fits",
+                )
+            } else {
+                error
+            };
+            return Ok(Err(Problems::of(vec![error])));
+        }
     };
     // Problems the save can't fix: drift is what it fixes, so only the failures and the
     // solids that couldn't be measured.

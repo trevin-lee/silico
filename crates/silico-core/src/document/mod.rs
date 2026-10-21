@@ -34,12 +34,15 @@ use crate::{Error, ErrorCode};
 
 /// The document `bytes` hold, or an `invalid_input` error saying what's wrong and where.
 /// A document whose canonical text would pass [`json::MAX_DOCUMENT_LEN`] is refused, as
-/// `write` would refuse it: a document that opens can always be saved, and what's saved
-/// always opens.
+/// `write` would refuse it, its fingerprints counted as they are in a save (the
+/// maintainer, 2026-10-21): a document that opens can always be written back as it is,
+/// and what's written always opens. A save writes the fingerprints the rebuild measured,
+/// which can take a document that opens past the limit; then it's refused, as `write`
+/// refuses any document past it.
 pub fn read(bytes: &[u8]) -> Result<Document, Error> {
     let _span = tracing::debug_span!("document_read", bytes = bytes.len()).entered();
     let document = decode::decode(bytes)?;
-    if write::fits(&document, json::MAX_DOCUMENT_LEN) {
+    if fits(&document) {
         Ok(document)
     } else {
         Err(too_long(
@@ -56,6 +59,12 @@ pub fn write(document: &Document) -> Result<String, Error> {
         tracing::debug_span!("document_write", features = document.features.len()).entered();
     write::write(document, json::MAX_DOCUMENT_LEN)
         .map_err(|write::TooLong| too_long(document, "the document is too large to write"))
+}
+
+/// Whether the document's canonical text is within [`json::MAX_DOCUMENT_LEN`]: whether it
+/// can be written, counted without writing it.
+pub(crate) fn fits(document: &Document) -> bool {
+    write::fits(document, json::MAX_DOCUMENT_LEN)
 }
 
 /// What the gate refuses of `sketch` on its own (`sketch_gate`): M3.4 checks a solve's
