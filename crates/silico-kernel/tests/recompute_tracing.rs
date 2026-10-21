@@ -96,7 +96,7 @@ fn an_occt_warning_in_a_worker_traces_back_to_the_step_and_the_edit_with_more_wo
         let run = edit.in_scope(|| engine.start(document));
         assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
     }
-    // The log thread forwards the worker's lines as it reads them.
+    // The worker's lines are emitted as the log sink thread gets to them.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while seen.lock().unwrap().len() < rounds {
         assert!(

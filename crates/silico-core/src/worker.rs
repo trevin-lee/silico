@@ -5,11 +5,12 @@
 //! with something unreadable is killed and reaped, and the call returns a structured
 //! error; the app keeps running.
 //!
-//! Plain threads, no async runtime: one thread reads the worker's replies, one reads its
-//! log lines (JSON, one per line), keeping the last to attach to a crash report, and one
-//! re-emits them into `tracing` at their own level, so a log sink that falls behind never
-//! stops the worker's log being read. Each call has a trace ID, which the worker
-//! records on its logs for the request, so they line up with the core's span for the call.
+//! Plain threads, no async runtime: one thread reads the worker's replies, and one reads
+//! its log lines (JSON, one per line), keeping the last to attach to a crash report, and
+//! hands them to the one thread that re-emits every worker's into `tracing` at their own
+//! level, so a log sink that falls behind never stops a worker's log being read. Each call
+//! has a trace ID, which the worker records on its logs for the request, so they line up
+//! with the core's span for the call.
 
 use std::collections::VecDeque;
 use std::io::{self, BufRead, BufReader, Read};
@@ -39,21 +40,26 @@ const STDERR_TAIL_LINES: usize = 20;
 /// the core buffer without limit.
 const MAX_LOG_LINE: usize = 8 * 1024;
 
-/// How much of a worker's log may wait for the log sink, in bytes (each line's message
-/// and [`LOG_ITEM_COST`]): a burst of tens of thousands of lines, which a sink slower than
-/// the worker catches up on. Past that (a sink that's stalled: a terminal no one reads, a
-/// blocked exporter) lines are dropped, counted, and the count logged when the sink catches
-/// up, so the worker's log is always read: left unread, it fills the worker's pipe, and the
-/// worker blocks writing the line every request ends with, and stops answering, which looks
-/// like a hang in the geometry.
+/// How much of the workers' logs may wait for the log sink, all workers' together, in
+/// bytes (each line's message and [`LOG_ITEM_COST`]): a burst of tens of thousands of
+/// lines, which a sink slower than the workers catches up on. Past that (a sink that's
+/// stalled: a terminal no one reads, a blocked exporter) lines are dropped, counted, and
+/// the count logged when the sink catches up, so each worker's log is always read: left
+/// unread, it fills the worker's pipe, and the worker blocks writing the line every request
+/// ends with, and stops answering, which looks like a hang in the geometry.
 const LOG_QUEUE_BYTES: usize = 4 * 1024 * 1024;
 
 /// What each line, or each span let go, costs against [`LOG_QUEUE_BYTES`] besides its
-/// message: about what the queue holds for it.
-const LOG_ITEM_COST: usize = 64;
+/// message: the item, and its slot in the channel and the allocations it holds, roughly.
+const LOG_ITEM_COST: usize = std::mem::size_of::<Queued>() + 64;
+
+/// How long a crash report waits, at most, for the sink to emit the worker's last lines,
+/// once they're read: so they're logged before the error that reports them, when the sink
+/// keeps up, and a sink that doesn't holds the report up no longer than this.
+const LOG_FLUSH_WAIT: Duration = Duration::from_millis(250);
 
 /// How long a worker whose socket closed gets to exit on its own before it's killed, and
-/// how long its log thread then gets to finish.
+/// how long its log then gets to be read.
 const EXIT_GRACE: Duration = Duration::from_secs(2);
 /// The least a crashed call waits for its worker to exit, past the call's deadline.
 const MIN_EXIT_GRACE: Duration = Duration::from_millis(100);
@@ -163,7 +169,8 @@ pub struct Worker {
     callers: Arc<Mutex<Callers>>,
     /// Closes when the log thread has read everything the worker wrote.
     stderr_read: Receiver<()>,
-    /// Closes when the log sink thread has emitted everything the log thread gave it.
+    /// Closes when the log sink thread has emitted everything the log thread gave it (or
+    /// at once, if the log can't reach it).
     stderr_emitted: Receiver<()>,
     /// Set when the worker says it has started (see [`silico_protocol::write_started`]), or
     /// replies.
@@ -237,16 +244,7 @@ impl Worker {
         let (read_tx, stderr_read) = mpsc::channel::<()>();
         let (emitted_tx, stderr_emitted) = mpsc::channel::<()>();
         if let Some(stderr) = guard.take_stderr() {
-            let (queue, queued) = LogQueue::new(LOG_QUEUE_BYTES);
-            let sink = queue.sink();
-            std::thread::Builder::new()
-                .name(format!("worker-{pid}-log-sink"))
-                .spawn(move || {
-                    for item in queued {
-                        sink.take(item, pid);
-                    }
-                    drop(emitted_tx);
-                })
+            let queue = LogQueue::shared(pid)
                 .map_err(|e| start_failed(kind, "starting the log sink thread", &e))?;
             let tail = Arc::clone(&stderr_tail);
             let callers = Arc::clone(&callers);
@@ -255,6 +253,7 @@ impl Worker {
                 .spawn(move || {
                     forward_logs(stderr, &tail, &callers, &queue);
                     drop(read_tx);
+                    queue.flushed(emitted_tx);
                 })
                 .map_err(|e| start_failed(kind, "starting the log thread", &e))?;
         }
@@ -438,23 +437,16 @@ impl Worker {
             )
             .with_suggestion(format!("start a new {}", self.kind.noun())));
         }
-        // A timeout too long to add to the clock has no deadline.
-        let deadline = Instant::now().checked_add(timeout);
         let id = RequestId(self.next_id);
         self.next_id += 1;
         let trace = TraceId(NEXT_TRACE.fetch_add(1, Ordering::Relaxed));
         // The worker's log lines for this request go under the span it was asked in, so at
-        // any level they trace back to it (ARCHITECTURE.md, invariant 9).
-        // Let go of outside the lock, as the log thread takes it for every line.
-        let pushed_out = lock(&self.callers).push(trace.0, tracing::Span::current());
-        if pushed_out.is_some() {
-            tracing::warn!(
-                "a worker hasn't said {} requests were done: its log lines for the oldest no \
-                 longer trace back to them",
-                Callers::MOST
-            );
-        }
-        drop(pushed_out);
+        // any level they trace back to it (ARCHITECTURE.md, invariant 9). The log sink runs
+        // only outside the lock, which the log thread takes for every line: taking the span,
+        // and warning of and letting go of one pushed out.
+        let asked_in = tracing::Span::current();
+        let pushed_out = lock(&self.callers).push(trace.0, asked_in);
+        pushed_out_of_callers(pushed_out);
         let span = tracing::debug_span!(
             "worker_call",
             trace = trace.0,
@@ -464,6 +456,9 @@ impl Worker {
             op = name
         );
         let _entered = span.enter();
+        // From here, after the call's own logging, which a slow sink can make slow: a timeout
+        // too long to add to the clock has no deadline.
+        let deadline = Instant::now().checked_add(timeout);
 
         let request = Request {
             id,
@@ -487,6 +482,7 @@ impl Worker {
             // Refused before anything was sent: the request, not the worker, is at fault.
             Err(e @ (FrameError::TooLarge { .. } | FrameError::Encode(_))) => {
                 // The worker will never say it's done: its span goes now.
+                // Bound first, so it's let go once the lock is (see above).
                 let forgotten = lock(&self.callers).forget(trace.0);
                 drop(forgotten);
                 return Err(Error::new(
@@ -620,14 +616,16 @@ impl Worker {
             (true, true) => Reached::Request,
         };
         // The worker has exited, so its log pipe closes; let the log thread read the last
-        // lines before the report is built, and the sink emit them, if it can in the time
-        // (the tail is kept as lines are read, so a stalled or failed sink leaves it whole).
+        // lines before the report is built (the tail is kept as they're read). And give the
+        // sink a moment to emit them, so they're logged before the error that reports them;
+        // a sink that's behind or stalled doesn't hold the report, and the slot, up longer.
         let _ = self
             .stderr_read
             .recv_timeout(until.saturating_duration_since(Instant::now()));
+        let flushed = until.min(Instant::now() + LOG_FLUSH_WAIT);
         let _ = self
             .stderr_emitted
-            .recv_timeout(until.saturating_duration_since(Instant::now()));
+            .recv_timeout(flushed.saturating_duration_since(Instant::now()));
         let mut cause = match status {
             Some(status) => describe_exit(status),
             None => "it stopped responding and was killed".to_owned(),
@@ -840,15 +838,26 @@ impl Drop for KillOnDrop {
 }
 
 /// The spans of a worker's requests whose log lines may still be read, by trace, oldest
-/// first. How many it holds is how far the log thread is behind the worker: it never waits
-/// on the log sink, but a busy machine can put it behind, as far as the pipe holds done lines (its size over a done line's
-/// 28 bytes or so: about 2,300 for a 64 KiB pipe, on macOS and on Linux with 4 KiB pages;
-/// more with larger pages), before the worker blocks writing one. [`Callers::MOST`] is
-/// above that on the platforms Silico is checked on (a test measures each one's pipe); past
-/// it, the oldest span goes (with a warning), and its late lines go under none. It also
-/// bounds a worker that never says a request is done.
+/// first. How many it holds is how far the log thread is behind the worker: it doesn't
+/// wait on the log sink, but a busy machine can put it behind, as far as the pipe holds
+/// done lines (its size over a done line's 28 bytes or so: about 2,300 for a 64 KiB pipe,
+/// on macOS and on Linux with 4 KiB pages; more with larger pages), before the worker blocks
+/// writing one. [`Callers::MOST`] is above that on the platforms Silico is checked on (a
+/// test measures each one's pipe); past it, the oldest span goes (with a warning), and its
+/// late lines go under none. It also bounds a worker that never says a request is done.
 #[derive(Default)]
 struct Callers(VecDeque<(u64, tracing::Span)>);
+
+/// Warns of a span pushed out of [`Callers`], and lets it go: outside its lock.
+fn pushed_out_of_callers(span: Option<tracing::Span>) {
+    if span.is_some() {
+        tracing::warn!(
+            "a worker hasn't said {} requests were done: its log lines for the oldest no \
+             longer trace back to them",
+            Callers::MOST
+        );
+    }
+}
 
 impl Callers {
     const MOST: usize = 4096;
@@ -867,12 +876,9 @@ impl Callers {
     }
 
     /// Lets the span of request `trace` go, the worker never having been sent it.
-    fn forget(&mut self, trace: u64) -> Vec<tracing::Span> {
-        let (forgotten, kept) = std::mem::take(&mut self.0)
-            .into_iter()
-            .partition(|(asked, _)| *asked == trace);
-        self.0 = kept;
-        forgotten.into_iter().map(|(_, span)| span).collect()
+    fn forget(&mut self, trace: u64) -> Option<tracing::Span> {
+        let at = self.0.iter().position(|(asked, _)| *asked == trace)?;
+        self.0.remove(at).map(|(_, span)| span)
     }
 
     /// The span of request `trace`, held by its lines until they're emitted.
@@ -937,105 +943,62 @@ fn forward_logs(
     }
 }
 
-/// The log thread's side of the hand-off to the sink thread: never blocks. What the sink
-/// thread hasn't emitted yet is bounded in bytes; a line with no room is dropped and
-/// counted, and the count is said when the sink gets to where the line would have been.
+/// A worker's log thread's side of the hand-off to the sink thread, which emits every
+/// worker's lines: it never blocks. What the sink thread hasn't emitted yet is bounded in
+/// bytes, all workers' together; a line with no room is dropped and counted, and the first
+/// line dropped since the count was last said puts a mark in the queue, where the sink
+/// thread says the count: every line dropped by then, each said once.
 struct LogQueue {
+    pid: u32,
     items: mpsc::Sender<Queued>,
-    /// What the queue holds, in bytes (see [`Queued::cost`]).
+    /// What the queue holds, in bytes (see [`Queued::cost`]), shared by every worker's.
     held: Arc<AtomicUsize>,
     most: usize,
-    /// Lines dropped and not yet said. While it's above zero, the queue holds one
-    /// [`Queued::Dropped`], which says them.
+    /// This worker's lines dropped and not yet said. While it's above zero, the queue
+    /// holds one [`What::Dropped`] of this worker's, which says them.
     dropped: Arc<AtomicU64>,
 }
 
-/// The sink thread's side of the hand-off.
-struct LogSink {
-    held: Arc<AtomicUsize>,
-    dropped: Arc<AtomicU64>,
+/// The sink thread every worker's log goes to, started with the first worker: one, so a
+/// sink that never recovers holds one thread and one [`LOG_QUEUE_BYTES`], however many
+/// workers the pool starts. Its channel and the bytes it holds.
+static SINK: Mutex<Option<(mpsc::Sender<Queued>, Arc<AtomicUsize>)>> = Mutex::new(None);
+
+/// What a worker's log thread hands the sink thread.
+struct Queued {
+    pid: u32,
+    what: What,
 }
 
-/// What the log thread hands the sink thread.
-enum Queued {
+enum What {
     Line(WorkerLine),
-    /// Lines were dropped here: say how many.
-    Dropped,
-    /// Requests' spans the log thread let go: closing one runs the sink, which may block.
+    /// Lines were dropped: say how many (the count's the worker's).
+    Dropped(Arc<AtomicU64>),
+    /// Requests' spans the log thread let go: closing one runs the log sink, which may
+    /// block, so never on the log thread. Always queued, though they count against the
+    /// bound (so lines give way to them): at worst one span for each request the core
+    /// asked while the sink was stalled.
     Release(Vec<tracing::Span>),
+    /// The worker's log is all read: dropping this says everything before it is emitted.
+    Flushed(mpsc::Sender<()>),
 }
 
 impl Queued {
     fn cost(&self) -> usize {
-        match self {
-            Self::Line(line) => line.message.len() + LOG_ITEM_COST,
-            Self::Dropped => 0,
-            Self::Release(spans) => spans.len() * LOG_ITEM_COST,
-        }
-    }
-}
-
-impl LogQueue {
-    fn new(most: usize) -> (Self, Receiver<Queued>) {
-        let (items, queued) = mpsc::channel();
-        let queue = Self {
-            items,
-            held: Arc::default(),
-            most,
-            dropped: Arc::default(),
-        };
-        (queue, queued)
-    }
-
-    fn sink(&self) -> LogSink {
-        LogSink {
-            held: Arc::clone(&self.held),
-            dropped: Arc::clone(&self.dropped),
+        match &self.what {
+            What::Line(line) => line.message.len() + LOG_ITEM_COST,
+            What::Release(spans) => spans.len() * LOG_ITEM_COST,
+            What::Dropped(_) | What::Flushed(_) => 0,
         }
     }
 
-    /// Queues `item` if there's room for it, giving it back if not, or if the sink thread
-    /// has gone.
-    fn offer(&self, item: Queued) -> Result<(), Queued> {
-        let cost = item.cost();
-        let held = self.held.fetch_add(cost, Ordering::SeqCst);
-        if held + cost > self.most {
-            self.held.fetch_sub(cost, Ordering::SeqCst);
-            return Err(item);
-        }
-        self.items.send(item).map_err(|failed| {
-            self.held.fetch_sub(cost, Ordering::SeqCst);
-            failed.0
-        })
-    }
-
-    fn offer_line(&self, line: WorkerLine) {
-        if self.offer(Queued::Line(line)).is_ok() {
-            return;
-        }
-        // The first line dropped since the count was last said marks the place to say it;
-        // the mark costs nothing, and there's only ever one in the queue.
-        if self.dropped.fetch_add(1, Ordering::SeqCst) == 0 {
-            let _ = self.items.send(Queued::Dropped);
-        }
-    }
-
-    /// Hands the sink thread `spans` to let go of, or, with no room (a sink stalled for
-    /// long), lets go of them here.
-    fn release(&self, spans: Vec<tracing::Span>) {
-        if !spans.is_empty() {
-            drop(self.offer(Queued::Release(spans)));
-        }
-    }
-}
-
-impl LogSink {
-    fn take(&self, item: Queued, pid: u32) {
-        let cost = item.cost();
-        match &item {
-            Queued::Line(line) => line.emit(pid),
-            Queued::Dropped => {
-                let dropped = self.dropped.swap(0, Ordering::SeqCst);
+    /// Emits the item's line, or says its count, or lets its spans go.
+    fn emit(self) {
+        let pid = self.pid;
+        match self.what {
+            What::Line(line) => line.emit(pid),
+            What::Dropped(count) => {
+                let dropped = count.swap(0, Ordering::SeqCst);
                 tracing::warn!(
                     target: "silico::worker",
                     pid,
@@ -1043,16 +1006,102 @@ impl LogSink {
                     "{dropped} of the worker's log lines were dropped: the log sink fell behind"
                 );
             }
-            Queued::Release(_) => {}
+            What::Release(spans) => drop(spans),
+            What::Flushed(emitted) => drop(emitted),
         }
-        drop(item);
-        self.held.fetch_sub(cost, Ordering::SeqCst);
     }
 }
 
-/// One of a worker's log lines, read: its level (none if it isn't one of the worker's
-/// `tracing` lines, a crash message from the C runtime, say, emitted as it is at warn), its
-/// message, and the span of the request it's for, which it holds until it's emitted.
+/// The sink thread's work on one item: emits it, and gives its bytes back to `held`. A log
+/// layer that panics loses the item, not every worker's log after it, nor its bytes.
+fn sink_one(item: Queued, held: &AtomicUsize) {
+    let cost = item.cost();
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| item.emit()));
+    held.fetch_sub(cost, Ordering::SeqCst);
+}
+
+impl LogQueue {
+    /// Worker `pid`'s queue to the sink thread every worker's log goes to, starting it if
+    /// it isn't running yet.
+    fn shared(pid: u32) -> io::Result<Self> {
+        let mut sink = lock(&SINK);
+        let (items, held) = match &*sink {
+            Some(running) => running.clone(),
+            None => {
+                let (items, queued) = mpsc::channel::<Queued>();
+                let held = Arc::new(AtomicUsize::new(0));
+                let emitted = Arc::clone(&held);
+                std::thread::Builder::new()
+                    .name("silico-worker-log-sink".to_owned())
+                    .spawn(move || {
+                        for item in queued {
+                            sink_one(item, &emitted);
+                        }
+                    })?;
+                sink.insert((items, held)).clone()
+            }
+        };
+        Ok(Self::new(pid, items, held, LOG_QUEUE_BYTES))
+    }
+
+    fn new(pid: u32, items: mpsc::Sender<Queued>, held: Arc<AtomicUsize>, most: usize) -> Self {
+        Self {
+            pid,
+            items,
+            held,
+            most,
+            dropped: Arc::default(),
+        }
+    }
+
+    fn send(&self, what: What) -> Result<(), Queued> {
+        let item = Queued {
+            pid: self.pid,
+            what,
+        };
+        self.items.send(item).map_err(|failed| failed.0)
+    }
+
+    /// Queues `line` if there's room for it, or drops and counts it.
+    fn offer_line(&self, line: WorkerLine) {
+        let cost = line.message.len() + LOG_ITEM_COST;
+        let held = self.held.fetch_add(cost, Ordering::SeqCst);
+        if held + cost <= self.most && self.send(What::Line(line)).is_ok() {
+            return;
+        }
+        self.held.fetch_sub(cost, Ordering::SeqCst);
+        // The first line dropped since the count was last said marks where to say it; the
+        // mark costs nothing, and there's only ever one of this worker's in the queue.
+        if self.dropped.fetch_add(1, Ordering::SeqCst) == 0 {
+            let _ = self.send(What::Dropped(Arc::clone(&self.dropped)));
+        }
+    }
+
+    /// Hands the sink thread `spans` to let go of: room or not (see [`What::Release`]).
+    fn release(&self, spans: Vec<tracing::Span>) {
+        if spans.is_empty() {
+            return;
+        }
+        let cost = spans.len() * LOG_ITEM_COST;
+        self.held.fetch_add(cost, Ordering::SeqCst);
+        if let Err(unsent) = self.send(What::Release(spans)) {
+            // The sink thread has gone (only in tests: the shared one never ends). Its
+            // spans can't be let go on this thread, which mustn't block: they're kept.
+            self.held.fetch_sub(cost, Ordering::SeqCst);
+            std::mem::forget(unsent);
+        }
+    }
+
+    /// Says, through `emitted`, when the sink thread has emitted everything before now.
+    fn flushed(&self, emitted: mpsc::Sender<()>) {
+        let _ = self.send(What::Flushed(emitted));
+    }
+}
+
+/// A worker's log line as the sink thread emits it: its level (none if it isn't one of the
+/// worker's `tracing` lines, a crash message from the C runtime, say, emitted as it is at
+/// warn), its message, and the span of the request it's for, which it holds until it's
+/// emitted.
 struct WorkerLine {
     level: Option<tracing::Level>,
     message: String,
@@ -1131,7 +1180,7 @@ fn read_worker_log(line: &str, callers: &Mutex<Callers>) -> ReadLine {
     ReadLine::Line(read, summary)
 }
 
-/// One of a worker's log lines, read.
+/// What the log thread reads in a worker's line.
 enum ReadLine {
     /// A log line, with its summary for crash reports.
     Line(WorkerLine, String),
@@ -2034,9 +2083,17 @@ mod tests {
 
     fn logs_of(bytes: &[u8]) -> Vec<String> {
         let tail = Mutex::new(VecDeque::new());
-        let (queue, _queued) = super::LogQueue::new(super::LOG_QUEUE_BYTES);
+        let (queue, _queued) = private_queue(super::LOG_QUEUE_BYTES);
         forward_logs(bytes, &tail, &Mutex::new(super::Callers::default()), &queue);
         tail.into_inner().unwrap().into_iter().collect()
+    }
+
+    /// A queue to a sink thread of the test's own, holding at most `most` bytes: the test
+    /// emits what it takes off the receiver, as the sink thread does.
+    fn private_queue(most: usize) -> (super::LogQueue, std::sync::mpsc::Receiver<super::Queued>) {
+        let (items, queued) = std::sync::mpsc::channel();
+        let queue = super::LogQueue::new(1, items, std::sync::Arc::default(), most);
+        (queue, queued)
     }
 
     /// Reads `line` and emits it at once, as the sink thread does, giving its summary.
@@ -2222,7 +2279,8 @@ mod tests {
         assert_eq!(callers.0.len(), super::Callers::MOST);
         assert_eq!(callers.0.front().map(|(trace, _)| *trace), Some(10));
         // A request never sent is let go at once, and only it.
-        assert_eq!(callers.forget(most + 5).len(), 1);
+        assert!(callers.forget(most + 5).is_some());
+        assert!(callers.forget(most + 5).is_none());
         assert_eq!(callers.0.len(), super::Callers::MOST - 1);
         assert!(callers.0.iter().all(|(trace, _)| *trace != most + 5));
     }
@@ -2277,7 +2335,7 @@ mod tests {
         read: usize,
         drain_before: usize,
         queued: &'a std::sync::mpsc::Receiver<super::Queued>,
-        sink: &'a super::LogSink,
+        held: &'a std::sync::atomic::AtomicUsize,
     }
 
     impl std::io::Read for Paced<'_> {
@@ -2285,7 +2343,7 @@ mod tests {
             if self.read == self.drain_before
                 && let Ok(item) = self.queued.try_recv()
             {
-                self.sink.take(item, 1);
+                super::sink_one(item, self.held);
             }
             let Some(line) = self.lines.pop_front() else {
                 return Ok(0);
@@ -2301,8 +2359,8 @@ mod tests {
         // Room for one short line: "one" waits, "two" and "three" are dropped; the sink
         // takes "one", and "four" has room; "five" and "six" are dropped. The count is said
         // where the first was dropped, once the sink gets there: all four, each once.
-        let (queue, queued) = super::LogQueue::new(3 + super::LOG_ITEM_COST + 3);
-        let sink = queue.sink();
+        let (queue, queued) = private_queue(3 + super::LOG_ITEM_COST + 3);
+        let held = std::sync::Arc::clone(&queue.held);
         let lines: [&'static [u8]; 6] = [
             b"one\n", b"two\n", b"three\n", b"four\n", b"five\n", b"six\n",
         ];
@@ -2315,13 +2373,13 @@ mod tests {
                 read: 0,
                 drain_before: 3,
                 queued: &queued,
-                sink: &sink,
+                held: &held,
             };
             let callers = Mutex::new(super::Callers::default());
             forward_logs(&mut paced, &tail, &callers, &queue);
             drop(queue);
             for item in queued.iter() {
-                sink.take(item, 1);
+                super::sink_one(item, &held);
             }
         });
         assert_eq!(
@@ -2337,8 +2395,7 @@ mod tests {
 
     #[test]
     fn lines_dropped_are_counted_once_the_sink_catches_up_though_the_worker_says_no_more() {
-        let (queue, queued) = super::LogQueue::new(5 + super::LOG_ITEM_COST);
-        let sink = queue.sink();
+        let (queue, queued) = private_queue(5 + super::LOG_ITEM_COST);
         let seen = Seen::default();
         let subscriber = tracing_subscriber::registry().with(Events(seen.clone()));
         let callers = Mutex::new(super::Callers::default());
@@ -2348,14 +2405,13 @@ mod tests {
         // there.
         tracing::subscriber::with_default(subscriber, || {
             while let Ok(item) = queued.try_recv() {
-                sink.take(item, 1);
+                super::sink_one(item, &queue.held);
             }
         });
         assert_eq!(*seen.lock().unwrap(), [warn("first"), dropped(2)]);
         // Said, the count starts again, and the queue's room is back.
-        assert_eq!(sink.dropped.load(std::sync::atomic::Ordering::SeqCst), 0);
-        assert_eq!(sink.held.load(std::sync::atomic::Ordering::SeqCst), 0);
-        drop(queue);
+        assert_eq!(queue.dropped.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(queue.held.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -2373,8 +2429,7 @@ mod tests {
         let closes = Arc::new(AtomicUsize::new(0));
         let subscriber = tracing_subscriber::registry().with(Closes(Arc::clone(&closes)));
         tracing::subscriber::with_default(subscriber, || {
-            let (queue, queued) = super::LogQueue::new(super::LOG_QUEUE_BYTES);
-            let sink = queue.sink();
+            let (queue, queued) = private_queue(super::LOG_QUEUE_BYTES);
             let callers = Mutex::new(super::Callers::default());
             // The caller's span, its only handle now held for the worker's lines.
             assert!(
@@ -2392,9 +2447,121 @@ mod tests {
             assert!(lock(&callers).0.is_empty());
             assert_eq!(closes.load(Ordering::SeqCst), 0, "closed on the log thread");
             for item in queued.try_iter() {
-                sink.take(item, 1);
+                super::sink_one(item, &queue.held);
             }
             assert_eq!(closes.load(Ordering::SeqCst), 1);
+        });
+    }
+
+    #[test]
+    fn a_requests_span_is_let_go_by_the_sink_thread_though_the_queue_is_full() {
+        use std::sync::atomic::Ordering;
+        // No room for any line: a done line's span still goes to the sink thread, counted,
+        // so lines give way to it, and the log thread never closes it.
+        let (queue, queued) = private_queue(0);
+        let callers = Mutex::new(super::Callers::default());
+        assert!(lock(&callers).push(7, tracing::Span::none()).is_none());
+        let tail = Mutex::new(VecDeque::new());
+        forward_logs(
+            &b"a line with no room\n{\"silico_request_done\":7}\n"[..],
+            &tail,
+            &callers,
+            &queue,
+        );
+        let items: Vec<_> = queued.try_iter().collect();
+        let kinds: Vec<_> = items
+            .iter()
+            .map(|item| match &item.what {
+                super::What::Line(_) => "line",
+                super::What::Dropped(_) => "dropped",
+                super::What::Release(spans) if spans.len() == 1 => "release",
+                super::What::Release(_) => "release of other than one",
+                super::What::Flushed(_) => "flushed",
+            })
+            .collect();
+        assert_eq!(kinds, ["dropped", "release"]);
+        assert_eq!(queue.held.load(Ordering::SeqCst), super::LOG_ITEM_COST);
+        for item in items {
+            super::sink_one(item, &queue.held);
+        }
+        assert_eq!(queue.held.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_flush_is_said_once_everything_queued_before_it_is_emitted() {
+        let (queue, queued) = private_queue(super::LOG_QUEUE_BYTES);
+        let tail = Mutex::new(VecDeque::new());
+        forward_logs(
+            &b"last\n"[..],
+            &tail,
+            &Mutex::new(super::Callers::default()),
+            &queue,
+        );
+        let (emitted, flushed) = std::sync::mpsc::channel::<()>();
+        queue.flushed(emitted);
+        let line = queued.try_recv().unwrap();
+        // Not yet: the line before it is still to be emitted.
+        assert_eq!(
+            flushed.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+        super::sink_one(line, &queue.held);
+        super::sink_one(queued.try_recv().unwrap(), &queue.held);
+        assert_eq!(
+            flushed.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        );
+    }
+
+    #[test]
+    fn a_line_a_log_layer_panics_on_still_gives_its_bytes_back() {
+        use std::sync::atomic::Ordering;
+        use tracing_subscriber::layer::{Context, Layer};
+        struct Panics;
+        impl<S: tracing::Subscriber> Layer<S> for Panics {
+            fn on_event(&self, _: &tracing::Event<'_>, _: Context<'_, S>) {
+                panic!("a log layer with a bug");
+            }
+        }
+        let (queue, queued) = private_queue(super::LOG_QUEUE_BYTES);
+        let tail = Mutex::new(VecDeque::new());
+        forward_logs(
+            &b"doomed\n"[..],
+            &tail,
+            &Mutex::new(super::Callers::default()),
+            &queue,
+        );
+        assert_eq!(
+            queue.held.load(Ordering::SeqCst),
+            "doomed".len() + super::LOG_ITEM_COST
+        );
+        let subscriber = tracing_subscriber::registry().with(Panics);
+        tracing::subscriber::with_default(subscriber, || {
+            super::sink_one(queued.try_recv().unwrap(), &queue.held);
+        });
+        assert_eq!(queue.held.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_span_pushed_out_of_the_callers_is_warned_of() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tracing_subscriber::layer::{Context, Layer};
+        struct Warnings(Arc<AtomicUsize>);
+        impl<S: tracing::Subscriber> Layer<S> for Warnings {
+            fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
+                if *event.metadata().level() == tracing::Level::WARN {
+                    self.0.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        }
+        let warnings = Arc::new(AtomicUsize::new(0));
+        let subscriber = tracing_subscriber::registry().with(Warnings(Arc::clone(&warnings)));
+        tracing::subscriber::with_default(subscriber, || {
+            super::pushed_out_of_callers(None);
+            assert_eq!(warnings.load(Ordering::SeqCst), 0);
+            super::pushed_out_of_callers(Some(tracing::Span::none()));
+            assert_eq!(warnings.load(Ordering::SeqCst), 1);
         });
     }
 

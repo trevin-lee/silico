@@ -1,49 +1,52 @@
-//! Break-it: the worker log's hand-off from the thread that reads it to the thread that
-//! emits it (`worker.rs`: `forward_logs`, `LogQueue`, the log and log-sink threads), driven
-//! by workers that are shell scripts, so every byte of their log is the test's to choose,
-//! and by log sinks that stall, panic, or are merely slower than the reader.
+//! M2.4: a log sink that stalls, panics, or is merely slower than the workers never holds
+//! a worker up. Each worker's log is read on its own thread and handed to the one thread
+//! that emits every worker's (`silico_core::worker`: `forward_logs`, `LogQueue`), so the
+//! line every request ends with never fills the worker's pipe until the worker blocks
+//! writing one and stops answering, which would look like a hang in the geometry. Driven by
+//! the kernel worker, and by workers that are shell scripts, so every byte of their log is
+//! the test's to choose; the cases with "break-it" in them it found, against an earlier
+//! version of the hand-off.
 //!
 //! Each test installs the process's global subscriber, since the sink thread is the core's
 //! own: run under nextest (a process per test), as `pixi run test` does.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+#[path = "common/scripts.rs"]
+mod scripts;
+
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use scripts::script;
 use silico_core::ErrorCode;
+use silico_core::kernel::{KernelRequest, KernelWorker};
 use silico_core::worker::Worker;
-use silico_protocol::{Blob, Generation, Op};
+use silico_protocol::{Blob, BooleanOp, DebugOp, Generation, Op, Primitive};
 use tracing::Subscriber;
 use tracing::field::{Field, Visit};
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 
 const WARNING: &str = "of the worker's log lines were dropped: the log sink fell behind";
 
-/// Writes `body` as a `/bin/sh` script and gives its path: a worker that writes what the
-/// test says to its log (fd 2), and never answers on its socket (fd 3).
-fn script(name: &str, body: &str) -> PathBuf {
-    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
-        "adversarial-worker-logs-{}-{name}.sh",
-        std::process::id()
-    ));
-    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    path
+/// A file of `count` lines, `line 0` to `line {count-1}`, for a worker to write at once,
+/// faster than the reader takes them.
+fn burst_file(name: &str, count: usize) -> PathBuf {
+    let body: String = (0..count).map(|i| format!("line {i}\n")).collect();
+    let burst = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("worker-logs-{name}-{}.txt", std::process::id()));
+    std::fs::write(&burst, body).unwrap();
+    burst
 }
 
-/// A script writing `count` lines at once, `line 0` to `line {count-1}` (from a file, so
-/// faster than the reader takes them), then `then`.
+/// A script writing `count` lines at once (see [`burst_file`]), then `then`.
 fn burst_then(name: &str, count: usize, then: &str) -> PathBuf {
-    let body: String = (0..count).map(|i| format!("line {i}\n")).collect();
-    let burst = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
-        "adversarial-worker-logs-{}-{name}.txt",
-        std::process::id()
-    ));
-    std::fs::write(&burst, body).unwrap();
-    script(name, &format!("/bin/cat '{}' >&2\n{then}", burst.display()))
+    let burst = burst_file(name, count);
+    script(
+        &format!("worker-logs-{name}"),
+        &format!("/bin/cat '{}' >&2\n{then}", burst.display()),
+    )
 }
 
 /// More lines than the queue to the sink holds (4 MiB, each line's message and 64 bytes):
@@ -273,7 +276,9 @@ fn a_stalled_sink_has_every_line_given_or_counted_and_in_order() {
 fn lines_dropped_while_the_sink_stalled_are_counted_once_it_recovers_while_the_worker_is_quiet() {
     // A pool's worker lives as long as the app, and is quiet between requests. Lines it
     // wrote while the sink stalled are dropped; once the sink recovers and has taken what
-    // was queued, the count should be said, not held until the worker someday ends.
+    // was queued, the count should be said, not held until the worker someday ends. Found
+    // by break-it, against an earlier version of the hand-off, which said the count with
+    // the worker's next line.
     let sink = Sink::install(Mode::Stall);
     // Writes more lines than the queue holds and then waits on its socket, which the core
     // never writes to.
@@ -307,7 +312,7 @@ fn a_crash_report_waits_for_a_log_held_open_by_the_workers_child() {
     // it started may hold them open").
     let sink = Sink::install(Mode::Fast);
     let exe = script(
-        "child-holds-log",
+        "worker-logs-child-holds-log",
         "printf 'first\\n' >&2\n( exec 3>&-; /bin/sleep 1; printf 'LAST WORDS\\n' >&2 ) &\nexit 0",
     );
     let mut worker = Worker::spawn(&exe).unwrap();
@@ -324,7 +329,7 @@ fn a_crash_report_waits_for_a_log_held_open_by_the_workers_child() {
 fn a_stalled_sink_still_has_the_crash_report_wait_for_a_log_held_open() {
     let sink = Sink::install(Mode::Stall);
     let exe = script(
-        "child-holds-log-stalled",
+        "worker-logs-child-holds-log-stalled",
         "printf 'first\\n' >&2\n( exec 3>&-; /bin/sleep 1; printf 'LAST WORDS\\n' >&2 ) &\nexit 0",
     );
     let mut worker = Worker::spawn(&exe).unwrap();
@@ -347,12 +352,13 @@ fn a_stalled_sink_still_has_the_crash_report_wait_for_a_log_held_open() {
 #[test]
 fn a_sink_that_panics_leaves_the_crash_report_whole() {
     // A log layer with a bug panics on the worker's first line, on the sink thread. The
-    // reader must go on, and a crash report must still wait for the log as it does above:
-    // found by break-it, the sink thread then held the only "log done" signal, so its panic
-    // said the log was all read when it wasn't.
+    // reader must go on, a crash report must still wait for the log as it does above, and
+    // the sink must go on emitting. Found by break-it, against an earlier version of the
+    // hand-off, whose sink thread held the only "log done" signal, so its panic said the
+    // log was all read when it wasn't.
     let sink = Sink::install(Mode::Panic);
     let exe = script(
-        "child-holds-log-panic",
+        "worker-logs-child-holds-log-panic",
         "printf 'first\\n' >&2\n( exec 3>&-; /bin/sleep 1; printf 'LAST WORDS\\n' >&2 ) &\nexit 0",
     );
     let mut worker = Worker::spawn(&exe).unwrap();
@@ -365,6 +371,75 @@ fn a_sink_that_panics_leaves_the_crash_report_whole() {
     assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
     let cause = err.cause().unwrap_or_default();
     assert!(cause.ends_with("first\nLAST WORDS"), "{cause}");
+    // The sink thread is every worker's: it lost the line it panicked on, and goes on.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !sink.seen().contains(&Seen::Line("LAST WORDS".to_owned())) {
+        assert!(
+            Instant::now() < deadline,
+            "the sink stopped: {:?}",
+            sink.seen()
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn a_log_sink_that_blocks_outright_never_holds_up_a_kernel_worker() {
+    let sink = Sink::install(Mode::Stall);
+    let mut worker =
+        KernelWorker::start_worker(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker"))).unwrap();
+    // A sphere fused with a cylinder of its radius: OCCT warns about the touching surfaces,
+    // and the worker logs the warning, at which the sink stalls.
+    let ball = worker.make(Primitive::Sphere { radius: 5.0 }).unwrap();
+    let post = worker
+        .make(Primitive::Cylinder {
+            radius: 5.0,
+            height: 5.0,
+        })
+        .unwrap();
+    worker.boolean(BooleanOp::Fuse, &ball, &post).unwrap();
+    sink.wait_entered();
+    // Twice as many requests as a pipe holds the lines that end them (about 2,300 in a
+    // 64 KiB pipe: the core's unit test of the pipe measures it), each answered in time;
+    // before the hand-off, the 2,296th timed out.
+    let requests: u32 = 5_000;
+    for i in 0..requests {
+        let data = Blob::inline(i.to_le_bytes().to_vec());
+        let echoed = worker
+            .run(KernelRequest::echo(data.clone()).with_timeout(Duration::from_secs(10)))
+            .unwrap_or_else(|e| panic!("request {i} of {requests}: {e}"));
+        assert_eq!(echoed, data, "request {i}");
+    }
+    // The sink took the warning and nothing since: no request logged.
+    assert_eq!(sink.seen().len(), 1, "{:?}", sink.seen());
+    // A worker that crashes while the sink is stalled is reported at once, with its last
+    // lines (kept as they're read): the report waits a moment for the sink, no more, so a
+    // stalled sink doesn't hold a pool's slot up (it held it the whole 2 s exit grace).
+    let mut doomed =
+        Worker::spawn(Path::new(env!("CARGO_BIN_EXE_silico-kernel-test-worker"))).unwrap();
+    let asked = Instant::now();
+    let err = doomed
+        .call(
+            Generation(1),
+            Op::Debug(DebugOp::Abort),
+            Duration::from_secs(10),
+        )
+        .unwrap_err();
+    assert!(
+        asked.elapsed() < Duration::from_millis(1500),
+        "the crash took {:?} to report",
+        asked.elapsed()
+    );
+    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    let cause = err.cause().unwrap_or_default();
+    assert!(cause.contains("aborting, as asked: line 25"), "{cause}");
+    // Released, the sink takes every line it was given: the warning, then the crashed
+    // worker's 25, none dropped.
+    sink.release();
+    assert_eq!(sink.wait_accounted(26, Duration::from_secs(30)), 26);
+    drop(worker);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(sink.seen().len(), 26, "{:?}", sink.seen());
 }
 
 #[test]
@@ -384,8 +459,9 @@ fn a_sink_slower_than_the_reader_but_never_stalled_loses_no_lines() {
     drop(worker);
     let accounted = sink.wait_accounted(5_000, Duration::from_secs(20));
     assert_eq!(accounted, 5_000, "the sink saw {accounted}");
-    // Found by break-it: a queue of 1,024 lines filled in such a burst, and most of it was
-    // dropped, though the sink never stalled.
+    // Found by break-it, against an earlier version of the hand-off: a queue of 1,024
+    // lines filled in such a burst, and most of it was dropped, though the sink never
+    // stalled.
     assert_eq!(given, 5_000, "{} of 5000 lines dropped", 5_000 - given);
 }
 
@@ -436,19 +512,19 @@ fn a_text_log_written_to_a_file_has_every_line_of_a_burst() {
         })
         .sum();
     assert_eq!(given + dropped, total, "{given} given, {dropped} counted");
-    // Found by break-it: a queue of 1,024 lines dropped most of the burst, though the sink
-    // never stalled.
+    // Found by break-it, against an earlier version of the hand-off: a queue of 1,024
+    // lines dropped most of the burst, though the sink never stalled.
     assert_eq!(given, total, "{} of {total} lines dropped", total - given);
 }
 
-/// Blocks closing a span named `asked` when it closes on a worker's log sink thread (a
-/// span exporter whose collector stalls: tracing-opentelemetry exports a span as it closes,
-/// and a synchronous processor waits on the collector), for a minute, so the test ends;
-/// and notes one closed on the log thread, which mustn't be.
+/// Blocks closing a span named `asked` on the core's worker-log threads (a span exporter
+/// whose collector stalls: tracing-opentelemetry exports a span as it closes, and a
+/// synchronous processor waits on the collector), for a minute, so the test ends; and notes
+/// where they closed: the sink thread's closing them is meant, the log thread's mustn't be.
 #[derive(Clone, Default)]
 struct StalledExporter {
     stall: bool,
-    blocked: Arc<AtomicBool>,
+    on_sink: Arc<AtomicBool>,
     on_reader: Arc<AtomicBool>,
 }
 
@@ -457,21 +533,21 @@ where
     S: Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
     fn on_close(&self, id: tracing::span::Id, ctx: Context<'_, S>) {
-        let asked = ctx.span(&id).is_some_and(|span| span.name() == "asked");
+        if !ctx.span(&id).is_some_and(|span| span.name() == "asked") {
+            return;
+        }
         let thread = std::thread::current();
-        let worker_thread = |end: &str| {
-            thread
-                .name()
-                .is_some_and(|name| name.starts_with("worker-") && name.ends_with(end))
-        };
-        if asked && worker_thread("-logs") {
+        let name = thread.name().unwrap_or_default();
+        let reader = name.starts_with("worker-") && name.ends_with("-logs");
+        let sink = name == "silico-worker-log-sink";
+        if reader {
             self.on_reader.store(true, Ordering::SeqCst);
         }
-        if asked && worker_thread("-log-sink") {
-            self.blocked.store(true, Ordering::SeqCst);
-            if self.stall {
-                std::thread::sleep(Duration::from_secs(60));
-            }
+        if sink {
+            self.on_sink.store(true, Ordering::SeqCst);
+        }
+        if self.stall && (reader || sink) {
+            std::thread::sleep(Duration::from_secs(60));
         }
     }
 }
@@ -481,87 +557,118 @@ fn octal(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("\\{b:03o}")).collect()
 }
 
+/// `printf` octal escapes for a reply of done to request `id`.
+fn reply(id: u64) -> String {
+    let mut frame = Vec::new();
+    silico_protocol::write_message(
+        &mut frame,
+        &silico_protocol::Response {
+            id: silico_protocol::RequestId(id),
+            generation: Generation(1),
+            result: Ok(silico_protocol::Reply::Done),
+        },
+    )
+    .unwrap();
+    octal(&frame)
+}
+
+/// The done line of request `trace`, as a worker writes it.
+fn done(trace: u64) -> String {
+    format!("printf '{{\"silico_request_done\":{trace}}}\\n' >&2")
+}
+
 #[test]
 fn a_span_the_log_thread_lets_go_closes_on_the_sink_thread_and_the_next_call_is_answered() {
     // The control for the next test: the same worker, a sink that doesn't stall.
-    span_close_case(false);
+    span_close_case(false, &one_release(), 2);
 }
 
 #[test]
 fn a_sink_stalled_closing_a_requests_span_never_hangs_the_next_request() {
-    span_close_case(true);
+    // Found by break-it, against main before the hand-off: the log thread let a request's
+    // span go (`Callers::done`) holding the worker's callers lock, so the sink's `on_close`
+    // ran there with the lock held; stalled, it stalled the log thread (the worker's pipe
+    // went unread), and the next call blocked taking the lock before its timeout started,
+    // and never returned.
+    span_close_case(true, &one_release(), 2);
 }
 
-fn span_close_case(stall: bool) {
-    // The worker answers the first request (trace 1: the first of this process) at once,
-    // and says it's done half a second later, so the caller has let its span go by then
-    // and the log thread's handle is the last: the span closes when the log thread lets it
-    // go, on the sink thread. Then it answers the second request.
+/// The worker answers the first request (trace 1: the first of this process) at once, and
+/// says it's done half a second later, so the caller has let its span go by then and the
+/// log thread's handle is the last: the span closes when the log thread lets it go. Then
+/// it answers the second request.
+fn one_release() -> String {
+    format!(
+        "/bin/dd bs=1 count=1 <&3 >/dev/null 2>&1\nprintf '{}' >&3\n/bin/sleep 0.5\n{}\n\
+         /bin/sleep 1\nprintf '{}' >&3\nread -r _ <&3\nexit 0",
+        reply(0),
+        done(1),
+        reply(1),
+    )
+}
+
+#[test]
+fn a_sink_stalled_closing_a_span_with_the_queue_full_never_hangs_the_next_request() {
+    // Found in review, against an earlier version of the hand-off, which closed a request's
+    // span on the log thread when the queue had no room for it. The sink stalls closing the
+    // first request's span; more lines than the queue holds; the second request's done
+    // line, its caller gone, with no room for its span; and more lines than a pipe holds,
+    // before the third request's answer: the log thread must go on reading for it to come.
+    let burst = burst_file("full-queue", PAST_THE_QUEUE);
+    let body = format!(
+        "/bin/dd bs=1 count=1 <&3 >/dev/null 2>&1\nprintf '{}' >&3\n/bin/sleep 0.5\n{}\n\
+         /bin/sleep 1\nprintf '{}' >&3\n/bin/sleep 0.5\n/bin/cat '{burst}' >&2\n{}\n\
+         /bin/cat '{burst}' >&2\nprintf '{}' >&3\nread -r _ <&3\nexit 0",
+        reply(0),
+        done(1),
+        reply(1),
+        done(2),
+        reply(2),
+        burst = burst.display(),
+    );
+    span_close_case(true, &body, 3);
+}
+
+/// Runs `calls` requests, a second apart, each in a span named `asked`, on a worker
+/// running `body`, with a span exporter that stalls closing them if `stall`; each must be
+/// answered.
+fn span_close_case(stall: bool, body: &str, calls: u64) {
     let exporter = StalledExporter {
         stall,
         ..StalledExporter::default()
     };
     tracing::subscriber::set_global_default(tracing_subscriber::registry().with(exporter.clone()))
         .unwrap();
-    let reply = |id: u64| {
-        let mut frame = Vec::new();
-        silico_protocol::write_message(
-            &mut frame,
-            &silico_protocol::Response {
-                id: silico_protocol::RequestId(id),
-                generation: Generation(1),
-                result: Ok(silico_protocol::Reply::Done),
-            },
-        )
-        .unwrap();
-        octal(&frame)
-    };
-    let exe = script(
-        "span-close",
-        &format!(
-            "/bin/dd bs=1 count=1 <&3 >/dev/null 2>&1\nprintf '{}' >&3\n/bin/sleep 0.5\n\
-             printf '{{\"silico_request_done\":1}}\\n' >&2\n/bin/sleep 1\nprintf '{}' >&3\n\
-             read -r _ <&3\nexit 0",
-            reply(0),
-            reply(1),
-        ),
-    );
-    let (done, finished) = std::sync::mpsc::channel();
+    let exe = script(&format!("worker-logs-span-close-{calls}"), body);
+    let (answers, answered) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut worker = Worker::spawn(&exe).unwrap();
-        for i in 0..2 {
+        for i in 0..calls {
             let span = tracing::info_span!("asked", i);
-            let answered = span.in_scope(|| {
+            let answer = span.in_scope(|| {
                 worker.call(
                     Generation(1),
-                    Op::Debug(silico_protocol::DebugOp::Sleep { millis: 0 }),
+                    Op::Debug(DebugOp::Sleep { millis: 0 }),
                     Duration::from_secs(5),
                 )
             });
             drop(span);
-            done.send((i, answered.map_err(|e| e.to_string()))).unwrap();
+            answers
+                .send((i, answer.map_err(|e| e.to_string())))
+                .unwrap();
             std::thread::sleep(Duration::from_secs(1));
         }
     });
-    for i in 0..2 {
+    for i in 0..calls {
         // Each call has 5 s; 20 s is a hang no deadline ends.
-        let got = finished.recv_timeout(Duration::from_secs(20));
-        // Found by break-it: the log thread let a request's span go (`Callers::done`)
-        // holding the worker's callers lock, so the sink's `on_close` ran there with the
-        // lock held; stalled, it stalled the log thread (the worker's pipe went unread), and
-        // the next call blocked taking the lock before its timeout started, and never
-        // returned.
-        let (asked, answered) = got.unwrap_or_else(|_| {
-            panic!(
-                "call {i} never returned (the sink stalled closing a span: {})",
-                exporter.blocked.load(Ordering::SeqCst)
-            )
-        });
+        let (asked, answer) = answered
+            .recv_timeout(Duration::from_secs(20))
+            .unwrap_or_else(|_| panic!("call {i} never returned"));
         assert_eq!(asked, i);
-        assert_eq!(answered, Ok(silico_protocol::Reply::Done), "call {i}");
+        assert_eq!(answer, Ok(silico_protocol::Reply::Done), "call {i}");
     }
-    // The first request's span did close as the log thread let it go, so the case was the
-    // one meant, and never on the log thread itself.
-    assert!(exporter.blocked.load(Ordering::SeqCst));
+    // The first request's span did close as the log thread let it go, on the sink thread,
+    // so the case was the one meant, and never on the log thread itself.
+    assert!(exporter.on_sink.load(Ordering::SeqCst));
     assert!(!exporter.on_reader.load(Ordering::SeqCst));
 }
