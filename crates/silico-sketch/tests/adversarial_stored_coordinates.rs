@@ -92,7 +92,7 @@ fn an_arc_dimensioned_to_the_reach_saves_a_file_the_gate_takes_or_is_refused_nam
     // saved couldn't be opened again. Now a solve is checked as its file would hold it
     // (`sketch::savable`): one the gate would refuse is an invalid result naming the arc.
     let mut w = SketchWorker::start_worker(Path::new(WORKER)).unwrap();
-    let (mut refused, mut saved_ok, mut unsavable) = (Vec::new(), 0, 0);
+    let (mut refused, mut saved_ok, mut unsavable, mut unsettled) = (Vec::new(), 0, 0, 0);
     for start in (0..360).step_by(7) {
         let doc = checked(&arc_at_the_reach(f64::from(start)));
         let solution = match solve(&doc, &feature(), &mut w) {
@@ -104,9 +104,13 @@ fn an_arc_dimensioned_to_the_reach_saves_a_file_the_gate_takes_or_is_refused_nam
                 continue;
             }
             // Some starts don't solve at all (196°, 210°, 217°: solve_failed, "Converged"),
-            // M3.3's to answer.
+            // M3.3's to answer. Ten more (14°, 28°, 91°, ...) solved, but every load of their
+            // file moved them, by ulps at a kilometre, round and round (not within 30
+            // loads): they saved Ok and drifted on every open until loads were checked
+            // (Translation::solve), and are refused now as not settling.
             Err(e) => {
                 assert_eq!(e.code(), ErrorCode::SolveFailed, "{start}: {e}");
+                unsettled += usize::from(e.message().contains("doesn't settle on load"));
                 continue;
             }
         };
@@ -128,9 +132,10 @@ fn an_arc_dimensioned_to_the_reach_saves_a_file_the_gate_takes_or_is_refused_nam
     );
     // Both ways happen, so neither half of this is empty.
     assert!(
-        saved_ok > 30 && unsavable > 0,
+        saved_ok >= 30 && unsavable > 0,
         "{saved_ok} saved, {unsavable} refused"
     );
+    assert_eq!(unsettled, 10, "refused as not settling on load");
 }
 
 #[test]

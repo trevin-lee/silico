@@ -38,7 +38,7 @@ pub use refusal::{
 pub use sketch::{
     Algorithm, DragBegin, Geometry, MAX_DRAG_UNKNOWNS, MAX_JACOBIAN_ENTRIES,
     MAX_SKETCH_CONSTRAINTS, MAX_SKETCH_GEOMETRY, MAX_SKETCH_UNKNOWNS, MAX_SKETCH_VALUES, MAX_TAG,
-    Moved, PointOf, PointValues, SketchGeometry, SketchSystem, SolveStatus, Solved,
+    Moved, Part, Parts, PointOf, PointValues, SketchGeometry, SketchSystem, SolveStatus, Solved,
     SolverConstraint, Tag, Value, arc_from_points, check_drag_target, no_distance,
     squared_distance, unbuildable, within_reach,
 };

@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use silico_protocol::{
-    Algorithm, Generation, Geometry, Op, PointOf, PointValues, Reply, SketchGeometry, SketchSystem,
-    SolveStatus, Solved, SolverConstraint, Tag, Value, arc_from_points, no_distance,
+    Algorithm, Generation, Geometry, Op, Part, Parts, PointOf, PointValues, Reply, SketchGeometry,
+    SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value, arc_from_points, no_distance,
     squared_distance,
 };
 
@@ -29,14 +29,57 @@ pub const ALGORITHMS: [Algorithm; 4] = [
     Algorithm::AnchoredSqp,
 ];
 
-/// How far a redundant constraint may be from met, in millimetres, and still agree with the
-/// others (decision 5): a hundredth of the file's nanometre, a hundred times the solver's
-/// convergence (1e-10), and 86 times the spacing of doubles a kilometre out.
+/// The least a redundant constraint's gap may be and still agree with the others, in
+/// millimetres (decision 5): a hundredth of the file's nanometre, a hundred times the
+/// solver's convergence on a position (1e-10 mm), and 86 times the spacing of doubles a
+/// kilometre out. A redundant constraint's tolerance is this, [`EXTENT_TOLERANCE`] times
+/// the extent of the part of the sketch it's in, or [`TANGENCY_TOLERANCE`] over that part's
+/// tightest circle tangency (at least [`LEAST_TANGENCY`]), whichever is most: a kept row's
+/// slack reaches only the unknowns of its own part
+/// ([`SketchSystem::parts`](silico_protocol::SketchSystem::parts)), which PlaneGCS solves
+/// apart from the rest.
 pub const LENGTH_TOLERANCE: f64 = 1e-8;
 
-/// How far a redundant constraint may be from met, in radians, and still agree with the
-/// others (decision 5): ten times the solver's convergence, 57 nanodegrees.
-pub const ANGLE_TOLERANCE: f64 = 1e-9;
+/// How much a redundant constraint's gap may grow per millimetre of the extent of the part
+/// of the sketch it's in, the diagonal of the box around the part's points (decision 5):
+/// ten times the solver's convergence on a direction (1e-10 rad), or on a position carried
+/// along a line's direction, either of which moves a point at most the extent away by
+/// 1e-10 × the extent. So two dimensions a nanometre apart conflict on any part of a sketch
+/// that fits in a metre, corner to corner.
+pub const EXTENT_TOLERANCE: f64 = 1e-9;
+
+/// How much a redundant constraint's gap may grow per inverse millimetre of the tightest
+/// circle-to-circle tangency of the part of the sketch it's in, in square millimetres
+/// (decision 5). PlaneGCS measures such a tangency as `d² − (r1 ± r2)²`
+/// (`ConstraintTangentCircumf::error`), its one row in mm², and a solve holds it within
+/// 1e-10 mm², which holds `|d − (r1 ± r2)|` only within 1e-10 / (d + r1 ± r2) mm. Ten times that, the margin [`EXTENT_TOLERANCE`]
+/// has. Above [`LENGTH_TOLERANCE`] only when d + r1 ± r2 is under 0.1 mm: an inside
+/// tangency nearly concentric, or an outside one between tiny circles. At most 1e-4 mm:
+/// the tangency counts as [`LEAST_TANGENCY`] at the least.
+pub const TANGENCY_TOLERANCE: f64 = 1e-9;
+
+/// The least a part's tightest circle tangency counts as, in millimetres (decision 5): the
+/// square root of the 1e-10 mm² a solve holds the tangency's row within. A kept tangency
+/// leaves `|d − (r1 ± r2)|` within 1e-10 / T, and within T itself (two circles' gap is at
+/// most their centres' distance plus their radii's sum or difference), so within
+/// `min(T, 1e-10 / T)`, which is never more than 1e-5. Under 1e-5 the quotient only says
+/// where the solver happened to stop on a double root (equal radii inside: the row is d²
+/// alone, met anywhere under 1e-5), not how far the circles can be from tangent, which is
+/// the same 1e-5 from every start.
+pub const LEAST_TANGENCY: f64 = 1e-5;
+
+/// The squared distance between two tangent circles' centres, in mm², under which PlaneGCS
+/// measures their tangency as `r1 − r2`, in millimetres (`ConstraintTangentCircumf::error`,
+/// FreeCAD #24227, in 1.1.3): a row with no mm² slack, so [`TANGENCY_TOLERANCE`] has no term
+/// for it. That form is right only for an inside tangency, whatever side is given; an
+/// outside tangency solved with its centres this close is refused
+/// (`Translation::concentric_outside`).
+const CONCENTRIC_TANGENCY: f64 = 1e-14;
+
+/// How many loads, at most, a solve's answer is checked by: its solution written as the file
+/// holds it and solved as a load solves it, until one leaves it where it is
+/// ([`Translation::solve`]).
+pub const MAX_LOAD_RESOLVES: usize = 3;
 
 /// How long a solve may take before the worker is stopped. A sketch the constraints can't
 /// solve is tried by every algorithm in turn, and at the most unknowns the worker takes
@@ -44,9 +87,9 @@ pub const ANGLE_TOLERANCE: f64 = 1e-9;
 /// Levenberg–Marquardt 28.9 s, BFGS 0.2 s, and anchored SQP 33.2 s on a loaded machine:
 /// 74 s, past the kernel's 60. The time grows with the equations the diagnosis keeps
 /// too: the same chain with one line given `horizontal` 2,000 times took DogLeg 8.7× as
-/// long, and passes 300 s with all four (`MAX_SKETCH_UNKNOWNS`'s doc). A sketch solved
-/// again from its solution
-/// ([`Translation::solve`]) takes it twice at most.
+/// long, and passes 300 s with all four (`MAX_SKETCH_UNKNOWNS`'s doc). Every solve that
+/// reaches a solution is checked by at least one load ([`Translation::solve`]): at least
+/// two solves, and 1 + [`MAX_LOAD_RESOLVES`] at most, each with this limit.
 pub const SKETCH_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// The environment variable that names the sketch worker executable.
@@ -287,8 +330,10 @@ pub struct SketchSolution {
     /// The points, circles, and arcs the constraints don't fix (SolidWorks' under-defined
     /// geometry): any with a value the solver finds free.
     pub free: BTreeSet<ElementId>,
-    /// Constraints that repeat others and agree with them (decision 5): kept, and reported.
-    pub redundant: BTreeSet<ElementId>,
+    /// Constraints that repeat others and agree with them (decision 5): kept, and reported,
+    /// each with its gap, in millimetres: the least distance a point would have to move for
+    /// it to hold exactly.
+    pub redundant: BTreeMap<ElementId, f64>,
     /// The algorithm that solved.
     pub algorithm: Algorithm,
 }
@@ -312,24 +357,37 @@ impl SketchSolution {
     /// a value of their kind (a point–line distance's side too). A measure that can't be
     /// written (not finite) keeps the value stored.
     pub fn written(&self, sketch: &Sketch) -> Sketch {
-        let mut out = sketch.clone();
-        for p in &mut out.points {
-            if let Some(&[x, y]) = self.points.get(&p.id) {
-                (p.x, p.y) = (x, y);
-            }
-        }
-        for c in &mut out.circles {
-            if let Some(&r) = self.radii.get(&c.id) {
-                c.radius = r;
-            }
-        }
-        for c in &mut out.constraints {
-            if let Some(&measured) = self.references.get(&c.id) {
-                measure_into(&mut c.form, measured);
-            }
-        }
-        out
+        written(sketch, &self.points, &self.radii, &self.references)
     }
+}
+
+/// `sketch` with its points at `points`, its circles' radii at `radii`, and its reference
+/// dimensions holding `references`, as its file holds them: what a save writes
+/// ([`SketchSolution::written`]) and what a load starts from ([`Translation::solve`]). A
+/// measure that can't be written (not finite) keeps the value stored.
+fn written(
+    sketch: &Sketch,
+    points: &BTreeMap<ElementId, [Coordinate; 2]>,
+    radii: &BTreeMap<ElementId, Coordinate>,
+    references: &BTreeMap<ElementId, Measured>,
+) -> Sketch {
+    let mut out = sketch.clone();
+    for p in &mut out.points {
+        if let Some(&[x, y]) = points.get(&p.id) {
+            (p.x, p.y) = (x, y);
+        }
+    }
+    for c in &mut out.circles {
+        if let Some(&r) = radii.get(&c.id) {
+            c.radius = r;
+        }
+    }
+    for c in &mut out.constraints {
+        if let Some(&measured) = references.get(&c.id) {
+            measure_into(&mut c.form, measured);
+        }
+    }
+    out
 }
 
 /// `form`, a reference dimension, holding `measured`.
@@ -458,7 +516,13 @@ pub fn solve(
 /// write a file that can't be opened again. Refused as an invalid result, naming what the
 /// gate names.
 fn savable(sketch: &Sketch, solution: &SketchSolution) -> Result<(), Error> {
-    let problems = crate::document::sketch_problems(&solution.written(sketch));
+    holdable(&solution.written(sketch))
+}
+
+/// Whether `file`, a sketch with a solve written back, is one the gate takes; refused as
+/// [`savable`] says, if not.
+fn holdable(file: &Sketch) -> Result<(), Error> {
+    let problems = crate::document::sketch_problems(file);
     let Some(first) = problems.first() else {
         return Ok(());
     };
@@ -508,6 +572,9 @@ pub struct Translation {
     arcs: BTreeMap<ElementId, Arc>,
     /// The points the sketch's `on` constraints hold on curves, and those curves.
     on: Vec<(ElementId, Reference)>,
+    /// The sketch this translates, as its file holds it: what a solution is written into
+    /// for a load to start from ([`Translation::solve`]).
+    sketch: Sketch,
 }
 
 /// A line, or an axis, as the solver holds it.
@@ -745,6 +812,7 @@ impl Translation {
             circles,
             arcs,
             on,
+            sketch: sketch.clone(),
         };
         for (i, c) in constraints.iter().enumerate() {
             let tag = Tag(i as u32 + 1);
@@ -1152,58 +1220,141 @@ impl Translation {
     /// solver that couldn't answer (a crash, a timeout), is the error; what the answer says
     /// about the sketch is the outcome.
     ///
-    /// PlaneGCS diagnoses where the sketch is drawn, as FreeCAD does, and tells redundant
-    /// from conflicting by solving from there: a sketch drawn far from its solution (a
-    /// template redimensioned a thousandfold) can be called conflicting, and one whose kept
-    /// constraints fix a value only to the square root of their convergence can leave an
-    /// agreeing redundancy measurably off (M3.3's break-it). When the outcome is
-    /// over-constrained but the solver reached a solution anyway, the sketch is diagnosed
-    /// and solved again from it (the solve M3.4's re-solve on load would make), and that
-    /// answer stands if it solves: SolidWorks solves such a sketch. Otherwise the first
-    /// stands.
+    /// M3.4: a sketch is solved on every load from the solution its file stores, so the
+    /// answer kept must be one its own file gives back. PlaneGCS diagnoses where the sketch
+    /// is drawn, as FreeCAD does, so a load, starting from the solution, can drop other
+    /// redundant constraints, count other degrees of freedom, call the sketch conflicting,
+    /// or move it (an arc's radius and angles, worked out from its stored points, aren't the
+    /// solver's own; a kept constraint can fix a value only loosely, through a square root
+    /// or an angle along a long side). So every solve that reaches a solution is checked by
+    /// loads: its solution written as the file holds it, translated again, and solved, until
+    /// a load leaves the file where it was, bit for bit, at most [`MAX_LOAD_RESOLVES`]
+    /// times. That load's answer, solved, is a fixed point: its file gives it back (a load
+    /// runs this same check, from the same file, and finds it at once). A refusal writes no
+    /// file, so its load solves the drawing again and refuses alike; so a refusal on the
+    /// drawing stands unless a load reaches a solved fixed point (SolidWorks solves such a
+    /// sketch), and a solved answer that loads don't settle on is refused: as a load
+    /// refuses it, or, if they keep moving, as a solution that doesn't settle.
     pub fn solve(&self, solver: &mut dyn SketchSolver) -> Result<Answer, Error> {
+        let first = self.answer(solver)?;
+        // A refusal writes no file, so its load solves the drawing again and refuses alike.
+        // Only an over-constrained one is checked by loads (a diagnosis on the drawing): a load
+        // from an invalid result would measure sides from where that result put them.
+        let checked_by_load = match &first.outcome {
+            Ok(_) => true,
+            Err(e) => e.code() == ErrorCode::OverConstrained,
+        };
+        if !reached(&first.solved) || !checked_by_load {
+            return Ok(first);
+        }
+        // A solve that leaves its own file as it was drawn is its own load: the load would
+        // send the same system and get the same answer. Every load of a saved sketch is one.
+        if self
+            .stored(&first.solved.values)
+            .is_ok_and(|file| file == self.sketch)
+        {
+            return Ok(first);
+        }
+        let mut latest = first.solved.clone();
+        let mut solved_by = self.clone();
+        for _ in 0..MAX_LOAD_RESOLVES {
+            let file = match solved_by.stored(&latest.values) {
+                Ok(file) => file,
+                Err(e) => return Ok(refusal(first, Err(e))),
+            };
+            // A file the gate refuses can't be saved (`savable`) or loaded.
+            if let Err(e) = holdable(&file) {
+                return Ok(refusal(first, Err(e)));
+            }
+            let load = match Translation::new(&file) {
+                Ok(load) => load,
+                Err(e) => return Ok(refusal(first, Err(e))),
+            };
+            // A worker that failed (crashed, timed out, ran short) or a reply that can't be
+            // trusted is the error, as for the first solve; the worker refusing the start is
+            // the load's error too, so a drawing that solved is refused with it.
+            let here = match load.answer(solver) {
+                Ok(here) => here,
+                Err(e) if e.code() == ErrorCode::InvalidInput && first.outcome.is_err() => {
+                    return Ok(first);
+                }
+                Err(e) => return Err(e),
+            };
+            if !reached(&here.solved) {
+                return Ok(refusal(first, Ok(here)));
+            }
+            // Coordinates compare bit for bit (a file keeps -0 and 0 apart).
+            let settled = match load.stored(&here.solved.values) {
+                Ok(next) => next == file,
+                Err(e) => return Ok(refusal(first, Err(e))),
+            };
+            if settled {
+                return Ok(if here.outcome.is_ok() {
+                    here
+                } else {
+                    refusal(first, Ok(here))
+                });
+            }
+            latest = here.solved;
+            solved_by = load;
+        }
+        Ok(refusal(
+            first,
+            Err(Error::new(
+                ErrorCode::SolveFailed,
+                format!(
+                    "the sketch's solution doesn't settle on load: each of {MAX_LOAD_RESOLVES} loads of its solution moved it"
+                ),
+            )
+            .with_suggestion("draw the geometry nearer its solution, or report the sketch: Silico can't keep a solution its own file doesn't give back")),
+        ))
+    }
+
+    /// Solves this with `solver`, checks the reply, and reads it.
+    fn answer(&self, solver: &mut dyn SketchSolver) -> Result<Answer, Error> {
         let solved = solver.solve(self.system.clone())?;
         if let Err(e) = self.check_reply(&solved) {
             solver.distrust();
             return Err(e);
         }
-        let first = Answer {
+        Ok(Answer {
             outcome: self.read(&solved),
             solved,
-        };
-        let again_from = match &first.outcome {
-            Err(e)
-                if e.code() == ErrorCode::OverConstrained
-                    && matches!(
-                        first.solved.status,
-                        SolveStatus::Success | SolveStatus::SolvedExceptRedundant
-                    ) =>
-            {
-                first.solved.values.clone()
-            }
-            _ => return Ok(first),
-        };
-        let mut again = self.clone();
-        again.system.values = again_from;
-        // The worker refusing the solution as a start, or a second outcome that doesn't
-        // stand: the first answer stands. A worker that failed (crashed, timed out, ran short)
-        // or a reply that can't be trusted is the error, as it is for the first solve.
-        let resolved = match solver.solve(again.system.clone()) {
-            Ok(resolved) => resolved,
-            Err(e) if e.code() == ErrorCode::InvalidInput => return Ok(first),
-            Err(e) => return Err(e),
-        };
-        if let Err(e) = again.check_reply(&resolved) {
-            solver.distrust();
-            return Err(e);
-        }
-        Ok(match again.read(&resolved) {
-            Ok(solution) => Answer {
-                solved: resolved,
-                outcome: Ok(solution),
-            },
-            Err(_) => first,
         })
+    }
+
+    /// The points, circles' radii, and reference dimensions' measures at `values`.
+    fn placed(&self, values: &[f64]) -> Result<Placed, Error> {
+        // Finite, as check_reply and the buildable checks have made sure of a solution.
+        let coordinate = |v: f64| {
+            Coordinate::new(v).ok_or_else(|| {
+                Error::new(
+                    ErrorCode::Internal,
+                    format!("a solution the core checked has a value that isn't a number: {v}"),
+                )
+            })
+        };
+        let points = self
+            .points
+            .iter()
+            .map(|(id, &p)| {
+                let [x, y] = self.xy(values, p);
+                Ok((id.clone(), [coordinate(x)?, coordinate(y)?]))
+            })
+            .collect::<Result<_, Error>>()?;
+        let radii = self
+            .circles
+            .iter()
+            .map(|(id, c)| Ok((id.clone(), coordinate(at(values, c.radius))?)))
+            .collect::<Result<_, Error>>()?;
+        Ok((points, radii, self.references(values)?))
+    }
+
+    /// The sketch as its file holds it once `values` are written back, as a save writes a
+    /// solution ([`SketchSolution::written`]): what a load starts from.
+    fn stored(&self, values: &[f64]) -> Result<Sketch, Error> {
+        let (points, radii, references) = self.placed(values)?;
+        Ok(written(&self.sketch, &points, &radii, &references))
     }
 
     /// The tags sent, in increasing order.
@@ -1399,7 +1550,8 @@ impl Translation {
                 "share one point instead, or change the constraints that bring the two together",
             ));
         }
-        // Decision 5: a redundant constraint is kept only if it's met on the solution.
+        // Decision 5: a redundant constraint is kept only if it's met on the solution, its
+        // gap within the tolerance of the part of the sketch it's in.
         let mut dropped: Vec<Tag> = solved
             .redundant
             .iter()
@@ -1408,25 +1560,54 @@ impl Translation {
             .collect();
         dropped.sort_unstable();
         dropped.dedup();
+        let parts = self.system.parts();
+        let mut windows: BTreeMap<Option<Part>, Window> = BTreeMap::new();
+        let mut gaps = Vec::with_capacity(dropped.len());
         let mut disagreeing = Vec::new();
-        let mut worst = Gap::default();
+        // The disagreeing row with the largest gap (one that isn't a number the largest),
+        // the lowest tag on a tie, and its part's window.
+        let mut worst: Option<(Tag, f64, Window)> = None;
         for &tag in &dropped {
-            let gap = self.gap(self.sent(tag)?, values);
-            if !gap.met() {
-                worst = worst.max(gap);
+            let c = self.sent(tag)?;
+            let part = parts.of_constraint(c);
+            let window = *windows
+                .entry(part)
+                .or_insert_with(|| self.window(values, &parts, part));
+            let gap = self.gap(c, values);
+            if !met(gap, window.tolerance) {
+                let larger = match worst {
+                    None => true,
+                    Some((_, w, _)) => !w.is_nan() && (gap.is_nan() || gap > w),
+                };
+                if larger {
+                    worst = Some((tag, gap, window));
+                }
                 disagreeing.push(tag);
             }
+            gaps.push((tag, gap));
         }
-        if !disagreeing.is_empty() {
+        if let Some((tag, worst, window)) = worst {
+            let Window {
+                extent,
+                tightest,
+                tolerance,
+            } = window;
+            let tangency = tightest.map_or_else(String::new, |t| {
+                format!(
+                    "{TANGENCY_TOLERANCE:e} mm² over the {t:e} mm of its tightest circle tangency ({LEAST_TANGENCY:e} mm at the least), "
+                )
+            });
+            let id = self.id(tag)?;
             return Err(Error::new(
                 ErrorCode::OverConstrained,
                 format!(
-                    "constraints repeat others but disagree with them, by up to {:e} mm and {:e} rad",
-                    worst.mm, worst.rad
+                    "constraints repeat others but disagree with them, by up to {worst:e} mm ({id}), past the {tolerance:e} mm of the part of the sketch it's in ({EXTENT_TOLERANCE:e} of the part's {extent:e} mm extent, {tangency}or {LENGTH_TOLERANCE:e} mm at least)"
                 ),
             )
             .with_elements(self.ids(&disagreeing)?)
-            .with_suggestion("remove the constraints named, or make them agree with the rest"));
+            .with_suggestion(
+                "remove the constraints named, make them agree with the rest, or make a dimension among them a reference (`driving: false`)",
+            ));
         }
         // An arc's own ends mirrored about a line its centre is held on are sent as their
         // middle on the line alone (FreeCAD's 365af33fc6); on a half circle that's the
@@ -1439,7 +1620,7 @@ impl Translation {
             .filter_map(|c| match *c {
                 SolverConstraint::MidpointOnLine { tag, a, b, line } => {
                     let whole = SolverConstraint::SymmetricLine { tag, a, b, line };
-                    (!self.gap(&whole, values).met()).then_some(tag)
+                    (!met(self.gap(&whole, values), LENGTH_TOLERANCE)).then_some(tag)
                 }
                 _ => None,
             })
@@ -1461,36 +1642,28 @@ impl Translation {
             .with_elements(self.ids(&wrong_side)?)
             .with_suggestion("draw it on the side the constraint gives, or change the side"));
         }
-        let redundant = dropped
+        let concentric = self.concentric_outside(values)?;
+        if !concentric.is_empty() {
+            return Err(Error::new(
+                ErrorCode::InvalidResult,
+                "the solution puts two circles held tangent outside on one centre: concentric, they can't touch outside",
+            )
+            .with_elements(concentric)
+            .with_suggestion("dimension their centres apart, or make the tangency inside"));
+        }
+        let redundant = gaps
             .iter()
-            .map(|&t| self.id(t).cloned())
-            .collect::<Result<_, _>>()?;
-        // Finite, as check_reply and the buildable check above have made sure.
-        let coordinate = |v: f64| {
-            Coordinate::new(v).ok_or_else(|| {
-                Error::new(
-                    ErrorCode::Internal,
-                    format!("a solution the core checked has a value that isn't a number: {v}"),
-                )
-            })
-        };
-        let points = self
-            .points
-            .iter()
-            .map(|(id, &p)| {
-                let [x, y] = self.xy(values, p);
-                Ok((id.clone(), [coordinate(x)?, coordinate(y)?]))
+            .map(|&(t, gap)| {
+                let id = self.id(t)?;
+                tracing::info!("{id} repeats others, met within {gap:.1e} mm");
+                Ok((id.clone(), gap))
             })
             .collect::<Result<_, Error>>()?;
-        let radii = self
-            .circles
-            .iter()
-            .map(|(id, c)| Ok((id.clone(), coordinate(at(values, c.radius))?)))
-            .collect::<Result<_, Error>>()?;
+        let (points, radii, references) = self.placed(values)?;
         Ok(SketchSolution {
             points,
             radii,
-            references: self.references(values)?,
+            references,
             dofs: solved.dofs,
             free: self.free(solved),
             redundant,
@@ -1566,6 +1739,40 @@ impl Translation {
             let d = signed_distance(point, self.xy(values, l.from), self.xy(values, l.to));
             if !(if left { d > 0.0 } else { d < 0.0 }) {
                 out.push(tag);
+            }
+        }
+        Ok(out)
+    }
+
+    /// The tangencies that hold two circles or arcs outside each other whose solution has
+    /// their centres under [`CONCENTRIC_TANGENCY`] apart, squared, each followed by its two
+    /// curves (each named once): there PlaneGCS measures the tangency as `r1 − r2`, an inside
+    /// tangency's form, whatever side it's given, so a solve can meet it with the circles on
+    /// one centre. FreeCAD reads the side from the drawing each solve
+    /// (`System::addConstraintTangent`), so it sends `outside` whenever each centre starts
+    /// outside the other circle (d ≥ r1 and d ≥ r2); if other constraints then drive them together, 1.1.3 lands on equal circles on
+    /// one centre and accepts them (#24227). Silico refuses that on purpose: circles on one
+    /// centre touch outside only at radius 0, which no circle has.
+    fn concentric_outside(&self, values: &[f64]) -> Result<Vec<String>, Error> {
+        let mut out: Vec<String> = Vec::new();
+        for (i, c) in self.constraints.iter().enumerate() {
+            let Form::Tangent {
+                a,
+                b,
+                side: TangentSide::Outside,
+            } = &c.form
+            else {
+                continue;
+            };
+            let (ra, rb) = (self.round(a)?, self.round(b)?);
+            let squared = squared_distance(self.xy(values, ra.center), self.xy(values, rb.center));
+            if squared < CONCENTRIC_TANGENCY {
+                let tangency = self.id(Tag(i as u32 + 1))?.as_str().to_owned();
+                for name in [tangency, a.to_string(), b.to_string()] {
+                    if !out.contains(&name) {
+                        out.push(name);
+                    }
+                }
             }
         }
         Ok(out)
@@ -1758,8 +1965,91 @@ impl Translation {
         }
     }
 
-    /// How far a sent constraint is from met on `values`, geometrically (decision 5).
-    fn gap(&self, c: &SolverConstraint, values: &[f64]) -> Gap {
+    /// A curve's lever on `values`: a line's length, a circle's or arc's radius; none for
+    /// an axis, which can't move.
+    fn lever_of(&self, values: &[f64], g: Geometry) -> Option<f64> {
+        if g == X_AXIS.geometry || g == Y_AXIS.geometry {
+            return None;
+        }
+        match self.system.geometry.get(g.0 as usize) {
+            Some(SketchGeometry::Line { .. }) => {
+                let (a, b) = self.ends(values, g);
+                Some(squared_distance(a, b).sqrt())
+            }
+            Some(SketchGeometry::Circle { .. } | SketchGeometry::Arc { .. }) => {
+                Some(self.circle(values, g).1)
+            }
+            _ => None,
+        }
+    }
+
+    /// Decision 5's window for the redundant constraints in `part` on `values`: its extent,
+    /// its tightest circle tangency, and the tolerance they give.
+    fn window(&self, values: &[f64], parts: &Parts, part: Option<Part>) -> Window {
+        let extent = self.extent(values, parts, part);
+        let tightest = self.tightest_tangency(values, parts, part);
+        let tolerance = LENGTH_TOLERANCE
+            .max(EXTENT_TOLERANCE * extent)
+            .max(tightest.map_or(0.0, |t| TANGENCY_TOLERANCE / t.max(LEAST_TANGENCY)));
+        Window {
+            extent,
+            tightest,
+            tolerance,
+        }
+    }
+
+    /// The extent of `part` of the sketch on `values` (decision 5): the diagonal of the
+    /// axis-aligned box around every point of the sketch whose x is in it (points, lines'
+    /// ends, centres, and arcs' ends, construction geometry included; the origin and axes
+    /// never), measured as the core measures lengths. 0 for a
+    /// part of one point or none (a constraint that reads no unknown is in none). A box's
+    /// corners are a min and a max, which no order changes, so the extent is the same bits
+    /// on every platform.
+    fn extent(&self, values: &[f64], parts: &Parts, part: Option<Part>) -> f64 {
+        let mut points = self
+            .points
+            .values()
+            .filter(|p| parts.of(p.x) == part)
+            .map(|&p| self.xy(values, p));
+        let Some(first) = points.next() else {
+            return 0.0;
+        };
+        let (lo, hi) = points.fold((first, first), |(lo, hi), [x, y]| {
+            ([lo[0].min(x), lo[1].min(y)], [hi[0].max(x), hi[1].max(y)])
+        });
+        squared_distance(lo, hi).sqrt()
+    }
+
+    /// The tightest circle-to-circle tangency of `part` of the sketch on `values` (decision
+    /// 5): the least, over every one sent in it (circles and arcs, kept or dropped), of
+    /// d + r1 + r2 outside or d + |r1 − r2| inside, d the centres' distance; none if it has
+    /// no such tangency. A tangency whose centres are under [`CONCENTRIC_TANGENCY`] apart,
+    /// squared, isn't counted: PlaneGCS measures it in millimetres there. A minimum is the
+    /// same whatever the order, so it's the same bits on every platform.
+    fn tightest_tangency(&self, values: &[f64], parts: &Parts, part: Option<Part>) -> Option<f64> {
+        self.system
+            .constraints
+            .iter()
+            .filter(|c| parts.of_constraint(c) == part)
+            .filter_map(|c| match *c {
+                SolverConstraint::TangentCircles { a, b, internal, .. } => {
+                    let ((ca, ra), (cb, rb)) = (self.circle(values, a), self.circle(values, b));
+                    let squared = squared_distance(ca, cb);
+                    (squared >= CONCENTRIC_TANGENCY).then(|| {
+                        let s = if internal { (ra - rb).abs() } else { ra + rb };
+                        squared.sqrt() + s
+                    })
+                }
+                _ => None,
+            })
+            .reduce(f64::min)
+    }
+
+    /// How far a sent constraint is from met on `values` (decision 5), in millimetres: the
+    /// least distance a point would have to move for it to hold exactly. A direction's gap
+    /// is its angle carried by the smaller lever of its own curves (an axis has none);
+    /// horizontal and vertical are a line's rise and run.
+    fn gap(&self, c: &SolverConstraint, values: &[f64]) -> f64 {
         use SolverConstraint as S;
         let v = |value: Value| at(values, value);
         let p = |q: PointOf| self.point_of(values, q);
@@ -1779,81 +2069,91 @@ impl Translation {
             let (a, b) = self.ends(values, g);
             direction(a, b)
         };
+        // An angle carried by the smaller lever of `a` and `b`; not a number if neither
+        // can move.
+        let carried = |angle: f64, a: Geometry, b: Geometry| {
+            let lever = [a, b]
+                .into_iter()
+                .filter_map(|g| self.lever_of(values, g))
+                .fold(f64::NAN, f64::min);
+            angle * lever
+        };
         let at_point = |a: Geometry, b: Geometry, q: [f64; 2], angle: Value| {
             let turn = angle_between(self.normal(values, a, q), self.normal(values, b, q));
-            wrap(turn - v(angle)).abs()
+            carried(wrap(turn - v(angle)).abs(), a, b)
         };
         match *c {
-            S::ArcRules { .. } => Gap::default(),
-            S::Coincident { a, b, .. } => Gap::mm(length(p(a), p(b))),
+            S::ArcRules { .. } => 0.0,
+            S::Coincident { a, b, .. } => length(p(a), p(b)),
             S::Horizontal { line, .. } => {
-                let d = dir(line);
-                Gap::rad(libm::atan2(d[1].abs(), d[0].abs()))
+                let (a, b) = self.ends(values, line);
+                (b[1] - a[1]).abs()
             }
             S::Vertical { line, .. } => {
-                let d = dir(line);
-                Gap::rad(libm::atan2(d[0].abs(), d[1].abs()))
+                let (a, b) = self.ends(values, line);
+                (b[0] - a[0]).abs()
             }
-            S::HorizontalPoints { a, b, .. } => Gap::mm((p(a)[1] - p(b)[1]).abs()),
-            S::VerticalPoints { a, b, .. } => Gap::mm((p(a)[0] - p(b)[0]).abs()),
-            S::DistanceX { a, b, value, .. } => Gap::mm((p(b)[0] - p(a)[0] - v(value)).abs()),
-            S::DistanceY { a, b, value, .. } => Gap::mm((p(b)[1] - p(a)[1] - v(value)).abs()),
-            S::Distance { a, b, value, .. } => Gap::mm((length(p(a), p(b)) - v(value)).abs()),
-            S::PointOnLine { point, line, .. } => Gap::mm(from_line(p(point), line).abs()),
+            S::HorizontalPoints { a, b, .. } => (p(a)[1] - p(b)[1]).abs(),
+            S::VerticalPoints { a, b, .. } => (p(a)[0] - p(b)[0]).abs(),
+            S::DistanceX { a, b, value, .. } => (p(b)[0] - p(a)[0] - v(value)).abs(),
+            S::DistanceY { a, b, value, .. } => (p(b)[1] - p(a)[1] - v(value)).abs(),
+            S::Distance { a, b, value, .. } => (length(p(a), p(b)) - v(value)).abs(),
+            S::PointOnLine { point, line, .. } => from_line(p(point), line).abs(),
             S::PointLineDistance {
                 point, line, value, ..
-            } => Gap::mm((from_line(p(point), line).abs() - v(value)).abs()),
-            S::PointOnCircle { point, circle, .. } => Gap::mm(off_curve(p(point), circle)),
+            } => (from_line(p(point), line).abs() - v(value)).abs(),
+            S::PointOnCircle { point, circle, .. } => off_curve(p(point), circle),
             S::Parallel { a, b, .. } => {
                 let t = angle_between(dir(a), dir(b)).abs();
-                Gap::rad(t.min(PI - t))
+                carried(t.min(PI - t), a, b)
             }
             S::Perpendicular { a, b, .. } => {
-                Gap::rad((angle_between(dir(a), dir(b)).abs() - PI / 2.0).abs())
+                carried((angle_between(dir(a), dir(b)).abs() - PI / 2.0).abs(), a, b)
             }
             S::Angle { a, b, value, .. } => {
-                Gap::rad(wrap(angle_between(dir(a), dir(b)) - v(value)).abs())
+                carried(wrap(angle_between(dir(a), dir(b)) - v(value)).abs(), a, b)
             }
             S::EqualLength { a, b, .. } => {
                 let (a0, a1) = self.ends(values, a);
                 let (b0, b1) = self.ends(values, b);
-                Gap::mm((length(a0, a1) - length(b0, b1)).abs())
+                (length(a0, a1) - length(b0, b1)).abs()
             }
             S::EqualRadius { a, b, .. } => {
-                Gap::mm((self.circle(values, a).1 - self.circle(values, b).1).abs())
+                (self.circle(values, a).1 - self.circle(values, b).1).abs()
             }
-            S::Radius { circle, value, .. } => {
-                Gap::mm((self.circle(values, circle).1 - v(value)).abs())
-            }
+            S::Radius { circle, value, .. } => (self.circle(values, circle).1 - v(value)).abs(),
             S::TangentLine { line, circle, .. } => {
                 let (c, r) = self.circle(values, circle);
-                Gap::mm((from_line(c, line).abs() - r).abs())
+                (from_line(c, line).abs() - r).abs()
             }
             S::TangentCircles { a, b, internal, .. } => {
                 let ((ca, ra), (cb, rb)) = (self.circle(values, a), self.circle(values, b));
                 let want = if internal { (ra - rb).abs() } else { ra + rb };
-                Gap::mm((length(ca, cb) - want).abs())
+                (length(ca, cb) - want).abs()
             }
             S::TangentOn {
                 a, point, b, angle, ..
             } => {
                 let q = p(point);
-                Gap {
-                    mm: off_curve(q, b),
-                    rad: at_point(a, b, q, angle),
+                // The larger, and not a number if either isn't.
+                let (off, turned) = (off_curve(q, b), at_point(a, b, q, angle));
+                if off.is_nan() || turned.is_nan() {
+                    f64::NAN
+                } else {
+                    off.max(turned)
                 }
             }
             S::AngleViaPoint {
                 a, b, point, angle, ..
-            } => Gap::rad(at_point(a, b, p(point), angle)),
+            } => at_point(a, b, p(point), angle),
             S::SymmetricLine { a, b, line, .. } => {
                 let (f, t) = self.ends(values, line);
-                Gap::mm(length(p(a), mirror(p(b), f, t)))
+                length(p(a), mirror(p(b), f, t))
             }
             S::MidpointOnLine { a, b, line, .. } => {
                 let (pa, pb) = (p(a), p(b));
                 let mid = [(pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0];
-                Gap::mm(from_line(mid, line).abs())
+                from_line(mid, line).abs()
             }
             S::SymmetricPoint { tag, a, b, center } => {
                 let (pa, pb, m) = (p(a), p(b), p(center));
@@ -1861,10 +2161,10 @@ impl Translation {
                 if midpoint {
                     // A midpoint's gap is the point's distance from the line's middle.
                     let middle = [(pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0];
-                    Gap::mm(length(m, middle))
+                    length(m, middle)
                 } else {
                     // A symmetry's, one point's distance from the other's mirror image.
-                    Gap::mm(length(pa, [2.0 * m[0] - pb[0], 2.0 * m[1] - pb[1]]))
+                    length(pa, [2.0 * m[0] - pb[0], 2.0 * m[1] - pb[1]])
                 }
             }
         }
@@ -1883,33 +2183,53 @@ fn unbuildable_error(elements: Vec<String>) -> Error {
     )
 }
 
-/// How far a constraint is from met: millimetres and radians, each its own way of missing.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-struct Gap {
-    mm: f64,
-    rad: f64,
+/// A solution's points, circles' radii, and reference dimensions' measures, by ID.
+type Placed = (
+    BTreeMap<ElementId, [Coordinate; 2]>,
+    BTreeMap<ElementId, Coordinate>,
+    BTreeMap<ElementId, Measured>,
+);
+
+/// The answer that stands when no load reaches a solved fixed point. A drawing that was
+/// refused keeps its own refusal: a refusal writes no file, so its load solves the drawing
+/// again and refuses alike. A drawing that solved can't keep a solution its file doesn't
+/// give back, so it stands as `load` ended: the last load's answer, or, where a load
+/// couldn't be made, checked, or settled, the first solve's values with that error.
+fn refusal(first: Answer, load: Result<Answer, Error>) -> Answer {
+    if first.outcome.is_err() {
+        return first;
+    }
+    match load {
+        Ok(load) => load,
+        Err(e) => Answer {
+            solved: first.solved,
+            outcome: Err(e),
+        },
+    }
 }
 
-impl Gap {
-    fn mm(mm: f64) -> Self {
-        Gap { mm, rad: 0.0 }
-    }
+/// Decision 5's window for the redundant constraints of one part of a sketch.
+#[derive(Debug, Clone, Copy)]
+struct Window {
+    /// The part's extent, in millimetres.
+    extent: f64,
+    /// The part's tightest circle tangency, in millimetres, as measured.
+    tightest: Option<f64>,
+    /// The most a redundant constraint's gap may be there and still agree.
+    tolerance: f64,
+}
 
-    fn rad(rad: f64) -> Self {
-        Gap { mm: 0.0, rad }
-    }
+/// Whether a gap is within `tolerance` (decision 5); a gap that isn't a number isn't.
+fn met(gap: f64, tolerance: f64) -> bool {
+    gap <= tolerance
+}
 
-    /// Within decision 5's tolerances (a gap that isn't a number isn't).
-    fn met(self) -> bool {
-        self.mm <= LENGTH_TOLERANCE && self.rad <= ANGLE_TOLERANCE
-    }
-
-    fn max(self, other: Gap) -> Gap {
-        Gap {
-            mm: self.mm.max(other.mm),
-            rad: self.rad.max(other.rad),
-        }
-    }
+/// Whether `solved` reached a solution, one that can be built or not.
+fn reached(solved: &Solved) -> bool {
+    matches!(
+        solved.status,
+        SolveStatus::Success | SolveStatus::SolvedExceptRedundant
+    )
 }
 
 fn at(values: &[f64], v: Value) -> f64 {

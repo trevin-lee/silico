@@ -11,8 +11,9 @@ use std::path::Path;
 
 use silico_core::ErrorCode;
 use silico_core::document::{Checked, ElementId, FeatureId, read};
-use silico_core::sketch::{SketchSolution, SketchWorker, solve};
+use silico_core::sketch::{SketchSolution, SketchSolver, SketchWorker, solve};
 use silico_protocol::Algorithm;
+use silico_protocol::{SketchSystem, Solved};
 use systems::Rng;
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-worker");
@@ -62,7 +63,7 @@ fn document(
     Checked::new(read(text.as_bytes()).unwrap()).unwrap()
 }
 
-fn solved(doc: &Checked, w: &mut SketchWorker) -> Result<SketchSolution, silico_core::Error> {
+fn solved(doc: &Checked, w: &mut dyn SketchSolver) -> Result<SketchSolution, silico_core::Error> {
     solve(doc, &FeatureId::new(FEATURE).unwrap(), w)
 }
 
@@ -392,7 +393,8 @@ fn twice_ten(x0: f64, dx: &str) -> Checked {
 #[test]
 fn two_lengths_a_nanometre_apart_conflict_and_equal_ones_agree_here_and_a_kilometre_out() {
     // Decision 5: PlaneGCS calls the horizontal distance redundant either way; Silico keeps
-    // it only when it's met on the solution within 1e-8 mm.
+    // it only when it's met on the solution within 1e-8 mm (its part's extent is its 10
+    // mm line, wherever the line is: position never counts).
     for x0 in [0.0, 999_980.0] {
         let s = solved(&twice_ten(x0, "10"), &mut worker()).unwrap();
         assert_eq!(s.redundant.len(), 1, "{x0}: {s:?}");
@@ -403,12 +405,114 @@ fn two_lengths_a_nanometre_apart_conflict_and_equal_ones_agree_here_and_a_kilome
     }
 }
 
+/// A line from p1, held at the origin, horizontal, `len` long, and a horizontal distance
+/// from the origin to its end of `dx`: its length given twice.
+fn length_twice(len: f64, dx: &str) -> Checked {
+    let length = format!(
+        r#"{{"id": "k0000004", "type": "length", "line": "n0000001", "value": {len}, "driving": true}}"#
+    );
+    let dx = format!(
+        r#"{{"id": "k0000005", "type": "distance_x", "a": "origin", "b": "p0000002", "value": {dx}, "driving": true}}"#
+    );
+    document(
+        &[
+            point("p0000001", 0.0, 0.0),
+            point("p0000002", len - 1.0, 1.0),
+        ],
+        &[line("n0000001", "p0000001", "p0000002")],
+        &[],
+        &[],
+        &[
+            r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000003", "type": "horizontal", "line": "n0000001"}"#,
+            &length,
+            &dx,
+        ],
+    )
+}
+
+#[test]
+fn a_nanometre_conflicts_under_a_metre_and_is_kept_over_one() {
+    // Decision 5 (Fable, 2026-10-18; its scale, 2026-10-20): a sketch's tolerance is the
+    // larger of 1e-8 mm and 1e-9 times its extent, the diagonal of the box around its
+    // points, here the line itself. A line 999 mm long given again as 999.000001: a gap of
+    // 1e-6 past 9.99e-7, over_constrained, the message giving both. At 1001 against 1001.000001
+    // the tolerance is 1.001e-6: kept, its gap of 1e-6 reported.
+    let e = solved(&length_twice(999.0, "999.000001"), &mut worker()).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::OverConstrained, "{e}");
+    assert_eq!(e.elements().len(), 1, "{e}");
+    assert!(e.message().contains("past the 9.99"), "{e}");
+    assert!(
+        e.suggestion().unwrap_or("").contains("driving: false"),
+        "{e}"
+    );
+    let s = solved(&length_twice(1001.0, "1001.000001"), &mut worker()).unwrap();
+    let gaps: Vec<f64> = s.redundant.values().copied().collect();
+    assert_eq!(gaps.len(), 1, "{s:?}");
+    assert!((0.99e-6..=1.01e-6).contains(&gaps[0]), "{gaps:?}");
+}
+
+/// A horizontal line n1 and a vertical line n2, both 10 long from p1 at the origin, the
+/// angle between them given as `angle` degrees; and, if `far`, a point p5 at (1100, 100),
+/// dimensioned from p1 (k8, k9), so it's in the lines' part of the sketch.
+fn right_angle_given(angle: &str, far: bool) -> Checked {
+    let angle = format!(
+        r#"{{"id": "k0000007", "type": "angle", "a": "n0000001", "b": "n0000002", "value": {angle}, "driving": true}}"#
+    );
+    let mut points = vec![
+        point("p0000001", 0.0, 0.0),
+        point("p0000002", 9.0, 0.5),
+        point("p0000003", 0.5, 11.0),
+    ];
+    let lines = [
+        line("n0000001", "p0000001", "p0000002"),
+        line("n0000002", "p0000001", "p0000003"),
+    ];
+    let mut constraints = vec![
+        r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+        r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+        r#"{"id": "k0000003", "type": "horizontal", "line": "n0000001"}"#,
+        r#"{"id": "k0000004", "type": "vertical", "line": "n0000002"}"#,
+        r#"{"id": "k0000005", "type": "length", "line": "n0000001", "value": 10, "driving": true}"#,
+        r#"{"id": "k0000006", "type": "length", "line": "n0000002", "value": 10, "driving": true}"#,
+        &angle,
+    ];
+    if far {
+        points.push(point("p0000005", 1100.0, 100.0));
+        constraints.extend([
+            r#"{"id": "k0000008", "type": "distance_x", "a": "p0000001", "b": "p0000005", "value": 1100, "driving": true}"#,
+            r#"{"id": "k0000009", "type": "distance_y", "a": "p0000001", "b": "p0000005", "value": 100, "driving": true}"#,
+        ]);
+    }
+    document(&points, &lines, &[], &[], &constraints)
+}
+
+#[test]
+fn an_angle_off_is_measured_as_the_distance_it_moves_a_lines_end() {
+    // Decision 5's angular conversion: a right angle given as 90.000002865°, 5.0e-8 rad off
+    // what the horizontal and vertical make. Carried by a 10 mm line, a gap of 5.0e-7 mm
+    // (hand: 2.865e-6° × π/180 × 10): past the 1.41e-8 of the lines alone (their points
+    // span 10 × 10), over_constrained. With a point p5 at (1100, 100) dimensioned from p1,
+    // in the lines' part, the part's points span 1,100 × 100: an extent of √(1100² + 100²)
+    // = 1,104.5 and a tolerance of 1.1045e-6: kept, the gap reported. Whichever of the three
+    // PlaneGCS drops, the gap is the same distance.
+    let e = solved(&right_angle_given("90.000002865", false), &mut worker()).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::OverConstrained, "{e}");
+    let s = solved(&right_angle_given("90.000002865", true), &mut worker()).unwrap();
+    let gaps: Vec<f64> = s.redundant.values().copied().collect();
+    assert_eq!(gaps.len(), 1, "{s:?}");
+    assert!((4.9e-7..=5.1e-7).contains(&gaps[0]), "{gaps:?}");
+}
+
 #[test]
 fn a_thirty_sixty_ninety_triangle_from_two_hundred_starts_keeps_its_implied_angle() {
     // The oracle's case for decision 5: a triangle with its corner angles 30°, 60°, and 90°
     // (the third implied by the other two), its base horizontal, 10 long, its first corner
     // at the origin. Drawn from 200 starts about the solution, every solve keeps the
-    // redundant angle: PlaneGCS leaves it up to about 1.3e-10 rad off, inside 1e-9.
+    // redundant angle: it's 180° less the two kept angles, each met to 1e-10 rad, so it's
+    // at most 2e-10 rad off (PlaneGCS leaves it up to 1.32e-10 here), which carried by its
+    // shorter line (BC, 5 mm) is a gap of at most 1e-9 mm, inside the sketch's 1e-8.
     let mut rng = Rng(0x30_60_90);
     let mut w = worker();
     let s3 = 3f64.sqrt();
@@ -451,6 +555,10 @@ fn a_thirty_sixty_ninety_triangle_from_two_hundred_starts_keeps_its_implied_angl
         );
         let s = solved(&doc, &mut w).unwrap_or_else(|e| panic!("start {start}: {e}"));
         assert_eq!(s.redundant.len(), 1, "start {start}: {s:?}");
+        assert!(
+            s.redundant.values().all(|&gap| gap <= 1e-9),
+            "start {start}: {s:?}"
+        );
         assert_at(&s, "p0000003", c);
     }
 }
@@ -513,6 +621,33 @@ fn a_point_two_lines_share_held_in_two_places_conflicts() {
     assert_eq!(e.elements(), ["k0000001", "k0000002"]);
 }
 
+/// The worker, recording the algorithm each solve it answers was solved by.
+struct Counting {
+    inner: SketchWorker,
+    replies: Vec<Solved>,
+}
+
+impl Counting {
+    fn new(inner: SketchWorker) -> Self {
+        Counting {
+            inner,
+            replies: Vec::new(),
+        }
+    }
+
+    fn algorithms(&self) -> Vec<Option<Algorithm>> {
+        self.replies.iter().map(|r| r.algorithm).collect()
+    }
+}
+
+impl SketchSolver for Counting {
+    fn solve(&mut self, system: SketchSystem) -> Result<Solved, silico_core::Error> {
+        let r = self.inner.solve(system)?;
+        self.replies.push(r.clone());
+        Ok(r)
+    }
+}
+
 #[test]
 fn a_solution_that_cant_be_built_is_passed_over_for_the_next_algorithms() {
     // TestCoincidentCommandGui.py's collapsed line: FreeCAD's coincidences make its two ends
@@ -521,7 +656,8 @@ fn a_solution_that_cant_be_built_is_passed_over_for_the_next_algorithms() {
     // dimensions. DogLeg solves that exactly, to a line of no length, which FreeCAD's
     // GeomLineSegment refuses ("Both points are equal": gp::Resolution, so only exactly);
     // its solution is passed over (fc128d357d), and Levenberg–Marquardt's, its ends 1e-10
-    // apart, is a line FreeCAD builds too.
+    // apart, is a line FreeCAD builds too. Loaded from that file, DogLeg meets it as it
+    // starts and leaves it there, so the answer kept (the load's, M3.4) says DogLeg.
     let doc = free_line(&[
         r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 5, "driving": true}"#,
         r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 5, "driving": true}"#,
@@ -541,8 +677,13 @@ fn a_solution_that_cant_be_built_is_passed_over_for_the_next_algorithms() {
         by_dogleg.status,
         silico_protocol::SolveStatus::SolvedInvalid
     );
-    let s = solved(&doc, &mut worker()).unwrap();
-    assert_eq!(s.algorithm, Algorithm::LevenbergMarquardt);
+    let mut w = Counting::new(worker());
+    let s = solved(&doc, &mut w).unwrap();
+    assert_eq!(
+        w.algorithms(),
+        [Some(Algorithm::LevenbergMarquardt), Some(Algorithm::DogLeg)]
+    );
+    assert_eq!(s.algorithm, Algorithm::DogLeg);
     let (a, b) = (
         s.point(&id("p0000001")).unwrap(),
         s.point(&id("p0000002")).unwrap(),
@@ -687,6 +828,135 @@ fn two_circles_tangent_outside_and_inside_land_their_radii_apart() {
             "{side}: {p:?}"
         );
     }
+}
+
+/// c1 and c2 both about p1, held at (1, 1); c1's radius held 10, c2's drawn 12 and held
+/// `r2` if given; c1 and c2 tangent on `side` (k0000004).
+fn on_one_centre(side: &str, r2: Option<f64>) -> Checked {
+    let tangent = format!(
+        r#"{{"id": "k0000004", "type": "tangent", "a": "c0000001", "b": "c0000002", "side": "{side}"}}"#
+    );
+    let radius = r2.map(|r| {
+        format!(r#"{{"id": "k0000005", "type": "radius", "curve": "c0000002", "value": {r}, "driving": true}}"#)
+    });
+    let mut constraints = vec![
+        r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 1, "driving": true}"#,
+        r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 1, "driving": true}"#,
+        r#"{"id": "k0000003", "type": "radius", "curve": "c0000001", "value": 10, "driving": true}"#,
+        &tangent,
+    ];
+    constraints.extend(radius.as_deref());
+    document(
+        &[point("p0000001", 1.0, 1.0)],
+        &[],
+        &[
+            circle("c0000001", "p0000001", 10.0),
+            circle("c0000002", "p0000001", 12.0),
+        ],
+        &[],
+        &constraints,
+    )
+}
+
+#[test]
+fn an_outside_tangency_between_circles_on_one_centre_is_an_invalid_result() {
+    // The port reviewer's case: circles on one centre touch outside only at radius 0, but
+    // 1.1.3's PlaneGCS measures a tangency between concentric circles as r1 − r2 whatever
+    // its side, so the solve gave r2 = 10, two identical circles, the tangency 20 mm off
+    // (d = 0, r1 + r2 = 20), and no redundancy. Refused, naming the tangency and both
+    // circles, with c2's radius free and with it held 10 (which PlaneGCS called redundant).
+    for r2 in [None, Some(10.0)] {
+        let e = solved(&on_one_centre("outside", r2), &mut worker()).unwrap_err();
+        assert_eq!(
+            (e.code(), e.elements()),
+            (
+                ErrorCode::InvalidResult,
+                &[
+                    "k0000004".to_owned(),
+                    "c0000001".to_owned(),
+                    "c0000002".to_owned()
+                ][..]
+            ),
+            "{r2:?}: {e}"
+        );
+    }
+}
+
+#[test]
+fn an_outside_tangency_drawn_apart_and_driven_onto_one_centre_is_an_invalid_result() {
+    // The route FreeCAD 1.1.3 takes too, and accepts (the port reviewer ran it on the
+    // oracle): c1 r 10 held about the origin, c2 drawn 30 to its right, r 12, tangent
+    // outside, and c2's centre dimensioned onto the origin. The centres cross under 1e-7
+    // during the solve, where PlaneGCS measures r1 − r2 whatever the side, and it lands on
+    // two equal circles on one centre. Silico refuses that on purpose, naming the tangency
+    // and both circles.
+    let doc = document(
+        &[point("p0000001", 0.0, 0.0), point("p0000002", 30.0, 0.0)],
+        &[],
+        &[
+            circle("c0000001", "p0000001", 10.0),
+            circle("c0000002", "p0000002", 12.0),
+        ],
+        &[],
+        &[
+            r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000003", "type": "radius", "curve": "c0000001", "value": 10, "driving": true}"#,
+            r#"{"id": "k0000004", "type": "tangent", "a": "c0000001", "b": "c0000002", "side": "outside"}"#,
+            r#"{"id": "k0000005", "type": "distance_x", "a": "origin", "b": "p0000002", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000006", "type": "distance_y", "a": "origin", "b": "p0000002", "value": 0, "driving": true}"#,
+        ],
+    );
+    let e = solved(&doc, &mut worker()).unwrap_err();
+    assert_eq!(
+        (e.code(), e.elements()),
+        (
+            ErrorCode::InvalidResult,
+            &[
+                "k0000004".to_owned(),
+                "c0000001".to_owned(),
+                "c0000002".to_owned()
+            ][..]
+        ),
+        "{e}"
+    );
+}
+
+#[test]
+fn an_inside_tangency_between_circles_on_one_centre_makes_them_equal() {
+    // Inside, PlaneGCS's r1 − r2 is the tangency itself: c2's free radius solves to c1's,
+    // 10, about (1, 1).
+    let s = solved(&on_one_centre("inside", None), &mut worker()).unwrap();
+    assert_at(&s, "p0000001", [1.0, 1.0]);
+    let r = s.radius(&id("c0000002")).unwrap();
+    assert!((r - 10.0).abs() <= CLOSE, "{r}");
+}
+
+#[test]
+fn an_outside_tangency_between_circles_apart_takes_the_gap_as_the_free_radius() {
+    // c1 r 10 held about the origin, c2 about (25, 0), its radius free, drawn 12: tangent
+    // outside, r2 = 25 − 10 = 15.
+    let doc = document(
+        &[point("p0000001", 0.0, 0.0), point("p0000002", 25.0, 0.0)],
+        &[],
+        &[
+            circle("c0000001", "p0000001", 10.0),
+            circle("c0000002", "p0000002", 12.0),
+        ],
+        &[],
+        &[
+            r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000003", "type": "distance_x", "a": "origin", "b": "p0000002", "value": 25, "driving": true}"#,
+            r#"{"id": "k0000004", "type": "distance_y", "a": "origin", "b": "p0000002", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000005", "type": "radius", "curve": "c0000001", "value": 10, "driving": true}"#,
+            r#"{"id": "k0000006", "type": "tangent", "a": "c0000001", "b": "c0000002", "side": "outside"}"#,
+        ],
+    );
+    let s = solved(&doc, &mut worker()).unwrap();
+    assert_at(&s, "p0000002", [25.0, 0.0]);
+    let r = s.radius(&id("c0000002")).unwrap();
+    assert!((r - 15.0).abs() <= CLOSE, "{r}");
 }
 
 #[test]

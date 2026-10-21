@@ -12,7 +12,10 @@ use std::f64::consts::PI;
 
 use silico_core::ErrorCode;
 use silico_core::document::{Checked, FeatureId, LineSide, Operation, Sketch, read};
-use silico_core::sketch::{ALGORITHMS, Measured, SketchSolution, SketchSolver, Translation, solve};
+use silico_core::sketch::{
+    ALGORITHMS, Answer, MAX_LOAD_RESOLVES, Measured, SketchSolution, SketchSolver, Translation,
+    solve,
+};
 use silico_protocol::{
     Algorithm, Geometry, PointOf, PointValues, SketchGeometry, SketchSystem, SolveStatus, Solved,
     SolverConstraint, Tag, Value,
@@ -689,7 +692,7 @@ fn redundant_constraints_that_agree_are_kept_and_named_and_ones_a_nanometre_off_
         if agrees {
             let id = silico_core::document::ElementId::new("k0000003").unwrap();
             assert_eq!(
-                read.unwrap().redundant.into_iter().collect::<Vec<_>>(),
+                read.unwrap().redundant.into_keys().collect::<Vec<_>>(),
                 [id]
             );
         } else {
@@ -701,13 +704,18 @@ fn redundant_constraints_that_agree_are_kept_and_named_and_ones_a_nanometre_off_
 }
 
 #[test]
-fn decision_fives_tolerances_are_a_hundredth_of_a_nanometre_and_a_nanoradian() {
-    // A redundant horizontal distance of 10, on a solution with the line's end just within,
-    // and just past, 1e-8 mm of it; a redundant horizontal on one with the line turned just
-    // within, and past, 1e-9 rad.
+fn decision_fives_tolerance_on_a_ten_by_three_sketch_is_a_billionth_of_its_diagonal() {
+    // ten()'s points span (0, 0) to (10, 3), joined into one part by a distance from p1 to
+    // p3 (5, as drawn; ten()'s own rows leave p3 a part of its own): E = √109 = 10.44, so
+    // the tolerance is max(1e-8, 1e-9 × 10.44) = 1.044e-8 mm. A redundant horizontal distance of 10, on a
+    // solution with the line's end 0.9e-8 and 1.1e-8 mm off it, either side of that; a
+    // redundant horizontal on one with the line turned 0.9e-9 and 1.1e-9 rad either way, its
+    // end risen or fallen 9e-9 and 1.1e-8 mm (the gap a horizontal has is its line's rise,
+    // whichever way: a fall of 1.1e-8 is as far off as a rise).
     for (off, agrees) in [(0.9e-8, true), (1.1e-8, false)] {
         let t = translate(&ten(&[
             r#"{"id": "k0000003", "type": "distance_x", "a": "p0000001", "b": "p0000002", "value": 10, "driving": true}"#,
+            r#"{"id": "k0000004", "type": "distance", "a": "p0000001", "b": "p0000003", "value": 5, "driving": true}"#,
         ]));
         let mut values = t.system.values.clone();
         values[8] = 10.0 + off;
@@ -715,16 +723,1058 @@ fn decision_fives_tolerances_are_a_hundredth_of_a_nanometre_and_a_nanoradian() {
         solved.partially_redundant = vec![Tag(3)];
         assert_eq!(read_back(&t, &solved).is_ok(), agrees, "{off}");
     }
-    for (off, agrees) in [(0.9e-9, true), (1.1e-9, false)] {
+    for (off, agrees) in [
+        (0.9e-9, true),
+        (1.1e-9, false),
+        (-0.9e-9, true),
+        (-1.1e-9, false),
+    ] {
         // The line turned off horizontal by `off` radians at its end; the horizontal is the
         // redundant one.
-        let t = translate(&ten(&[]));
+        let t = translate(&ten(&[
+            r#"{"id": "k0000003", "type": "distance", "a": "p0000001", "b": "p0000003", "value": 5, "driving": true}"#,
+        ]));
         let mut values = t.system.values.clone();
         values[8] = 10.0 * libm::cos(off);
         values[9] = 10.0 * libm::sin(off);
         let mut solved = answer(&t, values, SolveStatus::SolvedExceptRedundant);
         solved.redundant = vec![Tag(1)];
-        assert_eq!(read_back(&t, &solved).is_ok(), agrees, "{off}");
+        match read_back(&t, &solved) {
+            Ok(_) => assert!(agrees, "{off}: kept"),
+            Err(e) => {
+                assert!(!agrees, "{off}: {e}");
+                assert_eq!(
+                    (e.code(), e.elements()),
+                    (ErrorCode::OverConstrained, &["k0000001".to_owned()][..]),
+                    "{off}: {e}"
+                );
+            }
+        }
+    }
+}
+
+/// `t` answered met, its constraint tagged `tag` dropped as redundant, with `values`.
+fn dropping_tag(t: &Translation, values: Vec<f64>, tag: u32) -> Solved {
+    let mut solved = answer(t, values, SolveStatus::SolvedExceptRedundant);
+    solved.redundant = vec![Tag(tag)];
+    solved
+}
+
+/// The index of the value `t` sends drawn as `v` (drawn values here are all distinct).
+fn value_drawn(t: &Translation, v: f64) -> usize {
+    t.system.values.iter().position(|&x| x == v).unwrap()
+}
+
+#[test]
+fn a_sketchs_tolerance_is_its_extent_or_a_hundredth_of_a_nanometre() {
+    // Decision 5 (Fable, 2026-10-18; its scale, 2026-10-20; per part, 2026-10-21): a
+    // redundant constraint is met when its gap is within max(1e-8 mm, 1e-9 × E), E the
+    // diagonal of the box around the points of the part of the sketch it's in. Hand values
+    // throughout: 3-4-5 layouts give whole extents. Each sketch's points are joined into one
+    // part by a row (a `distance` between them); the stand-in doesn't solve, so a joining
+    // row's value needn't match the drawing.
+    let held = |id: &str, x: f64| {
+        format!(
+            r#"{{"id": "{id}", "type": "distance_x", "a": "origin", "b": "p0000001", "value": {x}, "driving": true}}"#
+        )
+    };
+    let joined = |id: &str, b: &str| {
+        format!(
+            r#"{{"id": "{id}", "type": "distance", "a": "p0000001", "b": "{b}", "value": 50, "driving": true}}"#
+        )
+    };
+    // One point: E is 0, the tolerance 1e-8. Its x given twice, the solution 0.99e-8 and
+    // 1.01e-8 off the dropped one.
+    let t = translate(&text(
+        &[point("p0000001", 3.25, 1.5)],
+        &[],
+        &[],
+        &[],
+        &[held("k0000001", 3.25), held("k0000002", 3.25)],
+    ));
+    let x = value_drawn(&t, 3.25);
+    for (off, kept) in [(0.99e-8, true), (1.01e-8, false)] {
+        let mut values = t.system.values.clone();
+        values[x] += off;
+        let got = read_back(&t, &dropping_tag(&t, values, 2));
+        assert_eq!(got.is_ok(), kept, "one point, {off}: {got:?}");
+    }
+    // Two points, p1 30 right of and 40 above p2: E 50, the tolerance 5e-8, wherever the
+    // pair is (position never counts): at the origin and a kilometre out. p1's x given
+    // twice, the solution 4.9e-8 and 5.1e-8 off the dropped one.
+    for (dx, dy) in [(0.0, 0.0), (999_000.0, -999_000.0)] {
+        let x1 = 30.0 + dx;
+        let t = translate(&text(
+            &[point("p0000001", x1, 40.0 + dy), point("p0000002", dx, dy)],
+            &[],
+            &[],
+            &[],
+            &[
+                held("k0000001", x1),
+                held("k0000002", x1),
+                joined("k0000003", "p0000002"),
+            ],
+        ));
+        let x = value_drawn(&t, x1);
+        for (off, kept) in [(4.9e-8, true), (5.1e-8, false)] {
+            let mut values = t.system.values.clone();
+            values[x] += off;
+            let got = read_back(&t, &dropping_tag(&t, values, 2));
+            assert_eq!(
+                got.is_ok(),
+                kept,
+                "two points at ({dx}, {dy}), {off}: {got:?}"
+            );
+        }
+    }
+    // Three points, none at the box's corners: p1 (50, 100), p2 (0, 0), p3 (100, 0). The box
+    // is (0, 0) to (100, 100), E = 100√2 = 141.42, the tolerance 1.4142e-7; the farthest
+    // pair, p1 and either other, is only √12500 = 111.80 apart (1.118e-7). p1's x given
+    // twice, the solution 1.3e-7 and 1.5e-7 off the dropped one: 1.3e-7 is kept by the box
+    // and would be refused by the farthest pair.
+    let t = translate(&text(
+        &[
+            point("p0000001", 50.0, 100.0),
+            point("p0000002", 0.0, 0.0),
+            point("p0000003", 100.0, 0.0),
+        ],
+        &[],
+        &[],
+        &[],
+        &[
+            held("k0000001", 50.0),
+            held("k0000002", 50.0),
+            joined("k0000003", "p0000002"),
+            joined("k0000004", "p0000003"),
+        ],
+    ));
+    let x = value_drawn(&t, 50.0);
+    for (off, kept) in [(1.3e-7, true), (1.5e-7, false)] {
+        let mut values = t.system.values.clone();
+        values[x] += off;
+        let got = read_back(&t, &dropping_tag(&t, values, 2));
+        assert_eq!(got.is_ok(), kept, "no point at a corner, {off}: {got:?}");
+    }
+    // The extent is the solution's, not the drawing's: p1 drawn at (3, 4) and p2 at the
+    // origin (E 5, the tolerance the floor, 1e-8), p1's x given twice as 300 and the
+    // solution putting p1 at (300, 400), so E 500 and the tolerance 5e-7. The solution
+    // 4e-7 and 6e-7 off the dropped one: 4e-7 is kept, which the drawing's 1e-8 would
+    // refuse.
+    let t = translate(&text(
+        &[point("p0000001", 3.0, 4.0), point("p0000002", 0.0, 0.0)],
+        &[],
+        &[],
+        &[],
+        &[
+            held("k0000001", 300.0),
+            held("k0000002", 300.0),
+            joined("k0000003", "p0000002"),
+        ],
+    ));
+    let x = value_drawn(&t, 3.0);
+    for (off, kept) in [(4e-7, true), (6e-7, false)] {
+        let mut values = t.system.values.clone();
+        values[x] = 300.0 + off;
+        values[x + 1] = 400.0;
+        let got = read_back(&t, &dropping_tag(&t, values, 2));
+        assert_eq!(
+            got.is_ok(),
+            kept,
+            "solved far from the drawing, {off}: {got:?}"
+        );
+    }
+    // And the reverse: p1 drawn at (300, 400) (the drawing's E 500, its tolerance 5e-7),
+    // p1's x given twice as 3 and the solution putting p1 at (3, 4), so E 5 and the
+    // tolerance the floor, 1e-8. The solution 0.9e-8 and 4e-7 off the dropped one: 4e-7 is
+    // refused, which the drawing's 5e-7 would keep.
+    let t = translate(&text(
+        &[point("p0000001", 300.0, 400.0), point("p0000002", 0.0, 0.0)],
+        &[],
+        &[],
+        &[],
+        &[
+            held("k0000001", 3.0),
+            held("k0000002", 3.0),
+            joined("k0000003", "p0000002"),
+        ],
+    ));
+    let x = value_drawn(&t, 300.0);
+    for (off, kept) in [(0.9e-8, true), (4e-7, false)] {
+        let mut values = t.system.values.clone();
+        values[x] = 3.0 + off;
+        values[x + 1] = 4.0;
+        let got = read_back(&t, &dropping_tag(&t, values, 2));
+        assert_eq!(
+            got.is_ok(),
+            kept,
+            "drawn far from the solution, {off}: {got:?}"
+        );
+    }
+    // A 50 mm line from the origin along x, and a circle centred at (120, 160), joined to
+    // the line by a horizontal distance from its end: the box is (0, 0) to (120, 160), E
+    // 200, the tolerance 2e-7, whether the circle's radius is 80 or 500 (a radius isn't the
+    // extent). The line's length given twice, the solution 1.9e-7 and 2.1e-7 off the
+    // dropped one.
+    for radius in [80.0, 500.0] {
+        let t = translate(&text(
+            &[
+                point("p0000001", 0.0, 0.0),
+                point("p0000002", 50.0, 0.0),
+                point("p0000003", 120.0, 160.0),
+            ],
+            &[line("n0000001", "p0000001", "p0000002")],
+            &[circle("c0000001", "p0000003", radius)],
+            &[],
+            &[
+                r#"{"id": "k0000001", "type": "length", "line": "n0000001", "value": 50, "driving": true}"#.to_owned(),
+                r#"{"id": "k0000002", "type": "length", "line": "n0000001", "value": 50, "driving": true}"#.to_owned(),
+                r#"{"id": "k0000003", "type": "distance_x", "a": "p0000002", "b": "p0000003", "value": 70, "driving": true}"#.to_owned(),
+            ],
+        ));
+        let end = value_drawn(&t, 50.0);
+        for (off, kept) in [(1.9e-7, true), (2.1e-7, false)] {
+            let mut values = t.system.values.clone();
+            values[end] += off;
+            let got = read_back(&t, &dropping_tag(&t, values, 2));
+            assert_eq!(got.is_ok(), kept, "radius {radius}, {off}: {got:?}");
+            match got {
+                Ok(s) => {
+                    let gap = s.redundant.values().copied().next().unwrap();
+                    assert!((gap - off).abs() < 1e-12, "{gap:e} for {off:e}");
+                }
+                Err(e) => {
+                    assert!(e.message().contains("(k0000002), past the 2"), "{e}");
+                    assert!(
+                        e.message()
+                            .contains("(1e-9 of the part's 2e2 mm extent, or 1e-8 mm at least)"),
+                        "{e}"
+                    );
+                }
+            }
+        }
+    }
+    // A point on a 5 mm line's extension, 715 mm across: the line (1, 1) to (4, 5) and p3
+    // at (430, 573) = (1, 1) + 143 × (3, 4), the point on the line dropped. The box is
+    // (1, 1) to (430, 573), E 715 (143 × 5), the tolerance 7.15e-7. p3 moved δ across the
+    // line, along its normal (−0.8, 0.6): a gap of δ. 7e-7 kept, 7.3e-7 refused; a
+    // tolerance of the 5 mm line's would be the floor.
+    let t = translate(&text(
+        &[
+            point("p0000001", 1.0, 1.0),
+            point("p0000002", 4.0, 5.0),
+            point("p0000003", 430.0, 573.0),
+        ],
+        &[line("n0000001", "p0000001", "p0000002")],
+        &[],
+        &[],
+        &[
+            r#"{"id": "k0000001", "type": "on", "point": "p0000003", "curve": "n0000001"}"#
+                .to_owned(),
+        ],
+    ));
+    let p3 = value_drawn(&t, 430.0);
+    for (off, kept) in [(7e-7, true), (7.3e-7, false)] {
+        let mut values = t.system.values.clone();
+        values[p3] -= 0.8 * off;
+        values[p3 + 1] += 0.6 * off;
+        let got = read_back(&t, &dropping_tag(&t, values, 1));
+        assert_eq!(got.is_ok(), kept, "the far point, {off}: {got:?}");
+        if let Ok(s) = got {
+            let gap = s.redundant.values().copied().next().unwrap();
+            assert!((gap - off).abs() < 1e-12, "{gap:e} for {off:e}");
+        }
+    }
+    // A line parallel to the x axis, 50 long, alone: E 50, the tolerance 5e-8. Its end
+    // risen 4e-8 and 6e-8: the parallel's angle carried by the line (the axis can't move),
+    // a gap as large as the rise; carried by the axis's 1, it would be fifty times less.
+    let t = translate(&text(
+        &[point("p0000001", 0.0, 0.0), point("p0000002", 50.0, 0.0)],
+        &[line("n0000001", "p0000001", "p0000002")],
+        &[],
+        &[],
+        &[r#"{"id": "k0000001", "type": "parallel", "a": "n0000001", "b": "x_axis"}"#.to_owned()],
+    ));
+    let rise = value_drawn(&t, 50.0) + 1;
+    for (off, kept) in [(4e-8, true), (6e-8, false)] {
+        let mut values = t.system.values.clone();
+        values[rise] += off;
+        let got = read_back(&t, &dropping_tag(&t, values, 1));
+        assert_eq!(got.is_ok(), kept, "parallel to the axis, {off}: {got:?}");
+    }
+}
+
+/// Two circles, c1 about p1 and c2 about `c2_center`, given `tangent` on `side` (k1) and,
+/// if `equal`, `equal` (k2); and p3 at `p3`, its x given twice after them, from p1, which
+/// joins it to the circles' part of the sketch (p1 is at the origin, so the dimensions are
+/// p3's x). The points: p1 at the origin, p2 at `p2`, p3.
+fn tangent_pair(
+    p2: [f64; 2],
+    radii: [f64; 2],
+    c2_center: &str,
+    side: &str,
+    equal: bool,
+    p3: [f64; 2],
+) -> Translation {
+    tangent_pair_from("p0000001", p2, radii, c2_center, side, equal, p3)
+}
+
+/// [`tangent_pair`], p3's x given from `from`: from the origin, p3 is a part of its own.
+fn tangent_pair_from(
+    from: &str,
+    p2: [f64; 2],
+    radii: [f64; 2],
+    c2_center: &str,
+    side: &str,
+    equal: bool,
+    p3: [f64; 2],
+) -> Translation {
+    let mut constraints = vec![format!(
+        r#"{{"id": "k0000001", "type": "tangent", "a": "c0000001", "b": "c0000002", "side": "{side}"}}"#
+    )];
+    if equal {
+        constraints.push(
+            r#"{"id": "k0000002", "type": "equal", "a": "c0000001", "b": "c0000002"}"#.to_owned(),
+        );
+    }
+    for id in ["k0000003", "k0000004"] {
+        constraints.push(format!(
+            r#"{{"id": "{id}", "type": "distance_x", "a": "{from}", "b": "p0000003", "value": {}, "driving": true}}"#,
+            p3[0]
+        ));
+    }
+    translate(&text(
+        &[
+            point("p0000001", 0.0, 0.0),
+            point("p0000002", p2[0], p2[1]),
+            point("p0000003", p3[0], p3[1]),
+        ],
+        &[],
+        &[
+            circle("c0000001", "p0000001", radii[0]),
+            circle("c0000002", c2_center, radii[1]),
+        ],
+        &[],
+        &constraints,
+    ))
+}
+
+/// The centre and radius values of `t`'s second circle, c2.
+fn second_circle(t: &Translation) -> (PointValues, Value) {
+    t.system
+        .geometry
+        .iter()
+        .filter_map(|g| match *g {
+            SketchGeometry::Circle { center, radius } => Some((center, radius)),
+            _ => None,
+        })
+        .nth(1)
+        .unwrap()
+}
+
+/// `t` read back with p3's x (drawn `x`) moved `off` and `values` changed by `set`, its
+/// second x dimension dropped as redundant.
+fn p3_moved(
+    t: &Translation,
+    x: f64,
+    off: f64,
+    set: impl Fn(&mut Vec<f64>),
+) -> Result<SketchSolution, silico_core::Error> {
+    let mut values = t.system.values.clone();
+    let at = value_drawn(t, x);
+    values[at] += off;
+    set(&mut values);
+    let last = sent(t).iter().filter_map(|c| c.tag()).max().unwrap();
+    read_back(t, &dropping_tag(t, values, last.0))
+}
+
+#[test]
+fn a_sketchs_tolerance_is_a_nanometre_squared_over_its_tightest_circle_tangency() {
+    // Decision 5's third term (Fable, 2026-10-21; per part, and T at least 1e-5,
+    // 2026-10-21): PlaneGCS measures a circle tangency in mm², so ε = max(1e-8 mm, 1e-9 × E,
+    // 1e-9 mm² / max(T, 1e-5 mm)), T the least d + (r1 + r2) outside or d + |r1 − r2|
+    // inside over the tangencies of the part of the sketch the redundant row is in, d the
+    // centres' distance; none when the centres are concentric to PlaneGCS (d² < 1e-14),
+    // where it measures r1 − r2 in mm. The term reaches every redundant row in the part:
+    // here p3's x, given twice from p1, the circle c1's centre, and nothing else to do with
+    // the circles. Every value a power of two, so T and ε are exact.
+    let refused = |got: Result<SketchSolution, silico_core::Error>, what: &str| {
+        let e = got.expect_err(what);
+        assert_eq!(
+            (e.code(), e.elements()),
+            (ErrorCode::OverConstrained, &["k0000004".to_owned()][..]),
+            "{what}: {e}"
+        );
+        e.message().to_owned()
+    };
+    // Kept, its gap the move within the spacing of doubles at p3's x, `x`.
+    let kept = |got: Result<SketchSolution, silico_core::Error>, x: f64, off: f64, what: &str| {
+        let s = got.unwrap_or_else(|e| panic!("{what}: {e}"));
+        let gaps: Vec<f64> = s.redundant.values().copied().collect();
+        assert!(
+            gaps.len() == 1 && (gaps[0] - off).abs() <= x * f64::EPSILON,
+            "{what}: {gaps:?}"
+        );
+    };
+    // U1, inside: c1 r 1 about (0, 0), c2 r 1.03125 about (0.03125, 0): d 0.03125, |r1 −
+    // r2| 0.03125, T 0.0625, ε = 1e-9 / 0.0625 = 1.6e-8 (E = √(0.03125² + 0.01²) = 0.0328,
+    // 3.3e-11). 1.5e-8 kept; 1.7e-8 refused.
+    let t = tangent_pair(
+        [0.03125, 0.0],
+        [1.0, 1.03125],
+        "p0000002",
+        "inside",
+        false,
+        [0.01, 0.01],
+    );
+    kept(
+        p3_moved(&t, 0.01, 1.5e-8, |_| ()),
+        0.01,
+        1.5e-8,
+        "inside, 1.5e-8",
+    );
+    let m = refused(p3_moved(&t, 0.01, 1.7e-8, |_| ()), "inside, 1.7e-8");
+    assert!(
+        m.contains("(k0000004), past the 1.6e-8 mm of the part"),
+        "{m}"
+    );
+    assert!(
+        m.contains(
+            "1e-9 mm² over the 6.25e-2 mm of its tightest circle tangency (1e-5 mm at the least), or 1e-8 mm at least"
+        ),
+        "{m}"
+    );
+    // The same, c2 about (0.53125, 0) with r 1.53125: T 1.0625, the term 9.4e-10, E 0.53,
+    // so ε is the floor. 0.99e-8 kept; 1.01e-8 refused.
+    let t = tangent_pair(
+        [0.53125, 0.0],
+        [1.0, 1.53125],
+        "p0000002",
+        "inside",
+        false,
+        [0.01, 0.01],
+    );
+    kept(
+        p3_moved(&t, 0.01, 0.99e-8, |_| ()),
+        0.01,
+        0.99e-8,
+        "loose inside, 0.99e-8",
+    );
+    let m = refused(p3_moved(&t, 0.01, 1.01e-8, |_| ()), "loose inside, 1.01e-8");
+    assert!(m.contains("past the 1e-8 mm"), "{m}");
+    assert!(
+        m.contains("over the 1.0625e0 mm of its tightest circle tangency (1e-5 mm at the least), or 1e-8 mm at least"),
+        "{m}"
+    );
+    // The tightest of two: U1's circles and a third, c3, r 1 about (2, 0), tangent outside
+    // c1 and given first: T = min(2 + 2, 0.0625), ε 1.6e-8 still (E = √(2² + 0.01²), 2e-9).
+    // 1.5e-8 kept; 1.7e-8 refused. The loosest's T, 4, would give the floor.
+    let t = translate(&text(
+        &[
+            point("p0000001", 0.0, 0.0),
+            point("p0000002", 0.03125, 0.0),
+            point("p0000003", 0.01, 0.01),
+            point("p0000004", 2.0, 0.0),
+        ],
+        &[],
+        &[
+            circle("c0000001", "p0000001", 1.0),
+            circle("c0000002", "p0000002", 1.03125),
+            circle("c0000003", "p0000004", 1.0),
+        ],
+        &[],
+        &[
+            r#"{"id": "k0000001", "type": "tangent", "a": "c0000001", "b": "c0000003", "side": "outside"}"#.to_owned(),
+            r#"{"id": "k0000002", "type": "tangent", "a": "c0000001", "b": "c0000002", "side": "inside"}"#.to_owned(),
+            r#"{"id": "k0000003", "type": "distance_x", "a": "p0000001", "b": "p0000003", "value": 0.01, "driving": true}"#.to_owned(),
+            r#"{"id": "k0000004", "type": "distance_x", "a": "p0000001", "b": "p0000003", "value": 0.01, "driving": true}"#.to_owned(),
+        ],
+    ));
+    kept(
+        p3_moved(&t, 0.01, 1.5e-8, |_| ()),
+        0.01,
+        1.5e-8,
+        "two tangencies, 1.5e-8",
+    );
+    let m = refused(p3_moved(&t, 0.01, 1.7e-8, |_| ()), "two tangencies, 1.7e-8");
+    assert!(m.contains("past the 1.6e-8 mm"), "{m}");
+    // U2, outside: both radii 0.015625, centres 0.03125 apart: T = 0.03125 + 0.03125 =
+    // 0.0625, ε 1.6e-8 (|r1 − r2| would give T 0.03125, ε 3.2e-8, and keep 1.7e-8).
+    let t = tangent_pair(
+        [0.03125, 0.0],
+        [0.015625, 0.015625],
+        "p0000002",
+        "outside",
+        false,
+        [0.01, 0.01],
+    );
+    kept(
+        p3_moved(&t, 0.01, 1.5e-8, |_| ()),
+        0.01,
+        1.5e-8,
+        "outside, 1.5e-8",
+    );
+    let m = refused(p3_moved(&t, 0.01, 1.7e-8, |_| ()), "outside, 1.7e-8");
+    assert!(m.contains("past the 1.6e-8 mm"), "{m}");
+    assert!(m.contains("over the 6.25e-2 mm of its tightest"), "{m}");
+    // U3, concentric: c1 and c2 both about p1, radii 100, tangent inside and equal (they
+    // agree). PlaneGCS measures the tangency as r1 − r2 in mm: no term. p3 at (30, 40): E
+    // 50, ε 5e-8. 4.9e-8 kept; 5.1e-8 refused, its message without a tangency.
+    let t = tangent_pair(
+        [0.0, 0.0],
+        [100.0, 100.0],
+        "p0000001",
+        "inside",
+        true,
+        [30.0, 40.0],
+    );
+    kept(
+        p3_moved(&t, 30.0, 4.9e-8, |_| ()),
+        30.0,
+        4.9e-8,
+        "concentric, 4.9e-8",
+    );
+    let m = refused(p3_moved(&t, 30.0, 5.1e-8, |_| ()), "concentric, 5.1e-8");
+    // (p3 moved, E is 50.00000003.)
+    assert!(m.contains("past the 5.0000000"), "{m}");
+    assert!(m.contains("(1e-9 of the part's 5.0000000"), "{m}");
+    assert!(m.contains("e1 mm extent, or 1e-8 mm at least)"), "{m}");
+    // c2's radius solved 1e-10 larger: d + |r1 − r2| is 1e-10, and 1e-9 / 1e-10 would be
+    // a 10 mm tolerance. Still concentric to PlaneGCS: refused.
+    let r2 = second_circle(&t).1.0 as usize;
+    let m = refused(
+        p3_moved(&t, 30.0, 5.1e-8, |v| v[r2] = 100.0 + 1e-10),
+        "concentric, its radii 1e-10 apart",
+    );
+    assert!(!m.contains("circle tangency"), "{m}");
+    // At the switch's edge, RECORDED BEHAVIOUR (what PlaneGCS holds there): c2 about its own
+    // p2, drawn at the origin and solved to (2e-7, 0). d² = 4e-14, the mm² form: T = 2e-7,
+    // which counts as 1e-5, so ε = 1e-9 / 1e-5 = 1e-4 (not 1e-9 / 2e-7 = 5e-3). 5.1e-8
+    // kept, its gap reported; 0.99e-4 kept; 1.01e-4 refused.
+    let t = tangent_pair(
+        [0.0, 0.0],
+        [100.0, 100.0],
+        "p0000002",
+        "inside",
+        true,
+        [30.0, 40.0],
+    );
+    let p2 = second_circle(&t).0.x.0 as usize;
+    kept(
+        p3_moved(&t, 30.0, 5.1e-8, |v| v[p2] = 2e-7),
+        30.0,
+        5.1e-8,
+        "centres 2e-7 apart, 5.1e-8",
+    );
+    kept(
+        p3_moved(&t, 30.0, 0.99e-4, |v| v[p2] = 2e-7),
+        30.0,
+        0.99e-4,
+        "centres 2e-7 apart, 0.99e-4",
+    );
+    let m = refused(
+        p3_moved(&t, 30.0, 1.01e-4, |v| v[p2] = 2e-7),
+        "centres 2e-7 apart, 1.01e-4",
+    );
+    assert!(m.contains("past the 1e-4 mm"), "{m}");
+    assert!(
+        m.contains("over the 2e-7 mm of its tightest circle tangency (1e-5 mm at the least)"),
+        "{m}"
+    );
+    // Below the switch: centres solved 9e-8 apart, d² = 8.1e-15 < 1e-14, so PlaneGCS
+    // measures r1 − r2 in mm and there's no tangency term. ε is 1e-9 × E (E = 50), 5e-8, and
+    // 5.1e-8 is refused, with no tangency clause. (Counting any d² above 0 would give
+    // T = 9e-8 and ε = 1.1e-2, keeping it.)
+    let p2 = second_circle(&t).0.x.0 as usize;
+    let e = p3_moved(&t, 30.0, 5.1e-8, |v| v[p2] = 9e-8)
+        .expect_err("centres 9e-8 apart are concentric to PlaneGCS");
+    assert_eq!(e.code(), ErrorCode::OverConstrained, "{e}");
+    assert!(!e.message().contains("circle tangency"), "{e}");
+}
+
+#[test]
+fn a_redundant_constraints_tolerance_is_its_parts_of_the_sketch() {
+    // Decision 5 per part (Fable, 2026-10-21): E and T are taken over the part of the sketch
+    // the dropped row is in, its unknowns joined by every row sent (kept, dropped, or an
+    // arc's rules); the origin's and axes' values and the dimensions' are fixed and join
+    // nothing. And T counts as 1e-5 mm at the least, so the tangency term is at most 1e-4.
+    let refused = |got: Result<SketchSolution, silico_core::Error>, id: &str, what: &str| {
+        let e = got.expect_err(what);
+        assert_eq!(
+            (e.code(), e.elements()),
+            (ErrorCode::OverConstrained, &[id.to_owned()][..]),
+            "{what}: {e}"
+        );
+        e.message().to_owned()
+    };
+    let kept = |got: Result<SketchSolution, silico_core::Error>, off: f64, what: &str| {
+        let s = got.unwrap_or_else(|e| panic!("{what}: {e}"));
+        let gaps: Vec<f64> = s.redundant.values().copied().collect();
+        assert!(
+            gaps.len() == 1 && (gaps[0] - off).abs() <= 1e-12,
+            "{what}: {gaps:?}"
+        );
+    };
+    let row = |id: &str, kind: &str, a: &str, b: &str, value: f64| {
+        format!(
+            r#"{{"id": "{id}", "type": "{kind}", "a": "{a}", "b": "{b}", "value": {value}, "driving": true}}"#
+        )
+    };
+
+    // C1a, two parts: p1 (0, 0) and p2 (30, 40) joined by a distance of 50 (k1); p3
+    // (1000, 0) held from the origin (k4, k5). p1's x given twice from the origin (k2, k3,
+    // the second dropped): its part's box is p1 and p2's, E 50, ε 5e-8, where the sketch's
+    // (0, 0) to (1000, 40) would give E 1000.8 and ε 1e-6. 4.9e-8 kept with that gap; 5.1e-8
+    // refused naming k3 (p1 moved 5.1e-8 right shrinks the box to 29.99999995 × 40: E
+    // 49.99999997, so the message gives 4.9999999...).
+    let two_parts = |twice: &str, other: &str, x: f64, other_x: f64| {
+        translate(&text(
+            &[
+                point("p0000001", 0.0, 0.0),
+                point("p0000002", 30.0, 40.0),
+                point("p0000003", 1000.0, 0.0),
+            ],
+            &[],
+            &[],
+            &[],
+            &[
+                row("k0000001", "distance", "p0000001", "p0000002", 50.0),
+                row("k0000002", "distance_x", "origin", twice, x),
+                row("k0000003", "distance_x", "origin", twice, x),
+                row("k0000004", "distance_x", "origin", other, other_x),
+                row("k0000005", "distance_y", "origin", other, 0.0),
+            ],
+        ))
+    };
+    let t = two_parts("p0000001", "p0000003", 0.0, 1000.0);
+    let x1 = pv_of(&t, 0).x.0 as usize;
+    let moved = |t: &Translation, at: usize, off: f64| {
+        let mut values = t.system.values.clone();
+        values[at] += off;
+        read_back(t, &dropping_tag(t, values, 3))
+    };
+    kept(moved(&t, x1, 4.9e-8), 4.9e-8, "C1a, p1's x 4.9e-8 off");
+    let m = refused(moved(&t, x1, 5.1e-8), "k0000003", "C1a, p1's x 5.1e-8 off");
+    assert!(
+        m.contains("by up to 5.1e-8 mm (k0000003), past the 4.9999999"),
+        "{m}"
+    );
+    assert!(m.contains("of the part's 4.9999999"), "{m}");
+    assert!(!m.contains("circle tangency"), "{m}");
+    // p3's x given twice instead: its part is p3 alone, E 0, the floor 1e-8.
+    let t = two_parts("p0000003", "p0000001", 1000.0, 0.0);
+    let x3 = pv_of(&t, 2).x.0 as usize;
+    kept(moved(&t, x3, 0.99e-8), 0.99e-8, "C1a, p3's x 0.99e-8 off");
+    let m = refused(
+        moved(&t, x3, 1.01e-8),
+        "k0000003",
+        "C1a, p3's x 1.01e-8 off",
+    );
+    assert!(m.contains("past the 1e-8 mm"), "{m}");
+    assert!(m.contains("of the part's 0e0 mm extent"), "{m}");
+
+    // C1b, a tangency in another part doesn't count: U1's circles (T 0.0625, 1.6e-8) and p3
+    // (0.01, 0.01), its x given twice from the origin: p3 is a part of its own, ε the floor:
+    // 0.99e-8 kept, 1.01e-8 refused without a tangency. Given from p1 instead, the circles'
+    // part: ε 1.6e-8, 1.5e-8 kept, 1.7e-8 refused with the tangency's clause.
+    let u1 = |from: &str| {
+        tangent_pair_from(
+            from,
+            [0.03125, 0.0],
+            [1.0, 1.03125],
+            "p0000002",
+            "inside",
+            false,
+            [0.01, 0.01],
+        )
+    };
+    let t = u1("origin");
+    kept(
+        p3_moved(&t, 0.01, 0.99e-8, |_| ()),
+        0.99e-8,
+        "C1b apart, 0.99e-8",
+    );
+    let m = refused(
+        p3_moved(&t, 0.01, 1.01e-8, |_| ()),
+        "k0000004",
+        "C1b apart, 1.01e-8",
+    );
+    assert!(m.contains("past the 1e-8 mm"), "{m}");
+    assert!(!m.contains("circle tangency"), "{m}");
+    let t = u1("p0000001");
+    kept(
+        p3_moved(&t, 0.01, 1.5e-8, |_| ()),
+        1.5e-8,
+        "C1b joined, 1.5e-8",
+    );
+    let m = refused(
+        p3_moved(&t, 0.01, 1.7e-8, |_| ()),
+        "k0000004",
+        "C1b joined, 1.7e-8",
+    );
+    assert!(m.contains("past the 1.6e-8 mm"), "{m}");
+    assert!(
+        m.contains("over the 6.25e-2 mm of its tightest circle tangency (1e-5 mm at the least)"),
+        "{m}"
+    );
+
+    // C1c, the dropped row joins as a kept one would: p1 (0, 0) and p2 (30, 40) each held
+    // from the origin (k1 to k4), and the distance between them, 50, dropped (k5). Their
+    // part is both, E 50, ε 5e-8 (parts of the kept rows alone would leave p1 a part of its
+    // own, E 0, the floor). p2 moved along (0.6, 0.8), the distance's direction: a gap of
+    // the move. 4.9e-8 kept; 5.1e-8 refused, naming the distance.
+    let t = translate(&text(
+        &[point("p0000001", 0.0, 0.0), point("p0000002", 30.0, 40.0)],
+        &[],
+        &[],
+        &[],
+        &[
+            row("k0000001", "distance_x", "origin", "p0000001", 0.0),
+            row("k0000002", "distance_y", "origin", "p0000001", 0.0),
+            row("k0000003", "distance_x", "origin", "p0000002", 30.0),
+            row("k0000004", "distance_y", "origin", "p0000002", 40.0),
+            row("k0000005", "distance", "p0000001", "p0000002", 50.0),
+        ],
+    ));
+    let p2 = pv_of(&t, 1);
+    let along = |off: f64| {
+        let mut values = t.system.values.clone();
+        values[p2.x.0 as usize] += 0.6 * off;
+        values[p2.y.0 as usize] += 0.8 * off;
+        read_back(&t, &dropping_tag(&t, values, 5))
+    };
+    kept(along(4.9e-8), 4.9e-8, "C1c, 4.9e-8");
+    let m = refused(along(5.1e-8), "k0000005", "C1c, 5.1e-8");
+    assert!(m.contains("past the 5.0000000"), "{m}");
+
+    // C1d, the cap, exact in doubles: c2 about (2⁻¹⁸, 0), radii 1 and 1 + 2⁻¹⁸, inside:
+    // T = 2⁻¹⁸ + 2⁻¹⁸ = 2⁻¹⁷ = 7.62939453125e-6, which counts as 1e-5: ε = 1e-9 / 1e-5 =
+    // 1e-4 (uncapped, 1e-9 / 2⁻¹⁷ = 1.31e-4 would keep 1.01e-4). E is p1 to p3, 0.014.
+    let tiny = 1.0 / 262_144.0;
+    let t = tangent_pair(
+        [tiny, 0.0],
+        [1.0, 1.0 + tiny],
+        "p0000002",
+        "inside",
+        false,
+        [0.01, 0.01],
+    );
+    kept(
+        p3_moved(&t, 0.01, 0.99e-4, |_| ()),
+        0.99e-4,
+        "C1d 2⁻¹⁷, 0.99e-4",
+    );
+    let m = refused(
+        p3_moved(&t, 0.01, 1.01e-4, |_| ()),
+        "k0000004",
+        "C1d 2⁻¹⁷, 1.01e-4",
+    );
+    assert!(m.contains("past the 1e-4 mm"), "{m}");
+    assert!(
+        m.contains(
+            "over the 7.62939453125e-6 mm of its tightest circle tangency (1e-5 mm at the least)"
+        ),
+        "{m}"
+    );
+    // Above the cap: c2 about (2⁻¹⁶, 0), radii 1 and 1 + 2⁻¹⁶: T = 2⁻¹⁵, ε = 1e-9 × 2¹⁵ =
+    // 3.2768e-5 exactly. 3.2e-5 kept, 3.3e-5 refused.
+    let small = 1.0 / 65_536.0;
+    let t = tangent_pair(
+        [small, 0.0],
+        [1.0, 1.0 + small],
+        "p0000002",
+        "inside",
+        false,
+        [0.01, 0.01],
+    );
+    kept(
+        p3_moved(&t, 0.01, 3.2e-5, |_| ()),
+        3.2e-5,
+        "C1d 2⁻¹⁵, 3.2e-5",
+    );
+    let m = refused(
+        p3_moved(&t, 0.01, 3.3e-5, |_| ()),
+        "k0000004",
+        "C1d 2⁻¹⁵, 3.3e-5",
+    );
+    assert!(m.contains("past the 3.2768e-5 mm"), "{m}");
+    // The double root, equal radii inside, from three landings: c2 about (2⁻²², 0) (d² =
+    // 5.7e-14, the mm² form), (2⁻¹⁸, 0), and (9.5e-6, 0): T = d, each under 1e-5, so ε =
+    // 1e-4 for all three (uncapped: 4.2e-3, 2.6e-4, and 1.05e-4, each keeping 1.01e-4).
+    for d in [1.0 / 4_194_304.0, tiny, 9.5e-6] {
+        let t = tangent_pair(
+            [d, 0.0],
+            [1.0, 1.0],
+            "p0000002",
+            "inside",
+            false,
+            [0.01, 0.01],
+        );
+        kept(
+            p3_moved(&t, 0.01, 0.99e-4, |_| ()),
+            0.99e-4,
+            &format!("C1d equal radii, d {d:e}, 0.99e-4"),
+        );
+        let m = refused(
+            p3_moved(&t, 0.01, 1.01e-4, |_| ()),
+            "k0000004",
+            &format!("C1d equal radii, d {d:e}, 1.01e-4"),
+        );
+        assert!(m.contains("past the 1e-4 mm"), "{d:e}: {m}");
+    }
+}
+
+#[test]
+fn a_refusal_reports_its_worst_row_against_that_rows_part() {
+    // Two parts, each with a disagreeing row dropped: p1 (0, 0) and p2 (30, 40), joined by
+    // a distance (k1), p1's x given twice (k2, k3); and p3 (0, −1000), a part of its own,
+    // its x given twice (k4, k5) and its y once (k6). k3's window is 5e-8 (E 50), k5's the
+    // floor, 1e-8 (E 0). The message gives the row with the largest gap, and its part's
+    // window; on a tie, the lower tag's. Both rows are named.
+    let row = |id: &str, kind: &str, a: &str, b: &str, value: f64| {
+        format!(
+            r#"{{"id": "{id}", "type": "{kind}", "a": "{a}", "b": "{b}", "value": {value}, "driving": true}}"#
+        )
+    };
+    let t = translate(&text(
+        &[
+            point("p0000001", 0.0, 0.0),
+            point("p0000002", 30.0, 40.0),
+            point("p0000003", 0.0, -1000.0),
+        ],
+        &[],
+        &[],
+        &[],
+        &[
+            row("k0000001", "distance", "p0000001", "p0000002", 50.0),
+            row("k0000002", "distance_x", "origin", "p0000001", 0.0),
+            row("k0000003", "distance_x", "origin", "p0000001", 0.0),
+            row("k0000004", "distance_x", "origin", "p0000003", 0.0),
+            row("k0000005", "distance_x", "origin", "p0000003", 0.0),
+            row("k0000006", "distance_y", "origin", "p0000003", -1000.0),
+        ],
+    ));
+    let (x1, x3) = (pv_of(&t, 0).x.0 as usize, pv_of(&t, 2).x.0 as usize);
+    let refused = |off1: f64, off3: f64| {
+        let mut values = t.system.values.clone();
+        values[x1] += off1;
+        values[x3] += off3;
+        let mut solved = answer(&t, values, SolveStatus::SolvedExceptRedundant);
+        solved.redundant = vec![Tag(3), Tag(5)];
+        let e = read_back(&t, &solved).unwrap_err();
+        assert_eq!(
+            (e.code(), e.elements()),
+            (
+                ErrorCode::OverConstrained,
+                &["k0000003".to_owned(), "k0000005".to_owned()][..]
+            ),
+            "{off1:e}, {off3:e}: {e}"
+        );
+        e.message().to_owned()
+    };
+    // k3 the worse: p1's part, E 49.99999996 with p1 moved.
+    let m = refused(6e-8, 2e-8);
+    assert!(
+        m.contains("by up to 6e-8 mm (k0000003), past the 4.9999999"),
+        "{m}"
+    );
+    assert!(m.contains("of the part's 4.9999999"), "{m}");
+    // k5 the worse: p3's part, E 0.
+    let m = refused(6e-8, 9e-8);
+    assert!(
+        m.contains("by up to 9e-8 mm (k0000005), past the 1e-8 mm"),
+        "{m}"
+    );
+    assert!(m.contains("of the part's 0e0 mm extent"), "{m}");
+    // A tie, 6e-8 each, exact (both moved from 0): the lower tag, k3.
+    let m = refused(6e-8, 6e-8);
+    assert!(
+        m.contains("by up to 6e-8 mm (k0000003), past the 4.9999999"),
+        "{m}"
+    );
+}
+
+#[test]
+fn an_arcs_rules_join_its_ends_to_its_centre() {
+    // An arc's rules (sent untagged) join its nine values: a1 about p1 (0, 0) from p2
+    // (50, 0) to p3 (0, 50), and p2's x given twice from the origin, the second dropped,
+    // nothing else joining p2 to anything. Its part is the arc's: the box (0, 0) to (50,
+    // 50), E 50√2 = 70.71, ε 7.07e-8 (without the rules p2 would be a part of its own, E 0,
+    // the floor). p2's x moved 6.9e-8 kept, 7.2e-8 refused.
+    let t = translate(&text(
+        &[
+            point("p0000001", 0.0, 0.0),
+            point("p0000002", 50.0, 0.0),
+            point("p0000003", 0.0, 50.0),
+        ],
+        &[],
+        &[],
+        &[arc("a0000001", "p0000001", "p0000002", "p0000003")],
+        &[
+            r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000002", "value": 50, "driving": true}"#.to_owned(),
+            r#"{"id": "k0000002", "type": "distance_x", "a": "origin", "b": "p0000002", "value": 50, "driving": true}"#.to_owned(),
+        ],
+    ));
+    let x2 = pv_of(&t, 1).x.0 as usize;
+    let moved = |off: f64| {
+        let mut values = t.system.values.clone();
+        values[x2] += off;
+        read_back(&t, &dropping_tag(&t, values, 2))
+    };
+    let s = moved(6.9e-8).unwrap_or_else(|e| panic!("{e}"));
+    let gaps: Vec<f64> = s.redundant.values().copied().collect();
+    assert!(
+        gaps.len() == 1 && (gaps[0] - 6.9e-8).abs() <= 1e-12,
+        "{gaps:?}"
+    );
+    let e = moved(7.2e-8).unwrap_err();
+    assert_eq!(
+        (e.code(), e.elements()),
+        (ErrorCode::OverConstrained, &["k0000002".to_owned()][..]),
+        "{e}"
+    );
+    assert!(e.message().contains("past the 7.07"), "{e}");
+}
+
+/// The values of `t`'s `i`th point, in ID order.
+fn pv_of(t: &Translation, i: usize) -> PointValues {
+    t.system
+        .geometry
+        .iter()
+        .skip(3)
+        .filter_map(|g| match *g {
+            SketchGeometry::Point(p) => Some(p),
+            _ => None,
+        })
+        .nth(i)
+        .unwrap()
+}
+
+#[test]
+fn an_outside_tangency_solved_concentric_is_an_invalid_result_naming_it_and_its_circles() {
+    // PlaneGCS 1.1.3 measures a circle tangency as r1 − r2 when its centres are under 1e-7
+    // apart (d² < 1e-14), whatever side it's given: an inside tangency's form. So a solve can
+    // meet an outside tangency with the circles on one centre, d = 0 where it must be
+    // r1 + r2 = 20. c1 r 10 about p1 (0, 0), c2 r 12 about p2, tangent outside (k1); p3 at
+    // (5, 5), its x given twice (k3, k4), there for tangent_pair's sake.
+    let refused = |t: &Translation, values: Vec<f64>, what: &str| {
+        let e = read_back(t, &answer(t, values, SolveStatus::Success)).expect_err(what);
+        assert_eq!(
+            (e.code(), e.elements()),
+            (
+                ErrorCode::InvalidResult,
+                &[
+                    "k0000001".to_owned(),
+                    "c0000001".to_owned(),
+                    "c0000002".to_owned()
+                ][..]
+            ),
+            "{what}: {e}"
+        );
+        assert!(e.message().contains("concentric"), "{what}: {e}");
+        assert!(
+            e.suggestion().is_some_and(|s| s.contains("inside")),
+            "{what}: {e}"
+        );
+    };
+    // Drawn 30 apart, answered as drawn: outside, not concentric, kept.
+    let t = tangent_pair(
+        [30.0, 0.0],
+        [10.0, 12.0],
+        "p0000002",
+        "outside",
+        false,
+        [5.0, 5.0],
+    );
+    read_back(
+        &t,
+        &answer(&t, t.system.values.clone(), SolveStatus::Success),
+    )
+    .unwrap();
+    let p2 = second_circle(&t).0;
+    let at = |x: f64| {
+        let mut v = t.system.values.clone();
+        v[p2.x.0 as usize] = x;
+        v[p2.y.0 as usize] = 0.0;
+        v
+    };
+    // Solved onto p1: refused.
+    refused(&t, at(0.0), "on one centre");
+    // 9e-8 apart, d² = 8.1e-15 < 1e-14: concentric to PlaneGCS, refused.
+    refused(&t, at(9e-8), "9e-8 apart");
+    // 1.1e-7 apart, d² = 1.21e-14: PlaneGCS's mm² form, which a solve can't meet 20 off,
+    // so this answer is the boundary alone: not refused as concentric.
+    read_back(&t, &answer(&t, at(1.1e-7), SolveStatus::Success)).unwrap();
+    // c2 drawn about p1 itself, the port reviewer's case: refused as drawn.
+    let t = tangent_pair(
+        [30.0, 0.0],
+        [10.0, 12.0],
+        "p0000001",
+        "outside",
+        false,
+        [5.0, 5.0],
+    );
+    refused(&t, t.system.values.clone(), "one centre point");
+    // Inside, on one centre, is PlaneGCS's form met (r1 = r2): kept.
+    let t = tangent_pair(
+        [30.0, 0.0],
+        [10.0, 10.0],
+        "p0000001",
+        "inside",
+        false,
+        [5.0, 5.0],
+    );
+    read_back(
+        &t,
+        &answer(&t, t.system.values.clone(), SolveStatus::Success),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_direction_is_carried_by_the_smaller_lever_of_its_own_lines() {
+    // Decision 5: an angle's gap is the angle carried by the smaller lever of its own two
+    // curves. n1, 50 mm along the x axis, and n2, 1 mm, parallel to it 7 above, its end
+    // raised by δ, so the two are δ rad apart (atan(δ) and δ agree to 1e-23 here). The
+    // points span (0, 0) to (50, 7): E = √2549 = 50.49, the tolerance 5.05e-8. Carried by
+    // n2's 1 mm, the gap is δ: 4e-8 is kept, reported as 4e-8, and 6e-8 is
+    // over-constrained; carried by n1's 50 mm it would be 2e-6, refused.
+    let t = translate(&text(
+        &[
+            point("p0000001", 0.0, 0.0),
+            point("p0000002", 50.0, 0.0),
+            point("p0000003", 2.0, 7.0),
+            point("p0000004", 3.0, 7.0),
+        ],
+        &[
+            line("n0000001", "p0000001", "p0000002"),
+            line("n0000002", "p0000003", "p0000004"),
+        ],
+        &[],
+        &[],
+        &[
+            r#"{"id": "k0000001", "type": "parallel", "a": "n0000001", "b": "n0000002"}"#
+                .to_owned(),
+        ],
+    ));
+    let rise = value_drawn(&t, 3.0) + 1;
+    for (off, kept) in [(4e-8, true), (6e-8, false)] {
+        let mut values = t.system.values.clone();
+        values[rise] += off;
+        match read_back(&t, &dropping_tag(&t, values, 1)) {
+            Ok(s) => {
+                assert!(kept, "{off}: kept");
+                let gap = s.redundant.values().copied().next().unwrap();
+                assert!((gap - off).abs() < 1e-12, "{gap:e} for {off:e}");
+            }
+            Err(e) => {
+                assert!(!kept, "{off}: {e}");
+                assert_eq!(
+                    (e.code(), e.elements()),
+                    (ErrorCode::OverConstrained, &["k0000001".to_owned()][..]),
+                    "{e}"
+                );
+            }
+        }
     }
 }
 
@@ -875,15 +1925,53 @@ fn shapes2(constraint: &str) -> String {
     )
 }
 
+/// [`shapes2`] with `constraint` (k0000001) and rows after it that join the whole fixture
+/// into one part of the sketch, each met as drawn: p2 to p7 dimensioned from p1 by their x
+/// and y (k0000002 to k0000013), p2 on c1 and on c2 (k0000014, k0000015), and p1 on c3
+/// (k0000016), so every circle's radius joins too; the arc joins by its rules.
+fn shapes2_joined(constraint: &str) -> String {
+    let mut text = shapes2(constraint);
+    let mut id = 1;
+    let mut join = |form: String| {
+        id += 1;
+        text = text.replace("]}]}", &format!(r#", {{"id": "k{id:07}", {form}}}]}}]}}"#));
+    };
+    for (p, x, y) in [
+        (2, 10, 0),
+        (3, 10, 10),
+        (4, 0, 10),
+        (5, 5, 0),
+        (6, 20, 0),
+        (7, 5, 10),
+    ] {
+        for (kind, v) in [("distance_x", x), ("distance_y", y)] {
+            join(format!(
+                r#""type": "{kind}", "a": "p0000001", "b": "p000000{p}", "value": {v}, "driving": true"#
+            ));
+        }
+    }
+    for (p, c) in [(2, 1), (2, 2), (1, 3)] {
+        join(format!(
+            r#""type": "on", "point": "p000000{p}", "curve": "c000000{c}""#
+        ));
+    }
+    text
+}
+
 #[test]
 fn every_form_redundant_and_met_is_kept_and_a_nanometre_off_is_over_constrained() {
     // Each form alone, drawn exactly met, answered as PlaneGCS dropping it as redundant:
     // kept, and named redundant. Then one value it reads moved, chosen by hand so the move
-    // is the form's own measure: a millimetre gap as large as the move, or a radian gap a
-    // tenth of it over a 10 mm line. A move of 1e-8 is then exactly decision 5's tolerance
-    // (1e-8 mm, 1e-9 rad): 1% within it is kept, 1% past it is over-constrained, naming it.
-    // A measure off by more than 1% either way fails one or the other (round 2's and 3's
-    // tests lens; doubles at 10 mm are 1.8e-15 apart, far inside the margin).
+    // is the form's own measure: a gap as large as the move, a distance outright, or a
+    // direction's angle (a tenth of the move, over a 10 mm line) carried by its smaller
+    // lever, 10 mm, or a horizontal's rise or a vertical's run. The fixture's extent, by
+    // hand from shapes2, joined into one part (shapes2_joined), so every form's part is the
+    // whole fixture: its points span (0, 0) to (20, 10), so E = √500 = 22.36 and
+    // decision 5's tolerance is max(1e-8, 1e-9 × √500) = 2.236e-8 (moving a value by that
+    // changes E by at most as much, the tolerance by 2e-17). A move of the tolerance is then
+    // exactly its gap: 1% within it is kept, 1% past it is over-constrained, naming it. A
+    // measure off by more than 1% either way fails one or the other (round 2's and 3's tests
+    // lens; doubles at 10 mm are 1.8e-15 apart, far inside the margin).
     let cases: [(&str, usize); 28] = [
         (r#""type": "horizontal", "line": "n0000001""#, 9),
         (r#""type": "vertical", "line": "n0000002""#, 10),
@@ -990,7 +2078,7 @@ fn every_form_redundant_and_met_is_kept_and_a_nanometre_off_is_over_constrained(
         ),
     ];
     for (form, moved) in cases {
-        let t = translate(&shapes2(&format!(r#"{{"id": "k0000001", {form}}}"#)));
+        let t = translate(&shapes2_joined(&format!(r#"{{"id": "k0000001", {form}}}"#)));
         let mut met = answer(
             &t,
             t.system.values.clone(),
@@ -1004,16 +2092,22 @@ fn every_form_redundant_and_met_is_kept_and_a_nanometre_off_is_over_constrained(
             off.values[moved] += step;
             read_back(&t, &off)
         };
-        assert!(
-            moved_by(0.99e-8).is_ok(),
-            "{form}: just within the tolerance"
-        );
-        let e = moved_by(1.01e-8).unwrap_err();
-        assert_eq!(
-            (e.code(), e.elements()),
-            (ErrorCode::OverConstrained, &["k0000001".to_owned()][..]),
-            "{form}: {e}"
-        );
+        // Both ways: a gap is a distance, so a value moved down is as far off as one moved
+        // up (a signed measure, a horizontal's fall or a distance short of its value, is
+        // otherwise met however far it falls).
+        let tolerance = 1e-9 * 500f64.sqrt();
+        for way in [1.0, -1.0] {
+            assert!(
+                moved_by(way * 0.99 * tolerance).is_ok(),
+                "{form}, {way}: just within the tolerance"
+            );
+            let e = moved_by(way * 1.01 * tolerance).unwrap_err();
+            assert_eq!(
+                (e.code(), e.elements()),
+                (ErrorCode::OverConstrained, &["k0000001".to_owned()][..]),
+                "{form}, {way}: {e}"
+            );
+        }
     }
 }
 
@@ -1210,17 +2304,19 @@ impl SketchSolver for Scripted {
 }
 
 #[test]
-fn the_second_solve_stands_only_when_it_solves_and_happens_only_after_a_solved_conflict() {
+fn after_a_solved_conflict_the_second_solve_stands_only_when_it_solves() {
     let t = translate(&ten(&[
         r#"{"id": "k0000003", "type": "length", "line": "n0000001", "value": 11, "driving": true}"#,
     ]));
+    // p3 (values 10, 11) moved by each conflicting solve: a solve that leaves the drawing
+    // where it was is its own load, and isn't solved again (asserted last).
+    let mut moved = t.system.values.clone();
+    moved[11] = 2.5;
     let conflict = |status| {
-        let mut a = answer(&t, t.system.values.clone(), status);
+        let mut a = answer(&t, moved.clone(), status);
         a.conflicting = vec![Tag(2), Tag(3)];
         a
     };
-    let mut moved = t.system.values.clone();
-    moved[11] = 2.5;
     let clean = answer(&t, moved.clone(), SolveStatus::Success);
     let run = |answers: Vec<Result<Solved, silico_core::Error>>| {
         let mut s = Scripted {
@@ -1238,17 +2334,19 @@ fn the_second_solve_stands_only_when_it_solves_and_happens_only_after_a_solved_c
     };
     // The first conflicting but solved, the second clean: the second stands, sent from the
     // first's solution.
-    let mut first = conflict(SolveStatus::Success);
-    first.values = moved.clone();
-    let (got, sent) = run(vec![Ok(first), Ok(clean.clone())]);
+    let (got, sent) = run(vec![Ok(conflict(SolveStatus::Success)), Ok(clean.clone())]);
     assert!(got.unwrap().is_ok());
     assert_eq!(sent.len(), 2);
     assert_eq!(sent[1].values, moved);
     // The second conflicting too, or failing, or the worker refusing its start: the first's
-    // refusal stands, naming its constraints.
+    // refusal stands, naming its constraints (a refusal writes no file; its load solves the
+    // drawing again).
+    let mut elsewhere = conflict(SolveStatus::Success);
+    elsewhere.conflicting = vec![Tag(3)];
     for second in [
         Ok(conflict(SolveStatus::Success)),
-        Ok(answer(&t, t.system.values.clone(), SolveStatus::Failed)),
+        Ok(elsewhere),
+        Ok(answer(&t, moved.clone(), SolveStatus::Failed)),
         Err(silico_core::Error::new(ErrorCode::InvalidInput, "refused")),
     ] {
         let (got, sent) = run(vec![Ok(conflict(SolveStatus::Success)), second]);
@@ -1282,13 +2380,224 @@ fn the_second_solve_stands_only_when_it_solves_and_happens_only_after_a_solved_c
     assert_eq!(sent.len(), 1);
     // No second solve after a conflict the solver didn't solve, or a refusal of another
     // kind.
+    // No second solve after a conflict the solver didn't solve, a refusal of another kind,
+    // or a solve that leaves the drawing where it was (its load would be the same solve).
+    let mut unmoved = answer(&t, t.system.values.clone(), SolveStatus::Success);
+    unmoved.conflicting = vec![Tag(2), Tag(3)];
     for first in [
         conflict(SolveStatus::Failed),
         answer(&t, t.system.values.clone(), SolveStatus::Failed),
+        unmoved,
+        answer(&t, t.system.values.clone(), SolveStatus::Success),
     ] {
         let (_, sent) = run(vec![Ok(first)]);
         assert_eq!(sent.len(), 1);
     }
+}
+
+#[test]
+fn a_solve_stands_only_where_a_load_of_its_own_file_gives_it_back() {
+    // M3.4: a sketch is solved on every load from the solution its file stores, so the
+    // answer that stands must be one its own file gives back: a load that leaves the file
+    // where it was. PlaneGCS picks what it drops where it diagnoses: the line horizontal
+    // twice, k0000003 dropped from the drawing, may be kept from the solution, and the
+    // solve move. p3, free, is values 10 and 11 (drawn at y 3): the scripted solves move it.
+    let t = translate(&ten(&[
+        r#"{"id": "k0000003", "type": "horizontal", "line": "n0000001"}"#,
+    ]));
+    let at = |y: f64| {
+        let mut v = t.system.values.clone();
+        v[11] = y;
+        v
+    };
+    let dropping = |tag: u32, y: f64| {
+        let mut a = answer(&t, at(y), SolveStatus::SolvedExceptRedundant);
+        a.redundant = vec![Tag(tag)];
+        a
+    };
+    let conflict = |y: f64| {
+        let mut a = answer(&t, at(y), SolveStatus::Success);
+        a.conflicting = vec![Tag(1), Tag(3)];
+        a
+    };
+    let run = |answers: Vec<Solved>| {
+        let mut s = Scripted {
+            answers: answers.into_iter().map(Ok).collect(),
+            sent: Vec::new(),
+            distrusted: 0,
+        };
+        let got = t.solve(&mut s).unwrap();
+        assert_eq!(s.distrusted, 0);
+        let starts: Vec<f64> = s.sent.iter().map(|system| system.values[11]).collect();
+        (got, starts)
+    };
+    let redundant_of = |got: &Answer| {
+        let s = got.outcome.as_ref().unwrap();
+        (
+            s.point(&silico_core::document::ElementId::new("p0000003").unwrap())
+                .unwrap()[1],
+            s.redundant
+                .keys()
+                .map(|id| id.as_str().to_owned())
+                .collect::<Vec<_>>(),
+        )
+    };
+    // Dropped, and the load from its solution doesn't move it: the load's answer stands,
+    // naming what the load's diagnosis dropped (k0000001), as every later load will; not
+    // the drawing's pick (break-it on the first solve again, which kept the drawing's pick:
+    // a save and its load named different ones).
+    let (got, starts) = run(vec![dropping(3, 4.0), dropping(1, 4.0)]);
+    assert_eq!(redundant_of(&got), (4.0, vec!["k0000001".to_owned()]));
+    assert_eq!(starts, [3.0, 4.0]);
+    // Nothing dropped and moved: checked by a load all the same (the council, when only a
+    // solve that dropped constraints was checked: an arc, nothing repeated, whose load
+    // moved it); moved by the first load, which the second doesn't move: the second load
+    // stands.
+    let (got, starts) = run(vec![
+        answer(&t, at(4.0), SolveStatus::Success),
+        dropping(1, 5.0),
+        dropping(3, 5.0),
+    ]);
+    assert_eq!(redundant_of(&got), (5.0, vec!["k0000003".to_owned()]));
+    assert_eq!(starts, [3.0, 4.0, 5.0]);
+    // Called conflicting, then conflicting again but moved, then not moved and solved: the
+    // third stands (one solve again wasn't enough, M3.3's break-it).
+    let (got, starts) = run(vec![conflict(4.0), conflict(5.0), dropping(1, 5.0)]);
+    assert_eq!(redundant_of(&got), (5.0, vec!["k0000001".to_owned()]));
+    assert_eq!(starts, [3.0, 4.0, 5.0]);
+    // Refused on the drawing, and no load reaches a solved fixed point: the drawing's
+    // refusal stands, naming what it names (a refusal writes no file, so its load solves
+    // the drawing again and refuses alike).
+    let mut other = conflict(5.0);
+    other.conflicting = vec![Tag(3)];
+    let (got, starts) = run(vec![conflict(4.0), conflict(5.0), other]);
+    let e = got.outcome.unwrap_err();
+    assert_eq!(
+        (e.code(), e.elements()),
+        (
+            ErrorCode::OverConstrained,
+            &["k0000001".to_owned(), "k0000003".to_owned()][..]
+        )
+    );
+    assert_eq!(starts, [3.0, 4.0, 5.0]);
+    // Solved Ok on the drawing, and refused by the load that doesn't move it: refused as
+    // the load refuses it (break-it on the first solve again, which kept the first answer:
+    // a save Ok whose every load was refused).
+    let (got, starts) = run(vec![dropping(3, 4.0), conflict(4.0)]);
+    let e = got.outcome.unwrap_err();
+    assert_eq!(
+        (e.code(), e.elements()),
+        (
+            ErrorCode::OverConstrained,
+            &["k0000001".to_owned(), "k0000003".to_owned()][..]
+        )
+    );
+    assert_eq!(starts, [3.0, 4.0]);
+    // Solved Ok on the drawing, every load moving it: MAX_LOAD_RESOLVES loads, then refused
+    // as a solution that doesn't settle (the council, when the first answer stood where
+    // loads didn't settle: never the first, whose own file loads elsewhere).
+    let moving: Vec<Solved> = (0..=MAX_LOAD_RESOLVES)
+        .map(|i| dropping(3, 4.0 + i as f64))
+        .collect();
+    let (got, starts) = run(moving);
+    let e = got.outcome.unwrap_err();
+    assert_eq!(e.code(), ErrorCode::SolveFailed);
+    assert!(
+        e.message()
+            .starts_with("the sketch's solution doesn't settle on load"),
+        "{e}"
+    );
+    assert_eq!(starts.len(), 1 + MAX_LOAD_RESOLVES);
+    // Refused on the drawing, every load moving it: the drawing's refusal stands.
+    let mut moving = vec![conflict(4.0)];
+    moving.extend((1..=MAX_LOAD_RESOLVES).map(|i| conflict(4.0 + i as f64)));
+    let (got, starts) = run(moving);
+    assert_eq!(got.outcome.unwrap_err().code(), ErrorCode::OverConstrained);
+    assert_eq!(starts.len(), 1 + MAX_LOAD_RESOLVES);
+    // Solved Ok on the drawing, and the load from its solution reaches none: that load's
+    // refusal stands, since it leaves the file as it is and every load gives it (break-it
+    // on the first solve again, which kept the first answer: a far triangle saved Ok whose
+    // every load failed).
+    let (got, starts) = run(vec![
+        dropping(3, 4.0),
+        answer(&t, at(4.0), SolveStatus::Failed),
+    ]);
+    assert_eq!(got.outcome.unwrap_err().code(), ErrorCode::SolveFailed);
+    assert_eq!(starts, [3.0, 4.0]);
+    // Solved Ok on the drawing, moved and refused by the first load, and the load from
+    // there reaches none: refused, as the last load refused it (break-it, when the first
+    // answer stood where a load failed: the first stood, Ok, and every load of its file was
+    // refused).
+    let (got, starts) = run(vec![
+        dropping(3, 4.0),
+        conflict(5.0),
+        answer(&t, at(5.0), SolveStatus::Failed),
+    ]);
+    assert_eq!(got.outcome.unwrap_err().code(), ErrorCode::SolveFailed);
+    assert_eq!(starts, [3.0, 4.0, 5.0]);
+    // A solve that leaves the drawing where it was is its own load: no solve again.
+    let (got, starts) = run(vec![dropping(3, 3.0)]);
+    assert_eq!(redundant_of(&got), (3.0, vec!["k0000003".to_owned()]));
+    assert_eq!(starts, [3.0]);
+    // A refusal of another kind on the drawing: no solve again (a load from an invalid
+    // result would measure sides from where that result put them).
+    let mut flat = dropping(3, 4.0);
+    flat.values[8] = 0.0;
+    let (got, starts) = run(vec![flat]);
+    assert_eq!(got.outcome.unwrap_err().code(), ErrorCode::InvalidResult);
+    assert_eq!(starts, [3.0]);
+}
+
+#[test]
+fn a_circles_solved_radius_is_where_the_solve_again_starts() {
+    // The council, on the first check by load: a circle's radius is a value the solve moves
+    // and the file stores, so a load starts from the solved radius, and a load that moves
+    // only the radius hasn't settled. A circle about p1, held at the origin, drawn radius 2,
+    // its radius given as 3 twice (one dropped).
+    let t = translate(&text(
+        &[point("p0000001", 0.0, 0.0)],
+        &[],
+        &[circle("c0000001", "p0000001", 2.0)],
+        &[],
+        &[
+            r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#.to_owned(),
+            r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#.to_owned(),
+            r#"{"id": "k0000003", "type": "radius", "curve": "c0000001", "value": 3, "driving": true}"#.to_owned(),
+            r#"{"id": "k0000004", "type": "radius", "curve": "c0000001", "value": 3, "driving": true}"#.to_owned(),
+        ],
+    ));
+    let radius = t.system.values.iter().position(|&v| v == 2.0).unwrap();
+    let at = |r: f64| {
+        let mut v = t.system.values.clone();
+        v[radius] = r;
+        let mut a = answer(&t, v, SolveStatus::SolvedExceptRedundant);
+        a.redundant = vec![Tag(4)];
+        a
+    };
+    let run = |answers: Vec<Solved>| {
+        let mut s = Scripted {
+            answers: answers.into_iter().map(Ok).collect(),
+            sent: Vec::new(),
+            distrusted: 0,
+        };
+        let got = t.solve(&mut s).unwrap();
+        let starts: Vec<f64> = s.sent.iter().map(|system| system.values[radius]).collect();
+        let solved = got
+            .outcome
+            .unwrap()
+            .radius(&silico_core::document::ElementId::new("c0000001").unwrap())
+            .unwrap();
+        (solved, starts)
+    };
+    // The first load starts from the solved radius, 3, and leaves it there: settled.
+    let near = 3.0 + f64::EPSILON * 2.0;
+    assert_eq!(run(vec![at(3.0), at(3.0)]), (3.0, vec![2.0, 3.0]));
+    // A load that moves the radius alone, by two ulps, hasn't settled: the next load starts
+    // from the moved radius, and its answer stands.
+    assert_eq!(
+        run(vec![at(3.0), at(near), at(near)]),
+        (near, vec![2.0, 3.0, near])
+    );
 }
 
 /// `t` answered met with its one constraint dropped as redundant, its values `values`.
@@ -1449,4 +2758,98 @@ fn a_reference_distance_to_a_point_on_its_line_keeps_its_stored_side() {
             side: LineSide::Left
         }
     );
+}
+
+// Council round 6 (tests): the concentric-outside refusal on an arc, once per curve when two
+// tangencies share one, and with the centres apart along y as well as x.
+
+#[test]
+fn an_arc_held_outside_tangent_on_its_circles_centre_is_an_invalid_result() {
+    // Circle c1 r 10 and arc a1 r 12, both about p1 at the origin, held tangent outside: on
+    // one centre they can't touch outside.
+    let t = translate(&text(
+        &[
+            point("p0000001", 0.0, 0.0),
+            point("p0000002", 12.0, 0.0),
+            point("p0000003", 0.0, 12.0),
+        ],
+        &[],
+        &[circle("c0000001", "p0000001", 10.0)],
+        &[arc("a0000001", "p0000001", "p0000002", "p0000003")],
+        &[r#"{"id": "k0000001", "type": "tangent", "a": "c0000001", "b": "a0000001", "side": "outside"}"#.to_owned()],
+    ));
+    let e = read_back(
+        &t,
+        &answer(&t, t.system.values.clone(), SolveStatus::Success),
+    )
+    .unwrap_err();
+    assert_eq!(
+        (e.code(), e.elements()),
+        (
+            ErrorCode::InvalidResult,
+            &[
+                "k0000001".to_owned(),
+                "c0000001".to_owned(),
+                "a0000001".to_owned()
+            ][..]
+        ),
+        "{e}"
+    );
+}
+
+#[test]
+fn two_concentric_outside_tangencies_name_each_curve_once() {
+    // c1, c2, c3 about one centre, c1 held outside tangent to c2 and to c3: both refused,
+    // c1 named once.
+    let t = translate(&text(
+        &[point("p0000001", 0.0, 0.0)],
+        &[],
+        &[
+            circle("c0000001", "p0000001", 10.0),
+            circle("c0000002", "p0000001", 12.0),
+            circle("c0000003", "p0000001", 14.0),
+        ],
+        &[],
+        &[
+            r#"{"id": "k0000001", "type": "tangent", "a": "c0000001", "b": "c0000002", "side": "outside"}"#.to_owned(),
+            r#"{"id": "k0000002", "type": "tangent", "a": "c0000001", "b": "c0000003", "side": "outside"}"#.to_owned(),
+        ],
+    ));
+    let e = read_back(
+        &t,
+        &answer(&t, t.system.values.clone(), SolveStatus::Success),
+    )
+    .unwrap_err();
+    assert_eq!(
+        (e.code(), e.elements()),
+        (
+            ErrorCode::InvalidResult,
+            &[
+                "k0000001".to_owned(),
+                "c0000001".to_owned(),
+                "c0000002".to_owned(),
+                "k0000002".to_owned(),
+                "c0000003".to_owned()
+            ][..]
+        ),
+        "{e}"
+    );
+}
+
+#[test]
+fn an_outside_tangency_with_its_centres_apart_along_y_is_kept() {
+    // r 10 and 12, their centres 30 apart vertically: not concentric, kept.
+    let t = tangent_pair(
+        [0.0, 30.0],
+        [10.0, 12.0],
+        "p0000002",
+        "outside",
+        false,
+        [5.0, 5.0],
+    );
+    read_back(
+        &t,
+        &answer(&t, t.system.values.clone(), SolveStatus::Success),
+    )
+    .unwrap();
 }
