@@ -20,10 +20,11 @@
 //! measure the kernel refused is kept with it only if the refusal is a fact about the
 //! solid's values (invalid input, or an invalid result), with the identity of the Silico
 //! that worded it, so it's given back only to that one: another words it afresh, by
-//! measuring again. Nothing here fails a recompute: an entry that can't be read is a miss, and one that can't be written is left
-//! unwritten, each with a warning. An entry that doesn't hold together (a bad seal, a
-//! payload that doesn't parse, an entry for another key) is a miss too, rebuilt and written
-//! over, never trusted. Without a secret (no home directory, say) the cache keeps nothing.
+//! measuring again. Nothing here fails a recompute: an entry that can't be read is a miss,
+//! and one that can't be written is left unwritten, each with a warning. An entry that
+//! doesn't hold together (a bad seal, a payload that doesn't parse, an entry for another
+//! key) is a miss too, rebuilt and written over, never trusted. Without a secret (no home
+//! directory, say) the cache keeps nothing.
 //!
 //! The cache is bounded (docs/design/m2.5-cache-bound.md): a put that would take it past its
 //! bound evicts the entries least recently used (written, or taken by a hit), and a scan
@@ -849,7 +850,10 @@ fn sha256_of_running_executable() -> std::io::Result<[u8; 32]> {
     loop {
         match file.read(&mut buffer) {
             Ok(0) => return Ok(hash.finalize().into()),
-            Ok(n) => hash.update(buffer.get(..n).unwrap_or_default()),
+            Ok(n) => match buffer.get(..n) {
+                Some(read) => hash.update(read),
+                None => return Err(std::io::Error::other("a read past its buffer")),
+            },
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) => return Err(e),
         }
