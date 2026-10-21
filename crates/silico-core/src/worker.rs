@@ -113,6 +113,9 @@ impl WorkerKind {
     }
 }
 
+/// A check of a worker as it starts (see [`Worker::spawn_checked`]).
+pub(crate) type StartCheck = Box<dyn FnOnce() -> Result<(), Error> + Send>;
+
 /// A file's size, modification time, and inode: what changes when it's rebuilt or replaced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Stamp {
@@ -175,6 +178,9 @@ pub struct Worker {
     /// Set when the worker says it has started (see [`silico_protocol::write_started`]), or
     /// replies.
     started: Arc<AtomicBool>,
+    /// Why the worker isn't to be trusted, if its start's check found so (see
+    /// [`Worker::spawn_checked`]): its calls fail with it, and stop it.
+    refused: Arc<std::sync::OnceLock<Error>>,
     /// How many requests the worker has answered (with a result or a refusal).
     answers: u64,
     next_id: u64,
@@ -190,6 +196,19 @@ impl Worker {
 
     /// Starts the worker executable at `exe`, of the given kind.
     pub fn spawn_as(exe: &Path, kind: WorkerKind) -> Result<Self, Error> {
+        Self::spawn_checked(exe, kind, None)
+    }
+
+    /// Starts the worker executable at `exe`, of the given kind, and, once it has started
+    /// (its first frame, sent as its process begins), runs `check`: if that fails, the
+    /// worker isn't trusted, and every call fails with its error (and stops it) rather than
+    /// taking what it answers. Checked there, close after the exec, so what the check
+    /// finds is what was run.
+    pub(crate) fn spawn_checked(
+        exe: &Path,
+        kind: WorkerKind,
+        check: Option<StartCheck>,
+    ) -> Result<Self, Error> {
         let spawning = lock(&SPAWNING);
         let (ours, theirs) =
             UnixStream::pair().map_err(|e| start_failed(kind, "socket pair", &e))?;
@@ -274,6 +293,9 @@ impl Worker {
         let (tx, replies) = mpsc::sync_channel(1);
         let started = Arc::new(AtomicBool::new(false));
         let has_started = Arc::clone(&started);
+        let refused = Arc::new(std::sync::OnceLock::new());
+        let refuse = Arc::clone(&refused);
+        let mut check = check;
         std::thread::Builder::new()
             .name(format!("worker-{pid}-replies"))
             .spawn(move || {
@@ -281,7 +303,13 @@ impl Worker {
                 loop {
                     let reply = match frames.read_frame() {
                         // The worker has started (any frame says so); an empty one says only that.
+                        // Checked first, so no reply is taken before.
                         Ok(Some(frame)) => {
+                            if let Some(check) = check.take()
+                                && let Err(e) = check()
+                            {
+                                let _ = refuse.set(e);
+                            }
                             has_started.store(true, Ordering::Relaxed);
                             if frame.is_empty() {
                                 continue;
@@ -314,6 +342,7 @@ impl Worker {
             stderr_read,
             stderr_emitted,
             started,
+            refused,
             answers: 0,
             next_id: 0,
             stopped: false,
@@ -518,6 +547,11 @@ impl Worker {
                 .recv()
                 .map_err(|_| RecvTimeoutError::Disconnected),
         };
+        // The start's check runs before any reply is passed on, so it has run by now if
+        // the worker started.
+        if let Some(refused) = self.refused.get() {
+            return Err(self.stop(refused.clone()));
+        }
         match reply {
             Ok(Ok(response)) if response.id == id && response.generation == generation => {
                 self.answers += 1;

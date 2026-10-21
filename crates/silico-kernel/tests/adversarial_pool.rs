@@ -27,7 +27,7 @@ use pool::{
 };
 use process::{open_fds, scratch_dir, threads};
 use silico_core::ErrorCode;
-use silico_core::kernel::{Blob, KernelRequest, Primitive};
+use silico_core::kernel::{Blob, Kernel, KernelRequest, Primitive};
 use silico_core::pool::{IDLE_CHECK, KernelPool, Outcome};
 use silico_core::worker::Worker;
 use silico_protocol::{DebugOp, Failure, Generation, Op, Refusal, Reply, Response, write_message};
@@ -393,6 +393,105 @@ fn a_worker_executable_deleted_and_restored_under_a_running_pool() {
     drop(pool);
     assert_reaped(&held, "after the drop");
     wait_no_children("after the drop");
+}
+
+/// A worker executable, build `n` of it: a script that runs the test worker, its bytes
+/// (and so its identity) its build's own.
+fn build(n: u32) -> String {
+    format!("#!/bin/sh\n# build {n}\nexec '{TEST_WORKER}'\n")
+}
+
+/// Puts `text` in place at `exe` as a build tool does: written beside it, renamed over it.
+fn put_in_place(exe: &Path, text: &str) {
+    let beside = exe.with_extension("new");
+    write_executable(&beside, text);
+    std::fs::rename(&beside, exe).unwrap();
+}
+
+/// Whether `err` says the pool's worker executable changed, naming it, and to restart.
+fn says_changed(err: &silico_core::Error, exe: &Path) -> bool {
+    err.code() == ErrorCode::WorkerCrashed
+        && err.message().contains("changed since the pool started")
+        && err.message().contains(&*exe.to_string_lossy())
+        && err.suggestion().is_some_and(|s| s.contains("restart"))
+}
+
+#[test]
+fn a_worker_executable_replaced_by_another_build_isnt_started_under_the_pools_identity() {
+    // Rebuilt to other bytes while a pool runs (a build, an update): the workers running go
+    // on under the pool's identity, but none is started from the other build, which would
+    // answer under it. Each start fails saying the executable changed, never hangs, and the
+    // pool's identity stays its own build's. With that build back, workers start again.
+    // One worker, which answers first (so it has started, and been checked, as build 1)
+    // before the other build is put in place.
+    let dir = scratch_dir("replaced");
+    let exe = dir.join("worker");
+    write_executable(&exe, &build(1));
+    let pool = KernelPool::start_workers(&exe, 1).unwrap();
+    let identity = pool.identity().to_owned();
+    assert!(done(pool.submit(Generation(1), sleep(1))).is_ok());
+    put_in_place(&exe, &build(2));
+    assert!(done(pool.submit(Generation(1), sleep(1))).is_ok());
+    let before = pool.pids();
+    for &pid in &before {
+        kill9_and_wait(pid);
+    }
+    for _ in 0..4 {
+        let err = done(pool.submit(Generation(1), sleep(1))).unwrap_err();
+        assert!(says_changed(&err, &exe), "{err}");
+    }
+    assert_eq!(pool.identity(), identity);
+    assert!(pool.pids().iter().all(|pid| before.contains(pid)));
+    // The pool's own build back, as a new file of the same bytes: it starts again.
+    put_in_place(&exe, &build(1));
+    assert!(done(pool.submit(Generation(1), sleep(1))).is_ok());
+    assert_eq!(pool.identity(), identity);
+}
+
+#[test]
+fn a_worker_executable_rewritten_with_its_own_bytes_goes_on() {
+    // A relink that writes the same bytes again (a new file, a new time): the same build,
+    // so workers start as before.
+    let dir = scratch_dir("rewritten");
+    let exe = dir.join("worker");
+    write_executable(&exe, &build(1));
+    let pool = KernelPool::start_workers(&exe, 1).unwrap();
+    put_in_place(&exe, &build(1));
+    for pid in pool.pids() {
+        kill9_and_wait(pid);
+    }
+    assert!(done(pool.submit(Generation(1), sleep(1))).is_ok());
+}
+
+#[test]
+fn a_worker_whose_executable_changes_as_it_starts_isnt_used() {
+    // The executable is replaced between the pool's check and the worker's start: here by
+    // the worker itself, which puts another build in its place as it starts, so it's always
+    // after the check. The worker running may be either build, so it isn't used: it's
+    // stopped before its answer is taken, and the request fails as a change.
+    let dir = scratch_dir("changed-as-started");
+    let exe = dir.join("worker");
+    let other = dir.join("other-build");
+    write_executable(&other, &build(2));
+    write_executable(
+        &exe,
+        &format!(
+            "#!/bin/sh\n# build 1\ncp '{}' '{}.tmp' && mv '{}.tmp' '{}'\nexec '{TEST_WORKER}'\n",
+            other.display(),
+            exe.display(),
+            exe.display(),
+            exe.display()
+        ),
+    );
+    let pool = KernelPool::start_on_demand(&exe, 1).unwrap();
+    let err = done(pool.submit(Generation(1), sleep(1))).unwrap_err();
+    assert!(says_changed(&err, &exe), "{err}");
+    let deadline = Instant::now() + HANG;
+    while !pool.pids().is_empty() {
+        assert!(Instant::now() < deadline, "the worker is still held");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    wait_no_children("after the change");
 }
 
 /// How long a test here waits for a launch, a request, or a full pool before failing: long

@@ -216,6 +216,7 @@ impl KernelPool {
         let identity = identity_of(exe, WorkerKind::Kernel)?;
         let shared = Arc::new(Shared {
             identity,
+            exe: exe.to_owned(),
             exe_stamp,
             state: Mutex::new(State {
                 queue: VecDeque::new(),
@@ -487,12 +488,37 @@ pub(crate) fn thread_error(kernel: &str, e: &std::io::Error) -> Error {
     })
 }
 
+/// Whether the worker executable at `exe` is still the one whose identity is `identity`
+/// (taken when it was as `stamp` says): a worker started from another build would answer
+/// under that identity with another kernel's results, so it isn't started, nor its answers
+/// taken. Cheap when the file is as it was (its size, time, and inode); hashed again only
+/// when they've changed.
+fn executable_is(exe: &Path, stamp: Option<Stamp>, identity: &str) -> Result<(), Error> {
+    if stamp.is_some() && Stamp::of(exe) == stamp {
+        return Ok(());
+    }
+    if identity_of(exe, WorkerKind::Kernel)? == identity {
+        return Ok(());
+    }
+    Err(Error::new(
+        ErrorCode::WorkerCrashed,
+        format!(
+            "the kernel worker {} changed since the pool started: another build of it isn't \
+             started under this pool's identity",
+            exe.display()
+        ),
+    )
+    .with_suggestion("restart Silico, so the new worker's results are kept as its own"))
+}
+
 /// What the pool's threads share. Its locks are taken in the order `state`, then `slots`
 /// (then a worker's process lock), never the other way.
 struct Shared {
     /// The pool's identity: its worker executable's, as the pool started.
     identity: String,
-    /// The executable as it was then: a worker started later from another is refused.
+    /// The worker executable, and how it was then: a worker started later from another is
+    /// refused.
+    exe: PathBuf,
     exe_stamp: Option<Stamp>,
     state: Mutex<State>,
     /// Signalled when a request is queued or the pool stops.
@@ -554,6 +580,25 @@ impl Activity {
 }
 
 impl Shared {
+    /// Whether the worker executable is still the one the pool started with
+    /// ([`executable_is`]).
+    fn same_executable(&self) -> Result<(), Error> {
+        executable_is(&self.exe, self.exe_stamp, &self.identity)
+    }
+
+    /// The check of a worker the pool starts, as it starts: its executable still the
+    /// pool's. Checked before the worker is started too (`Keeper::live_worker`), but the
+    /// file may be replaced between that check and the exec, and the worker then be
+    /// another build's; checked again once it has started, any such replacement shows, and
+    /// the worker isn't trusted (it may be either build). A file replaced and put back
+    /// between those two checks would pass: two replacements in the moments a worker takes
+    /// to start, out of reach without pinning the executable (an open file to exec, or a
+    /// private copy), which waits on how M5 packages the worker.
+    fn start_check(&self) -> crate::worker::StartCheck {
+        let (exe, stamp, identity) = (self.exe.clone(), self.exe_stamp, self.identity.clone());
+        Box::new(move || executable_is(&exe, stamp, &identity))
+    }
+
     fn stopping(&self) -> bool {
         lock(&self.state).stopping
     }
@@ -1028,7 +1073,12 @@ impl Keeper<'_> {
                     self.wait_to_retry();
                     return Err(e);
                 }
-                let worker = match Worker::spawn(&self.exe) {
+                let started = Worker::spawn_checked(
+                    &self.exe,
+                    WorkerKind::Kernel,
+                    Some(self.shared.start_check()),
+                );
+                let worker = match started {
                     Ok(worker) => worker,
                     Err(e) => {
                         self.wait_to_retry();
@@ -1144,26 +1194,10 @@ impl Keeper<'_> {
         }
     }
 
-    /// Whether the worker executable is still the one the pool started with: a worker
-    /// started from another build would answer under the pool's identity with another
-    /// kernel's results, so it isn't started. Cheap when the file is as it was (its size,
-    /// time, and inode); hashed again only when they've changed.
+    /// Whether the worker executable is still the one the pool started with
+    /// ([`Shared::same_executable`]).
     fn same_executable(&self) -> Result<(), Error> {
-        if self.shared.exe_stamp.is_some() && Stamp::of(&self.exe) == self.shared.exe_stamp {
-            return Ok(());
-        }
-        if identity_of(&self.exe, WorkerKind::Kernel)? == self.shared.identity {
-            return Ok(());
-        }
-        Err(Error::new(
-            ErrorCode::WorkerCrashed,
-            format!(
-                "the kernel worker {} changed since the pool started: another build of it \
-                 isn't started under this pool's identity",
-                self.exe.display()
-            ),
-        )
-        .with_suggestion("restart Silico, so the new worker's results are kept as its own"))
+        self.shared.same_executable()
     }
 
     /// Puts off the next start, twice as long as the last time (or [`IDLE_CHECK`]).
