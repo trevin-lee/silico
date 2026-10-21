@@ -1,8 +1,10 @@
-//! M2.4: a log sink that's slow (a stalled terminal, a busy exporter) puts the core's log
-//! thread behind a worker, and the worker's lines still go under the spans of the requests
-//! they're for, however far behind. The sink here waits at the first worker line until
-//! every recompute has run, so the log thread is certainly behind by all of them, on any
-//! machine. Alone in its binary: it installs the process's global subscriber.
+//! M2.4: a log sink that's slow (a stalled terminal, a busy exporter) puts the emitting of
+//! a worker's lines behind the worker, and they still go under the spans of the requests
+//! they're for, however far behind: the log thread reads each line as it comes, finds its
+//! request's span, and queues the line holding it for the sink thread. The sink here waits
+//! at the first worker line until every recompute has run, so the sink thread is certainly
+//! behind by all of them, on any machine. Alone in its binary: it installs the process's
+//! global subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::Path;
@@ -101,9 +103,9 @@ fn a_worker_line_read_long_after_its_request_still_goes_under_its_span() {
     let pool = KernelPool::start_workers(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")), 1)
         .unwrap();
     let engine = Recompute::new(pool);
-    // Few enough that the worker's lines (a warning and three done lines a round) fit in its
-    // log pipe while the sink is stalled; many more than a small bound on the requests the
-    // core remembers would hold.
+    // Few enough that the worker's lines (a warning and three done lines a round) fit in the
+    // queue to the sink while it's stalled, so none is dropped; more than one, so a line
+    // emitted long after its request, others since, still finds its own span.
     let rounds: u64 = 20;
     for i in 0..rounds {
         // A sphere fused with a cylinder of its radius: OCCT warns about the touching
@@ -120,7 +122,7 @@ fn a_worker_line_read_long_after_its_request_still_goes_under_its_span() {
         let run = edit.in_scope(|| engine.start(document));
         assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
     }
-    // Every round has run: the sink goes on, its log thread every round behind.
+    // Every round has run: the sink goes on, every round behind.
     let (open, opened) = &*gate;
     *open.lock().unwrap() = true;
     opened.notify_all();
