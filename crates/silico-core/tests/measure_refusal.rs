@@ -14,10 +14,13 @@ mod cache;
 mod example;
 #[path = "common/model.rs"]
 mod model;
+#[path = "common/refusals.rs"]
+mod refusals;
 
 use cache::{HOLE, Scratch, calls, example_with_pin, files, hole, session};
 use example::EXAMPLE;
 use model::{checked, published};
+use refusals::refusing;
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::Op;
 use silico_core::recompute::Recompute;
@@ -46,13 +49,6 @@ fn measures(kernel: &FakeKernel) -> usize {
         .iter()
         .filter(|call| matches!(call.op, Op::Summarize { .. }))
         .count()
-}
-
-/// A kernel that refuses every measure with `code`.
-fn refusing(kernel: &FakeKernel, code: ErrorCode) {
-    kernel.refuse(move |op| {
-        matches!(op, Op::Summarize { .. }).then(|| Error::new(code, "Summarize failed"))
-    });
 }
 
 #[test]

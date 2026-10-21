@@ -18,13 +18,13 @@
 //! Only results are kept, never a step's failure: a failure's cause may not last (memory,
 //! say), and recompute keeps those that follow from the values in memory. A result's
 //! measure the kernel refused is kept with it only if the refusal is a fact about the
-//! solid's values (invalid input, or an invalid result), with the identity of the Silico
-//! that worded it, so it's given back only to that one: another words it afresh, by
-//! measuring again. Nothing here fails a recompute: an entry that can't be read is a miss,
-//! and one that can't be written is left unwritten, each with a warning. An entry that
-//! doesn't hold together (a bad seal, a payload that doesn't parse, an entry for another
-//! key) is a miss too, rebuilt and written over, never trusted. Without a secret (no home
-//! directory, say) the cache keeps nothing.
+//! solid's values (invalid input, or an invalid result), as the worker said it, as data:
+//! the core that reads it back words it, and judges again whether it's kept. Nothing here
+//! fails a recompute: an entry that can't be read is a miss, and one that can't be written
+//! is left unwritten, each with a warning. An entry that doesn't hold together (a bad seal,
+//! a payload that doesn't parse, an entry for another key) is a miss too, rebuilt and
+//! written over, never trusted. Without a secret (no home directory, say) the cache keeps
+//! nothing.
 //!
 //! The cache is bounded (docs/design/m2.5-cache-bound.md): a put that would take it past its
 //! bound evicts the entries least recently used (written, or taken by a hit), and a scan
@@ -42,9 +42,9 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
-use crate::error::CachedError;
 use crate::kernel::{Blob, History, ShapeData, ShapeSummary};
 use crate::recompute::{Built, Key};
+use silico_protocol::Failure;
 
 /// The first bytes of every entry, naming its format: a change to the format changes it.
 /// It's part of every entry's key too, so an entry of another format is never looked for.
@@ -183,11 +183,12 @@ struct Entry {
 enum Measure {
     Unmeasured,
     Summary(ShapeSummary),
-    /// The kernel's refusal, as the core that wrote the entry worded it (`worded_by`, its
-    /// executable's SHA-256): the entry's key holds the worker's identity, not the core's.
+    /// The kernel worker's refusal, as data, and the operation it was for (`Summarize`):
+    /// the core reading it back words it, so its words are always that core's (the entry's
+    /// key holds the worker's identity, not the core's).
     Refused {
-        error: CachedError,
-        worded_by: [u8; 32],
+        op: String,
+        failure: Failure,
     },
 }
 
@@ -294,11 +295,12 @@ impl Cache {
             history: built.history.clone(),
             measure: match (built.summary(), built.measure_refused()) {
                 (Some(summary), _) => Measure::Summary(summary.clone()),
-                (None, Some(refused)) if lasting(refused) => match this_core() {
-                    Some(core) => Measure::Refused {
-                        error: CachedError::from(refused),
-                        worded_by: *core,
+                (None, Some(refused)) if lasting(refused) => match refused.worker_words() {
+                    Some((op, failure)) => Measure::Refused {
+                        op: op.to_owned(),
+                        failure,
                     },
+                    // Not a worker's (a fake kernel's): nothing to word it again from.
                     None => Measure::Unmeasured,
                 },
                 (None, _) => Measure::Unmeasured,
@@ -815,72 +817,24 @@ fn lasting(refused: &crate::Error) -> bool {
     )
 }
 
-/// The SHA-256 of the running executable, the core that words a kept refusal, read once
-/// (only when a refusal is kept or taken back); none, said once, if it can't be read, and
-/// then no refusal is kept on disk. On Linux it's read through `/proc/self/exe`, the file
-/// running even if another has since taken its name; elsewhere, by the executable's path,
-/// so a core replaced on disk while it runs takes the new one's identity (its refusals may
-/// then be given back in the other's words, never with the other's codes unchecked).
-fn this_core() -> Option<&'static [u8; 32]> {
-    static CORE: std::sync::OnceLock<Option<[u8; 32]>> = std::sync::OnceLock::new();
-    CORE.get_or_init(|| {
-        let hashed = sha256_of_running_executable();
-        if let Err(e) = &hashed {
-            tracing::warn!(
-                "couldn't read Silico's own executable ({e}): keeping no measure's refusal \
-                 on disk"
-            );
-        }
-        hashed.ok()
-    })
-    .as_ref()
-}
-
-/// The SHA-256 of the running executable.
-fn sha256_of_running_executable() -> std::io::Result<[u8; 32]> {
-    use sha2::Digest as _;
-    let path = if cfg!(target_os = "linux") {
-        PathBuf::from("/proc/self/exe")
-    } else {
-        std::env::current_exe()?
-    };
-    let mut file = std::fs::File::open(path)?;
-    let mut hash = Sha256::new();
-    let mut buffer = vec![0; 1 << 20];
-    loop {
-        match file.read(&mut buffer) {
-            Ok(0) => return Ok(hash.finalize().into()),
-            Ok(n) => match buffer.get(..n) {
-                Some(read) => hash.update(read),
-                None => return Err(std::io::Error::other("a read past its buffer")),
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(e),
-        }
-    }
-}
-
-/// The result `entry` keeps, checked as a worker's reply is: a summary no shape has, or a
-/// refusal the cache wouldn't keep (another code, one this Silico doesn't know, one that
-/// breaks an error's rules, or one another Silico worded) is a measure to make again.
+/// The result `entry` keeps, checked as a worker's reply is: a summary no shape has is a
+/// measure to make again, and a refusal is worded now, by this core, and kept only if the
+/// cache would keep it (this core may judge it otherwise than the one that wrote it).
 fn built_of(entry: Entry) -> Built {
     let shape = ShapeData::checked(Blob::inline(entry.brep), entry.valid);
-    let unmeasured = |shape, history| Built::new(shape, history, None);
     match entry.measure {
         Measure::Summary(summary) if crate::kernel::summary_fault(&summary).is_none() => {
             Built::new(shape, entry.history, Some(summary))
         }
-        Measure::Refused { error, worded_by } if this_core() == Some(&worded_by) => {
-            match error.error() {
-                Some(refused) if lasting(&refused) => {
-                    Built::refused_measure(shape, entry.history, refused)
-                }
-                _ => unmeasured(shape, entry.history),
+        Measure::Refused { op, failure } => {
+            let refused = crate::worker::failure_error(&op, failure);
+            if lasting(&refused) {
+                Built::refused_measure(shape, entry.history, refused)
+            } else {
+                Built::new(shape, entry.history, None)
             }
         }
-        Measure::Unmeasured | Measure::Summary(_) | Measure::Refused { .. } => {
-            unmeasured(shape, entry.history)
-        }
+        Measure::Unmeasured | Measure::Summary(_) => Built::new(shape, entry.history, None),
     }
 }
 

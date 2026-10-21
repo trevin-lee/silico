@@ -132,6 +132,19 @@ struct Fields {
     cause: Option<String>,
     suggestion: Option<String>,
     candidates: Vec<String>,
+    /// What a kernel worker said, as data, that this error was worded from: never written
+    /// out, but kept by the rebuild cache, so the core that reads it back words it itself.
+    #[serde(skip)]
+    worker: Option<Box<WorkerWords>>,
+}
+
+/// A kernel worker's failure, as data, and the operation it was for, from which the core
+/// worded an error: the failure as postcard bytes, so an error stays `Eq` (a failure holds
+/// floating-point values).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkerWords {
+    op: String,
+    failure: Vec<u8>,
 }
 
 impl Error {
@@ -147,6 +160,7 @@ impl Error {
             cause: None,
             suggestion: None,
             candidates: Vec::new(),
+            worker: None,
         }))
     }
 
@@ -223,6 +237,29 @@ impl Error {
     {
         self.0.candidates = candidates.into_iter().map(Into::into).collect();
         self
+    }
+
+    /// This error, worded from `failure`, a kernel worker's, for `op`.
+    pub(crate) fn with_worker_words(
+        mut self,
+        op: &str,
+        failure: &silico_protocol::Failure,
+    ) -> Self {
+        self.0.worker = postcard::to_allocvec(failure).ok().map(|failure| {
+            Box::new(WorkerWords {
+                op: op.to_owned(),
+                failure,
+            })
+        });
+        self
+    }
+
+    /// The kernel worker's failure this error was worded from, and the operation it was
+    /// for, if it was.
+    pub(crate) fn worker_words(&self) -> Option<(&str, silico_protocol::Failure)> {
+        let words = self.0.worker.as_deref()?;
+        let failure = postcard::from_bytes(&words.failure).ok()?;
+        Some((&words.op, failure))
     }
 
     pub fn code(&self) -> ErrorCode {
@@ -320,95 +357,3 @@ impl Serialize for Error {
 }
 
 impl std::error::Error for Error {}
-
-/// An error as the rebuild cache keeps it (a measure the kernel refused for the solid's
-/// values): every field, the code by its name. Part of the cache's entry format (postcard,
-/// which isn't self-describing): a change to it changes `cache::MAGIC`.
-#[derive(Serialize, serde::Deserialize)]
-pub(crate) struct CachedError {
-    code: String,
-    message: String,
-    feature: Option<String>,
-    elements: Vec<String>,
-    elements_total: u64,
-    parameter: Option<String>,
-    cause: Option<String>,
-    suggestion: Option<String>,
-    candidates: Vec<String>,
-}
-
-impl From<&Error> for CachedError {
-    fn from(error: &Error) -> Self {
-        let f = &*error.0;
-        CachedError {
-            code: f.code.as_str().to_owned(),
-            message: f.message.clone(),
-            feature: f.feature.clone(),
-            elements: f.elements.clone(),
-            elements_total: f.elements_total,
-            parameter: f.parameter.clone(),
-            cause: f.cause.clone(),
-            suggestion: f.suggestion.clone(),
-            candidates: f.candidates.clone(),
-        }
-    }
-}
-
-impl CachedError {
-    /// The error kept, if its code is one this Silico knows, and it names no more elements
-    /// than its total, as every error does.
-    pub(crate) fn error(self) -> Option<Error> {
-        let code = *ErrorCode::ALL.iter().find(|c| c.as_str() == self.code)?;
-        if (self.elements.len() as u64) > self.elements_total {
-            return None;
-        }
-        Some(Error(Box::new(Fields {
-            code,
-            message: self.message,
-            feature: self.feature,
-            elements: self.elements,
-            elements_total: self.elements_total,
-            parameter: self.parameter,
-            cause: self.cause,
-            suggestion: self.suggestion,
-            candidates: self.candidates,
-        })))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn an_error_kept_by_the_cache_comes_back_as_it_was_and_one_of_an_unknown_code_doesnt() {
-        // Every field set, and the elements past what's listed.
-        let error = Error::new(ErrorCode::KernelFailed, "Summarize failed")
-            .with_feature("k7f2qx3m")
-            .with_elements(["Edge1", "Edge2"])
-            .with_elements_total(5)
-            .with_parameter("radius")
-            .with_cause("BRepGProp returned NaN")
-            .with_suggestion("make the part smaller")
-            .with_candidates(["Edge3"]);
-        let kept = postcard::to_allocvec(&CachedError::from(&error)).unwrap();
-        let back: CachedError = postcard::from_bytes(&kept).unwrap();
-        assert_eq!(back.error(), Some(error.clone()));
-        // Every code comes back as itself.
-        for &code in ErrorCode::ALL {
-            let error = Error::new(code, "a message");
-            assert_eq!(CachedError::from(&error).error(), Some(error));
-        }
-        // A code this Silico doesn't know (a later one's) is none, not another.
-        let mut unknown = CachedError::from(&error);
-        unknown.code = "a_code_from_later".to_owned();
-        assert_eq!(unknown.error(), None);
-        // Nor is one naming more elements than its total; as many as it names is one.
-        let mut under = CachedError::from(&error);
-        under.elements_total = 1;
-        assert_eq!(under.error(), None);
-        let mut exactly = CachedError::from(&error);
-        exactly.elements_total = 2;
-        assert!(exactly.error().is_some());
-    }
-}

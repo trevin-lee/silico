@@ -199,6 +199,17 @@ impl FakeKernel {
         lock(&self.shared.state).refusals.push(Arc::new(refuses));
     }
 
+    /// Refuses each request from now on that `refuses` gives a failure for, as a kernel
+    /// worker would: the failure, as data, worded as the worker client words a worker's.
+    pub fn refuse_as_worker(
+        &self,
+        refuses: impl Fn(&Op) -> Option<silico_protocol::Failure> + Send + Sync + 'static,
+    ) {
+        self.refuse(move |op| {
+            refuses(op).map(|failure| crate::worker::failure_error(op.name(), failure))
+        });
+    }
+
     /// How a fake kernel made `shape`, written out (`cut(box(40, 20, 10), sphere(5))`), if
     /// it's a fake kernel's shape.
     pub fn describe(shape: &ShapeData) -> Option<String> {

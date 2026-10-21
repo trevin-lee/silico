@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 1c0b708862e7f363b79b7cfca2d1ee26b08dec3e464f4b028679c9ed4046be98 # shrinks to codes = [None, None, Some(KernelFailed)]
+cc 5e3bf40ca8ede1b06bc974a7ef20689e2f3c53312c6e37f68837dc9b39b48894 # shrinks to codes = [None, None, Some(InvalidResult)]

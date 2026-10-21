@@ -1411,6 +1411,9 @@ fn failure_error_with_edge_names(
         Some((_, written)) => crate::references::cut_short(written),
         None => element.to_string(),
     };
+    // A kernel worker's failure, the edges unnamed (a measure's, say), is kept with the
+    // error, so the rebuild cache keeps it as data, for the core that reads it to word.
+    let words = (kind == WorkerKind::Kernel && names.is_none()).then(|| failure.clone());
     let described = failure.refusal.describe(failure.cause.as_deref(), &name);
     // Why it failed: OCCT's words where it threw; otherwise the refusal's.
     let why = failure
@@ -1476,7 +1479,11 @@ fn failure_error_with_edge_names(
         Some(parameter) => error.with_parameter(parameter),
         None => error,
     };
-    error.with_suggestion(described.suggestion.unwrap_or_else(|| fallback.to_owned()))
+    let error = error.with_suggestion(described.suggestion.unwrap_or_else(|| fallback.to_owned()));
+    match words {
+        Some(failure) => error.with_worker_words(op, &failure),
+        None => error,
+    }
 }
 
 fn internal(kind: WorkerKind, what: &str, e: impl std::fmt::Display) -> Error {

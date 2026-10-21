@@ -18,6 +18,8 @@ mod cache;
 mod example;
 #[path = "common/model.rs"]
 mod model;
+#[path = "common/refusals.rs"]
+mod refusals;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -25,11 +27,13 @@ use cache::{HOLE, Scratch, calls, files, hole, session};
 use example::EXAMPLE;
 use model::{WAIT, checked, id, published};
 use proptest::prelude::*;
+use refusals::{refusing, worker_failure};
 use silico_core::command;
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::Op;
 use silico_core::recompute::{Recompute, RunOutcome};
 use silico_core::{Error, ErrorCode};
+use silico_protocol::{Failure, Operation, Refusal};
 
 /// The codes kept for the session: those that may follow from the solid's values.
 const KEPT: [ErrorCode; 3] = [
@@ -68,27 +72,29 @@ fn said(errors: &[Error]) -> Vec<(ErrorCode, String)> {
         .collect()
 }
 
-fn refusing(kernel: &FakeKernel, code: ErrorCode) {
-    kernel.refuse(move |op| {
-        matches!(op, Op::Summarize { .. }).then(|| Error::new(code, "Summarize failed"))
-    });
-}
-
 /// A kernel that refuses the measure of each shape whose description starts with one of
-/// `prefixes`, with that prefix's code.
+/// `prefixes`, with that prefix's code (as a worker would, if one gives it).
 fn refusing_some(kernel: &FakeKernel, prefixes: Vec<(&'static str, ErrorCode)>) {
-    kernel.refuse(move |op| match op {
+    let code_of = move |op: &Op| match op {
         Op::Summarize { shape } => {
             let made = FakeKernel::describe(shape)?;
             prefixes
                 .iter()
                 .find(|(prefix, _)| made.starts_with(prefix))
-                .map(|(prefix, code)| {
-                    Error::new(*code, format!("Summarize failed on {prefix}"))
-                        .with_cause("the fake was told to")
-                })
+                .map(|(prefix, code)| (*prefix, *code))
         }
         _ => None,
+    };
+    let code_of = std::sync::Arc::new(code_of);
+    let by_worker = std::sync::Arc::clone(&code_of);
+    kernel.refuse_as_worker(move |op| by_worker(op).and_then(|(_, code)| worker_failure(code)));
+    kernel.refuse(move |op| {
+        code_of(op)
+            .filter(|(_, code)| worker_failure(*code).is_none())
+            .map(|(prefix, code)| {
+                Error::new(code, format!("Summarize failed on {prefix}"))
+                    .with_cause("the fake was told to")
+            })
     });
 }
 
@@ -234,37 +240,27 @@ fn a_kernel_failed_measure_is_kept_for_the_session_and_asked_again_after_a_resta
 
 #[test]
 fn a_refusal_with_every_field_at_its_edge_comes_back_from_disk_as_it_was_said() {
-    // A refusal naming ten thousand elements of a total past them, a cause with a newline,
-    // a NUL, and an emoji, an empty suggestion and parameter, candidates, and a feature the
-    // kernel named wrongly: the disk gives back what the fresh model said, to the field,
-    // and each feature is named as itself, not as the kernel named it.
+    // A worker's refusal whose cause has a newline, a NUL, an emoji, and is a megabyte long:
+    // kept as the worker said it and worded again on reading, the disk gives back what the
+    // fresh model said, to the field, and each feature is named as itself.
     let dir = Scratch::new("every-field");
-    let elements: Vec<String> = (1..=10_000).map(|n| format!("Face{n}")).collect();
-    let refusal = Error::new(ErrorCode::InvalidInput, "Summarize failed: \u{1F4A5}")
-        .with_feature("zzzzzzzz")
-        .with_elements(elements.clone())
-        .with_elements_total(u64::MAX)
-        .with_parameter("")
-        .with_cause("line one\nline two\0after a NUL")
-        .with_suggestion("")
-        .with_candidates(["Edge1", ""]);
+    let mut cause = "line one\nline two\0after a NUL \u{1F4A5} ".to_owned();
+    cause.push_str(&"x".repeat(1 << 20));
+    let failure = Failure {
+        refusal: Refusal::BrepCorrupted,
+        cause: Some(cause.clone()),
+    };
     let first = session(&dir.0);
-    let given = refusal.clone();
     first
         .kernel()
-        .refuse(move |op| matches!(op, Op::Summarize { .. }).then(|| given.clone()));
+        .refuse_as_worker(move |op| matches!(op, Op::Summarize { .. }).then(|| failure.clone()));
     let model = published(&first, checked(EXAMPLE));
     let fresh = model.drift();
     assert_eq!(fresh.len(), 3);
     for (error, feature) in fresh.iter().zip(["k7f2qx3m", "a91cw0de", "m3tq8v0z"]) {
+        assert_eq!(error.code(), ErrorCode::InvalidInput);
         assert_eq!(error.feature(), Some(feature));
-        assert_eq!(error.elements(), &elements[..]);
-        assert_eq!(error.elements_total(), u64::MAX);
-        assert_eq!(error.cause(), Some("line one\nline two\0after a NUL"));
-        assert_eq!(error.suggestion(), Some(""));
-        assert_eq!(error.parameter(), Some(""));
-        assert_eq!(error.candidates(), ["Edge1", ""]);
-        assert_eq!(error.message(), "Summarize failed: \u{1F4A5}");
+        assert_eq!(error.cause(), Some(cause.as_str()));
     }
     let second = session(&dir.0);
     let again = published(&second, checked(EXAMPLE));
@@ -491,17 +487,17 @@ proptest! {
 
 #[test]
 fn a_refused_measures_drift_is_actionable() {
-    // Through the fake, worded as the worker words a refusal (a code, "Summarize failed", its
-    // cause, its suggestion): kept on disk, the error still says what failed and what to do.
+    // A worker's refusal (an invalid result, OCCT's words as its cause), kept on disk and
+    // worded again on reading: the error still says which operation failed and what to do.
     let dir = Scratch::new("actionable");
     let first = session(&dir.0);
-    first.kernel().refuse(|op| {
-        matches!(op, Op::Summarize { .. }).then(|| {
-            Error::new(ErrorCode::InvalidResult, "Summarize failed")
-                .with_cause("BRepGProp: integration didn't converge")
-                .with_suggestion(
-                    "change the operation's values: the kernel can't build it from these",
-                )
+    first.kernel().refuse_as_worker(|op| {
+        matches!(op, Op::Summarize { .. }).then(|| Failure {
+            refusal: Refusal::ResultInvalid {
+                operation: Operation::Other,
+                edges: Vec::new(),
+            },
+            cause: Some("BRepGProp: integration didn't converge".to_owned()),
         })
     });
     published(&first, checked(EXAMPLE));
@@ -510,11 +506,10 @@ fn a_refused_measures_drift_is_actionable() {
     assert!(second.kernel().calls().is_empty());
     assert_eq!(model.drift().len(), 3);
     for error in model.drift() {
+        assert_eq!(error.code(), ErrorCode::InvalidResult);
         assert!(error.feature().is_some());
-        assert_eq!(
-            error.cause(),
-            Some("BRepGProp: integration didn't converge")
-        );
-        assert!(error.suggestion().is_some());
+        assert!(error.message().starts_with("Summarize "), "{error}");
+        assert!(error.cause().is_some());
+        assert!(error.suggestion().is_some_and(|s| !s.is_empty()));
     }
 }
