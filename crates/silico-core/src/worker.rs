@@ -2629,6 +2629,60 @@ mod tests {
     }
 
     #[test]
+    fn the_queue_holds_4_mib_of_lines_and_no_more() {
+        // Lines of 100 bytes, each costing its message, the item's own size, and 64: the
+        // queue takes as many as fit in 4 MiB, and drops the rest.
+        assert_eq!(super::LOG_QUEUE_BYTES, 4 * 1024 * 1024);
+        assert_eq!(
+            super::LOG_ITEM_COST,
+            std::mem::size_of::<super::Queued>() + 64
+        );
+        let fit = super::LOG_QUEUE_BYTES / (100 + super::LOG_ITEM_COST);
+        let line = format!("{}\n", "x".repeat(100));
+        let (queue, queued) = private_queue(super::LOG_QUEUE_BYTES);
+        let tail = Mutex::new(VecDeque::new());
+        forward_logs(
+            line.repeat(fit + 10).as_bytes(),
+            &tail,
+            &Mutex::new(super::Callers::default()),
+            &queue,
+        );
+        let items: Vec<_> = queued.try_iter().collect();
+        let lines = items
+            .iter()
+            .filter(|item| matches!(item.item, super::LogItem::Line(_)))
+            .count();
+        assert_eq!(lines, fit);
+        assert_eq!(items.len(), fit + 1, "the lines, and one mark");
+        assert_eq!(queue.dropped.load(std::sync::atomic::Ordering::SeqCst), 10);
+    }
+
+    #[test]
+    fn with_the_sink_thread_gone_nothing_is_held_for_it() {
+        use std::sync::atomic::Ordering;
+        let (queue, queued) = private_queue(super::LOG_QUEUE_BYTES);
+        drop(queued);
+        let callers = Mutex::new(super::Callers::default());
+        let tail = Mutex::new(VecDeque::new());
+        let subscriber = tracing_subscriber::registry();
+        tracing::subscriber::with_default(subscriber, || {
+            assert!(
+                lock(&callers)
+                    .push(7, tracing::error_span!("call"))
+                    .is_none()
+            );
+            forward_logs(
+                &b"a line\n{\"silico_request_done\":7}\n"[..],
+                &tail,
+                &callers,
+                &queue,
+            );
+        });
+        assert_eq!(queue.held.load(Ordering::SeqCst), 0);
+        assert_eq!(queue.dropped.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn a_span_pushed_out_of_the_callers_is_warned_of() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};

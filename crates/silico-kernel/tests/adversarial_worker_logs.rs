@@ -413,18 +413,18 @@ fn a_log_sink_that_blocks_outright_never_holds_up_a_kernel_worker() {
     }
     // The sink took the warning and nothing since: no request logged.
     assert_eq!(sink.seen().len(), 1, "{:?}", sink.seen());
-    // A worker that crashes while the sink is stalled is reported at once, with its last
-    // lines (kept as they're read): the report waits a moment for the sink, no more, so a
-    // stalled sink doesn't hold a pool's slot up (it held it the whole 2 s exit grace).
+    // A worker that ends while the sink is stalled is reported at once, with its last lines
+    // (kept as they're read): the report waits a moment for the sink, no more, so a stalled
+    // sink doesn't hold a pool's slot up (it held it the whole 2 s exit grace). A script
+    // that exits, not one that aborts, so no core dump is in the time.
+    let lines: String = (1..=25)
+        .map(|i| format!("printf 'last {i}\\n' >&2\n"))
+        .collect();
     let mut doomed =
-        Worker::spawn(Path::new(env!("CARGO_BIN_EXE_silico-kernel-test-worker"))).unwrap();
+        Worker::spawn(&script("worker-logs-doomed", &format!("{lines}exit 3"))).unwrap();
     let asked = Instant::now();
     let err = doomed
-        .call(
-            Generation(1),
-            Op::Debug(DebugOp::Abort),
-            Duration::from_secs(10),
-        )
+        .call(Generation(1), echo(), Duration::from_secs(10))
         .unwrap_err();
     assert!(
         asked.elapsed() < Duration::from_millis(1500),
@@ -433,8 +433,10 @@ fn a_log_sink_that_blocks_outright_never_holds_up_a_kernel_worker() {
     );
     assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
     let cause = err.cause().unwrap_or_default();
-    assert!(cause.contains("aborting, as asked: line 25"), "{cause}");
-    // Released, the sink takes every line it was given: the warning, then the crashed
+    assert!(cause.ends_with("last 25"), "{cause}");
+    // Its lines wait behind the one stalled sink that every worker's go to.
+    assert_eq!(sink.seen().len(), 1, "{:?}", sink.seen());
+    // Released, the sink takes every line it was given: the warning, then the ended
     // worker's 25, none dropped.
     sink.release();
     assert_eq!(sink.wait_accounted(26, Duration::from_secs(30)), 26);
@@ -494,24 +496,35 @@ fn a_text_log_written_to_a_file_has_every_line_of_a_burst() {
         .unwrap_err();
     assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
     drop(worker);
-    std::thread::sleep(Duration::from_secs(2));
-    let text = std::fs::read_to_string(&log).unwrap();
-    let given = text
-        .lines()
-        .filter(|l| l.contains("silico::worker") && l.contains(": line "))
-        .count() as u64;
-    let dropped: u64 = text
-        .lines()
-        .filter(|l| l.contains(WARNING))
-        .filter_map(|l| {
-            l.split("dropped=")
-                .nth(1)?
-                .split_whitespace()
-                .next()?
-                .parse::<u64>()
-                .ok()
-        })
-        .sum();
+    // The lines given, and the counts dropped, in the log so far.
+    let counted = || {
+        let text = std::fs::read_to_string(&log).unwrap();
+        let given = text
+            .lines()
+            .filter(|l| l.contains("silico::worker") && l.contains(": line "))
+            .count() as u64;
+        let dropped: u64 = text
+            .lines()
+            .filter(|l| l.contains(WARNING))
+            .filter_map(|l| {
+                l.split("dropped=")
+                    .nth(1)?
+                    .split_whitespace()
+                    .next()?
+                    .parse::<u64>()
+                    .ok()
+            })
+            .sum();
+        (given, dropped)
+    };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let (given, dropped) = loop {
+        let (given, dropped) = counted();
+        if given + dropped >= total || Instant::now() >= deadline {
+            break (given, dropped);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
     assert_eq!(given + dropped, total, "{given} given, {dropped} counted");
     // Found by break-it, against an earlier version of the hand-off: a queue of 1,024
     // lines dropped most of the burst, though the sink never stalled.
@@ -706,4 +719,140 @@ fn a_timed_out_requests_span_never_closes_on_the_log_thread() {
     }
     assert!(!exporter.on_reader.load(Ordering::SeqCst));
     assert!(exporter.on_sink.load(Ordering::SeqCst));
+}
+
+#[test]
+fn every_workers_log_goes_to_one_sink_thread() {
+    // One thread, and one bound, however many workers: a second worker's line waits behind
+    // the first's at the one stalled sink, rather than going to a sink thread of its own
+    // (each of which, left stalled, would be a thread and a queue for every worker the pool
+    // replaced).
+    let sink = Sink::install(Mode::Stall);
+    let _first = Worker::spawn(&script(
+        "worker-logs-first",
+        "printf 'first\\n' >&2\nread -r _ <&3\nexit 0",
+    ))
+    .unwrap();
+    sink.wait_entered();
+    let mut second = Worker::spawn(&script(
+        "worker-logs-second",
+        "printf 'second\\n' >&2\nexit 0",
+    ))
+    .unwrap();
+    let err = second
+        .call(Generation(1), echo(), Duration::from_secs(20))
+        .unwrap_err();
+    assert!(err.cause().unwrap_or_default().ends_with("second"), "{err}");
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(sink.seen(), [Seen::Line("first".to_owned())]);
+    sink.release();
+    assert_eq!(sink.wait_accounted(2, Duration::from_secs(10)), 2);
+}
+
+#[test]
+fn a_crash_report_comes_after_its_workers_last_lines_are_logged() {
+    // A sink that keeps up, if slowly (2 ms a line, 40 ms in all, well within the report's
+    // wait for it): every line is logged before the error that reports them comes back.
+    let sink = Sink::install(Mode::Slow { micros: 2_000 });
+    let body: String = (0..20)
+        .map(|i| format!("printf 'line {i}\\n' >&2\n"))
+        .collect();
+    let mut worker = Worker::spawn(&script("worker-logs-flush", &format!("{body}exit 0"))).unwrap();
+    let err = worker
+        .call(Generation(1), echo(), Duration::from_secs(20))
+        .unwrap_err();
+    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert_eq!(line_numbers(&sink.seen()), (0..20).collect::<Vec<u64>>());
+}
+
+/// Sleeps opening each `worker_call` span (a slow log sink on the calling thread).
+#[derive(Clone, Default)]
+struct SlowToOpenCalls;
+
+impl<S: Subscriber> Layer<S> for SlowToOpenCalls {
+    fn on_new_span(
+        &self,
+        attrs: &tracing::span::Attributes<'_>,
+        _: &tracing::span::Id,
+        _: Context<'_, S>,
+    ) {
+        if attrs.metadata().name() == "worker_call" {
+            std::thread::sleep(Duration::from_millis(1500));
+        }
+    }
+}
+
+#[test]
+fn a_calls_time_starts_after_its_own_logging() {
+    // A log sink slow on the calling thread spends the caller's time, not the worker's: a
+    // worker that answers at once isn't timed out for it.
+    tracing::subscriber::set_global_default(tracing_subscriber::registry().with(SlowToOpenCalls))
+        .unwrap();
+    let exe = script(
+        "worker-logs-slow-call-span",
+        &format!(
+            "/bin/dd bs=1 count=1 <&3 >/dev/null 2>&1\nprintf '{}' >&3\nread -r _ <&3\nexit 0",
+            reply(0)
+        ),
+    );
+    let mut worker = Worker::spawn(&exe).unwrap();
+    let answer = worker.call(
+        Generation(1),
+        Op::Debug(DebugOp::Sleep { millis: 0 }),
+        Duration::from_secs(1),
+    );
+    assert_eq!(
+        answer.map_err(|e| e.to_string()),
+        Ok(silico_protocol::Reply::Done)
+    );
+}
+
+/// Counts the core's warnings that a worker hasn't said requests were done.
+#[derive(Clone, Default)]
+struct PushedOut(Arc<std::sync::atomic::AtomicUsize>);
+
+impl<S: Subscriber> Layer<S> for PushedOut {
+    fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
+        let mut fields = Fields::default();
+        event.record(&mut fields);
+        if fields
+            .message
+            .contains("hasn't said 4096 requests were done")
+        {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+}
+
+#[test]
+fn a_call_warns_when_its_worker_hasnt_said_the_most_requests_were_done() {
+    // A worker that answers 4,097 requests and never says one is done: the core holds the
+    // spans of the most (4,096), and the request after them pushes the oldest out, warned
+    // of once, with that call.
+    let warned = PushedOut::default();
+    tracing::subscriber::set_global_default(tracing_subscriber::registry().with(warned.clone()))
+        .unwrap();
+    let calls: u64 = 4_097;
+    let replies: String = (0..calls).map(reply).collect();
+    let frames = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("worker-logs-replies-{}.txt", std::process::id()));
+    std::fs::write(&frames, format!("printf '{replies}' >&3\n")).unwrap();
+    let exe = script(
+        "worker-logs-never-done",
+        &format!(". '{}'\nexec /bin/sleep 60", frames.display()),
+    );
+    let mut worker = Worker::spawn(&exe).unwrap();
+    for i in 0..calls {
+        let answer = worker.call(
+            Generation(1),
+            Op::Debug(DebugOp::Sleep { millis: 0 }),
+            Duration::from_secs(10),
+        );
+        assert_eq!(
+            answer.map_err(|e| e.to_string()),
+            Ok(silico_protocol::Reply::Done)
+        );
+        let want = usize::from(i == calls - 1);
+        assert_eq!(warned.0.load(Ordering::SeqCst), want, "call {i}");
+    }
 }
