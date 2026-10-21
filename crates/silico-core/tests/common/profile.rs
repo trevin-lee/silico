@@ -161,7 +161,7 @@ impl Draw {
             references: BTreeMap::new(),
             dofs: 0,
             free: BTreeSet::new(),
-            redundant: BTreeSet::new(),
+            redundant: BTreeMap::new(),
             algorithm: Algorithm::DogLeg,
         }
     }
