@@ -1214,6 +1214,15 @@ fn a_sketchs_tolerance_is_a_nanometre_squared_over_its_tightest_circle_tangency(
         5.1e-8,
         "centres 2e-7 apart, 5.1e-8",
     );
+    // Below the switch: centres solved 9e-8 apart, d² = 8.1e-15 < 1e-14, so PlaneGCS
+    // measures r1 − r2 in mm and there's no tangency term. ε is 1e-9 × E (E = 50), 5e-8, and
+    // 5.1e-8 is refused, with no tangency clause. (Counting any d² above 0 would give
+    // T = 9e-8 and ε = 1.1e-2, keeping it.)
+    let p2 = second_circle(&t).0.x.0 as usize;
+    let e = p3_moved(&t, 30.0, 5.1e-8, |v| v[p2] = 9e-8)
+        .expect_err("centres 9e-8 apart are concentric to PlaneGCS");
+    assert_eq!(e.code(), ErrorCode::OverConstrained, "{e}");
+    assert!(!e.message().contains("circle tangency"), "{e}");
 }
 
 #[test]
