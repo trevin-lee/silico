@@ -52,4 +52,12 @@ tests_of() {
   echo "package($package) & ($tests)"
 }
 filter="not ($(tests_of silico-core "${core_wall_clock[@]}") | $(tests_of silico-sketch "${sketch_wall_clock[@]}"))"
-cargo mutants --in-place --minimum-test-timeout 300 --cargo-test-arg=-E --cargo-test-arg="$filter" "$@"
+# Each mutant's tests, given 20 minutes. A hang is nextest's to stop: it ends a test past its
+# slow-timeout (.config/nextest.toml, 10 minutes at most for the tests run here), and that
+# failure catches the mutant. So this only bounds what nextest itself can't, and a timeout
+# here otherwise cuts off tests that were passing. It's no multiple of the baseline, which
+# runs only the mutated packages' tests: the workspace's take about 5 minutes on a loaded
+# runner, and Cargo can wait minutes before them on the package cache's lock, which every
+# runner on the VM shares. (At 300 s, 10 of a run's 11 timeouts were cut off with every test
+# so far passing.)
+cargo mutants --in-place --timeout 1200 --cargo-test-arg=-E --cargo-test-arg="$filter" "$@"
