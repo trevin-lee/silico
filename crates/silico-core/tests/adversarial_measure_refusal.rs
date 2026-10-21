@@ -1,16 +1,15 @@
 //! break-it: a measure the kernel refuses for the solid's values, kept with the result in
-//! memory and in the rebuild cache (5065d58). Hostile cases: features that share one step,
-//! a refusal among measures, a transient failure followed by a refusal, a measure superseded
-//! while it runs, sessions racing on one cache, refusals with every field at an edge, many
-//! features at once, and entries with a sound seal that keep what no worker's reply would
-//! give (a code never kept, a count under the elements listed, a summary no shape has).
-//! A property test runs every pattern of codes over the example through four sessions.
-//! Expected values are written by hand: which codes are kept (the rule as decided after the
-//! commit: in memory, `kernel_failed`, `invalid_result`, and `invalid_input`; on disk, only
-//! `invalid_result` and `invalid_input`, since OCCT's Gauss and Kronrod point computations
-//! catch every `Standard_Failure`, out of memory included, so a `kernel_failed` measure may be
-//! transient and must not outlive a restart), which kernel calls each recompute makes, and
-//! the refusals the fake gives.
+//! memory and in the rebuild cache. Hostile cases: features that share one step, a refusal
+//! among measures, a transient failure followed by a refusal, a measure superseded while it
+//! runs, sessions racing on one cache, refusals with every field at an edge, and many
+//! features at once. A property test runs every pattern of codes over the example through
+//! four sessions. (Entries read back that keep what no worker's reply would give are in
+//! adversarial_cache.rs, with the cache's format.) Expected values are written by hand:
+//! which codes are kept (in memory, `kernel_failed`, `invalid_result`, and `invalid_input`;
+//! on disk, only `invalid_result` and `invalid_input`, since OCCT's Gauss and Kronrod point
+//! computations catch every `Standard_Failure`, out of memory included, so a `kernel_failed`
+//! measure may be transient and must not outlive a restart), which kernel calls each
+//! recompute makes, and the refusals the fake gives.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 #[path = "common/cache.rs"]
@@ -20,25 +19,17 @@ mod example;
 #[path = "common/model.rs"]
 mod model;
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use cache::{HOLE, Scratch, calls, files, hole, secret_of, session};
+use cache::{HOLE, Scratch, calls, files, hole, session};
 use example::EXAMPLE;
-use hmac::{Hmac, Mac};
 use model::{WAIT, checked, id, published};
 use proptest::prelude::*;
-use serde::{Deserialize, Serialize};
-use sha2::Sha256;
 use silico_core::command;
-use silico_core::document::FeatureId;
 use silico_core::fake::FakeKernel;
-use silico_core::kernel::{History, Op, ShapeSummary};
-use silico_core::recompute::{Built, FeatureOutcome, Model, Recompute, RunOutcome};
+use silico_core::kernel::Op;
+use silico_core::recompute::{Recompute, RunOutcome};
 use silico_core::{Error, ErrorCode};
-
-const MAGIC: &[u8] = b"silico cache 5\n";
 
 /// The codes kept for the session: those that may follow from the solid's values.
 const KEPT: [ErrorCode; 3] = [
@@ -99,107 +90,6 @@ fn refusing_some(kernel: &FakeKernel, prefixes: Vec<(&'static str, ErrorCode)>) 
         }
         _ => None,
     });
-}
-
-fn built(model: &Model, feature: &str) -> (String, Arc<Built>) {
-    match model.outcome(&FeatureId::new(feature).unwrap()) {
-        Some(FeatureOutcome::Built { key, built }) => (key.to_string(), Arc::clone(built)),
-        other => panic!("{feature}: {other:?}"),
-    }
-}
-
-// ---------------------------------------------------------------------------------------
-// The format, by hand, as tests/adversarial_cache.rs derives it.
-
-fn platform() -> String {
-    format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
-}
-
-fn entry_path(dir: &Path, step: &str) -> PathBuf {
-    let platform = platform();
-    let secret = std::fs::read(secret_of(dir)).unwrap();
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&secret).unwrap();
-    mac.update(MAGIC);
-    for part in ["silico fake kernel 1", &platform, step] {
-        mac.update(&(part.len() as u64).to_le_bytes());
-        mac.update(part.as_bytes());
-    }
-    let hex: String = mac
-        .finalize()
-        .into_bytes()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    dir.join(&hex[..2]).join(&hex[2..])
-}
-
-/// An error as format 5 keeps it, field for field.
-#[derive(Serialize, Deserialize, Clone)]
-struct KeptError {
-    code: String,
-    message: String,
-    feature: Option<String>,
-    elements: Vec<String>,
-    elements_total: u64,
-    parameter: Option<String>,
-    cause: Option<String>,
-    suggestion: Option<String>,
-    candidates: Vec<String>,
-}
-
-#[derive(Serialize, Deserialize)]
-enum Measure {
-    Unmeasured,
-    Summary(ShapeSummary),
-    Refused(KeptError),
-}
-
-#[derive(Serialize, Deserialize)]
-struct Entry {
-    key: [u8; 32],
-    brep: Vec<u8>,
-    valid: bool,
-    history: Option<History>,
-    measure: Measure,
-}
-
-fn decode(bytes: &[u8]) -> Entry {
-    postcard::from_bytes(&bytes[MAGIC.len() + 32..]).unwrap()
-}
-
-fn encode(dir: &Path, entry: &Entry) -> Vec<u8> {
-    let secret = std::fs::read(secret_of(dir)).unwrap();
-    let payload = postcard::to_allocvec(entry).unwrap();
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&secret).unwrap();
-    mac.update(&payload);
-    let mut bytes = MAGIC.to_vec();
-    bytes.extend_from_slice(&mac.finalize().into_bytes());
-    bytes.extend_from_slice(&payload);
-    bytes
-}
-
-/// Rewrites the block's entry in `dir` (sealed as its own writer would) with `measure`.
-fn forge_block(dir: &Path, model: &Model, measure: Measure) -> PathBuf {
-    let (key, _) = built(model, "k7f2qx3m");
-    let path = entry_path(dir, &key);
-    let mut entry = decode(&std::fs::read(&path).unwrap());
-    entry.measure = measure;
-    std::fs::write(&path, encode(dir, &entry)).unwrap();
-    path
-}
-
-fn kept_error(code: &str) -> KeptError {
-    KeptError {
-        code: code.to_owned(),
-        message: "Summarize failed".to_owned(),
-        feature: None,
-        elements: Vec::new(),
-        elements_total: 0,
-        parameter: None,
-        cause: None,
-        suggestion: None,
-        candidates: Vec::new(),
-    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -411,58 +301,61 @@ fn many_features_refused_are_each_asked_once_in_memory_and_from_disk() {
 // ---------------------------------------------------------------------------------------
 // Timing: a measure superseded while it runs, and sessions racing.
 
-// BREAKS: a superseded recompute keeps what it made (`Engine::keep`, recompute.rs) even when
-// it ends after a newer one has kept the same step refused, and puts its own copy, neither
-// measured nor refused, in its place: the next recompute asks the kernel for the measure
-// again. The older one's measures are held; the newer one starts (which ends them
-// superseded) and refuses its own. Which run keeps last is a race: about one in seventy alone,
-// more under load, so the case runs 500 times. The race predates the commit: with nothing
-// refused, a measured copy is overwritten by an unmeasured one the same way (10 rounds in
-// 500 asked a measured solid again, checked by hand); here it breaks "asked once". Disk
-// holds the refusal (a superseded measure writes nothing), so only memory is wrong, and
-// only by a call a solid.
+// Found by break-it: a superseded recompute kept what it made (`Engine::keep`, recompute.rs)
+// even when it ended after a newer one had kept the same step refused or measured, and put
+// its own copy, neither measured nor refused, in its place: the next recompute asked the
+// kernel for the measure again. The older one's measures are held; the newer one starts
+// (which ends them superseded) and measures, or refuses, its own. Which run keeps last is a
+// race (about one round in seventy alone, more under load), so each case runs 500 times;
+// the exact rule is `recompute::tests::a_result_kept_is_replaced_only_by_one_that_knows_as_
+// much_of_its_measure`. Disk holds the newer run's (a superseded measure writes nothing).
 #[test]
-fn a_superseded_recompute_finishing_last_doesnt_undo_a_kept_refusal() {
+fn a_superseded_recompute_finishing_last_doesnt_undo_a_kept_measure_or_refusal() {
     let mut undone = Vec::new();
-    for round in 0..500 {
-        let engine = Recompute::new(FakeKernel::new(2).unwrap());
-        refusing(engine.kernel(), ErrorCode::KernelFailed);
-        let hold = engine
-            .kernel()
-            .hold(|op| matches!(op, Op::Summarize { .. }));
-        let older = engine.start(checked(EXAMPLE));
-        assert!(engine.kernel().wait_running(1, WAIT));
-        let newer = engine.start(checked(EXAMPLE));
-        hold.release();
-        match older.wait_timeout(WAIT) {
-            Ok(Ok(RunOutcome::Superseded)) => {}
-            Ok(other) => panic!("the older recompute: {other:?}"),
-            Err(_) => panic!("the older recompute hung"),
-        }
-        let model = match newer.wait_timeout(WAIT) {
-            Ok(Ok(RunOutcome::Published(model))) => model,
-            Ok(other) => panic!("the newer recompute: {other:?}"),
-            Err(_) => panic!("the newer recompute hung"),
-        };
-        assert_eq!(said(&model.drift()).len(), 3);
-        assert_eq!(hole(&model), HOLE);
-        let asked = engine.kernel().calls().len();
-        let again = published(&engine, checked(EXAMPLE));
-        assert_eq!(again.drift(), model.drift());
-        let more: Vec<String> = engine.kernel().calls()[asked..]
-            .iter()
-            .map(|call| match &call.op {
-                Op::Summarize { shape } => {
-                    format!(
-                        "Summarize {}",
-                        FakeKernel::describe(shape).unwrap_or_default()
-                    )
-                }
-                op => op.name().to_owned(),
-            })
-            .collect();
-        if !more.is_empty() {
-            undone.push((round, more));
+    for refusal in [Some(ErrorCode::KernelFailed), None] {
+        for round in 0..500 {
+            let engine = Recompute::new(FakeKernel::new(2).unwrap());
+            if let Some(code) = refusal {
+                refusing(engine.kernel(), code);
+            }
+            let hold = engine
+                .kernel()
+                .hold(|op| matches!(op, Op::Summarize { .. }));
+            let older = engine.start(checked(EXAMPLE));
+            assert!(engine.kernel().wait_running(1, WAIT));
+            let newer = engine.start(checked(EXAMPLE));
+            hold.release();
+            match older.wait_timeout(WAIT) {
+                Ok(Ok(RunOutcome::Superseded)) => {}
+                Ok(other) => panic!("the older recompute: {other:?}"),
+                Err(_) => panic!("the older recompute hung"),
+            }
+            let model = match newer.wait_timeout(WAIT) {
+                Ok(Ok(RunOutcome::Published(model))) => model,
+                Ok(other) => panic!("the newer recompute: {other:?}"),
+                Err(_) => panic!("the newer recompute hung"),
+            };
+            let unmeasured = if refusal.is_some() { 3 } else { 0 };
+            assert_eq!(said(&model.drift()).len(), unmeasured, "{refusal:?}");
+            assert_eq!(hole(&model), HOLE);
+            let asked = engine.kernel().calls().len();
+            let again = published(&engine, checked(EXAMPLE));
+            assert_eq!(again.drift(), model.drift());
+            let more: Vec<String> = engine.kernel().calls()[asked..]
+                .iter()
+                .map(|call| match &call.op {
+                    Op::Summarize { shape } => {
+                        format!(
+                            "Summarize {}",
+                            FakeKernel::describe(shape).unwrap_or_default()
+                        )
+                    }
+                    op => op.name().to_owned(),
+                })
+                .collect();
+            if !more.is_empty() {
+                undone.push((refusal, round, more));
+            }
         }
     }
     assert!(undone.is_empty(), "asked again, by round: {undone:?}");
@@ -511,100 +404,6 @@ fn a_kept_refusal_holds_while_the_document_is_edited_away_and_back() {
     let back = published(&engine, checked(EXAMPLE));
     assert_eq!(measures(engine.kernel()), asked);
     assert_eq!(back.drift(), model.drift());
-}
-
-// ---------------------------------------------------------------------------------------
-// Entries with a sound seal that keep what no worker's reply gives.
-
-#[test]
-fn a_kept_refusal_of_a_code_this_silico_doesnt_know_is_a_miss_rebuilt_and_written_over() {
-    let dir = Scratch::new("unknown-code");
-    let model = published(&session(&dir.0), checked(EXAMPLE));
-    let path = forge_block(&dir.0, &model, Measure::Refused(kept_error("a_later_code")));
-    let next = session(&dir.0);
-    let again = published(&next, checked(EXAMPLE));
-    assert_eq!(calls(&next), ["MakeBox"]);
-    assert!(again.drift().is_empty());
-    assert!(again.fingerprint(&id("k7f2qx3m")).is_some());
-    assert!(matches!(
-        decode(&std::fs::read(&path).unwrap()).measure,
-        Measure::Summary(_)
-    ));
-    let third = session(&dir.0);
-    published(&third, checked(EXAMPLE));
-    assert!(third.kernel().calls().is_empty());
-}
-
-// BREAKS: `built_of` (cache.rs) takes back a refusal of any code it knows, though only
-// `invalid_result` and `invalid_input` are kept on disk (`kernel_failed` only for the
-// session, under the rule decided after the commit). An entry keeping a refusal of a code that's never kept (a hang's, a
-// crash's, a bug's) is taken as kept: the solid is never measured again, and every
-// `silico check` of the document fails as the kernel's fault (`check` returns the error,
-// not problems) until the cache is deleted. The core decides what's kept from a worker's
-// reply; read back, it isn't checked again (the catalog: "whatever the core validates from a
-// worker must be validated when read back from disk"). Expected: a miss of the measure (or
-// of the entry), so the solid is measured.
-#[test]
-fn a_kept_refusal_of_a_code_never_kept_is_measured_again() {
-    for code in ErrorCode::ALL.iter().filter(|c| !is_kept_on_disk(**c)) {
-        let dir = Scratch::new(&format!("never-kept-{}", code.as_str()));
-        let model = published(&session(&dir.0), checked(EXAMPLE));
-        forge_block(&dir.0, &model, Measure::Refused(kept_error(code.as_str())));
-        let next = session(&dir.0);
-        let again = published(&next, checked(EXAMPLE));
-        assert!(
-            again.drift().is_empty(),
-            "{code:?}: a refusal never kept, taken from the disk: {:?}",
-            again.drift()
-        );
-        assert!(
-            again.fingerprint(&id("k7f2qx3m")).is_some(),
-            "{code:?}: not measured"
-        );
-    }
-}
-
-// BREAKS: the same root cause: an entry keeping a refusal that names more elements than its
-// total is taken back as it is, so `Error::elements_total` is under `elements().len()`,
-// which every `Error` the core builds rules out ("never fewer than it names").
-#[test]
-fn a_kept_refusal_whose_total_is_under_the_elements_it_names_keeps_the_errors_rule() {
-    let dir = Scratch::new("total-under");
-    let model = published(&session(&dir.0), checked(EXAMPLE));
-    let mut refusal = kept_error("invalid_input");
-    refusal.elements = vec!["Face1".into(), "Face2".into(), "Face3".into()];
-    refusal.elements_total = 0;
-    forge_block(&dir.0, &model, Measure::Refused(refusal));
-    let next = session(&dir.0);
-    let again = published(&next, checked(EXAMPLE));
-    for error in again.drift() {
-        assert!(
-            error.elements_total() >= error.elements().len() as u64,
-            "{error:?}"
-        );
-    }
-}
-
-// BREAKS (before this commit, in M2.6, and kept by it): a kept summary is taken back as
-// it is, though the core refuses one no shape has from a worker (`summary_fault`, as a
-// protocol error, asked again). An entry with a NaN volume gives no fingerprint, and the
-// solid is never measured again: a feature with a fingerprint stored drifts forever, and
-// one without never gets one. Expected: a miss of the measure, so the solid is measured.
-#[test]
-fn a_kept_summary_no_shape_has_is_measured_again() {
-    let dir = Scratch::new("nan-summary");
-    let model = published(&session(&dir.0), checked(EXAMPLE));
-    let (_, block) = built(&model, "k7f2qx3m");
-    let mut summary = block.summary().unwrap().clone();
-    summary.volume = f64::NAN;
-    forge_block(&dir.0, &model, Measure::Summary(summary));
-    let next = session(&dir.0);
-    let again = published(&next, checked(EXAMPLE));
-    assert!(
-        again.fingerprint(&id("k7f2qx3m")).is_some(),
-        "a summary with a NaN volume, taken from the disk; asked: {:?}",
-        next.kernel().calls().len()
-    );
 }
 
 // ---------------------------------------------------------------------------------------

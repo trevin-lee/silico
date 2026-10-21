@@ -322,9 +322,10 @@ impl Serialize for Error {
 impl std::error::Error for Error {}
 
 /// An error as the rebuild cache keeps it (a measure the kernel refused for the solid's
-/// values): every field, the code by its name.
+/// values): every field, the code by its name. Part of the cache's entry format (postcard,
+/// which isn't self-describing): a change to it changes `cache::MAGIC`.
 #[derive(Serialize, serde::Deserialize)]
-pub(crate) struct KeptError {
+pub(crate) struct CachedError {
     code: String,
     message: String,
     feature: Option<String>,
@@ -336,10 +337,10 @@ pub(crate) struct KeptError {
     candidates: Vec<String>,
 }
 
-impl From<&Error> for KeptError {
+impl From<&Error> for CachedError {
     fn from(error: &Error) -> Self {
         let f = &*error.0;
-        KeptError {
+        CachedError {
             code: f.code.as_str().to_owned(),
             message: f.message.clone(),
             feature: f.feature.clone(),
@@ -353,7 +354,7 @@ impl From<&Error> for KeptError {
     }
 }
 
-impl KeptError {
+impl CachedError {
     /// The error kept, if its code is one this Silico knows, and it names no more elements
     /// than its total, as every error does.
     pub(crate) fn error(self) -> Option<Error> {
@@ -390,23 +391,23 @@ mod tests {
             .with_cause("BRepGProp returned NaN")
             .with_suggestion("make the part smaller")
             .with_candidates(["Edge3"]);
-        let kept = postcard::to_allocvec(&KeptError::from(&error)).unwrap();
-        let back: KeptError = postcard::from_bytes(&kept).unwrap();
+        let kept = postcard::to_allocvec(&CachedError::from(&error)).unwrap();
+        let back: CachedError = postcard::from_bytes(&kept).unwrap();
         assert_eq!(back.error(), Some(error.clone()));
         // Every code comes back as itself.
         for &code in ErrorCode::ALL {
             let error = Error::new(code, "a message");
-            assert_eq!(KeptError::from(&error).error(), Some(error));
+            assert_eq!(CachedError::from(&error).error(), Some(error));
         }
         // A code this Silico doesn't know (a later one's) is none, not another.
-        let mut unknown = KeptError::from(&error);
+        let mut unknown = CachedError::from(&error);
         unknown.code = "a_code_from_later".to_owned();
         assert_eq!(unknown.error(), None);
         // Nor is one naming more elements than its total; as many as it names is one.
-        let mut under = KeptError::from(&error);
+        let mut under = CachedError::from(&error);
         under.elements_total = 1;
         assert_eq!(under.error(), None);
-        let mut exactly = KeptError::from(&error);
+        let mut exactly = CachedError::from(&error);
         exactly.elements_total = 2;
         assert!(exactly.error().is_some());
     }

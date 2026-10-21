@@ -1,7 +1,7 @@
 //! The rebuild cache (`.silico-cache/`, ARCHITECTURE.md): each kernel step's result kept on
 //! disk, so a document opened again, or by another session, rebuilds without the kernel. An
 //! entry is a step's shape (its B-rep and the worker's word on its validity), history, and
-//! summary, under one seal, keyed by the step's recompute key, the kernel's identity, and the
+//! measure, under one seal, keyed by the step's recompute key, the kernel's identity, and the
 //! platform: a result is used only by the same kernel, for the same request, on the same
 //! kind of machine, and a hit is a shape whose validity the worker has already checked.
 //!
@@ -15,8 +15,11 @@
 //! document in any repository; a directory that's a link, which may point anywhere, keeps
 //! nothing.
 //!
-//! Only results are kept, never failures: a failure's cause may not last (memory, say), and
-//! recompute keeps those that follow from the values in memory. Nothing here fails a
+//! Only results are kept, never a step's failure: a failure's cause may not last (memory,
+//! say), and recompute keeps those that follow from the values in memory. A result's measure
+//! the kernel refused is kept with it only if the refusal is a fact about the solid's values
+//! (invalid input, or an invalid result), with the identity of the Silico that worded it, so
+//! it's given back only to that one: another words it afresh, by measuring again. Nothing here fails a
 //! recompute: an entry that can't be read is a miss, and one that can't be written is left
 //! unwritten, each with a warning. An entry that doesn't hold together (a bad seal, a
 //! payload that doesn't parse, an entry for another key) is a miss too, rebuilt and written
@@ -38,11 +41,12 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
-use crate::error::KeptError;
+use crate::error::CachedError;
 use crate::kernel::{Blob, History, ShapeData, ShapeSummary};
 use crate::recompute::{Built, Key};
 
 /// The first bytes of every entry, naming its format: a change to the format changes it.
+/// It's part of every entry's key too, so an entry of another format is never looked for.
 const MAGIC: &[u8] = b"silico cache 5\n";
 
 /// What the cache's directory holds besides its entries: it ignores itself.
@@ -178,7 +182,12 @@ struct Entry {
 enum Measure {
     Unmeasured,
     Summary(ShapeSummary),
-    Refused(KeptError),
+    /// The kernel's refusal, as the core that wrote the entry worded it (`worded_by`, its
+    /// executable's SHA-256): the entry's key holds the worker's identity, not the core's.
+    Refused {
+        error: CachedError,
+        worded_by: [u8; 32],
+    },
 }
 
 impl Cache {
@@ -255,7 +264,7 @@ impl Cache {
                 return None;
             }
         };
-        match read_entry(&bytes, secret, &key).and_then(built_of) {
+        match read_entry(&bytes, secret, &key).map(built_of) {
             Some(built) => {
                 renew(&path);
                 Some(built)
@@ -282,12 +291,13 @@ impl Cache {
             brep: built.shape.brep().as_bytes().to_vec(),
             valid,
             history: built.history.clone(),
-            measure: match (built.summary(), built.measure_refused()) {
-                (Some(summary), _) => Measure::Summary(summary.clone()),
-                (None, Some(refused)) if lasting(refused) => {
-                    Measure::Refused(KeptError::from(refused))
-                }
-                (None, _) => Measure::Unmeasured,
+            measure: match (built.summary(), built.measure_refused(), this_core()) {
+                (Some(summary), _, _) => Measure::Summary(summary.clone()),
+                (None, Some(refused), Some(core)) if lasting(refused) => Measure::Refused {
+                    error: CachedError::from(refused),
+                    worded_by: *core,
+                },
+                (None, _, _) => Measure::Unmeasured,
             },
         };
         let payload = match postcard::to_allocvec(&entry) {
@@ -786,12 +796,14 @@ fn this_platform() -> String {
 }
 
 /// Whether a measure's refusal is a fact about the solid's values, so it's kept on disk:
-/// invalid input, or an invalid result. Not `kernel_failed`, though recompute keeps it for
+/// invalid input, or an invalid result. Within what recompute keeps for the session
+/// (`recompute::kept`), and must stay so. Not `kernel_failed`, though recompute keeps it for
 /// the session as it keeps a step's: the cache keeps nothing a restart might not see again
 /// (M2.4's decision, of OCCT's catch-all alerts), and OCCT's integration catches its own
 /// shortage of memory (`math_ComputeGaussPointsAndWeights` and its Kronrod twin catch every
 /// `Standard_Failure`, `Standard_OutOfMemory` too), which can then come back as a failed
-/// measure.
+/// measure. (A B-rep refused as damaged is invalid input too: a fact while shapes travel
+/// inline, as they do; a transport that could damage them would make it not one.)
 fn lasting(refused: &crate::Error) -> bool {
     matches!(
         refused.code(),
@@ -799,22 +811,51 @@ fn lasting(refused: &crate::Error) -> bool {
     )
 }
 
+/// The SHA-256 of the running executable, the core that words a kept refusal, read once
+/// (only when a refusal is kept or taken back); none if it can't be read, and then no
+/// refusal is kept on disk.
+fn this_core() -> Option<&'static [u8; 32]> {
+    use sha2::Digest as _;
+    static CORE: std::sync::OnceLock<Option<[u8; 32]>> = std::sync::OnceLock::new();
+    CORE.get_or_init(|| {
+        let mut file = std::fs::File::open(std::env::current_exe().ok()?).ok()?;
+        let mut hash = Sha256::new();
+        let mut buffer = vec![0; 1 << 20];
+        loop {
+            match file.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => hash.update(buffer.get(..n)?),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => return None,
+            }
+        }
+        Some(hash.finalize().into())
+    })
+    .as_ref()
+}
+
 /// The result `entry` keeps, checked as a worker's reply is: a summary no shape has, or a
-/// refusal that isn't one the cache keeps, is a measure to make again; a refusal whose code
-/// this Silico doesn't know, or that breaks an error's rules, is an entry that doesn't hold
-/// together.
-fn built_of(entry: Entry) -> Option<Built> {
+/// refusal the cache wouldn't keep (another code, one this Silico doesn't know, one that
+/// breaks an error's rules, or one another Silico worded) is a measure to make again.
+fn built_of(entry: Entry) -> Built {
     let shape = ShapeData::checked(Blob::inline(entry.brep), entry.valid);
-    Some(match entry.measure {
+    let unmeasured = |shape, history| Built::new(shape, history, None);
+    match entry.measure {
         Measure::Summary(summary) if crate::kernel::summary_fault(&summary).is_none() => {
             Built::new(shape, entry.history, Some(summary))
         }
-        Measure::Refused(refused) => match refused.error()? {
-            refused if lasting(&refused) => Built::refused_measure(shape, entry.history, refused),
-            _ => Built::new(shape, entry.history, None),
-        },
-        Measure::Unmeasured | Measure::Summary(_) => Built::new(shape, entry.history, None),
-    })
+        Measure::Refused { error, worded_by } if this_core() == Some(&worded_by) => {
+            match error.error() {
+                Some(refused) if lasting(&refused) => {
+                    Built::refused_measure(shape, entry.history, refused)
+                }
+                _ => unmeasured(shape, entry.history),
+            }
+        }
+        Measure::Unmeasured | Measure::Summary(_) | Measure::Refused { .. } => {
+            unmeasured(shape, entry.history)
+        }
+    }
 }
 
 /// The entry `bytes` hold for `key`, if they hold together: the format's magic, a seal

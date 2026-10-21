@@ -1,9 +1,11 @@
 //! M2.6: a feature's solid whose measure the kernel refuses for its values (the measure
 //! would be refused again) is kept with that refusal, in memory and in the rebuild cache, so
 //! it's asked once, not on every recompute and every open; one a worker failed to measure
-//! (a crash, a hang, a shortage) is asked again. And an entry of the cache's format before
-//! this one is a miss, not a failure, and is written over in this one. Expected values are
-//! written by hand: which kernel calls each recompute makes, and the refusals the fake gives.
+//! (a crash, a hang, a shortage) is asked again. On disk only invalid input and an invalid
+//! result are kept: `kernel_failed` may come of a shortage of memory OCCT caught itself.
+//! (The format, and entries of the format before, are tested in adversarial_cache.rs.)
+//! Expected values are written by hand: which kernel calls each recompute makes, and the
+//! refusals the fake gives.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 #[path = "common/cache.rs"]
@@ -140,51 +142,4 @@ fn a_measure_a_worker_failed_is_asked_again() {
         assert_eq!(measures(next.kernel()), 3, "{code:?}");
         assert!(model.drift().is_empty(), "{code:?}");
     }
-}
-
-#[test]
-fn an_entry_of_the_format_before_is_a_miss_and_written_over_in_this_one() {
-    // Entries of the format before this one ("silico cache 4") are keyed under it, so this
-    // format never looks for them: a planted one is a miss, left as it was (the cache's
-    // bound evicts it in time), and the step is built and written in this format.
-    let dir = Scratch::new("format-before");
-    std::fs::create_dir_all(dir.0.join("ab")).unwrap();
-    let old = dir.0.join("ab").join("0".repeat(62));
-    let mut bytes = b"silico cache 4\n".to_vec();
-    bytes.extend([7; 32]);
-    bytes.extend(b"a payload of the format before");
-    std::fs::write(&old, &bytes).unwrap();
-    let first = session(&dir.0);
-    let model = published(&first, checked(EXAMPLE));
-    assert_eq!(
-        calls(&first),
-        ["Cut", "MakeBox", "MakeCylinder", "Translate"]
-    );
-    assert!(model.drift().is_empty());
-    assert_eq!(std::fs::read(&old).unwrap(), bytes);
-    let written: Vec<_> = files(&dir.0).into_iter().filter(|f| *f != old).collect();
-    assert_eq!(written.len(), 4);
-    for file in &written {
-        assert!(
-            std::fs::read(file)
-                .unwrap()
-                .starts_with(b"silico cache 5\n"),
-            "{file:?}"
-        );
-    }
-    // An entry of this format's name with the format before's bytes doesn't hold together:
-    // rebuilt, and written over in this format.
-    let entry = &written[0];
-    let mut text = std::fs::read(entry).unwrap();
-    text[..15].copy_from_slice(b"silico cache 4\n");
-    std::fs::write(entry, &text).unwrap();
-    let second = session(&dir.0);
-    let model = published(&second, checked(EXAMPLE));
-    assert_eq!(hole(&model), HOLE);
-    assert_eq!(calls(&second).len(), 1, "{:?}", calls(&second));
-    assert!(
-        std::fs::read(entry)
-            .unwrap()
-            .starts_with(b"silico cache 5\n")
-    );
 }
