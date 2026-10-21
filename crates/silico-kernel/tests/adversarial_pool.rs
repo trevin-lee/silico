@@ -500,14 +500,31 @@ fn a_worker_whose_executable_changes_as_it_starts_isnt_used() {
 /// rule out can't meet.
 const HANG: Duration = Duration::from_secs(60);
 
-/// A request for a slot that can't start a worker (its binary missing): fails, and doubles
+/// A copy of the test worker that can't be run (not executable), at `dir/unrunnable`: an
+/// executable linked to it can't start a worker, but is still the pool's build (its bytes
+/// the same), so a worker whose start's check runs after the link changes isn't refused.
+fn unrunnable_copy(dir: &Path) -> PathBuf {
+    let copy = dir.join("unrunnable");
+    std::fs::copy(TEST_WORKER, &copy).unwrap();
+    std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o644)).unwrap();
+    copy
+}
+
+/// Links `exe` to `target`, in place at once (a link made beside it, renamed over it).
+fn link(exe: &Path, target: &Path) {
+    let beside = exe.with_extension("new");
+    std::os::unix::fs::symlink(target, &beside).unwrap();
+    std::fs::rename(&beside, exe).unwrap();
+}
+
+/// A request for a slot that can't start a worker (its binary missing, or not runnable): fails, and doubles
 /// the slot's wait.
 fn fail_to_start(pool: &KernelPool) {
     let err = done(pool.submit(Generation(1), echo(&[1]))).unwrap_err();
     assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
 }
 
-/// Crashes the one idle slot's worker while its binary is missing, then fails `more` starts
+/// Crashes the one idle slot's worker while its binary is missing (or not runnable), then fails `more` starts
 /// on it (the other slot busy, so every request goes to this one): each failure doubles its
 /// wait from [`IDLE_CHECK`], so after `more` it's `2^more` checks. Returns the moment before
 /// the last request was submitted: the slot's wait runs at least that long from then.
@@ -525,8 +542,10 @@ fn grow_idle_slots_wait(pool: &KernelPool, more: u32) -> Instant {
 
 #[test]
 fn a_pool_whose_binary_comes_back_after_many_failed_starts_fills_at_once() {
-    // While the binary is missing, each failed start doubles its slot's wait, toward a
-    // minute. Once a worker answers, the binary is back: every slot starts one at its next
+    // While the binary can't be run, each failed start doubles its slot's wait, toward a
+    // minute. (Not runnable, rather than missing: its bytes still the pool's, so a worker
+    // whose start's check runs after the binary goes isn't refused for it, and the slot that
+    // started it is still busy when the test kills it.) Once a worker answers, the binary is back: every slot starts one at its next
     // check, not after its wait.
     //
     // Each slot's wait is grown in turn while the other is busy, so the requests that fail
@@ -541,14 +560,15 @@ fn a_pool_whose_binary_comes_back_after_many_failed_starts_fills_at_once() {
     let dir = scratch_dir("restored-late");
     let exe = dir.join("silico-kernel-test-worker");
     std::os::unix::fs::symlink(TEST_WORKER, &exe).unwrap();
+    let unrunnable = unrunnable_copy(&dir);
     let pool = KernelPool::start_workers(&exe, 2).unwrap();
     let before = pool.pids();
     let mut gone: BTreeSet<u32> = before.iter().copied().collect();
-    std::fs::remove_file(&exe).unwrap();
+    link(&exe, &unrunnable);
     // Queued first, so taken first: by X.
     let x_busy = pool.submit(Generation(1), sleep(50_000));
     grow_idle_slots_wait(&pool, 5);
-    std::os::unix::fs::symlink(TEST_WORKER, &exe).unwrap();
+    link(&exe, Path::new(TEST_WORKER));
     let y_busy = pool.submit(Generation(1), sleep(50_000));
     let deadline = Instant::now() + HANG;
     let y_worker = loop {
@@ -562,7 +582,7 @@ fn a_pool_whose_binary_comes_back_after_many_failed_starts_fills_at_once() {
         );
         std::thread::sleep(Duration::from_millis(5));
     };
-    std::fs::remove_file(&exe).unwrap();
+    link(&exe, &unrunnable);
     let x_worker = pool
         .pids()
         .into_iter()
@@ -588,7 +608,7 @@ fn a_pool_whose_binary_comes_back_after_many_failed_starts_fills_at_once() {
         assert!(Instant::now() < deadline, "Y kept {:?}", pool.pids());
         std::thread::sleep(Duration::from_millis(5));
     }
-    std::os::unix::fs::symlink(TEST_WORKER, &exe).unwrap();
+    link(&exe, Path::new(TEST_WORKER));
     assert!(done(pool.submit(Generation(1), sleep(1))).is_ok());
     let held = wait_full_by(&pool, 2, &gone, x_last + IDLE_CHECK * 31);
     drop(pool);
@@ -1741,7 +1761,8 @@ fn a_worker_started_before_a_slots_failure_doesnt_end_its_wait() {
 
 #[test]
 fn a_slot_waiting_out_a_long_back_off_starts_a_worker_once_a_newer_one_has_started() {
-    // A slot whose worker can't be started (its binary missing) waits longer each time it
+    // A slot whose worker can't be started (its binary not runnable: see
+    // `a_pool_whose_binary_comes_back_after_many_failed_starts_fills_at_once`) waits longer each time it
     // tries: here the other slot is busy, so every request goes to the first, which fails
     // six times in a row (its worker crashed, then five requests): its wait is 32 s. With
     // the binary back, the busy slot's worker is killed under its request: that slot starts
@@ -1752,13 +1773,14 @@ fn a_slot_waiting_out_a_long_back_off_starts_a_worker_once_a_newer_one_has_start
     let dir = scratch_dir("waits-for-newer");
     let exe = dir.join("silico-kernel-test-worker");
     std::os::unix::fs::symlink(TEST_WORKER, &exe).unwrap();
+    let unrunnable = unrunnable_copy(&dir);
     let pool = KernelPool::start_workers(&exe, 2).unwrap();
     let before = pool.pids();
-    std::fs::remove_file(&exe).unwrap();
+    link(&exe, &unrunnable);
     // Queued first, so taken first, by the slot kept busy.
     let busy = pool.submit(Generation(1), sleep(50_000));
     let last = grow_idle_slots_wait(&pool, 5);
-    std::os::unix::fs::symlink(TEST_WORKER, &exe).unwrap();
+    link(&exe, Path::new(TEST_WORKER));
     let working = pool.pids();
     assert_eq!(working.len(), 1, "{working:?}");
     kill9_and_wait(working[0]);
@@ -2186,4 +2208,367 @@ fn an_on_demand_pool_of_one_crashing_every_request_never_wedges() {
         );
     }
     assert_eq!(pool.pids().len(), 1);
+}
+
+// ---------------------------------------------------------------------------------------
+// break-it: a worker checked against the pool's executable as it starts
+// (`Worker::spawn_checked`, `Shared::start_check`, a worker's `refused`). Executables that
+// change as their worker starts (another build, deleted, a directory, a FIFO), rewritten in
+// place so their size, time, and inode stay as they were, or replaced by a FIFO under a
+// running pool; refused workers given long requests; and many slots starting at once from
+// an executable that changes under them.
+
+/// A worker executable at `exe` that, as it starts (after the pool's check, before its
+/// first frame), runs `then` (shell, with `$exe` its own path), then runs the test worker.
+fn changing_as_it_starts(exe: &Path, then: &str) -> String {
+    format!(
+        "#!/bin/sh\n# build 1\nexe='{}'\n{then}\nexec '{TEST_WORKER}'\n",
+        exe.display()
+    )
+}
+
+fn mkfifo(path: &Path) {
+    let status = Command::new("mkfifo").arg(path).status().unwrap();
+    assert!(status.success(), "mkfifo {}", path.display());
+}
+
+#[cfg(target_os = "macos")]
+const O_NONBLOCK: i32 = 0x0004;
+#[cfg(target_os = "linux")]
+const O_NONBLOCK: i32 = 0o4000;
+
+/// Until `stop` is set, opens the FIFO at `path` for writing whenever a reader waits on it,
+/// and closes it, so every reader blocked opening it gets an end of file: so that a test
+/// that finds a hang can still let the pool go and end.
+fn feed_fifo(
+    path: PathBuf,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+            // ENXIO while no reader has it open; opened (and closed at once) when one has.
+            let _ = std::os::unix::fs::OpenOptionsExt::custom_flags(
+                std::fs::OpenOptions::new().write(true),
+                O_NONBLOCK,
+            )
+            .open(&path);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    })
+}
+
+/// Drops `pool` on another thread, saying whether the drop ended within `within`; if it
+/// didn't, feeds the FIFO at `fifo` until it does, so the test can end.
+fn drop_within(pool: KernelPool, within: Duration, fifo: &Path) -> bool {
+    let (dropped_tx, dropped) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        drop(pool);
+        let _ = dropped_tx.send(());
+    });
+    let in_time = dropped.recv_timeout(within).is_ok();
+    if !in_time {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let feeder = feed_fifo(fifo.to_owned(), std::sync::Arc::clone(&stop));
+        let _ = dropped.recv_timeout(Duration::from_secs(30));
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        feeder.join().unwrap();
+    }
+    in_time
+}
+
+/// How long a step here may take before it counts as a hang: far longer than any of them
+/// takes (milliseconds), however loaded the machine, and far shorter than the requests'
+/// sleeps and timeouts that a hang would wait out.
+const BOUND: Duration = Duration::from_secs(10);
+
+// ---------------------------------------------------------------------------------------
+// A refused worker given a request
+
+#[test]
+fn a_refused_worker_given_a_30_s_request_fails_it_at_once_not_when_it_answers() {
+    // The worker's executable changes as it starts, so its start's check refuses it within
+    // milliseconds of its launch. Its request is a 30 s sleep: the refusal is known long
+    // before the worker could answer, so the request fails then, with it.
+    // BREAKS: the refusal is read only once the worker's reply has come (or the call's time
+    // run out): the request is sent to the refused worker anyway and the call waits all 30 s
+    // for an answer it then throws away (a build that never answers holds the slot for the
+    // request's whole timeout, 60 s by default).
+    const SLEEP: Duration = Duration::from_secs(30);
+    let dir = scratch_dir("refused-long-request");
+    let exe = dir.join("worker");
+    let other = dir.join("other-build");
+    write_executable(&other, &build(2));
+    write_executable(
+        &exe,
+        &changing_as_it_starts(
+            &exe,
+            &format!(
+                "cp '{}' \"$exe.tmp\" && mv \"$exe.tmp\" \"$exe\"",
+                other.display()
+            ),
+        ),
+    );
+    let pool = KernelPool::start_on_demand(&exe, 1).unwrap();
+    let start = Instant::now();
+    let err = done(pool.submit(Generation(1), sleep(SLEEP.as_millis() as u64))).unwrap_err();
+    let took = start.elapsed();
+    assert!(says_changed(&err, &exe), "{err}");
+    assert!(
+        took < BOUND,
+        "the refused worker's request failed after {took:?}, once its {SLEEP:?} answer came"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// Executables changed so their stamp stays
+
+#[test]
+fn an_executable_rewritten_in_place_to_another_build_of_its_size_and_time_isnt_started() {
+    // Another build of the same size written into the same file (its inode kept, as `cp`
+    // onto an existing file does), its modification time put back (as `cp -p` and
+    // `rsync --inplace -t` do): the file's size, time, and inode are as they were, its bytes
+    // aren't. A worker started from it is another build's, so it mustn't be started under
+    // the pool's identity.
+    // BREAKS: the start's check takes an unchanged size, time, and inode for an unchanged
+    // file and never hashes it, so the other build is started and its answer taken under
+    // the pool's identity (and kept so in the rebuild cache). The file's change time
+    // (`st_ctime`), which no write can put back, would show it.
+    let dir = scratch_dir("rewritten-in-place");
+    let exe = dir.join("worker");
+    write_executable(&exe, &build(1));
+    let pool = KernelPool::start_workers(&exe, 1).unwrap();
+    let identity = pool.identity().to_owned();
+    assert!(done(pool.submit(Generation(1), sleep(1))).is_ok());
+    let before = std::fs::metadata(&exe).unwrap();
+    {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&exe)
+            .unwrap();
+        file.write_all(build(2).as_bytes()).unwrap();
+        file.set_modified(before.modified().unwrap()).unwrap();
+    }
+    let after = std::fs::metadata(&exe).unwrap();
+    // The premise: size, time, and inode as they were; the bytes another build's.
+    assert_eq!(after.len(), before.len());
+    assert_eq!(
+        std::os::unix::fs::MetadataExt::ino(&after),
+        std::os::unix::fs::MetadataExt::ino(&before)
+    );
+    assert_eq!(after.modified().unwrap(), before.modified().unwrap());
+    assert_eq!(std::fs::read_to_string(&exe).unwrap(), build(2));
+    for pid in pool.pids() {
+        kill9_and_wait(pid);
+    }
+    let got = done(pool.submit(Generation(1), sleep(1)));
+    assert_eq!(pool.identity(), identity);
+    match got {
+        Err(err) => assert!(says_changed(&err, &exe), "{err}"),
+        Ok(()) => panic!(
+            "a worker of another build ({}) answered under the pool's identity {identity}",
+            exe.display()
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Executables that aren't files
+
+#[test]
+fn an_executable_replaced_by_a_fifo_under_a_running_pool_fails_its_request_and_lets_the_pool_go() {
+    // A FIFO renamed over the worker's executable while the pool runs (a broken install, a
+    // hostile one). The next worker can't be started from it; the request that needs one
+    // fails, naming the executable, and the pool still drops at once.
+    // BREAKS: checking the executable before a start reads whatever the path names to hash
+    // it, and opening a FIFO with no writer blocks: the slot's thread blocks for ever, the
+    // request never gets an outcome, and dropping the pool (which joins its threads) hangs.
+    // (The same read of a symlink to /dev/zero would read without end, until the app runs
+    // out of memory: not run here.)
+    let dir = scratch_dir("fifo-under-pool");
+    let exe = dir.join("worker");
+    write_executable(&exe, &build(1));
+    let pool = KernelPool::start_workers(&exe, 1).unwrap();
+    assert!(done(pool.submit(Generation(1), sleep(1))).is_ok());
+    let fifo = dir.join("fifo");
+    mkfifo(&fifo);
+    std::fs::rename(&fifo, &exe).unwrap();
+    for pid in pool.pids() {
+        kill9_and_wait(pid);
+    }
+    let pending = pool.submit(Generation(1), echo(&[1]));
+    let got = pending.wait_timeout(BOUND);
+    let answered = got.is_ok();
+    let dropped = drop_within(pool, BOUND, &exe);
+    assert!(
+        answered,
+        "a request needing a worker from a FIFO had no outcome within {BOUND:?}"
+    );
+    assert!(
+        dropped,
+        "dropping the pool hung, its slot blocked reading a FIFO"
+    );
+    let err = got.ok().unwrap().done().unwrap().unwrap_err();
+    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert!(err.message().contains(&*exe.to_string_lossy()), "{err}");
+    assert!(err.suggestion().is_some(), "{err}");
+}
+
+#[test]
+fn a_worker_whose_executable_becomes_a_fifo_as_it_starts_is_refused_at_once() {
+    // The executable is replaced by a FIFO after the pool's check, as its worker starts. The
+    // start's check, at the worker's first frame, finds it no longer the pool's: the request
+    // fails saying so, within moments, and the pool drops at once.
+    // BREAKS: the check, on the worker's reply thread, blocks opening the FIFO, so the
+    // worker's frames are never passed on: the request waits out its whole timeout and fails
+    // as a `worker_timeout` saying the worker "hadn't started" (it had), with advice to try
+    // again; the reply thread stays blocked for good; and the slot, replacing the worker,
+    // blocks in the same read, so dropping the pool hangs.
+    const TIMEOUT: Duration = Duration::from_secs(20);
+    let dir = scratch_dir("fifo-as-started");
+    let exe = dir.join("worker");
+    write_executable(
+        &exe,
+        &changing_as_it_starts(&exe, "mkfifo \"$exe.fifo\" && mv \"$exe.fifo\" \"$exe\""),
+    );
+    let pool = KernelPool::start_on_demand(&exe, 1).unwrap();
+    let start = Instant::now();
+    let pending = pool.submit(Generation(1), sleep(1).with_timeout(TIMEOUT));
+    let got = pending.wait_timeout(TIMEOUT + BOUND);
+    let took = start.elapsed();
+    let dropped = drop_within(pool, BOUND, &exe);
+    let err = got
+        .ok()
+        .expect("no outcome even after the request's timeout")
+        .done()
+        .unwrap()
+        .unwrap_err();
+    assert!(
+        took < BOUND,
+        "the request failed after {took:?} ({err}), not at its worker's refusal"
+    );
+    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert!(err.message().contains(&*exe.to_string_lossy()), "{err}");
+    assert!(
+        dropped,
+        "dropping the pool hung, its slot blocked reading a FIFO"
+    );
+}
+
+#[test]
+fn a_worker_whose_executable_becomes_a_directory_as_it_starts_is_refused_naming_it() {
+    // The executable is removed and a directory put in its place as its worker starts. The
+    // worker isn't used: the request fails with a structured error naming the executable,
+    // with advice; no process is left; and with the build back the pool works again.
+    let dir = scratch_dir("dir-as-started");
+    let exe = dir.join("worker");
+    let marker = dir.join("change-once");
+    let script = format!(
+        "#!/bin/sh\n# build 1\nif [ -e '{m}' ]; then rm '{m}'; rm '{e}'; mkdir '{e}'; fi\nexec '{TEST_WORKER}'\n",
+        m = marker.display(),
+        e = exe.display()
+    );
+    write_executable(&exe, &script);
+    std::fs::write(&marker, b"").unwrap();
+    let pool = KernelPool::start_on_demand(&exe, 1).unwrap();
+    let start = Instant::now();
+    let err = done(pool.submit(Generation(1), sleep(1))).unwrap_err();
+    assert!(start.elapsed() < BOUND, "took {:?}", start.elapsed());
+    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert!(err.message().contains(&*exe.to_string_lossy()), "{err}");
+    assert!(err.suggestion().is_some(), "{err}");
+    let deadline = Instant::now() + BOUND;
+    while !pool.pids().is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "the refused worker is still held"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // The build back, the same bytes as a new file: the pool starts workers again (after
+    // the slot's wait, which a request doesn't wait for).
+    std::fs::remove_dir(&exe).unwrap();
+    write_executable(&exe, &script);
+    assert!(done(pool.submit(Generation(1), sleep(1))).is_ok());
+    drop(pool);
+    wait_no_children("after the drop");
+}
+
+#[test]
+fn a_worker_whose_executable_is_deleted_as_it_starts_is_refused_then_the_pool_recovers() {
+    // The executable is deleted as its worker starts (a clean before a rebuild): the worker
+    // isn't used, the request fails naming the executable, and once it's back (the same
+    // bytes) the next request is answered.
+    let dir = scratch_dir("deleted-as-started");
+    let exe = dir.join("worker");
+    let marker = dir.join("change-once");
+    let script = format!(
+        "#!/bin/sh\n# build 1\nif [ -e '{m}' ]; then rm '{m}'; rm '{e}'; fi\nexec '{TEST_WORKER}'\n",
+        m = marker.display(),
+        e = exe.display()
+    );
+    write_executable(&exe, &script);
+    std::fs::write(&marker, b"").unwrap();
+    let pool = KernelPool::start_on_demand(&exe, 1).unwrap();
+    let err = done(pool.submit(Generation(1), sleep(1))).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert!(err.message().contains(&*exe.to_string_lossy()), "{err}");
+    assert!(err.suggestion().is_some(), "{err}");
+    write_executable(&exe, &script);
+    assert!(done(pool.submit(Generation(1), sleep(1))).is_ok());
+    drop(pool);
+    wait_no_children("after the drop");
+}
+
+// ---------------------------------------------------------------------------------------
+// Many slots at once
+
+#[test]
+fn many_slots_starting_from_an_executable_that_changes_under_them_take_no_answer() {
+    // Eight slots start at once, on demand, from an executable that replaces itself with
+    // another build as its first worker starts. Some workers run the first build, some the
+    // other; each start races the replacement. None may be taken: every request fails as a
+    // change, and none is answered under the pool's identity.
+    const SLOTS: usize = 8;
+    let dir = scratch_dir("many-changing");
+    let exe = dir.join("worker");
+    let other = dir.join("other-build");
+    write_executable(&other, &build(2));
+    write_executable(
+        &exe,
+        &changing_as_it_starts(
+            &exe,
+            &format!(
+                "cp '{}' \"$exe.$$\" && mv \"$exe.$$\" \"$exe\"",
+                other.display()
+            ),
+        ),
+    );
+    for round in 0..5 {
+        // The first build back, for the round.
+        write_executable(
+            &exe,
+            &changing_as_it_starts(
+                &exe,
+                &format!(
+                    "cp '{}' \"$exe.$$\" && mv \"$exe.$$\" \"$exe\"",
+                    other.display()
+                ),
+            ),
+        );
+        let pool = KernelPool::start_on_demand(&exe, SLOTS).unwrap();
+        let pending: Vec<_> = (0..SLOTS * 2)
+            .map(|_| pool.submit(Generation(1), sleep(50)))
+            .collect();
+        for p in pending {
+            match done(p) {
+                Err(err) => assert!(says_changed(&err, &exe), "round {round}: {err}"),
+                Ok(()) => panic!(
+                    "round {round}: a worker's answer was taken after its executable changed"
+                ),
+            }
+        }
+        drop(pool);
+        wait_no_children(&format!("round {round}"));
+    }
 }

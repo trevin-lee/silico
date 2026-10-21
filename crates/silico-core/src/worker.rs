@@ -116,11 +116,15 @@ impl WorkerKind {
 /// A check of a worker as it starts (see [`Worker::spawn_checked`]).
 pub(crate) type StartCheck = Box<dyn FnOnce() -> Result<(), Error> + Send>;
 
-/// A file's size, modification time, and inode: what changes when it's rebuilt or replaced.
+/// A file's size, modification and change times, and inode: what changes when it's rebuilt
+/// or replaced. The change time (`st_ctime`) as well as the modification time, since a write
+/// can put the modification time back (as `cp -p` onto the file does) but not the change
+/// time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Stamp {
     len: u64,
     modified: Option<std::time::SystemTime>,
+    changed: (i64, i64),
     inode: u64,
 }
 
@@ -131,6 +135,7 @@ impl Stamp {
         Some(Self {
             len: meta.len(),
             modified: meta.modified().ok(),
+            changed: (meta.ctime(), meta.ctime_nsec()),
             inode: meta.ino(),
         })
     }
@@ -143,7 +148,26 @@ impl Stamp {
 pub(crate) fn identity_of(exe: &Path, kind: WorkerKind) -> Result<String, Error> {
     use sha2::{Digest, Sha256};
     let noun = kind.noun();
-    let bytes = std::fs::read(exe).map_err(|e| {
+    // Opened without waiting, and read only if it's a regular file: a FIFO put at the path
+    // would block its open (and the pool's thread) until something wrote to it, and a device
+    // (a link to /dev/zero) would be read without end.
+    let digest = (|| {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(exe)?;
+        if !file.metadata()?.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "it isn't a regular file",
+            ));
+        }
+        let mut hasher = Sha256::new();
+        io::copy(&mut file, &mut hasher)?;
+        Ok(hasher.finalize())
+    })()
+    .map_err(|e: io::Error| {
         Error::new(
             ErrorCode::WorkerCrashed,
             format!("couldn't read the {noun} {}", exe.display()),
@@ -151,10 +175,7 @@ pub(crate) fn identity_of(exe: &Path, kind: WorkerKind) -> Result<String, Error>
         .with_cause(e.to_string())
         .with_suggestion(format!("check Silico's install: rebuild the {noun}"))
     })?;
-    Ok(format!(
-        "{noun} sha256:{}",
-        crate::hex(&Sha256::digest(&bytes))
-    ))
+    Ok(format!("{noun} sha256:{}", crate::hex(&digest)))
 }
 
 /// A running worker. Dropping it kills and reaps the process.
@@ -305,12 +326,15 @@ impl Worker {
                         // The worker has started (any frame says so); an empty one says only that.
                         // Checked first, so no reply is taken before.
                         Ok(Some(frame)) => {
-                            if let Some(check) = check.take()
-                                && let Err(e) = check()
-                            {
-                                let _ = refuse.set(e);
-                            }
+                            let refused = check.take().and_then(|check| check().err());
                             has_started.store(true, Ordering::Relaxed);
+                            if let Some(e) = refused {
+                                // Nothing more is passed on: the call waiting (or the
+                                // next) ends at once, with the refusal, rather than when
+                                // the worker answers.
+                                let _ = refuse.set(e);
+                                break;
+                            }
                             if frame.is_empty() {
                                 continue;
                             }
@@ -471,6 +495,10 @@ impl Worker {
             )
             .with_suggestion(format!("start a new {}", self.kind.noun())));
         }
+        // A worker its start's check refused isn't sent anything.
+        if let Some(refused) = self.refused.get() {
+            return Err(self.stop(refused.clone()));
+        }
         let id = RequestId(self.next_id);
         self.next_id += 1;
         let trace = TraceId(NEXT_TRACE.fetch_add(1, Ordering::Relaxed));
@@ -548,7 +576,7 @@ impl Worker {
                 .map_err(|_| RecvTimeoutError::Disconnected),
         };
         // The start's check runs before any reply is passed on, so it has run by now if
-        // the worker started.
+        // the worker started; a refusal ends the wait at once (the reply thread stops).
         if let Some(refused) = self.refused.get() {
             return Err(self.stop(refused.clone()));
         }
