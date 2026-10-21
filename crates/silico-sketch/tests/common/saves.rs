@@ -24,6 +24,11 @@ pub fn line(id: &str, from: &str, to: &str) -> String {
     format!(r#"{{"id": "{id}", "from": "{from}", "to": "{to}", "construction": false}}"#)
 }
 
+/// A construction line, which the sketch's profile leaves out.
+pub fn construction_line(id: &str, from: &str, to: &str) -> String {
+    format!(r#"{{"id": "{id}", "from": "{from}", "to": "{to}", "construction": true}}"#)
+}
+
 pub fn circle(id: &str, center: &str, r: f64) -> String {
     format!(r#"{{"id": "{id}", "center": "{center}", "radius": {r}, "construction": false}}"#)
 }
@@ -31,6 +36,29 @@ pub fn circle(id: &str, center: &str, r: f64) -> String {
 pub fn arc(id: &str, center: &str, start: &str, end: &str) -> String {
     format!(
         r#"{{"id": "{id}", "center": "{center}", "start": "{start}", "end": "{end}", "construction": false}}"#
+    )
+}
+
+/// A constraint, its ID k`n` (seven digits), of `form`: its fields after the ID.
+pub fn k(n: usize, form: &str) -> String {
+    format!(r#"{{"id": "k{n:07}", {form}}}"#)
+}
+
+/// A document of one sketch, [`FEATURE`], on the xy plane, of these elements.
+pub fn text(
+    points: &[String],
+    lines: &[String],
+    circles: &[String],
+    arcs: &[String],
+    constraints: &[String],
+) -> String {
+    format!(
+        "{{\"silico\": 1, \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}}, \"features\": [{{\"id\": \"{FEATURE}\", \"type\": \"sketch\", \"v\": 1, \"name\": \"S\", \"plane\": \"xy\", \"points\": [{}], \"lines\": [{}], \"circles\": [{}], \"arcs\": [{}], \"constraints\": [{}]}}]}}",
+        points.join(", "),
+        lines.join(", "),
+        circles.join(", "),
+        arcs.join(", "),
+        constraints.join(", ")
     )
 }
 

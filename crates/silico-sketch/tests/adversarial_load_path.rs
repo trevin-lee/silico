@@ -15,24 +15,14 @@
 mod saves;
 
 use proptest::prelude::*;
-use saves::{FEATURE, arc, checked, circle, line, nm, point, said, solved, worker, written_back};
+use saves::{arc, checked, circle, k, line, nm, point, said, solved, text, worker, written_back};
 use silico_core::ErrorCode;
 use silico_core::document::{Checked, write};
 use silico_core::sketch::{SketchSolution, SketchSolver, SketchWorker};
 
-fn k(n: usize, form: &str) -> String {
-    format!(r#"{{"id": "k{n:07}", {form}}}"#)
-}
-
-fn text(points: &[String], lines: &[String], circles: &[String], forms: &[String]) -> String {
-    let constraints: Vec<String> = forms.iter().enumerate().map(|(i, f)| k(i + 1, f)).collect();
-    format!(
-        "{{\"silico\": 1, \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}}, \"features\": [{{\"id\": \"{FEATURE}\", \"type\": \"sketch\", \"v\": 1, \"name\": \"S\", \"plane\": \"xy\", \"points\": [{}], \"lines\": [{}], \"circles\": [{}], \"arcs\": [], \"constraints\": [{}]}}]}}",
-        points.join(", "),
-        lines.join(", "),
-        circles.join(", "),
-        constraints.join(", ")
-    )
+/// Constraints of these forms, numbered k0000001 on.
+fn numbered(forms: &[String]) -> Vec<String> {
+    forms.iter().enumerate().map(|(i, f)| k(i + 1, f)).collect()
 }
 
 /// What a solve says, whole: Ok with where it put the sketch ([`said`]) and the redundant
@@ -136,7 +126,7 @@ fn touching(r: f64, l: f64, dx: f64, dy: f64, twice: bool) -> String {
     if twice {
         forms.push(r#""type": "horizontal", "line": "n0000001""#.to_owned());
     }
-    text(&points, &lines, &circles, &forms)
+    text(&points, &lines, &circles, &[], &numbered(&forms))
 }
 
 /// Two circles: c1 about p1 at the origin, radius a, held; c2 about p2, radius b, tangent
@@ -169,7 +159,7 @@ fn kissing(a: f64, b: f64, jitter: [f64; 3]) -> String {
         ),
         format!(r#""type": "radius", "curve": "c0000002", "value": {b}, "driving": true"#),
     ];
-    text(&points, &[], &circles, &forms)
+    text(&points, &[], &circles, &[], &numbered(&forms))
 }
 
 /// A line from p1 to p2, horizontal twice and nothing else: under-constrained (three
@@ -184,7 +174,7 @@ fn loose(x: f64, y: f64, len: f64, slope: f64) -> String {
         r#""type": "horizontal", "line": "n0000001""#.to_owned(),
         r#""type": "horizontal", "line": "n0000001""#.to_owned(),
     ];
-    text(&points, &lines, &[], &forms)
+    text(&points, &lines, &[], &[], &numbered(&forms))
 }
 
 /// A quarter arc about p1, held at (x0, y0), radius r, from p2 (level with p1, to its
@@ -214,18 +204,7 @@ fn quarter(x0: f64, y0: f64, r: f64, jitter: [f64; 4], twice: bool) -> String {
             r#""type": "radius", "curve": "a0000001", "value": {r}, "driving": true"#
         ));
     }
-    text_arcs(&points, &[], &[], &arcs, &forms)
-}
-
-fn text_arcs(
-    points: &[String],
-    lines: &[String],
-    circles: &[String],
-    arcs: &[String],
-    forms: &[String],
-) -> String {
-    let t = text(points, lines, circles, forms);
-    t.replace("\"arcs\": []", &format!("\"arcs\": [{}]", arcs.join(", ")))
+    text(&points, &[], &[], &arcs, &numbered(&forms))
 }
 
 /// An arc about p1, held at (x0, y0), radius r, from p2 to p3 (above p1); p2 held at
@@ -260,7 +239,7 @@ fn slanted(x0: f64, y0: f64, r: f64, deg: f64, jitter: [f64; 4], twice: bool) ->
             r#""type": "radius", "curve": "a0000001", "value": {r}, "driving": true"#
         ));
     }
-    text_arcs(&points, &lines, &[], &arcs, &forms)
+    text(&points, &lines, &[], &arcs, &numbered(&forms))
 }
 
 // --- Targeted ---------------------------------------------------------------------------------
@@ -382,11 +361,12 @@ fn an_implied_perpendicular_drawn_off_its_solution_saves_what_its_load_says() {
             line("n0000002", "p0000003", "p0000004"),
         ],
         &[],
-        &[
+        &[],
+        &numbered(&[
             r#""type": "horizontal", "line": "n0000001""#.to_owned(),
             r#""type": "vertical", "line": "n0000002""#.to_owned(),
             r#""type": "perpendicular", "a": "n0000001", "b": "n0000002""#.to_owned(),
-        ],
+        ]),
     ))
     .unwrap();
     let (save, load) = save_and_load(&doc, &mut worker());
@@ -535,7 +515,7 @@ fn a_refused_sketch_is_refused_with_its_code_on_every_solve() {
         r#""type": "length", "line": "n0000001", "value": 10, "driving": true"#.to_owned(),
         r#""type": "length", "line": "n0000001", "value": 20, "driving": true"#.to_owned(),
     ];
-    let doc = checked(&text(&points, &lines, &[], &forms)).unwrap();
+    let doc = checked(&text(&points, &lines, &[], &[], &numbered(&forms))).unwrap();
     let mut w = worker();
     let (save, load) = save_and_load(&doc, &mut w);
     let e = save.as_ref().unwrap_err();

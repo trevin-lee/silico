@@ -15,7 +15,7 @@
 mod saves;
 
 use proptest::prelude::*;
-use saves::{FEATURE, arc, checked, line, nm, point, said, solved, worker, written_back};
+use saves::{arc, checked, line, nm, point, said, solved, text, worker, written_back};
 use silico_core::ErrorCode;
 use silico_core::document::Checked;
 use silico_core::sketch::{SketchSolution, SketchSolver, SketchWorker};
@@ -25,26 +25,16 @@ const CLOSE: f64 = 1e-8;
 
 /// How far a kept slot's corner may sit from the analytic one: decision 5's ε = max(1e-8 mm,
 /// 1e-9 × E), E the sketch's extent, the diagonal of the box around its points
-/// (docs/design/m3.3-solving.md), worked out here from the slot's own sizes. Rectangles and triangles are held to CLOSE,
-/// which every case of their properties meets. A slot's corners are fixed through angular
-/// rows (the tangencies at its ends, its sides' parallel), carried to them by the arcs'
-/// radii, and land further off: the long slot's p2, 2e-8 mm at E 4,375 mm. A bound by hand,
-/// chaining PlaneGCS's 1e-10 per row from p1 (held) to the farthest corner, is no tighter
-/// than 1e-9 × E (a horizontal's 1e-10 mm across a short side, carried by a large arc,
-/// gives 1e-10 × r / len, looser still), so a slot's corners get the slack the core itself
-/// keeps a redundant row within.
+/// (docs/design/m3.3-solving.md), worked out here from the slot's own sizes. Rectangles and
+/// triangles are held to CLOSE, which every case of their properties meets. A slot's corners
+/// are fixed through angular rows (the tangencies at its ends, its sides' parallel), carried
+/// to them by the arcs' radii, and land further off: the long slot's p2, 2e-8 mm at
+/// E 4,375 mm. A bound by hand, chaining PlaneGCS's 1e-10 per row from p1 (held) to the
+/// farthest corner, is no tighter than 1e-9 × E (a horizontal's 1e-10 mm across a short
+/// side, carried by a large arc, gives 1e-10 × r / len, looser still), so a slot's corners
+/// get the slack the core itself keeps a redundant row within.
 fn within_decision_5(extent: f64) -> f64 {
     CLOSE.max(1e-9 * extent)
-}
-
-fn text(points: &[String], lines: &[String], arcs: &[String], constraints: &[String]) -> String {
-    format!(
-        "{{\"silico\": 1, \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}}, \"features\": [{{\"id\": \"{FEATURE}\", \"type\": \"sketch\", \"v\": 1, \"name\": \"S\", \"plane\": \"xy\", \"points\": [{}], \"lines\": [{}], \"circles\": [], \"arcs\": [{}], \"constraints\": [{}]}}]}}",
-        points.join(", "),
-        lines.join(", "),
-        arcs.join(", "),
-        constraints.join(", ")
-    )
 }
 
 /// The redundant constraints a solve names, by ID.
@@ -169,7 +159,7 @@ fn rectangle(x0: f64, y0: f64, w: f64, h: f64, jitter: [f64; 6], times: usize) -
             constraints.push(format!(r#"{{"id": "k{:07}", {f}}}"#, t * 100 + i + 1));
         }
     }
-    text(&points, &lines, &[], &constraints)
+    text(&points, &lines, &[], &[], &constraints)
 }
 
 fn rectangle_is(s: &SketchSolution, x0: f64, y0: f64, w: f64, h: f64) -> bool {
@@ -195,9 +185,9 @@ fn rectangle_is(s: &SketchSolution, x0: f64, y0: f64, w: f64, h: f64) -> bool {
 }
 
 /// A slot: centres c1 (x0, y0) and c2 (x0 + len, y0), radius r, its straight sides tangent
-/// to both arcs where they meet, drawn off by `jitter` (a fraction of the smaller of len and r), with redundancies
-/// that agree: both arcs' radii and their equality, both sides horizontal and parallel and
-/// equal, the centres level.
+/// to both arcs where they meet, drawn off by `jitter` (a fraction of the smaller of len and
+/// r), with redundancies that agree: both arcs' radii and their equality, both sides
+/// horizontal and parallel and equal, the centres level.
 fn slot(x0: f64, y0: f64, len: f64, r: f64, jitter: [f64; 6]) -> String {
     let j = |k: usize| jitter[k] * r.min(len);
     let points = [
@@ -251,7 +241,7 @@ fn slot(x0: f64, y0: f64, len: f64, r: f64, jitter: [f64; 6]) -> String {
         c(r#"{"id": "k0000014", "type": "horizontal_points", "a": "p0000001", "b": "p0000002"}"#),
         c(r#"{"id": "k0000015", "type": "equal", "a": "n0000001", "b": "n0000002"}"#),
     ];
-    text(&points, &lines, &arcs, &constraints)
+    text(&points, &lines, &[], &arcs, &constraints)
 }
 
 fn slot_is(s: &SketchSolution, x0: f64, y0: f64, len: f64, r: f64) -> bool {
@@ -325,7 +315,7 @@ fn triangle(x0: f64, y0: f64, side: f64, jitter: [f64; 4]) -> String {
             r#"{"id": "k0000009", "type": "angle", "a": "n0000002", "b": "n0000003", "value": 120, "driving": true}"#,
         ),
     ];
-    text(&points, &lines, &[], &constraints)
+    text(&points, &lines, &[], &[], &constraints)
 }
 
 fn triangle_is(s: &SketchSolution, x0: f64, y0: f64, side: f64) -> bool {
@@ -383,10 +373,7 @@ fn equal_circles(x0: f64, y0: f64, r: f64, d: f64, jitter: [f64; 2]) -> String {
         ),
         c(r#"{"id": "k0000008", "type": "equal", "a": "c0000001", "b": "c0000002"}"#),
     ];
-    text(&points, &[], &[], &constraints).replace(
-        "\"circles\": []",
-        &format!("\"circles\": [{}]", circles.join(", ")),
-    )
+    text(&points, &[], &circles, &[], &constraints)
 }
 
 fn equal_circles_are(s: &SketchSolution, r: f64) -> bool {
@@ -772,7 +759,7 @@ fn a_large_redundant_chain_is_saved_in_two_solves() {
             ));
         }
     }
-    let doc = checked(&text(&points, &lines, &[], &constraints)).unwrap();
+    let doc = checked(&text(&points, &lines, &[], &[], &constraints)).unwrap();
     let mut w = Counting {
         inner: worker(),
         sent: Vec::new(),

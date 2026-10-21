@@ -4,61 +4,22 @@
 //! where it was found.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::path::Path;
+#[path = "common/saves.rs"]
+mod saves;
+
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use proptest::prelude::*;
+use saves::{FEATURE, arc, line, nm, point, solved, text, worker, written_back};
 use silico_core::ErrorCode;
-use silico_core::document::{Checked, ElementId, FeatureId, Operation, read, write};
-use silico_core::sketch::{SketchSolution, SketchSolver, SketchWorker, Translation, solve};
+use silico_core::document::{Checked, ElementId, Operation, read};
+use silico_core::sketch::{SketchSolution, SketchSolver, SketchWorker, Translation};
 
-const WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-worker");
-const FEATURE: &str = "k7f2qx3m";
 const CLOSE: f64 = 1e-8;
 
-fn worker() -> SketchWorker {
-    SketchWorker::start_worker(Path::new(WORKER)).unwrap()
-}
-
-fn point(id: &str, x: f64, y: f64) -> String {
-    format!(r#"{{"id": "{id}", "x": {x}, "y": {y}, "construction": false}}"#)
-}
-
-fn line(id: &str, from: &str, to: &str) -> String {
-    format!(r#"{{"id": "{id}", "from": "{from}", "to": "{to}", "construction": false}}"#)
-}
-
-fn arc(id: &str, center: &str, start: &str, end: &str) -> String {
-    format!(
-        r#"{{"id": "{id}", "center": "{center}", "start": "{start}", "end": "{end}", "construction": false}}"#
-    )
-}
-
-fn text(
-    points: &[String],
-    lines: &[String],
-    circles: &[String],
-    arcs: &[String],
-    constraints: &[String],
-) -> String {
-    format!(
-        "{{\"silico\": 1, \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}}, \"features\": [{{\"id\": \"{FEATURE}\", \"type\": \"sketch\", \"v\": 1, \"name\": \"S\", \"plane\": \"xy\", \"points\": [{}], \"lines\": [{}], \"circles\": [{}], \"arcs\": [{}], \"constraints\": [{}]}}]}}",
-        points.join(", "),
-        lines.join(", "),
-        circles.join(", "),
-        arcs.join(", "),
-        constraints.join(", ")
-    )
-}
-
 fn checked(text: &str) -> Checked {
-    Checked::new(read(text.as_bytes()).unwrap())
-        .unwrap_or_else(|e| panic!("the gate refused: {:?}", e.errors()))
-}
-
-fn solved(doc: &Checked, w: &mut dyn SketchSolver) -> Result<SketchSolution, silico_core::Error> {
-    solve(doc, &FeatureId::new(FEATURE).unwrap(), w)
+    saves::checked(text).unwrap_or_else(|e| panic!("{e}"))
 }
 
 fn id(s: &str) -> ElementId {
@@ -539,11 +500,6 @@ fn redundant_rectangle(x0: f64, y0: f64, w: f64, h: f64, jitter: [f64; 6], rough
     text(&points, &lines, &[], &[], &constraints)
 }
 
-/// A whole number of nanometres, as the file holds dimensions.
-fn nm(v: f64) -> f64 {
-    (v * 1e6).round() / 1e6 + 0.0
-}
-
 #[test]
 fn a_small_redundant_rectangle_far_out_keeps_its_agreeing_constraints() {
     // A 0.01 × 0.01 mm rectangle a kilometre out, its redundancies all agreeing: spacing of
@@ -560,17 +516,6 @@ fn a_small_redundant_rectangle_far_out_keeps_its_agreeing_constraints() {
     ));
     let s = solved(&doc, &mut worker()).unwrap_or_else(|e| panic!("{e}"));
     assert!(!s.redundant.is_empty(), "{s:?}");
-}
-
-/// `doc`'s sketch with its points where `solution` puts them, through the file's text: the
-/// sketch M3.4's re-solve on load starts from.
-fn written_back(doc: &Checked, solution: &SketchSolution) -> Checked {
-    let mut document = doc.document().clone();
-    let Operation::Sketch(sketch) = &mut document.features[0].operation else {
-        panic!("not a sketch")
-    };
-    *sketch = solution.written(sketch);
-    checked(&write(&document).unwrap())
 }
 
 /// The bits of each point's coordinates, by ID.

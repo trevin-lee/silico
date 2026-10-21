@@ -20,25 +20,10 @@
 mod saves;
 
 use proptest::prelude::*;
-use saves::{FEATURE, circle, point, solved, worker, written_back};
+use saves::{circle, construction_line, k, line, point, solved, text, worker, written_back};
 use silico_core::ErrorCode;
 use silico_core::document::{Checked, ElementId};
 use silico_core::sketch::{SketchSolution, SketchSolver, SketchWorker};
-
-/// A line, construction or not.
-fn line(id: &str, from: &str, to: &str, construction: bool) -> String {
-    format!(r#"{{"id": "{id}", "from": "{from}", "to": "{to}", "construction": {construction}}}"#)
-}
-
-fn text(points: &[String], lines: &[String], circles: &[String], constraints: &[String]) -> String {
-    format!(
-        "{{\"silico\": 1, \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}}, \"features\": [{{\"id\": \"{FEATURE}\", \"type\": \"sketch\", \"v\": 1, \"name\": \"S\", \"plane\": \"xy\", \"points\": [{}], \"lines\": [{}], \"circles\": [{}], \"arcs\": [], \"constraints\": [{}]}}]}}",
-        points.join(", "),
-        lines.join(", "),
-        circles.join(", "),
-        constraints.join(", ")
-    )
-}
 
 /// `text`, read and gated.
 fn checked(text: &str) -> Checked {
@@ -49,11 +34,7 @@ fn at(s: &SketchSolution, id: &str) -> [f64; 2] {
     s.point(&ElementId::new(id).unwrap()).unwrap()
 }
 
-fn k(id: u32, form: &str) -> String {
-    format!(r#"{{"id": "k{id:07}", {form}}}"#)
-}
-
-fn fix(id: u32, p: &str, x: f64, y: f64) -> [String; 2] {
+fn fix(id: usize, p: &str, x: f64, y: f64) -> [String; 2] {
     [
         k(
             id,
@@ -78,7 +59,7 @@ fn short_line(jitter: [f64; 2]) -> (Vec<String>, Vec<String>, Vec<String>) {
         point("p0000001", 1.0, 1.0),
         point("p0000002", 4.0 + jitter[0], 5.0 + jitter[1]),
     ];
-    let lines = vec![line("n0000001", "p0000001", "p0000002", false)];
+    let lines = vec![line("n0000001", "p0000001", "p0000002")];
     let mut constraints = fix(1, "p0000001", 1.0, 1.0).to_vec();
     constraints.push(k(
         3,
@@ -131,7 +112,7 @@ fn far_point_on_line(jitter: [f64; 2]) -> Checked {
         7,
         r#""type": "on", "point": "p0000003", "curve": "n0000001""#,
     ));
-    checked(&text(&points, &lines, &[], &constraints))
+    checked(&text(&points, &lines, &[], &[], &constraints))
 }
 
 #[test]
@@ -196,7 +177,7 @@ proptest! {
         points.push(point("p0000003", x, y));
         constraints.extend(fix(5, "p0000003", x, y));
         constraints.push(k(7, r#""type": "on", "point": "p0000003", "curve": "n0000001""#));
-        let doc = checked(&text(&points, &lines, &[], &constraints));
+        let doc = checked(&text(&points, &lines, &[], &[], &constraints));
         let s = W.with(|w| save_and_load(&doc, &mut *w.borrow_mut()));
         // Found by break-it, fixed as above: the first failure was 5380 × 5 mm (27 m) along,
         // the line's end drawn 8.3e-6 mm high: a gap of 1.0000076e-8 mm against the longest
@@ -233,6 +214,7 @@ fn far_circle_tangent_to_a_short_line_is_kept() {
             &points,
             &lines,
             &[circle("c0000001", "p0000003", 5.0)],
+            &[],
             &constraints,
         ));
         if let Err(e) = save_and_load(&doc, &mut w) {
@@ -260,6 +242,7 @@ fn far_circle_of_radius(radius: &str) -> Checked {
         &points,
         &lines,
         &[circle("c0000001", "p0000003", 5.0)],
+        &[],
         &constraints,
     ))
 }
@@ -310,7 +293,7 @@ fn far_points_symmetric_about_a_short_line_are_kept() {
             9,
             r#""type": "symmetric", "a": "p0000003", "b": "p0000004", "about": "n0000001""#,
         ));
-        let doc = checked(&text(&points, &lines, &[], &constraints));
+        let doc = checked(&text(&points, &lines, &[], &[], &constraints));
         match save_and_load(&doc, &mut w) {
             Ok(s) => {
                 if at(&s, "p0000003") != [800001.0, 600001.0]
@@ -339,11 +322,11 @@ fn twice_dimensioned_beside(second: f64, length: f64, far: Option<f64>) -> Check
         point("p0000001", 1.0, 1.0),
         point("p0000002", 1.0 + length, 1.0),
     ];
-    let mut lines = vec![line("n0000001", "p0000001", "p0000002", false)];
+    let mut lines = vec![line("n0000001", "p0000001", "p0000002")];
     if let Some(far) = far {
         points.push(point("p0000003", -500000.0, -900000.0));
         points.push(point("p0000004", -500000.0 + far, -900000.0));
-        lines.push(line("n0000002", "p0000003", "p0000004", true));
+        lines.push(construction_line("n0000002", "p0000003", "p0000004"));
     }
     let mut constraints = fix(1, "p0000001", 1.0, 1.0).to_vec();
     constraints.push(k(3, r#""type": "horizontal", "line": "n0000001""#));
@@ -357,7 +340,7 @@ fn twice_dimensioned_beside(second: f64, length: f64, far: Option<f64>) -> Check
             r#""type": "distance", "a": "p0000001", "b": "p0000002", "value": {second}, "driving": true"#
         ),
     ));
-    checked(&text(&points, &lines, &[], &constraints))
+    checked(&text(&points, &lines, &[], &[], &constraints))
 }
 
 #[test]
@@ -411,8 +394,8 @@ fn twice_dimensioned_in_a_row(second: f64, to: f64) -> Checked {
         point("p0000004", to, 1.0),
     ];
     let lines = [
-        line("n0000001", "p0000001", "p0000002", false),
-        line("n0000002", "p0000003", "p0000004", true),
+        line("n0000001", "p0000001", "p0000002"),
+        construction_line("n0000002", "p0000003", "p0000004"),
     ];
     let mut constraints = fix(1, "p0000001", 1.0, 1.0).to_vec();
     constraints.push(k(3, r#""type": "horizontal", "line": "n0000001""#));
@@ -426,7 +409,7 @@ fn twice_dimensioned_in_a_row(second: f64, to: f64) -> Checked {
             r#""type": "distance", "a": "p0000001", "b": "p0000002", "value": {second}, "driving": true"#
         ),
     ));
-    checked(&text(&points, &lines, &[], &constraints))
+    checked(&text(&points, &lines, &[], &[], &constraints))
 }
 
 #[test]
@@ -451,7 +434,7 @@ fn two_lengths_a_nanometre_apart_conflict_within_a_metres_extent_and_agree_past_
 /// to x_axis as well.
 fn tiny_line(len: f64, angle: f64) -> Checked {
     let points = vec![point("p0000001", 0.0, 0.0), point("p0000002", len, 0.0)];
-    let lines = vec![line("n0000001", "p0000001", "p0000002", false)];
+    let lines = vec![line("n0000001", "p0000001", "p0000002")];
     let constraints = vec![
         k(1, r#""type": "on", "point": "p0000001", "curve": "x_axis""#),
         k(2, r#""type": "on", "point": "p0000001", "curve": "y_axis""#),
@@ -463,7 +446,7 @@ fn tiny_line(len: f64, angle: f64) -> Checked {
             ),
         ),
     ];
-    checked(&text(&points, &lines, &[], &constraints))
+    checked(&text(&points, &lines, &[], &[], &constraints))
 }
 
 #[test]
@@ -501,7 +484,7 @@ fn a_point_715_mm_along_a_5_mm_lines_extension_is_kept() {
         7,
         r#""type": "on", "point": "p0000003", "curve": "n0000001""#,
     ));
-    let doc = checked(&text(&points, &lines, &[], &constraints));
+    let doc = checked(&text(&points, &lines, &[], &[], &constraints));
     let mut w = worker();
     let s = save_and_load(&doc, &mut w).unwrap();
     assert_eq!(at(&s, "p0000003"), [430.0, 573.0]);
@@ -519,7 +502,7 @@ fn far_point_held_at(y: f64) -> Checked {
         7,
         r#""type": "on", "point": "p0000003", "curve": "n0000001""#,
     ));
-    checked(&text(&points, &lines, &[], &constraints))
+    checked(&text(&points, &lines, &[], &[], &constraints))
 }
 
 #[test]
@@ -635,7 +618,7 @@ proptest! {
         points.push(point("p0000003", x, y));
         constraints.extend(fix(5, "p0000003", x, y));
         constraints.push(k(7, r#""type": "on", "point": "p0000003", "curve": "n0000001""#));
-        let doc = checked(&text(&points, &lines, &[], &constraints));
+        let doc = checked(&text(&points, &lines, &[], &[], &constraints));
         let s = W.with(|w| save_and_load(&doc, &mut *w.borrow_mut()));
         prop_assert!(s.is_ok(), "{} along: {}", along, s.unwrap_err());
     }
