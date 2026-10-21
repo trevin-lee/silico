@@ -1,6 +1,8 @@
 //! The worker pool's idle slots, with worker binaries that are shell scripts: what a slot
 //! does about a worker that never says it started needs no kernel. The pool's tests with
-//! real workers are silico-kernel's (tests/pool.rs, tests/adversarial_pool.rs).
+//! real workers are silico-kernel's (tests/pool.rs, tests/adversarial_pool.rs), whose
+//! launch-log helpers these follow (silico-kernel's tests/common/pool.rs and
+//! adversarial_pool.rs): a fix to one is likely due in the other.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::os::unix::fs::PermissionsExt as _;

@@ -568,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cache_file_is_read_only_if_its_a_regular_file() {
+    fn a_cache_file_is_read_exactly_when_its_a_regular_file() {
         // Found by the milestone's mutation run: each of these came to a miss through
         // `Cache::get` whatever `read_file` said, so a wrong answer passed every test.
         let scratch = Scratch::new("read-file");

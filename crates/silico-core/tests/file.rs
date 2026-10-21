@@ -196,8 +196,9 @@ fn a_save_cut_short_leaves_nothing_more_open_than_the_document() {
     // was made with every permission (mode | 0o777, not mode & 0o777) and narrowed only
     // before it was renamed, which passed every test. Killed by a file-size limit (a
     // shell's `ulimit -f`, SIGXFSZ) as it grows the new file, under no umask, the save
-    // leaves that file: it holds the next text of a document others may not read, so
-    // others may not read it either. On macOS the signal goes to the process, not the
+    // leaves that file. Cut short here while it grows, it's empty, so only its mode is
+    // checked: a save cut short after writing would leave the next text of a document
+    // others may not read, so others may not read the file either. On macOS the signal goes to the process, not the
     // thread that grew the file, which may run on and remove the file (or exit) before
     // the process ends: tried until a run leaves the file.
     use std::os::unix::fs::PermissionsExt as _;
