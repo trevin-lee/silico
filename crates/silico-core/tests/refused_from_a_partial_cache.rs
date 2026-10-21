@@ -327,7 +327,17 @@ fn a_refused_pocket_on_a_dead_but_unrefused_pocket_builds_none_of_its_own_missin
         cut.to_owned(),
         mid.clone(),
     ];
-    published(&first, &refs(&base));
+    let built = published(&first, &refs(&base));
+    // The middle pocket's cut holds: in run 2 it's dead (made from a refused pocket), not
+    // refused itself, the case this test is for.
+    assert!(
+        matches!(
+            built.outcome(&id("dddddddd")),
+            Some(FeatureOutcome::Built { .. })
+        ),
+        "{:?}",
+        built.outcome(&id("dddddddd"))
+    );
     let had = scratch.entries();
     let mut with_pocket = base.clone();
     with_pocket.push(on_mid.clone());
