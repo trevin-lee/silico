@@ -48,7 +48,7 @@ fn a_worker_call_descends_from_the_span_that_asked_for_it() {
         .in_scope(|| one.run(KernelRequest::echo(Blob::inline(vec![1]))))
         .unwrap();
 
-    let pool = KernelPool::start_workers(Path::new(WORKER), 2).unwrap();
+    let pool = KernelPool::start_on_demand(Path::new(WORKER), 2).unwrap();
     let pending =
         feature.in_scope(|| pool.submit(Generation(1), KernelRequest::echo(Blob::inline(vec![2]))));
     match pending.wait_timeout(Duration::from_secs(30)) {

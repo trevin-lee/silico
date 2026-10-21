@@ -245,7 +245,7 @@ fn a_cone_brought_to_a_point_breaks_a_reference_to_the_rim_it_lost_and_keeps_the
     // a point (r2 → 0) and the cone has no top cap: the top rim's fillet breaks, offering
     // the base rim, never taking it; the base rim's still builds. The same at the base.
     let engine = Recompute::new(
-        KernelPool::start_workers(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")), 2)
+        KernelPool::start_on_demand(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")), 2)
             .unwrap(),
     );
     let top = "hhhhhhhh.cut.Edge(G kkkkkkkk.cone.Face2, G pppppppp.cylinder.Face1)";

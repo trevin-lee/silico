@@ -63,7 +63,7 @@ fn a_blocked_superseded_log_neither_holds_the_pool_nor_loses_its_span() {
     let layer = Blocking::default();
     tracing::subscriber::set_global_default(tracing_subscriber::registry().with(layer.clone()))
         .unwrap();
-    let pool = KernelPool::start_workers(Path::new(TEST_WORKER), 1).unwrap();
+    let pool = KernelPool::start_on_demand(Path::new(TEST_WORKER), 1).unwrap();
     pool.set_stop_after(Duration::ZERO);
     let feature = tracing::info_span!("recompute_feature", feature = "pad1");
     let stopped = feature.in_scope(|| {

@@ -75,8 +75,9 @@ fn an_occt_warning_in_a_worker_traces_back_to_the_step_and_the_edit_with_more_wo
     .unwrap();
     // One worker, so each warning's step is followed on it by the next step (the cut on the
     // fuse), which may be asked before the warning's line is read.
-    let pool = KernelPool::start_workers(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")), 1)
-        .unwrap();
+    let pool =
+        KernelPool::start_on_demand(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")), 1)
+            .unwrap();
     let engine = Recompute::new(pool);
     let rounds = 200;
     for i in 0..rounds {

@@ -472,7 +472,7 @@ fn a_recomputed_holes_names_say_how_each_element_came_about() {
         {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
         {"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de"}
     ]}"#;
-    let pool = KernelPool::start_workers(
+    let pool = KernelPool::start_on_demand(
         std::path::Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")),
         2,
     )
@@ -575,7 +575,7 @@ fn plate_with_holes(xs: &[(u32, f64)]) -> silico_core::document::Checked {
 }
 
 fn occt_engine() -> silico_core::recompute::Recompute<silico_core::pool::KernelPool> {
-    let pool = silico_core::pool::KernelPool::start_workers(
+    let pool = silico_core::pool::KernelPool::start_on_demand(
         std::path::Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")),
         2,
     )

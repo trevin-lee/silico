@@ -34,8 +34,9 @@ fn the_recompute_and_edit_spans_close_once_the_recompute_is_done() {
     .unwrap();
     let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "features": [{"id": "s0000001", "type": "sphere", "v": 1, "name": "Ball", "position": [0, 0, 0], "radius": 5}]}"#;
     let document = Checked::new(read(text.as_bytes()).unwrap()).unwrap();
-    let pool = KernelPool::start_workers(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")), 1)
-        .unwrap();
+    let pool =
+        KernelPool::start_on_demand(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")), 1)
+            .unwrap();
     // The engine (and its worker) stays: the spans must close without a next request.
     let engine = Recompute::new(pool);
     {

@@ -100,8 +100,9 @@ fn a_worker_line_read_long_after_its_request_still_goes_under_its_span() {
         ),
     )
     .unwrap();
-    let pool = KernelPool::start_workers(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")), 1)
-        .unwrap();
+    let pool =
+        KernelPool::start_on_demand(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")), 1)
+            .unwrap();
     let engine = Recompute::new(pool);
     // Few enough that the worker's lines (a warning and three done lines a round) fit in the
     // queue to the sink while it's stalled, so none is dropped; more than one, so a line

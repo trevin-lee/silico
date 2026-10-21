@@ -1709,3 +1709,382 @@ fn on_the_pool_no_result_of_an_older_generation_arrives_after_advance_returns() 
     );
     assert_eq!(late, None);
 }
+
+// ---------------------------------------------------------------------------------------
+// break-it: slots started on demand (KernelPool::start_on_demand, grow, State::started and
+// busy, the Busy guard). Requests one after another, bursts from many threads, drops and
+// advances while slots start, and executables that change before any worker has started.
+
+/// A pool whose slots start on demand, as `KernelPool::start`'s do.
+fn on_demand(exe: &str, size: usize) -> KernelPool {
+    KernelPool::start_on_demand(Path::new(exe), size).unwrap()
+}
+
+#[test]
+fn requests_one_after_another_on_demand_start_one_worker_and_one_slot() {
+    // Requests one after another run on one worker. Each request is
+    // submitted only once the one before it has come back, so no two are ever waiting or
+    // running at once: a second slot (a second thread, and with its first request a second
+    // worker) is never needed.
+    let pool = on_demand(TEST_WORKER, 8);
+    done(pool.submit(Generation(1), sleep(0))).unwrap();
+    let first = pool.pids();
+    assert_eq!(first.len(), 1, "{first:?}");
+    let before = threads();
+    let mut grew_at = None;
+    // Many: the race (a caller submitting on its result as the slot lets go of it) is
+    // narrow, and a single run of a few thousand missed it one time in five.
+    for i in 0..20_000u32 {
+        done(pool.submit(Generation(1), echo(&[i as u8]))).unwrap();
+        if grew_at.is_none() && pool.pids().len() > 1 {
+            grew_at = Some(i);
+        }
+    }
+    // Found by break-it, against an earlier version: a slot let go of its request only
+    // after the outcome was delivered and its loop iteration ended, so a caller woken by
+    // the outcome that submitted the next at once could find every started slot busy, and
+    // `grow` started another: two slots, and two workers, for requests that never
+    // overlapped (9 runs of 9). Now the slot is freed under the lock that delivers.
+    assert_eq!(
+        pool.pids(),
+        first,
+        "requests one after another started more workers (the second at request {grew_at:?})"
+    );
+    assert_eq!(
+        threads(),
+        before,
+        "requests one after another started more slots"
+    );
+}
+
+#[test]
+fn a_request_after_one_that_crashed_its_worker_waits_for_the_slot_not_a_new_one() {
+    // Requests one after another, every other one crashing its worker: the slot replaces it
+    // (a new process) after the crash is reported, free, so the next request, submitted the
+    // moment the crash is reported, waits for it rather than starting another slot.
+    let pool = on_demand(TEST_WORKER, 4);
+    for _ in 0..10 {
+        let err =
+            done(pool.submit(Generation(1), KernelRequest::debug(DebugOp::Abort))).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+        done(pool.submit(Generation(1), sleep(0))).unwrap();
+    }
+    // Found by break-it, against an earlier version, which replaced the worker with the
+    // slot still counted busy: the request after the first crash grew the pool by a slot
+    // and a worker (4 runs of 5), two held for work that never ran two at once.
+    let pids = wait_full(&pool, pool.pids().len(), &BTreeSet::new());
+    assert_eq!(pids.len(), 1, "{pids:?}");
+}
+
+#[test]
+fn bursts_from_many_threads_on_demand_never_pass_the_size_and_every_request_ends() {
+    // Sixteen threads submit at once, again and again, to a pool of three opened on demand:
+    // every request comes back with its own bytes, the pool never holds more than three
+    // workers, and it holds three (the bursts need them all).
+    let pool = on_demand(TEST_WORKER, 3);
+    let before = threads();
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..16u8)
+            .map(|t| {
+                let pool = &pool;
+                scope.spawn(move || {
+                    for round in 0..50u32 {
+                        let pending: Vec<_> = (0..4u32)
+                            .map(|k| {
+                                let bytes: Vec<u8> = [t]
+                                    .into_iter()
+                                    .chain((round * 4 + k).to_le_bytes())
+                                    .collect();
+                                (bytes.clone(), pool.submit(Generation(1), echo(&bytes)))
+                            })
+                            .collect();
+                        for (bytes, p) in pending {
+                            assert_eq!(done(p).unwrap(), Blob::inline(bytes));
+                        }
+                        assert!(pool.pids().len() <= 3, "{:?}", pool.pids());
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+    });
+    assert_eq!(pool.pids().len(), 3, "{:?}", pool.pids());
+    // Each slot is a thread and each worker at most a few (its log reader): the pool's
+    // threads are bounded by its size, however many submitted.
+    let grown = threads().saturating_sub(before);
+    assert!(grown <= 3 * 4, "the pool grew {grown} threads for 3 slots");
+    drop(pool);
+    wait_no_children("after the drop");
+}
+
+#[test]
+fn many_submitters_and_advancers_on_demand_never_cross_results() {
+    // The race of `many_submitters_and_advancers_never_cross_results` on a pool whose
+    // slots start as the race needs them, with superseded requests stopped at once (their
+    // workers condemned, killed, and replaced while slots are still starting).
+    let pool = on_demand(TEST_WORKER, 3);
+    pool.set_stop_after(Duration::ZERO);
+    std::thread::scope(|scope| {
+        let submitters: Vec<_> = (0..8u8)
+            .map(|t| {
+                let pool = &pool;
+                scope.spawn(move || {
+                    let mut sent = Vec::new();
+                    for n in 0..150u32 {
+                        let bytes: Vec<u8> = [t].into_iter().chain(n.to_le_bytes()).collect();
+                        let g = pool.generation().0 + u64::from(n % 3 == 0);
+                        // Some sleep, so slots are busy and condemned while others start.
+                        if n % 5 == 0 {
+                            sent.push((
+                                g,
+                                None,
+                                AnyPending::Unit(pool.submit(Generation(g), sleep(3))),
+                            ));
+                        } else {
+                            sent.push((
+                                g,
+                                Some(bytes.clone()),
+                                AnyPending::Blob(pool.submit(Generation(g), echo(&bytes))),
+                            ));
+                        }
+                    }
+                    sent
+                })
+            })
+            .collect();
+        let advancer = {
+            let pool = &pool;
+            scope.spawn(move || {
+                for _ in 0..200 {
+                    pool.advance(Generation(pool.generation().0 + 1));
+                    std::thread::sleep(Duration::from_micros(300));
+                }
+            })
+        };
+        let sent: Vec<_> = submitters
+            .into_iter()
+            .flat_map(|s| s.join().unwrap())
+            .collect();
+        advancer.join().unwrap();
+        let last = pool.generation();
+        for (g, bytes, p) in sent {
+            match p.wait() {
+                Ended::Done(Ok(got)) => {
+                    if let Some(bytes) = bytes {
+                        assert_eq!(got, Some(Blob::inline(bytes)));
+                    }
+                }
+                // A superseded sleep ends superseded, even if its worker was killed: never
+                // an error.
+                Ended::Done(Err(e)) => panic!("generation {g} (last {last:?}): {e}"),
+                Ended::Superseded => assert!(g < last.0, "{g} superseded, newest {last:?}"),
+            }
+        }
+    });
+    assert!(pool.pids().len() <= 3, "{:?}", pool.pids());
+    let last = pool.generation();
+    assert_eq!(
+        done(pool.submit(last, echo(&[42]))).unwrap(),
+        Blob::inline(vec![42])
+    );
+    drop(pool);
+    wait_no_children("after the drop");
+}
+
+/// A pending request of either kind, for the race above.
+enum AnyPending {
+    Unit(silico_core::pool::Pending<()>),
+    Blob(silico_core::pool::Pending<Blob>),
+}
+
+enum Ended {
+    Done(Result<Option<Blob>, silico_core::Error>),
+    Superseded,
+}
+
+impl AnyPending {
+    fn wait(self) -> Ended {
+        match self {
+            AnyPending::Unit(p) => match outcome(p) {
+                Outcome::Done(r) => Ended::Done(r.map(|()| None)),
+                Outcome::Superseded => Ended::Superseded,
+            },
+            AnyPending::Blob(p) => match outcome(p) {
+                Outcome::Done(r) => Ended::Done(r.map(Some)),
+                Outcome::Superseded => Ended::Superseded,
+            },
+        }
+    }
+}
+
+#[test]
+fn dropping_an_on_demand_pool_while_its_slots_start_stops_at_once() {
+    // Eight long requests to a pool of eight with no slot started: each submit starts a
+    // slot, whose first request starts its worker. A drop swept over those starts must
+    // still kill every worker at once (a worker started after the drop listed the killers
+    // is never given its request), end every request without a result, and leave no
+    // process behind.
+    const SLEEP: Duration = Duration::from_secs(30);
+    for attempt in 0..40u32 {
+        let pool = on_demand(TEST_WORKER, 8);
+        let pending: Vec<_> = (0..8)
+            .map(|_| pool.submit(Generation(1), sleep(SLEEP.as_millis() as u64)))
+            .collect();
+        spin(Duration::from_micros(u64::from(attempt) * 250));
+        let start = Instant::now();
+        drop(pool);
+        let took = start.elapsed();
+        assert!(
+            took < Duration::from_secs(10),
+            "attempt {attempt}: the drop took {took:?}"
+        );
+        for p in pending {
+            let err = done(p).unwrap_err();
+            assert_eq!(err.code(), ErrorCode::Internal, "attempt {attempt}: {err}");
+        }
+        wait_no_children(&format!("attempt {attempt}"));
+    }
+}
+
+#[test]
+fn an_on_demand_pool_advanced_before_any_slot_started() {
+    // Nothing started: an advance has nothing to stop, a stale request is superseded
+    // without starting a slot, and a current one starts the first.
+    let pool = on_demand(TEST_WORKER, 4);
+    pool.set_stop_after(Duration::ZERO);
+    let before = threads();
+    pool.advance(Generation(5));
+    assert!(matches!(
+        pool.submit(Generation(3), echo(&[3])).try_take().ok(),
+        Some(Outcome::Superseded)
+    ));
+    assert_eq!(pool.pids(), Vec::<u32>::new());
+    assert_eq!(threads(), before, "a superseded request started a slot");
+    assert_eq!(
+        done(pool.submit(Generation(5), echo(&[5]))).unwrap(),
+        Blob::inline(vec![5])
+    );
+    assert_eq!(pool.pids().len(), 1);
+}
+
+#[test]
+fn a_request_superseded_while_its_slot_starts_its_first_worker() {
+    // A slot's first request is superseded around the moment its worker starts (swept over
+    // that moment), with the stop-after zero: it ends superseded, never with a result or a
+    // crash, and the pool goes on with one worker.
+    let pool = on_demand(TEST_WORKER, 2);
+    pool.set_stop_after(Duration::ZERO);
+    let mut g = 1u64;
+    for attempt in 0..100u32 {
+        let p = pool.submit(Generation(g), sleep(2_000));
+        spin(Duration::from_micros(u64::from(attempt % 50) * 200));
+        g += 1;
+        pool.advance(Generation(g));
+        match outcome(p) {
+            Outcome::Superseded => {}
+            Outcome::Done(r) => panic!("attempt {attempt}: {r:?}"),
+        }
+        assert_eq!(
+            done(pool.submit(Generation(g), echo(&[attempt as u8]))).unwrap(),
+            Blob::inline(vec![attempt as u8])
+        );
+    }
+    assert!(pool.pids().len() <= 2, "{:?}", pool.pids());
+}
+
+#[test]
+fn an_on_demand_pool_whose_executable_changes_before_its_first_request() {
+    // The pool's identity is the executable's as it opened. Changed before any worker
+    // started, the first request must fail naming the change, not run another build
+    // under the old identity; put back as it was, requests run again.
+    let dir = scratch_dir("changed-before-first");
+    let exe = dir.join("silico-kernel-test-worker");
+    let original = format!("#!/bin/sh\nexec '{TEST_WORKER}'\n");
+    write_executable(&exe, &original);
+    let pool = KernelPool::start_on_demand(&exe, 2).unwrap();
+    write_executable(
+        &exe,
+        &format!("#!/bin/sh\n# another build\nexec '{TEST_WORKER}'\n"),
+    );
+    let err = done(pool.submit(Generation(1), echo(&[1]))).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert!(
+        err.message().contains("changed since the pool started"),
+        "{err}"
+    );
+    assert_eq!(pool.pids(), Vec::<u32>::new());
+    write_executable(&exe, &original);
+    assert_eq!(
+        done(pool.submit(Generation(1), echo(&[2]))).unwrap(),
+        Blob::inline(vec![2])
+    );
+    // Deleted: the request fails as an install that can't run, and a restore is used by
+    // the next request at once (a request never waits out a slot's retry).
+    let held = pool.pids();
+    kill9_and_wait(held[0]);
+    std::fs::remove_file(&exe).unwrap();
+    let err = done(pool.submit(Generation(1), echo(&[3]))).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    write_executable(&exe, &original);
+    let at = Instant::now();
+    assert_eq!(
+        done(pool.submit(Generation(1), echo(&[4]))).unwrap(),
+        Blob::inline(vec![4])
+    );
+    let restored = at.elapsed();
+    // Against a worker's start, now, on this machine (loaded or not): within it and less
+    // than half the retry wait a failed start begins (IDLE_CHECK), not the wait as well.
+    let cold = on_demand(TEST_WORKER, 1);
+    let at = Instant::now();
+    done(cold.submit(Generation(1), echo(&[5]))).unwrap();
+    let start = at.elapsed();
+    drop(cold);
+    assert!(
+        restored < start + IDLE_CHECK / 2,
+        "the restore waited: {restored:?}, a start {start:?}"
+    );
+    drop(pool);
+    wait_no_children("after the drop");
+}
+
+#[test]
+fn failed_starts_one_after_another_start_one_slot() {
+    // A worker that can't start fails each request, and frees its slot before the failure
+    // is delivered: a caller that submits on it finds the slot free, and no slot more is
+    // started (found by review: freed after, a few thousand failures one after another
+    // grew the pool to its size).
+    let dir = scratch_dir("failed-starts");
+    let exe = dir.join("silico-kernel-test-worker");
+    write_executable(&exe, &format!("#!/bin/sh\nexec '{TEST_WORKER}'\n"));
+    let pool = on_demand(exe.to_str().unwrap(), 8);
+    std::fs::remove_file(&exe).unwrap();
+    assert!(done(pool.submit(Generation(1), echo(&[0]))).is_err());
+    let before = threads();
+    for i in 0..3000u32 {
+        assert!(done(pool.submit(Generation(1), echo(&[i as u8]))).is_err());
+    }
+    assert_eq!(
+        threads(),
+        before,
+        "failed starts one after another started more slots"
+    );
+}
+
+#[test]
+fn an_on_demand_pool_of_one_crashing_every_request_never_wedges() {
+    // One slot, every other request crashing its worker: the slot's busy count must come
+    // back exactly once each time; released twice, it would underflow and end the only
+    // slot's thread, and a later request would wait with no slot to take it.
+    let pool = on_demand(TEST_WORKER, 1);
+    for i in 0..30u32 {
+        let op = [DebugOp::Abort, DebugOp::Segfault, DebugOp::Garbage][(i % 3) as usize].clone();
+        assert!(done(pool.submit(Generation(1), KernelRequest::debug(op))).is_err());
+        assert_eq!(
+            done(pool.submit(Generation(1), echo(&[i as u8]))).unwrap(),
+            Blob::inline(vec![i as u8])
+        );
+    }
+    assert_eq!(pool.pids().len(), 1);
+}

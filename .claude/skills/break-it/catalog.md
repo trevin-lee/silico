@@ -170,6 +170,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A fallback step appended to a chain of attempts: time the whole chain on one failing component at a fraction of the size limit (an impossible chain of 1,024 unknowns: DogLeg 11 s, LM 29 s, BFGS 0.2 s, anchored SQP 33 s, past a 60 s request), not each step alone
 - Worker refusals passed up as they came (a value index, `kernel_failed`, no feature): check the core adds the feature and maps indices to the elements it knows
 - Log sinks that misbehave each way, as a global `tracing` layer under a shell-script worker that writes chosen log bytes: stalled on events, stalled in `on_close` (a synchronous span exporter), panicking, merely slower than the reader (a `fmt` layer to a file, in a 20,000-line burst); check every line is given or counted, counts are said promptly, crash reports still wait for a log a worker's child holds open, and no lock is held while sink code runs
+- A pool that grows on demand, fed requests strictly one after another (thousands of submit-then-wait, and every other one crashing its worker): a slot that counts itself busy until after it has delivered, or while it replaces its worker, makes the next submit start another slot and worker
 
 ## Recompute and scheduling
 

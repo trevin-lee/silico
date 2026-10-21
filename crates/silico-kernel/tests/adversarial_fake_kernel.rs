@@ -20,7 +20,7 @@ use silico_core::kernel::{
 use silico_core::pool::{KernelPool, Outcome, Pending};
 
 fn pool() -> KernelPool {
-    KernelPool::start_workers(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")), 2).unwrap()
+    KernelPool::start_on_demand(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")), 2).unwrap()
 }
 
 fn outcome<T>(pending: Pending<T>) -> Outcome<T> {

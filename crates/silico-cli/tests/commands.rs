@@ -404,36 +404,35 @@ fn checking_several_files_starts_its_workers_once_whatever_their_directories() {
     // Found by the review: each file started a pool of its own, files × cores workers
     // with nothing to build. Counted from the workers' start log.
     let scratch = Scratch::new("one-pool");
-    let exe = Path::new(env!("CARGO_BIN_EXE_silico"));
     let started = |files: &[&str]| -> usize {
-        let out = Command::new(exe)
-            .arg("check")
-            .args(files.iter().map(|f| scratch.0.join(f)))
-            .env(
-                "SILICO_KERNEL_WORKER",
-                exe.with_file_name("silico-kernel-worker"),
-            )
-            .env("XDG_CACHE_HOME", scratch.0.join("cache-home"))
-            .env("SILICO_LOG", "debug")
-            .stdin(Stdio::null())
-            .output()
-            .unwrap();
-        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-        stderr(&out).matches("started kernel worker").count()
+        let paths: Vec<PathBuf> = files.iter().map(|f| scratch.0.join(f)).collect();
+        kernel_workers_started(&scratch, &paths)
     };
     std::fs::create_dir(scratch.0.join("x")).unwrap();
     std::fs::create_dir(scratch.0.join("y")).unwrap();
-    for name in ["x/a.silico", "x/b.silico", "y/c.silico", "y/d.silico"] {
-        std::fs::write(scratch.0.join(name), EXAMPLE).unwrap();
+    // Each file a block of its own length, so none is in the cache before its run, and its
+    // rebuild (requests one after another) needs a worker: the one pool's one worker, for
+    // every file of a run.
+    let names = [
+        "x/a.silico",
+        "x/b.silico",
+        "x/c.silico",
+        "y/d.silico",
+        "x/e.silico",
+        "y/f.silico",
+        "x/g.silico",
+    ];
+    for (i, name) in names.iter().enumerate() {
+        let block = EXAMPLE.replace(r#""length": 40"#, &format!(r#""length": {}"#, 40 + i));
+        std::fs::write(scratch.0.join(name), block).unwrap();
     }
-    let one = started(&["x/a.silico"]);
-    assert!(one > 0);
-    assert_eq!(started(&["x/a.silico", "x/b.silico"]), one);
+    assert_eq!(started(&["x/a.silico"]), 1);
+    assert_eq!(started(&["x/b.silico", "x/c.silico"]), 1);
     // Directories in turn, each with its own cache, on the one pool (the review found a
     // pool started at every change of directory).
     assert_eq!(
-        started(&["x/a.silico", "y/c.silico", "x/b.silico", "y/d.silico"]),
-        one
+        started(&["y/d.silico", "x/e.silico", "y/f.silico", "x/g.silico"]),
+        1
     );
     for dir in ["x", "y"] {
         assert!(scratch.0.join(dir).join(".silico-cache").is_dir(), "{dir}");
@@ -589,4 +588,48 @@ fn a_sketch_worker_that_cant_be_found_is_exit_2_and_nothing_is_written() {
     let out = run(&["fmt"]);
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
     assert_eq!(std::fs::read_to_string(&file).unwrap(), RECTANGLE);
+}
+
+/// How many kernel workers `silico check FILES` started (from the workers' start log),
+/// failing unless it found nothing wrong.
+fn kernel_workers_started(scratch: &Scratch, files: &[PathBuf]) -> usize {
+    let exe = Path::new(env!("CARGO_BIN_EXE_silico"));
+    let out = Command::new(exe)
+        .arg("check")
+        .args(files)
+        .env(
+            "SILICO_KERNEL_WORKER",
+            exe.with_file_name("silico-kernel-worker"),
+        )
+        .env(
+            "SILICO_SKETCH_WORKER",
+            exe.with_file_name("silico-sketch-worker"),
+        )
+        .env("XDG_CACHE_HOME", scratch.0.join("cache-home"))
+        .env("SILICO_LOG", "silico_core::worker=debug")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    stderr(&out).matches("started kernel worker").count()
+}
+
+#[test]
+fn check_starts_only_the_kernel_workers_its_rebuild_needs() {
+    // A slot for each core, but a worker only for the requests run at once: a block's
+    // rebuild, its requests one after another, starts one; from the cache, none. (A worker
+    // a core cost each run its start, which on a loaded Linux machine was most of the time
+    // of a small document's check.)
+    let scratch = Scratch::new("workers-needed");
+    let file = scratch.0.join("part.silico");
+    std::fs::write(&file, EXAMPLE).unwrap();
+    assert_eq!(
+        kernel_workers_started(&scratch, std::slice::from_ref(&file)),
+        1
+    );
+    assert_eq!(
+        kernel_workers_started(&scratch, &[file]),
+        0,
+        "rebuilt from the cache"
+    );
 }
