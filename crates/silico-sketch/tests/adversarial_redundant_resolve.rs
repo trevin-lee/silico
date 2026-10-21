@@ -23,6 +23,14 @@ const WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-worker");
 const FEATURE: &str = "k7f2qx3m";
 const CLOSE: f64 = 1e-8;
 
+/// How far a kept solve's point may sit from the analytic one: decision 5 keeps a redundant
+/// constraint met within ε = max(1e-8 mm, 1e-9 × L), L the sketch's longest line or largest
+/// radius (Fable's rule, docs/design/m3.3-solving.md), so a point the dropped constraint
+/// alone fixed may land that far off. Worked out here from the shape's own sizes.
+fn within_decision_5(lever: f64) -> f64 {
+    CLOSE.max(1e-9 * lever)
+}
+
 fn worker() -> SketchWorker {
     SketchWorker::start_worker(Path::new(WORKER)).unwrap()
 }
@@ -98,7 +106,7 @@ fn said(s: &SketchSolution) -> String {
 /// The redundant constraints a solve names, by ID.
 fn dropped(s: &SketchSolution) -> Vec<String> {
     s.redundant
-        .iter()
+        .keys()
         .map(|id| id.as_str().to_owned())
         .collect()
 }
@@ -225,7 +233,8 @@ fn rectangle_is(s: &SketchSolution, x0: f64, y0: f64, w: f64, h: f64) -> bool {
         s.point(&silico_core::document::ElementId::new(p).unwrap())
             .unwrap()
     };
-    let near = |a: f64, b: f64| (a - b).abs() <= CLOSE;
+    let close = within_decision_5(w.max(h));
+    let near = |a: f64, b: f64| (a - b).abs() <= close;
     let (p1, p2, p3, p4) = (
         at("p0000001"),
         at("p0000002"),
@@ -303,6 +312,11 @@ fn slot(x0: f64, y0: f64, len: f64, r: f64, jitter: [f64; 6]) -> String {
 }
 
 fn slot_is(s: &SketchSolution, x0: f64, y0: f64, len: f64, r: f64) -> bool {
+    slot_within(s, x0, y0, len, r, within_decision_5(len.max(r)))
+}
+
+/// [`slot_is`], each point within `close` of where it should be.
+fn slot_within(s: &SketchSolution, x0: f64, y0: f64, len: f64, r: f64, close: f64) -> bool {
     // Either way round: a length has no direction, so a slot drawn far off may land on its
     // mirror image (its arcs and sides still tangent the way they're drawn).
     let at = |p: &str| {
@@ -310,7 +324,7 @@ fn slot_is(s: &SketchSolution, x0: f64, y0: f64, len: f64, r: f64) -> bool {
             .unwrap()
     };
     let near =
-        |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() <= CLOSE && (a[1] - b[1]).abs() <= CLOSE;
+        |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() <= close && (a[1] - b[1]).abs() <= close;
     [(1.0, 1.0), (-1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)]
         .iter()
         .any(|&(sx, sy): &(f64, f64)| {
@@ -368,8 +382,9 @@ fn triangle_is(s: &SketchSolution, x0: f64, y0: f64, side: f64) -> bool {
         s.point(&silico_core::document::ElementId::new(p).unwrap())
             .unwrap()
     };
+    let close = within_decision_5(side);
     let near =
-        |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() <= CLOSE && (a[1] - b[1]).abs() <= CLOSE;
+        |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() <= close && (a[1] - b[1]).abs() <= close;
     let hgt = side * 3f64.sqrt() / 2.0;
     near(at("p0000001"), [x0, y0])
         && near(at("p0000002"), [x0 + side, y0])
@@ -581,19 +596,20 @@ fn an_equilateral_triangle_far_out_is_refused_on_save_as_its_load_refuses_it() {
     assert_eq!(saved, refusal(&exact, &mut w));
 }
 
+/// The gap the solution reports for redundant constraint `id`, in millimetres.
+fn gap_of(s: &SketchSolution, id: &str) -> f64 {
+    s.redundant[&silico_core::document::ElementId::new(id).unwrap()]
+}
+
 #[test]
-fn a_micrometre_equilateral_triangle_is_refused_by_decision_5s_fixed_angle_tolerance() {
-    // Found by break-it on dc18c28 (not introduced by it), open: a 1.597 µm equilateral
-    // triangle at the origin, drawn a little off, is over_constrained, "disagree with them,
-    // by up to 0e0 mm and 8.09e-9 rad", naming k0000009 (the second angle). The analytic
-    // triangle is consistent: DogLeg stops once its residuals are below 1e-10 in their own
-    // units, the kept equal lengths are met to 1.5e-11 mm, a relative 1e-8 on a 1.6 µm side,
-    // so the dropped angle is off by 8e-9 rad against decision 5's scale-free 1e-9. A load
-    // gives the same refusal (it doesn't move), so save and load agree. Whether decision 5's
-    // angle tolerance should scale with the sides (as its length tolerance would allow:
-    // 1e-8 mm across 1.6 µm is 6e-6 rad) is a design question for the maintainer; this pins
-    // today's answer so a change is seen; the properties below take such refusals as open
-    // (unless_open).
+fn a_micrometre_equilateral_triangle_keeps_its_agreeing_angle() {
+    // Found by break-it on dc18c28 (not introduced by it), fixed by decision 5's positional
+    // rule (Fable, 2026-10-18): a 1.597 µm equilateral triangle at the origin, drawn a
+    // little off, was over_constrained, "disagree with them, by up to 0e0 mm and 8.09e-9
+    // rad", naming k0000009 (the second angle), against a scale-free 1e-9 rad. DogLeg meets
+    // the kept equal lengths to about 1.5e-11 mm, a relative 1e-8 on a 1.6 µm side. As a
+    // distance, the angle's gap is that angle carried by its sides: 8.09e-9 rad × 0.001597
+    // mm = 1.3e-11 mm (hand), well within the sketch's 1e-8 mm. Kept, k0000009 redundant.
     let doc = checked(&triangle(
         0.0,
         0.0,
@@ -606,16 +622,73 @@ fn a_micrometre_equilateral_triangle_is_refused_by_decision_5s_fixed_angle_toler
         ],
     ))
     .unwrap();
-    let e = solved(&doc, &mut worker()).unwrap_err();
-    assert_eq!(
-        (e.code(), e.elements()),
-        (ErrorCode::OverConstrained, &["k0000009".to_owned()][..])
-    );
-    assert!(
-        e.message()
-            .starts_with("constraints repeat others but disagree with them"),
-        "{e}"
-    );
+    let s = solved(&doc, &mut worker()).unwrap_or_else(|e| panic!("{e}"));
+    assert!(triangle_is(&s, 0.0, 0.0, 0.001597), "{s:?}");
+    assert_eq!(dropped(&s), ["k0000009"]);
+    let gap = gap_of(&s, "k0000009");
+    assert!((1e-12..=1e-10).contains(&gap), "{gap:e}");
+}
+
+#[test]
+fn a_long_slot_keeps_its_equal_sides_within_the_slack_its_arcs_allow() {
+    // Found by break-it on 56b7fe2, fixed by decision 5's positional rule: a 4,289.278884 mm
+    // slot of radius 430.346545 at the origin was refused, its sides' equality "disagreeing
+    // by 2.4e-8 mm" against a fixed 1e-8. The slack reaches it through the tangencies' angle
+    // rows on 430 mm arcs: two ends, each up to 1e-10 rad × 430 mm, bound it by 8.6e-8 mm
+    // (hand), and the sketch's tolerance is 1e-9 × 4,289.28 = 4.29e-6 mm. The same slack
+    // leaves the corners off the analytic slot by up to that bound too (p2 lands 2e-8 out),
+    // so they're checked to 1e-7.
+    let doc = checked(&slot(
+        0.0,
+        0.0,
+        4289.278884,
+        430.346545,
+        [
+            0.059784654735803223,
+            -0.17701446655438366,
+            0.1294286237483277,
+            -0.002774020427998682,
+            0.1762997203303423,
+            0.16106275270293036,
+        ],
+    ))
+    .unwrap();
+    let r = case(&doc, "slot 4289 r 430", &mut worker(), |s| {
+        slot_within(s, 0.0, 0.0, 4289.278884, 430.346545, 1e-7)
+            && s.redundant.values().all(|&gap| gap <= 1e-7)
+    });
+    assert!(r.is_ok(), "{}", r.unwrap_err());
+}
+
+#[test]
+fn a_fat_slot_keeps_its_redundancies_by_the_sketchs_longest_lever() {
+    // Fable's case for the sketch-wide lever: sides 1 mm long, arcs of radius 100, whose
+    // rows carry the slack to the sides' equality; the sketch's longest lever, 100, gives a
+    // tolerance of 1e-7. Kept, from starts a little off, each gap within 2e-8. (Of 3,000
+    // starts drawn up to 0.2 off, the largest gap was 2.15e-9, the last start here, so the
+    // sides' own length would keep these too; the lever is pinned by the core's stand-in
+    // tests, a_sketchs_tolerance_is_its_longest_lever_..., not here.)
+    let mut w = worker();
+    for jitter in [
+        [0.1, -0.1, 0.05, 0.05, -0.1, 0.1],
+        [-0.2, 0.15, -0.1, 0.0, 0.2, -0.05],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.17, 0.03, -0.12, 0.09, 0.04, -0.18],
+        [
+            -0.029471552426800385,
+            -0.1319170970587054,
+            -0.07179943605187483,
+            0.17774541629131313,
+            -0.04942675742535213,
+            0.16435915483845925,
+        ],
+    ] {
+        let doc = checked(&slot(0.0, 0.0, 1.0, 100.0, jitter)).unwrap();
+        let r = case(&doc, &format!("fat slot {jitter:?}"), &mut w, |s| {
+            slot_is(s, 0.0, 0.0, 1.0, 100.0) && s.redundant.values().all(|&gap| gap <= 2e-8)
+        });
+        assert!(r.is_ok(), "{}", r.unwrap_err());
+    }
 }
 
 #[test]
@@ -810,43 +883,15 @@ fn past_the_solvers_precision(far: f64, size: f64) -> bool {
     spacing >= 1e-10 * size.min(1.0)
 }
 
-/// `r`, with the refusals this property doesn't settle taken as holding. Each is a refusal
-/// its load gives too, so the save and the load agree, which is the property's invariant:
-/// - where `limited` ([`past_the_solvers_precision`]), solve_failed: a consistent sketch
-///   the solver can't meet there;
-/// - decision 5's refusal of agreeing redundancies only within the gap its fixed
-///   tolerances leave open at the sketch's scale, an open question for the maintainer
-///   (a_micrometre_equilateral_triangle_is_refused_by_decision_5s_fixed_angle_tolerance):
-///   the solver meets length residuals to 1e-10 mm, which across the `shortest` line is
-///   past 1e-9 rad under 0.1 mm, and angle residuals to 1e-10 rad, which along the
-///   `longest` is past 1e-8 mm over 100 mm. So up to 1e-8 mm across `shortest` in radians,
-///   and 1e-9 rad along `longest` in millimetres; any gap past that is still a break.
-fn unless_open(
-    r: Result<(), Broke>,
-    limited: bool,
-    shortest: f64,
-    longest: f64,
-) -> Result<(), Broke> {
+/// `r`, with a solve_failed refusal taken as holding where `limited`
+/// ([`past_the_solvers_precision`]): a consistent sketch the solver can't meet there,
+/// refused on save as on load, which is the property's invariant. Any refusal by decision 5
+/// of these agreeing redundancies is a break.
+fn unless_past_precision(r: Result<(), Broke>, limited: bool) -> Result<(), Broke> {
     match r {
         Err(Broke::Refused(ErrorCode::SolveFailed, _)) if limited => Ok(()),
-        Err(Broke::Refused(ErrorCode::OverConstrained, m))
-            if decision_5_gap(&m).is_some_and(|(mm, rad)| {
-                mm <= 1e-8f64.max(1e-9 * longest) && rad <= 1e-9f64.max(1e-8 / shortest)
-            }) =>
-        {
-            Ok(())
-        }
         r => r,
     }
-}
-
-/// The gap decision 5's refusal reports, millimetres and radians, from its message: "…
-/// disagree with them, by up to {mm} mm and {rad} rad".
-fn decision_5_gap(message: &str) -> Option<(f64, f64)> {
-    let rest = message.split("disagree with them, by up to ").nth(1)?;
-    let (mm, rest) = rest.split_once(" mm and ")?;
-    let (rad, _) = rest.split_once(" rad")?;
-    Some((mm.parse().ok()?, rad.parse().ok()?))
 }
 
 proptest! {
@@ -895,7 +940,7 @@ proptest! {
         let what = format!("equal circles r {r} d {d} at ({x0}, {y0}), jitter {:?}", [j0, j1]);
         let res = W.with(|w| case(&doc, &what, &mut *w.borrow_mut(), |s| equal_circles_are(s, r)));
         let far = x0.abs().max(y0.abs()) + d + r;
-        report(unless_open(res, past_the_solvers_precision(far, r.min(d)), r.min(d), (2.0 * r).max(d)))?;
+        report(unless_past_precision(res, past_the_solvers_precision(far, r.min(d))))?;
     }
 
     // Found by break-it on dc18c28, fixed: about 1 in 2,000 slots loaded a few ulps (up to
@@ -903,8 +948,9 @@ proptest! {
     // a_redundant_slot_saved_by_silico_loads_without_moving): the solve again started from
     // the solver's arc values, not a load's. About 1 in 10,000, far out, can't be met by a
     // load from their exact solution and are refused on save as on load
-    // (past_the_solvers_precision); about 1 in 20,000 is refused by decision 5's fixed
-    // tolerances, which a load refuses the same way, an open question (unless_open).
+    // (past_the_solvers_precision). About 1 in 20,000 was refused by decision 5's fixed
+    // tolerances (a_long_slot_keeps_its_equal_sides_within_the_slack_its_arcs_allow), until
+    // its positional rule; now any such refusal is a break.
     /// A redundant slot: arcs, whose angles a load works out from the saved points rather
     /// than taking the solve's own.
     #[test]
@@ -926,14 +972,15 @@ proptest! {
         let res = W.with(|w| case(&doc, &what, &mut *w.borrow_mut(), |s| slot_is(s, x0, y0, len, r)));
         let far = x0.abs().max(y0.abs()) + len + 2.0 * r;
         let limited = past_the_solvers_precision(far, len.min(r));
-        report(unless_open(res, limited, len.min(r), len.max(2.0 * r)))?;
+        report(unless_past_precision(res, limited))?;
     }
 
     // Found by break-it on dc18c28, fixed: about 1 in 250 triangles far out saved Ok and
     // loaded refused, as conflicting or as solve_failed (the regression file's case;
     // an_equilateral_triangle_far_out_is_refused_on_save_as_its_load_refuses_it); now the
-    // save is refused as its load is. About 1 in 1,000 under 0.1 mm is refused by decision
-    // 5's fixed angle tolerance, an open question (unless_open).
+    // save is refused as its load is. About 1 in 1,000 under 0.1 mm was refused by decision
+    // 5's fixed angle tolerance (a_micrometre_equilateral_triangle_keeps_its_agreeing_angle),
+    // until its positional rule; now any such refusal is a break.
     /// A triangle held by its angles as well as its sides.
     #[test]
     fn a_redundant_triangles_load_gives_the_answer_its_save_kept(
@@ -951,6 +998,43 @@ proptest! {
         let what = format!("triangle {side} at ({x0}, {y0}), jitter {jitter:?}");
         let res = W.with(|w| case(&doc, &what, &mut *w.borrow_mut(), |s| triangle_is(s, x0, y0, side)));
         let far = x0.abs().max(y0.abs()) + 2.0 * side;
-        report(unless_open(res, past_the_solvers_precision(far, side), side, side))?;
+        report(unless_past_precision(res, past_the_solvers_precision(far, side)))?;
+    }
+}
+
+/// A rectangle w × h at the origin, held and dimensioned once (as the property above, with
+/// no redundancy but its horizontals' and verticals' pairing), with its width stated a
+/// second way: a horizontal distance from p1 to p2 of w + `more`.
+fn rectangle_with_width_twice(w: f64, h: f64, more: f64) -> String {
+    let text = rectangle(0.0, 0.0, w, h, [0.0; 6], 1);
+    let twice = format!(
+        r#"{{"id": "k0000099", "type": "distance_x", "a": "p0000001", "b": "p0000002", "value": {}, "driving": true}}"#,
+        nm(w + more)
+    );
+    text.replacen(
+        "\"constraints\": [",
+        &format!("\"constraints\": [{twice}, "),
+        1,
+    )
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 500, .. ProptestConfig::default() })]
+
+    /// Decision 5's converse (Fable, 2026-10-18): on any sketch under a metre, two
+    /// dimensions a nanometre apart conflict. A rectangle whose longest side is under 999
+    /// mm (so its tolerance, 1e-9 × the side, is under 1e-6), its width stated again 1 nm
+    /// more, is always over_constrained.
+    #[test]
+    fn two_dimensions_a_nanometre_apart_on_a_sketch_under_a_metre_conflict(
+        log_w in -1.0f64..2.999,
+        log_h in -1.0f64..2.999,
+    ) {
+        let (w, h) = (nm(libm::pow(10.0, log_w)), nm(libm::pow(10.0, log_h)));
+        prop_assume!(w > 0.0 && h > 0.0 && w.max(h) < 999.0);
+        let doc = checked(&rectangle_with_width_twice(w, h, 1e-6)).unwrap();
+        let got = W.with(|wk| solved(&doc, &mut *wk.borrow_mut()));
+        let e = got.map(|s| said(&s)).unwrap_err();
+        prop_assert_eq!(e.code(), ErrorCode::OverConstrained, "{}", e);
     }
 }

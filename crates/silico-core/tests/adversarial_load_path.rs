@@ -123,7 +123,7 @@ fn says(r: &Result<SketchSolution, Error>) -> Says {
                 .unwrap()[1]
                 .to_bits(),
             s.redundant
-                .iter()
+                .keys()
                 .map(|id| id.as_str().to_owned())
                 .collect(),
         )),

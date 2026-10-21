@@ -404,12 +404,117 @@ fn two_lengths_a_nanometre_apart_conflict_and_equal_ones_agree_here_and_a_kilome
     }
 }
 
+/// A line from p1, held at the origin, horizontal, `len` long, and a horizontal distance
+/// from the origin to its end of `dx`: its length given twice.
+fn length_twice(len: f64, dx: &str) -> Checked {
+    let length = format!(
+        r#"{{"id": "k0000004", "type": "length", "line": "n0000001", "value": {len}, "driving": true}}"#
+    );
+    let dx = format!(
+        r#"{{"id": "k0000005", "type": "distance_x", "a": "origin", "b": "p0000002", "value": {dx}, "driving": true}}"#
+    );
+    document(
+        &[
+            point("p0000001", 0.0, 0.0),
+            point("p0000002", len - 1.0, 1.0),
+        ],
+        &[line("n0000001", "p0000001", "p0000002")],
+        &[],
+        &[],
+        &[
+            r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000003", "type": "horizontal", "line": "n0000001"}"#,
+            &length,
+            &dx,
+        ],
+    )
+}
+
+#[test]
+fn a_nanometre_conflicts_under_a_metre_and_is_kept_over_one() {
+    // Decision 5 (Fable, 2026-10-18): a sketch's tolerance is the larger of 1e-8 mm and 1e-9
+    // times its longest lever. A line 999 mm long given again as 999.000001: a gap of 1e-6
+    // past 9.99e-7, over_constrained, the message giving both. At 1001 against 1001.000001
+    // the tolerance is 1.001e-6: kept, its gap of 1e-6 reported.
+    let e = solved(&length_twice(999.0, "999.000001"), &mut worker()).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::OverConstrained, "{e}");
+    assert_eq!(e.elements().len(), 1, "{e}");
+    assert!(e.message().contains("past this sketch's 9.99"), "{e}");
+    assert!(
+        e.suggestion().unwrap_or("").contains("driving: false"),
+        "{e}"
+    );
+    let s = solved(&length_twice(1001.0, "1001.000001"), &mut worker()).unwrap();
+    let gaps: Vec<f64> = s.redundant.values().copied().collect();
+    assert_eq!(gaps.len(), 1, "{s:?}");
+    assert!((0.99e-6..=1.01e-6).contains(&gaps[0]), "{gaps:?}");
+}
+
+/// A horizontal line n1 and a vertical line n2, both 10 long from p1 at the origin, the
+/// angle between them given as `angle` degrees; and, if `far`, a free construction line
+/// 1,000 long elsewhere in the sketch.
+fn right_angle_given(angle: &str, far: bool) -> Checked {
+    let angle = format!(
+        r#"{{"id": "k0000007", "type": "angle", "a": "n0000001", "b": "n0000002", "value": {angle}, "driving": true}}"#
+    );
+    let mut points = vec![
+        point("p0000001", 0.0, 0.0),
+        point("p0000002", 9.0, 0.5),
+        point("p0000003", 0.5, 11.0),
+    ];
+    let mut lines = vec![
+        line("n0000001", "p0000001", "p0000002"),
+        line("n0000002", "p0000001", "p0000003"),
+    ];
+    if far {
+        points.push(point("p0000004", 100.0, 100.0));
+        points.push(point("p0000005", 1100.0, 100.0));
+        lines.push(
+            r#"{"id": "n0000003", "from": "p0000004", "to": "p0000005", "construction": true}"#
+                .to_owned(),
+        );
+    }
+    document(
+        &points,
+        &lines,
+        &[],
+        &[],
+        &[
+            r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000003", "type": "horizontal", "line": "n0000001"}"#,
+            r#"{"id": "k0000004", "type": "vertical", "line": "n0000002"}"#,
+            r#"{"id": "k0000005", "type": "length", "line": "n0000001", "value": 10, "driving": true}"#,
+            r#"{"id": "k0000006", "type": "length", "line": "n0000002", "value": 10, "driving": true}"#,
+            &angle,
+        ],
+    )
+}
+
+#[test]
+fn an_angle_off_is_measured_as_the_distance_it_moves_a_lines_end() {
+    // Decision 5's angular conversion: a right angle given as 90.000002865°, 5.0e-8 rad off
+    // what the horizontal and vertical make. Carried by a 10 mm line, a gap of 5.0e-7 mm
+    // (hand: 2.865e-6° × π/180 × 10): past 1e-8 alone, over_constrained. With a 1,000 mm
+    // construction line elsewhere in the sketch, its tolerance is 1e-6: kept, the gap
+    // reported. Whichever of the three PlaneGCS drops, the gap is the same distance.
+    let e = solved(&right_angle_given("90.000002865", false), &mut worker()).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::OverConstrained, "{e}");
+    let s = solved(&right_angle_given("90.000002865", true), &mut worker()).unwrap();
+    let gaps: Vec<f64> = s.redundant.values().copied().collect();
+    assert_eq!(gaps.len(), 1, "{s:?}");
+    assert!((4.9e-7..=5.1e-7).contains(&gaps[0]), "{gaps:?}");
+}
+
 #[test]
 fn a_thirty_sixty_ninety_triangle_from_two_hundred_starts_keeps_its_implied_angle() {
     // The oracle's case for decision 5: a triangle with its corner angles 30°, 60°, and 90°
     // (the third implied by the other two), its base horizontal, 10 long, its first corner
     // at the origin. Drawn from 200 starts about the solution, every solve keeps the
-    // redundant angle: PlaneGCS leaves it up to about 1.3e-10 rad off, inside 1e-9.
+    // redundant angle: it's 180° less the two kept angles, each met to 1e-10 rad, so it's
+    // at most 2e-10 rad off (PlaneGCS leaves it up to 1.32e-10 here), which carried by its
+    // shorter line (BC, 5 mm) is a gap of at most 1e-9 mm, inside the sketch's 1e-8.
     let mut rng = Rng(0x30_60_90);
     let mut w = worker();
     let s3 = 3f64.sqrt();
@@ -452,6 +557,10 @@ fn a_thirty_sixty_ninety_triangle_from_two_hundred_starts_keeps_its_implied_angl
         );
         let s = solved(&doc, &mut w).unwrap_or_else(|e| panic!("start {start}: {e}"));
         assert_eq!(s.redundant.len(), 1, "start {start}: {s:?}");
+        assert!(
+            s.redundant.values().all(|&gap| gap <= 1e-9),
+            "start {start}: {s:?}"
+        );
         assert_at(&s, "p0000003", c);
     }
 }

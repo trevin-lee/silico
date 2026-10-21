@@ -692,7 +692,7 @@ fn redundant_constraints_that_agree_are_kept_and_named_and_ones_a_nanometre_off_
         if agrees {
             let id = silico_core::document::ElementId::new("k0000003").unwrap();
             assert_eq!(
-                read.unwrap().redundant.into_iter().collect::<Vec<_>>(),
+                read.unwrap().redundant.into_keys().collect::<Vec<_>>(),
                 [id]
             );
         } else {
@@ -704,10 +704,12 @@ fn redundant_constraints_that_agree_are_kept_and_named_and_ones_a_nanometre_off_
 }
 
 #[test]
-fn decision_fives_tolerances_are_a_hundredth_of_a_nanometre_and_a_nanoradian() {
-    // A redundant horizontal distance of 10, on a solution with the line's end just within,
-    // and just past, 1e-8 mm of it; a redundant horizontal on one with the line turned just
-    // within, and past, 1e-9 rad.
+fn decision_fives_tolerance_on_a_ten_millimetre_sketch_is_a_hundredth_of_a_nanometre() {
+    // On a sketch whose longest lever is 10 mm, the tolerance is max(1e-8, 1e-9 × 10) =
+    // 1e-8 mm. A redundant horizontal distance of 10, on a solution with the line's end just
+    // within, and just past, 1e-8 mm of it; a redundant horizontal on one with the line
+    // turned 0.9e-9 and 1.1e-9 rad, its end risen 9e-9 and 1.1e-8 mm (the gap a horizontal
+    // has is its line's rise).
     for (off, agrees) in [(0.9e-8, true), (1.1e-8, false)] {
         let t = translate(&ten(&[
             r#"{"id": "k0000003", "type": "distance_x", "a": "p0000001", "b": "p0000002", "value": 10, "driving": true}"#,
@@ -728,6 +730,92 @@ fn decision_fives_tolerances_are_a_hundredth_of_a_nanometre_and_a_nanoradian() {
         let mut solved = answer(&t, values, SolveStatus::SolvedExceptRedundant);
         solved.redundant = vec![Tag(1)];
         assert_eq!(read_back(&t, &solved).is_ok(), agrees, "{off}");
+    }
+}
+
+/// `t` answered met, its constraint tagged `tag` dropped as redundant, with `values`.
+fn dropping_tag(t: &Translation, values: Vec<f64>, tag: u32) -> Solved {
+    let mut solved = answer(t, values, SolveStatus::SolvedExceptRedundant);
+    solved.redundant = vec![Tag(tag)];
+    solved
+}
+
+/// The index of the value `t` sends drawn as `v` (drawn values here are all distinct).
+fn value_drawn(t: &Translation, v: f64) -> usize {
+    t.system.values.iter().position(|&x| x == v).unwrap()
+}
+
+#[test]
+fn a_sketchs_tolerance_is_its_longest_lever_or_a_hundredth_of_a_nanometre() {
+    // Decision 5 (Fable, 2026-10-18): a redundant constraint is met when its gap is within
+    // max(1e-8 mm, 1e-9 × L), L the sketch's longest line or largest radius, axes excluded.
+    let held = |id: &str, x: f64| {
+        format!(
+            r#"{{"id": "{id}", "type": "distance_x", "a": "origin", "b": "p0000001", "value": {x}, "driving": true}}"#
+        )
+    };
+    // Points only: L is 0, the tolerance 1e-8. A point's x given twice, the solution 0.99e-8
+    // and 1.01e-8 off the dropped one.
+    let t = translate(&text(
+        &[point("p0000001", 3.25, 1.5)],
+        &[],
+        &[],
+        &[],
+        &[held("k0000001", 3.25), held("k0000002", 3.25)],
+    ));
+    let x = value_drawn(&t, 3.25);
+    for (off, kept) in [(0.99e-8, true), (1.01e-8, false)] {
+        let mut values = t.system.values.clone();
+        values[x] += off;
+        let got = read_back(&t, &dropping_tag(&t, values, 2));
+        assert_eq!(got.is_ok(), kept, "points only, {off}: {got:?}");
+    }
+    // A 50 mm line and a circle of radius 80: L 80, the tolerance 8e-8. The line's length
+    // given twice, the solution 7e-8 and 9e-8 off the dropped one.
+    let t = translate(&text(
+        &[
+            point("p0000001", 0.0, 0.0),
+            point("p0000002", 50.0, 0.0),
+            point("p0000003", 200.0, 7.0),
+        ],
+        &[line("n0000001", "p0000001", "p0000002")],
+        &[circle("c0000001", "p0000003", 80.0)],
+        &[],
+        &[
+            r#"{"id": "k0000001", "type": "length", "line": "n0000001", "value": 50, "driving": true}"#.to_owned(),
+            r#"{"id": "k0000002", "type": "length", "line": "n0000001", "value": 50, "driving": true}"#.to_owned(),
+        ],
+    ));
+    let end = value_drawn(&t, 50.0);
+    for (off, kept) in [(7e-8, true), (9e-8, false)] {
+        let mut values = t.system.values.clone();
+        values[end] += off;
+        let got = read_back(&t, &dropping_tag(&t, values, 2));
+        assert_eq!(got.is_ok(), kept, "line and circle, {off}: {got:?}");
+        match got {
+            Ok(s) => {
+                let gap = s.redundant.values().copied().next().unwrap();
+                assert!((gap - off).abs() < 1e-12, "{gap:e} for {off:e}");
+            }
+            Err(e) => assert!(e.message().contains("past this sketch's 8e-8 mm"), "{e}"),
+        }
+    }
+    // A line parallel to the x axis, 50 long, alone: L 50, the tolerance 5e-8. Its end
+    // risen 4e-8 and 6e-8: the parallel's angle carried by the line (the axis can't move),
+    // a gap as large as the rise; carried by the axis's 1, it would be fifty times less.
+    let t = translate(&text(
+        &[point("p0000001", 0.0, 0.0), point("p0000002", 50.0, 0.0)],
+        &[line("n0000001", "p0000001", "p0000002")],
+        &[],
+        &[],
+        &[r#"{"id": "k0000001", "type": "parallel", "a": "n0000001", "b": "x_axis"}"#.to_owned()],
+    ));
+    let rise = value_drawn(&t, 50.0) + 1;
+    for (off, kept) in [(4e-8, true), (6e-8, false)] {
+        let mut values = t.system.values.clone();
+        values[rise] += off;
+        let got = read_back(&t, &dropping_tag(&t, values, 1));
+        assert_eq!(got.is_ok(), kept, "parallel to the axis, {off}: {got:?}");
     }
 }
 
@@ -882,11 +970,15 @@ fn shapes2(constraint: &str) -> String {
 fn every_form_redundant_and_met_is_kept_and_a_nanometre_off_is_over_constrained() {
     // Each form alone, drawn exactly met, answered as PlaneGCS dropping it as redundant:
     // kept, and named redundant. Then one value it reads moved, chosen by hand so the move
-    // is the form's own measure: a millimetre gap as large as the move, or a radian gap a
-    // tenth of it over a 10 mm line. A move of 1e-8 is then exactly decision 5's tolerance
-    // (1e-8 mm, 1e-9 rad): 1% within it is kept, 1% past it is over-constrained, naming it.
-    // A measure off by more than 1% either way fails one or the other (round 2's and 3's
-    // tests lens; doubles at 10 mm are 1.8e-15 apart, far inside the margin).
+    // is the form's own measure: a gap as large as the move, a distance outright, or a
+    // direction's angle (a tenth of the move, over a 10 mm line) carried by its smaller
+    // lever, 10 mm, or a horizontal's rise or a vertical's run. The fixture's levers, by
+    // hand from shapes2: five lines 10 long, circles of radius 10, 10, and 5, an arc of 10;
+    // the longest is 10, so decision 5's tolerance is max(1e-8, 1e-9 × 10) = 1e-8 (1e-8 +
+    // 1e-17 once a value moves). A move of 1e-8 is then exactly the tolerance: 1% within it
+    // is kept, 1% past it is over-constrained, naming it. A measure off by more than 1%
+    // either way fails one or the other (round 2's and 3's tests lens; doubles at 10 mm are
+    // 1.8e-15 apart, far inside the margin).
     let cases: [(&str, usize); 28] = [
         (r#""type": "horizontal", "line": "n0000001""#, 9),
         (r#""type": "vertical", "line": "n0000002""#, 10),
@@ -1346,7 +1438,7 @@ fn a_solve_stands_only_where_a_load_of_its_own_file_gives_it_back() {
             s.point(&silico_core::document::ElementId::new("p0000003").unwrap())
                 .unwrap()[1],
             s.redundant
-                .iter()
+                .keys()
                 .map(|id| id.as_str().to_owned())
                 .collect::<Vec<_>>(),
         )

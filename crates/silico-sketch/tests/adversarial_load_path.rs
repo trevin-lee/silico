@@ -434,7 +434,7 @@ fn an_implied_perpendicular_drawn_off_its_solution_saves_what_its_load_says() {
     let s = save.as_ref().unwrap();
     assert_eq!(s.dofs, 6, "{s:?}");
     assert_eq!(
-        s.redundant.iter().map(|id| id.as_str()).collect::<Vec<_>>(),
+        s.redundant.keys().map(|id| id.as_str()).collect::<Vec<_>>(),
         ["k0000003"]
     );
     assert_eq!(says(&save), says(&load));

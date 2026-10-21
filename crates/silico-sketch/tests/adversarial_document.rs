@@ -548,7 +548,8 @@ fn nm(v: f64) -> f64 {
 fn a_small_redundant_rectangle_far_out_keeps_its_agreeing_constraints() {
     // A 0.01 × 0.01 mm rectangle a kilometre out, its redundancies all agreeing: spacing of
     // doubles there is 1.16e-10 mm, so a side's direction can't be known better than about
-    // 1e-8 rad, yet decision 5's 1e-9 rad holds here (the solve leaves the sides exact).
+    // 1e-8 rad; carried by a 0.01 mm side that's 1e-10 mm, and the solve leaves the sides
+    // exact.
     let doc = checked(&redundant_rectangle(
         999_000.0,
         999_000.0,

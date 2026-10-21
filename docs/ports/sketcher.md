@@ -123,7 +123,7 @@ FreeCAD's `SketchObject::solve` (`SketchObjectConstraints.cpp:78-183`) diagnoses
 
 Partially redundant is a warning only (`b01313c0d8`) when the geometry needn't move; when it must, PlaneGCS checks the dropped equation on the starting values and the solve fails (the oracle: a point coincident with the origin and given its x twice, drawn at (1, 2), gives `solve()` −1). On an error FreeCAD keeps the previous shape; Silico's recompute fails the feature (SolidWorks' behavior, and recompute's since M2.4). Every attempt starts from the stored coordinates, and a failure leaves them as they were. Redundant constraints are never deleted on recompute; FreeCAD's auto-removal is an editor preference, off by default.
 
-**Silico differs on redundancy:** SolidWorks solves an over-defined sketch whose extra dimensions agree and marks them, and FreeCAD's refusal to write back a solve it did makes a model's result depend on whether a constraint is spelled twice. Silico follows SolidWorks: a sketch whose only problem is redundancy solves and keeps its result, and the redundant constraints come back as data (a warning naming them). Since PlaneGCS calls constraints redundant when they disagree by up to 1e-5, keeping its result would quietly take one of two dimensions that disagree: Silico's own tolerance for "agree" is open decision 5 (docs/roadmap/m3-sketcher.md).
+**Silico differs on redundancy:** SolidWorks solves an over-defined sketch whose extra dimensions agree and marks them, and FreeCAD's refusal to write back a solve it did makes a model's result depend on whether a constraint is spelled twice. Silico follows SolidWorks: a sketch whose only problem is redundancy solves and keeps its result, and the redundant constraints come back as data (a warning naming them). Since PlaneGCS calls constraints redundant when they disagree by up to 1e-5, keeping its result would quietly take one of two dimensions that disagree: Silico's own tolerance for "agree" is decision 5: each redundant constraint's gap, the least distance a point would move for it to hold, within max(1e-8 mm, 1e-9 × the sketch's longest line or radius) (docs/design/m3.3-solving.md).
 
 ### Dragging
 
@@ -179,7 +179,7 @@ FreeCAD's tests (`tests/src/Mod/Part/App/FaceMakerBullseye.cpp`, added in `88c80
 - Constraint forms explicit in the file, refused at the gate when they don't fit; never "malformed" at solve time; never a hidden, unconstrained solve.
 - Every choice FreeCAD makes from the current geometry (tangency direction, sides) stored in the constraint.
 - Tags from constraint positions, never a counter.
-- Redundant-only sketches solve and keep their result, the redundancy reported (SolidWorks), where FreeCAD fails the feature, with Silico's own tolerance for constraints that agree (open decision 5).
+- Redundant-only sketches solve and keep their result, the redundancy reported (SolidWorks), where FreeCAD fails the feature, with Silico's own tolerance for constraints that agree (decision 5, docs/design/m3.3-solving.md).
 - Crossing, overlapping, and touching profile wires refused, naming the elements.
 - Pad and pocket depth > 0, with `reversed`; pocket without a base refused.
 - No heuristics: no weight nudge, no geometry-id reuse by endpoint matching, no auto-removal, no fix-up of faces.

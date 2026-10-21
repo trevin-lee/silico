@@ -114,7 +114,7 @@ fn says(a: &Answer) -> Says {
         match &a.outcome {
             Ok(s) => Ok(s
                 .redundant
-                .iter()
+                .keys()
                 .map(|id| id.as_str().to_owned())
                 .collect()),
             Err(e) => Err((e.code(), e.elements().to_vec())),

@@ -29,14 +29,18 @@ pub const ALGORITHMS: [Algorithm; 4] = [
     Algorithm::AnchoredSqp,
 ];
 
-/// How far a redundant constraint may be from met, in millimetres, and still agree with the
-/// others (decision 5): a hundredth of the file's nanometre, a hundred times the solver's
-/// convergence (1e-10), and 86 times the spacing of doubles a kilometre out.
+/// The least a redundant constraint's gap may be and still agree with the others, in
+/// millimetres (decision 5): a hundredth of the file's nanometre, a hundred times the
+/// solver's convergence on a position (1e-10 mm), and 86 times the spacing of doubles a
+/// kilometre out. A sketch's tolerance is this or [`LEVER_TOLERANCE`] times its longest
+/// lever, whichever is more.
 pub const LENGTH_TOLERANCE: f64 = 1e-8;
 
-/// How far a redundant constraint may be from met, in radians, and still agree with the
-/// others (decision 5): ten times the solver's convergence, 57 nanodegrees.
-pub const ANGLE_TOLERANCE: f64 = 1e-9;
+/// How much a redundant constraint's gap may grow per millimetre of the sketch's longest
+/// lever, its longest line or largest radius (decision 5): ten times the solver's
+/// convergence on a direction (1e-10 rad), which moves the far end of a lever L by
+/// 1e-10 × L. So two dimensions a nanometre apart conflict on any sketch under a metre.
+pub const LEVER_TOLERANCE: f64 = 1e-9;
 
 /// How many loads, at most, a solve's answer is checked by: its solution written as the file
 /// holds it and solved as a load solves it, until one leaves it where it is
@@ -292,8 +296,10 @@ pub struct SketchSolution {
     /// The points, circles, and arcs the constraints don't fix (SolidWorks' under-defined
     /// geometry): any with a value the solver finds free.
     pub free: BTreeSet<ElementId>,
-    /// Constraints that repeat others and agree with them (decision 5): kept, and reported.
-    pub redundant: BTreeSet<ElementId>,
+    /// Constraints that repeat others and agree with them (decision 5): kept, and reported,
+    /// each with its gap, in millimetres: the least distance a point would have to move for
+    /// it to hold exactly.
+    pub redundant: BTreeMap<ElementId, f64>,
     /// The algorithm that solved.
     pub algorithm: Algorithm,
 }
@@ -1513,7 +1519,8 @@ impl Translation {
                 "share one point instead, or change the constraints that bring the two together",
             ));
         }
-        // Decision 5: a redundant constraint is kept only if it's met on the solution.
+        // Decision 5: a redundant constraint is kept only if it's met on the solution, its
+        // gap within the sketch's tolerance.
         let mut dropped: Vec<Tag> = solved
             .redundant
             .iter()
@@ -1522,25 +1529,33 @@ impl Translation {
             .collect();
         dropped.sort_unstable();
         dropped.dedup();
+        let tolerance = LENGTH_TOLERANCE.max(LEVER_TOLERANCE * self.lever(values));
+        let mut gaps = Vec::with_capacity(dropped.len());
         let mut disagreeing = Vec::new();
-        let mut worst = Gap::default();
+        let mut worst = 0.0f64;
         for &tag in &dropped {
             let gap = self.gap(self.sent(tag)?, values);
-            if !gap.met() {
-                worst = worst.max(gap);
+            if !met(gap, tolerance) {
+                worst = if gap.is_nan() || worst.is_nan() {
+                    f64::NAN
+                } else {
+                    worst.max(gap)
+                };
                 disagreeing.push(tag);
             }
+            gaps.push((tag, gap));
         }
         if !disagreeing.is_empty() {
             return Err(Error::new(
                 ErrorCode::OverConstrained,
                 format!(
-                    "constraints repeat others but disagree with them, by up to {:e} mm and {:e} rad",
-                    worst.mm, worst.rad
+                    "constraints repeat others but disagree with them, by up to {worst:e} mm, past this sketch's {tolerance:e} mm"
                 ),
             )
             .with_elements(self.ids(&disagreeing)?)
-            .with_suggestion("remove the constraints named, or make them agree with the rest"));
+            .with_suggestion(
+                "remove the constraints named, make them agree with the rest, or make a dimension among them a reference (`driving: false`)",
+            ));
         }
         // An arc's own ends mirrored about a line its centre is held on are sent as their
         // middle on the line alone (FreeCAD's 365af33fc6); on a half circle that's the
@@ -1553,7 +1568,7 @@ impl Translation {
             .filter_map(|c| match *c {
                 SolverConstraint::MidpointOnLine { tag, a, b, line } => {
                     let whole = SolverConstraint::SymmetricLine { tag, a, b, line };
-                    (!self.gap(&whole, values).met()).then_some(tag)
+                    (!met(self.gap(&whole, values), LENGTH_TOLERANCE)).then_some(tag)
                 }
                 _ => None,
             })
@@ -1575,10 +1590,14 @@ impl Translation {
             .with_elements(self.ids(&wrong_side)?)
             .with_suggestion("draw it on the side the constraint gives, or change the side"));
         }
-        let redundant = dropped
+        let redundant = gaps
             .iter()
-            .map(|&t| self.id(t).cloned())
-            .collect::<Result<_, _>>()?;
+            .map(|&(t, gap)| {
+                let id = self.id(t)?;
+                tracing::info!("{id} repeats others, met within {gap:.1e} mm");
+                Ok((id.clone(), gap))
+            })
+            .collect::<Result<_, Error>>()?;
         let (points, radii, references) = self.placed(values)?;
         Ok(SketchSolution {
             points,
@@ -1851,8 +1870,44 @@ impl Translation {
         }
     }
 
-    /// How far a sent constraint is from met on `values`, geometrically (decision 5).
-    fn gap(&self, c: &SolverConstraint, values: &[f64]) -> Gap {
+    /// A curve's lever on `values`: a line's length, a circle's or arc's radius; none for
+    /// an axis, which can't move.
+    fn lever_of(&self, values: &[f64], g: Geometry) -> Option<f64> {
+        if g == X_AXIS.geometry || g == Y_AXIS.geometry {
+            return None;
+        }
+        match self.system.geometry.get(g.0 as usize) {
+            Some(SketchGeometry::Line { .. }) => {
+                let (a, b) = self.ends(values, g);
+                Some(squared_distance(a, b).sqrt())
+            }
+            Some(SketchGeometry::Circle { .. } | SketchGeometry::Arc { .. }) => {
+                Some(self.circle(values, g).1)
+            }
+            _ => None,
+        }
+    }
+
+    /// The sketch's longest lever on `values`: its longest line or largest circle or arc
+    /// radius, whichever is more; 0 for a sketch with neither (decision 5).
+    fn lever(&self, values: &[f64]) -> f64 {
+        let lines = self.lines.values().map(|l| l.geometry);
+        let rounds = self
+            .circles
+            .values()
+            .chain(self.arcs.values().map(|a| &a.round))
+            .map(|r| r.geometry);
+        lines
+            .chain(rounds)
+            .filter_map(|g| self.lever_of(values, g))
+            .fold(0.0, f64::max)
+    }
+
+    /// How far a sent constraint is from met on `values` (decision 5), in millimetres: the
+    /// least distance a point would have to move for it to hold exactly. A direction's gap
+    /// is its angle carried by the smaller lever of its own curves (an axis has none);
+    /// horizontal and vertical are a line's rise and run.
+    fn gap(&self, c: &SolverConstraint, values: &[f64]) -> f64 {
         use SolverConstraint as S;
         let v = |value: Value| at(values, value);
         let p = |q: PointOf| self.point_of(values, q);
@@ -1872,81 +1927,91 @@ impl Translation {
             let (a, b) = self.ends(values, g);
             direction(a, b)
         };
+        // An angle carried by the smaller lever of `a` and `b`; not a number if neither
+        // can move.
+        let carried = |angle: f64, a: Geometry, b: Geometry| {
+            let lever = [a, b]
+                .into_iter()
+                .filter_map(|g| self.lever_of(values, g))
+                .fold(f64::NAN, f64::min);
+            angle * lever
+        };
         let at_point = |a: Geometry, b: Geometry, q: [f64; 2], angle: Value| {
             let turn = angle_between(self.normal(values, a, q), self.normal(values, b, q));
-            wrap(turn - v(angle)).abs()
+            carried(wrap(turn - v(angle)).abs(), a, b)
         };
         match *c {
-            S::ArcRules { .. } => Gap::default(),
-            S::Coincident { a, b, .. } => Gap::mm(length(p(a), p(b))),
+            S::ArcRules { .. } => 0.0,
+            S::Coincident { a, b, .. } => length(p(a), p(b)),
             S::Horizontal { line, .. } => {
-                let d = dir(line);
-                Gap::rad(libm::atan2(d[1].abs(), d[0].abs()))
+                let (a, b) = self.ends(values, line);
+                (b[1] - a[1]).abs()
             }
             S::Vertical { line, .. } => {
-                let d = dir(line);
-                Gap::rad(libm::atan2(d[0].abs(), d[1].abs()))
+                let (a, b) = self.ends(values, line);
+                (b[0] - a[0]).abs()
             }
-            S::HorizontalPoints { a, b, .. } => Gap::mm((p(a)[1] - p(b)[1]).abs()),
-            S::VerticalPoints { a, b, .. } => Gap::mm((p(a)[0] - p(b)[0]).abs()),
-            S::DistanceX { a, b, value, .. } => Gap::mm((p(b)[0] - p(a)[0] - v(value)).abs()),
-            S::DistanceY { a, b, value, .. } => Gap::mm((p(b)[1] - p(a)[1] - v(value)).abs()),
-            S::Distance { a, b, value, .. } => Gap::mm((length(p(a), p(b)) - v(value)).abs()),
-            S::PointOnLine { point, line, .. } => Gap::mm(from_line(p(point), line).abs()),
+            S::HorizontalPoints { a, b, .. } => (p(a)[1] - p(b)[1]).abs(),
+            S::VerticalPoints { a, b, .. } => (p(a)[0] - p(b)[0]).abs(),
+            S::DistanceX { a, b, value, .. } => (p(b)[0] - p(a)[0] - v(value)).abs(),
+            S::DistanceY { a, b, value, .. } => (p(b)[1] - p(a)[1] - v(value)).abs(),
+            S::Distance { a, b, value, .. } => (length(p(a), p(b)) - v(value)).abs(),
+            S::PointOnLine { point, line, .. } => from_line(p(point), line).abs(),
             S::PointLineDistance {
                 point, line, value, ..
-            } => Gap::mm((from_line(p(point), line).abs() - v(value)).abs()),
-            S::PointOnCircle { point, circle, .. } => Gap::mm(off_curve(p(point), circle)),
+            } => (from_line(p(point), line).abs() - v(value)).abs(),
+            S::PointOnCircle { point, circle, .. } => off_curve(p(point), circle),
             S::Parallel { a, b, .. } => {
                 let t = angle_between(dir(a), dir(b)).abs();
-                Gap::rad(t.min(PI - t))
+                carried(t.min(PI - t), a, b)
             }
             S::Perpendicular { a, b, .. } => {
-                Gap::rad((angle_between(dir(a), dir(b)).abs() - PI / 2.0).abs())
+                carried((angle_between(dir(a), dir(b)).abs() - PI / 2.0).abs(), a, b)
             }
             S::Angle { a, b, value, .. } => {
-                Gap::rad(wrap(angle_between(dir(a), dir(b)) - v(value)).abs())
+                carried(wrap(angle_between(dir(a), dir(b)) - v(value)).abs(), a, b)
             }
             S::EqualLength { a, b, .. } => {
                 let (a0, a1) = self.ends(values, a);
                 let (b0, b1) = self.ends(values, b);
-                Gap::mm((length(a0, a1) - length(b0, b1)).abs())
+                (length(a0, a1) - length(b0, b1)).abs()
             }
             S::EqualRadius { a, b, .. } => {
-                Gap::mm((self.circle(values, a).1 - self.circle(values, b).1).abs())
+                (self.circle(values, a).1 - self.circle(values, b).1).abs()
             }
-            S::Radius { circle, value, .. } => {
-                Gap::mm((self.circle(values, circle).1 - v(value)).abs())
-            }
+            S::Radius { circle, value, .. } => (self.circle(values, circle).1 - v(value)).abs(),
             S::TangentLine { line, circle, .. } => {
                 let (c, r) = self.circle(values, circle);
-                Gap::mm((from_line(c, line).abs() - r).abs())
+                (from_line(c, line).abs() - r).abs()
             }
             S::TangentCircles { a, b, internal, .. } => {
                 let ((ca, ra), (cb, rb)) = (self.circle(values, a), self.circle(values, b));
                 let want = if internal { (ra - rb).abs() } else { ra + rb };
-                Gap::mm((length(ca, cb) - want).abs())
+                (length(ca, cb) - want).abs()
             }
             S::TangentOn {
                 a, point, b, angle, ..
             } => {
                 let q = p(point);
-                Gap {
-                    mm: off_curve(q, b),
-                    rad: at_point(a, b, q, angle),
+                // The larger, and not a number if either isn't.
+                let (off, turned) = (off_curve(q, b), at_point(a, b, q, angle));
+                if off.is_nan() || turned.is_nan() {
+                    f64::NAN
+                } else {
+                    off.max(turned)
                 }
             }
             S::AngleViaPoint {
                 a, b, point, angle, ..
-            } => Gap::rad(at_point(a, b, p(point), angle)),
+            } => at_point(a, b, p(point), angle),
             S::SymmetricLine { a, b, line, .. } => {
                 let (f, t) = self.ends(values, line);
-                Gap::mm(length(p(a), mirror(p(b), f, t)))
+                length(p(a), mirror(p(b), f, t))
             }
             S::MidpointOnLine { a, b, line, .. } => {
                 let (pa, pb) = (p(a), p(b));
                 let mid = [(pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0];
-                Gap::mm(from_line(mid, line).abs())
+                from_line(mid, line).abs()
             }
             S::SymmetricPoint { tag, a, b, center } => {
                 let (pa, pb, m) = (p(a), p(b), p(center));
@@ -1954,10 +2019,10 @@ impl Translation {
                 if midpoint {
                     // A midpoint's gap is the point's distance from the line's middle.
                     let middle = [(pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0];
-                    Gap::mm(length(m, middle))
+                    length(m, middle)
                 } else {
                     // A symmetry's, one point's distance from the other's mirror image.
-                    Gap::mm(length(pa, [2.0 * m[0] - pb[0], 2.0 * m[1] - pb[1]]))
+                    length(pa, [2.0 * m[0] - pb[0], 2.0 * m[1] - pb[1]])
                 }
             }
         }
@@ -1974,35 +2039,6 @@ fn unbuildable_error(elements: Vec<String>) -> Error {
     .with_suggestion(
         "draw the geometry nearer its solution, or check the dimensions that move it past a kilometre or shrink it to nothing",
     )
-}
-
-/// How far a constraint is from met: millimetres and radians, each its own way of missing.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-struct Gap {
-    mm: f64,
-    rad: f64,
-}
-
-impl Gap {
-    fn mm(mm: f64) -> Self {
-        Gap { mm, rad: 0.0 }
-    }
-
-    fn rad(rad: f64) -> Self {
-        Gap { mm: 0.0, rad }
-    }
-
-    /// Within decision 5's tolerances (a gap that isn't a number isn't).
-    fn met(self) -> bool {
-        self.mm <= LENGTH_TOLERANCE && self.rad <= ANGLE_TOLERANCE
-    }
-
-    fn max(self, other: Gap) -> Gap {
-        Gap {
-            mm: self.mm.max(other.mm),
-            rad: self.rad.max(other.rad),
-        }
-    }
 }
 
 /// A solution's points, circles' radii, and reference dimensions' measures, by ID.
@@ -2024,6 +2060,11 @@ fn refusal_with(first: Answer, drawn_ok: bool, e: Error) -> Answer {
     } else {
         first
     }
+}
+
+/// Whether a gap is within `tolerance` (decision 5); a gap that isn't a number isn't.
+fn met(gap: f64, tolerance: f64) -> bool {
+    gap <= tolerance
 }
 
 /// Whether `solved` reached a solution, one that can be built or not.
