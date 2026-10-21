@@ -553,20 +553,17 @@ fn a_request_after_advance_never_lands_on_a_killed_worker() {
     let pool = pool(TEST_WORKER, 1);
     pool.set_stop_after(Duration::ZERO);
     let mut failures = Vec::new();
-    let mut workers = BTreeSet::new();
-    for attempt in 0..300u64 {
+    sweep_until_a_worker_is_stopped(&pool, 300, Duration::from_micros(100), |attempt, delay| {
         let g = pool.generation().0;
         drop(pool.submit(Generation(g), sleep(200)));
-        spin(Duration::from_micros(attempt % 100));
+        spin(delay);
         pool.advance(Generation(g + 1));
         match outcome(pool.submit(Generation(g + 1), echo(&[1]))) {
             Outcome::Done(Ok(_)) => {}
             other => failures.push((attempt, format!("{other:?}"))),
         }
-        workers.extend(pool.pids());
-    }
+    });
     assert!(failures.is_empty(), "{failures:?}");
-    assert!(workers.len() > 1, "no worker was ever stopped");
 }
 
 #[test]
@@ -577,21 +574,53 @@ fn a_worker_killed_as_its_request_ends_is_never_given_another() {
     let pool = pool(TEST_WORKER, 1);
     pool.set_stop_after(Duration::ZERO);
     let mut failures = Vec::new();
-    let mut workers = BTreeSet::new();
-    for attempt in 0..600u64 {
+    sweep_until_a_worker_is_stopped(&pool, 600, Duration::from_micros(300), |attempt, delay| {
         let g = pool.generation().0;
         let first = pool.submit(Generation(g), echo(&[0]));
-        spin(Duration::from_micros(attempt % 300));
+        spin(delay);
         pool.advance(Generation(g + 1));
         let _ = outcome(first);
         match outcome(pool.submit(Generation(g + 1), echo(&[1]))) {
             Outcome::Done(Ok(_)) => {}
             other => failures.push((attempt, format!("{other:?}"))),
         }
-        workers.extend(pool.pids());
-    }
+    });
     assert!(failures.is_empty(), "{failures:?}");
-    assert!(workers.len() > 1, "no worker was ever stopped");
+}
+
+/// Runs `attempt` `attempts` times, with delays from zero across `window`, and again across
+/// a window twice as wide each time until a worker has been stopped.
+///
+/// The moments these tests aim an `advance` at are inside a slot's own thread (between its
+/// marking a request running and checking the generation, or between a reply and the slot
+/// being idle), before the worker has the request or after it has answered, so no signal
+/// from the worker reaches them and the test can't wait on one: only a sweep lands there.
+/// A stopped worker shows an `advance` that came after the moment, so the sweep crossed
+/// it. A loaded machine moves the moment later, and the window widens to follow it rather
+/// than ending short of it (a fixed 100 µs fell short of it on a loaded machine).
+fn sweep_until_a_worker_is_stopped(
+    pool: &KernelPool,
+    attempts: u32,
+    window: Duration,
+    mut attempt: impl FnMut(u32, Duration),
+) {
+    let start = Instant::now();
+    let mut window = window;
+    let mut workers = BTreeSet::new();
+    loop {
+        for i in 0..attempts {
+            attempt(i, window * i / attempts);
+            workers.extend(pool.pids());
+        }
+        if workers.len() > 1 {
+            return;
+        }
+        assert!(
+            start.elapsed() < HANG,
+            "no worker was ever stopped, with advances up to {window:?} after a request"
+        );
+        window *= 2;
+    }
 }
 
 // ---------------------------------------------------------------------------------------
