@@ -1556,29 +1556,51 @@ fn a_wait_ended_early_by_a_newer_worker_still_doubles_on_the_next_failure() {
 
 #[test]
 fn a_request_refused_before_its_sent_doesnt_end_a_slots_wait() {
-    // Launches at about 0, 2, and 5 s (the wait 2 s). A request over the frame limit, once
-    // the third has exited, starts a worker (which fails: launch 4) and is refused before
-    // it's sent: no answer, so the slot's next wait is the last doubled, at least 4 s (a
-    // launch at least 4 s after the request's), not 1 s (about 2 s after).
+    // Launches at about 0, 2, and 5 s, each worker ending at once (exit 3): the slot waits
+    // 1, 2, then 4 s, from the idle check that sees each end. A request over the frame
+    // limit, sent while the slot waits, starts a worker (which ends too) and is refused
+    // before it's sent: no answer, so the slot's wait isn't ended, and its next is the last
+    // doubled, at least 4 s after the request's worker (not 1 s, a wait begun anew).
+    // The request is sent once the slot has let its last worker go, so while it waits; and
+    // the next launch is timed from the request's return, after its worker started, since
+    // a loaded machine can log a launch seconds late (a worker's own `perl` writes it).
+    // That was a race: sent once the worker had exited, by a test thread that then polled
+    // `ps` and could fall 4 s behind on a loaded machine, it met the slot's own next launch
+    // and started none (proven by a 5 s stall there). Should the slot start one in the
+    // moment before the request all the same, that worker's end is waited out, and the
+    // request sent in the next, longer wait.
     let dir = scratch_dir("refusal-keeps-wait");
     let (script, log) = launch_logger(&dir, "exit 3");
     let pool = KernelPool::start_workers(&script, 1).unwrap();
-    let third = wait_launches(&log, 3)[2];
-    // Its worker has ended, so the request starts one of its own.
-    wait_exited(launch_pid(&log, 2));
+    wait_launches(&log, 3);
     let too_large = vec![0; silico_protocol::MAX_FRAME_LEN as usize + 1];
-    let err =
-        done(pool.submit(Generation(1), KernelRequest::echo(Blob::inline(too_large)))).unwrap_err();
-    assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
-    let times = wait_launches(&log, 5);
+    let request = loop {
+        let before = launches(&log).len();
+        wait_let_go(&pool, launch_pid(&log, before - 1));
+        let submitted = epoch_now();
+        let err = done(pool.submit(
+            Generation(1),
+            KernelRequest::echo(Blob::inline(too_large.clone())),
+        ))
+        .unwrap_err();
+        let returned = epoch_now();
+        assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
+        // The worker the request met or started, logged as it starts.
+        let met = wait_launches_after(&log, submitted, 1)[0];
+        if launches(&log).len() == before + 1 {
+            break (met, returned);
+        }
+    };
+    let (request, returned) = request;
+    let next = wait_launches_after(&log, request, 1)[0];
     drop(pool);
-    let gaps = gaps(&times);
-    // The fourth is the request's: the slot's own came no sooner than 4 s after the third.
     assert!(
-        times[3] < third + 4.0,
-        "the request started no worker: gaps {gaps:?}"
+        next - returned > 4.0,
+        "a refusal ended the wait: the slot started its next worker {:.3} s after the \
+         request returned (launches at {:?})",
+        next - returned,
+        launch_times(&log)
     );
-    assert!(gaps[3] > 4.0, "a refusal ended the wait: gaps {gaps:?}");
 }
 
 #[test]
