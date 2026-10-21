@@ -890,7 +890,11 @@ fn a_sketchs_tolerance_is_its_extent_or_a_hundredth_of_a_nanometre() {
                 }
                 Err(e) => {
                     assert!(e.message().contains("past this sketch's 2"), "{e}");
-                    assert!(e.message().contains("of its 200 mm extent"), "{e}");
+                    assert!(
+                        e.message()
+                            .contains("(1e-9 of its 2e2 mm extent, or 1e-8 mm at least)"),
+                        "{e}"
+                    );
                 }
             }
         }

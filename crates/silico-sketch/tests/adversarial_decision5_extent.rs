@@ -435,7 +435,7 @@ fn two_lengths_a_nanometre_apart_conflict_within_a_metres_extent_and_agree_past_
     let mut w = worker();
     let e = solved(&twice_dimensioned_in_a_row(10.000001, 1000.0), &mut w).unwrap_err();
     assert_eq!(e.code(), ErrorCode::OverConstrained, "{e}");
-    assert!(e.message().contains("of its 999 mm extent"), "{e}");
+    assert!(e.message().contains("of its 9.99e2 mm extent"), "{e}");
     let s = solved(&twice_dimensioned_in_a_row(10.000001, 1002.0), &mut w)
         .unwrap_or_else(|e| panic!("{e}"));
     let gaps: Vec<f64> = s.redundant.values().copied().collect();
@@ -551,7 +551,8 @@ fn a_point_715_mm_along_held_a_micrometre_off_is_kept_and_two_off_is_refused() {
         .unwrap_or(f64::NAN);
     assert!((1.17e-6..=1.23e-6).contains(&worst), "{e}");
     assert!(e.message().contains("past this sketch's 7.150"), "{e}");
-    assert!(e.message().contains("of its 715.00"), "{e}");
+    assert!(e.message().contains("of its 7.1500"), "{e}");
+    assert!(e.message().contains("e2 mm extent"), "{e}");
 }
 
 #[test]

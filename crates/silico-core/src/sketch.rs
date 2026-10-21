@@ -1548,7 +1548,7 @@ impl Translation {
             return Err(Error::new(
                 ErrorCode::OverConstrained,
                 format!(
-                    "constraints repeat others but disagree with them, by up to {worst:e} mm, past this sketch's {tolerance:e} mm (1e-9 of its {extent} mm extent, or 1e-8 mm at least)"
+                    "constraints repeat others but disagree with them, by up to {worst:e} mm, past this sketch's {tolerance:e} mm ({EXTENT_TOLERANCE:e} of its {extent:e} mm extent, or {LENGTH_TOLERANCE:e} mm at least)"
                 ),
             )
             .with_elements(self.ids(&disagreeing)?)
