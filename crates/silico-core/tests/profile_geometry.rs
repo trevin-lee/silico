@@ -197,3 +197,247 @@ fn a_line_that_crosses_a_circle_once_from_outside_is_refused() {
     want.sort();
     assert_eq!(pairs, want, "{:#?}", draw::named(&errors));
 }
+
+// Round 1 of the CI mutants: each test below failed on a surviving mutant of the code.
+
+/// The rule every "apart" and end message ends with.
+const RULE: &str =
+    "a profile's curves must be more than 1e-7 mm apart except at a point they share";
+
+/// The circle r 1 about the origin, and a line inside it along the x axis from `from` to
+/// `to`, its points drawn in the order `drawn` gives (`true`: `to`'s point first). An end
+/// at (±x, 0) is 1 − x from the circle. The line's ends each end it alone (open), so
+/// they're refused too; the pair's meeting is the one end nearest the circle.
+fn chord(from: f64, to: f64, to_first: bool) -> (Vec<(String, Vec<String>)>, [String; 4]) {
+    let mut d = Draw::new();
+    let c = d.circle(0.0, 0.0, 1.0);
+    let (p, q) = if to_first {
+        let q = d.point(to, 0.0);
+        (d.point(from, 0.0), q)
+    } else {
+        let p = d.point(from, 0.0);
+        (p, d.point(to, 0.0))
+    };
+    let n = d.line(&p, &q);
+    (draw::named(&d.refused()), [c, n, p, q])
+}
+
+/// The one refusal naming the circle and the line, of [`chord`]'s.
+fn end_named<'a>(
+    errors: &'a [(String, Vec<String>)],
+    [c, n, ..]: &[String; 4],
+) -> &'a (String, Vec<String>) {
+    let mut of_pair = errors
+        .iter()
+        .filter(|(_, elements)| elements.contains(c) && elements.contains(n));
+    let found = of_pair.next().unwrap();
+    assert!(of_pair.next().is_none(), "{errors:#?}");
+    found
+}
+
+#[test]
+fn of_two_ends_near_a_curve_the_nearer_is_named_though_found_second() {
+    // The line from (−(1 − 2⁻²⁴), 0) to (1 − 2⁻²⁵, 0): its start 2⁻²⁴ (6e-8) from the
+    // circle, its end 2⁻²⁵ (3e-8), both within 1e-7. The end is the nearer.
+    let near = 1.0 - libm::exp2(-25.0);
+    let far = 1.0 - libm::exp2(-24.0);
+    let (errors, names) = chord(-far, near, false);
+    let [c, n, _, q] = &names;
+    let (message, elements) = end_named(&errors, &names);
+    assert!(
+        message.starts_with(&format!("point {q}, the end of line {n}, is 2.98")),
+        "{message}"
+    );
+    assert!(message.ends_with(&format!("e-8 mm from circle {c}: {RULE}")));
+    assert_eq!(elements, &vec![n.clone(), c.clone(), q.clone()]);
+}
+
+#[test]
+fn of_two_ends_near_a_curve_a_farther_one_first_by_id_isnt_named() {
+    // The line from (−(1 − 2⁻²⁵), 0), 3e-8 from the circle, to (1 − 2⁻²⁴, 0), 6e-8, its
+    // end's point drawn (so numbered) first: the nearer, its start, is named.
+    let near = 1.0 - libm::exp2(-25.0);
+    let far = 1.0 - libm::exp2(-24.0);
+    let (errors, names) = chord(-near, far, true);
+    let [c, n, p, _] = &names;
+    let (message, elements) = end_named(&errors, &names);
+    assert!(
+        message.starts_with(&format!("point {p}, the end of line {n}, is 2.98")),
+        "{message}"
+    );
+    assert_eq!(elements, &vec![n.clone(), c.clone(), p.clone()]);
+}
+
+#[test]
+fn of_two_ends_as_near_a_curve_the_first_by_id_is_named() {
+    // The line from (−(1 − 2⁻²⁴), 0) to (1 − 2⁻²⁴, 0): both ends exactly 2⁻²⁴ from the
+    // circle (|±x| is x). The first by ID is named, whichever end is found first.
+    let x = 1.0 - libm::exp2(-24.0);
+    for to_first in [false, true] {
+        let (errors, names) = chord(-x, x, to_first);
+        let [c, n, p, q] = &names;
+        let first = if to_first { q } else { p };
+        let (message, elements) = end_named(&errors, &names);
+        assert!(
+            message.starts_with(&format!("point {first}, the end of line {n}, is 5.96")),
+            "{to_first}: {message}"
+        );
+        assert_eq!(elements, &vec![n.clone(), c.clone(), first.clone()]);
+    }
+}
+
+#[test]
+fn a_point_on_an_arcs_circle_beyond_its_end_is_apart_from_it() {
+    // The arc r 5 about the origin from (5, 0) counter-clockwise to (−3, 4), 126.87°, and
+    // its chord; a triangle (−4, 3), (−4, 6), (−8, 3) outside the circle, its corner
+    // (−4, 3) on the circle at 143.13°, past the arc's end: √2 from it, so the two are
+    // apart. Areas by hand: the segment (r²/2)(θ − sin θ), θ = atan2(4, −3), sin θ = 0.8;
+    // the triangle ½·3·4.
+    let mut d = Draw::new();
+    let o = d.point(0.0, 0.0);
+    let s = d.point(5.0, 0.0);
+    let e = d.point(-3.0, 4.0);
+    d.arc(&o, &s, &e);
+    d.line(&e, &s);
+    d.polygon(&[(-4.0, 3.0), (-4.0, 6.0), (-8.0, 3.0)]);
+    let p = d.made();
+    let mut areas: Vec<f64> = p.regions.iter().map(|r| r.area()).collect();
+    areas.sort_by(f64::total_cmp);
+    let theta = libm::atan2(4.0, -3.0);
+    let segment = 12.5 * (theta - 0.8);
+    assert_eq!(areas.len(), 2, "{p:#?}");
+    assert!(close(areas[0], 6.0, 1e-12), "{areas:?}");
+    assert!(
+        close(areas[1], segment, 1e-12),
+        "{areas:?} against {segment}"
+    );
+}
+
+#[test]
+fn a_point_on_a_major_arc_where_it_turns_back_towards_its_start_is_on_it() {
+    // The arc r 5 about the origin from (5, 0) counter-clockwise to (−3, −4), 233.13°, and
+    // its chord; a triangle (−4, −3), (−8, −3), (−4, −6) outside the circle, its corner
+    // (−4, −3) on the arc at 216.87°: 0 from it, past the half turn from the arc's start.
+    let mut d = Draw::new();
+    let o = d.point(0.0, 0.0);
+    let s = d.point(5.0, 0.0);
+    let e = d.point(-3.0, -4.0);
+    let a = d.arc(&o, &s, &e);
+    d.line(&e, &s);
+    let corner = d.point(-4.0, -3.0);
+    let (left, low) = (d.point(-8.0, -3.0), d.point(-4.0, -6.0));
+    let sides = [
+        d.line(&corner, &left),
+        d.line(&left, &low),
+        d.line(&low, &corner),
+    ];
+    let errors = draw::named(&d.refused());
+    for side in [&sides[0], &sides[2]] {
+        assert!(
+            errors.contains(&(
+                format!("point {corner}, the end of line {side}, is 0 mm from arc {a}: {RULE}"),
+                vec![side.clone(), a.clone(), corner.to_owned()]
+            )),
+            "{errors:#?}"
+        );
+    }
+}
+
+#[test]
+fn a_point_at_an_arcs_centre_is_as_far_from_it_as_its_nearer_end() {
+    // A tiny arc about the origin from (1.5e-7, 0) to (−7.5e-8, 0): r 1.5e-7, from its
+    // start, its end 7.5e-8 off its circle (within 1e-7, so the arc is built), so its end
+    // is 7.5e-8 from its centre. A line from the centre's point up to (0, 5), and one from
+    // the arc's end down to (−7.5e-8, −5), so neither point is open. The centre is 7.5e-8
+    // from the arc, at its end, not its radius away: the line's end there is named, as
+    // near as the arc's end is to the line, and first by ID.
+    let mut d = Draw::new();
+    let o = d.point(0.0, 0.0);
+    let s = d.point(1.5e-7, 0.0);
+    let e = d.point(-7.5e-8, 0.0);
+    let a = d.arc(&o, &s, &e);
+    let up = d.point(0.0, 5.0);
+    let n = d.line(&o, &up);
+    let down = d.point(-7.5e-8, -5.0);
+    d.line(&e, &down);
+    let errors = draw::named(&d.refused());
+    assert!(
+        errors.contains(&(
+            format!("point {o}, the end of line {n}, is 7.5e-8 mm from arc {a}: {RULE}"),
+            vec![n.clone(), a.clone(), o.clone()]
+        )),
+        "{errors:#?}"
+    );
+}
+
+#[test]
+fn a_short_line_near_a_long_one_is_measured_off_the_long_ones_line() {
+    // A 2-long line from (2, 2e-8) to (4, 6e-8), the bottom of a quadrilateral up to y = 5,
+    // drawn first; the 8 × 5 rectangle (0, −5)–(8, 0) below, its top from (8, 0) to (0, 0). Off
+    // the long top's line the short line's ends are 2e-8 and 6e-8: they lie along each
+    // other, 6e-8 apart. (Off the short line's own line, the top's end (8, 0) is 1.4e-7.)
+    let mut d = Draw::new();
+    let quad = d.polygon(&[(2.0, 2e-8), (4.0, 6e-8), (4.0, 5.0), (2.0, 5.0)]);
+    let rect = d.rectangle(0.0, -5.0, 8.0, 0.0);
+    let (short, top) = (&quad[0], &rect[2]);
+    let errors = draw::named(&d.refused());
+    let of_pair: Vec<_> = errors
+        .iter()
+        .filter(|(_, e)| e.contains(short) && e.contains(top))
+        .collect();
+    assert_eq!(
+        of_pair,
+        vec![&(
+            format!("line {short} and line {top} are 6e-8 mm apart: {RULE}"),
+            vec![short.clone(), top.clone()]
+        )],
+        "{errors:#?}"
+    );
+}
+
+#[test]
+fn a_solves_negative_zeros_are_sent_as_positive_zeros() {
+    // The lower half disc r 1 about the origin: the arc from (−1, −0) counter-clockwise
+    // to (1, 0), and the line back. As +0, the start is at π from the centre (atan2(+0, −1)),
+    // the end a turn on from 0, at 2π; as −0 it would be at −π, a turn earlier.
+    let mut d = Draw::new();
+    let o = d.point(0.0, -0.0);
+    let s = d.point(-1.0, -0.0);
+    let e = d.point(1.0, 0.0);
+    d.arc(&o, &s, &e);
+    d.line(&e, &s);
+    let p = d.made();
+    assert_eq!(p.regions.len(), 1);
+    assert!(close(p.regions[0].area(), PI / 2.0, 1e-15));
+    let sent = p.regions[0].outer.sent();
+    assert_eq!(
+        sent,
+        vec![
+            silico_protocol::Curve::Arc {
+                center: [0.0, 0.0],
+                start: [-1.0, 0.0],
+                end: [1.0, 0.0],
+                radius: 1.0,
+                start_angle: PI,
+                end_angle: 2.0 * PI,
+            },
+            silico_protocol::Curve::Line {
+                start: [1.0, 0.0],
+                end: [-1.0, 0.0],
+            },
+        ]
+    );
+    // == takes −0 for +0: each zero's sign, as sent.
+    for curve in &sent {
+        let points: Vec<[f64; 2]> = match *curve {
+            silico_protocol::Curve::Arc {
+                center, start, end, ..
+            } => vec![center, start, end],
+            silico_protocol::Curve::Line { start, end } => vec![start, end],
+            silico_protocol::Curve::Circle { center, .. } => vec![center],
+        };
+        for v in points.into_iter().flatten() {
+            assert!(v != 0.0 || v.is_sign_positive(), "{curve:?}");
+        }
+    }
+}

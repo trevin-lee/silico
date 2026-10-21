@@ -461,3 +461,62 @@ fn a_circle_exactly_1e_7_from_a_line_is_refused_and_one_more_f64_away_is_not() {
     let p = d.made();
     assert!(close(p.regions[0].area(), 256.0 - PI * r * r, 1e-15));
 }
+
+#[test]
+fn an_arcs_end_off_its_circle_by_1e_7_is_compared_though_their_boxes_are_2e_7_apart() {
+    // The quarter arc r 1 about (0, 1) from (−1, 1) to (0, −1e-7): its end 1e-7 below its
+    // circle (on it to 1e-7, so built), so 1e-7 below the circle's box, whose bottom is
+    // y = 0. A line along y = −2e-7: its box's top is 2e-7 below the arc's box, the sweep's
+    // margin exactly, and the arc's end is 1e-7 above it (8·1e-7/8 and 1·1e-7/1, exactly):
+    // they meet. The line from x = −0.5, so the arc comes first along x, and from x = −4,
+    // so the line does.
+    for from in [-0.5, -4.0] {
+        let mut d = Draw::new();
+        let o = d.point(0.0, 1.0);
+        let s = d.point(-1.0, 1.0);
+        let e = d.point(0.0, -1e-7);
+        let a = d.arc(&o, &s, &e);
+        let (l, r) = (d.point(from, -2e-7), d.point(-from, -2e-7));
+        let n = d.line(&l, &r);
+        let errors = named(&d.refused());
+        assert!(
+            errors.contains(&(
+                format!("point {e}, the end of arc {a}, is 1e-7 mm from line {n}: {RULE}"),
+                vec![a.clone(), n.clone(), e.clone()]
+            )),
+            "{from}: {errors:#?}"
+        );
+    }
+}
+
+#[test]
+fn a_thin_hole_in_a_region_with_no_area_is_refused_once_as_the_loop() {
+    // A 10 × 3.3e-7 strip with a 9.8 × 1.1e-7 hole along its middle, 1.1e-7 from each
+    // side (more than 1e-7: apart). By hand: the strip, 3.3e-6 against 1e-7 × 20, has
+    // area; the hole, 1.078e-6 against 1e-7 × 19.6, has none; the region, 2.222e-6 against
+    // 1e-7 × 39.6, has none either. The hole is refused, and the region it makes thin isn't
+    // refused again.
+    let by_hand = |area: f64, perimeter: f64| area <= 1e-7 * perimeter;
+    assert!(!by_hand(10.0 * 3.3e-7, 2.0 * (10.0 + 3.3e-7)));
+    assert!(by_hand(9.8 * 1.1e-7, 2.0 * (9.8 + 1.1e-7)));
+    assert!(by_hand(
+        10.0 * 3.3e-7 - 9.8 * 1.1e-7,
+        2.0 * (10.0 + 3.3e-7) + 2.0 * (9.8 + 1.1e-7)
+    ));
+    let mut d = Draw::new();
+    d.rectangle(0.0, 0.0, 10.0, 3.3e-7);
+    let hole = d.rectangle(0.1, 1.1e-7, 9.9, 2.2e-7);
+    let errors = d.refused();
+    assert_eq!(errors.len(), 1, "{:#?}", named(&errors));
+    assert!(errors[0].message().starts_with("loop "), "{}", errors[0]);
+    assert!(
+        errors[0]
+            .message()
+            .contains(" encloses no area to speak of ("),
+        "{}",
+        errors[0]
+    );
+    let mut elements = errors[0].elements().to_vec();
+    elements.sort();
+    assert_eq!(elements, hole);
+}

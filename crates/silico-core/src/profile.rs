@@ -330,18 +330,17 @@ fn unsigned([x, y]: Xy) -> Xy {
 /// radius and angles from its own points, as M3.3's translation has them
 /// (`arc_from_points`, the libm crate's), and one walked against its drawing is sent end
 /// first with its angles swapped, so it turns clockwise; a circle has its radius, and no
-/// direction (the request runs it with its loop's). Every coordinate's zero as +0. None for
-/// an arc whose points make none (its ends at one angle from its centre).
+/// direction (the request runs it with its loop's). Its points' zeros are +0 already, as
+/// [`gather`] puts them. None for an arc whose points make none (its ends at one angle from
+/// its centre).
 fn sent(drawn: Drawn, reversed: bool) -> Option<silico_protocol::Curve> {
     use silico_protocol::Curve;
     Some(match drawn {
         Drawn::Line { from, to } => {
-            let (from, to) = (unsigned(from), unsigned(to));
             let (start, end) = if reversed { (to, from) } else { (from, to) };
             Curve::Line { start, end }
         }
         Drawn::Arc { center, start, end } => {
-            let (center, start, end) = (unsigned(center), unsigned(start), unsigned(end));
             let [radius, start_angle, end_angle] = arc_from_points(center, start, end)?;
             if reversed {
                 Curve::Arc {
@@ -363,10 +362,7 @@ fn sent(drawn: Drawn, reversed: bool) -> Option<silico_protocol::Curve> {
                 }
             }
         }
-        Drawn::Circle { center, radius } => Curve::Circle {
-            center: unsigned(center),
-            radius,
-        },
+        Drawn::Circle { center, radius } => Curve::Circle { center, radius },
     })
 }
 
@@ -707,10 +703,10 @@ fn of_sketch(
         .regions
         .iter()
         .flat_map(|r| std::iter::once(&r.outer).chain(&r.holes));
-    let mut thin_loops = 0;
+    let mut any_thin = false;
     for l in all {
         if sliver(l.area, l.perimeter) {
-            thin_loops += 1;
+            any_thin = true;
             found.add(|| {
                 refuse(
                     format!(
@@ -726,7 +722,7 @@ fn of_sketch(
         }
     }
     // A region of loops that each have area can still have none: a ring.
-    if thin_loops == 0 {
+    if !any_thin {
         for region in &profile.regions {
             if !region.holes.is_empty() && sliver(region.area(), region.perimeter()) {
                 found.add(|| {

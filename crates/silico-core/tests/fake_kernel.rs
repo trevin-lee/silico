@@ -809,6 +809,76 @@ fn faces_are_made_symbolically_with_their_areas_by_formula() {
 }
 
 #[test]
+fn faces_boxes_reach_as_far_as_their_circles_and_arcs_go() {
+    use std::f64::consts::PI;
+    let kernel = FakeKernel::new(1).unwrap();
+    // Arcs r 5 about (2, 1), between points 3-4-5 from it, each closed by its chord.
+    let arc = |start: [f64; 2], end: [f64; 2]| {
+        let angle = |p: [f64; 2]| libm::atan2(p[1] - 1.0, p[0] - 2.0);
+        let (start_angle, mut end_angle) = (angle(start), angle(end));
+        if end_angle < start_angle {
+            end_angle += 2.0 * PI;
+        }
+        vec![
+            Curve::Arc {
+                center: [2.0, 1.0],
+                start,
+                end,
+                radius: 5.0,
+                start_angle,
+                end_angle,
+            },
+            line(end, start),
+        ]
+    };
+    // a: the angle of (4, 3) from the centre; b: of (3, 4).
+    let (a, b) = (libm::atan2(3.0, 4.0), libm::atan2(4.0, 3.0));
+    // Each region, its area by hand, and its box on XY by hand. A segment of angle θ is
+    // (r²/2)(θ − sin θ); sin 2a = sin 2b = 2·0.6·0.8 = 0.96.
+    let cases = [
+        // A ring: circles r 2 and r 1 about (5, 3). Its box is the outer circle's.
+        (
+            vec![(
+                vec![circle([5.0, 3.0], 2.0)],
+                vec![vec![circle([5.0, 3.0], 1.0)]],
+            )],
+            3.0 * PI,
+            [[3.0, 1.0, 0.0], [7.0, 5.0, 0.0]],
+        ),
+        // From (6, 4) over the top to (−2, 4): past 90°, to y = 6.
+        (
+            vec![(arc([6.0, 4.0], [-2.0, 4.0]), vec![])],
+            12.5 * (PI - 2.0 * a - 0.96),
+            [[-2.0, 4.0, 0.0], [6.0, 6.0, 0.0]],
+        ),
+        // From (6, 4) round past the top, the left, and the bottom to (6, −2): past 90°,
+        // 180°, and 270°, and not 360° (2π − a, short of it).
+        (
+            vec![(arc([6.0, 4.0], [6.0, -2.0]), vec![])],
+            12.5 * (2.0 * PI - 2.0 * a + 0.96),
+            [[-3.0, -4.0, 0.0], [6.0, 6.0, 0.0]],
+        ),
+        // From (−1, 5), at π − b, past the left to (−1, −3): past 180° only.
+        (
+            vec![(arc([-1.0, 5.0], [-1.0, -3.0]), vec![])],
+            12.5 * (2.0 * b - 0.96),
+            [[-3.0, -3.0, 0.0], [-1.0, 5.0, 0.0]],
+        ),
+    ];
+    for (sent, area, bounds) in cases {
+        let faces = regions(SketchPlane::Xy, sent);
+        let built = run(&kernel, KernelRequest::make_faces(&faces).unwrap());
+        let summary = run(&kernel, KernelRequest::summarize(&built.shape));
+        assert!(
+            (summary.area - area).abs() <= 1e-12 * area,
+            "{} for {area}",
+            summary.area
+        );
+        assert_eq!(summary.bounds, Some(bounds), "{faces:?}");
+    }
+}
+
+#[test]
 fn faces_read_back_and_move_as_any_fake_shape() {
     let kernel = FakeKernel::new(1).unwrap();
     let faces = regions(SketchPlane::Xy, vec![(slot(), vec![])]);
