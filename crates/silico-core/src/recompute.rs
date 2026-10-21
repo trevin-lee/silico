@@ -1344,23 +1344,34 @@ fn fits(step: &Step, built: &Built) -> bool {
     }
 }
 
-/// How much `built` knows of its measure: its summary most, then why the kernel refused it
-/// (which, for the session, may not last), then nothing.
-fn measure_known(built: &Built) -> u8 {
+/// How much a result knows of its measure, least first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum MeasureKnown {
+    Nothing,
+    /// Why the kernel refused it, which, for the session, may not last.
+    Refused,
+    Summary,
+}
+
+/// How much `built` knows of its measure.
+fn measure_known(built: &Built) -> MeasureKnown {
     match (built.summary(), built.measure_refused()) {
-        (Some(_), _) => 2,
-        (None, Some(_)) => 1,
-        (None, None) => 0,
+        (Some(_), _) => MeasureKnown::Summary,
+        (None, Some(_)) => MeasureKnown::Refused,
+        (None, None) => MeasureKnown::Nothing,
     }
 }
 
 /// Whether a recompute's `result` for a step is kept in place of `kept_now`, what's kept
 /// for it: a result, unless what's kept knows more of its measure; a failure, if it follows
-/// from the step's values.
+/// from the step's values, and nothing kept is a result (a step's result is a function of
+/// its key, so a failure beside one was a passing one: a superseded recompute's, say, short
+/// of memory, finishing last).
 fn replaces(kept_now: Option<&StepResult>, result: &StepResult) -> bool {
     match (kept_now, result) {
         (Some(Ok(old)), Ok(new)) => measure_known(new) >= measure_known(old),
         (_, Ok(_)) => true,
+        (Some(Ok(_)), Err(_)) => false,
         (_, Err(error)) => kept(error),
     }
 }
@@ -2372,10 +2383,22 @@ mod tests {
         for new in results {
             assert!(replaces(None, new));
         }
-        // A failure is kept if it follows from the step's values, whatever's there.
-        for old in [None, Some(&measured), Some(&unmeasured)] {
-            assert!(replaces(old, &failed(ErrorCode::KernelFailed)));
+        // A failure is kept if it follows from the step's values, and only in place of
+        // nothing, or of a failure: never of a result, which shows the failure passed.
+        let kept_failure = failed(ErrorCode::KernelFailed);
+        for old in [None, Some(&kept_failure)] {
+            assert!(replaces(old, &failed(ErrorCode::InvalidInput)));
             assert!(!replaces(old, &failed(ErrorCode::WorkerCrashed)));
+        }
+        for old in results {
+            assert!(
+                !replaces(Some(old), &failed(ErrorCode::KernelFailed)),
+                "{old:?}"
+            );
+        }
+        // And a result replaces a kept failure.
+        for new in results {
+            assert!(replaces(Some(&kept_failure), new), "{new:?}");
         }
     }
 

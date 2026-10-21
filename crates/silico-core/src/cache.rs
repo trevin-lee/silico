@@ -16,11 +16,11 @@
 //! nothing.
 //!
 //! Only results are kept, never a step's failure: a failure's cause may not last (memory,
-//! say), and recompute keeps those that follow from the values in memory. A result's measure
-//! the kernel refused is kept with it only if the refusal is a fact about the solid's values
-//! (invalid input, or an invalid result), with the identity of the Silico that worded it, so
-//! it's given back only to that one: another words it afresh, by measuring again. Nothing here fails a
-//! recompute: an entry that can't be read is a miss, and one that can't be written is left
+//! say), and recompute keeps those that follow from the values in memory. A result's
+//! measure the kernel refused is kept with it only if the refusal is a fact about the
+//! solid's values (invalid input, or an invalid result), with the identity of the Silico
+//! that worded it, so it's given back only to that one: another words it afresh, by
+//! measuring again. Nothing here fails a recompute: an entry that can't be read is a miss, and one that can't be written is left
 //! unwritten, each with a warning. An entry that doesn't hold together (a bad seal, a
 //! payload that doesn't parse, an entry for another key) is a miss too, rebuilt and written
 //! over, never trusted. Without a secret (no home directory, say) the cache keeps nothing.
@@ -291,13 +291,16 @@ impl Cache {
             brep: built.shape.brep().as_bytes().to_vec(),
             valid,
             history: built.history.clone(),
-            measure: match (built.summary(), built.measure_refused(), this_core()) {
-                (Some(summary), _, _) => Measure::Summary(summary.clone()),
-                (None, Some(refused), Some(core)) if lasting(refused) => Measure::Refused {
-                    error: CachedError::from(refused),
-                    worded_by: *core,
+            measure: match (built.summary(), built.measure_refused()) {
+                (Some(summary), _) => Measure::Summary(summary.clone()),
+                (None, Some(refused)) if lasting(refused) => match this_core() {
+                    Some(core) => Measure::Refused {
+                        error: CachedError::from(refused),
+                        worded_by: *core,
+                    },
+                    None => Measure::Unmeasured,
                 },
-                (None, _, _) => Measure::Unmeasured,
+                (None, _) => Measure::Unmeasured,
             },
         };
         let payload = match postcard::to_allocvec(&entry) {
@@ -812,26 +815,45 @@ fn lasting(refused: &crate::Error) -> bool {
 }
 
 /// The SHA-256 of the running executable, the core that words a kept refusal, read once
-/// (only when a refusal is kept or taken back); none if it can't be read, and then no
-/// refusal is kept on disk.
+/// (only when a refusal is kept or taken back); none, said once, if it can't be read, and
+/// then no refusal is kept on disk. On Linux it's read through `/proc/self/exe`, the file
+/// running even if another has since taken its name; elsewhere, by the executable's path,
+/// so a core replaced on disk while it runs takes the new one's identity (its refusals may
+/// then be given back in the other's words, never with the other's codes unchecked).
 fn this_core() -> Option<&'static [u8; 32]> {
-    use sha2::Digest as _;
     static CORE: std::sync::OnceLock<Option<[u8; 32]>> = std::sync::OnceLock::new();
     CORE.get_or_init(|| {
-        let mut file = std::fs::File::open(std::env::current_exe().ok()?).ok()?;
-        let mut hash = Sha256::new();
-        let mut buffer = vec![0; 1 << 20];
-        loop {
-            match file.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(n) => hash.update(buffer.get(..n)?),
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(_) => return None,
-            }
+        let hashed = sha256_of_running_executable();
+        if let Err(e) = &hashed {
+            tracing::warn!(
+                "couldn't read Silico's own executable ({e}): keeping no measure's refusal \
+                 on disk"
+            );
         }
-        Some(hash.finalize().into())
+        hashed.ok()
     })
     .as_ref()
+}
+
+/// The SHA-256 of the running executable.
+fn sha256_of_running_executable() -> std::io::Result<[u8; 32]> {
+    use sha2::Digest as _;
+    let path = if cfg!(target_os = "linux") {
+        PathBuf::from("/proc/self/exe")
+    } else {
+        std::env::current_exe()?
+    };
+    let mut file = std::fs::File::open(path)?;
+    let mut hash = Sha256::new();
+    let mut buffer = vec![0; 1 << 20];
+    loop {
+        match file.read(&mut buffer) {
+            Ok(0) => return Ok(hash.finalize().into()),
+            Ok(n) => hash.update(buffer.get(..n).unwrap_or_default()),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// The result `entry` keeps, checked as a worker's reply is: a summary no shape has, or a

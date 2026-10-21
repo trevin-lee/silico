@@ -2,8 +2,11 @@
 //! directories, unreadable files, forged bytes with a sound seal, and entries planted under
 //! another's seal; symlinks planted where the cache writes its partial files; a cache
 //! directory removed mid-run, made read-only, or with a file where a subdirectory goes;
-//! sessions racing on one cache; and keys whose parts run together. Expected values are written by hand: which kernel calls a
-//! session makes, and the fake's description of each shape.
+//! sessions racing on one cache; and keys whose parts run together. And the cache's
+//! format, by hand: measures kept and taken back (refusals kept only as invalid input or an
+//! invalid result, worded by this core; anything else a worker's reply couldn't give,
+//! measured again), and entries of the format before. Expected values are written by hand:
+//! which kernel calls a session makes, and the fake's description of each shape.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 #[path = "common/cache.rs"]
@@ -1014,6 +1017,11 @@ fn a_kept_refusal_another_core_worded_is_measured_again() {
     published(&next, checked(EXAMPLE));
     assert!(calls(&next).is_empty(), "{:?}", calls(&next));
     assert_eq!(measures(&next), 1);
+    // Written as this one measured it.
+    assert!(matches!(
+        decode(&std::fs::read(&path).unwrap()).measure,
+        Measure::Summary(_)
+    ));
 }
 
 #[test]
