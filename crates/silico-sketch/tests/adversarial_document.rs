@@ -712,6 +712,50 @@ fn a_flat_redundant_rectangle_far_out_that_needs_two_solves_from_its_solution_is
     assert_eq!(r, Ok(()));
 }
 
+#[test]
+fn a_tall_redundant_rectangle_at_the_origin_lands_on_its_corners_and_loads_as_it_saved() {
+    // Found by the property below on main's gate (#48, run 39554967682): a 3.239132 ×
+    // 15,860.18596 rectangle at the origin, drawn off by a fraction of its short side, landed
+    // its top-right corner at x 3.2391328386725893, 0.84 µm off the vertical through the
+    // bottom-right one. Its sizes by hand: 10^0.5104286564522502 = 3.2391320735…,
+    // 10^4.200308275086536 = 15,860.1859596…, each to a whole nanometre. The corners are
+    // (0, 0), (w, 0), (w, h), and (0, h), each within 1e-8, and a load from the solution as
+    // the file holds it gives the same bits.
+    let (wide, high) = (3.239132, 15_860.185_96);
+    assert_eq!(
+        (
+            nm(libm::pow(10.0, 0.5104286564522502)),
+            nm(libm::pow(10.0, 4.200308275086536))
+        ),
+        (wide, high)
+    );
+    let jitter = [
+        -0.08558385451604963,
+        0.16548011266384074,
+        -0.1275441920853553,
+        0.0,
+        -0.23909021499140531,
+        0.23348846441637056,
+    ];
+    let doc = checked(&redundant_rectangle(0.0, 0.0, wide, high, jitter, false));
+    let mut w = worker();
+    let s = solved(&doc, &mut w).unwrap_or_else(|e| panic!("{e} / {:?}", e.elements()));
+    for (p, [x, y]) in [
+        ("p0000001", [0.0, 0.0]),
+        ("p0000002", [wide, 0.0]),
+        ("p0000003", [wide, high]),
+        ("p0000004", [0.0, high]),
+    ] {
+        let got = s.point(&id(p)).unwrap();
+        assert!(
+            (got[0] - x).abs() <= 1e-8 && (got[1] - y).abs() <= 1e-8,
+            "{p} at {got:?}, not ({x}, {y})"
+        );
+    }
+    let again = solved(&written_back(&doc, &s), &mut w).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(point_bits(&again), point_bits(&s));
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 1000, .. ProptestConfig::default() })]
 
