@@ -1566,18 +1566,21 @@ fn a_request_refused_before_its_sent_doesnt_end_a_slots_wait() {
     // a loaded machine can log a launch seconds late (a worker's own `perl` writes it).
     // That was a race: sent once the worker had exited, by a test thread that then polled
     // `ps` and could fall 4 s behind on a loaded machine, it met the slot's own next launch
-    // and started none (proven by a 5 s stall there). Should the slot start one in the
-    // moment before the request all the same, that worker's end is waited out, and the
-    // request sent in the next, longer wait.
+    // and started none (proven by a 5 s stall there). So each pass waits, after the
+    // request, until the slot has let go of every worker it holds: each logs before it
+    // ends, so every launch of the pass is then in the log. The pass counts only if it
+    // holds one launch, a worker the pool didn't hold before the request; otherwise (the
+    // slot started its own, the request meeting it or ending it and starting another) the
+    // request is sent again, in the slot's next, longer wait.
     let dir = scratch_dir("refusal-keeps-wait");
     let (script, log) = launch_logger(&dir, "exit 3");
     let pool = KernelPool::start_workers(&script, 1).unwrap();
     wait_launches(&log, 3);
     let too_large = vec![0; silico_protocol::MAX_FRAME_LEN as usize + 1];
-    let request = loop {
+    let (request, returned) = loop {
         let before = launches(&log).len();
         wait_let_go(&pool, launch_pid(&log, before - 1));
-        let submitted = epoch_now();
+        let held = pool.pids();
         let err = done(pool.submit(
             Generation(1),
             KernelRequest::echo(Blob::inline(too_large.clone())),
@@ -1585,13 +1588,15 @@ fn a_request_refused_before_its_sent_doesnt_end_a_slots_wait() {
         .unwrap_err();
         let returned = epoch_now();
         assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
-        // The worker the request met or started, logged as it starts.
-        let met = wait_launches_after(&log, submitted, 1)[0];
-        if launches(&log).len() == before + 1 {
-            break (met, returned);
+        for pid in pool.pids() {
+            wait_let_go(&pool, pid);
+        }
+        if let [(time, pid)] = launches(&log)[before..]
+            && !held.contains(&pid)
+        {
+            break (time, returned);
         }
     };
-    let (request, returned) = request;
     let next = wait_launches_after(&log, request, 1)[0];
     drop(pool);
     assert!(
