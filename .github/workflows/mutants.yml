@@ -6,10 +6,12 @@
 #
 #   gh workflow run mutants.yml --ref main -f ref=<branch> -f base=main -f packages="silico-core"
 #   gh workflow run mutants.yml --ref main -f files="crates/silico-core/src/cache.rs crates/silico-core/src/naming/*.rs"
+#   gh workflow run mutants.yml --ref main -f ref=<branch> -f re='profile\.rs:.* in (meeting|on_arc)$'
+#     (re-checks survivors: only the mutants whose names match, in minutes)
 name: mutants
 # The ref, base, packages, and files, so concurrent runs can be told apart (review-tests
 # finds its run by this title).
-run-name: "mutants ${{ inputs.ref || github.ref_name }} since ${{ inputs.base || 'nothing' }} in ${{ inputs.packages || 'every package' }}${{ inputs.files && format(' files {0}', inputs.files) || '' }}"
+run-name: "mutants ${{ inputs.ref || github.ref_name }} since ${{ inputs.base || 'nothing' }} in ${{ inputs.packages || 'every package' }}${{ inputs.files && format(' files {0}', inputs.files) || '' }}${{ inputs.re && format(' matching {0}', inputs.re) || '' }}"
 
 on:
   workflow_dispatch:
@@ -26,8 +28,11 @@ on:
       files:
         description: "Only mutants in these source files, space-separated, each a --file: a path from the repository's root, with * (not crossing /) or ** for globs; a word without / matches that name anywhere (empty: every file)"
         default: ""
+      re:
+        description: "Only mutants whose names match this regex, cargo-mutants' --re (e.g. re-checking survivors by file, line, or function; empty: every mutant)"
+        default: ""
       shards:
-        description: "Number of shards to share the work (1 to 16; at most three run at once)"
+        description: "Number of shards to share the work (1 to 16; at most two run at once)"
         default: "3"
 
 permissions:
@@ -77,14 +82,15 @@ jobs:
     timeout-minutes: 1440
     strategy:
       fail-fast: false
-      # At most three at once, whatever the shard count. A run's cap doesn't count other
-      # runs' shards, so two runs together take six of the eight runners and leave two for
+      # At most two at once, whatever the shard count. A run's cap doesn't count other
+      # runs' shards, so two runs together take four of the eight runners and leave four for
       # gates and the other workflows (bench, whose timings a busy machine skews, and the
-      # nightly oracle sweep); a third run at once would take the rest, and they would wait
-      # for a shard to finish. (Runner labels could reserve runners for gates, but the VM's
-      # runners are single-use and minted with fixed labels.) The runners share one VM, and
-      # free runners don't keep its CPU free: see the shard's share below.
-      max-parallel: 3
+      # nightly oracle sweep). At three a milestone-wide run and another together held six
+      # runners for hours, and gates queued behind them on the two left. (Runner labels could
+      # reserve runners for gates, but the VM's runners are single-use and minted with fixed
+      # labels.) The runners share one VM, and free runners don't keep its CPU free: see the
+      # shard's share below.
+      max-parallel: 2
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:
@@ -99,6 +105,7 @@ jobs:
           BASE: ${{ inputs.base }}
           PACKAGES: ${{ inputs.packages }}
           FILES: ${{ inputs.files }}
+          RE: ${{ inputs.re }}
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ inputs.shards }}
         run: |
@@ -120,10 +127,12 @@ jobs:
           set -f
           for file in $FILES; do args+=(--file "$file"); done
           set +f
-          # A sixth of the machine each: the most shards that run at once, two runs of three.
-          # One run alone uses half of it. Two use all of it, and a gate then runs on a full
-          # machine, where a test still held to a wall clock (tests/mutants.sh lists them)
-          # can fail: re-run the gate. Retry a failed test here, since one that fails only
+          # One regex, as given: cargo-mutants matches it against each mutant's name.
+          if [ -n "$RE" ]; then args+=(--re "$RE"); fi
+          # A sixth of the machine each: the most shards that run at once is four, two runs of
+          # two, which leaves a third of it for gates. (At three a run, two runs used all of
+          # it, and a gate on a full machine could fail a test still held to a wall clock:
+          # tests/mutants.sh lists them.) Retry a failed test here, since one that fails only
           # under load would fail the baseline or count a mutant as caught; a mutant that
           # breaks a test fails it every time.
           running=6
@@ -164,6 +173,7 @@ jobs:
           BASE: ${{ inputs.base }}
           PACKAGES: ${{ inputs.packages }}
           FILES: ${{ inputs.files }}
+          RE: ${{ inputs.re }}
         run: |
           mkdir -p all
           for outcome in caught missed timeout unviable; do
@@ -175,7 +185,7 @@ jobs:
           # without it.
           reported=$(find shards -mindepth 2 -maxdepth 2 -name shard 2>/dev/null | wc -l)
           {
-            echo "## Mutants: $REF${BASE:+ since $BASE}${PACKAGES:+ ($PACKAGES)}${FILES:+ in $FILES}"
+            echo "## Mutants: $REF${BASE:+ since $BASE}${PACKAGES:+ ($PACKAGES)}${FILES:+ in $FILES}${RE:+ matching \`$RE\`}"
             echo
             echo "| Caught | Missed | Timed out | Unviable | Shards reported |"
             echo "|---|---|---|---|---|"
@@ -196,11 +206,11 @@ jobs:
             echo "::error::a shard failed or didn't report: the results are incomplete, and a stopped shard's caught list may hold a mutant whose tests were killed"
             exit 1
           fi
-          # cargo-mutants passes a run that finds no mutants: a misspelt file would pass
-          # having tested nothing. (With a base, a change that touches none of the files
+          # cargo-mutants passes a run that finds no mutants: a misspelt file or regex would
+          # pass having tested nothing. (With a base, a change that touches none of the files
           # also finds none.)
-          if [ -n "$FILES" ] && [ "$tested" -eq 0 ]; then
-            echo "::error::the files matched no mutants${BASE:+ changed since $BASE}: check each is a path from the repository's root in the packages given"
+          if [ -n "$FILES$RE" ] && [ "$tested" -eq 0 ]; then
+            echo "::error::the files or regex matched no mutants${BASE:+ changed since $BASE}: check each file is a path from the repository's root in the packages given, and the regex matches mutants' names (file:line:column: what in function)"
             exit 1
           fi
           if [ -s all/missed.txt ]; then
