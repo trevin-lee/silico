@@ -981,6 +981,37 @@ fn a_result_with_no_volume_is_refused_as_empty() {
 }
 
 #[test]
+fn a_broken_result_of_a_kilometre_torus_is_measured_precisely_not_cleared_by_the_quick_measure() {
+    // Found by the milestone's mutation run: the quick measure clears a result against the
+    // cube of its bounding diagonal (1e-5 d³), and a threshold that grew only as d² went
+    // unnoticed. A torus of radii 1e6 and 2.5e5, the largest the kernel takes, cut by a copy
+    // moved 175,000 along y (the family the port note lists: OCCT gets these wrong): OCCT's
+    // result reads 3.0e13 by the quick measure, under 1e-5 d³ (6.3e14, d 4.0e6) but over d²
+    // (1.6e13), and 32 precisely, with an area of 2e13: no volume to speak of. Measured
+    // precisely, it's refused as empty, never accepted. Should OCCT get it right one day,
+    // it has a volume, at least a tenth of a millionth of the torus's.
+    let t = Primitive::Torus {
+        major_radius: 1e6,
+        minor_radius: 2.5e5,
+    };
+    match boolean(
+        BooleanOp::Cut,
+        &make(&t).unwrap(),
+        &at(t, [0.0, 175_000.0, 0.0]),
+    ) {
+        Err(e) => {
+            assert_eq!(e.kind(), KernelErrorKind::Failed, "{e}");
+            assert!(e.message().ends_with("result is empty"), "{e}");
+        }
+        Ok(built) => {
+            let v = summarize(&built.shape).unwrap().volume;
+            let torus = 2.0 * std::f64::consts::PI * std::f64::consts::PI * 1e6 * 2.5e5 * 2.5e5;
+            assert!(v > 1e-7 * torus, "accepted with volume {v}");
+        }
+    }
+}
+
+#[test]
 fn a_result_turned_inside_out_is_refused_as_invalid() {
     // A torus of radii 200 and 100 cut by a copy of itself moved 50 across its seam: OCCT's
     // cut is a solid turned inside out, its volume -3.15e6 for an area of 7.9e5, which

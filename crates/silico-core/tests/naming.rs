@@ -1493,3 +1493,72 @@ fn an_edge_modified_from_both_operands_says_m_for_a_bitten_one_and_i_for_the_oth
         );
     }
 }
+
+/// A unit cube's map, every name in it stable.
+fn unit_cube(feature: &str) -> ElementMap {
+    ElementMap::primitive(
+        id(feature),
+        &Primitive::Box {
+            dx: 1.0,
+            dy: 1.0,
+            dz: 1.0,
+        },
+    )
+}
+
+#[test]
+fn a_name_the_map_doesnt_hold_is_unstable_if_its_a_duplicate_or_made_from_one() {
+    // Found by the milestone's mutation run: a map's own names are decided when it's made,
+    // so only a name it doesn't hold reaches the rule itself, and none did in a test. A
+    // `~n` is unstable (N3) whatever it's the `~n` of, and so is a name made from one.
+    let map = unit_cube("aaaaaaaa");
+    let edge = |i| map.name(element(ElementKind::Edge, i)).unwrap();
+    assert!(!map.is_unstable(&edge(1)));
+    let duplicate = Arc::new(Name::Duplicate {
+        name: edge(1),
+        ordinal: std::num::NonZeroU32::MIN,
+    });
+    assert!(map.is_unstable(&duplicate));
+    let face_of = |more: Arc<Name>| Name::Lower {
+        feature: id("rrrrrrrr"),
+        operation: OpCode::Cut,
+        kind: ElementKind::Face,
+        first: edge(1),
+        more: vec![more],
+    };
+    assert!(map.is_unstable(&face_of(Arc::clone(&duplicate))));
+    // Made from stable names only, it's stable.
+    assert!(!map.is_unstable(&face_of(edge(2))));
+}
+
+#[test]
+fn names_order_alike_by_partial_and_total_order() {
+    // Found by the milestone's mutation run: `<` on names, and on the parts of a name
+    // kept only for FreeCAD's form, was never used, so a `partial_cmp` of `None` passed
+    // every test. Rust requires `partial_cmp` to be `Some(cmp)`; the parts compare equal
+    // whatever they hold, as their docs say, so they're equal by `==` and `<=` alike.
+    use silico_core::naming::{LastOp, Raw};
+    use std::cmp::Ordering;
+    use std::num::NonZeroU32;
+    let map = unit_cube("aaaaaaaa");
+    let faces: Vec<Arc<Name>> = (1..=6)
+        .map(|i| map.name(element(ElementKind::Face, i)).unwrap())
+        .collect();
+    for a in &faces {
+        for b in &faces {
+            assert_eq!(a.partial_cmp(b), Some(a.cmp(b)), "{a} {b}");
+            assert_eq!(a < b, a.cmp(b) == Ordering::Less, "{a} {b}");
+        }
+    }
+    assert!(faces[0] < faces[1]);
+    let (one, two) = (NonZeroU32::MIN, NonZeroU32::new(2).unwrap());
+    assert!(Raw(one) == Raw(two));
+    assert_eq!(Raw(one).partial_cmp(&Raw(two)), Some(Ordering::Equal));
+    assert!(Raw(two) <= Raw(one));
+    assert!(LastOp(OpCode::Cut) == LastOp(OpCode::Fuse));
+    assert_eq!(
+        LastOp(OpCode::Cut).partial_cmp(&LastOp(OpCode::Fuse)),
+        Some(Ordering::Equal)
+    );
+    assert!(LastOp(OpCode::Fuse) <= LastOp(OpCode::Cut));
+}

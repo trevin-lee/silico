@@ -15,10 +15,12 @@ fail-fast = false
 test-threads = 15
 # The default profile's timeouts and overrides hold here too: nextest takes them from it.
 
-# The document reader's timed tests (named `..._promptly`) measure their own thread's CPU
-# time, so load doesn't fail them; they and its memory-heavy tests (named here: renaming
-# one means renaming it here) run one at a time, with room for a loaded machine's wall
-# time.
+# The document reader's and the cache's timed tests (named `..._promptly`) measure their
+# own thread's CPU time, so load doesn't fail them; they and the reader's memory-heavy tests
+# (named here: renaming one means renaming it here) run one at a time, with room for a
+# loaded machine's wall time. The cache's read of a file of exactly the largest entry
+# (1 GiB, in silico-core's src/cache.rs) is one of the `_promptly` tests on purpose, so it
+# never runs beside the others: keep the name.
 [test-groups]
 document-heavy = { max-threads = 1 }
 

@@ -206,6 +206,98 @@ fn after_a_step_panics_the_next_recompute_still_publishes() {
     assert_eq!(described(&model, "aaaaaaaa"), "box(2, 1, 1)");
 }
 
+/// A kernel whose submit panics on spheres, but only once a held request is running on
+/// the fake, and says when the thread that panicked has ended (its recompute thread, which
+/// ends after it has marked the recompute broken).
+struct PanicsWhileHeld {
+    fake: FakeKernel,
+    ended: std::sync::Mutex<std::sync::mpsc::Sender<()>>,
+}
+
+/// Sends once the thread holding it ends.
+struct OnEnd(std::sync::mpsc::Sender<()>);
+
+impl Drop for OnEnd {
+    fn drop(&mut self) {
+        let _ = self.0.send(());
+    }
+}
+
+thread_local! {
+    static ON_END: std::cell::RefCell<Option<OnEnd>> = const { std::cell::RefCell::new(None) };
+}
+
+impl Kernel for PanicsWhileHeld {
+    fn identity(&self) -> &str {
+        self.fake.identity()
+    }
+
+    fn generation(&self) -> Generation {
+        self.fake.generation()
+    }
+
+    fn advance(&self, generation: Generation) {
+        self.fake.advance(generation);
+    }
+
+    fn submit<T: Send + 'static>(
+        &self,
+        generation: Generation,
+        request: KernelRequest<T>,
+    ) -> Pending<T> {
+        if request.name() == "MakeSphere" {
+            assert!(self.fake.wait_running(1, WAIT));
+            let ended = self.ended.lock().unwrap().clone();
+            ON_END.with(|on_end| *on_end.borrow_mut() = Some(OnEnd(ended)));
+            panic!("a bug under a recompute step");
+        }
+        self.fake.submit(generation, request)
+    }
+}
+
+#[test]
+fn once_a_step_panics_no_thread_takes_another_step() {
+    // Found by the milestone's mutation run: a thread kept taking steps after another's
+    // panicked (the check was `superseded && broken`), which passed every test. A broken
+    // recompute ends with the panic's error, and nothing more is asked of the kernel: here
+    // a box's make is held until the thread whose sphere panicked has ended; then the
+    // box's move, ready once its make is done, is never sent.
+    let (ended, end) = std::sync::mpsc::channel();
+    let engine = Recompute::new(PanicsWhileHeld {
+        fake: FakeKernel::new(4).unwrap(),
+        ended: std::sync::Mutex::new(ended),
+    });
+    let hold = engine
+        .kernel()
+        .fake
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { .. })));
+    let run = engine.start(document(&[
+        boxed("aaaaaaaa", [1.0, 0.0, 0.0], [1.0, 1.0, 1.0]),
+        sphere("bbbbbbbb", [0.0; 3], 1.0),
+    ]));
+    assert!(
+        end.recv_timeout(WAIT).is_ok(),
+        "the sphere's step never panicked"
+    );
+    hold.release();
+    match run.wait_timeout(WAIT) {
+        Ok(Err(error)) => {
+            assert_eq!(error.code(), ErrorCode::Internal, "{error}");
+            assert_eq!(error.feature(), Some("bbbbbbbb"));
+        }
+        Ok(Ok(outcome)) => panic!("a panicking step came to {outcome:?}"),
+        Err(_) => panic!("the recompute hung after a step panicked"),
+    }
+    let calls: Vec<&str> = engine
+        .kernel()
+        .fake
+        .calls()
+        .iter()
+        .map(|call| call.op.name())
+        .collect();
+    assert_eq!(calls, ["MakeBox"]);
+}
+
 // ---------------------------------------------------------------------------------------
 // Waiting.
 

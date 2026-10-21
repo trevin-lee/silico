@@ -837,6 +837,100 @@ fn names_that_would_double_with_every_feature_are_bounded_promptly() {
     assert!(!map.is_unstable(&face3));
 }
 
+/// `drilled()`, but the plate's Face1 and Face2 each modified into both the result's Face1
+/// and Face2, and the result's Face1 made from the first `p` of the tool's faces too, its
+/// Face2 from the first `q` (`p` and `q` differ, so the two are named apart).
+fn crossed_with_tool(p: u32, q: u32) -> History {
+    let mut h = drilled();
+    let into = |faces: &[u32]| ElementFate {
+        modified: (1..)
+            .zip(faces)
+            .map(|(position, &face)| Reported {
+                element: element(ElementKind::Face, face),
+                position,
+            })
+            .collect(),
+        ..ElementFate::default()
+    };
+    h.inputs[0].faces[0] = into(&[1, 2]);
+    h.inputs[0].faces[1] = into(&[1, 2]);
+    h.inputs[0].faces[5] = kept(6);
+    h.inputs[1].faces = (1..=p.max(q))
+        .map(|j| match (j <= p, j <= q) {
+            (true, true) => into(&[1, 2]),
+            (true, false) => into(&[1]),
+            _ => into(&[2]),
+        })
+        .collect();
+    h
+}
+
+/// How many names `name` is made of, written out (a name used twice counts twice): the
+/// bound's measure, counted here from the name's own parts.
+fn written_out(name: &Name) -> u64 {
+    let parts: Vec<&Name> = match name {
+        Name::Element { .. } => vec![],
+        Name::Derived { first, more, .. } => std::iter::once(first)
+            .chain(more)
+            .map(|source| source.name.as_ref())
+            .collect(),
+        Name::Upper { upper, more, .. } => std::iter::once(upper)
+            .chain(more)
+            .map(Arc::as_ref)
+            .collect(),
+        Name::Lower { first, more, .. } => std::iter::once(first)
+            .chain(more)
+            .map(Arc::as_ref)
+            .collect(),
+        Name::Duplicate { name, .. } | Name::Modified { name, .. } => vec![name.as_ref()],
+    };
+    1 + parts.into_iter().map(written_out).sum::<u64>()
+}
+
+#[test]
+fn a_name_of_exactly_the_most_names_is_kept_and_one_more_is_numbered() {
+    // Found by the milestone's mutation run: a name exactly at the bound (4,096 names
+    // written out) was never made, so a bound of `>=` passed every test. The result's
+    // Face1 and Face2 are each made of the plate's two and some of the tool's faces (each
+    // one name): with a, b the plate's two and p, q the tool's faces each takes, the next
+    // are 1 + a + b + p and 1 + a + b + q. Worked by hand from 1 and 1, with (p, q) of
+    // (1, 3) six times, then (2, 3), (1, 3), (2, 3): 4 and 6, 12 and 14, 28 and 30, 60 and
+    // 62, 124 and 126, 252 and 254, 509 and 510, 1021 and 1023, 2047 and 2048. Then (0, 1):
+    // Face1 is 1 + 4095 = 4096 names, at the bound, so it's kept; Face2 is 4097, past it,
+    // so it's named by its number, unstable.
+    let tool = ElementMap::by_number(id("tttttttt"), OpCode::Fuse, BOX);
+    let mut map = ElementMap::by_number(id("pppppppp"), OpCode::Fuse, BOX);
+    let steps = [
+        (1, 3),
+        (1, 3),
+        (1, 3),
+        (1, 3),
+        (1, 3),
+        (1, 3),
+        (2, 3),
+        (1, 3),
+        (2, 3),
+        (0, 1),
+    ];
+    for (n, (p, q)) in steps.into_iter().enumerate() {
+        let history = crossed_with_tool(p, q);
+        history.validate(2).unwrap();
+        map = ElementMap::operation(
+            id(&format!("f{n:07}")),
+            OpCode::Cut,
+            &[&map, &tool],
+            &history,
+        );
+    }
+    let face1 = map.name(element(ElementKind::Face, 1)).unwrap();
+    assert_eq!(written_out(&face1), 4096);
+    assert!(matches!(*face1, Name::Derived { .. }), "{face1}");
+    assert!(!map.is_unstable(&face1));
+    let face2 = map.name(element(ElementKind::Face, 2)).unwrap();
+    assert_eq!(face2.to_string(), "f0000009.cut.Face2");
+    assert!(map.is_unstable(&face2));
+}
+
 #[test]
 fn a_deep_timeline_names_and_writes_its_names_on_a_default_thread() {
     // Found by the review: a plate drilled 6,000 times, a feature a hole, nested its top

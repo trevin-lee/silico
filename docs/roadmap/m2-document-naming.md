@@ -132,3 +132,24 @@ Trevin's decisions N4 to N6 (docs/design/m2.7-naming.md), and, under his standin
 - **`silico check`, `fmt`, `show`, and `textconv`** (docs/cli.md), one kernel pool for the files of a directory: exit 0 for nothing wrong, 1 for a document's problems, 2 for a command that couldn't run; `check --json` writes a line per file an agent reads. A file is read only if it's a regular file (a pipe or a device could hang), at most one byte more than a document may be. `fmt` writes the file a link names, in place where it has other hard links and through a renamed temporary file otherwise, keeping its permissions; it won't write a read-only file, or one changed since it was read. `textconv` is git's diff driver: a one-value edit diffs as one line of the outline, and a file that isn't a document (conflict markers) diffs as written.
 - **On the golden models** (`tests/golden/`): `check`, `fmt --check`, and `fmt` on each (silico-cli `tests/golden.rs`): clean, canonical, and left as they are.
 - **Not yet**: snapshots of `show` and `textconv` on the golden models; the outline is tested on the example documents.
+
+### The milestone review (done)
+
+Six personas over four rounds, and `/break-it`. Fixed: names that say their operation and side (N8, N9), failed dressings named by the document's edges, planning that grows as the chain does, and the tests a mutation passed (PR #42); and inside-out boolean results refused as invalid (PR #46).
+
+- **Mutation testing**, over M2's lines in silico-core, silico-kernel, silico-cli, and silico-protocol (the milestone-wide run reached about 38% of its mutants before it was stopped; a run over the review's own lines covered those). Its survivors are caught by tests added for them (PR #48), but for these, each acceptable for the reason given:
+  - Equivalent:
+    - `|` for `^` on separate flag bits (cache's open);
+    - an equal-length resize that changes nothing (`file::in_place`);
+    - the worker binary's stamp left unread, which only re-hashes the binary (`Stamp::of`);
+    - `||` for `&&` on a pool worker's exit, since a stopped worker is always reaped;
+    - a recompute's thread count made negative, still nonzero;
+    - `running` after a panic, read only to wake the other threads;
+    - two extra wake-ups when a recompute finishes;
+    - `< -thin` for `< thin` in a boolean's amount, the same once `|v| > thin`;
+    - an exact float tie at the quick measure's threshold.
+  - Race-only, differing only if a file grows between its size check and its read (three in cache's `read_file`), or if a worker's "started" message is still in flight at a slot's idle check (the pool's drain deadline).
+  - Reachable only when the OS refuses to start a recompute thread (four, in the count of threads started).
+  - Unreachable: `retyped`'s arm for a sketch, since a sketch's name never parses.
+  - Reached by no shape found: the boolean quick measure's threshold made larger. A search of 2,340 boolean results found no broken one whose rough volume clears 1e-5 d³.
+- **After the milestone**: the files the stopped run never reached (1,623 mutants, 26 files) are mutated in a pass of their own, and its survivors are dealt with in their own PR.

@@ -755,6 +755,50 @@ fn steps_one_result_makes_ready_run_at_once() {
     assert!(together, "the two moves didn't run at once");
 }
 
+#[test]
+fn a_solid_made_is_measured_at_once_while_what_uses_it_runs() {
+    // Found by the milestone's mutation run: the measure a make makes ready didn't wake an
+    // idle thread (it was counted as one fewer job, not one more), so it waited for the
+    // thread that made it, which passed every test. A block and a tool are made (the
+    // block's make held until the tool is measured), then the cut that uses them is held:
+    // the block is still measured, by another thread, while the cut runs.
+    let engine = engine(4);
+    let block = engine
+        .kernel()
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx == 2.0));
+    let cut = engine.kernel().hold(|op| op.name() == "Cut");
+    let run = engine.start(document(&[
+        r#"{"id": "aaaaaaaa", "type": "box", "v": 1, "name": "A", "position": [0, 0, 0], "length": 2, "width": 1, "height": 1}"#,
+        r#"{"id": "tttttttt", "type": "box", "v": 1, "name": "T", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1}"#,
+        r#"{"id": "bbbbbbbb", "type": "cut", "v": 1, "name": "B", "base": "aaaaaaaa", "tool": "tttttttt"}"#,
+    ]));
+    let summaries = || {
+        engine
+            .kernel()
+            .calls()
+            .iter()
+            .filter(|call| call.op.name() == "Summarize")
+            .count()
+    };
+    let until = |what: &str, done: &dyn Fn() -> bool| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !done() {
+            assert!(std::time::Instant::now() < deadline, "{what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    until("the tool was never measured", &|| summaries() == 1);
+    block.release();
+    until("the cut never ran", &|| {
+        engine.kernel().wait_running(1, Duration::ZERO)
+    });
+    until("the block wasn't measured while the cut ran", &|| {
+        summaries() == 2
+    });
+    cut.release();
+    assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
+}
+
 /// The fake kernel, with the first recompute's `advance` held until let go: so a newer
 /// recompute can start, and get ahead, before the older one has.
 struct SlowAdvance {
@@ -869,4 +913,51 @@ fn three_moves_on_one_make_all_run_at_once() {
     hold.release();
     assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
     assert!(together, "the three moves didn't run at once");
+}
+
+#[test]
+fn models_are_equal_exactly_when_theyre_of_the_same_document_and_generation_and_came_to_the_same() {
+    // Found by the milestone's mutation run: no test compared two models, so equality that
+    // looked only at the document, or only at the features, passed every test. Two engines'
+    // first models, of documents that differ only in a name and a note: every feature comes
+    // to the same, in the same generation, but they're not of the same document. And one
+    // engine's two models of one document, built in two generations: not equal either.
+    let renamed = EXAMPLE
+        .replace("\"Pin\"", "\"Dowel\"")
+        .replace("Clearance for an M5 bolt", "Clearance for an M6 bolt");
+    let first = published(&engine(2), checked(EXAMPLE));
+    let same = published(&engine(2), checked(EXAMPLE));
+    let other = published(&engine(2), checked(&renamed));
+    assert_eq!(*same, *first);
+    assert_eq!(other.generation(), first.generation());
+    assert_eq!(other.features(), first.features());
+    assert_eq!(other.bodies(), first.bodies());
+    assert_eq!(other.errors().count(), 0);
+    assert_ne!(*other, *first);
+    let engine = engine(2);
+    let earlier = published(&engine, checked(EXAMPLE));
+    let later = published(&engine, checked(EXAMPLE));
+    assert_ne!(earlier.generation(), later.generation());
+    assert_eq!(later.features(), earlier.features());
+    assert_ne!(*later, *earlier);
+}
+
+#[test]
+fn a_key_debugs_as_its_hex() {
+    // Found by the milestone's mutation run: a key's `Debug` (in every logged outcome) was
+    // never read. It's `Key(...)` around its 64 hex digits, as it displays.
+    let model = published(&engine(2), checked(EXAMPLE));
+    let Some(FeatureOutcome::Built { key, .. }) = model.outcome(&id("k7f2qx3m")) else {
+        panic!(
+            "k7f2qx3m didn't build: {:?}",
+            model.outcome(&id("k7f2qx3m"))
+        )
+    };
+    let hex = key.to_string();
+    assert_eq!(hex.len(), 64);
+    assert!(
+        hex.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    );
+    assert_eq!(format!("{key:?}"), format!("Key({hex})"));
 }

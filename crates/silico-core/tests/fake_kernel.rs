@@ -616,3 +616,59 @@ fn the_fake_summarizes_a_shape_by_formula() {
     assert_eq!(fused.bounds, Some([[0.0, -1.0, 0.0], [11.0, 3.0, 4.0]]));
     assert_eq!((fused.faces, fused.edges, fused.vertices), (9, 15, 10));
 }
+
+#[test]
+fn the_fake_summarizes_a_cone_and_a_torus_of_any_radii_by_formula() {
+    // Found by the milestone's mutation run: the cone above has a first radius of 2, where
+    // a·a = a + a and 2a = 2 + a, and the torus a second radius of 1, where Rr² = Rr/r, so
+    // those slips passed every test. Worked by hand: a cone of radii 3 and 1.5, 4 high, has
+    // a² + ab + b² = 15.75, so a volume of 21π, a slant of √18.25, an area of
+    // π(4.5·√18.25 + 11.25), and its centroid at 4·24.75/63 = 11/7; upside down (radii 1.5
+    // and 3), the same volume, area, and bounds, its centroid at 4·38.25/63 = 17/7 (and the
+    // bounds of its wider end, the second); a torus of radii 5 and 3 has a volume of 90π²
+    // and an area of 60π².
+    use std::f64::consts::PI;
+    let kernel = FakeKernel::new(1).unwrap();
+    let close = |a: f64, b: f64| (a - b).abs() <= 1e-12 * b.abs().max(1.0);
+    let summary = |primitive: Primitive| {
+        let shape = run(&kernel, KernelRequest::make(primitive).unwrap());
+        run(&kernel, KernelRequest::summarize(&shape))
+    };
+    let cone = summary(Primitive::Cone {
+        radius1: 3.0,
+        radius2: 1.5,
+        height: 4.0,
+    });
+    assert!(close(cone.volume, 21.0 * PI), "{cone:?}");
+    assert!(
+        close(cone.area, PI * (4.5 * 18.25f64.sqrt() + 11.25)),
+        "{cone:?}"
+    );
+    assert_eq!(cone.center[..2], [0.0, 0.0]);
+    assert!(close(cone.center[2], 11.0 / 7.0), "{cone:?}");
+    assert_eq!(cone.bounds, Some([[-3.0, -3.0, 0.0], [3.0, 3.0, 4.0]]));
+    let upside_down = summary(Primitive::Cone {
+        radius1: 1.5,
+        radius2: 3.0,
+        height: 4.0,
+    });
+    assert!(close(upside_down.volume, 21.0 * PI), "{upside_down:?}");
+    assert!(
+        close(upside_down.area, PI * (4.5 * 18.25f64.sqrt() + 11.25)),
+        "{upside_down:?}"
+    );
+    assert_eq!(upside_down.center[..2], [0.0, 0.0]);
+    assert!(close(upside_down.center[2], 17.0 / 7.0), "{upside_down:?}");
+    assert_eq!(
+        upside_down.bounds,
+        Some([[-3.0, -3.0, 0.0], [3.0, 3.0, 4.0]])
+    );
+    let torus = summary(Primitive::Torus {
+        major_radius: 5.0,
+        minor_radius: 3.0,
+    });
+    assert!(close(torus.volume, 90.0 * PI * PI), "{torus:?}");
+    assert!(close(torus.area, 60.0 * PI * PI), "{torus:?}");
+    assert_eq!(torus.center, [0.0; 3]);
+    assert_eq!(torus.bounds, Some([[-8.0, -8.0, -3.0], [8.0, 8.0, 3.0]]));
+}
