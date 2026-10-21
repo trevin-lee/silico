@@ -130,14 +130,10 @@ fn length_of(feature: &FeatureId, axis: &SolvedAxis<'_>) -> Result<[f64; 2], Err
         .with_parameter("axis")
         .with_suggestion("give the line some length, or turn about another line"));
     }
+    // The ends are apart (dx² + dy² isn't 0) and within reach (a solution's every value is,
+    // or it isn't kept), so the length is finite and above 0.
     let (dx, dy) = (axis.to[0] - axis.from[0], axis.to[1] - axis.from[1]);
     let length = (dx * dx + dy * dy).sqrt();
-    if !(length.is_finite() && length > 0.0) {
-        return Err(unchecked(format!(
-            "turns {feature} about {}, whose ends are no distance apart",
-            axis.axis
-        )));
-    }
     Ok([dx / length, dy / length])
 }
 

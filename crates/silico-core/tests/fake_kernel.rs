@@ -1178,3 +1178,154 @@ fn a_sweep_reads_back_as_built_and_only_faces_are_swept() {
         Some("revolution(faces(xy, 1 regions, 1 curves), 2, 0, 0, 0, 1, 0, 0, 1)")
     );
 }
+
+#[test]
+fn a_partial_turn_an_offset_prism_and_a_pocket_measure_by_the_fakes_own_model() {
+    // Mutants that survived M3.6's round 1, each worked out by hand from the model
+    // (`Measured::swept`, `Measured::less`).
+    use std::f64::consts::{FRAC_PI_2, PI};
+    let kernel = FakeKernel::new(1).unwrap();
+    let close = |got: f64, want: f64, what: &str| {
+        assert!(
+            (got - want).abs() <= 1e-12 * want.abs().max(1.0),
+            "{what}: {got} for {want}"
+        );
+    };
+    // A 4 × 3 rectangle on XY from the origin, swept from 5 below the plane to 10 above:
+    // the box of the faces at its start and its end, z −5 to 10.
+    let square = made_faces(
+        &kernel,
+        SketchPlane::Xy,
+        vec![(rectangle(4.0, 3.0), vec![])],
+    );
+    let prism = run(
+        &kernel,
+        KernelRequest::prism(&square.shape, [0.0, 0.0, -5.0], [0.0, 0.0, 15.0]).unwrap(),
+    );
+    let s = run(&kernel, KernelRequest::summarize(&prism.shape));
+    assert_eq!(s.volume, 180.0);
+    assert_eq!(s.bounds, Some([[0.0, 0.0, -5.0], [4.0, 3.0, 10.0]]));
+    assert_eq!(s.center, [2.0, 1.5, 2.5]);
+
+    // The rectangle x 2..6, z −4..−1 on XZ (area 12, perimeter 14, its box's centre 4 from
+    // the z axis), turned a quarter turn about the z axis: Pappus, 12·4·π/2 = 24π, and
+    // 14·4·π/2 + 2·12 = 28π + 24 (its two caps); a cube about the axis's point reaching
+    // its box's farthest corner, (6, 0, −4): √52.
+    let p = [[2.0, -4.0], [6.0, -4.0], [6.0, -1.0], [2.0, -1.0]];
+    let off = (0..4).map(|i| line(p[i], p[(i + 1) % 4])).collect();
+    let faces = made_faces(&kernel, SketchPlane::Xz, vec![(off, vec![])]);
+    let turned = |origin: [f64; 3]| {
+        let axis = silico_core::kernel::Axis {
+            origin,
+            direction: [0.0, 0.0, 1.0],
+        };
+        let made = run(
+            &kernel,
+            KernelRequest::revolution(&faces.shape, axis, 0.0, FRAC_PI_2).unwrap(),
+        );
+        run(&kernel, KernelRequest::summarize(&made.shape))
+    };
+    let s = turned([0.0; 3]);
+    close(s.volume, 24.0 * PI, "the quarter turn's volume");
+    close(s.area, 28.0 * PI + 24.0, "the quarter turn's area");
+    let [low, high] = s.bounds.unwrap();
+    let reach = 52f64.sqrt();
+    for k in 0..3 {
+        close(low[k], -reach, "the quarter turn's box");
+        close(high[k], reach, "the quarter turn's box");
+    }
+    // The same axis by its point (0, 0, −2): the same solid by Pappus; the farthest corner
+    // from that point is (6, 0, −4) still, √(36 + 4) = √40 away, and the centre is there.
+    let s = turned([0.0, 0.0, -2.0]);
+    close(s.volume, 24.0 * PI, "about (0, 0, −2)");
+    let reach = 40f64.sqrt();
+    let [low, high] = s.bounds.unwrap();
+    for (k, at) in [0.0, 0.0, -2.0].into_iter().enumerate() {
+        close(low[k], at - reach, "the box about (0, 0, −2)");
+        close(high[k], at + reach, "the box about (0, 0, −2)");
+    }
+    assert_eq!(s.center, [0.0, 0.0, -2.0]);
+
+    // A pocket: the 10 mm cube less the 4 × 3 rectangle's prism from z 5 to 10, all inside
+    // it. Volume 1000 − 60; area 600 more by the prism's 2·12 + 14·5 = 94 (the model's,
+    // where the real cut adds only the walls); moment (5, 5, 5)·1000 − (2, 1.5, 7.5)·60.
+    let cube = run(
+        &kernel,
+        KernelRequest::make(block(10.0, 10.0, 10.0)).unwrap(),
+    );
+    let tool = run(
+        &kernel,
+        KernelRequest::prism(&square.shape, [0.0, 0.0, 5.0], [0.0, 0.0, 5.0]).unwrap(),
+    );
+    let cut = run(
+        &kernel,
+        KernelRequest::boolean(BooleanOp::Cut, &cube, &tool.shape),
+    );
+    let s = run(&kernel, KernelRequest::summarize(&cut.shape));
+    assert_eq!(s.volume, 940.0);
+    assert_eq!(s.area, 694.0);
+    for (k, moment) in [4880.0, 4910.0, 4550.0].into_iter().enumerate() {
+        close(s.center[k], moment / 940.0, "the pocket's centre");
+    }
+}
+
+#[test]
+fn a_sweep_in_shape_bytes_is_refused_by_each_kernel_rule_on_its_own() {
+    // A circle on XY (normal +z) swept: bytes no request could make, each breaking one of
+    // the kernel's rules and passing the other. The values' rule (`check_prism`,
+    // `check_revolution`): a vector past 1e6 mm, out of the plane; an angle past a turn,
+    // about an axis in the plane. The plane's (`check_leaves_plane`,
+    // `check_axis_in_plane`): a vector of 1 mm in the plane; an axis along the normal,
+    // turned 1 radian.
+    let shape = |text: &str| ShapeData::checked(Blob::inline(text.as_bytes().to_vec()), true);
+    let faces = "silico fake shape 1\nfaces xy region loop circle 0 0 1\n";
+    for sweep in [
+        "prism 0 0 0 0 0 0 2000000",
+        "revolution 0 0 0 0 1 0 0 0 7",
+        "prism 0 0 0 0 1 0 0",
+        "revolution 0 0 0 0 0 0 1 0 1",
+    ] {
+        let text = format!("{faces}{sweep}\n");
+        assert_eq!(FakeKernel::describe(&shape(&text)), None, "{text}");
+    }
+    // And each value made good, read: so it's the one rule that refused it.
+    for sweep in ["prism 0 0 0 0 0 0 1000000", "revolution 0 0 0 0 1 0 0 0 1"] {
+        let text = format!("{faces}{sweep}\n");
+        assert!(FakeKernel::describe(&shape(&text)).is_some(), "{text}");
+    }
+}
+
+#[test]
+fn a_fuse_has_a_solid_where_either_side_has_one() {
+    // A fuse of the fake is one solid of solids that met, and none of none: faces (no
+    // solid) with faces are none, as OCCT's fuse of two faces is faces; with a box, either
+    // way round, one.
+    let kernel = FakeKernel::new(1).unwrap();
+    let square = made_faces(
+        &kernel,
+        SketchPlane::Xy,
+        vec![(rectangle(4.0, 3.0), vec![])],
+    );
+    let other = made_faces(
+        &kernel,
+        SketchPlane::Xy,
+        vec![(vec![circle([20.0, 0.0], 1.0)], vec![])],
+    );
+    let cube = run(
+        &kernel,
+        KernelRequest::make(block(10.0, 10.0, 10.0)).unwrap(),
+    );
+    for (base, tool, solids) in [
+        (&square.shape, &other.shape, 0),
+        (&cube, &square.shape, 1),
+        (&square.shape, &cube, 1),
+    ] {
+        let fused = run(&kernel, KernelRequest::boolean(BooleanOp::Fuse, base, tool));
+        assert_eq!(
+            FakeKernel::counts(&fused.shape).map(|c| c.solids),
+            Some(solids),
+            "{:?}",
+            FakeKernel::describe(&fused.shape)
+        );
+    }
+}

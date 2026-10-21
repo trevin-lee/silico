@@ -2789,9 +2789,11 @@ impl<K: Kernel + 'static> Engine<K> {
                         plan.judge(&key, done, refusals);
                         // A feature's solid is measured once it's made, by a job of its own:
                         // what uses it doesn't wait for that.
+                        // This thread takes a job itself next (it has nothing to write: a
+                        // feature's solid is written once measured), so the measure wakes no
+                        // other.
                         if plan.results.contains(&key) {
                             s.ready.push_back(Job::Measure(key));
-                            woken += 1;
                         }
                     }
                 }
@@ -3176,9 +3178,8 @@ fn naming(
     done: &BTreeMap<Key, StepResult>,
 ) -> Vec<Option<FeatureNaming>> {
     let mut naming: Vec<Option<FeatureNaming>> = Vec::with_capacity(features.len());
-    for (planned, (id, outcome)) in plan.features.iter().zip(features) {
-        let (FeatureOutcome::Built { key, .. }, Some(how)) = (outcome, planned.naming.as_ref())
-        else {
+    for (planned, (_, outcome)) in plan.features.iter().zip(features) {
+        let (FeatureOutcome::Built { .. }, Some(how)) = (outcome, planned.naming.as_ref()) else {
             naming.push(None);
             continue;
         };
@@ -3192,15 +3193,19 @@ fn naming(
             })
             .collect();
         // (A feature whose inputs aren't named isn't either: naming it needs their maps.)
-        let planned_key = planned
-            .naming_key
-            .filter(|_| planned.key() == Some(*key) && planned.id == *id);
-        naming.push(planned_key.zip(steps).map(|(key, steps)| FeatureNaming {
-            key,
-            how: how.clone(),
-            uses: planned.uses.clone(),
-            steps,
-        }));
+        // `features` are the plan's, in its order, and a built one's key is its last step's
+        // (`feature_outcome`).
+        naming.push(
+            planned
+                .naming_key
+                .zip(steps)
+                .map(|(key, steps)| FeatureNaming {
+                    key,
+                    how: how.clone(),
+                    uses: planned.uses.clone(),
+                    steps,
+                }),
+        );
     }
     naming
 }
