@@ -162,6 +162,41 @@ struct Executable {
     identity: String,
 }
 
+impl Executable {
+    /// Whether the file is still the build the worker started from: another would answer
+    /// under its identity. Cheap when the file is as it was; hashed again if not.
+    fn check(&self) -> Result<(), Error> {
+        Self::still(&self.path, self.stamp, &self.identity)
+    }
+
+    fn still(path: &Path, stamp: Option<Stamp>, identity: &str) -> Result<(), Error> {
+        let same = (stamp.is_some() && Stamp::of(path) == stamp)
+            || identity_of(path, WorkerKind::Sketch)? == identity;
+        if same {
+            return Ok(());
+        }
+        Err(Error::new(
+            ErrorCode::WorkerCrashed,
+            format!(
+                "the sketch worker {} changed since it started: another build of it isn't \
+                 started in its place",
+                path.display()
+            ),
+        )
+        .with_suggestion("restart Silico, so the new worker's solutions are kept as its own"))
+    }
+
+    /// Starts a worker from the file, checked again once it has started, as the kernel pool
+    /// checks its workers (`pool::Shared::start_check`): a file replaced between the check
+    /// and the exec shows, and that worker isn't trusted.
+    fn start(&self) -> Result<Worker, Error> {
+        let (path, stamp, identity) = (self.path.clone(), self.stamp, self.identity.clone());
+        let check: crate::worker::StartCheck =
+            Box::new(move || Self::still(&path, stamp, &identity));
+        Worker::spawn_checked(&self.path, WorkerKind::Sketch, Some(check))
+    }
+}
+
 impl SketchWorker {
     /// Starts the sketch worker: [`SKETCH_WORKER_ENV`], or `silico-sketch-worker` next to
     /// the running executable.
@@ -178,13 +213,15 @@ impl SketchWorker {
     pub fn start_worker(exe: &Path) -> Result<Self, Error> {
         let stamp = Stamp::of(exe);
         let identity = identity_of(exe, WorkerKind::Sketch)?;
+        let exe = Executable {
+            path: exe.to_owned(),
+            stamp,
+            identity,
+        };
+        let worker = exe.start()?;
         Ok(Self {
-            exe: Some(Executable {
-                path: exe.to_owned(),
-                stamp,
-                identity,
-            }),
-            ..Self::from_worker(Worker::spawn_as(exe, WorkerKind::Sketch)?)
+            exe: Some(exe),
+            ..Self::from_worker(worker)
         })
     }
 
@@ -210,20 +247,8 @@ impl SketchWorker {
         let Some(exe) = &self.exe else {
             return Ok(());
         };
-        let same = (exe.stamp.is_some() && Stamp::of(&exe.path) == exe.stamp)
-            || identity_of(&exe.path, WorkerKind::Sketch)? == exe.identity;
-        if !same {
-            return Err(Error::new(
-                ErrorCode::WorkerCrashed,
-                format!(
-                    "the sketch worker {} changed since it started: another build of it \
-                     isn't started in its place",
-                    exe.path.display()
-                ),
-            )
-            .with_suggestion("restart Silico, so the new worker's solutions are kept as its own"));
-        }
-        self.worker = Worker::spawn_as(&exe.path, WorkerKind::Sketch)?;
+        exe.check()?;
+        self.worker = exe.start()?;
         Ok(())
     }
 

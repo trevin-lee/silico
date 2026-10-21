@@ -185,6 +185,29 @@ fn small() -> String {
 }
 
 #[test]
+fn a_worker_whose_executable_changes_as_it_starts_isnt_used() {
+    // The executable is replaced between the check and the worker's start: here by the
+    // worker itself (a script that puts other bytes in its place, then runs the worker), so
+    // always after the check. The worker running may be either build: its answer isn't
+    // taken, and the solve fails as a change.
+    let dir = scratch("changed-as-started");
+    let exe = dir.join("silico-sketch-worker");
+    let tmp = dir.join("next");
+    let script = format!(
+        "#!/bin/sh\n# build 1\nprintf '#!/bin/sh\\n# build 2\\n' > '{tmp}' && mv '{tmp}' '{exe}'\nexec '{WORKER}'\n",
+        tmp = tmp.display(),
+        exe = exe.display(),
+    );
+    std::fs::write(&exe, script).unwrap();
+    std::fs::set_permissions(&exe, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let mut w = SketchWorker::start_worker(&exe).unwrap();
+    let e = solve(&checked(&small()), &feature(), &mut w).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::WorkerCrashed, "{e}");
+    assert!(e.message().contains("changed since it started"), "{e}");
+    assert!(e.message().contains(&exe.display().to_string()), "{e}");
+}
+
+#[test]
 fn a_worker_whose_executable_was_replaced_isnt_started_again_and_one_put_back_is() {
     // Linked, not copied: macOS holds a newly written executable at launch while it assesses
     // it (the catalog's worker-held-at-launch entry).
