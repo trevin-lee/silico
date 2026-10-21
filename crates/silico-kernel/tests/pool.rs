@@ -190,12 +190,13 @@ fn requests_run_in_parallel() {
 }
 
 #[test]
-fn the_pool_finds_its_worker_and_has_one_per_core() {
-    // As KernelWorker::start does: next to the test binary's directory.
+fn the_pool_finds_its_worker_and_has_one_per_core_started_as_requests_need_them() {
+    // As KernelWorker::start does: next to the test binary's directory. A slot for each
+    // core, none started until a request needs it; requests one at a time need one.
     let pool = KernelPool::start().unwrap();
     let cores = std::thread::available_parallelism().map_or(1, usize::from);
     assert_eq!(pool.size(), cores.min(silico_core::pool::MAX_WORKERS));
-    assert_eq!(pool.pids().len(), pool.size());
+    assert_eq!(pool.pids(), Vec::<u32>::new());
     let block = done(
         pool.submit(
             Generation(1),
@@ -214,6 +215,67 @@ fn the_pool_finds_its_worker_and_has_one_per_core() {
         "{}",
         summary.volume
     );
+    assert_eq!(pool.pids().len(), 1, "{:?}", pool.pids());
+}
+
+#[test]
+fn a_pool_on_demand_starts_as_many_workers_as_requests_run_at_once_and_no_more() {
+    let pool = KernelPool::start_on_demand(Path::new(TEST_WORKER), 8).unwrap();
+    assert_eq!(pool.size(), 8);
+    assert_eq!(pool.pids(), Vec::<u32>::new());
+    // Three at once: three workers, each request on its own.
+    let at_once = |n: usize| {
+        let started = Instant::now();
+        let pending: Vec<_> = (0..n)
+            .map(|_| pool.submit(Generation(1), sleep(300)))
+            .collect();
+        for p in pending {
+            done(p).unwrap();
+        }
+        started.elapsed()
+    };
+    at_once(3);
+    assert_eq!(pool.pids().len(), 3, "{:?}", pool.pids());
+    // Idle, the pool starts no more; three at once again run on the three it has, at once
+    // (timed now its workers have started, so starting them isn't in the time).
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(pool.pids().len(), 3, "{:?}", pool.pids());
+    let before: BTreeSet<u32> = pool.pids().into_iter().collect();
+    let took = at_once(3);
+    assert!(
+        took < Duration::from_millis(900),
+        "they didn't run at once: {took:?}"
+    );
+    assert_eq!(pool.pids().into_iter().collect::<BTreeSet<u32>>(), before);
+    // Five at once: two more. Twelve: the pool's eight, no more.
+    at_once(5);
+    assert_eq!(pool.pids().len(), 5, "{:?}", pool.pids());
+    at_once(12);
+    assert_eq!(pool.pids().len(), 8, "{:?}", pool.pids());
+    drop(pool);
+    assert_eq!(children(), Vec::new());
+}
+
+#[test]
+fn a_pool_on_demand_whose_worker_cant_start_fails_the_request_and_starts_on() {
+    // A worker that can't be run: the pool opens (it starts none), and each request fails
+    // as a start that crashed does, rather than waiting; made runnable, the next request
+    // starts it and runs.
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("pool-on-demand-unrunnable-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let exe = dir.join("silico-kernel-test-worker");
+    std::fs::write(&exe, format!("#!/bin/sh\nexec '{TEST_WORKER}'\n")).unwrap();
+    let pool = KernelPool::start_on_demand(&exe, 2).unwrap();
+    for _ in 0..2 {
+        let err = done(pool.submit(Generation(1), sleep(0))).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    }
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    done(pool.submit(Generation(1), sleep(0))).unwrap();
+    drop(pool);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

@@ -22,7 +22,7 @@ fn id(text: &str) -> FeatureId {
 
 fn engine() -> Recompute<KernelPool> {
     Recompute::new(
-        KernelPool::start_workers(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")), 2)
+        KernelPool::start_on_demand(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")), 2)
             .unwrap(),
     )
 }

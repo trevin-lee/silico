@@ -35,7 +35,7 @@ fn built<K: Kernel + 'static>(kernel: K, text: &str) -> Arc<Model> {
 
 fn occt(text: &str) -> Arc<Model> {
     built(
-        KernelPool::start_workers(Path::new(WORKER), 2).unwrap(),
+        KernelPool::start_on_demand(Path::new(WORKER), 2).unwrap(),
         text,
     )
 }
@@ -328,7 +328,7 @@ fn curved_booleans_fingerprint_alike_in_pools_of_any_size() {
         .into_iter()
         .map(|workers| {
             let model = built(
-                KernelPool::start_workers(Path::new(WORKER), workers).unwrap(),
+                KernelPool::start_on_demand(Path::new(WORKER), workers).unwrap(),
                 &text,
             );
             ids.iter().map(|id| print(&model, id)).collect()

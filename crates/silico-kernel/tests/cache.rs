@@ -22,7 +22,7 @@ const WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-worker");
 const TEST_WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-test-worker");
 
 fn pool(exe: &str) -> KernelPool {
-    KernelPool::start_workers(Path::new(exe), 1).unwrap()
+    KernelPool::start_on_demand(Path::new(exe), 1).unwrap()
 }
 
 #[test]
@@ -130,6 +130,7 @@ fn a_worker_rebuilt_while_the_pool_runs_isnt_started_under_its_identity() {
     std::fs::create_dir_all(&dir).unwrap();
     let exe = dir.join("silico-kernel-worker");
     std::fs::copy(WORKER, &exe).unwrap();
+    // Started now: its running worker is killed, and replaced from the changed file.
     let pool = KernelPool::start_workers(&exe, 1).unwrap();
     let identity = pool.identity().to_owned();
     // Replaced, not rewritten in place: a new file under the name, as a rebuild leaves it.
@@ -165,6 +166,7 @@ fn a_worker_reinstalled_with_the_same_bytes_is_still_started() {
     std::fs::create_dir_all(&dir).unwrap();
     let exe = dir.join("silico-kernel-worker");
     std::fs::copy(WORKER, &exe).unwrap();
+    // Started now: its running worker is killed, and replaced from the changed file.
     let pool = KernelPool::start_workers(&exe, 1).unwrap();
     let again = dir.join("again");
     std::fs::copy(WORKER, &again).unwrap();

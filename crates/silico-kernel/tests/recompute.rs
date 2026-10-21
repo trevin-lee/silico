@@ -17,8 +17,9 @@ fn example() -> Checked {
 }
 
 fn built() -> Arc<Model> {
-    let pool = KernelPool::start_workers(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")), 2)
-        .unwrap();
+    let pool =
+        KernelPool::start_on_demand(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")), 2)
+            .unwrap();
     match Recompute::new(pool).start(example()).wait().unwrap() {
         RunOutcome::Published(model) => model,
         RunOutcome::Superseded => panic!("superseded"),
@@ -45,8 +46,9 @@ fn the_example_on_occt_is_the_block_with_the_pin_cut_through_it() {
     // (the pin runs from z = -1 to 11): volume 8000 - 62.5 pi; area the block's 2800, less
     // the two discs (12.5 pi), plus the hole's wall (50 pi); seven faces, the hole's one;
     // fifteen edges (the block's, the hole's two circles and its seam); ten vertices.
-    let pool = KernelPool::start_workers(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")), 2)
-        .unwrap();
+    let pool =
+        KernelPool::start_on_demand(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")), 2)
+            .unwrap();
     let engine = Recompute::new(pool);
     let model = match engine.start(example()).wait().unwrap() {
         RunOutcome::Published(model) => model,

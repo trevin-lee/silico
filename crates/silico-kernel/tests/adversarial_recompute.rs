@@ -14,7 +14,8 @@ use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 const WAIT: Duration = Duration::from_secs(60);
 
 fn pool(size: usize) -> KernelPool {
-    KernelPool::start_workers(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")), size).unwrap()
+    KernelPool::start_on_demand(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")), size)
+        .unwrap()
 }
 
 fn checked(features: &[String]) -> Checked {
@@ -150,4 +151,68 @@ fn booleans_occt_finds_empty_fail_their_feature_and_block_on_the_base_first() {
         ]
     );
     assert_eq!(model.errors().count(), 2);
+}
+
+// break-it: recompute's parallel branches on a pool whose slots start on demand.
+
+fn on_demand(size: usize) -> KernelPool {
+    KernelPool::start_on_demand(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker")), size)
+        .unwrap()
+}
+
+#[test]
+fn a_part_builds_to_the_same_bytes_on_a_pool_started_on_demand() {
+    // The part's three branches (block and pin, ball, cone and torus) run at once on a
+    // pool that starts its slots as they're needed: the same bytes as one worker's, and no
+    // more workers than the pool's size.
+    let one = published(&Recompute::new(pool(1)), part(2.5));
+    for size in [1, 2, 8] {
+        let engine = Recompute::new(on_demand(size));
+        let model = published(&engine, part(2.5));
+        built(&model);
+        assert_eq!(model.features(), one.features(), "size {size}");
+        let held = engine.kernel().pids().len();
+        assert!((1..=size).contains(&held), "size {size}: {held} workers");
+    }
+}
+
+#[test]
+fn a_storm_of_superseded_edits_on_a_pool_started_on_demand_ends_in_a_fresh_builds_bytes() {
+    // Twenty edits at once on a pool with no slot started, its superseded requests stopped
+    // at once: slots start, are condemned, and replace their workers while others start.
+    let engine = Recompute::new(on_demand(4));
+    engine.kernel().set_stop_after(Duration::ZERO);
+    let runs: Vec<_> = (0..20)
+        .map(|n| engine.start(part(1.0 + f64::from(n) * 0.125)))
+        .collect();
+    let mut outcomes: Vec<_> = runs
+        .into_iter()
+        .map(|run| run.wait_timeout(WAIT).ok().expect("hung").unwrap())
+        .collect();
+    let last = outcomes.pop().unwrap();
+    for outcome in &outcomes {
+        assert_eq!(outcome, &RunOutcome::Superseded);
+    }
+    let RunOutcome::Published(model) = last else {
+        panic!("{last:?}")
+    };
+    built(&model);
+    let fresh = published(&Recompute::new(pool(1)), part(1.0 + 19.0 * 0.125));
+    assert_eq!(model.features(), fresh.features());
+    assert!(engine.kernel().pids().len() <= 4);
+}
+
+#[test]
+fn dropping_the_engine_while_its_on_demand_slots_start_returns_promptly() {
+    for _ in 0..20 {
+        let engine = Recompute::new(on_demand(8));
+        let run = engine.start(part(2.5));
+        let at = Instant::now();
+        drop(engine);
+        assert!(at.elapsed() < Duration::from_secs(2), "{:?}", at.elapsed());
+        match run.wait_timeout(WAIT).ok() {
+            Some(Ok(RunOutcome::Superseded | RunOutcome::Published(_))) => {}
+            other => panic!("{other:?}"),
+        }
+    }
 }

@@ -34,7 +34,7 @@ fn a_request_refused_before_it_was_sent_lets_its_span_go() {
         tracing_subscriber::registry().with(Closed(Arc::clone(&closed))),
     )
     .unwrap();
-    let pool = KernelPool::start_workers(
+    let pool = KernelPool::start_on_demand(
         Path::new(env!("CARGO_BIN_EXE_silico-kernel-test-worker")),
         1,
     )

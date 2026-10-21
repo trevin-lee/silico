@@ -15,7 +15,7 @@ impl Counted {
     /// A pool of `workers` of the worker at `exe`.
     pub fn new(exe: &str, workers: usize) -> Self {
         Self(
-            KernelPool::start_workers(Path::new(exe), workers).unwrap(),
+            KernelPool::start_on_demand(Path::new(exe), workers).unwrap(),
             AtomicUsize::new(0),
         )
     }

@@ -20,7 +20,7 @@ use silico_core::recompute::{Model, Recompute, RunOutcome};
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-worker");
 
 fn pool() -> KernelPool {
-    KernelPool::start_workers(Path::new(WORKER), 2).unwrap()
+    KernelPool::start_on_demand(Path::new(WORKER), 2).unwrap()
 }
 
 fn published(

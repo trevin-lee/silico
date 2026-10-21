@@ -163,7 +163,7 @@ fn a_superseded_failure_is_logged_at_warn_unless_the_pool_stopped_it() {
 
     // Stopped by the pool (its worker killed while running it): the failure is its own
     // stopping, at debug.
-    let pool = KernelPool::start_workers(&marking_worker(&marker), 1).unwrap();
+    let pool = KernelPool::start_on_demand(&marking_worker(&marker), 1).unwrap();
     pool.set_stop_after(Duration::ZERO);
     let stopped = submit_running(&pool, &feature, &marker, sleep_for(5_000));
     pool.advance(next(&pool));
@@ -214,7 +214,7 @@ fn a_superseded_failure_is_logged_at_warn_unless_the_pool_stopped_it() {
     );
     drop(pool);
 
-    let pool = KernelPool::start_workers(Path::new(TEST_WORKER), 1).unwrap();
+    let pool = KernelPool::start_on_demand(Path::new(TEST_WORKER), 1).unwrap();
     pool.set_stop_after(Duration::from_secs(3600));
     // Discard the pool's start event.
     events.take_after(Duration::ZERO);
@@ -249,6 +249,7 @@ fn a_superseded_failure_is_logged_at_warn_unless_the_pool_stopped_it() {
         "dies-holding-its-log",
         "sleep 5 3>&- &\nhead -c 1 <&3 >/dev/null\nexit 3",
     );
+    // Started now: its worker's ID is read before the request.
     let pool = KernelPool::start_workers(&dies, 1).unwrap();
     let pid = rustix::process::Pid::from_raw(i32::try_from(pool.pids()[0]).unwrap()).unwrap();
     let died = feature.in_scope(|| pool.submit(Generation(1), sleep_for(0)));
