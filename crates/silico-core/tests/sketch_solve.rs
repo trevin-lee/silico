@@ -704,13 +704,13 @@ fn redundant_constraints_that_agree_are_kept_and_named_and_ones_a_nanometre_off_
 }
 
 #[test]
-fn decision_fives_tolerance_on_a_ten_millimetre_sketch_is_a_hundredth_of_a_nanometre() {
+fn decision_fives_tolerance_on_a_ten_by_three_sketch_is_a_billionth_of_its_diagonal() {
     // ten()'s points span (0, 0) to (10, 3): E = √109 = 10.44, so the tolerance is
     // max(1e-8, 1e-9 × 10.44) = 1.044e-8 mm. A redundant horizontal distance of 10, on a
-    // solution with the line's end 0.9e-8 and 1.1e-8 mm off it, either side of that; a redundant horizontal on one with the line
-    // turned 0.9e-9 and 1.1e-9 rad either way, its end risen or fallen 9e-9 and 1.1e-8 mm
-    // (the gap a horizontal has is its line's rise, whichever way: a fall of 1.1e-8 is as
-    // far off as a rise).
+    // solution with the line's end 0.9e-8 and 1.1e-8 mm off it, either side of that; a
+    // redundant horizontal on one with the line turned 0.9e-9 and 1.1e-9 rad either way, its
+    // end risen or fallen 9e-9 and 1.1e-8 mm (the gap a horizontal has is its line's rise,
+    // whichever way: a fall of 1.1e-8 is as far off as a rise).
     for (off, agrees) in [(0.9e-8, true), (1.1e-8, false)] {
         let t = translate(&ten(&[
             r#"{"id": "k0000003", "type": "distance_x", "a": "p0000001", "b": "p0000002", "value": 10, "driving": true}"#,
@@ -1154,9 +1154,9 @@ fn every_form_redundant_and_met_is_kept_and_a_nanometre_off_is_over_constrained(
     // hand from shapes2: its points span (0, 0) to (20, 10), so E = √500 = 22.36 and
     // decision 5's tolerance is max(1e-8, 1e-9 × √500) = 2.236e-8 (moving a value by that
     // changes E by at most as much, the tolerance by 2e-17). A move of the tolerance is then
-    // exactly its gap: 1% within it is kept, 1% past it is over-constrained, naming it. A measure off by more than 1%
-    // either way fails one or the other (round 2's and 3's tests lens; doubles at 10 mm are
-    // 1.8e-15 apart, far inside the margin).
+    // exactly its gap: 1% within it is kept, 1% past it is over-constrained, naming it. A
+    // measure off by more than 1% either way fails one or the other (round 2's and 3's tests
+    // lens; doubles at 10 mm are 1.8e-15 apart, far inside the margin).
     let cases: [(&str, usize); 28] = [
         (r#""type": "horizontal", "line": "n0000001""#, 9),
         (r#""type": "vertical", "line": "n0000002""#, 10),
