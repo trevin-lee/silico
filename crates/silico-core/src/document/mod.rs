@@ -34,11 +34,11 @@ use crate::{Error, ErrorCode};
 
 /// The document `bytes` hold, or an `invalid_input` error saying what's wrong and where.
 /// A document whose canonical text would pass [`json::MAX_DOCUMENT_LEN`] is refused, as
-/// `write` would refuse it, its fingerprints counted as they are in a save (the
+/// `write` would refuse it, its stored fingerprints counted as `write` counts them (the
 /// maintainer, 2026-10-21): a document that opens can always be written back as it is,
-/// and what's written always opens. A save writes the fingerprints the rebuild measured,
-/// which can take a document that opens past the limit; then it's refused, as `write`
-/// refuses any document past it.
+/// and what's written always opens. A save writes the fingerprints the rebuild measured
+/// and the sketches as solved, which can take a document that opens past the limit; then
+/// it's refused, as `write` refuses any document past it.
 pub fn read(bytes: &[u8]) -> Result<Document, Error> {
     let _span = tracing::debug_span!("document_read", bytes = bytes.len()).entered();
     let document = decode::decode(bytes)?;

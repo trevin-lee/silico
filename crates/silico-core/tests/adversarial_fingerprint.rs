@@ -670,9 +670,9 @@ fn a_cancel_while_a_summary_is_held_leaves_the_next_run_whole() {
 
 #[test]
 fn a_document_that_opens_near_the_size_limit_and_gains_fingerprints_is_refused_as_data() {
-    // Spec question: every save writes fingerprints, so a document that opens just under
-    // the 16 MiB limit can't be saved once fingerprinted. The error must at least be
-    // structured and name the feature.
+    // Decided (the maintainer, 2026-10-21): fingerprints count toward the limit, so a
+    // document that opens just under it and gains them on a save is refused, as data
+    // naming the feature.
     let limit = silico_core::document::json::MAX_DOCUMENT_LEN;
     let base = doc(&[&format!(r#"{BLOCK}, "note": ""}}"#)]);
     let pad = limit - write(&read(base.as_bytes()).unwrap()).unwrap().len() - 16;
@@ -761,6 +761,22 @@ fn a_save_is_refused_exactly_when_the_fingerprints_it_writes_take_the_document_p
         "{err}"
     );
     assert!(err.suggestion().is_some(), "{err}");
+}
+
+#[test]
+fn a_save_of_a_document_already_past_the_limit_doesnt_blame_the_fingerprints() {
+    // Built in memory, as an edit command will build one, never through `read`: too large
+    // as it stands, so its save is refused for that, with no word of the fingerprints.
+    let limit = silico_core::document::json::MAX_DOCUMENT_LEN;
+    let mut document = read(doc(&[&format!(r#"{BLOCK}}}"#)]).as_bytes()).unwrap();
+    document.features[0].note = Some("n".repeat(limit));
+    assert!(write(&document).is_err());
+    let model = published(&engine(), Checked::new(document).unwrap());
+    let problems = silico_core::command::format(&model).unwrap().unwrap_err();
+    let err = &problems.errors()[0];
+    assert!(err.message().contains("too large to write"), "{err}");
+    assert_eq!(err.feature(), Some("k7f2qx3m"), "{err}");
+    assert!(err.cause().is_none(), "{err}");
 }
 
 #[test]
