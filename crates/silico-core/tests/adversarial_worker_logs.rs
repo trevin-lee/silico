@@ -482,7 +482,7 @@ fn octal(bytes: &[u8]) -> String {
 }
 
 #[test]
-fn a_requests_span_let_go_by_the_log_thread_closes_on_the_sink_thread_and_the_next_request_is_answered() {
+fn a_span_the_log_thread_lets_go_closes_on_the_sink_thread_and_the_next_call_is_answered() {
     // The control for the next test: the same worker, a sink that doesn't stall.
     span_close_case(false);
 }
