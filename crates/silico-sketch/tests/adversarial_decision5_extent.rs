@@ -23,7 +23,7 @@ use proptest::prelude::*;
 use saves::{FEATURE, circle, point, solved, worker, written_back};
 use silico_core::ErrorCode;
 use silico_core::document::{Checked, ElementId};
-use silico_core::sketch::{SketchSolution, SketchSolver};
+use silico_core::sketch::{SketchSolution, SketchSolver, SketchWorker};
 
 /// A line, construction or not.
 fn line(id: &str, from: &str, to: &str, construction: bool) -> String {
@@ -176,6 +176,9 @@ fn far_point_on_a_short_lines_extension_drawn_off_by_ten_nanometres_is_kept() {
     assert!(broke.is_empty(), "{}", broke.join("\n"));
 }
 
+// One worker per test thread for the properties: a worker's start costs more than a solve.
+thread_local!(static W: std::cell::RefCell<SketchWorker> = std::cell::RefCell::new(worker()));
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 1000, failure_persistence: None, ..ProptestConfig::default() })]
 
@@ -194,8 +197,7 @@ proptest! {
         constraints.extend(fix(5, "p0000003", x, y));
         constraints.push(k(7, r#""type": "on", "point": "p0000003", "curve": "n0000001""#));
         let doc = checked(&text(&points, &lines, &[], &constraints));
-        let mut w = worker();
-        let s = save_and_load(&doc, &mut w);
+        let s = W.with(|w| save_and_load(&doc, &mut *w.borrow_mut()));
         // Found by break-it, fixed as above: the first failure was 5380 × 5 mm (27 m) along,
         // the line's end drawn 8.3e-6 mm high: a gap of 1.0000076e-8 mm against the longest
         // line's ε 1e-8. Its extent's ε is 2.69e-5.
@@ -634,8 +636,7 @@ proptest! {
         constraints.extend(fix(5, "p0000003", x, y));
         constraints.push(k(7, r#""type": "on", "point": "p0000003", "curve": "n0000001""#));
         let doc = checked(&text(&points, &lines, &[], &constraints));
-        let mut w = worker();
-        let s = save_and_load(&doc, &mut w);
+        let s = W.with(|w| save_and_load(&doc, &mut *w.borrow_mut()));
         prop_assert!(s.is_ok(), "{} along: {}", along, s.unwrap_err());
     }
 }
