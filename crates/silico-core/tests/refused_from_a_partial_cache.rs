@@ -299,3 +299,67 @@ fn a_refused_pocket_on_a_refused_pocket_builds_none_of_its_own_missing_steps() {
         "built for a feature made from a refused one: {asked:?}"
     );
 }
+
+/// The council's round 6 (tests): the same one level down. A refused pocket on a pocket
+/// that is dead (made from a refused one) but not refused itself builds none of its own
+/// steps either: `made_from_dead` asks whether a feature it's made from is dead, not only
+/// refused.
+#[test]
+fn a_refused_pocket_on_a_dead_but_unrefused_pocket_builds_none_of_its_own_missing_steps() {
+    const REVERSED: &str = r#"{"type": "one_side", "length": 10, "reversed": true}"#;
+    const UP3: &str = r#"{"type": "one_side", "length": 3, "reversed": true}"#;
+    let scratch = Scratch::new("made-from-dead-transitive");
+    let cube = box_at("bbbbbbbb", [-1.0, -1.0, 1.0], 10.0, 10.0, 10.0);
+    let twin = box_at("cccccccc", [-1.0, -1.0, 1.0], 10.0, 10.0, 10.0);
+    let sketch = rectangle("ssssssss", "xy", [0.0, 0.0], 4.0, 2.0);
+    let pad = pad("pppppppp", None, "ssssssss", REVERSED);
+    let cut = r#"{"id": "kkkkkkkk", "type": "cut", "v": 1, "name": "K", "base": "cccccccc", "tool": "pppppppp"}"#;
+    // A pocket up into the cut, which removes some of it: built.
+    let mid = pocket("dddddddd", "kkkkkkkk", "ssssssss", UP3);
+    // A pocket down from it, which misses: refused.
+    let on_mid = pocket("rrrrrrrr", "dddddddd", "ssssssss", &one_side("3"));
+    let first = scratch.engine(FakeKernel::new(2).unwrap());
+    let base = vec![
+        cube.clone(),
+        twin,
+        sketch.clone(),
+        pad,
+        cut.to_owned(),
+        mid.clone(),
+    ];
+    published(&first, &refs(&base));
+    let had = scratch.entries();
+    let mut with_pocket = base.clone();
+    with_pocket.push(on_mid.clone());
+    refused(&published(&first, &refs(&with_pocket)), "rrrrrrrr");
+    drop(first);
+    assert_eq!(drop_all_but_the_cut(&scratch, &had), 1);
+    // The pocket of the cube refused; the pocket on it dead, not refused (its cached cut
+    // holds); the pocket on that refused, its cut cached, its sweep lost.
+    let second = scratch.engine(FakeKernel::new(2).unwrap());
+    let document = vec![
+        cube,
+        sketch,
+        pocket("qqqqqqqq", "bbbbbbbb", "ssssssss", TEN),
+        mid.replace("kkkkkkkk", "qqqqqqqq"),
+        on_mid,
+    ];
+    let model = published(&second, &refs(&document));
+    for blocked in ["dddddddd", "rrrrrrrr"] {
+        assert_eq!(
+            model.outcome(&id(blocked)),
+            Some(&FeatureOutcome::Blocked { on: id("qqqqqqqq") }),
+            "{blocked}"
+        );
+    }
+    let asked: Vec<&str> = second
+        .kernel()
+        .calls()
+        .iter()
+        .map(|c| c.op.name())
+        .collect();
+    assert!(
+        asked.is_empty(),
+        "built for a feature made from a dead one: {asked:?}"
+    );
+}
