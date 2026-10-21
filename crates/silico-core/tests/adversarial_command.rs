@@ -211,6 +211,11 @@ fn checking_a_document_just_under_the_size_limit_then_formatting_it_says_why_it_
     let error = &problems.errors()[0];
     assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
     assert!(error.to_string().contains(&limit.to_string()), "{error}");
+    // Why: it's what the save writes that takes it past.
+    assert!(
+        error.cause().is_some_and(|c| c.contains("fingerprints")),
+        "{error}"
+    );
 }
 
 #[test]

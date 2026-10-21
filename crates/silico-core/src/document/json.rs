@@ -13,8 +13,10 @@ use std::mem::size_of;
 pub const MAX_DEPTH: usize = 64;
 
 /// The most bytes a document's canonical text may be: 16 MiB, past any part's timeline (a
-/// hundred thousand features). Measured on the canonical text, not the bytes read, so a
-/// document either opens and saves or does neither (`document::read`, `document::write`).
+/// hundred thousand features). Measured on the canonical text, stored fingerprints and
+/// all, not the bytes read, so what opens can be written back as it is and what's written
+/// opens (`document::read`, `document::write`); a save, which writes the fingerprints and
+/// solved sketches its rebuild made, can pass it, and is refused (`command::format`).
 pub const MAX_DOCUMENT_LEN: usize = 16 << 20;
 
 /// The most bytes read: four times [`MAX_DOCUMENT_LEN`], room for a document spelled more
