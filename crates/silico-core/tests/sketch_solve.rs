@@ -972,6 +972,250 @@ fn a_sketchs_tolerance_is_its_extent_or_a_hundredth_of_a_nanometre() {
     }
 }
 
+/// Two circles, c1 about p1 and c2 about `c2_center`, given `tangent` on `side` (k1) and,
+/// if `equal`, `equal` (k2); and p3 at `p3`, its x given twice after them. The points:
+/// p1 at the origin, p2 at `p2`, p3.
+fn tangent_pair(
+    p2: [f64; 2],
+    radii: [f64; 2],
+    c2_center: &str,
+    side: &str,
+    equal: bool,
+    p3: [f64; 2],
+) -> Translation {
+    let mut constraints = vec![format!(
+        r#"{{"id": "k0000001", "type": "tangent", "a": "c0000001", "b": "c0000002", "side": "{side}"}}"#
+    )];
+    if equal {
+        constraints.push(
+            r#"{"id": "k0000002", "type": "equal", "a": "c0000001", "b": "c0000002"}"#.to_owned(),
+        );
+    }
+    for id in ["k0000003", "k0000004"] {
+        constraints.push(format!(
+            r#"{{"id": "{id}", "type": "distance_x", "a": "origin", "b": "p0000003", "value": {}, "driving": true}}"#,
+            p3[0]
+        ));
+    }
+    translate(&text(
+        &[
+            point("p0000001", 0.0, 0.0),
+            point("p0000002", p2[0], p2[1]),
+            point("p0000003", p3[0], p3[1]),
+        ],
+        &[],
+        &[
+            circle("c0000001", "p0000001", radii[0]),
+            circle("c0000002", c2_center, radii[1]),
+        ],
+        &[],
+        &constraints,
+    ))
+}
+
+/// The centre and radius values of `t`'s second circle, c2.
+fn second_circle(t: &Translation) -> (PointValues, Value) {
+    t.system
+        .geometry
+        .iter()
+        .filter_map(|g| match *g {
+            SketchGeometry::Circle { center, radius } => Some((center, radius)),
+            _ => None,
+        })
+        .nth(1)
+        .unwrap()
+}
+
+/// `t` read back with p3's x (drawn `x`) moved `off` and `values` changed by `set`, its
+/// second x dimension dropped as redundant.
+fn p3_moved(
+    t: &Translation,
+    x: f64,
+    off: f64,
+    set: impl Fn(&mut Vec<f64>),
+) -> Result<SketchSolution, silico_core::Error> {
+    let mut values = t.system.values.clone();
+    let at = value_drawn(t, x);
+    values[at] += off;
+    set(&mut values);
+    let last = sent(t).iter().filter_map(|c| c.tag()).max().unwrap();
+    read_back(t, &dropping_tag(t, values, last.0))
+}
+
+#[test]
+fn a_sketchs_tolerance_is_a_nanometre_squared_over_its_tightest_circle_tangency() {
+    // Decision 5's third term (Fable, 2026-10-21): PlaneGCS measures a circle tangency in
+    // mm², so ε = max(1e-8 mm, 1e-9 × E, 1e-9 mm² / T), T the least d + (r1 + r2) outside
+    // or d + |r1 − r2| inside over the sketch's tangencies, d the centres' distance; none
+    // when the centres are concentric to PlaneGCS (d² < 1e-14), where it measures r1 − r2 in
+    // mm. The term reaches every redundant row in the sketch: here p3's x, given twice and
+    // nothing to do with the circles. Every value a power of two, so T and ε are exact.
+    let refused = |got: Result<SketchSolution, silico_core::Error>, what: &str| {
+        let e = got.expect_err(what);
+        assert_eq!(
+            (e.code(), e.elements()),
+            (ErrorCode::OverConstrained, &["k0000004".to_owned()][..]),
+            "{what}: {e}"
+        );
+        e.message().to_owned()
+    };
+    // Kept, its gap the move within the spacing of doubles at p3's x, `x`.
+    let kept = |got: Result<SketchSolution, silico_core::Error>, x: f64, off: f64, what: &str| {
+        let s = got.unwrap_or_else(|e| panic!("{what}: {e}"));
+        let gaps: Vec<f64> = s.redundant.values().copied().collect();
+        assert!(
+            gaps.len() == 1 && (gaps[0] - off).abs() <= x * f64::EPSILON,
+            "{what}: {gaps:?}"
+        );
+    };
+    // U1, inside: c1 r 1 about (0, 0), c2 r 1.03125 about (0.03125, 0): d 0.03125, |r1 −
+    // r2| 0.03125, T 0.0625, ε = 1e-9 / 0.0625 = 1.6e-8 (E = √(0.03125² + 0.01²) = 0.0328,
+    // 3.3e-11). 1.5e-8 kept; 1.7e-8 refused.
+    let t = tangent_pair(
+        [0.03125, 0.0],
+        [1.0, 1.03125],
+        "p0000002",
+        "inside",
+        false,
+        [0.01, 0.01],
+    );
+    kept(
+        p3_moved(&t, 0.01, 1.5e-8, |_| ()),
+        0.01,
+        1.5e-8,
+        "inside, 1.5e-8",
+    );
+    let m = refused(p3_moved(&t, 0.01, 1.7e-8, |_| ()), "inside, 1.7e-8");
+    assert!(m.contains("past this sketch's 1.6e-8 mm"), "{m}");
+    assert!(
+        m.contains(
+            "1e-9 mm² over the 6.25e-2 mm of its tightest circle tangency, or 1e-8 mm at least"
+        ),
+        "{m}"
+    );
+    // The same, c2 about (0.53125, 0) with r 1.53125: T 1.0625, the term 9.4e-10, E 0.53,
+    // so ε is the floor. 0.99e-8 kept; 1.01e-8 refused.
+    let t = tangent_pair(
+        [0.53125, 0.0],
+        [1.0, 1.53125],
+        "p0000002",
+        "inside",
+        false,
+        [0.01, 0.01],
+    );
+    kept(
+        p3_moved(&t, 0.01, 0.99e-8, |_| ()),
+        0.01,
+        0.99e-8,
+        "loose inside, 0.99e-8",
+    );
+    let m = refused(p3_moved(&t, 0.01, 1.01e-8, |_| ()), "loose inside, 1.01e-8");
+    assert!(m.contains("past this sketch's 1e-8 mm"), "{m}");
+    assert!(
+        m.contains("over the 1.0625e0 mm of its tightest circle tangency, or 1e-8 mm at least"),
+        "{m}"
+    );
+    // The tightest of two: U1's circles and a third, c3, r 1 about (2, 0), tangent outside
+    // c1 and given first: T = min(2 + 2, 0.0625), ε 1.6e-8 still (E = √(2² + 0.01²), 2e-9).
+    // 1.5e-8 kept; 1.7e-8 refused. The loosest's T, 4, would give the floor.
+    let t = translate(&text(
+        &[
+            point("p0000001", 0.0, 0.0),
+            point("p0000002", 0.03125, 0.0),
+            point("p0000003", 0.01, 0.01),
+            point("p0000004", 2.0, 0.0),
+        ],
+        &[],
+        &[
+            circle("c0000001", "p0000001", 1.0),
+            circle("c0000002", "p0000002", 1.03125),
+            circle("c0000003", "p0000004", 1.0),
+        ],
+        &[],
+        &[
+            r#"{"id": "k0000001", "type": "tangent", "a": "c0000001", "b": "c0000003", "side": "outside"}"#.to_owned(),
+            r#"{"id": "k0000002", "type": "tangent", "a": "c0000001", "b": "c0000002", "side": "inside"}"#.to_owned(),
+            r#"{"id": "k0000003", "type": "distance_x", "a": "origin", "b": "p0000003", "value": 0.01, "driving": true}"#.to_owned(),
+            r#"{"id": "k0000004", "type": "distance_x", "a": "origin", "b": "p0000003", "value": 0.01, "driving": true}"#.to_owned(),
+        ],
+    ));
+    kept(
+        p3_moved(&t, 0.01, 1.5e-8, |_| ()),
+        0.01,
+        1.5e-8,
+        "two tangencies, 1.5e-8",
+    );
+    let m = refused(p3_moved(&t, 0.01, 1.7e-8, |_| ()), "two tangencies, 1.7e-8");
+    assert!(m.contains("past this sketch's 1.6e-8 mm"), "{m}");
+    // U2, outside: both radii 0.015625, centres 0.03125 apart: T = 0.03125 + 0.03125 =
+    // 0.0625, ε 1.6e-8 (|r1 − r2| would give T 0.03125, ε 3.2e-8, and keep 1.7e-8).
+    let t = tangent_pair(
+        [0.03125, 0.0],
+        [0.015625, 0.015625],
+        "p0000002",
+        "outside",
+        false,
+        [0.01, 0.01],
+    );
+    kept(
+        p3_moved(&t, 0.01, 1.5e-8, |_| ()),
+        0.01,
+        1.5e-8,
+        "outside, 1.5e-8",
+    );
+    let m = refused(p3_moved(&t, 0.01, 1.7e-8, |_| ()), "outside, 1.7e-8");
+    assert!(m.contains("past this sketch's 1.6e-8 mm"), "{m}");
+    assert!(m.contains("over the 6.25e-2 mm of its tightest"), "{m}");
+    // U3, concentric: c1 and c2 both about p1, radii 100, tangent inside and equal (they
+    // agree). PlaneGCS measures the tangency as r1 − r2 in mm: no term. p3 at (30, 40): E
+    // 50, ε 5e-8. 4.9e-8 kept; 5.1e-8 refused, its message without a tangency.
+    let t = tangent_pair(
+        [0.0, 0.0],
+        [100.0, 100.0],
+        "p0000001",
+        "inside",
+        true,
+        [30.0, 40.0],
+    );
+    kept(
+        p3_moved(&t, 30.0, 4.9e-8, |_| ()),
+        30.0,
+        4.9e-8,
+        "concentric, 4.9e-8",
+    );
+    let m = refused(p3_moved(&t, 30.0, 5.1e-8, |_| ()), "concentric, 5.1e-8");
+    // (p3 moved, E is 50.00000003.)
+    assert!(m.contains("past this sketch's 5.0000000"), "{m}");
+    assert!(m.contains("(1e-9 of its 5.0000000"), "{m}");
+    assert!(m.contains("e1 mm extent, or 1e-8 mm at least)"), "{m}");
+    // c2's radius solved 1e-10 larger: d + |r1 − r2| is 1e-10, and 1e-9 / 1e-10 would be
+    // a 10 mm tolerance. Still concentric to PlaneGCS: refused.
+    let r2 = second_circle(&t).1.0 as usize;
+    let m = refused(
+        p3_moved(&t, 30.0, 5.1e-8, |v| v[r2] = 100.0 + 1e-10),
+        "concentric, its radii 1e-10 apart",
+    );
+    assert!(!m.contains("circle tangency"), "{m}");
+    // At the switch's edge, RECORDED BEHAVIOUR (what PlaneGCS holds there): c2 about its own
+    // p2, drawn at the origin and solved to (2e-7, 0). d² = 4e-14, the mm² form: T = 2e-7,
+    // ε = 1e-9 / 2e-7 = 5e-3. 5.1e-8 kept, its gap reported.
+    let t = tangent_pair(
+        [0.0, 0.0],
+        [100.0, 100.0],
+        "p0000002",
+        "inside",
+        true,
+        [30.0, 40.0],
+    );
+    let p2 = second_circle(&t).0.x.0 as usize;
+    kept(
+        p3_moved(&t, 30.0, 5.1e-8, |v| v[p2] = 2e-7),
+        30.0,
+        5.1e-8,
+        "centres 2e-7 apart, 5.1e-8",
+    );
+}
+
 #[test]
 fn a_direction_is_carried_by_the_smaller_lever_of_its_own_lines() {
     // Decision 5: an angle's gap is the angle carried by the smaller lever of its own two

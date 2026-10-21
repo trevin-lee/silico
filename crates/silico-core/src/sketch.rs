@@ -32,8 +32,8 @@ pub const ALGORITHMS: [Algorithm; 4] = [
 /// The least a redundant constraint's gap may be and still agree with the others, in
 /// millimetres (decision 5): a hundredth of the file's nanometre, a hundred times the
 /// solver's convergence on a position (1e-10 mm), and 86 times the spacing of doubles a
-/// kilometre out. A sketch's tolerance is this or [`EXTENT_TOLERANCE`] times its extent,
-/// whichever is more.
+/// kilometre out. A sketch's tolerance is this, [`EXTENT_TOLERANCE`] times its extent, or
+/// [`TANGENCY_TOLERANCE`] over its tightest circle tangency, whichever is most.
 pub const LENGTH_TOLERANCE: f64 = 1e-8;
 
 /// How much a redundant constraint's gap may grow per millimetre of the sketch's extent, the
@@ -42,6 +42,21 @@ pub const LENGTH_TOLERANCE: f64 = 1e-8;
 /// which moves a point at most the extent away by 1e-10 × the extent. So two dimensions a
 /// nanometre apart conflict on any sketch that fits in a metre, corner to corner.
 pub const EXTENT_TOLERANCE: f64 = 1e-9;
+
+/// How much a redundant constraint's gap may grow per inverse millimetre of the sketch's
+/// tightest circle-to-circle tangency, in square millimetres (decision 5). PlaneGCS
+/// measures such a tangency as `d² − (r1 ± r2)²` (`ConstraintTangentCircumf::error`), its
+/// one row in mm², and a solve holds it within 1e-10 mm², which holds `|d − (r1 ± r2)|`
+/// only within 1e-10 / (d + r1 ± r2) mm. Ten times that, the margin [`EXTENT_TOLERANCE`]
+/// has. Above [`LENGTH_TOLERANCE`] only when d + r1 ± r2 is under 0.1 mm: an inside
+/// tangency nearly concentric, or an outside one between tiny circles.
+pub const TANGENCY_TOLERANCE: f64 = 1e-9;
+
+/// The squared distance between two tangent circles' centres, in mm², under which PlaneGCS
+/// measures their tangency as `r1 − r2`, in millimetres (`ConstraintTangentCircumf::error`,
+/// FreeCAD #24227, in 1.1.3): a row with no mm² slack, so [`TANGENCY_TOLERANCE`] has no term
+/// for it.
+const CONCENTRIC_TANGENCY: f64 = 1e-14;
 
 /// How many loads, at most, a solve's answer is checked by: its solution written as the file
 /// holds it and solved as a load solves it, until one leaves it where it is
@@ -1528,7 +1543,10 @@ impl Translation {
         dropped.sort_unstable();
         dropped.dedup();
         let extent = self.extent(values);
-        let tolerance = LENGTH_TOLERANCE.max(EXTENT_TOLERANCE * extent);
+        let tightest = self.tightest_tangency(values);
+        let tolerance = LENGTH_TOLERANCE
+            .max(EXTENT_TOLERANCE * extent)
+            .max(tightest.map_or(0.0, |t| TANGENCY_TOLERANCE / t));
         let mut gaps = Vec::with_capacity(dropped.len());
         let mut disagreeing = Vec::new();
         let mut worst = 0.0f64;
@@ -1545,10 +1563,15 @@ impl Translation {
             gaps.push((tag, gap));
         }
         if !disagreeing.is_empty() {
+            let tangency = tightest.map_or_else(String::new, |t| {
+                format!(
+                    "{TANGENCY_TOLERANCE:e} mm² over the {t:e} mm of its tightest circle tangency, "
+                )
+            });
             return Err(Error::new(
                 ErrorCode::OverConstrained,
                 format!(
-                    "constraints repeat others but disagree with them, by up to {worst:e} mm, past this sketch's {tolerance:e} mm ({EXTENT_TOLERANCE:e} of its {extent:e} mm extent, or {LENGTH_TOLERANCE:e} mm at least)"
+                    "constraints repeat others but disagree with them, by up to {worst:e} mm, past this sketch's {tolerance:e} mm ({EXTENT_TOLERANCE:e} of its {extent:e} mm extent, {tangency}or {LENGTH_TOLERANCE:e} mm at least)"
                 ),
             )
             .with_elements(self.ids(&disagreeing)?)
@@ -1901,6 +1924,30 @@ impl Translation {
             ([lo[0].min(x), lo[1].min(y)], [hi[0].max(x), hi[1].max(y)])
         });
         squared_distance(lo, hi).sqrt()
+    }
+
+    /// The sketch's tightest circle-to-circle tangency on `values` (decision 5): the least,
+    /// over every one sent (circles and arcs, kept or dropped), of d + r1 + r2 outside or
+    /// d + |r1 − r2| inside, d the centres' distance; none if there's no such tangency. A
+    /// tangency whose centres are under [`CONCENTRIC_TANGENCY`] apart, squared, isn't
+    /// counted: PlaneGCS measures it in millimetres there. A minimum is the same whatever
+    /// the order, so it's the same bits on every platform.
+    fn tightest_tangency(&self, values: &[f64]) -> Option<f64> {
+        self.system
+            .constraints
+            .iter()
+            .filter_map(|c| match *c {
+                SolverConstraint::TangentCircles { a, b, internal, .. } => {
+                    let ((ca, ra), (cb, rb)) = (self.circle(values, a), self.circle(values, b));
+                    let squared = squared_distance(ca, cb);
+                    (squared >= CONCENTRIC_TANGENCY).then(|| {
+                        let s = if internal { (ra - rb).abs() } else { ra + rb };
+                        squared.sqrt() + s
+                    })
+                }
+                _ => None,
+            })
+            .reduce(f64::min)
     }
 
     /// How far a sent constraint is from met on `values` (decision 5), in millimetres: the

@@ -1,8 +1,9 @@
 //! /break-it on decision 5's tolerance: a redundant constraint is kept when its gap (the
 //! least distance a point must move for it to hold; an angle carried by the smaller of its
-//! own curves' levers) is within ε = max(1e-8 mm, 1e-9 × E), E the sketch's extent, the
-//! diagonal of the box around its points on the solution (Fable, 2026-10-20). And the load
-//! path every solve takes: what a save keeps must be what its load gives.
+//! own curves' levers) is within ε = max(1e-8 mm, 1e-9 × E, 1e-9 mm² / T), E the sketch's
+//! extent, the diagonal of the box around its points on the solution (Fable, 2026-10-20),
+//! and T its tightest circle-to-circle tangency (Fable, 2026-10-21). And the load path every
+//! solve takes: what a save keeps must be what its load gives.
 //!
 //! Found on the rule's first scale, the sketch's longest line or radius: that measured the
 //! sketch's curves, not where its geometry is, so a gap a direction carries past a short
@@ -11,6 +12,18 @@
 //! though FreeCAD solves the sketch. The extent covers every such distance. Still recorded:
 //! the extent counts geometry the constraint has nothing to do with (a construction line a
 //! kilometre away), so how far two dimensions may disagree depends on what else is drawn.
+//!
+//! Found next, fixed by T: PlaneGCS measures a tangency between circles or arcs in mm², as
+//! d² − (r1 ± r2)² = (d − (r1 ± r2)) × T, T = d + (r1 ± r2), so a solve that holds it within
+//! 1e-10 mm² holds the circles only within 1e-10 / T mm of tangent, and two circles of
+//! radius 100 and 100.001 tangent inside (T 2 µm, slack 5e-8 mm) left a dimension
+//! repeating their centres' distance 1.2e-8 off, refused against the floor though FreeCAD
+//! solves the sketch. The extent can't bound it: the slack is on the row itself, in mm²,
+//! and grows as T shrinks. ε's third term is ten times it, over every circle tangency in
+//! the sketch, kept or dropped, except those PlaneGCS measures in millimetres, their
+//! centres under 1e-7 apart. Those cases are drawn so the solver takes no step at all
+//! (DogLeg returns a start whose rows are within 1e-10 untouched), so their gaps are hand
+//! values and the solution is the drawing, bit for bit.
 //!
 //! Every case's constraints agree exactly or disagree by a known amount: Pythagorean
 //! directions (3, 4, 5) and nanometre values, so the expected answer is a hand calculation.
@@ -621,5 +634,281 @@ proptest! {
         let doc = checked(&text(&points, &lines, &[], &[], &constraints));
         let s = W.with(|w| save_and_load(&doc, &mut *w.borrow_mut()));
         prop_assert!(s.is_ok(), "{} along: {}", along, s.unwrap_err());
+    }
+}
+
+// --- A circle tangency, in square millimetres ------------------------------------------------
+
+/// Circle c0000001 of radius 100 about p0000001, held at the origin (k1, k2, k3), and circle
+/// c0000002 of radius `r_b` about p0000002, drawn at (`x`, 0) and held on y = 0 (k4, k5):
+/// then `then`, numbered from k6. Every point and radius is drawn where the constraints
+/// hold it, so the kept rows are met as drawn.
+fn tangent_circles(r_b: &str, x: f64, then: &[&str]) -> Checked {
+    let points = [point("p0000001", 0.0, 0.0), point("p0000002", x, 0.0)];
+    let mut constraints = fix(1, "p0000001", 0.0, 0.0).to_vec();
+    constraints.push(k(
+        3,
+        r#""type": "radius", "curve": "c0000001", "value": 100, "driving": true"#,
+    ));
+    constraints.push(k(
+        4,
+        &format!(r#""type": "radius", "curve": "c0000002", "value": {r_b}, "driving": true"#),
+    ));
+    constraints.push(k(
+        5,
+        r#""type": "distance_y", "a": "origin", "b": "p0000002", "value": 0, "driving": true"#,
+    ));
+    constraints.extend(then.iter().enumerate().map(|(i, form)| k(6 + i, form)));
+    checked(&text(
+        &points,
+        &[],
+        &[
+            circle("c0000001", "p0000001", 100.0),
+            circle("c0000002", "p0000002", r_b.parse().unwrap()),
+        ],
+        &[],
+        &constraints,
+    ))
+}
+
+const TANGENT_INSIDE: &str =
+    r#""type": "tangent", "a": "c0000001", "b": "c0000002", "side": "inside""#;
+
+/// p1 to p2, `value` apart.
+fn apart(value: &str) -> String {
+    format!(
+        r#""type": "distance", "a": "p0000001", "b": "p0000002", "value": {value}, "driving": true"#
+    )
+}
+
+/// [`tangent_circles`] given `tangent` inside (k6), and p2 held on a line n0000001 (k11)
+/// as well: the line from p0000003, held at (`x`, −`h`) (k7, k8), to p0000004, held at
+/// (`x` + 1e-6, 1 − `h`) (k9, k10). The line passes y = 0 at `x` + 1e-6 × `h`, so p2 at
+/// (`x`, 0) is 1e-6 × `h` / √(1 + 1e-12) off it (hand): the point on the line is the row
+/// PlaneGCS drops, and its gap is a fraction of a nanometre the file can't write as a
+/// dimension. The kept rows hold p2 at (d, 0), d = `r_b` − 100, by the tangency.
+fn tangent_circles_and_a_line(r_b: &str, x: f64, h: f64) -> Checked {
+    let (x1, y0, y1) = (x + 1e-6, -h, 1.0 - h);
+    let points = [
+        point("p0000001", 0.0, 0.0),
+        point("p0000002", x, 0.0),
+        point("p0000003", x, y0),
+        point("p0000004", x1, y1),
+    ];
+    let mut constraints = fix(1, "p0000001", 0.0, 0.0).to_vec();
+    constraints.push(k(
+        3,
+        r#""type": "radius", "curve": "c0000001", "value": 100, "driving": true"#,
+    ));
+    constraints.push(k(
+        4,
+        &format!(r#""type": "radius", "curve": "c0000002", "value": {r_b}, "driving": true"#),
+    ));
+    constraints.push(k(
+        5,
+        r#""type": "distance_y", "a": "origin", "b": "p0000002", "value": 0, "driving": true"#,
+    ));
+    constraints.push(k(6, TANGENT_INSIDE));
+    constraints.extend(fix(7, "p0000003", x, y0));
+    constraints.extend(fix(9, "p0000004", x1, y1));
+    constraints.push(k(
+        11,
+        r#""type": "on", "point": "p0000002", "curve": "n0000001""#,
+    ));
+    checked(&text(
+        &points,
+        &[line("n0000001", "p0000003", "p0000004")],
+        &[
+            circle("c0000001", "p0000001", 100.0),
+            circle("c0000002", "p0000002", r_b.parse().unwrap()),
+        ],
+        &[],
+        &constraints,
+    ))
+}
+
+/// The one redundant constraint `s` names, and its gap.
+fn one_redundant(s: &SketchSolution) -> (String, f64) {
+    let all: Vec<(String, f64)> = s
+        .redundant
+        .iter()
+        .map(|(id, &gap)| (id.as_str().to_owned(), gap))
+        .collect();
+    match &all[..] {
+        [one] => one.clone(),
+        _ => panic!("{all:?}"),
+    }
+}
+
+/// `s` solved where `doc`'s sketch is drawn, bit for bit: the solver took no step.
+fn as_drawn(s: &SketchSolution, points: &[(&str, [f64; 2])], radii: [f64; 2]) {
+    for &(id, p) in points {
+        assert_eq!(at(s, id), p, "{id}");
+    }
+    for (id, r) in ["c0000001", "c0000002"].into_iter().zip(radii) {
+        assert_eq!(s.radius(&ElementId::new(id).unwrap()), Some(r), "{id}");
+    }
+}
+
+#[test]
+fn nearly_concentric_circles_keep_a_distance_the_tangencys_square_millimetres_hold() {
+    // W1, the finding (Fable, 2026-10-21): radii 100 and 100.001 inside, so the tangency
+    // holds the centres 0.001 apart, and the same 0.001 given again as a distance (k7, the
+    // highest tag, the row PlaneGCS drops). p2 drawn at (0.00100004, 0): every kept row is
+    // met as drawn but the tangency, whose residual is d² − s² = (4e-8)(0.00200004) = 8e-11
+    // mm², under DogLeg's 1e-10, so it takes no step and the solution is the drawing. The
+    // distance's gap is 4e-8; T = 0.00100004 + 0.001 = 0.00200004, ε = 1e-9 / T = 5.0e-7:
+    // kept. The floor alone, 1e-8, refused it, though FreeCAD solves the sketch.
+    let mut w = worker();
+    let x = 0.00100004;
+    let s = save_and_load(
+        &tangent_circles("100.001", x, &[TANGENT_INSIDE, &apart("0.001")]),
+        &mut w,
+    )
+    .unwrap();
+    as_drawn(
+        &s,
+        &[("p0000001", [0.0, 0.0]), ("p0000002", [x, 0.0])],
+        [100.0, 100.001],
+    );
+    let (id, gap) = one_redundant(&s);
+    assert_eq!(id, "k0000007");
+    assert!((gap - 4e-8).abs() <= 1e-16, "{gap:e}");
+}
+
+#[test]
+fn a_tangency_of_a_thirty_second_of_a_millimetre_keeps_3_point_2e_minus_8_and_no_more() {
+    // W2 and W3, ε pinned both ways: radii 100 and 100.015625 (100 + 2⁻⁶, exact), the
+    // centres 0.015625 apart, so d = |r1 − r2| = 2⁻⁶ exactly, T = 2⁻⁵, ε = 1e-9 × 32 =
+    // 3.2e-8 exactly (E is about 1, the line's; 1e-9). p2 held on a line 3e-8 off: kept,
+    // its gap 3e-8; 3.4e-8 off: refused, naming the point on the line. 1e-9 / d or 1e-9 /
+    // s would be 6.4e-8 and keep 3.4e-8; the floor, 1e-8, refuses 3e-8.
+    let mut w = worker();
+    let x = 0.015625;
+    let s = save_and_load(&tangent_circles_and_a_line("100.015625", x, 0.03), &mut w).unwrap();
+    as_drawn(
+        &s,
+        &[("p0000001", [0.0, 0.0]), ("p0000002", [x, 0.0])],
+        [100.0, 100.015625],
+    );
+    let (id, gap) = one_redundant(&s);
+    assert_eq!(id, "k0000011");
+    assert!((gap - 3e-8).abs() <= 1e-16, "{gap:e}");
+    let e = solved(&tangent_circles_and_a_line("100.015625", x, 0.034), &mut w).unwrap_err();
+    assert_eq!(
+        (e.code(), e.elements()),
+        (ErrorCode::OverConstrained, &["k0000011".to_owned()][..]),
+        "{e}"
+    );
+    assert!(e.message().contains("by up to 3.4"), "{e}");
+    assert!(e.message().contains("past this sketch's 3.2e-8 mm"), "{e}");
+    assert!(
+        e.message().contains(
+            "1e-9 mm² over the 3.125e-2 mm of its tightest circle tangency, or 1e-8 mm at least"
+        ),
+        "{e}"
+    );
+}
+
+#[test]
+fn a_tangency_of_two_micrometres_keeps_four_tenths_of_a_nanometre_and_not_six() {
+    // W4, the finding's window: radii 100 and 100.001, p2 at (0.001, 0). s = 100.001 − 100
+    // = 0.0010000000000047748 in doubles, so the tangency's residual is about 1e-17 and no
+    // step is taken. ε = 1e-9 / (0.001 + s) = 5.0e-7. p2 held on a line 4e-7 off: kept,
+    // its gap 4e-7; 6e-7 off: refused, naming the point on the line.
+    let mut w = worker();
+    let s = save_and_load(&tangent_circles_and_a_line("100.001", 0.001, 0.4), &mut w).unwrap();
+    as_drawn(
+        &s,
+        &[("p0000001", [0.0, 0.0]), ("p0000002", [0.001, 0.0])],
+        [100.0, 100.001],
+    );
+    let (id, gap) = one_redundant(&s);
+    assert_eq!(id, "k0000011");
+    assert!((gap - 4e-7).abs() <= 1e-15, "{gap:e}");
+    let e = solved(&tangent_circles_and_a_line("100.001", 0.001, 0.6), &mut w).unwrap_err();
+    assert_eq!(
+        (e.code(), e.elements()),
+        (ErrorCode::OverConstrained, &["k0000011".to_owned()][..]),
+        "{e}"
+    );
+    assert!(e.message().contains("past this sketch's 4.99999"), "{e}");
+    assert!(
+        e.message().contains("of its tightest circle tangency"),
+        "{e}"
+    );
+}
+
+#[test]
+fn a_dropped_tangency_counts_toward_the_tolerance_as_a_kept_one_does() {
+    // W5: every tangency counts, kept or dropped, so a renumbering can't change ε. Radii 100
+    // and 100.0004, the distance between the centres given first (k6) and the tangency
+    // last (k7), so PlaneGCS drops the tangency. p2 drawn at the distance, so no row moves.
+    // The tangency's gap is the distance less 0.0004 (s = 100.0004 − 100 =
+    // 0.00040000000000190994 in doubles): 0.000401 gives 1e-6, T = 0.000801, ε = 1.248e-6:
+    // kept; 0.000402 gives 2e-6, T = 0.000802, ε = 1.247e-6: refused, naming the tangency.
+    // Counting kept tangencies only, ε would be the floor and refuse the first.
+    let mut w = worker();
+    let s = save_and_load(
+        &tangent_circles("100.0004", 0.000401, &[&apart("0.000401"), TANGENT_INSIDE]),
+        &mut w,
+    )
+    .unwrap();
+    as_drawn(
+        &s,
+        &[("p0000001", [0.0, 0.0]), ("p0000002", [0.000401, 0.0])],
+        [100.0, 100.0004],
+    );
+    let (id, gap) = one_redundant(&s);
+    assert_eq!(id, "k0000007");
+    assert!((gap - 1e-6).abs() <= 1e-14, "{gap:e}");
+    let e = solved(
+        &tangent_circles("100.0004", 0.000402, &[&apart("0.000402"), TANGENT_INSIDE]),
+        &mut w,
+    )
+    .unwrap_err();
+    assert_eq!(
+        (e.code(), e.elements()),
+        (ErrorCode::OverConstrained, &["k0000007".to_owned()][..]),
+        "{e}"
+    );
+    assert!(
+        e.message().contains("of its tightest circle tangency"),
+        "{e}"
+    );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 1000, failure_persistence: None, ..ProptestConfig::default() })]
+
+    /// A nanometre against a circle tangency: radii 100 and 100 + s inside, p2 drawn at
+    /// (s, 0), and the distance between the centres given as s + 1 nm, s a whole number of
+    /// nanometres. Drawn as the kept rows hold it, so no row moves and the gap is 1e-6.
+    /// From s = 1 µm (T 2e-3, ε at most 5.0e-7; E = s, 1e-9 × E at most 1e-8) the
+    /// nanometre conflicts; to s = 0.4 µm (T 8e-4, ε at least 1.25e-6) it's kept, reported.
+    #[test]
+    fn a_nanometre_conflicts_with_a_circle_tangency_of_a_micrometre_or_more(
+        n in prop_oneof![1_000u32..=10_000_000, 1u32..=400],
+    ) {
+        let s = f64::from(n) / 1e6;
+        let r_b = format!("{}", f64::from(100_000_000 + n) / 1e6);
+        let d = format!("{}", f64::from(n + 1) / 1e6);
+        let doc = tangent_circles(&r_b, s, &[TANGENT_INSIDE, &apart(&d)]);
+        if n >= 1_000 {
+            let e = W.with(|w| solved(&doc, &mut *w.borrow_mut()))
+                .expect_err("a micrometre or more");
+            prop_assert_eq!(
+                (e.code(), e.elements()),
+                (ErrorCode::OverConstrained, &["k0000007".to_owned()][..]),
+                "{}: {}", s, e
+            );
+        } else {
+            let sol = W.with(|w| save_and_load(&doc, &mut *w.borrow_mut()))
+                .unwrap_or_else(|e| panic!("{s}: {e}"));
+            prop_assert_eq!(at(&sol, "p0000002"), [s, 0.0]);
+            let (id, gap) = one_redundant(&sol);
+            prop_assert_eq!(id, "k0000007");
+            prop_assert!((gap - 1e-6).abs() <= 1e-12, "{}: {:e}", s, gap);
+        }
     }
 }

@@ -25,7 +25,8 @@ const CLOSE: f64 = 1e-8;
 
 /// How far a kept slot's corner may sit from the analytic one: decision 5's ε = max(1e-8 mm,
 /// 1e-9 × E), E the sketch's extent, the diagonal of the box around its points
-/// (docs/design/m3.3-solving.md), worked out here from the slot's own sizes. Rectangles and
+/// (docs/design/m3.3-solving.md), worked out here from the slot's own sizes (its third term,
+/// for circle-to-circle tangencies, has no part: a slot's are lines tangent to arcs). Rectangles and
 /// triangles are held to CLOSE, which every case of their properties meets. A slot's corners
 /// are fixed through angular rows (the tangencies at its ends, its sides' parallel), carried
 /// to them by the arcs' radii, and land further off: the long slot's p2, 2e-8 mm at
