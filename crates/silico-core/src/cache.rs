@@ -89,16 +89,19 @@ struct Usage {
     writing: u64,
     /// Whether a put is scanning the directory (without the lock).
     scanning: bool,
+    /// How many scans this cache and its clones have made.
+    scans: u64,
 }
 
 /// Whether a put may write its entry.
+#[derive(Debug, PartialEq, Eq)]
 enum Room {
     Made,
-    /// Not even eviction leaves room beside what it can't evict: entries being written,
-    /// or (`foreign`) partial files not yet stale and files it couldn't remove.
-    None {
-        foreign: bool,
-    },
+    /// No room beside the entries this cache is writing, which can't be evicted yet.
+    Busy,
+    /// No room beside files it can't evict: other processes' partial files not yet stale,
+    /// and files it couldn't remove.
+    Stuck,
 }
 
 impl std::fmt::Debug for Cache {
@@ -300,19 +303,11 @@ impl Cache {
         }
         match self.make_room(size) {
             Room::Made => {}
-            Room::None { foreign: true } => {
-                if !self.said_full.swap(true, Ordering::Relaxed) {
-                    tracing::warn!(
-                        dir = %self.dir.display(),
-                        bound = self.bound,
-                        "the cache is full of files it can't evict (partial files of writes \
-                         under way, or files it couldn't remove): keeping no more results \
-                         until they're gone"
-                    );
-                }
+            Room::Stuck => {
+                self.say_full();
                 return;
             }
-            Room::None { foreign: false } => {
+            Room::Busy => {
                 tracing::debug!(
                     size,
                     bound = self.bound,
@@ -342,9 +337,9 @@ impl Cache {
     /// and the entry take at most three quarters of the bound. The scan runs without the
     /// lock: other puts that fit by what's known go on meanwhile, and those that don't wait
     /// for it (as all do for the first, before which nothing is known). Refuses, counting
-    /// nothing, if even then the entry would take the cache
-    /// past its bound, beside what can't be evicted: entries being written, partial files
-    /// not yet stale, and files it couldn't remove.
+    /// nothing, if even then the entry would take the cache past its bound, beside what
+    /// can't be evicted: entries being written, partial files not yet stale, and files it
+    /// couldn't remove.
     fn make_room(&self, size: u64) -> Room {
         let (_, scanned) = &*self.usage;
         let over = |known: u64| known.saturating_add(size) > self.bound;
@@ -359,26 +354,40 @@ impl Cache {
         if due && !usage.scanning {
             usage.scanning = true;
             usage.since_scan = 0;
+            usage.scans += 1;
             let writing = usage.writing;
             drop(usage);
+            // Should the scan unwind, the puts waiting on it are let go all the same.
+            let mut unwinding = ScanEnd {
+                cache: self,
+                armed: true,
+            };
             let left = self.scan_and_evict(size, writing);
+            unwinding.armed = false;
             usage = self.usage();
             usage.scanning = false;
             scanned.notify_all();
-            // What was being written as the scan began, and all that's begun since, which
-            // the scan may or may not have seen: counted as kept.
-            let coming = u128::from(writing) + u128::from(usage.since_scan);
-            let known = left.bytes + coming;
-            usage.known = Some(u64::try_from(known).unwrap_or(u64::MAX));
-            if known + u128::from(size) > u128::from(self.bound) {
-                let foreign = left.bytes + u128::from(size) > u128::from(self.bound);
-                return Room::None { foreign };
+            let room = settle(&mut usage, left.bytes, writing, size, self.bound);
+            if room != Room::Made {
+                return room;
             }
         }
         usage.known = usage.known.map(|known| known.saturating_add(size));
         usage.since_scan = usage.since_scan.saturating_add(size);
         usage.writing = usage.writing.saturating_add(size);
         Room::Made
+    }
+
+    /// Says, once, that the cache is full of files it can't evict.
+    fn say_full(&self) {
+        if !self.said_full.swap(true, Ordering::Relaxed) {
+            tracing::warn!(
+                dir = %self.dir.display(),
+                bound = self.bound,
+                "the cache is full of files it can't evict (partial files of writes under \
+                 way, or files it couldn't remove): keeping no more results until they're gone"
+            );
+        }
     }
 
     /// Scans the directory, removing stale partial files, and, if what it holds, `writing`
@@ -468,6 +477,39 @@ fn plain(path: PathBuf) -> PathBuf {
     path.components().collect()
 }
 
+/// Lets the puts waiting on a scan go if the scan unwinds (a panicking log layer, say),
+/// unless disarmed first.
+struct ScanEnd<'a> {
+    cache: &'a Cache,
+    armed: bool,
+}
+
+impl Drop for ScanEnd<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.cache.usage().scanning = false;
+            self.cache.usage.1.notify_all();
+        }
+    }
+}
+
+/// Settles what `usage` knows after a scan that left `left` bytes on disk, begun while
+/// `writing` bytes were being written: those, and all begun since (which the scan may or may
+/// not have seen), count as kept. Then whether an entry of `size` fits within `bound`: if
+/// not, whether only the cache's own writes are in its way.
+fn settle(usage: &mut Usage, left: u128, writing: u64, size: u64, bound: u64) -> Room {
+    let known = left + u128::from(writing) + u128::from(usage.since_scan);
+    usage.known = Some(u64::try_from(known).unwrap_or(u64::MAX));
+    let (size, bound) = (u128::from(size), u128::from(bound));
+    if known + size <= bound {
+        Room::Made
+    } else if left + size > bound {
+        Room::Stuck
+    } else {
+        Room::Busy
+    }
+}
+
 /// What a scan of a cache's directory found.
 struct Scan {
     /// Every entry, as its last use (its modification time), its path, and its size.
@@ -485,7 +527,8 @@ struct Scan {
 /// [`STALE_PARTIAL`] or more from `now`. Reads metadata only, and follows no link: an entry
 /// is a regular file named by 62 hex digits in a subdirectory named by two; a partial is a
 /// file named `.partial-…` in either. Anything else is left, and not counted; nor are this
-/// process's own partials not yet stale, which its puts count as being written.
+/// process's own partials not yet stale, which its puts count as being written (a process
+/// keeps one cache, and its clones, for a directory: two would each miss the other's).
 fn scan(dir: &Path, now: SystemTime) -> Scan {
     let mut found = Scan {
         entries: Vec::new(),
@@ -873,39 +916,116 @@ mod tests {
             since_scan: 60,
             writing: 60,
             scanning: false,
+            scans: 0,
         };
         // 60 + 50 is past 100: refused, for what's being written, and nothing counted.
-        assert!(matches!(cache.make_room(50), Room::None { foreign: false }));
+        assert_eq!(cache.make_room(50), Room::Busy);
         let usage = cache.usage();
         assert_eq!((usage.known, usage.writing), (Some(60), 60));
         drop(usage);
         // 60 + 40 is exactly 100: kept, and counted.
-        assert!(matches!(cache.make_room(40), Room::Made));
+        assert_eq!(cache.make_room(40), Room::Made);
         let usage = cache.usage();
         assert_eq!((usage.known, usage.writing), (Some(100), 100));
     }
 
     #[test]
-    fn a_put_kept_out_by_another_processs_partial_is_refused_as_foreign_and_by_its_own_isnt() {
+    fn a_put_kept_out_by_another_processs_partial_is_stuck_and_by_its_own_isnt() {
         // Found by review: a refusal for files the cache can't evict (here, another
         // process's partial, not yet stale, past the bound alone) is warned of, unlike one
         // for its own entries being written. This process's own partials aren't counted:
         // its puts count them as being written.
-        let scratch = Scratch::new("foreign");
+        let scratch = Scratch::new("stuck");
         let sub = scratch.0.join("ab");
         std::fs::create_dir_all(&sub).unwrap();
         let own = sub.join(format!(".partial-{}-0", std::process::id()));
         std::fs::write(&own, vec![0; 200]).unwrap();
         let cache =
             Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32]))).with_bound(100);
-        assert!(matches!(cache.make_room(10), Room::Made));
+        assert_eq!(cache.make_room(10), Room::Made);
         assert_eq!(cache.usage().known, Some(10));
         let theirs = sub.join(".partial-1-0");
         std::fs::write(&theirs, vec![0; 200]).unwrap();
         let fresh =
             Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32]))).with_bound(100);
-        assert!(matches!(fresh.make_room(10), Room::None { foreign: true }));
+        assert_eq!(fresh.make_room(10), Room::Stuck);
         assert!(own.exists() && theirs.exists());
+    }
+
+    #[test]
+    fn a_scan_settles_on_what_it_left_what_was_being_written_and_all_begun_since() {
+        // Found by review: what puts that went on during a scan begun was never counted in
+        // any test, nor what's left beside the cache's own writes. A bound of 100 each time.
+        let usage = |since_scan| Usage {
+            since_scan,
+            ..Usage::default()
+        };
+        // Nothing left, 70 being written as the scan began, 20 begun since: 90 kept, and a
+        // put of 20 doesn't fit, though only for the cache's own writes.
+        let mut after = usage(20);
+        assert_eq!(settle(&mut after, 0, 70, 20, 100), Room::Busy);
+        assert_eq!(after.known, Some(90));
+        // 30 left, 40 being written: 70; a put of 40 doesn't fit, and 30 left beside it
+        // would: busy, not stuck.
+        let mut after = usage(0);
+        assert_eq!(settle(&mut after, 30, 40, 40, 100), Room::Busy);
+        assert_eq!(after.known, Some(70));
+        // 90 left, that it couldn't evict: a put of 20 is stuck.
+        let mut after = usage(0);
+        assert_eq!(settle(&mut after, 90, 0, 20, 100), Room::Stuck);
+        // 10 left, 30 being written, 20 begun since: 60, and a put of 40 makes exactly 100.
+        let mut after = usage(20);
+        assert_eq!(settle(&mut after, 10, 30, 40, 100), Room::Made);
+        assert_eq!(after.known, Some(60));
+    }
+
+    #[test]
+    fn a_cache_scans_at_its_first_put_and_after_each_eighth_of_its_bound() {
+        // Found by review: scanning at every put passed every test, costing only time (1.5 s
+        // a put for a full cache). An empty directory; puts that fit, so no scan is for
+        // room. Under the default bound, ten puts of 100 scan once, at the first.
+        let scratch = Scratch::new("scans");
+        let cache = Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32])));
+        for _ in 0..10 {
+            assert_eq!(cache.make_room(100), Room::Made);
+        }
+        assert_eq!(cache.usage().scans, 1);
+        // A bound of 800, an eighth of 100: puts of 40 scan at the first (40 since), then
+        // when 40 more would make 120: the 3rd, 5th, 7th, and 9th.
+        let cache =
+            Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32]))).with_bound(800);
+        for _ in 0..9 {
+            assert_eq!(cache.make_room(40), Room::Made);
+        }
+        assert_eq!(cache.usage().scans, 5);
+        // A clone shares what its cache knows: no scan of its own.
+        assert_eq!(cache.clone().make_room(10), Room::Made);
+        assert_eq!(cache.usage().scans, 5);
+    }
+
+    #[test]
+    fn a_full_cache_says_so_once_for_itself_and_its_clones() {
+        // Found by review: saying it at every refusal but the first passed every test.
+        use std::sync::Mutex;
+        use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+        struct Warnings(Arc<Mutex<u32>>);
+        impl<S: tracing::Subscriber> Layer<S> for Warnings {
+            fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
+                if *event.metadata().level() == tracing::Level::WARN {
+                    *self.0.lock().unwrap() += 1;
+                }
+            }
+        }
+        let scratch = Scratch::new("full");
+        let cache = Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32])));
+        let warnings = Arc::new(Mutex::new(0));
+        let subscriber = tracing_subscriber::registry().with(Warnings(Arc::clone(&warnings)));
+        tracing::subscriber::with_default(subscriber, || {
+            cache.say_full();
+            cache.say_full();
+            cache.clone().say_full();
+        });
+        assert_eq!(*warnings.lock().unwrap(), 1);
     }
 
     #[test]
