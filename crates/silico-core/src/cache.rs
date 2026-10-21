@@ -973,6 +973,10 @@ mod tests {
         // 90 left, that it couldn't evict: a put of 20 is stuck.
         let mut after = usage(0);
         assert_eq!(settle(&mut after, 90, 0, 20, 100), Room::Stuck);
+        // 60 left and 10 being written: a put of 40 doesn't fit, but it would beside what's
+        // left alone (exactly 100): busy.
+        let mut after = usage(0);
+        assert_eq!(settle(&mut after, 60, 10, 40, 100), Room::Busy);
         // 10 left, 30 being written, 20 begun since: 60, and a put of 40 makes exactly 100.
         let mut after = usage(20);
         assert_eq!(settle(&mut after, 10, 30, 40, 100), Room::Made);
@@ -990,17 +994,51 @@ mod tests {
             assert_eq!(cache.make_room(100), Room::Made);
         }
         assert_eq!(cache.usage().scans, 1);
-        // A bound of 800, an eighth of 100: puts of 40 scan at the first (40 since), then
-        // when 40 more would make 120: the 3rd, 5th, 7th, and 9th.
+        // A bound of 800, an eighth of 100: puts of 50 scan at the first (50 since), not
+        // at the next (exactly 100), and when 50 more would make 150: the 3rd, 5th, 7th,
+        // and 9th.
         let cache =
             Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32]))).with_bound(800);
         for _ in 0..9 {
-            assert_eq!(cache.make_room(40), Room::Made);
+            assert_eq!(cache.make_room(50), Room::Made);
         }
         assert_eq!(cache.usage().scans, 5);
-        // A clone shares what its cache knows: no scan of its own.
-        assert_eq!(cache.clone().make_room(10), Room::Made);
-        assert_eq!(cache.usage().scans, 5);
+        // A clone shares what its cache knows (50 since): no scan of its own.
+        let twin = cache.clone();
+        assert_eq!(twin.make_room(10), Room::Made);
+        assert_eq!(twin.usage().scans, 5);
+    }
+
+    #[test]
+    fn a_scan_that_unwinds_lets_the_puts_after_it_go() {
+        // Found by review: nothing made a scan unwind, so letting its waiters go was never
+        // tested. A log layer that panics as the scan opens its span: the put unwinds, the
+        // scan is over, and the next put (with the layer gone) scans and is let in, not
+        // left waiting on a scan that never ends.
+        use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+        struct PanicAtScan;
+        impl<S: tracing::Subscriber> Layer<S> for PanicAtScan {
+            fn on_new_span(
+                &self,
+                attrs: &tracing::span::Attributes<'_>,
+                _: &tracing::span::Id,
+                _: Context<'_, S>,
+            ) {
+                if attrs.metadata().name() == "cache.evict" {
+                    panic!("a log layer panics, as a test asks");
+                }
+            }
+        }
+        let scratch = Scratch::new("unwinds");
+        let cache = Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32])));
+        let subscriber = tracing_subscriber::registry().with(PanicAtScan);
+        let unwound = tracing::subscriber::with_default(subscriber, || {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cache.make_room(10)))
+        });
+        assert!(unwound.is_err());
+        assert!(!cache.usage().scanning);
+        assert_eq!(cache.make_room(10), Room::Made);
+        assert_eq!(cache.usage().scans, 2);
     }
 
     #[test]
