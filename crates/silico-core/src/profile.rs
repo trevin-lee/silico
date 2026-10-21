@@ -1177,22 +1177,30 @@ fn point_segment_distance(p: Xy, a: Xy, b: Xy) -> f64 {
 }
 
 /// Whether `p`, a point of the arc's circle, is on the arc: counter-clockwise from its
-/// start and clockwise from its end about `c`, by cross products, with no angles.
+/// start and clockwise from its end about `c`, by cross products, with no angles but where
+/// its ends point one way from `c`: then it turns almost nothing or almost a whole circle,
+/// as its angles say.
 fn on_arc(c: Xy, arc: &Arc, p: Xy) -> bool {
     let (s, e, v) = (sub(arc.start, c), sub(arc.end, c), sub(p, c));
     let se = cross(s, e);
     let (sv, ve) = (cross(s, v), cross(v, e));
+    // Less than a half turn: between the two.
+    let minor = sv >= 0.0 && ve >= 0.0;
+    // More: anywhere but strictly inside the rest of the turn, from end to start.
+    let major = !(sv < 0.0 && ve < 0.0);
     if se > 0.0 {
-        // Less than a half turn: between the two.
-        sv >= 0.0 && ve >= 0.0
+        minor
     } else if se < 0.0 {
-        // More: anywhere but strictly inside the rest of the turn, from end to start.
-        !(sv < 0.0 && ve < 0.0)
+        major
     } else if dot(s, e) < 0.0 {
         // A half turn: the start's left.
         sv >= 0.0
+    } else if arc.to - arc.from > PI {
+        // Ends one way, a whole circle less a sliver: all but the sliver.
+        major
     } else {
-        sv >= 0.0 && ve >= 0.0
+        // Ends one way, a sliver.
+        minor
     }
 }
 

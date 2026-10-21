@@ -640,3 +640,97 @@ fn an_arc_whose_ends_point_one_way_sweeping_an_ulp_holds_no_point_a_quarter_turn
             .to_vec()
     );
 }
+
+// Arcs whose ends point one way from their centres: by their angles one turns almost a
+// whole circle, and one almost nothing.
+
+/// An arc about the origin from `from` to `to`, closed by the line back, and the rectangle
+/// (5000, −1000)–(20000, 1000): the arc's and line's names and the rectangle's lines
+/// (bottom, right, top, left). `from` and `to` point one way from the centre, as computed:
+/// `from.x·to.y` and `from.y·to.x` are equal (their cross product is 0), their dot product
+/// positive.
+fn one_way_arc_and_rectangle(from: [f64; 2], to: [f64; 2]) -> (Draw, [String; 2], Vec<String>) {
+    assert_eq!(
+        from[0] * to[1],
+        from[1] * to[0],
+        "the ends point one way, as computed"
+    );
+    assert!(from[0] * to[0] + from[1] * to[1] > 0.0);
+    let mut d = Draw::new();
+    let o = d.point(0.0, 0.0);
+    let start = d.point(from[0], from[1]);
+    let end = d.point(to[0], to[1]);
+    let a = d.arc(&o, &start, &end);
+    let back = d.line(&end, &start);
+    let rectangle = d.rectangle(5000.0, -1000.0, 20000.0, 1000.0);
+    (d, [a, back], rectangle)
+}
+
+#[test]
+fn an_arc_whose_ends_point_one_way_turning_almost_a_whole_circle_is_crossed_where_its_circle_is() {
+    // The arc r 10⁴ about the origin (|start| is 10⁴ exactly, as computed) from its start
+    // at −124.7° to its end 9.9999e-8 further out along the start's radius and a few ulps
+    // round, closed by the line back, 1.0000002e-7 long. atan2 puts the end a few ulps
+    // clockwise of the start, so the arc turns counter-clockwise a whole circle less a few
+    // ulps (6.283185307179585 rad): all of the circle but the few ulps at −124.7°. The
+    // rectangle's bottom (y = −1000) and top (y = 1000) cross the circle at
+    // x = √(10⁸ − 10⁶) = 3000√11 = 9949.87 (within 5000..20000), at ∓5.74°, on the arc;
+    // its left side (x = 5000, |y| ≤ 1000) is inside the circle (5000² + 1000² < 10⁸) and
+    // its right side (x = 20000) outside. The arc crosses the bottom and the top, as any
+    // arc crossing a line does.
+    let (s, e) = (
+        [-5692.484703417905, -8221.655423414019],
+        [-5692.48470347483, -8221.655423496235],
+    );
+    assert!(libm::atan2(e[1], e[0]) < libm::atan2(s[1], s[0]));
+    let (d, [a, _], rectangle) = one_way_arc_and_rectangle(s, e);
+    let (bottom, top) = (&rectangle[0], &rectangle[2]);
+    let errors = d.refused();
+    assert!(
+        errors
+            .iter()
+            .all(|e| e.code() == silico_core::ErrorCode::InvalidInput)
+    );
+    assert_eq!(
+        draw::named(&errors),
+        [bottom, top]
+            .map(|n| (
+                format!("arc {a} and line {n} cross"),
+                vec![a.clone(), n.clone()]
+            ))
+            .to_vec()
+    );
+}
+
+#[test]
+fn an_arc_whose_ends_point_one_way_turning_almost_nothing_is_a_sliver_apart_from_the_rectangle() {
+    // The same shape turning almost nothing. (The first test's ends swapped won't do: its
+    // start would then be the outer point, and its end, the inner, 1.0000014e-7 off the
+    // circle through the start, too far to build.) The arc r 10⁴ (|start| is 10⁴ exactly)
+    // from its start at −140.1° to its end 9.9999e-8 further out and a few ulps round,
+    // which atan2 puts an ulp counter-clockwise of the start: it turns 4.4e-16 rad, its
+    // length 10⁴ × 4.4e-16 = 4.4e-12, far from the rectangle (whose nearest corner,
+    // (5000, −1000), is at −11.3°). With the line back, 1.0000001714e-7 long, it's a loop of
+    // no area (under 1e-15 mm²) and a perimeter of 1.0000001714e-7 + 4.4e-12 = 1.00004e-7:
+    // a sliver, refused alone. Nothing crosses the rectangle, which is a region.
+    let (s, e) = (
+        [-7671.596045639507, -6414.562659490378],
+        [-7671.596045716223, -6414.562659554524],
+    );
+    assert!(libm::atan2(e[1], e[0]) > libm::atan2(s[1], s[0]));
+    let (d, [a, back], _) = one_way_arc_and_rectangle(s, e);
+    let errors = d.refused();
+    assert_eq!(errors.len(), 1, "{:#?}", draw::named(&errors));
+    let message = errors[0].message();
+    let numbers = message
+        .strip_prefix(&format!("loop {a}, {back} encloses no area to speak of ("))
+        .and_then(|m| m.strip_suffix(" mm)"))
+        .unwrap_or_else(|| panic!("{message}"));
+    let (area, perimeter) = numbers
+        .split_once(" mm², against a perimeter of ")
+        .unwrap_or_else(|| panic!("{message}"));
+    let (area, perimeter): (f64, f64) = (area.parse().unwrap(), perimeter.parse().unwrap());
+    assert!(area < 1e-15, "{message}");
+    assert!((perimeter - 1.00004e-7).abs() < 1e-12, "{message}");
+    assert_eq!(errors[0].elements(), [a.clone(), back.clone()]);
+}
