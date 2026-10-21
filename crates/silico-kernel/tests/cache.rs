@@ -149,7 +149,7 @@ fn a_worker_rebuilt_while_the_pool_runs_isnt_started_under_its_identity() {
         "{error}"
     );
     assert!(
-        error.message().contains("changed since the pool started"),
+        error.message().contains("changed since it started"),
         "{error}"
     );
     assert_eq!(pool.identity(), identity);

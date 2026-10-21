@@ -4203,6 +4203,7 @@ dependencies = [
  "crc32fast",
  "cxx",
  "cxx-build",
+ "libc",
  "proptest",
  "rustix",
  "serde_json",

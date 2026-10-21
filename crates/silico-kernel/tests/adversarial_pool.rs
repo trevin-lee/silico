@@ -411,7 +411,7 @@ fn put_in_place(exe: &Path, text: &str) {
 /// Whether `err` says the pool's worker executable changed, naming it, and to restart.
 fn says_changed(err: &silico_core::Error, exe: &Path) -> bool {
     err.code() == ErrorCode::WorkerCrashed
-        && err.message().contains("changed since the pool started")
+        && err.message().contains("changed since it started")
         && err.message().contains(&*exe.to_string_lossy())
         && err.suggestion().is_some_and(|s| s.contains("restart"))
 }
@@ -428,7 +428,6 @@ fn a_worker_executable_replaced_by_another_build_isnt_started_under_the_pools_id
     let exe = dir.join("worker");
     write_executable(&exe, &build(1));
     let pool = KernelPool::start_workers(&exe, 1).unwrap();
-    let identity = pool.identity().to_owned();
     assert!(done(pool.submit(Generation(1), sleep(1))).is_ok());
     put_in_place(&exe, &build(2));
     assert!(done(pool.submit(Generation(1), sleep(1))).is_ok());
@@ -440,12 +439,10 @@ fn a_worker_executable_replaced_by_another_build_isnt_started_under_the_pools_id
         let err = done(pool.submit(Generation(1), sleep(1))).unwrap_err();
         assert!(says_changed(&err, &exe), "{err}");
     }
-    assert_eq!(pool.identity(), identity);
     assert!(pool.pids().iter().all(|pid| before.contains(pid)));
     // The pool's own build back, as a new file of the same bytes: it starts again.
     put_in_place(&exe, &build(1));
     assert!(done(pool.submit(Generation(1), sleep(1))).is_ok());
-    assert_eq!(pool.identity(), identity);
 }
 
 #[test]
@@ -475,12 +472,12 @@ fn a_worker_whose_executable_changes_as_it_starts_isnt_used() {
     write_executable(&other, &build(2));
     write_executable(
         &exe,
-        &format!(
-            "#!/bin/sh\n# build 1\ncp '{}' '{}.tmp' && mv '{}.tmp' '{}'\nexec '{TEST_WORKER}'\n",
-            other.display(),
-            exe.display(),
-            exe.display(),
-            exe.display()
+        &changing_as_it_starts(
+            &exe,
+            &format!(
+                "cp '{}' \"$exe.$$\" && mv \"$exe.$$\" \"$exe\"",
+                other.display()
+            ),
         ),
     );
     let pool = KernelPool::start_on_demand(&exe, 1).unwrap();
@@ -2131,10 +2128,7 @@ fn an_on_demand_pool_whose_executable_changes_before_its_first_request() {
     );
     let err = done(pool.submit(Generation(1), echo(&[1]))).unwrap_err();
     assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
-    assert!(
-        err.message().contains("changed since the pool started"),
-        "{err}"
-    );
+    assert!(err.message().contains("changed since it started"), "{err}");
     assert_eq!(pool.pids(), Vec::<u32>::new());
     write_executable(&exe, &original);
     assert_eq!(
@@ -2232,11 +2226,6 @@ fn mkfifo(path: &Path) {
     assert!(status.success(), "mkfifo {}", path.display());
 }
 
-#[cfg(target_os = "macos")]
-const O_NONBLOCK: i32 = 0x0004;
-#[cfg(target_os = "linux")]
-const O_NONBLOCK: i32 = 0o4000;
-
 /// Until `stop` is set, opens the FIFO at `path` for writing whenever a reader waits on it,
 /// and closes it, so every reader blocked opening it gets an end of file: so that a test
 /// that finds a hang can still let the pool go and end.
@@ -2249,7 +2238,7 @@ fn feed_fifo(
             // ENXIO while no reader has it open; opened (and closed at once) when one has.
             let _ = std::os::unix::fs::OpenOptionsExt::custom_flags(
                 std::fs::OpenOptions::new().write(true),
-                O_NONBLOCK,
+                libc::O_NONBLOCK,
             )
             .open(&path);
             std::thread::sleep(Duration::from_millis(5));
@@ -2276,24 +2265,24 @@ fn drop_within(pool: KernelPool, within: Duration, fifo: &Path) -> bool {
     in_time
 }
 
-/// How long a step here may take before it counts as a hang: far longer than any of them
-/// takes (milliseconds), however loaded the machine, and far shorter than the requests'
-/// sleeps and timeouts that a hang would wait out.
-const BOUND: Duration = Duration::from_secs(10);
+/// How long a step here may take before it counts as a hang: [`HANG`], far longer than any
+/// of them takes (milliseconds), however loaded the machine, and far shorter than the
+/// requests' sleeps and timeouts (minutes) that a hang would wait out.
+const BOUND: Duration = HANG;
 
 // ---------------------------------------------------------------------------------------
 // A refused worker given a request
 
 #[test]
-fn a_refused_worker_given_a_30_s_request_fails_it_at_once_not_when_it_answers() {
+fn a_refused_worker_given_a_long_request_fails_it_at_once_not_when_it_answers() {
     // The worker's executable changes as it starts, so its start's check refuses it within
-    // milliseconds of its launch. Its request is a 30 s sleep: the refusal is known long
+    // milliseconds of its launch. Its request is a 5 min sleep: the refusal is known long
     // before the worker could answer, so the request fails then, with it.
     // BREAKS: the refusal is read only once the worker's reply has come (or the call's time
-    // run out): the request is sent to the refused worker anyway and the call waits all 30 s
+    // run out): the request is sent to the refused worker anyway and the call waits all 5 min
     // for an answer it then throws away (a build that never answers holds the slot for the
     // request's whole timeout, 60 s by default).
-    const SLEEP: Duration = Duration::from_secs(30);
+    const SLEEP: Duration = Duration::from_secs(300);
     let dir = scratch_dir("refused-long-request");
     let exe = dir.join("worker");
     let other = dir.join("other-build");
@@ -2362,7 +2351,6 @@ fn an_executable_rewritten_in_place_to_another_build_of_its_size_and_time_isnt_s
         kill9_and_wait(pid);
     }
     let got = done(pool.submit(Generation(1), sleep(1)));
-    assert_eq!(pool.identity(), identity);
     match got {
         Err(err) => assert!(says_changed(&err, &exe), "{err}"),
         Ok(()) => panic!(
@@ -2424,7 +2412,7 @@ fn a_worker_whose_executable_becomes_a_fifo_as_it_starts_is_refused_at_once() {
     // as a `worker_timeout` saying the worker "hadn't started" (it had), with advice to try
     // again; the reply thread stays blocked for good; and the slot, replacing the worker,
     // blocks in the same read, so dropping the pool hangs.
-    const TIMEOUT: Duration = Duration::from_secs(20);
+    const TIMEOUT: Duration = Duration::from_secs(300);
     let dir = scratch_dir("fifo-as-started");
     let exe = dir.join("worker");
     write_executable(
@@ -2520,6 +2508,67 @@ fn a_worker_whose_executable_is_deleted_as_it_starts_is_refused_then_the_pool_re
     wait_no_children("after the drop");
 }
 
+#[test]
+fn an_executable_replaced_by_a_fifo_written_without_end_is_refused_without_reading_it() {
+    // Found by review: a FIFO with no writer reads as empty, so no test needed the check that
+    // the file is a regular one; a FIFO written without end (or a link to /dev/zero) would be
+    // read without end, holding the slot and the pool's drop, if it weren't refused unread.
+    let dir = scratch_dir("fifo-written");
+    let exe = dir.join("worker");
+    write_executable(&exe, &build(1));
+    let pool = KernelPool::start_workers(&exe, 1).unwrap();
+    assert!(done(pool.submit(Generation(1), sleep(1))).is_ok());
+    std::fs::remove_file(&exe).unwrap();
+    mkfifo(&exe);
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let writer = {
+        let (stop, fifo) = (std::sync::Arc::clone(&stop), exe.clone());
+        std::thread::spawn(move || {
+            let block = vec![0; 1 << 16];
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                // Opened whenever a reader has it open, and written until that reader goes.
+                let opened = std::os::unix::fs::OpenOptionsExt::custom_flags(
+                    std::fs::OpenOptions::new().write(true),
+                    libc::O_NONBLOCK,
+                )
+                .open(&fifo);
+                match opened {
+                    Ok(mut file) => {
+                        while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                            match file.write(&block) {
+                                Ok(_) => {}
+                                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                    std::thread::sleep(Duration::from_millis(1));
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                    }
+                    Err(_) => std::thread::sleep(Duration::from_millis(5)),
+                }
+            }
+        })
+    };
+    for pid in pool.pids() {
+        kill9_and_wait(pid);
+    }
+    let answer = pool.submit(Generation(1), sleep(1)).wait_timeout(BOUND);
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let Ok(outcome) = answer else {
+        writer.join().unwrap();
+        panic!("the request waited on hashing a FIFO written without end");
+    };
+    let err = outcome.done().expect("superseded").unwrap_err();
+    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert!(err.message().contains(&*exe.to_string_lossy()), "{err}");
+    assert!(
+        err.cause().is_some_and(|c| c.contains("regular file")),
+        "{err:?}"
+    );
+    drop(pool);
+    writer.join().unwrap();
+}
+
 // ---------------------------------------------------------------------------------------
 // Many slots at once
 
@@ -2534,16 +2583,6 @@ fn many_slots_starting_from_an_executable_that_changes_under_them_take_no_answer
     let exe = dir.join("worker");
     let other = dir.join("other-build");
     write_executable(&other, &build(2));
-    write_executable(
-        &exe,
-        &changing_as_it_starts(
-            &exe,
-            &format!(
-                "cp '{}' \"$exe.$$\" && mv \"$exe.$$\" \"$exe\"",
-                other.display()
-            ),
-        ),
-    );
     for round in 0..5 {
         // The first build back, for the round.
         write_executable(

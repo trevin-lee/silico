@@ -201,10 +201,19 @@ fn a_worker_whose_executable_changes_as_it_starts_isnt_used() {
     std::fs::write(&exe, script).unwrap();
     std::fs::set_permissions(&exe, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let mut w = SketchWorker::start_worker(&exe).unwrap();
+    let refused = w.pid();
     let e = solve(&checked(&small()), &feature(), &mut w).unwrap_err();
     assert_eq!(e.code(), ErrorCode::WorkerCrashed, "{e}");
     assert!(e.message().contains("changed since it started"), "{e}");
     assert!(e.message().contains(&exe.display().to_string()), "{e}");
+    // And the worker refused is gone (stopped and reaped), not left running.
+    let alive = std::process::Command::new("kill")
+        .args(["-0", &refused.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success();
+    assert!(!alive, "the refused worker {refused} is still running");
 }
 
 #[test]
@@ -222,7 +231,14 @@ fn a_worker_whose_executable_was_replaced_isnt_started_again_and_one_put_back_is
     std::fs::remove_file(&exe).unwrap();
     std::fs::hard_link(OTHER_BUILD, &exe).unwrap();
     w.distrust();
+    // No worker is started from it: the stopped one is still the one held.
+    let stopped = w.pid();
     let e = solve(&doc, &feature(), &mut w).unwrap_err();
+    assert_eq!(
+        w.pid(),
+        stopped,
+        "a worker was started from the other build"
+    );
     assert_eq!(e.code(), ErrorCode::WorkerCrashed, "{e}");
     assert!(e.message().contains("changed since it started"), "{e}");
     assert!(
@@ -233,6 +249,11 @@ fn a_worker_whose_executable_was_replaced_isnt_started_again_and_one_put_back_is
     // Asked again, still refused: not started from the other build on a second try.
     let e = solve(&doc, &feature(), &mut w).unwrap_err();
     assert!(e.message().contains("changed since it started"), "{e}");
+    assert_eq!(
+        w.pid(),
+        stopped,
+        "a worker was started from the other build"
+    );
 
     // The same build back (the same file, linked again): started again.
     std::fs::remove_file(&exe).unwrap();

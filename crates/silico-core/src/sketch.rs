@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{PI, TAU};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use silico_protocol::{
@@ -18,7 +18,7 @@ use crate::document::{
     Angle as DocumentAngle, Checked, Coordinate, Direction, ElementId, FeatureId, Form, Length,
     LineSide, Operation, Reference, Sketch, SketchConstraint, TangentSide,
 };
-use crate::worker::{Stamp, Worker, WorkerKind, identity_of};
+use crate::worker::{Executable, Worker, WorkerKind};
 use crate::{Error, ErrorCode};
 
 /// The algorithms a sketch is solved with, in FreeCAD's order (`Sketch::internalSolve`).
@@ -139,8 +139,9 @@ impl std::fmt::Debug for SolveStopper {
 /// sent a reply that can't be trusted is stopped, and started again for the next solve.
 pub struct SketchWorker {
     worker: Worker,
-    /// The executable it was started from, to start again; none for a worker handed in.
-    exe: Option<Executable>,
+    /// The executable it was started from, to start again (only while it's still that
+    /// build); none for a worker handed in.
+    exe: Option<std::sync::Arc<Executable>>,
     timeout: Duration,
     /// Set by the [`SolveStopper`] it gave out for the solve under way: the worker was
     /// killed, perhaps after it answered (no call failed to say so). The solve's later
@@ -151,50 +152,6 @@ pub struct SketchWorker {
     /// worker (the stopper couldn't reach one), and only a `stopper` call does. A caller that
     /// has called `stopper` once has to begin each solve with it from then on.
     begun: bool,
-}
-
-/// A sketch worker's executable as it was when the worker started: started again only if
-/// it's still that build, since another would answer differently under the same name.
-struct Executable {
-    path: PathBuf,
-    stamp: Option<Stamp>,
-    /// `sketch worker sha256:…` of its bytes.
-    identity: String,
-}
-
-impl Executable {
-    /// Whether the file is still the build the worker started from: another would answer
-    /// under its identity. Cheap when the file is as it was; hashed again if not.
-    fn check(&self) -> Result<(), Error> {
-        Self::still(&self.path, self.stamp, &self.identity)
-    }
-
-    fn still(path: &Path, stamp: Option<Stamp>, identity: &str) -> Result<(), Error> {
-        let same = (stamp.is_some() && Stamp::of(path) == stamp)
-            || identity_of(path, WorkerKind::Sketch)? == identity;
-        if same {
-            return Ok(());
-        }
-        Err(Error::new(
-            ErrorCode::WorkerCrashed,
-            format!(
-                "the sketch worker {} changed since it started: another build of it isn't \
-                 started in its place",
-                path.display()
-            ),
-        )
-        .with_suggestion("restart Silico, so the new worker's solutions are kept as its own"))
-    }
-
-    /// Starts a worker from the file, checked again once it has started, as the kernel pool
-    /// checks its workers (`pool::Shared::start_check`): a file replaced between the check
-    /// and the exec shows, and that worker isn't trusted.
-    fn start(&self) -> Result<Worker, Error> {
-        let (path, stamp, identity) = (self.path.clone(), self.stamp, self.identity.clone());
-        let check: crate::worker::StartCheck =
-            Box::new(move || Self::still(&path, stamp, &identity));
-        Worker::spawn_checked(&self.path, WorkerKind::Sketch, Some(check))
-    }
 }
 
 impl SketchWorker {
@@ -211,14 +168,8 @@ impl SketchWorker {
 
     /// Starts the sketch worker at `exe`.
     pub fn start_worker(exe: &Path) -> Result<Self, Error> {
-        let stamp = Stamp::of(exe);
-        let identity = identity_of(exe, WorkerKind::Sketch)?;
-        let exe = Executable {
-            path: exe.to_owned(),
-            stamp,
-            identity,
-        };
-        let worker = exe.start()?;
+        let exe = Executable::of(exe, WorkerKind::Sketch)?;
+        let worker = exe.spawn()?;
         Ok(Self {
             exe: Some(exe),
             ..Self::from_worker(worker)
@@ -247,8 +198,7 @@ impl SketchWorker {
         let Some(exe) = &self.exe else {
             return Ok(());
         };
-        exe.check()?;
-        self.worker = exe.start()?;
+        self.worker = exe.spawn()?;
         Ok(())
     }
 
