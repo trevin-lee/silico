@@ -146,6 +146,12 @@ jobs:
           running=6
           share=$(( $(nproc) / running > 2 ? $(nproc) / running : 2 ))
           export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share NEXTEST_RETRIES=2
+          # One seed for every proptest whose config doesn't fix its own, so each mutant meets
+          # the same cases as the baseline. With a random seed, a property that fails now and
+          # then (a bug the gate's random runs have yet to pin) killed mutants it had nothing
+          # to do with: M3.5's first run counted 82 so. With this one, such a bug fails the
+          # baseline, and the run stops saying so. The gate keeps random seeds.
+          export PROPTEST_RNG_SEED=20261021
           args+=(--jobserver-tasks "$share")
           # 2: mutants missed; 3: mutants timed out. The summary reports both.
           status=0
