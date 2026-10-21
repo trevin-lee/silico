@@ -9,8 +9,8 @@
 #   gh workflow run mutants.yml --ref main -f ref=<branch> -f re='profile\.rs:.* in (meeting|on_arc)$'
 #     (re-checks survivors: only the mutants whose names match, in minutes)
 name: mutants
-# The ref, base, packages, and files, so concurrent runs can be told apart (review-tests
-# finds its run by this title).
+# The ref, base, packages, files, and regex, so concurrent runs can be told apart
+# (review-tests finds its run by this title).
 run-name: "mutants ${{ inputs.ref || github.ref_name }} since ${{ inputs.base || 'nothing' }} in ${{ inputs.packages || 'every package' }}${{ inputs.files && format(' files {0}', inputs.files) || '' }}${{ inputs.re && format(' matching {0}', inputs.re) || '' }}"
 
 on:
@@ -29,11 +29,11 @@ on:
         description: "Only mutants in these source files, space-separated, each a --file: a path from the repository's root, with * (not crossing /) or ** for globs; a word without / matches that name anywhere (empty: every file)"
         default: ""
       re:
-        description: "Only mutants whose names match this regex, cargo-mutants' --re (e.g. re-checking survivors by file, line, or function; empty: every mutant)"
+        description: "Only mutants whose names match this regex, cargo-mutants' --re, searched in each name (path:line:col: what was replaced, often ending ' in fn'); match a survivor by its description rather than its line, which moves; escape regex characters; no single quotes (write . for one) or newlines (empty: every mutant)"
         default: ""
       shards:
-        description: "Number of shards to share the work (1 to 16; at most two run at once)"
-        default: "3"
+        description: "Number of shards to share the work (1 to 16; at most two run at once, so more than two only helps a run whose shard would pass the 1,440-minute limit)"
+        default: "2"
 
 permissions:
   contents: read
@@ -56,6 +56,7 @@ jobs:
           SHARDS: ${{ inputs.shards }}
           PACKAGES: ${{ inputs.packages }}
           FILES: ${{ inputs.files }}
+          RE: ${{ inputs.re }}
         run: |
           case $SHARDS in
           [1-9] | 1[0-6]) ;;
@@ -73,6 +74,12 @@ jobs:
             /* | -* | *..* | *[!A-Za-z0-9_./*-]*) echo "::error::not a path from the repository's root: '$file'"; exit 1 ;;
             esac
           done
+          # pixi re-parses a task's arguments in its own shell, inside single quotes it doesn't
+          # escape: a quote in the regex would end the quoting, so it's refused (`.` matches
+          # it), as is a newline.
+          case $RE in
+          *"'"* | *$'\n'*) echo "::error::the regex has a single quote or a newline: write . for a quote"; exit 1 ;;
+          esac
           echo "shards=[$(seq -s, 0 $((SHARDS - 1)))]" >>"$GITHUB_OUTPUT"
 
   shard:
@@ -128,7 +135,8 @@ jobs:
           for file in $FILES; do args+=(--file "$file"); done
           set +f
           # One regex, as given: cargo-mutants matches it against each mutant's name.
-          if [ -n "$RE" ]; then args+=(--re "$RE"); fi
+          # (`--re=` so a regex beginning with `-` isn't read as an option.)
+          if [ -n "$RE" ]; then args+=("--re=$RE"); fi
           # A sixth of the machine each: the most shards that run at once is four, two runs of
           # two, which leaves a third of it for gates. (At three a run, two runs used all of
           # it, and a gate on a full machine could fail a test still held to a wall clock:
@@ -190,7 +198,11 @@ jobs:
             echo "| Caught | Missed | Timed out | Unviable | Shards reported |"
             echo "|---|---|---|---|---|"
             echo "| $(count caught) | $(count missed) | $(count timeout) | $(count unviable) | $reported of $SHARDS |"
-            for outcome in missed timeout; do
+            # A recheck (a regex) is small: list what it tested, so a survivor its regex
+            # missed shows by its absence.
+            listed="missed timeout"
+            if [ -n "$RE" ]; then listed="missed timeout caught unviable"; fi
+            for outcome in $listed; do
               if [ -s "all/$outcome.txt" ]; then
                 echo
                 echo "### ${outcome^}"
@@ -210,7 +222,7 @@ jobs:
           # pass having tested nothing. (With a base, a change that touches none of the files
           # also finds none.)
           if [ -n "$FILES$RE" ] && [ "$tested" -eq 0 ]; then
-            echo "::error::the files or regex matched no mutants${BASE:+ changed since $BASE}: check each file is a path from the repository's root in the packages given, and the regex matches mutants' names (file:line:column: what in function)"
+            echo "::error::the files or regex matched no mutants${BASE:+ changed since $BASE}: check each file is a path from the repository's root in the packages given, and the regex matches mutants' names (file:line:column: what was replaced)"
             exit 1
           fi
           if [ -s all/missed.txt ]; then
