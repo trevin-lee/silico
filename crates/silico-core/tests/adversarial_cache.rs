@@ -139,9 +139,9 @@ fn entry_replaced_by_a_fifo_is_a_miss_not_a_hang() {
     let hung = outcome.is_err();
     // Free a recompute blocked opening the FIFO, whatever happened, and close it, giving its
     // read end of file. Opened for reading and writing, a FIFO pairs with a reader or a
-    // writer and never waits for one itself (on Linux and macOS): an open for writing
-    // alone waited for a reader, so a recompute that hung for another reason, and never
-    // opened the FIFO, hung the test to its timeout rather than failing it.
+    // writer and never waits for one itself on Linux and macOS (POSIX leaves it undefined),
+    // unlike an open for writing alone, which waits for a reader: one that never came, from
+    // a recompute hung for another reason, would hang the test rather than fail it.
     drop(
         std::fs::OpenOptions::new()
             .read(true)
