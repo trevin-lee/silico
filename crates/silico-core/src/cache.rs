@@ -1,7 +1,7 @@
 //! The rebuild cache (`.silico-cache/`, ARCHITECTURE.md): each kernel step's result kept on
 //! disk, so a document opened again, or by another session, rebuilds without the kernel. An
 //! entry is a step's shape (its B-rep and the worker's word on its validity), history, and
-//! summary, under one seal, keyed by the step's recompute key, the kernel's identity, and the
+//! measure, under one seal, keyed by the step's recompute key, the kernel's identity, and the
 //! platform: a result is used only by the same kernel, for the same request, on the same
 //! kind of machine, and a hit is a shape whose validity the worker has already checked.
 //!
@@ -15,12 +15,16 @@
 //! document in any repository; a directory that's a link, which may point anywhere, keeps
 //! nothing.
 //!
-//! Only results are kept, never failures: a failure's cause may not last (memory, say), and
-//! recompute keeps those that follow from the values in memory. Nothing here fails a
-//! recompute: an entry that can't be read is a miss, and one that can't be written is left
-//! unwritten, each with a warning. An entry that doesn't hold together (a bad seal, a
-//! payload that doesn't parse, an entry for another key) is a miss too, rebuilt and written
-//! over, never trusted. Without a secret (no home directory, say) the cache keeps nothing.
+//! Only results are kept, never a step's failure: a failure's cause may not last (memory,
+//! say), and recompute keeps those that follow from the values in memory. A result's
+//! measure the kernel refused is kept with it only if the refusal is a fact about the
+//! solid's values (invalid input, or an invalid result), as the worker said it, as data:
+//! the core that reads it back words it, and judges again whether it's kept. Nothing here
+//! fails a recompute: an entry that can't be read is a miss, and one that can't be written
+//! is left unwritten, each with a warning. An entry that doesn't hold together (a bad seal,
+//! a payload that doesn't parse, an entry for another key) is a miss too, rebuilt and
+//! written over, never trusted. Without a secret (no home directory, say) the cache keeps
+//! nothing.
 //!
 //! The cache is bounded (docs/design/m2.5-cache-bound.md): a put that would take it past its
 //! bound evicts the entries least recently used (written, or taken by a hit), and a scan
@@ -40,9 +44,11 @@ use sha2::Sha256;
 
 use crate::kernel::{Blob, History, ShapeData, ShapeSummary};
 use crate::recompute::{Built, Key};
+use silico_protocol::Failure;
 
 /// The first bytes of every entry, naming its format: a change to the format changes it.
-const MAGIC: &[u8] = b"silico cache 4\n";
+/// It's part of every entry's key too, so an entry of another format is never looked for.
+const MAGIC: &[u8] = b"silico cache 6\n";
 
 /// What the cache's directory holds besides its entries: it ignores itself.
 const GITIGNORE: &[u8] =
@@ -167,8 +173,24 @@ struct Entry {
     brep: Vec<u8>,
     valid: bool,
     history: Option<History>,
-    /// The shape's summary, if it was measured (a feature's solid is, once it's made).
-    summary: Option<ShapeSummary>,
+    /// The shape's measure: none yet, its summary (a feature's solid is measured once it's
+    /// made), or the kernel's refusal to measure it, for its values.
+    measure: Measure,
+}
+
+/// An entry's measure.
+#[derive(Serialize, Deserialize)]
+enum Measure {
+    Unmeasured,
+    Summary(ShapeSummary),
+    /// The kernel worker's refusal, as data, and the operation it was for (`Summarize`):
+    /// the core reading it back words it, so its words are always that core's (the entry's
+    /// key holds the worker's identity, not the core's). Only a worker's refusal of a
+    /// measure is kept so (`worker::failure_error_with_edge_names` keeps no other's).
+    Refused {
+        op: String,
+        failure: Failure,
+    },
 }
 
 impl Cache {
@@ -245,14 +267,10 @@ impl Cache {
                 return None;
             }
         };
-        match read_entry(&bytes, secret, &key) {
-            Some(entry) => {
+        match read_entry(&bytes, secret, &key).map(built_of) {
+            Some(built) => {
                 renew(&path);
-                Some(Built::new(
-                    ShapeData::checked(Blob::inline(entry.brep), entry.valid),
-                    entry.history,
-                    entry.summary,
-                ))
+                Some(built)
             }
             None => {
                 tracing::warn!(path = %path.display(), "a cache entry doesn't hold together: rebuilding it");
@@ -276,7 +294,18 @@ impl Cache {
             brep: built.shape.brep().as_bytes().to_vec(),
             valid,
             history: built.history.clone(),
-            summary: built.summary().cloned(),
+            measure: match (built.summary(), built.measure_refused()) {
+                (Some(summary), _) => Measure::Summary(summary.clone()),
+                (None, Some(refused)) if lasting(refused) => match refused.worker_failure() {
+                    Some((op, failure)) => Measure::Refused {
+                        op: op.to_owned(),
+                        failure: failure.clone(),
+                    },
+                    // Not a worker's (a fake kernel's): nothing to word it again from.
+                    None => Measure::Unmeasured,
+                },
+                (None, _) => Measure::Unmeasured,
+            },
         };
         let payload = match postcard::to_allocvec(&entry) {
             Ok(payload) => payload,
@@ -771,6 +800,43 @@ fn read_file(path: &Path) -> FileRead {
 /// The platform's name: its OS and architecture (`macos-aarch64`).
 fn this_platform() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
+}
+
+/// Whether a measure's refusal is a fact about the solid's values, so it's kept on disk:
+/// invalid input, or an invalid result. Within what recompute keeps for the session
+/// (`recompute::kept`), and must stay so. Not `kernel_failed`, though recompute keeps it for
+/// the session as it keeps a step's: the cache keeps nothing a restart might not see again
+/// (M2.4's decision, of OCCT's catch-all alerts), and OCCT's integration catches its own
+/// shortage of memory (`math_ComputeGaussPointsAndWeights` and its Kronrod twin catch every
+/// `Standard_Failure`, `Standard_OutOfMemory` too), which can then come back as a failed
+/// measure. (A B-rep refused as damaged is invalid input too: a fact while shapes travel
+/// inline, as they do; a transport that could damage them would make it not one.)
+fn lasting(refused: &crate::Error) -> bool {
+    matches!(
+        refused.code(),
+        crate::ErrorCode::InvalidInput | crate::ErrorCode::InvalidResult
+    )
+}
+
+/// The result `entry` keeps, checked as a worker's reply is: a summary no shape has is a
+/// measure to make again, and a refusal is worded now, by this core, and kept only if the
+/// cache would keep it (this core may judge it otherwise than the one that wrote it).
+fn built_of(entry: Entry) -> Built {
+    let shape = ShapeData::checked(Blob::inline(entry.brep), entry.valid);
+    match entry.measure {
+        Measure::Summary(summary) if crate::kernel::summary_fault(&summary).is_none() => {
+            Built::new(shape, entry.history, Some(summary))
+        }
+        Measure::Refused { op, failure } => {
+            let refused = crate::worker::failure_error(&op, failure);
+            if lasting(&refused) {
+                Built::refused_measure(shape, entry.history, refused)
+            } else {
+                Built::new(shape, entry.history, None)
+            }
+        }
+        Measure::Unmeasured | Measure::Summary(_) => Built::new(shape, entry.history, None),
+    }
 }
 
 /// The entry `bytes` hold for `key`, if they hold together: the format's magic, a seal

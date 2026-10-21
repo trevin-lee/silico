@@ -75,12 +75,15 @@ impl fmt::Debug for Key {
 /// What a kernel step made: its shape, for an operation on other shapes what it did to
 /// them, and, if it was measured, the shape's summary (from which a feature's fingerprint
 /// comes; a step that's a feature's solid is measured after it's made, by a job of its own,
-/// which puts a measured copy in its place). Never changed once made: models share it.
+/// which puts a measured copy in its place), or why the kernel refused to measure it, if
+/// that follows from its values (so it would refuse again). Never changed once made: models
+/// share it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Built {
     pub shape: ShapeData,
     pub history: Option<History>,
     summary: Option<ShapeSummary>,
+    refused: Option<Error>,
 }
 
 impl Built {
@@ -93,6 +96,21 @@ impl Built {
             shape,
             history,
             summary,
+            refused: None,
+        }
+    }
+
+    /// A result the kernel refused to measure, for its values, as `refused` says.
+    pub(crate) fn refused_measure(
+        shape: ShapeData,
+        history: Option<History>,
+        refused: Error,
+    ) -> Self {
+        Built {
+            shape,
+            history,
+            summary: None,
+            refused: Some(refused),
         }
     }
 
@@ -101,10 +119,23 @@ impl Built {
         self.summary.as_ref()
     }
 
+    /// Why the kernel refused to measure the shape, if it did for its values.
+    pub fn measure_refused(&self) -> Option<&Error> {
+        self.refused.as_ref()
+    }
+
     /// This result, measured.
     fn measured(&self, summary: ShapeSummary) -> Self {
         Built {
             summary: Some(summary),
+            ..self.clone()
+        }
+    }
+
+    /// This result, the kernel having refused to measure it for its values.
+    fn with_refused_measure(&self, error: Error) -> Self {
+        Built {
+            refused: Some(error),
             ..self.clone()
         }
     }
@@ -1313,6 +1344,38 @@ fn fits(step: &Step, built: &Built) -> bool {
     }
 }
 
+/// How much a result knows of its measure, least first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum MeasureKnown {
+    Nothing,
+    /// Why the kernel refused it, which, for the session, may not last.
+    Refused,
+    Summary,
+}
+
+/// How much `built` knows of its measure.
+fn measure_known(built: &Built) -> MeasureKnown {
+    match (built.summary(), built.measure_refused()) {
+        (Some(_), _) => MeasureKnown::Summary,
+        (None, Some(_)) => MeasureKnown::Refused,
+        (None, None) => MeasureKnown::Nothing,
+    }
+}
+
+/// Whether a recompute's `result` for a step is kept in place of `kept_now`, what's kept
+/// for it: a result, unless what's kept knows more of its measure; a failure, if it follows
+/// from the step's values, and nothing kept is a result (a step's result is a function of
+/// its key, so a failure beside one was a passing one: a superseded recompute's, say, short
+/// of memory, finishing last).
+fn replaces(kept_now: Option<&StepResult>, result: &StepResult) -> bool {
+    match (kept_now, result) {
+        (Some(Ok(old)), Ok(new)) => measure_known(new) >= measure_known(old),
+        (_, Ok(_)) => true,
+        (Some(Ok(_)), Err(_)) => false,
+        (_, Err(error)) => kept(error),
+    }
+}
+
 /// Whether a step's failure follows from its values, so asking again would fail again.
 fn kept(error: &Error) -> bool {
     matches!(
@@ -1472,12 +1535,18 @@ impl<K: Kernel + 'static> Engine<K> {
                 schedule.waiting.insert(*key, unbuilt);
             }
         }
-        // Features' solids built before (kept, or from the cache) but not measured yet.
+        // Features' solids built before (kept, or from the cache) but not measured yet,
+        // unless the kernel refused to for their values: it would again.
         for key in &plan.results {
             if let Some(Ok(built)) = schedule.done.get(key)
                 && built.summary().is_none()
             {
-                schedule.ready.push_back(Job::Measure(*key));
+                match built.measure_refused() {
+                    Some(error) => {
+                        schedule.unmeasured.insert(*key, error.clone());
+                    }
+                    None => schedule.ready.push_back(Job::Measure(*key)),
+                }
             }
         }
         let to_run = schedule.ready.len() + schedule.waiting.len();
@@ -1578,14 +1647,14 @@ impl<K: Kernel + 'static> Engine<K> {
     /// Keeps a recompute's results by key, but for failures that might not happen again,
     /// and only what the plans worth keeping use: a superseded recompute's, if it's the
     /// newest, and the published ones'.
+    ///
+    /// A result already kept isn't replaced by one that knows less of its measure
+    /// ([`replaces`]): a superseded recompute finishing last would otherwise put back what a
+    /// newer one had measured.
     fn keep(&self, done: &BTreeMap<Key, StepResult>) {
         let mut state = lock(&self.state);
         for (key, result) in done {
-            let keep = match result {
-                Ok(_) => true,
-                Err(error) => kept(error),
-            };
-            if keep {
+            if replaces(state.results.get(key), result) {
                 state.results.insert(*key, result.clone());
             }
         }
@@ -1890,10 +1959,21 @@ impl<K: Kernel + 'static> Engine<K> {
                     s.done.insert(key, Ok(measured));
                 }
                 Ran::Measured(Outcome::Done(Err(error))) => {
-                    // A solid that couldn't be measured is kept on disk unmeasured, so the
-                    // next open measures it without making it again.
+                    // A solid that couldn't be measured is kept on disk all the same, so the
+                    // next open needn't make it again. With the refusal, if it follows from
+                    // the solid's values: kept for the session (not asked again), and on disk
+                    // only if the cache keeps it (`cache::lasting`: not `kernel_failed`,
+                    // which it writes unmeasured). Unmeasured if not, so the next recompute
+                    // measures it.
                     if let Some(Ok(built)) = s.done.get(&key) {
-                        to_keep = Some(Arc::clone(built));
+                        let built = if kept(&error) {
+                            let refused = Arc::new(built.with_refused_measure(error.clone()));
+                            s.done.insert(key, Ok(Arc::clone(&refused)));
+                            refused
+                        } else {
+                            Arc::clone(built)
+                        };
+                        to_keep = Some(built);
                     }
                     s.unmeasured.insert(key, error);
                 }
@@ -2264,6 +2344,63 @@ fn feature_outcome(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_result_kept_is_replaced_only_by_one_that_knows_as_much_of_its_measure() {
+        use crate::kernel::Blob;
+        // Found by review: a superseded recompute finishing last put back an unmeasured copy
+        // over a newer run's measure, or its session refusal over a newer run's summary.
+        let shape = || ShapeData::checked(Blob::inline(b"a shape".to_vec()), true);
+        let summary = ShapeSummary {
+            volume: 1.0,
+            area: 6.0,
+            center: [0.5; 3],
+            faces: 6,
+            edges: 12,
+            vertices: 8,
+            bounds: Some([[0.0; 3], [1.0; 3]]),
+            valid: true,
+        };
+        let refusal = Error::new(ErrorCode::KernelFailed, "Summarize failed");
+        let measured: StepResult = Ok(Arc::new(Built::new(shape(), None, Some(summary))));
+        let refused: StepResult = Ok(Arc::new(Built::refused_measure(shape(), None, refusal)));
+        let unmeasured: StepResult = Ok(Arc::new(Built::new(shape(), None, None)));
+        let failed = |code| -> StepResult { Err(Error::new(code, "the step failed")) };
+        // [kept now][coming], as measured, refused, unmeasured: a result replaces one that
+        // knows as much or less.
+        let results = [&measured, &refused, &unmeasured];
+        let replaced = [
+            [true, false, false],
+            [true, true, false],
+            [true, true, true],
+        ];
+        for (old, row) in results.iter().zip(replaced) {
+            for (new, expected) in results.iter().zip(row) {
+                assert_eq!(replaces(Some(old), new), expected, "{old:?} by {new:?}");
+            }
+        }
+        // Nothing kept: any result is.
+        for new in results {
+            assert!(replaces(None, new));
+        }
+        // A failure is kept if it follows from the step's values, and only in place of
+        // nothing, or of a failure: never of a result, which shows the failure passed.
+        let kept_failure = failed(ErrorCode::KernelFailed);
+        for old in [None, Some(&kept_failure)] {
+            assert!(replaces(old, &failed(ErrorCode::InvalidInput)));
+            assert!(!replaces(old, &failed(ErrorCode::WorkerCrashed)));
+        }
+        for old in results {
+            assert!(
+                !replaces(Some(old), &failed(ErrorCode::KernelFailed)),
+                "{old:?}"
+            );
+        }
+        // And a result replaces a kept failure.
+        for new in results {
+            assert!(replaces(Some(&kept_failure), new), "{new:?}");
+        }
+    }
 
     /// A naming key holds the naming scheme, so a change to how elements are named makes a
     /// fillet's step another step: pinned, computed by hand with Python's hashlib from the

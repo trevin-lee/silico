@@ -2,8 +2,11 @@
 //! directories, unreadable files, forged bytes with a sound seal, and entries planted under
 //! another's seal; symlinks planted where the cache writes its partial files; a cache
 //! directory removed mid-run, made read-only, or with a file where a subdirectory goes;
-//! sessions racing on one cache; and keys whose parts run together. Expected values are written by hand: which kernel calls a
-//! session makes, and the fake's description of each shape.
+//! sessions racing on one cache; and keys whose parts run together. And the cache's
+//! format, by hand: measures kept and taken back (refusals kept only as invalid input or an
+//! invalid result, worded by this core; anything else a worker's reply couldn't give,
+//! measured again), and entries of the format before. Expected values are written by hand:
+//! which kernel calls a session makes, and the fake's description of each shape.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 #[path = "common/cache.rs"]
@@ -31,8 +34,9 @@ use silico_core::kernel::{Generation, History, InputHistory, Kernel, KernelReque
 use silico_core::pool::Pending;
 use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 use silico_core::{Error, ErrorCode};
+use silico_protocol::{Failure, Operation, Refusal};
 
-const MAGIC: &[u8] = b"silico cache 4\n";
+const MAGIC: &[u8] = b"silico cache 6\n";
 
 fn built(model: &Model, id: &str) -> (String, Arc<silico_core::recompute::Built>) {
     match model.outcome(&FeatureId::new(id).unwrap()) {
@@ -51,10 +55,16 @@ fn platform() -> String {
 /// magic, then the kernel, the platform, and the step, each after its length (8 bytes,
 /// little-endian); the first two hex digits are the subdirectory.
 fn entry_path(dir: &Path, step: &str) -> PathBuf {
+    entry_path_in(dir, MAGIC, step)
+}
+
+/// Where the fake kernel's entry for step `key` would live in the cache in `dir`, in the
+/// format whose magic is `magic`.
+fn entry_path_in(dir: &Path, magic: &[u8], step: &str) -> PathBuf {
     let platform = platform();
     let secret = std::fs::read(secret_of(dir)).unwrap();
     let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&secret).unwrap();
-    mac.update(MAGIC);
+    mac.update(magic);
     for part in ["silico fake kernel 1", &platform, step] {
         mac.update(&(part.len() as u64).to_le_bytes());
         mac.update(part.as_bytes());
@@ -75,7 +85,44 @@ struct Entry {
     brep: Vec<u8>,
     valid: bool,
     history: Option<History>,
-    summary: Option<ShapeSummary>,
+    measure: Measure,
+}
+
+/// An entry's measure: none, its summary, or the kernel worker's refusal, as data, and the
+/// operation it was for (the protocol's own `Failure`: its layout is the protocol's).
+#[derive(Serialize, Deserialize)]
+enum Measure {
+    Unmeasured,
+    Summary(ShapeSummary),
+    Refused { op: String, failure: Failure },
+}
+
+/// A measure refused, as a worker refuses it, with `refusal`.
+fn refused(refusal: Refusal) -> Measure {
+    Measure::Refused {
+        op: "Summarize".to_owned(),
+        failure: Failure::new(refusal),
+    }
+}
+
+/// Rewrites the block's entry in `dir`, sealed as its own writer would, with `measure`.
+fn forge_block(dir: &Path, model: &Model, measure: Measure) -> PathBuf {
+    let (key, _) = built(model, "k7f2qx3m");
+    let path = entry_path(dir, &key);
+    let mut entry = decode(&std::fs::read(&path).unwrap());
+    entry.measure = measure;
+    std::fs::write(&path, encode(dir, &entry)).unwrap();
+    path
+}
+
+/// How many measures a session asked of its kernel.
+fn measures(engine: &Recompute<FakeKernel>) -> usize {
+    engine
+        .kernel()
+        .calls()
+        .iter()
+        .filter(|call| call.op.name() == "Summarize")
+        .count()
 }
 
 fn decode(bytes: &[u8]) -> Entry {
@@ -85,7 +132,7 @@ fn decode(bytes: &[u8]) -> Entry {
 
 /// An entry's bytes, as the module documents them: the magic, the payload's HMAC-SHA-256
 /// under `secret`, and the payload.
-fn encode_with(secret: &[u8], entry: &Entry) -> Vec<u8> {
+fn encode_with(secret: &[u8], entry: &impl Serialize) -> Vec<u8> {
     let payload = postcard::to_allocvec(entry).unwrap();
     let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(secret).unwrap();
     mac.update(&payload);
@@ -96,7 +143,7 @@ fn encode_with(secret: &[u8], entry: &Entry) -> Vec<u8> {
 }
 
 /// An entry's bytes, sealed with the secret of the cache in `dir`, as its own writer would.
-fn encode(dir: &Path, entry: &Entry) -> Vec<u8> {
+fn encode(dir: &Path, entry: &impl Serialize) -> Vec<u8> {
     encode_with(&std::fs::read(secret_of(dir)).unwrap(), entry)
 }
 
@@ -842,4 +889,266 @@ fn an_entry_written_by_a_superseded_recompute_is_sound() {
     let again = session(&dir.0);
     published(&again, checked(EXAMPLE));
     assert!(calls(&again).is_empty());
+}
+
+// ---------------------------------------------------------------------------------------
+// Measures kept: what's written, and what's taken back, as a worker's reply is checked.
+
+/// The example built in `dir` by a session whose kernel refuses every measure with
+/// `failure`, as a worker would.
+fn seed_refusing(dir: &Path, failure: Failure) -> Arc<Model> {
+    let engine = session(dir);
+    engine
+        .kernel()
+        .refuse_as_worker(move |op| (op.name() == "Summarize").then(|| failure.clone()));
+    published(&engine, checked(EXAMPLE))
+}
+
+#[test]
+fn a_refusal_kept_on_disk_is_written_as_the_worker_said_it_and_kernel_failed_is_written_unmeasured()
+{
+    let not_finite = Refusal::NotFinite {
+        quantity: "volume".to_owned(),
+        value: f64::INFINITY,
+    };
+    for (refusal, kept) in [
+        (Refusal::BrepCorrupted, true),
+        (
+            Refusal::ResultInvalid {
+                operation: Operation::Other,
+                edges: Vec::new(),
+            },
+            true,
+        ),
+        (not_finite, false),
+        (Refusal::OutOfMemory, false),
+    ] {
+        let dir = Scratch::new(&format!(
+            "written-{kept}-{:?}",
+            std::mem::discriminant(&refusal)
+        ));
+        let given = Failure {
+            refusal,
+            cause: Some("OCCT's words".to_owned()),
+        };
+        let model = seed_refusing(&dir.0, given.clone());
+        for id in ["k7f2qx3m", "a91cw0de", "m3tq8v0z"] {
+            let (key, _) = built(&model, id);
+            let entry = decode(&std::fs::read(entry_path(&dir.0, &key)).unwrap());
+            match entry.measure {
+                Measure::Refused { op, failure } => {
+                    assert!(kept, "{given:?}: {id} kept refused");
+                    assert_eq!(op, "Summarize");
+                    assert_eq!(failure, given, "as the worker said it");
+                }
+                Measure::Unmeasured => assert!(!kept, "{given:?}: {id} written unmeasured"),
+                Measure::Summary(_) => panic!("{given:?}: {id} measured"),
+            }
+        }
+    }
+    // A refusal that isn't a worker's (a fake's own error, of a code the cache would keep):
+    // nothing to word it again from, so unmeasured.
+    let dir = Scratch::new("written-not-a-workers");
+    let engine = session(&dir.0);
+    engine.kernel().refuse(|op| {
+        (op.name() == "Summarize").then(|| Error::new(ErrorCode::InvalidInput, "not a worker's"))
+    });
+    let model = published(&engine, checked(EXAMPLE));
+    let (key, _) = built(&model, "k7f2qx3m");
+    let entry = decode(&std::fs::read(entry_path(&dir.0, &key)).unwrap());
+    assert!(matches!(entry.measure, Measure::Unmeasured));
+}
+
+#[test]
+fn a_kept_refusal_this_core_wouldnt_keep_is_measured_again_not_made_again() {
+    // An entry keeping a refusal of a kind the cache doesn't keep (a measure not finite, a
+    // shortage, a worker's bug, an operation it doesn't answer: one an older Silico kept,
+    // or one hand-made) is worded now and judged now: the solid's measure is asked again,
+    // once, and nothing is made again.
+    for refusal in [
+        Refusal::NotFinite {
+            quantity: "volume".to_owned(),
+            value: f64::NAN,
+        },
+        Refusal::OutOfMemory,
+        Refusal::Internal {
+            what: "a bug".to_owned(),
+        },
+        Refusal::TestOperation {
+            op: "Abort".to_owned(),
+        },
+    ] {
+        let dir = Scratch::new(&format!(
+            "never-kept-{:?}",
+            std::mem::discriminant(&refusal)
+        ));
+        let model = seed(&dir.0);
+        let path = forge_block(&dir.0, &model, refused(refusal.clone()));
+        let next = session(&dir.0);
+        let again = published(&next, checked(EXAMPLE));
+        assert!(calls(&next).is_empty(), "{refusal:?}: {:?}", calls(&next));
+        assert_eq!(measures(&next), 1, "{refusal:?}");
+        assert!(again.drift().is_empty(), "{refusal:?}: {:?}", again.drift());
+        assert!(
+            again
+                .fingerprint(&FeatureId::new("k7f2qx3m").unwrap())
+                .is_some()
+        );
+        // Written measured.
+        assert!(matches!(
+            decode(&std::fs::read(&path).unwrap()).measure,
+            Measure::Summary(_)
+        ));
+    }
+}
+
+#[test]
+fn a_kept_refusal_is_worded_by_the_core_that_reads_it() {
+    // Kept as the worker said it, a refusal is worded on reading by this core: the entry
+    // holds no words of its own (here, of an invalid result: the message names the
+    // operation it was for, and the cause is the refusal's).
+    let dir = Scratch::new("worded-on-read");
+    let model = seed(&dir.0);
+    forge_block(
+        &dir.0,
+        &model,
+        refused(Refusal::ResultInvalid {
+            operation: Operation::Other,
+            edges: Vec::new(),
+        }),
+    );
+    let next = session(&dir.0);
+    let again = published(&next, checked(EXAMPLE));
+    assert!(next.kernel().calls().is_empty(), "{:?}", calls(&next));
+    let drift = again.drift();
+    assert_eq!(drift.len(), 1, "{drift:?}");
+    assert_eq!(drift[0].code(), ErrorCode::InvalidResult);
+    assert_eq!(drift[0].feature(), Some("k7f2qx3m"));
+    assert_eq!(
+        drift[0].message(),
+        "Summarize gave an invalid result, which was refused"
+    );
+}
+
+#[test]
+fn a_kept_refusal_of_a_kind_this_silico_doesnt_know_is_an_entry_that_doesnt_hold_together() {
+    // A later Silico's refusal (a variant past this one's last) doesn't parse: the entry is
+    // rebuilt, and written over in this one's terms. The same entry with a variant this one
+    // knows (a damaged B-rep, by its number) is taken back, kept: so only the variant fails.
+    #[derive(Serialize)]
+    enum LaterMeasure {
+        _Unmeasured,
+        _Summary(ShapeSummary),
+        Refused { op: String, failure: LaterFailure },
+    }
+    #[derive(Serialize)]
+    struct LaterFailure {
+        /// A refusal's variant, by number.
+        refusal: u32,
+        cause: Option<String>,
+    }
+    #[derive(Serialize)]
+    struct LaterEntry {
+        key: [u8; 32],
+        brep: Vec<u8>,
+        valid: bool,
+        history: Option<History>,
+        measure: LaterMeasure,
+    }
+    // The variant number postcard gives a damaged B-rep's refusal (no fields of its own).
+    let known = postcard::to_allocvec(&Refusal::BrepCorrupted).unwrap();
+    assert_eq!(known.len(), 1);
+    for (refusal, taken) in [(10_000, false), (u32::from(known[0]), true)] {
+        let dir = Scratch::new(&format!("later-refusal-{refusal}"));
+        let model = seed(&dir.0);
+        let (key, _) = built(&model, "k7f2qx3m");
+        let path = entry_path(&dir.0, &key);
+        let entry = decode(&std::fs::read(&path).unwrap());
+        let later = LaterEntry {
+            key: entry.key,
+            brep: entry.brep,
+            valid: entry.valid,
+            history: entry.history,
+            measure: LaterMeasure::Refused {
+                op: "Summarize".to_owned(),
+                failure: LaterFailure {
+                    refusal,
+                    cause: None,
+                },
+            },
+        };
+        std::fs::write(&path, encode(&dir.0, &later)).unwrap();
+        let next = session(&dir.0);
+        let again = published(&next, checked(EXAMPLE));
+        if taken {
+            assert!(next.kernel().calls().is_empty(), "{:?}", calls(&next));
+            assert_eq!(again.drift().len(), 1);
+            assert_eq!(again.drift()[0].code(), ErrorCode::InvalidInput);
+        } else {
+            assert_eq!(calls(&next), ["MakeBox"]);
+            assert!(again.drift().is_empty());
+            assert!(matches!(
+                decode(&std::fs::read(&path).unwrap()).measure,
+                Measure::Summary(_)
+            ));
+        }
+    }
+}
+
+#[test]
+fn a_kept_summary_no_shape_has_is_measured_again() {
+    // Found by break-it (from M2.6): a kept summary was taken back as it was, though the
+    // core refuses one no shape has from a worker. A NaN volume gave no fingerprint, and the
+    // solid was never measured again.
+    let dir = Scratch::new("nan-summary");
+    let model = seed(&dir.0);
+    let (_, block) = built(&model, "k7f2qx3m");
+    let mut summary = block.summary().unwrap().clone();
+    summary.volume = f64::NAN;
+    forge_block(&dir.0, &model, Measure::Summary(summary));
+    let next = session(&dir.0);
+    let again = published(&next, checked(EXAMPLE));
+    assert!(calls(&next).is_empty(), "{:?}", calls(&next));
+    assert_eq!(measures(&next), 1);
+    assert!(
+        again
+            .fingerprint(&FeatureId::new("k7f2qx3m").unwrap())
+            .is_some()
+    );
+}
+
+#[test]
+fn an_entry_of_the_format_before_is_never_looked_for_and_a_name_of_this_one_holding_it_is_rebuilt()
+{
+    // Each format's magic is part of every entry's key: an older format's entry for a step
+    // ("silico cache 4") lives elsewhere, so this one never reads it. Planted where the format
+    // before keeps the block, it's left as it was (the cache's bound evicts it in time), and
+    // the block is made and written in this format.
+    let dir = Scratch::new("format-before");
+    let model = seed(&dir.0);
+    let (key, _) = built(&model, "k7f2qx3m");
+    let old = entry_path_in(&dir.0, b"silico cache 4\n", &key);
+    let new = entry_path(&dir.0, &key);
+    assert_ne!(old, new);
+    let mut bytes = b"silico cache 4\n".to_vec();
+    bytes.extend([7; 32]);
+    bytes.extend(b"a payload of the format before");
+    std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+    std::fs::write(&old, &bytes).unwrap();
+    std::fs::remove_file(&new).unwrap();
+    let next = session(&dir.0);
+    let again = published(&next, checked(EXAMPLE));
+    assert_eq!(calls(&next), ["MakeBox"]);
+    assert_eq!(hole(&again), HOLE);
+    assert_eq!(std::fs::read(&old).unwrap(), bytes);
+    assert!(std::fs::read(&new).unwrap().starts_with(MAGIC));
+    // An entry of this format's name holding the format before's bytes doesn't hold
+    // together: rebuilt, and written over in this format.
+    let mut text = std::fs::read(&new).unwrap();
+    text[..MAGIC.len()].copy_from_slice(b"silico cache 4\n");
+    std::fs::write(&new, &text).unwrap();
+    let third = session(&dir.0);
+    published(&third, checked(EXAMPLE));
+    assert_eq!(calls(&third), ["MakeBox"]);
+    assert!(std::fs::read(&new).unwrap().starts_with(MAGIC));
 }

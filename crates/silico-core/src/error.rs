@@ -119,7 +119,7 @@ impl fmt::Display for ErrorCode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error(Box<Fields>);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct Fields {
     code: ErrorCode,
     message: String,
@@ -132,6 +132,60 @@ struct Fields {
     cause: Option<String>,
     suggestion: Option<String>,
     candidates: Vec<String>,
+    /// What a kernel worker said, as data, that this error was worded from (a measure's
+    /// refusal): never written out, and no part of what the error is (two errors are equal
+    /// by what they say), but kept by the rebuild cache, so the core that reads it back
+    /// words it itself.
+    #[serde(skip)]
+    worker: Option<Box<WorkerFailure>>,
+}
+
+impl PartialEq for Fields {
+    fn eq(&self, other: &Self) -> bool {
+        let Fields {
+            code,
+            message,
+            feature,
+            elements,
+            elements_total,
+            parameter,
+            cause,
+            suggestion,
+            candidates,
+            worker: _,
+        } = self;
+        (
+            code,
+            message,
+            feature,
+            elements,
+            elements_total,
+            parameter,
+            cause,
+            suggestion,
+            candidates,
+        ) == (
+            &other.code,
+            &other.message,
+            &other.feature,
+            &other.elements,
+            &other.elements_total,
+            &other.parameter,
+            &other.cause,
+            &other.suggestion,
+            &other.candidates,
+        )
+    }
+}
+
+impl Eq for Fields {}
+
+/// A kernel worker's failure, as data, and the operation it was for, from which the core
+/// worded an error.
+#[derive(Debug, Clone)]
+struct WorkerFailure {
+    op: String,
+    failure: silico_protocol::Failure,
 }
 
 impl Error {
@@ -147,6 +201,7 @@ impl Error {
             cause: None,
             suggestion: None,
             candidates: Vec::new(),
+            worker: None,
         }))
     }
 
@@ -223,6 +278,26 @@ impl Error {
     {
         self.0.candidates = candidates.into_iter().map(Into::into).collect();
         self
+    }
+
+    /// This error, worded from `failure`, a kernel worker's, for `op`.
+    pub(crate) fn with_worker_failure(
+        mut self,
+        op: &str,
+        failure: silico_protocol::Failure,
+    ) -> Self {
+        self.0.worker = Some(Box::new(WorkerFailure {
+            op: op.to_owned(),
+            failure,
+        }));
+        self
+    }
+
+    /// The kernel worker's failure this error was worded from, and the operation it was
+    /// for, if it was.
+    pub(crate) fn worker_failure(&self) -> Option<(&str, &silico_protocol::Failure)> {
+        let worker = self.0.worker.as_deref()?;
+        Some((&worker.op, &worker.failure))
     }
 
     pub fn code(&self) -> ErrorCode {
