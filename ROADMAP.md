@@ -12,7 +12,8 @@ Every milestone ends with `/adversarial-review --milestone`, and the council mus
 | M1 – The kernel layer | [docs/roadmap/m1-kernel.md](docs/roadmap/m1-kernel.md) | Detailed |
 | M2 – Document and naming | [docs/roadmap/m2-document-naming.md](docs/roadmap/m2-document-naming.md) | Detailed |
 | M3 – Sketcher | [docs/roadmap/m3-sketcher.md](docs/roadmap/m3-sketcher.md) | Detailed |
-| M4, M5 | This file | Detailed when M3 ends |
+| M4 – MCP, before any UI | [docs/roadmap/m4-mcp.md](docs/roadmap/m4-mcp.md) | Draft, detailed when M3 ends |
+| M5 | This file | Detailed when M4 ends |
 | FreeCAD file import | [docs/roadmap/freecad-import.md](docs/roadmap/freecad-import.md) | Outline, detailed when its prerequisites exist |
 
 **How to work through a plan:**
