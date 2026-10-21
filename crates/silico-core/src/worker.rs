@@ -1381,14 +1381,14 @@ fn edges_fit(named: &[u32], listed: Option<&[u32]>) -> Result<(), String> {
     }
 }
 
+/// The operation whose refusals an error keeps as data: a measure's, which the rebuild
+/// cache keeps (`Op::Summarize`'s name).
+const MEASURE: &str = "Summarize";
+
 /// A worker's refusal or failure, as a structured error. The core names the elements at
 /// fault (as FreeCAD does, `Edge3`, where no document names them: `references::EdgeNames`) and has
 /// the refusal described with those names (`Refusal::describe`). A kernel failure always
 /// suggests something.
-/// The operation whose refusals an error keeps as data: a measure's, which the rebuild
-/// cache keeps.
-const MEASURE: &str = "Summarize";
-
 pub(crate) fn failure_error(op: &str, failure: Failure) -> Error {
     failure_error_with_edge_names(WorkerKind::Kernel, op, failure, None)
 }
@@ -1611,6 +1611,14 @@ mod tests {
             },
             cause: Some("OCCT's words".to_owned()),
         };
+        // The measure's name is the protocol's for it.
+        let summarize = silico_protocol::Op::Summarize {
+            shape: silico_protocol::ShapeData::checked(
+                silico_protocol::Blob::inline(Vec::new()),
+                true,
+            ),
+        };
+        assert_eq!(summarize.name(), super::MEASURE);
         let measure = failure_error("Summarize", failure.clone());
         let (op, kept) = measure.worker_failure().unwrap();
         assert_eq!((op, kept), ("Summarize", &failure));

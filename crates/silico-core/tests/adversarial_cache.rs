@@ -1121,9 +1121,9 @@ fn a_kept_summary_no_shape_has_is_measured_again() {
 fn an_entry_of_the_format_before_is_never_looked_for_and_a_name_of_this_one_holding_it_is_rebuilt()
 {
     // Each format's magic is part of every entry's key: an older format's entry for a step
-    // (main's before this, "silico cache 4") lives elsewhere, so this one never reads it. Planted where the
-    // format before keeps the block, it's left as it was (the cache's bound evicts it in
-    // time), and the block is made and written in this format.
+    // ("silico cache 4") lives elsewhere, so this one never reads it. Planted where the format
+    // before keeps the block, it's left as it was (the cache's bound evicts it in time), and
+    // the block is made and written in this format.
     let dir = Scratch::new("format-before");
     let model = seed(&dir.0);
     let (key, _) = built(&model, "k7f2qx3m");
