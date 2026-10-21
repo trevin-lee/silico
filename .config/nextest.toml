@@ -23,6 +23,7 @@ test-threads = 15
 # never runs beside the others: keep the name.
 [test-groups]
 document-heavy = { max-threads = 1 }
+thread-exhausting = { max-threads = 1 }
 
 [[profile.default.overrides]]
 filter = 'package(silico-core) & test(/_promptly$|size_or_memory_limits|opens_exactly_when|exactly_the_size|exponent_past_i128|loosely_spelled|exactly_when_it_takes_more|exactly_when_they_take_more/)'
@@ -56,3 +57,11 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 filter = 'package(silico-sketch) & test(=an_impossible_chain_of_the_largest_size_fails_as_solve_failed_not_a_timeout)'
 slow-timeout = { period = "60s", terminate-after = 17 }
 
+
+# A pool whose slot's thread can't start (silico-kernel pool_slot_spawn_fails) takes away its
+# own process's threads: on macOS, up to the process's cap. One at a time, so a run never
+# holds two processes' worth at once. (A group holds within one nextest run, not between
+# runs.)
+[[profile.default.overrides]]
+filter = 'package(silico-kernel) & binary(=pool_slot_spawn_fails)'
+test-group = 'thread-exhausting'
