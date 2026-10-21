@@ -1,52 +1,40 @@
-//! /break-it on `Translation::solve`'s solve again from the solution (dc18c28): a sketch the
-//! solver reached a solution for, and either called over-constrained or solved with
-//! constraints dropped, is solved again from each solution until a solve leaves it where it
-//! was, at most MAX_LOAD_RESOLVES times. The claim under attack: the answer that stands "is what every
-//! later load gives" (M3.4: a sketch is solved on every load from the coordinates its file
-//! stores). Each case here is solved, written through the file as a save writes it, read
-//! back, and solved again as a load does; the two answers must agree: Ok on both or a
+//! /break-it on `Translation::solve`'s solve again from the solution: a sketch the solver
+//! reached a solution for, and either called over-constrained or solved with constraints
+//! dropped, is solved again from each solution until a solve leaves it where it was, at
+//! most MAX_LOAD_RESOLVES times. The claim under attack: the answer that stands "is what
+//! every later load gives" (M3.4: a sketch is solved on every load from the coordinates its
+//! file stores). Each case here is solved, written through the file as a save writes it,
+//! read back, and solved again as a load does; the two answers must agree: Ok on both or a
 //! refusal on both, the same bits, and the same redundant constraints, degrees of freedom,
 //! and free geometry. Shapes beyond the rectangle the fix was found on: a slot (arcs, whose
 //! angles a load works out from the points), a triangle held by angles, and a rectangle
 //! with every constraint given twice.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::path::Path;
+#[path = "common/saves.rs"]
+mod saves;
 
 use proptest::prelude::*;
+use saves::{FEATURE, arc, checked, line, nm, point, said, solved, worker, written_back};
 use silico_core::ErrorCode;
-use silico_core::document::{Checked, FeatureId, Operation, read, write};
-use silico_core::sketch::{SketchSolution, SketchSolver, SketchWorker, solve};
+use silico_core::document::Checked;
+use silico_core::sketch::{SketchSolution, SketchSolver, SketchWorker};
 use silico_protocol::{SketchSystem, Solved};
 
-const WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-worker");
-const FEATURE: &str = "k7f2qx3m";
 const CLOSE: f64 = 1e-8;
 
-/// How far a kept solve's point may sit from the analytic one: decision 5 keeps a redundant
-/// constraint met within ε = max(1e-8 mm, 1e-9 × L), L the sketch's longest line or largest
-/// radius (Fable's rule, docs/design/m3.3-solving.md), so a point the dropped constraint
-/// alone fixed may land that far off. Worked out here from the shape's own sizes.
+/// How far a kept slot's corner may sit from the analytic one: decision 5's ε = max(1e-8 mm,
+/// 1e-9 × L), L the slot's longer of its side and radius (docs/design/m3.3-solving.md),
+/// worked out here from the slot's own sizes. Rectangles and triangles are held to CLOSE,
+/// which every case of their properties meets. A slot's corners are fixed through angular
+/// rows (the tangencies at its ends, its sides' parallel), carried to them by the arcs'
+/// radii, and land further off: the long slot's p2, 2e-8 mm at L 4,289 mm. A bound by hand,
+/// chaining PlaneGCS's 1e-10 per row from p1 (held) to the farthest corner, is no tighter
+/// than 1e-9 × L (a horizontal's 1e-10 mm across a short side, carried by a large arc,
+/// gives 1e-10 × r / len, looser still), so a slot's corners get the slack the core itself
+/// keeps a redundant row within.
 fn within_decision_5(lever: f64) -> f64 {
     CLOSE.max(1e-9 * lever)
-}
-
-fn worker() -> SketchWorker {
-    SketchWorker::start_worker(Path::new(WORKER)).unwrap()
-}
-
-fn point(id: &str, x: f64, y: f64) -> String {
-    format!(r#"{{"id": "{id}", "x": {x}, "y": {y}, "construction": false}}"#)
-}
-
-fn line(id: &str, from: &str, to: &str) -> String {
-    format!(r#"{{"id": "{id}", "from": "{from}", "to": "{to}", "construction": false}}"#)
-}
-
-fn arc(id: &str, center: &str, start: &str, end: &str) -> String {
-    format!(
-        r#"{{"id": "{id}", "center": "{center}", "start": "{start}", "end": "{end}", "construction": false}}"#
-    )
 }
 
 fn text(points: &[String], lines: &[String], arcs: &[String], constraints: &[String]) -> String {
@@ -56,50 +44,6 @@ fn text(points: &[String], lines: &[String], arcs: &[String], constraints: &[Str
         lines.join(", "),
         arcs.join(", "),
         constraints.join(", ")
-    )
-}
-
-fn checked(text: &str) -> Result<Checked, String> {
-    let doc = read(text.as_bytes()).map_err(|e| format!("unreadable: {e}"))?;
-    Checked::new(doc).map_err(|e| format!("the gate refused: {:?}", e.errors()))
-}
-
-fn solved(doc: &Checked, w: &mut dyn SketchSolver) -> Result<SketchSolution, silico_core::Error> {
-    solve(doc, &FeatureId::new(FEATURE).unwrap(), w)
-}
-
-/// A whole number of nanometres, as the file holds dimensions.
-fn nm(v: f64) -> f64 {
-    (v * 1e6).round() / 1e6 + 0.0
-}
-
-/// `doc`'s sketch as a save writes it once `solution` is its solve (points, radii, and
-/// reference values), through the file's text: the sketch a load solves from.
-fn written_back(doc: &Checked, solution: &SketchSolution) -> Checked {
-    let mut document = doc.document().clone();
-    let Operation::Sketch(sketch) = &mut document.features[0].operation else {
-        panic!("not a sketch")
-    };
-    *sketch = solution.written(sketch);
-    checked(&write(&document).unwrap()).unwrap()
-}
-
-/// What a solve says the sketch is, with coordinates as bits: what a load must give back
-/// unchanged. The redundant constraints it names are compared apart ([`dropped`]).
-fn said(s: &SketchSolution) -> String {
-    let points: Vec<(String, u64, u64)> = s
-        .points
-        .iter()
-        .map(|(id, [x, y])| (id.as_str().to_owned(), x.mm().to_bits(), y.mm().to_bits()))
-        .collect();
-    let radii: Vec<(String, u64)> = s
-        .radii
-        .iter()
-        .map(|(id, r)| (id.as_str().to_owned(), r.mm().to_bits()))
-        .collect();
-    format!(
-        "points {points:?} radii {radii:?} dofs {} free {:?}",
-        s.dofs, s.free
     )
 }
 
@@ -233,8 +177,7 @@ fn rectangle_is(s: &SketchSolution, x0: f64, y0: f64, w: f64, h: f64) -> bool {
         s.point(&silico_core::document::ElementId::new(p).unwrap())
             .unwrap()
     };
-    let close = within_decision_5(w.max(h));
-    let near = |a: f64, b: f64| (a - b).abs() <= close;
+    let near = |a: f64, b: f64| (a - b).abs() <= CLOSE;
     let (p1, p2, p3, p4) = (
         at("p0000001"),
         at("p0000002"),
@@ -382,9 +325,8 @@ fn triangle_is(s: &SketchSolution, x0: f64, y0: f64, side: f64) -> bool {
         s.point(&silico_core::document::ElementId::new(p).unwrap())
             .unwrap()
     };
-    let close = within_decision_5(side);
     let near =
-        |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() <= close && (a[1] - b[1]).abs() <= close;
+        |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() <= CLOSE && (a[1] - b[1]).abs() <= CLOSE;
     let hgt = side * 3f64.sqrt() / 2.0;
     near(at("p0000001"), [x0, y0])
         && near(at("p0000002"), [x0 + side, y0])
@@ -487,13 +429,14 @@ fn named_on_save_and_load(doc: &Checked) -> (Vec<String>, Vec<String>) {
 
 #[test]
 fn a_unit_square_names_the_same_redundant_constraints_when_loaded_as_when_saved() {
-    // Found by break-it on dc18c28, fixed: a 1 × 1 square, every redundancy agreeing, drawn
-    // with p4's y 0.14 low. The save solved it to the exact square and named k0000012 (the
-    // top and bottom equal) redundant: PlaneGCS's pick on the drawing. Solved again from
-    // that square it didn't move, so Translation::solve kept the first answer "as it was
-    // diagnosed"; but the load diagnoses on the square and names k0000005 and k0000010, and
-    // every load after says the same. Now the answer that stands is the load's
-    // (docs/design/m3.3-solving.md): the save names what the load names.
+    // Found by break-it on the first solve again (from the solver's own values, until it
+    // didn't move, keeping the first answer), fixed: a 1 × 1 square, every redundancy
+    // agreeing, drawn with p4's y 0.14 low. The save solved it to the exact square and
+    // named k0000012 (the top and bottom equal) redundant: PlaneGCS's pick on the drawing.
+    // Solved again from that square it didn't move, so Translation::solve kept the first
+    // answer "as it was diagnosed"; but the load diagnoses on the square and names k0000005
+    // and k0000010, and every load after says the same. Now the answer that stands is the
+    // load's (docs/design/m3.3-solving.md): the save names what the load names.
     let doc = checked(&rectangle(
         0.0,
         0.0,
@@ -509,8 +452,8 @@ fn a_unit_square_names_the_same_redundant_constraints_when_loaded_as_when_saved(
 
 #[test]
 fn a_slot_names_the_same_redundant_constraints_when_loaded_as_when_saved() {
-    // Found by break-it on dc18c28, fixed as above: on a 1 mm slot of radius 1 the save
-    // named k0000015 (the sides equal), the load k0000009 (the sides parallel).
+    // Found by break-it on the first solve again, fixed as above: on a 1 mm slot of radius
+    // 1 the save named k0000015 (the sides equal), the load k0000009 (the sides parallel).
     let doc = checked(&slot(
         0.0,
         0.0,
@@ -525,9 +468,9 @@ fn a_slot_names_the_same_redundant_constraints_when_loaded_as_when_saved() {
 
 #[test]
 fn a_triangle_names_the_same_redundant_constraints_when_loaded_as_when_saved() {
-    // Found by break-it on dc18c28, fixed as above: on a unit equilateral triangle held by
-    // its angles too the save named k0000008 (the first angle), the load k0000009 (the
-    // second).
+    // Found by break-it on the first solve again, fixed as above: on a unit equilateral
+    // triangle held by its angles too the save named k0000008 (the first angle), the load
+    // k0000009 (the second).
     let doc = checked(&triangle(
         0.0,
         0.0,
@@ -560,19 +503,20 @@ impl SketchSolver for Counting {
 
 #[test]
 fn an_equilateral_triangle_far_out_is_refused_on_save_as_its_load_refuses_it() {
-    // Found by break-it on dc18c28, fixed: a 404.17214 mm equilateral triangle at (999,000,
-    // -999,000), its sides equal (one redundantly) and two angles given too, drawn with its
-    // apex off by (-51, 31) mm. The save's first solve, diagnosed on the drawing, drops
-    // k0000007 and solves it to the exact triangle, Ok. A load from that triangle, diagnosed
-    // there, doesn't move it but calls seven constraints conflicting (PlaneGCS's absolute
-    // convergence, 1e-10 mm, is under the spacing of doubles a kilometre out, 1.16e-10 mm);
-    // dc18c28 kept the first answer, so the save wrote the triangle and every load was
-    // refused: a document that saved cleanly failed `silico check` on the next open. Now
-    // the answer that stands is the load's, and the save is refused as every load would
-    // be: as the same sketch drawn at the exact triangle is. FreeCAD, which solves from the
-    // stored geometry on every recompute, refuses it the same way; that a consistent
-    // triangle is refused there is the solver's precision at a kilometre, as for
-    // conflicting diagnoses on the drawing (adversarial_document.rs).
+    // Found by break-it on the first solve again, fixed: a 404.17214 mm equilateral
+    // triangle at (999,000, -999,000), its sides equal (one redundantly) and two angles
+    // given too, drawn with its apex off by (-51, 31) mm. The save's first solve, diagnosed
+    // on the drawing, drops k0000007 and solves it to the exact triangle, Ok. A load from
+    // that triangle, diagnosed there, doesn't move it but calls seven constraints
+    // conflicting (PlaneGCS's absolute convergence, 1e-10 mm, is under the spacing of
+    // doubles a kilometre out, 1.16e-10 mm); that solve again kept the first answer, so the
+    // save wrote the triangle and every load was refused: a document that saved cleanly
+    // failed `silico check` on the next open. Now the answer that stands is the load's, and
+    // the save is refused as every load would be: as the same sketch drawn at the exact
+    // triangle is. FreeCAD, which solves from the stored geometry on every recompute,
+    // refuses it the same way; that a consistent triangle is refused there is the solver's
+    // precision at a kilometre, as for conflicting diagnoses on the drawing
+    // (adversarial_document.rs).
     let mut w = worker();
     let refusal = |doc: &Checked, w: &mut SketchWorker| {
         let e = solved(doc, w).map(|s| said(&s)).unwrap_err();
@@ -603,13 +547,14 @@ fn gap_of(s: &SketchSolution, id: &str) -> f64 {
 
 #[test]
 fn a_micrometre_equilateral_triangle_keeps_its_agreeing_angle() {
-    // Found by break-it on dc18c28 (not introduced by it), fixed by decision 5's positional
-    // rule (Fable, 2026-10-18): a 1.597 µm equilateral triangle at the origin, drawn a
-    // little off, was over_constrained, "disagree with them, by up to 0e0 mm and 8.09e-9
-    // rad", naming k0000009 (the second angle), against a scale-free 1e-9 rad. DogLeg meets
-    // the kept equal lengths to about 1.5e-11 mm, a relative 1e-8 on a 1.6 µm side. As a
-    // distance, the angle's gap is that angle carried by its sides: 8.09e-9 rad × 0.001597
-    // mm = 1.3e-11 mm (hand), well within the sketch's 1e-8 mm. Kept, k0000009 redundant.
+    // Found by break-it on the first solve again (not introduced by it), fixed by decision
+    // 5's positional rule (Fable, 2026-10-18): a 1.597 µm equilateral triangle at the
+    // origin, drawn a little off, was over_constrained, "disagree with them, by up to 0e0
+    // mm and 8.09e-9 rad", naming k0000009 (the second angle), against a scale-free 1e-9
+    // rad. DogLeg meets the kept equal lengths to about 1.5e-11 mm, a relative 1e-8 on a
+    // 1.6 µm side. As a distance, the angle's gap is that angle carried by its sides:
+    // 8.09e-9 rad × 0.001597 mm = 1.3e-11 mm (hand), well within the sketch's 1e-8 mm.
+    // Kept, k0000009 redundant.
     let doc = checked(&triangle(
         0.0,
         0.0,
@@ -631,13 +576,14 @@ fn a_micrometre_equilateral_triangle_keeps_its_agreeing_angle() {
 
 #[test]
 fn a_long_slot_keeps_its_equal_sides_within_the_slack_its_arcs_allow() {
-    // Found by break-it on 56b7fe2, fixed by decision 5's positional rule: a 4,289.278884 mm
-    // slot of radius 430.346545 at the origin was refused, its sides' equality "disagreeing
-    // by 2.4e-8 mm" against a fixed 1e-8. The slack reaches it through the tangencies' angle
-    // rows on 430 mm arcs: two ends, each up to 1e-10 rad × 430 mm, bound it by 8.6e-8 mm
-    // (hand), and the sketch's tolerance is 1e-9 × 4,289.28 = 4.29e-6 mm. The same slack
-    // leaves the corners off the analytic slot by up to that bound too (p2 lands 2e-8 out),
-    // so they're checked to 1e-7.
+    // Found by break-it on the first check by load (only a solve that dropped constraints
+    // was checked), fixed by decision 5's positional rule: a 4,289.278884 mm slot of radius
+    // 430.346545 at the origin was refused, its sides' equality "disagreeing by 2.4e-8 mm"
+    // against a fixed 1e-8. The slack reaches it through the tangencies' angle rows on 430
+    // mm arcs: two ends, each up to 1e-10 rad × 430 mm, bound it by 8.6e-8 mm (hand), and
+    // the sketch's tolerance is 1e-9 × 4,289.28 = 4.29e-6 mm. The same slack leaves the
+    // corners off the analytic slot by up to that bound too (p2 lands 2e-8 out), so they're
+    // checked to 1e-7.
     let doc = checked(&slot(
         0.0,
         0.0,
@@ -693,17 +639,17 @@ fn a_fat_slot_keeps_its_redundancies_by_the_sketchs_longest_lever() {
 
 #[test]
 fn a_redundant_slot_saved_by_silico_loads_without_moving() {
-    // Found by break-it on dc18c28, fixed: a 0.670725 mm slot of radius 16.786477 at the
-    // origin, drawn a little off. The save's first solve dropped k0000015; its solve again,
-    // from the solver's own values, dropped k0000009 and k0000015 and didn't move, so the
-    // loop called it settled. But that start isn't a load's: a load starts from the points
-    // the file stores and works each arc's radius and angles out from them
-    // (Translation::new), which differ from the solver's own by ulps (a far slot's: radius
-    // 93.111393 against 93.11139299999923, an angle 2.6e-14 off). Diagnosed there, PlaneGCS
-    // picked other constraints and moved points by an ulp, so `silico check` reported drift
-    // on a file Silico saved and nobody edited. Now the loop solves the sketch as a load
-    // does, written as the file holds it and translated again: the load gives the saved
-    // bits.
+    // Found by break-it on the first solve again, fixed: a 0.670725 mm slot of radius
+    // 16.786477 at the origin, drawn a little off. The save's first solve dropped k0000015;
+    // its solve again, from the solver's own values, dropped k0000009 and k0000015 and
+    // didn't move, so the loop called it settled. But that start isn't a load's: a load
+    // starts from the points the file stores and works each arc's radius and angles out
+    // from them (Translation::new), which differ from the solver's own by ulps (a far
+    // slot's: radius 93.111393 against 93.11139299999923, an angle 2.6e-14 off). Diagnosed
+    // there, PlaneGCS picked other constraints and moved points by an ulp, so `silico
+    // check` reported drift on a file Silico saved and nobody edited. Now the loop solves
+    // the sketch as a load does, written as the file holds it and translated again: the
+    // load gives the saved bits.
     let doc = checked(&slot(
         0.0,
         0.0,
@@ -920,7 +866,7 @@ proptest! {
     }
 
     /// Two equal circles, their radii given redundantly: a load starts from the radii a
-    /// save writes (the council on 56b7fe2).
+    /// save writes (the council, on the first check by load).
     #[test]
     fn redundant_equal_circles_load_gives_the_answer_its_save_kept(
         log_r in -3.0f64..5.0,
@@ -943,11 +889,11 @@ proptest! {
         report(unless_past_precision(res, past_the_solvers_precision(far, r.min(d))))?;
     }
 
-    // Found by break-it on dc18c28, fixed: about 1 in 2,000 slots loaded a few ulps (up to
-    // 2.6e-10 mm) from where their save put them (the regression file's case;
-    // a_redundant_slot_saved_by_silico_loads_without_moving): the solve again started from
-    // the solver's arc values, not a load's. About 1 in 10,000, far out, can't be met by a
-    // load from their exact solution and are refused on save as on load
+    // Found by break-it on the first solve again, fixed: about 1 in 2,000 slots loaded a
+    // few ulps (up to 2.6e-10 mm) from where their save put them (the regression file's
+    // case; a_redundant_slot_saved_by_silico_loads_without_moving): the solve again started
+    // from the solver's arc values, not a load's. About 1 in 10,000, far out, can't be met
+    // by a load from their exact solution and are refused on save as on load
     // (past_the_solvers_precision). About 1 in 20,000 was refused by decision 5's fixed
     // tolerances (a_long_slot_keeps_its_equal_sides_within_the_slack_its_arcs_allow), until
     // its positional rule; now any such refusal is a break.
@@ -975,12 +921,13 @@ proptest! {
         report(unless_past_precision(res, limited))?;
     }
 
-    // Found by break-it on dc18c28, fixed: about 1 in 250 triangles far out saved Ok and
-    // loaded refused, as conflicting or as solve_failed (the regression file's case;
-    // an_equilateral_triangle_far_out_is_refused_on_save_as_its_load_refuses_it); now the
-    // save is refused as its load is. About 1 in 1,000 under 0.1 mm was refused by decision
-    // 5's fixed angle tolerance (a_micrometre_equilateral_triangle_keeps_its_agreeing_angle),
-    // until its positional rule; now any such refusal is a break.
+    // Found by break-it on the first solve again, fixed: about 1 in 250 triangles far out
+    // saved Ok and loaded refused, as conflicting or as solve_failed (the regression file's
+    // case; an_equilateral_triangle_far_out_is_refused_on_save_as_its_load_refuses_it); now
+    // the save is refused as its load is. About 1 in 1,000 under 0.1 mm was refused by
+    // decision 5's fixed angle tolerance
+    // (a_micrometre_equilateral_triangle_keeps_its_agreeing_angle), until its positional
+    // rule; now any such refusal is a break.
     /// A triangle held by its angles as well as its sides.
     #[test]
     fn a_redundant_triangles_load_gives_the_answer_its_save_kept(

@@ -1,40 +1,24 @@
-//! /break-it on 56b7fe2's `Translation::solve` through the real sketch worker: a save's
-//! answer must be its load's (M3.4: every open solves the sketch again from the coordinates
-//! its file stores). Each case is solved (the save); a solution is written through the file
-//! as a save writes it, read back, gated, and solved again (the load); a refusal saves
-//! nothing, so its load solves the drawing again. The two answers must agree whole: Ok on
-//! both with the same bits, degrees of freedom, free geometry, and redundant constraints, or
-//! the same refusal. Shapes beyond the earlier break-it's rectangles, slots, and triangles:
-//! circles (whose radii a save writes), tangencies, a point held where two curves touch
-//! (a rank that drops only at the solution), and under-constrained sketches with a
-//! constraint given twice.
+//! /break-it on `Translation::solve`'s check by load through the real sketch worker (as
+//! first written, only a solve that dropped constraints or was called over-constrained was
+//! checked by a load): a save's answer must be its load's (M3.4: every open solves the
+//! sketch again from the coordinates its file stores). Each case is solved (the save); a
+//! solution is written through the file as a save writes it, read back, gated, and solved
+//! again (the load); a refusal saves nothing, so its load solves the drawing again. The two
+//! answers must agree whole: Ok on both with the same bits, degrees of freedom, free
+//! geometry, and redundant constraints, or the same refusal. Shapes beyond the earlier
+//! break-it's rectangles, slots, and triangles: circles (whose radii a save writes),
+//! tangencies, a point held where two curves touch (a rank that drops only at the
+//! solution), and under-constrained sketches with a constraint given twice.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::path::Path;
+#[path = "common/saves.rs"]
+mod saves;
 
 use proptest::prelude::*;
+use saves::{FEATURE, arc, checked, circle, line, nm, point, said, solved, worker, written_back};
 use silico_core::ErrorCode;
-use silico_core::document::{Checked, FeatureId, Operation, read, write};
-use silico_core::sketch::{SketchSolution, SketchSolver, SketchWorker, solve};
-
-const WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-worker");
-const FEATURE: &str = "k7f2qx3m";
-
-fn worker() -> SketchWorker {
-    SketchWorker::start_worker(Path::new(WORKER)).unwrap()
-}
-
-fn point(id: &str, x: f64, y: f64) -> String {
-    format!(r#"{{"id": "{id}", "x": {x}, "y": {y}, "construction": false}}"#)
-}
-
-fn line(id: &str, from: &str, to: &str) -> String {
-    format!(r#"{{"id": "{id}", "from": "{from}", "to": "{to}", "construction": false}}"#)
-}
-
-fn circle(id: &str, center: &str, r: f64) -> String {
-    format!(r#"{{"id": "{id}", "center": "{center}", "radius": {r}, "construction": false}}"#)
-}
+use silico_core::document::{Checked, write};
+use silico_core::sketch::{SketchSolution, SketchSolver, SketchWorker};
 
 fn k(n: usize, form: &str) -> String {
     format!(r#"{{"id": "k{n:07}", {form}}}"#)
@@ -51,51 +35,11 @@ fn text(points: &[String], lines: &[String], circles: &[String], forms: &[String
     )
 }
 
-fn checked(text: &str) -> Result<Checked, String> {
-    let doc = read(text.as_bytes()).map_err(|e| format!("unreadable: {e}"))?;
-    Checked::new(doc).map_err(|e| format!("the gate refused: {:?}", e.errors()))
-}
-
-fn solved(doc: &Checked, w: &mut dyn SketchSolver) -> Result<SketchSolution, silico_core::Error> {
-    solve(doc, &FeatureId::new(FEATURE).unwrap(), w)
-}
-
-/// A whole number of nanometres, as the file holds dimensions.
-fn nm(v: f64) -> f64 {
-    (v * 1e6).round() / 1e6 + 0.0
-}
-
-/// `doc` as a save writes it once `solution` is its solve, through the file's text.
-fn written_back(doc: &Checked, solution: &SketchSolution) -> Checked {
-    let mut document = doc.document().clone();
-    let Operation::Sketch(sketch) = &mut document.features[0].operation else {
-        panic!("not a sketch")
-    };
-    *sketch = solution.written(sketch);
-    checked(&write(&document).unwrap()).unwrap()
-}
-
-/// What a solve says, whole: Ok with every coordinate and radius as bits, the degrees of
-/// freedom, free geometry, and redundant constraints; or the refusal's code, message, and
-/// elements.
+/// What a solve says, whole: Ok with where it put the sketch ([`said`]) and the redundant
+/// constraints it names, with their gaps; or the refusal's code, message, and elements.
 fn says(r: &Result<SketchSolution, silico_core::Error>) -> Result<String, String> {
     match r {
-        Ok(s) => {
-            let points: Vec<(String, u64, u64)> = s
-                .points
-                .iter()
-                .map(|(id, [x, y])| (id.as_str().to_owned(), x.mm().to_bits(), y.mm().to_bits()))
-                .collect();
-            let radii: Vec<(String, u64)> = s
-                .radii
-                .iter()
-                .map(|(id, r)| (id.as_str().to_owned(), r.mm().to_bits()))
-                .collect();
-            Ok(format!(
-                "points {points:?} radii {radii:?} dofs {} free {:?} redundant {:?}",
-                s.dofs, s.free, s.redundant
-            ))
-        }
+        Ok(s) => Ok(format!("{} redundant {:?}", said(s), s.redundant)),
         Err(e) => Err(format!(
             "{:?}: {} {:?}",
             e.code(),
@@ -121,14 +65,33 @@ fn save_and_load(
     (save, load)
 }
 
-/// That the save and its load agree, or what they said.
-fn agree(doc: &Checked, w: &mut dyn SketchSolver, what: &str) -> Result<(), String> {
+/// How a save and its load went, where they agree.
+#[derive(Debug, PartialEq)]
+enum Agreed {
+    /// Both Ok, alike.
+    Saved,
+    /// Both refused alike, as this says.
+    Refused(String),
+}
+
+/// That the save and its load agree, and how they went; or what they said.
+fn agree(doc: &Checked, w: &mut dyn SketchSolver, what: &str) -> Result<Agreed, String> {
     let (save, load) = save_and_load(doc, w);
     let (a, b) = (says(&save), says(&load));
-    if a == b {
-        Ok(())
-    } else {
-        Err(format!("{what}\n  saved  {a:?}\n  loaded {b:?}"))
+    if a != b {
+        return Err(format!("{what}\n  saved  {a:?}\n  loaded {b:?}"));
+    }
+    Ok(match a {
+        Ok(_) => Agreed::Saved,
+        Err(refusal) => Agreed::Refused(refusal),
+    })
+}
+
+/// That a consistent sketch's save is Ok and its load agrees; or what went wrong.
+fn kept(doc: &Checked, w: &mut dyn SketchSolver, what: &str) -> Result<(), String> {
+    match agree(doc, w, what)? {
+        Agreed::Saved => Ok(()),
+        Agreed::Refused(refusal) => Err(format!("{what}: consistent, but refused: {refusal}")),
     }
 }
 
@@ -224,12 +187,6 @@ fn loose(x: f64, y: f64, len: f64, slope: f64) -> String {
     text(&points, &lines, &[], &forms)
 }
 
-fn arc(id: &str, center: &str, start: &str, end: &str) -> String {
-    format!(
-        r#"{{"id": "{id}", "center": "{center}", "start": "{start}", "end": "{end}", "construction": false}}"#
-    )
-}
-
 /// A quarter arc about p1, held at (x0, y0), radius r, from p2 (level with p1, to its
 /// right) to p3 (above p1): fully constrained, nothing repeated, unless `twice` gives the
 /// radius twice. Drawn off by `jitter` (fractions of r).
@@ -322,7 +279,7 @@ fn a_point_on_a_circle_and_on_its_tangent_line_loads_as_it_saved() {
     ] {
         for twice in [false, true] {
             let doc = checked(&touching(5.0, 10.0, dx, dy, twice)).unwrap();
-            if let Err(m) = agree(
+            if let Err(m) = kept(
                 &doc,
                 &mut w,
                 &format!("touching dx {dx} dy {dy} twice {twice}"),
@@ -345,7 +302,7 @@ fn a_redundant_circle_tangency_loads_as_it_saved() {
         [0.4, -0.4, 0.2],
     ] {
         let doc = checked(&kissing(10.0, 3.0, jitter)).unwrap();
-        if let Err(m) = agree(&doc, &mut w, &format!("kissing jitter {jitter:?}")) {
+        if let Err(m) = kept(&doc, &mut w, &format!("kissing jitter {jitter:?}")) {
             broke.push(m);
         }
     }
@@ -363,7 +320,7 @@ fn an_under_constrained_line_horizontal_twice_loads_as_it_saved() {
         (-12.5, 4.25, 1000.0, -0.7),
     ] {
         let doc = checked(&loose(x, y, len, slope)).unwrap();
-        if let Err(m) = agree(
+        if let Err(m) = kept(
             &doc,
             &mut w,
             &format!("loose ({x}, {y}) len {len} slope {slope}"),
@@ -387,15 +344,16 @@ fn the_same_sketch_saved_twice_gives_the_same_bytes() {
 
 #[test]
 fn a_45_degree_arc_of_radius_100_saved_clean_loads_where_it_saved() {
-    // Found by break-it on 56b7fe2, fixed: an arc of radius 100 about the origin, its start
-    // held at 45 degrees by a line from the centre, its end above the centre, drawn a
-    // little off. Nothing is repeated, so the first solve (dofs 0, no redundant constraint)
-    // stood without the load-path loop, and the save wrote p2 at (70.71067811847684,
-    // 70.71067811899326), 5.2e-10 mm apart (the angle met to 5e-12 rad, under PlaneGCS's
-    // 1e-10). A load works the arc's radius and angles out of those points, and its solve
-    // moved p2 to (70.71067811865476, 70.71067811865474): `silico fmt` on the drawing, then
-    // `silico check`, exited 1 with drift. Now every solve that reaches a solution is
-    // checked by loads, and the answer kept is one its file gives back.
+    // Found by break-it on that first check by load, fixed: an arc of radius 100 about the
+    // origin, its start held at 45 degrees by a line from the centre, its end above the
+    // centre, drawn a little off. Nothing is repeated, so the first solve (dofs 0, no
+    // redundant constraint) stood without the load-path loop, and the save wrote p2 at
+    // (70.71067811847684, 70.71067811899326), 5.2e-10 mm apart (the angle met to 5e-12 rad,
+    // under PlaneGCS's 1e-10). A load works the arc's radius and angles out of those
+    // points, and its solve moved p2 to (70.71067811865476, 70.71067811865474): `silico
+    // fmt` on the drawing, then `silico check`, exited 1 with drift. Now every solve that
+    // reaches a solution is checked by loads, and the answer kept is one its file gives
+    // back.
     let doc = checked(&slanted(0.0, 0.0, 100.0, 45.0, [0.0, 0.1, 0.1, 0.1], false)).unwrap();
     let (save, load) = save_and_load(&doc, &mut worker());
     let save = save.unwrap();
@@ -405,12 +363,13 @@ fn a_45_degree_arc_of_radius_100_saved_clean_loads_where_it_saved() {
 
 #[test]
 fn an_implied_perpendicular_drawn_off_its_solution_saves_what_its_load_says() {
-    // Found by the council (port) on 56b7fe2, fixed: n1 horizontal, drawn (0, 0) to (10, 3),
-    // n2 vertical, drawn (12, 1) to (14, 9), and the two perpendicular, which the first two
-    // imply. Diagnosed on the drawing, where the lines aren't yet level and plumb, PlaneGCS
-    // finds no redundancy and 5 degrees of freedom; every load, diagnosed on the solution,
-    // finds k0000003 redundant and 6 (FreeCAD 1.1.3's PlaneGCS does the same; fc82d71c15
-    // documents the mechanism). The save said the drawing's; now it says the load's.
+    // Found by the council (port) on that first check by load, fixed: n1 horizontal, drawn
+    // (0, 0) to (10, 3), n2 vertical, drawn (12, 1) to (14, 9), and the two perpendicular,
+    // which the first two imply. Diagnosed on the drawing, where the lines aren't yet level
+    // and plumb, PlaneGCS finds no redundancy and 5 degrees of freedom; every load,
+    // diagnosed on the solution, finds k0000003 redundant and 6 (FreeCAD 1.1.3's PlaneGCS
+    // does the same; fc82d71c15 documents the mechanism). The save said the drawing's; now
+    // it says the load's.
     let doc = checked(&text(
         &[
             point("p0000001", 0.0, 0.0),
@@ -466,7 +425,7 @@ fn quarter_arcs_far_out_load_as_they_saved() {
         for r in [0.001, 1.5, 997.25] {
             for twice in [false, true] {
                 let doc = checked(&quarter(x0, y0, r, [0.1, -0.1, -0.15, 0.05], twice)).unwrap();
-                if let Err(m) = agree(
+                if let Err(m) = kept(
                     &doc,
                     &mut w,
                     &format!("quarter ({x0}, {y0}) r {r} twice {twice}"),
@@ -516,32 +475,14 @@ proptest! {
             return Ok(());
         };
         let what = format!("touching r {r} dx {dx} dy {dy} twice {twice}");
-        report(W.with(|w| agree(&doc, &mut *w.borrow_mut(), &what)))?;
+        report(W.with(|w| kept(&doc, &mut *w.borrow_mut(), &what)))?;
     }
 
-    /// Two circles tangent, their centres' distance given too, the second's size given as
-    /// a radius and a diameter.
-    #[test]
-    fn redundant_kissing_circles_load_as_they_saved(
-        log_a in -3.0f64..5.0,
-        log_b in -3.0f64..5.0,
-        j0 in jitter(0.4),
-        j1 in jitter(0.4),
-        j2 in jitter(0.4),
-    ) {
-        let (a, b) = (nm(libm::pow(10.0, log_a)), nm(libm::pow(10.0, log_b)));
-        prop_assume!(a > 0.0 && b > 0.0 && a + 3.0 * b < 9e5);
-        let Ok(doc) = checked(&kissing(a, b, [j0, j1, j2])) else {
-            return Ok(());
-        };
-        let what = format!("kissing a {a} b {b} jitter {:?}", [j0, j1, j2]);
-        report(W.with(|w| agree(&doc, &mut *w.borrow_mut(), &what)))?;
-    }
-
-    // Found by break-it on 56b7fe2, fixed: about 1 in 250 of these arcs, nothing repeated,
-    // at ordinary places and sizes (a sweep of 10,000 near the origin: 38), saved Ok and
-    // loaded moved by ulps (a_45_degree_arc_of_radius_100_saved_clean_loads_where_it_saved).
-    // Now none does, and all of 20,000 solve.
+    // Found by break-it on that first check by load, fixed: about 1 in 250 of these arcs,
+    // nothing repeated, at ordinary places and sizes (a sweep of 10,000 near the origin:
+    // 38), saved Ok and loaded moved by ulps
+    // (a_45_degree_arc_of_radius_100_saved_clean_loads_where_it_saved). Now none does, and
+    // every one is kept: a refusal fails the property (of 20,000, none).
     /// An arc whose start is held at an angle, so its points are irrational and a load's
     /// arc values, worked out from them, aren't the solver's.
     #[test]
@@ -562,7 +503,7 @@ proptest! {
             return Ok(());
         };
         let what = format!("slanted ({x0}, {y0}) r {r} deg {deg} jitter {:?} twice {twice}", [j0, j1, j2, j3]);
-        report(W.with(|w| agree(&doc, &mut *w.borrow_mut(), &what)))?;
+        report(W.with(|w| kept(&doc, &mut *w.borrow_mut(), &what)))?;
     }
 
     /// An under-constrained line horizontal twice.
@@ -579,7 +520,7 @@ proptest! {
             return Ok(());
         };
         let what = format!("loose ({x}, {y}) len {len} slope {slope}");
-        report(W.with(|w| agree(&doc, &mut *w.borrow_mut(), &what)))?;
+        report(W.with(|w| kept(&doc, &mut *w.borrow_mut(), &what)))?;
     }
 }
 
@@ -600,4 +541,53 @@ fn a_refused_sketch_is_refused_with_its_code_on_every_solve() {
     let e = save.as_ref().unwrap_err();
     assert_eq!(e.code(), ErrorCode::OverConstrained);
     assert_eq!(says(&save), says(&load));
+}
+
+#[test]
+fn redundant_kissing_circles_load_as_they_saved() {
+    // Two circles tangent, their centres' distance given too, the second's size given as a
+    // radius and a diameter: consistent, but PlaneGCS, diagnosing on the drawing, calls about
+    // 1 in 30 drawn this far off conflicting (9 of 300 in a sweep; a spec question, as for
+    // the redundant shapes in adversarial_redundant_resolve.rs, not a break). So a refusal
+    // must be that diagnosis, the save's and its load's alike, and at least nine in ten of
+    // the cases saved: a solve that refused every case alike would agree with its load and
+    // pass on agreement alone.
+    let strategy = (
+        -3.0f64..5.0,
+        -3.0f64..5.0,
+        jitter(0.4),
+        jitter(0.4),
+        jitter(0.4),
+    );
+    let (cases, saved) = (std::cell::Cell::new(0), std::cell::Cell::new(0));
+    let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
+        cases: 1000,
+        ..ProptestConfig::default()
+    });
+    let run = runner.run(&strategy, |(log_a, log_b, j0, j1, j2)| {
+        let (a, b) = (nm(libm::pow(10.0, log_a)), nm(libm::pow(10.0, log_b)));
+        prop_assume!(a > 0.0 && b > 0.0 && a + 3.0 * b < 9e5);
+        let Ok(doc) = checked(&kissing(a, b, [j0, j1, j2])) else {
+            return Ok(());
+        };
+        let what = format!("kissing a {a} b {b} jitter {:?}", [j0, j1, j2]);
+        cases.set(cases.get() + 1);
+        match W.with(|w| agree(&doc, &mut *w.borrow_mut(), &what)) {
+            Ok(Agreed::Saved) => saved.set(saved.get() + 1),
+            Ok(Agreed::Refused(refusal)) => prop_assert!(
+                refusal.starts_with("OverConstrained: the sketch's constraints conflict"),
+                "{what}: refused otherwise: {refusal}"
+            ),
+            Err(m) => return Err(TestCaseError::fail(m)),
+        }
+        Ok(())
+    });
+    if let Err(e) = run {
+        panic!("{e}");
+    }
+    let (cases, saved) = (cases.get(), saved.get());
+    assert!(
+        cases >= 500 && saved * 10 >= cases * 9,
+        "{saved} of {cases} saved"
+    );
 }
