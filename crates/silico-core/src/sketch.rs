@@ -1204,17 +1204,15 @@ impl Translation {
     pub fn solve(&self, solver: &mut dyn SketchSolver) -> Result<Answer, Error> {
         let first = self.answer(solver)?;
         // A refusal writes no file, so its load solves the drawing again and refuses alike.
-        // Only an over-constrained one is looked past (a diagnosis on the drawing): a load
+        // Only an over-constrained one is checked by loads (a diagnosis on the drawing): a load
         // from an invalid result would measure sides from where that result put them.
-        let looked_past = match &first.outcome {
+        let checked_by_load = match &first.outcome {
             Ok(_) => true,
             Err(e) => e.code() == ErrorCode::OverConstrained,
         };
-        if !reached(&first.solved) || !looked_past {
+        if !reached(&first.solved) || !checked_by_load {
             return Ok(first);
         }
-        // What stands when no load reaches a solved fixed point: the drawing's refusal, or
-        // for a drawing that solved, the refusal `refused` gives.
         // A solve that leaves its own file as it was drawn is its own load: the load would
         // send the same system and get the same answer. Every load of a saved sketch is one.
         if self
@@ -1223,59 +1221,58 @@ impl Translation {
         {
             return Ok(first);
         }
-        let drawn_ok = first.outcome.is_ok();
-        let refusal = |first: Answer, refused: Answer| if drawn_ok { refused } else { first };
         let mut latest = first.solved.clone();
         let mut solved_by = self.clone();
         for _ in 0..MAX_LOAD_RESOLVES {
             let file = match solved_by.stored(&latest.values) {
                 Ok(file) => file,
-                Err(e) => return Ok(refusal_with(first, drawn_ok, e)),
+                Err(e) => return Ok(refusal(first, Err(e))),
             };
             // A file the gate refuses can't be saved (`savable`) or loaded.
             if let Err(e) = holdable(&file) {
-                return Ok(refusal_with(first, drawn_ok, e));
+                return Ok(refusal(first, Err(e)));
             }
             let load = match Translation::new(&file) {
                 Ok(load) => load,
-                Err(e) => return Ok(refusal_with(first, drawn_ok, e)),
+                Err(e) => return Ok(refusal(first, Err(e))),
             };
             // A worker that failed (crashed, timed out, ran short) or a reply that can't be
             // trusted is the error, as for the first solve; the worker refusing the start is
             // the load's error too, so a drawing that solved is refused with it.
             let here = match load.answer(solver) {
                 Ok(here) => here,
-                Err(e) if e.code() == ErrorCode::InvalidInput && !drawn_ok => return Ok(first),
+                Err(e) if e.code() == ErrorCode::InvalidInput && first.outcome.is_err() => {
+                    return Ok(first);
+                }
                 Err(e) => return Err(e),
             };
             if !reached(&here.solved) {
-                return Ok(refusal(first, here));
+                return Ok(refusal(first, Ok(here)));
             }
             // Coordinates compare bit for bit (a file keeps -0 and 0 apart).
             let settled = match load.stored(&here.solved.values) {
                 Ok(next) => next == file,
-                Err(e) => return Ok(refusal_with(first, drawn_ok, e)),
+                Err(e) => return Ok(refusal(first, Err(e))),
             };
             if settled {
                 return Ok(if here.outcome.is_ok() {
                     here
                 } else {
-                    refusal(first, here)
+                    refusal(first, Ok(here))
                 });
             }
             latest = here.solved;
             solved_by = load;
         }
-        Ok(refusal_with(
+        Ok(refusal(
             first,
-            drawn_ok,
-            Error::new(
+            Err(Error::new(
                 ErrorCode::SolveFailed,
                 format!(
                     "the sketch's solution doesn't settle on load: each of {MAX_LOAD_RESOLVES} loads of its solution moved it"
                 ),
             )
-            .with_suggestion("draw the geometry nearer its solution, or report the sketch: Silico can't keep a solution its own file doesn't give back"),
+            .with_suggestion("draw the geometry nearer its solution, or report the sketch: Silico can't keep a solution its own file doesn't give back")),
         ))
     }
 
@@ -2048,17 +2045,21 @@ type Placed = (
     BTreeMap<ElementId, Measured>,
 );
 
-/// The answer that stands when a load can't be made or checked, `e` saying why: the
-/// drawing's refusal if it was refused; otherwise `e`, as the outcome, since a drawing that
-/// solved can't keep a solution its file doesn't give back.
-fn refusal_with(first: Answer, drawn_ok: bool, e: Error) -> Answer {
-    if drawn_ok {
-        Answer {
+/// The answer that stands when no load reaches a solved fixed point. A drawing that was
+/// refused keeps its own refusal: a refusal writes no file, so its load solves the drawing
+/// again and refuses alike. A drawing that solved can't keep a solution its file doesn't
+/// give back, so it stands as `load` ended: the last load's answer, or, where a load
+/// couldn't be made, checked, or settled, the first solve's values with that error.
+fn refusal(first: Answer, load: Result<Answer, Error>) -> Answer {
+    if first.outcome.is_err() {
+        return first;
+    }
+    match load {
+        Ok(load) => load,
+        Err(e) => Answer {
             solved: first.solved,
             outcome: Err(e),
-        }
-    } else {
-        first
+        },
     }
 }
 
