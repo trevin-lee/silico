@@ -31,7 +31,7 @@ use silico_core::kernel::{
     ShapeSummary,
 };
 use silico_core::pool::{KernelPool, Outcome, Pending, STOP_AFTER};
-use silico_protocol::{DebugOp, Generation, Misbehavior};
+use silico_protocol::{DebugOp, Failure, Generation, Misbehavior, Op, Refusal, Reply};
 
 /// One of the mixed requests the concurrency test sends, for both the pool and the
 /// reference worker.
@@ -594,49 +594,96 @@ fn a_worker_killed_as_its_request_ends_is_never_given_another() {
     assert!(workers.len() > 1, "no worker was ever stopped");
 }
 
+// ---------------------------------------------------------------------------------------
+// A worker that says when it's running a request: this test binary, run again as a worker
+// by a script (a worker gets no environment of its own, so the script names the directory),
+// which creates `running` in that directory as it takes a sleep, then sleeps.
+
+const MARKS_ENV: &str = "SILICO_POOL_TEST_MARKS";
+
+/// Not a test of its own: run by [`marking_worker`]'s script, this binary serves as a kernel
+/// worker that marks each sleep it takes. Run normally, it does nothing.
+#[test]
+fn marking_worker_entry() {
+    let Ok(dir) = std::env::var(MARKS_ENV) else {
+        return;
+    };
+    let running = Path::new(&dir).join("running");
+    let _ = silico_kernel::worker::run(move |_, _, op, _| match op {
+        Op::Debug(DebugOp::Sleep { millis }) => {
+            std::fs::write(&running, b"").map_err(|e| {
+                Failure::new(Refusal::Internal {
+                    what: e.to_string(),
+                })
+            })?;
+            std::thread::sleep(Duration::from_millis(millis));
+            Ok(Reply::Done)
+        }
+        op => silico_kernel::worker::handle(op),
+    });
+    std::process::exit(0);
+}
+
+/// A worker that, as it takes a sleep, creates `running` in `dir` (see
+/// [`marking_worker_entry`]).
+fn marking_worker(dir: &Path) -> std::path::PathBuf {
+    let me = std::env::current_exe().unwrap();
+    scripts::script(
+        "marking-worker",
+        &format!(
+            "{MARKS_ENV}='{}' exec '{}' --exact marking_worker_entry --nocapture --test-threads=1",
+            dir.display(),
+            me.display()
+        ),
+    )
+}
+
 #[test]
 fn a_running_superseded_request_that_ends_within_stop_after_finishes_on_its_worker() {
-    // Stopping a request costs a new worker (about 30 ms), more than letting a short one
-    // finish: a superseded request, running, that ends within STOP_AFTER is left to, its
-    // result discarded, and its worker kept. A short request is superseded soon after it
-    // starts, ATTEMPTS times. One not yet running by then is dropped instead, and one a
-    // loaded machine makes take past STOP_AFTER is rightly stopped; but none is stopped
-    // sooner, and at least one must have run to its end on its worker.
-    const REQUEST_MILLIS: u64 = 25;
-    const SUPERSEDED_AFTER: Duration = Duration::from_millis(8);
-    const ATTEMPTS: u64 = 10;
-    let pool = pool(TEST_WORKER, 1);
-    done(pool.submit(Generation(0), echo(b"warm"))).unwrap();
-    let mut finished_on_its_worker = 0;
+    // Stopping a request costs a new worker, more than letting a short one finish: a
+    // superseded request, running, that ends within the stop-after is left to, its result
+    // discarded, and its worker kept. Each time, the request is superseded once its worker
+    // says it's running it (an event, not a guess at how soon it starts), and it's short
+    // beside the stop-after, so however loaded the machine it ends within it: it finishes on
+    // its worker every time.
+    const REQUEST: Duration = Duration::from_secs(2);
+    const STOP: Duration = Duration::from_secs(60);
+    const ATTEMPTS: u64 = 3;
+    let marks = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("silico-pool-marks-{}", std::process::id()));
+    std::fs::create_dir_all(&marks).unwrap();
+    let running = marks.join("running");
+    let pool = KernelPool::start_workers(&marking_worker(&marks), 1).unwrap();
+    pool.set_stop_after(STOP);
     for g in 1..=ATTEMPTS {
+        let _ = std::fs::remove_file(&running);
         let before = pool.pids();
         let start = Instant::now();
-        let young = pool.submit(Generation(g), sleep(REQUEST_MILLIS));
-        std::thread::sleep(SUPERSEDED_AFTER);
+        let young = pool.submit(Generation(g), sleep(REQUEST.as_millis() as u64));
+        while !running.exists() {
+            assert!(start.elapsed() < HANG, "attempt {g}: the request never ran");
+            std::thread::sleep(Duration::from_millis(1));
+        }
         pool.advance(Generation(g + 1));
         assert!(matches!(outcome(young), Outcome::Superseded));
         let elapsed = start.elapsed();
-        // Once another request has been through the slot, a stopped worker has been
+        // Once another request has been through the slot, a stopped worker would have been
         // replaced.
         assert_eq!(
             done(pool.submit(Generation(g + 1), echo(&[1]))).unwrap(),
             Blob::inline(vec![1])
         );
-        if pool.pids() == before {
-            if elapsed >= Duration::from_millis(REQUEST_MILLIS) {
-                finished_on_its_worker += 1;
-            }
-        } else {
-            assert!(
-                elapsed >= STOP_AFTER,
-                "attempt {g}: its worker was stopped {elapsed:?} in, before STOP_AFTER"
-            );
-        }
+        assert_eq!(
+            pool.pids(),
+            before,
+            "attempt {g}: its worker was stopped {elapsed:?} in, within the stop-after"
+        );
+        assert!(
+            elapsed >= REQUEST,
+            "attempt {g}: it ended {elapsed:?} in, before it could have run to its end"
+        );
     }
-    assert!(
-        finished_on_its_worker > 0,
-        "no superseded request ran to its end on its worker"
-    );
+    let _ = std::fs::remove_dir_all(&marks);
 }
 
 #[test]
