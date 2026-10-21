@@ -58,7 +58,11 @@ fn a_5_nm_disagreement_bridging_two_rigid_points_ten_metres_apart_is_kept() {
     // 10000), E 1e4, ε 1e-5: the 5 nm disagreement is kept, its gap reported. Under the same
     // rows with p2 at (0, 1) (the next test) it's refused. Decision 5's own reason for the
     // extent term (a direction's convergence carried along a lever) doesn't arise: no row
-    // here has a direction. Pinned as the rule now reads; a spec question.
+    // here has a direction. This is decision 5 as Fable decided it, per part
+    // (docs/design/m3.3-solving.md): the dropped row joins its parts as a kept one would,
+    // so the verdict doesn't hang on which twin PlaneGCS drops, and two sides' sum stays
+    // within the union's window, never a refusal PlaneGCS's split would have avoided. Pinned
+    // as SPEC for the M3 review.
     let mut w = worker();
     let s = solved(&bridged(10000.0), &mut w).unwrap_or_else(|e| panic!("{e}"));
     let gaps: Vec<f64> = s.redundant.values().copied().collect();
