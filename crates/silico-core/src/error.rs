@@ -320,3 +320,83 @@ impl Serialize for Error {
 }
 
 impl std::error::Error for Error {}
+
+/// An error as the rebuild cache keeps it (a measure the kernel refused for the solid's
+/// values): every field, the code by its name.
+#[derive(Serialize, serde::Deserialize)]
+pub(crate) struct KeptError {
+    code: String,
+    message: String,
+    feature: Option<String>,
+    elements: Vec<String>,
+    elements_total: u64,
+    parameter: Option<String>,
+    cause: Option<String>,
+    suggestion: Option<String>,
+    candidates: Vec<String>,
+}
+
+impl From<&Error> for KeptError {
+    fn from(error: &Error) -> Self {
+        let f = &*error.0;
+        KeptError {
+            code: f.code.as_str().to_owned(),
+            message: f.message.clone(),
+            feature: f.feature.clone(),
+            elements: f.elements.clone(),
+            elements_total: f.elements_total,
+            parameter: f.parameter.clone(),
+            cause: f.cause.clone(),
+            suggestion: f.suggestion.clone(),
+            candidates: f.candidates.clone(),
+        }
+    }
+}
+
+impl KeptError {
+    /// The error kept, if its code is one this Silico knows.
+    pub(crate) fn error(self) -> Option<Error> {
+        let code = *ErrorCode::ALL.iter().find(|c| c.as_str() == self.code)?;
+        Some(Error(Box::new(Fields {
+            code,
+            message: self.message,
+            feature: self.feature,
+            elements: self.elements,
+            elements_total: self.elements_total,
+            parameter: self.parameter,
+            cause: self.cause,
+            suggestion: self.suggestion,
+            candidates: self.candidates,
+        })))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_error_kept_by_the_cache_comes_back_as_it_was_and_one_of_an_unknown_code_doesnt() {
+        // Every field set, and the elements past what's listed.
+        let error = Error::new(ErrorCode::KernelFailed, "Summarize failed")
+            .with_feature("k7f2qx3m")
+            .with_elements(["Edge1", "Edge2"])
+            .with_elements_total(5)
+            .with_parameter("radius")
+            .with_cause("BRepGProp returned NaN")
+            .with_suggestion("make the part smaller")
+            .with_candidates(["Edge3"]);
+        let kept = postcard::to_allocvec(&KeptError::from(&error)).unwrap();
+        let back: KeptError = postcard::from_bytes(&kept).unwrap();
+        assert_eq!(back.error(), Some(error.clone()));
+        // Every code comes back as itself.
+        for &code in ErrorCode::ALL {
+            let error = Error::new(code, "a message");
+            assert_eq!(KeptError::from(&error).error(), Some(error));
+        }
+        // A code this Silico doesn't know (a later one's) is none, not another.
+        let mut unknown = KeptError::from(&error);
+        unknown.code = "a_code_from_later".to_owned();
+        assert_eq!(unknown.error(), None);
+    }
+}

@@ -216,9 +216,11 @@ fn failures_arent_kept_on_disk() {
 }
 
 #[test]
-fn a_solid_that_couldnt_be_measured_is_kept_on_disk_unmeasured_and_measured_next_time() {
+fn a_solid_that_couldnt_be_measured_is_kept_on_disk_and_measured_next_time_unless_refused_for_its_values()
+ {
     // Refused for its values or by a hung worker, a measure keeps the solid on disk all the
-    // same, so the next session measures it without making it again.
+    // same, so the next session needn't make it again. A hung worker's is measured then; a
+    // refusal for the solid's values is kept with it, and said again without asking.
     for code in [ErrorCode::KernelFailed, ErrorCode::WorkerTimeout] {
         let dir = Scratch::new("unmeasured");
         let first = session(&dir.0);
@@ -230,14 +232,21 @@ fn a_solid_that_couldnt_be_measured_is_kept_on_disk_unmeasured_and_measured_next
         // Every step, the features' solids unmeasured.
         assert_eq!(files(&dir.0).len(), 4, "{code:?}");
         let second = session(&dir.0);
-        let model = published(&second, checked(EXAMPLE));
+        let again = published(&second, checked(EXAMPLE));
         assert!(calls(&second).is_empty(), "{code:?}: {:?}", calls(&second));
-        // Measured now, and written measured: a third session asks the kernel nothing.
-        assert!(model.drift().is_empty(), "{code:?}");
-        assert!(
-            model.fingerprint(&model::id("k7f2qx3m")).is_some(),
-            "{code:?}"
-        );
+        if code == ErrorCode::KernelFailed {
+            // Not asked again: the same refusals, and no fingerprint.
+            assert!(second.kernel().calls().is_empty(), "{code:?}");
+            assert_eq!(again.drift(), model.drift());
+            assert!(again.fingerprint(&model::id("k7f2qx3m")).is_none());
+        } else {
+            // Measured now, and written measured: a third session asks the kernel nothing.
+            assert!(again.drift().is_empty(), "{code:?}");
+            assert!(
+                again.fingerprint(&model::id("k7f2qx3m")).is_some(),
+                "{code:?}"
+            );
+        }
         let third = session(&dir.0);
         published(&third, checked(EXAMPLE));
         assert!(third.kernel().calls().is_empty(), "{code:?}");

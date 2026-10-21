@@ -38,11 +38,12 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
+use crate::error::KeptError;
 use crate::kernel::{Blob, History, ShapeData, ShapeSummary};
 use crate::recompute::{Built, Key};
 
 /// The first bytes of every entry, naming its format: a change to the format changes it.
-const MAGIC: &[u8] = b"silico cache 4\n";
+const MAGIC: &[u8] = b"silico cache 5\n";
 
 /// What the cache's directory holds besides its entries: it ignores itself.
 const GITIGNORE: &[u8] =
@@ -167,8 +168,17 @@ struct Entry {
     brep: Vec<u8>,
     valid: bool,
     history: Option<History>,
-    /// The shape's summary, if it was measured (a feature's solid is, once it's made).
-    summary: Option<ShapeSummary>,
+    /// The shape's measure: none yet, its summary (a feature's solid is measured once it's
+    /// made), or the kernel's refusal to measure it, for its values.
+    measure: Measure,
+}
+
+/// An entry's measure.
+#[derive(Serialize, Deserialize)]
+enum Measure {
+    Unmeasured,
+    Summary(ShapeSummary),
+    Refused(KeptError),
 }
 
 impl Cache {
@@ -245,14 +255,10 @@ impl Cache {
                 return None;
             }
         };
-        match read_entry(&bytes, secret, &key) {
-            Some(entry) => {
+        match read_entry(&bytes, secret, &key).and_then(built_of) {
+            Some(built) => {
                 renew(&path);
-                Some(Built::new(
-                    ShapeData::checked(Blob::inline(entry.brep), entry.valid),
-                    entry.history,
-                    entry.summary,
-                ))
+                Some(built)
             }
             None => {
                 tracing::warn!(path = %path.display(), "a cache entry doesn't hold together: rebuilding it");
@@ -276,7 +282,11 @@ impl Cache {
             brep: built.shape.brep().as_bytes().to_vec(),
             valid,
             history: built.history.clone(),
-            summary: built.summary().cloned(),
+            measure: match (built.summary(), built.measure_refused()) {
+                (Some(summary), _) => Measure::Summary(summary.clone()),
+                (None, Some(refused)) => Measure::Refused(KeptError::from(refused)),
+                (None, None) => Measure::Unmeasured,
+            },
         };
         let payload = match postcard::to_allocvec(&entry) {
             Ok(payload) => payload,
@@ -771,6 +781,16 @@ fn read_file(path: &Path) -> FileRead {
 /// The platform's name: its OS and architecture (`macos-aarch64`).
 fn this_platform() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
+}
+
+/// The result `entry` keeps, unless it keeps a refusal whose code this Silico doesn't know.
+fn built_of(entry: Entry) -> Option<Built> {
+    let shape = ShapeData::checked(Blob::inline(entry.brep), entry.valid);
+    Some(match entry.measure {
+        Measure::Unmeasured => Built::new(shape, entry.history, None),
+        Measure::Summary(summary) => Built::new(shape, entry.history, Some(summary)),
+        Measure::Refused(refused) => Built::refused_measure(shape, entry.history, refused.error()?),
+    })
 }
 
 /// The entry `bytes` hold for `key`, if they hold together: the format's magic, a seal

@@ -75,12 +75,15 @@ impl fmt::Debug for Key {
 /// What a kernel step made: its shape, for an operation on other shapes what it did to
 /// them, and, if it was measured, the shape's summary (from which a feature's fingerprint
 /// comes; a step that's a feature's solid is measured after it's made, by a job of its own,
-/// which puts a measured copy in its place). Never changed once made: models share it.
+/// which puts a measured copy in its place), or why the kernel refused to measure it, if
+/// that follows from its values (so it would refuse again). Never changed once made: models
+/// share it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Built {
     pub shape: ShapeData,
     pub history: Option<History>,
     summary: Option<ShapeSummary>,
+    refused: Option<Error>,
 }
 
 impl Built {
@@ -93,6 +96,21 @@ impl Built {
             shape,
             history,
             summary,
+            refused: None,
+        }
+    }
+
+    /// A result the kernel refused to measure, for its values, as `refused` says.
+    pub(crate) fn refused_measure(
+        shape: ShapeData,
+        history: Option<History>,
+        refused: Error,
+    ) -> Self {
+        Built {
+            shape,
+            history,
+            summary: None,
+            refused: Some(refused),
         }
     }
 
@@ -101,10 +119,23 @@ impl Built {
         self.summary.as_ref()
     }
 
+    /// Why the kernel refused to measure the shape, if it did for its values.
+    pub fn measure_refused(&self) -> Option<&Error> {
+        self.refused.as_ref()
+    }
+
     /// This result, measured.
     fn measured(&self, summary: ShapeSummary) -> Self {
         Built {
             summary: Some(summary),
+            ..self.clone()
+        }
+    }
+
+    /// This result, the kernel having refused to measure it for its values.
+    fn refused(&self, error: Error) -> Self {
+        Built {
+            refused: Some(error),
             ..self.clone()
         }
     }
@@ -1472,12 +1503,18 @@ impl<K: Kernel + 'static> Engine<K> {
                 schedule.waiting.insert(*key, unbuilt);
             }
         }
-        // Features' solids built before (kept, or from the cache) but not measured yet.
+        // Features' solids built before (kept, or from the cache) but not measured yet,
+        // unless the kernel refused to for their values: it would again.
         for key in &plan.results {
             if let Some(Ok(built)) = schedule.done.get(key)
                 && built.summary().is_none()
             {
-                schedule.ready.push_back(Job::Measure(*key));
+                match built.measure_refused() {
+                    Some(error) => {
+                        schedule.unmeasured.insert(*key, error.clone());
+                    }
+                    None => schedule.ready.push_back(Job::Measure(*key)),
+                }
             }
         }
         let to_run = schedule.ready.len() + schedule.waiting.len();
@@ -1890,10 +1927,19 @@ impl<K: Kernel + 'static> Engine<K> {
                     s.done.insert(key, Ok(measured));
                 }
                 Ran::Measured(Outcome::Done(Err(error))) => {
-                    // A solid that couldn't be measured is kept on disk unmeasured, so the
-                    // next open measures it without making it again.
+                    // A solid that couldn't be measured is kept on disk all the same, so the
+                    // next open needn't make it again: with the refusal, if it follows from
+                    // the solid's values (so it's never asked again, here or there), and
+                    // unmeasured if not (so the next recompute measures it).
                     if let Some(Ok(built)) = s.done.get(&key) {
-                        to_keep = Some(Arc::clone(built));
+                        let built = if kept(&error) {
+                            let refused = Arc::new(built.refused(error.clone()));
+                            s.done.insert(key, Ok(Arc::clone(&refused)));
+                            refused
+                        } else {
+                            Arc::clone(built)
+                        };
+                        to_keep = Some(built);
                     }
                     s.unmeasured.insert(key, error);
                 }
