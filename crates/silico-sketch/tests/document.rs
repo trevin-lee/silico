@@ -835,6 +835,95 @@ fn two_circles_tangent_outside_and_inside_land_their_radii_apart() {
     }
 }
 
+/// c1 and c2 both about p1, held at (1, 1); c1's radius held 10, c2's drawn 12 and held
+/// `r2` if given; c1 and c2 tangent on `side` (k0000004).
+fn on_one_centre(side: &str, r2: Option<f64>) -> Checked {
+    let tangent = format!(
+        r#"{{"id": "k0000004", "type": "tangent", "a": "c0000001", "b": "c0000002", "side": "{side}"}}"#
+    );
+    let radius = r2.map(|r| {
+        format!(r#"{{"id": "k0000005", "type": "radius", "curve": "c0000002", "value": {r}, "driving": true}}"#)
+    });
+    let mut constraints = vec![
+        r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 1, "driving": true}"#,
+        r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 1, "driving": true}"#,
+        r#"{"id": "k0000003", "type": "radius", "curve": "c0000001", "value": 10, "driving": true}"#,
+        &tangent,
+    ];
+    constraints.extend(radius.as_deref());
+    document(
+        &[point("p0000001", 1.0, 1.0)],
+        &[],
+        &[
+            circle("c0000001", "p0000001", 10.0),
+            circle("c0000002", "p0000001", 12.0),
+        ],
+        &[],
+        &constraints,
+    )
+}
+
+#[test]
+fn an_outside_tangency_between_circles_on_one_centre_is_an_invalid_result() {
+    // The port reviewer's case: circles on one centre touch outside only at radius 0, but
+    // 1.1.3's PlaneGCS measures a tangency between concentric circles as r1 − r2 whatever
+    // its side, so the solve gave r2 = 10, two identical circles, the tangency 20 mm off
+    // (d = 0, r1 + r2 = 20), and no redundancy. Refused, naming the tangency and both
+    // circles, with c2's radius free and with it held 10 (which PlaneGCS called redundant).
+    for r2 in [None, Some(10.0)] {
+        let e = solved(&on_one_centre("outside", r2), &mut worker()).unwrap_err();
+        assert_eq!(
+            (e.code(), e.elements()),
+            (
+                ErrorCode::InvalidResult,
+                &[
+                    "k0000004".to_owned(),
+                    "c0000001".to_owned(),
+                    "c0000002".to_owned()
+                ][..]
+            ),
+            "{r2:?}: {e}"
+        );
+    }
+}
+
+#[test]
+fn an_inside_tangency_between_circles_on_one_centre_makes_them_equal() {
+    // Inside, PlaneGCS's r1 − r2 is the tangency itself: c2's free radius solves to c1's,
+    // 10, about (1, 1).
+    let s = solved(&on_one_centre("inside", None), &mut worker()).unwrap();
+    assert_at(&s, "p0000001", [1.0, 1.0]);
+    let r = s.radius(&id("c0000002")).unwrap();
+    assert!((r - 10.0).abs() <= CLOSE, "{r}");
+}
+
+#[test]
+fn an_outside_tangency_between_circles_apart_takes_the_gap_as_the_free_radius() {
+    // c1 r 10 held about the origin, c2 about (25, 0), its radius free, drawn 12: tangent
+    // outside, r2 = 25 − 10 = 15.
+    let doc = document(
+        &[point("p0000001", 0.0, 0.0), point("p0000002", 25.0, 0.0)],
+        &[],
+        &[
+            circle("c0000001", "p0000001", 10.0),
+            circle("c0000002", "p0000002", 12.0),
+        ],
+        &[],
+        &[
+            r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000003", "type": "distance_x", "a": "origin", "b": "p0000002", "value": 25, "driving": true}"#,
+            r#"{"id": "k0000004", "type": "distance_y", "a": "origin", "b": "p0000002", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000005", "type": "radius", "curve": "c0000001", "value": 10, "driving": true}"#,
+            r#"{"id": "k0000006", "type": "tangent", "a": "c0000001", "b": "c0000002", "side": "outside"}"#,
+        ],
+    );
+    let s = solved(&doc, &mut worker()).unwrap();
+    assert_at(&s, "p0000002", [25.0, 0.0]);
+    let r = s.radius(&id("c0000002")).unwrap();
+    assert!((r - 15.0).abs() <= CLOSE, "{r}");
+}
+
 #[test]
 fn a_sketch_worker_waits_its_own_time_and_the_time_it_is_given() {
     // The council's tests lens: SKETCH_TIMEOUT was guarded only by a test bounded by the

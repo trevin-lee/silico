@@ -55,7 +55,9 @@ pub const TANGENCY_TOLERANCE: f64 = 1e-9;
 /// The squared distance between two tangent circles' centres, in mm², under which PlaneGCS
 /// measures their tangency as `r1 − r2`, in millimetres (`ConstraintTangentCircumf::error`,
 /// FreeCAD #24227, in 1.1.3): a row with no mm² slack, so [`TANGENCY_TOLERANCE`] has no term
-/// for it.
+/// for it. That form is right only for an inside tangency, whatever side is given; an
+/// outside tangency solved with its centres this close is refused
+/// (`Translation::concentric_outside`).
 const CONCENTRIC_TANGENCY: f64 = 1e-14;
 
 /// How many loads, at most, a solve's answer is checked by: its solution written as the file
@@ -1612,6 +1614,15 @@ impl Translation {
             .with_elements(self.ids(&wrong_side)?)
             .with_suggestion("draw it on the side the constraint gives, or change the side"));
         }
+        let concentric = self.concentric_outside(values)?;
+        if !concentric.is_empty() {
+            return Err(Error::new(
+                ErrorCode::InvalidResult,
+                "the solution puts two circles held tangent outside on one centre: concentric, they can't touch outside",
+            )
+            .with_elements(concentric)
+            .with_suggestion("dimension their centres apart, or make the tangency inside"));
+        }
         let redundant = gaps
             .iter()
             .map(|&(t, gap)| {
@@ -1700,6 +1711,38 @@ impl Translation {
             let d = signed_distance(point, self.xy(values, l.from), self.xy(values, l.to));
             if !(if left { d > 0.0 } else { d < 0.0 }) {
                 out.push(tag);
+            }
+        }
+        Ok(out)
+    }
+
+    /// The tangencies that hold two circles or arcs outside each other whose solution has
+    /// their centres under [`CONCENTRIC_TANGENCY`] apart, squared, each followed by its two
+    /// curves (each named once): there PlaneGCS measures the tangency as `r1 − r2`, an inside
+    /// tangency's form, whatever side it's given, so a solve can meet it with the circles on
+    /// one centre. FreeCAD never asks for that, as it reads the side from the drawing
+    /// (`System::addConstraintTangent`); circles on one centre touch outside only at radius
+    /// 0, which no circle has.
+    fn concentric_outside(&self, values: &[f64]) -> Result<Vec<String>, Error> {
+        let mut out: Vec<String> = Vec::new();
+        for (i, c) in self.constraints.iter().enumerate() {
+            let Form::Tangent {
+                a,
+                b,
+                side: TangentSide::Outside,
+            } = &c.form
+            else {
+                continue;
+            };
+            let (ra, rb) = (self.round(a)?, self.round(b)?);
+            let squared = squared_distance(self.xy(values, ra.center), self.xy(values, rb.center));
+            if squared < CONCENTRIC_TANGENCY {
+                let tangency = self.id(Tag(i as u32 + 1))?.as_str().to_owned();
+                for name in [tangency, a.to_string(), b.to_string()] {
+                    if !out.contains(&name) {
+                        out.push(name);
+                    }
+                }
             }
         }
         Ok(out)

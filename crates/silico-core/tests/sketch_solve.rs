@@ -1226,6 +1226,87 @@ fn a_sketchs_tolerance_is_a_nanometre_squared_over_its_tightest_circle_tangency(
 }
 
 #[test]
+fn an_outside_tangency_solved_concentric_is_an_invalid_result_naming_it_and_its_circles() {
+    // PlaneGCS 1.1.3 measures a circle tangency as r1 − r2 when its centres are under 1e-7
+    // apart (d² < 1e-14), whatever side it's given: an inside tangency's form. So a solve can
+    // meet an outside tangency with the circles on one centre, d = 0 where it must be
+    // r1 + r2 = 20. c1 r 10 about p1 (0, 0), c2 r 12 about p2, tangent outside (k1); p3 at
+    // (5, 5), its x given twice (k3, k4), there for tangent_pair's sake.
+    let refused = |t: &Translation, values: Vec<f64>, what: &str| {
+        let e = read_back(t, &answer(t, values, SolveStatus::Success)).expect_err(what);
+        assert_eq!(
+            (e.code(), e.elements()),
+            (
+                ErrorCode::InvalidResult,
+                &[
+                    "k0000001".to_owned(),
+                    "c0000001".to_owned(),
+                    "c0000002".to_owned()
+                ][..]
+            ),
+            "{what}: {e}"
+        );
+        assert!(e.message().contains("concentric"), "{what}: {e}");
+        assert!(
+            e.suggestion().is_some_and(|s| s.contains("inside")),
+            "{what}: {e}"
+        );
+    };
+    // Drawn 30 apart, answered as drawn: outside, not concentric, kept.
+    let t = tangent_pair(
+        [30.0, 0.0],
+        [10.0, 12.0],
+        "p0000002",
+        "outside",
+        false,
+        [5.0, 5.0],
+    );
+    read_back(
+        &t,
+        &answer(&t, t.system.values.clone(), SolveStatus::Success),
+    )
+    .unwrap();
+    let p2 = second_circle(&t).0;
+    let at = |x: f64| {
+        let mut v = t.system.values.clone();
+        v[p2.x.0 as usize] = x;
+        v[p2.y.0 as usize] = 0.0;
+        v
+    };
+    // Solved onto p1: refused.
+    refused(&t, at(0.0), "on one centre");
+    // 9e-8 apart, d² = 8.1e-15 < 1e-14: concentric to PlaneGCS, refused.
+    refused(&t, at(9e-8), "9e-8 apart");
+    // 1.1e-7 apart, d² = 1.21e-14: PlaneGCS's mm² form, which a solve can't meet 20 off,
+    // so this answer is the boundary alone: not refused as concentric.
+    read_back(&t, &answer(&t, at(1.1e-7), SolveStatus::Success)).unwrap();
+    // c2 drawn about p1 itself, the port reviewer's case: refused as drawn.
+    let t = tangent_pair(
+        [30.0, 0.0],
+        [10.0, 12.0],
+        "p0000001",
+        "outside",
+        false,
+        [5.0, 5.0],
+    );
+    refused(&t, t.system.values.clone(), "one centre point");
+    // Inside, on one centre, is PlaneGCS's form met (r1 = r2): kept.
+    let t = tangent_pair(
+        [30.0, 0.0],
+        [10.0, 10.0],
+        "p0000001",
+        "inside",
+        false,
+        [5.0, 5.0],
+    );
+    read_back(
+        &t,
+        &answer(&t, t.system.values.clone(), SolveStatus::Success),
+    )
+    .unwrap();
+}
+
+#[test]
 fn a_direction_is_carried_by_the_smaller_lever_of_its_own_lines() {
     // Decision 5: an angle's gap is the angle carried by the smaller lever of its own two
     // curves. n1, 50 mm along the x axis, and n2, 1 mm, parallel to it 7 above, its end
