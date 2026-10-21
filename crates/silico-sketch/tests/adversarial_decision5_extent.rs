@@ -1,17 +1,22 @@
 //! /break-it on decision 5's tolerance: a redundant constraint is kept when its gap (the
 //! least distance a point must move for it to hold; an angle carried by the smaller of its
-//! own curves' levers) is within ε = max(1e-8 mm, 1e-9 × E, 1e-9 mm² / T), E the sketch's
-//! extent, the diagonal of the box around its points on the solution (Fable, 2026-10-20),
-//! and T its tightest circle-to-circle tangency (Fable, 2026-10-21). And the load path every
-//! solve takes: what a save keeps must be what its load gives.
+//! own curves' levers) is within ε = max(1e-8 mm, 1e-9 × E, 1e-9 mm² / max(T, 1e-5 mm)),
+//! E the extent of the part of the sketch it's in, the diagonal of the box around the
+//! part's points on the solution (Fable, 2026-10-20), and T the part's tightest
+//! circle-to-circle tangency (Fable, 2026-10-21); a part is the sketch's unknowns joined by
+//! every row sent (Fable, 2026-10-21, adversarial_decision5_parts.rs). And the load path
+//! every solve takes: what a save keeps must be what its load gives.
 //!
 //! Found on the rule's first scale, the sketch's longest line or radius: that measured the
 //! sketch's curves, not where its geometry is, so a gap a direction carries past a short
 //! line's ends (a point on its extension, a circle tangent to it far along, two points
 //! mirrored about it far off), which grows with the distance, was refused against 1e-8 mm
-//! though FreeCAD solves the sketch. The extent covers every such distance. Still recorded:
-//! the extent counts geometry the constraint has nothing to do with (a construction line a
-//! kilometre away), so how far two dimensions may disagree depends on what else is drawn.
+//! though FreeCAD solves the sketch. The extent covers every such distance. And it's the
+//! extent of the constraint's part of the sketch: geometry no row joins to it (a
+//! construction line a kilometre away, unconstrained) doesn't count, since no slack reaches
+//! the constraint from there; geometry joined to it does, however far, so within a part how
+//! far two dimensions may disagree still depends on what else is drawn, loud, with the gap
+//! reported.
 //!
 //! Found next, fixed by T: PlaneGCS measures a tangency between circles or arcs in mm², as
 //! d² − (r1 ± r2)² = (d − (r1 ± r2)) × T, T = d + (r1 ± r2), so a solve that holds it within
@@ -321,16 +326,17 @@ fn far_points_symmetric_about_a_short_line_are_kept() {
     assert!(broke.is_empty(), "{}", broke.join("\n"));
 }
 
-// --- L from geometry the constraint has nothing to do with ---------------------------------
+// --- E from geometry the constraint has nothing to do with --------------------------------
 
 /// A 10 mm horizontal line from (1, 1), its length given twice: 10 and `second` (a distance
 /// between its ends), and, if `far`, a 1 km construction line 900 m below, unconstrained.
 fn twice_dimensioned(second: f64, length: f64, far: bool) -> Checked {
-    twice_dimensioned_beside(second, length, far.then_some(1e6))
+    twice_dimensioned_beside(second, length, far.then_some(1e6), false)
 }
 
-/// [`twice_dimensioned`], the construction line `far` long, if any.
-fn twice_dimensioned_beside(second: f64, length: f64, far: Option<f64>) -> Checked {
+/// [`twice_dimensioned`], the construction line `far` long, if any, and if `joined`, its
+/// ends dimensioned from p1 and from each other (k6 to k9), in whole nanometres: one part.
+fn twice_dimensioned_beside(second: f64, length: f64, far: Option<f64>, joined: bool) -> Checked {
     let mut points = vec![
         point("p0000001", 1.0, 1.0),
         point("p0000002", 1.0 + length, 1.0),
@@ -353,6 +359,21 @@ fn twice_dimensioned_beside(second: f64, length: f64, far: Option<f64>) -> Check
             r#""type": "distance", "a": "p0000001", "b": "p0000002", "value": {second}, "driving": true"#
         ),
     ));
+    if let (Some(far), true) = (far, joined) {
+        for (n, kind, a, b, value) in [
+            (6, "distance_x", "p0000001", "p0000003", -500001.0),
+            (7, "distance_y", "p0000001", "p0000003", -900001.0),
+            (8, "distance_x", "p0000003", "p0000004", far),
+            (9, "distance_y", "p0000003", "p0000004", 0.0),
+        ] {
+            constraints.push(k(
+                n,
+                &format!(
+                    r#""type": "{kind}", "a": "{a}", "b": "{b}", "value": {value}, "driving": true"#
+                ),
+            ));
+        }
+    }
     checked(&text(&points, &lines, &[], &[], &constraints))
 }
 
@@ -367,38 +388,56 @@ fn two_lengths_five_nanometres_apart_conflict_on_a_small_sketch() {
 }
 
 #[test]
-fn an_unrelated_construction_line_lets_two_lengths_five_micrometres_apart_agree() {
-    // SPEC QUESTION, recorded as it stands: the same 10 mm line, dimensioned 10 and
-    // 10.000005, beside an unconstrained construction line 1 km long and 900 m away. The
-    // box is (-500000, -900000) to (500000, 1): E = √(1,000,000² + 900,001²) = 1,345,363
-    // mm, ε = 1.3e-3 mm, so the 5e-6 mm gap is "met": the sketch solves Ok, one length
-    // kept as redundant. Whether two dimensions conflict depends on what else is drawn; a
-    // construction line deleted (or shortened below 5 m) makes the same part over-defined.
-    // FreeCAD calls both redundant (its error² < 1e-10); SolidWorks' tolerance isn't known
-    // here.
+fn an_unrelated_construction_line_leaves_two_lengths_five_micrometres_apart_conflicting() {
+    // Found by break-it, fixed by parts: the same 10 mm line, dimensioned 10 and 10.000005,
+    // beside an unconstrained construction line 1 km long and 900 m away. Sketch-wide, the
+    // box (-500000, -900000) to (500000, 1) gave E = √(1,000,000² + 900,001²) = 1,345,363
+    // mm and ε 1.3e-3, so the 5e-6 mm gap was "met" and whether two dimensions conflict
+    // depended on what else was drawn. No row joins the construction line to the 10 mm one:
+    // the length's part is the line's two points, E 10, ε 1e-8: refused, as without it.
     let mut w = worker();
-    let s = solved(&twice_dimensioned(10.000005, 10.0, true), &mut w).unwrap();
+    let e = solved(&twice_dimensioned(10.000005, 10.0, true), &mut w).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::OverConstrained, "{e}");
+    assert_eq!(e.elements().len(), 1, "{e}");
+    assert!(e.message().contains("of the part's 1e1 mm extent"), "{e}");
+}
+
+#[test]
+fn an_unrelated_construction_line_leaves_a_one_and_a_two_nanometre_length_conflicting() {
+    // Found by break-it, fixed by parts: a line 1 nm long dimensioned 1 nm and 2 nm, a 100%
+    // disagreement, beside the kilometre construction line, unconstrained (sketch-wide, ε
+    // 1.3e-3 kept it, "met within 1e-6 mm"): its part is its own, E 1e-6, ε the floor:
+    // refused, as without the construction line.
+    let mut w = worker();
+    for far in [true, false] {
+        let e = solved(&twice_dimensioned(0.000002, 0.000001, far), &mut w).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::OverConstrained, "{far}: {e}");
+        assert!(e.message().contains("past the 1e-8 mm"), "{far}: {e}");
+    }
+}
+
+#[test]
+fn a_construction_line_joined_to_two_lengths_five_micrometres_apart_lets_them_agree() {
+    // RECORDED, what remains within a part: the kilometre construction line's ends
+    // dimensioned from p1 (-500001, -900001) and from each other (1000000, 0), so it and
+    // the 10 mm line are one part, E = √(1,000,000² + 900,001²) = 1,345,363 mm, ε 1.3e-3:
+    // the 5e-6 mm disagreement is kept, its gap reported. The exact rule (decision 5's
+    // dependence coefficients) would refuse it.
+    let mut w = worker();
+    let s = solved(
+        &twice_dimensioned_beside(10.000005, 10.0, Some(1e6), true),
+        &mut w,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
     let gaps: Vec<f64> = s.redundant.values().copied().collect();
     assert_eq!(gaps.len(), 1, "{:?}", s.redundant);
     assert!((gaps[0] - 5e-6).abs() < 1e-9, "{gaps:?}");
 }
 
-#[test]
-fn an_unrelated_construction_line_lets_a_one_and_a_two_nanometre_length_agree() {
-    // SPEC QUESTION, recorded as it stands: a line 1 nm long dimensioned 1 nm and 2 nm, a
-    // 100% disagreement, beside the kilometre construction line (ε 1.3e-3, as above): Ok,
-    // "met within 1e-6 mm".
-    // Without the construction line it's refused (the next test).
-    let mut w = worker();
-    let s = solved(&twice_dimensioned(0.000002, 0.000001, true), &mut w).unwrap();
-    assert_eq!(s.redundant.len(), 1, "{:?}", s.redundant);
-    let e = solved(&twice_dimensioned(0.000002, 0.000001, false), &mut w).unwrap_err();
-    assert_eq!(e.code(), ErrorCode::OverConstrained, "{e}");
-}
-
-/// A 10 mm horizontal line from (1, 1), its length given twice, 10 and `second`, and a free
-/// construction line beside it on y = 1, from (12, 1) to (`to`, 1), unconstrained: every
-/// point on y = 1, so the extent is `to` − 1.
+/// A 10 mm horizontal line from (1, 1), its length given twice, 10 and `second`, and a
+/// construction line beside it on y = 1, from (12, 1) to (`to`, 1), joined to it: held
+/// horizontal (k6) and its start 1 right of the line's end (k7). Every point on y = 1 and
+/// one part, so the extent is `to` − 1.
 fn twice_dimensioned_in_a_row(second: f64, to: f64) -> Checked {
     let points = [
         point("p0000001", 1.0, 1.0),
@@ -422,6 +461,11 @@ fn twice_dimensioned_in_a_row(second: f64, to: f64) -> Checked {
             r#""type": "distance", "a": "p0000001", "b": "p0000002", "value": {second}, "driving": true"#
         ),
     ));
+    constraints.push(k(6, r#""type": "horizontal", "line": "n0000002""#));
+    constraints.push(k(
+        7,
+        r#""type": "distance_x", "a": "p0000002", "b": "p0000003", "value": 1, "driving": true"#,
+    ));
     checked(&text(&points, &lines, &[], &[], &constraints))
 }
 
@@ -433,7 +477,10 @@ fn two_lengths_a_nanometre_apart_conflict_within_a_metres_extent_and_agree_past_
     let mut w = worker();
     let e = solved(&twice_dimensioned_in_a_row(10.000001, 1000.0), &mut w).unwrap_err();
     assert_eq!(e.code(), ErrorCode::OverConstrained, "{e}");
-    assert!(e.message().contains("of its 9.99e2 mm extent"), "{e}");
+    assert!(
+        e.message().contains("of the part's 9.99e2 mm extent"),
+        "{e}"
+    );
     let s = solved(&twice_dimensioned_in_a_row(10.000001, 1002.0), &mut w)
         .unwrap_or_else(|e| panic!("{e}"));
     let gaps: Vec<f64> = s.redundant.values().copied().collect();
@@ -548,8 +595,8 @@ fn a_point_715_mm_along_held_a_micrometre_off_is_kept_and_two_off_is_refused() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(f64::NAN);
     assert!((1.17e-6..=1.23e-6).contains(&worst), "{e}");
-    assert!(e.message().contains("past this sketch's 7.150"), "{e}");
-    assert!(e.message().contains("of its 7.1500"), "{e}");
+    assert!(e.message().contains("(k0000007), past the 7.150"), "{e}");
+    assert!(e.message().contains("of the part's 7.1500"), "{e}");
     assert!(e.message().contains("e2 mm extent"), "{e}");
 }
 
@@ -801,10 +848,13 @@ fn a_tangency_of_a_thirty_second_of_a_millimetre_keeps_3_point_2e_minus_8_and_no
         "{e}"
     );
     assert!(e.message().contains("by up to 3.4"), "{e}");
-    assert!(e.message().contains("past this sketch's 3.2e-8 mm"), "{e}");
+    assert!(
+        e.message().contains("past the 3.2e-8 mm of the part"),
+        "{e}"
+    );
     assert!(
         e.message().contains(
-            "1e-9 mm² over the 3.125e-2 mm of its tightest circle tangency, or 1e-8 mm at least"
+            "1e-9 mm² over the 3.125e-2 mm of its tightest circle tangency (1e-5 mm at the least), or 1e-8 mm at least"
         ),
         "{e}"
     );
@@ -832,7 +882,7 @@ fn a_tangency_of_two_micrometres_keeps_four_tenths_of_a_nanometre_and_not_six() 
         (ErrorCode::OverConstrained, &["k0000011".to_owned()][..]),
         "{e}"
     );
-    assert!(e.message().contains("past this sketch's 4.99999"), "{e}");
+    assert!(e.message().contains("past the 4.99999"), "{e}");
     assert!(
         e.message().contains("of its tightest circle tangency"),
         "{e}"

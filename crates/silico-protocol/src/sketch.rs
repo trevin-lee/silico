@@ -406,6 +406,33 @@ pub struct SketchSystem {
     pub algorithms: Vec<Algorithm>,
 }
 
+/// One part of a sketch's system ([`SketchSystem::parts`]): unknowns no constraint joins to
+/// another part's. Which part is which says nothing beyond that, and is never output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Part(usize);
+
+/// The parts of a sketch's system ([`SketchSystem::parts`]), each unknown's resolved once.
+#[derive(Debug, Clone)]
+pub struct Parts<'a> {
+    system: &'a SketchSystem,
+    /// Each unknown's part, by its place in `system.unknowns`.
+    roots: Vec<usize>,
+}
+
+impl Parts<'_> {
+    /// The part `v` is in; none for a value that isn't an unknown.
+    pub fn of(&self, v: Value) -> Option<Part> {
+        let i = self.system.unknowns.binary_search(&v).ok()?;
+        self.roots.get(i).copied().map(Part)
+    }
+
+    /// The part constraint `c` is in: every unknown it reads is in one, joined by `c`
+    /// itself. None for a constraint that reads no unknown.
+    pub fn of_constraint(&self, c: &SolverConstraint) -> Option<Part> {
+        self.system.reads(c).into_iter().find_map(|v| self.of(v))
+    }
+}
+
 /// How a solve ended: PlaneGCS's `SolveStatus`, and one reading of it. A status means
 /// something only when the diagnosis found no conflict: FreeCAD doesn't solve a conflicting
 /// sketch, and PlaneGCS can report `Success` for one with its conflicting constraints unmet.
@@ -926,16 +953,15 @@ impl SketchSystem {
 }
 
 impl SketchSystem {
-    /// The part of the system `points` are in: the unknowns the constraints join to theirs
+    /// The parts of the system: its unknowns, joined by the constraints that read them
     /// (PlaneGCS splits a system into parts that share no unknown and solves each apart,
-    /// each constraint joining the unknowns it reads), and the constraints that read them;
-    /// every other value is held where it is, as a fixed value. At least the parts PlaneGCS
-    /// would solve them in: it drops redundant equations first, so its parts can be
-    /// smaller. Points that don't name a point their geometry has join nothing.
-    pub fn part(&self, points: &[PointOf]) -> SketchSystem {
-        let n = self.unknowns.len();
+    /// `System::initSolution`). Every constraint joins, whatever the solver later keeps or
+    /// drops, so no renumbering changes them; fixed values (the origin's, the axes', every
+    /// dimension's) are no part and join nothing. At least the parts PlaneGCS solves in: it
+    /// drops redundant equations first, so its parts can be smaller.
+    pub fn parts(&self) -> Parts<'_> {
         let index = |v: Value| self.unknowns.binary_search(&v).ok();
-        let mut parent: Vec<usize> = (0..n).collect();
+        let mut parent: Vec<usize> = (0..self.unknowns.len()).collect();
         fn root(parent: &mut [usize], mut i: usize) -> usize {
             while parent[i] != i {
                 parent[i] = parent[parent[i]];
@@ -952,20 +978,32 @@ impl SketchSystem {
                 }
             }
         }
-        let mut roots: Vec<usize> = points
+        let roots = (0..parent.len()).map(|i| root(&mut parent, i)).collect();
+        Parts {
+            system: self,
+            roots,
+        }
+    }
+
+    /// The part of the system `points` are in: the unknowns of their parts
+    /// ([`parts`](Self::parts)), and the constraints that read them; every other value is
+    /// held where it is, as a fixed value. Points that don't name a point their geometry
+    /// has join nothing.
+    pub fn part(&self, points: &[PointOf]) -> SketchSystem {
+        let parts = self.parts();
+        let mut wanted: Vec<Part> = points
             .iter()
             .filter_map(|&p| self.point_values(p))
             .flat_map(|v| [v.x, v.y])
-            .filter_map(index)
-            .map(|i| root(&mut parent, i))
+            .filter_map(|v| parts.of(v))
             .collect();
-        roots.sort_unstable();
-        roots.dedup();
-        let mut held = vec![false; n];
-        for (i, h) in held.iter_mut().enumerate() {
-            *h = roots.binary_search(&root(&mut parent, i)).is_ok();
-        }
-        let in_part = |v: Value| index(v).is_some_and(|i| held[i]);
+        wanted.sort_unstable();
+        wanted.dedup();
+        let in_part = |v: Value| {
+            parts
+                .of(v)
+                .is_some_and(|p| wanted.binary_search(&p).is_ok())
+        };
         SketchSystem {
             values: self.values.clone(),
             unknowns: self
@@ -2145,6 +2183,110 @@ mod tests {
         assert_eq!(part.values, s.values);
         assert_eq!(part.unknowns, [Value(2), Value(3)]);
         assert!(part.constraints.is_empty());
+    }
+
+    /// The origin (values 0 and 1, fixed), p1 (2, 3) and p2 (4, 5), the unknowns, each held
+    /// from the origin by its x and y (tags 1 to 4); and, if `joined`, a distance between
+    /// them (tag 5). Every dimension's value is 6, fixed.
+    fn two_held_points(joined: bool) -> (SketchSystem, SolverConstraint) {
+        let (origin, p1, p2) = (Geometry(0), Geometry(1), Geometry(2));
+        let point = |x: u32| {
+            SketchGeometry::Point(PointValues {
+                x: Value(x),
+                y: Value(x + 1),
+            })
+        };
+        let v = Value(6);
+        let held = |tag: u32, p: Geometry| {
+            [
+                SolverConstraint::DistanceX {
+                    tag: Tag(tag),
+                    a: PointOf::Point(origin),
+                    b: PointOf::Point(p),
+                    value: v,
+                },
+                SolverConstraint::DistanceY {
+                    tag: Tag(tag + 1),
+                    a: PointOf::Point(origin),
+                    b: PointOf::Point(p),
+                    value: v,
+                },
+            ]
+        };
+        let between = SolverConstraint::Distance {
+            tag: Tag(5),
+            a: PointOf::Point(p1),
+            b: PointOf::Point(p2),
+            value: v,
+        };
+        let mut constraints = [held(1, p1), held(3, p2)].concat();
+        if joined {
+            constraints.push(between);
+        }
+        let s = SketchSystem {
+            values: vec![0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 6.0],
+            unknowns: (2..6).map(Value).collect(),
+            geometry: vec![point(0), point(2), point(4)],
+            constraints,
+            algorithms: vec![Algorithm::DogLeg],
+        };
+        (s, between)
+    }
+
+    #[test]
+    fn parts_are_unknowns_joined_by_constraints_and_fixed_values_join_nothing() {
+        // Each point held from the origin: two parts, each a point's x and y; the origin's
+        // values and the dimensions' are fixed, so they're no part and don't join the two.
+        let (s, between) = two_held_points(false);
+        s.check().unwrap();
+        let parts = s.parts();
+        assert_eq!(parts.of(Value(0)), None, "the origin's x");
+        assert_eq!(parts.of(Value(1)), None, "the origin's y");
+        assert_eq!(parts.of(Value(6)), None, "a dimension's value");
+        let (x1, y1, x2, y2) = (
+            parts.of(Value(2)),
+            parts.of(Value(3)),
+            parts.of(Value(4)),
+            parts.of(Value(5)),
+        );
+        assert!(x1.is_some() && x2.is_some());
+        assert_eq!(x1, y1);
+        assert_eq!(x2, y2);
+        assert_ne!(x1, x2);
+        // A row's part is its unknowns' part, wherever the fixed values it reads come.
+        assert_eq!(parts.of_constraint(&s.constraints[0]), x1);
+        assert_eq!(parts.of_constraint(&s.constraints[3]), x2);
+        // Not sent, the distance would bridge the two; a row is read as it is, so it's the
+        // part of the first unknown it reads, p1's here.
+        assert_eq!(parts.of_constraint(&between), x1);
+        // A row that reads no unknown: none.
+        let fixed = SolverConstraint::DistanceX {
+            tag: Tag(6),
+            a: PointOf::Point(Geometry(0)),
+            b: PointOf::Point(Geometry(0)),
+            value: Value(6),
+        };
+        assert_eq!(parts.of_constraint(&fixed), None);
+        // The drag's part of p1 is p1's two unknowns and its two rows.
+        let part = s.part(&[PointOf::Point(Geometry(1))]);
+        assert_eq!(part.unknowns, [Value(2), Value(3)]);
+        assert_eq!(part.constraints, s.constraints[..2]);
+
+        // With the distance sent: one part, the distance's too.
+        let (s, between) = two_held_points(true);
+        s.check().unwrap();
+        let parts = s.parts();
+        let one = parts.of(Value(2));
+        assert!(one.is_some());
+        for v in 3..6 {
+            assert_eq!(parts.of(Value(v)), one, "{v}");
+        }
+        assert_eq!(parts.of_constraint(&between), one);
+        assert_eq!(parts.of_constraint(&s.constraints[3]), one);
+        assert_eq!(parts.of(Value(0)), None);
+        let part = s.part(&[PointOf::Point(Geometry(1))]);
+        assert_eq!(part.unknowns.len(), 4);
+        assert_eq!(part.constraints, s.constraints);
     }
 
     #[test]

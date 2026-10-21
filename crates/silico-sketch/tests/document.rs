@@ -393,7 +393,7 @@ fn twice_ten(x0: f64, dx: &str) -> Checked {
 #[test]
 fn two_lengths_a_nanometre_apart_conflict_and_equal_ones_agree_here_and_a_kilometre_out() {
     // Decision 5: PlaneGCS calls the horizontal distance redundant either way; Silico keeps
-    // it only when it's met on the solution within 1e-8 mm (the sketch's extent is its 10
+    // it only when it's met on the solution within 1e-8 mm (its part's extent is its 10
     // mm line, wherever the line is: position never counts).
     for x0 in [0.0, 999_980.0] {
         let s = solved(&twice_ten(x0, "10"), &mut worker()).unwrap();
@@ -442,7 +442,7 @@ fn a_nanometre_conflicts_under_a_metre_and_is_kept_over_one() {
     let e = solved(&length_twice(999.0, "999.000001"), &mut worker()).unwrap_err();
     assert_eq!(e.code(), ErrorCode::OverConstrained, "{e}");
     assert_eq!(e.elements().len(), 1, "{e}");
-    assert!(e.message().contains("past this sketch's 9.99"), "{e}");
+    assert!(e.message().contains("past the 9.99"), "{e}");
     assert!(
         e.suggestion().unwrap_or("").contains("driving: false"),
         "{e}"
@@ -454,8 +454,8 @@ fn a_nanometre_conflicts_under_a_metre_and_is_kept_over_one() {
 }
 
 /// A horizontal line n1 and a vertical line n2, both 10 long from p1 at the origin, the
-/// angle between them given as `angle` degrees; and, if `far`, a free construction line
-/// 1,000 long elsewhere in the sketch.
+/// angle between them given as `angle` degrees; and, if `far`, a point p5 at (1100, 100),
+/// dimensioned from p1 (k8, k9), so it's in the lines' part of the sketch.
 fn right_angle_given(angle: &str, far: bool) -> Checked {
     let angle = format!(
         r#"{{"id": "k0000007", "type": "angle", "a": "n0000001", "b": "n0000002", "value": {angle}, "driving": true}}"#
@@ -465,33 +465,27 @@ fn right_angle_given(angle: &str, far: bool) -> Checked {
         point("p0000002", 9.0, 0.5),
         point("p0000003", 0.5, 11.0),
     ];
-    let mut lines = vec![
+    let lines = [
         line("n0000001", "p0000001", "p0000002"),
         line("n0000002", "p0000001", "p0000003"),
     ];
+    let mut constraints = vec![
+        r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+        r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+        r#"{"id": "k0000003", "type": "horizontal", "line": "n0000001"}"#,
+        r#"{"id": "k0000004", "type": "vertical", "line": "n0000002"}"#,
+        r#"{"id": "k0000005", "type": "length", "line": "n0000001", "value": 10, "driving": true}"#,
+        r#"{"id": "k0000006", "type": "length", "line": "n0000002", "value": 10, "driving": true}"#,
+        &angle,
+    ];
     if far {
-        points.push(point("p0000004", 100.0, 100.0));
         points.push(point("p0000005", 1100.0, 100.0));
-        lines.push(
-            r#"{"id": "n0000003", "from": "p0000004", "to": "p0000005", "construction": true}"#
-                .to_owned(),
-        );
+        constraints.extend([
+            r#"{"id": "k0000008", "type": "distance_x", "a": "p0000001", "b": "p0000005", "value": 1100, "driving": true}"#,
+            r#"{"id": "k0000009", "type": "distance_y", "a": "p0000001", "b": "p0000005", "value": 100, "driving": true}"#,
+        ]);
     }
-    document(
-        &points,
-        &lines,
-        &[],
-        &[],
-        &[
-            r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
-            r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
-            r#"{"id": "k0000003", "type": "horizontal", "line": "n0000001"}"#,
-            r#"{"id": "k0000004", "type": "vertical", "line": "n0000002"}"#,
-            r#"{"id": "k0000005", "type": "length", "line": "n0000001", "value": 10, "driving": true}"#,
-            r#"{"id": "k0000006", "type": "length", "line": "n0000002", "value": 10, "driving": true}"#,
-            &angle,
-        ],
-    )
+    document(&points, &lines, &[], &[], &constraints)
 }
 
 #[test]
@@ -499,9 +493,10 @@ fn an_angle_off_is_measured_as_the_distance_it_moves_a_lines_end() {
     // Decision 5's angular conversion: a right angle given as 90.000002865°, 5.0e-8 rad off
     // what the horizontal and vertical make. Carried by a 10 mm line, a gap of 5.0e-7 mm
     // (hand: 2.865e-6° × π/180 × 10): past the 1.41e-8 of the lines alone (their points
-    // span 10 × 10), over_constrained. With a 1,000 mm construction line from (100, 100)
-    // to (1100, 100), the points span 1,100 × 100: an extent of √(1100² + 100²) = 1,104.5
-    // and a tolerance of 1.1045e-6: kept, the gap reported. Whichever of the three PlaneGCS drops, the gap is the same distance.
+    // span 10 × 10), over_constrained. With a point p5 at (1100, 100) dimensioned from p1,
+    // in the lines' part, the part's points span 1,100 × 100: an extent of √(1100² + 100²)
+    // = 1,104.5 and a tolerance of 1.1045e-6: kept, the gap reported. Whichever of the three
+    // PlaneGCS drops, the gap is the same distance.
     let e = solved(&right_angle_given("90.000002865", false), &mut worker()).unwrap_err();
     assert_eq!(e.code(), ErrorCode::OverConstrained, "{e}");
     let s = solved(&right_angle_given("90.000002865", true), &mut worker()).unwrap();

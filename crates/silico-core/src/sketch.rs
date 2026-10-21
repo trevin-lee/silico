@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use silico_protocol::{
-    Algorithm, Generation, Geometry, Op, PointOf, PointValues, Reply, SketchGeometry, SketchSystem,
-    SolveStatus, Solved, SolverConstraint, Tag, Value, arc_from_points, no_distance,
+    Algorithm, Generation, Geometry, Op, Part, Parts, PointOf, PointValues, Reply, SketchGeometry,
+    SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value, arc_from_points, no_distance,
     squared_distance,
 };
 
@@ -32,25 +32,41 @@ pub const ALGORITHMS: [Algorithm; 4] = [
 /// The least a redundant constraint's gap may be and still agree with the others, in
 /// millimetres (decision 5): a hundredth of the file's nanometre, a hundred times the
 /// solver's convergence on a position (1e-10 mm), and 86 times the spacing of doubles a
-/// kilometre out. A sketch's tolerance is this, [`EXTENT_TOLERANCE`] times its extent, or
-/// [`TANGENCY_TOLERANCE`] over its tightest circle tangency, whichever is most.
+/// kilometre out. A redundant constraint's tolerance is this, [`EXTENT_TOLERANCE`] times
+/// the extent of the part of the sketch it's in, or [`TANGENCY_TOLERANCE`] over that part's
+/// tightest circle tangency (at least [`LEAST_TANGENCY`]), whichever is most: a kept row's
+/// slack reaches only the unknowns of its own part
+/// ([`SketchSystem::parts`](silico_protocol::SketchSystem::parts)), which PlaneGCS solves
+/// apart from the rest.
 pub const LENGTH_TOLERANCE: f64 = 1e-8;
 
-/// How much a redundant constraint's gap may grow per millimetre of the sketch's extent, the
-/// diagonal of the box around its points (decision 5): ten times the solver's convergence
-/// on a direction (1e-10 rad), or on a position carried along a line's direction, either of
-/// which moves a point at most the extent away by 1e-10 × the extent. So two dimensions a
-/// nanometre apart conflict on any sketch that fits in a metre, corner to corner.
+/// How much a redundant constraint's gap may grow per millimetre of the extent of the part
+/// of the sketch it's in, the diagonal of the box around the part's points (decision 5):
+/// ten times the solver's convergence on a direction (1e-10 rad), or on a position carried
+/// along a line's direction, either of which moves a point at most the extent away by
+/// 1e-10 × the extent. So two dimensions a nanometre apart conflict on any part of a sketch
+/// that fits in a metre, corner to corner.
 pub const EXTENT_TOLERANCE: f64 = 1e-9;
 
-/// How much a redundant constraint's gap may grow per inverse millimetre of the sketch's
-/// tightest circle-to-circle tangency, in square millimetres (decision 5). PlaneGCS
-/// measures such a tangency as `d² − (r1 ± r2)²` (`ConstraintTangentCircumf::error`), its
-/// one row in mm², and a solve holds it within 1e-10 mm², which holds `|d − (r1 ± r2)|`
-/// only within 1e-10 / (d + r1 ± r2) mm. Ten times that, the margin [`EXTENT_TOLERANCE`]
+/// How much a redundant constraint's gap may grow per inverse millimetre of the tightest
+/// circle-to-circle tangency of the part of the sketch it's in, in square millimetres
+/// (decision 5). PlaneGCS measures such a tangency as `d² − (r1 ± r2)²`
+/// (`ConstraintTangentCircumf::error`), its one row in mm², and a solve holds it within
+/// 1e-10 mm², which holds `|d − (r1 ± r2)|` only within 1e-10 / (d + r1 ± r2) mm. Ten times that, the margin [`EXTENT_TOLERANCE`]
 /// has. Above [`LENGTH_TOLERANCE`] only when d + r1 ± r2 is under 0.1 mm: an inside
-/// tangency nearly concentric, or an outside one between tiny circles.
+/// tangency nearly concentric, or an outside one between tiny circles. At most 1e-4 mm:
+/// the tangency counts as [`LEAST_TANGENCY`] at the least.
 pub const TANGENCY_TOLERANCE: f64 = 1e-9;
+
+/// The least a part's tightest circle tangency counts as, in millimetres (decision 5): the
+/// square root of the 1e-10 mm² a solve holds the tangency's row within. A kept tangency
+/// leaves `|d − (r1 ± r2)|` within 1e-10 / T, and within T itself (two circles' gap is at
+/// most their centres' distance plus their radii's sum or difference), so within
+/// `min(T, 1e-10 / T)`, which is never more than 1e-5. Under 1e-5 the quotient only says
+/// where the solver happened to stop on a double root (equal radii inside: the row is d²
+/// alone, met anywhere under 1e-5), not how far the circles can be from tangent, which is
+/// the same 1e-5 from every start.
+pub const LEAST_TANGENCY: f64 = 1e-5;
 
 /// The squared distance between two tangent circles' centres, in mm², under which PlaneGCS
 /// measures their tangency as `r1 − r2`, in millimetres (`ConstraintTangentCircumf::error`,
@@ -1535,7 +1551,7 @@ impl Translation {
             ));
         }
         // Decision 5: a redundant constraint is kept only if it's met on the solution, its
-        // gap within the sketch's tolerance.
+        // gap within the tolerance of the part of the sketch it's in.
         let mut dropped: Vec<Tag> = solved
             .redundant
             .iter()
@@ -1544,36 +1560,48 @@ impl Translation {
             .collect();
         dropped.sort_unstable();
         dropped.dedup();
-        let extent = self.extent(values);
-        let tightest = self.tightest_tangency(values);
-        let tolerance = LENGTH_TOLERANCE
-            .max(EXTENT_TOLERANCE * extent)
-            .max(tightest.map_or(0.0, |t| TANGENCY_TOLERANCE / t));
+        let parts = self.system.parts();
+        let mut windows: BTreeMap<Option<Part>, Window> = BTreeMap::new();
         let mut gaps = Vec::with_capacity(dropped.len());
         let mut disagreeing = Vec::new();
-        let mut worst = 0.0f64;
+        // The disagreeing row with the largest gap (one that isn't a number the largest),
+        // the lowest tag on a tie, and its part's window.
+        let mut worst: Option<(Tag, f64, Window)> = None;
         for &tag in &dropped {
-            let gap = self.gap(self.sent(tag)?, values);
-            if !met(gap, tolerance) {
-                worst = if gap.is_nan() || worst.is_nan() {
-                    f64::NAN
-                } else {
-                    worst.max(gap)
+            let c = self.sent(tag)?;
+            let part = parts.of_constraint(c);
+            let window = *windows
+                .entry(part)
+                .or_insert_with(|| self.window(values, &parts, part));
+            let gap = self.gap(c, values);
+            if !met(gap, window.tolerance) {
+                let larger = match worst {
+                    None => true,
+                    Some((_, w, _)) => !w.is_nan() && (gap.is_nan() || gap > w),
                 };
+                if larger {
+                    worst = Some((tag, gap, window));
+                }
                 disagreeing.push(tag);
             }
             gaps.push((tag, gap));
         }
-        if !disagreeing.is_empty() {
+        if let Some((tag, worst, window)) = worst {
+            let Window {
+                extent,
+                tightest,
+                tolerance,
+            } = window;
             let tangency = tightest.map_or_else(String::new, |t| {
                 format!(
-                    "{TANGENCY_TOLERANCE:e} mm² over the {t:e} mm of its tightest circle tangency, "
+                    "{TANGENCY_TOLERANCE:e} mm² over the {t:e} mm of its tightest circle tangency ({LEAST_TANGENCY:e} mm at the least), "
                 )
             });
+            let id = self.id(tag)?;
             return Err(Error::new(
                 ErrorCode::OverConstrained,
                 format!(
-                    "constraints repeat others but disagree with them, by up to {worst:e} mm, past this sketch's {tolerance:e} mm ({EXTENT_TOLERANCE:e} of its {extent:e} mm extent, {tangency}or {LENGTH_TOLERANCE:e} mm at least)"
+                    "constraints repeat others but disagree with them, by up to {worst:e} mm ({id}), past the {tolerance:e} mm of the part of the sketch it's in ({EXTENT_TOLERANCE:e} of the part's {extent:e} mm extent, {tangency}or {LENGTH_TOLERANCE:e} mm at least)"
                 ),
             )
             .with_elements(self.ids(&disagreeing)?)
@@ -1955,13 +1983,34 @@ impl Translation {
         }
     }
 
-    /// The sketch's extent on `values` (decision 5): the diagonal of the axis-aligned box
-    /// around every point of the sketch (points, lines' ends, centres, and arcs' ends,
-    /// construction geometry included; the origin and axes never), measured as the core
-    /// measures lengths. 0 for a sketch of one point or none. A box's corners are a min and
-    /// a max, which no order changes, so the extent is the same bits on every platform.
-    fn extent(&self, values: &[f64]) -> f64 {
-        let mut points = self.points.values().map(|&p| self.xy(values, p));
+    /// Decision 5's window for the redundant constraints in `part` on `values`: its extent,
+    /// its tightest circle tangency, and the tolerance they give.
+    fn window(&self, values: &[f64], parts: &Parts, part: Option<Part>) -> Window {
+        let extent = self.extent(values, parts, part);
+        let tightest = self.tightest_tangency(values, parts, part);
+        let tolerance = LENGTH_TOLERANCE
+            .max(EXTENT_TOLERANCE * extent)
+            .max(tightest.map_or(0.0, |t| TANGENCY_TOLERANCE / t.max(LEAST_TANGENCY)));
+        Window {
+            extent,
+            tightest,
+            tolerance,
+        }
+    }
+
+    /// The extent of `part` of the sketch on `values` (decision 5): the diagonal of the
+    /// axis-aligned box around every point of the sketch whose x is in it (points, lines'
+    /// ends, centres, and arcs' ends, construction geometry included; the origin and axes
+    /// never), measured as the core measures lengths. 0 for a
+    /// part of one point or none (a constraint that reads no unknown is in none). A box's
+    /// corners are a min and a max, which no order changes, so the extent is the same bits
+    /// on every platform.
+    fn extent(&self, values: &[f64], parts: &Parts, part: Option<Part>) -> f64 {
+        let mut points = self
+            .points
+            .values()
+            .filter(|p| parts.of(p.x) == part)
+            .map(|&p| self.xy(values, p));
         let Some(first) = points.next() else {
             return 0.0;
         };
@@ -1971,16 +2020,17 @@ impl Translation {
         squared_distance(lo, hi).sqrt()
     }
 
-    /// The sketch's tightest circle-to-circle tangency on `values` (decision 5): the least,
-    /// over every one sent (circles and arcs, kept or dropped), of d + r1 + r2 outside or
-    /// d + |r1 − r2| inside, d the centres' distance; none if there's no such tangency. A
-    /// tangency whose centres are under [`CONCENTRIC_TANGENCY`] apart, squared, isn't
-    /// counted: PlaneGCS measures it in millimetres there. A minimum is the same whatever
-    /// the order, so it's the same bits on every platform.
-    fn tightest_tangency(&self, values: &[f64]) -> Option<f64> {
+    /// The tightest circle-to-circle tangency of `part` of the sketch on `values` (decision
+    /// 5): the least, over every one sent in it (circles and arcs, kept or dropped), of
+    /// d + r1 + r2 outside or d + |r1 − r2| inside, d the centres' distance; none if it has
+    /// no such tangency. A tangency whose centres are under [`CONCENTRIC_TANGENCY`] apart,
+    /// squared, isn't counted: PlaneGCS measures it in millimetres there. A minimum is the
+    /// same whatever the order, so it's the same bits on every platform.
+    fn tightest_tangency(&self, values: &[f64], parts: &Parts, part: Option<Part>) -> Option<f64> {
         self.system
             .constraints
             .iter()
+            .filter(|c| parts.of_constraint(c) == part)
             .filter_map(|c| match *c {
                 SolverConstraint::TangentCircles { a, b, internal, .. } => {
                     let ((ca, ra), (cb, rb)) = (self.circle(values, a), self.circle(values, b));
@@ -2156,6 +2206,17 @@ fn refusal(first: Answer, load: Result<Answer, Error>) -> Answer {
             outcome: Err(e),
         },
     }
+}
+
+/// Decision 5's window for the redundant constraints of one part of a sketch.
+#[derive(Debug, Clone, Copy)]
+struct Window {
+    /// The part's extent, in millimetres.
+    extent: f64,
+    /// The part's tightest circle tangency, in millimetres, as measured.
+    tightest: Option<f64>,
+    /// The most a redundant constraint's gap may be there and still agree.
+    tolerance: f64,
 }
 
 /// Whether a gap is within `tolerance` (decision 5); a gap that isn't a number isn't.

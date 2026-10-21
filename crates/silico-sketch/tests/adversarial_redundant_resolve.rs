@@ -24,8 +24,8 @@ use silico_protocol::{SketchSystem, Solved};
 const CLOSE: f64 = 1e-8;
 
 /// How far a kept slot's corner may sit from the analytic one: decision 5's ε = max(1e-8 mm,
-/// 1e-9 × E), E the sketch's extent, the diagonal of the box around its points
-/// (docs/design/m3.3-solving.md), worked out here from the slot's own sizes (its third term,
+/// 1e-9 × E), E the extent of the part of the sketch the row is in (a slot is one part),
+/// the diagonal of the box around its points (docs/design/m3.3-solving.md), worked out here from the slot's own sizes (its third term,
 /// for circle-to-circle tangencies, has no part: a slot's are lines tangent to arcs). Rectangles and
 /// triangles are held to CLOSE, which every case of their properties meets. A slot's corners
 /// are fixed through angular rows (the tangencies at its ends, its sides' parallel), carried
@@ -606,7 +606,7 @@ fn a_long_slot_keeps_its_equal_sides_within_the_slack_its_arcs_allow() {
 #[test]
 fn a_fat_slot_keeps_its_redundancies_by_the_sketchs_extent() {
     // Fable's case for a sketch-wide scale: sides 1 mm long, arcs of radius 100, whose rows
-    // carry the slack to the sides' equality; the sketch's extent, √(1² + 200²) = 200.0025,
+    // carry the slack to the sides' equality; the sketch's extent (one part), √(1² + 200²) = 200.0025,
     // gives a tolerance of 2.0e-7. Kept, from starts a little off, each gap within 2e-8. (Of
     // 3,000 starts drawn up to 0.2 off, the largest gap was 2.15e-9, the last start here,
     // so the sides' own length would keep these too; the extent is pinned by the core's
