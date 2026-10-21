@@ -441,3 +441,202 @@ fn a_solves_negative_zeros_are_sent_as_positive_zeros() {
         }
     }
 }
+
+// Round 2 of the CI mutants: each test below failed on a surviving mutant of the code.
+
+#[test]
+fn a_solves_negative_zero_xs_are_sent_as_positive_zeros() {
+    // The right half disc r 1 about (−0, 0): the arc from (−0, −1) counter-clockwise to
+    // (−0, 1), at −π/2 and π/2 from its centre (atan2(±1, +0)), and the line back. Every x
+    // is a zero, and each is sent as +0, as a_solves_negative_zeros_are_sent_as_positive_zeros
+    // has each y. Area π/2.
+    let mut d = Draw::new();
+    let o = d.point(-0.0, 0.0);
+    let s = d.point(-0.0, -1.0);
+    let e = d.point(-0.0, 1.0);
+    d.arc(&o, &s, &e);
+    d.line(&e, &s);
+    let p = d.made();
+    assert_eq!(p.regions.len(), 1);
+    assert!(close(p.regions[0].area(), PI / 2.0, 1e-15));
+    let sent = p.regions[0].outer.sent();
+    assert_eq!(
+        sent,
+        vec![
+            silico_protocol::Curve::Arc {
+                center: [0.0, 0.0],
+                start: [0.0, -1.0],
+                end: [0.0, 1.0],
+                radius: 1.0,
+                start_angle: -PI / 2.0,
+                end_angle: PI / 2.0,
+            },
+            silico_protocol::Curve::Line {
+                start: [0.0, 1.0],
+                end: [0.0, -1.0],
+            },
+        ]
+    );
+    // == takes −0 for +0: each x's sign, as sent.
+    for curve in &sent {
+        let points: Vec<[f64; 2]> = match *curve {
+            silico_protocol::Curve::Arc {
+                center, start, end, ..
+            } => vec![center, start, end],
+            silico_protocol::Curve::Line { start, end } => vec![start, end],
+            silico_protocol::Curve::Circle { center, .. } => vec![center],
+        };
+        for [x, _] in points {
+            assert!(x.is_sign_positive(), "{curve:?}");
+        }
+    }
+}
+
+#[test]
+fn a_point_on_a_major_arc_before_its_half_turn_is_on_it() {
+    // The arc r 5 about the origin from (5, 0) counter-clockwise to (−3, −4), 233.13°, and
+    // its chord; a triangle (4, 3), (8, 3), (4, 6) outside the circle, its corner (4, 3) on
+    // the arc at 36.87° (|(4, 3)| = 5): 0 from it, within the arc's first half turn (and
+    // more than a half turn before its end). Its sides leave the circle there: (1, 0) and
+    // (0, 1) each point out of it at (4, 3) (dot (4, 3) > 0), so each meets it only there.
+    let mut d = Draw::new();
+    let o = d.point(0.0, 0.0);
+    let s = d.point(5.0, 0.0);
+    let e = d.point(-3.0, -4.0);
+    let a = d.arc(&o, &s, &e);
+    d.line(&e, &s);
+    let corner = d.point(4.0, 3.0);
+    let (right, high) = (d.point(8.0, 3.0), d.point(4.0, 6.0));
+    let sides = [
+        d.line(&corner, &right),
+        d.line(&right, &high),
+        d.line(&high, &corner),
+    ];
+    assert_eq!(
+        draw::named(&d.refused()),
+        [&sides[0], &sides[2]]
+            .map(|side| (
+                format!("point {corner}, the end of line {side}, is 0 mm from arc {a}: {RULE}"),
+                vec![side.clone(), a.clone(), corner.clone()]
+            ))
+            .to_vec()
+    );
+}
+
+#[test]
+fn a_point_beyond_a_major_arcs_end_is_measured_off_its_circle_not_from_its_end() {
+    // The arc r 5 about the origin from (5, 0) counter-clockwise to (0, −(5 − 2⁻²⁵)), three
+    // quarters of a turn, its end 2⁻²⁵ (3e-8) inside its circle, and its chord; a triangle
+    // (0, −(5 + 3·2⁻²⁵)), (3, −9), (−3, −9) below it, its corner straight below the arc's
+    // end, on the ray of the end's angle: 3·2⁻²⁵ (8.94e-8) outside the circle, so that far
+    // from the arc there, though 2⁻²³ (1.19e-7) from the end's point. Its sides leave the
+    // corner downwards, away from the arc's end, so the end is 2⁻²³ from each.
+    let mut d = Draw::new();
+    let o = d.point(0.0, 0.0);
+    let s = d.point(5.0, 0.0);
+    let e = d.point(0.0, -(5.0 - libm::exp2(-25.0)));
+    let a = d.arc(&o, &s, &e);
+    d.line(&e, &s);
+    let corner = d.point(0.0, -(5.0 + 3.0 * libm::exp2(-25.0)));
+    let (right, left) = (d.point(3.0, -9.0), d.point(-3.0, -9.0));
+    let sides = [
+        d.line(&corner, &right),
+        d.line(&right, &left),
+        d.line(&left, &corner),
+    ];
+    assert_eq!(
+        draw::named(&d.refused()),
+        [&sides[0], &sides[2]]
+            .map(|side| (
+                format!(
+                    "point {corner}, the end of line {side}, is 8.940696716308594e-8 mm from arc {a}: {RULE}"
+                ),
+                vec![side.clone(), a.clone(), corner.clone()]
+            ))
+            .to_vec()
+    );
+}
+
+#[test]
+fn a_point_beyond_a_half_turns_end_is_on_it_by_its_start_alone() {
+    // The half turn r 5 about the origin from (3, 4) counter-clockwise to
+    // −(1 − 2⁻²⁶)·(3, 4) = (−3 + 3·2⁻²⁶, −4 + 4·2⁻²⁶): its end 5·2⁻²⁶ (7.45e-8) inside
+    // its circle, exactly opposite its start (3·e.y − 4·e.x is exactly 0), and its chord
+    // through the centre. A triangle beyond the end: its corner (−3.000000024000001,
+    // −4.000000032000002), −(3, 4) scaled by 1 + 8e-9 to a few ulps, so 5 × 8e-9 = 4e-8
+    // outside the circle and 4e-8 + 7.45e-8 = 1.145e-7 from the end's point. The corner is
+    // on the arc's last ray to the last bit: its cross with the start rounds to 0 (the
+    // start's left, inclusive) though its cross with the end rounds to −1.8e-15. A half
+    // turn is the start's left, so the corner is 4e-8 from the arc. The triangle's other
+    // corners are (−7, −4) and (−3, −8): its sides leave the circle at the corner, along
+    // −x and −y, away from the arc's end.
+    let mut d = Draw::new();
+    let o = d.point(0.0, 0.0);
+    let s = d.point(3.0, 4.0);
+    let e = d.point(
+        -3.0 + 3.0 * libm::exp2(-26.0),
+        -4.0 + 4.0 * libm::exp2(-26.0),
+    );
+    let a = d.arc(&o, &s, &e);
+    d.line(&e, &s);
+    let corner = d.point(-3.000000024000001, -4.000000032000002);
+    let (left, low) = (d.point(-7.0, -4.0), d.point(-3.0, -8.0));
+    let sides = [
+        d.line(&corner, &left),
+        d.line(&left, &low),
+        d.line(&low, &corner),
+    ];
+    let errors = draw::named(&d.refused());
+    assert_eq!(errors.len(), 2, "{errors:#?}");
+    for ((message, elements), side) in errors.iter().zip([&sides[0], &sides[2]]) {
+        let start = format!("point {corner}, the end of line {side}, is ");
+        let end = format!(" mm from arc {a}: {RULE}");
+        let gap: f64 = message
+            .strip_prefix(&start)
+            .and_then(|m| m.strip_suffix(&end))
+            .unwrap_or_else(|| panic!("{message}"))
+            .parse()
+            .unwrap();
+        assert!((gap - 4e-8).abs() < 1e-14, "{gap}");
+        assert_eq!(elements, &vec![side.clone(), a.clone(), corner.clone()]);
+    }
+}
+
+#[test]
+fn an_arc_whose_ends_point_one_way_sweeping_an_ulp_holds_no_point_a_quarter_turn_round() {
+    // An arc r 10⁴ about the origin whose end is its start moved 1.00000017e-7 out along
+    // its radius and a few ulps round: as computed, the start's and end's cross product is
+    // 0 and their dot product positive (one direction), but atan2 puts the end an ulp
+    // (4.4e-16 rad) counter-clockwise of the start, so the arc sweeps 4.4e-16 rad. Its ends
+    // are more than 1e-7 apart and the end within 1e-7 of its circle, so it's built, and
+    // its ends are open. A triangle outside the circle has its corner a quarter turn
+    // clockwise round it, (s.y, −s.x), exactly the radius from the centre: nowhere near
+    // the arc, which is all within 1e-7 of its start. Only the open ends are refused.
+    let (sx, sy) = (-7671.596045639507, -6414.562659490378);
+    let (ex, ey) = (-7671.596045716223, -6414.562659554524);
+    assert_eq!(sx * ey, sy * ex, "the ends point one way, as computed");
+    assert!(libm::atan2(ey, ex) > libm::atan2(sy, sx));
+    let mut d = Draw::new();
+    let o = d.point(0.0, 0.0);
+    let s = d.point(sx, sy);
+    let e = d.point(ex, ey);
+    let a = d.arc(&o, &s, &e);
+    // The corner, then out along its radius, and across.
+    let corner = d.point(sy, -sx);
+    let out = d.point(-9600.0, 11500.0);
+    let across = d.point(-6400.0, 11500.0);
+    d.line(&corner, &out);
+    d.line(&out, &across);
+    d.line(&across, &corner);
+    assert_eq!(
+        draw::named(&d.refused()),
+        [&s, &e]
+            .map(|p| (
+                format!(
+                    "point {p} ends arc {a} and no other profile curve, so the profile is open there"
+                ),
+                vec![p.clone(), a.clone()]
+            ))
+            .to_vec()
+    );
+}
