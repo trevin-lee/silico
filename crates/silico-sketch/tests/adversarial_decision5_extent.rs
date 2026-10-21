@@ -1,0 +1,640 @@
+//! /break-it on decision 5's tolerance: a redundant constraint is kept when its gap (the
+//! least distance a point must move for it to hold; an angle carried by the smaller of its
+//! own curves' levers) is within ε = max(1e-8 mm, 1e-9 × E), E the sketch's extent, the
+//! diagonal of the box around its points on the solution (Fable, 2026-10-20). And the load
+//! path every solve takes: what a save keeps must be what its load gives.
+//!
+//! Found on the rule's first scale, the sketch's longest line or radius: that measured the
+//! sketch's curves, not where its geometry is, so a gap a direction carries past a short
+//! line's ends (a point on its extension, a circle tangent to it far along, two points
+//! mirrored about it far off), which grows with the distance, was refused against 1e-8 mm
+//! though FreeCAD solves the sketch. The extent covers every such distance. Still recorded:
+//! the extent counts geometry the constraint has nothing to do with (a construction line a
+//! kilometre away), so how far two dimensions may disagree depends on what else is drawn.
+//!
+//! Every case's constraints agree exactly or disagree by a known amount: Pythagorean
+//! directions (3, 4, 5) and nanometre values, so the expected answer is a hand calculation.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+#[path = "common/saves.rs"]
+mod saves;
+
+use proptest::prelude::*;
+use saves::{FEATURE, circle, point, solved, worker, written_back};
+use silico_core::ErrorCode;
+use silico_core::document::{Checked, ElementId};
+use silico_core::sketch::{SketchSolution, SketchSolver};
+
+/// A line, construction or not.
+fn line(id: &str, from: &str, to: &str, construction: bool) -> String {
+    format!(r#"{{"id": "{id}", "from": "{from}", "to": "{to}", "construction": {construction}}}"#)
+}
+
+fn text(points: &[String], lines: &[String], circles: &[String], constraints: &[String]) -> String {
+    format!(
+        "{{\"silico\": 1, \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}}, \"features\": [{{\"id\": \"{FEATURE}\", \"type\": \"sketch\", \"v\": 1, \"name\": \"S\", \"plane\": \"xy\", \"points\": [{}], \"lines\": [{}], \"circles\": [{}], \"arcs\": [], \"constraints\": [{}]}}]}}",
+        points.join(", "),
+        lines.join(", "),
+        circles.join(", "),
+        constraints.join(", ")
+    )
+}
+
+/// `text`, read and gated.
+fn checked(text: &str) -> Checked {
+    saves::checked(text).unwrap_or_else(|e| panic!("{e}"))
+}
+
+fn at(s: &SketchSolution, id: &str) -> [f64; 2] {
+    s.point(&ElementId::new(id).unwrap()).unwrap()
+}
+
+fn k(id: u32, form: &str) -> String {
+    format!(r#"{{"id": "k{id:07}", {form}}}"#)
+}
+
+fn fix(id: u32, p: &str, x: f64, y: f64) -> [String; 2] {
+    [
+        k(
+            id,
+            &format!(
+                r#""type": "distance_x", "a": "origin", "b": "{p}", "value": {x}, "driving": true"#
+            ),
+        ),
+        k(
+            id + 1,
+            &format!(
+                r#""type": "distance_y", "a": "origin", "b": "{p}", "value": {y}, "driving": true"#
+            ),
+        ),
+    ]
+}
+
+/// A 5 mm line n0000001 from p0000001, held at (1, 1), to p0000002 at (4, 5): its length and
+/// its run (3) fix it, its rise (4) only through the length's square root. `jitter` is how
+/// far p0000002 is drawn off (x, y).
+fn short_line(jitter: [f64; 2]) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let points = vec![
+        point("p0000001", 1.0, 1.0),
+        point("p0000002", 4.0 + jitter[0], 5.0 + jitter[1]),
+    ];
+    let lines = vec![line("n0000001", "p0000001", "p0000002", false)];
+    let mut constraints = fix(1, "p0000001", 1.0, 1.0).to_vec();
+    constraints.push(k(
+        3,
+        r#""type": "length", "line": "n0000001", "value": 5, "driving": true"#,
+    ));
+    constraints.push(k(
+        4,
+        r#""type": "distance_x", "a": "p0000001", "b": "p0000002", "value": 3, "driving": true"#,
+    ));
+    (points, lines, constraints)
+}
+
+/// What a solve of `doc` gives, then what its load gives (solved, written through the file,
+/// read, solved again): both must be Ok, at the same bits.
+fn save_and_load(doc: &Checked, w: &mut dyn SketchSolver) -> Result<SketchSolution, String> {
+    let s = solved(doc, w).map_err(|e| {
+        format!(
+            "refused on save: {:?} {e} / elements {:?}",
+            e.code(),
+            e.elements()
+        )
+    })?;
+    let l = solved(&written_back(doc, &s), w).map_err(|e| {
+        format!(
+            "solved on save, refused on load: {:?} {e} / elements {:?}",
+            e.code(),
+            e.elements()
+        )
+    })?;
+    if l.points != s.points || l.redundant.keys().ne(s.redundant.keys()) {
+        return Err(format!(
+            "the load differs: saved {:?} {:?}, loaded {:?} {:?}",
+            s.points, s.redundant, l.points, l.redundant
+        ));
+    }
+    Ok(s)
+}
+
+// --- A far point on a short line's extension ------------------------------------------------
+
+/// The short line, and p0000003 at (600001, 800001): on the line's extension exactly
+/// ((1, 1) + 200000 × (3, 4)), held there by its own x and y, and constrained onto the line
+/// too. Four constraints for three unknowns' worth of freedom: one is redundant, and all
+/// agree exactly.
+fn far_point_on_line(jitter: [f64; 2]) -> Checked {
+    let (mut points, lines, mut constraints) = short_line(jitter);
+    points.push(point("p0000003", 600001.0, 800001.0));
+    constraints.extend(fix(5, "p0000003", 600001.0, 800001.0));
+    constraints.push(k(
+        7,
+        r#""type": "on", "point": "p0000003", "curve": "n0000001""#,
+    ));
+    checked(&text(&points, &lines, &[], &constraints))
+}
+
+#[test]
+fn far_point_on_a_short_lines_extension_drawn_exactly_is_kept() {
+    // The baseline: drawn on its solution, nothing moves, so nothing is off by more than
+    // rounding (the line's direction from exact points; 1e6 × 1e-16 is 1e-10 mm).
+    let mut w = worker();
+    let s = save_and_load(&far_point_on_line([0.0, 0.0]), &mut w).unwrap();
+    assert_eq!(at(&s, "p0000003"), [600001.0, 800001.0]);
+    assert_eq!(s.redundant.len(), 1, "{:?}", s.redundant);
+}
+
+#[test]
+fn far_point_on_a_short_lines_extension_drawn_off_by_ten_nanometres_is_kept() {
+    // Found by break-it, fixed by the extent: p0000002 drawn 1e-5 mm off its (4, 5): one
+    // Newton step leaves the line's length within the solver's convergence (1e-10) but not
+    // at 5 exactly, so its direction is off by about 1e-12 rad. The far point, a kilometre
+    // along, is then about 1e-6 mm off the line: PlaneGCS calls the constraint redundant
+    // (its error² under 1e-10), and so would FreeCAD, but the longest line's ε was 1e-8 mm,
+    // and the sketch was refused as over-constrained, though its constraints agree exactly.
+    // Its extent is 1,000,000 mm (the box (1, 1) to (600001, 800001)), its ε 1e-3: kept.
+    let mut w = worker();
+    let mut broke = Vec::new();
+    for jitter in [
+        [0.0, 1e-5],
+        [0.0, -1e-5],
+        [1e-5, 0.0],
+        [0.0, 3e-6],
+        [0.0, 3e-5],
+        [2e-5, -2e-5],
+    ] {
+        match save_and_load(&far_point_on_line(jitter), &mut w) {
+            Ok(s) => {
+                let p = at(&s, "p0000003");
+                if p != [600001.0, 800001.0] {
+                    broke.push(format!("{jitter:?}: the far point moved to {p:?}"));
+                }
+            }
+            Err(e) => broke.push(format!("{jitter:?}: {e}")),
+        }
+    }
+    assert!(broke.is_empty(), "{}", broke.join("\n"));
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 1000, failure_persistence: None, ..ProptestConfig::default() })]
+
+    /// The far point's case, drawn off by up to 1e-3 mm, biased to the convergence edge
+    /// (1e-5 and below), and placed at any whole multiple of (3, 4) along the line, out to
+    /// a kilometre.
+    #[test]
+    fn a_far_point_on_a_short_lines_extension_agrees_wherever_it_is_drawn(
+        jx in prop_oneof![Just(0.0), -1e-5f64..1e-5, -1e-3f64..1e-3],
+        jy in prop_oneof![Just(0.0), -1e-5f64..1e-5, -1e-3f64..1e-3],
+        along in prop_oneof![1u32..10, 1000u32..200_000],
+    ) {
+        let (mut points, lines, mut constraints) = short_line([jx, jy]);
+        let (x, y) = (1.0 + 3.0 * f64::from(along), 1.0 + 4.0 * f64::from(along));
+        points.push(point("p0000003", x, y));
+        constraints.extend(fix(5, "p0000003", x, y));
+        constraints.push(k(7, r#""type": "on", "point": "p0000003", "curve": "n0000001""#));
+        let doc = checked(&text(&points, &lines, &[], &constraints));
+        let mut w = worker();
+        let s = save_and_load(&doc, &mut w);
+        // Found by break-it, fixed as above: the first failure was 5380 × 5 mm (27 m) along,
+        // the line's end drawn 8.3e-6 mm high: a gap of 1.0000076e-8 mm against the longest
+        // line's ε 1e-8. Its extent's ε is 2.69e-5.
+        prop_assert!(s.is_ok(), "{} along: {}", along, s.unwrap_err());
+    }
+}
+
+// --- A small circle tangent to the line far along ------------------------------------------
+
+#[test]
+fn far_circle_tangent_to_a_short_line_is_kept() {
+    // Found by break-it, fixed by the extent (as the far point): a circle of radius 5 whose
+    // centre is held at (600001, 800001) + 5 × (−4, 3)/5 = (599997, 800004), left of the
+    // line's extension and tangent to it exactly. The longest line or radius was 5 mm, ε
+    // 1e-8 mm; the tangency's gap is the line's direction error times a kilometre, under
+    // 4e-11 rad × 1e6 = 4e-5 (hand). The extent is √(599996² + 800003²) = 1,000,000.0000125
+    // (the box (1, 1) to (599997, 800004)), ε 1.0e-3: kept.
+    let mut w = worker();
+    let mut broke = Vec::new();
+    for jitter in [[0.0, 0.0], [0.0, 1e-5], [0.0, -1e-5], [1e-5, 1e-5]] {
+        let (mut points, lines, mut constraints) = short_line(jitter);
+        points.push(point("p0000003", 599997.0, 800004.0));
+        constraints.extend(fix(5, "p0000003", 599997.0, 800004.0));
+        constraints.push(k(
+            7,
+            r#""type": "radius", "curve": "c0000001", "value": 5, "driving": true"#,
+        ));
+        constraints.push(k(
+            8,
+            r#""type": "tangent", "a": "n0000001", "b": "c0000001", "side": "left""#,
+        ));
+        let doc = checked(&text(
+            &points,
+            &lines,
+            &[circle("c0000001", "p0000003", 5.0)],
+            &constraints,
+        ));
+        if let Err(e) = save_and_load(&doc, &mut w) {
+            broke.push(format!("{jitter:?}: {e}"));
+        }
+    }
+    assert!(broke.is_empty(), "{}", broke.join("\n"));
+}
+
+/// The far tangent circle, its radius drawn 5 and given as `radius`: the tangency, from a
+/// centre held 5 off the line's extension, disagrees with it by `radius` − 5.
+fn far_circle_of_radius(radius: &str) -> Checked {
+    let (mut points, lines, mut constraints) = short_line([0.0, 0.0]);
+    points.push(point("p0000003", 599997.0, 800004.0));
+    constraints.extend(fix(5, "p0000003", 599997.0, 800004.0));
+    constraints.push(k(
+        7,
+        &format!(r#""type": "radius", "curve": "c0000001", "value": {radius}, "driving": true"#),
+    ));
+    constraints.push(k(
+        8,
+        r#""type": "tangent", "a": "n0000001", "b": "c0000001", "side": "left""#,
+    ));
+    checked(&text(
+        &points,
+        &lines,
+        &[circle("c0000001", "p0000003", 5.0)],
+        &constraints,
+    ))
+}
+
+#[test]
+fn far_circle_tangent_to_a_short_line_keeps_a_disagreement_under_the_extents_tolerance() {
+    // ε at a kilometre's extent is 1.0e-3 (as above), but only gaps under PlaneGCS's own
+    // 1e-5 reach it: past that PlaneGCS calls the rows conflicting (the radius given as
+    // 5.0005 is refused so, "the sketch's constraints conflict"). So the extent's side is
+    // pinned here, and its refusing side by the core's stand-in tests: the radius given as
+    // 5.000005, drawn on its solution so the line's direction is exact, a gap of 5e-6, is
+    // kept and reported, where the longest line or radius (5 mm, ε 1e-8) refused it.
+    let mut w = worker();
+    let s = solved(&far_circle_of_radius("5.000005"), &mut w).unwrap_or_else(|e| panic!("{e}"));
+    let gaps: Vec<f64> = s.redundant.values().copied().collect();
+    assert!(
+        gaps.len() == 1 && (4.9e-6..=5.1e-6).contains(&gaps[0]),
+        "{:?}",
+        s.redundant
+    );
+    let e = solved(&far_circle_of_radius("5.0005"), &mut w).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::OverConstrained, "{e}");
+    assert!(
+        e.message().starts_with("the sketch's constraints conflict"),
+        "{e}"
+    );
+}
+
+// --- Two far points mirrored about the short line -------------------------------------------
+
+#[test]
+fn far_points_symmetric_about_a_short_line_are_kept() {
+    // Kept since the extent (the box (1, 1) to (800001, 936001), √(800000² + 936000²) =
+    // 1,231,298.5, ε 1.23e-3). Held (the solver drops one of the points' own dimensions
+    // here, not the symmetry): (800001, 600001) and (352001, 936001) mirror each other
+    // about the line through (1, 1) along (3, 4): the reflection [[−7, 24], [24, 7]] / 25 of
+    // (800000, 600000) is (352000, 936000), exactly. Both held by their x and y, and
+    // symmetric about the line too: two redundant rows, both met exactly.
+    let mut w = worker();
+    let mut broke = Vec::new();
+    for jitter in [[0.0, 0.0], [0.0, 1e-5], [0.0, -1e-5], [1e-5, 1e-5]] {
+        let (mut points, lines, mut constraints) = short_line(jitter);
+        points.push(point("p0000003", 800001.0, 600001.0));
+        points.push(point("p0000004", 352001.0, 936001.0));
+        constraints.extend(fix(5, "p0000003", 800001.0, 600001.0));
+        constraints.extend(fix(7, "p0000004", 352001.0, 936001.0));
+        constraints.push(k(
+            9,
+            r#""type": "symmetric", "a": "p0000003", "b": "p0000004", "about": "n0000001""#,
+        ));
+        let doc = checked(&text(&points, &lines, &[], &constraints));
+        match save_and_load(&doc, &mut w) {
+            Ok(s) => {
+                if at(&s, "p0000003") != [800001.0, 600001.0]
+                    || at(&s, "p0000004") != [352001.0, 936001.0]
+                {
+                    broke.push(format!("{jitter:?}: moved {:?}", s.points));
+                }
+            }
+            Err(e) => broke.push(format!("{jitter:?}: {e}")),
+        }
+    }
+    assert!(broke.is_empty(), "{}", broke.join("\n"));
+}
+
+// --- L from geometry the constraint has nothing to do with ---------------------------------
+
+/// A 10 mm horizontal line from (1, 1), its length given twice: 10 and `second` (a distance
+/// between its ends), and, if `far`, a 1 km construction line 900 m below, unconstrained.
+fn twice_dimensioned(second: f64, length: f64, far: bool) -> Checked {
+    twice_dimensioned_beside(second, length, far.then_some(1e6))
+}
+
+/// [`twice_dimensioned`], the construction line `far` long, if any.
+fn twice_dimensioned_beside(second: f64, length: f64, far: Option<f64>) -> Checked {
+    let mut points = vec![
+        point("p0000001", 1.0, 1.0),
+        point("p0000002", 1.0 + length, 1.0),
+    ];
+    let mut lines = vec![line("n0000001", "p0000001", "p0000002", false)];
+    if let Some(far) = far {
+        points.push(point("p0000003", -500000.0, -900000.0));
+        points.push(point("p0000004", -500000.0 + far, -900000.0));
+        lines.push(line("n0000002", "p0000003", "p0000004", true));
+    }
+    let mut constraints = fix(1, "p0000001", 1.0, 1.0).to_vec();
+    constraints.push(k(3, r#""type": "horizontal", "line": "n0000001""#));
+    constraints.push(k(
+        4,
+        &format!(r#""type": "length", "line": "n0000001", "value": {length}, "driving": true"#),
+    ));
+    constraints.push(k(
+        5,
+        &format!(
+            r#""type": "distance", "a": "p0000001", "b": "p0000002", "value": {second}, "driving": true"#
+        ),
+    ));
+    checked(&text(&points, &lines, &[], &constraints))
+}
+
+#[test]
+fn two_lengths_five_nanometres_apart_conflict_on_a_small_sketch() {
+    // The rule's own side: 10 and 10.000005 on a sketch whose longest line is 10 mm:
+    // ε = 1e-8 mm, the gap 5e-6 mm. Refused as over-constrained, naming the one dropped.
+    let mut w = worker();
+    let e = solved(&twice_dimensioned(10.000005, 10.0, false), &mut w).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::OverConstrained, "{e}");
+    assert!(!e.elements().is_empty(), "{e}");
+}
+
+#[test]
+fn an_unrelated_construction_line_lets_two_lengths_five_micrometres_apart_agree() {
+    // SPEC QUESTION, recorded as it stands: the same 10 mm line, dimensioned 10 and
+    // 10.000005, beside an unconstrained construction line 1 km long and 900 m away. The
+    // box is (-500000, -900000) to (500000, 1): E = √(1,000,000² + 900,001²) = 1,345,363
+    // mm, ε = 1.3e-3 mm, so the 5e-6 mm gap is "met": the sketch solves Ok, one length
+    // kept as redundant. Whether two dimensions conflict depends on what else is drawn; a
+    // construction line deleted (or shortened below 5 m) makes the same part over-defined.
+    // FreeCAD calls both redundant (its error² < 1e-10); SolidWorks' tolerance isn't known
+    // here.
+    let mut w = worker();
+    let s = solved(&twice_dimensioned(10.000005, 10.0, true), &mut w).unwrap();
+    let gaps: Vec<f64> = s.redundant.values().copied().collect();
+    assert_eq!(gaps.len(), 1, "{:?}", s.redundant);
+    assert!((gaps[0] - 5e-6).abs() < 1e-9, "{gaps:?}");
+}
+
+#[test]
+fn an_unrelated_construction_line_lets_a_one_and_a_two_nanometre_length_agree() {
+    // SPEC QUESTION, recorded as it stands: a line 1 nm long dimensioned 1 nm and 2 nm, a
+    // 100% disagreement, beside the kilometre construction line (ε 1.3e-3, as above): Ok,
+    // "met within 1e-6 mm".
+    // Without the construction line it's refused (the next test).
+    let mut w = worker();
+    let s = solved(&twice_dimensioned(0.000002, 0.000001, true), &mut w).unwrap();
+    assert_eq!(s.redundant.len(), 1, "{:?}", s.redundant);
+    let e = solved(&twice_dimensioned(0.000002, 0.000001, false), &mut w).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::OverConstrained, "{e}");
+}
+
+/// A 10 mm horizontal line from (1, 1), its length given twice, 10 and `second`, and a free
+/// construction line beside it on y = 1, from (12, 1) to (`to`, 1), unconstrained: every
+/// point on y = 1, so the extent is `to` − 1.
+fn twice_dimensioned_in_a_row(second: f64, to: f64) -> Checked {
+    let points = [
+        point("p0000001", 1.0, 1.0),
+        point("p0000002", 11.0, 1.0),
+        point("p0000003", 12.0, 1.0),
+        point("p0000004", to, 1.0),
+    ];
+    let lines = [
+        line("n0000001", "p0000001", "p0000002", false),
+        line("n0000002", "p0000003", "p0000004", true),
+    ];
+    let mut constraints = fix(1, "p0000001", 1.0, 1.0).to_vec();
+    constraints.push(k(3, r#""type": "horizontal", "line": "n0000001""#));
+    constraints.push(k(
+        4,
+        r#""type": "length", "line": "n0000001", "value": 10, "driving": true"#,
+    ));
+    constraints.push(k(
+        5,
+        &format!(
+            r#""type": "distance", "a": "p0000001", "b": "p0000002", "value": {second}, "driving": true"#
+        ),
+    ));
+    checked(&text(&points, &lines, &[], &constraints))
+}
+
+#[test]
+fn two_lengths_a_nanometre_apart_conflict_within_a_metres_extent_and_agree_past_it() {
+    // The rule's edge: 10 and 10.000001 (a gap of 1.00000008e-6 mm, 10.000001's rounding)
+    // on a sketch whose points span 999 mm (the construction line to x 1000: ε 9.99e-7),
+    // refused, and 1001 mm (to x 1002: ε 1.001e-6), kept with the gap reported.
+    let mut w = worker();
+    let e = solved(&twice_dimensioned_in_a_row(10.000001, 1000.0), &mut w).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::OverConstrained, "{e}");
+    assert!(e.message().contains("of its 999 mm extent"), "{e}");
+    let s = solved(&twice_dimensioned_in_a_row(10.000001, 1002.0), &mut w)
+        .unwrap_or_else(|e| panic!("{e}"));
+    let gaps: Vec<f64> = s.redundant.values().copied().collect();
+    assert_eq!(gaps.len(), 1, "{:?}", s.redundant);
+    assert!((0.99e-6..=1.01e-6).contains(&gaps[0]), "{gaps:?}");
+}
+
+// --- Lines of no size to speak of -----------------------------------------------------------
+
+/// A line from the origin (held on both axes) to (len, 0), horizontal, at `angle` degrees
+/// to x_axis as well.
+fn tiny_line(len: f64, angle: f64) -> Checked {
+    let points = vec![point("p0000001", 0.0, 0.0), point("p0000002", len, 0.0)];
+    let lines = vec![line("n0000001", "p0000001", "p0000002", false)];
+    let constraints = vec![
+        k(1, r#""type": "on", "point": "p0000001", "curve": "x_axis""#),
+        k(2, r#""type": "on", "point": "p0000001", "curve": "y_axis""#),
+        k(3, r#""type": "horizontal", "line": "n0000001""#),
+        k(
+            4,
+            &format!(
+                r#""type": "angle", "a": "x_axis", "b": "n0000001", "value": {angle}, "driving": true"#
+            ),
+        ),
+    ];
+    checked(&text(&points, &lines, &[], &constraints))
+}
+
+#[test]
+fn tiny_lines_horizontal_and_at_no_angle_agree() {
+    // Agreeing redundancy at every scale the gate takes (1e-150 squares to 1e-300, above 0).
+    let mut w = worker();
+    for len in [1.0, 1e-6, 1e-12, 1e-50, 1e-100, 1e-150] {
+        let s = solved(&tiny_line(len, 0.0), &mut w)
+            .unwrap_or_else(|e| panic!("{len}: {e} {:?}", e.elements()));
+        assert_eq!(at(&s, "p0000002")[1], 0.0, "{len}");
+        assert!(
+            s.redundant.values().all(|&g| g == 0.0),
+            "{len}: {:?}",
+            s.redundant
+        );
+    }
+}
+
+#[test]
+fn a_point_715_mm_along_a_5_mm_lines_extension_is_kept() {
+    // Found by break-it, fixed by the extent: the property's minimal case, at part scale. The
+    // 5 mm line from (1, 1) to (4, 5) drawn with its end (2.4943317280471605e-5,
+    // -1.7720700385223786e-5) off, and p0000003 at (430, 573) = (1, 1) + 143 × (3, 4), on
+    // the line exactly. Refused as over-constrained by the longest line's scale: k0000007
+    // (the point on the line) "disagrees by 1.0034e-8 mm, past this sketch's 1e-8 mm". The
+    // solver left the line's direction about 1.4e-11 rad off, 7e-11 mm at its own end (its
+    // 5 mm lever) and 1e-8 at the point's 715 mm. The box (1, 1) to (430, 573) is 429 ×
+    // 572, E = 715 (143 × 5), ε 7.15e-7: kept, its gap under the hand bound, 4e-11 rad (the
+    // line's direction, held by its length and run, each to 1e-10) × 715 = 3e-8.
+    let (mut points, lines, mut constraints) =
+        short_line([2.4943317280471605e-5, -1.7720700385223786e-5]);
+    points.push(point("p0000003", 430.0, 573.0));
+    constraints.extend(fix(5, "p0000003", 430.0, 573.0));
+    constraints.push(k(
+        7,
+        r#""type": "on", "point": "p0000003", "curve": "n0000001""#,
+    ));
+    let doc = checked(&text(&points, &lines, &[], &constraints));
+    let mut w = worker();
+    let s = save_and_load(&doc, &mut w).unwrap();
+    assert_eq!(at(&s, "p0000003"), [430.0, 573.0]);
+    let gaps: Vec<f64> = s.redundant.values().copied().collect();
+    assert!(gaps.len() == 1 && gaps[0] <= 3e-8, "{:?}", s.redundant);
+}
+
+/// The 715 mm case, p0000003 drawn and held at (430, `y`) instead of on the line.
+fn far_point_held_at(y: f64) -> Checked {
+    let (mut points, lines, mut constraints) =
+        short_line([2.4943317280471605e-5, -1.7720700385223786e-5]);
+    points.push(point("p0000003", 430.0, y));
+    constraints.extend(fix(5, "p0000003", 430.0, y));
+    constraints.push(k(
+        7,
+        r#""type": "on", "point": "p0000003", "curve": "n0000001""#,
+    ));
+    checked(&text(&points, &lines, &[], &constraints))
+}
+
+#[test]
+fn a_point_715_mm_along_held_a_micrometre_off_is_kept_and_two_off_is_refused() {
+    // ε pinned both ways at 7.15e-7 (E 715, as above). p0000003 held (0, δ) off the line,
+    // which runs along (3, 4)/5: its distance from the line is 0.6 δ (hand), give or take
+    // the line's own slack there, 3e-8 (as above). At δ = 1e-6 a gap of 6e-7 ± 3e-8, kept
+    // and reported; at δ = 2e-6, 1.2e-6 ± 3e-8, refused, naming the point on the
+    // line (k0000007, the row PlaneGCS drops).
+    let mut w = worker();
+    let s = save_and_load(&far_point_held_at(573.000001), &mut w).unwrap();
+    assert_eq!(at(&s, "p0000003"), [430.0, 573.000001]);
+    let gaps: Vec<f64> = s.redundant.values().copied().collect();
+    assert!(
+        gaps.len() == 1 && (5.7e-7..=6.3e-7).contains(&gaps[0]),
+        "{:?}",
+        s.redundant
+    );
+    let e = solved(&far_point_held_at(573.000002), &mut w).unwrap_err();
+    assert_eq!(
+        (e.code(), e.elements()),
+        (ErrorCode::OverConstrained, &["k0000007".to_owned()][..]),
+        "{e}"
+    );
+    let worst: f64 = e
+        .message()
+        .split("by up to ")
+        .nth(1)
+        .and_then(|m| m.split(' ').next())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(f64::NAN);
+    assert!((1.17e-6..=1.23e-6).contains(&worst), "{e}");
+    assert!(e.message().contains("past this sketch's 7.150"), "{e}");
+    assert!(e.message().contains("of its 715.00"), "{e}");
+}
+
+#[test]
+fn tiny_lines_name_one_redundant_constraint_and_one_freedom() {
+    // RECORDED BEHAVIOUR, not a claim that it's right (for the M3 review): below about
+    // 1e-13 mm (1e-50, 1e-100, 1e-150 here) PlaneGCS says dofs 3, and names k0000002
+    // (p0000001 on y_axis) redundant beside the angle. The angle's Jacobian row scales as
+    // 1/length (1e50), so the rank check, relative to the largest pivot, takes the unit rows
+    // for zero: a point held on both axes is called free. Not decision 5's (every gap is 0);
+    // PlaneGCS's diagnosis (1.1.3 does the same), on a line no file dimension can state,
+    // which the gate's "no length" (a squared distance of 0) lets through. Pinned so a
+    // solver change is noticed; a gate floor on a drawn line's length is the M3 review's.
+    // p0000001 held on both axes (2 rows, 2 unknowns), the line horizontal and at 0° (2
+    // rows, one unknown: the end's y): one constraint redundant, the end's x free.
+    let mut w = worker();
+    let named = |s: &SketchSolution| {
+        let ids: Vec<&str> = s.redundant.keys().map(|id| id.as_str()).collect();
+        (s.dofs, ids.join(" "))
+    };
+    for len in [1.0, 1e-6, 1e-12] {
+        let s = solved(&tiny_line(len, 0.0), &mut w).unwrap();
+        assert_eq!((s.dofs, s.redundant.len()), (1, 1), "{len:e} mm: {s:?}");
+    }
+    for len in [1e-50, 1e-100, 1e-150] {
+        let s = solved(&tiny_line(len, 0.0), &mut w).unwrap();
+        assert_eq!(
+            named(&s),
+            (3, "k0000002 k0000004".to_owned()),
+            "{len:e} mm: {s:?}"
+        );
+    }
+}
+
+#[test]
+fn tiny_lines_horizontal_and_at_thirty_degrees_conflict() {
+    // A line can't be horizontal and at 30° to x. On a 1 mm line it's refused; the question
+    // is where that stops. At 1e-8 mm and below the dropped constraint's gap (the rise, or
+    // 0.52 rad × the length) is under 1e-8 mm, decision 5's ε, and PlaneGCS's own check is
+    // under 1e-5: a sketch claiming both is kept, "met".
+    let mut w = worker();
+    let mut kept = Vec::new();
+    for len in [1.0, 1e-3, 1e-6, 1e-8, 1e-12, 1e-100, 1e-150] {
+        match solved(&tiny_line(len, 30.0), &mut w) {
+            Ok(s) => kept.push(format!(
+                "{len} mm: Ok, end at {:?}, redundant {:?}",
+                at(&s, "p0000002"),
+                s.redundant
+            )),
+            Err(e) => assert!(
+                matches!(e.code(), ErrorCode::OverConstrained),
+                "{len}: {:?} {e}",
+                e.code()
+            ),
+        }
+    }
+    // Survives: every length is refused, so no line is kept horizontal and at 30° at once.
+    assert!(kept.is_empty(), "{}", kept.join("\n"));
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 1000, failure_persistence: None, ..ProptestConfig::default() })]
+
+    /// The far point at part scale: a 5 mm reference line, the point on its extension at most
+    /// a metre out (a whole multiple of (3, 4)), the line's end drawn off by up to 0.1 mm,
+    /// biased to the solver's convergence edge.
+    #[test]
+    // Found by break-it, fixed by the extent: at 143 × 5 mm (715 mm) along, the end drawn
+    // (2.49e-5, -1.77e-5) off, refused, "disagree by up to 1.0034e-8 mm, past this sketch's
+    // 1e-8 mm" (pinned above). At `along` = a, E = 5a and ε = 5e-9 × a, against a hand
+    // bound of 2e-10 × a: the same 25× margin at every a.
+    fn a_point_on_a_short_lines_extension_within_a_metre_agrees(
+        jx in prop_oneof![Just(0.0), -3e-5f64..3e-5, -1e-1f64..1e-1],
+        jy in prop_oneof![Just(0.0), -3e-5f64..3e-5, -1e-1f64..1e-1],
+        along in 2u32..=200,
+    ) {
+        let (mut points, lines, mut constraints) = short_line([jx, jy]);
+        let (x, y) = (1.0 + 3.0 * f64::from(along), 1.0 + 4.0 * f64::from(along));
+        points.push(point("p0000003", x, y));
+        constraints.extend(fix(5, "p0000003", x, y));
+        constraints.push(k(7, r#""type": "on", "point": "p0000003", "curve": "n0000001""#));
+        let doc = checked(&text(&points, &lines, &[], &constraints));
+        let mut w = worker();
+        let s = save_and_load(&doc, &mut w);
+        prop_assert!(s.is_ok(), "{} along: {}", along, s.unwrap_err());
+    }
+}

@@ -32,15 +32,16 @@ pub const ALGORITHMS: [Algorithm; 4] = [
 /// The least a redundant constraint's gap may be and still agree with the others, in
 /// millimetres (decision 5): a hundredth of the file's nanometre, a hundred times the
 /// solver's convergence on a position (1e-10 mm), and 86 times the spacing of doubles a
-/// kilometre out. A sketch's tolerance is this or [`LEVER_TOLERANCE`] times its longest
-/// lever, whichever is more.
+/// kilometre out. A sketch's tolerance is this or [`EXTENT_TOLERANCE`] times its extent,
+/// whichever is more.
 pub const LENGTH_TOLERANCE: f64 = 1e-8;
 
-/// How much a redundant constraint's gap may grow per millimetre of the sketch's longest
-/// lever, its longest line or largest radius (decision 5): ten times the solver's
-/// convergence on a direction (1e-10 rad), which moves the far end of a lever L by
-/// 1e-10 × L. So two dimensions a nanometre apart conflict on any sketch under a metre.
-pub const LEVER_TOLERANCE: f64 = 1e-9;
+/// How much a redundant constraint's gap may grow per millimetre of the sketch's extent, the
+/// diagonal of the box around its points (decision 5): ten times the solver's convergence
+/// on a direction (1e-10 rad), or on a position carried along a line's direction, either of
+/// which moves a point at most the extent away by 1e-10 × the extent. So two dimensions a
+/// nanometre apart conflict on any sketch that fits in a metre, corner to corner.
+pub const EXTENT_TOLERANCE: f64 = 1e-9;
 
 /// How many loads, at most, a solve's answer is checked by: its solution written as the file
 /// holds it and solved as a load solves it, until one leaves it where it is
@@ -1526,7 +1527,8 @@ impl Translation {
             .collect();
         dropped.sort_unstable();
         dropped.dedup();
-        let tolerance = LENGTH_TOLERANCE.max(LEVER_TOLERANCE * self.lever(values));
+        let extent = self.extent(values);
+        let tolerance = LENGTH_TOLERANCE.max(EXTENT_TOLERANCE * extent);
         let mut gaps = Vec::with_capacity(dropped.len());
         let mut disagreeing = Vec::new();
         let mut worst = 0.0f64;
@@ -1546,7 +1548,7 @@ impl Translation {
             return Err(Error::new(
                 ErrorCode::OverConstrained,
                 format!(
-                    "constraints repeat others but disagree with them, by up to {worst:e} mm, past this sketch's {tolerance:e} mm"
+                    "constraints repeat others but disagree with them, by up to {worst:e} mm, past this sketch's {tolerance:e} mm (1e-9 of its {extent} mm extent, or 1e-8 mm at least)"
                 ),
             )
             .with_elements(self.ids(&disagreeing)?)
@@ -1885,19 +1887,20 @@ impl Translation {
         }
     }
 
-    /// The sketch's longest lever on `values`: its longest line or largest circle or arc
-    /// radius, whichever is more; 0 for a sketch with neither (decision 5).
-    fn lever(&self, values: &[f64]) -> f64 {
-        let lines = self.lines.values().map(|l| l.geometry);
-        let rounds = self
-            .circles
-            .values()
-            .chain(self.arcs.values().map(|a| &a.round))
-            .map(|r| r.geometry);
-        lines
-            .chain(rounds)
-            .filter_map(|g| self.lever_of(values, g))
-            .fold(0.0, f64::max)
+    /// The sketch's extent on `values` (decision 5): the diagonal of the axis-aligned box
+    /// around every point of the sketch (points, lines' ends, centres, and arcs' ends,
+    /// construction geometry included; the origin and axes never), measured as the core
+    /// measures lengths. 0 for a sketch of one point or none. A box's corners are a min and
+    /// a max, which no order changes, so the extent is the same bits on every platform.
+    fn extent(&self, values: &[f64]) -> f64 {
+        let mut points = self.points.values().map(|&p| self.xy(values, p));
+        let Some(first) = points.next() else {
+            return 0.0;
+        };
+        let (lo, hi) = points.fold((first, first), |(lo, hi), [x, y]| {
+            ([lo[0].min(x), lo[1].min(y)], [hi[0].max(x), hi[1].max(y)])
+        });
+        squared_distance(lo, hi).sqrt()
     }
 
     /// How far a sent constraint is from met on `values` (decision 5), in millimetres: the

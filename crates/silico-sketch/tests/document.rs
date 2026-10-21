@@ -393,7 +393,8 @@ fn twice_ten(x0: f64, dx: &str) -> Checked {
 #[test]
 fn two_lengths_a_nanometre_apart_conflict_and_equal_ones_agree_here_and_a_kilometre_out() {
     // Decision 5: PlaneGCS calls the horizontal distance redundant either way; Silico keeps
-    // it only when it's met on the solution within 1e-8 mm.
+    // it only when it's met on the solution within 1e-8 mm (the sketch's extent is its 10
+    // mm line, wherever the line is: position never counts).
     for x0 in [0.0, 999_980.0] {
         let s = solved(&twice_ten(x0, "10"), &mut worker()).unwrap();
         assert_eq!(s.redundant.len(), 1, "{x0}: {s:?}");
@@ -433,9 +434,10 @@ fn length_twice(len: f64, dx: &str) -> Checked {
 
 #[test]
 fn a_nanometre_conflicts_under_a_metre_and_is_kept_over_one() {
-    // Decision 5 (Fable, 2026-10-18): a sketch's tolerance is the larger of 1e-8 mm and 1e-9
-    // times its longest lever. A line 999 mm long given again as 999.000001: a gap of 1e-6
-    // past 9.99e-7, over_constrained, the message giving both. At 1001 against 1001.000001
+    // Decision 5 (Fable, 2026-10-18; its scale, 2026-10-20): a sketch's tolerance is the
+    // larger of 1e-8 mm and 1e-9 times its extent, the diagonal of the box around its
+    // points, here the line itself. A line 999 mm long given again as 999.000001: a gap of
+    // 1e-6 past 9.99e-7, over_constrained, the message giving both. At 1001 against 1001.000001
     // the tolerance is 1.001e-6: kept, its gap of 1e-6 reported.
     let e = solved(&length_twice(999.0, "999.000001"), &mut worker()).unwrap_err();
     assert_eq!(e.code(), ErrorCode::OverConstrained, "{e}");
@@ -496,9 +498,10 @@ fn right_angle_given(angle: &str, far: bool) -> Checked {
 fn an_angle_off_is_measured_as_the_distance_it_moves_a_lines_end() {
     // Decision 5's angular conversion: a right angle given as 90.000002865°, 5.0e-8 rad off
     // what the horizontal and vertical make. Carried by a 10 mm line, a gap of 5.0e-7 mm
-    // (hand: 2.865e-6° × π/180 × 10): past 1e-8 alone, over_constrained. With a 1,000 mm
-    // construction line elsewhere in the sketch, its tolerance is 1e-6: kept, the gap
-    // reported. Whichever of the three PlaneGCS drops, the gap is the same distance.
+    // (hand: 2.865e-6° × π/180 × 10): past the 1.41e-8 of the lines alone (their points
+    // span 10 × 10), over_constrained. With a 1,000 mm construction line from (100, 100)
+    // to (1100, 100), the points span 1,100 × 100: an extent of √(1100² + 100²) = 1,104.5
+    // and a tolerance of 1.1045e-6: kept, the gap reported. Whichever of the three PlaneGCS drops, the gap is the same distance.
     let e = solved(&right_angle_given("90.000002865", false), &mut worker()).unwrap_err();
     assert_eq!(e.code(), ErrorCode::OverConstrained, "{e}");
     let s = solved(&right_angle_given("90.000002865", true), &mut worker()).unwrap();

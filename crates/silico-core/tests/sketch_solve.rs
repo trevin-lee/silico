@@ -705,9 +705,9 @@ fn redundant_constraints_that_agree_are_kept_and_named_and_ones_a_nanometre_off_
 
 #[test]
 fn decision_fives_tolerance_on_a_ten_millimetre_sketch_is_a_hundredth_of_a_nanometre() {
-    // On a sketch whose longest lever is 10 mm, the tolerance is max(1e-8, 1e-9 × 10) =
-    // 1e-8 mm. A redundant horizontal distance of 10, on a solution with the line's end just
-    // within, and just past, 1e-8 mm of it; a redundant horizontal on one with the line
+    // ten()'s points span (0, 0) to (10, 3): E = √109 = 10.44, so the tolerance is
+    // max(1e-8, 1e-9 × 10.44) = 1.044e-8 mm. A redundant horizontal distance of 10, on a
+    // solution with the line's end 0.9e-8 and 1.1e-8 mm off it, either side of that; a redundant horizontal on one with the line
     // turned 0.9e-9 and 1.1e-9 rad either way, its end risen or fallen 9e-9 and 1.1e-8 mm
     // (the gap a horizontal has is its line's rise, whichever way: a fall of 1.1e-8 is as
     // far off as a rise).
@@ -762,16 +762,17 @@ fn value_drawn(t: &Translation, v: f64) -> usize {
 }
 
 #[test]
-fn a_sketchs_tolerance_is_its_longest_lever_or_a_hundredth_of_a_nanometre() {
-    // Decision 5 (Fable, 2026-10-18): a redundant constraint is met when its gap is within
-    // max(1e-8 mm, 1e-9 × L), L the sketch's longest line or largest radius, axes excluded.
+fn a_sketchs_tolerance_is_its_extent_or_a_hundredth_of_a_nanometre() {
+    // Decision 5 (Fable, 2026-10-18; its scale, 2026-10-20): a redundant constraint is met
+    // when its gap is within max(1e-8 mm, 1e-9 × E), E the diagonal of the box around the
+    // sketch's points. Hand values throughout: 3-4-5 layouts give whole extents.
     let held = |id: &str, x: f64| {
         format!(
             r#"{{"id": "{id}", "type": "distance_x", "a": "origin", "b": "p0000001", "value": {x}, "driving": true}}"#
         )
     };
-    // Points only: L is 0, the tolerance 1e-8. A point's x given twice, the solution 0.99e-8
-    // and 1.01e-8 off the dropped one.
+    // One point: E is 0, the tolerance 1e-8. Its x given twice, the solution 0.99e-8 and
+    // 1.01e-8 off the dropped one.
     let t = translate(&text(
         &[point("p0000001", 3.25, 1.5)],
         &[],
@@ -784,39 +785,101 @@ fn a_sketchs_tolerance_is_its_longest_lever_or_a_hundredth_of_a_nanometre() {
         let mut values = t.system.values.clone();
         values[x] += off;
         let got = read_back(&t, &dropping_tag(&t, values, 2));
-        assert_eq!(got.is_ok(), kept, "points only, {off}: {got:?}");
+        assert_eq!(got.is_ok(), kept, "one point, {off}: {got:?}");
     }
-    // A 50 mm line and a circle of radius 80: L 80, the tolerance 8e-8. The line's length
-    // given twice, the solution 7e-8 and 9e-8 off the dropped one.
-    let t = translate(&text(
-        &[
-            point("p0000001", 0.0, 0.0),
-            point("p0000002", 50.0, 0.0),
-            point("p0000003", 200.0, 7.0),
-        ],
-        &[line("n0000001", "p0000001", "p0000002")],
-        &[circle("c0000001", "p0000003", 80.0)],
-        &[],
-        &[
-            r#"{"id": "k0000001", "type": "length", "line": "n0000001", "value": 50, "driving": true}"#.to_owned(),
-            r#"{"id": "k0000002", "type": "length", "line": "n0000001", "value": 50, "driving": true}"#.to_owned(),
-        ],
-    ));
-    let end = value_drawn(&t, 50.0);
-    for (off, kept) in [(7e-8, true), (9e-8, false)] {
-        let mut values = t.system.values.clone();
-        values[end] += off;
-        let got = read_back(&t, &dropping_tag(&t, values, 2));
-        assert_eq!(got.is_ok(), kept, "line and circle, {off}: {got:?}");
-        match got {
-            Ok(s) => {
-                let gap = s.redundant.values().copied().next().unwrap();
-                assert!((gap - off).abs() < 1e-12, "{gap:e} for {off:e}");
-            }
-            Err(e) => assert!(e.message().contains("past this sketch's 8e-8 mm"), "{e}"),
+    // Two points, p1 30 right of and 40 above p2: E 50, the tolerance 5e-8, wherever the
+    // pair is (position never counts): at the origin and a kilometre out. p1's x given
+    // twice, the solution 4.9e-8 and 5.1e-8 off the dropped one.
+    for (dx, dy) in [(0.0, 0.0), (999_000.0, -999_000.0)] {
+        let x1 = 30.0 + dx;
+        let t = translate(&text(
+            &[point("p0000001", x1, 40.0 + dy), point("p0000002", dx, dy)],
+            &[],
+            &[],
+            &[],
+            &[held("k0000001", x1), held("k0000002", x1)],
+        ));
+        let x = value_drawn(&t, x1);
+        for (off, kept) in [(4.9e-8, true), (5.1e-8, false)] {
+            let mut values = t.system.values.clone();
+            values[x] += off;
+            let got = read_back(&t, &dropping_tag(&t, values, 2));
+            assert_eq!(
+                got.is_ok(),
+                kept,
+                "two points at ({dx}, {dy}), {off}: {got:?}"
+            );
         }
     }
-    // A line parallel to the x axis, 50 long, alone: L 50, the tolerance 5e-8. Its end
+    // A 50 mm line from the origin along x, and a circle centred at (120, 160): the box is
+    // (0, 0) to (120, 160), E 200, the tolerance 2e-7, whether the circle's radius is 80 or
+    // 500 (a radius isn't the extent). The line's length given twice, the solution 1.9e-7
+    // and 2.1e-7 off the dropped one.
+    for radius in [80.0, 500.0] {
+        let t = translate(&text(
+            &[
+                point("p0000001", 0.0, 0.0),
+                point("p0000002", 50.0, 0.0),
+                point("p0000003", 120.0, 160.0),
+            ],
+            &[line("n0000001", "p0000001", "p0000002")],
+            &[circle("c0000001", "p0000003", radius)],
+            &[],
+            &[
+                r#"{"id": "k0000001", "type": "length", "line": "n0000001", "value": 50, "driving": true}"#.to_owned(),
+                r#"{"id": "k0000002", "type": "length", "line": "n0000001", "value": 50, "driving": true}"#.to_owned(),
+            ],
+        ));
+        let end = value_drawn(&t, 50.0);
+        for (off, kept) in [(1.9e-7, true), (2.1e-7, false)] {
+            let mut values = t.system.values.clone();
+            values[end] += off;
+            let got = read_back(&t, &dropping_tag(&t, values, 2));
+            assert_eq!(got.is_ok(), kept, "radius {radius}, {off}: {got:?}");
+            match got {
+                Ok(s) => {
+                    let gap = s.redundant.values().copied().next().unwrap();
+                    assert!((gap - off).abs() < 1e-12, "{gap:e} for {off:e}");
+                }
+                Err(e) => {
+                    assert!(e.message().contains("past this sketch's 2"), "{e}");
+                    assert!(e.message().contains("of its 200 mm extent"), "{e}");
+                }
+            }
+        }
+    }
+    // A point on a 5 mm line's extension, 715 mm across: the line (1, 1) to (4, 5) and p3
+    // at (430, 573) = (1, 1) + 143 × (3, 4), the point on the line dropped. The box is
+    // (1, 1) to (430, 573), E 715 (143 × 5), the tolerance 7.15e-7. p3 moved δ across the
+    // line, along its normal (−0.8, 0.6): a gap of δ. 7e-7 kept, 7.3e-7 refused; a
+    // tolerance of the 5 mm line's would be the floor.
+    let t = translate(&text(
+        &[
+            point("p0000001", 1.0, 1.0),
+            point("p0000002", 4.0, 5.0),
+            point("p0000003", 430.0, 573.0),
+        ],
+        &[line("n0000001", "p0000001", "p0000002")],
+        &[],
+        &[],
+        &[
+            r#"{"id": "k0000001", "type": "on", "point": "p0000003", "curve": "n0000001"}"#
+                .to_owned(),
+        ],
+    ));
+    let p3 = value_drawn(&t, 430.0);
+    for (off, kept) in [(7e-7, true), (7.3e-7, false)] {
+        let mut values = t.system.values.clone();
+        values[p3] -= 0.8 * off;
+        values[p3 + 1] += 0.6 * off;
+        let got = read_back(&t, &dropping_tag(&t, values, 1));
+        assert_eq!(got.is_ok(), kept, "the far point, {off}: {got:?}");
+        if let Ok(s) = got {
+            let gap = s.redundant.values().copied().next().unwrap();
+            assert!((gap - off).abs() < 1e-12, "{gap:e} for {off:e}");
+        }
+    }
+    // A line parallel to the x axis, 50 long, alone: E 50, the tolerance 5e-8. Its end
     // risen 4e-8 and 6e-8: the parallel's angle carried by the line (the axis can't move),
     // a gap as large as the rise; carried by the axis's 1, it would be fifty times less.
     let t = translate(&text(
@@ -839,9 +902,10 @@ fn a_sketchs_tolerance_is_its_longest_lever_or_a_hundredth_of_a_nanometre() {
 fn a_direction_is_carried_by_the_smaller_lever_of_its_own_lines() {
     // Decision 5: an angle's gap is the angle carried by the smaller lever of its own two
     // curves. n1, 50 mm along the x axis, and n2, 1 mm, parallel to it 7 above, its end
-    // raised by δ, so the two are δ rad apart (atan(δ) and δ agree to 1e-23 here). L is 50,
-    // the tolerance 5e-8. Carried by n2's 1 mm, the gap is δ: 4e-8 is kept, reported as
-    // 4e-8, and 6e-8 is over-constrained; carried by n1's 50 mm it would be 2e-6, refused.
+    // raised by δ, so the two are δ rad apart (atan(δ) and δ agree to 1e-23 here). The
+    // points span (0, 0) to (50, 7): E = √2549 = 50.49, the tolerance 5.05e-8. Carried by
+    // n2's 1 mm, the gap is δ: 4e-8 is kept, reported as 4e-8, and 6e-8 is
+    // over-constrained; carried by n1's 50 mm it would be 2e-6, refused.
     let t = translate(&text(
         &[
             point("p0000001", 0.0, 0.0),
@@ -1035,11 +1099,11 @@ fn every_form_redundant_and_met_is_kept_and_a_nanometre_off_is_over_constrained(
     // kept, and named redundant. Then one value it reads moved, chosen by hand so the move
     // is the form's own measure: a gap as large as the move, a distance outright, or a
     // direction's angle (a tenth of the move, over a 10 mm line) carried by its smaller
-    // lever, 10 mm, or a horizontal's rise or a vertical's run. The fixture's levers, by
-    // hand from shapes2: five lines 10 long, circles of radius 10, 10, and 5, an arc of 10;
-    // the longest is 10, so decision 5's tolerance is max(1e-8, 1e-9 × 10) = 1e-8 (1e-8 +
-    // 1e-17 once a value moves). A move of 1e-8 is then exactly the tolerance: 1% within it
-    // is kept, 1% past it is over-constrained, naming it. A measure off by more than 1%
+    // lever, 10 mm, or a horizontal's rise or a vertical's run. The fixture's extent, by
+    // hand from shapes2: its points span (0, 0) to (20, 10), so E = √500 = 22.36 and
+    // decision 5's tolerance is max(1e-8, 1e-9 × √500) = 2.236e-8 (moving a value by that
+    // changes E by at most as much, the tolerance by 2e-17). A move of the tolerance is then
+    // exactly its gap: 1% within it is kept, 1% past it is over-constrained, naming it. A measure off by more than 1%
     // either way fails one or the other (round 2's and 3's tests lens; doubles at 10 mm are
     // 1.8e-15 apart, far inside the margin).
     let cases: [(&str, usize); 28] = [
@@ -1165,12 +1229,13 @@ fn every_form_redundant_and_met_is_kept_and_a_nanometre_off_is_over_constrained(
         // Both ways: a gap is a distance, so a value moved down is as far off as one moved
         // up (a signed measure, a horizontal's fall or a distance short of its value, is
         // otherwise met however far it falls).
+        let tolerance = 1e-9 * 500f64.sqrt();
         for way in [1.0, -1.0] {
             assert!(
-                moved_by(way * 0.99e-8).is_ok(),
+                moved_by(way * 0.99 * tolerance).is_ok(),
                 "{form}, {way}: just within the tolerance"
             );
-            let e = moved_by(way * 1.01e-8).unwrap_err();
+            let e = moved_by(way * 1.01 * tolerance).unwrap_err();
             assert_eq!(
                 (e.code(), e.elements()),
                 (ErrorCode::OverConstrained, &["k0000001".to_owned()][..]),

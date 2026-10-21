@@ -24,17 +24,17 @@ use silico_protocol::{SketchSystem, Solved};
 const CLOSE: f64 = 1e-8;
 
 /// How far a kept slot's corner may sit from the analytic one: decision 5's ε = max(1e-8 mm,
-/// 1e-9 × L), L the slot's longer of its side and radius (docs/design/m3.3-solving.md),
-/// worked out here from the slot's own sizes. Rectangles and triangles are held to CLOSE,
+/// 1e-9 × E), E the sketch's extent, the diagonal of the box around its points
+/// (docs/design/m3.3-solving.md), worked out here from the slot's own sizes. Rectangles and triangles are held to CLOSE,
 /// which every case of their properties meets. A slot's corners are fixed through angular
 /// rows (the tangencies at its ends, its sides' parallel), carried to them by the arcs'
-/// radii, and land further off: the long slot's p2, 2e-8 mm at L 4,289 mm. A bound by hand,
+/// radii, and land further off: the long slot's p2, 2e-8 mm at E 4,375 mm. A bound by hand,
 /// chaining PlaneGCS's 1e-10 per row from p1 (held) to the farthest corner, is no tighter
-/// than 1e-9 × L (a horizontal's 1e-10 mm across a short side, carried by a large arc,
+/// than 1e-9 × E (a horizontal's 1e-10 mm across a short side, carried by a large arc,
 /// gives 1e-10 × r / len, looser still), so a slot's corners get the slack the core itself
 /// keeps a redundant row within.
-fn within_decision_5(lever: f64) -> f64 {
-    CLOSE.max(1e-9 * lever)
+fn within_decision_5(extent: f64) -> f64 {
+    CLOSE.max(1e-9 * extent)
 }
 
 fn text(points: &[String], lines: &[String], arcs: &[String], constraints: &[String]) -> String {
@@ -255,7 +255,15 @@ fn slot(x0: f64, y0: f64, len: f64, r: f64, jitter: [f64; 6]) -> String {
 }
 
 fn slot_is(s: &SketchSolution, x0: f64, y0: f64, len: f64, r: f64) -> bool {
-    slot_within(s, x0, y0, len, r, within_decision_5(len.max(r)))
+    // Its points span len across and 2r up: E = √(len² + (2r)²).
+    slot_within(
+        s,
+        x0,
+        y0,
+        len,
+        r,
+        within_decision_5((len * len + 4.0 * r * r).sqrt()),
+    )
 }
 
 /// [`slot_is`], each point within `close` of where it should be.
@@ -581,7 +589,8 @@ fn a_long_slot_keeps_its_equal_sides_within_the_slack_its_arcs_allow() {
     // 430.346545 at the origin was refused, its sides' equality "disagreeing by 2.4e-8 mm"
     // against a fixed 1e-8. The slack reaches it through the tangencies' angle rows on 430
     // mm arcs: two ends, each up to 1e-10 rad × 430 mm, bound it by 8.6e-8 mm (hand), and
-    // the sketch's tolerance is 1e-9 × 4,289.28 = 4.29e-6 mm. The same slack leaves the
+    // the sketch's tolerance is 1e-9 × its extent, √(4,289.28² + 860.69²) = 4,374.78 mm:
+    // 4.37e-6 mm. The same slack leaves the
     // corners off the analytic slot by up to that bound too (p2 lands 2e-8 out), so they're
     // checked to 1e-7.
     let doc = checked(&slot(
@@ -607,13 +616,13 @@ fn a_long_slot_keeps_its_equal_sides_within_the_slack_its_arcs_allow() {
 }
 
 #[test]
-fn a_fat_slot_keeps_its_redundancies_by_the_sketchs_longest_lever() {
-    // Fable's case for the sketch-wide lever: sides 1 mm long, arcs of radius 100, whose
-    // rows carry the slack to the sides' equality; the sketch's longest lever, 100, gives a
-    // tolerance of 1e-7. Kept, from starts a little off, each gap within 2e-8. (Of 3,000
-    // starts drawn up to 0.2 off, the largest gap was 2.15e-9, the last start here, so the
-    // sides' own length would keep these too; the lever is pinned by the core's stand-in
-    // tests, a_sketchs_tolerance_is_its_longest_lever_..., not here.)
+fn a_fat_slot_keeps_its_redundancies_by_the_sketchs_extent() {
+    // Fable's case for a sketch-wide scale: sides 1 mm long, arcs of radius 100, whose rows
+    // carry the slack to the sides' equality; the sketch's extent, √(1² + 200²) = 200.0025,
+    // gives a tolerance of 2.0e-7. Kept, from starts a little off, each gap within 2e-8. (Of
+    // 3,000 starts drawn up to 0.2 off, the largest gap was 2.15e-9, the last start here,
+    // so the sides' own length would keep these too; the extent is pinned by the core's
+    // stand-in tests, a_sketchs_tolerance_is_its_extent_..., not here.)
     let mut w = worker();
     for jitter in [
         [0.1, -0.1, 0.05, 0.05, -0.1, 0.1],
@@ -968,20 +977,43 @@ fn rectangle_with_width_twice(w: f64, h: f64, more: f64) -> String {
 proptest! {
     #![proptest_config(ProptestConfig { cases: 500, .. ProptestConfig::default() })]
 
-    /// Decision 5's converse (Fable, 2026-10-18): on any sketch under a metre, two
-    /// dimensions a nanometre apart conflict. A rectangle whose longest side is under 999
-    /// mm (so its tolerance, 1e-9 × the side, is under 1e-6), its width stated again 1 nm
-    /// more, is always over_constrained.
+    /// Decision 5's converse (Fable, 2026-10-18; its scale, 2026-10-20): on any sketch that
+    /// fits in a metre corner to corner, two dimensions a nanometre apart conflict. A
+    /// rectangle whose diagonal, its extent, is under 999 mm (so its tolerance, 1e-9 × the
+    /// diagonal, is under 1e-6), its width stated again 1 nm more, is always
+    /// over_constrained.
     #[test]
     fn two_dimensions_a_nanometre_apart_on_a_sketch_under_a_metre_conflict(
         log_w in -1.0f64..2.999,
         log_h in -1.0f64..2.999,
     ) {
         let (w, h) = (nm(libm::pow(10.0, log_w)), nm(libm::pow(10.0, log_h)));
-        prop_assume!(w > 0.0 && h > 0.0 && w.max(h) < 999.0);
+        prop_assume!(w > 0.0 && h > 0.0 && (w * w + h * h).sqrt() < 999.0);
         let doc = checked(&rectangle_with_width_twice(w, h, 1e-6)).unwrap();
         let got = W.with(|wk| solved(&doc, &mut *wk.borrow_mut()));
         let e = got.map(|s| said(&s)).unwrap_err();
         prop_assert_eq!(e.code(), ErrorCode::OverConstrained, "{}", e);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 300, .. ProptestConfig::default() })]
+
+    /// And past a metre: a rectangle whose diagonal is over 1001 mm (its tolerance over
+    /// 1.001e-6), its width stated again 1 nm more, is kept, the nanometre reported as the
+    /// dropped constraint's gap (the rectangle's other redundancies agree exactly).
+    #[test]
+    fn two_dimensions_a_nanometre_apart_on_a_sketch_past_a_metre_are_kept(
+        log_w in 2.0f64..3.4,
+        log_h in 2.0f64..3.4,
+    ) {
+        let (w, h) = (nm(libm::pow(10.0, log_w)), nm(libm::pow(10.0, log_h)));
+        prop_assume!((w * w + h * h).sqrt() > 1001.0);
+        let doc = checked(&rectangle_with_width_twice(w, h, 1e-6)).unwrap();
+        let s = W
+            .with(|wk| solved(&doc, &mut *wk.borrow_mut()))
+            .map_err(|e| TestCaseError::fail(format!("{w} x {h}: {e}")))?;
+        let worst = s.redundant.values().copied().fold(0.0, f64::max);
+        prop_assert!((0.99e-6..=1.01e-6).contains(&worst), "{} x {}: {:?}", w, h, s.redundant);
     }
 }
