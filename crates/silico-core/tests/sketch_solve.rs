@@ -708,8 +708,9 @@ fn decision_fives_tolerance_on_a_ten_millimetre_sketch_is_a_hundredth_of_a_nanom
     // On a sketch whose longest lever is 10 mm, the tolerance is max(1e-8, 1e-9 × 10) =
     // 1e-8 mm. A redundant horizontal distance of 10, on a solution with the line's end just
     // within, and just past, 1e-8 mm of it; a redundant horizontal on one with the line
-    // turned 0.9e-9 and 1.1e-9 rad, its end risen 9e-9 and 1.1e-8 mm (the gap a horizontal
-    // has is its line's rise).
+    // turned 0.9e-9 and 1.1e-9 rad either way, its end risen or fallen 9e-9 and 1.1e-8 mm
+    // (the gap a horizontal has is its line's rise, whichever way: a fall of 1.1e-8 is as
+    // far off as a rise).
     for (off, agrees) in [(0.9e-8, true), (1.1e-8, false)] {
         let t = translate(&ten(&[
             r#"{"id": "k0000003", "type": "distance_x", "a": "p0000001", "b": "p0000002", "value": 10, "driving": true}"#,
@@ -720,7 +721,12 @@ fn decision_fives_tolerance_on_a_ten_millimetre_sketch_is_a_hundredth_of_a_nanom
         solved.partially_redundant = vec![Tag(3)];
         assert_eq!(read_back(&t, &solved).is_ok(), agrees, "{off}");
     }
-    for (off, agrees) in [(0.9e-9, true), (1.1e-9, false)] {
+    for (off, agrees) in [
+        (0.9e-9, true),
+        (1.1e-9, false),
+        (-0.9e-9, true),
+        (-1.1e-9, false),
+    ] {
         // The line turned off horizontal by `off` radians at its end; the horizontal is the
         // redundant one.
         let t = translate(&ten(&[]));
@@ -729,7 +735,17 @@ fn decision_fives_tolerance_on_a_ten_millimetre_sketch_is_a_hundredth_of_a_nanom
         values[9] = 10.0 * libm::sin(off);
         let mut solved = answer(&t, values, SolveStatus::SolvedExceptRedundant);
         solved.redundant = vec![Tag(1)];
-        assert_eq!(read_back(&t, &solved).is_ok(), agrees, "{off}");
+        match read_back(&t, &solved) {
+            Ok(_) => assert!(agrees, "{off}: kept"),
+            Err(e) => {
+                assert!(!agrees, "{off}: {e}");
+                assert_eq!(
+                    (e.code(), e.elements()),
+                    (ErrorCode::OverConstrained, &["k0000001".to_owned()][..]),
+                    "{off}: {e}"
+                );
+            }
+        }
     }
 }
 
@@ -816,6 +832,53 @@ fn a_sketchs_tolerance_is_its_longest_lever_or_a_hundredth_of_a_nanometre() {
         values[rise] += off;
         let got = read_back(&t, &dropping_tag(&t, values, 1));
         assert_eq!(got.is_ok(), kept, "parallel to the axis, {off}: {got:?}");
+    }
+}
+
+#[test]
+fn a_direction_is_carried_by_the_smaller_lever_of_its_own_lines() {
+    // Decision 5: an angle's gap is the angle carried by the smaller lever of its own two
+    // curves. n1, 50 mm along the x axis, and n2, 1 mm, parallel to it 7 above, its end
+    // raised by δ, so the two are δ rad apart (atan(δ) and δ agree to 1e-23 here). L is 50,
+    // the tolerance 5e-8. Carried by n2's 1 mm, the gap is δ: 4e-8 is kept, reported as
+    // 4e-8, and 6e-8 is over-constrained; carried by n1's 50 mm it would be 2e-6, refused.
+    let t = translate(&text(
+        &[
+            point("p0000001", 0.0, 0.0),
+            point("p0000002", 50.0, 0.0),
+            point("p0000003", 2.0, 7.0),
+            point("p0000004", 3.0, 7.0),
+        ],
+        &[
+            line("n0000001", "p0000001", "p0000002"),
+            line("n0000002", "p0000003", "p0000004"),
+        ],
+        &[],
+        &[],
+        &[
+            r#"{"id": "k0000001", "type": "parallel", "a": "n0000001", "b": "n0000002"}"#
+                .to_owned(),
+        ],
+    ));
+    let rise = value_drawn(&t, 3.0) + 1;
+    for (off, kept) in [(4e-8, true), (6e-8, false)] {
+        let mut values = t.system.values.clone();
+        values[rise] += off;
+        match read_back(&t, &dropping_tag(&t, values, 1)) {
+            Ok(s) => {
+                assert!(kept, "{off}: kept");
+                let gap = s.redundant.values().copied().next().unwrap();
+                assert!((gap - off).abs() < 1e-12, "{gap:e} for {off:e}");
+            }
+            Err(e) => {
+                assert!(!kept, "{off}: {e}");
+                assert_eq!(
+                    (e.code(), e.elements()),
+                    (ErrorCode::OverConstrained, &["k0000001".to_owned()][..]),
+                    "{e}"
+                );
+            }
+        }
     }
 }
 
@@ -1099,16 +1162,21 @@ fn every_form_redundant_and_met_is_kept_and_a_nanometre_off_is_over_constrained(
             off.values[moved] += step;
             read_back(&t, &off)
         };
-        assert!(
-            moved_by(0.99e-8).is_ok(),
-            "{form}: just within the tolerance"
-        );
-        let e = moved_by(1.01e-8).unwrap_err();
-        assert_eq!(
-            (e.code(), e.elements()),
-            (ErrorCode::OverConstrained, &["k0000001".to_owned()][..]),
-            "{form}: {e}"
-        );
+        // Both ways: a gap is a distance, so a value moved down is as far off as one moved
+        // up (a signed measure, a horizontal's fall or a distance short of its value, is
+        // otherwise met however far it falls).
+        for way in [1.0, -1.0] {
+            assert!(
+                moved_by(way * 0.99e-8).is_ok(),
+                "{form}, {way}: just within the tolerance"
+            );
+            let e = moved_by(way * 1.01e-8).unwrap_err();
+            assert_eq!(
+                (e.code(), e.elements()),
+                (ErrorCode::OverConstrained, &["k0000001".to_owned()][..]),
+                "{form}, {way}: {e}"
+            );
+        }
     }
 }
 
@@ -1444,14 +1512,16 @@ fn a_solve_stands_only_where_a_load_of_its_own_file_gives_it_back() {
         )
     };
     // Dropped, and the load from its solution doesn't move it: the load's answer stands,
-    // naming what the load's diagnosis dropped (k0000001), as every later load will; not the
-    // drawing's pick (break-it on dc18c28: a save and its load named different ones).
+    // naming what the load's diagnosis dropped (k0000001), as every later load will; not
+    // the drawing's pick (break-it on the first solve again, which kept the drawing's pick:
+    // a save and its load named different ones).
     let (got, starts) = run(vec![dropping(3, 4.0), dropping(1, 4.0)]);
     assert_eq!(redundant_of(&got), (4.0, vec!["k0000001".to_owned()]));
     assert_eq!(starts, [3.0, 4.0]);
-    // Nothing dropped and moved: checked by a load all the same (the council on 56b7fe2: an
-    // arc, nothing repeated, whose load moved it); moved by the first load, which the
-    // second doesn't move: the second load stands.
+    // Nothing dropped and moved: checked by a load all the same (the council, when only a
+    // solve that dropped constraints was checked: an arc, nothing repeated, whose load
+    // moved it); moved by the first load, which the second doesn't move: the second load
+    // stands.
     let (got, starts) = run(vec![
         answer(&t, at(4.0), SolveStatus::Success),
         dropping(1, 5.0),
@@ -1480,7 +1550,8 @@ fn a_solve_stands_only_where_a_load_of_its_own_file_gives_it_back() {
     );
     assert_eq!(starts, [3.0, 4.0, 5.0]);
     // Solved Ok on the drawing, and refused by the load that doesn't move it: refused as
-    // the load refuses it (break-it on dc18c28: a save Ok whose every load was refused).
+    // the load refuses it (break-it on the first solve again, which kept the first answer:
+    // a save Ok whose every load was refused).
     let (got, starts) = run(vec![dropping(3, 4.0), conflict(4.0)]);
     let e = got.outcome.unwrap_err();
     assert_eq!(
@@ -1492,8 +1563,8 @@ fn a_solve_stands_only_where_a_load_of_its_own_file_gives_it_back() {
     );
     assert_eq!(starts, [3.0, 4.0]);
     // Solved Ok on the drawing, every load moving it: MAX_LOAD_RESOLVES loads, then refused
-    // as a solution that doesn't settle (the council on 56b7fe2: never the first, whose own
-    // file loads elsewhere).
+    // as a solution that doesn't settle (the council, when the first answer stood where
+    // loads didn't settle: never the first, whose own file loads elsewhere).
     let moving: Vec<Solved> = (0..=MAX_LOAD_RESOLVES)
         .map(|i| dropping(3, 4.0 + i as f64))
         .collect();
@@ -1514,7 +1585,8 @@ fn a_solve_stands_only_where_a_load_of_its_own_file_gives_it_back() {
     assert_eq!(starts.len(), 1 + MAX_LOAD_RESOLVES);
     // Solved Ok on the drawing, and the load from its solution reaches none: that load's
     // refusal stands, since it leaves the file as it is and every load gives it (break-it
-    // on dc18c28: a far triangle saved Ok whose every load failed).
+    // on the first solve again, which kept the first answer: a far triangle saved Ok whose
+    // every load failed).
     let (got, starts) = run(vec![
         dropping(3, 4.0),
         answer(&t, at(4.0), SolveStatus::Failed),
@@ -1522,8 +1594,9 @@ fn a_solve_stands_only_where_a_load_of_its_own_file_gives_it_back() {
     assert_eq!(got.outcome.unwrap_err().code(), ErrorCode::SolveFailed);
     assert_eq!(starts, [3.0, 4.0]);
     // Solved Ok on the drawing, moved and refused by the first load, and the load from
-    // there reaches none: refused, as the last load refused it (break-it on 56b7fe2: the
-    // first stood, Ok, and every load of its file was refused).
+    // there reaches none: refused, as the last load refused it (break-it, when the first
+    // answer stood where a load failed: the first stood, Ok, and every load of its file was
+    // refused).
     let (got, starts) = run(vec![
         dropping(3, 4.0),
         conflict(5.0),
@@ -1546,10 +1619,10 @@ fn a_solve_stands_only_where_a_load_of_its_own_file_gives_it_back() {
 
 #[test]
 fn a_circles_solved_radius_is_where_the_solve_again_starts() {
-    // The council on 56b7fe2: a circle's radius is a value the solve moves and the file
-    // stores, so a load starts from the solved radius, and a load that moves only the
-    // radius hasn't settled. A circle about p1, held at the origin, drawn radius 2, its
-    // radius given as 3 twice (one dropped).
+    // The council, on the first check by load: a circle's radius is a value the solve moves
+    // and the file stores, so a load starts from the solved radius, and a load that moves
+    // only the radius hasn't settled. A circle about p1, held at the origin, drawn radius 2,
+    // its radius given as 3 twice (one dropped).
     let t = translate(&text(
         &[point("p0000001", 0.0, 0.0)],
         &[],
