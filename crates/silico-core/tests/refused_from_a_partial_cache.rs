@@ -245,3 +245,57 @@ fn a_refused_pockets_faces_and_sweep_still_queued_when_its_cached_cuts_measure_l
     };
     check(&model, &fresh);
 }
+
+/// The council's round 5 (tests): a refused pocket made from another refused one, its cut
+/// cached (its verdict known when the recompute starts) but its own sweep missing, is
+/// blocked on the first, and none of its steps is built: they serve a feature made from a
+/// refused one, which nothing reads (`needed`'s `made_from_dead`).
+#[test]
+fn a_refused_pocket_on_a_refused_pocket_builds_none_of_its_own_missing_steps() {
+    const REVERSED: &str = r#"{"type": "one_side", "length": 10, "reversed": true}"#;
+    let scratch = Scratch::new("made-from-dead");
+    let cube = box_at("bbbbbbbb", [-1.0, -1.0, 1.0], 10.0, 10.0, 10.0);
+    let twin = box_at("cccccccc", [-1.0, -1.0, 1.0], 10.0, 10.0, 10.0);
+    let sketch = rectangle("ssssssss", "xy", [0.0, 0.0], 4.0, 2.0);
+    let pad = pad("pppppppp", None, "ssssssss", REVERSED);
+    // An M2 cut of the twin by the pad: the same step as the pocket of the cube below,
+    // built, so its result is cached with its measures.
+    let cut = r#"{"id": "kkkkkkkk", "type": "cut", "v": 1, "name": "K", "base": "cccccccc", "tool": "pppppppp"}"#;
+    let on_cut = pocket("rrrrrrrr", "kkkkkkkk", "ssssssss", &one_side("3"));
+    // Run 1: the cut built; a 3 mm pocket on it refused (it misses), its cut cached.
+    let first = scratch.engine(FakeKernel::new(2).unwrap());
+    let base = vec![cube.clone(), twin, sketch.clone(), pad, cut.to_owned()];
+    published(&first, &refs(&base));
+    let had = scratch.entries();
+    let mut with_pocket = base.clone();
+    with_pocket.push(on_cut.clone());
+    let model = published(&first, &refs(&with_pocket));
+    refused(&model, "rrrrrrrr");
+    drop(first);
+    // Its sweep's entry lost; its cut's kept.
+    assert_eq!(drop_all_but_the_cut(&scratch, &had), 1);
+    // Run 2: the pocket of the cube (refused: the cached cut's step) and the same 3 mm
+    // pocket on it, made from it: its cut cached and refused, its sweep missing.
+    let second = scratch.engine(FakeKernel::new(2).unwrap());
+    let document = vec![
+        cube,
+        sketch,
+        pocket("qqqqqqqq", "bbbbbbbb", "ssssssss", TEN),
+        on_cut.replace("kkkkkkkk", "qqqqqqqq"),
+    ];
+    let model = published(&second, &refs(&document));
+    assert_eq!(
+        model.outcome(&id("rrrrrrrr")),
+        Some(&FeatureOutcome::Blocked { on: id("qqqqqqqq") })
+    );
+    let asked: Vec<&str> = second
+        .kernel()
+        .calls()
+        .iter()
+        .map(|c| c.op.name())
+        .collect();
+    assert!(
+        asked.is_empty(),
+        "built for a feature made from a refused one: {asked:?}"
+    );
+}
