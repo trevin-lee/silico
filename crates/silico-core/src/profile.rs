@@ -962,7 +962,9 @@ fn meetings(
     let bounds: Vec<[f64; 4]> = curves.iter().map(|c| c.shape.bounds()).collect();
     let mut by_x: Vec<usize> = (0..curves.len()).collect();
     by_x.sort_by(|&a, &b| bounds[a][0].total_cmp(&bounds[b][0]).then(a.cmp(&b)));
-    // Boxes this far apart hold curves that are apart, whatever the rounding of a box.
+    // Boxes this far apart hold curves that are apart: a box is off by at most an ulp or so
+    // of its coordinates, under 2.4e-10 within reach (1e6 mm), far inside the margin's 1e-7
+    // to spare. That holds only within reach: near 2^28 mm an ulp is 6e-8.
     let margin = 2.0 * LENGTH_TOLERANCE;
     let mut kept: BTreeMap<(usize, usize), Meeting> = BTreeMap::new();
     let mut total = 0u64;
@@ -1177,9 +1179,12 @@ fn point_segment_distance(p: Xy, a: Xy, b: Xy) -> f64 {
 }
 
 /// Whether `p`, a point of the arc's circle, is on the arc: counter-clockwise from its
-/// start and clockwise from its end about `c`, by cross products, with no angles but where
-/// its ends point one way from `c`: then it turns almost nothing or almost a whole circle,
-/// as its angles say.
+/// start and clockwise from its end about `c`, by cross products. Which of the two rules
+/// holds, between the ends or all but the rest of the turn, is the arc's sweep where its
+/// ends are less than a quarter turn apart (it then turns almost nothing or almost a whole
+/// circle, far from a half turn, and a cross product of its ends can round to 0, and
+/// might round to the wrong sign), and the sign of their cross product near a half turn, where the sweep can
+/// be π either side.
 fn on_arc(c: Xy, arc: &Arc, p: Xy) -> bool {
     let (s, e, v) = (sub(arc.start, c), sub(arc.end, c), sub(p, c));
     let se = cross(s, e);
@@ -1188,19 +1193,15 @@ fn on_arc(c: Xy, arc: &Arc, p: Xy) -> bool {
     let minor = sv >= 0.0 && ve >= 0.0;
     // More: anywhere but strictly inside the rest of the turn, from end to start.
     let major = !(sv < 0.0 && ve < 0.0);
-    if se > 0.0 {
+    if dot(s, e) > 0.0 {
+        if arc.to - arc.from > PI { major } else { minor }
+    } else if se > 0.0 {
         minor
     } else if se < 0.0 {
         major
-    } else if dot(s, e) < 0.0 {
+    } else {
         // A half turn: the start's left.
         sv >= 0.0
-    } else if arc.to - arc.from > PI {
-        // Ends one way, a whole circle less a sliver: all but the sliver.
-        major
-    } else {
-        // Ends one way, a sliver.
-        minor
     }
 }
 

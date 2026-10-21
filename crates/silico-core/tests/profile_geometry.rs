@@ -579,7 +579,25 @@ fn a_point_beyond_a_half_turns_end_is_on_it_by_its_start_alone() {
     );
     let a = d.arc(&o, &s, &e);
     d.line(&e, &s);
-    let corner = d.point(-3.000000024000001, -4.000000032000002);
+    let (sxy, exy, cxy) = (
+        [3.0, 4.0],
+        [
+            -3.0 + 3.0 * libm::exp2(-26.0),
+            -4.0 + 4.0 * libm::exp2(-26.0),
+        ],
+        [-3.000000024000001, -4.000000032000002],
+    );
+    // The premises, as on_arc computes them about the origin.
+    let cross = |a: [f64; 2], b: [f64; 2]| a[0] * b[1] - a[1] * b[0];
+    assert_eq!(cross(sxy, exy), 0.0, "the ends are opposite, as computed");
+    assert!(sxy[0] * exy[0] + sxy[1] * exy[1] < 0.0);
+    assert_eq!(
+        cross(sxy, cxy),
+        0.0,
+        "the corner is on the start's line, as computed"
+    );
+    assert!(cross(cxy, exy) < 0.0, "but to the end's right, as computed");
+    let corner = d.point(cxy[0], cxy[1]);
     let (left, low) = (d.point(-7.0, -4.0), d.point(-3.0, -8.0));
     let sides = [
         d.line(&corner, &left),
@@ -603,13 +621,87 @@ fn a_point_beyond_a_half_turns_end_is_on_it_by_its_start_alone() {
 }
 
 #[test]
+fn a_point_just_right_of_a_half_turns_start_line_is_off_it_though_its_cross_with_the_end_is_0() {
+    // a_point_beyond_a_half_turns_end_is_on_it_by_its_start_alone's half turn and triangle,
+    // the corner moved out to (−3.0000000300000003, −4.000000040000001): −(3, 4) scaled by
+    // 1 + 1e-8, so 5 × 1e-8 = 5e-8 outside the circle and 5e-8 + 7.45e-8 = 1.245e-7 from the
+    // end's point. As computed, its cross with the start rounds to −1.8e-15 (the start's
+    // right) and its cross with the end to 0. A half turn is the start's left, so the corner
+    // is off the arc: 1.245e-7 from it, at its end, more than 1e-7. Nothing meets; the
+    // regions are the half disc, 12.5π (less a sliver of the order of 5 × 7.45e-8 / 2 for
+    // the end inside the circle), and the triangle, ½ × 4 × 4 = 8 (less the order of 4e-8
+    // × 4 for the corner's move).
+    let (sxy, exy, cxy) = (
+        [3.0, 4.0],
+        [
+            -3.0 + 3.0 * libm::exp2(-26.0),
+            -4.0 + 4.0 * libm::exp2(-26.0),
+        ],
+        [-3.0000000300000003, -4.000000040000001],
+    );
+    // The premises, as on_arc computes them about the origin.
+    let cross = |a: [f64; 2], b: [f64; 2]| a[0] * b[1] - a[1] * b[0];
+    assert_eq!(cross(sxy, exy), 0.0, "the ends are opposite, as computed");
+    assert!(sxy[0] * exy[0] + sxy[1] * exy[1] < 0.0);
+    assert!(
+        cross(sxy, cxy) < 0.0,
+        "the corner is to the start's right, as computed"
+    );
+    assert_eq!(cross(cxy, exy), 0.0, "and on the end's line, as computed");
+    let mut d = Draw::new();
+    let o = d.point(0.0, 0.0);
+    let s = d.point(sxy[0], sxy[1]);
+    let e = d.point(exy[0], exy[1]);
+    d.arc(&o, &s, &e);
+    d.line(&e, &s);
+    d.polygon(&[(cxy[0], cxy[1]), (-7.0, -4.0), (-3.0, -8.0)]);
+    let p = d.made();
+    let areas: Vec<f64> = p.regions.iter().map(|r| r.area()).collect();
+    assert_eq!(areas.len(), 2, "{p:#?}");
+    assert!(close(areas[0], 12.5 * PI, 1e-8), "{areas:?}");
+    assert!(close(areas[1], 8.0, 1e-7), "{areas:?}");
+}
+
+#[test]
+fn a_point_on_a_major_arcs_circle_in_its_gap_is_apart_from_it() {
+    // The arc r 5 about the origin from (5, 0) counter-clockwise to (−3, −4), 233.13°, and
+    // its chord; a triangle (3, −4), (6, −4), (3, −8) outside the circle, its corner (3, −4)
+    // on the circle at 306.87°, in the arc's gap (233.13° to 360°): its nearest end (5, 0)
+    // is √(2² + 4²) = 4.47 away, so the two are apart. The triangle's sides leave the
+    // circle at the corner ((1, 0) and (0, −1) each point out, dot (3, −4) > 0), its third
+    // side 7.2 from the centre; the chord is 2.68 from the corner. Areas by hand: the
+    // segment (r²/2)(θ − sin θ), θ = π + atan2(4, 3), sin θ = −0.8; the triangle ½·3·4.
+    let mut d = Draw::new();
+    let o = d.point(0.0, 0.0);
+    let s = d.point(5.0, 0.0);
+    let e = d.point(-3.0, -4.0);
+    d.arc(&o, &s, &e);
+    d.line(&e, &s);
+    d.polygon(&[(3.0, -4.0), (6.0, -4.0), (3.0, -8.0)]);
+    let p = d.made();
+    let mut areas: Vec<f64> = p.regions.iter().map(|r| r.area()).collect();
+    areas.sort_by(f64::total_cmp);
+    let segment = 12.5 * (PI + libm::atan2(4.0, 3.0) + 0.8);
+    assert_eq!(areas.len(), 2, "{p:#?}");
+    assert!(close(areas[0], 6.0, 1e-12), "{areas:?}");
+    assert!(
+        close(areas[1], segment, 1e-12),
+        "{areas:?} against {segment}"
+    );
+}
+
+#[test]
 fn an_arc_whose_ends_point_one_way_sweeping_an_ulp_holds_no_point_a_quarter_turn_round() {
-    // An arc r 10⁴ about the origin whose end is its start moved 1.00000017e-7 out along
-    // its radius and a few ulps round: as computed, the start's and end's cross product is
-    // 0 and their dot product positive (one direction), but atan2 puts the end an ulp
-    // (4.4e-16 rad) counter-clockwise of the start, so the arc sweeps 4.4e-16 rad. Its ends
-    // are more than 1e-7 apart and the end within 1e-7 of its circle, so it's built, and
-    // its ends are open. A triangle outside the circle has its corner a quarter turn
+    // An arc r 10⁴ about the origin (|start| is 10⁴, as computed) whose end is its start
+    // moved out along its radius and a few ulps round. Exactly, the ends are 1.00000017e-7
+    // apart (1.0000001714e-7 as computed), nearly all of it along the radius. As computed,
+    // the start's and end's cross product is 0 and their dot product positive (one
+    // direction), but atan2 puts the end an ulp (4.4e-16 rad) counter-clockwise of the
+    // start, so the arc sweeps 4.4e-16 rad. It builds only through rounding at 10⁴, where an
+    // ulp is 1.8e-12: its ends are 1.7e-14 more than 1e-7 apart, and its end comes out
+    // 9.99995e-8 from its circle as computed (by the rounded radius and the angle's cos and
+    // sin; |end| − |start| as computed is 9.99989e-8), 4.5e-13 within 1e-7, though exactly
+    // it's about as far out as the ends are apart. Its ends are open. A triangle outside the circle has its corner a quarter turn
     // clockwise round it, (s.y, −s.x), exactly the radius from the centre: nowhere near
     // the arc, which is all within 1e-7 of its start. Only the open ends are refused.
     let (sx, sy) = (-7671.596045639507, -6414.562659490378);
@@ -668,9 +760,12 @@ fn one_way_arc_and_rectangle(from: [f64; 2], to: [f64; 2]) -> (Draw, [String; 2]
 
 #[test]
 fn an_arc_whose_ends_point_one_way_turning_almost_a_whole_circle_is_crossed_where_its_circle_is() {
-    // The arc r 10⁴ about the origin (|start| is 10⁴ exactly, as computed) from its start
-    // at −124.7° to its end 9.9999e-8 further out along the start's radius and a few ulps
-    // round, closed by the line back, 1.0000002e-7 long. atan2 puts the end a few ulps
+    // The arc r 10⁴ about the origin (|start| is 10⁴, as computed) from its start at
+    // −124.7° to its end, out along the start's radius and a few ulps round: exactly
+    // 1.000002e-7 from the start (1.0000019980e-7 as computed, 2.0e-13 over 1e-7), and as
+    // computed 9.99986e-8 from its circle (1.4e-12 within 1e-7), so it builds only through
+    // rounding at 10⁴, as the ulp-sweep arc does. It's closed by the line back,
+    // 1.0000019980e-7 long. atan2 puts the end a few ulps
     // clockwise of the start, so the arc turns counter-clockwise a whole circle less a few
     // ulps (6.283185307179585 rad): all of the circle but the few ulps at −124.7°. The
     // rectangle's bottom (y = −1000) and top (y = 1000) cross the circle at
@@ -703,12 +798,66 @@ fn an_arc_whose_ends_point_one_way_turning_almost_a_whole_circle_is_crossed_wher
 }
 
 #[test]
+fn an_arc_turning_almost_a_whole_circle_holds_the_point_opposite_its_start() {
+    // an_arc_whose_ends_point_one_way_turning_almost_a_whole_circle_is_crossed_where_its_
+    // circle_is's arc and line back, and a triangle outside the circle cornered at
+    // (5692.484703417854, 8221.655423413944): the start negated and moved a few dozen ulps,
+    // opposite the start, half a turn round the arc, so on it; 9.09e-11 inside the circle
+    // (|corner| − 10⁴ as computed). As computed, its cross with the start is 0 (on the
+    // start's line) and with the end −7.45e-9. Its sides leave the circle there, to
+    // (8000, 11500) and (5692, 12000) (each dot the corner > 0); the third side is 12,900
+    // from the centre. The corner is 9.09e-11 from the arc, from each side's end.
+    let (s, e) = (
+        [-5692.484703417905, -8221.655423414019],
+        [-5692.48470347483, -8221.655423496235],
+    );
+    let cxy = [5692.484703417854, 8221.655423413944];
+    let cross = |a: [f64; 2], b: [f64; 2]| a[0] * b[1] - a[1] * b[0];
+    assert_eq!(
+        cross(s, cxy),
+        0.0,
+        "the corner is on the start's line, as computed"
+    );
+    assert!(cross(cxy, e) < 0.0);
+    assert!(libm::atan2(e[1], e[0]) < libm::atan2(s[1], s[0]));
+    let mut d = Draw::new();
+    let o = d.point(0.0, 0.0);
+    let start = d.point(s[0], s[1]);
+    let end = d.point(e[0], e[1]);
+    let a = d.arc(&o, &start, &end);
+    d.line(&end, &start);
+    let corner = d.point(cxy[0], cxy[1]);
+    let (out, up) = (d.point(8000.0, 11500.0), d.point(5692.0, 12000.0));
+    let sides = [
+        d.line(&corner, &out),
+        d.line(&out, &up),
+        d.line(&up, &corner),
+    ];
+    let errors = draw::named(&d.refused());
+    assert_eq!(errors.len(), 2, "{errors:#?}");
+    for ((message, elements), side) in errors.iter().zip([&sides[0], &sides[2]]) {
+        let start = format!("point {corner}, the end of line {side}, is ");
+        let end = format!(" mm from arc {a}: {RULE}");
+        let gap: f64 = message
+            .strip_prefix(&start)
+            .and_then(|m| m.strip_suffix(&end))
+            .unwrap_or_else(|| panic!("{message}"))
+            .parse()
+            .unwrap();
+        // To two ulps of 10⁴, as hypot and a square root may round.
+        assert!((gap - 9.09e-11).abs() < 4e-12, "{gap}");
+        assert_eq!(elements, &vec![side.clone(), a.clone(), corner.clone()]);
+    }
+}
+
+#[test]
 fn an_arc_whose_ends_point_one_way_turning_almost_nothing_is_a_sliver_apart_from_the_rectangle() {
     // The same shape turning almost nothing. (The first test's ends swapped won't do: its
     // start would then be the outer point, and its end, the inner, 1.0000014e-7 off the
-    // circle through the start, too far to build.) The arc r 10⁴ (|start| is 10⁴ exactly)
-    // from its start at −140.1° to its end 9.9999e-8 further out and a few ulps round,
-    // which atan2 puts an ulp counter-clockwise of the start: it turns 4.4e-16 rad, its
+    // circle through the start, too far to build.) The ulp-sweep test's arc: r 10⁴
+    // (|start| is 10⁴, as computed), from its start at −140.1° to its end out along its
+    // radius, 1.0000001714e-7 from it as computed, which atan2 puts an ulp
+    // counter-clockwise of the start: it turns 4.4e-16 rad, its
     // length 10⁴ × 4.4e-16 = 4.4e-12, far from the rectangle (whose nearest corner,
     // (5000, −1000), is at −11.3°). With the line back, 1.0000001714e-7 long, it's a loop of
     // no area (under 1e-15 mm²) and a perimeter of 1.0000001714e-7 + 4.4e-12 = 1.00004e-7:
