@@ -1,7 +1,9 @@
 # Silico compared with FreeCAD, nightly: 500 generated cases (docs/roadmap/m1-kernel.md,
 # M1.8) from a seed that changes every run, so the nights add up to broad coverage (a
 # failing night names its seed; `pixi run oracle-sweep -- --seed S` repeats it), and the
-# corpus of real parts (M1.9; `pixi run corpus`).
+# corpus of real parts (M1.9; `pixi run corpus`). A failed night opens an issue for the
+# part that failed (sweep, corpus, or setup), or comments on the open one; a green night
+# closes the corpus's and setup's and comments on the sweep's (.github/nightly-report.sh).
 name: oracle-sweep
 
 on:
@@ -16,14 +18,43 @@ jobs:
   sweep:
     runs-on: [self-hosted, linux, x64, pve]
     timeout-minutes: 120
+    outputs:
+      sweep: ${{ steps.sweep.outcome }}
+      corpus: ${{ steps.corpus.outcome }}
     steps:
       - uses: actions/checkout@v5
       - name: Toolchains
         run: bash .github/tools.sh
       - name: Sweep
+        id: sweep
         run: |
           echo "seed ${{ github.run_number }}"
           pixi run oracle-sweep -- --seed ${{ github.run_number }}
       - name: Corpus
+        id: corpus
         if: ${{ !cancelled() }}
         run: pixi run corpus
+
+  report:
+    needs: sweep
+    # Scheduled nights only: a run started by hand reports to whoever started it.
+    if: ${{ always() && github.event_name == 'schedule' }}
+    runs-on: [self-hosted, linux, x64, pve]
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          RESULT: ${{ needs.sweep.result }}
+          SWEEP: ${{ needs.sweep.outputs.sweep }}
+          CORPUS: ${{ needs.sweep.outputs.corpus }}
+          WORKFLOW: ${{ github.workflow }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SEED: ${{ github.run_number }}
+        run: bash .github/nightly-report.sh
