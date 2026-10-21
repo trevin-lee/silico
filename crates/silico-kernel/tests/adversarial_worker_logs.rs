@@ -839,7 +839,12 @@ fn a_call_warns_when_its_worker_hasnt_said_the_most_requests_were_done() {
     std::fs::write(&frames, format!("printf '{replies}' >&3\n")).unwrap();
     let exe = script(
         "worker-logs-never-done",
-        &format!(". '{}'\nexec /bin/sleep 60", frames.display()),
+        // It reads the requests (and drops them), so they never fill its socket: Linux
+        // holds less of them than macOS.
+        &format!(
+            "/bin/cat <&3 >/dev/null &\n. '{}'\nexec /bin/sleep 60",
+            frames.display()
+        ),
     );
     let mut worker = Worker::spawn(&exe).unwrap();
     for i in 0..calls {
