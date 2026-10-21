@@ -354,9 +354,13 @@ impl From<&Error> for KeptError {
 }
 
 impl KeptError {
-    /// The error kept, if its code is one this Silico knows.
+    /// The error kept, if its code is one this Silico knows, and it names no more elements
+    /// than its total, as every error does.
     pub(crate) fn error(self) -> Option<Error> {
         let code = *ErrorCode::ALL.iter().find(|c| c.as_str() == self.code)?;
+        if (self.elements.len() as u64) > self.elements_total {
+            return None;
+        }
         Some(Error(Box::new(Fields {
             code,
             message: self.message,
@@ -398,5 +402,12 @@ mod tests {
         let mut unknown = KeptError::from(&error);
         unknown.code = "a_code_from_later".to_owned();
         assert_eq!(unknown.error(), None);
+        // Nor is one naming more elements than its total; as many as it names is one.
+        let mut under = KeptError::from(&error);
+        under.elements_total = 1;
+        assert_eq!(under.error(), None);
+        let mut exactly = KeptError::from(&error);
+        exactly.elements_total = 2;
+        assert!(exactly.error().is_some());
     }
 }

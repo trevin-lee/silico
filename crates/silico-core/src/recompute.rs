@@ -1344,6 +1344,11 @@ fn fits(step: &Step, built: &Built) -> bool {
     }
 }
 
+/// Whether `built` knows its measure: its summary, or why the kernel refused it.
+fn knows_measure(built: &Built) -> bool {
+    built.summary().is_some() || built.measure_refused().is_some()
+}
+
 /// Whether a step's failure follows from its values, so asking again would fail again.
 fn kept(error: &Error) -> bool {
     matches!(
@@ -1615,11 +1620,17 @@ impl<K: Kernel + 'static> Engine<K> {
     /// Keeps a recompute's results by key, but for failures that might not happen again,
     /// and only what the plans worth keeping use: a superseded recompute's, if it's the
     /// newest, and the published ones'.
+    /// A result already kept that knows its measure (a summary, or a kept refusal) isn't
+    /// replaced by one that doesn't: a superseded recompute finishing last would otherwise
+    /// put back what a newer one had measured, to be asked again.
     fn keep(&self, done: &BTreeMap<Key, StepResult>) {
         let mut state = lock(&self.state);
         for (key, result) in done {
             let keep = match result {
-                Ok(_) => true,
+                Ok(built) => !matches!(
+                    state.results.get(key),
+                    Some(Ok(kept)) if knows_measure(kept) && !knows_measure(built)
+                ),
                 Err(error) => kept(error),
             };
             if keep {

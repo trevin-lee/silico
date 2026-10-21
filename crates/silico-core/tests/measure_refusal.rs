@@ -81,31 +81,35 @@ fn a_measure_refused_for_its_values_is_asked_once_in_a_session() {
 }
 
 #[test]
-fn a_measure_refused_for_its_values_is_kept_on_disk_and_never_asked_again() {
-    let dir = Scratch::new("refused-kept");
-    let first = session(&dir.0);
-    refusing(first.kernel(), ErrorCode::KernelFailed);
-    let model = published(&first, checked(EXAMPLE));
-    assert_eq!(said(&model.drift()), refused(ErrorCode::KernelFailed));
-    // A session that would measure them: it asks the kernel nothing, and says the same.
-    let second = session(&dir.0);
-    let again = published(&second, checked(EXAMPLE));
-    assert!(second.kernel().calls().is_empty(), "{:?}", calls(&second));
-    assert_eq!(again.drift(), model.drift());
-    assert_eq!(hole(&again), HOLE);
-    // Nor is anything written again: the entries are as the first session left them.
-    let before: Vec<Vec<u8>> = files(&dir.0)
-        .iter()
-        .map(|f| std::fs::read(f).unwrap())
-        .collect();
-    let third = session(&dir.0);
-    published(&third, checked(EXAMPLE));
-    assert!(third.kernel().calls().is_empty());
-    let after: Vec<Vec<u8>> = files(&dir.0)
-        .iter()
-        .map(|f| std::fs::read(f).unwrap())
-        .collect();
-    assert_eq!(after, before);
+fn a_measure_refused_as_invalid_is_kept_on_disk_and_never_asked_again() {
+    // Invalid input or an invalid result: facts about the solid. (`kernel_failed` is kept
+    // only for the session: OCCT's integration may come back so for a shortage of memory.)
+    for code in [ErrorCode::InvalidInput, ErrorCode::InvalidResult] {
+        let dir = Scratch::new(&format!("refused-kept-{}", code.as_str()));
+        let first = session(&dir.0);
+        refusing(first.kernel(), code);
+        let model = published(&first, checked(EXAMPLE));
+        assert_eq!(said(&model.drift()), refused(code));
+        // A session that would measure them: it asks the kernel nothing, and says the same.
+        let second = session(&dir.0);
+        let again = published(&second, checked(EXAMPLE));
+        assert!(second.kernel().calls().is_empty(), "{:?}", calls(&second));
+        assert_eq!(again.drift(), model.drift());
+        assert_eq!(hole(&again), HOLE);
+        // Nor is anything written again: the entries are as the first session left them.
+        let before: Vec<Vec<u8>> = files(&dir.0)
+            .iter()
+            .map(|f| std::fs::read(f).unwrap())
+            .collect();
+        let third = session(&dir.0);
+        published(&third, checked(EXAMPLE));
+        assert!(third.kernel().calls().is_empty());
+        let after: Vec<Vec<u8>> = files(&dir.0)
+            .iter()
+            .map(|f| std::fs::read(f).unwrap())
+            .collect();
+        assert_eq!(after, before);
+    }
 }
 
 #[test]

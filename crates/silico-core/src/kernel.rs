@@ -327,7 +327,7 @@ impl KernelRequest<ShapeSummary> {
 /// What's wrong with `summary`, if it's not one a shape could have: a measure that isn't
 /// finite, or a box whose lowest corner is past its highest. (The worker refuses the first
 /// itself; the core checks what it's given, as it checks any reply.)
-fn summary_fault(summary: &ShapeSummary) -> Option<String> {
+pub(crate) fn summary_fault(summary: &ShapeSummary) -> Option<String> {
     let [x, y, z] = summary.center;
     let mut values = vec![
         ("volume", summary.volume),

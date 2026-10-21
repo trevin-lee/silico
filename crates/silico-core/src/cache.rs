@@ -284,8 +284,10 @@ impl Cache {
             history: built.history.clone(),
             measure: match (built.summary(), built.measure_refused()) {
                 (Some(summary), _) => Measure::Summary(summary.clone()),
-                (None, Some(refused)) => Measure::Refused(KeptError::from(refused)),
-                (None, None) => Measure::Unmeasured,
+                (None, Some(refused)) if lasting(refused) => {
+                    Measure::Refused(KeptError::from(refused))
+                }
+                (None, _) => Measure::Unmeasured,
             },
         };
         let payload = match postcard::to_allocvec(&entry) {
@@ -783,13 +785,35 @@ fn this_platform() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
-/// The result `entry` keeps, unless it keeps a refusal whose code this Silico doesn't know.
+/// Whether a measure's refusal is a fact about the solid's values, so it's kept on disk:
+/// invalid input, or an invalid result. Not `kernel_failed`, though recompute keeps it for
+/// the session as it keeps a step's: the cache keeps nothing a restart might not see again
+/// (M2.4's decision, of OCCT's catch-all alerts), and OCCT's integration catches its own
+/// shortage of memory (`math_ComputeGaussPointsAndWeights` and its Kronrod twin catch every
+/// `Standard_Failure`, `Standard_OutOfMemory` too), which can then come back as a failed
+/// measure.
+fn lasting(refused: &crate::Error) -> bool {
+    matches!(
+        refused.code(),
+        crate::ErrorCode::InvalidInput | crate::ErrorCode::InvalidResult
+    )
+}
+
+/// The result `entry` keeps, checked as a worker's reply is: a summary no shape has, or a
+/// refusal that isn't one the cache keeps, is a measure to make again; a refusal whose code
+/// this Silico doesn't know, or that breaks an error's rules, is an entry that doesn't hold
+/// together.
 fn built_of(entry: Entry) -> Option<Built> {
     let shape = ShapeData::checked(Blob::inline(entry.brep), entry.valid);
     Some(match entry.measure {
-        Measure::Unmeasured => Built::new(shape, entry.history, None),
-        Measure::Summary(summary) => Built::new(shape, entry.history, Some(summary)),
-        Measure::Refused(refused) => Built::refused_measure(shape, entry.history, refused.error()?),
+        Measure::Summary(summary) if crate::kernel::summary_fault(&summary).is_none() => {
+            Built::new(shape, entry.history, Some(summary))
+        }
+        Measure::Refused(refused) => match refused.error()? {
+            refused if lasting(&refused) => Built::refused_measure(shape, entry.history, refused),
+            _ => Built::new(shape, entry.history, None),
+        },
+        Measure::Unmeasured | Measure::Summary(_) => Built::new(shape, entry.history, None),
     })
 }
 
