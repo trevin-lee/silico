@@ -811,6 +811,53 @@ fn a_sketchs_tolerance_is_its_extent_or_a_hundredth_of_a_nanometre() {
             );
         }
     }
+    // Three points, none at the box's corners: p1 (50, 100), p2 (0, 0), p3 (100, 0). The box
+    // is (0, 0) to (100, 100), E = 100√2 = 141.42, the tolerance 1.4142e-7; the farthest
+    // pair, p1 and either other, is only √12500 = 111.80 apart (1.118e-7). p1's x given
+    // twice, the solution 1.3e-7 and 1.5e-7 off the dropped one: 1.3e-7 is kept by the box
+    // and would be refused by the farthest pair.
+    let t = translate(&text(
+        &[
+            point("p0000001", 50.0, 100.0),
+            point("p0000002", 0.0, 0.0),
+            point("p0000003", 100.0, 0.0),
+        ],
+        &[],
+        &[],
+        &[],
+        &[held("k0000001", 50.0), held("k0000002", 50.0)],
+    ));
+    let x = value_drawn(&t, 50.0);
+    for (off, kept) in [(1.3e-7, true), (1.5e-7, false)] {
+        let mut values = t.system.values.clone();
+        values[x] += off;
+        let got = read_back(&t, &dropping_tag(&t, values, 2));
+        assert_eq!(got.is_ok(), kept, "no point at a corner, {off}: {got:?}");
+    }
+    // The extent is the solution's, not the drawing's: p1 drawn at (3, 4) and p2 at the
+    // origin (E 5, the tolerance the floor, 1e-8), p1's x given twice as 300 and the
+    // solution putting p1 at (300, 400), so E 500 and the tolerance 5e-7. The solution
+    // 4e-7 and 6e-7 off the dropped one: 4e-7 is kept, which the drawing's 1e-8 would
+    // refuse.
+    let t = translate(&text(
+        &[point("p0000001", 3.0, 4.0), point("p0000002", 0.0, 0.0)],
+        &[],
+        &[],
+        &[],
+        &[held("k0000001", 300.0), held("k0000002", 300.0)],
+    ));
+    let x = value_drawn(&t, 3.0);
+    for (off, kept) in [(4e-7, true), (6e-7, false)] {
+        let mut values = t.system.values.clone();
+        values[x] = 300.0 + off;
+        values[x + 1] = 400.0;
+        let got = read_back(&t, &dropping_tag(&t, values, 2));
+        assert_eq!(
+            got.is_ok(),
+            kept,
+            "solved far from the drawing, {off}: {got:?}"
+        );
+    }
     // A 50 mm line from the origin along x, and a circle centred at (120, 160): the box is
     // (0, 0) to (120, 160), E 200, the tolerance 2e-7, whether the circle's radius is 80 or
     // 500 (a radius isn't the extent). The line's length given twice, the solution 1.9e-7
