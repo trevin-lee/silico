@@ -1721,8 +1721,8 @@ impl Translation {
     /// curves (each named once): there PlaneGCS measures the tangency as `r1 − r2`, an inside
     /// tangency's form, whatever side it's given, so a solve can meet it with the circles on
     /// one centre. FreeCAD reads the side from the drawing each solve
-    /// (`System::addConstraintTangent`), so it sends `outside` whenever the centres start
-    /// apart; if other constraints then drive them together, 1.1.3 lands on equal circles on
+    /// (`System::addConstraintTangent`), so it sends `outside` whenever each centre starts
+    /// outside the other circle (d ≥ r1 and d ≥ r2); if other constraints then drive them together, 1.1.3 lands on equal circles on
     /// one centre and accepts them (#24227). Silico refuses that on purpose: circles on one
     /// centre touch outside only at radius 0, which no circle has.
     fn concentric_outside(&self, values: &[f64]) -> Result<Vec<String>, Error> {
