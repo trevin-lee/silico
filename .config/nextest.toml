@@ -65,3 +65,9 @@ slow-timeout = { period = "60s", terminate-after = 17 }
 [[profile.default.overrides]]
 filter = 'package(silico-kernel) & binary(=pool_slot_spawn_fails)'
 test-group = 'thread-exhausting'
+
+# The advance sweeps (silico-kernel pool) widen until they reach the moment they aim at, up
+# to a bound: each says how wide it went, so a run shows how close load took it.
+[[profile.default.overrides]]
+filter = 'package(silico-kernel) & (test(=a_request_after_advance_never_lands_on_a_killed_worker) | test(=a_worker_killed_as_its_request_ends_is_never_given_another))'
+success-output = "final"

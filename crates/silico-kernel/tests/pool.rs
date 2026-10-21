@@ -613,6 +613,11 @@ fn sweep_until_a_worker_is_stopped(
             workers.extend(pool.pids());
         }
         if workers.len() > 1 {
+            // Shown in CI (.config/nextest.toml): how close a loaded machine took it to HANG.
+            eprintln!(
+                "swept to {window:?} after a request, in {:?} of {HANG:?}",
+                start.elapsed()
+            );
             return;
         }
         assert!(
