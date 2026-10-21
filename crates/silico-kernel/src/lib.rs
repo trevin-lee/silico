@@ -1926,4 +1926,37 @@ mod tests {
             Some("check that the shapes are solids that overlap")
         );
     }
+
+    #[test]
+    fn a_sweep_turned_inside_out_is_refused_as_an_invalid_result() {
+        use silico_protocol::{Operation, Refusal};
+        // A 10 × 20 × 30 box, reversed: written as OCCT's binary B-rep, whose last 9 bytes
+        // are the shape's own reference (its orientation, a byte, 0 for FORWARD, then its
+        // index and its location's, 4 bytes each: BinTools_ShapeSet::Write), with that
+        // byte set to 1, REVERSED. Each face is then reversed in it, so its volume is
+        // -6000 (-(10 × 20 × 30)): a solid turned inside out, as a sweep should never give.
+        let made = super::make_box(10.0, 20.0, 30.0).unwrap();
+        let written = super::ffi::shape_to_brep(made.get().unwrap()).unwrap();
+        let mut brep = written.as_bytes().to_vec();
+        let at = brep.len() - 9;
+        assert_eq!(brep[at], 0, "the box isn't written FORWARD where expected");
+        brep[at] = 1;
+        let reversed = super::ffi::shape_from_brep(&brep).unwrap();
+        let measured = super::ffi::measure(&reversed, silico_protocol::MEASURE_PRECISION).unwrap();
+        assert!(
+            (measured.volume + 6000.0).abs() <= 1e-9 * 6000.0,
+            "{}",
+            measured.volume
+        );
+        let refused = super::swept(&made, reversed, Operation::Extrusion, &[])
+            .err()
+            .unwrap();
+        assert_eq!(
+            refused.refusal(),
+            &Refusal::ResultInvalid {
+                operation: Operation::Extrusion,
+                edges: Vec::new(),
+            }
+        );
+    }
 }

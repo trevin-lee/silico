@@ -22,7 +22,7 @@ use silico_kernel::{
     Axis, Built, Curve, FaceRegions, KernelError, KernelErrorKind, Region, ShapeSummary,
     SketchPlane, make_faces, prism, prism_through_all, revolution, summarize, to_brep,
 };
-use silico_protocol::{SweepKind, THROUGH_ALL_FACTOR};
+use silico_protocol::{Operation, Refusal, SweepKind, THROUGH_ALL_FACTOR};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-worker");
 
@@ -331,7 +331,7 @@ fn a_prism_along_its_own_plane_is_refused_not_a_flat_solid() {
     // Found by break-it, fixed: this built, valid, volume 0 (6 faces, 12 edges, 8 vertices,
     // all at z = 0). The kernel now refuses a vector within 1e-7 of the faces' plane, as M1's
     // extrude does (check_leaves_plane, Refusal::SweepFlat), and any sweep whose result has
-    // no volume (has_no_volume).
+    // no volume to speak of or is turned inside out (amount_of, Refusal::ResultInvalid).
     // A 2 × 2 square on XY swept along +x: no volume. The core never sends it (its vector is
     // the plane's normal), but the kernel takes any vector; it must not build a flat
     // "solid".
@@ -364,6 +364,79 @@ fn a_prism_just_longer_than_the_tolerance_is_built_exactly_or_refused() {
             4.0 * length,
         );
     }
+}
+
+/// The refusal `swept` gives a sweep whose result has no volume to speak of (`amount_of`):
+/// an invalid result of `operation`, naming no edges.
+fn no_volume_to_speak_of(what: &str, result: Result<Built, KernelError>, operation: Operation) {
+    match result {
+        Ok(built) => {
+            let s = summarize(&built.shape).unwrap();
+            panic!("{what}: built, {s:?}");
+        }
+        Err(e) => assert_eq!(
+            e.refusal(),
+            &Refusal::ResultInvalid {
+                operation,
+                edges: vec![],
+            },
+            "{what}"
+        ),
+    }
+}
+
+#[test]
+fn a_prism_thinner_than_twice_the_tolerance_is_refused_as_having_no_volume() {
+    // A 10 × 10 square on XY swept 1.5e-7 along z: longer than the 1e-7 check_prism asks,
+    // and straight out of its plane, so only the result's amount can refuse it. By hand:
+    // volume 100 × 1.5e-7 = 1.5e-5; area 2 × 100 + 4 × 10 × 1.5e-7 = 200.000006, so its
+    // mean thickness, 7.5e-8, is within the 1e-7 tolerance of none (1.5e-5 ≤ 1e-7 × 200):
+    // no volume to speak of. Its rough volume (1.5e-5) is far under 1e-5 × its box's
+    // diagonal cubed (√200³ ≈ 2828, so 0.028), so it's measured precisely, not cleared.
+    let made = make_faces(&one(SketchPlane::Xy, rectangle(0.0, 0.0, 10.0, 10.0))).unwrap();
+    no_volume_to_speak_of(
+        "a 10 × 10 prism 1.5e-7 long",
+        prism(&made.shape, [0.0; 3], [0.0, 0.0, 1.5e-7]),
+        Operation::Extrusion,
+    );
+    // Twice as long, its mean thickness 1.5e-7 (3e-5 > 1e-7 × 200): built, of the volume
+    // 100 × 3e-7.
+    let built = judge(
+        "a 10 × 10 prism 3e-7 long",
+        prism(&made.shape, [0.0; 3], [0.0, 0.0, 3e-7]),
+        SweepKind::Prism,
+        3e-5,
+    );
+    assert!(built.is_some(), "a 10 × 10 prism 3e-7 long was refused");
+}
+
+#[test]
+fn a_turn_thinner_than_twice_the_tolerance_is_refused_as_having_no_volume() {
+    // The unit square x 100..101, z 0..1 on XZ turned 1.5e-9 rad about z: above OCCT's 1e-12
+    // radians, and every edge it sweeps at least 100 × 1.5e-9 = 1.5e-7 long, longer than the
+    // tolerance. By hand (Pappus): volume 1.5e-9 × 1 × 100.5 = 1.5075e-7; area 2 (the
+    // square, at each end) + θ × (101 + 100) (the cylinders) + θ × (101² − 100²) (the two
+    // annulus sectors) = 2 + 402θ ≈ 2.0000006, so its mean thickness, 7.5e-8, is within the
+    // tolerance of none (1.5075e-7 ≤ 1e-7 × 2.0000006). Its rough volume is far under
+    // 1e-5 × √2³ ≈ 2.8e-5, so it's measured precisely.
+    let made = make_faces(&one(SketchPlane::Xz, rectangle(100.0, 0.0, 1.0, 1.0))).unwrap();
+    no_volume_to_speak_of(
+        "a 1.5e-9 rad turn 100 from the axis",
+        revolution(&made.shape, &Z, 0.0, 1.5e-9),
+        Operation::Revolve,
+    );
+    // Twice the angle, its mean thickness 1.5e-7 (3.015e-7 > 1e-7 × 2.0000012): built, of
+    // the volume 3e-9 × 100.5.
+    let built = judge(
+        "a 3e-9 rad turn 100 from the axis",
+        revolution(&made.shape, &Z, 0.0, 3e-9),
+        SweepKind::Turn,
+        3e-9 * 100.5,
+    );
+    assert!(
+        built.is_some(),
+        "a 3e-9 rad turn 100 from the axis was refused"
+    );
 }
 
 #[test]

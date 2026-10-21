@@ -42,7 +42,8 @@ fn a_volume_that_isnt_a_number_is_no_proof_of_a_change() {
     // Found by break-it, fixed: `change <= MEASURE_PRECISION * before` is false when either
     // volume is NaN, so check_result passed a feature whose result (or base) measured NaN,
     // the precise measure's answer for a broken shape. It now refuses a volume no solid has
-    // first, kernel_failed, as the kernel's has_no_volume treats NaN as no volume.
+    // first, kernel_failed, as the kernel's amount_of (which refuses a sweep with no volume to
+    // speak of, or turned inside out) treats NaN as no volume.
     for kind in SweepFeature::ALL {
         for (before, after) in [(1000.0, f64::NAN), (f64::NAN, 1000.0), (f64::NAN, f64::NAN)] {
             let e = check(kind, before, after).unwrap_err();
