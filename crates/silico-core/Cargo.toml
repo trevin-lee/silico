@@ -35,6 +35,7 @@ required-features = ["fake"]
 cpu-time.workspace = true
 jsonschema.workspace = true
 proptest.workspace = true
+rustix = { workspace = true, features = ["fs"] }
 silico-core = { path = ".", features = ["fake"] }
 
 [lints]

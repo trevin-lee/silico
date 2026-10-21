@@ -21,12 +21,18 @@
 //! unwritten, each with a warning. An entry that doesn't hold together (a bad seal, a
 //! payload that doesn't parse, an entry for another key) is a miss too, rebuilt and written
 //! over, never trusted. Without a secret (no home directory, say) the cache keeps nothing.
+//!
+//! The cache is bounded (docs/design/m2.5-cache-bound.md): a put that would take it past its
+//! bound evicts the entries least recently used (written, or taken by a hit), and a scan
+//! removes partial files left by writes that were killed. Eviction only makes misses: a miss
+//! is a rebuild, which comes to the same bytes.
 
 use std::io::{Read as _, Write as _};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, SystemTime};
 
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
@@ -42,6 +48,14 @@ const MAGIC: &[u8] = b"silico cache 4\n";
 const GITIGNORE: &[u8] =
     b"# Silico's rebuild cache: rebuilt from the document, never committed.\n*\n";
 
+/// The most bytes a cache keeps unless it's given another bound: twice the largest entry
+/// ([`MAX_ENTRY`]), so even that is kept.
+pub const DEFAULT_BOUND: u64 = 2 << 30;
+
+/// How long after its last write a partial file is taken for a write that was killed, and
+/// removed: a writer renames its partial within moments of writing its last byte.
+pub const STALE_PARTIAL: Duration = Duration::from_secs(60 * 60);
+
 /// A directory of kept results, for one platform, sealed with one secret.
 #[derive(Clone)]
 pub struct Cache {
@@ -52,6 +66,22 @@ pub struct Cache {
     secret: Option<Secret>,
     /// Whether this cache (or a clone) has said its directory is a link it won't use.
     said_linked: Arc<AtomicBool>,
+    /// The most bytes the directory's entries and partial files may take.
+    bound: u64,
+    /// What this cache and its clones know of the directory's size.
+    usage: Arc<Mutex<Usage>>,
+}
+
+/// What a cache knows of its directory's size: the bytes its last scan found, plus those
+/// it has written or is writing since (which `since_scan` counts too).
+#[derive(Default)]
+struct Usage {
+    /// None until the first put scans.
+    known: Option<u64>,
+    since_scan: u64,
+    /// The bytes of the entries being written: a scan may not see them yet (a job's
+    /// dependents run, and put, while its entry is written).
+    writing: u64,
 }
 
 impl std::fmt::Debug for Cache {
@@ -60,6 +90,7 @@ impl std::fmt::Debug for Cache {
             .field("dir", &self.dir)
             .field("platform", &self.platform)
             .field("sealed", &self.secret.is_some())
+            .field("bound", &self.bound)
             .finish()
     }
 }
@@ -156,7 +187,17 @@ impl Cache {
             platform,
             secret,
             said_linked: Arc::default(),
+            bound: DEFAULT_BOUND,
+            usage: Arc::default(),
         }
+    }
+
+    /// This cache, keeping at most `bound` bytes of entries and partial files (rather than
+    /// [`DEFAULT_BOUND`]): an entry larger than that isn't kept.
+    #[must_use]
+    pub fn with_bound(mut self, bound: u64) -> Self {
+        self.bound = bound;
+        self
     }
 
     /// The result kept for `step` on `kernel` (its [`identity`](crate::kernel::Kernel::identity)),
@@ -182,11 +223,14 @@ impl Cache {
             }
         };
         match read_entry(&bytes, secret, &key) {
-            Some(entry) => Some(Built::new(
-                ShapeData::checked(Blob::inline(entry.brep), entry.valid),
-                entry.history,
-                entry.summary,
-            )),
+            Some(entry) => {
+                renew(&path);
+                Some(Built::new(
+                    ShapeData::checked(Blob::inline(entry.brep), entry.valid),
+                    entry.history,
+                    entry.summary,
+                ))
+            }
             None => {
                 tracing::warn!(path = %path.display(), "a cache entry doesn't hold together: rebuilding it");
                 let _ = std::fs::remove_file(&path);
@@ -225,9 +269,72 @@ impl Cache {
         if self.linked_below(&path) {
             return;
         }
-        if let Err(e) = write_entry(&self.dir, &path, &seal, &payload) {
+        let size = (MAGIC.len() + seal.0.len() + payload.len()) as u64;
+        if size > self.bound {
+            tracing::debug!(
+                size,
+                bound = self.bound,
+                "a cache entry larger than the cache's bound: not kept"
+            );
+            return;
+        }
+        self.make_room(size);
+        let written = write_entry(&self.dir, &path, &seal, &payload);
+        {
+            let mut usage = self.usage.lock().unwrap_or_else(PoisonError::into_inner);
+            usage.writing = usage.writing.saturating_sub(size);
+            if written.is_err() {
+                usage.known = usage.known.map(|known| known.saturating_sub(size));
+                usage.since_scan = usage.since_scan.saturating_sub(size);
+            }
+        }
+        if let Err(e) = written {
             tracing::warn!(path = %path.display(), "couldn't write a cache entry: {e}");
         }
+    }
+
+    /// Makes room for an entry of `size` bytes, and counts it as being written. Scans the
+    /// directory at the first put, once an eighth of the bound has been written since the
+    /// last scan (so other sessions' writes are seen), and when the entry would take the
+    /// cache past its bound; then evicts the entries least recently used, until what's left
+    /// and the entry take at most three quarters of the bound.
+    fn make_room(&self, size: u64) {
+        let mut usage = self.usage.lock().unwrap_or_else(PoisonError::into_inner);
+        let due = usage
+            .known
+            .is_none_or(|known| known.saturating_add(size) > self.bound)
+            || usage.since_scan.saturating_add(size) > self.bound / 8;
+        if due {
+            let span = tracing::debug_span!(
+                "cache.evict",
+                dir = %self.dir.display(),
+                entries = tracing::field::Empty,
+                bytes = tracing::field::Empty,
+                evicted = tracing::field::Empty,
+                evicted_bytes = tracing::field::Empty,
+                partials_removed = tracing::field::Empty,
+            );
+            let _entered = span.enter();
+            let mut scan = scan(&self.dir, SystemTime::now());
+            span.record("entries", scan.entries.len());
+            span.record("bytes", scan.bytes);
+            span.record("partials_removed", scan.partials_removed);
+            // What's being written counts as kept, whether or not the scan saw it.
+            let coming = size.saturating_add(usage.writing);
+            let target = (self.bound - self.bound / 4).saturating_sub(coming);
+            let (evicted, evicted_bytes) = if scan.bytes.saturating_add(coming) > self.bound {
+                evict(&mut scan, target)
+            } else {
+                (0, 0)
+            };
+            span.record("evicted", evicted);
+            span.record("evicted_bytes", evicted_bytes);
+            usage.known = Some(scan.bytes.saturating_add(usage.writing));
+            usage.since_scan = 0;
+        }
+        usage.known = usage.known.map(|known| known.saturating_add(size));
+        usage.since_scan = usage.since_scan.saturating_add(size);
+        usage.writing = usage.writing.saturating_add(size);
     }
 
     /// The secret to key and seal entries with, if the cache keeps any: not when its
@@ -281,6 +388,158 @@ fn is_link(path: &Path) -> bool {
 /// `.` components.
 fn plain(path: PathBuf) -> PathBuf {
     path.components().collect()
+}
+
+/// What a scan of a cache's directory found.
+struct Scan {
+    /// Every entry, as its last use (its modification time), its path, and its size.
+    entries: Vec<(SystemTime, PathBuf, u64)>,
+    /// The bytes of its entries and of the partial files it left.
+    bytes: u64,
+    /// How many partial files, last written [`STALE_PARTIAL`] ago or more, it removed.
+    partials_removed: usize,
+}
+
+/// Lists the entries of the cache in `dir`, and removes its partial files last written
+/// [`STALE_PARTIAL`] before `now` or earlier. Reads metadata only, and follows no link: an
+/// entry is a regular file named by 62 hex digits in a subdirectory named by two; a partial
+/// is a file named `.partial-…` in either. Anything else is left, and not counted.
+fn scan(dir: &Path, now: SystemTime) -> Scan {
+    let mut scan = Scan {
+        entries: Vec::new(),
+        bytes: 0,
+        partials_removed: 0,
+    };
+    let mut warned = false;
+    for item in list(dir) {
+        let name = item.file_name();
+        let path = item.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if is_partial(&name) {
+            scan.partial(&path, &meta, now, &mut warned);
+        } else if meta.is_dir() && is_hex(&name, 2) {
+            for file in list(&path) {
+                let name = file.file_name();
+                let path = file.path();
+                let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                    continue;
+                };
+                if is_partial(&name) {
+                    scan.partial(&path, &meta, now, &mut warned);
+                } else if meta.is_file() && is_hex(&name, 62) {
+                    let used = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                    scan.bytes += meta.len();
+                    scan.entries.push((used, path, meta.len()));
+                }
+            }
+        }
+    }
+    scan
+}
+
+impl Scan {
+    /// Removes the partial file at `path` if it was last written [`STALE_PARTIAL`] before
+    /// `now` or earlier (a link that's named as one, by its own time: never what it points
+    /// at); otherwise counts it.
+    fn partial(
+        &mut self,
+        path: &Path,
+        meta: &std::fs::Metadata,
+        now: SystemTime,
+        warned: &mut bool,
+    ) {
+        let written = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let stale = now
+            .duration_since(written)
+            .is_ok_and(|age| age >= STALE_PARTIAL);
+        if stale && !meta.is_dir() {
+            match remove(path, warned) {
+                Removed::Yes | Removed::Gone => self.partials_removed += 1,
+                Removed::No => {
+                    if meta.is_file() {
+                        self.bytes += meta.len();
+                    }
+                }
+            }
+        } else if meta.is_file() {
+            self.bytes += meta.len();
+        }
+    }
+}
+
+/// Evicts `scan`'s entries, least recently used first (by path, of two used at once), until
+/// its bytes are at most `target` or no entry is left. Returns how many it evicted, and
+/// their bytes.
+fn evict(scan: &mut Scan, target: u64) -> (usize, u64) {
+    scan.entries.sort();
+    let mut warned = false;
+    let (mut evicted, mut evicted_bytes) = (0, 0);
+    for (_, path, size) in &scan.entries {
+        if scan.bytes <= target {
+            break;
+        }
+        match remove(path, &mut warned) {
+            // Gone already: another session evicted it, or rebuilt it after a bad read.
+            Removed::Yes | Removed::Gone => {
+                scan.bytes -= size;
+                evicted += 1;
+                evicted_bytes += size;
+            }
+            Removed::No => {}
+        }
+    }
+    (evicted, evicted_bytes)
+}
+
+/// What removing a cache's file came to.
+enum Removed {
+    Yes,
+    Gone,
+    No,
+}
+
+/// Removes the file (or link) at `path`, warning of a failure (once for each `warned`).
+fn remove(path: &Path, warned: &mut bool) -> Removed {
+    match std::fs::remove_file(path) {
+        Ok(()) => Removed::Yes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Removed::Gone,
+        Err(e) => {
+            if !std::mem::replace(warned, true) {
+                tracing::warn!(path = %path.display(), "couldn't remove a cache file: {e}");
+            }
+            Removed::No
+        }
+    }
+}
+
+/// The items in the directory `dir`, or none if it can't be read.
+fn list(dir: &Path) -> impl Iterator<Item = std::fs::DirEntry> {
+    std::fs::read_dir(dir).into_iter().flatten().flatten()
+}
+
+/// Whether `name` is a partial file's: one [`new_file`] makes.
+fn is_partial(name: &std::ffi::OsStr) -> bool {
+    name.as_encoded_bytes().starts_with(b".partial-")
+}
+
+/// Whether `name` is `digits` lowercase hex digits, as an entry's path is.
+fn is_hex(name: &std::ffi::OsStr, digits: usize) -> bool {
+    let name = name.as_encoded_bytes();
+    name.len() == digits && name.iter().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Marks the entry at `path` as used now, so it's evicted after those used before it. A
+/// hit whose time can't be set (a read-only cache, say) is still a hit.
+fn renew(path: &Path) {
+    let opened = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path);
+    if let Ok(file) = opened {
+        let _ = file.set_modified(SystemTime::now());
+    }
 }
 
 /// The user's secret file: `silico/cache-secret` in `$XDG_CACHE_HOME`, if that's an absolute
@@ -412,7 +671,9 @@ fn read_entry(bytes: &[u8], secret: &Secret, key: &EntryKey) -> Option<Entry> {
 /// Writes an entry at `path`, in the cache at `root`, whole or not at all: to a file of its
 /// own beside it, then renamed over it, so a reader never sees a part of one, and two
 /// writers of the same entry (two sessions) leave one or the other. Not synced to the disk:
-/// an entry a crash cuts short or empties doesn't hold together, so it's a miss.
+/// an entry a crash cuts short or empties doesn't hold together, so it's a miss. Its
+/// modification time, its last use, is set to now, to the nanosecond (Linux's own moves only
+/// once a tick).
 fn write_entry(root: &Path, path: &Path, seal: &Seal, payload: &[u8]) -> std::io::Result<()> {
     let dir = path
         .parent()
@@ -431,7 +692,8 @@ fn write_entry(root: &Path, path: &Path, seal: &Seal, payload: &[u8]) -> std::io
     let written = file
         .write_all(MAGIC)
         .and_then(|()| file.write_all(&seal.0))
-        .and_then(|()| file.write_all(payload));
+        .and_then(|()| file.write_all(payload))
+        .and_then(|()| file.set_modified(SystemTime::now()));
     let renamed = written.and_then(|()| std::fs::rename(&partial, path));
     if renamed.is_err() {
         let _ = std::fs::remove_file(&partial);
