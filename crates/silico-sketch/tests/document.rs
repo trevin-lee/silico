@@ -888,6 +888,46 @@ fn an_outside_tangency_between_circles_on_one_centre_is_an_invalid_result() {
 }
 
 #[test]
+fn an_outside_tangency_drawn_apart_and_driven_onto_one_centre_is_an_invalid_result() {
+    // The route FreeCAD 1.1.3 takes too, and accepts (the port reviewer ran it on the
+    // oracle): c1 r 10 held about the origin, c2 drawn 30 to its right, r 12, tangent
+    // outside, and c2's centre dimensioned onto the origin. The centres cross under 1e-7
+    // during the solve, where PlaneGCS measures r1 − r2 whatever the side, and it lands on
+    // two equal circles on one centre. Silico refuses that on purpose, naming the tangency
+    // and both circles.
+    let doc = document(
+        &[point("p0000001", 0.0, 0.0), point("p0000002", 30.0, 0.0)],
+        &[],
+        &[
+            circle("c0000001", "p0000001", 10.0),
+            circle("c0000002", "p0000002", 12.0),
+        ],
+        &[],
+        &[
+            r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000003", "type": "radius", "curve": "c0000001", "value": 10, "driving": true}"#,
+            r#"{"id": "k0000004", "type": "tangent", "a": "c0000001", "b": "c0000002", "side": "outside"}"#,
+            r#"{"id": "k0000005", "type": "distance_x", "a": "origin", "b": "p0000002", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000006", "type": "distance_y", "a": "origin", "b": "p0000002", "value": 0, "driving": true}"#,
+        ],
+    );
+    let e = solved(&doc, &mut worker()).unwrap_err();
+    assert_eq!(
+        (e.code(), e.elements()),
+        (
+            ErrorCode::InvalidResult,
+            &[
+                "k0000004".to_owned(),
+                "c0000001".to_owned(),
+                "c0000002".to_owned()
+            ][..]
+        ),
+        "{e}"
+    );
+}
+
+#[test]
 fn an_inside_tangency_between_circles_on_one_centre_makes_them_equal() {
     // Inside, PlaneGCS's r1 − r2 is the tangency itself: c2's free radius solves to c1's,
     // 10, about (1, 1).
