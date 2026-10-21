@@ -958,7 +958,7 @@ fn crossed_with_tool(p: u32, q: u32) -> History {
 /// bound's measure, counted here from the name's own parts.
 fn written_out(name: &Name) -> u64 {
     let parts: Vec<&Name> = match name {
-        Name::Element { .. } => vec![],
+        Name::Element { .. } | Name::Sketch { .. } => vec![],
         Name::Derived { first, more, .. } => std::iter::once(first)
             .chain(more)
             .map(|source| source.name.as_ref())

@@ -630,7 +630,7 @@ mod axis_reach {
             references: BTreeMap::new(),
             dofs: 0,
             free: BTreeSet::new(),
-            redundant: BTreeSet::new(),
+            redundant: BTreeMap::new(),
             algorithm: silico_protocol::Algorithm::DogLeg,
         };
         (document, solution, p, q)

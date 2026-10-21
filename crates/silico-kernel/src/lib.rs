@@ -934,8 +934,9 @@ fn point3([x, y, z]: [f64; 3]) -> ffi::Point3 {
 }
 
 /// A sweep's result, checked as any operation's ([`checked_result`]), and refused as an
-/// invalid result if it has no volume to speak of ([`has_no_volume`], as a boolean's is):
-/// a flat "solid" OCCT calls valid, which the plane checks keep out, should one get past.
+/// invalid result if it has no volume to speak of or is turned inside out ([`amount_of`], as a
+/// boolean's is): a flat "solid" OCCT calls valid, which the plane checks keep out, should
+/// one get past.
 fn swept(
     faces: &Shape,
     solid: cxx::UniquePtr<ffi::Shape>,
@@ -943,7 +944,7 @@ fn swept(
     entries: &[ffi::HistoryEntry],
 ) -> Result<Built, KernelError> {
     let result = checked_result(&[faces], solid, operation.clone())?;
-    if has_no_volume(result.get()?, &[])? {
+    if !matches!(amount_of(result.get()?, &[])?, Amount::Some) {
         return Err(KernelError::new(Refusal::ResultInvalid {
             operation,
             edges: Vec::new(),
