@@ -858,6 +858,29 @@ fn a_sketchs_tolerance_is_its_extent_or_a_hundredth_of_a_nanometre() {
             "solved far from the drawing, {off}: {got:?}"
         );
     }
+    // And the reverse: p1 drawn at (300, 400) (the drawing's E 500, its tolerance 5e-7),
+    // p1's x given twice as 3 and the solution putting p1 at (3, 4), so E 5 and the
+    // tolerance the floor, 1e-8. The solution 0.9e-8 and 4e-7 off the dropped one: 4e-7 is
+    // refused, which the drawing's 5e-7 would keep.
+    let t = translate(&text(
+        &[point("p0000001", 300.0, 400.0), point("p0000002", 0.0, 0.0)],
+        &[],
+        &[],
+        &[],
+        &[held("k0000001", 3.0), held("k0000002", 3.0)],
+    ));
+    let x = value_drawn(&t, 300.0);
+    for (off, kept) in [(0.9e-8, true), (4e-7, false)] {
+        let mut values = t.system.values.clone();
+        values[x] = 3.0 + off;
+        values[x + 1] = 4.0;
+        let got = read_back(&t, &dropping_tag(&t, values, 2));
+        assert_eq!(
+            got.is_ok(),
+            kept,
+            "drawn far from the solution, {off}: {got:?}"
+        );
+    }
     // A 50 mm line from the origin along x, and a circle centred at (120, 160): the box is
     // (0, 0) to (120, 160), E 200, the tolerance 2e-7, whether the circle's radius is 80 or
     // 500 (a radius isn't the extent). The line's length given twice, the solution 1.9e-7
