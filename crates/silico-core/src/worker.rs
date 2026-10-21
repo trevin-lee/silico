@@ -113,34 +113,139 @@ impl WorkerKind {
     }
 }
 
-/// A file's size, modification time, and inode: what changes when it's rebuilt or replaced.
+/// A check of a worker as it starts (see [`Worker::spawn_checked`]).
+pub(crate) type StartCheck = Box<dyn FnOnce() -> Result<(), Error> + Send>;
+
+/// A file's size, modification and change times, and inode: what changes when it's rebuilt
+/// or replaced. The change time (`st_ctime`) as well as the modification time, since a write
+/// can put the modification time back (as `cp -p` onto the file does) but not the change
+/// time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Stamp {
     len: u64,
     modified: Option<std::time::SystemTime>,
+    /// The change time: seconds, and nanoseconds past them.
+    changed: (i64, i64),
     inode: u64,
 }
 
 impl Stamp {
     pub(crate) fn of(path: &Path) -> Option<Self> {
+        std::fs::metadata(path).ok().map(|meta| Self::from(&meta))
+    }
+}
+
+impl From<&std::fs::Metadata> for Stamp {
+    fn from(meta: &std::fs::Metadata) -> Self {
         use std::os::unix::fs::MetadataExt;
-        let meta = std::fs::metadata(path).ok()?;
-        Some(Self {
+        Self {
             len: meta.len(),
             modified: meta.modified().ok(),
+            changed: (meta.ctime(), meta.ctime_nsec()),
             inode: meta.ino(),
-        })
+        }
+    }
+}
+
+/// A worker's executable, as it was when first found (before any worker of it starts): its
+/// identity (see
+/// [`hashed`]), which results kept by key carry, and its stamp then. A worker is started
+/// from it, and taken, only while it's still that build ([`Executable::check`]): another
+/// would answer under this one's identity with another kernel's (or solver's) results.
+pub(crate) struct Executable {
+    path: PathBuf,
+    kind: WorkerKind,
+    identity: String,
+    /// The file as it was when last found to be this build: renewed when a change that
+    /// keeps the bytes (a relink, a `chmod`) is hashed and found the same, so it's hashed
+    /// once for it, not at every start. Its lock is taken alone, never while another is.
+    stamp: Mutex<Stamp>,
+}
+
+impl Executable {
+    /// The executable at `path`, of a `kind` of worker, as it is now.
+    pub(crate) fn of(path: &Path, kind: WorkerKind) -> Result<Arc<Self>, Error> {
+        let (identity, stamp) = hashed(path, kind)?;
+        Ok(Arc::new(Self {
+            path: path.to_owned(),
+            kind,
+            identity,
+            stamp: Mutex::new(stamp),
+        }))
+    }
+
+    pub(crate) fn identity(&self) -> &str {
+        &self.identity
+    }
+
+    /// Whether the file is still this build. Cheap when it's as it was (its stamp); hashed
+    /// again only when that's changed.
+    pub(crate) fn check(&self) -> Result<(), Error> {
+        let known = *lock(&self.stamp);
+        if Stamp::of(&self.path) == Some(known) {
+            return Ok(());
+        }
+        let (identity, stamp) = hashed(&self.path, self.kind)?;
+        if identity == self.identity {
+            *lock(&self.stamp) = stamp;
+            return Ok(());
+        }
+        let noun = self.kind.noun();
+        Err(Error::new(
+            ErrorCode::WorkerCrashed,
+            format!(
+                "the {noun} {} changed since it started: another build of it isn't started \
+                 in its place",
+                self.path.display()
+            ),
+        )
+        .with_suggestion(format!(
+            "restart Silico, so the new {noun}'s results are kept as its own"
+        )))
+    }
+
+    /// Starts a worker from the file, if it's still this build, and checks it again once
+    /// the worker has started (see [`Worker::spawn_checked`]): a file replaced between the
+    /// two checks (around the exec) shows, and that worker isn't trusted. A file replaced
+    /// and put back between them would pass: two replacements in the moments a worker takes
+    /// to start, out of reach without pinning the executable (an open file to exec, or a
+    /// private copy), which waits on how M5 packages the workers.
+    pub(crate) fn spawn(self: &Arc<Self>) -> Result<Worker, Error> {
+        self.check()?;
+        let again = Arc::clone(self);
+        Worker::spawn_checked(&self.path, self.kind, Some(Box::new(move || again.check())))
     }
 }
 
 /// The identity of the worker executable at `exe`, a `kind` of worker: its noun (`kernel
 /// worker`), `sha256:`, and its bytes' SHA-256, so a rebuilt or replaced worker is another
 /// kernel or solver. Results kept by key carry it (M2.5's cache keeps the kernel's on disk,
-/// so its spelling doesn't change).
-pub(crate) fn identity_of(exe: &Path, kind: WorkerKind) -> Result<String, Error> {
+/// so its spelling doesn't change). And the file's stamp, from the same open file, so the
+/// two are of one file.
+fn hashed(exe: &Path, kind: WorkerKind) -> Result<(String, Stamp), Error> {
     use sha2::{Digest, Sha256};
     let noun = kind.noun();
-    let bytes = std::fs::read(exe).map_err(|e| {
+    // Opened without waiting, and read only if it's a regular file: a FIFO put at the path
+    // would block its open (and the pool's thread) until something wrote to it, and a device
+    // (a link to /dev/zero) would be read without end.
+    let hashed_and_stamped = (|| {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(exe)?;
+        let meta = file.metadata()?;
+        if !meta.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "it isn't a regular file",
+            ));
+        }
+        let mut hasher = Sha256::new();
+        io::copy(&mut file, &mut hasher)?;
+        Ok((hasher.finalize(), Stamp::from(&meta)))
+    })()
+    .map_err(|e: io::Error| {
         Error::new(
             ErrorCode::WorkerCrashed,
             format!("couldn't read the {noun} {}", exe.display()),
@@ -148,10 +253,8 @@ pub(crate) fn identity_of(exe: &Path, kind: WorkerKind) -> Result<String, Error>
         .with_cause(e.to_string())
         .with_suggestion(format!("check Silico's install: rebuild the {noun}"))
     })?;
-    Ok(format!(
-        "{noun} sha256:{}",
-        crate::hex(&Sha256::digest(&bytes))
-    ))
+    let (digest, stamp) = hashed_and_stamped;
+    Ok((format!("{noun} sha256:{}", crate::hex(&digest)), stamp))
 }
 
 /// A running worker. Dropping it kills and reaps the process.
@@ -175,6 +278,9 @@ pub struct Worker {
     /// Set when the worker says it has started (see [`silico_protocol::write_started`]), or
     /// replies.
     started: Arc<AtomicBool>,
+    /// Why the worker isn't to be trusted, if its start's check found so (see
+    /// [`Worker::spawn_checked`]): its calls fail with it, and stop it.
+    refused: Arc<std::sync::OnceLock<Error>>,
     /// How many requests the worker has answered (with a result or a refusal).
     answers: u64,
     next_id: u64,
@@ -190,6 +296,20 @@ impl Worker {
 
     /// Starts the worker executable at `exe`, of the given kind.
     pub fn spawn_as(exe: &Path, kind: WorkerKind) -> Result<Self, Error> {
+        Self::spawn_checked(exe, kind, None)
+    }
+
+    /// Starts the worker executable at `exe`, of the given kind, and, once it has started
+    /// (its first frame, sent as its process begins), runs `check`: if that fails, the
+    /// worker isn't trusted, and every call fails with its error (and stops it) rather than
+    /// taking what it answers. Checked there, close after the exec, so a change made since
+    /// a check before the start shows (one put back between the two doesn't: see
+    /// [`Executable::spawn`]).
+    pub(crate) fn spawn_checked(
+        exe: &Path,
+        kind: WorkerKind,
+        check: Option<StartCheck>,
+    ) -> Result<Self, Error> {
         let spawning = lock(&SPAWNING);
         let (ours, theirs) =
             UnixStream::pair().map_err(|e| start_failed(kind, "socket pair", &e))?;
@@ -274,6 +394,9 @@ impl Worker {
         let (tx, replies) = mpsc::sync_channel(1);
         let started = Arc::new(AtomicBool::new(false));
         let has_started = Arc::clone(&started);
+        let refused = Arc::new(std::sync::OnceLock::new());
+        let refuse = Arc::clone(&refused);
+        let mut check = check;
         std::thread::Builder::new()
             .name(format!("worker-{pid}-replies"))
             .spawn(move || {
@@ -281,7 +404,18 @@ impl Worker {
                 loop {
                     let reply = match frames.read_frame() {
                         // The worker has started (any frame says so); an empty one says only that.
+                        // Checked first, so no reply is taken before.
                         Ok(Some(frame)) => {
+                            let refused = check.take().and_then(|check| check().err());
+                            if let Some(e) = refused {
+                                // Not said to have started: a refused worker is no sign the
+                                // executable works (the pool's slots would cut their waits).
+                                // Nothing more is passed on: the call waiting (or the
+                                // next) ends at once, with the refusal, rather than when
+                                // the worker answers.
+                                let _ = refuse.set(e);
+                                break;
+                            }
                             has_started.store(true, Ordering::Relaxed);
                             if frame.is_empty() {
                                 continue;
@@ -314,6 +448,7 @@ impl Worker {
             stderr_read,
             stderr_emitted,
             started,
+            refused,
             answers: 0,
             next_id: 0,
             stopped: false,
@@ -442,6 +577,10 @@ impl Worker {
             )
             .with_suggestion(format!("start a new {}", self.kind.noun())));
         }
+        // A worker its start's check refused isn't sent anything.
+        if let Some(refused) = self.refused.get() {
+            return Err(self.stop(refused.clone()));
+        }
         let id = RequestId(self.next_id);
         self.next_id += 1;
         let trace = TraceId(NEXT_TRACE.fetch_add(1, Ordering::Relaxed));
@@ -518,6 +657,11 @@ impl Worker {
                 .recv()
                 .map_err(|_| RecvTimeoutError::Disconnected),
         };
+        // The start's check runs before any reply is passed on, so it has run by now if
+        // the worker started; a refusal ends the wait at once (the reply thread stops).
+        if let Some(refused) = self.refused.get() {
+            return Err(self.stop(refused.clone()));
+        }
         match reply {
             Ok(Ok(response)) if response.id == id && response.generation == generation => {
                 self.answers += 1;
@@ -1598,6 +1742,35 @@ mod tests {
     use crate::ErrorCode;
     use crate::references::EdgeNames;
     use tracing_subscriber::layer::SubscriberExt;
+
+    #[test]
+    fn an_executables_stamp_is_its_files_and_is_renewed_when_a_change_keeps_its_bytes() {
+        // Found by review: dropping the renewal, or the stamp's shortcut, only made every
+        // check hash the file again, which no test could see. The stamp taken with the hash
+        // is the file's (from its path); a change that keeps the bytes (a relink: the same
+        // bytes as a new file, renamed over it, so another inode) is hashed, found the same,
+        // and renews the stamp.
+        let dir = std::env::temp_dir().join(format!("silico-stamp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("worker");
+        std::fs::write(&path, b"#!/bin/sh\n").unwrap();
+        let exe = super::Executable::of(&path, WorkerKind::Kernel).unwrap();
+        assert_eq!(Some(*lock(&exe.stamp)), super::Stamp::of(&path));
+        let before = *lock(&exe.stamp);
+        let beside = dir.join("worker.new");
+        std::fs::write(&beside, b"#!/bin/sh\n").unwrap();
+        std::fs::rename(&beside, &path).unwrap();
+        let relinked = super::Stamp::of(&path);
+        assert_ne!(
+            relinked,
+            Some(before),
+            "a relink changes the stamp (its inode)"
+        );
+        exe.check().unwrap();
+        assert_eq!(Some(*lock(&exe.stamp)), relinked);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn only_a_kernel_workers_refusal_of_a_measure_keeps_its_failure_and_it_words_the_same() {

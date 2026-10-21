@@ -23,7 +23,7 @@
 
 use std::collections::VecDeque;
 use std::os::unix::process::ExitStatusExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitStatus;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError};
@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 use silico_protocol::Generation;
 
 use crate::kernel::KernelRequest;
-use crate::worker::{Stamp, Worker, WorkerKiller, WorkerKind, identity_of, lock};
+use crate::worker::{Executable, Worker, WorkerKiller, WorkerKind, lock};
 use crate::{Error, ErrorCode};
 
 /// How often an idle thread checks that its worker is still alive.
@@ -76,8 +76,6 @@ pub struct KernelPool {
     threads: Mutex<Vec<JoinHandle<()>>>,
     /// How many slots the pool has.
     size: usize,
-    /// The workers' executable, for the slots started on demand.
-    exe: PathBuf,
     /// Stops superseded requests when they're due.
     stopper: Option<JoinHandle<()>>,
 }
@@ -211,12 +209,8 @@ impl KernelPool {
             )
             .with_cause(e.to_string())
         })?;
-        let exe = exe.as_path();
-        let exe_stamp = Stamp::of(exe);
-        let identity = identity_of(exe, WorkerKind::Kernel)?;
         let shared = Arc::new(Shared {
-            identity,
-            exe_stamp,
+            executable: Executable::of(&exe, WorkerKind::Kernel)?,
             state: Mutex::new(State {
                 queue: VecDeque::new(),
                 generation: Generation(0),
@@ -239,7 +233,6 @@ impl KernelPool {
             shared,
             threads: Mutex::new(Vec::with_capacity(size)),
             size,
-            exe: exe.to_owned(),
             stopper: None,
         };
         let shared = Arc::clone(&pool.shared);
@@ -286,9 +279,8 @@ impl KernelPool {
     /// Starts slot `slot`'s thread, which starts its worker as `start` says.
     fn spawn_slot(&self, slot: usize, start: SlotStart) -> Result<JoinHandle<()>, Error> {
         let shared = Arc::clone(&self.shared);
-        let exe = self.exe.clone();
         spawn_thread(format!("kernel-pool-{slot}"), move || {
-            serve(slot, &exe, &shared, start);
+            serve(slot, &shared, start);
         })
     }
 
@@ -417,7 +409,7 @@ impl KernelPool {
 
 impl crate::kernel::Kernel for KernelPool {
     fn identity(&self) -> &str {
-        &self.shared.identity
+        self.shared.executable.identity()
     }
 
     fn generation(&self) -> Generation {
@@ -488,12 +480,12 @@ pub(crate) fn thread_error(kernel: &str, e: &std::io::Error) -> Error {
 }
 
 /// What the pool's threads share. Its locks are taken in the order `state`, then `slots`
-/// (then a worker's process lock), never the other way.
+/// (then a worker's process lock), never the other way; the executable's stamp lock
+/// (`Executable`) is taken alone, never while another is.
 struct Shared {
-    /// The pool's identity: its worker executable's, as the pool started.
-    identity: String,
-    /// The executable as it was then: a worker started later from another is refused.
-    exe_stamp: Option<Stamp>,
+    /// The workers' executable: the pool's identity is its identity, as the pool started,
+    /// and a worker is started from it, and taken, only while it's still that build.
+    executable: Arc<Executable>,
     state: Mutex<State>,
     /// Signalled when a request is queued or the pool stops.
     work: Condvar,
@@ -842,7 +834,7 @@ enum SlotStart {
 /// request), reports it ready (or not), then runs requests
 /// from the queue until the pool stops, replacing its worker whenever it stops, dies, or
 /// its request is superseded.
-fn serve(slot: usize, exe: &Path, shared: &Shared, start: SlotStart) {
+fn serve(slot: usize, shared: &Shared, start: SlotStart) {
     let span = tracing::debug_span!("kernel_pool", slot);
     let _entered = span.enter();
     // However the thread ends but by the pool's stopping (a panic, say), the slot is left
@@ -851,7 +843,6 @@ fn serve(slot: usize, exe: &Path, shared: &Shared, start: SlotStart) {
     let _ended = SlotEnded { shared, slot };
     let mut keeper = Keeper {
         slot,
-        exe: exe.to_owned(),
         shared,
         worker: None,
         number: 0,
@@ -936,7 +927,6 @@ fn serve(slot: usize, exe: &Path, shared: &Shared, start: SlotStart) {
 /// A slot's worker, kept running.
 struct Keeper<'a> {
     slot: usize,
-    exe: PathBuf,
     shared: &'a Shared,
     worker: Option<Worker>,
     /// The worker's number (see [`Shared::spawns`]), and whether its start has been noted.
@@ -1024,11 +1014,9 @@ impl Keeper<'_> {
         match self.worker {
             Some(ref mut worker) => Ok(worker),
             None => {
-                if let Err(e) = self.same_executable() {
-                    self.wait_to_retry();
-                    return Err(e);
-                }
-                let worker = match Worker::spawn(&self.exe) {
+                // Started only from the pool's own build, and taken only if it is once it's
+                // started (`Executable::spawn`).
+                let worker = match self.shared.executable.spawn() {
                     Ok(worker) => worker,
                     Err(e) => {
                         self.wait_to_retry();
@@ -1142,28 +1130,6 @@ impl Keeper<'_> {
                 .newest_started
                 .fetch_max(self.number, Ordering::Relaxed);
         }
-    }
-
-    /// Whether the worker executable is still the one the pool started with: a worker
-    /// started from another build would answer under the pool's identity with another
-    /// kernel's results, so it isn't started. Cheap when the file is as it was (its size,
-    /// time, and inode); hashed again only when they've changed.
-    fn same_executable(&self) -> Result<(), Error> {
-        if self.shared.exe_stamp.is_some() && Stamp::of(&self.exe) == self.shared.exe_stamp {
-            return Ok(());
-        }
-        if identity_of(&self.exe, WorkerKind::Kernel)? == self.shared.identity {
-            return Ok(());
-        }
-        Err(Error::new(
-            ErrorCode::WorkerCrashed,
-            format!(
-                "the kernel worker {} changed since the pool started: another build of it \
-                 isn't started under this pool's identity",
-                self.exe.display()
-            ),
-        )
-        .with_suggestion("restart Silico, so the new worker's results are kept as its own"))
     }
 
     /// Puts off the next start, twice as long as the last time (or [`IDLE_CHECK`]).
