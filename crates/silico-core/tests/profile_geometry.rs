@@ -628,9 +628,10 @@ fn a_point_just_right_of_a_half_turns_start_line_is_off_it_though_its_cross_with
     // end's point. As computed, its cross with the start rounds to −1.8e-15 (the start's
     // right) and its cross with the end to 0. A half turn is the start's left, so the corner
     // is off the arc: 1.245e-7 from it, at its end, more than 1e-7. Nothing meets; the
-    // regions are the half disc, 12.5π (less a sliver of the order of 5 × 7.45e-8 / 2 for
-    // the end inside the circle), and the triangle, ½ × 4 × 4 = 8 (less the order of 4e-8
-    // × 4 for the corner's move).
+    // regions are the half disc, 12.5π (the line back runs along the start's own diameter,
+    // through the centre, so it adds no area), and the triangle, ½ × 4 × 4 = 8 less 1.4e-7
+    // for the corner's move: twice its area is (4 − 3e-8)(4 − 4e-8) − 4e-8 × 3e-8 =
+    // 16 − 2.8e-7.
     let (sxy, exy, cxy) = (
         [3.0, 4.0],
         [
@@ -658,8 +659,8 @@ fn a_point_just_right_of_a_half_turns_start_line_is_off_it_though_its_cross_with
     let p = d.made();
     let areas: Vec<f64> = p.regions.iter().map(|r| r.area()).collect();
     assert_eq!(areas.len(), 2, "{p:#?}");
-    assert!(close(areas[0], 12.5 * PI, 1e-8), "{areas:?}");
-    assert!(close(areas[1], 8.0, 1e-7), "{areas:?}");
+    assert!(close(areas[0], 12.5 * PI, 1e-14), "{areas:?}");
+    assert!(close(areas[1], 8.0 - 1.4e-7, 1e-12), "{areas:?}");
 }
 
 #[test]
