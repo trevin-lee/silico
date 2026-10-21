@@ -2206,7 +2206,7 @@ fn an_on_demand_pool_of_one_crashing_every_request_never_wedges() {
 
 // ---------------------------------------------------------------------------------------
 // break-it: a worker checked against the pool's executable as it starts
-// (`Worker::spawn_checked`, `Shared::start_check`, a worker's `refused`). Executables that
+// (`Worker::spawn_checked`, `Executable::spawn`, a worker's `refused`). Executables that
 // change as their worker starts (another build, deleted, a directory, a FIFO), rewritten in
 // place so their size, time, and inode stay as they were, or replaced by a FIFO under a
 // running pool; refused workers given long requests; and many slots starting at once from
@@ -2511,8 +2511,9 @@ fn a_worker_whose_executable_is_deleted_as_it_starts_is_refused_then_the_pool_re
 #[test]
 fn an_executable_replaced_by_a_fifo_written_without_end_is_refused_without_reading_it() {
     // Found by review: a FIFO with no writer reads as empty, so no test needed the check that
-    // the file is a regular one; a FIFO written without end (or a link to /dev/zero) would be
-    // read without end, holding the slot and the pool's drop, if it weren't refused unread.
+    // the file is a regular one. Without it, a FIFO (opened without waiting) reads as
+    // whatever is in it so far, or as nothing, and is hashed as if a file; a link to
+    // /dev/zero would be read without end. Refused unread, it says why: not a regular file.
     let dir = scratch_dir("fifo-written");
     let exe = dir.join("worker");
     write_executable(&exe, &build(1));

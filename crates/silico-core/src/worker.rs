@@ -147,7 +147,8 @@ impl From<&std::fs::Metadata> for Stamp {
     }
 }
 
-/// A worker's executable, as it was when its first worker was started: its identity (see
+/// A worker's executable, as it was when first found (before any worker of it starts): its
+/// identity (see
 /// [`hashed`]), which results kept by key carry, and its stamp then. A worker is started
 /// from it, and taken, only while it's still that build ([`Executable::check`]): another
 /// would answer under this one's identity with another kernel's (or solver's) results.
@@ -157,8 +158,8 @@ pub(crate) struct Executable {
     identity: String,
     /// The file as it was when last found to be this build: renewed when a change that
     /// keeps the bytes (a relink, a `chmod`) is hashed and found the same, so it's hashed
-    /// once for it, not at every start.
-    stamp: Mutex<Option<Stamp>>,
+    /// once for it, not at every start. Its lock is taken alone, never while another is.
+    stamp: Mutex<Stamp>,
 }
 
 impl Executable {
@@ -169,7 +170,7 @@ impl Executable {
             path: path.to_owned(),
             kind,
             identity,
-            stamp: Mutex::new(Some(stamp)),
+            stamp: Mutex::new(stamp),
         }))
     }
 
@@ -181,12 +182,12 @@ impl Executable {
     /// again only when that's changed.
     pub(crate) fn check(&self) -> Result<(), Error> {
         let known = *lock(&self.stamp);
-        if known.is_some() && Stamp::of(&self.path) == known {
+        if Stamp::of(&self.path) == Some(known) {
             return Ok(());
         }
         let (identity, stamp) = hashed(&self.path, self.kind)?;
         if identity == self.identity {
-            *lock(&self.stamp) = Some(stamp);
+            *lock(&self.stamp) = stamp;
             return Ok(());
         }
         let noun = self.kind.noun();
@@ -227,7 +228,7 @@ fn hashed(exe: &Path, kind: WorkerKind) -> Result<(String, Stamp), Error> {
     // Opened without waiting, and read only if it's a regular file: a FIFO put at the path
     // would block its open (and the pool's thread) until something wrote to it, and a device
     // (a link to /dev/zero) would be read without end.
-    let digest = (|| {
+    let hashed_and_stamped = (|| {
         use std::os::unix::fs::OpenOptionsExt;
         let mut file = std::fs::OpenOptions::new()
             .read(true)
@@ -252,7 +253,7 @@ fn hashed(exe: &Path, kind: WorkerKind) -> Result<(String, Stamp), Error> {
         .with_cause(e.to_string())
         .with_suggestion(format!("check Silico's install: rebuild the {noun}"))
     })?;
-    let (digest, stamp) = digest;
+    let (digest, stamp) = hashed_and_stamped;
     Ok((format!("{noun} sha256:{}", crate::hex(&digest)), stamp))
 }
 
@@ -1741,6 +1742,33 @@ mod tests {
     use crate::ErrorCode;
     use crate::references::EdgeNames;
     use tracing_subscriber::layer::SubscriberExt;
+
+    #[test]
+    fn an_executables_stamp_is_its_files_and_is_renewed_when_a_change_keeps_its_bytes() {
+        // Found by review: dropping the renewal, or the stamp's shortcut, only made every
+        // check hash the file again, which no test could see. The stamp taken with the hash
+        // is the file's (from its path); a change that keeps the bytes (a chmod) is hashed,
+        // found the same, and renews the stamp, so the next check is the shortcut's.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("silico-stamp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("worker");
+        std::fs::write(&path, b"#!/bin/sh\n").unwrap();
+        let exe = super::Executable::of(&path, WorkerKind::Kernel).unwrap();
+        assert_eq!(Some(*lock(&exe.stamp)), super::Stamp::of(&path));
+        let before = *lock(&exe.stamp);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let changed = super::Stamp::of(&path);
+        assert_ne!(
+            changed,
+            Some(before),
+            "a chmod changes the stamp (its change time)"
+        );
+        exe.check().unwrap();
+        assert_eq!(Some(*lock(&exe.stamp)), changed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn only_a_kernel_workers_refusal_of_a_measure_keeps_its_failure_and_it_words_the_same() {

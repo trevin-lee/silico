@@ -479,6 +479,9 @@ pub(crate) fn thread_error(kernel: &str, e: &std::io::Error) -> Error {
     })
 }
 
+/// What the pool's threads share. Its locks are taken in the order `state`, then `slots`
+/// (then a worker's process lock), never the other way; the executable's stamp lock
+/// (`Executable`) is taken alone, never while another is.
 struct Shared {
     /// The workers' executable: the pool's identity is its identity, as the pool started,
     /// and a worker is started from it, and taken, only while it's still that build.
