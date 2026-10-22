@@ -182,6 +182,14 @@ fn a_point_is_left_or_right_of_a_line_only_where_rounding_cant_have_chosen() {
     // product would trust rounding's sign near the origin (#44's surviving mutant).
     let near = |p: [f64; 2]| [p[0] / 128.0, p[1] / 128.0];
     assert_eq!(side_of_line(near(c5), near(c6), near([48.5, 95.3])), 0);
+    // Past the bound, rounding's sign is the exact one, and side_of_line says so: this point
+    // near the line from corner 5 to corner 6 is left of it by exact rational arithmetic,
+    // its orientation 1.76 times the bound, so a bound two to four times as wide would call
+    // it on the line (#78's mutants: the bound's `*` as `+`, its `/` as `%` or `*`).
+    assert_eq!(
+        side_of_line(c5, c6, [56.35393626839515, 111.00787253679026]),
+        1
+    );
     let off = 1e-6 / 5f64.sqrt();
     assert_eq!(side_of_line(c5, c6, [61.1 - 2.0 * off, 120.5 + off]), -1);
     assert_eq!(side_of_line(c5, c6, [61.1 + 2.0 * off, 120.5 - off]), 1);
