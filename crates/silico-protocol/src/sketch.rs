@@ -833,11 +833,34 @@ impl SketchSystem {
                 want(line, &[Line])?
             }
             SolverConstraint::DistanceX { a, b, value: v, .. }
-            | SolverConstraint::DistanceY { a, b, value: v, .. }
-            | SolverConstraint::Distance { a, b, value: v, .. } => {
+            | SolverConstraint::DistanceY { a, b, value: v, .. } => {
                 point(a)?;
                 point(b)?;
                 dimension(v)?;
+            }
+            SolverConstraint::Distance { a, b, value: v, .. } => {
+                point(a)?;
+                point(b)?;
+                dimension(v)?;
+                // Above 0, as the gate has it (FreeCAD's `setDatum` refuses 0 only): a
+                // distance of 0 is a coincidence, whose solve would leave its points at one
+                // place, a start the next solve refuses (below).
+                // (Every value is finite by now: checked within reach above.)
+                let value = self.values[v.0 as usize];
+                if value <= 0.0 {
+                    return Err(invalid(
+                        "constraints",
+                        format!(
+                            "{what}'s value must be above 0 (points no distance apart are coincident), got {}",
+                            format_number(value)
+                        ),
+                    ));
+                }
+                // A point's distance from itself can't hold whatever is drawn: the solver
+                // finds it conflicting, as it is.
+                if a != b {
+                    self.apart(a, b, what)?;
+                }
             }
             SolverConstraint::PointOnLine { point: p, line, .. } => {
                 point(p)?;
@@ -874,6 +897,13 @@ impl SketchSystem {
             } => {
                 point(p)?;
                 want(circle, &[Circle, Arc])?;
+                // Held as its distance from the centre, whose gradient there is 0/0.
+                self.off_centre(
+                    p,
+                    circle,
+                    what,
+                    "the solver measures it by the line from the centre",
+                )?;
             }
             SolverConstraint::EqualRadius { a, b, .. }
             | SolverConstraint::TangentCircles { a, b, .. } => {
@@ -900,6 +930,16 @@ impl SketchSystem {
                     ));
                 }
                 dimension(angle)?;
+                // The solver takes a round curve's direction at the point from the line
+                // from its centre: none at the centre itself.
+                if matches!(kind(b)?, Circle | Arc) {
+                    self.off_centre(
+                        p,
+                        b,
+                        what,
+                        "the solver takes the curve's direction there by the line from its centre",
+                    )?;
+                }
             }
             SolverConstraint::AngleViaPoint {
                 a,
@@ -1133,20 +1173,14 @@ impl SketchSystem {
         }
     }
 
-    /// That a symmetry's two points, which exist, are drawn at two places: PlaneGCS measures
-    /// both kinds of symmetry by the line between them (its direction, scaled by its length
-    /// where the system is built), which two points at one place don't have, so the solve
-    /// would start from 0/0.
+    /// That two points, which exist, are drawn at two places, where PlaneGCS measures a
+    /// constraint by the line between them: both kinds of symmetry (its direction, scaled by
+    /// its length where the system is built), a distance (whose gradient is that line's
+    /// direction), and a tangency at an end lying on a round curve (whose direction there is
+    /// the line from its centre). Two points at one place have no such line, so the solve
+    /// would start from 0/0, and the constraint be taken to conflict.
     fn apart(&self, a: PointOf, b: PointOf, what: &str) -> Result<(), InvalidParameter> {
-        let at = |p: PointOf| {
-            self.point_values(p).map(|v| {
-                [
-                    self.values.get(v.x.0 as usize).copied().unwrap_or(f64::NAN),
-                    self.values.get(v.y.0 as usize).copied().unwrap_or(f64::NAN),
-                ]
-            })
-        };
-        match (at(a), at(b)) {
+        match (self.place(a), self.place(b)) {
             (Some(pa), Some(pb)) if no_distance(pa, pb) => Err(invalid(
                 "constraints",
                 format!(
@@ -1157,6 +1191,39 @@ impl SketchSystem {
             )),
             _ => Ok(()),
         }
+    }
+
+    /// That `p` isn't drawn on the centre of round geometry `round`, where `what` (worded by
+    /// `why`) has no line from the centre to measure by.
+    fn off_centre(
+        &self,
+        p: PointOf,
+        round: Geometry,
+        what: &str,
+        why: &str,
+    ) -> Result<(), InvalidParameter> {
+        match (self.place(p), self.place(PointOf::Center(round))) {
+            (Some(at), Some(center)) if no_distance(at, center) => Err(invalid(
+                "constraints",
+                format!(
+                    "{what}, with {p} drawn on the centre of geometry {}, ({}, {}): {why}",
+                    round.0,
+                    format_number(at[0]),
+                    format_number(at[1])
+                ),
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// Where `p` is drawn, if it names a point there is.
+    fn place(&self, p: PointOf) -> Option<[f64; 2]> {
+        self.point_values(p).map(|v| {
+            [
+                self.values.get(v.x.0 as usize).copied().unwrap_or(f64::NAN),
+                self.values.get(v.y.0 as usize).copied().unwrap_or(f64::NAN),
+            ]
+        })
     }
 
     /// That `p` names geometry there is, at a point that kind has: a point is only itself,
@@ -2332,6 +2399,132 @@ mod tests {
         );
         let most = arc_from_points([0.0, 0.0], [1.0, 1e-9], [1.0, 0.0]).unwrap();
         assert!(most[2] - most[1] > std::f64::consts::TAU - 1e-8, "{most:?}");
+    }
+
+    #[test]
+    fn a_distance_or_a_tangency_on_a_round_curve_between_points_at_one_place_is_refused() {
+        // A distance's gradient is the line between its points, and a round curve's
+        // direction at a point the line from its centre: none for two at one place (the M3
+        // review's RR1). The line runs (0, 0) to (10, 0); the circle's centre is moved onto
+        // the line's start for the distance, onto its end for the tangency, and so is the
+        // arc's for the tangency on it.
+        let distance = |s: &mut SketchSystem| {
+            s.values[4] = 0.0;
+            s.values[5] = 0.0;
+            s.constraints.push(SolverConstraint::Distance {
+                tag: Tag(4),
+                a: PointOf::Start(Geometry(0)),
+                b: PointOf::Center(Geometry(1)),
+                value: Value(16),
+            });
+        };
+        let tangency = |on: u32| {
+            move |s: &mut SketchSystem| {
+                let at = if on == 1 { 4 } else { 7 };
+                s.values[at] = 10.0;
+                s.values[at + 1] = 0.0;
+                s.constraints.push(SolverConstraint::TangentOn {
+                    tag: Tag(4),
+                    a: Geometry(0),
+                    point: PointOf::End(Geometry(0)),
+                    b: Geometry(on),
+                    angle: Value(17),
+                });
+            }
+        };
+        let (parameter, message) = refused(distance);
+        assert_eq!(parameter, "constraints");
+        assert_eq!(
+            message,
+            "constraint 4 (tag 4): a distance of the start of geometry 0 and the centre of geometry 1, drawn at one place, (0, 0): the solver measures it by the line between them"
+        );
+        for on in [1, 2] {
+            let (parameter, message) = refused(tangency(on));
+            assert_eq!(parameter, "constraints");
+            assert_eq!(
+                message,
+                format!(
+                    "constraint 4 (tag 4): a tangency at an end, with the end of geometry 0 drawn on the centre of geometry {on}, (10, 0): the solver takes the curve's direction there by the line from its centre"
+                )
+            );
+        }
+        // A point held on a circle or an arc, drawn at its centre: the line's start (0, 0),
+        // the circle's or the arc's centre moved onto it.
+        for (on, at) in [(1u32, 4usize), (2, 7)] {
+            let (parameter, message) = refused(|s| {
+                s.values[at] = 0.0;
+                s.values[at + 1] = 0.0;
+                s.constraints.push(SolverConstraint::PointOnCircle {
+                    tag: Tag(4),
+                    point: PointOf::Start(Geometry(0)),
+                    circle: Geometry(on),
+                });
+            });
+            assert_eq!(parameter, "constraints");
+            assert_eq!(
+                message,
+                format!(
+                    "constraint 4 (tag 4): a point on a circle, with the start of geometry 0 drawn on the centre of geometry {on}, (0, 0): the solver measures it by the line from the centre"
+                )
+            );
+        }
+        // Apart, each is a system the worker takes: the distance's points (0, 0) and (0, 5),
+        // the tangency's end (10, 0) and the circle's centre (0, 5), or the arc's (1, 1).
+        for spoil in [
+            Box::new(|s: &mut SketchSystem| {
+                s.constraints.push(SolverConstraint::Distance {
+                    tag: Tag(4),
+                    a: PointOf::Start(Geometry(0)),
+                    b: PointOf::Center(Geometry(1)),
+                    value: Value(16),
+                });
+            }) as Box<dyn Fn(&mut SketchSystem)>,
+            Box::new(|s: &mut SketchSystem| {
+                for on in [1, 2] {
+                    s.constraints.push(SolverConstraint::PointOnCircle {
+                        tag: Tag(10 + on),
+                        point: PointOf::Start(Geometry(0)),
+                        circle: Geometry(on),
+                    });
+                }
+            }),
+            Box::new(|s: &mut SketchSystem| {
+                for on in [1, 2] {
+                    s.constraints.push(SolverConstraint::TangentOn {
+                        tag: Tag(4 + on),
+                        a: Geometry(0),
+                        point: PointOf::End(Geometry(0)),
+                        b: Geometry(on),
+                        angle: Value(17),
+                    });
+                }
+            }),
+        ] {
+            let mut s = system();
+            spoil(&mut s);
+            s.check().unwrap();
+        }
+        // A tangency on a line at an end of another measures by the line's own direction:
+        // its end on the line's is no refusal.
+        let mut s = system();
+        s.geometry.push(SketchGeometry::Line {
+            start: PointValues {
+                x: Value(2),
+                y: Value(3),
+            },
+            end: PointValues {
+                x: Value(4),
+                y: Value(5),
+            },
+        });
+        s.constraints.push(SolverConstraint::TangentOn {
+            tag: Tag(4),
+            a: Geometry(0),
+            point: PointOf::End(Geometry(0)),
+            b: Geometry(3),
+            angle: Value(17),
+        });
+        s.check().unwrap();
     }
 
     #[test]

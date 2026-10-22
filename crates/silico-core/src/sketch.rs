@@ -592,6 +592,42 @@ enum Curve {
     Round(Round),
 }
 
+/// What two points drawn at one place would leave the solver no line between, for
+/// [`Translation::apart`]'s words.
+#[derive(Clone, Copy)]
+enum Between {
+    Symmetry,
+    Distance,
+    /// A tangency at a point of a circle or an arc.
+    TangencyOnRound(RoundKind),
+    /// A point held on a circle or an arc.
+    OnRound(RoundKind),
+}
+
+/// Which of a sketch's round curves, for [`Translation::apart`]'s words.
+#[derive(Clone, Copy)]
+enum RoundKind {
+    Circle,
+    Arc,
+}
+
+impl RoundKind {
+    fn word(self) -> &'static str {
+        match self {
+            RoundKind::Circle => "circle",
+            RoundKind::Arc => "arc",
+        }
+    }
+
+    /// The word with its article: "a circle", "an arc".
+    fn a(self) -> &'static str {
+        match self {
+            RoundKind::Circle => "a circle",
+            RoundKind::Arc => "an arc",
+        }
+    }
+}
+
 impl Curve {
     fn geometry(self) -> Geometry {
         match self {
@@ -1113,8 +1149,28 @@ impl Translation {
                 }
             }
         };
-        if let S::SymmetricLine { a, b, .. } | S::SymmetricPoint { a, b, .. } = sent {
-            self.apart(a, b)?;
+        match sent {
+            S::SymmetricLine { a, b, .. } | S::SymmetricPoint { a, b, .. } => {
+                self.apart(self.at(a), self.at(b), Between::Symmetry)?;
+            }
+            // Two different points: the gate refuses a distance of a point from itself, and
+            // a line's length runs from its start to its end.
+            S::Distance { a, b, .. } => {
+                self.apart(self.at(a), self.at(b), Between::Distance)?;
+            }
+            S::TangentOn { point, b, .. } => {
+                if let Some((center, round)) = self.center_of(b) {
+                    let center = self.xy(&self.system.values, center);
+                    self.apart(self.at(point), center, Between::TangencyOnRound(round))?;
+                }
+            }
+            S::PointOnCircle { point, circle, .. } => {
+                if let Some((center, round)) = self.center_of(circle) {
+                    let center = self.xy(&self.system.values, center);
+                    self.apart(self.at(point), center, Between::OnRound(round))?;
+                }
+            }
+            _ => {}
         }
         Ok(Some(sent))
     }
@@ -1154,24 +1210,67 @@ impl Translation {
             .filter_map(move |(p, c)| (c == curve).then_some(p))
     }
 
-    /// That a symmetry's two points aren't drawn at one place: PlaneGCS measures a symmetry
-    /// by the line between them.
-    fn apart(&self, a: PointOf, b: PointOf) -> Result<(), Error> {
-        let (pa, pb) = (
-            self.point_of(&self.system.values, a),
-            self.point_of(&self.system.values, b),
-        );
-        if no_distance(pa, pb) {
-            return Err(Error::new(
-                ErrorCode::InvalidInput,
-                format!(
-                    "a symmetry of two points drawn at one place, ({}, {}): the solver measures it by the line between them",
-                    pa[0], pa[1]
-                ),
-            )
-            .with_suggestion("draw the two points apart, where they'd mirror each other"));
+    /// That two points aren't drawn at one place where PlaneGCS measures a constraint by the
+    /// line between them (as the worker's own check refuses, `SketchSystem::check`): there's
+    /// no such line, the solve starts from 0/0, and the constraint is taken to conflict,
+    /// though it can hold once the points are apart.
+    fn apart(&self, pa: [f64; 2], pb: [f64; 2], between: Between) -> Result<(), Error> {
+        if !no_distance(pa, pb) {
+            return Ok(());
         }
-        Ok(())
+        let (what, suggestion) = match between {
+            Between::Symmetry => (
+                "a symmetry of two points drawn at one place".to_owned(),
+                "draw the two points apart, where they'd mirror each other".to_owned(),
+            ),
+            Between::Distance => (
+                "a distance between two points drawn at one place".to_owned(),
+                "draw the two points apart, about as far apart as the distance says".to_owned(),
+            ),
+            Between::TangencyOnRound(round) => (
+                format!(
+                    "a tangency at a point drawn on the {}'s centre",
+                    round.word()
+                ),
+                format!(
+                    "draw the point on the {}, away from its centre",
+                    round.word()
+                ),
+            ),
+            Between::OnRound(round) => (
+                format!("a point on {} drawn at its centre", round.a()),
+                format!(
+                    "draw the point on the {}, away from its centre",
+                    round.word()
+                ),
+            ),
+        };
+        Err(Error::new(
+            ErrorCode::InvalidInput,
+            format!(
+                "{what}, ({}, {}): the solver measures it by the line between them",
+                pa[0], pa[1]
+            ),
+        )
+        .with_suggestion(suggestion))
+    }
+
+    /// Where `p` is drawn.
+    fn at(&self, p: PointOf) -> [f64; 2] {
+        self.point_of(&self.system.values, p)
+    }
+
+    /// The centre of geometry `g`, if it's a circle or an arc of the sketch, and which.
+    fn center_of(&self, g: Geometry) -> Option<(PointValues, RoundKind)> {
+        let circle = self.circles.values().find(|c| c.geometry == g);
+        let arc = self
+            .arcs
+            .values()
+            .map(|a| &a.round)
+            .find(|a| a.geometry == g);
+        circle
+            .map(|c| (c.center, RoundKind::Circle))
+            .or(arc.map(|a| (a.center, RoundKind::Arc)))
     }
 
     fn xy(&self, values: &[f64], p: PointValues) -> [f64; 2] {
