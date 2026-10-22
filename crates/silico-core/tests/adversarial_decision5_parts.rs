@@ -7,8 +7,12 @@
 
 #[path = "common/sketch.rs"]
 mod fixture;
+#[path = "common/within.rs"]
+mod within;
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use within::within;
 
 use silico_core::ErrorCode;
 use silico_core::document::{Operation, Sketch, read, validate};
@@ -321,7 +325,7 @@ fn a_row_reading_only_fixed_values_is_judged_without_a_panic() {
 }
 
 #[test]
-fn the_largest_sketch_of_one_point_parts_reads_its_drops_quickly() {
+fn the_largest_sketch_of_one_point_parts_reads_its_drops_promptly() {
     // 512 points (1,024 unknowns, the most), each held from the origin alone, its x given
     // 16 times and its y once (8,704 constraints, every value within the 10,000): 512 parts,
     // 7,680 rows dropped, every one met. Each window is worked out once per part; each
@@ -349,15 +353,14 @@ fn the_largest_sketch_of_one_point_parts_reads_its_drops_quickly() {
     t.check_reply(&solved).unwrap();
     // Measured 3.3 s in a debug build and 0.39 s in release (one part, below: 0.24 s and
     // 21 ms): each part's window passes over every constraint.
-    let start = Instant::now();
-    let s = t.read(&solved).unwrap();
-    let took = start.elapsed();
+    // Bounded in the reading thread's CPU time, which a loaded machine doesn't change (at a
+    // load of 108 this took 12 to 14 s of wall time); a hang fails at ten times the bound.
+    let s = within(Duration::from_secs(10), move || t.read(&solved).unwrap());
     assert_eq!(s.redundant.len(), dropped.len());
-    assert!(took < Duration::from_secs(10), "{took:?}");
 }
 
 #[test]
-fn the_largest_sketch_in_one_part_reads_its_drops_as_quickly() {
+fn the_largest_sketch_in_one_part_reads_its_drops_as_promptly() {
     // The sketch above with its points chained into one part by horizontal_points rows
     // (each pair drawn level for it: y = −1 for all): one window, worked out once. The
     // gap between this and the 512-part read is the per-part windows' cost.
@@ -391,9 +394,8 @@ fn the_largest_sketch_in_one_part_reads_its_drops_as_quickly() {
     let t = translate(&text(&points, &[], &constraints));
     let solved = answer(&t, t.system.values.clone(), &dropped);
     t.check_reply(&solved).unwrap();
-    let start = Instant::now();
-    let s = t.read(&solved).unwrap();
-    let took = start.elapsed();
+    // Bounded in the reading thread's CPU time, which a loaded machine doesn't change (at a
+    // load of 108 this took 12 to 14 s of wall time); a hang fails at ten times the bound.
+    let s = within(Duration::from_secs(10), move || t.read(&solved).unwrap());
     assert_eq!(s.redundant.len(), dropped.len());
-    assert!(took < Duration::from_secs(10), "{took:?}");
 }

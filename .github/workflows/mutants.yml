@@ -146,6 +146,15 @@ jobs:
           running=6
           share=$(( $(nproc) / running > 2 ? $(nproc) / running : 2 ))
           export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share NEXTEST_RETRIES=2
+          # One seed for every property run through `proptest!` (it overrides the seeds tests
+          # fix in their configs; only a TestRunner made directly keeps its own), so each mutant
+          # meets the same cases as the baseline. With random seeds, a property that failed now
+          # and then killed mutants it had nothing to do with: M3.5's first run counted 82 so.
+          # Now a bug the seed meets fails the baseline and stops the run, and one it doesn't
+          # meet fails no mutant either. Saved failures stay on: the committed
+          # .proptest-regressions files are replayed for each mutant, and a case saved during
+          # the run comes from the seed's own cases. The gate keeps random seeds.
+          export PROPTEST_RNG_SEED=20261021
           args+=(--jobserver-tasks "$share")
           # 2: mutants missed; 3: mutants timed out. The summary reports both.
           status=0
