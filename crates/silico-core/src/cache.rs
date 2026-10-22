@@ -108,6 +108,11 @@ enum Room {
     /// No room beside files it can't evict: other processes' partial files not yet stale,
     /// and files it couldn't remove.
     Stuck,
+    /// No room, but what's being written changed during the scan (puts began, which it
+    /// couldn't make room for, or writes it counted ended, whose entries it may now evict):
+    /// another scan may make room. Never returned by [`Cache::make_room`], which scans again
+    /// once and then says [`Room::Busy`].
+    Again,
 }
 
 impl std::fmt::Debug for Cache {
@@ -336,7 +341,7 @@ impl Cache {
                 self.say_full();
                 return;
             }
-            Room::Busy => {
+            Room::Busy | Room::Again => {
                 tracing::debug!(
                     size,
                     bound = self.bound,
@@ -370,6 +375,15 @@ impl Cache {
     /// can't be evicted: entries being written, partial files not yet stale, and files it
     /// couldn't remove.
     fn make_room(&self, size: u64) -> Room {
+        self.make_room_scanning(size, Cache::scan_and_evict)
+    }
+
+    /// [`make_room`](Cache::make_room), each scan by `scan` (a test's runs a put during it).
+    fn make_room_scanning(
+        &self,
+        size: u64,
+        mut scan: impl FnMut(&Cache, u64, u64) -> Scan,
+    ) -> Room {
         let (_, scanned) = &*self.usage;
         let over = |known: u64| known.saturating_add(size) > self.bound;
         let mut usage = self.usage();
@@ -381,24 +395,41 @@ impl Cache {
         let due =
             usage.known.is_none_or(over) || usage.since_scan.saturating_add(size) > self.bound / 8;
         if due && !usage.scanning {
-            usage.scanning = true;
-            usage.since_scan = 0;
-            usage.scans += 1;
-            let writing = usage.writing;
-            drop(usage);
-            // Should the scan unwind, the puts waiting on it are let go all the same.
-            let mut unwinding = ScanEnd {
-                cache: self,
-                armed: true,
-            };
-            let left = self.scan_and_evict(size, writing);
-            unwinding.armed = false;
-            usage = self.usage();
-            usage.scanning = false;
-            scanned.notify_all();
-            let room = settle(&mut usage, left.bytes, writing, size, self.bound);
-            if room != Room::Made {
-                return room;
+            let mut rescan = true;
+            loop {
+                usage.scanning = true;
+                usage.since_scan = 0;
+                usage.scans += 1;
+                let writing = usage.writing;
+                drop(usage);
+                // Should the scan unwind, the puts waiting on it are let go all the same.
+                let mut unwinding = ScanEnd {
+                    cache: self,
+                    armed: true,
+                };
+                let left = scan(self, size, writing);
+                unwinding.armed = false;
+                usage = self.usage();
+                usage.scanning = false;
+                scanned.notify_all();
+                match settle(&mut usage, left.bytes, writing, size, self.bound) {
+                    Room::Made => break,
+                    // What was written during the scan took its room: puts begun meanwhile,
+                    // or writes it counted that have ended. So it scans again, once, from
+                    // the lock it holds now (no other put begins a scan in between): those
+                    // written by then are entries to evict, those still being written are
+                    // counted as coming, and only what changes during that scan can leave it
+                    // no room, when it's refused as busy.
+                    Room::Again if rescan => {
+                        tracing::debug!(
+                            size,
+                            "the puts during a scan took its room: scanning again"
+                        );
+                        rescan = false;
+                    }
+                    Room::Again => return Room::Busy,
+                    room => return room,
+                }
             }
         }
         usage.known = usage.known.map(|known| known.saturating_add(size));
@@ -534,6 +565,8 @@ fn settle(usage: &mut Usage, left: u128, writing: u64, size: u64, bound: u64) ->
         Room::Made
     } else if left + size > bound {
         Room::Stuck
+    } else if usage.since_scan > 0 || usage.writing < writing {
+        Room::Again
     } else {
         Room::Busy
     }
@@ -995,6 +1028,140 @@ mod tests {
         assert_eq!((usage.known, usage.writing), (Some(100), 100));
     }
 
+    /// An entry's file in `dir`, named by `byte` repeated, of `len` bytes, last used `ago`.
+    fn entry_file(dir: &Path, byte: char, len: usize, ago: Duration) -> PathBuf {
+        let sub = dir.join(byte.to_string().repeat(2));
+        std::fs::create_dir_all(&sub).unwrap();
+        let path = sub.join(byte.to_string().repeat(62));
+        std::fs::write(&path, vec![0; len]).unwrap();
+        let file = std::fs::File::options().write(true).open(&path).unwrap();
+        file.set_modified(SystemTime::now() - ago).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_put_whose_room_puts_during_its_scan_took_scans_again_and_is_kept() {
+        // Found under load (cache_bound's sixty documents in one session, 10 of 40 runs): a
+        // put whose scan the document's other puts overlapped was refused as busy, though
+        // those were written by then and could be evicted, so the newest step wasn't kept.
+        // A bound of 100; on disk an entry of 40 used 20 s ago and one of 20 used 10 s ago; a
+        // put of 30, and two of 40 written whole during its first scan, 2 s ago and now.
+        let scratch = Scratch::new("rescan");
+        let a = entry_file(&scratch.0, 'a', 40, Duration::from_secs(20));
+        let b = entry_file(&scratch.0, 'b', 20, Duration::from_secs(10));
+        let cache =
+            Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32]))).with_bound(100);
+        let mut scans = 0;
+        let (mut c, mut d) = (PathBuf::new(), PathBuf::new());
+        let room = cache.make_room_scanning(30, |cache, size, writing| {
+            let left = cache.scan_and_evict(size, writing);
+            scans += 1;
+            if scans == 1 {
+                c = entry_file(&cache.dir, 'c', 40, Duration::from_secs(2));
+                d = entry_file(&cache.dir, 'd', 40, Duration::ZERO);
+                cache.usage().since_scan += 80;
+            }
+            left
+        });
+        // By hand: the first scan finds 60, and 60 + 30 is within 100, so it evicts nothing;
+        // with the 80 put since, 60 + 80 + 30 is past 100, but those 80 are in place, so it
+        // scans again: a, b, c, d are 140, past 100 with the 30, and it evicts the least
+        // recently used, a, b, and c, to 40, within 75 - 30; 40 + 30 fits.
+        assert_eq!(room, Room::Made);
+        assert_eq!(scans, 2);
+        assert!(!a.exists() && !b.exists() && !c.exists() && d.exists());
+        let usage = cache.usage();
+        assert_eq!(
+            (usage.known, usage.since_scan, usage.writing),
+            (Some(70), 30, 30)
+        );
+    }
+
+    #[test]
+    fn a_put_whose_scans_puts_keep_taking_its_room_scans_again_once_and_is_refused() {
+        // As above, but 80 more written during every scan: it scans again once, then takes
+        // what's still coming to be its own writes, and is refused (a miss later), rather
+        // than scanning without end.
+        let scratch = Scratch::new("rescan-busy");
+        let cache =
+            Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32]))).with_bound(100);
+        let mut scans = 0;
+        let room = cache.make_room_scanning(30, |cache, size, writing| {
+            let left = cache.scan_and_evict(size, writing);
+            scans += 1;
+            assert!(scans <= 3, "it scanned again and again");
+            let byte = if scans == 1 { 'e' } else { 'f' };
+            entry_file(&cache.dir, byte, 80, Duration::ZERO);
+            cache.usage().since_scan += 80;
+            left
+        });
+        assert_eq!(room, Room::Busy);
+        assert_eq!(scans, 2);
+        // Nothing counted for it: what the second scan settled on (f, put during it).
+        let usage = cache.usage();
+        assert_eq!(
+            (usage.known, usage.since_scan, usage.writing),
+            (Some(80), 80, 0)
+        );
+    }
+
+    #[test]
+    fn a_put_begun_during_a_scan_and_still_being_written_is_counted_as_coming_by_the_next() {
+        // Found by review: no test had a put begun during a scan still being written at its
+        // end, which the next scan must count as coming, beside the put it makes room for (a
+        // scan counting it nowhere would let the bound pass). A bound of 100, known to hold
+        // a (30, used 20 s ago) and b (30, 10 s ago); a put of 30, and, during its first scan,
+        // another session thread's put of 40 that fits by what's known, made room for and
+        // still being written.
+        let scratch = Scratch::new("rescan-writing");
+        let a = entry_file(&scratch.0, 'a', 30, Duration::from_secs(20));
+        let b = entry_file(&scratch.0, 'b', 30, Duration::from_secs(10));
+        let cache =
+            Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32]))).with_bound(100);
+        cache.usage().known = Some(60);
+        let mut scans = 0;
+        let room = cache.make_room_scanning(30, |cache, size, writing| {
+            let left = cache.scan_and_evict(size, writing);
+            scans += 1;
+            if scans == 1 {
+                assert_eq!(cache.make_room(40), Room::Made);
+            }
+            left
+        });
+        // By hand: the first scan finds 60, and 60 + 30 is within 100: nothing evicted; with
+        // the 40 begun since, 60 + 40 + 30 is past 100, so it scans again, now counting the
+        // 40 as coming: 60 + 40 + 30 is past 100, so it evicts to 75 - 70 = 5, a and b
+        // both; 0 left, 40 being written, and 30 fit (70).
+        assert_eq!(room, Room::Made);
+        assert_eq!(scans, 2);
+        assert!(!a.exists() && !b.exists());
+        let usage = cache.usage();
+        assert_eq!(
+            (usage.known, usage.since_scan, usage.writing),
+            (Some(70), 30, 70)
+        );
+    }
+
+    #[test]
+    fn a_put_that_fills_the_cache_exactly_doesnt_scan_and_one_byte_more_does() {
+        // 760 known of a bound of 800, nothing written since the last scan: a put of 40 makes
+        // exactly 800, within the bound, so it neither scans nor waits for one; a put of one
+        // byte more would pass it, and scans (an empty directory: room is made).
+        let scratch = Scratch::new("exactly");
+        let cache =
+            Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32]))).with_bound(800);
+        cache.usage().known = Some(760);
+        assert_eq!(cache.make_room(40), Room::Made);
+        let usage = cache.usage();
+        assert_eq!((usage.known, usage.scans), (Some(800), 0));
+        drop(usage);
+        let other =
+            Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32]))).with_bound(800);
+        other.usage().known = Some(760);
+        assert_eq!(other.make_room(41), Room::Made);
+        assert_eq!(other.usage().scans, 1);
+    }
+
     #[test]
     fn a_put_kept_out_by_another_processs_partial_is_stuck_and_by_its_own_isnt() {
         // Found by review: a refusal for files the cache can't evict (here, another
@@ -1027,22 +1194,37 @@ mod tests {
             ..Usage::default()
         };
         // Nothing left, 70 being written as the scan began, 20 begun since: 90 kept, and a
-        // put of 20 doesn't fit, though only for the cache's own writes.
+        // put of 20 doesn't fit, though only for the cache's own writes, and those begun
+        // since may be in place by now: scan again.
         let mut after = usage(20);
-        assert_eq!(settle(&mut after, 0, 70, 20, 100), Room::Busy);
+        assert_eq!(settle(&mut after, 0, 70, 20, 100), Room::Again);
         assert_eq!(after.known, Some(90));
-        // 30 left, 40 being written: 70; a put of 40 doesn't fit, and 30 left beside it
-        // would: busy, not stuck.
-        let mut after = usage(0);
+        // 30 left, 40 being written, still: 70; a put of 40 doesn't fit, and 30 left beside
+        // it would: busy, not stuck.
+        let mut after = Usage {
+            writing: 40,
+            ..usage(0)
+        };
         assert_eq!(settle(&mut after, 30, 40, 40, 100), Room::Busy);
         assert_eq!(after.known, Some(70));
+        // The same, but those 40 written by the scan's end: in place, so another scan may
+        // evict them.
+        let mut after = usage(0);
+        assert_eq!(settle(&mut after, 30, 40, 40, 100), Room::Again);
         // 90 left, that it couldn't evict: a put of 20 is stuck.
         let mut after = usage(0);
         assert_eq!(settle(&mut after, 90, 0, 20, 100), Room::Stuck);
-        // 60 left and 10 being written: a put of 40 doesn't fit, but it would beside what's
-        // left alone (exactly 100): busy.
-        let mut after = usage(0);
+        // 60 left and 10 being written, still: a put of 40 doesn't fit, but it would beside
+        // what's left alone (exactly 100): busy.
+        let mut after = Usage {
+            writing: 10,
+            ..usage(0)
+        };
         assert_eq!(settle(&mut after, 60, 10, 40, 100), Room::Busy);
+        // 90 left that it couldn't evict, and 20 begun since: stuck, whatever else is being
+        // written, not scanned again.
+        let mut after = usage(20);
+        assert_eq!(settle(&mut after, 90, 0, 20, 100), Room::Stuck);
         // 10 left, 30 being written, 20 begun since: 60, and a put of 40 makes exactly 100.
         let mut after = usage(20);
         assert_eq!(settle(&mut after, 10, 30, 40, 100), Room::Made);
