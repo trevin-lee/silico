@@ -112,6 +112,38 @@ fn a_sketch_worker_that_exits_at_launch_gets_one_code_every_time() {
     );
 }
 
+#[test]
+fn a_sketch_worker_whose_first_frame_comes_after_it_exited_had_started() {
+    // Found by mutants: the solve's wait for what an ended worker sent before it ended could
+    // be dropped (its deadline put in the past) and every test passed. Here the worker exits
+    // at once while a process it started sends its first frame 0.3 s later: it had started,
+    // so the solve waits for that frame, as a call to it would (`Worker::crashed`), and calls
+    // the end a crash.
+    let exe = script(
+        "sketch-first-frame-late",
+        &format!("( sleep 0.3; {STARTED} ) &\nexit 0"),
+    );
+    let mut solver = SketchWorker::start_worker(&exe).unwrap();
+    let _stopper = solver.stopper().unwrap();
+    // Until the worker itself has exited (a zombie, or gone), before its child sends the frame.
+    let pid = solver.pid().to_string();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let ps = Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid])
+            .output()
+            .unwrap();
+        let stat = String::from_utf8_lossy(&ps.stdout).trim().to_owned();
+        if stat.is_empty() || stat.starts_with('Z') {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the worker didn't exit");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let err = solver.solve(empty_system()).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+}
+
 // --- Ended before its first frame --------------------------------------------------------
 
 /// Ways a worker ends before its first frame: how it's told, its script, and the signal
