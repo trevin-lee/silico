@@ -1358,12 +1358,33 @@ fn a_turn_short_of_a_whole_one_by_the_tolerance_is_refused_and_a_nanodegree_more
     let below = arc([0, -10], [4, -7], [-4, -7]);
     let wrapping = arc([0, 10], [-5, 10], [4, 7]);
     let cap = arc([0, 10], [4, 13], [-4, 13]);
+    // Profiles with no point off the axis, measured at their farthest point:
+    // - a circle of radius 5 about (0, 5), tangent to the axis at the origin: no end, and
+    //   its point toward the axis on it; its farthest point is (0, 10), whose band is
+    //   1800/π = 572.96 nanodegrees, so 572 short (359.999999428°, 10 · 572e-9 · π/180 =
+    //   9.9833e-8) is refused and 573 short turns;
+    // - a semicircle of radius 5 about the origin on its diameter, the chord on the axis:
+    //   its ends on the axis, its circle's centre too; farthest at its top, (0, 5): the band
+    //   at 5.
+    let tangent = circles("ssssssss", "xy", &[([0.0, 5.0], 5.0)]);
+    let semicircle = arc([0, 0], [5, 0], [-5, 0]);
     // Each refusal names the sketch's curves where its slit is measured: the circle, the
     // arc at its interior point, the cap's arc and chord at their shared ends, a
-    // rectangle's side there and the two sides ending on it.
+    // rectangle's side there and the two sides ending on it; and where nothing is off the
+    // axis, the curve reaching the farthest point, the tangent circle, and the semicircle's
+    // arc and not its chord.
     let short = "359.999998855";
     let turns = "359.999998854";
-    let cases: [BandCase; 8] = [
+    let cases: [BandCase; 10] = [
+        (
+            tangent,
+            "359.999999428",
+            10.0,
+            9.9833e-8,
+            "359.999999427",
+            &["ca000001"],
+        ),
+        (semicircle, short, 5.0, 9.9920e-8, turns, &["aa000001"]),
         (torus, short, 5.0, 9.9920e-8, turns, &["ca000001"]),
         (bulge, short, 5.0, 9.9920e-8, turns, &["aa000001"]),
         (below, short, 5.0, 9.9920e-8, turns, &["aa000001"]),
@@ -1535,4 +1556,57 @@ fn a_slit_is_measured_at_the_nearest_point_off_the_axis_over_every_region_and_ho
         "{:?}",
         model.outcome(&id("rrrrrrrr"))
     );
+}
+
+#[test]
+fn a_slit_refusal_lists_a_hundred_of_its_curves_and_counts_them_all() {
+    // A comb: a zigzag along the bottom from (0, 5) to (240, 5), its corners at x = 0, 1,
+    // ..., 240 alternately at y = 5 and 6, closed by (240, 10) and (0, 10). About the x
+    // axis its nearest points are the 121 corners at y = 5, ends of every zigzag side
+    // (240) and of the two sides up to y = 10: 242 curves at 5, all but the top, n0000242.
+    // 1145 nanodegrees short is refused there; the refusal lists the first hundred by ID,
+    // n0000001 to n0000100, and counts 242.
+    let mut points: Vec<String> = (0..=240)
+        .map(|i| {
+            let y = if i % 2 == 0 { 5 } else { 6 };
+            format!(
+                r#"{{"id": "p{:07}", "x": {i}, "y": {y}, "construction": false}}"#,
+                i + 1
+            )
+        })
+        .collect();
+    points.push(r#"{"id": "p0000242", "x": 240, "y": 10, "construction": false}"#.to_owned());
+    points.push(r#"{"id": "p0000243", "x": 0, "y": 10, "construction": false}"#.to_owned());
+    let lines: Vec<String> = (1..=243)
+        .map(|k| {
+            format!(
+                r#"{{"id": "n{k:07}", "from": "p{k:07}", "to": "p{:07}", "construction": false}}"#,
+                k % 243 + 1
+            )
+        })
+        .collect();
+    let comb = format!(
+        r#"{{"id": "ssssssss", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{}], "lines": [{}], "circles": [], "arcs": [], "constraints": []}}"#,
+        points.join(", "),
+        lines.join(", ")
+    );
+    let model = published(
+        &engine(),
+        &[
+            &comb,
+            &turned(
+                "rrrrrrrr",
+                "revolve",
+                None,
+                "ssssssss",
+                "x_axis",
+                &angle("359.999998855"),
+            ),
+        ],
+    );
+    let error = failed(&model, "rrrrrrrr");
+    assert_eq!(error.parameter(), Some("extent.angle"), "{error}");
+    let listed: Vec<String> = (1..=100).map(|k| format!("n{k:07}")).collect();
+    assert_eq!(error.elements(), listed);
+    assert_eq!(error.elements_total(), 242);
 }

@@ -1191,11 +1191,30 @@ fn meetings_found_out_of_id_order_still_name_every_part_of_those_dropped() {
     // name their parts too: 1 + 51 × 3 = 154.
     let mut d = Draw::new();
     d.rectangle(-5.0, 0.0, 200.0, 1.0);
+    let mut sides = Vec::new();
     for i in (0..51).rev() {
         let x = 3.0 * f64::from(i);
-        d.polygon(&[(x + 1.0, 1.0 + 5e-8), (x + 2.0, 3.0), (x, 3.0)]);
+        sides.push(d.polygon(&[(x + 1.0, 1.0 + 5e-8), (x + 2.0, 3.0), (x, 3.0)]));
     }
     let refused = d.profile().unwrap_err();
     assert_eq!((refused.errors().len(), refused.total()), (100, 102));
     assert_eq!(refused.elements_total(), 154);
+    // The hundred listed are the lowest by ID: the first-drawn triangle's two sides from
+    // its apex and the apex (the bar's 8 IDs, then its points p0000009 to p0000011, then
+    // its sides n0000012 to n0000014) are listed; the last-drawn's (its apex p0000309,
+    // 9 + 50 × 6) are in no listed refusal.
+    let listed: std::collections::BTreeSet<&str> = refused
+        .errors()
+        .iter()
+        .flat_map(|e| e.elements().iter().map(String::as_str))
+        .collect();
+    let (first, last) = (&sides[0], &sides[50]);
+    assert_eq!(first, &["n0000012", "n0000013", "n0000014"]);
+    assert_eq!(last, &["n0000312", "n0000313", "n0000314"]);
+    for id in ["p0000009", "n0000012", "n0000014"] {
+        assert!(listed.contains(id), "{id}");
+    }
+    for id in ["p0000309", "n0000312", "n0000314"] {
+        assert!(!listed.contains(id), "{id}");
+    }
 }

@@ -670,14 +670,15 @@ fn a_cause_gives_each_of_its_different_advices_once() {
         "{cause}"
     );
     assert_eq!(cause.matches(" cross").count(), 4, "{cause}");
-    // Each advice right after the first refusal it belongs to.
-    assert!(cause.find(open) < cause.find(cross), "{cause}");
+    // Each advice right after the first refusal it belongs to: the two open ends first, then
+    // the four crossings.
+    let parts: Vec<&str> = cause.split("; ").collect();
+    assert_eq!(parts.len(), 6, "{cause}");
+    assert!(parts[0].ends_with(open), "{cause}");
     assert!(
-        cause
-            .split("; ")
-            .filter(|refusal| refusal.ends_with(open) || refusal.ends_with(cross))
-            .count()
-            == 2,
+        !parts[1].ends_with(open) && !parts[1].ends_with(cross),
         "{cause}"
     );
+    assert!(parts[2].ends_with(cross), "{cause}");
+    assert!(parts[3..].iter().all(|p| !p.ends_with(cross)), "{cause}");
 }
