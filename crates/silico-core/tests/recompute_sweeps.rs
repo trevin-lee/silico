@@ -827,16 +827,13 @@ fn a_cached_sweep_is_taken_from_disk_by_a_new_session_with_no_kernel_call() {
     // M2.5's cache with the new steps: faces (no input keys, a history of one), a through-
     // all prism (two input keys, a history of one, the sweep's rule), and the checked cut,
     // measured as it's made. A second session over the same cache asks the kernel nothing.
-    let dir = std::env::temp_dir().join(format!(
-        "silico-recompute-sweeps-cache-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    let secret = std::env::temp_dir().join(format!(
-        "silico-recompute-sweeps-cache-{}.secret",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_file(&secret);
+    // Removed when dropped, even if the test fails.
+    let scratch = tempfile::Builder::new()
+        .prefix("silico-recompute-sweeps-")
+        .tempdir()
+        .unwrap();
+    let dir = scratch.path().join("cache");
+    let secret = scratch.path().join("secret");
     let session = || {
         Recompute::with_cache(
             FakeKernel::new(2).unwrap(),
@@ -890,8 +887,6 @@ fn a_cached_sweep_is_taken_from_disk_by_a_new_session_with_no_kernel_call() {
         ),
         fingerprints
     );
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_file(&secret);
 }
 
 #[test]

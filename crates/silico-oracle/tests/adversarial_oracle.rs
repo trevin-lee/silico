@@ -1181,11 +1181,12 @@ fn a_run_of_more_than_one_directory_is_refused() {
 fn a_corpus_of_no_step_files_is_an_error_not_a_pass() {
     // `corpus DIR` reads DIR's STEP files; with none there is nothing to compare, the error
     // a run of no cases is, not the usage error of a corpus without its one directory.
-    let dir = scratch("empty-corpus");
+    let temp = scratch("empty-corpus");
+    let dir = temp.path();
     let corpus = dir.join("corpus");
     std::fs::create_dir_all(&corpus).unwrap();
     let ran = cli(
-        &dir,
+        dir,
         &["corpus", corpus.to_str().unwrap()],
         &[],
         Duration::from_secs(60),
@@ -1205,7 +1206,8 @@ fn document(features: &str) -> String {
 fn a_directory_of_sketch_cases_alone_is_run_and_counted() {
     // No shape cases and no sketch-feature cases: the one sketch case is solved by both
     // sides and is the run's one case, not a run of no cases.
-    let dir = scratch("sketches-alone");
+    let temp = scratch("sketches-alone");
+    let dir = temp.path();
     let cases = dir.join("cases");
     std::fs::create_dir_all(&cases).unwrap();
     let line = r#"{"id": "s0000001", "type": "sketch", "v": 1, "name": "free_line", "plane": "xy",
@@ -1214,7 +1216,7 @@ fn a_directory_of_sketch_cases_alone_is_run_and_counted() {
       "circles": [], "arcs": [], "constraints": [], "note": "A line with no constraints."}"#;
     std::fs::write(cases.join("sketches.silico"), document(line)).unwrap();
     let ran = cli(
-        &dir,
+        dir,
         &["run", cases.to_str().unwrap()],
         &[],
         Duration::from_secs(120),
@@ -1232,7 +1234,8 @@ fn a_directory_of_sketch_feature_cases_alone_is_run_and_its_differences_counted(
     // No shape cases and no sketch cases: the unit square padded 1 (volume 1, FreeCAD's
     // testPartDesignElementMapPad), said to be expected at volume 2, is the run's one case,
     // and it differs, Silico's volume from the expected, so the run fails.
-    let dir = scratch("features-alone");
+    let temp = scratch("features-alone");
+    let dir = temp.path();
     let cases = dir.join("cases");
     std::fs::create_dir_all(&cases).unwrap();
     let pad = r#"{"id": "s0000001", "type": "sketch", "v": 1, "name": "unit_square", "plane": "xy",
@@ -1244,7 +1247,7 @@ fn a_directory_of_sketch_feature_cases_alone_is_run_and_its_differences_counted(
       "note": "The unit square padded 1. Expected: volume 2."}"#;
     std::fs::write(cases.join("sketch-features.silico"), document(pad)).unwrap();
     let ran = cli(
-        &dir,
+        dir,
         &["run", cases.to_str().unwrap()],
         &[],
         Duration::from_secs(120),
