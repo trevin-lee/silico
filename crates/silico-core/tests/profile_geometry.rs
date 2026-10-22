@@ -984,3 +984,71 @@ fn short_arcs_of_crossing_circles_each_through_a_different_crossing_dont_meet() 
         1e-12
     ));
 }
+
+#[test]
+fn a_tiny_arc_far_out_whose_circle_but_not_itself_nears_a_line_is_apart_from_it() {
+    // 700 km out: an arc r 1e-3 about (400970, 600404), from 53.61 to 139.56 deg, and a
+    // triangle whose side from (400977.93.., 600397.91..) to (400962.06.., 600410.09..)
+    // runs 1.00005e-3 from the centre, its foot at 52.48 deg: the arc's circle comes
+    // 5e-8 from the side, but 1.13 deg (0.0197 rad) before the arc starts. The arc comes
+    // nearest at its start, 1.00005e-3 - 1e-3 cos(0.0197) = 2.4e-7 from the side's line,
+    // more than the tolerance. Whether the circle's nearest point is on the arc is a
+    // question of direction from the centre, asked of a point 1e-3 from it, where the
+    // coordinates' rounding (1.2e-10) turns it by 1.2e-7 rad at most. The triangle's
+    // third corner is 10 beyond the side's middle: area 20 x 10 / 2 by hand.
+    let mut d = Draw::new();
+    d_shape(
+        &mut d,
+        (400970.0, 600404.0),
+        (400970.0005932259, 600404.000805036),
+        (400969.9992389437, 600404.0006486858),
+    );
+    d.polygon(&[
+        (400977.9324988479, 600397.9110376065),
+        (400962.0687191642, 600410.0905488507),
+        (400976.0903646281, 600411.9326830704),
+    ]);
+    let p = d.made();
+    assert_eq!(p.regions.len(), 2, "{p:#?}");
+    assert!(
+        close(p.regions[1].area(), 100.0, 1e-9),
+        "{}",
+        p.regions[1].area()
+    );
+}
+
+#[test]
+fn arcs_far_out_whose_circles_but_not_both_arcs_near_each_other_are_apart() {
+    // Two pairs, 400 km out, of arcs r 1e5 whose circles are 2e5 + 5e-8 apart between
+    // centres, so 5e-8 apart on their line of centres: in the first pair the first arc
+    // starts 0.0000818 deg (1.43e-6 rad) past that line and the second turns through it;
+    // in the second pair the other way about. Where the arc that misses the line starts,
+    // it's 2.54e-7 (and 2.39e-7) from the other circle, more than the tolerance, and
+    // nothing else comes near. Whether a circle's nearest point is on its arc is a
+    // question of direction from the centre, asked of a point 1e5 from it, where the
+    // coordinates' rounding (6e-11) turns it by 6e-16 rad at most.
+    let pairs = [
+        [
+            (313244.0, 329106.0),
+            (406453.22961985564, 365328.0859928446),
+            (377677.0014351336, 405580.7561359961),
+            (499662.5626556184, 401549.90586814925),
+            (400389.47759058577, 389514.3509714777),
+            (418312.3867262234, 343393.66049195186),
+        ],
+        [
+            (287859.0, 313793.0),
+            (387016.39391499094, 326747.19746596867),
+            (368667.2266849834, 372699.9647837022),
+            (473598.82185333583, 387959.829364016),
+            (380728.9618572616, 350876.28713421314),
+            (409876.6494024557, 310891.776721301),
+        ],
+    ];
+    for [c1, s1, e1, c2, s2, e2] in pairs {
+        let mut d = Draw::new();
+        d_shape(&mut d, c1, s1, e1);
+        d_shape(&mut d, c2, s2, e2);
+        assert_eq!(d.made().regions.len(), 2, "{c1:?}");
+    }
+}
