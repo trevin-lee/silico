@@ -1139,3 +1139,26 @@ fn a_hole_whose_probe_ray_passes_an_l_outlines_inner_corner_is_a_hole() {
         p.regions[0].area()
     );
 }
+
+#[test]
+fn every_curve_of_every_crossing_is_at_fault_though_only_a_hundred_are_listed() {
+    // Six thin bars across x (y 10i to 10i + 1, x -5 to 200) and five down y (x 10j + 3 to
+    // 10j + 4, y -5 to 200): each bar across meets each bar down where their long sides
+    // cross, 2 × 2 = 4 crossings a pair, 30 pairs, 120 crossings; their short sides lie
+    // beyond the others. The crossings listed are the first hundred by ID, all of the first
+    // five bars across; the sixth's two long sides cross only in the twenty past them, and
+    // are at fault too: 6 × 2 + 5 × 2 = 22 curves.
+    let mut d = Draw::new();
+    for i in 0..6 {
+        let y = 10.0 * f64::from(i);
+        d.rectangle(-5.0, y, 200.0, y + 1.0);
+    }
+    for j in 0..5 {
+        let x = 10.0 * f64::from(j) + 3.0;
+        d.rectangle(x, -5.0, x + 1.0, 200.0);
+    }
+    let refused = d.profile().unwrap_err();
+    assert_eq!((refused.errors().len(), refused.total()), (100, 120));
+    assert_eq!(refused.elements_total(), 22);
+    assert_eq!(refused.elements().len(), 22);
+}

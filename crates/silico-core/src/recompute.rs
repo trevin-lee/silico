@@ -13,7 +13,8 @@
 //! A sweep's steps depend on its sketch's profile, so every sketch a feature sweeps is
 //! solved, and its profile made, before the plan (both kept by the sketch's key, so an
 //! unchanged sketch costs nothing); a sketch that doesn't solve blocks what sweeps it, and
-//! one that makes no profile fails it with every refusal of its profile. Its checks before
+//! one that makes no profile fails it with one error, the sketch's elements at fault and
+//! every refusal of its profile in it. Its checks before
 //! any kernel step (several regions, a revolve's axis) and of its result (one solid, a
 //! change of volume, measured as its fuse or cut is made: `sweep`) fail it as a step's
 //! refusal does.
@@ -161,10 +162,11 @@ impl Built {
 pub enum FeatureOutcome {
     /// Built: its last step's key and result.
     Built { key: Key, built: Arc<Built> },
-    /// The kernel refused one of its steps, or the rebuild refused it before any: why. A
-    /// pad, pocket, revolve, or groove whose sketch solved but makes no profile fails with
-    /// one error naming it, the profile's refusals its cause
-    /// ([`crate::sweep::unprofiled`]; docs/design/m3.6-sketch-features.md, S3).
+    /// The kernel refused one of its steps, or the rebuild refused it before any: why,
+    /// naming the feature. A pad, pocket, revolve, or groove whose sketch solved but makes
+    /// no profile fails with one error, its elements the sketch's at fault, the profile's
+    /// refusals its cause ([`crate::sweep::unprofiled`]; docs/design/m3.6-sketch-features.md,
+    /// S3).
     Failed(Error),
     /// References it holds (a fillet's or chamfer's edges, by name) name nothing it can
     /// use: each broken one's `reference_broken` error, in the order the feature holds them
@@ -279,13 +281,12 @@ impl Model {
         self.errors().count() as u64 + self.unlisted_errors()
     }
 
-    /// Why each failed feature failed, in timeline order: one error for a failure, naming
-    /// its feature (or, for a pad's regions or a revolve's axis crossing its profile, the
-    /// sketch, whose elements are at fault and named: design S5, S6), and one for each
-    /// broken reference of a feature whose references broke (its first hundred:
-    /// [`Model::error_count`] counts them all). A sketch that makes no profile fails each
-    /// feature that sweeps it with one error naming that feature, the profile's refusals
-    /// its cause; the sketch isn't failed.
+    /// Why each failed feature failed, in timeline order, each error naming its feature:
+    /// one for a failure, and one for each broken reference of a feature whose references
+    /// broke (its first hundred: [`Model::error_count`] counts them all). A pad, pocket,
+    /// revolve, or groove refused for its sketch (no profile, several regions, an axis
+    /// across it) has one error, naming it, whose elements are the sketch's at fault; the
+    /// sketch, solved, has none (design S3, S5, S6).
     pub fn errors(&self) -> impl Iterator<Item = &Error> {
         self.features.iter().flat_map(|(_, outcome)| match outcome {
             FeatureOutcome::Failed(error) => std::slice::from_ref(error),

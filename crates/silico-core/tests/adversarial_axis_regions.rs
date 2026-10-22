@@ -93,7 +93,9 @@ fn a_crossing_region_is_refused_whatever_its_place_naming_only_its_curves() {
             error.message(),
             "groove rrrrrrrr turns sketch ssssssss about a line that crosses its profile: its axis, the sketch's x_axis, has the profile's curves on both sides, 1 mm on one and 1 mm on the other"
         );
-        assert_eq!(error.feature(), Some("ssssssss"));
+        // The groove's own error, its elements the sketch's (Fable, AR1).
+        assert_eq!(error.feature(), Some("rrrrrrrr"));
+        assert_eq!(error.parameter(), Some("axis"));
         assert_eq!(error.elements_total(), 4);
     }
 }

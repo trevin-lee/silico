@@ -218,9 +218,9 @@ fn reach(edge: &crate::profile::Edge, origin: [f64; 2], direction: [f64; 2]) -> 
 ///   axis's line, a point within OCCT's tolerance (1e-7 mm) of it counting as on it, so a
 ///   region may touch the axis or run along it, and two regions may lie on opposite sides
 ///   (FreeCAD checks each face's outer wire alone: `checkLineCrossesFace`, per face). A
-///   crossing is refused as `invalid_input`, the feature the sketch (its elements are
-///   where it's fixed), the elements the crossing region's curves reaching off the axis,
-///   by ID, and the axis, if it's a line;
+///   crossing is refused as `invalid_input`, naming the feature and its `axis`, the
+///   elements the sketch's, where it's fixed: the crossing region's curves reaching off
+///   the axis, by ID, and the axis, if it's a line;
 /// - **the turn's end mustn't be where it started** ([`silico_protocol::end_at_start`], M1's
 ///   revolve's rule): the profile's farthest point from the axis, over every region, must
 ///   move more than the tolerance, and, short of a whole turn, its slit must be wider than
@@ -286,7 +286,8 @@ pub fn check_axis(
                     format_number(high)
                 ),
             )
-            .with_feature(axis.sketch.as_str())
+            .with_feature(feature.as_str())
+            .with_parameter("axis")
             .with_elements(elements)
             .with_elements_total(total as u64)
             .with_suggestion(
@@ -365,10 +366,12 @@ fn unchecked(what: String) -> Error {
 
 /// Design S3: pad, pocket, revolve, or groove `feature`, of type `kind`, sweeps `sketch`,
 /// which solved but makes no profile (`refused`). The feature's own error, one however many
-/// refusals there are and however many features sweep the sketch: `invalid_input` (or the
-/// first refusal's code that isn't, a bug), naming the feature and its `sketch`, the
-/// refusals' messages (the first hundred, and how many more) its cause. The sketch itself
-/// isn't failed: a sketch nothing sweeps may be open.
+/// refusals there are, each sweep of the sketch its own, whole: `invalid_input` (or the
+/// first listed refusal's code that isn't, a bug, with a bug's advice), naming the feature
+/// and its `sketch`; the sketch's elements at fault, every refusal's, by ID (the first
+/// hundred, and their total: a sweep refusal's elements are its sketch's); each listed
+/// refusal's message and advice its cause, and how many more. The sketch itself isn't
+/// failed, and no error names it: a sketch nothing sweeps may be open.
 pub fn unprofiled(
     feature: &FeatureId,
     kind: SweepFeature,
@@ -383,7 +386,10 @@ pub fn unprofiled(
         .unwrap_or(ErrorCode::InvalidInput);
     let mut cause = listed
         .iter()
-        .map(Error::message)
+        .map(|e| match e.suggestion() {
+            Some(advice) => format!("{} ({advice})", e.message()),
+            None => e.message().to_owned(),
+        })
         .collect::<Vec<_>>()
         .join("; ");
     let more = refused.total().saturating_sub(listed.len() as u64);
@@ -394,6 +400,11 @@ pub fn unprofiled(
         1 => "1 refusal".to_owned(),
         n => format!("{n} refusals"),
     };
+    let suggestion = if code == ErrorCode::Internal {
+        crate::worker::SILICO_BUG.to_owned()
+    } else {
+        format!("fix sketch {sketch} where the cause says, or sweep another sketch")
+    };
     Error::new(
         code,
         format!(
@@ -403,10 +414,10 @@ pub fn unprofiled(
     )
     .with_feature(feature.as_str())
     .with_parameter("sketch")
+    .with_elements(refused.elements())
+    .with_elements_total(refused.elements_total())
     .with_cause(cause)
-    .with_suggestion(format!(
-        "fix sketch {sketch} where the cause says, or sweep another sketch"
-    ))
+    .with_suggestion(suggestion)
 }
 
 /// A solid as a sketch feature's checks see it: its volume, by the precise measure, and how
@@ -422,9 +433,9 @@ pub struct Measured {
 
 /// Decision 3, strict (design S5): a pad or a revolve makes one solid of one region, so a
 /// profile of several is refused before any kernel step, with or without a base that would
-/// join them. `invalid_input`, the feature the sketch (its elements are the sketch's, and
-/// that's where they're fixed), the elements every region's outer-loop curves in region
-/// order (the first hundred, and their total). A pocket or a groove takes every region.
+/// join them. `invalid_input`, naming the feature and its `sketch`, the elements the
+/// sketch's, where they're fixed: every region's outer-loop curves in region order (the
+/// first hundred, and their total). A pocket or a groove takes every region.
 pub fn check_regions(
     feature: &FeatureId,
     kind: SweepFeature,
@@ -477,7 +488,8 @@ pub fn check_regions(
         feature.as_str()
     );
     Err(Error::new(ErrorCode::InvalidInput, message)
-        .with_feature(sketch.as_str())
+        .with_feature(feature.as_str())
+        .with_parameter("sketch")
         .with_elements(listed)
         .with_elements_total(total as u64)
         .with_suggestion(format!(

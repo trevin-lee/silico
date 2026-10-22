@@ -821,8 +821,12 @@ fn a_pocket_on_a_pad_is_blocked_on_the_pad() {
     assert_eq!(error.feature(), Some("p0000001"));
     assert_eq!(
         error.cause(),
-        Some("the sketch has no curves to make a profile of")
+        Some(
+            "the sketch has no curves to make a profile of (draw a closed outline of lines, arcs, or circles that aren't construction geometry)"
+        )
     );
+    assert_eq!((error.elements(), error.elements_total()), (&[][..], 0));
+    assert!(model.errors().all(|e| e.feature() != Some("s0000001")));
     assert_eq!(
         model.outcome(&id("q0000001")),
         Some(&FeatureOutcome::Blocked { on: id("p0000001") })

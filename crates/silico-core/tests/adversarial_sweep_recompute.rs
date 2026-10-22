@@ -267,8 +267,11 @@ fn a_sketch_with_no_profile_then_mended_then_emptied_again_follows_each_edit() {
                 assert_eq!(error.feature(), Some("pppppppp"));
                 assert_eq!(
                     error.cause(),
-                    Some("the sketch has no curves to make a profile of")
+                    Some(
+                        "the sketch has no curves to make a profile of (draw a closed outline of lines, arcs, or circles that aren't construction geometry)"
+                    )
                 );
+                assert!(model.errors().all(|e| e.feature() != Some("ssssssss")));
             }
             other => panic!("{other:?}"),
         }

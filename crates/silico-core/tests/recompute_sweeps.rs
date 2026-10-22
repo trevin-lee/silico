@@ -459,11 +459,12 @@ fn a_sketch_that_doesnt_solve_blocks_what_sweeps_it() {
 
 #[test]
 fn a_sketch_that_makes_no_profile_fails_each_sweep_of_it_once_naming_it() {
-    // Design S3: the sketch is solved, not failed (a sketch nothing sweeps may be open);
-    // each feature sweeping it fails with one error of its own, naming it, the profile's
-    // refusals its cause, and what uses it is blocked. The open polyline (0, 0), (4, 0),
-    // (4, 2) has two open ends, pa000001 and pa000003: two refusals, given once in each
-    // pad's cause, not as two problems per pad. Two pads: two errors, one per pad.
+    // Design S3 (Fable's decision on AR1): the sketch is solved, not failed (a sketch nothing
+    // sweeps may be open), and no error names it; each feature sweeping it fails with one
+    // whole error of its own, naming it, its elements the sketch's at fault, the profile's
+    // refusals and their advice its cause, and what uses it is blocked. The open polyline
+    // (0, 0), (4, 0), (4, 2) has two open ends, pa000001 (of na000001) and pa000003 (of
+    // na000002): two refusals, four elements. Two pads: two errors, one per pad.
     let open = r#"{"id": "ssssssss", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 4, "y": 0, "construction": false}, {"id": "pa000003", "x": 4, "y": 2, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}], "circles": [], "arcs": [], "constraints": []}"#;
     let engine = engine();
     let model = published(
@@ -489,13 +490,21 @@ fn a_sketch_that_makes_no_profile_fails_each_sweep_of_it_once_naming_it() {
             error.message(),
             format!("pad {feature} sweeps sketch ssssssss, which makes no profile (2 refusals)")
         );
+        let advice = "end another curve at the point to close the outline, or make the curve construction geometry";
         assert_eq!(
             error.cause(),
             Some(
-                "point pa000001 ends line na000001 and no other profile curve, so the profile is open there; point pa000003 ends line na000002 and no other profile curve, so the profile is open there"
+                format!(
+                    "point pa000001 ends line na000001 and no other profile curve, so the profile is open there ({advice}); point pa000003 ends line na000002 and no other profile curve, so the profile is open there ({advice})"
+                )
+                .as_str()
             )
         );
-        assert!(error.elements().is_empty(), "{error:?}");
+        assert_eq!(
+            error.elements(),
+            ["na000001", "na000002", "pa000001", "pa000003"]
+        );
+        assert_eq!(error.elements_total(), 4);
         assert_eq!(
             error.suggestion(),
             Some("fix sketch ssssssss where the cause says, or sweep another sketch")
@@ -506,10 +515,48 @@ fn a_sketch_that_makes_no_profile_fails_each_sweep_of_it_once_naming_it() {
         Some(&FeatureOutcome::Blocked { on: id("pppppppp") })
     );
     assert!(!names(&engine).contains(&"MakeFaces"));
-    // One error per pad, each naming it, and nothing else.
+    // One error per pad, each naming it, and nothing else: none names the sketch.
     let features: Vec<Option<&str>> = model.errors().map(Error::feature).collect();
     assert_eq!(features, [Some("pppppppp"), Some("p0000002")]);
     assert_eq!(model.error_count(), 2);
+}
+
+#[test]
+fn two_pads_of_a_two_region_sketch_are_each_refused_naming_the_pad_and_a_pocket_builds() {
+    // Design S5 in AR1's shape: two circles, two regions; each pad's error names it, with
+    // parameter `sketch` and the sketch's two circles; no error names the sketch. A pocket
+    // of the same sketch into the cube takes both regions and builds.
+    let two = circles("ssssssss", "xy", &[([2.0, 2.0], 1.0), ([6.0, 2.0], 1.0)]);
+    let model = published(
+        &engine(),
+        &[
+            &two,
+            &pad("pppppppp", None, "ssssssss", TEN),
+            &pad("p0000002", None, "ssssssss", TEN),
+        ],
+    );
+    let listed: Vec<(Option<&str>, Option<&str>, &[String])> = model
+        .errors()
+        .map(|e| (e.feature(), e.parameter(), e.elements()))
+        .collect();
+    let circles_at_fault = ["ca000001".to_owned(), "ca000002".to_owned()];
+    assert_eq!(
+        listed,
+        [
+            (Some("pppppppp"), Some("sketch"), &circles_at_fault[..]),
+            (Some("p0000002"), Some("sketch"), &circles_at_fault[..]),
+        ]
+    );
+    let model = published(
+        &engine(),
+        &[
+            &cube_below(),
+            &two,
+            &pocket("qqqqqqqq", "bbbbbbbb", "ssssssss", TEN),
+        ],
+    );
+    assert!(built(&model, "qqqqqqqq"), "{:?}", model.features());
+    assert_eq!(model.errors().count(), 0);
 }
 
 #[test]
@@ -530,7 +577,8 @@ fn a_pad_or_revolve_of_two_regions_is_refused_naming_them_and_a_pocket_takes_bot
         let model = published(&engine, &[&cube_below(), &two, &feature]);
         let error = failed(&model, "pppppppp");
         assert_eq!(error.code(), ErrorCode::InvalidInput);
-        assert_eq!(error.feature(), Some("ssssssss"));
+        assert_eq!(error.feature(), Some("pppppppp"));
+        assert_eq!(error.parameter(), Some("sketch"));
         assert_eq!(error.elements(), ["ca000001", "ca000002"]);
         assert_eq!(error.elements_total(), 2);
         assert_eq!(
@@ -600,7 +648,8 @@ fn a_revolves_axis_is_checked_against_the_solved_profile_before_any_kernel_step(
         if refused {
             let error = failed(&model, "rrrrrrrr");
             assert_eq!(error.code(), ErrorCode::InvalidInput);
-            assert_eq!(error.feature(), Some("ssssssss"));
+            assert_eq!(error.feature(), Some("rrrrrrrr"));
+            assert_eq!(error.parameter(), Some("axis"));
             assert!(
                 error.message().contains("crosses its profile"),
                 "{}",
@@ -983,8 +1032,8 @@ fn an_axis_crossing_its_profile_and_an_angle_too_small_are_refused_in_full() {
     );
     let error = failed(&model, "rrrrrrrr");
     assert_eq!(error.code(), ErrorCode::InvalidInput);
-    assert_eq!(error.feature(), Some("ssssssss"));
-    assert_eq!(error.parameter(), None);
+    assert_eq!(error.feature(), Some("rrrrrrrr"));
+    assert_eq!(error.parameter(), Some("axis"));
     assert_eq!(
         error.message(),
         "revolve rrrrrrrr turns sketch ssssssss about a line that crosses its profile: its axis, line nb000000, has the profile's curves on both sides, 2 mm on one and 1 mm on the other"
@@ -1082,7 +1131,8 @@ fn a_crossing_circle_is_refused_with_its_reach_either_side_of_the_axis() {
     );
     let error = failed(&model, "rrrrrrrr");
     assert_eq!(error.code(), ErrorCode::InvalidInput);
-    assert_eq!(error.feature(), Some("ssssssss"));
+    assert_eq!(error.feature(), Some("rrrrrrrr"));
+    assert_eq!(error.parameter(), Some("axis"));
     assert_eq!(
         error.message(),
         "revolve rrrrrrrr turns sketch ssssssss about a line that crosses its profile: its axis, the sketch's x_axis, has the profile's curves on both sides, 2 mm on one and 4 mm on the other"

@@ -336,8 +336,9 @@ fn a_pad_or_revolve_of_two_regions_is_refused_naming_every_outer_curve_and_their
     let two = regions(vec![square(1, 0.0, 10.0), square(5, 20.0, 10.0)]);
     let refused = check_profile(SweepFeature::Pad, &two).unwrap_err();
     assert_eq!(refused.code(), ErrorCode::InvalidInput);
-    // The sketch's, since that's where the regions are.
-    assert_eq!(refused.feature(), Some("s0000001"));
+    // The pad's own error; its elements the sketch's, since that's where the regions are.
+    assert_eq!(refused.feature(), Some("p0000001"));
+    assert_eq!(refused.parameter(), Some("sketch"));
     assert_eq!(
         refused.elements(),
         [
@@ -510,7 +511,9 @@ fn an_m2_boolean_of_more_than_one_solid_is_refused_naming_itself_and_the_cause()
 #[test]
 fn a_sweep_of_a_sketch_that_makes_no_profile_is_one_error_naming_it_however_many_refusals() {
     // One open line, (0, 0) to (4, 0): its two ends, p0000001 and p0000002, are open, two
-    // refusals; a groove of it is one error naming the groove, the two its cause.
+    // refusals of three elements (the line, n0000003, and its ends); a groove of it is one
+    // error naming the groove, the sketch's elements its own, the two refusals and their
+    // advice its cause.
     let mut d = draw::Draw::new();
     let a = d.point(0.0, 0.0);
     let b = d.point(4.0, 0.0);
@@ -526,15 +529,20 @@ fn a_sweep_of_a_sketch_that_makes_no_profile_is_one_error_naming_it_however_many
     assert_eq!(error.code(), ErrorCode::InvalidInput);
     assert_eq!(error.feature(), Some("g0000001"));
     assert_eq!(error.parameter(), Some("sketch"));
-    assert!(error.elements().is_empty());
+    assert_eq!(error.elements(), ["n0000003", "p0000001", "p0000002"]);
+    assert_eq!(error.elements_total(), 3);
     assert_eq!(
         error.message(),
         "groove g0000001 sweeps sketch k7f2qx3m, which makes no profile (2 refusals)"
     );
+    let advice = "end another curve at the point to close the outline, or make the curve construction geometry";
     assert_eq!(
         error.cause(),
         Some(
-            "point p0000001 ends line n0000003 and no other profile curve, so the profile is open there; point p0000002 ends line n0000003 and no other profile curve, so the profile is open there"
+            format!(
+                "point p0000001 ends line n0000003 and no other profile curve, so the profile is open there ({advice}); point p0000002 ends line n0000003 and no other profile curve, so the profile is open there ({advice})"
+            )
+            .as_str()
         )
     );
     assert_eq!(
@@ -542,8 +550,24 @@ fn a_sweep_of_a_sketch_that_makes_no_profile_is_one_error_naming_it_however_many
         Some("fix sketch k7f2qx3m where the cause says, or sweep another sketch")
     );
 
-    // 51 open lines apart, (0, 2i) to (1, 2i): 102 open ends, the first hundred given, and
-    // the 2 more counted. One refusal is "1 refusal".
+    // No curves: one refusal of no elements.
+    let empty = draw::Draw::new().profile().unwrap_err();
+    let error = unprofiled(
+        &fid("p0000001"),
+        SweepFeature::Pad,
+        &draw::feature(),
+        &empty,
+    );
+    assert_eq!(
+        error.message(),
+        "pad p0000001 sweeps sketch k7f2qx3m, which makes no profile (1 refusal)"
+    );
+    assert_eq!((error.elements(), error.elements_total()), (&[][..], 0));
+
+    // 51 open lines apart, (0, 2i) to (1, 2i): 102 open ends, the first hundred given and
+    // the 2 more counted; 153 elements at fault (51 lines and 102 points), the first
+    // hundred by ID listed. The last line and its ends are in the 2 refusals past the
+    // hundred alone, and counted.
     let mut d = draw::Draw::new();
     for i in 0..51 {
         let y = 2.0 * f64::from(i);
@@ -563,25 +587,46 @@ fn a_sweep_of_a_sketch_that_makes_no_profile_is_one_error_naming_it_however_many
         error.message(),
         "pad p0000001 sweeps sketch k7f2qx3m, which makes no profile (102 refusals)"
     );
+    assert_eq!(error.elements().len(), 100);
+    assert_eq!(error.elements_total(), 153);
     let cause = error.cause().unwrap();
-    assert_eq!(
-        cause.matches("so the profile is open there").count(),
-        100,
-        "{cause}"
-    );
+    assert_eq!(cause.matches("so the profile is open there (").count(), 100);
     assert!(
-        cause.ends_with("so the profile is open there; and 2 more"),
+        cause.ends_with("or make the curve construction geometry); and 2 more"),
         "{cause}"
     );
-    let empty = draw::Draw::new().profile().unwrap_err();
+}
+
+#[test]
+fn a_sweep_of_a_sketch_whose_profile_refusal_is_a_bug_carries_the_bugs_code_and_advice() {
+    // A solution missing a point the sketch draws from: the profile's refusal is internal
+    // (a bug, never a document's), so the sweep's error is internal, with the advice the
+    // codebase gives a bug, not "fix sketch ...". Recompute can't reach it (its solution is
+    // read back from the sketch's own translation, every point of the sketch in it), so
+    // this is the pure function.
+    let mut d = draw::Draw::new();
+    let a = d.point(0.0, 0.0);
+    let b = d.point(4.0, 0.0);
+    let c = d.point(4.0, 3.0);
+    d.line(&a, &b);
+    d.line(&b, &c);
+    d.line(&c, &a);
+    let mut solution = d.solution();
+    solution
+        .points
+        .remove(&silico_core::document::ElementId::new(&c).unwrap());
+    let refused = d.profile_from(&solution).unwrap_err();
+    assert_eq!(refused.errors()[0].code(), ErrorCode::Internal);
+    let error = unprofiled(
+        &fid("p0000001"),
+        SweepFeature::Pad,
+        &draw::feature(),
+        &refused,
+    );
+    assert_eq!(error.code(), ErrorCode::Internal);
+    assert_eq!(error.feature(), Some("p0000001"));
     assert_eq!(
-        unprofiled(
-            &fid("p0000001"),
-            SweepFeature::Pad,
-            &draw::feature(),
-            &empty
-        )
-        .message(),
-        "pad p0000001 sweeps sketch k7f2qx3m, which makes no profile (1 refusal)"
+        error.suggestion(),
+        Some("this is a bug in Silico, not in the request: report it")
     );
 }

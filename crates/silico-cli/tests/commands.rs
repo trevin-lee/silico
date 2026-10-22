@@ -668,10 +668,11 @@ fn check_starts_only_the_kernel_workers_its_rebuild_needs() {
 
 #[test]
 fn an_open_sketch_swept_twice_names_each_failed_pad_once() {
-    // The architecture review's case (M3, round 1): a square's outline with its fourth side
-    // left out, padded twice. Its two open ends, p0000001 and p0000004, are the profile's
-    // two refusals; each pad fails with one problem naming it, the two its cause: two
-    // problems, not the two refusals once per pad, each naming the sketch.
+    // The architecture review's case (M3, round 1), in Fable's shape: a square's outline
+    // with its fourth side left out, padded twice. Its two open ends, p0000001 (of
+    // n0000001) and p0000004 (of n0000003), are the profile's two refusals; each pad fails
+    // with one whole problem naming it, the sketch's four elements at fault its own, the
+    // refusals and their advice its cause. Two problems, and none names the sketch.
     let scratch = Scratch::new("open-twice");
     let file = scratch.file(
         r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "features": [
@@ -694,16 +695,47 @@ fn an_open_sketch_swept_twice_names_each_failed_pad_once() {
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(line["total"], 2, "{line}");
-    let cause = "point p0000001 ends line n0000001 and no other profile curve, so the profile is open there; point p0000004 ends line n0000003 and no other profile curve, so the profile is open there";
+    let advice = "end another curve at the point to close the outline, or make the curve construction geometry";
+    let cause = format!(
+        "point p0000001 ends line n0000001 and no other profile curve, so the profile is open there ({advice}); point p0000004 ends line n0000003 and no other profile curve, so the profile is open there ({advice})"
+    );
     for (i, pad) in ["d0000001", "d0000009"].into_iter().enumerate() {
         let problem = &line["problems"][i];
         assert_eq!(problem["code"], "invalid_input", "{line}");
         assert_eq!(problem["feature"], pad, "{line}");
         assert_eq!(problem["parameter"], "sketch", "{line}");
         assert_eq!(
+            problem["elements"],
+            serde_json::json!(["n0000001", "n0000003", "p0000001", "p0000004"]),
+            "{line}"
+        );
+        assert_eq!(problem["elements_total"], 4, "{line}");
+        assert_eq!(
             problem["message"],
             format!("pad {pad} sweeps sketch s0000001, which makes no profile (2 refusals)")
         );
         assert_eq!(problem["cause"], cause, "{line}");
+        assert_eq!(
+            problem["suggestion"],
+            "fix sketch s0000001 where the cause says, or sweep another sketch"
+        );
     }
+    let problems = line["problems"].as_array().unwrap();
+    assert!(
+        problems.iter().all(|p| p["feature"] != "s0000001"),
+        "{line}"
+    );
+    // `fmt` lists the same two, and nothing against the sketch.
+    let out = silico(&scratch, &["fmt"], &file);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let said = stderr(&out);
+    for pad in ["d0000001", "d0000009"] {
+        assert!(
+            said.contains(&format!(
+                "pad {pad} sweeps sketch s0000001, which makes no profile (2 refusals) (feature {pad}, elements n0000001, n0000003, p0000001, p0000004, parameter sketch)"
+            )),
+            "{said}"
+        );
+    }
+    assert!(!said.contains("feature s0000001"), "{said}");
 }

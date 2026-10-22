@@ -119,7 +119,8 @@ Not in M3.6: the up-to modes, through all both ways, a second side of another mo
 | a pad that doesn't touch its base | two solids in one compound (`AllowCompound` true) | refused: the result is 2 solids (S5) |
 | a pocket that cuts its base in two | two solids in one compound | refused: the result is 2 solids (S5) |
 | a pad of two regions onto a base that joins them | one solid | refused (decision 3, strict) |
-| a pad of two separate regions | two solids | refused, naming both regions (decision 3) |
+| a sketch that makes no profile (an open outline), padded by two features | measured on 1.1.3, two Bodies each padding one open sketch: the sketch stays valid, and each Pad fails alone ("Wire is not closed."), nothing against the sketch | the same, agreeing: each pad fails with one error naming it, the sketch's elements at fault and its refusals with their advice in it; nothing against the sketch, which stays solved (the milestone review's round 2) |
+| a pad of two separate regions | two solids | refused, naming the pad, and both regions' curves as its elements (decision 3) |
 | a pocket of two separate regions | both cut | the same |
 | a revolution of two separate regions | two solids | refused, naming both (decision 3) |
 | a revolve angle of 0, or above 360 | refused ("too small", "too large") | refused by the gate |
