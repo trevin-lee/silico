@@ -232,12 +232,11 @@ fn a_verdict_that_lands_mid_recompute_stops_what_hasnt_started() {
     // and once the cube's and the first cut's entries are on disk (written after their
     // measures are judged), the first pocket is refused and the second's cut let go: the
     // third's cut, which only refused features need, is never started. Exactly two cuts.
-    let dir = std::env::temp_dir().join(format!(
-        "silico-verdict-mid-recompute-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let temp = tempfile::Builder::new()
+        .prefix("silico-verdict-mid-recompute-")
+        .tempdir()
+        .unwrap();
+    let dir = temp.path();
     let kernel = FakeKernel::new(3).unwrap();
     let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let second = kernel.hold(move |op| {
@@ -269,7 +268,6 @@ fn a_verdict_that_lands_mid_recompute_stops_what_hasnt_started() {
     let Ok(Ok(RunOutcome::Published(model))) = run.wait_timeout(Duration::from_secs(60)) else {
         panic!("not published");
     };
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(matches!(
         model.outcome(&id("qqqqqqqq")),
         Some(FeatureOutcome::Failed(_))

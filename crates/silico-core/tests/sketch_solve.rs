@@ -2018,6 +2018,20 @@ fn a_reply_whose_residuals_or_algorithm_dont_fit_its_request_is_a_protocol_error
             "{what}"
         );
     }
+    // A solution names its algorithm, whichever solution it is.
+    for status in [
+        SolveStatus::Success,
+        SolveStatus::SolvedExceptRedundant,
+        SolveStatus::SolvedInvalid,
+    ] {
+        let mut unnamed = answer(&t, t.system.values.clone(), status);
+        unnamed.algorithm = None;
+        assert_eq!(
+            t.check_reply(&unnamed).unwrap_err().code(),
+            ErrorCode::ProtocolError,
+            "{status:?} by no algorithm"
+        );
+    }
     for status in [SolveStatus::Failed, SolveStatus::Converged] {
         let failed = answer(&t, t.system.values.clone(), status);
         assert_eq!(failed.algorithm, None);
