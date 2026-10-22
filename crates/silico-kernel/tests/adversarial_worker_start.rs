@@ -116,18 +116,35 @@ fn a_sketch_worker_that_exits_at_launch_gets_one_code_every_time() {
 fn a_sketch_worker_whose_first_frame_comes_after_it_exited_had_started() {
     // Found by mutants: the solve's wait for what an ended worker sent before it ended could
     // be dropped (its deadline put in the past) and every test passed. Here the worker exits
-    // at once while a process it started sends its first frame 0.3 s later: it had started,
-    // so the solve waits for that frame, as a call to it would (`Worker::crashed`), and calls
+    // at once while a process it started sends its first frame later: it had started, so
+    // the solve waits for that frame, as a call to it would (`Worker::crashed`), and calls
     // the end a crash.
+    //
+    // The timing, against CI's stalls: the child waits for `go`, which the test makes just
+    // before it calls the solve, then sends its frame 0.2 s later. So the frame comes about
+    // 0.2 s into the solve's wait, which lasts up to EXIT_GRACE, 2 s; the mutant's wait
+    // ends at once, before it. A stall before `go` changes nothing (the child waits for
+    // it). Only a stall in the microseconds between `go` and the wait's start could let the
+    // frame be read first (the mutant then passes, a missed catch); only one of over 1.8 s
+    // in the child within the wait would fail the right code, as the product's own 2 s
+    // bound would.
+    let temp = tempfile::Builder::new()
+        .prefix("silico-sketch-first-frame-")
+        .tempdir()
+        .unwrap();
+    let go = temp.path().join("go");
     let exe = script(
         "sketch-first-frame-late",
-        &format!("( sleep 0.3; {STARTED} ) &\nexit 0"),
+        &format!(
+            "( while [ ! -e '{}' ]; do sleep 0.005; done; sleep 0.2; {STARTED} ) &\nexit 0",
+            go.display()
+        ),
     );
     let mut solver = SketchWorker::start_worker(&exe).unwrap();
     let _stopper = solver.stopper().unwrap();
-    // Until the worker itself has exited (a zombie, or gone), before its child sends the frame.
+    // Until the worker itself has exited (a zombie, or gone); its child waits for `go`.
     let pid = solver.pid().to_string();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let ps = Command::new("ps")
             .args(["-o", "stat=", "-p", &pid])
@@ -140,6 +157,7 @@ fn a_sketch_worker_whose_first_frame_comes_after_it_exited_had_started() {
         assert!(Instant::now() < deadline, "the worker didn't exit");
         std::thread::sleep(Duration::from_millis(5));
     }
+    std::fs::write(&go, "").unwrap();
     let err = solver.solve(empty_system()).unwrap_err();
     assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
 }
