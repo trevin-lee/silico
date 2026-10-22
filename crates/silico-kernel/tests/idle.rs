@@ -40,9 +40,10 @@ fn waiting_on_a_worker_costs_no_cpu() {
     );
 
     // A send to a worker that never reads: it waits for room until its timeout, asleep in
-    // poll. What it costs besides setting up its 8 MiB and a byte (past the 4 MiB socket
-    // buffers the worker asks for at both ends, and past macOS's largest, so it waits)
-    // doesn't grow with how long it waits. So, measured against a send that waits
+    // poll. What it costs besides setting up its 8 MiB and a byte doesn't grow with how long
+    // it waits: twice the core's 4 MiB send buffer (`worker::SOCKET_BUFFER`) and a byte,
+    // past what Linux, which doubles the buffer asked for, holds before a send waits, and
+    // past macOS's, which holds the sender's 4 MiB. So, measured against a send that waits
     // 10 ms, one that waits 1 s costs nothing more, and one that waits 4 s nothing more
     // again (about 0.01 s each). A send that spins instead costs a quarter of each second it
     // waits or more: 0.25 s more for the 1 s wait, 0.75 s more for the 4 s one; and a burst

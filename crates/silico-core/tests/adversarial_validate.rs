@@ -885,10 +885,10 @@ fn a_million_valid_features_validate_promptly() {
     // thousand, the least of three runs of each, in turn: about 10 by its count, a little
     // more for its sorted maps' depth; a validation quadratic in the count would be about
     // 100. A ratio, so a loaded machine, which stretches both alike, can't fail it (a gate's
-    // million once took 7.3 s of CPU against an absolute 5 s). And at most 15 s of CPU, against a constant
-    // slowdown the ratio can't see: twice the worst seen on CI's overcommitted VM (7.3 s, gate
-    // 39813098861), where the Mac's debug build takes 1.56 s, so a validation 10 times slower
-    // fails it.
+    // million once took 7.3 s of CPU against an absolute 5 s). And at most 15 s of CPU,
+    // against a slowdown by a constant the ratio can't see: twice the worst seen on CI's
+    // overcommitted VM (7.3 s, gate 39813098861), where the Mac's debug build takes 1.56 s,
+    // so a validation ten times slower fails it.
     let (small, large) = (valid_features(100_000), valid_features(1_000_000));
     let ([small_cpu, large_cpu], [small, large]) = least_cpu([&small, &large], validate);
     assert_eq!(small, Ok(()));
