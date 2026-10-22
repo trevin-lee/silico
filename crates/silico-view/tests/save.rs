@@ -23,7 +23,7 @@ fn worker() -> PathBuf {
 /// has lost `--save` or `--viewer`'s path: a mutant that dropped the path once opened one
 /// on the maintainer's desktop, from the `rerun` on PATH. Its PATH holds only a stand-in
 /// `rerun` that leaves a mark and fails, and it runs in a directory of its own, where
-/// Rerun's debug-build fallback (`target/debug/rerun`) finds nothing; [`View::output`]
+/// Rerun's debug-build fallback finds nothing; [`View::output`]
 /// fails the test if the mark is there. (A viewer already listening on Rerun's port, 9876,
 /// is still connected to rather than started: close it before running these tests.)
 struct View {
@@ -50,9 +50,13 @@ fn view() -> View {
     .unwrap();
     std::fs::set_permissions(&stand_in, std::fs::Permissions::from_mode(0o755)).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_silico-view"));
+    // Rerun's debug-build fallback is `$CARGO_TARGET_DIR/debug/rerun` when that's set (an
+    // absolute, shared target directory could hold a real one), else `target/debug/rerun`
+    // under the working directory: neither finds anything here.
     command
         .current_dir(&dir)
         .env("PATH", &bin)
+        .env_remove("CARGO_TARGET_DIR")
         .stdin(Stdio::null());
     View { dir, command }
 }
