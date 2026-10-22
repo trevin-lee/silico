@@ -206,7 +206,7 @@ fn every_sketch_case_matches_freecad() {
     // by Silico's sketch worker and by FreeCAD 1.1.3.
     let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/oracle"));
     let cases = silico_oracle::sketch::load(dir).unwrap();
-    assert_eq!(cases.len(), 15);
+    assert_eq!(cases.len(), 16);
     let differences = silico_oracle::sketch::run(&cases).unwrap();
     assert!(
         differences.is_empty(),

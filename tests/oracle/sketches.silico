@@ -397,6 +397,56 @@
         {"id": "k0000004", "type": "diameter", "curve": "c0000001", "value": 0, "driving": false}
       ],
       "note": "A circle held at the origin with its radius 5: its reference diameter reads 10 (FreeCAD 727dc9fa9e)."
+    },
+    {
+      "id": "s000000f",
+      "type": "sketch",
+      "v": 1,
+      "name": "slot_plate_with_inner_set",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000000", "x": 200, "y": 0, "construction": false},
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 67.1279704941824, "y": 80, "construction": false},
+        {"id": "p0000003", "x": 200, "y": 80, "construction": false},
+        {"id": "p0000004", "x": 200, "y": 40, "construction": false},
+        {"id": "p0000010", "x": 195.055893, "y": 39.562252, "construction": false},
+        {"id": "p0000011", "x": 150.16951703902004, "y": 13.050452947874792, "construction": false},
+        {"id": "p0000012", "x": 36.70045615522816, "y": 13.050452947874792, "construction": false},
+        {"id": "p0000013", "x": 79.11862023739202, "y": 63.602452384044234, "construction": false},
+        {"id": "p0000014", "x": 148.15210260767645, "y": 63.602452384044234, "construction": false},
+        {"id": "p0000015", "x": 192.5722413533035, "y": 40.05890339848491, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000000", "from": "p0000000", "to": "p0000001", "construction": false},
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false},
+        {"id": "n0000005", "from": "p0000011", "to": "p0000012", "construction": false},
+        {"id": "n0000006", "from": "p0000012", "to": "p0000013", "construction": false},
+        {"id": "n0000007", "from": "p0000013", "to": "p0000014", "construction": false}
+      ],
+      "circles": [
+        {"id": "c0000004", "center": "p0000010", "radius": 29.846098, "construction": false}
+      ],
+      "arcs": [
+        {"id": "a0000003", "center": "p0000004", "start": "p0000000", "end": "p0000003", "construction": false},
+        {"id": "a0000008", "center": "p0000015", "start": "p0000014", "end": "p0000011", "construction": false}
+      ],
+      "constraints": [
+        {"id": "k0000001", "type": "horizontal", "line": "n0000000"},
+        {"id": "k0000002", "type": "horizontal", "line": "n0000002"},
+        {"id": "k0000003", "type": "tangent_at", "a": "n0000002", "b": "a0000003", "at": "p0000003", "direction": "same"},
+        {"id": "k0000004", "type": "tangent_at", "a": "n0000000", "b": "a0000003", "at": "p0000000", "direction": "same"},
+        {"id": "k0000005", "type": "angle", "a": "n0000000", "b": "n0000001", "value": -130, "driving": true},
+        {"id": "k0000006", "type": "length", "line": "n0000000", "value": 200, "driving": true},
+        {"id": "k0000007", "type": "radius", "curve": "a0000003", "value": 40, "driving": true},
+        {"id": "k0000008", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true},
+        {"id": "k0000009", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true},
+        {"id": "k000000a", "type": "horizontal", "line": "n0000005"},
+        {"id": "k000000b", "type": "horizontal", "line": "n0000007"},
+        {"id": "k000000c", "type": "parallel", "a": "n0000001", "b": "n0000006"}
+      ],
+      "note": "FreeCAD's testSlotCase whole: the slot plate (CreateSlotPlateSet), solved, and its inner set (CreateSlotPlateInnerSet), a circle and a hole of three lines and an arc, drawn where Silico solves it from FreeCAD's drawing. The inner set has 9 degrees of freedom, so where it ends depends on where the solve starts: drawn so, both keep it, and the plate's face is 8650.331462 mm² by hand (silico-kernel's profile_faces); FreeCAD's own drawing solves to another solution, 8607.71344. Approved by the maintainer, 2026-10-22."
     }
   ]
 }
