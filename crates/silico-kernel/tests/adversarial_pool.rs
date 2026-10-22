@@ -24,8 +24,8 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use launches::{
-    HANG, assert_gaps_exceed, gaps, launch_logger, launch_times, launches, log_launch,
-    wait_launches, wait_launches_after,
+    Decision, Decisions, HANG, assert_gaps_exceed, gaps, launch_logger, launch_times, launches,
+    log_launch, wait_launches, wait_launches_after,
 };
 use pool::{
     PATIENCE, TEST_WORKER, WORKER, assert_reaped, children, done, echo, kill9_and_wait, outcome,
@@ -1463,7 +1463,10 @@ fn a_wait_ended_early_by_a_newer_worker_still_doubles_on_the_next_failure() {
     // killed from outside: B's replacement (launch 7) works, which ends A's wait early. A's
     // next launch (8) fails: its wait doubles to 32 s, not back to 1 s, so no launch follows
     // (it would within about 2 s). Each launch takes its number in turn, so which launch
-    // works is the same however the machine runs.
+    // works is the same however the machine runs. What each slot decides is what's checked,
+    // as the pool says it (A: waits of 1, 2, 4, 8, and 16 s, the last ended early, then
+    // 32 s; B: at once), so a stalled machine can't fail it by the times between launches.
+    let decisions = Decisions::record();
     let dir = scratch_dir("moot-keeps");
     let children = dir.join("children");
     let (script, log) = launch_logger(
@@ -1514,12 +1517,23 @@ fn a_wait_ended_early_by_a_newer_worker_still_doubles_on_the_next_failure() {
         "A's wait went back after its early launch: gaps {gaps:?}"
     );
     assert_eq!(times[7], early);
-    // Its early launch came before its own 16 s wait from its last failure (launch 6) could
-    // have ended; a loaded machine has 12 s to run B's start and the slots' checks late.
-    assert!(
-        times[7] - times[5] < 16.0,
-        "A's wait didn't end early: gaps {gaps:?}"
+    // A's last wait was ended early by B's new worker, not waited out, and the next was
+    // doubled from it; B's worker, killed from outside, was replaced at once.
+    use Decision::{AtOnce, Wait, WaitEnded};
+    assert_eq!(
+        decisions.of_slot(0, 7),
+        [
+            Wait(1000),
+            Wait(2000),
+            Wait(4000),
+            Wait(8000),
+            Wait(16000),
+            WaitEnded,
+            Wait(32000)
+        ],
+        "gaps {gaps:?}"
     );
+    assert_eq!(decisions.of_slot(1, 1), [AtOnce], "gaps {gaps:?}");
     // Three launches worked: the first two, and B's replacement.
     let worked = std::fs::read_to_string(&children).unwrap().lines().count();
     assert_eq!(worked, 3, "gaps {gaps:?}");

@@ -9,58 +9,8 @@
 #[path = "common/launches.rs"]
 mod launches;
 
-use std::sync::{Arc, Mutex};
-
-use launches::{assert_gaps_exceed, gaps, launch_logger, wait_launches};
+use launches::{Decision, Decisions, assert_gaps_exceed, gaps, launch_logger, wait_launches};
 use silico_core::pool::KernelPool;
-use tracing::field::{Field, Visit};
-use tracing::{Event, Subscriber};
-use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
-
-/// What a slot decided once its worker ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Decision {
-    AtOnce,
-    /// To start another after this many milliseconds.
-    Wait(u64),
-}
-
-/// Every decision the pool's slots say, in order.
-#[derive(Clone, Default)]
-struct Decisions(Arc<Mutex<Vec<Decision>>>);
-
-impl<S: Subscriber> Layer<S> for Decisions {
-    fn on_event(&self, event: &Event<'_>, _: Context<'_, S>) {
-        #[derive(Default)]
-        struct Fields {
-            message: String,
-            wait_ms: Option<u64>,
-        }
-        impl Visit for Fields {
-            fn record_u64(&mut self, field: &Field, value: u64) {
-                if field.name() == "wait_ms" {
-                    self.wait_ms = Some(value);
-                }
-            }
-            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-                if field.name() == "message" {
-                    self.message = format!("{value:?}");
-                }
-            }
-        }
-        if !event.metadata().target().starts_with("silico_core::pool") {
-            return;
-        }
-        let mut fields = Fields::default();
-        event.record(&mut fields);
-        let decision = match fields.wait_ms {
-            Some(ms) => Decision::Wait(ms),
-            None if fields.message.contains("starting another at once") => Decision::AtOnce,
-            None => return,
-        };
-        self.0.lock().unwrap().push(decision);
-    }
-}
 
 /// A fresh directory for one test's worker and its launches.
 fn scratch_dir(what: &str) -> std::path::PathBuf {
@@ -69,22 +19,6 @@ fn scratch_dir(what: &str) -> std::path::PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
-}
-
-impl Decisions {
-    /// Installs the subscriber that records them, for this test's process.
-    fn record() -> Decisions {
-        let decisions = Decisions::default();
-        tracing::subscriber::set_global_default(
-            tracing_subscriber::registry().with(decisions.clone()),
-        )
-        .expect("one test a process, as nextest runs them");
-        decisions
-    }
-
-    fn first(&self, n: usize) -> Vec<Decision> {
-        self.0.lock().unwrap().iter().take(n).copied().collect()
-    }
 }
 
 #[test]
@@ -102,7 +36,7 @@ fn an_idle_slot_whose_worker_is_killed_at_launch_backs_off_after_the_second_kill
     drop(pool);
     use Decision::{AtOnce, Wait};
     assert_eq!(
-        decisions.first(5),
+        decisions.of_slot(0, 5),
         [AtOnce, Wait(1000), Wait(2000), Wait(4000), Wait(8000)]
     );
     assert_gaps_exceed(&times[1..6], &[1.0, 2.0, 4.0, 8.0]);
@@ -129,7 +63,7 @@ fn a_kill_at_launch_after_an_exit_of_its_own_is_taken_as_from_outside() {
     drop(pool);
     use Decision::{AtOnce, Wait};
     assert_eq!(
-        decisions.first(5),
+        decisions.of_slot(0, 5),
         [Wait(1000), Wait(2000), Wait(4000), AtOnce, Wait(8000)]
     );
     let times = &times[..6];

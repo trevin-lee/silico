@@ -1100,11 +1100,16 @@ impl Keeper<'_> {
             );
         } else if let Some(retry) = self.retry {
             // Due, the wait is kept: if this start fails too, the next wait is longer.
-            if !retry.is_due(
-                Instant::now(),
-                self.shared.newest_started.load(Ordering::Relaxed),
-            ) {
+            let now = Instant::now();
+            if !retry.is_due(now, self.shared.newest_started.load(Ordering::Relaxed)) {
                 return;
+            }
+            if now < retry.at {
+                // The decision, as the wait's is: what the back-off's tests follow.
+                tracing::debug!(
+                    slot,
+                    "a kernel worker started since this slot's wait began: starting another now"
+                );
             }
         } else {
             return;

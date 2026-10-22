@@ -1,9 +1,14 @@
-//! For the pool's back-off tests: workers that log each launch, and the times between
-//! them.
+//! For the pool's back-off tests: workers that log each launch, the times between them,
+//! and what the pool's slots decide each time a worker ends.
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use tracing::field::{Field, Visit};
+use tracing::{Event, Subscriber};
+use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 
 /// How long a test here waits for a launch, a request, or a full pool before failing: long
 /// enough that only a hang reaches it, however loaded the machine. A hang guard only: what
@@ -95,5 +100,82 @@ pub fn assert_gaps_exceed(times: &[f64], waits: &[f64]) {
             gap > wait,
             "gap {k} is {gap:.3} s, not longer than its {wait} s wait: gaps {gaps:?}"
         );
+    }
+}
+
+/// What a slot decided once its worker ended, or while it waited, as the pool says it in its
+/// span's events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    /// To start another worker at once.
+    AtOnce,
+    /// To start another after this many milliseconds.
+    Wait(u64),
+    /// To start another before its wait was over: a worker started since it began.
+    WaitEnded,
+}
+
+/// Every decision the pool's slots say, in order, with each one's slot.
+#[derive(Clone, Default)]
+pub struct Decisions(Arc<Mutex<Vec<(u64, Decision)>>>);
+
+impl<S: Subscriber> Layer<S> for Decisions {
+    fn on_event(&self, event: &Event<'_>, _: Context<'_, S>) {
+        #[derive(Default)]
+        struct Fields {
+            message: String,
+            slot: Option<u64>,
+            wait_ms: Option<u64>,
+        }
+        impl Visit for Fields {
+            fn record_u64(&mut self, field: &Field, value: u64) {
+                match field.name() {
+                    "slot" => self.slot = Some(value),
+                    "wait_ms" => self.wait_ms = Some(value),
+                    _ => {}
+                }
+            }
+            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.message = format!("{value:?}");
+                }
+            }
+        }
+        if !event.metadata().target().starts_with("silico_core::pool") {
+            return;
+        }
+        let mut fields = Fields::default();
+        event.record(&mut fields);
+        let decision = match fields.wait_ms {
+            Some(ms) => Decision::Wait(ms),
+            None if fields.message.contains("starting another at once") => Decision::AtOnce,
+            None if fields.message.contains("starting another now") => Decision::WaitEnded,
+            None => return,
+        };
+        let Some(slot) = fields.slot else { return };
+        self.0.lock().unwrap().push((slot, decision));
+    }
+}
+
+impl Decisions {
+    /// Installs the subscriber that records them, for this test's process.
+    pub fn record() -> Decisions {
+        let decisions = Decisions::default();
+        tracing::subscriber::set_global_default(
+            tracing_subscriber::registry().with(decisions.clone()),
+        )
+        .expect("one test a process, as nextest runs them");
+        decisions
+    }
+
+    /// The first `n` decisions of `slot`, in order.
+    pub fn of_slot(&self, slot: u64, n: usize) -> Vec<Decision> {
+        let decisions = self.0.lock().unwrap();
+        decisions
+            .iter()
+            .filter(|(s, _)| *s == slot)
+            .map(|(_, d)| *d)
+            .take(n)
+            .collect()
     }
 }
