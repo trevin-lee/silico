@@ -71,9 +71,6 @@ pub const MAX_WORKERS: usize = 1024;
 /// once (requests still waiting or running end without a result) and joins its threads.
 pub struct KernelPool {
     shared: Arc<Shared>,
-    /// One per slot started: every slot for [`KernelPool::start_workers`], those requests
-    /// have needed so far for [`KernelPool::start_on_demand`].
-    threads: Mutex<Vec<JoinHandle<()>>>,
     /// How many slots the pool has.
     size: usize,
     /// Stops superseded requests when they're due.
@@ -186,7 +183,7 @@ impl KernelPool {
     /// A pool of `size` slots (1 to [`MAX_WORKERS`]) for workers of the executable at
     /// `exe`, found once, now, as [`start_workers`](Self::start_workers) finds it, none
     /// started yet: a slot starts, and starts its worker, when the requests waiting
-    /// outnumber the started slots free to take them ([`grow`](Self::grow)), and keeps it
+    /// outnumber the started slots free to take them ([`grow`]), and keeps it
     /// as `start_workers`'s slots do. Starting a worker
     /// costs a process and OCCT's libraries (on a loaded Linux machine, a large part of a
     /// small document's rebuild), so a slot no request needs costs nothing. A worker that
@@ -228,10 +225,10 @@ impl KernelPool {
             spawns: AtomicU64::new(1),
             newest_started: AtomicU64::new(0),
             slots: Mutex::new((0..size).map(|_| Slot::default()).collect()),
+            threads: Mutex::new(Vec::with_capacity(size)),
         });
         let mut pool = Self {
             shared,
-            threads: Mutex::new(Vec::with_capacity(size)),
             size,
             stopper: None,
         };
@@ -249,8 +246,8 @@ impl KernelPool {
         let (ready_tx, ready) = mpsc::channel();
         lock(&pool.shared.state).started = size;
         for slot in 0..size {
-            let thread = pool.spawn_slot(slot, SlotStart::Now(ready_tx.clone()))?;
-            lock(&pool.threads).push(thread);
+            let thread = spawn_slot(&pool.shared, slot, SlotStart::Now(ready_tx.clone()))?;
+            lock(&pool.shared.threads).push(thread);
         }
         drop(ready_tx);
         for _ in 0..size {
@@ -274,52 +271,6 @@ impl KernelPool {
     /// until requests need them: see [`pids`](Self::pids)).
     pub fn size(&self) -> usize {
         self.size
-    }
-
-    /// Starts slot `slot`'s thread, which starts its worker as `start` says.
-    fn spawn_slot(&self, slot: usize, start: SlotStart) -> Result<JoinHandle<()>, Error> {
-        let shared = Arc::clone(&self.shared);
-        spawn_thread(format!("kernel-pool-{slot}"), move || {
-            serve(slot, &shared, start);
-        })
-    }
-
-    /// Starts another slot, on demand, if the requests waiting are more than the slots
-    /// free to take them, and the pool has a slot not yet started.
-    fn grow(&self) {
-        let slot = {
-            let mut state = lock(&self.shared.state);
-            let free = state.started - state.busy;
-            if state.stopping || state.queue.len() <= free {
-                return;
-            }
-            let Some(slot) = state.unstarted.pop() else {
-                return;
-            };
-            state.started += 1;
-            slot
-        };
-        match self.spawn_slot(slot, SlotStart::OnDemand) {
-            Ok(thread) => lock(&self.threads).push(thread),
-            Err(e) => {
-                // The system is short of threads: the slots started take the requests in
-                // turn, or, if there are none, the requests fail with it. The slot is left
-                // to start later, as itself.
-                let mut state = lock(&self.shared.state);
-                state.started -= 1;
-                state.unstarted.push(slot);
-                let none = state.started == 0;
-                let waiting: Vec<Box<dyn Task>> = if none {
-                    state.queue.drain(..).collect()
-                } else {
-                    Vec::new()
-                };
-                drop(state);
-                for task in waiting {
-                    task.fail(e.clone());
-                }
-            }
-        }
     }
 
     /// The process IDs of the pool's workers, one per worker it holds (a worker being
@@ -394,7 +345,7 @@ impl KernelPool {
                 state.queue.push_back(task);
                 drop(state);
                 self.shared.work.notify_one();
-                self.grow();
+                grow(&self.shared);
                 return Pending::new(name, KERNEL, outcome);
             }
             if state.stopping {
@@ -446,13 +397,70 @@ impl Drop for KernelPool {
                 killer.kill();
             }
         }
-        let threads = std::mem::take(
-            self.threads
-                .get_mut()
-                .unwrap_or_else(PoisonError::into_inner),
-        );
-        for thread in threads.into_iter().chain(self.stopper.take()) {
-            let _ = thread.join();
+        // A slot whose thread ended just before the stop may have started its slot again:
+        // joined until none are left (none starts once the pool is stopping).
+        loop {
+            let threads = std::mem::take(&mut *lock(&self.shared.threads));
+            if threads.is_empty() {
+                break;
+            }
+            for thread in threads {
+                let _ = thread.join();
+            }
+        }
+        if let Some(stopper) = self.stopper.take() {
+            let _ = stopper.join();
+        }
+    }
+}
+
+/// Starts slot `slot`'s thread, which starts its worker as `start` says.
+fn spawn_slot(
+    shared: &Arc<Shared>,
+    slot: usize,
+    start: SlotStart,
+) -> Result<JoinHandle<()>, Error> {
+    let shared = Arc::clone(shared);
+    spawn_thread(format!("kernel-pool-{slot}"), move || {
+        serve(slot, &shared, start);
+    })
+}
+
+/// Starts another slot, on demand, if the requests waiting are more than the slots free to
+/// take them, and the pool has a slot not yet started: as a request is queued, and as a
+/// slot's thread ends ([`SlotEnded`]).
+fn grow(shared: &Arc<Shared>) {
+    let slot = {
+        let mut state = lock(&shared.state);
+        let free = state.started - state.busy;
+        if state.stopping || state.queue.len() <= free {
+            return;
+        }
+        let Some(slot) = state.unstarted.pop() else {
+            return;
+        };
+        state.started += 1;
+        slot
+    };
+    match spawn_slot(shared, slot, SlotStart::OnDemand) {
+        Ok(thread) => lock(&shared.threads).push(thread),
+        Err(e) => {
+            // The system is short of threads: the slots started take the requests in turn,
+            // or, if there are none, the requests fail with it. The slot is left to start
+            // later, as itself.
+            let mut state = lock(&shared.state);
+            state.started -= 1;
+            state.unstarted.push(slot);
+            let none = state.started == 0;
+            let waiting: Vec<Box<dyn Task>> = if none {
+                state.queue.drain(..).collect()
+            } else {
+                Vec::new()
+            };
+            drop(state);
+            for task in waiting {
+                task.fail(e.clone());
+            }
         }
     }
 }
@@ -495,6 +503,10 @@ struct Shared {
     /// What each slot holds and runs, to kill its worker when the pool stops or its request
     /// is superseded, and to report its process ID.
     slots: Mutex<Vec<Slot>>,
+    /// One per slot's thread started: every slot for [`KernelPool::start_workers`], those
+    /// requests have needed so far for [`KernelPool::start_on_demand`], and those started
+    /// again as their threads ended. Locked alone, never with another lock.
+    threads: Mutex<Vec<JoinHandle<()>>>,
     /// The next number to give a worker the pool starts (from 1).
     spawns: AtomicU64,
     /// The number of the newest worker known to have started (0 for none). Once a worker
@@ -778,39 +790,30 @@ impl Drop for Busy<'_> {
 }
 
 /// A slot's thread, ending: unless the pool is stopping, its slot goes back among those
-/// not started, for a request to start again, and if no slot is left started, the requests
-/// waiting fail (none would take them).
+/// not started, and starts again at once if requests are waiting with no slot free to take
+/// them ([`grow`]). However the thread ended (a panic, which only a bug causes), a request
+/// queued meanwhile is taken, not failed for want of a slot: its own caller's, say, woken
+/// as the request the thread held ended with it, and asking again before the slot was back.
 struct SlotEnded<'a> {
-    shared: &'a Shared,
+    shared: &'a Arc<Shared>,
     slot: usize,
 }
 
 impl Drop for SlotEnded<'_> {
     fn drop(&mut self) {
-        let mut state = lock(&self.shared.state);
-        if state.stopping {
-            return;
+        tracing::debug!(slot = self.slot, "the slot's thread is ending");
+        {
+            let mut state = lock(&self.shared.state);
+            if state.stopping {
+                return;
+            }
+            state.started -= 1;
+            state.unstarted.push(self.slot);
+            // Its worker went with its keeper; its entry goes too, so the slot started again
+            // isn't taken for still running the old request.
+            self.shared.with_slot(self.slot, |s| *s = Slot::default());
         }
-        state.started -= 1;
-        state.unstarted.push(self.slot);
-        // Its worker went with its keeper; its entry goes too, so the slot started again
-        // isn't taken for still running the old request.
-        self.shared.with_slot(self.slot, |s| *s = Slot::default());
-        let waiting: Vec<Box<dyn Task>> = if state.started == 0 {
-            state.queue.drain(..).collect()
-        } else {
-            Vec::new()
-        };
-        drop(state);
-        for task in waiting {
-            task.fail(
-                Error::new(
-                    ErrorCode::Internal,
-                    "a kernel pool's last slot ended before it took the request",
-                )
-                .with_suggestion(crate::worker::SILICO_BUG),
-            );
-        }
+        grow(self.shared);
     }
 }
 
@@ -834,13 +837,13 @@ enum SlotStart {
 /// request), reports it ready (or not), then runs requests
 /// from the queue until the pool stops, replacing its worker whenever it stops, dies, or
 /// its request is superseded.
-fn serve(slot: usize, shared: &Shared, start: SlotStart) {
+fn serve(slot: usize, shared: &Arc<Shared>, start: SlotStart) {
+    // However the thread ends but by the pool's stopping (a panic, say, even in its span),
+    // the slot is left to start again rather than counted free: once its keeper, declared
+    // after, has let its worker go.
+    let _ended = SlotEnded { shared, slot };
     let span = tracing::debug_span!("kernel_pool", slot);
     let _entered = span.enter();
-    // However the thread ends but by the pool's stopping (a panic, say), the slot is left
-    // to start again rather than counted free: once its keeper, declared after, has let
-    // its worker go.
-    let _ended = SlotEnded { shared, slot };
     let mut keeper = Keeper {
         slot,
         shared,
