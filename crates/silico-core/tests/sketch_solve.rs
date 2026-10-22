@@ -539,6 +539,9 @@ fn a_distance_or_a_tangency_at_a_circles_centre_between_points_at_one_place_is_r
         )
     };
     let tangency = r#"{"id": "k0000001", "type": "tangent_on", "a": "n0000001", "at": "p0000002", "b": "c0000001", "direction": "same"}"#;
+    let on = |curve: &str| {
+        format!(r#"{{"id": "k0000001", "type": "on", "point": "p0000001", "curve": "{curve}"}}"#)
+    };
     let cases = [
         (
             text(
@@ -577,6 +580,52 @@ fn a_distance_or_a_tangency_at_a_circles_centre_between_points_at_one_place_is_r
             "a tangency at a point drawn on the circle's centre, (0, 0): the solver measures it by the line between them",
             "draw the point on the circle, away from its centre",
         ),
+        (
+            // The same on an arc about (0, 0) from (3, 0) to (0, 3).
+            text(
+                &[
+                    point("p0000001", -10.0, 1.0),
+                    point("p0000002", 0.0, 0.0),
+                    point("p0000003", 0.0, 0.0),
+                    point("p0000004", 3.0, 0.0),
+                    point("p0000005", 0.0, 3.0),
+                ],
+                &[line("n0000001", "p0000001", "p0000002")],
+                &[],
+                &[arc("a0000001", "p0000003", "p0000004", "p0000005")],
+                &[tangency.replace("c0000001", "a0000001")],
+            ),
+            "a tangency at a point drawn on the arc's centre, (0, 0): the solver measures it by the line between them",
+            "draw the point on the arc, away from its centre",
+        ),
+        (
+            // A point held on a circle, drawn at its centre (the M3 review's round 2).
+            text(
+                &[point("p0000001", 5.0, 5.0), point("p0000002", 5.0, 5.0)],
+                &[],
+                &[circle("c0000001", "p0000002", 3.0)],
+                &[],
+                &[on("c0000001")],
+            ),
+            "a point on a circle drawn at its centre, (5, 5): the solver measures it by the line between them",
+            "draw the point on the circle, away from its centre",
+        ),
+        (
+            text(
+                &[
+                    point("p0000001", 5.0, 5.0),
+                    point("p0000002", 5.0, 5.0),
+                    point("p0000003", 8.0, 5.0),
+                    point("p0000004", 5.0, 8.0),
+                ],
+                &[],
+                &[],
+                &[arc("a0000001", "p0000002", "p0000003", "p0000004")],
+                &[on("a0000001")],
+            ),
+            "a point on an arc drawn at its centre, (5, 5): the solver measures it by the line between them",
+            "draw the point on the arc, away from its centre",
+        ),
     ];
     for (document, message, suggestion) in &cases {
         let e = Translation::new(&sketch_of(document)).unwrap_err();
@@ -612,6 +661,13 @@ fn a_distance_or_a_tangency_at_a_circles_centre_between_points_at_one_place_is_r
             &[circle("c0000001", "p0000003", 3.0)],
             &[],
             &[tangency.to_owned()],
+        ),
+        text(
+            &[point("p0000001", 5.0, 6.0), point("p0000002", 5.0, 5.0)],
+            &[],
+            &[circle("c0000001", "p0000002", 3.0)],
+            &[],
+            &[on("c0000001")],
         ),
     ] {
         Translation::new(&sketch_of(&document)).unwrap();

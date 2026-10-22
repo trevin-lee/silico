@@ -598,7 +598,10 @@ enum Curve {
 enum Between {
     Symmetry,
     Distance,
-    TangencyOnRound,
+    /// On a circle or an arc, as the word says.
+    TangencyOnRound(&'static str),
+    /// A point held on a circle or an arc, as the word says.
+    OnRound(&'static str),
 }
 
 impl Curve {
@@ -1130,9 +1133,15 @@ impl Translation {
                 self.apart(self.at(a), self.at(b), Between::Distance)?;
             }
             S::TangentOn { point, b, .. } => {
-                if let Some(center) = self.center_of(b) {
+                if let Some((center, round)) = self.center_of(b) {
                     let center = self.xy(&self.system.values, center);
-                    self.apart(self.at(point), center, Between::TangencyOnRound)?;
+                    self.apart(self.at(point), center, Between::TangencyOnRound(round))?;
+                }
+            }
+            S::PointOnCircle { point, circle, .. } => {
+                if let Some((center, round)) = self.center_of(circle) {
+                    let center = self.xy(&self.system.values, center);
+                    self.apart(self.at(point), center, Between::OnRound(round))?;
                 }
             }
             _ => {}
@@ -1192,10 +1201,29 @@ impl Translation {
                 "a distance between two points drawn at one place",
                 "draw the two points apart, about as far apart as the distance says",
             ),
-            Between::TangencyOnRound => (
-                "a tangency at a point drawn on the circle's centre",
-                "draw the point on the circle, away from its centre",
-            ),
+            Between::TangencyOnRound(round) | Between::OnRound(round) => {
+                let what = match between {
+                    Between::OnRound(_) => "a point on",
+                    _ => "a tangency at a point drawn on",
+                };
+                let place = match between {
+                    Between::OnRound(_) => {
+                        let article = if round == "arc" { "an" } else { "a" };
+                        format!("{what} {article} {round} drawn at its centre")
+                    }
+                    _ => format!("{what} the {round}'s centre"),
+                };
+                return Err(Error::new(
+                    ErrorCode::InvalidInput,
+                    format!(
+                        "{place}, ({}, {}): the solver measures it by the line between them",
+                        pa[0], pa[1]
+                    ),
+                )
+                .with_suggestion(format!(
+                    "draw the point on the {round}, away from its centre"
+                )));
+            }
         };
         Err(Error::new(
             ErrorCode::InvalidInput,
@@ -1212,13 +1240,17 @@ impl Translation {
         self.point_of(&self.system.values, p)
     }
 
-    /// The centre of geometry `g`, if it's a circle or an arc of the sketch.
-    fn center_of(&self, g: Geometry) -> Option<PointValues> {
-        self.circles
+    /// The centre of geometry `g`, if it's a circle or an arc of the sketch, and which.
+    fn center_of(&self, g: Geometry) -> Option<(PointValues, &'static str)> {
+        let circle = self.circles.values().find(|c| c.geometry == g);
+        let arc = self
+            .arcs
             .values()
-            .chain(self.arcs.values().map(|arc| &arc.round))
-            .find(|round| round.geometry == g)
-            .map(|round| round.center)
+            .map(|a| &a.round)
+            .find(|a| a.geometry == g);
+        circle
+            .map(|c| (c.center, "circle"))
+            .or(arc.map(|a| (a.center, "arc")))
     }
 
     fn xy(&self, values: &[f64], p: PointValues) -> [f64; 2] {

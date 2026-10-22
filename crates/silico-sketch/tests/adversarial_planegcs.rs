@@ -387,8 +387,9 @@ fn a_line_drawn_with_no_length_is_refused_by_the_check() {
 
 #[test]
 fn a_distance_of_zero_is_refused_though_planegcs_brings_the_points_together() {
-    // The worker refuses a distance that isn't above 0, as FreeCAD's `setDatum` and the gate
-    // do: a distance of 0 is a coincidence, and its solve leaves the points at one place,
+    // The worker refuses a distance that isn't above 0, as the gate does (FreeCAD's
+    // `setDatum` refuses 0 only): a distance of 0 is a coincidence, and its solve leaves the
+    // points at one place,
     // where the next solve's check refuses a distance between them (the M3 review's RR1).
     // PlaneGCS itself, asked, brings them together.
     let mut b = Builder::default();
