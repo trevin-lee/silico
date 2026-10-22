@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # A CI job's test scratch, in memory (a gate's, or a mutants shard's): `start` makes a directory for the job on the VM's
 # tmpfs (/dev/shm) and points TMPDIR and the tests' target/tmp (SILICO_TEST_SCRATCH, which
-# tests/committed-tree.sh links target/tmp to) into it; `end` reports how large it grew and
-# removes it. On the VM's disk, which every runner's builds and tests share, a test's fsync
+# tests/committed-tree.sh links target/tmp to) into it; `end` reports how large it grew,
+# puts target/tmp back as a directory, and removes it. On the VM's disk, which every runner's builds and tests share, a test's fsync
 # stalled for 70 to 102 s with three gates writing at once (#75), past nextest's limit.
 # Build outputs stay on disk.
 #
@@ -30,6 +30,17 @@ case "${1-}" in
     # job's limit (a mutants shard's, a day).
     find "$root" -maxdepth 1 -name 'silico-*' -user "$(id -u)" -mmin +1500 -print0 2>/dev/null |
       while IFS= read -r -d '' lost; do remove "$lost" || true; done
+    # And a gate tree's target/tmp left linked to scratch that's gone (the job lost, its
+    # scratch swept) is put back as an empty directory, as `end` does: a running job's
+    # link always leads to a directory. Only under the tree's own lock (committed-tree.sh
+    # holds it for a whole gate or mutants run), so a job that's linking it isn't raced.
+    for link in "${XDG_CACHE_HOME:-$HOME/.cache}"/silico/gate/*/target/tmp; do
+      if [ -L "$link" ] && [ ! -e "$link" ]; then
+        flock -n "${link%/target/tmp}.lock" \
+          sh -c 'if [ -L "$1" ] && [ ! -e "$1" ]; then rm -f "$1"; mkdir -p "$1"; fi' _ "$link" ||
+          true
+      fi
+    done
     mkdir -p "$scratch/tmp" "$scratch/target-tmp"
     {
       echo "TMPDIR=$scratch/tmp"
@@ -60,6 +71,16 @@ case "${1-}" in
     line="Test scratch in memory: peak $((peak / 1024)) MiB (sampled every 5 s)"
     echo "$line"
     echo "$line" >>"${GITHUB_STEP_SUMMARY:-/dev/null}"
+    # The gate trees' target/tmp linked into this scratch (tests/committed-tree.sh) is put
+    # back as an empty directory, so the next job finds a plain tree whatever its scripts'
+    # age: a tree checked out from before the link existed fails at its first cargo step
+    # on a dangling one ("failed to create directory .../target/tmp: File exists").
+    for link in "${XDG_CACHE_HOME:-$HOME/.cache}"/silico/gate/*/target/tmp; do
+      if [ -L "$link" ] && [ "$(readlink "$link")" = "$scratch/target-tmp" ]; then
+        rm -f "$link"
+        mkdir -p "$link" || true
+      fi
+    done
     if [ "$peak" -gt "$warn_kib" ]; then
       echo "::warning::test scratch grew past $((warn_kib / 1024 / 1024)) GiB in memory; look for tests that leave theirs behind"
     fi
