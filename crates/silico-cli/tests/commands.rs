@@ -6,8 +6,12 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+#[path = "../../silico-core/tests/common/sketch.rs"]
+mod fixture;
 #[path = "common/run.rs"]
 mod run;
+#[path = "../../silico-core/tests/common/sweeps.rs"]
+mod sweeps;
 
 use std::process::{Command, Output, Stdio};
 
@@ -674,23 +678,24 @@ fn an_open_sketch_swept_twice_names_each_failed_pad_once() {
     // with one whole problem naming it, the sketch's four elements at fault its own, the
     // refusals and their advice its cause. Two problems, and none names the sketch.
     let scratch = Scratch::new("open-twice");
-    let file = scratch.file(
-        r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "features": [
-  {"id": "s0000001", "type": "sketch", "v": 1, "name": "s", "plane": "xy",
-   "points": [{"id": "p0000001", "x": 0, "y": 0, "construction": false},
-              {"id": "p0000002", "x": 10, "y": 0, "construction": false},
-              {"id": "p0000003", "x": 10, "y": 10, "construction": false},
-              {"id": "p0000004", "x": 0, "y": 10, "construction": false}],
-   "lines": [{"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
-             {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false},
-             {"id": "n0000003", "from": "p0000003", "to": "p0000004", "construction": false}],
-   "circles": [], "arcs": [], "constraints": []},
-  {"id": "d0000001", "type": "pad", "v": 1, "name": "a", "sketch": "s0000001",
-   "extent": {"type": "one_side", "length": 1, "reversed": false}},
-  {"id": "d0000009", "type": "pad", "v": 1, "name": "b", "sketch": "s0000001",
-   "extent": {"type": "one_side", "length": 1, "reversed": false}}]}
-"#,
-    );
+    let points = [
+        fixture::point("p0000001", 0.0, 0.0),
+        fixture::point("p0000002", 10.0, 0.0),
+        fixture::point("p0000003", 10.0, 10.0),
+        fixture::point("p0000004", 0.0, 10.0),
+    ];
+    let lines = [
+        fixture::line("n0000001", "p0000001", "p0000002"),
+        fixture::line("n0000002", "p0000002", "p0000003"),
+        fixture::line("n0000003", "p0000003", "p0000004"),
+    ];
+    let sketch = sweeps::sketch_of("s0000001", "xy", &points, &lines, &[], &[]);
+    let extent = sweeps::one_side("1");
+    let file = scratch.file(&sweeps::document(&[
+        &sketch,
+        &sweeps::pad("d0000001", None, "s0000001", &extent),
+        &sweeps::pad("d0000009", None, "s0000001", &extent),
+    ]));
     let out = silico(&scratch, &["check", "--json"], &file);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -748,31 +753,22 @@ fn a_groove_whose_other_region_is_off_the_axis_is_refused_for_its_narrow_slit() 
     // 1 · 600e-9 · π/180 = 1.0472e-8 mm, one place, so it's refused naming the groove's
     // angle (measured at 10 mm, 1.05e-7, it passed and OCCT cut itself).
     let scratch = Scratch::new("groove-slit");
-    let file = scratch.file(
-        r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "features": [
-  {"id": "b0000001", "type": "box", "v": 1, "name": "B", "position": [-20, -1, -20], "length": 40, "width": 3, "height": 40},
-  {"id": "s0000001", "type": "sketch", "v": 1, "name": "s", "plane": "xy",
-   "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false},
-              {"id": "pa000002", "x": 10, "y": 0, "construction": false},
-              {"id": "pa000003", "x": 10, "y": 5, "construction": false},
-              {"id": "pa000004", "x": 0, "y": 5, "construction": false},
-              {"id": "pb000001", "x": -2, "y": 0, "construction": false},
-              {"id": "pb000002", "x": -1, "y": 0, "construction": false},
-              {"id": "pb000003", "x": -1, "y": 5, "construction": false},
-              {"id": "pb000004", "x": -2, "y": 5, "construction": false}],
-   "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
-             {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
-             {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
-             {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false},
-             {"id": "nb000001", "from": "pb000001", "to": "pb000002", "construction": false},
-             {"id": "nb000002", "from": "pb000002", "to": "pb000003", "construction": false},
-             {"id": "nb000003", "from": "pb000003", "to": "pb000004", "construction": false},
-             {"id": "nb000004", "from": "pb000004", "to": "pb000001", "construction": false}],
-   "circles": [], "arcs": [], "constraints": []},
-  {"id": "g0000001", "type": "groove", "v": 1, "name": "g", "base": "b0000001", "sketch": "s0000001", "axis": "y_axis",
-   "extent": {"type": "one_side", "angle": 359.9999994, "reversed": false}}]}
-"#,
-    );
+    let file = scratch.file(&sweeps::document(&[
+        &sweeps::box_at("b0000001", [-20.0, -1.0, -20.0], 40.0, 3.0, 40.0),
+        &sweeps::rectangles(
+            "s0000001",
+            "xy",
+            &[[0.0, 0.0, 10.0, 5.0], [-2.0, 0.0, -1.0, 5.0]],
+        ),
+        &sweeps::turned(
+            "g0000001",
+            "groove",
+            Some("b0000001"),
+            "s0000001",
+            "y_axis",
+            &sweeps::angle("359.9999994"),
+        ),
+    ]));
     let out = silico(&scratch, &["check", "--json"], &file);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();

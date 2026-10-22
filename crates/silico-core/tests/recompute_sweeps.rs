@@ -24,6 +24,50 @@ use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 use silico_core::{Error, ErrorCode};
 use sweeps::*;
 
+/// The elements of an arc about `center`, counter-clockwise from `start` to `end`, closed by
+/// its chord: points pa000001 (the centre), pa000002 (the start), and pa000003 (the end),
+/// the arc aa000001, and the chord na000001 from the end back to the start.
+fn arc_and_chord(center: [f64; 2], start: [f64; 2], end: [f64; 2]) -> [Vec<String>; 3] {
+    [
+        vec![
+            fixture::point("pa000001", center[0], center[1]),
+            fixture::point("pa000002", start[0], start[1]),
+            fixture::point("pa000003", end[0], end[1]),
+        ],
+        vec![fixture::line("na000001", "pa000003", "pa000002")],
+        vec![fixture::arc("aa000001", "pa000001", "pa000002", "pa000003")],
+    ]
+}
+
+/// Sketch ssssssss on XY of an arc closed by its chord ([`arc_and_chord`]).
+fn arc_sketch(center: [f64; 2], start: [f64; 2], end: [f64; 2]) -> String {
+    let [points, lines, arcs] = arc_and_chord(center, start, end);
+    sketch_of("ssssssss", "xy", &points, &lines, &[], &arcs)
+}
+
+/// The elements of a closed polygon through `corners`, in order: points p<letter>000001,
+/// ..., and sides n<letter>000001 (from the first corner to the second), ..., the last
+/// back to the first.
+fn polygon_of(letter: char, corners: &[[f64; 2]]) -> [Vec<String>; 2] {
+    let n = corners.len();
+    [
+        corners
+            .iter()
+            .enumerate()
+            .map(|(i, [x, y])| fixture::point(&format!("p{letter}{:06}", i + 1), *x, *y))
+            .collect(),
+        (0..n)
+            .map(|i| {
+                fixture::line(
+                    &format!("n{letter}{:06}", i + 1),
+                    &format!("p{letter}{:06}", i + 1),
+                    &format!("p{letter}{:06}", (i + 1) % n + 1),
+                )
+            })
+            .collect(),
+    ]
+}
+
 fn engine() -> Recompute<FakeKernel> {
     Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(FakeSketches::new())
 }
@@ -1336,7 +1380,7 @@ fn a_turn_short_of_a_whole_one_by_the_tolerance_is_refused_and_a_nanodegree_more
     // For a revolve, and a groove into the cube below.
     let off = rectangle("ssssssss", "xy", [0.0, 5.0], 4.0, 5.0);
     let torus = circles("ssssssss", "xy", &[([2.0, 7.5], 2.5)]);
-    let bulge = r#"{"id": "ssssssss", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 10, "construction": false}, {"id": "pa000002", "x": -4, "y": 7, "construction": false}, {"id": "pa000003", "x": 4, "y": 7, "construction": false}], "lines": [{"id": "na000001", "from": "pa000003", "to": "pa000002", "construction": false}], "circles": [], "arcs": [{"id": "aa000001", "center": "pa000001", "start": "pa000002", "end": "pa000003", "construction": false}], "constraints": []}"#.to_owned();
+    let bulge = arc_sketch([0.0, 10.0], [-4.0, 7.0], [4.0, 7.0]);
     // Arcs about the x axis, each closed by its chord, the arc from its start
     // counter-clockwise to its end:
     // - below the axis, about (0, −10) from (4, −7) to (−4, −7), through 90° to (0, −5): its
@@ -1349,15 +1393,9 @@ fn a_turn_short_of_a_whole_one_by_the_tolerance_is_refused_and_a_nanodegree_more
     //   band is 1e-7 · 180 / (13π · 1e-9) = 440.76 nanodegrees, so 440 short
     //   (359.99999956°, 13 · 440e-9 · π/180 = 9.9833e-8) is refused, and 1000 short
     //   (359.999999°, 2.2689e-7) turns (at 5 it would be 8.73e-8, and refused).
-    let arc = |center: [i32; 2], start: [i32; 2], end: [i32; 2]| {
-        format!(
-            r#"{{"id": "ssssssss", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{{"id": "pa000001", "x": {}, "y": {}, "construction": false}}, {{"id": "pa000002", "x": {}, "y": {}, "construction": false}}, {{"id": "pa000003", "x": {}, "y": {}, "construction": false}}], "lines": [{{"id": "na000001", "from": "pa000003", "to": "pa000002", "construction": false}}], "circles": [], "arcs": [{{"id": "aa000001", "center": "pa000001", "start": "pa000002", "end": "pa000003", "construction": false}}], "constraints": []}}"#,
-            center[0], center[1], start[0], start[1], end[0], end[1]
-        )
-    };
-    let below = arc([0, -10], [4, -7], [-4, -7]);
-    let wrapping = arc([0, 10], [-5, 10], [4, 7]);
-    let cap = arc([0, 10], [4, 13], [-4, 13]);
+    let below = arc_sketch([0.0, -10.0], [4.0, -7.0], [-4.0, -7.0]);
+    let wrapping = arc_sketch([0.0, 10.0], [-5.0, 10.0], [4.0, 7.0]);
+    let cap = arc_sketch([0.0, 10.0], [4.0, 13.0], [-4.0, 13.0]);
     // Profiles with no point off the axis, measured at their farthest point:
     // - a circle of radius 5 about (0, 5), tangent to the axis at the origin: no end, and
     //   its point toward the axis on it; its farthest point is (0, 10), whose band is
@@ -1367,12 +1405,12 @@ fn a_turn_short_of_a_whole_one_by_the_tolerance_is_refused_and_a_nanodegree_more
     //   its ends on the axis, its circle's centre too; farthest at its top, (0, 5): the band
     //   at 5.
     let tangent = circles("ssssssss", "xy", &[([0.0, 5.0], 5.0)]);
-    let semicircle = arc([0, 0], [5, 0], [-5, 0]);
+    let semicircle = arc_sketch([0.0, 0.0], [5.0, 0.0], [-5.0, 0.0]);
     // The same two mirrored below the axis, their farthest points on its other side: the
     // circle about (0, −5), farthest at (0, −10); the semicircle from (−5, 0) through
     // (0, −5) to (5, 0), farthest at (0, −5).
     let tangent_below = circles("ssssssss", "xy", &[([0.0, -5.0], 5.0)]);
-    let semicircle_below = arc([0, 0], [-5, 0], [5, 0]);
+    let semicircle_below = arc_sketch([0.0, 0.0], [-5.0, 0.0], [5.0, 0.0]);
     // A semicircle of radius 5 whose diameter lies `lift` above the axis, from (5, lift)
     // over (0, 5 + lift) to (−5, lift): its ends within the tolerance of the axis (5e-8,
     // and exactly 1e-7, which is still within it), so no point is off the axis and it's
@@ -1380,11 +1418,7 @@ fn a_turn_short_of_a_whole_one_by_the_tolerance_is_refused_and_a_nanodegree_more
     // 1145.9156 (1 − lift / 5): less 1145.92 · 1e-8 = 1.1e-5 nanodegrees at 5e-8, and
     // 1145.92 · 2e-8 = 2.3e-5 at 1e-7, so 1145 short (9.9920e-8) is still refused and 1146
     // short turns.
-    let lifted = |lift: f64| {
-        format!(
-            r#"{{"id": "ssssssss", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{{"id": "pa000001", "x": 0, "y": {lift:?}, "construction": false}}, {{"id": "pa000002", "x": 5, "y": {lift:?}, "construction": false}}, {{"id": "pa000003", "x": -5, "y": {lift:?}, "construction": false}}], "lines": [{{"id": "na000001", "from": "pa000003", "to": "pa000002", "construction": false}}], "circles": [], "arcs": [{{"id": "aa000001", "center": "pa000001", "start": "pa000002", "end": "pa000003", "construction": false}}], "constraints": []}}"#
-        )
-    };
+    let lifted = |lift: f64| arc_sketch([0.0, lift], [5.0, lift], [-5.0, lift]);
     // Each refusal names the sketch's curves where its slit is measured: the circle, the
     // arc at its interior point, the cap's arc and chord at their shared ends, a
     // rectangle's side there and the two sides ending on it; and where nothing is off the
@@ -1615,30 +1649,24 @@ fn a_slit_refusal_lists_a_hundred_of_its_curves_and_counts_them_all() {
     // (240) and of the two sides up to y = 10: 242 curves at 5, all but the top, n0000242.
     // 1145 nanodegrees short is refused there; the refusal lists the first hundred by ID,
     // n0000001 to n0000100, and counts 242.
-    let mut points: Vec<String> = (0..=240)
+    let mut points: Vec<String> = (0..=240u32)
         .map(|i| {
-            let y = if i % 2 == 0 { 5 } else { 6 };
-            format!(
-                r#"{{"id": "p{:07}", "x": {i}, "y": {y}, "construction": false}}"#,
-                i + 1
-            )
+            let y = if i % 2 == 0 { 5.0 } else { 6.0 };
+            fixture::point(&format!("p{:07}", i + 1), f64::from(i), y)
         })
         .collect();
-    points.push(r#"{"id": "p0000242", "x": 240, "y": 10, "construction": false}"#.to_owned());
-    points.push(r#"{"id": "p0000243", "x": 0, "y": 10, "construction": false}"#.to_owned());
+    points.push(fixture::point("p0000242", 240.0, 10.0));
+    points.push(fixture::point("p0000243", 0.0, 10.0));
     let lines: Vec<String> = (1..=243)
         .map(|k| {
-            format!(
-                r#"{{"id": "n{k:07}", "from": "p{k:07}", "to": "p{:07}", "construction": false}}"#,
-                k % 243 + 1
+            fixture::line(
+                &format!("n{k:07}"),
+                &format!("p{k:07}"),
+                &format!("p{:07}", k % 243 + 1),
             )
         })
         .collect();
-    let comb = format!(
-        r#"{{"id": "ssssssss", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{}], "lines": [{}], "circles": [], "arcs": [], "constraints": []}}"#,
-        points.join(", "),
-        lines.join(", ")
-    );
+    let comb = sketch_of("ssssssss", "xy", &points, &lines, &[], &[]);
     let model = published(
         &engine(),
         &[
@@ -1675,7 +1703,7 @@ fn a_half_disc_right_of_the_y_axis_names_its_arc_where_its_farthest_point_is() {
     // axis's negative side (right of y is negative to it). The band at 5 is 3600/π =
     // 1145.92 nanodegrees: 1145 short leaves 9.9920e-8 and is refused, naming the arc
     // alone, and 1146 short turns.
-    let half = r#"{"id": "ssssssss", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 0, "y": -5, "construction": false}, {"id": "pa000003", "x": 0, "y": 5, "construction": false}], "lines": [{"id": "na000001", "from": "pa000003", "to": "pa000002", "construction": false}], "circles": [], "arcs": [{"id": "aa000001", "center": "pa000001", "start": "pa000002", "end": "pa000003", "construction": false}], "constraints": []}"#;
+    let half = &arc_sketch([0.0, 0.0], [0.0, -5.0], [0.0, 5.0]);
     let turn = |degrees: &str| {
         turned(
             "rrrrrrrr",
@@ -1715,7 +1743,12 @@ fn a_slit_refusal_beside_a_measured_corner_names_the_curves_there_not_a_farthest
     // naming the curves with a point nearest 5, the rectangle's bottom, nb000001, and its
     // two sides ending on it, nb000002 and nb000004; not the semicircle's arc, though its
     // top lies at 5 too.
-    let both = r#"{"id": "ssssssss", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 5, "y": 0, "construction": false}, {"id": "pa000003", "x": -5, "y": 0, "construction": false}, {"id": "pb000001", "x": 10, "y": 5, "construction": false}, {"id": "pb000002", "x": 14, "y": 5, "construction": false}, {"id": "pb000003", "x": 14, "y": 10, "construction": false}, {"id": "pb000004", "x": 10, "y": 10, "construction": false}], "lines": [{"id": "na000001", "from": "pa000003", "to": "pa000002", "construction": false}, {"id": "nb000001", "from": "pb000001", "to": "pb000002", "construction": false}, {"id": "nb000002", "from": "pb000002", "to": "pb000003", "construction": false}, {"id": "nb000003", "from": "pb000003", "to": "pb000004", "construction": false}, {"id": "nb000004", "from": "pb000004", "to": "pb000001", "construction": false}], "circles": [], "arcs": [{"id": "aa000001", "center": "pa000001", "start": "pa000002", "end": "pa000003", "construction": false}], "constraints": []}"#;
+    let [mut points, mut lines, arcs] = arc_and_chord([0.0, 0.0], [5.0, 0.0], [-5.0, 0.0]);
+    let [rectangle_points, rectangle_sides] =
+        polygon_of('b', &[[10.0, 5.0], [14.0, 5.0], [14.0, 10.0], [10.0, 10.0]]);
+    points.extend(rectangle_points);
+    lines.extend(rectangle_sides);
+    let both = &sketch_of("ssssssss", "xy", &points, &lines, &[], &arcs);
     let model = published(
         &engine(),
         &[
@@ -1754,7 +1787,25 @@ fn one_region_with_an_arc_reaching_a_measured_corners_distance_names_only_the_co
     // slit is measured there; the arc's top is 5 away too, but no point of the arc is off
     // the axis but it, so it isn't named. 1145 nanodegrees short is refused, naming the
     // two sides ending at D, na000002 and na000003.
-    let kinked = r#"{"id": "ssssssss", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 5, "y": 0, "construction": false}, {"id": "pa000003", "x": -5, "y": 0, "construction": false}, {"id": "pa000004", "x": -8, "y": 0, "construction": false}, {"id": "pa000005", "x": -7, "y": 5, "construction": false}, {"id": "pa000006", "x": -8, "y": 12, "construction": false}, {"id": "pa000007", "x": 8, "y": 12, "construction": false}, {"id": "pa000008", "x": 8, "y": 0, "construction": false}], "lines": [{"id": "na000001", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000002", "from": "pa000004", "to": "pa000005", "construction": false}, {"id": "na000003", "from": "pa000005", "to": "pa000006", "construction": false}, {"id": "na000004", "from": "pa000006", "to": "pa000007", "construction": false}, {"id": "na000005", "from": "pa000007", "to": "pa000008", "construction": false}, {"id": "na000006", "from": "pa000008", "to": "pa000002", "construction": false}], "circles": [], "arcs": [{"id": "aa000001", "center": "pa000001", "start": "pa000002", "end": "pa000003", "construction": false}], "constraints": []}"#;
+    let [mut points, _, arcs] = arc_and_chord([0.0, 0.0], [5.0, 0.0], [-5.0, 0.0]);
+    let around = [
+        ("pa000004", -8.0, 0.0),
+        ("pa000005", -7.0, 5.0),
+        ("pa000006", -8.0, 12.0),
+        ("pa000007", 8.0, 12.0),
+        ("pa000008", 8.0, 0.0),
+    ];
+    points.extend(around.iter().map(|&(id, x, y)| fixture::point(id, x, y)));
+    // From the arc's end, (−5, 0), round the box to its start, (5, 0).
+    let path = [
+        "pa000003", "pa000004", "pa000005", "pa000006", "pa000007", "pa000008", "pa000002",
+    ];
+    let lines: Vec<String> = path
+        .windows(2)
+        .enumerate()
+        .map(|(i, ends)| fixture::line(&format!("na{:06}", i + 1), ends[0], ends[1]))
+        .collect();
+    let kinked = &sketch_of("ssssssss", "xy", &points, &lines, &[], &arcs);
     for (word, base) in [("revolve", None), ("groove", Some("bbbbbbbb"))] {
         let model = published(
             &engine(),
@@ -1794,7 +1845,11 @@ fn a_slit_measured_where_the_nearest_point_off_the_axis_is_also_the_farthest_nam
     // band at 5 is 3600/π = 1145.92 nanodegrees: 1145 short (9.9920e-8) is refused, naming
     // the triangle's two sides from its apex, nb000002 and nb000003, and not the arc whose
     // top is as far; 1146 short turns.
-    let tie = r#"{"id": "ssssssss", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 5, "y": 0, "construction": false}, {"id": "pa000003", "x": -5, "y": 0, "construction": false}, {"id": "pb000001", "x": 6, "y": 0, "construction": false}, {"id": "pb000002", "x": 8, "y": 0, "construction": false}, {"id": "pb000003", "x": 7, "y": 5, "construction": false}], "lines": [{"id": "na000001", "from": "pa000003", "to": "pa000002", "construction": false}, {"id": "nb000001", "from": "pb000001", "to": "pb000002", "construction": false}, {"id": "nb000002", "from": "pb000002", "to": "pb000003", "construction": false}, {"id": "nb000003", "from": "pb000003", "to": "pb000001", "construction": false}], "circles": [], "arcs": [{"id": "aa000001", "center": "pa000001", "start": "pa000002", "end": "pa000003", "construction": false}], "constraints": []}"#;
+    let [mut points, mut lines, arcs] = arc_and_chord([0.0, 0.0], [5.0, 0.0], [-5.0, 0.0]);
+    let [triangle_points, triangle_sides] = polygon_of('b', &[[6.0, 0.0], [8.0, 0.0], [7.0, 5.0]]);
+    points.extend(triangle_points);
+    lines.extend(triangle_sides);
+    let tie = &sketch_of("ssssssss", "xy", &points, &lines, &[], &arcs);
     let groove = |degrees: &str| {
         turned(
             "rrrrrrrr",

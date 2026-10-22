@@ -6,7 +6,10 @@
 #[path = "common/sketch.rs"]
 mod fixture;
 
-use fixture::{ARC, CIRCLE, FEATURE, LINE, POINTS, constrained, document, fields, problems};
+use fixture::{
+    ARC, CIRCLE, FEATURE, LINE, POINTS, constrained, document, fields, line_as, point_debug,
+    problems,
+};
 use silico_core::ErrorCode;
 use silico_core::document::{Operation, Plane, read, write};
 
@@ -469,8 +472,8 @@ fn geometry_a_hair_apart_has_no_size_to_the_kernel() {
     // 1e-150 squared is 1e-300, not 0, so the solver would measure a line and an arc's
     // radius; but they're far inside the kernel's 1e-7 mm, one place to it, and refused:
     // the line (lines.0.to), and the arc's start and end, each 1e-150 from its center.
-    let tiny = r#"{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 1e-150, "y": 0, "construction": false}, {"id": "pc000000", "x": 0, "y": 1e-150, "construction": false}"#;
-    let all = problems(&document(&fields(tiny, LINE, "", ARC, "")));
+    let tiny = three_points((1e-150, 0.0), (0.0, 1e-150));
+    let all = problems(&document(&fields(&tiny, LINE, "", ARC, "")));
     let refused: Vec<Option<&str>> = all.iter().map(|e| e.parameter()).collect();
     assert_eq!(
         refused,
@@ -488,10 +491,12 @@ fn geometry_a_hair_apart_has_no_size_to_the_kernel() {
 
 /// pa at the origin, pb and pc where given.
 fn three_points(b: (f64, f64), c: (f64, f64)) -> String {
-    format!(
-        r#"{{"id": "pa000000", "x": 0, "y": 0, "construction": false}}, {{"id": "pb000000", "x": {:?}, "y": {:?}, "construction": false}}, {{"id": "pc000000", "x": {:?}, "y": {:?}, "construction": false}}"#,
-        b.0, b.1, c.0, c.1
-    )
+    [
+        point_debug("pa000000", 0.0, 0.0),
+        point_debug("pb000000", b.0, b.1),
+        point_debug("pc000000", c.0, c.1),
+    ]
+    .join(", ")
 }
 
 #[test]
@@ -502,9 +507,7 @@ fn a_drawn_size_at_most_the_kernels_tolerance_is_refused_and_above_it_admitted()
     let line = |b: (f64, f64), construction: bool| {
         document(&fields(
             &three_points(b, far),
-            &format!(
-                r#"{{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": {construction}}}"#
-            ),
+            &line_as("na000000", "pa000000", "pb000000", construction),
             "",
             "",
             "",
@@ -531,24 +534,22 @@ fn a_drawn_size_at_most_the_kernels_tolerance_is_refused_and_above_it_admitted()
     only(&line((1e-7, 0.0), true), "lines.0.to", "mm long");
 
     // A circle's radius: 1e-7 refused, 1e-6 admitted.
-    let circle = |radius: &str| {
+    let circle = |radius: f64| {
         document(&fields(
             POINTS,
             "",
-            &format!(
-                r#"{{"id": "ca000000", "center": "pa000000", "radius": {radius}, "construction": false}}"#
-            ),
+            &fixture::circle("ca000000", "pa000000", radius),
             "",
             "",
         ))
     };
     only(
-        &circle("1e-7"),
+        &circle(1e-7),
         "circles.0.radius",
         "circle ca000000's radius is 1e-7 mm: arcs and circles have a radius above 1e-7 mm, as the kernel measures them",
     );
-    assert_eq!(problems(&circle("1e-7"))[0].elements(), ["ca000000"]);
-    none(&circle("0.000001"));
+    assert_eq!(problems(&circle(1e-7))[0].elements(), ["ca000000"]);
+    none(&circle(0.000001));
 
     // An arc about pa from pb to pc: its start 1e-7 from its center refused, 1.01e-7
     // admitted; its end likewise.
