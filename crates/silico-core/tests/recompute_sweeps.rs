@@ -1376,8 +1376,10 @@ fn a_turn_short_of_a_whole_one_by_the_tolerance_is_refused_and_a_nanodegree_more
     // A semicircle of radius 5 whose diameter lies `lift` above the axis, from (5, lift)
     // over (0, 5 + lift) to (−5, lift): its ends within the tolerance of the axis (5e-8,
     // and exactly 1e-7, which is still within it), so no point is off the axis and it's
-    // measured at its top, 5 + lift. The band there is 3600 / (π (1 + lift / 5)): 1145.92
-    // less 1.1e-5 at most, so 1145 short (9.9920e-8) is still refused and 1146 short turns.
+    // measured at its top, 5 + lift. The band there is 3600 / (π (1 + lift / 5)), about
+    // 1145.9156 (1 − lift / 5): less 1145.92 · 1e-8 = 1.1e-5 nanodegrees at 5e-8, and
+    // 1145.92 · 2e-8 = 2.3e-5 at 1e-7, so 1145 short (9.9920e-8) is still refused and 1146
+    // short turns.
     let lifted = |lift: f64| {
         format!(
             r#"{{"id": "ssssssss", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{{"id": "pa000001", "x": 0, "y": {lift:?}, "construction": false}}, {{"id": "pa000002", "x": 5, "y": {lift:?}, "construction": false}}, {{"id": "pa000003", "x": -5, "y": {lift:?}, "construction": false}}], "lines": [{{"id": "na000001", "from": "pa000003", "to": "pa000002", "construction": false}}], "circles": [], "arcs": [{{"id": "aa000001", "center": "pa000001", "start": "pa000002", "end": "pa000003", "construction": false}}], "constraints": []}}"#
@@ -1781,4 +1783,45 @@ fn one_region_with_an_arc_reaching_a_measured_corners_distance_names_only_the_co
         assert_eq!(error.elements(), ["na000002", "na000003"], "{word}");
         assert_eq!(error.elements_total(), 2, "{word}");
     }
+}
+
+#[test]
+fn a_slit_measured_where_the_nearest_point_off_the_axis_is_also_the_farthest_names_its_curves() {
+    // A groove of two regions about the x axis: a half-disc of radius 5 on its diameter on
+    // the axis (no point off the axis, its top (0, 5) 5 away), and a triangle (6, 0),
+    // (8, 0), (7, 5) on the axis too, its apex 5 away. The apex is the only point off the
+    // axis, so the slit is measured there, at 5, which is also the profile's farthest. The
+    // band at 5 is 3600/π = 1145.92 nanodegrees: 1145 short (9.9920e-8) is refused, naming
+    // the triangle's two sides from its apex, nb000002 and nb000003, and not the arc whose
+    // top is as far; 1146 short turns.
+    let tie = r#"{"id": "ssssssss", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 5, "y": 0, "construction": false}, {"id": "pa000003", "x": -5, "y": 0, "construction": false}, {"id": "pb000001", "x": 6, "y": 0, "construction": false}, {"id": "pb000002", "x": 8, "y": 0, "construction": false}, {"id": "pb000003", "x": 7, "y": 5, "construction": false}], "lines": [{"id": "na000001", "from": "pa000003", "to": "pa000002", "construction": false}, {"id": "nb000001", "from": "pb000001", "to": "pb000002", "construction": false}, {"id": "nb000002", "from": "pb000002", "to": "pb000003", "construction": false}, {"id": "nb000003", "from": "pb000003", "to": "pb000001", "construction": false}], "circles": [], "arcs": [{"id": "aa000001", "center": "pa000001", "start": "pa000002", "end": "pa000003", "construction": false}], "constraints": []}"#;
+    let groove = |degrees: &str| {
+        turned(
+            "rrrrrrrr",
+            "groove",
+            Some("bbbbbbbb"),
+            "ssssssss",
+            "x_axis",
+            &angle(degrees),
+        )
+    };
+    let model = published(&engine(), &[&cube_below(), tie, &groove("359.999998855")]);
+    let error = failed(&model, "rrrrrrrr");
+    assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
+    assert_eq!(error.parameter(), Some("extent.angle"), "{error}");
+    assert!(
+        error.message().ends_with(
+            " mm at its profile's point 5 mm from the axis: within 1e-7 mm, its ends would be one place"
+        ),
+        "{error}"
+    );
+    assert!((slit(error.message()) - 9.9920e-8).abs() < 1e-12, "{error}");
+    assert_eq!(error.elements(), ["nb000002", "nb000003"]);
+    assert_eq!(error.elements_total(), 2);
+    let model = published(&engine(), &[&cube_below(), tie, &groove("359.999998854")]);
+    assert!(
+        built(&model, "rrrrrrrr"),
+        "{:?}",
+        model.outcome(&id("rrrrrrrr"))
+    );
 }
