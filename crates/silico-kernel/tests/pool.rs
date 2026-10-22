@@ -16,7 +16,6 @@ mod pool;
 mod scripts;
 
 use std::collections::BTreeSet;
-use std::io::Write as _;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -644,13 +643,6 @@ fn sweep_across(attempts: u32, window: Duration, mut attempt: impl FnMut(Duratio
             );
         }
         if before > 0 && after > 0 {
-            // Shown in CI (.config/nextest.toml): how close a loaded machine took it to HANG.
-            let _ = writeln!(
-                std::io::stderr().lock(),
-                "swept to {window:?} after a request, in {:?} of {HANG:?}: {before} landed \
-                 before the moment, {after} after",
-                start.elapsed()
-            );
             return;
         }
         window *= 2;
