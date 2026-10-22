@@ -1177,6 +1177,96 @@ fn a_run_of_more_than_one_directory_is_refused() {
     );
 }
 
+#[test]
+fn a_corpus_of_no_step_files_is_an_error_not_a_pass() {
+    // `corpus DIR` reads DIR's STEP files; with none there is nothing to compare, the error
+    // a run of no cases is, not the usage error of a corpus without its one directory.
+    let dir = scratch("empty-corpus");
+    let corpus = dir.join("corpus");
+    std::fs::create_dir_all(&corpus).unwrap();
+    let ran = cli(
+        &dir,
+        &["corpus", corpus.to_str().unwrap()],
+        &[],
+        Duration::from_secs(60),
+    );
+    assert_eq!(ran.status.and_then(|s| s.code()), Some(2), "{}", ran.stdout);
+    assert_eq!(ran.stderr, "silico-oracle: there are no cases to compare\n");
+}
+
+/// A document of `features` (JSON), as the oracle's `.silico` case files are.
+fn document(features: &str) -> String {
+    format!(
+        "{{\"silico\": 1, \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}}, \"features\": [{features}]}}"
+    )
+}
+
+#[test]
+fn a_directory_of_sketch_cases_alone_is_run_and_counted() {
+    // No shape cases and no sketch-feature cases: the one sketch case is solved by both
+    // sides and is the run's one case, not a run of no cases.
+    let dir = scratch("sketches-alone");
+    let cases = dir.join("cases");
+    std::fs::create_dir_all(&cases).unwrap();
+    let line = r#"{"id": "s0000001", "type": "sketch", "v": 1, "name": "free_line", "plane": "xy",
+      "points": [{"id": "p0000001", "x": 1, "y": 2, "construction": false}, {"id": "p0000002", "x": 11, "y": 3, "construction": false}],
+      "lines": [{"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false}],
+      "circles": [], "arcs": [], "constraints": [], "note": "A line with no constraints."}"#;
+    std::fs::write(cases.join("sketches.silico"), document(line)).unwrap();
+    let ran = cli(
+        &dir,
+        &["run", cases.to_str().unwrap()],
+        &[],
+        Duration::from_secs(120),
+    );
+    assert_eq!(
+        ran.stdout, "0 of 1 cases differ from FreeCAD\n",
+        "{}",
+        ran.stderr
+    );
+    assert_eq!(ran.status.and_then(|s| s.code()), Some(0));
+}
+
+#[test]
+fn a_directory_of_sketch_feature_cases_alone_is_run_and_its_differences_counted() {
+    // No shape cases and no sketch cases: the unit square padded 1 (volume 1, FreeCAD's
+    // testPartDesignElementMapPad), said to be expected at volume 2, is the run's one case,
+    // and it differs, Silico's volume from the expected, so the run fails.
+    let dir = scratch("features-alone");
+    let cases = dir.join("cases");
+    std::fs::create_dir_all(&cases).unwrap();
+    let pad = r#"{"id": "s0000001", "type": "sketch", "v": 1, "name": "unit_square", "plane": "xy",
+      "points": [{"id": "p0000001", "x": 0, "y": 0, "construction": false}, {"id": "p0000002", "x": 1, "y": 0, "construction": false}, {"id": "p0000003", "x": 1, "y": 1, "construction": false}, {"id": "p0000004", "x": 0, "y": 1, "construction": false}],
+      "lines": [{"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false}, {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false}, {"id": "n0000003", "from": "p0000003", "to": "p0000004", "construction": false}, {"id": "n0000004", "from": "p0000004", "to": "p0000001", "construction": false}],
+      "circles": [], "arcs": [], "constraints": []},
+      {"id": "p0000005", "type": "pad", "v": 1, "name": "unit_square_pad", "sketch": "s0000001",
+      "extent": {"type": "one_side", "length": 1, "reversed": false},
+      "note": "The unit square padded 1. Expected: volume 2."}"#;
+    std::fs::write(cases.join("sketch-features.silico"), document(pad)).unwrap();
+    let ran = cli(
+        &dir,
+        &["run", cases.to_str().unwrap()],
+        &[],
+        Duration::from_secs(120),
+    );
+    let lines: Vec<&str> = ran.stdout.lines().collect();
+    let volume = lines.first().and_then(|l| {
+        l.strip_prefix("unit_square_pad: Silico's volume ")?
+            .strip_suffix(" against the expected 2")?
+            .parse::<f64>()
+            .ok()
+    });
+    assert!(
+        volume.is_some_and(|v| (v - 1.0).abs() < 1e-9)
+            && lines.get(1) == Some(&"1 of 1 cases differ from FreeCAD")
+            && lines.len() == 2,
+        "{}{}",
+        ran.stdout,
+        ran.stderr
+    );
+    assert_eq!(ran.status.and_then(|s| s.code()), Some(1));
+}
+
 // ---- Generated cases from other seeds ----
 
 #[test]
