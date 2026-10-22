@@ -1140,6 +1140,8 @@ impl Keeper<'_> {
         {
             self.noted = true;
             self.killed_unstarted = false;
+            // What a kill of it now is taken as (from outside): the pool's tests follow it.
+            tracing::debug!(slot = self.slot, "a kernel worker is running");
             self.shared
                 .newest_started
                 .fetch_max(self.number, Ordering::Relaxed);

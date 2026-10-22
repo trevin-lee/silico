@@ -115,9 +115,11 @@ pub enum Decision {
     WaitEnded,
 }
 
-/// Every decision the pool's slots say, in order, with each one's slot.
+/// Every decision the pool's slots say, in order, with each one's slot; and, apart, each
+/// slot's note that its worker is running (not a decision: what makes a kill of it one from
+/// outside).
 #[derive(Clone, Default)]
-pub struct Decisions(Arc<Mutex<Vec<(u64, Decision)>>>);
+pub struct Decisions(Arc<Mutex<Vec<(u64, Decision)>>>, Arc<Mutex<Vec<u64>>>);
 
 impl<S: Subscriber> Layer<S> for Decisions {
     fn on_event(&self, event: &Event<'_>, _: Context<'_, S>) {
@@ -146,6 +148,12 @@ impl<S: Subscriber> Layer<S> for Decisions {
         }
         let mut fields = Fields::default();
         event.record(&mut fields);
+        if fields.message == "a kernel worker is running"
+            && let Some(slot) = fields.slot
+        {
+            self.1.lock().unwrap().push(slot);
+            return;
+        }
         let decision = match fields.wait_ms {
             Some(ms) => Decision::Wait(ms),
             None if fields.message.contains("starting another at once") => Decision::AtOnce,
@@ -166,6 +174,16 @@ impl Decisions {
         )
         .expect("one test a process, as nextest runs them");
         decisions
+    }
+
+    /// How many of `slot`'s workers it has noted running.
+    pub fn running(&self, slot: u64) -> usize {
+        self.1
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|&&s| s == slot)
+            .count()
     }
 
     /// The first `n` decisions of `slot`, in order.
