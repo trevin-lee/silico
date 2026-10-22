@@ -34,9 +34,9 @@ case "${1-}" in
     # scratch swept) is put back as an empty directory, as `end` does: a running job's
     # link always leads to a directory. Only under the tree's own lock (committed-tree.sh
     # holds it for a whole gate or mutants run), so a job that's linking it isn't raced.
-    for link in "${XDG_CACHE_HOME:-$HOME/.cache}"/silico/gate/*/target/tmp; do
+    for link in "${XDG_CACHE_HOME:-$HOME/.cache}"/silico/gate/*/target*/tmp; do
       if [ -L "$link" ] && [ ! -e "$link" ]; then
-        flock -n "${link%/target/tmp}.lock" \
+        flock -n "${link%/target*/tmp}.lock" \
           sh -c 'if [ -L "$1" ] && [ ! -e "$1" ]; then rm -f "$1"; mkdir -p "$1"; fi' _ "$link" ||
           true
       fi
@@ -75,7 +75,7 @@ case "${1-}" in
     # back as an empty directory, so the next job finds a plain tree whatever its scripts'
     # age: a tree checked out from before the link existed fails at its first cargo step
     # on a dangling one ("failed to create directory .../target/tmp: File exists").
-    for link in "${XDG_CACHE_HOME:-$HOME/.cache}"/silico/gate/*/target/tmp; do
+    for link in "${XDG_CACHE_HOME:-$HOME/.cache}"/silico/gate/*/target*/tmp; do
       if [ -L "$link" ] && [ "$(readlink "$link")" = "$scratch/target-tmp" ]; then
         rm -f "$link"
         mkdir -p "$link" || true

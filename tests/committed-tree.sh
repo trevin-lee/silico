@@ -47,13 +47,13 @@ if [ -e "$tree/.git" ] && ! git -C "$tree" rev-parse --git-dir >/dev/null 2>&1; 
   # Its checkout is gone, cloned again at the same path (a CI runner's is, every job):
   # start the worktree again, keeping its build caches.
   keep=$(mktemp -d "$tree.keep.XXXXXX")
-  for cache in target .pixi; do
+  for cache in target target-mutants .pixi; do
     if [ -e "$tree/$cache" ]; then mv "$tree/$cache" "$keep/"; fi
   done
   rm -rf "$tree"
   git -C "$root" worktree prune
   git -C "$root" worktree add --detach --quiet "$tree" "$commit"
-  for cache in target .pixi; do
+  for cache in target target-mutants .pixi; do
     if [ -e "$keep/$cache" ]; then mv "$keep/$cache" "$tree/"; fi
   done
   rmdir "$keep"
@@ -63,36 +63,41 @@ if [ ! -e "$tree/.git" ]; then
   git -C "$root" worktree remove --force "$tree" 2>/dev/null || true
   git -C "$root" worktree add --detach --quiet "$tree" "$commit"
 fi
-# target/debug keeps a copy of each crate for each set of dependencies and features it was
+# The build's own target directory: target/, or the one SILICO_TARGET names (CI's mutants
+# shards build without debug info in target-mutants/, so neither build evicts the other).
+# target/occt stays in target/: the build scripts find OCCT there.
+target=${SILICO_TARGET:-target}
+# $target/debug keeps a copy of each crate for each set of dependencies and features it was
 # built with (each branch's Cargo.lock, cargo-mutants' baselines of a few packages), and
 # Cargo never removes them: past a bound, start it again, cold (target/occt and the other
 # caches stay). One whole gate's build is about 12 GiB, or 14 GiB with incremental
 # compilation, which CI turns off.
 target_limit_gib=30
-if [ -d "$tree/target/debug" ]; then
-  target_kib=$(du -sk "$tree/target/debug" | cut -f1) || {
-    echo "gate: can't measure $tree/target/debug (above); delete it by hand" >&2
+if [ -d "$tree/$target/debug" ]; then
+  target_kib=$(du -sk "$tree/$target/debug" | cut -f1) || {
+    echo "gate: can't measure $tree/$target/debug (above); delete it by hand" >&2
     exit 1
   }
   target_gib=$((target_kib / 1024 / 1024))
   if [ "$target_gib" -gt "$target_limit_gib" ]; then
-    echo "gate: target/debug is $target_gib GiB, past $target_limit_gib GiB: deleting it, so this build starts cold" >&2
-    rm -rf "$tree/target/debug"
+    echo "gate: $target/debug is $target_gib GiB, past $target_limit_gib GiB: deleting it, so this build starts cold" >&2
+    rm -rf "$tree/$target/debug"
   else
-    echo "gate: target/debug is $target_gib GiB: kept (deleted past $target_limit_gib GiB)" >&2
+    echo "gate: $target/debug is $target_gib GiB: kept (deleted past $target_limit_gib GiB)" >&2
   fi
 fi
 git -C "$tree" checkout --detach --quiet --force "$commit"
-git -C "$tree" clean -fdx --quiet -e /target/ -e /.pixi/
+git -C "$tree" clean -fdx --quiet -e /target/ -e /target-mutants/ -e /.pixi/
 cd "$tree"
+if [ "$target" != target ]; then export CARGO_TARGET_DIR="$tree/$target"; fi
 # The tests' scratch (Cargo's CARGO_TARGET_TMPDIR, target/tmp: documents, logs, workers'
 # dumps) where SILICO_TEST_SCRATCH says, as CI puts it in memory (.github/scratch.sh,
 # whose `end` puts the directory back); otherwise a directory, as Cargo makes it.
-mkdir -p target
+mkdir -p "$target"
 if [ -n "${SILICO_TEST_SCRATCH-}" ]; then
   mkdir -p "$SILICO_TEST_SCRATCH"
-  if [ -L target/tmp ]; then rm target/tmp; else remove_tree target/tmp; fi
-  ln -s "$SILICO_TEST_SCRATCH" target/tmp
-elif [ -L target/tmp ]; then
-  rm target/tmp
+  if [ -L "$target/tmp" ]; then rm "$target/tmp"; else remove_tree "$target/tmp"; fi
+  ln -s "$SILICO_TEST_SCRATCH" "$target/tmp"
+elif [ -L "$target/tmp" ]; then
+  rm "$target/tmp"
 fi
