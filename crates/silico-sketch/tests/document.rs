@@ -619,6 +619,88 @@ fn a_point_two_lines_share_held_in_two_places_conflicts() {
     let e = solved(&doc, &mut worker()).unwrap_err();
     assert_eq!(e.code(), ErrorCode::OverConstrained, "{e}");
     assert_eq!(e.elements(), ["k0000001", "k0000002"]);
+    // Without the second, it solves, as FreeCAD's fixture does before the coincidence: 3
+    // points' 6 values less the one held, 5 degrees of freedom (by hand).
+    let doc = document(
+        &[
+            point("p0000001", 0.0, 0.0),
+            point("p0000002", 10.0, 0.0),
+            point("p0000003", 30.0, 0.0),
+        ],
+        &[
+            line("n0000001", "p0000001", "p0000002"),
+            line("n0000002", "p0000002", "p0000003"),
+        ],
+        &[],
+        &[],
+        &[
+            r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000002", "value": 10, "driving": true}"#,
+        ],
+    );
+    assert_eq!(solved(&doc, &mut worker()).unwrap().dofs, 5);
+}
+
+/// TestCoincidentCommandGui.py's tangent substitution sketch: a line from (−10, 0), 20 long
+/// and horizontal, and an arc of radius 5 about (0, 5), its centre's x and its ends' x held,
+/// the line's end at `line_end`, and `tangency` between them. FreeCAD's arc runs from 0.5
+/// rad to 2.5 rad; here from (4, 8) to (−4, 8) (3² + 4² = 5²), so every value is a whole
+/// nanometre, as a document's are.
+fn line_and_arc(line_end: &str, arc_start: &str, tangency: &str) -> Checked {
+    let mut points = vec![
+        point("p0000001", -10.0, 0.0),
+        point("p0000003", 0.0, 5.0),
+        point("p0000005", -4.0, 8.0),
+    ];
+    points.push(point(line_end, 10.0, 0.0));
+    if arc_start != line_end {
+        points.push(point(arc_start, 4.0, 8.0));
+    }
+    document(
+        &points,
+        &[line("n0000001", "p0000001", line_end)],
+        &[],
+        &[arc("a0000002", "p0000003", arc_start, "p0000005")],
+        &[
+            r#"{"id": "k0000001", "type": "horizontal", "line": "n0000001"}"#,
+            r#"{"id": "k0000002", "type": "distance_x", "a": "origin", "b": "p0000001", "value": -10, "driving": true}"#,
+            r#"{"id": "k0000003", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000004", "type": "length", "line": "n0000001", "value": 20, "driving": true}"#,
+            r#"{"id": "k0000005", "type": "distance_x", "a": "origin", "b": "p0000003", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000006", "type": "radius", "curve": "a0000002", "value": 5, "driving": true}"#,
+            &format!(
+                r#"{{"id": "k0000007", "type": "distance_x", "a": "origin", "b": "{arc_start}", "value": 4, "driving": true}}"#
+            ),
+            r#"{"id": "k0000008", "type": "distance_x", "a": "origin", "b": "p0000005", "value": -4, "driving": true}"#,
+            tangency,
+        ],
+    )
+}
+
+#[test]
+fn a_tangency_of_the_curves_holds_where_one_at_shared_ends_cant() {
+    // TestCoincidentCommandGui.py's failed tangent substitution, its solver half. The line
+    // tangent to the arc's circle solves where drawn (FreeCAD's solve() 0): the line on
+    // y = 0, the centre 5 above it, every value held, 0 degrees of freedom by hand (11
+    // values: 4 the line's, 7 the arc's centre, ends, and radius; 11 equations: 4 on the
+    // line, the arc's 2 rules, its radius, 3 x's held, and the tangency). The tangency at a
+    // shared end FreeCAD substitutes can't hold: the line's end, held at x 10 by its length,
+    // is the arc's start, held at x 4 (FreeCAD's solve() nonzero).
+    let curves = line_and_arc(
+        "p0000002",
+        "p0000004",
+        r#"{"id": "k0000009", "type": "tangent", "a": "n0000001", "b": "a0000002", "side": "left"}"#,
+    );
+    let s = solved(&curves, &mut worker()).unwrap();
+    assert_eq!(s.dofs, 0);
+    let c = s.point(&id("p0000003")).unwrap();
+    assert!(c[0].abs() < 1e-9 && (c[1] - 5.0).abs() < 1e-9, "{c:?}");
+    let at_end = line_and_arc(
+        "p0000002",
+        "p0000002",
+        r#"{"id": "k0000009", "type": "tangent_at", "a": "n0000001", "b": "a0000002", "at": "p0000002", "direction": "same"}"#,
+    );
+    let e = solved(&at_end, &mut worker()).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::OverConstrained, "{e}");
 }
 
 /// The worker, recording the algorithm each solve it answers was solved by.
