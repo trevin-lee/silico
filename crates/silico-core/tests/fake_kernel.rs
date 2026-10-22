@@ -1166,6 +1166,9 @@ fn a_sweep_reads_back_as_built_and_only_faces_are_swept() {
         "silico fake shape 1\nfaces xy region loop circle 0 0 1\nprism 0 0 0 0 0 0 0\n",
         "silico fake shape 1\nfaces xy region loop circle 0 0 1\nrevolution 0 0 0 0 0 0 1 0 7\n",
         "silico fake shape 1\nfaces xy region loop circle 0 0 1\nprism 0 0 0 0 0 0 1 9\n",
+        // A sweep as the first step, so of no step before it: refused, not panicked on.
+        "silico fake shape 1\nprism 0 0 0 0 0 0 1\n",
+        "silico fake shape 1\nrevolution 0 2 0 0 0 1 0 0 1\n",
     ] {
         let shape = ShapeData::checked(Blob::inline(text.as_bytes().to_vec()), true);
         assert_eq!(FakeKernel::describe(&shape), None, "{text}");
@@ -1266,6 +1269,47 @@ fn a_partial_turn_an_offset_prism_and_a_pocket_measure_by_the_fakes_own_model() 
     assert_eq!(s.area, 694.0);
     for (k, moment) in [4880.0, 4910.0, 4550.0].into_iter().enumerate() {
         close(s.center[k], moment / 940.0, "the pocket's centre");
+    }
+}
+
+#[test]
+fn a_turn_about_an_axis_off_the_origin_is_measured_from_the_axis_to_its_farthest_corner() {
+    // Mutants that survived M3.6's recheck, worked out by hand from the model
+    // (`Measured::swept`): the distance of the faces' box centre from an axis whose point
+    // is off the origin across it, and the box's farthest corner being one of its highest.
+    use std::f64::consts::PI;
+    let kernel = FakeKernel::new(1).unwrap();
+    let close = |got: f64, want: f64, what: &str| {
+        assert!(
+            (got - want).abs() <= 1e-12 * want.abs().max(1.0),
+            "{what}: {got} for {want}"
+        );
+    };
+    // The rectangle x 2..6, z 1..4 on XZ (area 12, perimeter 14, its box's centre
+    // (4, 0, 2.5)), turned a quarter turn about the line x = 1 along z, through (1, 0, 0):
+    // the centre is 3 from it, so by Pappus 12·3·π/2 = 18π, and 14·3·π/2 + 2·12 = 21π + 24
+    // with its two caps. The box's farthest corner from (1, 0, 0) is its highest,
+    // (6, 0, 4): (5, 0, 4) away, √41; the cube about (1, 0, 0) reaches that far.
+    let p = [[2.0, 1.0], [6.0, 1.0], [6.0, 4.0], [2.0, 4.0]];
+    let off = (0..4).map(|i| line(p[i], p[(i + 1) % 4])).collect();
+    let faces = made_faces(&kernel, SketchPlane::Xz, vec![(off, vec![])]);
+    let axis = silico_core::kernel::Axis {
+        origin: [1.0, 0.0, 0.0],
+        direction: [0.0, 0.0, 1.0],
+    };
+    let made = run(
+        &kernel,
+        KernelRequest::revolution(&faces.shape, axis, 0.0, PI / 2.0).unwrap(),
+    );
+    let s = run(&kernel, KernelRequest::summarize(&made.shape));
+    close(s.volume, 18.0 * PI, "the volume");
+    close(s.area, 21.0 * PI + 24.0, "the area");
+    let reach = 41f64.sqrt();
+    let [low, high] = s.bounds.unwrap();
+    for (k, at) in [1.0, 0.0, 0.0].into_iter().enumerate() {
+        close(low[k], at - reach, "the box's low corner");
+        close(high[k], at + reach, "the box's high corner");
+        close(s.center[k], at, "the centre");
     }
 }
 
