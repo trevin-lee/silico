@@ -9,10 +9,12 @@ CXX = { value = ".pixi/envs/default/bin/clang++", relative = true, force = true 
 CXXFLAGS = { value = "-stdlib=libc++", force = true }
 CXXSTDLIB = { value = "c++", force = true }
 
-# Link Rust binaries with mold on Linux (pinned in pixi.toml), the default cc driver still
-# driving it. The gate and every mutant relink ~127 test binaries, and mold is several
-# times faster than the default ld; build was about 40% of mutants time. Linux only, by the
-# target triple: macOS keeps Apple's ld (lld 21 can't read the macOS 27 SDK, and mold has no
-# Mach-O backend). mold is deterministic, so the stress reference stays byte-identical.
+# Link Rust binaries (the tests, the workers, the CLI) with mold on Linux, pinned in
+# pixi.toml, the default cc driver still driving it; OCCT's own libraries keep lld
+# (third_party/occt/build.sh). The gate and every mutant relink ~127 test binaries, and
+# mold is several times faster than the default ld. Linux only, by the target triple: macOS
+# keeps Apple's ld (mold has no Mach-O backend). mold is found on the PATH pixi sets, so
+# build on Linux through pixi (`pixi run ...`), as CI does: a bare cargo there can't find
+# mold, and fails to link.
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]
