@@ -119,11 +119,13 @@ Not in M3.6: the up-to modes, through all both ways, a second side of another mo
 | a pad that doesn't touch its base | two solids in one compound (`AllowCompound` true) | refused: the result is 2 solids (S5) |
 | a pocket that cuts its base in two | two solids in one compound | refused: the result is 2 solids (S5) |
 | a pad of two regions onto a base that joins them | one solid | refused (decision 3, strict) |
-| a pad of two separate regions | two solids | refused, naming both regions (decision 3) |
+| a sketch that makes no profile (an open outline), padded by two features | measured on 1.1.3, two Bodies each padding one open sketch: the sketch stays valid, and each Pad fails alone ("Wire is not closed."), nothing against the sketch | the same, agreeing: each pad fails with one error naming it, the sketch's elements at fault and its refusals with their advice in it; nothing against the sketch, which stays solved (the milestone review's round 2) |
+| a pad of two separate regions | two solids | refused, naming the pad, and both regions' curves as its elements (decision 3) |
 | a pocket of two separate regions | both cut | the same |
 | a revolution of two separate regions | two solids | refused, naming both (decision 3) |
 | a revolve angle of 0, or above 360 | refused ("too small", "too large") | refused by the gate |
 | an angle that moves the profile's far point less than 1e-7 | built if above 1e-12 rad | refused, as M1's revolve |
+| an angle short of 360° by so little its slit is within 1e-7 where it's narrowest, at the profile's nearest point off the axis, over every region and hole (a curve end, or an arc's or circle's nearest point; the farthest only if none is off it) (359.999999999° on a profile 2 to 4 from the axis, a slit of 3.5e-11) | built: a valid open turn of 6 faces, its two ends within the tolerance of each other; a pocket across it is accepted, but `Shape.check(True)` calls the result self-intersecting (`BOPAlgo` SelfIntersect). FreeCAD checks only the angle, above `Precision::Angular()` (`3694da3102`, `c0de42335b`) and at most 360° (measured on 1.1.3) | refused, naming `extent.angle`, with the advice to use 360° for a whole turn: ends within the tolerance are one place, as on the near-0 side (`silico_protocol::end_at_start`, M1's revolve's rule too). Within 1e-12 rad of 360° is a whole turn to OCCT, and built as one |
 | an axis perpendicular to the sketch | `N_Axis` isn't checked; an edge is refused | not expressible: every axis is a line of the sketch |
 | an axis line whose solved ends coincide | OCCT throws on the null direction | refused in the core, `invalid_input`, parameter `axis` (S6) |
 | an axis crossing the profile | "Revolve axis intersects the sketch", by sampling each face's outer wire | refused exactly, region by region, naming the crossing region's curves off the axis and the axis line (S6) |

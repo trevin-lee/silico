@@ -182,9 +182,26 @@ impl Draw {
         })
     }
 
-    /// The profile from `solution`, of the sketch the gate takes.
+    /// The document of this one sketch, stored with its points spread 10 mm apart on a grid
+    /// and its circles of radius 1, through the gate: its elements and how they join, as
+    /// drawn, with nothing the gate refuses as too small. The profile takes the sketch's
+    /// shape from the solution alone, so this is how its own rules are tested on what a
+    /// solve might give, the gate's floor aside (a solve under it isn't kept).
+    pub fn structure(&self) -> Result<Checked, Invalid> {
+        let mut sketch = self.sketch.clone();
+        for (k, point) in sketch.points.iter_mut().enumerate() {
+            point.x = coordinate(10.0 * (k % 100) as f64 + 10.0);
+            point.y = coordinate(10.0 * (k / 100) as f64 + 10.0);
+        }
+        for circle in &mut sketch.circles {
+            circle.radius = coordinate(1.0);
+        }
+        Draw { sketch, count: 0 }.checked()
+    }
+
+    /// The profile from `solution`, of the sketch's structure the gate takes.
     pub fn profile_from(&self, solution: &SketchSolution) -> Result<Profile, Refused> {
-        let checked = match self.checked() {
+        let checked = match self.structure() {
             Ok(c) => c,
             Err(invalid) => panic!("the gate refuses the sketch: {:#?}", invalid.errors()),
         };
@@ -216,6 +233,15 @@ impl Draw {
                     assert!(e.suggestion().is_some(), "{e}");
                 }
                 assert_eq!(r.total(), r.errors().len() as u64);
+                // Every refusal listed: the elements at fault are theirs, all of them.
+                let union: BTreeSet<String> = r
+                    .errors()
+                    .iter()
+                    .flat_map(|e| e.elements().iter().cloned())
+                    .collect();
+                assert_eq!(r.elements_total(), union.len() as u64);
+                let listed: Vec<String> = union.into_iter().take(100).collect();
+                assert_eq!(r.elements(), listed);
                 r.errors().to_vec()
             }
         }

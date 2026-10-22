@@ -479,12 +479,13 @@ fn a_thousand_corner_profile_extrudes_and_revolves_in_reasonable_time() {
 #[test]
 fn a_revolve_a_hair_short_of_a_turn_is_the_turn_it_says() {
     // A unit square from x = 1 about y by 360 − ε: a partial turn with a slit between its
-    // ends, as FreeCAD's is, and its volume θ · 1.5. Within OCCT's angular tolerance of a
-    // turn (1e-12 radians, 5.73e-11 degrees), OCCT makes it a full one, without ends.
+    // ends, as FreeCAD's is, and its volume θ · 1.5, once the slit where it's narrowest, at
+    // its near corners, 1 off the axis, is wider than 1e-7 (ε above 1e-7 · 180 / π =
+    // 5.730e-6 degrees: 6e-6 leaves 1.047e-7). Within OCCT's angular tolerance of a turn
+    // (1e-12 radians, 5.73e-11 degrees), OCCT makes it a full one, without ends.
     for (angle, ends) in [
         (360.0 - 1e-5, (1, 1)),
-        (360.0 - 1e-6, (1, 1)),
-        (360.0 - 1e-10, (1, 1)),
+        (360.0 - 6e-6, (1, 1)),
         (360.0 - 1e-12, (0, 0)),
         (359.999_999_999_999_94, (0, 0)),
     ] {
@@ -501,15 +502,28 @@ fn a_revolve_a_hair_short_of_a_turn_is_the_turn_it_says() {
         let got = (b.history.ends.start.len(), b.history.ends.end.len());
         assert_eq!(got, ends, "{angle}");
     }
+    // Short by less, the slit at the near corners is within the tolerance (5.7e-6 degrees
+    // leaves 9.95e-8, 3e-6 5.2e-8, though 1.047e-7 at the far corners, 1e-6 1.7e-8): its
+    // ends are one place there, which OCCT would build as two, so it's refused.
+    for angle in [360.0 - 5.7e-6, 360.0 - 3e-6, 360.0 - 1e-6, 360.0 - 1e-10] {
+        let err = revolve(&rect(1.0, 0.0, 1.0, 1.0), &axis([0.0; 3], Y), angle)
+            .err()
+            .unwrap_or_else(|| panic!("{angle}: built"));
+        assert!(
+            err.message().contains("its ends would be one place"),
+            "{angle}: {err}"
+        );
+    }
 }
 
 #[test]
 fn a_cut_across_where_a_nearly_full_turn_would_leave_its_gap_removes_what_it_covers() {
-    // A ring from a unit square at x = 1..2 about y by 360 − 1e-6 leaves a slit of 3.5e-8;
-    // a box (0.5 × 0.5 × 1 = 0.25) across it lies wholly inside the ring, so the cut
-    // removes exactly 0.25. (OCCT 8.0.1 removed nothing, a regression from the 7.9.3 that
-    // Silico and FreeCAD's oracle run.)
-    let ring = revolve(&rect(1.0, 0.0, 1.0, 1.0), &axis([0.0; 3], Y), 360.0 - 1e-6).unwrap();
+    // A ring from a unit square at x = 1..2 about y by 360 − 6e-6 leaves a slit of
+    // 1.047e-7 at its near corners, about the narrowest the rules take (one within 1e-7 is
+    // refused); a box (0.5 × 0.5 × 1 = 0.25) across it lies wholly inside the ring, so the
+    // cut removes exactly 0.25. (OCCT 8.0.1 removed nothing, a regression from the 7.9.3
+    // that Silico and FreeCAD's oracle run.)
+    let ring = revolve(&rect(1.0, 0.0, 1.0, 1.0), &axis([0.0; 3], Y), 360.0 - 6e-6).unwrap();
     let block = silico_kernel::make(&silico_kernel::Primitive::Box {
         dx: 0.5,
         dy: 0.5,
@@ -578,7 +592,8 @@ fn a_cut_across_a_large_nearly_full_ring_removes_what_it_covers() {
     // FreeCAD's oracle run, cuts them right. A 0.5 × 0.5 × 1 box across the slit, wholly
     // inside the ring: 0.25.
     for (x0, width, short, at) in [
-        (1.0, 9.0, 1e-6, 1.2),
+        // At 1e-6 short the slit at x = 1 is 1.7e-8, one place, and refused (RR2).
+        (1.0, 9.0, 6e-6, 1.2),
         (100.0, 100.0, 1e-7, 120.0),
         (100.0, 100.0, 3e-7, 120.0),
         (1000.0, 1000.0, 1e-8, 1200.0),
@@ -885,6 +900,15 @@ proptest! {
         // Turns that move the profile less than (ten times) the tolerance are refused, rightly.
         let reach = flat.iter().map(|p| p[0].abs()).fold(0.0, f64::max);
         prop_assume!(reach * angle.to_radians() > 1e-6);
+        // So are turns short of a whole one whose slit is within the tolerance where it's
+        // narrowest: at the nearest corner off the axis, or the farthest if none is
+        // (a_revolves_slit_is_measured_at_the_profiles_nearest_corner).
+        let at = flat
+            .iter()
+            .map(|p| p[0].abs())
+            .filter(|&d| d > 1e-7)
+            .fold(reach, f64::min);
+        prop_assume!(angle == 360.0 || at * (360.0 - angle).to_radians() > 1e-7);
         let place = |p: [f64; 3]| {
             let p = angles.map_or(p, |a| rotate(p, a));
             [p[0] + offset[0], p[1] + offset[1], p[2] + offset[2]]

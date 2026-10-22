@@ -49,9 +49,9 @@ pub use sketch::{
     squared_distance, unbuildable, within_reach,
 };
 pub use sweep::{
-    ANGULAR_TOLERANCE, MEASURE_PRECISION, SweepKind, THROUGH_ALL_FACTOR, check_axis_in_plane,
-    check_leaves_plane, check_prism, check_revolution, check_through_all, is_whole_turn,
-    through_all_length,
+    ANGULAR_TOLERANCE, EndAtStart, MEASURE_PRECISION, SlitAt, SweepKind, THROUGH_ALL_FACTOR,
+    check_axis_in_plane, check_leaves_plane, check_prism, check_revolution, check_through_all,
+    end_at_start, is_whole_turn, slit_radius, through_all_length,
 };
 
 /// The file descriptor a worker inherits its end of the socket pair as.

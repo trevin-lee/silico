@@ -624,7 +624,20 @@ fn sizes_and_places_past_a_kilometre_or_at_zero_are_refused() {
         "points.0.x",
         "points.0.x is 1000000.0000000001 mm, farther from the sketch's origin than the 1000000 mm (a kilometre) a point may be",
     );
-    for (radius, shown) in [("0", "0"), ("-1", "-1"), ("1000001", "1000001")] {
+    for (radius, message) in [
+        (
+            "0",
+            "circle ca000000's radius is 0 mm: arcs and circles have a radius above 1e-7 mm, as the kernel measures them",
+        ),
+        (
+            "-1",
+            "circle ca000000's radius is -1 mm: arcs and circles have a radius above 1e-7 mm, as the kernel measures them",
+        ),
+        (
+            "1000001",
+            "circles.0.radius is 1000001 mm: a circle's radius is at most 1000000 mm (a kilometre)",
+        ),
+    ] {
         let text = document(&fields(
             POINTS,
             "",
@@ -634,13 +647,7 @@ fn sizes_and_places_past_a_kilometre_or_at_zero_are_refused() {
             "",
             "",
         ));
-        assert_error(
-            &problem(&text),
-            "circles.0.radius",
-            &format!(
-                "circles.0.radius is {shown} mm: a circle's radius is above 0 and at most 1000000 mm (a kilometre)"
-            ),
-        );
+        assert_error(&problem(&text), "circles.0.radius", message);
     }
 }
 

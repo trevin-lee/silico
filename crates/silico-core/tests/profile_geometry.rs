@@ -1083,3 +1083,138 @@ fn arcs_far_out_whose_circles_but_not_both_arcs_near_each_other_are_apart() {
         assert_eq!(d.made().regions.len(), 2, "{c1:?}");
     }
 }
+
+#[test]
+fn a_hole_whose_probe_ray_passes_a_corner_of_a_hexagon_is_a_hole() {
+    // A regular hexagon of circumradius 10 about the origin, a corner at (10, 0), and a
+    // circle r 2 at its centre. The circle's probe, (2, 0), is level with that corner: its
+    // ray along +x passes through the corner, where two sides meet, one from below and one
+    // above. Counted once (an end on the ray counts as below it), the circle is a hole.
+    // Area by hand: the hexagon's (3 sqrt 3 / 2) 10^2 = 150 sqrt 3, less the circle's 4 pi.
+    let mut d = Draw::new();
+    let h = 5.0 * 3f64.sqrt();
+    d.polygon(&[
+        (10.0, 0.0),
+        (5.0, h),
+        (-5.0, h),
+        (-10.0, 0.0),
+        (-5.0, -h),
+        (5.0, -h),
+    ]);
+    d.circle(0.0, 0.0, 2.0);
+    let p = d.made();
+    assert_eq!(p.regions.len(), 1, "{p:#?}");
+    assert_eq!(p.regions[0].holes.len(), 1);
+    let want = 150.0 * 3f64.sqrt() - 4.0 * PI;
+    assert!(
+        close(p.regions[0].area(), want, 1e-12),
+        "{}",
+        p.regions[0].area()
+    );
+}
+
+#[test]
+fn a_hole_whose_probe_ray_passes_an_l_outlines_inner_corner_is_a_hole() {
+    // An L: (0, 0), (10, 0), (10, 5), (5, 5), (5, 10), (0, 10); its inner corner is (5, 5).
+    // A 2 x 2 square hole drawn from (1, 5): its probe, (1, 5), is level with the inner
+    // corner, so its ray along +x passes through that corner and runs along the side from
+    // (5, 5) to (10, 5), ending on the outer corner (10, 5). Counted once (the side up from
+    // the inner corner), the square is a hole. Area by hand: 10 x 5 + 5 x 5 = 75, less 4.
+    let mut d = Draw::new();
+    d.polygon(&[
+        (0.0, 0.0),
+        (10.0, 0.0),
+        (10.0, 5.0),
+        (5.0, 5.0),
+        (5.0, 10.0),
+        (0.0, 10.0),
+    ]);
+    d.rectangle(1.0, 5.0, 3.0, 7.0);
+    let p = d.made();
+    assert_eq!(p.regions.len(), 1, "{p:#?}");
+    assert_eq!(p.regions[0].holes.len(), 1);
+    assert!(
+        close(p.regions[0].area(), 71.0, 1e-12),
+        "{}",
+        p.regions[0].area()
+    );
+}
+
+#[test]
+fn every_curve_of_every_crossing_is_at_fault_though_only_a_hundred_are_listed() {
+    // Six thin bars across x (y 10i to 10i + 1, x -5 to 200) and five down y (x 10j + 3 to
+    // 10j + 4, y -5 to 200): each bar across meets each bar down where their long sides
+    // cross, 2 × 2 = 4 crossings a pair, 30 pairs, 120 crossings; their short sides lie
+    // beyond the others. The crossings listed are the first hundred by ID, all of the first
+    // five bars across; the sixth's two long sides cross only in the twenty past them, and
+    // are at fault too: 6 × 2 + 5 × 2 = 22 curves.
+    let mut d = Draw::new();
+    for i in 0..6 {
+        let y = 10.0 * f64::from(i);
+        d.rectangle(-5.0, y, 200.0, y + 1.0);
+    }
+    for j in 0..5 {
+        let x = 10.0 * f64::from(j) + 3.0;
+        d.rectangle(x, -5.0, x + 1.0, 200.0);
+    }
+    let refused = d.profile().unwrap_err();
+    assert_eq!((refused.errors().len(), refused.total()), (100, 120));
+    assert_eq!(refused.elements_total(), 22);
+    assert_eq!(refused.elements().len(), 22);
+}
+
+#[test]
+fn an_end_near_a_curve_past_the_hundredth_meeting_names_its_point_too() {
+    // A bar (y 0..1, x -5..200) and 51 triangles above it, each its apex 5e-8 over the
+    // bar's top at (3i + 1, 1 + 5e-8) and its base at y = 3: each apex is an end of two
+    // sides within the tolerance of the bar's top, two meetings a triangle, 102. The first
+    // hundred are listed; the last triangle's two are past them, and name its sides and its
+    // apex too. At fault: the bar's top, and each triangle's two sides and apex,
+    // 1 + 51 × 3 = 154.
+    let mut d = Draw::new();
+    d.rectangle(-5.0, 0.0, 200.0, 1.0);
+    for i in 0..51 {
+        let x = 3.0 * f64::from(i);
+        d.polygon(&[(x + 1.0, 1.0 + 5e-8), (x + 2.0, 3.0), (x, 3.0)]);
+    }
+    let refused = d.profile().unwrap_err();
+    assert_eq!((refused.errors().len(), refused.total()), (100, 102));
+    assert_eq!(refused.elements_total(), 154);
+}
+
+#[test]
+fn meetings_found_out_of_id_order_still_name_every_part_of_those_dropped() {
+    // The bar and 51 triangles of
+    // an_end_near_a_curve_past_the_hundredth_meeting_names_its_point_too, the triangles
+    // drawn right to left: the sweep across x meets the leftmost first, whose IDs are the
+    // last, and keeps them until lower IDs push them out of the hundred. Those pushed out
+    // name their parts too: 1 + 51 × 3 = 154.
+    let mut d = Draw::new();
+    d.rectangle(-5.0, 0.0, 200.0, 1.0);
+    let mut sides = Vec::new();
+    for i in (0..51).rev() {
+        let x = 3.0 * f64::from(i);
+        sides.push(d.polygon(&[(x + 1.0, 1.0 + 5e-8), (x + 2.0, 3.0), (x, 3.0)]));
+    }
+    let refused = d.profile().unwrap_err();
+    assert_eq!((refused.errors().len(), refused.total()), (100, 102));
+    assert_eq!(refused.elements_total(), 154);
+    // The hundred listed are the lowest by ID: the first-drawn triangle's two sides from
+    // its apex and the apex (the bar's 8 IDs, then its points p0000009 to p0000011, then
+    // its sides n0000012 to n0000014) are listed; the last-drawn's (its apex p0000309,
+    // 9 + 50 × 6) are in no listed refusal.
+    let listed: std::collections::BTreeSet<&str> = refused
+        .errors()
+        .iter()
+        .flat_map(|e| e.elements().iter().map(String::as_str))
+        .collect();
+    let (first, last) = (&sides[0], &sides[50]);
+    assert_eq!(first, &["n0000012", "n0000013", "n0000014"]);
+    assert_eq!(last, &["n0000312", "n0000313", "n0000314"]);
+    for id in ["p0000009", "n0000012", "n0000014"] {
+        assert!(listed.contains(id), "{id}");
+    }
+    for id in ["p0000309", "n0000312", "n0000314"] {
+        assert!(!listed.contains(id), "{id}");
+    }
+}

@@ -494,8 +494,8 @@ fn two_lengths_a_nanometre_apart_conflict_within_a_metres_extent_and_agree_past_
 // --- Lines of no size to speak of -----------------------------------------------------------
 
 /// A line from the origin (held on both axes) to (len, 0), horizontal, at `angle` degrees
-/// to x_axis as well.
-fn tiny_line(len: f64, angle: f64) -> Checked {
+/// to x_axis as well, as its file writes it.
+fn tiny_line_text(len: f64, angle: f64) -> String {
     let points = vec![point("p0000001", 0.0, 0.0), point("p0000002", len, 0.0)];
     let lines = vec![line("n0000001", "p0000001", "p0000002")];
     let constraints = vec![
@@ -509,14 +509,35 @@ fn tiny_line(len: f64, angle: f64) -> Checked {
             ),
         ),
     ];
-    checked(&text(&points, &lines, &[], &[], &constraints))
+    text(&points, &lines, &[], &[], &constraints)
+}
+
+/// [`tiny_line_text`], gated.
+fn tiny_line(len: f64, angle: f64) -> Checked {
+    checked(&tiny_line_text(len, angle))
+}
+
+/// That the gate refuses [`tiny_line_text`]: its line is 1e-7 mm long or less, no size to
+/// the kernel (the gate's floor), named by its field.
+#[track_caller]
+fn too_small_to_draw(len: f64, angle: f64) {
+    let refused = saves::checked(&tiny_line_text(len, angle)).unwrap_err();
+    assert!(
+        refused.contains("parameter: Some(\"lines.0.to\")")
+            && refused.contains(&format!("line n0000001 is {len:e} mm long")),
+        "{len:e}: {refused}"
+    );
 }
 
 #[test]
 fn tiny_lines_horizontal_and_at_no_angle_agree() {
-    // Agreeing redundancy at every scale the gate takes (1e-150 squares to 1e-300, above 0).
+    // Agreeing redundancy at every scale the gate takes: above its floor, 1e-7 mm. At or
+    // under it (1e-12 now among them), the gate refuses the line before any solve.
     let mut w = worker();
-    for len in [1.0, 1e-6, 1e-12, 1e-50, 1e-100, 1e-150] {
+    for len in [1e-7, 1e-12, 1e-50, 1e-100, 1e-150] {
+        too_small_to_draw(len, 0.0);
+    }
+    for len in [1.0, 1e-6] {
         let s = solved(&tiny_line(len, 0.0), &mut w)
             .unwrap_or_else(|e| panic!("{len}: {e} {:?}", e.elements()));
         assert_eq!(at(&s, "p0000002")[1], 0.0, "{len}");
@@ -605,32 +626,22 @@ fn a_point_715_mm_along_held_a_micrometre_off_is_kept_and_two_off_is_refused() {
 
 #[test]
 fn tiny_lines_name_one_redundant_constraint_and_one_freedom() {
-    // RECORDED BEHAVIOUR, not a claim that it's right (for the M3 review): below about
-    // 1e-13 mm (1e-50, 1e-100, 1e-150 here) PlaneGCS says dofs 3, and names k0000002
-    // (p0000001 on y_axis) redundant beside the angle. The angle's Jacobian row scales as
-    // 1/length (1e50), so the rank check, relative to the largest pivot, takes the unit rows
-    // for zero: a point held on both axes is called free. Not decision 5's (every gap is 0);
-    // PlaneGCS's diagnosis (1.1.3 does the same), on a line no file dimension can state,
-    // which the gate's "no length" (a squared distance of 0) lets through. Pinned so a
-    // solver change is noticed; a gate floor on a drawn line's length is the M3 review's.
+    // Below about 1e-13 mm PlaneGCS said dofs 3, and named k0000002 (p0000001 on y_axis)
+    // redundant beside the angle: the angle's Jacobian row scales as 1/length, so the rank
+    // check, relative to the largest pivot, took the unit rows for zero, and a point held on
+    // both axes was called free (1.1.3 does the same). The gate's floor, a drawn size above
+    // 1e-7 mm (the M3 review, round 1), now refuses such a line before any solve. Above it,
     // p0000001 held on both axes (2 rows, 2 unknowns), the line horizontal and at 0° (2
     // rows, one unknown: the end's y): one constraint redundant, the end's x free.
     let mut w = worker();
-    let named = |s: &SketchSolution| {
-        let ids: Vec<&str> = s.redundant.keys().map(|id| id.as_str()).collect();
-        (s.dofs, ids.join(" "))
-    };
-    for len in [1.0, 1e-6, 1e-12] {
+    for len in [1.0, 1e-6] {
         let s = solved(&tiny_line(len, 0.0), &mut w).unwrap();
         assert_eq!((s.dofs, s.redundant.len()), (1, 1), "{len:e} mm: {s:?}");
     }
-    for len in [1e-50, 1e-100, 1e-150] {
-        let s = solved(&tiny_line(len, 0.0), &mut w).unwrap();
-        assert_eq!(
-            named(&s),
-            (3, "k0000002 k0000004".to_owned()),
-            "{len:e} mm: {s:?}"
-        );
+    // The gate's floor (the M3 review, round 1) now refuses these before PlaneGCS sees them:
+    // the 1e-12 arm, which PlaneGCS counted right, and the arms it miscounted.
+    for len in [1e-12, 1e-50, 1e-100, 1e-150] {
+        too_small_to_draw(len, 0.0);
     }
 }
 
@@ -639,10 +650,14 @@ fn tiny_lines_horizontal_and_at_thirty_degrees_conflict() {
     // A line can't be horizontal and at 30° to x. On a 1 mm line it's refused; the question
     // is where that stops. At 1e-8 mm and below the dropped constraint's gap (the rise, or
     // 0.52 rad × the length) is under 1e-8 mm, decision 5's ε, and PlaneGCS's own check is
-    // under 1e-5: a sketch claiming both is kept, "met".
+    // under 1e-5: a sketch claiming both is kept, "met". The gate's floor (1e-7 mm, the M3
+    // review) now refuses 1e-8 and under before any solve; above it, each is refused.
+    for len in [1e-8, 1e-12, 1e-100, 1e-150] {
+        too_small_to_draw(len, 30.0);
+    }
     let mut w = worker();
     let mut kept = Vec::new();
-    for len in [1.0, 1e-3, 1e-6, 1e-8, 1e-12, 1e-100, 1e-150] {
+    for len in [1.0, 1e-3, 1e-6] {
         match solved(&tiny_line(len, 30.0), &mut w) {
             Ok(s) => kept.push(format!(
                 "{len} mm: Ok, end at {:?}, redundant {:?}",
@@ -658,6 +673,97 @@ fn tiny_lines_horizontal_and_at_thirty_degrees_conflict() {
     }
     // Survives: every length is refused, so no line is kept horizontal and at 30° at once.
     assert!(kept.is_empty(), "{}", kept.join("\n"));
+}
+
+#[test]
+fn a_one_nanometre_line_solved_from_any_start_is_kept_clear_of_the_floor() {
+    // The format reviewer's case (M3, round 1): a line from the origin with a driving
+    // length of 1 nm, the smallest the file states, at 30° to x, drawn from four starts.
+    // A solve lands on 1e-6 only to rounding (9.999999999999997e-7 from three of them),
+    // which a floor at 1 nm would refuse; the gate's floor, 1e-7 mm, is ten times under it.
+    let mut w = worker();
+    for start in [
+        (1.3e-6, 2e-7),
+        (7e-7, 4e-7),
+        (1.1e-6, -3e-7),
+        (9.3e-7, 1e-8),
+    ] {
+        let points = vec![
+            point("pa000001", 0.0, 0.0),
+            point("pa000002", start.0, start.1),
+        ];
+        let lines = vec![line("na000001", "pa000001", "pa000002")];
+        let mut constraints = fix(1, "pa000001", 0.0, 0.0).to_vec();
+        constraints.push(k(
+            3,
+            r#""type": "length", "line": "na000001", "value": 0.000001, "driving": true"#,
+        ));
+        constraints.push(k(
+            4,
+            r#""type": "angle", "a": "x_axis", "b": "na000001", "value": 30, "driving": true"#,
+        ));
+        let doc = checked(&text(&points, &lines, &[], &[], &constraints));
+        let s = save_and_load(&doc, &mut w).unwrap_or_else(|e| panic!("{start:?}: {e}"));
+        let [x, y] = at(&s, "pa000002");
+        let length = libm::hypot(x, y);
+        assert!((length - 1e-6).abs() <= 1e-21, "{start:?}: {length:e}");
+    }
+}
+
+#[test]
+fn two_lines_a_nanodegree_apart_joined_are_refused_naming_the_joining_line() {
+    // Two 1 mm lines from the origin, one along x and one at 1e-9° to it, their far ends
+    // joined by a third line, drawn wide open (to (1, 0.5)). The solve draws the third
+    // 2 sin(θ/2) long, θ = 1e-9° = 1.745e-11 rad: 1.745e-11 mm, under the kernel's 1e-7
+    // mm, so the solve's geometry is one the file can't hold: an invalid result, naming the
+    // joining line and its ends, with the gate's advice.
+    let points = vec![
+        point("p0000001", 0.0, 0.0),
+        point("p0000002", 1.0, 0.0),
+        point("p0000003", 1.0, 0.5),
+    ];
+    let lines = vec![
+        line("n0000001", "p0000001", "p0000002"),
+        line("n0000002", "p0000001", "p0000003"),
+        line("n0000003", "p0000002", "p0000003"),
+    ];
+    let mut constraints = fix(1, "p0000001", 0.0, 0.0).to_vec();
+    constraints.push(k(3, r#""type": "horizontal", "line": "n0000001""#));
+    constraints.push(k(
+        4,
+        r#""type": "length", "line": "n0000001", "value": 1, "driving": true"#,
+    ));
+    constraints.push(k(
+        5,
+        r#""type": "length", "line": "n0000002", "value": 1, "driving": true"#,
+    ));
+    constraints.push(k(
+        6,
+        r#""type": "angle", "a": "x_axis", "b": "n0000002", "value": 0.000000001, "driving": true"#,
+    ));
+    let doc = checked(&text(&points, &lines, &[], &[], &constraints));
+    let e = solved(&doc, &mut worker()).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::InvalidResult, "{e}");
+    assert_eq!(e.elements(), ["n0000003", "p0000002", "p0000003"], "{e}");
+    assert!(
+        e.message()
+            .starts_with("the sketch solves to geometry its file can't hold: line n0000003 is "),
+        "{e}"
+    );
+    let length: f64 = e
+        .message()
+        .split("line n0000003 is ")
+        .nth(1)
+        .and_then(|m| m.split(' ').next())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(f64::NAN);
+    // The solve meets the angle only to its convergence, 1e-10 rad, on a 1 mm lever (here
+    // 1.607e-11 for the hand 1.745e-11): above 0, and at most the hand length and that.
+    assert!(length > 0.0 && length <= 1.745e-11 + 1e-10, "{e}");
+    assert_eq!(
+        e.suggestion(),
+        Some("change the constraints that draw it this small: draw the line's ends further apart")
+    );
 }
 
 proptest! {

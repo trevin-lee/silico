@@ -3,9 +3,10 @@
 //! naming the field and the element.
 //! - Every ID is unique within its sketch; every reference names an element of a kind its
 //!   place takes.
-//! - Nothing is drawn with no size as the solver measures it (a line's or an arc's radius
-//!   as the square root of dx² + dy²), or past what it takes (an arc's radius, center to
-//!   start, within a kilometre).
+//! - Nothing is drawn with no size as the kernel measures it (a line's ends, a circle's
+//!   radius, an arc's center to its start and to its end, and its chord, each at most
+//!   1e-7 mm, `LENGTH_TOLERANCE`, by `Curve::size_problem` as the profile converts it), or
+//!   past what the solver takes (an arc's radius, center to start, within a kilometre).
 //! - A curve's own point isn't constrained onto it, curves sharing an end are tangent only
 //!   there (`tangent_at`), and forms that take two elements get two.
 //! - Driving dimensions are above 0 (unless signed) and within a kilometre; reference ones
@@ -19,12 +20,49 @@
 use std::collections::BTreeMap;
 
 use silico_protocol::{
-    MAX_LENGTH, MAX_SKETCH_CONSTRAINTS, MAX_SKETCH_GEOMETRY, MAX_SKETCH_UNKNOWNS,
-    MAX_SKETCH_VALUES, format_number, no_distance, squared_distance,
+    LENGTH_TOLERANCE, MAX_LENGTH, MAX_SKETCH_CONSTRAINTS, MAX_SKETCH_GEOMETRY, MAX_SKETCH_UNKNOWNS,
+    MAX_SKETCH_VALUES, SizeProblem, format_number, squared_distance,
 };
 
 use super::sketch::{ElementId, ElementKind, Form, Reference, Sketch, Takes, TangentSide};
 use crate::Error;
+use crate::profile::{Drawn, sent, unsigned};
+
+/// What a line or arc too small is refused for: its ends within the kernel's tolerance.
+const ENDS_RULE: &str =
+    "lines and arcs are longer than 1e-7 mm between their ends, as the kernel measures them";
+
+/// What a circle or arc too small is refused for: its radius within the kernel's tolerance.
+const RADIUS_RULE: &str =
+    "arcs and circles have a radius above 1e-7 mm, as the kernel measures them";
+
+/// Whether `error` is the gate's refusal of a curve too small ([`ENDS_RULE`],
+/// [`RADIUS_RULE`]).
+pub(crate) fn too_small(error: &Error) -> bool {
+    let message = error.message();
+    message.ends_with(ENDS_RULE) || message.ends_with(RADIUS_RULE)
+}
+
+/// What's too small about a curve drawn as `drawn`, measured as the kernel request measures
+/// it ([`silico_protocol::Curve::size_problem`]), after the profile's own conversion
+/// ([`sent`]): at most [`LENGTH_TOLERANCE`] is no size. None for an arc whose points make
+/// none (its ends at one angle from its centre), which the gate refuses otherwise or leaves
+/// to the solve.
+fn size_problem(drawn: Drawn) -> Option<SizeProblem> {
+    let drawn = match drawn {
+        Drawn::Line { from, to } => Drawn::Line {
+            from: unsigned(from),
+            to: unsigned(to),
+        },
+        Drawn::Arc { center, start, end } => Drawn::Arc {
+            center: unsigned(center),
+            start: unsigned(start),
+            end: unsigned(end),
+        },
+        circle @ Drawn::Circle { .. } => circle,
+    };
+    sent(drawn, false)?.size_problem()
+}
 
 /// The largest angle a constraint may have, either way, in degrees.
 pub const MAX_ANGLE_DEGREES: i64 = 360;
@@ -109,7 +147,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
         Some(Place {
             kind: ElementKind::Point,
             index,
-        }) => sketch.points.get(index).map(|p| (p.x.mm(), p.y.mm())),
+        }) => sketch.points.get(index).map(|p| [p.x.mm(), p.y.mm()]),
         _ => None,
     };
 
@@ -154,25 +192,27 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                 "end the line at another point".to_owned(),
             ));
         } else if let (Some(a), Some(b)) = (at_of(&line.from), at_of(&line.to))
-            && no_distance([a.0, a.1], [b.0, b.1])
+            && let Some(SizeProblem::Ends(length)) = size_problem(Drawn::Line { from: a, to: b })
         {
-            // The solver works out the length as the square root of dx² + dy², so ends
-            // that close (or at one place) are a line of no length to it, which the sketch
-            // worker refuses.
+            // Ends within the kernel's tolerance are one place to it (the profile's rule):
+            // a line of no size.
             add(refuse(
                 &format!("{at}.to"),
                 format!(
-                    "line {}'s ends, points {} at ({}, {}) and {} at ({}, {}), are too close for its length to be anything but 0 to the solver",
+                    "line {} is {} mm long, from point {} at ({}, {}) to {} at ({}, {}): {ENDS_RULE}",
                     line.id,
+                    format_number(length),
                     line.from,
-                    format_number(a.0),
-                    format_number(a.1),
+                    format_number(a[0]),
+                    format_number(a[1]),
                     line.to,
-                    format_number(b.0),
-                    format_number(b.1)
+                    format_number(b[0]),
+                    format_number(b[1])
                 ),
-                "draw the line's ends apart".to_owned(),
-            ));
+                "draw the line's ends further apart".to_owned(),
+            )
+            .with_element(line.from.as_str())
+            .with_element(line.to.as_str()));
         }
     }
     for (i, circle) in sketch.circles.iter().enumerate() {
@@ -182,15 +222,28 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
         unique(ElementKind::Circle, i, &circle.id, add);
         point_of(format!("{at}.center"), &circle.center, add);
         let radius = circle.radius.mm();
-        if radius <= 0.0 || radius > MAX_LENGTH {
+        if let Some(SizeProblem::Radius(r)) = size_problem(Drawn::Circle {
+            center: [0.0, 0.0],
+            radius,
+        }) {
             add(refuse(
                 &format!("{at}.radius"),
                 format!(
-                    "{at}.radius is {} mm: a circle's radius is above 0 and at most {} mm (a kilometre)",
+                    "circle {}'s radius is {} mm: {RADIUS_RULE}",
+                    circle.id,
+                    format_number(r)
+                ),
+                "draw the circle larger".to_owned(),
+            ));
+        } else if radius > MAX_LENGTH {
+            add(refuse(
+                &format!("{at}.radius"),
+                format!(
+                    "{at}.radius is {} mm: a circle's radius is at most {} mm (a kilometre)",
                     circle.radius,
                     format_number(MAX_LENGTH)
                 ),
-                "give the circle a radius above 0".to_owned(),
+                "draw the circle smaller".to_owned(),
             ));
         }
     }
@@ -214,31 +267,42 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                 ));
             }
         }
-        // Drawn with no radius, or with one past what the solver takes: the solver works
-        // out the radius from the center to the start (D2, arcs), as the square root of
-        // dx² + dy², and an end with no distance from the center has no angle.
+        // Drawn with no size as the kernel measures it, or with a radius past what the
+        // solver takes: the radius is the center's distance to the start (D2, arcs), and
+        // an end within the tolerance of the center is at it, with no angle.
+        let mut sized = true;
         if let Some(c) = at_of(&arc.center) {
             for (key, id) in [("start", &arc.start), ("end", &arc.end)] {
-                if *id != arc.center
-                    && let Some(p) = at_of(id)
-                    && no_distance([c.0, c.1], [p.0, p.1])
-                {
+                if *id == arc.center {
+                    sized = false;
+                    continue;
+                }
+                let Some(p) = at_of(id) else {
+                    continue;
+                };
+                let length = silico_protocol::distance(c, p);
+                if length <= LENGTH_TOLERANCE {
+                    sized = false;
                     add(refuse(
                         &format!("{at}.{key}"),
                         format!(
-                            "arc {}'s {key}, point {id} at ({}, {}), is too close to its center at ({}, {}) for its radius to be anything but 0 to the solver",
+                            "arc {}'s {key}, point {id} at ({}, {}), is {} mm from its center, point {} at ({}, {}): {RADIUS_RULE}",
                             arc.id,
-                            format_number(p.0),
-                            format_number(p.1),
-                            format_number(c.0),
-                            format_number(c.1)
+                            format_number(p[0]),
+                            format_number(p[1]),
+                            format_number(length),
+                            arc.center,
+                            format_number(c[0]),
+                            format_number(c[1])
                         ),
                         format!("draw the arc's {key} away from its center"),
-                    ));
+                    )
+                    .with_element(id.as_str())
+                    .with_element(arc.center.as_str()));
                 }
             }
             if let Some(p) = at_of(&arc.start) {
-                let radius = squared_distance([c.0, c.1], [p.0, p.1]).sqrt();
+                let radius = squared_distance(c, p).sqrt();
                 if radius > MAX_LENGTH {
                     add(refuse(
                         &format!("{at}.start"),
@@ -254,20 +318,50 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
         }
         if arc.start != arc.end
             && let (Some(a), Some(b)) = (at_of(&arc.start), at_of(&arc.end))
-            && a == b
         {
-            add(refuse(
-                &format!("{at}.end"),
-                format!(
-                    "arc {}'s start and end, points {} and {}, are both drawn at ({}, {}), so its sweep is 0 or a whole turn (a whole circle is a circle)",
-                    arc.id,
-                    arc.start,
-                    arc.end,
-                    format_number(a.0),
-                    format_number(a.1)
-                ),
-                "draw the arc's end away from its start, or draw a circle".to_owned(),
-            ));
+            if a == b {
+                add(refuse(
+                    &format!("{at}.end"),
+                    format!(
+                        "arc {}'s start and end, points {} and {}, are both drawn at ({}, {}), so its sweep is 0 or a whole turn (a whole circle is a circle)",
+                        arc.id,
+                        arc.start,
+                        arc.end,
+                        format_number(a[0]),
+                        format_number(a[1])
+                    ),
+                    "draw the arc's end away from its start, or draw a circle".to_owned(),
+                ));
+            } else if sized
+                && let Some(center) = at_of(&arc.center)
+                && let Some(problem) = size_problem(Drawn::Arc {
+                    center,
+                    start: a,
+                    end: b,
+                })
+            {
+                let message = match problem {
+                    SizeProblem::Ends(d) => format!(
+                        "arc {}'s ends, points {} and {}, are {} mm apart: {ENDS_RULE}",
+                        arc.id,
+                        arc.start,
+                        arc.end,
+                        format_number(d)
+                    ),
+                    SizeProblem::Radius(r) => format!(
+                        "arc {}'s radius is {} mm: {RADIUS_RULE}",
+                        arc.id,
+                        format_number(r)
+                    ),
+                };
+                add(refuse(
+                    &format!("{at}.end"),
+                    message,
+                    "draw a circle instead, or open the arc".to_owned(),
+                )
+                .with_element(arc.start.as_str())
+                .with_element(arc.end.as_str()));
+            }
         }
         if start && end && arc.start == arc.end && arc.start != arc.center {
             add(refuse(

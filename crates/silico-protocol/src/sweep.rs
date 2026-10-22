@@ -212,6 +212,75 @@ pub fn is_whole_turn(angle: f64) -> bool {
     (angle - TAU).abs() <= ANGULAR_TOLERANCE
 }
 
+/// How a turn's end lies within OCCT's length tolerance of its start ([`end_at_start`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EndAtStart {
+    /// The turn moves the profile's farthest point from the axis by no more than the
+    /// tolerance: it makes no solid.
+    Unmoved,
+    /// The turn stops short of a whole one, and isn't a whole turn to OCCT
+    /// ([`is_whole_turn`]), leaving a slit of `slit` mm, no more than the tolerance, where
+    /// it's narrowest, at the point `at` mm from the axis: its ends are one place there, yet
+    /// OCCT builds them as two, an open ring a later cut across finds cutting itself.
+    ShortOfWhole { at: f64, slit: f64 },
+}
+
+/// Where a profile's slit is measured ([`slit_radius`]): at its nearest point off the
+/// axis, or, with none off it, at its farthest point. Callers name the curves there from
+/// which it is, so they and the rule can't disagree.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SlitAt {
+    /// The nearest point off the axis, this far from it.
+    Nearest(f64),
+    /// No point is off the axis: the farthest point, this far from it.
+    Farthest(f64),
+}
+
+impl SlitAt {
+    /// How far from the axis the slit is measured.
+    pub fn distance(self) -> f64 {
+        match self {
+            SlitAt::Nearest(d) | SlitAt::Farthest(d) => d,
+        }
+    }
+}
+
+/// Where a profile's slit is measured, given the distances from the axis of its points
+/// that could be nearest (its curves' ends, and each curve's interior point nearest the
+/// axis, where it has one: an arc's or a circle's): the nearest of them off the axis,
+/// farther than the tolerance, where a slit `r·(2π − angle)` is narrowest; or the
+/// profile's `farthest`, if none is off it. Points on the axis (within the tolerance) are
+/// left out: a curve running out from the axis has its copies meet at its end there, as
+/// every partial turn's do, and the slit beside that end is no separate place. Every
+/// region's and hole's points together, so a corner, hole, or region off the axis is
+/// measured though another touches it.
+pub fn slit_radius(distances: impl IntoIterator<Item = f64>, farthest: f64) -> SlitAt {
+    distances
+        .into_iter()
+        .filter(|&d| d > LENGTH_TOLERANCE)
+        .reduce(f64::min)
+        .map_or(SlitAt::Farthest(farthest), SlitAt::Nearest)
+}
+
+/// Whether a turn of `angle` radians (more than 0, at most a whole turn) about an axis
+/// leaves its end within OCCT's length tolerance of its start, for a profile whose farthest
+/// point is `farthest` from the axis and whose slit is measured `at` from it
+/// ([`slit_radius`]). A point `r` from the axis travels `r·angle` along its
+/// circle and stops `r·(2π − angle)` short of where it began. Points within the tolerance
+/// are one place, so the turn's ends are one if it moves the farthest point no more than
+/// that (it moves nothing), or if, short of a whole turn ([`is_whole_turn`], which has no
+/// ends), its slit is no wider than that where it's narrowest. FreeCAD checks only the
+/// angle, above `Precision::Angular()` and at most 360° (docs/ports/extrude-revolve.md).
+/// The rule for M1's revolve and for a sketch's revolve and groove alike.
+pub fn end_at_start(at: f64, farthest: f64, angle: f64) -> Option<EndAtStart> {
+    if farthest * angle <= LENGTH_TOLERANCE {
+        return Some(EndAtStart::Unmoved);
+    }
+    let slit = at * (TAU - angle);
+    (!is_whole_turn(angle) && slit <= LENGTH_TOLERANCE)
+        .then_some(EndAtStart::ShortOfWhole { at, slit })
+}
+
 /// What a sweep is, for the history it must report ([`History::sweep_fault`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SweepKind {
@@ -871,6 +940,62 @@ mod tests {
         assert!(!is_whole_turn(crate::radians(360.0 - 1e-9)));
         assert_eq!(SweepKind::of_turn(TAU), SweepKind::WholeTurn);
         assert_eq!(SweepKind::of_turn(crate::radians(90.0)), SweepKind::Turn);
+    }
+
+    #[test]
+    fn a_turn_whose_end_is_within_the_tolerance_of_its_start_either_way_is_found() {
+        // A slit measured 10 mm from the axis: 1e-7 mm of that point's circle is 1e-8
+        // radians, 572.96 nanodegrees. So 360° less 572 nanodegrees leaves 9.983e-8 mm, one
+        // place; less 573, 1.00007e-7.
+        let short = |ndeg: f64| crate::radians(360.0 - ndeg * 1e-9);
+        let narrow = |at: f64, angle: f64| match end_at_start(at, 10.0, angle) {
+            Some(EndAtStart::ShortOfWhole { at: got, slit }) => {
+                assert_eq!(got, at);
+                assert_eq!(slit, at * (TAU - angle));
+                true
+            }
+            other => {
+                assert_eq!(other, None);
+                false
+            }
+        };
+        assert!(narrow(10.0, short(572.0)));
+        assert!(narrow(10.0, short(1.0)));
+        assert!(!narrow(10.0, short(573.0)));
+        // At 5 mm the band is 3600/π = 1145.92 nanodegrees.
+        assert!(narrow(5.0, short(1145.0)));
+        assert!(narrow(5.0, short(573.0)));
+        assert!(!narrow(5.0, short(1146.0)));
+        assert!(narrow(2e-7, crate::radians(340.0)));
+        assert!(!narrow(2e-7, crate::radians(300.0)));
+        // Within OCCT's angular tolerance of a turn it's a whole turn, with no ends.
+        assert!(!narrow(5.0, TAU));
+        assert!(!narrow(5.0, TAU - 0.9e-12));
+        assert!(narrow(5.0, TAU - 2e-12));
+        // A kilometre off, 2e-12 radians short leaves its ends 2e-6 mm apart.
+        assert_eq!(end_at_start(1e6, 1e6 + 1.0, TAU - 2e-12), None);
+        // The near-0 side, at the farthest point: 572 nanodegrees moves it 9.983e-8 mm, 573
+        // 1.00007e-7.
+        assert_eq!(
+            end_at_start(5.0, 10.0, crate::radians(572e-9)),
+            Some(EndAtStart::Unmoved)
+        );
+        assert_eq!(end_at_start(5.0, 10.0, crate::radians(573e-9)), None);
+        assert_eq!(end_at_start(0.0, 1e-8, TAU), Some(EndAtStart::Unmoved));
+        // A slit is measured at the nearest point off the axis, past the tolerance, or at
+        // the farthest if none is off it.
+        assert_eq!(slit_radius([10.0, 5.0, 7.0], 10.0), SlitAt::Nearest(5.0));
+        assert_eq!(slit_radius([0.0, 10.0, 1.0], 10.0), SlitAt::Nearest(1.0));
+        assert_eq!(slit_radius([1e-7, 10.0], 10.0), SlitAt::Nearest(10.0));
+        assert_eq!(
+            slit_radius([1e-7, 1e-7f64.next_up(), 10.0], 10.0),
+            SlitAt::Nearest(1e-7f64.next_up())
+        );
+        // Every point within the tolerance of the axis, or none: at the farthest.
+        assert_eq!(slit_radius([0.0, 5e-8, 1e-7], 4.0), SlitAt::Farthest(4.0));
+        assert_eq!(slit_radius([], 4.0), SlitAt::Farthest(4.0));
+        assert_eq!(SlitAt::Farthest(4.0).distance(), 4.0);
+        assert_eq!(SlitAt::Nearest(1.0).distance(), 1.0);
     }
 
     #[test]

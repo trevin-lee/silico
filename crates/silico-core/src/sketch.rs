@@ -507,6 +507,14 @@ fn holdable(file: &Sketch) -> Result<(), Error> {
         .flat_map(|e| e.elements())
         .map(String::as_str)
         .collect();
+    // A curve the constraints draw too small takes the gate's own advice; a value at a
+    // limit, rounded past it, keeping inside it.
+    let suggestion = match first.suggestion() {
+        Some(own) if crate::document::too_small(first) => {
+            format!("change the constraints that draw it this small: {own}")
+        }
+        _ => "keep the sketch's dimensions inside their limits, not at them: a solve meets them only to rounding".to_owned(),
+    };
     let mut error = Error::new(
         ErrorCode::InvalidResult,
         format!(
@@ -515,9 +523,7 @@ fn holdable(file: &Sketch) -> Result<(), Error> {
         ),
     )
     .with_elements(elements)
-    .with_suggestion(
-        "keep the sketch's dimensions inside their limits, not at them: a solve meets them only to rounding",
-    );
+    .with_suggestion(suggestion);
     if let Some(parameter) = first.parameter() {
         error = error.with_parameter(parameter);
     }

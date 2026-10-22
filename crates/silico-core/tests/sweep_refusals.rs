@@ -1,14 +1,18 @@
 //! M3.6: what a sketch feature's rebuild refuses (docs/design/m3.6-sketch-features.md, S5 and
 //! S7), as pure functions: a pad or revolve of several regions (decision 3), a result of more
-//! than one solid, and a result whose volume shows the feature changed nothing. Each
+//! than one solid, a result whose volume shows the feature changed nothing, and a sweep of a
+//! sketch that makes no profile (S3). Each
 //! boundary from the design's own numbers: on a 1000 mm³ base, 1e-9 of it is 1e-6 mm³.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+#[path = "common/profile.rs"]
+mod draw;
 
 use silico_core::ErrorCode;
 use silico_core::document::SweepFeature;
 use silico_core::document::{ElementId, FeatureId, Plane};
 use silico_core::profile::{CurveKind, Edge, Loop, Profile, Region};
-use silico_core::sweep::{Measured, check_regions, check_result};
+use silico_core::sweep::{Measured, check_regions, check_result, unprofiled};
 use silico_protocol::{Curve, MEASURE_PRECISION};
 
 fn fid(text: &str) -> FeatureId {
@@ -332,8 +336,9 @@ fn a_pad_or_revolve_of_two_regions_is_refused_naming_every_outer_curve_and_their
     let two = regions(vec![square(1, 0.0, 10.0), square(5, 20.0, 10.0)]);
     let refused = check_profile(SweepFeature::Pad, &two).unwrap_err();
     assert_eq!(refused.code(), ErrorCode::InvalidInput);
-    // The sketch's, since that's where the regions are.
-    assert_eq!(refused.feature(), Some("s0000001"));
+    // The pad's own error; its elements the sketch's, since that's where the regions are.
+    assert_eq!(refused.feature(), Some("p0000001"));
+    assert_eq!(refused.parameter(), Some("sketch"));
     assert_eq!(
         refused.elements(),
         [
@@ -501,4 +506,192 @@ fn an_m2_boolean_of_more_than_one_solid_is_refused_naming_itself_and_the_cause()
         said(BooleanOp::Cut, 3).0,
         "cut f0000001 cuts its base b0000001 in three: the result is 3 solids"
     );
+}
+
+#[test]
+fn a_sweep_of_a_sketch_that_makes_no_profile_is_one_error_naming_it_however_many_refusals() {
+    // One open line, (0, 0) to (4, 0): its two ends, p0000001 and p0000002, are open, two
+    // refusals of three elements (the line, n0000003, and its ends); a groove of it is one
+    // error naming the groove, the sketch's elements its own, the two refusals and their
+    // advice its cause.
+    let mut d = draw::Draw::new();
+    let a = d.point(0.0, 0.0);
+    let b = d.point(4.0, 0.0);
+    d.line(&a, &b);
+    let refused = d.profile().unwrap_err();
+    assert_eq!(refused.total(), 2);
+    let error = unprofiled(
+        &fid("g0000001"),
+        SweepFeature::Groove,
+        &draw::feature(),
+        &refused,
+    );
+    assert_eq!(error.code(), ErrorCode::InvalidInput);
+    assert_eq!(error.feature(), Some("g0000001"));
+    assert_eq!(error.parameter(), Some("sketch"));
+    assert_eq!(error.elements(), ["n0000003", "p0000001", "p0000002"]);
+    assert_eq!(error.elements_total(), 3);
+    assert_eq!(
+        error.message(),
+        "groove g0000001 sweeps sketch k7f2qx3m, which makes no profile (2 refusals)"
+    );
+    let advice = "end another curve at the point to close the outline, or make the curve construction geometry";
+    assert_eq!(
+        error.cause(),
+        Some(
+            format!(
+                "point p0000001 ends line n0000003 and no other profile curve, so the profile is open there ({advice}); point p0000002 ends line n0000003 and no other profile curve, so the profile is open there"
+            )
+            .as_str()
+        )
+    );
+    assert_eq!(
+        error.suggestion(),
+        Some("fix sketch k7f2qx3m where the cause says, or sweep another sketch")
+    );
+
+    // No curves: one refusal of no elements.
+    let empty = draw::Draw::new().profile().unwrap_err();
+    let error = unprofiled(
+        &fid("p0000001"),
+        SweepFeature::Pad,
+        &draw::feature(),
+        &empty,
+    );
+    assert_eq!(
+        error.message(),
+        "pad p0000001 sweeps sketch k7f2qx3m, which makes no profile (1 refusal)"
+    );
+    assert_eq!((error.elements(), error.elements_total()), (&[][..], 0));
+
+    // 51 open lines apart, (0, 2i) to (1, 2i): 102 open ends, the first hundred given and
+    // the 2 more counted; 153 elements at fault (51 lines and 102 points), the first
+    // hundred by ID listed. The last line and its ends are in the 2 refusals past the
+    // hundred alone, and counted.
+    let mut d = draw::Draw::new();
+    for i in 0..51 {
+        let y = 2.0 * f64::from(i);
+        let a = d.point(0.0, y);
+        let b = d.point(1.0, y);
+        d.line(&a, &b);
+    }
+    let refused = d.profile().unwrap_err();
+    assert_eq!((refused.errors().len(), refused.total()), (100, 102));
+    let error = unprofiled(
+        &fid("p0000001"),
+        SweepFeature::Pad,
+        &draw::feature(),
+        &refused,
+    );
+    assert_eq!(
+        error.message(),
+        "pad p0000001 sweeps sketch k7f2qx3m, which makes no profile (102 refusals)"
+    );
+    // By ID: the 51 lines (n0000003, n0000006, ... n0000153) first, then the points not
+    // a multiple of 3, the 49th of which is 3 · 24 + 1 = 73.
+    assert_eq!(error.elements().len(), 100);
+    assert_eq!(error.elements()[0], "n0000003");
+    assert_eq!(error.elements()[50], "n0000153");
+    assert_eq!(error.elements()[99], "p0000073");
+    assert_eq!(error.elements_total(), 153);
+    // Each refusal said, and their one advice once.
+    let cause = error.cause().unwrap();
+    assert_eq!(cause.matches("so the profile is open there").count(), 100);
+    assert_eq!(cause.matches("(end another curve at the point").count(), 1);
+    assert!(
+        cause.ends_with("so the profile is open there; and 2 more"),
+        "{cause}"
+    );
+}
+
+#[test]
+fn a_sweep_of_a_sketch_whose_profile_refusal_is_a_bug_carries_the_bugs_code_and_advice() {
+    // A solution missing a point the sketch draws from: the profile's refusal is internal
+    // (a bug, never a document's), so the sweep's error is internal, with the advice the
+    // codebase gives a bug, not "fix sketch ...". Recompute can't reach it (its solution is
+    // read back from the sketch's own translation, every point of the sketch in it), so
+    // this is the pure function.
+    let mut d = draw::Draw::new();
+    let a = d.point(0.0, 0.0);
+    let b = d.point(4.0, 0.0);
+    let c = d.point(4.0, 3.0);
+    d.line(&a, &b);
+    d.line(&b, &c);
+    d.line(&c, &a);
+    let mut solution = d.solution();
+    solution
+        .points
+        .remove(&silico_core::document::ElementId::new(&c).unwrap());
+    let refused = d.profile_from(&solution).unwrap_err();
+    assert_eq!(refused.errors()[0].code(), ErrorCode::Internal);
+    let error = unprofiled(
+        &fid("p0000001"),
+        SweepFeature::Pad,
+        &draw::feature(),
+        &refused,
+    );
+    assert_eq!(error.code(), ErrorCode::Internal);
+    assert_eq!(error.feature(), Some("p0000001"));
+    assert_eq!(
+        error.suggestion(),
+        Some("this is a bug in Silico, not in the request: report it")
+    );
+}
+
+#[test]
+fn a_cause_gives_each_of_its_different_advices_once() {
+    // Rectangles (0, 0)–(4, 1) and (1, −1)–(2, 3), whose sides cross four times, and a lone
+    // line (10, 0)–(11, 0), open at both ends: six refusals of two kinds, two open ends
+    // and four crossings, each kind with its own advice. A pad of the sketch has one error,
+    // its cause every refusal, and each advice exactly once, after the first refusal it
+    // follows.
+    let mut d = draw::Draw::new();
+    d.rectangle(0.0, 0.0, 4.0, 1.0);
+    d.rectangle(1.0, -1.0, 2.0, 3.0);
+    let a = d.point(10.0, 0.0);
+    let b = d.point(11.0, 0.0);
+    d.line(&a, &b);
+    let refused = d.profile().unwrap_err();
+    assert_eq!(refused.total(), 6);
+    let error = unprofiled(
+        &fid("p0000001"),
+        SweepFeature::Pad,
+        &draw::feature(),
+        &refused,
+    );
+    let cause = error.cause().unwrap();
+    let open = "(end another curve at the point to close the outline, or make the curve construction geometry)";
+    let cross = "(move or remove one of them: a profile's curves meet only at the points they share, and each point joins two curves)";
+    assert_eq!(cause.matches(open).count(), 1, "{cause}");
+    assert_eq!(cause.matches(cross).count(), 1, "{cause}");
+    assert_eq!(
+        cause.matches("so the profile is open there").count(),
+        2,
+        "{cause}"
+    );
+    assert_eq!(cause.matches(" cross").count(), 4, "{cause}");
+    // Each advice right after the first refusal it belongs to: the two open ends first, then
+    // the four crossings.
+    let parts: Vec<&str> = cause.split("; ").collect();
+    assert_eq!(parts.len(), 6, "{cause}");
+    assert!(parts[0].ends_with(open), "{cause}");
+    assert!(
+        !parts[1].ends_with(open) && !parts[1].ends_with(cross),
+        "{cause}"
+    );
+    assert!(parts[2].ends_with(cross), "{cause}");
+    assert!(parts[3..].iter().all(|p| !p.ends_with(cross)), "{cause}");
+    // Each part's kind: the two open ends, then the four crossings.
+    for part in &parts[..2] {
+        assert!(
+            part.starts_with("point p") && part.contains("so the profile is open there"),
+            "{part}"
+        );
+    }
+    for part in &parts[2..] {
+        assert!(
+            part.starts_with("line n") && part.contains(" cross"),
+            "{part}"
+        );
+    }
 }

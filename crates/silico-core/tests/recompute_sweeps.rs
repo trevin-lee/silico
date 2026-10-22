@@ -24,6 +24,50 @@ use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 use silico_core::{Error, ErrorCode};
 use sweeps::*;
 
+/// The elements of an arc about `center`, counter-clockwise from `start` to `end`, closed by
+/// its chord: points pa000001 (the centre), pa000002 (the start), and pa000003 (the end),
+/// the arc aa000001, and the chord na000001 from the end back to the start.
+fn arc_and_chord(center: [f64; 2], start: [f64; 2], end: [f64; 2]) -> [Vec<String>; 3] {
+    [
+        vec![
+            fixture::point("pa000001", center[0], center[1]),
+            fixture::point("pa000002", start[0], start[1]),
+            fixture::point("pa000003", end[0], end[1]),
+        ],
+        vec![fixture::line("na000001", "pa000003", "pa000002")],
+        vec![fixture::arc("aa000001", "pa000001", "pa000002", "pa000003")],
+    ]
+}
+
+/// Sketch ssssssss on XY of an arc closed by its chord ([`arc_and_chord`]).
+fn arc_sketch(center: [f64; 2], start: [f64; 2], end: [f64; 2]) -> String {
+    let [points, lines, arcs] = arc_and_chord(center, start, end);
+    sketch_of("ssssssss", "xy", &points, &lines, &[], &arcs)
+}
+
+/// The elements of a closed polygon through `corners`, in order: points p<letter>000001,
+/// ..., and sides n<letter>000001 (from the first corner to the second), ..., the last
+/// back to the first.
+fn polygon_of(letter: char, corners: &[[f64; 2]]) -> [Vec<String>; 2] {
+    let n = corners.len();
+    [
+        corners
+            .iter()
+            .enumerate()
+            .map(|(i, [x, y])| fixture::point(&format!("p{letter}{:06}", i + 1), *x, *y))
+            .collect(),
+        (0..n)
+            .map(|i| {
+                fixture::line(
+                    &format!("n{letter}{:06}", i + 1),
+                    &format!("p{letter}{:06}", i + 1),
+                    &format!("p{letter}{:06}", (i + 1) % n + 1),
+                )
+            })
+            .collect(),
+    ]
+}
+
 fn engine() -> Recompute<FakeKernel> {
     Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(FakeSketches::new())
 }
@@ -458,10 +502,13 @@ fn a_sketch_that_doesnt_solve_blocks_what_sweeps_it() {
 }
 
 #[test]
-fn a_sketch_that_makes_no_profile_fails_each_sweep_of_it_with_every_refusal() {
-    // Design S3: the sketch is solved, not failed (a sketch nothing sweeps may be open);
-    // each feature sweeping it fails with every refusal M3.5 words, naming the sketch and
-    // its elements, and what uses it is blocked. Two open polylines: two open ends each.
+fn a_sketch_that_makes_no_profile_fails_each_sweep_of_it_once_naming_it() {
+    // Design S3 (Fable's decision on AR1): the sketch is solved, not failed (a sketch nothing
+    // sweeps may be open), and no error names it; each feature sweeping it fails with one
+    // whole error of its own, naming it, its elements the sketch's at fault, the profile's
+    // refusals and their advice its cause, and what uses it is blocked. The open polyline
+    // (0, 0), (4, 0), (4, 2) has two open ends, pa000001 (of na000001) and pa000003 (of
+    // na000002): two refusals, four elements. Two pads: two errors, one per pad.
     let open = r#"{"id": "ssssssss", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 4, "y": 0, "construction": false}, {"id": "pa000003", "x": 4, "y": 2, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}], "circles": [], "arcs": [], "constraints": []}"#;
     let engine = engine();
     let model = published(
@@ -479,30 +526,77 @@ fn a_sketch_that_makes_no_profile_fails_each_sweep_of_it_with_every_refusal() {
         Some(FeatureOutcome::Sketch(_))
     ));
     for feature in ["pppppppp", "p0000002"] {
-        let Some(FeatureOutcome::Broken { errors, total }) = model.outcome(&id(feature)) else {
-            panic!("{feature}: {:?}", model.outcome(&id(feature)));
-        };
-        assert_eq!(*total, errors.len() as u64);
-        assert!(!errors.is_empty());
-        for error in errors {
-            assert_eq!(error.code(), ErrorCode::InvalidInput);
-            assert_eq!(error.feature(), Some("ssssssss"));
-            assert!(!error.elements().is_empty(), "{error:?}");
-        }
+        let error = failed(&model, feature);
+        assert_eq!(error.code(), ErrorCode::InvalidInput, "{feature}");
+        assert_eq!(error.feature(), Some(feature));
+        assert_eq!(error.parameter(), Some("sketch"), "{feature}");
+        assert_eq!(
+            error.message(),
+            format!("pad {feature} sweeps sketch ssssssss, which makes no profile (2 refusals)")
+        );
+        let advice = "end another curve at the point to close the outline, or make the curve construction geometry";
+        assert_eq!(
+            error.cause(),
+            Some(
+                format!(
+                    "point pa000001 ends line na000001 and no other profile curve, so the profile is open there ({advice}); point pa000003 ends line na000002 and no other profile curve, so the profile is open there"
+                )
+                .as_str()
+            )
+        );
+        assert_eq!(
+            error.elements(),
+            ["na000001", "na000002", "pa000001", "pa000003"]
+        );
+        assert_eq!(error.elements_total(), 4);
+        assert_eq!(
+            error.suggestion(),
+            Some("fix sketch ssssssss where the cause says, or sweep another sketch")
+        );
     }
     assert_eq!(
         model.outcome(&id("f0000001")),
         Some(&FeatureOutcome::Blocked { on: id("pppppppp") })
     );
     assert!(!names(&engine).contains(&"MakeFaces"));
-    // Every refusal counted among the model's errors, for each feature.
-    assert!(model.error_count() >= 2);
+    // One error per pad, each naming it, and nothing else: none names the sketch.
+    let features: Vec<Option<&str>> = model.errors().map(Error::feature).collect();
+    assert_eq!(features, [Some("pppppppp"), Some("p0000002")]);
+    assert_eq!(model.error_count(), 2);
+}
+
+#[test]
+fn two_pads_of_a_two_region_sketch_are_each_refused_naming_the_pad() {
+    // Design S5 in AR1's shape: two circles, two regions; each pad's error names it, with
+    // parameter `sketch` and the sketch's two circles; no error names the sketch. (A pocket
+    // of them builds: a_pad_or_revolve_of_two_regions_is_refused_naming_them_and_a_pocket_takes_both.)
+    let two = circles("ssssssss", "xy", &[([2.0, 2.0], 1.0), ([6.0, 2.0], 1.0)]);
+    let model = published(
+        &engine(),
+        &[
+            &two,
+            &pad("pppppppp", None, "ssssssss", TEN),
+            &pad("p0000002", None, "ssssssss", TEN),
+        ],
+    );
+    let listed: Vec<(Option<&str>, Option<&str>, &[String])> = model
+        .errors()
+        .map(|e| (e.feature(), e.parameter(), e.elements()))
+        .collect();
+    let circles_at_fault = ["ca000001".to_owned(), "ca000002".to_owned()];
+    assert_eq!(
+        listed,
+        [
+            (Some("pppppppp"), Some("sketch"), &circles_at_fault[..]),
+            (Some("p0000002"), Some("sketch"), &circles_at_fault[..]),
+        ]
+    );
 }
 
 #[test]
 fn a_pad_or_revolve_of_two_regions_is_refused_naming_them_and_a_pocket_takes_both() {
     // Decision 3, strict (design S5): with or without a base that would join them, refused
-    // before any kernel step, the feature the sketch, the elements every region's outer-loop
+    // before any kernel step, naming the feature, the elements every region's outer-loop
     // curves in region order, and their total; a pocket or groove takes every region.
     let two = circles("ssssssss", "xy", &[([2.0, 2.0], 1.0), ([6.0, 2.0], 1.0)]);
     for (feature, word) in [
@@ -517,7 +611,8 @@ fn a_pad_or_revolve_of_two_regions_is_refused_naming_them_and_a_pocket_takes_bot
         let model = published(&engine, &[&cube_below(), &two, &feature]);
         let error = failed(&model, "pppppppp");
         assert_eq!(error.code(), ErrorCode::InvalidInput);
-        assert_eq!(error.feature(), Some("ssssssss"));
+        assert_eq!(error.feature(), Some("pppppppp"));
+        assert_eq!(error.parameter(), Some("sketch"));
         assert_eq!(error.elements(), ["ca000001", "ca000002"]);
         assert_eq!(error.elements_total(), 2);
         assert_eq!(
@@ -546,6 +641,7 @@ fn a_pad_or_revolve_of_two_regions_is_refused_naming_them_and_a_pocket_takes_bot
             "{:?}",
             model.outcome(&id("qqqqqqqq"))
         );
+        assert_eq!(model.errors().count(), 0);
         let faces: Vec<Op> = shape_ops(&engine)
             .into_iter()
             .filter(|op| op.name() == "MakeFaces")
@@ -587,7 +683,8 @@ fn a_revolves_axis_is_checked_against_the_solved_profile_before_any_kernel_step(
         if refused {
             let error = failed(&model, "rrrrrrrr");
             assert_eq!(error.code(), ErrorCode::InvalidInput);
-            assert_eq!(error.feature(), Some("ssssssss"));
+            assert_eq!(error.feature(), Some("rrrrrrrr"));
+            assert_eq!(error.parameter(), Some("axis"));
             assert!(
                 error.message().contains("crosses its profile"),
                 "{}",
@@ -970,8 +1067,8 @@ fn an_axis_crossing_its_profile_and_an_angle_too_small_are_refused_in_full() {
     );
     let error = failed(&model, "rrrrrrrr");
     assert_eq!(error.code(), ErrorCode::InvalidInput);
-    assert_eq!(error.feature(), Some("ssssssss"));
-    assert_eq!(error.parameter(), None);
+    assert_eq!(error.feature(), Some("rrrrrrrr"));
+    assert_eq!(error.parameter(), Some("axis"));
     assert_eq!(
         error.message(),
         "revolve rrrrrrrr turns sketch ssssssss about a line that crosses its profile: its axis, line nb000000, has the profile's curves on both sides, 2 mm on one and 1 mm on the other"
@@ -1069,7 +1166,8 @@ fn a_crossing_circle_is_refused_with_its_reach_either_side_of_the_axis() {
     );
     let error = failed(&model, "rrrrrrrr");
     assert_eq!(error.code(), ErrorCode::InvalidInput);
-    assert_eq!(error.feature(), Some("ssssssss"));
+    assert_eq!(error.feature(), Some("rrrrrrrr"));
+    assert_eq!(error.parameter(), Some("axis"));
     assert_eq!(
         error.message(),
         "revolve rrrrrrrr turns sketch ssssssss about a line that crosses its profile: its axis, the sketch's x_axis, has the profile's curves on both sides, 2 mm on one and 4 mm on the other"
@@ -1246,4 +1344,580 @@ fn a_valid_chains_users_dont_wait_for_its_measures() {
         panic!("not published");
     };
     assert!(built(&model, "pppppppp") && built(&model, "ffffffff"));
+}
+
+/// A band test's case: the sketch, an angle refused, where its slit is measured and how
+/// wide, an angle that turns, and the curves the refusal names.
+type BandCase<'a> = (String, &'a str, f64, f64, &'a str, &'a [&'a str]);
+
+/// The slit a refusal of a turn short of a whole one reports, in mm.
+fn slit(message: &str) -> f64 {
+    message
+        .split("leaves a slit of ")
+        .nth(1)
+        .and_then(|m| m.split(' ').next())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(f64::NAN)
+}
+
+#[test]
+fn a_turn_short_of_a_whole_one_by_the_tolerance_is_refused_and_a_nanodegree_more_turns() {
+    // A turn of 360° less k nanodegrees leaves a slit of r · k · 1e-9 · π/180 mm at a point
+    // r from the axis, narrowest at the profile's nearest point off the axis: within 1e-7
+    // mm for k ≤ 1e-7 · 180 / (r π · 1e-9). About the x axis, on XY:
+    // - the rectangle 4 by 2 from the origin runs out from the axis: its corners on it are
+    //   left out, and the nearest off it are 2 away: k ≤ 9000/π = 2864.79, so 2864 short
+    //   (359.999997136°, a slit of 9.9973e-8) is refused and 2865 short turns;
+    // - the rectangle 4 by 5 from (0, 5) lies 5 to 10 from it: k ≤ 3600/π = 1145.92, so
+    //   1145 short (359.999998855°, 9.9920e-8 at 5) is refused and 1146 short turns; 573
+    //   short, past the band at its far side (572.96), is refused too (5.0003e-8 at 5);
+    // - a circle of radius 2.5 about (2, 7.5) is nearest the axis at (2, 5), 7.5 − 2.5 = 5
+    //   away, its point toward it, no curve end: the same band as the rectangle at 5;
+    // - an arc of radius 5 about (0, 10), counter-clockwise from (−4, 7) to (4, 7) (from
+    //   −143.13° past −90° to −36.87°), closed by its chord: its ends are 7 from the axis,
+    //   its bottom, (0, 5), inside it, 5: the band at 5 (at 7 it would be 818.51, and 1145
+    //   would turn).
+    // For a revolve, and a groove into the cube below.
+    let off = rectangle("ssssssss", "xy", [0.0, 5.0], 4.0, 5.0);
+    let torus = circles("ssssssss", "xy", &[([2.0, 7.5], 2.5)]);
+    let bulge = arc_sketch([0.0, 10.0], [-4.0, 7.0], [4.0, 7.0]);
+    // Arcs about the x axis, each closed by its chord, the arc from its start
+    // counter-clockwise to its end:
+    // - below the axis, about (0, −10) from (4, −7) to (−4, −7), through 90° to (0, −5): its
+    //   nearest point 5 away, toward the axis from below (the band at 5);
+    // - wrapping past π, about (0, 10) from (−5, 10) (π) to (4, 7) (5.64 rad, −36.87° a
+    //   turn on), through 3π/2 to (0, 5): its nearest point 5 away (the band at 5; its
+    //   ends at 10 and 7);
+    // - a cap, about (0, 10) from (4, 13) over the top to (−4, 13): its circle's point
+    //   toward the axis, (0, 5), isn't on it, so it's nearest at its ends, 13 away: the
+    //   band is 1e-7 · 180 / (13π · 1e-9) = 440.76 nanodegrees, so 440 short
+    //   (359.99999956°, 13 · 440e-9 · π/180 = 9.9833e-8) is refused, and 1000 short
+    //   (359.999999°, 2.2689e-7) turns (at 5 it would be 8.73e-8, and refused).
+    let below = arc_sketch([0.0, -10.0], [4.0, -7.0], [-4.0, -7.0]);
+    let wrapping = arc_sketch([0.0, 10.0], [-5.0, 10.0], [4.0, 7.0]);
+    let cap = arc_sketch([0.0, 10.0], [4.0, 13.0], [-4.0, 13.0]);
+    // Profiles with no point off the axis, measured at their farthest point:
+    // - a circle of radius 5 about (0, 5), tangent to the axis at the origin: no end, and
+    //   its point toward the axis on it; its farthest point is (0, 10), whose band is
+    //   1800/π = 572.96 nanodegrees, so 572 short (359.999999428°, 10 · 572e-9 · π/180 =
+    //   9.9833e-8) is refused and 573 short turns;
+    // - a semicircle of radius 5 about the origin on its diameter, the chord on the axis:
+    //   its ends on the axis, its circle's centre too; farthest at its top, (0, 5): the band
+    //   at 5.
+    let tangent = circles("ssssssss", "xy", &[([0.0, 5.0], 5.0)]);
+    let semicircle = arc_sketch([0.0, 0.0], [5.0, 0.0], [-5.0, 0.0]);
+    // The same two mirrored below the axis, their farthest points on its other side: the
+    // circle about (0, −5), farthest at (0, −10); the semicircle from (−5, 0) through
+    // (0, −5) to (5, 0), farthest at (0, −5).
+    let tangent_below = circles("ssssssss", "xy", &[([0.0, -5.0], 5.0)]);
+    let semicircle_below = arc_sketch([0.0, 0.0], [-5.0, 0.0], [5.0, 0.0]);
+    // A semicircle of radius 5 whose diameter lies `lift` above the axis, from (5, lift)
+    // over (0, 5 + lift) to (−5, lift): its ends within the tolerance of the axis (5e-8,
+    // and exactly 1e-7, which is still within it), so no point is off the axis and it's
+    // measured at its top, 5 + lift. The band there is 3600 / (π (1 + lift / 5)), about
+    // 1145.9156 (1 − lift / 5): less 1145.92 · 1e-8 = 1.1e-5 nanodegrees at 5e-8, and
+    // 1145.92 · 2e-8 = 2.3e-5 at 1e-7, so 1145 short (9.9920e-8) is still refused and 1146
+    // short turns.
+    let lifted = |lift: f64| arc_sketch([0.0, lift], [5.0, lift], [-5.0, lift]);
+    // Each refusal names the sketch's curves where its slit is measured: the circle, the
+    // arc at its interior point, the cap's arc and chord at their shared ends, a
+    // rectangle's side there and the two sides ending on it; and where nothing is off the
+    // axis, the curve reaching the farthest point, the tangent circle, and the semicircle's
+    // arc and not its chord.
+    let short = "359.999998855";
+    let turns = "359.999998854";
+    let cases: [BandCase; 14] = [
+        (
+            lifted(5e-8),
+            short,
+            5.0 + 5e-8,
+            9.9920e-8,
+            turns,
+            &["aa000001"],
+        ),
+        (
+            lifted(1e-7),
+            short,
+            5.0 + 1e-7,
+            9.9920e-8,
+            turns,
+            &["aa000001"],
+        ),
+        (
+            tangent_below,
+            "359.999999428",
+            10.0,
+            9.9833e-8,
+            "359.999999427",
+            &["ca000001"],
+        ),
+        (
+            semicircle_below,
+            short,
+            5.0,
+            9.9920e-8,
+            turns,
+            &["aa000001"],
+        ),
+        (
+            tangent,
+            "359.999999428",
+            10.0,
+            9.9833e-8,
+            "359.999999427",
+            &["ca000001"],
+        ),
+        (semicircle, short, 5.0, 9.9920e-8, turns, &["aa000001"]),
+        (torus, short, 5.0, 9.9920e-8, turns, &["ca000001"]),
+        (bulge, short, 5.0, 9.9920e-8, turns, &["aa000001"]),
+        (below, short, 5.0, 9.9920e-8, turns, &["aa000001"]),
+        (wrapping, short, 5.0, 9.9920e-8, turns, &["aa000001"]),
+        (
+            cap,
+            "359.99999956",
+            13.0,
+            9.9833e-8,
+            "359.999999",
+            &["aa000001", "na000001"],
+        ),
+        (
+            off.clone(),
+            short,
+            5.0,
+            9.9920e-8,
+            turns,
+            &["na000001", "na000002", "na000004"],
+        ),
+        (
+            off,
+            "359.999999427",
+            5.0,
+            5.0003e-8,
+            turns,
+            &["na000001", "na000002", "na000004"],
+        ),
+        (
+            sketch("xy"),
+            "359.999997136",
+            2.0,
+            9.9973e-8,
+            "359.999997135",
+            &["na000002", "na000003", "na000004"],
+        ),
+    ];
+    for (word, base) in [("revolve", None), ("groove", Some("bbbbbbbb"))] {
+        let feature = |degrees: &str| {
+            turned(
+                "rrrrrrrr",
+                word,
+                base,
+                "ssssssss",
+                "x_axis",
+                &angle(degrees),
+            )
+        };
+        for (drawn, short, at, width, turns, there) in &cases {
+            let engine = engine();
+            let model = published(&engine, &[&cube_below(), drawn, &feature(short)]);
+            let error = failed(&model, "rrrrrrrr");
+            assert_eq!(error.code(), ErrorCode::InvalidInput, "{word} {short}");
+            assert_eq!(error.feature(), Some("rrrrrrrr"), "{word}");
+            assert_eq!(error.parameter(), Some("extent.angle"), "{word}");
+            let message = error.message();
+            assert!(
+                message.starts_with(&format!(
+                    "{word} rrrrrrrr's angle, {short} degrees, short of a whole turn, leaves a slit of "
+                )) && message.ends_with(&format!(
+                    " mm at its profile's point {at} mm from the axis: within 1e-7 mm, its ends would be one place"
+                )),
+                "{message}"
+            );
+            assert!((slit(message) - width).abs() < 1e-12, "{message}");
+            assert_eq!(
+                error.suggestion(),
+                Some(
+                    "turn it by 360 degrees for a whole turn, or by less, so its ends are more than 1e-7 mm apart"
+                )
+            );
+            assert_eq!(error.elements(), *there, "{word} {short}");
+            assert_eq!(error.elements_total(), there.len() as u64, "{word}");
+            assert!(!names(&engine).contains(&"MakeFaces"), "{word}");
+
+            let engine = self::engine();
+            let model = published(&engine, &[&cube_below(), drawn, &feature(turns)]);
+            assert!(
+                built(&model, "rrrrrrrr"),
+                "{word} {turns}: {:?}",
+                model.outcome(&id("rrrrrrrr"))
+            );
+            let Sweep::Revolution(_, _, sent) = the_sweep(&engine) else {
+                panic!("{word}: not a revolution");
+            };
+            let turns: f64 = turns.parse().unwrap();
+            assert_eq!(sent, turns * (PI / 180.0), "{word}");
+        }
+    }
+}
+
+#[test]
+fn a_slit_is_measured_at_the_nearest_point_off_the_axis_over_every_region_and_hole() {
+    // About the y axis, on XY. A profile running out from the axis has its corners there
+    // left out (their copies meet on the axis); the nearest point off it is where the slit
+    // is narrowest, though another region or the outline touches the axis. 360° less k
+    // nanodegrees leaves r · k · 1e-9 · π/180 mm at r:
+    // - the rectangle 0..10 with a hole 1..2: nearest off the axis 1 (the hole); 5000 short
+    //   leaves 8.7266e-8 there, refused (measured at 10, 8.7e-7, it passed);
+    // - a groove of the rectangles 0..1 and 5..10: nearest off it 1; 5000 short, refused;
+    // - a groove of the rectangles 0..10 and −2..−1 (the robustness review's case): nearest
+    //   off it 1, the second's near side; 600 short leaves 1.0472e-8, refused;
+    // - the control, the rectangle 0..10 alone: nearest off the axis 10; 5000 short leaves
+    //   8.7266e-7, and it turns.
+    let cases = [
+        (
+            "revolve",
+            [[0.0, 0.0, 10.0, 5.0], [1.0, 1.0, 2.0, 2.0]],
+            "359.999995",
+            8.7266e-8,
+            ["nb000001", "nb000003", "nb000004"],
+        ),
+        (
+            "groove",
+            [[0.0, 0.0, 1.0, 5.0], [5.0, 0.0, 10.0, 5.0]],
+            "359.999995",
+            8.7266e-8,
+            ["na000001", "na000002", "na000003"],
+        ),
+        (
+            "groove",
+            [[0.0, 0.0, 10.0, 5.0], [-2.0, 0.0, -1.0, 5.0]],
+            "359.9999994",
+            1.0472e-8,
+            ["nb000001", "nb000002", "nb000003"],
+        ),
+    ];
+    // Each names the curves 1 mm off the axis: the near side, and the two sides ending on
+    // it.
+    for (word, rects, short, width, there) in cases {
+        let base = (word == "groove").then_some("bbbbbbbb");
+        let model = published(
+            &engine(),
+            &[
+                &cube_below(),
+                &rectangles("ssssssss", "xy", &rects),
+                &turned("rrrrrrrr", word, base, "ssssssss", "y_axis", &angle(short)),
+            ],
+        );
+        let error = failed(&model, "rrrrrrrr");
+        assert_eq!(error.parameter(), Some("extent.angle"), "{rects:?}");
+        let message = error.message();
+        assert!(
+            message.ends_with(
+                " mm at its profile's point 1 mm from the axis: within 1e-7 mm, its ends would be one place"
+            ),
+            "{message}"
+        );
+        assert!((slit(message) - width).abs() < 1e-12, "{message}");
+        assert_eq!(error.elements(), there, "{rects:?}");
+        assert_eq!(error.elements_total(), 3, "{rects:?}");
+    }
+    let model = published(
+        &engine(),
+        &[
+            &rectangles("ssssssss", "xy", &[[0.0, 0.0, 10.0, 5.0]]),
+            &turned(
+                "rrrrrrrr",
+                "revolve",
+                None,
+                "ssssssss",
+                "y_axis",
+                &angle("359.999995"),
+            ),
+        ],
+    );
+    assert!(
+        built(&model, "rrrrrrrr"),
+        "{:?}",
+        model.outcome(&id("rrrrrrrr"))
+    );
+}
+
+#[test]
+fn a_slit_refusal_lists_a_hundred_of_its_curves_and_counts_them_all() {
+    // A comb: a zigzag along the bottom from (0, 5) to (240, 5), its corners at x = 0, 1,
+    // ..., 240 alternately at y = 5 and 6, closed by (240, 10) and (0, 10). About the x
+    // axis its nearest points are the 121 corners at y = 5, ends of every zigzag side
+    // (240) and of the two sides up to y = 10: 242 curves at 5, all but the top, n0000242.
+    // 1145 nanodegrees short is refused there; the refusal lists the first hundred by ID,
+    // n0000001 to n0000100, and counts 242.
+    let mut points: Vec<String> = (0..=240u32)
+        .map(|i| {
+            let y = if i % 2 == 0 { 5.0 } else { 6.0 };
+            fixture::point(&format!("p{:07}", i + 1), f64::from(i), y)
+        })
+        .collect();
+    points.push(fixture::point("p0000242", 240.0, 10.0));
+    points.push(fixture::point("p0000243", 0.0, 10.0));
+    let lines: Vec<String> = (1..=243)
+        .map(|k| {
+            fixture::line(
+                &format!("n{k:07}"),
+                &format!("p{k:07}"),
+                &format!("p{:07}", k % 243 + 1),
+            )
+        })
+        .collect();
+    let comb = sketch_of("ssssssss", "xy", &points, &lines, &[], &[]);
+    let model = published(
+        &engine(),
+        &[
+            &comb,
+            &turned(
+                "rrrrrrrr",
+                "revolve",
+                None,
+                "ssssssss",
+                "x_axis",
+                &angle("359.999998855"),
+            ),
+        ],
+    );
+    let error = failed(&model, "rrrrrrrr");
+    assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
+    assert_eq!(error.parameter(), Some("extent.angle"), "{error}");
+    assert!(
+        error.message().ends_with(
+            " mm at its profile's point 5 mm from the axis: within 1e-7 mm, its ends would be one place"
+        ),
+        "{error}"
+    );
+    let listed: Vec<String> = (1..=100).map(|k| format!("n{k:07}")).collect();
+    assert_eq!(error.elements(), listed);
+    assert_eq!(error.elements_total(), 242);
+}
+
+#[test]
+fn a_half_disc_right_of_the_y_axis_names_its_arc_where_its_farthest_point_is() {
+    // An arc of radius 5 about the origin from (0, −5) counter-clockwise through (5, 0) to
+    // (0, 5), its chord on the y axis, turned about y: its ends and its circle's centre
+    // are on the axis, so its slit is measured at its farthest point, (5, 0), on the
+    // axis's negative side (right of y is negative to it). The band at 5 is 3600/π =
+    // 1145.92 nanodegrees: 1145 short leaves 9.9920e-8 and is refused, naming the arc
+    // alone, and 1146 short turns.
+    let half = &arc_sketch([0.0, 0.0], [0.0, -5.0], [0.0, 5.0]);
+    let turn = |degrees: &str| {
+        turned(
+            "rrrrrrrr",
+            "revolve",
+            None,
+            "ssssssss",
+            "y_axis",
+            &angle(degrees),
+        )
+    };
+    let model = published(&engine(), &[half, &turn("359.999998855")]);
+    let error = failed(&model, "rrrrrrrr");
+    assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
+    assert!(
+        error.message().ends_with(
+            " mm at its profile's point 5 mm from the axis: within 1e-7 mm, its ends would be one place"
+        ),
+        "{error}"
+    );
+    assert!((slit(error.message()) - 9.9920e-8).abs() < 1e-12, "{error}");
+    assert_eq!(error.elements(), ["aa000001"]);
+    assert_eq!(error.elements_total(), 1);
+    let model = published(&engine(), &[half, &turn("359.999998854")]);
+    assert!(
+        built(&model, "rrrrrrrr"),
+        "{:?}",
+        model.outcome(&id("rrrrrrrr"))
+    );
+}
+
+#[test]
+fn a_slit_refusal_beside_a_measured_corner_names_the_curves_there_not_a_farthest_point() {
+    // A groove of two regions about the x axis: a semicircle of radius 5 on its diameter
+    // on the axis (no point off the axis, farthest at its top, (0, 5)), and a rectangle
+    // 10..14 × 5..10. The slit is measured at the rectangle's nearest corners, 5 away, so
+    // the farthest points aren't consulted: 1145 nanodegrees short is refused there,
+    // naming the curves with a point nearest 5, the rectangle's bottom, nb000001, and its
+    // two sides ending on it, nb000002 and nb000004; not the semicircle's arc, though its
+    // top lies at 5 too.
+    let [mut points, mut lines, arcs] = arc_and_chord([0.0, 0.0], [5.0, 0.0], [-5.0, 0.0]);
+    let [rectangle_points, rectangle_sides] =
+        polygon_of('b', &[[10.0, 5.0], [14.0, 5.0], [14.0, 10.0], [10.0, 10.0]]);
+    points.extend(rectangle_points);
+    lines.extend(rectangle_sides);
+    let both = &sketch_of("ssssssss", "xy", &points, &lines, &[], &arcs);
+    let model = published(
+        &engine(),
+        &[
+            &cube_below(),
+            both,
+            &turned(
+                "rrrrrrrr",
+                "groove",
+                Some("bbbbbbbb"),
+                "ssssssss",
+                "x_axis",
+                &angle("359.999998855"),
+            ),
+        ],
+    );
+    let error = failed(&model, "rrrrrrrr");
+    assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
+    assert_eq!(error.parameter(), Some("extent.angle"), "{error}");
+    assert!(
+        error.message().ends_with(
+            " mm at its profile's point 5 mm from the axis: within 1e-7 mm, its ends would be one place"
+        ),
+        "{error}"
+    );
+    assert_eq!(error.elements(), ["nb000001", "nb000002", "nb000004"]);
+    assert_eq!(error.elements_total(), 3);
+}
+
+#[test]
+fn one_region_with_an_arc_reaching_a_measured_corners_distance_names_only_the_corners_curves() {
+    // The corner test's case in one region, so a revolve takes it as well as a groove (two
+    // regions are a revolve's S5 refusal): a box 16 × 12 on the x axis less the half-disc
+    // of radius 5 about the origin, and its left side kinked out to a corner D (−7, 5):
+    // (5, 0), the arc over (0, 5) to (−5, 0), then (−8, 0), D (−7, 5), (−8, 12), (8, 12),
+    // (8, 0), and back. Its only point off the axis nearer than 12 is D, 5 away, so the
+    // slit is measured there; the arc's top is 5 away too, but no point of the arc is off
+    // the axis but it, so it isn't named. 1145 nanodegrees short is refused, naming the
+    // two sides ending at D, na000002 and na000003.
+    let [mut points, _, arcs] = arc_and_chord([0.0, 0.0], [5.0, 0.0], [-5.0, 0.0]);
+    let around = [
+        ("pa000004", -8.0, 0.0),
+        ("pa000005", -7.0, 5.0),
+        ("pa000006", -8.0, 12.0),
+        ("pa000007", 8.0, 12.0),
+        ("pa000008", 8.0, 0.0),
+    ];
+    points.extend(around.iter().map(|&(id, x, y)| fixture::point(id, x, y)));
+    // From the arc's end, (−5, 0), round the box to its start, (5, 0).
+    let path = [
+        "pa000003", "pa000004", "pa000005", "pa000006", "pa000007", "pa000008", "pa000002",
+    ];
+    let lines: Vec<String> = path
+        .windows(2)
+        .enumerate()
+        .map(|(i, ends)| fixture::line(&format!("na{:06}", i + 1), ends[0], ends[1]))
+        .collect();
+    let kinked = &sketch_of("ssssssss", "xy", &points, &lines, &[], &arcs);
+    for (word, base) in [("revolve", None), ("groove", Some("bbbbbbbb"))] {
+        let model = published(
+            &engine(),
+            &[
+                &cube_below(),
+                kinked,
+                &turned(
+                    "rrrrrrrr",
+                    word,
+                    base,
+                    "ssssssss",
+                    "x_axis",
+                    &angle("359.999998855"),
+                ),
+            ],
+        );
+        let error = failed(&model, "rrrrrrrr");
+        assert_eq!(error.code(), ErrorCode::InvalidInput, "{word}: {error}");
+        assert_eq!(error.parameter(), Some("extent.angle"), "{word}");
+        assert!(
+            error.message().ends_with(
+                " mm at its profile's point 5 mm from the axis: within 1e-7 mm, its ends would be one place"
+            ),
+            "{word}: {error}"
+        );
+        assert_eq!(error.elements(), ["na000002", "na000003"], "{word}");
+        assert_eq!(error.elements_total(), 2, "{word}");
+    }
+}
+
+#[test]
+fn a_slit_measured_where_the_nearest_point_off_the_axis_is_also_the_farthest_names_its_curves() {
+    // A groove of two regions about the x axis: a half-disc of radius 5 on its diameter on
+    // the axis (no point off the axis, its top (0, 5) 5 away), and a triangle (6, 0),
+    // (8, 0), (7, 5) on the axis too, its apex 5 away. The apex is the only point off the
+    // axis, so the slit is measured there, at 5, which is also the profile's farthest. The
+    // band at 5 is 3600/π = 1145.92 nanodegrees: 1145 short (9.9920e-8) is refused, naming
+    // the triangle's two sides from its apex, nb000002 and nb000003, and not the arc whose
+    // top is as far; 1146 short turns.
+    let [mut points, mut lines, arcs] = arc_and_chord([0.0, 0.0], [5.0, 0.0], [-5.0, 0.0]);
+    let [triangle_points, triangle_sides] = polygon_of('b', &[[6.0, 0.0], [8.0, 0.0], [7.0, 5.0]]);
+    points.extend(triangle_points);
+    lines.extend(triangle_sides);
+    let tie = &sketch_of("ssssssss", "xy", &points, &lines, &[], &arcs);
+    let groove = |degrees: &str| {
+        turned(
+            "rrrrrrrr",
+            "groove",
+            Some("bbbbbbbb"),
+            "ssssssss",
+            "x_axis",
+            &angle(degrees),
+        )
+    };
+    let model = published(&engine(), &[&cube_below(), tie, &groove("359.999998855")]);
+    let error = failed(&model, "rrrrrrrr");
+    assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
+    assert_eq!(error.parameter(), Some("extent.angle"), "{error}");
+    assert!(
+        error.message().ends_with(
+            " mm at its profile's point 5 mm from the axis: within 1e-7 mm, its ends would be one place"
+        ),
+        "{error}"
+    );
+    assert!((slit(error.message()) - 9.9920e-8).abs() < 1e-12, "{error}");
+    assert_eq!(error.elements(), ["nb000002", "nb000003"]);
+    assert_eq!(error.elements_total(), 2);
+    let model = published(&engine(), &[&cube_below(), tie, &groove("359.999998854")]);
+    assert!(
+        built(&model, "rrrrrrrr"),
+        "{:?}",
+        model.outcome(&id("rrrrrrrr"))
+    );
+}
+
+#[test]
+fn an_arc_right_of_the_y_axis_is_measured_at_its_point_toward_the_axis() {
+    // A lens about the y axis: an arc of radius 5 about (10, 0), counter-clockwise from
+    // (6, 3) (143.13°) through (5, 0) (180°) to (6, −3) (216.87°), closed by its chord at
+    // x = 6. Right of y, the axis is to the circle's right: its point toward the axis is at
+    // 180°, (5, 0), on the arc, 10 − 5 = 5 from the axis (its ends are 6). The band at 5
+    // is 3600/π = 1145.92 nanodegrees: 1145 short (9.9920e-8) is refused, naming the arc,
+    // and 1146 short turns. (Taking the circle's point away from the axis, at 0°, which
+    // isn't on the arc, measures it at its ends, 6, where 1145 short leaves 1.199e-7.)
+    let lens = arc_sketch([10.0, 0.0], [6.0, 3.0], [6.0, -3.0]);
+    let turn = |degrees: &str| {
+        turned(
+            "rrrrrrrr",
+            "revolve",
+            None,
+            "ssssssss",
+            "y_axis",
+            &angle(degrees),
+        )
+    };
+    let model = published(&engine(), &[&lens, &turn("359.999998855")]);
+    let error = failed(&model, "rrrrrrrr");
+    assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
+    assert_eq!(error.parameter(), Some("extent.angle"), "{error}");
+    assert!(
+        error.message().ends_with(
+            " mm at its profile's point 5 mm from the axis: within 1e-7 mm, its ends would be one place"
+        ),
+        "{error}"
+    );
+    assert!((slit(error.message()) - 9.9920e-8).abs() < 1e-12, "{error}");
+    assert_eq!(error.elements(), ["aa000001"]);
+    assert_eq!(error.elements_total(), 1);
+    let model = published(&engine(), &[&lens, &turn("359.999998854")]);
+    assert!(
+        built(&model, "rrrrrrrr"),
+        "{:?}",
+        model.outcome(&id("rrrrrrrr"))
+    );
 }

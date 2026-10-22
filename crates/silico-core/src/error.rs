@@ -8,6 +8,11 @@
 //! present, `null` when absent and `[]` for no elements or candidates, so there's one shape
 //! to parse. `elements_total` is how many elements are at fault, `0` for none: more than
 //! `elements` lists only when the list is cut short.
+//!
+//! The elements are the named feature's, with one rule: a pad's, pocket's, revolve's, or
+//! groove's refusal for its sketch (no profile, several regions, an axis across it, a slit
+//! too thin where it's measured) names the sweep as its feature and the sketch's elements
+//! at fault, since that's where they're fixed (docs/design/m3.6-sketch-features.md, S3).
 
 use std::fmt;
 

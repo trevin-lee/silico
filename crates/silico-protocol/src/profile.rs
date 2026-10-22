@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::primitive::{InvalidParameter, LENGTH_TOLERANCE, MAX_LENGTH, format_number};
+use crate::sweep::EndAtStart;
 
 /// The most points a profile may have. Checking that a profile doesn't cross itself costs
 /// the square of its points.
@@ -421,9 +422,10 @@ pub fn extrusion_vector(
 /// Whether the profile can be revolved about `axis` by `angle` degrees: the axis must lie
 /// in the profile's plane (within OCCT's tolerance wherever it passes a corner) with the
 /// profile on one side of it (touching it at most), and the angle must be more than 0 and
-/// at most 360, and move the profile further than OCCT's tolerance. A turn a hair short of
-/// 360 is the turn it says, leaving a slit, as FreeCAD's is. Returns the axis's unit
-/// direction.
+/// at most 360, and move the profile further than OCCT's tolerance, and, short of a whole
+/// turn, leave a slit wider than that where it's narrowest ([`crate::end_at_start`]): a
+/// turn short of 360 by more is the turn it says, leaving a slit, as FreeCAD's is. Returns
+/// the axis's unit direction.
 pub fn check_revolve(
     plane: &ProfilePlane,
     points: &[[f64; 3]],
@@ -513,18 +515,32 @@ pub fn check_revolve(
             ),
         ));
     }
-    // The farthest corner travels its distance times the angle in radians.
+    // A corner travels its distance times the angle in radians, and stops that far short of
+    // a whole turn's worth of it: the farthest moves most, and the nearest off the axis
+    // leaves the narrowest slit.
     let reach = low.abs().max(high.abs());
-    if reach * radians(angle) <= LENGTH_TOLERANCE {
-        return Err(invalid(
+    // A side's points between its corners are no nearer than its nearer corner, so the
+    // corners are every point that could be nearest.
+    let at = crate::slit_radius(sides.iter().map(|s| s.abs()), reach).distance();
+    match crate::end_at_start(at, reach, radians(angle)) {
+        Some(EndAtStart::Unmoved) => Err(invalid(
             "angle",
             format!(
                 "the revolve's angle of {} degrees moves the profile less than 1e-7 mm",
                 format_number(angle)
             ),
-        ));
+        )),
+        Some(EndAtStart::ShortOfWhole { at, slit }) => Err(invalid(
+            "angle",
+            format!(
+                "the revolve's angle of {} degrees, short of a whole turn, leaves a slit of {} mm at the profile's corner {} mm from the axis: within 1e-7 mm, its ends would be one place; use 360 for a whole turn, or less for ends apart",
+                format_number(angle),
+                format_number(slit),
+                format_number(at)
+            ),
+        )),
+        None => Ok(unit),
     }
-    Ok(unit)
 }
 
 #[cfg(test)]

@@ -6,8 +6,12 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+#[path = "../../silico-core/tests/common/sketch.rs"]
+mod fixture;
 #[path = "common/run.rs"]
 mod run;
+#[path = "../../silico-core/tests/common/sweeps.rs"]
+mod sweeps;
 
 use std::process::{Command, Output, Stdio};
 
@@ -663,5 +667,125 @@ fn check_starts_only_the_kernel_workers_its_rebuild_needs() {
         kernel_workers_started(&scratch, &[file]),
         0,
         "rebuilt from the cache"
+    );
+}
+
+#[test]
+fn an_open_sketch_swept_twice_names_each_failed_pad_once() {
+    // The architecture review's case (M3, round 1), in Fable's shape: a square's outline
+    // with its fourth side left out, padded twice. Its two open ends, p0000001 (of
+    // n0000001) and p0000004 (of n0000003), are the profile's two refusals; each pad fails
+    // with one whole problem naming it, the sketch's four elements at fault its own, the
+    // refusals and their advice its cause. Two problems, and none names the sketch.
+    let scratch = Scratch::new("open-twice");
+    let points = [
+        fixture::point("p0000001", 0.0, 0.0),
+        fixture::point("p0000002", 10.0, 0.0),
+        fixture::point("p0000003", 10.0, 10.0),
+        fixture::point("p0000004", 0.0, 10.0),
+    ];
+    let lines = [
+        fixture::line("n0000001", "p0000001", "p0000002"),
+        fixture::line("n0000002", "p0000002", "p0000003"),
+        fixture::line("n0000003", "p0000003", "p0000004"),
+    ];
+    let sketch = sweeps::sketch_of("s0000001", "xy", &points, &lines, &[], &[]);
+    let extent = sweeps::one_side("1");
+    let file = scratch.file(&sweeps::document(&[
+        &sketch,
+        &sweeps::pad("d0000001", None, "s0000001", &extent),
+        &sweeps::pad("d0000009", None, "s0000001", &extent),
+    ]));
+    let out = silico(&scratch, &["check", "--json"], &file);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(line["total"], 2, "{line}");
+    let advice = "end another curve at the point to close the outline, or make the curve construction geometry";
+    let cause = format!(
+        "point p0000001 ends line n0000001 and no other profile curve, so the profile is open there ({advice}); point p0000004 ends line n0000003 and no other profile curve, so the profile is open there"
+    );
+    for (i, pad) in ["d0000001", "d0000009"].into_iter().enumerate() {
+        let problem = &line["problems"][i];
+        assert_eq!(problem["code"], "invalid_input", "{line}");
+        assert_eq!(problem["feature"], pad, "{line}");
+        assert_eq!(problem["parameter"], "sketch", "{line}");
+        assert_eq!(
+            problem["elements"],
+            serde_json::json!(["n0000001", "n0000003", "p0000001", "p0000004"]),
+            "{line}"
+        );
+        assert_eq!(problem["elements_total"], 4, "{line}");
+        assert_eq!(
+            problem["message"],
+            format!("pad {pad} sweeps sketch s0000001, which makes no profile (2 refusals)")
+        );
+        assert_eq!(problem["cause"], cause, "{line}");
+        assert_eq!(
+            problem["suggestion"],
+            "fix sketch s0000001 where the cause says, or sweep another sketch"
+        );
+    }
+    let problems = line["problems"].as_array().unwrap();
+    assert!(
+        problems.iter().all(|p| p["feature"] != "s0000001"),
+        "{line}"
+    );
+    // `fmt` lists the same two, and nothing against the sketch.
+    let out = silico(&scratch, &["fmt"], &file);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let said = stderr(&out);
+    for pad in ["d0000001", "d0000009"] {
+        assert!(
+            said.contains(&format!(
+                "pad {pad} sweeps sketch s0000001, which makes no profile (2 refusals) (feature {pad}, elements n0000001, n0000003, p0000001, p0000004, parameter sketch)"
+            )),
+            "{said}"
+        );
+    }
+    assert!(!said.contains("feature s0000001"), "{said}");
+}
+
+#[test]
+fn a_groove_whose_other_region_is_off_the_axis_is_refused_for_its_narrow_slit() {
+    // The robustness review's case (M3, round 3): a groove of two rectangles, x 0..10
+    // touching the y axis and x −2..−1 off it, into a box, 600 nanodegrees short of a whole
+    // turn. The slit is narrowest at the second's near side, 1 mm off the axis:
+    // 1 · 600e-9 · π/180 = 1.0472e-8 mm, one place, so it's refused naming the groove's
+    // angle (measured at 10 mm, 1.05e-7, it passed and OCCT cut itself).
+    let scratch = Scratch::new("groove-slit");
+    let file = scratch.file(&sweeps::document(&[
+        &sweeps::box_at("b0000001", [-20.0, -1.0, -20.0], 40.0, 3.0, 40.0),
+        &sweeps::rectangles(
+            "s0000001",
+            "xy",
+            &[[0.0, 0.0, 10.0, 5.0], [-2.0, 0.0, -1.0, 5.0]],
+        ),
+        &sweeps::turned(
+            "g0000001",
+            "groove",
+            Some("b0000001"),
+            "s0000001",
+            "y_axis",
+            &sweeps::angle("359.9999994"),
+        ),
+    ]));
+    let out = silico(&scratch, &["check", "--json"], &file);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let refused: Vec<&serde_json::Value> = line["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["feature"] == "g0000001")
+        .collect();
+    assert_eq!(refused.len(), 1, "{line}");
+    assert_eq!(refused[0]["code"], "invalid_input", "{line}");
+    assert_eq!(refused[0]["parameter"], "extent.angle", "{line}");
+    let message = refused[0]["message"].as_str().unwrap();
+    assert!(
+        message.ends_with(
+            " mm at its profile's point 1 mm from the axis: within 1e-7 mm, its ends would be one place"
+        ),
+        "{message}"
     );
 }

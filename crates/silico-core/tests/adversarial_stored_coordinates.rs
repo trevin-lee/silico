@@ -239,16 +239,62 @@ fn coordinate() -> impl Strategy<Value = f64> {
     .prop_filter("within reach", |v| v.abs() <= 1e6)
 }
 
+/// A radius a sketch can hold: above the gate's floor, the kernel's 1e-7 mm (one at or
+/// under it is refused: a_solve_to_a_radius_at_the_floor_is_refused_naming_the_circle).
 fn radius() -> impl Strategy<Value = f64> {
     prop_oneof![
-        Just(5e-324),
-        Just(1e-300),
+        Just(1e-7f64.next_up()),
         Just(1e6),
         Just(f64::from_bits(1e6f64.to_bits() - 1)),
         Just(1e-6),
         Just(4.9e-7),
-        (1e-9..1e6f64),
+        (1e-7f64.next_up()..1e6f64),
     ]
+}
+
+#[test]
+fn a_solve_to_a_radius_at_the_floor_is_refused_naming_the_circle() {
+    // The gate's floor reaches every solve (M3.4's savable): a solve that leaves the circle
+    // a radius of 1e-7 mm or less, the kernel's tolerance, is an invalid result naming it,
+    // with the gate's own advice; the next float up is kept, bit for bit.
+    for r in [1e-7, 1e-9, 5e-324] {
+        let sketches = FakeSketches::new();
+        sketches.answer(move |system: &SketchSystem| {
+            let mut solved = FakeSketches::as_sent(system);
+            solved.values[FIRST_POINT + 6] = r;
+            Ok(solved)
+        });
+        let model = published(&engine(&sketches), &many_values());
+        let Some(FeatureOutcome::Failed(error)) = model.outcome(&feature()) else {
+            panic!("{r}: {:?}", model.outcome(&feature()));
+        };
+        assert_eq!(error.code(), ErrorCode::InvalidResult, "{r}");
+        assert_eq!(error.elements(), ["c0000001"], "{r}");
+        assert!(
+            error
+                .message()
+                .contains("arcs and circles have a radius above 1e-7 mm"),
+            "{r}: {error}"
+        );
+        assert_eq!(
+            error.suggestion(),
+            Some("change the constraints that draw it this small: draw the circle larger"),
+            "{r}"
+        );
+    }
+    let kept = 1e-7f64.next_up();
+    let sketches = FakeSketches::new();
+    sketches.answer(move |system: &SketchSystem| {
+        let mut solved = FakeSketches::as_sent(system);
+        solved.values[FIRST_POINT + 6] = kept;
+        Ok(solved)
+    });
+    let saved = format(&engine(&sketches), &many_values());
+    let document = read(saved.text.as_bytes()).unwrap();
+    let Operation::Sketch(s) = &document.features[0].operation else {
+        panic!()
+    };
+    assert_eq!(s.circles[0].radius.mm().to_bits(), kept.to_bits());
 }
 
 /// Three points, p1..p3 (two drawn at the origin), a circle about p1, and reference
@@ -747,4 +793,50 @@ fn a_sketch_at_the_limit_with_everything_moved_reports_drift_and_saves_promptly(
         start.elapsed()
     );
     holds_as_saved(&saved.text);
+}
+
+#[test]
+fn a_solve_past_a_limit_not_a_size_keeps_the_solves_own_advice() {
+    // The gate's advice is carried into an unsavable solve's only when the problem is a
+    // curve too small (the floor); any other limit keeps the solve's own advice. An arc
+    // about pa000000 from (1000, 0) to (0, 1000), its centre solved to (−999001, 0): every
+    // coordinate within a kilometre, but the radius, centre to start, is 1000 + 999001 =
+    // 1000001 mm, past the kilometre the solver takes. An invalid result naming the arc,
+    // with "keep the sketch's dimensions inside their limits", not "change the constraints
+    // that draw it this small".
+    let doc = fixture::document(&fixture::fields(
+        &[
+            fixture::point("pa000000", 0.0, 0.0),
+            fixture::point("pa000001", 1000.0, 0.0),
+            fixture::point("pa000002", 0.0, 1000.0),
+        ]
+        .join(", "),
+        "",
+        "",
+        &fixture::arc("aa000001", "pa000000", "pa000001", "pa000002"),
+        "",
+    ));
+    let sketches = FakeSketches::new();
+    sketches.answer(move |system: &SketchSystem| {
+        let mut solved = FakeSketches::as_sent(system);
+        // The centre's x, the first point's first value.
+        solved.values[FIRST_POINT] = -999_001.0;
+        Ok(solved)
+    });
+    let model = published(&engine(&sketches), &doc);
+    let Some(FeatureOutcome::Failed(error)) = model.outcome(&feature()) else {
+        panic!("{:?}", model.outcome(&feature()));
+    };
+    assert_eq!(error.code(), ErrorCode::InvalidResult);
+    assert_eq!(error.elements(), ["aa000001"]);
+    assert_eq!(
+        error.message(),
+        "the sketch solves to geometry its file can't hold: arc aa000001's radius, from its center to its start, is 1000001 mm, more than the 1000000 mm (a kilometre) the solver takes"
+    );
+    assert_eq!(
+        error.suggestion(),
+        Some(
+            "keep the sketch's dimensions inside their limits, not at them: a solve meets them only to rounding"
+        )
+    );
 }

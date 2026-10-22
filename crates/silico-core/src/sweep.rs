@@ -8,7 +8,7 @@
 //! result's checks of each feature when its outcome is decided, from its solid's stored
 //! measures, however the solid was had (made, kept, or read from the cache).
 
-use silico_protocol::{MEASURE_PRECISION, format_number, no_distance};
+use silico_protocol::{EndAtStart, MEASURE_PRECISION, format_number, no_distance};
 
 use crate::document::{Axis, Checked, FeatureId, Operation, PROBLEMS_LISTED, SweepFeature};
 use crate::profile::Profile;
@@ -164,13 +164,26 @@ pub fn axis_line(
     })
 }
 
+/// The signed distance of `p` from the line through `origin` along the unit `direction`,
+/// positive to the line's left.
+fn side(origin: [f64; 2], direction: [f64; 2], p: [f64; 2]) -> f64 {
+    direction[0] * (p[1] - origin[1]) - direction[1] * (p[0] - origin[0])
+}
+
+/// Whether the direction `angle` from an arc's centre lies on the arc, which runs from the
+/// lesser of its angles to the greater, less than a turn.
+fn on_arc(start_angle: f64, end_angle: f64, angle: f64) -> bool {
+    let (from, to) = (start_angle.min(end_angle), start_angle.max(end_angle));
+    from + (angle - from).rem_euclid(std::f64::consts::TAU) <= to
+}
+
 /// How far each of a profile's curves reaches either side of the line through `origin`
 /// along the unit `direction`: its least and greatest signed distance from it (positive to
 /// the line's left), closed-form (design S6): a line's ends; an arc's ends, and its circle's
 /// two points farthest from the line where they lie on the arc; a circle's centre ± its
 /// radius.
 fn reach(edge: &crate::profile::Edge, origin: [f64; 2], direction: [f64; 2]) -> (f64, f64) {
-    let side = |p: [f64; 2]| direction[0] * (p[1] - origin[1]) - direction[1] * (p[0] - origin[0]);
+    let side = |p: [f64; 2]| side(origin, direction, p);
     match edge.sent {
         silico_protocol::Curve::Line { start, end } => {
             let (a, b) = (side(start), side(end));
@@ -190,22 +203,64 @@ fn reach(edge: &crate::profile::Edge, origin: [f64; 2], direction: [f64; 2]) -> 
         } => {
             let (a, b) = (side(start), side(end));
             let (mut low, mut high) = (a.min(b), a.max(b));
-            // The arc runs from the lesser of its angles to the greater, less than a turn.
-            let (from, to) = (start_angle.min(end_angle), start_angle.max(end_angle));
-            let on_arc = |angle: f64| {
-                let turned = from + (angle - from).rem_euclid(std::f64::consts::TAU);
-                turned <= to
-            };
             // The line's left normal, and the circle's points along it and against it.
             let normal = [-direction[1], direction[0]];
             let c = side(center);
-            if on_arc(libm::atan2(normal[1], normal[0])) {
+            if on_arc(start_angle, end_angle, libm::atan2(normal[1], normal[0])) {
                 high = high.max(c + radius);
             }
-            if on_arc(libm::atan2(-normal[1], -normal[0])) {
+            if on_arc(start_angle, end_angle, libm::atan2(-normal[1], -normal[0])) {
                 low = low.min(c - radius);
             }
             (low, high)
+        }
+    }
+}
+
+/// The distances from the line through `origin` along the unit `direction` of a curve's
+/// points that could be the nearest of a profile to it: its ends; and its interior point
+/// nearest the line, where it has one: where its circle lies off the line, the circle's
+/// point toward it, the centre's distance less the radius (a circle's always; an arc's
+/// where that point lies on it). A line's points between its ends are no nearer than its
+/// nearer end, and an arc whose circle meets the line is nearest it at an end or where it
+/// meets it.
+fn nearest_distances(
+    edge: &crate::profile::Edge,
+    origin: [f64; 2],
+    direction: [f64; 2],
+) -> [Option<f64>; 3] {
+    let side = |p: [f64; 2]| side(origin, direction, p);
+    // The circle's point toward the line, as an angle, and its distance from the line, if
+    // the circle lies off it.
+    let toward = |center: [f64; 2], radius: f64| {
+        let c = side(center);
+        // The line's normal toward it from the centre: against the left normal from the
+        // left of it, along it from the right.
+        let normal = if c >= 0.0 {
+            [direction[1], -direction[0]]
+        } else {
+            [-direction[1], direction[0]]
+        };
+        (c.abs() > radius).then(|| (libm::atan2(normal[1], normal[0]), c.abs() - radius))
+    };
+    match edge.sent {
+        silico_protocol::Curve::Line { start, end } => {
+            [Some(side(start).abs()), Some(side(end).abs()), None]
+        }
+        silico_protocol::Curve::Circle { center, radius } => {
+            [None, None, toward(center, radius).map(|(_, d)| d)]
+        }
+        silico_protocol::Curve::Arc {
+            center,
+            start,
+            end,
+            radius,
+            start_angle,
+            end_angle,
+        } => {
+            let inside = toward(center, radius)
+                .and_then(|(angle, d)| on_arc(start_angle, end_angle, angle).then_some(d));
+            [Some(side(start).abs()), Some(side(end).abs()), inside]
         }
     }
 }
@@ -218,12 +273,16 @@ fn reach(edge: &crate::profile::Edge, origin: [f64; 2], direction: [f64; 2]) -> 
 ///   axis's line, a point within OCCT's tolerance (1e-7 mm) of it counting as on it, so a
 ///   region may touch the axis or run along it, and two regions may lie on opposite sides
 ///   (FreeCAD checks each face's outer wire alone: `checkLineCrossesFace`, per face). A
-///   crossing is refused as `invalid_input`, the feature the sketch (its elements are
-///   where it's fixed), the elements the crossing region's curves reaching off the axis,
-///   by ID, and the axis, if it's a line;
-/// - **the angle must move something**: the profile's farthest point from the axis, over
-///   every region, times the angle in radians more than the tolerance, as M1's revolve
-///   refuses one; refused as `invalid_input`, naming the feature and its `extent.angle`.
+///   crossing is refused as `invalid_input`, naming the feature and its `axis`, the
+///   elements the sketch's, where it's fixed: the crossing region's curves reaching off
+///   the axis, by ID, and the axis, if it's a line;
+/// - **the turn's end mustn't be where it started** ([`silico_protocol::end_at_start`], M1's
+///   revolve's rule): the profile's farthest point from the axis, over every region, must
+///   move more than the tolerance, and, short of a whole turn, its slit must be wider than
+///   that where it's narrowest, at its nearest point off the axis over every region and
+///   hole ([`silico_protocol::slit_radius`]): 360 degrees less a few
+///   nanodegrees leaves ends one place, which OCCT builds as two; refused as
+///   `invalid_input`, naming the feature and its `extent.angle`.
 pub fn check_axis(
     document: &Checked,
     feature: &FeatureId,
@@ -237,6 +296,11 @@ pub fn check_axis(
     let word = axis.word;
     let tolerance = silico_protocol::LENGTH_TOLERANCE;
     let mut farthest = 0.0f64;
+    // Every point that could be the profile's nearest to the axis, over every region and
+    // hole, with its curve: where its slit is measured, and the curves there.
+    let mut near: Vec<(f64, &crate::document::ElementId)> = Vec::new();
+    // Each curve's farthest reach, for the curves there when the slit is measured there.
+    let mut far: Vec<(f64, &crate::document::ElementId)> = Vec::new();
     for region in &profile.regions {
         let (mut low, mut high) = (0.0f64, 0.0f64);
         let mut off: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -247,6 +311,13 @@ pub fn check_axis(
             let (l, h) = reach(edge, origin, direction);
             low = low.min(l);
             high = high.max(h);
+            near.extend(
+                nearest_distances(edge, origin, direction)
+                    .into_iter()
+                    .flatten()
+                    .map(|d| (d, &edge.curve)),
+            );
+            far.push(((-l).max(h), &edge.curve));
             if l < -tolerance || h > tolerance {
                 off.insert(edge.curve.to_string());
             }
@@ -273,7 +344,8 @@ pub fn check_axis(
                     format_number(high)
                 ),
             )
-            .with_feature(axis.sketch.as_str())
+            .with_feature(feature.as_str())
+            .with_parameter("axis")
             .with_elements(elements)
             .with_elements_total(total as u64)
             .with_suggestion(
@@ -293,18 +365,55 @@ pub fn check_axis(
         )) => angle.degrees(),
         _ => return Err(unchecked(format!("has {feature}, which turns by no angle"))),
     };
-    if farthest * silico_protocol::radians(degrees) <= tolerance {
-        return Err(Error::new(
-            ErrorCode::InvalidInput,
-            format!(
-                "{word} {feature}'s angle, {} degrees, moves its profile's farthest point, {} mm from the axis, by at most 1e-7 mm: it would make no solid",
-                format_number(degrees),
-                format_number(farthest)
-            ),
-        )
-        .with_feature(feature.as_str())
-        .with_parameter("extent.angle")
-        .with_suggestion("turn it by a larger angle"));
+    let refused = |message: String, suggestion: &str| {
+        Error::new(ErrorCode::InvalidInput, message)
+            .with_feature(feature.as_str())
+            .with_parameter("extent.angle")
+            .with_suggestion(suggestion)
+    };
+    let turned = silico_protocol::radians(degrees);
+    let slit_at = silico_protocol::slit_radius(near.iter().map(|&(d, _)| d), farthest);
+    match silico_protocol::end_at_start(slit_at.distance(), farthest, turned) {
+        Some(EndAtStart::Unmoved) => {
+            return Err(refused(
+                format!(
+                    "{word} {feature}'s angle, {} degrees, moves its profile's farthest point, {} mm from the axis, by at most 1e-7 mm: it would make no solid",
+                    format_number(degrees),
+                    format_number(farthest)
+                ),
+                "turn it by a larger angle",
+            ));
+        }
+        Some(EndAtStart::ShortOfWhole { at, slit }) => {
+            // The sketch's curves where the slit is measured, by ID: a sweep refusal's
+            // elements are its sketch's. Those with a point there that could be nearest; or,
+            // where the rule fell back to the farthest point (no point off the axis), those
+            // reaching it. `far` names curves only in that fallback: a curve whose farthest
+            // point merely lies at `at` beside a measured corner isn't named, since its edges
+            // running out from the axis share the axis vertex and are harmless, and its
+            // extreme sitting at `at` is a coincidence, not where the rule measured.
+            let measured = match slit_at {
+                silico_protocol::SlitAt::Nearest(_) => &near,
+                silico_protocol::SlitAt::Farthest(_) => &far,
+            };
+            let there: std::collections::BTreeSet<String> = measured
+                .iter()
+                .filter(|&&(d, _)| d == at)
+                .map(|(_, curve)| curve.to_string())
+                .collect();
+            return Err(refused(
+                format!(
+                    "{word} {feature}'s angle, {} degrees, short of a whole turn, leaves a slit of {} mm at its profile's point {} mm from the axis: within 1e-7 mm, its ends would be one place",
+                    format_number(degrees),
+                    format_number(slit),
+                    format_number(at)
+                ),
+                "turn it by 360 degrees for a whole turn, or by less, so its ends are more than 1e-7 mm apart",
+            )
+            .with_elements(there.iter().take(PROBLEMS_LISTED).cloned())
+            .with_elements_total(there.len() as u64));
+        }
+        None => {}
     }
     Ok(AxisLine {
         origin,
@@ -332,6 +441,68 @@ fn unchecked(what: String) -> Error {
     .with_suggestion(crate::worker::SILICO_BUG)
 }
 
+/// Design S3: pad, pocket, revolve, or groove `feature`, of type `kind`, sweeps `sketch`,
+/// which solved but makes no profile (`refused`). The feature's own error, one however many
+/// refusals there are, each sweep of the sketch its own, whole: `invalid_input` (or the
+/// first listed refusal's code that isn't, a bug, with a bug's advice), naming the feature
+/// and its `sketch`; the sketch's elements at fault, every refusal's, by ID (the first
+/// hundred, and their total: a sweep refusal's elements are its sketch's); its cause each
+/// listed refusal's message, each distinct advice given once, after the first refusal it
+/// follows, and how many more. The sketch itself isn't failed, and no error names it: a
+/// sketch nothing sweeps may be open.
+pub fn unprofiled(
+    feature: &FeatureId,
+    kind: SweepFeature,
+    sketch: &FeatureId,
+    refused: &crate::profile::Refused,
+) -> Error {
+    let listed = refused.errors();
+    let code = listed
+        .iter()
+        .map(Error::code)
+        .find(|&code| code != ErrorCode::InvalidInput)
+        .unwrap_or(ErrorCode::InvalidInput);
+    // Each refusal's message, with its advice the first time that advice is given.
+    let mut given: Vec<&str> = Vec::new();
+    let mut cause = listed
+        .iter()
+        .map(|e| match e.suggestion() {
+            Some(advice) if !given.contains(&advice) => {
+                given.push(advice);
+                format!("{} ({advice})", e.message())
+            }
+            _ => e.message().to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let more = refused.total().saturating_sub(listed.len() as u64);
+    if more > 0 {
+        cause.push_str(&format!("; and {more} more"));
+    }
+    let count = match refused.total() {
+        1 => "1 refusal".to_owned(),
+        n => format!("{n} refusals"),
+    };
+    let suggestion = if code == ErrorCode::Internal {
+        crate::worker::SILICO_BUG.to_owned()
+    } else {
+        format!("fix sketch {sketch} where the cause says, or sweep another sketch")
+    };
+    Error::new(
+        code,
+        format!(
+            "{} {feature} sweeps sketch {sketch}, which makes no profile ({count})",
+            kind.word()
+        ),
+    )
+    .with_feature(feature.as_str())
+    .with_parameter("sketch")
+    .with_elements(refused.elements())
+    .with_elements_total(refused.elements_total())
+    .with_cause(cause)
+    .with_suggestion(suggestion)
+}
+
 /// A solid as a sketch feature's checks see it: its volume, by the precise measure, and how
 /// many solids, faces, edges, and vertices it has.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -345,9 +516,9 @@ pub struct Measured {
 
 /// Decision 3, strict (design S5): a pad or a revolve makes one solid of one region, so a
 /// profile of several is refused before any kernel step, with or without a base that would
-/// join them. `invalid_input`, the feature the sketch (its elements are the sketch's, and
-/// that's where they're fixed), the elements every region's outer-loop curves in region
-/// order (the first hundred, and their total). A pocket or a groove takes every region.
+/// join them. `invalid_input`, naming the feature and its `sketch`, the elements the
+/// sketch's, where they're fixed: every region's outer-loop curves in region order (the
+/// first hundred, and their total). A pocket or a groove takes every region.
 pub fn check_regions(
     feature: &FeatureId,
     kind: SweepFeature,
@@ -400,7 +571,8 @@ pub fn check_regions(
         feature.as_str()
     );
     Err(Error::new(ErrorCode::InvalidInput, message)
-        .with_feature(sketch.as_str())
+        .with_feature(feature.as_str())
+        .with_parameter("sketch")
         .with_elements(listed)
         .with_elements_total(total as u64)
         .with_suggestion(format!(

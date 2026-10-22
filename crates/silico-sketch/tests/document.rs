@@ -720,15 +720,16 @@ impl SketchSolver for Counting {
 }
 
 #[test]
-fn a_solution_that_cant_be_built_is_passed_over_for_the_next_algorithms() {
+fn a_line_collapsed_by_its_constraints_is_passed_over_by_dogleg_and_refused_under_the_floor() {
     // TestCoincidentCommandGui.py's collapsed line: FreeCAD's coincidences make its two ends
     // one, exactly, so no algorithm can build it. In Silico a line's ends are two points
     // (the gate refuses one point twice), and the nearest is both held at (5, 5) by
     // dimensions. DogLeg solves that exactly, to a line of no length, which FreeCAD's
     // GeomLineSegment refuses ("Both points are equal": gp::Resolution, so only exactly);
     // its solution is passed over (fc128d357d), and Levenberg–Marquardt's, its ends 1e-10
-    // apart, is a line FreeCAD builds too. Loaded from that file, DogLeg meets it as it
-    // starts and leaves it there, so the answer kept (the load's, M3.4) says DogLeg.
+    // apart, is a line FreeCAD builds too. Silico doesn't keep it: a line 1e-7 mm long or
+    // less is no size to the kernel, the gate's floor (the M3 review, round 1), so the solve
+    // is an invalid result naming the line, with the gate's advice.
     let doc = free_line(&[
         r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 5, "driving": true}"#,
         r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 5, "driving": true}"#,
@@ -749,20 +750,18 @@ fn a_solution_that_cant_be_built_is_passed_over_for_the_next_algorithms() {
         silico_protocol::SolveStatus::SolvedInvalid
     );
     let mut w = Counting::new(worker());
-    let s = solved(&doc, &mut w).unwrap();
-    assert_eq!(
-        w.algorithms(),
-        [Some(Algorithm::LevenbergMarquardt), Some(Algorithm::DogLeg)]
-    );
-    assert_eq!(s.algorithm, Algorithm::DogLeg);
-    let (a, b) = (
-        s.point(&id("p0000001")).unwrap(),
-        s.point(&id("p0000002")).unwrap(),
-    );
-    assert!(a != b, "{a:?} {b:?}");
+    let e = solved(&doc, &mut w).unwrap_err();
+    assert_eq!(w.algorithms(), [Some(Algorithm::LevenbergMarquardt)]);
+    assert_eq!(e.code(), silico_core::ErrorCode::InvalidResult, "{e}");
+    assert_eq!(e.elements(), ["n0000001", "p0000001", "p0000002"], "{e}");
     assert!(
-        (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9,
-        "{a:?} {b:?}"
+        e.message()
+            .starts_with("the sketch solves to geometry its file can't hold: line n0000001 is "),
+        "{e}"
+    );
+    assert_eq!(
+        e.suggestion(),
+        Some("change the constraints that draw it this small: draw the line's ends further apart")
     );
 }
 

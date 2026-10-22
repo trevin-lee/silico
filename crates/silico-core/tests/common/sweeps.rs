@@ -108,6 +108,25 @@ fn number(v: f64) -> String {
     format!("{v}")
 }
 
+/// A sketch `id` on `plane` of these elements, each its JSON (silico-core's
+/// tests/common/sketch.rs builders write them), with no constraints.
+pub fn sketch_of(
+    id: &str,
+    plane: &str,
+    points: &[String],
+    lines: &[String],
+    circles: &[String],
+    arcs: &[String],
+) -> String {
+    format!(
+        r#"{{"id": "{id}", "type": "sketch", "v": 1, "name": "Sketch", "plane": "{plane}", "points": [{}], "lines": [{}], "circles": [{}], "arcs": [{}], "constraints": []}}"#,
+        points.join(", "),
+        lines.join(", "),
+        circles.join(", "),
+        arcs.join(", ")
+    )
+}
+
 /// A sketch `id` on `plane` holding the rectangle from `at`, `w` by `h`: its corners
 /// pa000001 to pa000004 counter-clockwise from `at`, and its sides na000001 (along the
 /// bottom, from pa000001 to pa000002), na000002 (the right), na000003 (the top), and

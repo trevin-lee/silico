@@ -262,10 +262,16 @@ fn a_sketch_with_no_profile_then_mended_then_emptied_again_follows_each_edit() {
         let model = published(&engine, &[sketch, &pad("pppppppp", None, "ssssssss", TEN)]);
         match model.outcome(&id("pppppppp")) {
             Some(FeatureOutcome::Built { .. }) => assert!(builds),
-            Some(FeatureOutcome::Broken { errors, total }) => {
+            Some(FeatureOutcome::Failed(error)) => {
                 assert!(!builds);
-                assert!(*total >= 1 && !errors.is_empty());
-                assert!(errors.iter().all(|e| e.feature() == Some("ssssssss")));
+                assert_eq!(error.feature(), Some("pppppppp"));
+                assert_eq!(
+                    error.cause(),
+                    Some(
+                        "the sketch has no curves to make a profile of (draw a closed outline of lines, arcs, or circles that aren't construction geometry)"
+                    )
+                );
+                assert!(model.errors().all(|e| e.feature() != Some("ssssssss")));
             }
             other => panic!("{other:?}"),
         }
