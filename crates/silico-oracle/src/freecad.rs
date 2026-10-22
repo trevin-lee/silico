@@ -162,10 +162,10 @@ pub fn script(source: &str) -> Result<serde_json::Value, String> {
 
 /// A directory of FreeCAD's own for one run: its settings (`home`), its script, and its
 /// input. Removed when dropped.
-struct Scratch(PathBuf);
+pub(crate) struct Scratch(PathBuf);
 
 impl Scratch {
-    fn new() -> Result<Scratch, String> {
+    pub(crate) fn new() -> Result<Scratch, String> {
         static RUNS: AtomicU32 = AtomicU32::new(0);
         let run = RUNS.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!("silico-oracle-{}-{run}", std::process::id()));
@@ -175,7 +175,7 @@ impl Scratch {
         Ok(Scratch(dir))
     }
 
-    fn write(&self, name: &str, contents: &str) -> Result<PathBuf, String> {
+    pub(crate) fn write(&self, name: &str, contents: &str) -> Result<PathBuf, String> {
         let path = self.0.join(name);
         std::fs::write(&path, contents)
             .map_err(|e| format!("can't write {}: {e}", path.display()))?;

@@ -293,14 +293,15 @@ fn a_symmetry_about_the_origin_is_freecads_symmetric_about_its_root_point() {
 fn a_case_file_that_cant_be_read_is_an_error_and_a_missing_one_no_cases() {
     // Round 1's mutants: any read error was taken as no file, so a case file the harness
     // couldn't read (here a directory where it goes) ran no cases, silently.
-    let dir = std::env::temp_dir().join(format!("silico-oracle-load-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    assert!(silico_oracle::sketch::load(&dir).unwrap().is_empty());
+    let temp = tempfile::Builder::new()
+        .prefix("silico-oracle-load-")
+        .tempdir()
+        .unwrap();
+    let dir = temp.path();
+    assert!(silico_oracle::sketch::load(dir).unwrap().is_empty());
     std::fs::create_dir(dir.join(silico_oracle::sketch::FILE)).unwrap();
-    let e = silico_oracle::sketch::load(&dir).unwrap_err();
+    let e = silico_oracle::sketch::load(dir).unwrap_err();
     assert!(e.contains("can't read"), "{e}");
-    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 /// FreeCAD's answer ending in `code`, its lists empty and nothing solved; and Silico's

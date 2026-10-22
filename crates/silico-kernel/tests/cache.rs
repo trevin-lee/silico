@@ -125,9 +125,11 @@ fn echo_after_kill(pool: &KernelPool) -> Result<Vec<u8>, silico_core::Error> {
 fn a_worker_rebuilt_while_the_pool_runs_isnt_started_under_its_identity() {
     // A pool of a copy of the worker; the copy then replaced by another build (the test
     // worker), and the worker killed: its replacement would be the other build.
-    let dir = std::env::temp_dir().join(format!("silico-cache-rebuilt-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let temp = tempfile::Builder::new()
+        .prefix("silico-cache-rebuilt-")
+        .tempdir()
+        .unwrap();
+    let dir = temp.path();
     let exe = dir.join("silico-kernel-worker");
     std::fs::copy(WORKER, &exe).unwrap();
     // Started now: its running worker is killed, and replaced from the changed file.
@@ -154,16 +156,17 @@ fn a_worker_rebuilt_while_the_pool_runs_isnt_started_under_its_identity() {
     );
     assert_eq!(pool.identity(), identity);
     drop(pool);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn a_worker_reinstalled_with_the_same_bytes_is_still_started() {
     // The same executable copied over itself (a reinstall): a new file, so its size, time,
     // or inode may differ, but its bytes, and so its identity, don't.
-    let dir = std::env::temp_dir().join(format!("silico-cache-reinstalled-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let temp = tempfile::Builder::new()
+        .prefix("silico-cache-reinstalled-")
+        .tempdir()
+        .unwrap();
+    let dir = temp.path();
     let exe = dir.join("silico-kernel-worker");
     std::fs::copy(WORKER, &exe).unwrap();
     // Started now: its running worker is killed, and replaced from the changed file.
@@ -179,5 +182,4 @@ fn a_worker_reinstalled_with_the_same_bytes_is_still_started() {
     let reply = echo_after_kill(&pool);
     assert!(reply.is_ok(), "{:?}", reply.err());
     drop(pool);
-    let _ = std::fs::remove_dir_all(&dir);
 }

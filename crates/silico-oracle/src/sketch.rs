@@ -487,24 +487,17 @@ print("SILICO_ORACLE " + json.dumps(out))
 
 /// What FreeCAD found for each of `sketches`, in order.
 pub fn freecad_solve(sketches: &[FreecadSketch]) -> Result<Vec<FreecadSolved>, String> {
-    // A directory of this run's own: runs in one process (tests, at once) each count one.
-    static RUNS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let run = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "silico-oracle-sketches-{}-{run}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).map_err(|e| format!("can't make {}: {e}", dir.display()))?;
-    let input = dir.join("cases.json");
+    // A directory of this run's own, removed however the run ends.
+    let scratch = freecad::Scratch::new()?;
     let json =
         serde_json::to_string(sketches).map_err(|e| format!("can't write the cases: {e}"))?;
-    std::fs::write(&input, json).map_err(|e| format!("can't write {}: {e}", input.display()))?;
+    let input = scratch.write("cases.json", &json)?;
     let source = format!(
         "import os\nos.environ['SILICO_SKETCH_CASES'] = {:?}\n{SCRIPT}",
         input.to_string_lossy()
     );
     let value = freecad::script(&source);
-    let _ = std::fs::remove_dir_all(&dir);
+    drop(scratch);
     let solved: Vec<FreecadSolved> = serde_json::from_value(value?)
         .map_err(|e| format!("FreeCAD's sketch outcomes can't be read: {e}"))?;
     if solved.len() != sketches.len() {

@@ -1747,13 +1747,19 @@ mod tests {
     use crate::references::EdgeNames;
     use tracing_subscriber::layer::SubscriberExt;
 
-    /// A worker script, `body` after its shebang, in a directory of its own named `name`.
-    fn script(name: &str, body: &str) -> std::path::PathBuf {
+    /// A directory of its own for one test, `silico-<name>-…`, removed when it's dropped,
+    /// so a test that fails leaves nothing behind either.
+    fn scratch(name: &str) -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix(&format!("silico-{name}-"))
+            .tempdir()
+            .unwrap()
+    }
+
+    /// A worker script, `body` after its shebang, in `dir`.
+    fn script(dir: &tempfile::TempDir, body: &str) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt as _;
-        let dir = std::env::temp_dir().join(format!("silico-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("worker");
+        let path = dir.path().join("worker");
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
@@ -1764,8 +1770,9 @@ mod tests {
         // It says it started (an empty frame), then sends a frame that doesn't decode (one
         // byte, 0xff), which ends its reply thread, and runs on. Drained, everything it sent
         // has been read: that it started, and the end, with nothing left waiting.
+        let dir = scratch("drain");
         let path = script(
-            "drain",
+            &dir,
             "printf '\\0\\0\\0\\0\\1\\0\\0\\0\\377' >&3\nexec sleep 600",
         );
         let mut worker = super::Worker::spawn(&path).unwrap();
@@ -1775,14 +1782,14 @@ mod tests {
             worker.replies.try_recv(),
             Err(std::sync::mpsc::TryRecvError::Disconnected)
         ));
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
     fn an_exit_is_waited_for_through_its_grace_and_none_said_only_after_it() {
         use std::time::{Duration, Instant};
         // One that runs on: none, and not before the grace is out.
-        let path = script("runs-on", "exec sleep 600");
+        let dir = scratch("runs-on");
+        let path = script(&dir, "exec sleep 600");
         let mut worker = super::Worker::spawn(&path).unwrap();
         let start = Instant::now();
         assert_eq!(worker.exit_status_within(Duration::from_millis(200)), None);
@@ -1791,13 +1798,12 @@ mod tests {
             "{:?}",
             start.elapsed()
         );
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
         // One that exits: how, as soon as it has.
-        let path = script("exits", "exit 3");
+        let dir = scratch("exits");
+        let path = script(&dir, "exit 3");
         let mut worker = super::Worker::spawn(&path).unwrap();
         let status = worker.exit_status_within(Duration::from_secs(10));
         assert_eq!(status.and_then(|s| s.code()), Some(3), "{status:?}");
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
@@ -1807,15 +1813,13 @@ mod tests {
         // is the file's (from its path); a change that keeps the bytes (a relink: the same
         // bytes as a new file, renamed over it, so another inode) is hashed, found the same,
         // and renews the stamp.
-        let dir = std::env::temp_dir().join(format!("silico-stamp-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("worker");
+        let dir = scratch("stamp");
+        let path = dir.path().join("worker");
         std::fs::write(&path, b"#!/bin/sh\n").unwrap();
         let exe = super::Executable::of(&path, WorkerKind::Kernel).unwrap();
         assert_eq!(Some(*lock(&exe.stamp)), super::Stamp::of(&path));
         let before = *lock(&exe.stamp);
-        let beside = dir.join("worker.new");
+        let beside = dir.path().join("worker.new");
         std::fs::write(&beside, b"#!/bin/sh\n").unwrap();
         std::fs::rename(&beside, &path).unwrap();
         let relinked = super::Stamp::of(&path);
@@ -1826,7 +1830,6 @@ mod tests {
         );
         exe.check().unwrap();
         assert_eq!(Some(*lock(&exe.stamp)), relinked);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
