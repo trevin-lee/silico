@@ -1,7 +1,8 @@
 //! A pool's slot whose thread ends unexpectedly (a panic, which only a bug causes: here a
-//! log layer that panics once on a slot's thread) is started again by the next request,
-//! rather than counted free with no thread to take it, or still counted started as it
-//! ends. Alone in its binary: it installs the process's global subscriber.
+//! log layer that panics once on a slot's thread, as it starts its worker) is started
+//! again by the next request, rather than counted free with no thread to take it, or the
+//! request failed for want of a slot. Alone in its binary: it installs the process's global
+//! subscriber. `pool_slot_panics_in_run` has the panic inside a request's run.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::Path;
@@ -16,12 +17,12 @@ use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 
 static PANICKED: AtomicBool = AtomicBool::new(false);
 
-/// Panics at the first worker event on a slot's thread (its worker's start), and holds up
-/// the pool's events as the thread unwinds (its slot's end), as a loaded machine can: a
-/// caller woken by the first request's end asks again meanwhile. Before the pool ended a
-/// slot ahead of the request it held, it failed the second request ("a kernel pool's last
-/// slot ended before it took the request") now and then on CI (#85's gate, 39755826573);
-/// held up here, every time.
+/// Panics at the first worker event on a slot's thread (its worker's start), and, as the
+/// thread unwinds, holds up the pool's event saying its slot is ending (before the slot is
+/// put back), as a loaded machine can: the caller, woken as the first request ended with
+/// the thread, asks again meanwhile. Before a slot's end started it again for a request
+/// waiting, it failed that request ("a kernel pool's last slot ended before it took the
+/// request"), now and then on CI (#85's gate, 39755826573); held up here, every time.
 struct PanicOnce;
 
 impl<S: Subscriber> Layer<S> for PanicOnce {
