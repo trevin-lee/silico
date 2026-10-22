@@ -35,7 +35,14 @@ jobs:
       - name: Test scratch
         run: bash .github/scratch.sh start
       - name: Gate
-        run: pixi run gate
+        # A quarter of the machine: the runners share one VM (30 vCPUs), and a gate given all
+        # of it (Cargo's default, nextest's 15 threads) beside others and mutants shards (an
+        # eighth each, mutants.yml) left CPU pressure averaging 25%, failing tests held to CPU
+        # time. Set here, not in the ci profile, so a run off CI keeps its defaults.
+        run: |
+          share=$(( $(nproc) / 4 > 2 ? $(nproc) / 4 : 2 ))
+          export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share
+          pixi run gate
       - name: Remove the test scratch
         if: ${{ always() }}
         run: bash .github/scratch.sh end
