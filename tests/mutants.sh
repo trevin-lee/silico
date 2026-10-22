@@ -9,7 +9,8 @@
 # Arguments go to cargo mutants; paths to files (--in-diff, --output) must be absolute,
 # since it runs in the worktree, while --file names source files from the tree's root. Without --output, the results (mutants.out) land in the worktree, which the next
 # gate or mutants run cleans: pass --output. CI shards it over the runners
-# (.github/workflows/mutants.yml).
+# (.github/workflows/mutants.yml). The test timeout is set below: --timeout-multiplier
+# conflicts with it, and --minimum-test-timeout does nothing.
 #
 # Run through pixi:  pixi run mutants -- --in-diff /tmp/change.diff -p silico-core --output /tmp
 set -euo pipefail
@@ -52,4 +53,12 @@ tests_of() {
   echo "package($package) & ($tests)"
 }
 filter="not ($(tests_of silico-core "${core_wall_clock[@]}") | $(tests_of silico-sketch "${sketch_wall_clock[@]}"))"
-cargo mutants --in-place --minimum-test-timeout 300 --cargo-test-arg=-E --cargo-test-arg="$filter" "$@"
+# Each mutant's tests, and the baseline's, given 20 minutes: no multiple of the baseline,
+# which runs only the mutated packages' tests. The workspace's take 4 to 5 minutes on a
+# loaded runner, and Cargo can wait as long again before them on the package cache's lock,
+# which every runner on the VM shares. (At 300 s, every test had passed so far in 10 of
+# run 39630661896's 11 timeouts.) A hang is mostly nextest's to stop: it ends a test past
+# its slow-timeout (.config/nextest.toml), and the failure catches the mutant. A hang in a
+# test allowed 10 minutes, retried on CI, still times out here; so does a run past 20
+# minutes. A timeout is triaged as missed.
+cargo mutants --in-place --timeout 1200 --cargo-test-arg=-E --cargo-test-arg="$filter" "$@"
