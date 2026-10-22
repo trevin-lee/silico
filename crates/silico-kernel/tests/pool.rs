@@ -16,14 +16,15 @@ mod pool;
 mod scripts;
 
 use std::collections::BTreeSet;
+use std::io::Write as _;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use kernel::kernel;
 use lateness::{Lateness, allowance};
 use pool::{
-    TEST_WORKER, WORKER, assert_reaped, children, done, echo, kill9_and_wait, outcome, pool,
-    signal, sleep, spin, wait_full, wait_full_by, wait_no_children, wait_no_children_besides,
+    PATIENCE, TEST_WORKER, WORKER, assert_reaped, children, done, echo, kill9_and_wait, outcome,
+    pool, signal, sleep, spin, wait_full, wait_full_by, wait_no_children, wait_no_children_besides,
 };
 use silico_core::ErrorCode;
 use silico_core::kernel::{
@@ -175,18 +176,19 @@ fn concurrent_requests_correct() {
 
 #[test]
 fn requests_run_in_parallel() {
-    // Four sleeps of a second on four workers end in about a second: two at a time would
-    // take two.
-    let pool = pool(TEST_WORKER, 4);
-    let start = Instant::now();
+    // Four sleeps on four workers run at once: all four have started before any is let go.
+    // Two at a time, the third would never start.
+    let marks = marks_dir("parallel");
+    let pool = KernelPool::start_workers(&sleep_marking_worker(&marks), 4).unwrap();
     let sleeps: Vec<_> = (0..4)
-        .map(|_| pool.submit(Generation(1), sleep(1000)))
+        .map(|_| pool.submit(Generation(1), long_sleep()))
         .collect();
+    wait_started(&marks, 4);
+    release(&marks);
     for pending in sleeps {
         done(pending).unwrap();
     }
-    let elapsed = start.elapsed();
-    assert!(elapsed < Duration::from_millis(1900), "{elapsed:?}");
+    let _ = std::fs::remove_dir_all(&marks);
 }
 
 #[test]
@@ -220,32 +222,31 @@ fn the_pool_finds_its_worker_and_has_one_per_core_started_as_requests_need_them(
 
 #[test]
 fn a_pool_on_demand_starts_as_many_workers_as_requests_run_at_once_and_no_more() {
-    let pool = KernelPool::start_on_demand(Path::new(TEST_WORKER), 8).unwrap();
+    let marks = marks_dir("on-demand");
+    let pool = KernelPool::start_on_demand(&sleep_marking_worker(&marks), 8).unwrap();
     assert_eq!(pool.size(), 8);
     assert_eq!(pool.pids(), Vec::<u32>::new());
-    // Three at once: three workers, each request on its own.
+    // `n` sleeps at once, let go only once as many as the pool runs at once (`n`, up to
+    // its eight) have started: three workers for three, each request on its own.
     let at_once = |n: usize| {
-        let started = Instant::now();
+        let _ = std::fs::remove_file(marks.join("running"));
+        let _ = std::fs::remove_file(marks.join("release"));
         let pending: Vec<_> = (0..n)
-            .map(|_| pool.submit(Generation(1), sleep(300)))
+            .map(|_| pool.submit(Generation(1), long_sleep()))
             .collect();
+        wait_started(&marks, n.min(8));
+        release(&marks);
         for p in pending {
             done(p).unwrap();
         }
-        started.elapsed()
     };
     at_once(3);
     assert_eq!(pool.pids().len(), 3, "{:?}", pool.pids());
-    // Idle, the pool starts no more; three at once again run on the three it has, at once
-    // (timed now its workers have started, so starting them isn't in the time).
+    // Idle, the pool starts no more; three at once again run on the three it has, at once.
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(pool.pids().len(), 3, "{:?}", pool.pids());
     let before: BTreeSet<u32> = pool.pids().into_iter().collect();
-    let took = at_once(3);
-    assert!(
-        took < Duration::from_millis(900),
-        "they didn't run at once: {took:?}"
-    );
+    at_once(3);
     assert_eq!(pool.pids().into_iter().collect::<BTreeSet<u32>>(), before);
     // Five at once: two more. Twelve: the pool's eight, no more.
     at_once(5);
@@ -254,6 +255,7 @@ fn a_pool_on_demand_starts_as_many_workers_as_requests_run_at_once_and_no_more()
     assert_eq!(pool.pids().len(), 8, "{:?}", pool.pids());
     drop(pool);
     assert_eq!(children(), Vec::new());
+    let _ = std::fs::remove_dir_all(&marks);
 }
 
 #[test]
@@ -315,17 +317,13 @@ fn wait_gives_each_outcome() {
 
 #[test]
 fn wait_timeout_gives_the_request_back_when_it_isnt_done() {
+    // A wait of 50 ms for a 3 s sleep gives the request back undone: one that waited for
+    // the request would give its outcome.
     let pool = pool(TEST_WORKER, 1);
-    let start = Instant::now();
     let pending = pool
-        .submit(Generation(1), sleep(500))
+        .submit(Generation(1), sleep(3_000))
         .wait_timeout(Duration::from_millis(50))
         .expect_err("done in 50 ms");
-    assert!(
-        start.elapsed() < Duration::from_millis(400),
-        "{:?}",
-        start.elapsed()
-    );
     let pending = pending.try_take().expect_err("done at once");
     assert!(matches!(outcome(pending), Outcome::Done(Ok(()))));
 }
@@ -344,33 +342,22 @@ fn advancing_to_a_generation_keeps_its_queued_requests() {
 
 #[test]
 fn advance_stops_superseded_work_so_the_new_generation_doesnt_wait() {
-    // Four workers busy on 3 s sleeps for generation 1. Generation 2 starts: the sleeps are
-    // stopped (their workers killed and replaced, about 30 ms each), so generation 2's first
-    // request runs at once, not after nearly 3 s.
+    // Four workers busy on sleeps for generation 1, each longer than an outcome is waited
+    // for. Generation 2 starts: the sleeps are stopped (their workers killed and replaced),
+    // so generation 2's first request runs, and every stale one ends: not one runs on to
+    // its end, which would outlast the wait for it.
     let pool = pool(TEST_WORKER, 4);
     let before: BTreeSet<u32> = pool.pids().into_iter().collect();
     let stale: Vec<_> = (0..4)
-        .map(|_| pool.submit(Generation(1), sleep(3_000)))
+        .map(|_| pool.submit(Generation(1), long_sleep()))
         .collect();
     std::thread::sleep(Duration::from_millis(200));
-    let start = Instant::now();
     pool.advance(Generation(2));
-    let current = pool.submit(Generation(2), echo(&[1])).wait();
-    let waited = start.elapsed();
-    // Every one of them stopped, not only the first: none runs on to its 3 s.
+    let current = outcome(pool.submit(Generation(2), echo(&[1])));
     for pending in stale {
         assert!(matches!(outcome(pending), Outcome::Superseded));
     }
-    let all_stopped = start.elapsed();
     assert!(matches!(current, Outcome::Done(Ok(_))), "{current:?}");
-    assert!(
-        waited < Duration::from_millis(500),
-        "waited {waited:?} behind superseded work"
-    );
-    assert!(
-        all_stopped < Duration::from_secs(1),
-        "stale work ran on for {all_stopped:?}"
-    );
     // And every worker was replaced.
     wait_full(&pool, 4, &before);
 }
@@ -652,7 +639,8 @@ fn sweep_across(attempts: u32, window: Duration, mut attempt: impl FnMut(Duratio
 // ---------------------------------------------------------------------------------------
 // A worker that says when it's running a request: this test binary, run again as a worker
 // by a script (a worker gets no environment of its own, so the script names the directory),
-// which creates `running` in that directory as it takes a sleep, then sleeps.
+// which adds a line to `running` in that directory as it takes a sleep, then sleeps, until
+// `release` is there or the sleep is over.
 
 const MARKS_ENV: &str = "SILICO_POOL_TEST_MARKS";
 
@@ -663,15 +651,27 @@ fn marking_worker_entry() {
     let Ok(dir) = std::env::var(MARKS_ENV) else {
         return;
     };
-    let running = Path::new(&dir).join("running");
+    let (running, release) = (
+        Path::new(&dir).join("running"),
+        Path::new(&dir).join("release"),
+    );
     let _ = silico_kernel::worker::run(move |_, _, op, _| match op {
         Op::Debug(DebugOp::Sleep { millis }) => {
-            std::fs::write(&running, b"").map_err(|e| {
+            let internal = |e: std::io::Error| {
                 Failure::new(Refusal::Internal {
                     what: e.to_string(),
                 })
-            })?;
-            std::thread::sleep(Duration::from_millis(millis));
+            };
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&running)
+                .and_then(|mut f| f.write_all(b"running\n"))
+                .map_err(internal)?;
+            let until = Instant::now() + Duration::from_millis(millis);
+            while Instant::now() < until && !release.exists() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
             Ok(Reply::Done)
         }
         op => silico_kernel::worker::handle(op),
@@ -679,8 +679,8 @@ fn marking_worker_entry() {
     std::process::exit(0);
 }
 
-/// A worker that, as it takes a sleep, creates `running` in `dir` (see
-/// [`marking_worker_entry`]).
+/// A worker that, as it takes a sleep, adds a line to `running` in `dir`, and ends the sleep
+/// early once `release` is there (see [`marking_worker_entry`]).
 fn sleep_marking_worker(dir: &Path) -> std::path::PathBuf {
     let me = std::env::current_exe().unwrap();
     scripts::script(
@@ -691,6 +691,44 @@ fn sleep_marking_worker(dir: &Path) -> std::path::PathBuf {
             me.display()
         ),
     )
+}
+
+/// A sleep longer than [`PATIENCE`], allowed an hour before the pool stops its worker as
+/// hung: one that should have been stopped, or let go, and wasn't fails the test by its
+/// outcome's wait, not by a bound on the time it took.
+fn long_sleep() -> KernelRequest<()> {
+    sleep(2 * PATIENCE.as_millis() as u64).with_timeout(Duration::from_secs(3600))
+}
+
+/// A fresh directory for a marking worker's marks.
+fn marks_dir(what: &str) -> std::path::PathBuf {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("silico-pool-{what}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Waits until `n` sleeps have started on the marking workers of `dir`, failing after
+/// [`HANG`]: had fewer run at once, the rest would never start before they're let go.
+fn wait_started(dir: &Path, n: usize) {
+    let deadline = Instant::now() + HANG;
+    loop {
+        let started = std::fs::read_to_string(dir.join("running")).map_or(0, |s| s.lines().count());
+        if started >= n {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{started} sleeps started at once, not {n}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Lets the marking workers' sleeps of `dir` go, and those after.
+fn release(dir: &Path) {
+    std::fs::write(dir.join("release"), b"").unwrap();
 }
 
 #[test]
@@ -880,22 +918,17 @@ fn each_superseded_request_is_stopped_when_it_is_due() {
 
 #[test]
 fn lowering_the_stop_after_stops_superseded_work_already_running() {
-    // A superseded request left running under a stop-after of ten seconds is stopped once
-    // the stop-after is lowered to zero, not left to its 3 s.
+    // A superseded request left running under a stop-after longer than the test waits is
+    // stopped once the stop-after is lowered to zero, not left to its end (longer than its
+    // outcome is waited for).
     let pool = pool(TEST_WORKER, 1);
-    pool.set_stop_after(Duration::from_secs(10));
-    let start = Instant::now();
-    let stale = pool.submit(Generation(1), sleep(3_000));
+    pool.set_stop_after(Duration::from_secs(3600));
+    let stale = pool.submit(Generation(1), long_sleep());
     std::thread::sleep(Duration::from_millis(100));
     pool.advance(Generation(2));
     std::thread::sleep(Duration::from_millis(100));
     pool.set_stop_after(Duration::ZERO);
     assert!(matches!(outcome(stale), Outcome::Superseded));
-    assert!(
-        start.elapsed() < Duration::from_secs(1),
-        "{:?}",
-        start.elapsed()
-    );
 }
 
 #[test]

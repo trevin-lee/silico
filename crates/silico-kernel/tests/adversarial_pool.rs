@@ -1261,20 +1261,18 @@ fn a_test_operation_sent_to_production_workers_is_refused_and_the_worker_kept() 
 #[test]
 fn a_superseded_request_whose_worker_is_killed_ends_superseded_and_the_worker_is_replaced() {
     // `advance` stops a superseded request that's running by killing its worker: the
-    // request ends Superseded at once, not when its 5 s sleep would have, and the worker is
-    // replaced.
+    // request ends Superseded, not when its sleep would have (longer than its outcome is
+    // waited for, and allowed an hour before the pool would stop it as hung), and the
+    // worker is replaced.
     let pool = pool(TEST_WORKER, 1);
     let before = pool.pids();
-    let slow = pool.submit(Generation(1), sleep(5_000));
+    let slow = pool.submit(
+        Generation(1),
+        sleep(2 * PATIENCE.as_millis() as u64).with_timeout(Duration::from_secs(3600)),
+    );
     std::thread::sleep(Duration::from_millis(100));
-    let start = Instant::now();
     pool.advance(Generation(2));
     assert!(matches!(outcome(slow), Outcome::Superseded));
-    assert!(
-        start.elapsed() < Duration::from_secs(2),
-        "{:?}",
-        start.elapsed()
-    );
     wait_full(&pool, 1, &before.iter().copied().collect());
     assert_eq!(
         done(pool.submit(Generation(2), echo(&[7]))).unwrap(),
