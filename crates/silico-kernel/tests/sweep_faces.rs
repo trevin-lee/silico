@@ -3,6 +3,8 @@
 //! an axis from a start angle. Every extent form the design builds on each of D6's planes,
 //! against analytic volumes and boxes; the history the design's rule asks for, pinned per
 //! element kind against the geometry; and the values and replies the core refuses.
+//! Needs the FreeCAD oracle (`pixi install -e oracle`): the shapes no profile's faces make
+//! are written by FreeCAD.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 #[path = "common/close.rs"]
