@@ -38,8 +38,35 @@ pub fn constrained(constraints: &str) -> String {
 
 /// The gate's problems with `text`, which reads.
 pub fn problems(text: &str) -> Vec<Error> {
-    match validate(&read(text.as_bytes()).unwrap()) {
+    let document = read(text.as_bytes()).unwrap();
+    let errors = match validate(&document) {
         Ok(()) => Vec::new(),
         Err(invalid) => invalid.errors().to_vec(),
+    };
+    // A constraint's refusal names it by its ID too: its field is its place in the list,
+    // which `fmt` reorders, so the ID is what stays its name (the M3 audit). Every refusal
+    // of one, in every test.
+    for error in &errors {
+        let place = error
+            .parameter()
+            .and_then(|p| p.strip_prefix("constraints."))
+            .and_then(|rest| rest.split('.').next())
+            .and_then(|n| n.parse::<usize>().ok());
+        let sketch = document.features.iter().find_map(|f| match &f.operation {
+            silico_core::document::Operation::Sketch(s)
+                if Some(f.id.as_str()) == error.feature() =>
+            {
+                Some(s)
+            }
+            _ => None,
+        });
+        if let (Some(i), Some(sketch)) = (place, sketch) {
+            let id = sketch.constraints[i].id.as_str();
+            assert!(
+                error.elements().iter().any(|e| e == id),
+                "{id} unnamed: {error:?}"
+            );
+        }
     }
+    errors
 }
