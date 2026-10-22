@@ -153,6 +153,12 @@ fn a_point_is_left_or_right_of_a_line_only_where_rounding_cant_have_chosen() {
     // the bound (4.2e-13) but not 0, so only the bound says it's on the line (#78's tests
     // review).
     assert_eq!(side_of_line(c5, c6, [48.5, 95.3]), 0);
+    // The same three corners scaled by 2^-7, which is exact, so corner 2 is still 7e-15 / 128
+    // mm off the line: by hand its orientation, -6.9e-18, is within the bound times the
+    // products' sum (2.6e-17) but over it times their product (5e-19): a bound taken on the
+    // product would trust rounding's sign near the origin (#44's surviving mutant).
+    let near = |p: [f64; 2]| [p[0] / 128.0, p[1] / 128.0];
+    assert_eq!(side_of_line(near(c5), near(c6), near([48.5, 95.3])), 0);
     let off = 1e-6 / 5f64.sqrt();
     assert_eq!(side_of_line(c5, c6, [61.1 - 2.0 * off, 120.5 + off]), -1);
     assert_eq!(side_of_line(c5, c6, [61.1 + 2.0 * off, 120.5 - off]), 1);
