@@ -13,6 +13,7 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 [profile.ci]
 fail-fast = false
 test-threads = 15
+# CI's gate overrides it with NEXTEST_TEST_THREADS, a quarter of the runner VM (gate.yml).
 # The default profile's timeouts and overrides hold here too: nextest takes them from it.
 
 # The document reader's and the cache's timed tests (named `..._promptly`) measure their

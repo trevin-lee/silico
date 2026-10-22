@@ -35,13 +35,16 @@ jobs:
       - name: Test scratch
         run: bash .github/scratch.sh start
       - name: Gate
-        # A quarter of the machine: the runners share one VM (30 vCPUs), and a gate given all
-        # of it (Cargo's default, nextest's 15 threads) beside others and mutants shards (an
-        # eighth each, mutants.yml) left CPU pressure averaging 25%, failing tests held to CPU
-        # time. Set here, not in the ci profile, so a run off CI keeps its defaults.
+        # A quarter of the runner VM (30 vCPUs) for its builds and tests. Each gate building
+        # with Cargo's default (every vCPU) and testing on 15 threads, beside other gates and
+        # mutants shards, left CPU pressure averaging 25% and failed tests held to CPU time.
+        # Eight gates at once now ask for 56 threads, against 240 while building before.
+        # Set here because a nextest profile can't say "a quarter of the CPUs" (it takes a
+        # number), and Cargo has no CI-only config; CMake (OCCT, on a cache miss) takes the
+        # same share. Kernel pool tests sized by the CPU count, and the linker, still burst.
         run: |
           share=$(( $(nproc) / 4 > 2 ? $(nproc) / 4 : 2 ))
-          export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share
+          export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share CMAKE_BUILD_PARALLEL_LEVEL=$share
           pixi run gate
       - name: Remove the test scratch
         if: ${{ always() }}
