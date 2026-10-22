@@ -650,6 +650,95 @@ fn a_derived_name_has_a_freecad_form() {
     );
 }
 
+#[test]
+fn a_names_further_sources_are_written_apart_in_freecads_form() {
+    // FreeCAD writes the sources after the first in parentheses, each after the first
+    // behind a `|` (TopoShapeExpansion.cpp's makeShapeWithElementMap: generated or modified,
+    // and named from below).
+    let leaf = |n| {
+        Arc::new(Name::Element {
+            feature: id("aaaaaaaa"),
+            made: TypeWord::Operation(OpCode::Fuse),
+            element: element(ElementKind::Edge, n),
+        })
+    };
+    let modified = |n| Source {
+        relation: Relation::Modified,
+        place: None,
+        position: Raw(Some(NonZeroU32::MIN)),
+        name: leaf(n),
+    };
+    let derived = Name::Derived {
+        feature: id("rrrrrrrr"),
+        operation: OpCode::Cut,
+        kind: ElementKind::Face,
+        first: modified(1),
+        more: vec![modified(2), modified(3)],
+    };
+    let lower = Name::Lower {
+        feature: id("rrrrrrrr"),
+        operation: OpCode::Cut,
+        kind: ElementKind::Face,
+        first: leaf(1),
+        more: vec![leaf(2), leaf(3)],
+    };
+    assert_eq!(freecad::text(&derived), "Edge1;:M(Edge2|Edge3);CUT");
+    assert_eq!(freecad::text(&lower), "Edge1;:L(Edge2|Edge3);CUT");
+}
+
+#[test]
+fn of_two_sources_freecad_writes_alike_the_bases_comes_first() {
+    // A fuse of the base `zzzzzzzz` (input 0) and the tool `aaaaaaaa`, each with one face,
+    // both kept, and an edge nothing reported, bounded by both: it's named from the faces
+    // above it, the first by FreeCAD's order. Both are `Face1` in FreeCAD's form, so the
+    // input decides, the base's first, not the IDs' order, which puts the tool's first.
+    let one_face = ElementCounts {
+        faces: 1,
+        edges: 0,
+        vertices: 0,
+        solids: 1,
+    };
+    let base = ElementMap::by_number(id("zzzzzzzz"), OpCode::Fuse, one_face);
+    let tool = ElementMap::by_number(id("aaaaaaaa"), OpCode::Fuse, one_face);
+    let result = ElementCounts {
+        faces: 2,
+        edges: 1,
+        vertices: 0,
+        solids: 1,
+    };
+    let history = History {
+        inputs: vec![
+            InputHistory {
+                faces: vec![kept(1)],
+                edges: vec![],
+                vertices: vec![],
+            },
+            InputHistory {
+                faces: vec![kept(2)],
+                edges: vec![],
+                vertices: vec![],
+            },
+        ],
+        result,
+        ends: Default::default(),
+        topology: Topology {
+            face_edges: vec![vec![1], vec![1]],
+            outer_edges: vec![vec![1], vec![1]],
+            edge_vertices: vec![vec![]],
+        },
+    };
+    let map = ElementMap::operation(id("ffffffff"), OpCode::Fuse, &[&base, &tool], &history);
+    let edge = map.name(element(ElementKind::Edge, 1)).unwrap();
+    let Name::Upper { upper, more, .. } = &*edge else {
+        panic!("{edge}");
+    };
+    assert_eq!(upper.to_string(), "zzzzzzzz.fuse.Face1");
+    assert_eq!(
+        more.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        ["aaaaaaaa.fuse.Face1"]
+    );
+}
+
 // --- A primitive's map and element numbers ----------------------------------------------
 
 #[test]

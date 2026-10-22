@@ -661,6 +661,24 @@ impl EngineState {
     }
 }
 
+/// Starts up to `threads` of a recompute's threads, `spawn` starting the `n`th: as many as
+/// start, up to the first that doesn't, since a recompute runs with the threads there are;
+/// with none, why.
+fn start_threads(
+    threads: usize,
+    mut spawn: impl FnMut(usize) -> std::io::Result<()>,
+) -> Result<usize, Error> {
+    let mut started = 0;
+    for n in 0..threads {
+        match spawn(n) {
+            Ok(()) => started += 1,
+            Err(e) if started == 0 => return Err(crate::pool::thread_error("recompute", &e)),
+            Err(_) => break,
+        }
+    }
+    Ok(started)
+}
+
 /// A sketch solve running: its recompute's generation, its number among the engine's
 /// solves, when it started, and how to stop it.
 struct Solving {
@@ -1572,23 +1590,15 @@ impl<K: Kernel + 'static> Engine<K> {
                     .map_err(|e| crate::pool::thread_error("recompute", &e))?;
                 Some(spawned)
             };
-            let mut started = 0;
-            for n in 0..threads {
-                let spawned = std::thread::Builder::new()
+            start_threads(threads, |n| {
+                std::thread::Builder::new()
                     .name(format!("recompute-{}-{n}", generation.0))
                     .spawn_scoped(scope, || {
                         let _entered = parent.enter();
                         self.serve(&plan, &schedule, &changed, generation);
-                    });
-                match spawned {
-                    Ok(_) => started += 1,
-                    // Run with the threads there are; with none, fail.
-                    Err(e) if started == 0 => {
-                        return Err(crate::pool::thread_error("recompute", &e));
-                    }
-                    Err(_) => break,
-                }
-            }
+                    })
+                    .map(drop)
+            })?;
             let Some(sketches) = sketches else {
                 return Ok(Some(SketchRun::new()));
             };
@@ -2344,6 +2354,66 @@ fn feature_outcome(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_recompute_runs_with_the_threads_that_start_and_fails_only_with_none() {
+        let short = || std::io::Error::from_raw_os_error(libc::EAGAIN);
+        // Every thread starts: all of them.
+        assert_eq!(start_threads(3, |_| Ok(())).unwrap(), 3);
+        // The first doesn't: the shortage, said as a recompute's.
+        let err = start_threads(3, |_| Err(short())).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::ResourceExhausted, "{err}");
+        assert_eq!(err.message(), "couldn't start a recompute thread");
+        // The third of four doesn't: the two before it, and none tried after it.
+        let mut tried = Vec::new();
+        let started = start_threads(4, |n| {
+            tried.push(n);
+            if n == 2 { Err(short()) } else { Ok(()) }
+        });
+        assert_eq!(started.unwrap(), 2);
+        assert_eq!(tried, [0, 1, 2]);
+    }
+
+    #[test]
+    fn a_superseded_solve_is_left_only_what_remains_of_its_grace() {
+        // Started 1 ms ago, superseded now: it may run on for at most the 9 ms left of
+        // SKETCH_STOP_AFTER's 10, not stopped yet. (Had this thread stalled past the
+        // grace, it's stopped now instead.)
+        let engine = Recompute::new(crate::fake::FakeKernel::new(1).unwrap());
+        let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut state = crate::worker::lock(&engine.engine.state);
+        state.solving = Some(Solving {
+            generation: Generation(1),
+            number: 7,
+            started: std::time::Instant::now()
+                .checked_sub(Duration::from_millis(1))
+                .unwrap(),
+            stopper: SolveStopper::new({
+                let stopped = Arc::clone(&stopped);
+                move || stopped.store(true, std::sync::atomic::Ordering::SeqCst)
+            }),
+        });
+        match state.stop_older_solve(Generation(2)) {
+            Some((left, number)) => {
+                assert_eq!(number, 7);
+                assert!(left <= Duration::from_millis(9), "{left:?} left");
+                assert!(!stopped.load(std::sync::atomic::Ordering::SeqCst));
+            }
+            None => {
+                assert!(stopped.load(std::sync::atomic::Ordering::SeqCst));
+                assert!(state.solving.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn a_naming_key_debugs_as_its_hex() {
+        let key = NamingKey(core::array::from_fn(|i| i as u8));
+        assert_eq!(
+            format!("{key:?}"),
+            "NamingKey(000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f)"
+        );
+    }
 
     #[test]
     fn a_result_kept_is_replaced_only_by_one_that_knows_as_much_of_its_measure() {

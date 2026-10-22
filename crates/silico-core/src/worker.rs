@@ -1743,6 +1743,59 @@ mod tests {
     use crate::references::EdgeNames;
     use tracing_subscriber::layer::SubscriberExt;
 
+    /// A worker script, `body` after its shebang, in a directory of its own named `name`.
+    fn script(name: &str, body: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("silico-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("worker");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[test]
+    fn draining_reads_everything_a_worker_sent_up_to_where_its_replies_end() {
+        // It says it started (an empty frame), then sends a frame that doesn't decode (one
+        // byte, 0xff), which ends its reply thread, and runs on. Drained, everything it sent
+        // has been read: that it started, and the end, with nothing left waiting.
+        let path = script(
+            "drain",
+            "printf '\\0\\0\\0\\0\\1\\0\\0\\0\\377' >&3\nexec sleep 600",
+        );
+        let mut worker = super::Worker::spawn(&path).unwrap();
+        worker.drain_replies(std::time::Instant::now() + std::time::Duration::from_secs(10));
+        assert!(worker.has_started());
+        assert!(matches!(
+            worker.replies.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        ));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn an_exit_is_waited_for_through_its_grace_and_none_said_only_after_it() {
+        use std::time::{Duration, Instant};
+        // One that runs on: none, and not before the grace is out.
+        let path = script("runs-on", "exec sleep 600");
+        let mut worker = super::Worker::spawn(&path).unwrap();
+        let start = Instant::now();
+        assert_eq!(worker.exit_status_within(Duration::from_millis(200)), None);
+        assert!(
+            start.elapsed() >= Duration::from_millis(200),
+            "{:?}",
+            start.elapsed()
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        // One that exits: how, as soon as it has.
+        let path = script("exits", "exit 3");
+        let mut worker = super::Worker::spawn(&path).unwrap();
+        let status = worker.exit_status_within(Duration::from_secs(10));
+        assert_eq!(status.and_then(|s| s.code()), Some(3), "{status:?}");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
     #[test]
     fn an_executables_stamp_is_its_files_and_is_renewed_when_a_change_keeps_its_bytes() {
         // Found by review: dropping the renewal, or the stamp's shortcut, only made every

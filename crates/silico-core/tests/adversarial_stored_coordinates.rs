@@ -677,6 +677,44 @@ fn at_the_limit() -> String {
 }
 
 #[test]
+fn a_sketch_drift_lists_five_moved_and_says_more_only_past_five() {
+    // `n` points on the x axis, each moved half a unit along it by the solve: the message
+    // names the first five, and says there are more (`, …`) only when there are.
+    for n in [5u32, 6] {
+        let points: Vec<String> = (0..n)
+            .map(|i| point(&format!("p{i:07}"), f64::from(i), 0.0))
+            .collect();
+        let sketches = FakeSketches::new();
+        sketches.answer(move |system| {
+            let mut solved = FakeSketches::as_sent(system);
+            // To its whole number and a half, which a load of the solution leaves there.
+            for i in 0..n as usize {
+                let x = &mut solved.values[FIRST_POINT + 2 * i];
+                *x = x.floor() + 0.5;
+            }
+            Ok(solved)
+        });
+        // A reference to solve for, which the move leaves as it was (both points move alike).
+        let reference = r#"{"id": "r0000000", "type": "distance", "a": "p0000000", "b": "p0000001", "value": 1, "driving": false}"#;
+        let text = fixture::document(&fixture::fields(&points.join(", "), "", "", "", reference));
+        let errors = published(&engine(&sketches), &text).drift();
+        let [e] = &errors[..] else {
+            panic!("{n}: {errors:?}")
+        };
+        assert_eq!(e.elements_total(), u64::from(n));
+        let listed = "p0000000 x 0 → 0.5, p0000001 x 1 → 1.5, p0000002 x 2 → 2.5, \
+                      p0000003 x 3 → 3.5, p0000004 x 4 → 4.5";
+        let end = if n == 5 {
+            format!("{listed} (5 in all)")
+        } else {
+            format!("{listed}, … (6 in all)")
+        };
+        assert!(e.message().ends_with(&end), "{n}: {e}");
+        assert!(!e.message().contains("p0000005 x"), "{n}: {e}");
+    }
+}
+
+#[test]
 fn a_sketch_at_the_limit_with_everything_moved_reports_drift_and_saves_promptly() {
     let sketches = FakeSketches::new();
     sketches.answer(|system| {
