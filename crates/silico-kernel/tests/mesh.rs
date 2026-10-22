@@ -19,6 +19,7 @@ use silico_kernel::{
     BooleanOp, KernelErrorKind, Mesh, Primitive, Shape, boolean, fillet, make, make_box,
     tessellate, translate,
 };
+use silico_protocol::Refusal;
 
 /// The volume a closed mesh encloses (divergence theorem), taken about `o`, a point inside
 /// the solid: every triangle then adds a positive tetrahedron if it faces outward, so a
@@ -171,6 +172,11 @@ fn a_bad_deflection_is_invalid_input() {
             KernelErrorKind::InvalidInput,
             "{deflection}: {err}"
         );
+        // Invalid in itself, not too fine for this shape: no deflection is zero or less.
+        assert!(
+            matches!(err.refusal(), Refusal::DeflectionInvalid { .. }),
+            "{deflection}: {err}"
+        );
     }
 }
 
@@ -219,6 +225,16 @@ fn a_deflection_too_fine_for_the_shape_is_refused() {
     // The floor, readable: about √1400 × 1e-4 (OCCT's box is a hair larger).
     assert!(err.message().contains("use at least 0.003741657"), "{err}");
     assert!(tessellate(&b, 0.004).is_ok());
+    // The floor is the finest allowed: it meshes, and the next finer deflection doesn't.
+    let &Refusal::DeflectionTooFine { floor, .. } = err.refusal() else {
+        panic!("{err}");
+    };
+    assert!(tessellate(&b, floor).is_ok());
+    let finer = tessellate(&b, floor.next_down()).unwrap_err();
+    assert!(
+        matches!(finer.refusal(), Refusal::DeflectionTooFine { .. }),
+        "{finer}"
+    );
 }
 
 /// A 20 × 20 × 10 box with a hole of radius 5 through it, about the vertical axis through

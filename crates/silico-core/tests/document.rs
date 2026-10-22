@@ -1333,3 +1333,13 @@ fn of_several_unknown_keys_the_first_written_is_named() {
     assert!(error.message().contains("\"depth\""), "{error}");
     assert!(!error.message().contains("\"angle\""), "{error}");
 }
+
+#[test]
+fn a_display_name_shows_as_it_was_written() {
+    for text in ["Base plate", "Ø6 bore", " spaced  "] {
+        assert_eq!(
+            silico_core::document::Name::new(text).unwrap().to_string(),
+            text
+        );
+    }
+}

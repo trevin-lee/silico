@@ -6,12 +6,11 @@
 //! worker passes a handler that adds the test operations.
 
 use std::io::Write;
-use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
 
 use silico_protocol::{
-    Blob, BuiltData, Failure, FrameError, FreecadMeasures, Generation, Op, Refusal, Reply,
-    RequestId, ShapeData, ShapeSummary,
+    Blob, BuiltData, Failure, FreecadMeasures, Generation, Op, Refusal, Reply, RequestId,
+    ShapeData, ShapeSummary,
 };
 
 use crate::KernelError;
@@ -187,14 +186,6 @@ pub fn check_fp_traps() -> Result<(), String> {
 }
 
 pub use silico_worker::check_fp_trap_mask;
-
-/// Serves requests from `socket` until the core closes it (see [`silico_worker::serve`]).
-pub fn serve<F>(socket: UnixStream, handle: F) -> Result<(), FrameError>
-where
-    F: FnMut(RequestId, Generation, Op, &mut dyn Write) -> Result<Reply, Failure>,
-{
-    silico_worker::serve(socket, &PLATFORM, handle)
-}
 
 /// The kernel worker process (see [`silico_worker::run`]).
 pub fn run<F>(handle: F) -> ExitCode

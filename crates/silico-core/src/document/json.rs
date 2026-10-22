@@ -745,4 +745,61 @@ mod tests {
         let objects = "{\"a\":".repeat(1_000_000);
         assert!(read_str(&objects).is_err());
     }
+
+    #[test]
+    fn a_character_ascii_shows_is_named_by_itself_alone() {
+        // Whole messages: a printable ASCII character is shown as itself, without its code
+        // point; any other, with it.
+        assert_eq!(
+            read_str("x").unwrap_err().message,
+            "expected a value, found `x`"
+        );
+        assert_eq!(
+            read_str("[1 ~]").unwrap_err().message,
+            "expected `,` or `]`, found `~`"
+        );
+        assert_eq!(
+            read_str("é").unwrap_err().message,
+            "expected a value, found `é` (U+00E9)"
+        );
+    }
+
+    fn reader(text: &str) -> Reader<'_> {
+        Reader {
+            text,
+            pos: 0,
+            line: 1,
+            column: 1,
+            spent: size_of::<Node>(),
+        }
+    }
+
+    #[test]
+    fn an_arrays_room_is_charged_as_it_grows_and_its_spare_room_given_back() {
+        // By hand, with N a node's bytes: the root's N; room for 4 items at the first
+        // (4N, and an allocation's 16); room for 4 more at the fifth (4N); and the 3 left
+        // spare at the end given back (-3N). 6N + 16: the root and its 5 items, and one
+        // allocation.
+        let n = size_of::<Node>();
+        let mut r = reader("[true,true,true,true,true]");
+        let Value::Array(items) = r.value(0).unwrap().value else {
+            panic!()
+        };
+        assert_eq!((items.len(), items.capacity()), (5, 5));
+        assert_eq!(r.spent, 6 * n + 16);
+        // Four fit the first room: nothing given back, nothing more charged.
+        let mut r = reader("[true,true,true,true]");
+        r.value(0).unwrap();
+        assert_eq!(r.spent, 5 * n + 16);
+    }
+
+    #[test]
+    fn a_tree_may_take_exactly_the_most_bytes_and_not_one_more() {
+        let mut r = reader("");
+        r.spent = MAX_TREE_BYTES - 10;
+        assert!(r.charge(10).is_ok());
+        assert_eq!(r.spent, MAX_TREE_BYTES);
+        let err = r.charge(1).unwrap_err();
+        assert_eq!(err.cause, Cause::Size);
+    }
 }
