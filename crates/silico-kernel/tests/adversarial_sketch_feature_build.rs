@@ -238,13 +238,14 @@ fn the_advice_for_a_sketchs_edge_named_whole_resolves_on_a_symmetric_pocket() {
 
 #[test]
 fn a_revolve_short_of_a_turn_by_the_tolerance_is_refused_and_a_nanodegree_more_is_valid() {
-    // The rectangle x 2..4, y 0..2 on XY about the y axis: its far side is 4 off the axis,
-    // and a whole turn is π(4² − 2²)·2 = 24π. 360° less k nanodegrees stops the far side
-    // 4 · k · 1e-9 · π/180 mm short of where it started: within 1e-7 mm for
-    // k <= 1e-7 · 180 / (4π · 1e-9) = 4500/π = 1432.39. A nanodegree short (7e-11 mm,
-    // which OCCT builds as an open ring whose ends are one place) and 1432 short are
-    // refused before the kernel is asked; 1433 short is a partial turn, valid, its volume
-    // 24π(360 − 1.433e-6)/360 to 1e-9, and every element named apart.
+    // The rectangle x 2..4, y 0..2 on XY about the y axis: a whole turn is π(4² − 2²)·2 =
+    // 24π. 360° less k nanodegrees leaves a slit of r · k · 1e-9 · π/180 mm at a point r
+    // from the axis, narrowest at the near side, 2: within 1e-7 mm for
+    // k <= 1e-7 · 180 / (2π · 1e-9) = 9000/π = 2864.79. A nanodegree short (3.5e-11 mm,
+    // which OCCT builds as an open ring whose ends are one place), 1433 short (past the
+    // band at the far side, 4: 1432.39) and 2864 short are refused before the kernel is
+    // asked; 2865 short is a partial turn, valid, its volume 24π(360 − 2.865e-6)/360 to
+    // 1e-9, and every element named apart.
     let ring = rectangle("ssssssss", "xy", [2.0, 0.0], 2.0, 2.0);
     let turn = |degrees: &str| {
         turned(
@@ -257,18 +258,20 @@ fn a_revolve_short_of_a_turn_by_the_tolerance_is_refused_and_a_nanodegree_more_i
         )
     };
     let engine = engine();
-    for degrees in ["359.999999999", "359.999998568"] {
+    for degrees in ["359.999999999", "359.999998567", "359.999997136"] {
         let model = publish(&engine, &[&ring, &turn(degrees)]);
         let error = failed(&model, "rrrrrrrr");
         assert_eq!(error.code(), ErrorCode::InvalidInput, "{degrees}");
         assert_eq!(error.parameter(), Some("extent.angle"), "{degrees}");
         assert!(
-            error.message().contains("its ends would be one place"),
+            error
+                .message()
+                .ends_with("at its profile's point 2 mm from the axis: within 1e-7 mm, its ends would be one place"),
             "{degrees}: {error}"
         );
     }
-    let model = publish(&engine, &[&ring, &turn("359.999998567")]);
-    let want = 24.0 * PI * (360.0 - 1.433e-6) / 360.0;
+    let model = publish(&engine, &[&ring, &turn("359.999997135")]);
+    let want = 24.0 * PI * (360.0 - 2.865e-6) / 360.0;
     assert_close(volume(&model, "rrrrrrrr"), want, 1e-9, "the near turn");
     assert_named_apart(&model, "rrrrrrrr");
 }

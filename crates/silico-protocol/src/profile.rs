@@ -423,9 +423,9 @@ pub fn extrusion_vector(
 /// in the profile's plane (within OCCT's tolerance wherever it passes a corner) with the
 /// profile on one side of it (touching it at most), and the angle must be more than 0 and
 /// at most 360, and move the profile further than OCCT's tolerance, and, short of a whole
-/// turn, stop it further than that from where it started ([`crate::end_at_start`]): a turn
-/// short of 360 by more is the turn it says, leaving a slit, as FreeCAD's is. Returns the
-/// axis's unit direction.
+/// turn, leave a slit wider than that where it's narrowest ([`crate::end_at_start`]): a
+/// turn short of 360 by more is the turn it says, leaving a slit, as FreeCAD's is. Returns
+/// the axis's unit direction.
 pub fn check_revolve(
     plane: &ProfilePlane,
     points: &[[f64; 3]],
@@ -515,10 +515,12 @@ pub fn check_revolve(
             ),
         ));
     }
-    // The farthest corner travels its distance times the angle in radians, and stops that
-    // far short of a whole turn's worth of it.
+    // A corner travels its distance times the angle in radians, and stops that far short of
+    // a whole turn's worth of it: the farthest moves most, and the nearest leaves the
+    // narrowest slit.
     let reach = low.abs().max(high.abs());
-    match crate::end_at_start(reach, radians(angle)) {
+    let nearest = sides.iter().map(|s| s.abs()).fold(f64::INFINITY, f64::min);
+    match crate::end_at_start(nearest, reach, radians(angle)) {
         Some(EndAtStart::Unmoved) => Err(invalid(
             "angle",
             format!(
@@ -526,12 +528,13 @@ pub fn check_revolve(
                 format_number(angle)
             ),
         )),
-        Some(EndAtStart::ShortOfWhole) => Err(invalid(
+        Some(EndAtStart::ShortOfWhole { at }) => Err(invalid(
             "angle",
             format!(
-                "the revolve's angle of {} degrees stops the profile's farthest corner, {} mm from the axis, within 1e-7 mm of where it started, short of a whole turn: its ends would be one place; use 360 for a whole turn, or less for ends apart",
+                "the revolve's angle of {} degrees, short of a whole turn, leaves a slit of {} mm at the profile's corner {} mm from the axis: within 1e-7 mm, its ends would be one place; use 360 for a whole turn, or less for ends apart",
                 format_number(angle),
-                format_number(reach)
+                format_number(at * (std::f64::consts::TAU - radians(angle))),
+                format_number(at)
             ),
         )),
         None => Ok(unit),

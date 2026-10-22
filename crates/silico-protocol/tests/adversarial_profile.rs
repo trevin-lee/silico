@@ -500,40 +500,111 @@ fn a_revolve_angle_below_occts_angular_precision_is_refused_as_the_angle() {
     }
 }
 
+/// The slit width a refusal of a turn short of a whole one reports, in mm.
+fn slit(message: &str) -> f64 {
+    message
+        .split("leaves a slit of ")
+        .nth(1)
+        .and_then(|m| m.split(' ').next())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(f64::NAN)
+}
+
 #[test]
 fn a_revolve_short_of_a_whole_turn_by_the_tolerance_is_refused_and_a_nanodegree_more_turns() {
-    // A unit square from x = 9 about y: its far corners are 10 off the axis. 360° less k
-    // nanodegrees stops them 10 · k · 1e-9 · π/180 mm short of where they started: within
-    // 1e-7 mm for k <= 1e-7 · 180 / (10π · 1e-9) = 1800/π = 572.96. So 572 short is refused,
-    // its ends one place (FreeCAD 1.1.3 builds it, and a cut across it cuts itself), and
-    // 573 short is the turn it says. 360 is a whole turn.
+    // A unit square from x = 9 about y: its corners are 9 and 10 off the axis. 360° less k
+    // nanodegrees leaves a slit of r · k · 1e-9 · π/180 mm at a corner r from the axis,
+    // narrowest at the nearest, 9: within 1e-7 mm for k <= 1e-7 · 180 / (9π · 1e-9) =
+    // 2000/π = 636.62. So 636 short is refused, its ends one place there (FreeCAD 1.1.3
+    // builds it, and a cut across it cuts itself), and 637 short is the turn it says. 573
+    // short, past the band at the far corners (572.96), is refused too: its inner slit is
+    // 9.0e-8. 360 is a whole turn.
     let p = unit_square_at(9.0);
     let plane = p.check().unwrap();
     let y = Axis {
         origin: [0.0; 3],
         direction: [0.0, 1.0, 0.0],
     };
-    for angle in [360.0 - 572e-9, 360.0 - 1e-9, 359.999_999_999_9] {
+    for angle in [
+        360.0 - 636e-9,
+        360.0 - 573e-9,
+        360.0 - 1e-9,
+        359.999_999_999_9,
+    ] {
         let e = refused(check_revolve(&plane, &p.points, &y, angle));
         assert_eq!(e.parameter, "angle", "{angle}: {}", e.message);
         assert!(
-            e.message.contains("within 1e-7 mm of where it started")
+            e.message
+                .contains("at the profile's corner 9 mm from the axis: within 1e-7 mm, its ends would be one place")
                 && e.message.contains("use 360 for a whole turn"),
             "{angle}: {}",
             e.message
         );
     }
-    assert_eq!(
-        refused(check_revolve(&plane, &p.points, &y, 360.0 - 572e-9)).message,
-        "the revolve's angle of 359.999999428 degrees stops the profile's farthest corner, 10 mm from the axis, within 1e-7 mm of where it started, short of a whole turn: its ends would be one place; use 360 for a whole turn, or less for ends apart"
-    );
-    for angle in [360.0 - 573e-9, 360.0] {
+    // 9 · 636e-9 · π/180 = 9.9903e-8; 9 · 573e-9 · π/180 = 9.0007e-8.
+    let at = |angle: f64| slit(&refused(check_revolve(&plane, &p.points, &y, angle)).message);
+    assert!((at(360.0 - 636e-9) - 9.9903e-8).abs() < 1e-12);
+    assert!((at(360.0 - 573e-9) - 9.0007e-8).abs() < 1e-12);
+    for angle in [360.0 - 637e-9, 360.0] {
         assert_eq!(
             check_revolve(&plane, &p.points, &y, angle),
             Ok([0.0, 1.0, 0.0]),
             "{angle}"
         );
     }
+}
+
+#[test]
+fn a_revolves_slit_is_measured_at_the_profiles_nearest_corner() {
+    // A profile from x = 5 to 10 about y: its band is at 5, k <= 1e-7 · 180 / (5π · 1e-9)
+    // = 3600/π = 1145.92 nanodegrees. 1145 short is refused (a slit of 5 · 1145e-9 · π/180 = 9.9920e-8 at 5),
+    // 1146 short turns; so does 360. Measured at the far corners, 1145 would pass.
+    let p = Profile {
+        points: vec![
+            [5.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [10.0, 1.0, 0.0],
+            [5.0, 1.0, 0.0],
+        ],
+    };
+    let plane = p.check().unwrap();
+    let y = Axis {
+        origin: [0.0; 3],
+        direction: [0.0, 1.0, 0.0],
+    };
+    let e = refused(check_revolve(&plane, &p.points, &y, 360.0 - 1145e-9));
+    assert_eq!(e.parameter, "angle", "{}", e.message);
+    assert!(
+        e.message
+            .contains("at the profile's corner 5 mm from the axis"),
+        "{}",
+        e.message
+    );
+    assert!(
+        (slit(&e.message) - 9.9920e-8).abs() < 1e-12,
+        "{}",
+        e.message
+    );
+    for angle in [360.0 - 1146e-9, 360.0] {
+        assert_eq!(
+            check_revolve(&plane, &p.points, &y, angle),
+            Ok([0.0, 1.0, 0.0]),
+            "{angle}"
+        );
+    }
+    // Touching the axis, from x = 0 to 10: the slit is measured at the far corners, 10,
+    // whose band is 572.96 nanodegrees.
+    let touching = Profile {
+        points: vec![
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [10.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ],
+    };
+    let plane = touching.check().unwrap();
+    assert!(check_revolve(&plane, &touching.points, &y, 360.0 - 572e-9).is_err());
+    assert!(check_revolve(&plane, &touching.points, &y, 360.0 - 573e-9).is_ok());
 }
 
 #[test]

@@ -223,10 +223,10 @@ fn reach(edge: &crate::profile::Edge, origin: [f64; 2], direction: [f64; 2]) -> 
 ///   by ID, and the axis, if it's a line;
 /// - **the turn's end mustn't be where it started** ([`silico_protocol::end_at_start`], M1's
 ///   revolve's rule): the profile's farthest point from the axis, over every region, must
-///   move more than the tolerance, and, short of a whole turn, stop more than that short of
-///   where it started (360 degrees less a few nanodegrees leaves ends one place, which OCCT
-///   builds as two); refused as `invalid_input`, naming the feature and its
-///   `extent.angle`.
+///   move more than the tolerance, and, short of a whole turn, its slit must be wider than
+///   that where it's narrowest, at the profile's nearest point (its farthest, if it touches
+///   the axis): 360 degrees less a few nanodegrees leaves ends one place, which OCCT builds
+///   as two; refused as `invalid_input`, naming the feature and its `extent.angle`.
 pub fn check_axis(
     document: &Checked,
     feature: &FeatureId,
@@ -240,6 +240,7 @@ pub fn check_axis(
     let word = axis.word;
     let tolerance = silico_protocol::LENGTH_TOLERANCE;
     let mut farthest = 0.0f64;
+    let mut nearest = f64::INFINITY;
     for region in &profile.regions {
         let (mut low, mut high) = (0.0f64, 0.0f64);
         let mut off: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -250,6 +251,15 @@ pub fn check_axis(
             let (l, h) = reach(edge, origin, direction);
             low = low.min(l);
             high = high.max(h);
+            // Its nearest to the axis: 0 where it reaches both sides (within the
+            // tolerance, touching; past it, the crossing refused below).
+            nearest = nearest.min(if l > 0.0 {
+                l
+            } else if h < 0.0 {
+                -h
+            } else {
+                0.0
+            });
             if l < -tolerance || h > tolerance {
                 off.insert(edge.curve.to_string());
             }
@@ -302,7 +312,8 @@ pub fn check_axis(
             .with_parameter("extent.angle")
             .with_suggestion(suggestion)
     };
-    match silico_protocol::end_at_start(farthest, silico_protocol::radians(degrees)) {
+    let turned = silico_protocol::radians(degrees);
+    match silico_protocol::end_at_start(nearest, farthest, turned) {
         Some(EndAtStart::Unmoved) => {
             return Err(refused(
                 format!(
@@ -313,12 +324,13 @@ pub fn check_axis(
                 "turn it by a larger angle",
             ));
         }
-        Some(EndAtStart::ShortOfWhole) => {
+        Some(EndAtStart::ShortOfWhole { at }) => {
             return Err(refused(
                 format!(
-                    "{word} {feature}'s angle, {} degrees, stops its profile's farthest point, {} mm from the axis, within 1e-7 mm of where it started, short of a whole turn: its ends would be one place",
+                    "{word} {feature}'s angle, {} degrees, short of a whole turn, leaves a slit of {} mm at its profile's point {} mm from the axis: within 1e-7 mm, its ends would be one place",
                     format_number(degrees),
-                    format_number(farthest)
+                    format_number(at * (std::f64::consts::TAU - turned)),
+                    format_number(at)
                 ),
                 "turn it by 360 degrees for a whole turn, or by less, so its ends are more than 1e-7 mm apart",
             ));

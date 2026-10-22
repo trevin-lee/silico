@@ -1263,12 +1263,34 @@ fn a_valid_chains_users_dont_wait_for_its_measures() {
 
 #[test]
 fn a_turn_short_of_a_whole_one_by_the_tolerance_is_refused_and_a_nanodegree_more_turns() {
-    // The rectangle 4 by 2 from the origin on XY about the x axis: its farthest point is 2 mm
-    // off it. A turn of 360° less k nanodegrees stops that point 2 · k · 1e-9 · π/180 mm
-    // short of where it started: within 1e-7 mm for k ≤ 1e-7 · 180 / (2π · 1e-9) = 9000/π
-    // = 2864.79. So 2864 short (359.999997136°, 9.997e-8 mm) is refused, its ends one place,
-    // and 2865 short (359.999997135°, 1.00007e-7 mm) turns, by that angle. For a revolve,
-    // and a groove into the cube below.
+    // A turn of 360° less k nanodegrees leaves a slit of r · k · 1e-9 · π/180 mm at a point
+    // r from the axis, narrowest at the profile's nearest point: within 1e-7 mm for
+    // k ≤ 1e-7 · 180 / (r π · 1e-9). About the x axis, on XY:
+    // - the rectangle 4 by 2 from the origin touches the axis, so its slit is measured at
+    //   its farthest point, 2: k ≤ 9000/π = 2864.79, so 2864 short (359.999997136°, a slit
+    //   of 9.9973e-8) is refused and 2865 short turns;
+    // - the rectangle 4 by 5 from (0, 5) lies 5 to 10 from it: k ≤ 3600/π = 1145.92, so
+    //   1145 short (359.999998855°, 9.9920e-8 at 5) is refused and 1146 short turns; 573
+    //   short, past the band at its far side (572.96), is refused too (5.0003e-8 at 5).
+    // For a revolve, and a groove into the cube below.
+    let off = rectangle("ssssssss", "xy", [0.0, 5.0], 4.0, 5.0);
+    let cases = [
+        (
+            off.clone(),
+            "359.999998855",
+            5.0,
+            9.9920e-8,
+            "359.999998854",
+        ),
+        (off, "359.999999427", 5.0, 5.0003e-8, "359.999998854"),
+        (
+            sketch("xy"),
+            "359.999997136",
+            2.0,
+            9.9973e-8,
+            "359.999997135",
+        ),
+    ];
     for (word, base) in [("revolve", None), ("groove", Some("bbbbbbbb"))] {
         let feature = |degrees: &str| {
             turned(
@@ -1280,43 +1302,50 @@ fn a_turn_short_of_a_whole_one_by_the_tolerance_is_refused_and_a_nanodegree_more
                 &angle(degrees),
             )
         };
-        let engine = engine();
-        let model = published(
-            &engine,
-            &[&cube_below(), &sketch("xy"), &feature("359.999997136")],
-        );
-        let error = failed(&model, "rrrrrrrr");
-        assert_eq!(error.code(), ErrorCode::InvalidInput, "{word}");
-        assert_eq!(error.feature(), Some("rrrrrrrr"), "{word}");
-        assert_eq!(error.parameter(), Some("extent.angle"), "{word}");
-        assert_eq!(
-            error.message(),
-            format!(
-                "{word} rrrrrrrr's angle, 359.999997136 degrees, stops its profile's farthest point, 2 mm from the axis, within 1e-7 mm of where it started, short of a whole turn: its ends would be one place"
-            )
-        );
-        assert_eq!(
-            error.suggestion(),
-            Some(
-                "turn it by 360 degrees for a whole turn, or by less, so its ends are more than 1e-7 mm apart"
-            )
-        );
-        assert!(error.elements().is_empty(), "{word}");
-        assert!(!names(&engine).contains(&"MakeFaces"), "{word}");
+        for (drawn, short, at, width, turns) in &cases {
+            let engine = engine();
+            let model = published(&engine, &[&cube_below(), drawn, &feature(short)]);
+            let error = failed(&model, "rrrrrrrr");
+            assert_eq!(error.code(), ErrorCode::InvalidInput, "{word} {short}");
+            assert_eq!(error.feature(), Some("rrrrrrrr"), "{word}");
+            assert_eq!(error.parameter(), Some("extent.angle"), "{word}");
+            let message = error.message();
+            assert!(
+                message.starts_with(&format!(
+                    "{word} rrrrrrrr's angle, {short} degrees, short of a whole turn, leaves a slit of "
+                )) && message.ends_with(&format!(
+                    " mm at its profile's point {at} mm from the axis: within 1e-7 mm, its ends would be one place"
+                )),
+                "{message}"
+            );
+            let slit: f64 = message
+                .split("leaves a slit of ")
+                .nth(1)
+                .and_then(|m| m.split(' ').next())
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(f64::NAN);
+            assert!((slit - width).abs() < 1e-12, "{message}");
+            assert_eq!(
+                error.suggestion(),
+                Some(
+                    "turn it by 360 degrees for a whole turn, or by less, so its ends are more than 1e-7 mm apart"
+                )
+            );
+            assert!(error.elements().is_empty(), "{word}");
+            assert!(!names(&engine).contains(&"MakeFaces"), "{word}");
 
-        let engine = self::engine();
-        let model = published(
-            &engine,
-            &[&cube_below(), &sketch("xy"), &feature("359.999997135")],
-        );
-        assert!(
-            built(&model, "rrrrrrrr"),
-            "{word}: {:?}",
-            model.outcome(&id("rrrrrrrr"))
-        );
-        let Sweep::Revolution(_, _, sent) = the_sweep(&engine) else {
-            panic!("{word}: not a revolution");
-        };
-        assert_eq!(sent, 359.999997135 * (PI / 180.0), "{word}");
+            let engine = self::engine();
+            let model = published(&engine, &[&cube_below(), drawn, &feature(turns)]);
+            assert!(
+                built(&model, "rrrrrrrr"),
+                "{word} {turns}: {:?}",
+                model.outcome(&id("rrrrrrrr"))
+            );
+            let Sweep::Revolution(_, _, sent) = the_sweep(&engine) else {
+                panic!("{word}: not a revolution");
+            };
+            let turns: f64 = turns.parse().unwrap();
+            assert_eq!(sent, turns * (PI / 180.0), "{word}");
+        }
     }
 }
