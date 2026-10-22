@@ -15,6 +15,13 @@ checkout_id=$(printf '%s' "$root" | { sha256sum 2>/dev/null || shasum -a 256; } 
 tree=${XDG_CACHE_HOME:-$HOME/.cache}/silico/gate/$checkout_id
 mkdir -p "$(dirname "$tree")"
 
+# Removes trees, made writable first: a test can leave a directory it made read-only (the
+# CLI's read-only save tests, cache_bound's), whose entries rm can't unlink.
+remove_tree() {
+  chmod -R u+w "$@" 2>/dev/null || true
+  rm -rf "$@"
+}
+
 # One run at a time per checkout: a second run would switch the shared worktree to its
 # own commit halfway through the first. Re-run this script holding a lock on it (Perl's
 # flock, as third_party/occt/scripts/cache.sh does; released if the process dies).
@@ -42,7 +49,7 @@ if [ -e "$tree/.git" ] && ! git -C "$tree" rev-parse --git-dir >/dev/null 2>&1; 
   for cache in target .pixi; do
     if [ -e "$tree/$cache" ]; then mv "$tree/$cache" "$keep/"; fi
   done
-  rm -rf "$tree"
+  remove_tree "$tree"
   git -C "$root" worktree prune
   git -C "$root" worktree add --detach --quiet "$tree" "$commit"
   for cache in target .pixi; do
@@ -69,7 +76,7 @@ if [ -d "$tree/target/debug" ]; then
   target_gib=$((target_kib / 1024 / 1024))
   if [ "$target_gib" -gt "$target_limit_gib" ]; then
     echo "gate: target/debug is $target_gib GiB, past $target_limit_gib GiB: deleting it, so this build starts cold" >&2
-    rm -rf "$tree/target/debug"
+    remove_tree "$tree/target/debug"
   else
     echo "gate: target/debug is $target_gib GiB: kept (deleted past $target_limit_gib GiB)" >&2
   fi
@@ -83,7 +90,7 @@ cd "$tree"
 mkdir -p target
 if [ -n "${SILICO_TEST_SCRATCH-}" ]; then
   mkdir -p "$SILICO_TEST_SCRATCH"
-  rm -rf target/tmp
+  remove_tree target/tmp
   ln -s "$SILICO_TEST_SCRATCH" target/tmp
 elif [ -L target/tmp ]; then
   rm target/tmp
