@@ -393,8 +393,10 @@ fn another_build_under_a_pool_is_unavailable_and_the_first_put_back_runs_again()
     let dir = scratch("replaced-then-restored");
     let exe = dir.join("silico-kernel-worker");
     let kept = dir.join("kept");
-    std::fs::hard_link(WORKER, &exe).unwrap();
-    std::fs::hard_link(WORKER, &kept).unwrap();
+    // Copies, not links: the scratch may be on another device than the build (CI keeps it in
+    // memory), and a copy has the same bytes, so it's the same build.
+    std::fs::copy(WORKER, &exe).unwrap();
+    std::fs::copy(WORKER, &kept).unwrap();
     let pool = KernelPool::start_on_demand(&exe, 1).unwrap();
     pool_echo(&pool).unwrap();
     // Another build at the path, and the worker gone.
