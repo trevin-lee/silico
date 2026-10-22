@@ -1221,17 +1221,31 @@ fn requests_whose_callers_stopped_waiting_dont_jam_the_pool() {
 }
 
 #[test]
-fn every_idle_worker_killed_at_once_is_replaced_every_time() {
-    // Every worker of a production-sized pool killed while idle, 5 times. The slots' idle
-    // checks replace them all within about a second, each on its own clock (which drift
-    // apart enough that these starts rarely overlap the way the pool's first ones do).
+fn every_idle_worker_killed_at_once_is_replaced_at_once_every_time() {
+    // Every worker of a production-sized pool killed while idle and running (each slot has
+    // noted it running, so the kill is from outside), 5 times: each time every slot decides
+    // to start another at once, never to wait, as the pool says it in its span's events, and
+    // the pool is full again, of none of the killed. A slot that waited, as for a binary that
+    // can't start, or left its worker dead, fails this. The decisions are what's checked, not
+    // how soon the pool refills, so a machine short of CPU, which stretches how long the
+    // workers take to start, can't fail it (gate 39813098861 took more than the 5 s this once
+    // allowed); the waits are bounded by HANG only.
+    let decisions = Decisions::record();
     let size = std::thread::available_parallelism()
         .map_or(8, usize::from)
         .max(8);
-    let pool = start_within(Path::new(TEST_WORKER), size);
+    let pool = KernelPool::start_workers(Path::new(TEST_WORKER), size).unwrap();
     let mut gone = BTreeSet::new();
     for round in 0..5 {
-        let before = wait_full(&pool, size, &gone);
+        let before = wait_full_by(&pool, size, &gone, Instant::now() + HANG);
+        let deadline = Instant::now() + HANG;
+        while !(0..size as u64).all(|slot| decisions.running(slot) > round) {
+            assert!(
+                Instant::now() < deadline,
+                "round {round}: not every slot's worker running after {HANG:?}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
         let status = Command::new("kill")
             .arg("-9")
             .args(before.iter().map(u32::to_string))
@@ -1239,8 +1253,14 @@ fn every_idle_worker_killed_at_once_is_replaced_every_time() {
             .unwrap();
         assert!(status.success());
         gone.extend(before);
-        let after = wait_full(&pool, size, &gone);
-        assert_eq!(after.len(), size, "round {round}");
+    }
+    wait_full_by(&pool, size, &gone, Instant::now() + HANG);
+    for slot in 0..size as u64 {
+        assert_eq!(
+            decisions.of_slot(slot, 6),
+            [Decision::AtOnce; 5],
+            "slot {slot}"
+        );
     }
 }
 

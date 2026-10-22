@@ -64,7 +64,8 @@ const EXIT_GRACE: Duration = Duration::from_secs(2);
 /// The least a crashed call waits for its worker to exit, past the call's deadline.
 const MIN_EXIT_GRACE: Duration = Duration::from_millis(100);
 
-/// The socket buffer size asked for on each end.
+/// The socket buffer size asked for on each end. (silico-kernel's tests/idle.rs sends twice
+/// this and a byte, to make a send wait: change it with this.)
 const SOCKET_BUFFER: usize = 4 * 1024 * 1024;
 
 /// The only variables a worker gets from the app's environment. OCCT reads others (such

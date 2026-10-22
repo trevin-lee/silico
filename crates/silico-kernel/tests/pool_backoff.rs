@@ -39,6 +39,8 @@ fn an_idle_slot_whose_worker_is_killed_at_launch_backs_off_after_the_second_kill
         decisions.of_slot(0, 5),
         [AtOnce, Wait(1000), Wait(2000), Wait(4000), Wait(8000)]
     );
+    // None ever ran: each was killed before it started.
+    assert_eq!(decisions.running(0), 0);
     assert_gaps_exceed(&times[1..6], &[1.0, 2.0, 4.0, 8.0]);
 }
 

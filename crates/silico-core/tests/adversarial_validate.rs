@@ -5,9 +5,6 @@
 //! (10^12 nm), positions at most a kilometre either way, and a solid consumed once.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/within.rs"]
-mod within;
-
 use std::collections::BTreeSet;
 use std::time::Duration;
 
@@ -18,7 +15,6 @@ use silico_core::document::{
     Units, read, validate, write,
 };
 use silico_protocol::Primitive;
-use within::within;
 
 const KM: i64 = 1_000_000_000_000;
 
@@ -798,21 +794,60 @@ proptest! {
 fn a_million_features_all_refused_validate_promptly() {
     // Every feature a boolean of the first box with a missing tool, all sharing one ID:
     // each refused three ways (its ID, base consumed, tool missing), named by place.
-    let mut features = vec![feature("aaaaaaaa", "A", unit_box())];
-    features.extend((0..1_000_000).map(|_| feature("aaaaaaaa", "F", cut("aaaaaaaa", MISSING))));
-    let doc = document(features);
-    let invalid = within(Duration::from_secs(5), move || validate(&doc).unwrap_err());
+    // Promptly, as for the valid million below: this thread's CPU time for a million is at
+    // most 30 times that for a hundred thousand (about 10), where a refusal quadratic in the
+    // count would be about 100; a ratio, so a loaded machine can't fail it. And at most
+    // 7.5 s, against a constant slowdown: half the valid million's bound, as it costs about
+    // half as much (0.78 s against 1.56 s on the Mac, a debug build), so a refusal 10 times
+    // slower fails it.
+    let refused = |n: usize| {
+        let mut features = vec![feature("aaaaaaaa", "A", unit_box())];
+        features.extend((0..n).map(|_| feature("aaaaaaaa", "F", cut("aaaaaaaa", MISSING))));
+        document(features)
+    };
+    let (small, large) = (refused(100_000), refused(1_000_000));
+    let ([small_cpu, large_cpu], [small, invalid]) =
+        least_cpu([&small, &large], |doc| validate(doc).unwrap_err());
     // The first boolean takes the box; every later one is refused for that too. Each is
     // refused for its ID and its tool.
+    assert_eq!(small.total(), 100_000 * 3 - 1);
     assert_eq!(invalid.total(), 1_000_000 * 3 - 1);
     assert_eq!(invalid.errors().len(), 100);
     assert_eq!(invalid.errors()[0].feature(), Some("features[1]"));
+    let ratio = large_cpu.as_secs_f64() / small_cpu.as_secs_f64();
+    assert!(
+        ratio < 30.0,
+        "a million refused features took {ratio:.1} times the CPU of a hundred thousand ({large_cpu:?} against {small_cpu:?})"
+    );
+    assert!(
+        large_cpu <= Duration::from_millis(7500),
+        "a million refused features took {large_cpu:?} of CPU, more than 7.5 s"
+    );
 }
 
-#[test]
-fn a_million_valid_features_validate_promptly() {
+/// The least of three runs of `f` on each of `docs`, the runs taken in turn (one of each,
+/// three times), in this thread's CPU time, and `f`'s last results: so a burst of load
+/// can't stretch one size's measure and not the other's.
+fn least_cpu<T>(docs: [&Document; 2], f: impl Fn(&Document) -> T) -> ([Duration; 2], [T; 2]) {
+    let mut least = [Duration::MAX; 2];
+    let mut last: [Option<T>; 2] = [None, None];
+    for _ in 0..3 {
+        for (k, doc) in docs.iter().enumerate() {
+            let start = cpu_time::ThreadTime::now();
+            let out = f(doc);
+            least[k] = least[k].min(start.elapsed());
+            last[k] = Some(out);
+        }
+    }
+    let [a, b] = last;
+    (least, [a.unwrap(), b.unwrap()])
+}
+
+/// `n` valid features with distinct IDs: every third fuses the two before it, which no one
+/// else takes.
+fn valid_features(n: u64) -> Document {
     let alphabet = silico_core::document::ID_ALPHABET.as_bytes();
-    let ids: Vec<FeatureId> = (0..1_000_000u64)
+    let ids: Vec<FeatureId> = (0..n)
         .map(|n| {
             let text: String = (0..8)
                 .map(|k| alphabet[((n >> (5 * k)) & 31) as usize] as char)
@@ -826,7 +861,6 @@ fn a_million_valid_features_validate_promptly() {
         .enumerate()
         .map(|(i, identity)| Feature {
             id: identity.clone(),
-            // Every third feature fuses the two before it, which no one else takes.
             operation: if i % 3 == 2 {
                 Operation::Fuse {
                     base: ids[i - 2].clone(),
@@ -841,7 +875,31 @@ fn a_million_valid_features_validate_promptly() {
             fingerprint: None,
         })
         .collect();
-    let doc = document(features);
-    let result = within(Duration::from_secs(5), move || validate(&doc));
-    assert_eq!(result, Ok(()));
+    document(features)
+}
+
+#[test]
+fn a_million_valid_features_validate_promptly() {
+    // Promptly: in time that grows as the count does, not as its square. Measured as the
+    // ratio of this thread's CPU time for a million features to that for a hundred
+    // thousand, the least of three runs of each, in turn: about 10 by its count, a little
+    // more for its sorted maps' depth; a validation quadratic in the count would be about
+    // 100. A ratio, so a loaded machine, which stretches both alike, can't fail it (a gate's
+    // million once took 7.3 s of CPU against an absolute 5 s). And at most 15 s of CPU,
+    // against a slowdown by a constant the ratio can't see: twice the worst seen on CI's
+    // overcommitted VM (7.3 s, gate 39813098861), where the Mac's debug build takes 1.56 s,
+    // so a validation ten times slower fails it.
+    let (small, large) = (valid_features(100_000), valid_features(1_000_000));
+    let ([small_cpu, large_cpu], [small, large]) = least_cpu([&small, &large], validate);
+    assert_eq!(small, Ok(()));
+    assert_eq!(large, Ok(()));
+    let ratio = large_cpu.as_secs_f64() / small_cpu.as_secs_f64();
+    assert!(
+        ratio < 30.0,
+        "a million features took {ratio:.1} times the CPU of a hundred thousand ({large_cpu:?} against {small_cpu:?})"
+    );
+    assert!(
+        large_cpu <= Duration::from_secs(15),
+        "a million features took {large_cpu:?} of CPU, more than 15 s"
+    );
 }

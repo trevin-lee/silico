@@ -218,7 +218,8 @@ fn a_superseded_failure_is_logged_at_warn_unless_the_pool_stopped_it() {
     pool.set_stop_after(Duration::from_secs(3600));
     // Discard the pool's start event.
     events.take_after(Duration::ZERO);
-    // Succeeded after it was superseded: nothing went wrong, so the pool logs nothing. A
+    // Succeeded after it was superseded: nothing went wrong, so the pool logs nothing of it
+    // (only, the first time, that its worker is running, which says nothing of the request). A
     // 1 s request superseded 0.5 s in; one not yet running by then is dropped instead (and
     // logs nothing either), so it's tried until one has run to its end on its worker.
     let mut ran = false;
@@ -231,7 +232,11 @@ fn a_superseded_failure_is_logged_at_warn_unless_the_pool_stopped_it() {
         pool.advance(Generation(g + 1));
         assert!(matches!(succeeded.wait(), Outcome::Superseded));
         ran = start.elapsed() >= Duration::from_millis(1_000) && pool.pids() == before;
-        let seen = events.take_after(Duration::from_millis(200));
+        let seen: Vec<_> = events
+            .take_after(Duration::from_millis(200))
+            .into_iter()
+            .filter(|e| e.message != "a kernel worker is running")
+            .collect();
         assert!(seen.is_empty(), "{seen:#?}");
         if ran {
             break;
