@@ -987,6 +987,13 @@ fn build_prism(faces: &Shape, start: [f64; 3], vector: [f64; 3]) -> Result<Built
 /// tight box around both ([`silico_protocol::through_all_length`], FreeCAD's rule, design
 /// S3), refused naming `base` past a kilometre. `base` only sizes the prism; the history is
 /// the faces' alone, as [`prism`]'s.
+///
+/// Sized here, in the worker, not by the core: the core holds `base` only as its B-rep's
+/// bytes, so measuring its box there would be another request and the shape sent twice,
+/// where this is one request, whose step's key already covers both shapes, its box taken
+/// by the OCCT that builds the prism. The rule itself, the length from the box, is the
+/// protocol's ([`silico_protocol::through_all_length`]), which the core's fake kernel
+/// shares, so both size a prism alike.
 pub fn prism_through_all(
     faces: &Shape,
     base: &Shape,
