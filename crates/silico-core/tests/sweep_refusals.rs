@@ -1,14 +1,18 @@
 //! M3.6: what a sketch feature's rebuild refuses (docs/design/m3.6-sketch-features.md, S5 and
 //! S7), as pure functions: a pad or revolve of several regions (decision 3), a result of more
-//! than one solid, and a result whose volume shows the feature changed nothing. Each
+//! than one solid, a result whose volume shows the feature changed nothing, and a sweep of a
+//! sketch that makes no profile (S3). Each
 //! boundary from the design's own numbers: on a 1000 mm³ base, 1e-9 of it is 1e-6 mm³.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+#[path = "common/profile.rs"]
+mod draw;
 
 use silico_core::ErrorCode;
 use silico_core::document::SweepFeature;
 use silico_core::document::{ElementId, FeatureId, Plane};
 use silico_core::profile::{CurveKind, Edge, Loop, Profile, Region};
-use silico_core::sweep::{Measured, check_regions, check_result};
+use silico_core::sweep::{Measured, check_regions, check_result, unprofiled};
 use silico_protocol::{Curve, MEASURE_PRECISION};
 
 fn fid(text: &str) -> FeatureId {
@@ -500,5 +504,84 @@ fn an_m2_boolean_of_more_than_one_solid_is_refused_naming_itself_and_the_cause()
     assert_eq!(
         said(BooleanOp::Cut, 3).0,
         "cut f0000001 cuts its base b0000001 in three: the result is 3 solids"
+    );
+}
+
+#[test]
+fn a_sweep_of_a_sketch_that_makes_no_profile_is_one_error_naming_it_however_many_refusals() {
+    // One open line, (0, 0) to (4, 0): its two ends, p0000001 and p0000002, are open, two
+    // refusals; a groove of it is one error naming the groove, the two its cause.
+    let mut d = draw::Draw::new();
+    let a = d.point(0.0, 0.0);
+    let b = d.point(4.0, 0.0);
+    d.line(&a, &b);
+    let refused = d.profile().unwrap_err();
+    assert_eq!(refused.total(), 2);
+    let error = unprofiled(
+        &fid("g0000001"),
+        SweepFeature::Groove,
+        &draw::feature(),
+        &refused,
+    );
+    assert_eq!(error.code(), ErrorCode::InvalidInput);
+    assert_eq!(error.feature(), Some("g0000001"));
+    assert_eq!(error.parameter(), Some("sketch"));
+    assert!(error.elements().is_empty());
+    assert_eq!(
+        error.message(),
+        "groove g0000001 sweeps sketch k7f2qx3m, which makes no profile (2 refusals)"
+    );
+    assert_eq!(
+        error.cause(),
+        Some(
+            "point p0000001 ends line n0000003 and no other profile curve, so the profile is open there; point p0000002 ends line n0000003 and no other profile curve, so the profile is open there"
+        )
+    );
+    assert_eq!(
+        error.suggestion(),
+        Some("fix sketch k7f2qx3m where the cause says, or sweep another sketch")
+    );
+
+    // 51 open lines apart, (0, 2i) to (1, 2i): 102 open ends, the first hundred given, and
+    // the 2 more counted. One refusal is "1 refusal".
+    let mut d = draw::Draw::new();
+    for i in 0..51 {
+        let y = 2.0 * f64::from(i);
+        let a = d.point(0.0, y);
+        let b = d.point(1.0, y);
+        d.line(&a, &b);
+    }
+    let refused = d.profile().unwrap_err();
+    assert_eq!((refused.errors().len(), refused.total()), (100, 102));
+    let error = unprofiled(
+        &fid("p0000001"),
+        SweepFeature::Pad,
+        &draw::feature(),
+        &refused,
+    );
+    assert_eq!(
+        error.message(),
+        "pad p0000001 sweeps sketch k7f2qx3m, which makes no profile (102 refusals)"
+    );
+    let cause = error.cause().unwrap();
+    assert_eq!(
+        cause.matches("so the profile is open there").count(),
+        100,
+        "{cause}"
+    );
+    assert!(
+        cause.ends_with("so the profile is open there; and 2 more"),
+        "{cause}"
+    );
+    let empty = draw::Draw::new().profile().unwrap_err();
+    assert_eq!(
+        unprofiled(
+            &fid("p0000001"),
+            SweepFeature::Pad,
+            &draw::feature(),
+            &empty
+        )
+        .message(),
+        "pad p0000001 sweeps sketch k7f2qx3m, which makes no profile (1 refusal)"
     );
 }

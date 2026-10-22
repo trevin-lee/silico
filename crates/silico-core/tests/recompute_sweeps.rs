@@ -458,10 +458,12 @@ fn a_sketch_that_doesnt_solve_blocks_what_sweeps_it() {
 }
 
 #[test]
-fn a_sketch_that_makes_no_profile_fails_each_sweep_of_it_with_every_refusal() {
+fn a_sketch_that_makes_no_profile_fails_each_sweep_of_it_once_naming_it() {
     // Design S3: the sketch is solved, not failed (a sketch nothing sweeps may be open);
-    // each feature sweeping it fails with every refusal M3.5 words, naming the sketch and
-    // its elements, and what uses it is blocked. Two open polylines: two open ends each.
+    // each feature sweeping it fails with one error of its own, naming it, the profile's
+    // refusals its cause, and what uses it is blocked. The open polyline (0, 0), (4, 0),
+    // (4, 2) has two open ends, pa000001 and pa000003: two refusals, given once in each
+    // pad's cause, not as two problems per pad. Two pads: two errors, one per pad.
     let open = r#"{"id": "ssssssss", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 4, "y": 0, "construction": false}, {"id": "pa000003", "x": 4, "y": 2, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}], "circles": [], "arcs": [], "constraints": []}"#;
     let engine = engine();
     let model = published(
@@ -479,24 +481,35 @@ fn a_sketch_that_makes_no_profile_fails_each_sweep_of_it_with_every_refusal() {
         Some(FeatureOutcome::Sketch(_))
     ));
     for feature in ["pppppppp", "p0000002"] {
-        let Some(FeatureOutcome::Broken { errors, total }) = model.outcome(&id(feature)) else {
-            panic!("{feature}: {:?}", model.outcome(&id(feature)));
-        };
-        assert_eq!(*total, errors.len() as u64);
-        assert!(!errors.is_empty());
-        for error in errors {
-            assert_eq!(error.code(), ErrorCode::InvalidInput);
-            assert_eq!(error.feature(), Some("ssssssss"));
-            assert!(!error.elements().is_empty(), "{error:?}");
-        }
+        let error = failed(&model, feature);
+        assert_eq!(error.code(), ErrorCode::InvalidInput, "{feature}");
+        assert_eq!(error.feature(), Some(feature));
+        assert_eq!(error.parameter(), Some("sketch"), "{feature}");
+        assert_eq!(
+            error.message(),
+            format!("pad {feature} sweeps sketch ssssssss, which makes no profile (2 refusals)")
+        );
+        assert_eq!(
+            error.cause(),
+            Some(
+                "point pa000001 ends line na000001 and no other profile curve, so the profile is open there; point pa000003 ends line na000002 and no other profile curve, so the profile is open there"
+            )
+        );
+        assert!(error.elements().is_empty(), "{error:?}");
+        assert_eq!(
+            error.suggestion(),
+            Some("fix sketch ssssssss where the cause says, or sweep another sketch")
+        );
     }
     assert_eq!(
         model.outcome(&id("f0000001")),
         Some(&FeatureOutcome::Blocked { on: id("pppppppp") })
     );
     assert!(!names(&engine).contains(&"MakeFaces"));
-    // Every refusal counted among the model's errors, for each feature.
-    assert!(model.error_count() >= 2);
+    // One error per pad, each naming it, and nothing else.
+    let features: Vec<Option<&str>> = model.errors().map(Error::feature).collect();
+    assert_eq!(features, [Some("pppppppp"), Some("p0000002")]);
+    assert_eq!(model.error_count(), 2);
 }
 
 #[test]

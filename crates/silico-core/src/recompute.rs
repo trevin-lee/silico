@@ -161,15 +161,15 @@ impl Built {
 pub enum FeatureOutcome {
     /// Built: its last step's key and result.
     Built { key: Key, built: Arc<Built> },
-    /// The kernel refused one of its steps: why, naming the feature.
+    /// The kernel refused one of its steps, or the rebuild refused it before any: why. A
+    /// pad, pocket, revolve, or groove whose sketch solved but makes no profile fails with
+    /// one error naming it, the profile's refusals its cause
+    /// ([`crate::sweep::unprofiled`]; docs/design/m3.6-sketch-features.md, S3).
     Failed(Error),
     /// References it holds (a fillet's or chamfer's edges, by name) name nothing it can
     /// use: each broken one's `reference_broken` error, in the order the feature holds them
     /// (N6: every one, at once), the first [`PROBLEMS_LISTED`](crate::document::PROBLEMS_LISTED)
-    /// of them, and how many there are, listed or not. Its step isn't run. Or the sketch a
-    /// pad, pocket, revolve, or groove sweeps solved but makes no profile: each of the
-    /// profile's refusals, an `invalid_input` naming the sketch and its elements, listed and
-    /// counted alike (docs/design/m3.6-sketch-features.md, S3).
+    /// of them, and how many there are, listed or not. Its step isn't run.
     Broken { errors: Vec<Error>, total: u64 },
     /// Not built, since it uses a feature that failed: that feature (the first failure
     /// along its base, then its tool).
@@ -279,9 +279,13 @@ impl Model {
         self.errors().count() as u64 + self.unlisted_errors()
     }
 
-    /// Why each failed feature failed, in timeline order, each error naming its feature:
-    /// one for a failure, and one for each broken reference of a feature whose references
-    /// broke (its first hundred: [`Model::error_count`] counts them all).
+    /// Why each failed feature failed, in timeline order: one error for a failure, naming
+    /// its feature (or, for a pad's regions or a revolve's axis crossing its profile, the
+    /// sketch, whose elements are at fault and named: design S5, S6), and one for each
+    /// broken reference of a feature whose references broke (its first hundred:
+    /// [`Model::error_count`] counts them all). A sketch that makes no profile fails each
+    /// feature that sweeps it with one error naming that feature, the profile's refusals
+    /// its cause; the sketch isn't failed.
     pub fn errors(&self) -> impl Iterator<Item = &Error> {
         self.features.iter().flat_map(|(_, outcome)| match outcome {
             FeatureOutcome::Failed(error) => std::slice::from_ref(error),
@@ -1302,9 +1306,6 @@ struct Planned {
     /// Why it isn't built, though what it uses is: a refusal of its sketch's profile or its
     /// axis, found before any step (design S5, S6).
     refused: Option<Error>,
-    /// Why a pad, pocket, revolve, or groove isn't built, its sketch solved: every refusal
-    /// of the sketch's profile (the first hundred), and how many there are (design S3).
-    unprofiled: Option<(Vec<Error>, u64)>,
     /// What its result is checked for, once built ([`Check`]).
     check: Option<Check>,
 }
@@ -1313,10 +1314,8 @@ struct Planned {
 enum SweepPlan {
     /// Its steps, and how its elements are named.
     Steps(Vec<Key>, Arc<SweepNaming>),
-    /// Refused before any step: its sketch's regions, or its axis.
+    /// Refused before any step: its sketch's profile, or regions, or its axis.
     Refused(Error),
-    /// Its sketch makes no profile: its refusals (the first hundred), and how many.
-    Unprofiled(Vec<Error>, u64),
     /// Its sketch didn't solve, or its base can't be built: blocked on that.
     Waits,
 }
@@ -1558,7 +1557,6 @@ impl Plan {
             let mut uses = Vec::new();
             let mut refused = None;
             let mut sweeps = None;
-            let mut unprofiled = None;
             let naming = match feature.operation.made() {
                 Made::Primitive(primitive) => {
                     let made = plan.add(Step::Make(primitive), &feature.id);
@@ -1626,10 +1624,6 @@ impl Plan {
                             refused = Some(error);
                             None
                         }
-                        SweepPlan::Unprofiled(errors, total) => {
-                            unprofiled = Some((errors, total));
-                            None
-                        }
                         SweepPlan::Waits => None,
                     }
                 }
@@ -1663,7 +1657,6 @@ impl Plan {
                 sketch,
                 sweeps,
                 refused,
-                unprofiled,
                 check: match feature.operation.made() {
                     Made::Boolean(op) => match feature.operation.inputs().as_slice() {
                         [(_, base), (_, tool)] => Some(Check::Boolean {
@@ -1727,7 +1720,12 @@ impl Plan {
         let profile = match &solved.profile {
             Ok(profile) => profile,
             Err(refused) => {
-                return SweepPlan::Unprofiled(refused.errors().to_vec(), refused.total());
+                return SweepPlan::Refused(crate::sweep::unprofiled(
+                    &feature.id,
+                    kind,
+                    sketch,
+                    refused,
+                ));
             }
         };
         if let Err(error) = crate::sweep::check_regions(&feature.id, kind, sketch, profile) {
@@ -3093,13 +3091,9 @@ fn model(
                     silico_bug("a sketch wasn't solved").with_feature(planned.id.as_str()),
                 ),
             },
-            (None, None) => match (&planned.refused, &planned.unprofiled) {
-                (Some(error), _) => FeatureOutcome::Failed(error.clone()),
-                (None, Some((errors, total))) => FeatureOutcome::Broken {
-                    errors: errors.clone(),
-                    total: *total,
-                },
-                (None, None) => checked(
+            (None, None) => match &planned.refused {
+                Some(error) => FeatureOutcome::Failed(error.clone()),
+                None => checked(
                     planned,
                     feature_outcome(planned, done, &schedule.unresolved),
                     &features,

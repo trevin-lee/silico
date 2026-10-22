@@ -351,6 +351,52 @@ fn unchecked(what: String) -> Error {
     .with_suggestion(crate::worker::SILICO_BUG)
 }
 
+/// Design S3: pad, pocket, revolve, or groove `feature`, of type `kind`, sweeps `sketch`,
+/// which solved but makes no profile (`refused`). The feature's own error, one however many
+/// refusals there are and however many features sweep the sketch: `invalid_input` (or the
+/// first refusal's code that isn't, a bug), naming the feature and its `sketch`, the
+/// refusals' messages (the first hundred, and how many more) its cause. The sketch itself
+/// isn't failed: a sketch nothing sweeps may be open.
+pub fn unprofiled(
+    feature: &FeatureId,
+    kind: SweepFeature,
+    sketch: &FeatureId,
+    refused: &crate::profile::Refused,
+) -> Error {
+    let listed = refused.errors();
+    let code = listed
+        .iter()
+        .map(Error::code)
+        .find(|&code| code != ErrorCode::InvalidInput)
+        .unwrap_or(ErrorCode::InvalidInput);
+    let mut cause = listed
+        .iter()
+        .map(Error::message)
+        .collect::<Vec<_>>()
+        .join("; ");
+    let more = refused.total().saturating_sub(listed.len() as u64);
+    if more > 0 {
+        cause.push_str(&format!("; and {more} more"));
+    }
+    let count = match refused.total() {
+        1 => "1 refusal".to_owned(),
+        n => format!("{n} refusals"),
+    };
+    Error::new(
+        code,
+        format!(
+            "{} {feature} sweeps sketch {sketch}, which makes no profile ({count})",
+            kind.word()
+        ),
+    )
+    .with_feature(feature.as_str())
+    .with_parameter("sketch")
+    .with_cause(cause)
+    .with_suggestion(format!(
+        "fix sketch {sketch} where the cause says, or sweep another sketch"
+    ))
+}
+
 /// A solid as a sketch feature's checks see it: its volume, by the precise measure, and how
 /// many solids, faces, edges, and vertices it has.
 #[derive(Debug, Clone, Copy, PartialEq)]

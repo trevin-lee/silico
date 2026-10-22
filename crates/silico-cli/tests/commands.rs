@@ -665,3 +665,45 @@ fn check_starts_only_the_kernel_workers_its_rebuild_needs() {
         "rebuilt from the cache"
     );
 }
+
+#[test]
+fn an_open_sketch_swept_twice_names_each_failed_pad_once() {
+    // The architecture review's case (M3, round 1): a square's outline with its fourth side
+    // left out, padded twice. Its two open ends, p0000001 and p0000004, are the profile's
+    // two refusals; each pad fails with one problem naming it, the two its cause: two
+    // problems, not the two refusals once per pad, each naming the sketch.
+    let scratch = Scratch::new("open-twice");
+    let file = scratch.file(
+        r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "features": [
+  {"id": "s0000001", "type": "sketch", "v": 1, "name": "s", "plane": "xy",
+   "points": [{"id": "p0000001", "x": 0, "y": 0, "construction": false},
+              {"id": "p0000002", "x": 10, "y": 0, "construction": false},
+              {"id": "p0000003", "x": 10, "y": 10, "construction": false},
+              {"id": "p0000004", "x": 0, "y": 10, "construction": false}],
+   "lines": [{"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+             {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false},
+             {"id": "n0000003", "from": "p0000003", "to": "p0000004", "construction": false}],
+   "circles": [], "arcs": [], "constraints": []},
+  {"id": "d0000001", "type": "pad", "v": 1, "name": "a", "sketch": "s0000001",
+   "extent": {"type": "one_side", "length": 1, "reversed": false}},
+  {"id": "d0000009", "type": "pad", "v": 1, "name": "b", "sketch": "s0000001",
+   "extent": {"type": "one_side", "length": 1, "reversed": false}}]}
+"#,
+    );
+    let out = silico(&scratch, &["check", "--json"], &file);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(line["total"], 2, "{line}");
+    let cause = "point p0000001 ends line n0000001 and no other profile curve, so the profile is open there; point p0000004 ends line n0000003 and no other profile curve, so the profile is open there";
+    for (i, pad) in ["d0000001", "d0000009"].into_iter().enumerate() {
+        let problem = &line["problems"][i];
+        assert_eq!(problem["code"], "invalid_input", "{line}");
+        assert_eq!(problem["feature"], pad, "{line}");
+        assert_eq!(problem["parameter"], "sketch", "{line}");
+        assert_eq!(
+            problem["message"],
+            format!("pad {pad} sweeps sketch s0000001, which makes no profile (2 refusals)")
+        );
+        assert_eq!(problem["cause"], cause, "{line}");
+    }
+}
