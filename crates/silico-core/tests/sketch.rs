@@ -551,11 +551,12 @@ fn a_curves_points_must_be_points_of_its_sketch() {
 }
 
 #[test]
-fn coincident_ends_that_would_collapse_a_line_are_one_point_a_line_runs_to_itself() {
+fn coincident_ends_that_would_collapse_a_line_leave_it_running_from_a_point_to_itself() {
     // TestCoincidentCommandGui.py's collapse fixtures, in Silico's terms: with shared points,
-    // making two ends coincident is giving them one point. Three lines in a chain whose
-    // outer ends are made one (test_transitive_coincidence_cannot_collapse_intermediate_line)
-    // leave the middle line running from that point to itself; a line's own ends made one
+    // making two ends coincident is giving them one point. Three lines in a chain, the first
+    // one's end made the third one's start, the two ends either side of the middle line
+    // (test_transitive_coincidence_cannot_collapse_intermediate_line), leave the middle line
+    // running from that point to itself; a line's own ends made one
     // (test_coincident_endpoints_of_same_edge_are_rejected, FreeCAD #20119) is the same. The
     // gate refuses it, naming the line, where FreeCAD's solve fails.
     let text = document(&fields(
@@ -565,10 +566,15 @@ fn coincident_ends_that_would_collapse_a_line_are_one_point_a_line_runs_to_itsel
         "",
         "",
     ));
+    let error = problem(&text);
     assert_error(
-        &problem(&text),
+        &error,
         "lines.1.to",
         "line nb000000 goes from point pb000000 to itself, so it has no length",
+    );
+    assert!(
+        error.elements().iter().any(|e| e == "nb000000"),
+        "{error:?}"
     );
 }
 
@@ -799,6 +805,8 @@ fn a_form_that_needs_two_elements_or_a_fitting_pair_gets_them() {
 #[test]
 fn a_constraint_on_the_fixed_references_alone_is_refused() {
     // FreeCAD's 3d7871fca5: a dimension between the origin and an axis constrains nothing.
+    // And an angle between the axes alone is the one measure decision 5 would find not a
+    // number (the axes have no lever), so none reaches a solve.
     for (constraint, what) in [
         (
             r#"{"id": "k0000000", "type": "angle", "a": "x_axis", "b": "y_axis", "value": 90, "driving": true}"#,
@@ -811,6 +819,10 @@ fn a_constraint_on_the_fixed_references_alone_is_refused() {
         (
             r#"{"id": "k0000000", "type": "perpendicular", "a": "x_axis", "b": "y_axis"}"#,
             "perpendicular",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "parallel", "a": "x_axis", "b": "y_axis"}"#,
+            "parallel",
         ),
     ] {
         assert_error(

@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use silico_core::Error;
-use silico_core::document::{read, validate};
+use silico_core::document::{Operation, read, validate};
 
 /// The sketch feature's ID.
 pub const FEATURE: &str = "k7f2qx3m";
@@ -36,7 +36,9 @@ pub fn constrained(constraints: &str) -> String {
     document(&fields(POINTS, LINE, CIRCLE, ARC, constraints))
 }
 
-/// The gate's problems with `text`, which reads.
+/// The gate's problems with `text`, which reads; and, failing the test if not, each
+/// refusal of a constraint naming its ID.
+#[track_caller]
 pub fn problems(text: &str) -> Vec<Error> {
     let document = read(text.as_bytes()).unwrap();
     let errors = match validate(&document) {
@@ -53,11 +55,7 @@ pub fn problems(text: &str) -> Vec<Error> {
             .and_then(|rest| rest.split('.').next())
             .and_then(|n| n.parse::<usize>().ok());
         let sketch = document.features.iter().find_map(|f| match &f.operation {
-            silico_core::document::Operation::Sketch(s)
-                if Some(f.id.as_str()) == error.feature() =>
-            {
-                Some(s)
-            }
+            Operation::Sketch(s) if Some(f.id.as_str()) == error.feature() => Some(s),
             _ => None,
         });
         if let (Some(i), Some(sketch)) = (place, sketch) {
