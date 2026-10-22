@@ -94,6 +94,28 @@ fn point_segment_distance(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> f64 {
     norm(sub(w, scale(u, t)))
 }
 
+/// Shewchuk's first-stage error bound for an orientation, (3 + 16ε)ε with ε = 2⁻⁵³
+/// ("Adaptive Precision Floating-Point Arithmetic and Fast Robust Geometric Predicates",
+/// 1997, `ccwerrboundA`): an orientation above it times the sum of its two products'
+/// magnitudes has the sign the exact one has.
+const ORIENTATION_BOUND: f64 = (3.0 + 8.0 * f64::EPSILON) * (f64::EPSILON / 2.0);
+
+/// Which side of the line from `a` to `b` `c` is on: 1 left, −1 right, or 0 on it or too
+/// near it for rounding to tell (within about 1e-9 mm of it within reach, and closer
+/// nearer the origin), by [`ORIENTATION_BOUND`]. Profiles and sketch profiles both decide
+/// crossings by it.
+pub fn side_of_line(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> i8 {
+    let (left, right) = ((b[0] - a[0]) * (c[1] - a[1]), (b[1] - a[1]) * (c[0] - a[0]));
+    let orientation = left - right;
+    if orientation.abs() <= ORIENTATION_BOUND * (left.abs() + right.abs()) {
+        0
+    } else if orientation > 0.0 {
+        1
+    } else {
+        -1
+    }
+}
+
 fn invalid(parameter: &'static str, message: String) -> InvalidParameter {
     InvalidParameter { parameter, message }
 }
@@ -249,14 +271,15 @@ impl Profile {
             .iter()
             .map(|&p| [dot(sub(p, origin), along), dot(sub(p, origin), side_way)])
             .collect();
-        let orient = |a: [f64; 2], b: [f64; 2], c: [f64; 2]| {
-            (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
-        };
         // No side may touch another, except a side's neighbours at the corner they share,
         // and those may not fold back along it. Two sides touch where a corner of one is
-        // within the tolerance of the other, and cross where each one's ends are on
+        // within the tolerance of the other, and cross where each one's ends are surely on
         // opposite sides of the other's line (a test that holds at any angle, where a
-        // distance between the lines would cancel to nothing at a shallow one).
+        // distance between the lines would cancel to nothing at a shallow one). Only sides
+        // rounding can't have chosen count: two sides on one line, apart along it, have
+        // their ends on it by rounding only (found by M3.5's review). Two that cross with
+        // an end too near the other's line to place have met already, within the tolerance:
+        // the distances below find them.
         for i in 0..n {
             let (a, b) = (points[i], next(i));
             for (j, &c) in points.iter().enumerate().skip(i + 1) {
@@ -271,8 +294,8 @@ impl Profile {
                         || point_segment_distance(b, c, d) <= LENGTH_TOLERANCE
                 } else {
                     let (fa, fb, fc, fd) = (flat[i], flat[(i + 1) % n], flat[j], flat[(j + 1) % n]);
-                    let crosses = orient(fa, fb, fc) * orient(fa, fb, fd) < 0.0
-                        && orient(fc, fd, fa) * orient(fc, fd, fb) < 0.0;
+                    let crosses = side_of_line(fa, fb, fc) * side_of_line(fa, fb, fd) < 0
+                        && side_of_line(fc, fd, fa) * side_of_line(fc, fd, fb) < 0;
                     crosses
                         || point_segment_distance(c, a, b) <= LENGTH_TOLERANCE
                         || point_segment_distance(d, a, b) <= LENGTH_TOLERANCE

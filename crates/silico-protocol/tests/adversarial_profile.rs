@@ -6,6 +6,7 @@
 use proptest::prelude::*;
 use silico_protocol::{
     Axis, InvalidParameter, MAX_LENGTH, Profile, ProfilePlane, check_revolve, extrusion_vector,
+    side_of_line,
 };
 
 fn profile(points: &[[f64; 3]]) -> Profile {
@@ -134,6 +135,108 @@ fn a_bow_tie_crossing_at_an_ordinary_angle_is_refused() {
 }
 
 // ---- Values exactly at, and one step either side of, each limit ----
+
+#[test]
+fn a_point_is_left_or_right_of_a_line_only_where_rounding_cant_have_chosen() {
+    // By hand: (0, 1) is left of the x axis run from (0, 0) to (1, 0), (0, -1) right, and
+    // (5, 0) on it.
+    let (o, x) = ([0.0, 0.0], [1.0, 0.0]);
+    assert_eq!(side_of_line(o, x, [0.0, 1.0]), 1);
+    assert_eq!(side_of_line(o, x, [0.0, -1.0]), -1);
+    assert_eq!(side_of_line(o, x, [5.0, 0.0]), 0);
+    // Corner 1 of the notch below, on the line from corner 5 to corner 6 within 1e-22 mm
+    // (exact rationals): its orientation is rounding's, so it's on the line. 1e-6 mm off it
+    // it's surely on a side: the line runs down and to the left, so its left is (2, -1)/√5.
+    let (c5, c6) = ([73.70000015, 145.7000003], [61.10000015, 120.5000003]);
+    assert_eq!(side_of_line(c5, c6, [61.1, 120.5]), 0);
+    let off = 1e-6 / 5f64.sqrt();
+    assert_eq!(side_of_line(c5, c6, [61.1 - 2.0 * off, 120.5 + off]), -1);
+    assert_eq!(side_of_line(c5, c6, [61.1 + 2.0 * off, 120.5 - off]), 1);
+}
+
+/// A profile with a notch cut in it at a slant: the first side runs from `a` back along `u`
+/// for `l`, the notch goes `3` mm to the right (`m`) and up along `u` past where it began,
+/// back to the line, and down along it to `gap` short of `a`, then out to the left and back
+/// to `a`. Sides 1 (corners 1 to 2) and 5 (corners 5 to 6) are on one line, `gap` apart.
+fn notched(a: [f64; 2], u: [f64; 2], l: f64, gap: f64) -> Profile {
+    let m = [u[1], -u[0]];
+    let at = |along: f64, right: f64| {
+        z(
+            a[0] + along * u[0] + right * m[0],
+            a[1] + along * u[1] + right * m[1],
+        )
+    };
+    profile(&[
+        at(0.0, 0.0),
+        at(-l, 0.0),
+        at(-l, 3.0),
+        at(l + gap, 3.0),
+        at(l + gap, 0.0),
+        at(gap, 0.0),
+        at(gap, -3.0),
+    ])
+}
+
+#[test]
+fn two_sides_on_one_line_apart_by_more_than_the_tolerance_are_a_profile() {
+    // Found by M3.5's review: two sides on one slanted line, 3.35e-7 mm apart along it,
+    // were called crossing, each side's ends measuring as on opposite sides of the other's
+    // line by the rounding of products of nothing. By hand (exact rationals): sides 1 and 5
+    // are on the line y = 2x - 1.7 within 7e-15 mm, corner 6 is 3.354e-7 mm from corner 1,
+    // more than the tolerance, and no two sides meet; the corners turn counterclockwise
+    // round 169.0467 mm², so the profile faces +z.
+    let plane = profile(&[
+        z(61.1, 120.5),
+        z(48.5, 95.3),
+        z(51.183281572999746, 93.95835921350012),
+        z(76.38328172299974, 144.35835951350012),
+        z(73.70000015, 145.7000003),
+        z(61.10000015, 120.5000003),
+        z(58.41671850200025, 121.84164093649989),
+    ])
+    .check()
+    .unwrap();
+    assert_eq!(plane.normal, [0.0, 0.0, 1.0]);
+    // The same notch at other slants, places, and gaps: sides 1 and 5 are `gap` apart by
+    // construction, over the tolerance in every case, so every one is a profile.
+    let mut refused = Vec::new();
+    for degrees in [
+        0.0,
+        7.0,
+        30.0,
+        45.0,
+        63.434948822922,
+        90.0,
+        121.0,
+        200.0,
+        333.0,
+    ] {
+        let t = f64::to_radians(degrees);
+        let u = [libm::cos(t), libm::sin(t)];
+        for a in [
+            [0.0, 0.0],
+            [61.1, 120.5],
+            [-997.5, 512.25],
+            [123456.789, -98765.4321],
+        ] {
+            for l in [1.0, 28.174456516497354, 500.0] {
+                for gap in [1.5e-7, 2e-7, 3.354101926004954e-7, 1e-6] {
+                    if let Err(e) = notched(a, u, l, gap).check() {
+                        refused.push(format!(
+                            "{degrees}° at {a:?}, {l} long, {gap:e} apart: {e:?}"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        refused.is_empty(),
+        "{} of 432 refused:\n{}",
+        refused.len(),
+        refused.join("\n")
+    );
+}
 
 #[test]
 fn coordinates_at_a_kilometre_are_accepted_and_one_step_past_refused() {
