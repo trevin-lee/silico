@@ -1019,6 +1019,162 @@ fn an_axis_crossing_its_profile_and_an_angle_too_small_are_refused_in_full() {
     assert_eq!(error.suggestion(), Some("turn it by a larger angle"));
 }
 
+/// A sketch `ssssssss` on XY of the closed polygon through `corners` (pa000001, ... and
+/// its sides na000001 from the first corner, ...), and, if given, the construction line
+/// nb000000 between two points of its own.
+fn polygon_and_line(corners: &[[f64; 2]], line: Option<([f64; 2], [f64; 2])>) -> String {
+    let point = |id: String, [x, y]: [f64; 2]| {
+        format!(r#"{{"id": "{id}", "x": {x}, "y": {y}, "construction": false}}"#)
+    };
+    let segment = |id: String, from: String, to: String, construction: bool| {
+        format!(
+            r#"{{"id": "{id}", "from": "{from}", "to": "{to}", "construction": {construction}}}"#
+        )
+    };
+    let n = corners.len();
+    let mut points: Vec<String> = (0..n)
+        .map(|i| point(format!("pa{:06}", i + 1), corners[i]))
+        .collect();
+    let mut lines: Vec<String> = (0..n)
+        .map(|i| {
+            let (from, to) = (
+                format!("pa{:06}", i + 1),
+                format!("pa{:06}", (i + 1) % n + 1),
+            );
+            segment(format!("na{:06}", i + 1), from, to, false)
+        })
+        .collect();
+    if let Some((from, to)) = line {
+        points.push(point("pb000001".to_owned(), from));
+        points.push(point("pb000002".to_owned(), to));
+        lines.push(segment(
+            "nb000000".to_owned(),
+            "pb000001".to_owned(),
+            "pb000002".to_owned(),
+            true,
+        ));
+    }
+    format!(
+        r#"{{"id": "ssssssss", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{}], "lines": [{}], "circles": [], "arcs": [], "constraints": []}}"#,
+        points.join(", "),
+        lines.join(", ")
+    )
+}
+
+#[test]
+fn a_crossing_circle_is_refused_with_its_reach_either_side_of_the_axis() {
+    // A circle reaches its centre's distance from the axis, plus and minus its radius:
+    // centre (0, 1), radius 3, about the x axis, whose left is +y, reaches 1 − 3 = −2 and
+    // 1 + 3 = 4, so 2 mm on one side and 4 on the other.
+    let model = published(
+        &engine(),
+        &[
+            &circles("ssssssss", "xy", &[([0.0, 1.0], 3.0)]),
+            &turned("rrrrrrrr", "revolve", None, "ssssssss", "x_axis", TURN),
+        ],
+    );
+    let error = failed(&model, "rrrrrrrr");
+    assert_eq!(error.code(), ErrorCode::InvalidInput);
+    assert_eq!(error.feature(), Some("ssssssss"));
+    assert_eq!(
+        error.message(),
+        "revolve rrrrrrrr turns sketch ssssssss about a line that crosses its profile: its axis, the sketch's x_axis, has the profile's curves on both sides, 2 mm on one and 4 mm on the other"
+    );
+    assert_eq!(error.elements(), ["ca000001"]);
+    assert_eq!(error.elements_total(), 1);
+}
+
+#[test]
+fn a_region_reaching_exactly_the_tolerance_past_the_axis_touches_it() {
+    // The rectangle from y = −1e-7 to y = 1 about the x axis: its lowest point is exactly
+    // OCCT's 1e-7 from the axis, so on it, and the region doesn't cross it. Built.
+    let model = published(
+        &engine(),
+        &[
+            &polygon(
+                "ssssssss",
+                "xy",
+                &[[0.0, -1e-7], [4.0, -1e-7], [4.0, 1.0], [0.0, 1.0]],
+            ),
+            &turned("rrrrrrrr", "revolve", None, "ssssssss", "x_axis", TURN),
+        ],
+    );
+    assert!(built(&model, "rrrrrrrr"), "{:?}", model.features());
+}
+
+#[test]
+fn a_curve_exactly_the_tolerance_from_the_axis_isnt_named_off_it() {
+    // A(0, 1), B(0, −1e-7), C(5, −1e-7), D(5, −1), E(6, −1), F(6, 1), about the x axis: the
+    // region crosses it (1 mm below at D and E, 1 above at F and A), and every side reaches
+    // off it but BC (na000002), which lies exactly 1e-7 below it, on it by the tolerance.
+    let model = published(
+        &engine(),
+        &[
+            &polygon(
+                "ssssssss",
+                "xy",
+                &[
+                    [0.0, 1.0],
+                    [0.0, -1e-7],
+                    [5.0, -1e-7],
+                    [5.0, -1.0],
+                    [6.0, -1.0],
+                    [6.0, 1.0],
+                ],
+            ),
+            &turned("rrrrrrrr", "revolve", None, "ssssssss", "x_axis", TURN),
+        ],
+    );
+    let error = failed(&model, "rrrrrrrr");
+    assert_eq!(
+        error.message(),
+        "revolve rrrrrrrr turns sketch ssssssss about a line that crosses its profile: its axis, the sketch's x_axis, has the profile's curves on both sides, 1 mm on one and 1 mm on the other"
+    );
+    assert_eq!(
+        error.elements(),
+        ["na000001", "na000003", "na000004", "na000005", "na000006"]
+    );
+    assert_eq!(error.elements_total(), 5);
+}
+
+#[test]
+fn a_crossing_with_more_curves_than_are_listed_counts_them_all_and_the_axis() {
+    // A region of 101 sides, every one reaching off the x axis: the bottom (0, −1) to
+    // (98, −1), the right side up to (98, 1), a zigzag back along y = 1 and y = 2 to (1, 2),
+    // and the left side from (0, 1) down. The first 100 curves by ID are listed
+    // (PROBLEMS_LISTED), and all 101 counted; about a construction line along the x axis
+    // the line is counted too, 102, but not listed, the list being full.
+    let mut corners = vec![[0.0, -1.0], [98.0, -1.0], [98.0, 1.0]];
+    for k in (1..98).rev() {
+        let up = (98 - k) % 2 == 1;
+        corners.push([f64::from(k), if up { 2.0 } else { 1.0 }]);
+    }
+    corners.push([0.0, 1.0]);
+    assert_eq!(corners.len(), 101);
+    let listed: Vec<String> = (1..=100).map(|i| format!("na{i:06}")).collect();
+    for (axis, line, total) in [
+        ("x_axis", None, 101),
+        ("nb000000", Some(([-5.0, 0.0], [105.0, 0.0])), 102),
+    ] {
+        let model = published(
+            &engine(),
+            &[
+                &polygon_and_line(&corners, line),
+                &turned("rrrrrrrr", "revolve", None, "ssssssss", axis, TURN),
+            ],
+        );
+        let error = failed(&model, "rrrrrrrr");
+        assert!(
+            error.message().ends_with(
+                "has the profile's curves on both sides, 1 mm on one and 2 mm on the other"
+            ),
+            "{axis}: {error:?}"
+        );
+        assert_eq!(error.elements(), listed, "{axis}");
+        assert_eq!(error.elements_total(), total, "{axis}");
+    }
+}
+
 #[test]
 fn nothing_is_built_on_a_refused_pocket() {
     // Council rounds 2 and 3: three pockets chained on the cube above the XY plane, each of
