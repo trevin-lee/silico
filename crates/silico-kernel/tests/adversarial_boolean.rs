@@ -320,8 +320,8 @@ fn boxes_with_flat_faces_3e7_apart_are_right_or_occts_known_wrong_answer() {
     // empty, and the cut a valid solid that removes nothing (0.75), with the warnings
     // BOPAlgo_AlertBadPositioning and BOPAlgo_AlertAcquiredSelfIntersection. Silico takes
     // OCCT's answer, as FreeCAD does (docs/ports/booleans.md, Known wrong results): each op
-    // is the right answer or that wrong one, and anything else fails, so a change in OCCT
-    // shows here. Found by the seeded property test below (PROPTEST_RNG_SEED=20261021).
+    // is the right answer or that wrong one, so OCCT giving any other answer fails here.
+    // Found by the seeded property test below (PROPTEST_RNG_SEED=20261021).
     let a = make(&Primitive::Box {
         dx: 3.0,
         dy: 0.5,
@@ -337,6 +337,8 @@ fn boxes_with_flat_faces_3e7_apart_are_right_or_occts_known_wrong_answer() {
         [0.0, 0.0, -0.499_999_8],
     );
     let what = "boxes 3e-7 apart";
+    // Each op, its right volume, and OCCT's known wrong one: a volume, or (None) refused
+    // as empty.
     for (op, right, wrong) in [
         (BooleanOp::Fuse, 1.500_000_1, None),
         (BooleanOp::Cut, 0.5, Some(0.75)),
@@ -879,14 +881,19 @@ proptest! {
         let vb = b.iter().product::<f64>();
         let dims: Vec<f64> = (0..3).map(|i| overlap(0.0, a[i], o[i], o[i] + b[i])).collect();
         let common = dims.iter().product::<f64>();
-        // Two parallel faces closer than a micron but not coincident.
+        // Two parallel faces closer than a micron but not coincident: their planes that
+        // close, and the faces themselves meeting, or within a micron, along the other axes.
         let near = (0..3).any(|i| {
-            [0.0, a[i]].iter().any(|&p| {
-                [o[i], o[i] + b[i]].iter().any(|&q| {
-                    let d = (p - q).abs();
-                    d > 0.0 && d < 1e-6
+            let faces_meet = (0..3)
+                .filter(|&j| j != i)
+                .all(|j| o[j] <= a[j] + 1e-6 && o[j] + b[j] >= -1e-6);
+            faces_meet
+                && [0.0, a[i]].iter().any(|&p| {
+                    [o[i], o[i] + b[i]].iter().any(|&q| {
+                        let d = (p - q).abs();
+                        d > 0.0 && d < 1e-6
+                    })
                 })
-            })
         });
         // A boundary moved by twice the tolerance, over the largest face.
         let slack = 1e-9 * (va + vb) + 2e-7 * 16.0;
@@ -911,6 +918,7 @@ proptest! {
                 }
                 Err(e) => {
                     prop_assert!(e.suggestion().is_some(), "{}", what);
+                    prop_assert_ne!(e.kind(), KernelErrorKind::Internal, "{}", what);
                     prop_assert!(
                         near || (e.message().contains("empty") && want <= slack),
                         "{what}: refused: {e} ({:?}), want volume {want}", e.suggestion()
