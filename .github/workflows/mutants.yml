@@ -155,10 +155,11 @@ jobs:
           # workspace's test binaries, and DWARF is much of what they write. Gates keep it, and
           # so does a run off CI. A mutant's backtrace loses file:line, which nobody reads; its
           # failing test's name and message are what triage uses. It builds in its own
-          # target directory in the gate's tree (target-mutants/, tests/committed-tree.sh)
-          # with its own bound, since the gate's target/debug alone reaches 18-33 GiB of its
-          # 30: the two builds would evict each other, and gates would start cold.
-          export CARGO_PROFILE_DEV_DEBUG=0 SILICO_TARGET=target-mutants
+          # target directory in the gate's tree (target-mutants/, tests/committed-tree.sh),
+          # since the gate's target/debug alone reaches 18-33 GiB of its 30: the two builds
+          # would evict each other, and gates would start cold. Its bound is about 1.5 times
+          # one debug-free build (4.2 GiB, measured 2026-10-22).
+          export CARGO_PROFILE_DEV_DEBUG=0 SILICO_TARGET=target-mutants SILICO_TARGET_LIMIT_GIB=6
           # One seed for every property run through `proptest!` (it overrides the seeds tests
           # fix in their configs; only a TestRunner made directly keeps its own), so each mutant
           # meets the same cases as the baseline. With random seeds, a property that failed now
