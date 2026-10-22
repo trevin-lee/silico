@@ -386,10 +386,15 @@ pub fn check_axis(
         }
         Some(EndAtStart::ShortOfWhole { at, slit }) => {
             // The sketch's curves where the slit is measured, by ID: a sweep refusal's
-            // elements are its sketch's.
-            let there: std::collections::BTreeSet<String> = near
+            // elements are its sketch's. Those with a point there that could be nearest; or,
+            // if no point is off the axis and the slit is measured at the farthest, those
+            // reaching it. `far` names curves only in that fallback: a curve whose farthest
+            // point merely lies at `at` beside a measured corner isn't named, since its edges
+            // running out from the axis share the axis vertex and are harmless, and its
+            // extreme sitting at `at` is a coincidence, not where the rule measured.
+            let off_axis = near.iter().any(|&(d, _)| d > tolerance);
+            let there: std::collections::BTreeSet<String> = (if off_axis { &near } else { &far })
                 .iter()
-                .chain(&far)
                 .filter(|&&(d, _)| d == at)
                 .map(|(_, curve)| curve.to_string())
                 .collect();

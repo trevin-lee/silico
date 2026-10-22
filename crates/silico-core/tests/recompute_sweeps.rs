@@ -1679,14 +1679,14 @@ fn a_half_disc_right_of_the_y_axis_names_its_arc_where_its_farthest_point_is() {
 }
 
 #[test]
-fn a_slit_refusal_names_every_curve_whose_farthest_point_is_where_it_is_measured() {
+fn a_slit_refusal_beside_a_measured_corner_names_the_curves_there_not_a_farthest_point() {
     // A groove of two regions about the x axis: a semicircle of radius 5 on its diameter
-    // on the axis (no point off the axis but its arc, farthest at its top, (0, 5)), and a
-    // rectangle 10..14 × 5..10. The slit is measured at the rectangle's nearest corners,
-    // 5 away: 1145 nanodegrees short is refused there. Named: the curves with a point
-    // nearest 5 (the rectangle's bottom, nb000001, and its two sides ending on it,
-    // nb000002 and nb000004), and the curves whose farthest point is at 5, the
-    // semicircle's arc, aa000001: its top lies at the same distance, its slit as narrow.
+    // on the axis (no point off the axis, farthest at its top, (0, 5)), and a rectangle
+    // 10..14 × 5..10. The slit is measured at the rectangle's nearest corners, 5 away, so
+    // the farthest points aren't consulted: 1145 nanodegrees short is refused there,
+    // naming the curves with a point nearest 5, the rectangle's bottom, nb000001, and its
+    // two sides ending on it, nb000002 and nb000004; not the semicircle's arc, though its
+    // top lies at 5 too.
     let both = r#"{"id": "ssssssss", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 5, "y": 0, "construction": false}, {"id": "pa000003", "x": -5, "y": 0, "construction": false}, {"id": "pb000001", "x": 10, "y": 5, "construction": false}, {"id": "pb000002", "x": 14, "y": 5, "construction": false}, {"id": "pb000003", "x": 14, "y": 10, "construction": false}, {"id": "pb000004", "x": 10, "y": 10, "construction": false}], "lines": [{"id": "na000001", "from": "pa000003", "to": "pa000002", "construction": false}, {"id": "nb000001", "from": "pb000001", "to": "pb000002", "construction": false}, {"id": "nb000002", "from": "pb000002", "to": "pb000003", "construction": false}, {"id": "nb000003", "from": "pb000003", "to": "pb000004", "construction": false}, {"id": "nb000004", "from": "pb000004", "to": "pb000001", "construction": false}], "circles": [], "arcs": [{"id": "aa000001", "center": "pa000001", "start": "pa000002", "end": "pa000003", "construction": false}], "constraints": []}"#;
     let model = published(
         &engine(),
@@ -1710,9 +1710,6 @@ fn a_slit_refusal_names_every_curve_whose_farthest_point_is_where_it_is_measured
         ),
         "{error}"
     );
-    assert_eq!(
-        error.elements(),
-        ["aa000001", "nb000001", "nb000002", "nb000004"]
-    );
-    assert_eq!(error.elements_total(), 4);
+    assert_eq!(error.elements(), ["nb000001", "nb000002", "nb000004"]);
+    assert_eq!(error.elements_total(), 3);
 }
