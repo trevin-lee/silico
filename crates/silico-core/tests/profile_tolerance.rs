@@ -520,3 +520,123 @@ fn a_thin_hole_in_a_region_with_no_area_is_refused_once_as_the_loop() {
     elements.sort();
     assert_eq!(elements, hole);
 }
+
+/// 2⁻²⁴, about 5.96e-8: within the tolerance, and exact in every sum and difference below.
+const GAP: f64 = 1.0 / 16_777_216.0;
+
+/// A closed D: the arc about `center` counter-clockwise from `start` to `end`, and its
+/// chord back. The arc's ID.
+fn d_shape(d: &mut Draw, center: (f64, f64), start: (f64, f64), end: (f64, f64)) -> String {
+    let c = d.point(center.0, center.1);
+    let s = d.point(start.0, start.1);
+    let e = d.point(end.0, end.1);
+    let arc = d.arc(&c, &s, &e);
+    d.line(&e, &s);
+    arc
+}
+
+#[test]
+fn arcs_facing_each_other_across_the_gap_between_their_circles_are_refused() {
+    // Arc A about (0, 0), r 5, from (4, -3) to (4, 3) through (5, 0); arc B about
+    // (10 + g, 0), r 5 (its ends 4 left of its centre and 3 off), from (6 + g, 3) to
+    // (6 + g, -3) through (5 + g, 0). The circles are g apart on the line of centres, at
+    // A's (5, 0) and B's (5 + g, 0), both on the arcs: 5 - (10 + g) + 5 = -g exactly.
+    let mut d = Draw::new();
+    let a = d_shape(&mut d, (0.0, 0.0), (4.0, -3.0), (4.0, 3.0));
+    let b = d_shape(
+        &mut d,
+        (10.0 + GAP, 0.0),
+        (6.0 + GAP, 3.0),
+        (6.0 + GAP, -3.0),
+    );
+    assert_eq!(
+        named(&d.refused()),
+        vec![(
+            format!("arc {a} and arc {b} are 5.960464477539063e-8 mm apart: {RULE}"),
+            vec![a.clone(), b.clone()]
+        )]
+    );
+}
+
+#[test]
+fn an_arc_inside_another_s_circle_and_g_from_it_where_both_turn_is_refused() {
+    // Arc A about (0, 0), r 5, from (-4, 3) to (-4, -3) through (-5, 0); arc B about
+    // (5 - g, 0), r 10 (its ends 8 left of its centre and 6 off), from (-3 - g, 6) to
+    // (-3 - g, -6) through (-5 - g, 0). A's circle is inside B's, g from it on the far
+    // side of A's centre from B's: 10 - 5 - (5 - g) = g, at points of both arcs. Nothing
+    // else comes near: A's ends are 10 - sqrt(90) = 0.51 inside B's circle, and the chords
+    // x = -4 and x = -3 - g miss the other arc (the circles meet them at y = ±sqrt(19) and
+    // at (-3, ±4), 126.87 deg round A's centre, outside A's 143.13..216.87).
+    let mut d = Draw::new();
+    let a = d_shape(&mut d, (0.0, 0.0), (-4.0, 3.0), (-4.0, -3.0));
+    let b = d_shape(
+        &mut d,
+        (5.0 - GAP, 0.0),
+        (-3.0 - GAP, 6.0),
+        (-3.0 - GAP, -6.0),
+    );
+    assert_eq!(
+        named(&d.refused()),
+        vec![(
+            format!("arc {a} and arc {b} are 5.960464477539063e-8 mm apart: {RULE}"),
+            vec![a.clone(), b.clone()]
+        )]
+    );
+}
+
+#[test]
+fn a_circle_g_from_another_s_circle_where_its_arc_doesnt_turn_is_apart_from_the_arc() {
+    // A circle r 5 about (0, 0); arc B about (10 + g, 0), r 5, from (14 + g, -3) to
+    // (14 + g, 3), the side of its circle away from the circle. The circles are g apart
+    // at (5, 0), where B doesn't turn; B comes nearest the circle at its ends,
+    // sqrt(14^2 + 3^2) - 5 = 9.32 away. Areas by hand: 25 pi, and B's segment,
+    // (25 / 2)(theta - sin theta) with theta = 2 atan2(3, 4) and sin theta = 24 / 25.
+    let mut d = Draw::new();
+    d.circle(0.0, 0.0, 5.0);
+    d_shape(
+        &mut d,
+        (10.0 + GAP, 0.0),
+        (14.0 + GAP, -3.0),
+        (14.0 + GAP, 3.0),
+    );
+    let p = d.made();
+    assert_eq!(p.regions.len(), 2, "{p:#?}");
+    // By their smallest IDs: the arc's D, then the circle.
+    let theta = 2.0 * libm::atan2(3.0, 4.0);
+    assert!(close(p.regions[0].area(), 12.5 * (theta - 0.96), 1e-12));
+    assert!(close(p.regions[1].area(), 25.0 * PI, 1e-12));
+}
+
+#[test]
+fn a_tiny_circle_about_a_large_one_s_centre_is_a_hole_in_it() {
+    // Circles about the origin of radii 1e-6, drawn first, and 100: 100 - 1e-6 apart, and
+    // the small one a hole of the large one (pi 1e-12 of area, against a perimeter of
+    // 6.3e-6, more than 1e-7 times it). Area by hand: pi (100^2 - 1e-12).
+    let mut d = Draw::new();
+    let o = d.point(0.0, 0.0);
+    d.circle_about(&o, 1e-6);
+    d.circle_about(&o, 100.0);
+    let p = d.made();
+    assert_eq!(p.regions.len(), 1, "{p:#?}");
+    assert_eq!(p.regions[0].holes.len(), 1);
+    assert!(close(p.regions[0].area(), PI * (1e4 - 1e-12), 1e-12));
+}
+
+#[test]
+fn arcs_about_centres_1e_200_apart_turning_on_opposite_sides_are_apart() {
+    // Arcs r 5 about (0, 0) and about (1e-200, 0), one circle to any precision: the first
+    // from (4, 3) to (3, 4), the second from (-4, -3) to (-3, -4) (each end's offset from
+    // its centre is exact: -4 - 1e-200 rounds to -4), each closed by its chord. They turn
+    // on opposite sides, 10 apart, and nowhere come near. Each region is the segment
+    // (25 / 2)(theta - sin theta), theta = atan2(4, 3) - atan2(3, 4) and
+    // sin theta = (4 * 4 - 3 * 3) / 25.
+    let mut d = Draw::new();
+    d_shape(&mut d, (0.0, 0.0), (4.0, 3.0), (3.0, 4.0));
+    d_shape(&mut d, (1e-200, 0.0), (-4.0, -3.0), (-3.0, -4.0));
+    let p = d.made();
+    assert_eq!(p.regions.len(), 2, "{p:#?}");
+    let theta = libm::atan2(4.0, 3.0) - libm::atan2(3.0, 4.0);
+    for r in &p.regions {
+        assert!(close(r.area(), 12.5 * (theta - 0.28), 1e-9), "{}", r.area());
+    }
+}
