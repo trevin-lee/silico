@@ -792,6 +792,75 @@ mod tests {
     }
 
     #[test]
+    fn every_component_of_the_normal_counts_in_the_plane_checks() {
+        // A normal and a vector along it with two components alike, s = 1/√2: the dot
+        // product is s² + s² = 1 (to rounding), its terms equal, so a check that took one
+        // term from another would read 0.
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        for normal in [[s, s, 0.0], [0.0, s, s]] {
+            assert_eq!(
+                check_leaves_plane("vector", normal, normal),
+                Ok(()),
+                "{normal:?}"
+            );
+            assert_eq!(
+                check_axis_in_plane(normal, normal).unwrap_err().parameter,
+                "axis",
+                "{normal:?}"
+            );
+        }
+        // An axis along an x normal (the YZ plane's) leans out of it: 1 · 1 + 0 + 0 = 1.
+        let x = [1.0, 0.0, 0.0];
+        assert_eq!(check_axis_in_plane(x, x).unwrap_err().parameter, "axis");
+        assert_eq!(check_axis_in_plane(x, [0.0, 0.6, 0.8]), Ok(()));
+    }
+
+    #[test]
+    fn a_through_all_of_exactly_the_tolerance_is_refused() {
+        // 1e-7 / 2.02 rounds to 4.95049504950495e-8, which 2.02 times rounds back to
+        // exactly 1e-7 (worked in doubles: the product's nearest double is 1e-7's); one ulp
+        // more gives 1.0000000000000001e-7. A sweep must be longer than 1e-7: the first is
+        // refused, the second taken.
+        let d = 4.95049504950495e-8;
+        assert_eq!(THROUGH_ALL_FACTOR * d, 1e-7);
+        let refused = through_all_length([[0.0; 3], [d, 0.0, 0.0]]).unwrap_err();
+        assert_eq!(refused.parameter, "base");
+        let next = f64::from_bits(d.to_bits() + 1);
+        assert_eq!(
+            through_all_length([[0.0; 3], [next, 0.0, 0.0]]),
+            Ok(1.0000000000000001e-7)
+        );
+    }
+
+    #[test]
+    fn an_edge_off_a_turns_axis_sweeps_one_side_face_no_more_no_fewer() {
+        // An edge with its end has left the axis, so it sweeps exactly one face: none, or
+        // two, is a fault.
+        let good = triangle_prism();
+        assert_eq!(good.sweep_fault(SweepKind::Turn), None);
+        let mut none = good.clone();
+        none.inputs[0].edges[1]
+            .generated
+            .retain(|r| r.element.kind != ElementKind::Face);
+        assert_eq!(
+            none.sweep_fault(SweepKind::Turn).as_deref(),
+            Some(
+                "Edge2 has 1 end and 0 side counterparts in a Turn sweep: an edge on the axis has neither, and one off it both"
+            )
+        );
+        let mut two = good.clone();
+        two.inputs[0].edges[1]
+            .generated
+            .push(r(ElementKind::Face, 3));
+        assert_eq!(
+            two.sweep_fault(SweepKind::Turn).as_deref(),
+            Some(
+                "Edge2 has 1 end and 2 side counterparts in a Turn sweep: an edge on the axis has neither, and one off it both"
+            )
+        );
+    }
+
+    #[test]
     fn a_whole_turn_is_360_degrees_as_freecad_converts_them_and_within_occts_tolerance() {
         assert_eq!(crate::radians(360.0), TAU);
         assert!(is_whole_turn(crate::radians(360.0)));
