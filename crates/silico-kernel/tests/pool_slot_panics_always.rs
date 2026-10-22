@@ -1,8 +1,9 @@
 //! A pool's slot whose thread panics every time it starts its worker (only a bug does: here
-//! a log layer that panics at each slot thread's first worker event) is started again only
-//! for a request waiting, never in a loop of its own: each start takes a request, which
-//! ends with it, and with none waiting the slot stays down. Alone in its binary: it
-//! installs the process's global subscriber.
+//! a log layer that panics at each slot thread's first worker event) starts its worker once
+//! per request waiting, never in a loop of its own: each start takes a request, which ends
+//! with it, and with none waiting no worker is started. (A slot started again with no
+//! request would start no worker, so this counts worker starts, not threads.) Alone in its
+//! binary: it installs the process's global subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::cell::Cell;
@@ -63,13 +64,14 @@ fn a_slot_that_panics_at_every_start_starts_once_per_request_and_not_on_its_own(
         );
     }
     assert_eq!(PANICS.load(Ordering::SeqCst), 8, "one start per request");
-    // With none waiting, the slot isn't started again.
+    // With none waiting, no worker is started again.
     std::thread::sleep(Duration::from_secs(1));
     assert_eq!(
         PANICS.load(Ordering::SeqCst),
         8,
         "the slot started on its own"
     );
+    assert!(pool.pids().is_empty(), "{:?}", pool.pids());
     // The next request starts it once more.
     assert!(
         pool.submit(Generation(1), echo(9))

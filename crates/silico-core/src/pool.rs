@@ -183,7 +183,7 @@ impl KernelPool {
     /// A pool of `size` slots (1 to [`MAX_WORKERS`]) for workers of the executable at
     /// `exe`, found once, now, as [`start_workers`](Self::start_workers) finds it, none
     /// started yet: a slot starts, and starts its worker, when the requests waiting
-    /// outnumber the started slots free to take them ([`grow`](Self::grow)), and keeps it
+    /// outnumber the started slots free to take them ([`grow`]), and keeps it
     /// as `start_workers`'s slots do. Starting a worker
     /// costs a process and OCCT's libraries (on a loaded Linux machine, a large part of a
     /// small document's rebuild), so a slot no request needs costs nothing. A worker that
@@ -838,12 +838,12 @@ enum SlotStart {
 /// from the queue until the pool stops, replacing its worker whenever it stops, dies, or
 /// its request is superseded.
 fn serve(slot: usize, shared: &Arc<Shared>, start: SlotStart) {
+    // However the thread ends but by the pool's stopping (a panic, say, even in its span),
+    // the slot is left to start again rather than counted free: once its keeper, declared
+    // after, has let its worker go.
+    let _ended = SlotEnded { shared, slot };
     let span = tracing::debug_span!("kernel_pool", slot);
     let _entered = span.enter();
-    // However the thread ends but by the pool's stopping (a panic, say), the slot is left
-    // to start again rather than counted free: once its keeper, declared after, has let
-    // its worker go.
-    let _ended = SlotEnded { shared, slot };
     let mut keeper = Keeper {
         slot,
         shared,
