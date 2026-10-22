@@ -311,6 +311,72 @@ fn a_boolean_result_refused_as_invalid_says_what_to_try() {
 }
 
 #[test]
+fn boxes_with_flat_faces_3e7_apart_are_right_or_occts_known_wrong_answer() {
+    // A 3 × 0.5 × 0.5 box, and a 1 × 1 × 1.0000001 box at (0, 0, −0.4999998): the second's
+    // top is 3e-7 above the first's, past OCCT's tolerance but within a few of it. They
+    // overlap in 1 × 0.5 × 0.5, so the common is 0.25, the cut 0.75 − 0.25 = 0.5, and the
+    // fuse 0.75 + 1.0000001 − 0.25 = 1.5000001. OCCT 7.9.3 gets all three wrong, as
+    // FreeCAD 1.1.3's `Shape.fuse`, `cut`, and `common` do on it: the fuse and common
+    // empty, and the cut a valid solid that removes nothing (0.75), with the warnings
+    // BOPAlgo_AlertBadPositioning and BOPAlgo_AlertAcquiredSelfIntersection. Silico takes
+    // OCCT's answer, as FreeCAD does (docs/ports/booleans.md, Known wrong results): each op
+    // is the right answer or that wrong one, and anything else fails, so a change in OCCT
+    // shows here. Found by the seeded property test below (PROPTEST_RNG_SEED=20261021).
+    let a = make(&Primitive::Box {
+        dx: 3.0,
+        dy: 0.5,
+        dz: 0.5,
+    })
+    .unwrap();
+    let b = at(
+        Primitive::Box {
+            dx: 1.0,
+            dy: 1.0,
+            dz: 1.000_000_1,
+        },
+        [0.0, 0.0, -0.499_999_8],
+    );
+    let what = "boxes 3e-7 apart";
+    for (op, right, wrong) in [
+        (BooleanOp::Fuse, 1.500_000_1, None),
+        (BooleanOp::Cut, 0.5, Some(0.75)),
+        (BooleanOp::Common, 0.25, None),
+    ] {
+        match boolean(op, &a, &b) {
+            Ok(built) => {
+                let s = summarize(&built.shape).unwrap();
+                assert!(s.valid, "{what} {op:?}: result isn't valid: {s:?}");
+                assert_eq!(built.history.validate(2), Ok(()), "{what} {op:?}");
+                assert_eq!(
+                    faces_without_a_source(&built.history),
+                    Vec::<u32>::new(),
+                    "{what} {op:?}: result faces with no source"
+                );
+                let is_right = close(s.volume, right, 3e-7);
+                let is_known_wrong = wrong.is_some_and(|w| close(s.volume, w, 1e-12));
+                assert!(
+                    is_right || is_known_wrong,
+                    "{what} {op:?}: volume {}, want {right} (or OCCT's known {wrong:?})",
+                    s.volume
+                );
+            }
+            // OCCT's known wrong answer for the fuse and common: refused as empty.
+            Err(e) if wrong.is_none() => {
+                assert_eq!(e.kind(), KernelErrorKind::Failed, "{what} {op:?}: {e}");
+                let name = op.name().to_lowercase();
+                assert_eq!(
+                    e.message(),
+                    format!("the {name}'s result is empty"),
+                    "{what} {op:?}"
+                );
+                assert!(e.suggestion().is_some(), "{what} {op:?}");
+            }
+            Err(e) => panic!("{what} {op:?}: refused: {e} ({:?})", e.suggestion()),
+        }
+    }
+}
+
+#[test]
 fn cylinder_inscribed_in_a_box_tangent_to_four_faces() {
     // A cylinder of radius 5 centered in a 10 × 10 box touches four of its faces along
     // lines. The cut leaves four corner pieces meeting the tangent lines.
@@ -793,9 +859,13 @@ proptest! {
     #![proptest_config(config())]
 
     /// Axis-aligned boxes: each boolean's volume is a product of interval overlaps. A
-    /// result must have that volume; a refusal must be right that the result is empty, or
-    /// (where faces are within a few tolerances of each other, and OCCT may not cope) say
-    /// something other than "empty".
+    /// result must be valid, with a history in which every face has a source, and must
+    /// have that volume; a refusal must say what to try, and be right that the result is
+    /// empty. Except where two parallel faces are within a micron of each other and not
+    /// coincident: there OCCT can give an empty result or a valid wrong one, and Silico
+    /// takes it, as FreeCAD does (docs/ports/booleans.md, Known wrong results; pinned in
+    /// `boxes_with_flat_faces_3e7_apart_are_right_or_occts_known_wrong_answer`), so only
+    /// the result's soundness and the refusal's suggestion are checked.
     #[test]
     fn box_booleans_match_interval_arithmetic(
         a in (size(), size(), size()),
@@ -835,17 +905,16 @@ proptest! {
                         faces_without_a_source(&built.history), Vec::<u32>::new(), "{}", what
                     );
                     prop_assert!(
-                        (s.volume - want).abs() <= slack,
+                        near || (s.volume - want).abs() <= slack,
                         "{what}: volume {} want {want}", s.volume
                     );
                 }
                 Err(e) => {
-                    let says_empty = e.message().contains("empty");
+                    prop_assert!(e.suggestion().is_some(), "{}", what);
                     prop_assert!(
-                        if says_empty { want <= slack } else { near },
+                        near || (e.message().contains("empty") && want <= slack),
                         "{what}: refused: {e} ({:?}), want volume {want}", e.suggestion()
                     );
-                    prop_assert!(e.suggestion().is_some(), "{}", what);
                 }
             }
         }
