@@ -914,6 +914,37 @@ fn sides_on_one_tilted_line_just_over_the_tolerance_apart_dont_cross() {
 }
 
 #[test]
+fn sides_on_one_tilted_line_near_the_origin_just_over_the_tolerance_apart_dont_cross() {
+    // The last test's line scaled by a tenth, y = 0.8x + 0.09, with its sides' near ends
+    // still 1.92e-7 apart along it: (0.17, 0.226) to (0.36, 0.378), and (0.5, 0.49) to
+    // (0.36000015, 0.37800012). Every corner is the decimal nearest the line. Near the
+    // origin each orientation's two products are under 0.1, far more than their product,
+    // and the rounding bound is their sum's: each orientation (3.5e-18 to 6.9e-18 here)
+    // is within the bound times their sum (1.0e-17 to 3.3e-17), so every end is on the
+    // other's line. Its signs, rounding's, put each side's ends on opposite sides of the
+    // other's line, and would be trusted by a bound times their product (8e-20 to 8e-19).
+    // Nothing meets. Areas by hand: the first triangle's side x = 0.36 from y 0.2 to
+    // 0.378 and apex 0.19 from it, 0.178 (0.19) / 2 = 0.01691; the second's side x = 0.5
+    // from y 0.3 to 0.49 and apex 0.13999985 from it, 0.19 (0.13999985) / 2 =
+    // 0.01329998575.
+    let mut d = Draw::new();
+    d.polygon(&[(0.17, 0.226), (0.36, 0.378), (0.36, 0.2)]);
+    d.polygon(&[(0.5, 0.49), (0.36000015, 0.37800012), (0.5, 0.3)]);
+    let p = d.made();
+    assert_eq!(p.regions.len(), 2, "{p:#?}");
+    assert!(
+        close(p.regions[0].area(), 0.01691, 1e-15),
+        "{}",
+        p.regions[0].area()
+    );
+    assert!(
+        close(p.regions[1].area(), 0.01329998575, 1e-15),
+        "{}",
+        p.regions[1].area()
+    );
+}
+
+#[test]
 fn a_circle_off_its_outer_circle_s_centre_line_is_a_hole_in_it() {
     // A circle r 10 about the origin, and one r 1 about (6, 5): inside it (7.81 + 1 < 10),
     // and its probe, (7, 5), 5 above the outer's centre, where the outer circle's right
