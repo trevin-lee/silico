@@ -164,13 +164,26 @@ pub fn axis_line(
     })
 }
 
+/// The signed distance of `p` from the line through `origin` along the unit `direction`,
+/// positive to the line's left.
+fn side(origin: [f64; 2], direction: [f64; 2], p: [f64; 2]) -> f64 {
+    direction[0] * (p[1] - origin[1]) - direction[1] * (p[0] - origin[0])
+}
+
+/// Whether the direction `angle` from an arc's centre lies on the arc, which runs from the
+/// lesser of its angles to the greater, less than a turn.
+fn on_arc(start_angle: f64, end_angle: f64, angle: f64) -> bool {
+    let (from, to) = (start_angle.min(end_angle), start_angle.max(end_angle));
+    from + (angle - from).rem_euclid(std::f64::consts::TAU) <= to
+}
+
 /// How far each of a profile's curves reaches either side of the line through `origin`
 /// along the unit `direction`: its least and greatest signed distance from it (positive to
 /// the line's left), closed-form (design S6): a line's ends; an arc's ends, and its circle's
 /// two points farthest from the line where they lie on the arc; a circle's centre ± its
 /// radius.
 fn reach(edge: &crate::profile::Edge, origin: [f64; 2], direction: [f64; 2]) -> (f64, f64) {
-    let side = |p: [f64; 2]| direction[0] * (p[1] - origin[1]) - direction[1] * (p[0] - origin[0]);
+    let side = |p: [f64; 2]| side(origin, direction, p);
     match edge.sent {
         silico_protocol::Curve::Line { start, end } => {
             let (a, b) = (side(start), side(end));
@@ -190,19 +203,13 @@ fn reach(edge: &crate::profile::Edge, origin: [f64; 2], direction: [f64; 2]) -> 
         } => {
             let (a, b) = (side(start), side(end));
             let (mut low, mut high) = (a.min(b), a.max(b));
-            // The arc runs from the lesser of its angles to the greater, less than a turn.
-            let (from, to) = (start_angle.min(end_angle), start_angle.max(end_angle));
-            let on_arc = |angle: f64| {
-                let turned = from + (angle - from).rem_euclid(std::f64::consts::TAU);
-                turned <= to
-            };
             // The line's left normal, and the circle's points along it and against it.
             let normal = [-direction[1], direction[0]];
             let c = side(center);
-            if on_arc(libm::atan2(normal[1], normal[0])) {
+            if on_arc(start_angle, end_angle, libm::atan2(normal[1], normal[0])) {
                 high = high.max(c + radius);
             }
-            if on_arc(libm::atan2(-normal[1], -normal[0])) {
+            if on_arc(start_angle, end_angle, libm::atan2(-normal[1], -normal[0])) {
                 low = low.min(c - radius);
             }
             (low, high)
@@ -217,12 +224,12 @@ fn reach(edge: &crate::profile::Edge, origin: [f64; 2], direction: [f64; 2]) -> 
 /// where that point lies on it). A line's points between its ends are no nearer than its
 /// nearer end, and an arc whose circle meets the line is nearest it at an end or where it
 /// meets it.
-fn nearest_points(
+fn nearest_distances(
     edge: &crate::profile::Edge,
     origin: [f64; 2],
     direction: [f64; 2],
 ) -> [Option<f64>; 3] {
-    let side = |p: [f64; 2]| direction[0] * (p[1] - origin[1]) - direction[1] * (p[0] - origin[0]);
+    let side = |p: [f64; 2]| side(origin, direction, p);
     // The circle's point toward the line, as an angle, and its distance from the line, if
     // the circle lies off it.
     let toward = |center: [f64; 2], radius: f64| {
@@ -251,11 +258,8 @@ fn nearest_points(
             start_angle,
             end_angle,
         } => {
-            let (from, to) = (start_angle.min(end_angle), start_angle.max(end_angle));
-            let inside = toward(center, radius).and_then(|(angle, distance)| {
-                let turned = from + (angle - from).rem_euclid(std::f64::consts::TAU);
-                (turned <= to).then_some(distance)
-            });
+            let inside = toward(center, radius)
+                .and_then(|(angle, d)| on_arc(start_angle, end_angle, angle).then_some(d));
             [Some(side(start).abs()), Some(side(end).abs()), inside]
         }
     }
@@ -276,7 +280,7 @@ fn nearest_points(
 ///   revolve's rule): the profile's farthest point from the axis, over every region, must
 ///   move more than the tolerance, and, short of a whole turn, its slit must be wider than
 ///   that where it's narrowest, at its nearest point off the axis over every region and
-///   hole ([`nearest_points`], [`silico_protocol::slit_radius`]): 360 degrees less a few
+///   hole ([`silico_protocol::slit_radius`]): 360 degrees less a few
 ///   nanodegrees leaves ends one place, which OCCT builds as two; refused as
 ///   `invalid_input`, naming the feature and its `extent.angle`.
 pub fn check_axis(
@@ -293,8 +297,10 @@ pub fn check_axis(
     let tolerance = silico_protocol::LENGTH_TOLERANCE;
     let mut farthest = 0.0f64;
     // Every point that could be the profile's nearest to the axis, over every region and
-    // hole: where its slit is measured.
-    let mut near: Vec<f64> = Vec::new();
+    // hole, with its curve: where its slit is measured, and the curves there.
+    let mut near: Vec<(f64, &crate::document::ElementId)> = Vec::new();
+    // Each curve's farthest reach, for the curves there when the slit is measured there.
+    let mut far: Vec<(f64, &crate::document::ElementId)> = Vec::new();
     for region in &profile.regions {
         let (mut low, mut high) = (0.0f64, 0.0f64);
         let mut off: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -306,10 +312,12 @@ pub fn check_axis(
             low = low.min(l);
             high = high.max(h);
             near.extend(
-                nearest_points(edge, origin, direction)
+                nearest_distances(edge, origin, direction)
                     .into_iter()
-                    .flatten(),
+                    .flatten()
+                    .map(|d| (d, &edge.curve)),
             );
+            far.push(((-l).max(h), &edge.curve));
             if l < -tolerance || h > tolerance {
                 off.insert(edge.curve.to_string());
             }
@@ -364,7 +372,7 @@ pub fn check_axis(
             .with_suggestion(suggestion)
     };
     let turned = silico_protocol::radians(degrees);
-    let slit_at = silico_protocol::slit_radius(near, farthest);
+    let slit_at = silico_protocol::slit_radius(near.iter().map(|&(d, _)| d), farthest);
     match silico_protocol::end_at_start(slit_at, farthest, turned) {
         Some(EndAtStart::Unmoved) => {
             return Err(refused(
@@ -377,6 +385,14 @@ pub fn check_axis(
             ));
         }
         Some(EndAtStart::ShortOfWhole { at, slit }) => {
+            // The sketch's curves where the slit is measured, by ID: a sweep refusal's
+            // elements are its sketch's.
+            let there: std::collections::BTreeSet<String> = near
+                .iter()
+                .chain(&far)
+                .filter(|&&(d, _)| d == at)
+                .map(|(_, curve)| curve.to_string())
+                .collect();
             return Err(refused(
                 format!(
                     "{word} {feature}'s angle, {} degrees, short of a whole turn, leaves a slit of {} mm at its profile's point {} mm from the axis: within 1e-7 mm, its ends would be one place",
@@ -385,7 +401,9 @@ pub fn check_axis(
                     format_number(at)
                 ),
                 "turn it by 360 degrees for a whole turn, or by less, so its ends are more than 1e-7 mm apart",
-            ));
+            )
+            .with_elements(there.iter().take(PROBLEMS_LISTED).cloned())
+            .with_elements_total(there.len() as u64));
         }
         None => {}
     }

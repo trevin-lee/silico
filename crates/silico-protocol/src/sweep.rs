@@ -238,9 +238,7 @@ pub fn slit_radius(distances: impl IntoIterator<Item = f64>, farthest: f64) -> f
     distances
         .into_iter()
         .filter(|&d| d > LENGTH_TOLERANCE)
-        .fold(None, |least: Option<f64>, d| {
-            Some(least.map_or(d, |l| l.min(d)))
-        })
+        .reduce(f64::min)
         .unwrap_or(farthest)
 }
 

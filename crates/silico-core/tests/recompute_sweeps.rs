@@ -597,6 +597,7 @@ fn a_pad_or_revolve_of_two_regions_is_refused_naming_them_and_a_pocket_takes_bot
             "{:?}",
             model.outcome(&id("qqqqqqqq"))
         );
+        assert_eq!(model.errors().count(), 0);
         let faces: Vec<Op> = shape_ops(&engine)
             .into_iter()
             .filter(|op| op.name() == "MakeFaces")
@@ -1301,6 +1302,20 @@ fn a_valid_chains_users_dont_wait_for_its_measures() {
     assert!(built(&model, "pppppppp") && built(&model, "ffffffff"));
 }
 
+/// A band test's case: the sketch, an angle refused, where its slit is measured and how
+/// wide, an angle that turns, and the curves the refusal names.
+type BandCase<'a> = (String, &'a str, f64, f64, &'a str, &'a [&'a str]);
+
+/// The slit a refusal of a turn short of a whole one reports, in mm.
+fn slit(message: &str) -> f64 {
+    message
+        .split("leaves a slit of ")
+        .nth(1)
+        .and_then(|m| m.split(' ').next())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(f64::NAN)
+}
+
 #[test]
 fn a_turn_short_of_a_whole_one_by_the_tolerance_is_refused_and_a_nanodegree_more_turns() {
     // A turn of 360° less k nanodegrees leaves a slit of r · k · 1e-9 · π/180 mm at a point
@@ -1343,26 +1358,47 @@ fn a_turn_short_of_a_whole_one_by_the_tolerance_is_refused_and_a_nanodegree_more
     let below = arc([0, -10], [4, -7], [-4, -7]);
     let wrapping = arc([0, 10], [-5, 10], [4, 7]);
     let cap = arc([0, 10], [4, 13], [-4, 13]);
-    let cases = [
-        (torus, "359.999998855", 5.0, 9.9920e-8, "359.999998854"),
-        (bulge, "359.999998855", 5.0, 9.9920e-8, "359.999998854"),
-        (below, "359.999998855", 5.0, 9.9920e-8, "359.999998854"),
-        (wrapping, "359.999998855", 5.0, 9.9920e-8, "359.999998854"),
-        (cap, "359.99999956", 13.0, 9.9833e-8, "359.999999"),
+    // Each refusal names the sketch's curves where its slit is measured: the circle, the
+    // arc at its interior point, the cap's arc and chord at their shared ends, a
+    // rectangle's side there and the two sides ending on it.
+    let short = "359.999998855";
+    let turns = "359.999998854";
+    let cases: [BandCase; 8] = [
+        (torus, short, 5.0, 9.9920e-8, turns, &["ca000001"]),
+        (bulge, short, 5.0, 9.9920e-8, turns, &["aa000001"]),
+        (below, short, 5.0, 9.9920e-8, turns, &["aa000001"]),
+        (wrapping, short, 5.0, 9.9920e-8, turns, &["aa000001"]),
+        (
+            cap,
+            "359.99999956",
+            13.0,
+            9.9833e-8,
+            "359.999999",
+            &["aa000001", "na000001"],
+        ),
         (
             off.clone(),
-            "359.999998855",
+            short,
             5.0,
             9.9920e-8,
-            "359.999998854",
+            turns,
+            &["na000001", "na000002", "na000004"],
         ),
-        (off, "359.999999427", 5.0, 5.0003e-8, "359.999998854"),
+        (
+            off,
+            "359.999999427",
+            5.0,
+            5.0003e-8,
+            turns,
+            &["na000001", "na000002", "na000004"],
+        ),
         (
             sketch("xy"),
             "359.999997136",
             2.0,
             9.9973e-8,
             "359.999997135",
+            &["na000002", "na000003", "na000004"],
         ),
     ];
     for (word, base) in [("revolve", None), ("groove", Some("bbbbbbbb"))] {
@@ -1376,7 +1412,7 @@ fn a_turn_short_of_a_whole_one_by_the_tolerance_is_refused_and_a_nanodegree_more
                 &angle(degrees),
             )
         };
-        for (drawn, short, at, width, turns) in &cases {
+        for (drawn, short, at, width, turns, there) in &cases {
             let engine = engine();
             let model = published(&engine, &[&cube_below(), drawn, &feature(short)]);
             let error = failed(&model, "rrrrrrrr");
@@ -1392,20 +1428,15 @@ fn a_turn_short_of_a_whole_one_by_the_tolerance_is_refused_and_a_nanodegree_more
                 )),
                 "{message}"
             );
-            let slit: f64 = message
-                .split("leaves a slit of ")
-                .nth(1)
-                .and_then(|m| m.split(' ').next())
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(f64::NAN);
-            assert!((slit - width).abs() < 1e-12, "{message}");
+            assert!((slit(message) - width).abs() < 1e-12, "{message}");
             assert_eq!(
                 error.suggestion(),
                 Some(
                     "turn it by 360 degrees for a whole turn, or by less, so its ends are more than 1e-7 mm apart"
                 )
             );
-            assert!(error.elements().is_empty(), "{word}");
+            assert_eq!(error.elements(), *there, "{word} {short}");
+            assert_eq!(error.elements_total(), there.len() as u64, "{word}");
             assert!(!names(&engine).contains(&"MakeFaces"), "{word}");
 
             let engine = self::engine();
@@ -1443,21 +1474,26 @@ fn a_slit_is_measured_at_the_nearest_point_off_the_axis_over_every_region_and_ho
             [[0.0, 0.0, 10.0, 5.0], [1.0, 1.0, 2.0, 2.0]],
             "359.999995",
             8.7266e-8,
+            ["nb000001", "nb000003", "nb000004"],
         ),
         (
             "groove",
             [[0.0, 0.0, 1.0, 5.0], [5.0, 0.0, 10.0, 5.0]],
             "359.999995",
             8.7266e-8,
+            ["na000001", "na000002", "na000003"],
         ),
         (
             "groove",
             [[0.0, 0.0, 10.0, 5.0], [-2.0, 0.0, -1.0, 5.0]],
             "359.9999994",
             1.0472e-8,
+            ["nb000001", "nb000002", "nb000003"],
         ),
     ];
-    for (word, rects, short, width) in cases {
+    // Each names the curves 1 mm off the axis: the near side, and the two sides ending on
+    // it.
+    for (word, rects, short, width, there) in cases {
         let base = (word == "groove").then_some("bbbbbbbb");
         let model = published(
             &engine(),
@@ -1476,13 +1512,9 @@ fn a_slit_is_measured_at_the_nearest_point_off_the_axis_over_every_region_and_ho
             ),
             "{message}"
         );
-        let slit: f64 = message
-            .split("leaves a slit of ")
-            .nth(1)
-            .and_then(|m| m.split(' ').next())
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(f64::NAN);
-        assert!((slit - width).abs() < 1e-12, "{message}");
+        assert!((slit(message) - width).abs() < 1e-12, "{message}");
+        assert_eq!(error.elements(), there, "{rects:?}");
+        assert_eq!(error.elements_total(), 3, "{rects:?}");
     }
     let model = published(
         &engine(),
