@@ -1181,3 +1181,21 @@ fn an_end_near_a_curve_past_the_hundredth_meeting_names_its_point_too() {
     assert_eq!((refused.errors().len(), refused.total()), (100, 102));
     assert_eq!(refused.elements_total(), 154);
 }
+
+#[test]
+fn meetings_found_out_of_id_order_still_name_every_part_of_those_dropped() {
+    // The bar and 51 triangles of
+    // an_end_near_a_curve_past_the_hundredth_meeting_names_its_point_too, the triangles
+    // drawn right to left: the sweep across x meets the leftmost first, whose IDs are the
+    // last, and keeps them until lower IDs push them out of the hundred. Those pushed out
+    // name their parts too: 1 + 51 × 3 = 154.
+    let mut d = Draw::new();
+    d.rectangle(-5.0, 0.0, 200.0, 1.0);
+    for i in (0..51).rev() {
+        let x = 3.0 * f64::from(i);
+        d.polygon(&[(x + 1.0, 1.0 + 5e-8), (x + 2.0, 3.0), (x, 3.0)]);
+    }
+    let refused = d.profile().unwrap_err();
+    assert_eq!((refused.errors().len(), refused.total()), (100, 102));
+    assert_eq!(refused.elements_total(), 154);
+}

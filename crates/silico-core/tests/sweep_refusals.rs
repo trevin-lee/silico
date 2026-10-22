@@ -637,3 +637,47 @@ fn a_sweep_of_a_sketch_whose_profile_refusal_is_a_bug_carries_the_bugs_code_and_
         Some("this is a bug in Silico, not in the request: report it")
     );
 }
+
+#[test]
+fn a_cause_gives_each_of_its_different_advices_once() {
+    // Rectangles (0, 0)–(4, 1) and (1, −1)–(2, 3), whose sides cross four times, and a lone
+    // line (10, 0)–(11, 0), open at both ends: six refusals of two kinds, two open ends
+    // and four crossings, each kind with its own advice. A pad of the sketch has one error,
+    // its cause every refusal, and each advice exactly once, after the first refusal it
+    // follows.
+    let mut d = draw::Draw::new();
+    d.rectangle(0.0, 0.0, 4.0, 1.0);
+    d.rectangle(1.0, -1.0, 2.0, 3.0);
+    let a = d.point(10.0, 0.0);
+    let b = d.point(11.0, 0.0);
+    d.line(&a, &b);
+    let refused = d.profile().unwrap_err();
+    assert_eq!(refused.total(), 6);
+    let error = unprofiled(
+        &fid("p0000001"),
+        SweepFeature::Pad,
+        &draw::feature(),
+        &refused,
+    );
+    let cause = error.cause().unwrap();
+    let open = "(end another curve at the point to close the outline, or make the curve construction geometry)";
+    let cross = "(move or remove one of them: a profile's curves meet only at the points they share, and each point joins two curves)";
+    assert_eq!(cause.matches(open).count(), 1, "{cause}");
+    assert_eq!(cause.matches(cross).count(), 1, "{cause}");
+    assert_eq!(
+        cause.matches("so the profile is open there").count(),
+        2,
+        "{cause}"
+    );
+    assert_eq!(cause.matches(" cross").count(), 4, "{cause}");
+    // Each advice right after the first refusal it belongs to.
+    assert!(cause.find(open) < cause.find(cross), "{cause}");
+    assert!(
+        cause
+            .split("; ")
+            .filter(|refusal| refusal.ends_with(open) || refusal.ends_with(cross))
+            .count()
+            == 2,
+        "{cause}"
+    );
+}

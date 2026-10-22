@@ -1322,9 +1322,33 @@ fn a_turn_short_of_a_whole_one_by_the_tolerance_is_refused_and_a_nanodegree_more
     let off = rectangle("ssssssss", "xy", [0.0, 5.0], 4.0, 5.0);
     let torus = circles("ssssssss", "xy", &[([2.0, 7.5], 2.5)]);
     let bulge = r#"{"id": "ssssssss", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 10, "construction": false}, {"id": "pa000002", "x": -4, "y": 7, "construction": false}, {"id": "pa000003", "x": 4, "y": 7, "construction": false}], "lines": [{"id": "na000001", "from": "pa000003", "to": "pa000002", "construction": false}], "circles": [], "arcs": [{"id": "aa000001", "center": "pa000001", "start": "pa000002", "end": "pa000003", "construction": false}], "constraints": []}"#.to_owned();
+    // Arcs about the x axis, each closed by its chord, the arc from its start
+    // counter-clockwise to its end:
+    // - below the axis, about (0, −10) from (4, −7) to (−4, −7), through 90° to (0, −5): its
+    //   nearest point 5 away, toward the axis from below (the band at 5);
+    // - wrapping past π, about (0, 10) from (−5, 10) (π) to (4, 7) (5.64 rad, −36.87° a
+    //   turn on), through 3π/2 to (0, 5): its nearest point 5 away (the band at 5; its
+    //   ends at 10 and 7);
+    // - a cap, about (0, 10) from (4, 13) over the top to (−4, 13): its circle's point
+    //   toward the axis, (0, 5), isn't on it, so it's nearest at its ends, 13 away: the
+    //   band is 1e-7 · 180 / (13π · 1e-9) = 440.76 nanodegrees, so 440 short
+    //   (359.99999956°, 13 · 440e-9 · π/180 = 9.9833e-8) is refused, and 1000 short
+    //   (359.999999°, 2.2689e-7) turns (at 5 it would be 8.73e-8, and refused).
+    let arc = |center: [i32; 2], start: [i32; 2], end: [i32; 2]| {
+        format!(
+            r#"{{"id": "ssssssss", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{{"id": "pa000001", "x": {}, "y": {}, "construction": false}}, {{"id": "pa000002", "x": {}, "y": {}, "construction": false}}, {{"id": "pa000003", "x": {}, "y": {}, "construction": false}}], "lines": [{{"id": "na000001", "from": "pa000003", "to": "pa000002", "construction": false}}], "circles": [], "arcs": [{{"id": "aa000001", "center": "pa000001", "start": "pa000002", "end": "pa000003", "construction": false}}], "constraints": []}}"#,
+            center[0], center[1], start[0], start[1], end[0], end[1]
+        )
+    };
+    let below = arc([0, -10], [4, -7], [-4, -7]);
+    let wrapping = arc([0, 10], [-5, 10], [4, 7]);
+    let cap = arc([0, 10], [4, 13], [-4, 13]);
     let cases = [
         (torus, "359.999998855", 5.0, 9.9920e-8, "359.999998854"),
         (bulge, "359.999998855", 5.0, 9.9920e-8, "359.999998854"),
+        (below, "359.999998855", 5.0, 9.9920e-8, "359.999998854"),
+        (wrapping, "359.999998855", 5.0, 9.9920e-8, "359.999998854"),
+        (cap, "359.99999956", 13.0, 9.9833e-8, "359.999999"),
         (
             off.clone(),
             "359.999998855",
