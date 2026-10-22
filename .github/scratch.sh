@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A CI job's test scratch, in memory: `start` makes a directory for the job on the VM's
+# A gate's test scratch, in memory: `start` makes a directory for the job on the VM's
 # tmpfs (/dev/shm) and points TMPDIR and the tests' target/tmp (SILICO_TEST_SCRATCH, which
 # tests/committed-tree.sh links target/tmp to) into it; `end` reports how large it grew and
 # removes it. On the VM's disk, which every runner's builds and tests share, a test's fsync
@@ -19,8 +19,8 @@ warn_kib=$((8 * 1024 * 1024))
 case "${1-}" in
   start)
     # A job whose `end` never ran (its runner died, or it was force-cancelled) leaves its
-    # scratch holding memory: removed here once it's older than any job can last (mutants',
-    # a day), plus an hour.
+    # scratch holding memory: removed here once it's over 25 hours old, far past a gate's
+    # two-hour limit.
     find "$root" -maxdepth 1 -name 'silico-*' -user "$(id -u)" -mmin +1500 \
       -exec rm -rf {} + 2>/dev/null || true
     mkdir -p "$scratch/tmp" "$scratch/target-tmp"
@@ -28,23 +28,17 @@ case "${1-}" in
       echo "TMPDIR=$scratch/tmp"
       echo "SILICO_TEST_SCRATCH=$scratch/target-tmp"
     } >>"$GITHUB_ENV"
-    # Until `end` removes it: its peak size, sampled every 5 s; and, every minute, whatever
-    # tests left behind over an hour ago, which no test still running can be using (a
-    # mutant's tests get 20 minutes), so a long mutants shard's leftovers don't build up in
-    # memory. A write after `end` fails, the directory being gone, and ends the loop.
+    # Its peak size, sampled every 5 s until `end` removes it. What tests leave behind stays
+    # until then (nothing is pruned mid-run: a later test may read what an earlier one
+    # made); a gate's is a few hundred MiB. A write after `end` fails, the directory being
+    # gone, and ends the loop.
     (
       peak=0
-      tick=0
       while [ -d "$scratch" ]; do
         kib=$(du -sk "$scratch" 2>/dev/null | cut -f1) || true
         if [ "${kib:-0}" -gt "$peak" ]; then
           peak=$kib
           echo "$peak" >"$scratch/peak" || exit 0
-        fi
-        tick=$((tick + 1))
-        if [ $((tick % 12)) = 0 ]; then
-          find "$scratch/tmp" "$scratch/target-tmp" -mindepth 1 -maxdepth 1 -mmin +60 \
-            -exec rm -rf {} + 2>/dev/null || true
         fi
         sleep 5
       done

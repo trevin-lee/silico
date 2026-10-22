@@ -106,8 +106,6 @@ jobs:
           fetch-depth: 0
       - name: Toolchains
         run: bash .github/tools.sh
-      - name: Test scratch
-        run: bash .github/scratch.sh start
       - name: Mutants
         env:
           REF: ${{ inputs.ref }}
@@ -172,9 +170,6 @@ jobs:
         with:
           name: mutants-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/out/mutants.out
-      - name: Remove the test scratch
-        if: ${{ always() }}
-        run: bash .github/scratch.sh end
 
   summary:
     needs: [plan, shard]
