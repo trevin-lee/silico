@@ -192,8 +192,8 @@ fn a_right_angle_chamfer_occt_hangs_on_is_refused_or_stopped() {
     // 585.5979126463726 at 90° from its lower-numbered face: on a square edge a right
     // angle never meets the other face, so there's no chamfer to make. OCCT 7.9.3 doesn't
     // say so: it never returns (BRepFilletAPI_MakeChamfer::Build, in ChFi3d_Builder::
-    // PerformIntersectionAtEnd's Newton iteration), nor does FreeCAD 1.1.3's PartDesign
-    // Chamfer on the same box (docs/ports/chamfer.md). The worker it runs in is stopped at
+    // PerformIntersectionAtEnd's Newton iteration), and FreeCAD 1.1.3's PartDesign Chamfer
+    // on the same box hadn't finished after 90 s (docs/ports/chamfer.md). The worker it runs in is stopped at
     // its time limit, so the hang is an error saying what to try, never a hung app.
     // Wanted: a refusal naming Edge9, or the worker stopped, with advice; anything else
     // fails, so a change in OCCT shows here. Found by the box property test below on
@@ -215,12 +215,22 @@ fn a_right_angle_chamfer_occt_hangs_on_is_refused_or_stopped() {
         Err(err) => err,
     };
     if err.code() == ErrorCode::WorkerTimeout {
-        // Stopped at the request's own limit, not the default minute.
-        assert!(started.elapsed() < Duration::from_secs(30), "{err}");
+        // Stopped at the request's own limit, not the default minute, with the advice for a
+        // worker stopped while running it.
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= Duration::from_secs(10) && elapsed < Duration::from_secs(30),
+            "{elapsed:?}: {err}"
+        );
+        assert!(
+            err.suggestion()
+                .is_some_and(|s| s.starts_with("simplify the operation")),
+            "{err}"
+        );
     } else {
         assert_eq!(err.elements(), ["Edge9"], "{err}");
+        assert!(err.suggestion().is_some(), "{err}");
     }
-    assert!(err.suggestion().is_some(), "{err}");
 }
 
 #[test]
@@ -1411,8 +1421,8 @@ proptest! {
         f_ref in fraction(),
         f_other in fraction(),
         // Every angle but 90° (index 7): on a square edge a right angle never meets the
-        // other face, and OCCT can hang on it (`a_right_angle_chamfer_occt_hangs_on_is_
-        // refused_or_stopped`), which only a worker can stop.
+        // other face, and OCCT can hang on it (the right-angle test above), which only a
+        // worker can stop.
         angle in (0usize..13).prop_map(|i| if i < 7 { i } else { i + 1 }),
         flip in any::<bool>(),
     ) {
