@@ -12,7 +12,8 @@ CXXSTDLIB = { value = "c++", force = true }
 # Link Rust binaries (the tests, the workers, the CLI) with mold on Linux, pinned in
 # pixi.toml, the default cc driver still driving it; OCCT's own libraries keep lld
 # (third_party/occt/build.sh). The gate and every mutant relink ~127 test binaries, and
-# mold is several times faster than the default ld. Linux only, by the target triple: macOS
+# mold links faster than rust-lld, Rust's default on Linux since 1.90 (gcc takes the last
+# -fuse-ld it's given, so this one wins). Linux only, by the target triple: macOS
 # keeps Apple's ld (mold has no Mach-O backend). mold is found on the PATH pixi sets, so
 # build on Linux through pixi (`pixi run ...`), as CI does: a bare cargo there can't find
 # mold, and fails to link.
