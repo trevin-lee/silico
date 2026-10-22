@@ -927,3 +927,60 @@ fn a_circle_off_its_outer_circle_s_centre_line_is_a_hole_in_it() {
     assert_eq!(p.regions[0].holes.len(), 1);
     assert!(close(p.regions[0].area(), 99.0 * PI, 1e-12));
 }
+
+/// A closed D: the arc about `center` counter-clockwise from `start` to `end`, and its
+/// chord back. The arc's ID.
+fn d_shape(d: &mut Draw, center: (f64, f64), start: (f64, f64), end: (f64, f64)) -> String {
+    let c = d.point(center.0, center.1);
+    let s = d.point(start.0, start.1);
+    let e = d.point(end.0, end.1);
+    let arc = d.arc(&c, &s, &e);
+    d.line(&e, &s);
+    arc
+}
+
+#[test]
+fn short_arcs_of_crossing_circles_cross_where_both_turn_through_one_crossing() {
+    // Circles r 25 about (0, 0) and r sqrt(325) about (-6, -8), 10 apart: they cross at
+    // (-24, -7) and (0, -25) (each 625 from the first centre squared and 325 from the
+    // second: 18^2 + 1^2, 6^2 + 17^2). Arc A, from (-25, 0) to (-20, -15) (180 to
+    // 216.87 deg), and arc B about (-6, -8), from (-23, -2) to (-24, -9) (160.56 to
+    // 183.18 deg), both turn through (-24, -7) (196.26 deg round A's centre, 176.82 round
+    // B's) and neither through (0, -25). Their ends are 0.63 or more from the other's
+    // circle.
+    let mut d = Draw::new();
+    let a = d_shape(&mut d, (0.0, 0.0), (-25.0, 0.0), (-20.0, -15.0));
+    let b = d_shape(&mut d, (-6.0, -8.0), (-23.0, -2.0), (-24.0, -9.0));
+    let errors = d.refused();
+    assert!(
+        draw::named(&errors).contains(&(
+            format!("arc {a} and arc {b} cross"),
+            vec![a.clone(), b.clone()]
+        )),
+        "{:#?}",
+        draw::named(&errors)
+    );
+}
+
+#[test]
+fn short_arcs_of_crossing_circles_each_through_a_different_crossing_dont_meet() {
+    // The last test's circles and arc A, through (-24, -7) only, and arc B about (-6, -8)
+    // from (-5, -26) to (4, -23) (-86.82 to -56.31 deg), through (0, -25) only (-70.56
+    // deg): neither crossing is on both. Areas by hand, each arc's segment
+    // (r^2 / 2)(theta - sin theta): A's theta between (-25, 0) and (-20, -15), cos 0.8 and
+    // sin 0.6; B's between (1, -18) and (10, -15) from its centre, sin 165 / 325 and
+    // cos 280 / 325.
+    let mut d = Draw::new();
+    d_shape(&mut d, (0.0, 0.0), (-25.0, 0.0), (-20.0, -15.0));
+    d_shape(&mut d, (-6.0, -8.0), (-5.0, -26.0), (4.0, -23.0));
+    let p = d.made();
+    assert_eq!(p.regions.len(), 2, "{p:#?}");
+    let a = libm::atan2(0.6, 0.8);
+    let b = libm::atan2(165.0, 280.0);
+    assert!(close(p.regions[0].area(), 312.5 * (a - 0.6), 1e-12));
+    assert!(close(
+        p.regions[1].area(),
+        162.5 * (b - 165.0 / 325.0),
+        1e-12
+    ));
+}
