@@ -549,49 +549,104 @@ fn a_request_after_advance_never_lands_on_a_killed_worker() {
     // `advance` swept across the moment a superseded request is taken and marked running
     // (every superseded request stopped at once): the next request, for the current
     // generation, never gets the killed worker. (A request superseded before it ran left
-    // its killed worker in place, found by the review.)
+    // its killed worker in place, found by the review.) An `advance` before that moment
+    // supersedes the request unrun, keeping its worker; one after it stops the worker.
     let pool = pool(TEST_WORKER, 1);
     pool.set_stop_after(Duration::ZERO);
     let mut failures = Vec::new();
-    let mut workers = BTreeSet::new();
-    for attempt in 0..300u64 {
+    sweep_across(300, Duration::from_micros(100), |delay| {
         let g = pool.generation().0;
+        let before = pool.pids();
         drop(pool.submit(Generation(g), sleep(200)));
-        spin(Duration::from_micros(attempt % 100));
+        spin(delay);
         pool.advance(Generation(g + 1));
         match outcome(pool.submit(Generation(g + 1), echo(&[1]))) {
             Outcome::Done(Ok(_)) => {}
-            other => failures.push((attempt, format!("{other:?}"))),
+            other => failures.push((delay, format!("{other:?}"))),
         }
-        workers.extend(pool.pids());
-    }
+        if pool.pids() == before {
+            Landed::Before
+        } else {
+            Landed::After
+        }
+    });
     assert!(failures.is_empty(), "{failures:?}");
-    assert!(workers.len() > 1, "no worker was ever stopped");
 }
 
 #[test]
 fn a_worker_killed_as_its_request_ends_is_never_given_another() {
     // `advance` swept across the end of a quick request (every superseded request stopped at
     // once): one that lands after the reply but before the slot is idle kills a worker with
-    // nothing left to do, and the slot must replace it, not give it the next request.
+    // nothing left to do, and the slot must replace it, not give it the next request. An
+    // `advance` while the request runs, up to the slot's being idle, stops its worker; one
+    // after it, the request's result is delivered. (One before the request was taken
+    // supersedes it unrun, which says nothing of that moment.)
     let pool = pool(TEST_WORKER, 1);
     pool.set_stop_after(Duration::ZERO);
     let mut failures = Vec::new();
-    let mut workers = BTreeSet::new();
-    for attempt in 0..600u64 {
+    sweep_across(600, Duration::from_micros(300), |delay| {
         let g = pool.generation().0;
+        let before = pool.pids();
         let first = pool.submit(Generation(g), echo(&[0]));
-        spin(Duration::from_micros(attempt % 300));
+        spin(delay);
         pool.advance(Generation(g + 1));
-        let _ = outcome(first);
+        let delivered = matches!(outcome(first), Outcome::Done(_));
         match outcome(pool.submit(Generation(g + 1), echo(&[1]))) {
             Outcome::Done(Ok(_)) => {}
-            other => failures.push((attempt, format!("{other:?}"))),
+            other => failures.push((delay, format!("{other:?}"))),
         }
-        workers.extend(pool.pids());
-    }
+        if delivered {
+            Landed::After
+        } else if pool.pids() != before {
+            Landed::Before
+        } else {
+            Landed::Neither
+        }
+    });
     assert!(failures.is_empty(), "{failures:?}");
-    assert!(workers.len() > 1, "no worker was ever stopped");
+}
+
+/// Which side of the moment a sweep aims at an attempt's `advance` landed on, as its
+/// outcome shows, if it does.
+enum Landed {
+    Before,
+    After,
+    Neither,
+}
+
+/// Runs `attempt` `attempts` times, with delays from zero across `window`, and again across
+/// a window twice as wide each time until attempts have landed on both sides of the moment
+/// it aims at, so the sweep crossed it.
+///
+/// The moments these tests aim an `advance` at are inside a slot's own thread (between its
+/// marking a request running and checking the generation, or between a reply and the slot
+/// being idle), before the worker has the request or after it has answered, so no signal
+/// from the worker reaches them and the test can't wait on one: only a sweep lands there.
+/// A loaded machine moves the moment later, and the window widens to follow it rather than
+/// ending short of it (a fixed 100 µs fell short of it on a loaded machine). Each wider
+/// pass is sparser; the first keeps the density the moment was found with.
+fn sweep_across(attempts: u32, window: Duration, mut attempt: impl FnMut(Duration) -> Landed) {
+    let start = Instant::now();
+    let mut window = window;
+    let (mut before, mut after) = (0, 0);
+    loop {
+        for i in 0..attempts {
+            match attempt(window * i / attempts) {
+                Landed::Before => before += 1,
+                Landed::After => after += 1,
+                Landed::Neither => {}
+            }
+            assert!(
+                (before > 0 && after > 0) || start.elapsed() < HANG,
+                "the sweep never crossed the moment, with advances up to {window:?} after a \
+                 request: {before} landed before it, {after} after"
+            );
+        }
+        if before > 0 && after > 0 {
+            return;
+        }
+        window *= 2;
+    }
 }
 
 // ---------------------------------------------------------------------------------------
