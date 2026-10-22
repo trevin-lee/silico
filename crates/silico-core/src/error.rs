@@ -90,7 +90,8 @@ error_codes! {
     /// No worker of this build could be had for the request: its executable missing,
     /// unreadable, not runnable, or another build than Silico started with, or its process
     /// ended before its first frame. Silico's install or environment, never the request's or
-    /// the document's: no retry or edit helps until it's fixed, or Silico restarted.
+    /// the document's: no edit helps, and no retry until it's fixed or Silico restarted,
+    /// unless the worker was stopped from outside as it started, as its suggestion then says.
     WorkerUnavailable = "worker_unavailable",
 }
 

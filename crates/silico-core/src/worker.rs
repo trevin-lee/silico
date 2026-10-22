@@ -60,7 +60,7 @@ const LOG_FLUSH_WAIT: Duration = Duration::from_millis(250);
 
 /// How long a worker whose socket closed gets to exit on its own before it's killed, and
 /// how long its log then gets to be read.
-const EXIT_GRACE: Duration = Duration::from_secs(2);
+pub(crate) const EXIT_GRACE: Duration = Duration::from_secs(2);
 /// The least a crashed call waits for its worker to exit, past the call's deadline.
 const MIN_EXIT_GRACE: Duration = Duration::from_millis(100);
 
@@ -799,17 +799,21 @@ impl Worker {
         self.stopped = true;
         // One that ended before its first frame never was a worker of this build: it can't
         // be had (a missing library, an exit at launch), not a crash of one that ran.
-        let code = if self.has_started() {
-            ErrorCode::WorkerCrashed
+        let noun = self.kind.noun();
+        let (code, message) = if self.has_started() {
+            (
+                ErrorCode::WorkerCrashed,
+                format!("the {noun} crashed during {name}"),
+            )
         } else {
-            ErrorCode::WorkerUnavailable
+            (
+                ErrorCode::WorkerUnavailable,
+                format!("the {noun} ended before it started, so it never ran {name}"),
+            )
         };
-        Error::new(
-            code,
-            format!("the {} crashed during {name}", self.kind.noun()),
-        )
-        .with_cause(cause)
-        .with_suggestion(crash_advice(self.kind, status, reached))
+        Error::new(code, message)
+            .with_cause(cause)
+            .with_suggestion(crash_advice(self.kind, status, reached))
     }
 
     /// Waits briefly for a worker whose socket closed to exit, then kills it if needed.

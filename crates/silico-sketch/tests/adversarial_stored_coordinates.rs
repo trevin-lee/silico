@@ -528,6 +528,9 @@ fn a_worker_that_dies_after_its_solve_began_isnt_replaced_out_of_its_stoppers_re
     // impossible chain) while a newer recompute waited. Once a solve has begun, it starts
     // no worker: a dead one fails it as a crash, and the next solve's start replaces it.
     let mut w = SketchWorker::start_worker(Path::new(WORKER)).unwrap();
+    // Solved once first, so it had started: its death is a crash (killed before its first
+    // frame, it would be worker_unavailable).
+    solve(&checked(&small()), &feature(), &mut w).unwrap();
     let stopper = w.stopper().unwrap().unwrap();
     let old = w.pid();
     std::process::Command::new("kill")
