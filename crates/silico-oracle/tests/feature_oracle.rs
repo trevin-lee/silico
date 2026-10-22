@@ -10,11 +10,11 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use silico_oracle::Outcome;
 use silico_oracle::features::{
     self, Cases, Extrusion, FeatureCase, PartDesignFeature, Revolution, RevolutionAxis,
     SketchGeometry, against_expected, compare,
 };
+use silico_oracle::{Outcome, Tolerance};
 
 const CASES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/oracle");
 
@@ -442,6 +442,11 @@ fn every_expected_value_is_checked() {
     let mut near = good.clone();
     near.volume *= 1.0 + 5e-10;
     assert!(against_expected(&case, &Outcome::Built(near)).is_empty());
+    // The center is compared relative to the box's largest side, 10 mm here: 5e-9 off is
+    // within the 1e-9 × 10 allowed, though past 1e-9 itself.
+    let mut near = good.clone();
+    near.center.as_mut().unwrap()[2] += 5e-9;
+    assert!(against_expected(&case, &Outcome::Built(near)).is_empty());
     type Spoil = fn(&mut silico_oracle::Measured);
     let spoils: [(&str, Spoil); 10] = [
         ("volume", |m| m.volume *= 1.0 + 2e-9),
@@ -470,6 +475,45 @@ fn every_expected_value_is_checked() {
     ] {
         assert!(!against_expected(&case, &outcome).is_empty());
     }
+}
+
+#[test]
+fn silicos_kernel_faults_are_lost_and_its_refusals_and_blocks_failed() {
+    // A worker that crashed or hung, or a fault of the kernel's own, never finished the
+    // case: lost, which never agrees with FreeCAD, even with its refusal. A refusal of the
+    // model (a value out of range, the kernel failing on it) is a failure, as FreeCAD's
+    // own refusals are; so is a feature not built for one that failed before it.
+    use silico_core::{Error, ErrorCode};
+    use silico_oracle::features::Ours;
+    for code in [
+        ErrorCode::WorkerCrashed,
+        ErrorCode::WorkerTimeout,
+        ErrorCode::ProtocolError,
+        ErrorCode::ResourceExhausted,
+        ErrorCode::Internal,
+    ] {
+        let outcome = Ours::Failed(Error::new(code, "faulted")).outcome();
+        assert!(matches!(outcome, Outcome::Lost(_)), "{code:?}: {outcome:?}");
+        let refused = Outcome::Failed("refused".to_owned());
+        assert!(!silico_oracle::differences(&outcome, &refused, Tolerance::PLANAR).is_empty());
+    }
+    for code in [
+        ErrorCode::InvalidInput,
+        ErrorCode::KernelFailed,
+        ErrorCode::InvalidResult,
+    ] {
+        let outcome = Ours::Failed(Error::new(code, "refused")).outcome();
+        assert!(
+            matches!(outcome, Outcome::Failed(_)),
+            "{code:?}: {outcome:?}"
+        );
+    }
+    let on = silico_core::document::FeatureId::new("p0000001").unwrap();
+    let outcome = Ours::Blocked(on).outcome();
+    assert!(
+        matches!(&outcome, Outcome::Failed(why) if why.contains("p0000001")),
+        "{outcome:?}"
+    );
 }
 
 #[test]
