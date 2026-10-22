@@ -24,6 +24,11 @@ libboost-headers = "==1.86.0"
 # On macOS, linking uses Apple's ld: lld 21 can't read the macOS 27 SDK.
 [target.linux-64.dependencies]
 lld = "21.*"
+# The Rust link step's linker on Linux only (.cargo/config.toml): the CI gate and every
+# mutant relink ~127 test binaries, and mold does it several times faster than the default
+# ld. The Mac keeps Apple's ld. Pinned, like the rest of the toolchain; linking a binary
+# doesn't change the geometry the stress test checks, so its reference stays byte-identical.
+mold = "2.40.*"
 # Rewrites OCCT's library search path so a cached build is shared between checkouts.
 patchelf = "*"
 # The pool's descriptor tests list a worker's open descriptors (macOS has lsof built in).
