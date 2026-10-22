@@ -1083,3 +1083,59 @@ fn arcs_far_out_whose_circles_but_not_both_arcs_near_each_other_are_apart() {
         assert_eq!(d.made().regions.len(), 2, "{c1:?}");
     }
 }
+
+#[test]
+fn a_hole_whose_probe_ray_passes_a_corner_of_a_hexagon_is_a_hole() {
+    // A regular hexagon of circumradius 10 about the origin, a corner at (10, 0), and a
+    // circle r 2 at its centre. The circle's probe, (2, 0), is level with that corner: its
+    // ray along +x passes through the corner, where two sides meet, one from below and one
+    // above. Counted once (an end on the ray counts as below it), the circle is a hole.
+    // Area by hand: the hexagon's (3 sqrt 3 / 2) 10^2 = 150 sqrt 3, less the circle's 4 pi.
+    let mut d = Draw::new();
+    let h = 5.0 * 3f64.sqrt();
+    d.polygon(&[
+        (10.0, 0.0),
+        (5.0, h),
+        (-5.0, h),
+        (-10.0, 0.0),
+        (-5.0, -h),
+        (5.0, -h),
+    ]);
+    d.circle(0.0, 0.0, 2.0);
+    let p = d.made();
+    assert_eq!(p.regions.len(), 1, "{p:#?}");
+    assert_eq!(p.regions[0].holes.len(), 1);
+    let want = 150.0 * 3f64.sqrt() - 4.0 * PI;
+    assert!(
+        close(p.regions[0].area(), want, 1e-12),
+        "{}",
+        p.regions[0].area()
+    );
+}
+
+#[test]
+fn a_hole_whose_probe_ray_passes_an_l_outlines_inner_corner_is_a_hole() {
+    // An L: (0, 0), (10, 0), (10, 5), (5, 5), (5, 10), (0, 10); its inner corner is (5, 5).
+    // A 2 x 2 square hole drawn from (1, 5): its probe, (1, 5), is level with the inner
+    // corner, so its ray along +x passes through that corner and runs along the side from
+    // (5, 5) to (10, 5), ending on the outer corner (10, 5). Counted once (the side up from
+    // the inner corner), the square is a hole. Area by hand: 10 x 5 + 5 x 5 = 75, less 4.
+    let mut d = Draw::new();
+    d.polygon(&[
+        (0.0, 0.0),
+        (10.0, 0.0),
+        (10.0, 5.0),
+        (5.0, 5.0),
+        (5.0, 10.0),
+        (0.0, 10.0),
+    ]);
+    d.rectangle(1.0, 5.0, 3.0, 7.0);
+    let p = d.made();
+    assert_eq!(p.regions.len(), 1, "{p:#?}");
+    assert_eq!(p.regions[0].holes.len(), 1);
+    assert!(
+        close(p.regions[0].area(), 71.0, 1e-12),
+        "{}",
+        p.regions[0].area()
+    );
+}
