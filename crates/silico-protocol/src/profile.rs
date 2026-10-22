@@ -271,6 +271,29 @@ impl Profile {
             .iter()
             .map(|&p| [dot(sub(p, origin), along), dot(sub(p, origin), side_way)])
             .collect();
+        // And each corner moved onto the plane along its normal, for the touches: they're
+        // the face's, so measured in it. Measured in space, corners within the tolerance of
+        // the plane can be twice that apart along its normal where in the plane they meet
+        // (found by #78's robustness review). A profile drawn in a plane of the axes has a
+        // normal along one exactly, so its corners stay exactly where they are.
+        let on_plane: Vec<[f64; 3]> = points
+            .iter()
+            .map(|&p| sub(p, scale(normal_guess, dot(sub(p, origin), normal_guess))))
+            .collect();
+        // A side apart in space but not in the plane runs along its normal: in the face,
+        // its corners are one.
+        for i in 0..n {
+            if norm(sub(on_plane[(i + 1) % n], on_plane[i])) <= LENGTH_TOLERANCE {
+                return Err(invalid(
+                    "points",
+                    format!(
+                        "corners {} and {} are the same point in the profile's plane: consecutive corners must be more than 1e-7 mm apart in it",
+                        i + 1,
+                        (i + 1) % n + 1
+                    ),
+                ));
+            }
+        }
         // No side may touch another, except a side's neighbours at the corner they share,
         // and those may not fold back along it. Two sides touch where a corner of one is
         // within the tolerance of the other, and cross where each one's ends are surely on
@@ -281,9 +304,9 @@ impl Profile {
         // an end too near the other's line to place have met already, within the tolerance:
         // the distances below find them.
         for i in 0..n {
-            let (a, b) = (points[i], next(i));
-            for (j, &c) in points.iter().enumerate().skip(i + 1) {
-                let d = next(j);
+            let (a, b) = (on_plane[i], on_plane[(i + 1) % n]);
+            for (j, &c) in on_plane.iter().enumerate().skip(i + 1) {
+                let d = on_plane[(j + 1) % n];
                 let touches = if j == i + 1 {
                     // b is c: d mustn't come back onto a–b, nor a onto c–d.
                     point_segment_distance(d, a, b) <= LENGTH_TOLERANCE

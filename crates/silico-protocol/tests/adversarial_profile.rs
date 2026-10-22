@@ -149,9 +149,44 @@ fn a_point_is_left_or_right_of_a_line_only_where_rounding_cant_have_chosen() {
     // it's surely on a side: the line runs down and to the left, so its left is (2, -1)/√5.
     let (c5, c6) = ([73.70000015, 145.7000003], [61.10000015, 120.5000003]);
     assert_eq!(side_of_line(c5, c6, [61.1, 120.5]), 0);
+    // Corner 2, by hand 7e-15 mm off the line: its orientation rounds to -1.1e-13, inside
+    // the bound (4.2e-13) but not 0, so only the bound says it's on the line (#78's tests
+    // review).
+    assert_eq!(side_of_line(c5, c6, [48.5, 95.3]), 0);
     let off = 1e-6 / 5f64.sqrt();
     assert_eq!(side_of_line(c5, c6, [61.1 - 2.0 * off, 120.5 + off]), -1);
     assert_eq!(side_of_line(c5, c6, [61.1 + 2.0 * off, 120.5 - off]), 1);
+}
+
+#[test]
+fn a_profile_crossing_itself_in_its_plane_is_refused_though_its_corners_are_off_it() {
+    // Found by #78's robustness review: crossings are decided in the profile's plane, but
+    // were measured as touches in space, where corners within the tolerance of the plane
+    // can be twice that apart along its normal. Here the side from (500, 1000) comes down
+    // through (500, 0, h), the corner B, onto side D to E along y = 0, and carries on to
+    // (500, -10): in the plane, B is on side D to E (by hand, their x and y), a crossing;
+    // in space it's 2h = 1.2e-7 from it, over the tolerance, D and E being h below it.
+    let h = 6e-8;
+    let refusal = refused(
+        profile(&[
+            [0.0, 0.0, 0.0],
+            [490.0, 0.0, -h],
+            [510.0, 0.0, -h],
+            [1000.0, 0.0, 0.0],
+            [1000.0, 1000.0, 0.0],
+            [500.0, 1000.0, 0.0],
+            [500.0, 0.0, h],
+            [500.0, -10.0, 0.0],
+            [0.0, -10.0, 0.0],
+        ])
+        .check(),
+    );
+    assert_eq!(refusal.parameter, "points");
+    assert!(
+        refusal.message.contains("crosses or touches itself"),
+        "{}",
+        refusal.message
+    );
 }
 
 /// A profile with a notch cut in it at a slant: the first side runs from `a` back along `u`
@@ -199,7 +234,7 @@ fn two_sides_on_one_line_apart_by_more_than_the_tolerance_are_a_profile() {
     assert_eq!(plane.normal, [0.0, 0.0, 1.0]);
     // The same notch at other slants, places, and gaps: sides 1 and 5 are `gap` apart by
     // construction, over the tolerance in every case, so every one is a profile.
-    let mut refused = Vec::new();
+    let mut admitted_not = Vec::new();
     for degrees in [
         0.0,
         7.0,
@@ -222,7 +257,7 @@ fn two_sides_on_one_line_apart_by_more_than_the_tolerance_are_a_profile() {
             for l in [1.0, 28.174456516497354, 500.0] {
                 for gap in [1.5e-7, 2e-7, 3.354101926004954e-7, 1e-6] {
                     if let Err(e) = notched(a, u, l, gap).check() {
-                        refused.push(format!(
+                        admitted_not.push(format!(
                             "{degrees}° at {a:?}, {l} long, {gap:e} apart: {e:?}"
                         ));
                     }
@@ -231,11 +266,63 @@ fn two_sides_on_one_line_apart_by_more_than_the_tolerance_are_a_profile() {
         }
     }
     assert!(
-        refused.is_empty(),
+        admitted_not.is_empty(),
         "{} of 432 refused:\n{}",
-        refused.len(),
-        refused.join("\n")
+        admitted_not.len(),
+        admitted_not.join("\n")
     );
+    // And the same notch with sides 1 and 5 overlapping along the line, or apart by less
+    // than the tolerance, touches itself, wherever it's drawn.
+    for degrees in [0.0, 30.0, 63.434948822922, 121.0] {
+        let t = f64::to_radians(degrees);
+        let u = [libm::cos(t), libm::sin(t)];
+        for a in [[0.0, 0.0], [-997.5, 512.25], [123456.789, -98765.4321]] {
+            for gap in [-1e-6, 5e-8] {
+                let refusal = refused(notched(a, u, 28.174456516497354, gap).check());
+                assert!(
+                    refusal.message.contains("crosses or touches itself"),
+                    "{degrees}° at {a:?}, {gap:e} apart: {}",
+                    refusal.message
+                );
+            }
+        }
+    }
+}
+
+/// A square of side `s` with a spike from its top right corner whose tip, near the middle
+/// of its first side's line, is `off` across it (positive) or short of it (negative).
+fn spiked(at: [f64; 2], s: f64, off: f64) -> Profile {
+    let across = [1.0 / 5f64.sqrt(), -2.0 / 5f64.sqrt()];
+    let p = |x: f64, y: f64| z(at[0] + x, at[1] + y);
+    profile(&[
+        p(0.0, 0.0),
+        p(s, s / 2.0),
+        p(s, s),
+        p(s / 2.0 + off * across[0], s / 4.0 + off * across[1]),
+        p(0.0, s),
+    ])
+}
+
+#[test]
+fn a_spike_across_a_side_by_twice_the_tolerance_is_a_crossing_at_any_size() {
+    // #78's tests review: no test held the orientation bound from being made too lenient.
+    // The spike's tip is 2e-7 mm across side 1 (the line y = x / 2, from (0, 0) to
+    // (s, s / 2)), by hand; it's further than the tolerance from every side, so only the
+    // crossing can refuse it, and sides 3 and 4 both cross side 1. At a side of 1e6 mm the
+    // tip's orientation is within a thousand times the bound: a bound a thousand times
+    // looser lets it through.
+    for (at, s) in [([0.0, 0.0], 1e6), ([0.0, 0.0], 1e3), ([-5e5, -5e5], 1e6)] {
+        let refusal = refused(spiked(at, s, 2e-7).check());
+        assert!(
+            refusal
+                .message
+                .contains("side 1 (corners 1 to 2) meets side 3 (corners 3 to 4)"),
+            "{s} at {at:?}: {}",
+            refusal.message
+        );
+        // Its tip 1e-6 short of the line, nothing crosses.
+        assert!(spiked(at, s, -1e-6).check().is_ok(), "{s} at {at:?}");
+    }
 }
 
 #[test]
