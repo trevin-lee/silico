@@ -14,6 +14,8 @@ mod commands;
 #[path = "common/sketch.rs"]
 mod fixture;
 
+use fixture::{line, point_debug};
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -59,15 +61,6 @@ fn feature() -> FeatureId {
     FeatureId::new(fixture::FEATURE).unwrap()
 }
 
-/// A point's JSON.
-fn point(id: &str, x: f64, y: f64) -> String {
-    format!(r#"{{"id": "{id}", "x": {x:?}, "y": {y:?}, "construction": false}}"#)
-}
-
-fn line(id: &str, from: &str, to: &str) -> String {
-    format!(r#"{{"id": "{id}", "from": "{from}", "to": "{to}", "construction": false}}"#)
-}
-
 /// What a file saved with a solve reads as again, on an engine whose solver gives back what
 /// it's sent: a fixed point has no drift there, and formats to the same bytes.
 fn holds_as_saved(saved: &str) {
@@ -92,9 +85,9 @@ fn holds_as_saved(saved: &str) {
 /// angle from na to nb stored `value` degrees.
 fn reference_angle(cx: f64, cy: f64, value: &str) -> String {
     let points = [
-        point("pa000000", 0.0, 0.0),
-        point("pb000000", 1.0, 0.0),
-        point("pc000000", cx, cy),
+        point_debug("pa000000", 0.0, 0.0),
+        point_debug("pb000000", 1.0, 0.0),
+        point_debug("pc000000", cx, cy),
     ]
     .join(", ");
     let lines = [
@@ -262,9 +255,9 @@ fn radius() -> impl Strategy<Value = f64> {
 /// dimensions on them: a distance, a distance_x, a radius and a diameter.
 fn many_values() -> String {
     let points = [
-        point("p0000001", 0.0, 0.0),
-        point("p0000002", 1.0, 1.0),
-        point("p0000003", 2.0, -3.0),
+        point_debug("p0000001", 0.0, 0.0),
+        point_debug("p0000002", 1.0, 1.0),
+        point_debug("p0000003", 2.0, -3.0),
     ]
     .join(", ");
     let circle = r#"{"id": "c0000001", "center": "p0000001", "radius": 1, "construction": false}"#;
@@ -656,7 +649,7 @@ fn a_cancel_at_the_generations_end_still_stops_the_solve() {
 /// distances between them, each stored 0.
 fn at_the_limit() -> String {
     let points: Vec<String> = (0..512)
-        .map(|i| point(&format!("p{i:07}"), f64::from(i), f64::from(i % 7)))
+        .map(|i| point_debug(&format!("p{i:07}"), f64::from(i), f64::from(i % 7)))
         .collect();
     let constraints: Vec<String> = (0..9000)
         .map(|i| {
@@ -682,7 +675,7 @@ fn a_sketch_drift_lists_five_moved_and_says_more_only_past_five() {
     // names the first five, and says there are more (`, …`) only when there are.
     for n in [5u32, 6] {
         let points: Vec<String> = (0..n)
-            .map(|i| point(&format!("p{i:07}"), f64::from(i), 0.0))
+            .map(|i| point_debug(&format!("p{i:07}"), f64::from(i), 0.0))
             .collect();
         let sketches = FakeSketches::new();
         sketches.answer(move |system| {

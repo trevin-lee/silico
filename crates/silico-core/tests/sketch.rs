@@ -7,7 +7,10 @@
 #[path = "common/sketch.rs"]
 mod fixture;
 
-use fixture::{ARC, CIRCLE, FEATURE, LINE, POINTS, constrained, document, fields, problems};
+use fixture::{
+    ARC, CIRCLE, FEATURE, LINE, POINTS, arc, circle, constrained, document, fields, line, point,
+    problems,
+};
 use proptest::prelude::*;
 use silico_core::document::{
     Coordinate, Direction, ElementId, Form, Operation, Plane, Reference, Sketch, TangentSide, read,
@@ -92,6 +95,22 @@ fn assert_error(error: &Error, parameter: &str, message: &str) {
         "{:?}\nwanted it to start {message:?}",
         error.message()
     );
+}
+
+#[test]
+fn the_base_sketchs_json_is_what_the_builders_write() {
+    // The base sketch's lists are constants, as they're used where a `&str` must be; they're
+    // held here to the builders every other sketch test writes with (the M3 review's QM4:
+    // the builders had been copied, and the copies had drifted apart).
+    let points = [
+        point("pa000000", 0.0, 0.0),
+        point("pb000000", 10.0, 0.0),
+        point("pc000000", 0.0, 10.0),
+    ];
+    assert_eq!(POINTS, points.join(", "));
+    assert_eq!(LINE, line("na000000", "pa000000", "pb000000"));
+    assert_eq!(CIRCLE, circle("ca000000", "pa000000", 5.0));
+    assert_eq!(ARC, arc("aa000000", "pa000000", "pb000000", "pc000000"));
 }
 
 #[test]

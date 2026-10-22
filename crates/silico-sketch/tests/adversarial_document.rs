@@ -4,14 +4,17 @@
 //! where it was found.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "../../silico-core/tests/common/sketch.rs"]
+mod fixture;
 #[path = "common/saves.rs"]
 mod saves;
 
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use fixture::{arc, line, point};
 use proptest::prelude::*;
-use saves::{FEATURE, arc, line, nm, point, solved, text, worker, written_back};
+use saves::{FEATURE, nm, solved, text, worker, written_back};
 use silico_core::ErrorCode;
 use silico_core::document::{Checked, ElementId, Operation, read};
 use silico_core::sketch::{SketchSolution, SketchSolver, SketchWorker, Translation};

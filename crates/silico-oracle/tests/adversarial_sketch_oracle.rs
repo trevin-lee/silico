@@ -4,25 +4,15 @@
 //! worker beside the test binary.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "../../silico-core/tests/common/sketch.rs"]
+mod fixture;
+
+use fixture::{arc, line, point};
 use silico_core::document::{Operation, Sketch, read};
 use silico_core::sketch::{SketchWorker, Translation};
 use silico_oracle::sketch::{
     FreecadSolved, Ours, SketchCase, compare, freecad_sketch, freecad_solve, silico_solve,
 };
-
-fn point(id: &str, x: f64, y: f64) -> String {
-    format!(r#"{{"id": "{id}", "x": {x}, "y": {y}, "construction": false}}"#)
-}
-
-fn line(id: &str, from: &str, to: &str) -> String {
-    format!(r#"{{"id": "{id}", "from": "{from}", "to": "{to}", "construction": false}}"#)
-}
-
-fn arc(id: &str, center: &str, start: &str, end: &str) -> String {
-    format!(
-        r#"{{"id": "{id}", "center": "{center}", "start": "{start}", "end": "{end}", "construction": false}}"#
-    )
-}
 
 fn sketch(points: &[String], lines: &[String], arcs: &[String], constraints: &[String]) -> Sketch {
     let text = format!(

@@ -22,6 +22,37 @@ pub fn fields(points: &str, lines: &str, circles: &str, arcs: &str, constraints:
     )
 }
 
+/// A point's JSON, its coordinates as `{x}` writes a float: the shortest decimal that reads
+/// back exactly, without an exponent (`10`, `0.5`, `0.0000001`). The builders here are every
+/// sketch test's, in every crate (included by `#[path]`), so a sketch's JSON is written one way.
+pub fn point(id: &str, x: f64, y: f64) -> String {
+    format!(r#"{{"id": "{id}", "x": {x}, "y": {y}, "construction": false}}"#)
+}
+
+/// A point's JSON, its coordinates as `{x:?}` writes a float: always with a point or an
+/// exponent (`10.0`, `1e-7`, `5e-324`). The stored-coordinate tests write the values at the
+/// edges of what a file holds this way.
+pub fn point_debug(id: &str, x: f64, y: f64) -> String {
+    format!(r#"{{"id": "{id}", "x": {x:?}, "y": {y:?}, "construction": false}}"#)
+}
+
+/// A line's JSON, from one point to another.
+pub fn line(id: &str, from: &str, to: &str) -> String {
+    format!(r#"{{"id": "{id}", "from": "{from}", "to": "{to}", "construction": false}}"#)
+}
+
+/// A circle's JSON, its radius written as [`point`]'s coordinates are.
+pub fn circle(id: &str, center: &str, radius: f64) -> String {
+    format!(r#"{{"id": "{id}", "center": "{center}", "radius": {radius}, "construction": false}}"#)
+}
+
+/// An arc's JSON, counter-clockwise from `start` to `end` about `center`.
+pub fn arc(id: &str, center: &str, start: &str, end: &str) -> String {
+    format!(
+        r#"{{"id": "{id}", "center": "{center}", "start": "{start}", "end": "{end}", "construction": false}}"#
+    )
+}
+
 /// pa (0, 0), pb (10, 0), pc (0, 10); line na from pa to pb; circle ca about pa, radius 5;
 /// arc aa about pa from pb to pc: the base sketch the gate's tests constrain.
 pub const POINTS: &str = r#"{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 10, "y": 0, "construction": false}, {"id": "pc000000", "x": 0, "y": 10, "construction": false}"#;

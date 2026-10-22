@@ -21,11 +21,14 @@
 //! lever; x_axis has none), a hand calculation.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "../../silico-core/tests/common/sketch.rs"]
+mod fixture;
 #[path = "common/saves.rs"]
 mod saves;
 
+use fixture::{arc, line, point};
 use proptest::prelude::*;
-use saves::{arc, k, line, point, solved, text, worker};
+use saves::{k, solved, text, worker};
 use silico_core::ErrorCode;
 use silico_core::document::{Checked, ElementId};
 use silico_core::sketch::{SketchSolution, SketchWorker};

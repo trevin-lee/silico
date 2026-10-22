@@ -10,6 +10,8 @@ mod fixture;
 #[path = "common/within.rs"]
 mod within;
 
+use fixture::{circle, point};
+
 use std::time::Duration;
 
 use within::within;
@@ -20,14 +22,6 @@ use silico_core::sketch::{SketchSolution, Translation};
 use silico_protocol::{
     Algorithm, PointValues, SketchGeometry, SolveStatus, Solved, SolverConstraint, Tag,
 };
-
-fn point(id: &str, x: f64, y: f64) -> String {
-    format!(r#"{{"id": "{id}", "x": {x}, "y": {y}, "construction": false}}"#)
-}
-
-fn circle(id: &str, center: &str, radius: f64) -> String {
-    format!(r#"{{"id": "{id}", "center": "{center}", "radius": {radius}, "construction": false}}"#)
-}
 
 fn row(id: &str, kind: &str, a: &str, b: &str, value: f64, driving: bool) -> String {
     format!(

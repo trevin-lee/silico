@@ -34,11 +34,14 @@
 //! directions (3, 4, 5) and nanometre values, so the expected answer is a hand calculation.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "../../silico-core/tests/common/sketch.rs"]
+mod fixture;
 #[path = "common/saves.rs"]
 mod saves;
 
+use fixture::{circle, line, point};
 use proptest::prelude::*;
-use saves::{circle, construction_line, k, line, point, solved, text, worker, written_back};
+use saves::{construction_line, k, solved, text, worker, written_back};
 use silico_core::ErrorCode;
 use silico_core::document::{Checked, ElementId};
 use silico_core::sketch::{SketchSolution, SketchSolver, SketchWorker};
