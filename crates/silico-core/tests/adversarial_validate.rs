@@ -795,7 +795,10 @@ fn a_million_features_all_refused_validate_promptly() {
     // each refused three ways (its ID, base consumed, tool missing), named by place.
     // Promptly, as for the valid million below: this thread's CPU time for a million is at
     // most 30 times that for a hundred thousand (about 10), where a refusal quadratic in the
-    // count would be about 100; a ratio, so a loaded machine can't fail it.
+    // count would be about 100; a ratio, so a loaded machine can't fail it. And at most
+    // 7.5 s, against a constant slowdown: half the valid million's bound, as it costs about
+    // half as much (0.78 s against 1.56 s on the Mac, a debug build), so a refusal 10 times
+    // slower fails it.
     let refused = |n: usize| {
         let mut features = vec![feature("aaaaaaaa", "A", unit_box())];
         features.extend((0..n).map(|_| feature("aaaaaaaa", "F", cut("aaaaaaaa", MISSING))));
@@ -816,6 +819,10 @@ fn a_million_features_all_refused_validate_promptly() {
     assert!(
         ratio < 30.0,
         "a million refused features took {ratio:.1} times the CPU of a hundred thousand ({large_cpu:?} against {small_cpu:?})"
+    );
+    assert!(
+        large_cpu <= std::time::Duration::from_millis(7500),
+        "a million refused features took {large_cpu:?} of CPU, more than 7.5 s"
     );
 }
 
@@ -861,7 +868,10 @@ fn a_million_valid_features_validate_promptly() {
     // thousand, one after the other: about 10 by its count, a little more for its sorted
     // maps' depth; a validation quadratic in the count would be about 100. A ratio, so a
     // loaded machine, which stretches both alike, can't fail it (a gate's million once took
-    // 7.3 s of CPU against an absolute 5 s).
+    // 7.3 s of CPU against an absolute 5 s). And at most 15 s of CPU, against a constant
+    // slowdown the ratio can't see: twice the worst seen on CI's overcommitted VM (7.3 s, gate
+    // 39813098861), where the Mac's debug build takes 1.56 s, so a validation 10 times slower
+    // fails it.
     let cpu = |doc: Document| {
         let start = cpu_time::ThreadTime::now();
         let result = validate(&doc);
@@ -875,5 +885,9 @@ fn a_million_valid_features_validate_promptly() {
     assert!(
         ratio < 30.0,
         "a million features took {ratio:.1} times the CPU of a hundred thousand ({large_cpu:?} against {small_cpu:?})"
+    );
+    assert!(
+        large_cpu <= std::time::Duration::from_secs(15),
+        "a million features took {large_cpu:?} of CPU, more than 15 s"
     );
 }
