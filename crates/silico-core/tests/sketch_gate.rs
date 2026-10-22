@@ -547,6 +547,7 @@ fn a_drawn_size_at_most_the_kernels_tolerance_is_refused_and_above_it_admitted()
         "circles.0.radius",
         "circle ca000000's radius is 1e-7 mm: arcs and circles have a radius above 1e-7 mm, as the kernel measures them",
     );
+    assert_eq!(problems(&circle("1e-7"))[0].elements(), ["ca000000"]);
     none(&circle("0.000001"));
 
     // An arc about pa from pb to pc: its start 1e-7 from its center refused, 1.01e-7
@@ -558,11 +559,20 @@ fn a_drawn_size_at_most_the_kernels_tolerance_is_refused_and_above_it_admitted()
         "arcs.0.start",
         "arc aa000000's start, point pb000000 at (1e-7, 0), is 1e-7 mm from its center",
     );
+    // Each names the point, the center, and the arc.
+    assert_eq!(
+        problems(&arc((1e-7, 0.0), far))[0].elements(),
+        ["pb000000", "pa000000", "aa000000"]
+    );
     none(&arc((1.01e-7, 0.0), (0.0, 1.01e-7)));
     only(
         &arc((10.0, 0.0), (0.0, 1e-7)),
         "arcs.0.end",
         "arc aa000000's end, point pc000000 at (0, 1e-7), is 1e-7 mm from its center",
+    );
+    assert_eq!(
+        problems(&arc((10.0, 0.0), (0.0, 1e-7)))[0].elements(),
+        ["pc000000", "pa000000", "aa000000"]
     );
     none(&arc((10.0, 0.0), (0.0, 1.01e-7)));
     // Its chord: from (10, 0) to (10, 1e-8), 1e-8 apart, refused as a circle; to
@@ -572,10 +582,12 @@ fn a_drawn_size_at_most_the_kernels_tolerance_is_refused_and_above_it_admitted()
         "arcs.0.end",
         "arc aa000000's ends, points pb000000 and pc000000, are 1e-8 mm apart: lines and arcs are longer than 1e-7 mm between their ends, as the kernel measures them",
     );
+    let chord = &problems(&arc((10.0, 0.0), (10.0, 1e-8)))[0];
     assert_eq!(
-        problems(&arc((10.0, 0.0), (10.0, 1e-8)))[0].suggestion(),
+        chord.suggestion(),
         Some("draw a circle instead, or open the arc")
     );
+    assert_eq!(chord.elements(), ["pb000000", "pc000000", "aa000000"]);
     none(&arc((10.0, 0.0), (10.0, 1.01e-7)));
 }
 

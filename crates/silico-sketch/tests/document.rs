@@ -720,7 +720,7 @@ impl SketchSolver for Counting {
 }
 
 #[test]
-fn a_solution_that_cant_be_built_is_passed_over_for_the_next_algorithms() {
+fn a_line_collapsed_by_its_constraints_is_passed_over_by_dogleg_and_refused_under_the_floor() {
     // TestCoincidentCommandGui.py's collapsed line: FreeCAD's coincidences make its two ends
     // one, exactly, so no algorithm can build it. In Silico a line's ends are two points
     // (the gate refuses one point twice), and the nearest is both held at (5, 5) by
