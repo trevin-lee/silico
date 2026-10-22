@@ -1,13 +1,12 @@
 //! Running `silico` in the CLI's tests: each run logged at debug (its log kept apart from
-//! the stderr a test checks), given a cache secret made once (so a run makes none, and
-//! writes nothing to disk it must sync, before it rebuilds), and held to a deadline under
+//! the stderr a test checks), its cache given a secret (so a run makes none, and syncs
+//! nothing to disk before it rebuilds), and held to a deadline under
 //! nextest's, after which it's killed and the test is told where its time went: the run's
 //! elapsed time, the longest waits between its log lines, and the log's last lines.
 
 use std::io::Read as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 /// How long one run may take: half of nextest's 120 s, so a run that stalls is told of
@@ -26,20 +25,16 @@ pub struct Finished {
     pub ended: f64,
 }
 
-/// The secret every run's cache is given: 32 random bytes, made once for this process.
-fn secret() -> &'static Path {
-    static SECRET: OnceLock<PathBuf> = OnceLock::new();
-    SECRET.get_or_init(|| {
-        let file = Path::new(env!("CARGO_TARGET_TMPDIR"))
-            .join(format!("cli-cache-secret-{}", std::process::id()));
-        let mut bytes = [0u8; 32];
-        std::fs::File::open("/dev/urandom")
-            .unwrap()
-            .read_exact(&mut bytes)
-            .unwrap();
-        std::fs::write(&file, bytes).unwrap();
-        file
-    })
+/// 32 random bytes, a cache secret, written to `file`: what silico would make, without the
+/// sync it makes it with.
+fn give_secret(file: &Path) {
+    let mut bytes = [0u8; 32];
+    std::fs::File::open("/dev/urandom")
+        .unwrap()
+        .read_exact(&mut bytes)
+        .unwrap();
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(file, bytes).unwrap();
 }
 
 /// Readies `cmd`, a run of `silico`: its cache's secret in place, if it names the cache's
@@ -59,8 +54,7 @@ pub fn ready(cmd: &mut Command) -> bool {
     if let Some((_, Some(home))) = envs.iter().find(|(k, _)| k == "XDG_CACHE_HOME") {
         let file = Path::new(home).join("silico").join("cache-secret");
         if !file.exists() {
-            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-            std::fs::copy(secret(), &file).unwrap();
+            give_secret(&file);
         }
     }
     let value = |key: &str| {
@@ -169,13 +163,18 @@ pub fn diagnosis(f: &Finished) -> String {
         .iter()
         .filter_map(|l| seconds(l).map(|t| (t, l)))
         .collect();
+    // Seconds into the UTC day: a wait across midnight comes out a day short.
+    let since = |later: f64, earlier: f64| (later - earlier).rem_euclid(86_400.0);
     let mut waits: Vec<(f64, &String, &String)> = timed
         .windows(2)
-        .map(|w| (w[1].0 - w[0].0, w[0].1, w[1].1))
+        .map(|w| (since(w[1].0, w[0].0), w[0].1, w[1].1))
         .collect();
     waits.sort_by(|a, b| b.0.total_cmp(&a.0));
     let silent = timed.last().map_or(String::new(), |(t, _)| {
-        format!(", {:.3} s of it since its last log line", f.ended - t)
+        format!(
+            ", {:.3} s of it since its last log line",
+            since(f.ended, *t)
+        )
     });
     let mut text = format!(
         "ran {:?}{silent}{}; {} log lines\nlongest waits:\n",
@@ -212,7 +211,11 @@ pub fn output(mut cmd: Command) -> Output {
         .unwrap();
     let f = finish(child, DEADLINE, split);
     let Some(status) = f.status else {
-        panic!("silico ran past {DEADLINE:?}: {}", diagnosis(&f));
+        panic!(
+            "silico ran past {DEADLINE:?}: {}its stderr:\n{}",
+            diagnosis(&f),
+            f.stderr
+        );
     };
     Output {
         status,
