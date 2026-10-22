@@ -1153,7 +1153,9 @@ impl Translation {
             S::SymmetricLine { a, b, .. } | S::SymmetricPoint { a, b, .. } => {
                 self.apart(self.at(a), self.at(b), Between::Symmetry)?;
             }
-            S::Distance { a, b, .. } if a != b => {
+            // Two different points: the gate refuses a distance of a point from itself, and
+            // a line's length runs from its start to its end.
+            S::Distance { a, b, .. } => {
                 self.apart(self.at(a), self.at(b), Between::Distance)?;
             }
             S::TangentOn { point, b, .. } => {
