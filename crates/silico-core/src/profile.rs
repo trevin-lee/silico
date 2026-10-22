@@ -1219,15 +1219,40 @@ fn foot(p: Xy, q: Xy, c: Xy) -> (f64, Xy, f64) {
     (t, f, distance(f, c))
 }
 
-/// Whether two curves that share no point cross: two segments whose ends are each on
-/// opposite sides of the other's line (as `Profile::check` decides it), or a line or a
+/// Shewchuk's first-stage error bound for an orientation, (3 + 16ε)ε with ε = 2⁻⁵³
+/// ("Adaptive Precision Floating-Point Arithmetic and Fast Robust Geometric Predicates",
+/// 1997, `ccwerrboundA`): an orientation above it times the sum of its two products'
+/// magnitudes has the sign the exact one has.
+const ORIENTATION_BOUND: f64 = (3.0 + 8.0 * f64::EPSILON) * (f64::EPSILON / 2.0);
+
+/// Which side of the line from `a` to `b` `c` is on: 1 left, −1 right, or 0 on it or too
+/// near it for rounding to tell (within about 1e-9 mm of it within reach, and closer
+/// nearer the origin), by [`ORIENTATION_BOUND`].
+fn side(a: Xy, b: Xy, c: Xy) -> i8 {
+    let (left, right) = ((b[0] - a[0]) * (c[1] - a[1]), (b[1] - a[1]) * (c[0] - a[0]));
+    let orientation = left - right;
+    if orientation.abs() <= ORIENTATION_BOUND * (left.abs() + right.abs()) {
+        0
+    } else if orientation > 0.0 {
+        1
+    } else {
+        -1
+    }
+}
+
+/// Whether two curves that share no point cross: two segments whose ends are each surely
+/// on opposite sides of the other's line ([`side`]), or a line or a
 /// circle passing through a circle at a point on both curves. A tangent, which touches
 /// without passing through, is [`between`]'s.
 fn cross_apart(a: &Shape, b: &Shape) -> bool {
     match (*a, *b) {
         (Shape::Line { a: p, b: q }, Shape::Line { a: r, b: s }) => {
-            let orient = |a: Xy, b: Xy, c: Xy| cross(sub(b, a), sub(c, a));
-            orient(p, q, r) * orient(p, q, s) < 0.0 && orient(r, s, p) * orient(r, s, q) < 0.0
+            // Only sides rounding can't have chosen count: the ends of two sides on one
+            // line, apart along it, are on it by rounding only, and their signs are
+            // rounding's. Two that cross with an end too near the other's line to place
+            // have met already: the crossing's stretch to that end passes the other's end
+            // at most that end's distance from it, within the tolerance.
+            side(p, q, r) * side(p, q, s) < 0 && side(r, s, p) * side(r, s, q) < 0
         }
         (Shape::Line { a: p, b: q }, Shape::Round { c, r, arc })
         | (Shape::Round { c, r, arc }, Shape::Line { a: p, b: q }) => {

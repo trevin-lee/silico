@@ -884,3 +884,31 @@ fn an_arc_whose_ends_point_one_way_turning_almost_nothing_is_a_sliver_apart_from
     assert!((perimeter - 1.00004e-7).abs() < 1e-12, "{message}");
     assert_eq!(errors[0].elements(), [a.clone(), back.clone()]);
 }
+
+#[test]
+fn sides_on_one_tilted_line_just_over_the_tolerance_apart_dont_cross() {
+    // Two triangles, each with a side on the line y = 0.8x + 0.9: (3.6, 3.78) to
+    // (6.5, 6.1), and (8.8, 7.94) to (6.50000015, 6.10000012). The sides' near ends are
+    // sqrt(1.5^2 + 1.2^2) e-7 = 1.92e-7 mm apart, more than the tolerance, along the line;
+    // their boxes are within the sweep's 2e-7 margin, so the pair is compared. Every corner
+    // is the decimal nearest the line, so each side's ends are off the other's line by
+    // rounding only. Nothing meets. Areas by hand: the first triangle's side x = 6.5 from
+    // y 4 to 6.1 and apex at x 3.6, |3.6 (6.1 - 4) + 6.5 (4 - 3.78) + 6.5 (3.78 - 6.1)| / 2
+    // = 3.045; the second's side x = 8.8 from y 6 to 7.94 and apex 2.29999985 from it,
+    // 1.94 (2.29999985) / 2 = 2.2309998545.
+    let mut d = Draw::new();
+    d.polygon(&[(3.6, 3.78), (6.5, 6.1), (6.5, 4.0)]);
+    d.polygon(&[(8.8, 7.94), (6.50000015, 6.10000012), (8.8, 6.0)]);
+    let p = d.made();
+    assert_eq!(p.regions.len(), 2, "{p:#?}");
+    assert!(
+        close(p.regions[0].area(), 3.045, 1e-12),
+        "{}",
+        p.regions[0].area()
+    );
+    assert!(
+        close(p.regions[1].area(), 2.2309998545, 1e-12),
+        "{}",
+        p.regions[1].area()
+    );
+}
