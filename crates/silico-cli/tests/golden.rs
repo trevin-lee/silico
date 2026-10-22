@@ -12,6 +12,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};
+#[path = "common/run.rs"]
+mod run;
+
 use std::process::{Command, Output, Stdio};
 
 /// The golden models, by file name.
@@ -55,15 +58,14 @@ fn silico(scratch: &Scratch, args: &[&str], file: &Path) -> Output {
         "{} isn't built: build the workspace (pixi run test does)",
         worker.display()
     );
-    Command::new(exe)
-        .args(args)
+    let mut cmd = Command::new(exe);
+    cmd.args(args)
         .arg(file)
         .env("SILICO_KERNEL_WORKER", &worker)
         .env("XDG_CACHE_HOME", scratch.0.join("cache-home"))
         .env_remove("SILICO_LOG")
-        .stdin(Stdio::null())
-        .output()
-        .unwrap()
+        .stdin(Stdio::null());
+    run::output(cmd)
 }
 
 #[test]

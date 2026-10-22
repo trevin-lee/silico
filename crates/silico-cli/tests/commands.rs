@@ -6,6 +6,9 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+#[path = "common/run.rs"]
+mod run;
+
 use std::process::{Command, Output, Stdio};
 
 const EXAMPLE: &str = r#"{
@@ -63,16 +66,15 @@ fn silico_with(scratch: &Scratch, args: &[&str], file: &Path, sketch_worker: &Pa
         "{} isn't built: build the workspace (pixi run test does)",
         worker.display()
     );
-    Command::new(exe)
-        .args(args)
+    let mut cmd = Command::new(exe);
+    cmd.args(args)
         .arg(file)
         .env("SILICO_KERNEL_WORKER", &worker)
         .env("SILICO_SKETCH_WORKER", sketch_worker)
         .env("XDG_CACHE_HOME", scratch.0.join("cache-home"))
         .env_remove("SILICO_LOG")
-        .stdin(Stdio::null())
-        .output()
-        .unwrap()
+        .stdin(Stdio::null());
+    run::output(cmd)
 }
 
 fn stderr(out: &Output) -> String {
@@ -444,15 +446,14 @@ fn checking_several_files_starts_its_workers_once_whatever_their_directories() {
 fn check_lines(scratch: &Scratch) -> serde_json::Value {
     let bad = scratch.0.join("bad.silico");
     std::fs::write(&bad, EXAMPLE.replace(r#""length": 40"#, r#""length": 0"#)).unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_silico"))
-        .args(["check", "--json", "bad.silico", "missing.silico"])
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_silico"));
+    cmd.args(["check", "--json", "bad.silico", "missing.silico"])
         .current_dir(&scratch.0)
         .env("SILICO_KERNEL_WORKER", "/nonexistent")
         .env("XDG_CACHE_HOME", scratch.0.join("cache-home"))
         .env_remove("SILICO_LOG")
-        .stdin(Stdio::null())
-        .output()
-        .unwrap();
+        .stdin(Stdio::null());
+    let out = run::output(cmd);
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
     let lines: Vec<serde_json::Value> = String::from_utf8(out.stdout)
         .unwrap()
@@ -594,8 +595,8 @@ fn a_sketch_worker_that_cant_be_found_is_exit_2_and_nothing_is_written() {
 /// failing unless it found nothing wrong.
 fn kernel_workers_started(scratch: &Scratch, files: &[PathBuf]) -> usize {
     let exe = Path::new(env!("CARGO_BIN_EXE_silico"));
-    let out = Command::new(exe)
-        .arg("check")
+    let mut cmd = Command::new(exe);
+    cmd.arg("check")
         .args(files)
         .env(
             "SILICO_KERNEL_WORKER",
@@ -607,9 +608,8 @@ fn kernel_workers_started(scratch: &Scratch, files: &[PathBuf]) -> usize {
         )
         .env("XDG_CACHE_HOME", scratch.0.join("cache-home"))
         .env("SILICO_LOG", "silico_core::worker=debug")
-        .stdin(Stdio::null())
-        .output()
-        .unwrap();
+        .stdin(Stdio::null());
+    let out = run::output(cmd);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     stderr(&out).matches("started kernel worker").count()
 }

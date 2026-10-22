@@ -8,12 +8,15 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::ffi::{OsStr, OsString};
+#[path = "common/run.rs"]
+mod run;
+
 use std::io::{Read as _, Write as _};
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const EXAMPLE: &str = r#"{
   "silico": 1,
@@ -82,6 +85,7 @@ fn command(scratch: &Scratch, worker: &Path, args: &[&OsStr]) -> Command {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    run::ready(&mut c);
     c
 }
 
@@ -97,36 +101,18 @@ impl Ran {
     }
 }
 
-/// Waits for `child` up to `deadline`, killing it after: `status` is `None` if it hung.
-fn finish(mut child: Child, deadline: Duration) -> Ran {
-    let mut out = child.stdout.take().unwrap();
-    let mut err = child.stderr.take().unwrap();
-    let out = std::thread::spawn(move || {
-        let mut s = Vec::new();
-        let _ = out.read_to_end(&mut s);
-        s
-    });
-    let err = std::thread::spawn(move || {
-        let mut s = Vec::new();
-        let _ = err.read_to_end(&mut s);
-        s
-    });
-    let start = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break Some(status);
-        }
-        if start.elapsed() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            break None;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
+/// Waits for `child` up to `deadline`, killing it after: `status` is `None` if it hung,
+/// and then its stderr ends with where its time went ([`run::diagnosis`]).
+fn finish(child: Child, deadline: Duration) -> Ran {
+    let f = run::finish(child, deadline, true);
+    let mut stderr = f.stderr.clone();
+    if f.status.is_none() {
+        stderr.push_str(&format!("\n(ran past {deadline:?}) {}", run::diagnosis(&f)));
+    }
     Ran {
-        status,
-        stdout: String::from_utf8_lossy(&out.join().unwrap()).into_owned(),
-        stderr: String::from_utf8_lossy(&err.join().unwrap()).into_owned(),
+        status: f.status,
+        stdout: String::from_utf8_lossy(&f.stdout).into_owned(),
+        stderr,
     }
 }
 
@@ -135,8 +121,12 @@ fn run(scratch: &Scratch, args: &[&OsStr]) -> Ran {
 }
 
 fn run_with(scratch: &Scratch, worker: &Path, args: &[&OsStr]) -> Ran {
-    let child = command(scratch, worker, args).spawn().unwrap();
-    finish(child, Duration::from_secs(120))
+    let out = run::output(command(scratch, worker, args));
+    Ran {
+        status: Some(out.status),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    }
 }
 
 fn os(s: &str) -> &OsStr {
@@ -527,7 +517,7 @@ fn fmt_doesnt_overwrite_an_edit_made_while_it_rebuilt() {
     std::thread::sleep(Duration::from_secs(1));
     let edited = EXAMPLE.replace(r#""length": 40"#, r#""length": 41"#);
     std::fs::write(&file, &edited).unwrap();
-    let out = finish(child, Duration::from_secs(120));
+    let out = finish(child, run::DEADLINE);
     let now = std::fs::read_to_string(&file).unwrap();
     assert!(
         now.contains(r#""length": 41"#),
@@ -547,10 +537,7 @@ fn two_fmts_at_once_leave_one_canonical_file_and_nothing_beside_it() {
     let b = command(&scratch, &worker(), &[os("fmt"), os("part.silico")])
         .spawn()
         .unwrap();
-    let (a, b) = (
-        finish(a, Duration::from_secs(120)),
-        finish(b, Duration::from_secs(120)),
-    );
+    let (a, b) = (finish(a, run::DEADLINE), finish(b, run::DEADLINE));
     // Each writes, or finds the file the other wrote changed under it and leaves it to
     // them (exit 2, saying so), never writing over it: at least one writes.
     let ok_or_left = |out: &Ran| {

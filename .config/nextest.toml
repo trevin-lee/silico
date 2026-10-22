@@ -23,6 +23,11 @@ test-threads = 15
 # never runs beside the others: keep the name.
 [test-groups]
 document-heavy = { max-threads = 1 }
+# The CLI's tests: each runs silico whole (its kernel workers, its cache, a save synced to
+# disk), several times, so at most four run at once: on CI's runners, under eight jobs'
+# load, many at once stalled together past nextest's timeout (2026-10-22, gate logs), with
+# fsyncs there taking up to seconds.
+cli = { max-threads = 4 }
 thread-exhausting = { max-threads = 1 }
 
 [[profile.default.overrides]]
@@ -65,3 +70,8 @@ slow-timeout = { period = "60s", terminate-after = 17 }
 [[profile.default.overrides]]
 filter = 'package(silico-kernel) & binary(=pool_slot_spawn_fails)'
 test-group = 'thread-exhausting'
+
+# The CLI's tests share four threads (the `cli` group above).
+[[profile.default.overrides]]
+filter = 'package(silico-cli)'
+test-group = 'cli'
