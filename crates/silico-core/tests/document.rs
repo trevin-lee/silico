@@ -1293,6 +1293,44 @@ fn a_fingerprint_that_doesnt_fit_is_refused_naming_its_field() {
 }
 
 #[test]
+fn a_refused_numbers_suggestion_says_how_to_write_it() {
+    // Found by M2.6's tests review: no test read these suggestions, so any wording, or
+    // none, passed. The largest values are worked out by hand: i64::MAX nanometres is
+    // 9223372036854.775807 mm, and i128::MAX millionths is
+    // 170141183460469231731687303715884.105727.
+    let cases = [
+        (
+            example_with("\"length\": 40", "\"length\": 0.0000001"),
+            "round it to 6 decimals: lengths are whole nanometres",
+        ),
+        (
+            example_with("\"length\": 40", "\"length\": 9223372036854.775808"),
+            "a length is at most 9223372036854.775807 mm either way",
+        ),
+        (example_with("\"length\": 40", "\"length\": -0"), "write 0"),
+        (
+            fingerprinted(r#""volume": 8000"#, r#""volume": 8000.0000001"#),
+            "round it to 6 decimals",
+        ),
+        (
+            fingerprinted(
+                r#""area": 2800"#,
+                r#""area": 170141183460469231731687303715884.105728"#,
+            ),
+            "a fingerprint's area is at most 170141183460469231731687303715884.105727 either way",
+        ),
+        (
+            fingerprinted(r#""volume": 8000"#, r#""volume": -0"#),
+            "write 0",
+        ),
+    ];
+    for (text, says) in cases {
+        let err = refused(&text);
+        assert_eq!(err.suggestion(), Some(says), "{err}");
+    }
+}
+
+#[test]
 fn the_schema_takes_fingerprints_as_the_reader_does() {
     let validator = &*VALIDATOR;
     let full = fingerprinted("", "");

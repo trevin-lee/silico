@@ -260,6 +260,38 @@ fn a_feature_that_fails_to_build_is_exit_1_for_check_and_fmt_which_still_writes(
 }
 
 #[test]
+fn fmt_check_of_a_feature_that_fails_to_build_writes_nothing_and_is_exit_1() {
+    // Found by M2.9's tests review: no test ran `fmt --check` on a document with a failed
+    // feature. docs/cli.md: --check writes nothing, and a document with problems is exit 1,
+    // whether or not it's in canonical form.
+    let scratch = Scratch::new("failing-check");
+    let file = scratch.file(FAILING);
+    // Not in canonical form (the block has no fingerprint yet): exit 1, saying both.
+    let out = silico(&scratch, &["fmt", "--check"], &file);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(stderr(&out).contains("f0000001"), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("not in canonical form"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), FAILING);
+    // In canonical form, as fmt writes it: still exit 1, for the feature alone.
+    let fmt = silico(&scratch, &["fmt"], &file);
+    assert_eq!(fmt.status.code(), Some(1), "{}", stderr(&fmt));
+    let formatted = std::fs::read_to_string(&file).unwrap();
+    let out = silico(&scratch, &["fmt", "--check"], &file);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(stderr(&out).contains("f0000001"), "{}", stderr(&out));
+    assert!(
+        !stderr(&out).contains("not in canonical form"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), formatted);
+}
+
+#[test]
 fn the_worst_of_several_files_decides_the_exit_whatever_their_order() {
     // Found by the milestone's tests review: the orders tested were all ones a fold that
     // keeps the last file's outcome passes too. A file that can't be read (2), then one

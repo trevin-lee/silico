@@ -474,6 +474,32 @@ fn every_field_of_the_wrong_kind_is_refused_naming_it() {
 }
 
 #[test]
+fn a_refused_angles_suggestion_says_how_to_write_it() {
+    // Found by M2.6's tests review: no test read these suggestions. The largest angle is
+    // worked out by hand: i64::MAX nanodegrees is 9223372036.854775807 degrees.
+    let angle = |value: &str| {
+        constrained(&format!(
+            r#"{{"id": "ka000000", "type": "angle", "a": "na000000", "b": "x_axis", "value": {value}, "driving": true}}"#
+        ))
+    };
+    for (value, says) in [
+        (
+            "0.0000000001",
+            "round it to 9 decimals: angles are whole nanodegrees",
+        ),
+        (
+            "9223372036.854775808",
+            "an angle is at most 9223372036.854775807 degrees either way",
+        ),
+        ("-0", "write 0"),
+    ] {
+        let error = read_error(&angle(value));
+        assert_eq!(error.parameter(), Some("constraints.0.value"), "{error:?}");
+        assert_eq!(error.suggestion(), Some(says), "{value}: {error:?}");
+    }
+}
+
+#[test]
 fn a_constraint_with_another_forms_keys_or_missing_its_own_is_refused() {
     for (constraint, parameter) in [
         // A value on a form with none.
