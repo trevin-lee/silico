@@ -1,0 +1,2223 @@
+{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "features": [
+    {
+      "id": "s0000001",
+      "type": "sketch",
+      "v": 1,
+      "name": "pocket_dimension_plate_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 10, "y": 0, "construction": false},
+        {"id": "p0000003", "x": 10, "y": 10, "construction": false},
+        {"id": "p0000004", "x": 0, "y": 10, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false},
+        {"id": "n0000003", "from": "p0000003", "to": "p0000004", "construction": false},
+        {"id": "n0000004", "from": "p0000004", "to": "p0000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "TestPocket.py testPocketDimensionCase: CreateRectangleSketch((0, 0), (10, 10))."
+    },
+    {
+      "id": "p0000001",
+      "type": "pad",
+      "v": 1,
+      "name": "pocket_dimension_plate",
+      "sketch": "s0000001",
+      "extent": {"type": "one_side", "length": 1, "reversed": true},
+      "note": "testPocketDimensionCase's pad: the 10 by 10 square padded 1, reversed, so z from -1 to 0. Expected: volume 100; faces 6; edges 12; vertices 8; box 0 0 -1 10 10 0; center 5 5 -0.5."
+    },
+    {
+      "id": "s0000002",
+      "type": "sketch",
+      "v": 1,
+      "name": "pocket_dimension_hole_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 2.5, "y": 2.5, "construction": false},
+        {"id": "p0000002", "x": 7.5, "y": 2.5, "construction": false},
+        {"id": "p0000003", "x": 7.5, "y": 7.5, "construction": false},
+        {"id": "p0000004", "x": 2.5, "y": 7.5, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false},
+        {"id": "n0000003", "from": "p0000003", "to": "p0000004", "construction": false},
+        {"id": "n0000004", "from": "p0000004", "to": "p0000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "testPocketDimensionCase: CreateRectangleSketch((2.5, 2.5), (5, 5))."
+    },
+    {
+      "id": "q0000001",
+      "type": "pocket",
+      "v": 1,
+      "name": "pocket_dimension",
+      "base": "p0000001",
+      "sketch": "s0000002",
+      "extent": {"type": "one_side", "length": 1, "reversed": false},
+      "note": "TestPocket.py testPocketDimensionCase: a 5 by 5 square pocketed 1 into the plate, against +Z, through it: 100 - 25 = 75 (FreeCAD asserts 75). A plate with a square hole: 10 faces, 24 edges, 16 vertices. Expected: volume 75; faces 10; edges 24; vertices 16; box 0 0 -1 10 10 0; center 5 5 -0.5."
+    },
+    {
+      "id": "s0000003",
+      "type": "sketch",
+      "v": 1,
+      "name": "pocket_through_all_profile",
+      "plane": "xz",
+      "points": [
+        {"id": "p0000001", "x": 2.5, "y": -0.75, "construction": false},
+        {"id": "p0000002", "x": 7.5, "y": -0.75, "construction": false},
+        {"id": "p0000003", "x": 7.5, "y": -0.25, "construction": false},
+        {"id": "p0000004", "x": 2.5, "y": -0.25, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false},
+        {"id": "n0000003", "from": "p0000003", "to": "p0000004", "construction": false},
+        {"id": "n0000004", "from": "p0000004", "to": "p0000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "TestPocket.py testPocketThroughAllCase: CreateRectangleSketch((2.5, -0.75), (5, 0.5)) on XZ."
+    },
+    {
+      "id": "q0000002",
+      "type": "pocket",
+      "v": 1,
+      "name": "pocket_through_all",
+      "base": "q0000001",
+      "sketch": "s0000003",
+      "extent": {"type": "through_all", "reversed": false},
+      "note": "TestPocket.py testPocketThroughAllCase: a 5 by 0.5 rectangle on XZ pocketed through all, against XZ's normal -Y, so along +Y, through the plate beside the square hole: 75 - 5 x 0.5 x (10 - 5) = 62.5 (FreeCAD asserts 62.5). Expected: volume 62.5; box 0 0 -1 10 10 0; center 5 5 -0.5."
+    },
+    {
+      "id": "s0000004",
+      "type": "sketch",
+      "v": 1,
+      "name": "pad_two_dimensions_cube_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 1, "construction": false},
+        {"id": "p0000002", "x": 1, "y": 1, "construction": false},
+        {"id": "p0000003", "x": 1, "y": 2, "construction": false},
+        {"id": "p0000004", "x": 0, "y": 2, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false},
+        {"id": "n0000003", "from": "p0000003", "to": "p0000004", "construction": false},
+        {"id": "n0000004", "from": "p0000004", "to": "p0000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "TestPad.py testPadTwoDimensionsCase: CreateRectangleSketch((0, 1), (1, 1))."
+    },
+    {
+      "id": "p0000002",
+      "type": "pad",
+      "v": 1,
+      "name": "pad_two_dimensions_cube",
+      "sketch": "s0000004",
+      "extent": {"type": "one_side", "length": 1, "reversed": false},
+      "note": "testPadTwoDimensionsCase's first pad: a unit cube from (0, 1, 0). Expected: volume 1; faces 6; edges 12; vertices 8; box 0 1 0 1 2 1; center 0.5 1.5 0.5."
+    },
+    {
+      "id": "s0000005",
+      "type": "sketch",
+      "v": 1,
+      "name": "pad_two_dimensions_profile",
+      "plane": "xz",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 1, "y": 0, "construction": false},
+        {"id": "p0000003", "x": 1, "y": 1, "construction": false},
+        {"id": "p0000004", "x": 0, "y": 1, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false},
+        {"id": "n0000003", "from": "p0000003", "to": "p0000004", "construction": false},
+        {"id": "n0000004", "from": "p0000004", "to": "p0000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "testPadTwoDimensionsCase: CreateRectangleSketch((0, 0), (1, 1)) on XZ."
+    },
+    {
+      "id": "p0000003",
+      "type": "pad",
+      "v": 1,
+      "name": "pad_two_dimensions",
+      "base": "p0000002",
+      "sketch": "s0000005",
+      "extent": {"type": "two_sides", "length": 2, "length2": 1},
+      "note": "TestPad.py testPadTwoDimensionsCase: a unit square on XZ padded two sides, 2 along XZ's normal -Y and 1 against it (FreeCAD's 1 and 2 reversed), so y from -2 to 1, fused with the cube on its y = 1 face: 1 + 3 = 4 (FreeCAD asserts 4). Unrefined, the cube's sides stay apart from the pad's: 10 faces, 20 edges, 12 vertices. Expected: volume 4; faces 10; edges 20; vertices 12; box 0 -2 0 1 2 1; center 0.5 0 0.5."
+    },
+    {
+      "id": "s0000006",
+      "type": "sketch",
+      "v": 1,
+      "name": "pad_two_lengths_circle_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "c0000001", "center": "p0000001", "radius": 10, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": [],
+      "note": "Pad.cpp TestMidPlaneTwoLength's sketch: a circle of radius 10 at the origin."
+    },
+    {
+      "id": "p0000004",
+      "type": "pad",
+      "v": 1,
+      "name": "pad_two_lengths_circle",
+      "sketch": "s0000006",
+      "extent": {"type": "two_sides", "length": 10, "length2": 20},
+      "note": "tests/src/Mod/PartDesign/App/Pad.cpp TestMidPlaneTwoLength: two sides, 10 along +Z and 20 against: the box FreeCAD asserts, x and y from -10 to 10 and z from -20 to 10, and pi 10^2 30 = 3000 pi. A cylinder: 3 faces, 3 edges, 2 vertices. Expected: volume 9424.77796076938; faces 3; edges 3; vertices 2; box -10 -10 -20 10 10 10; center 0 0 -5."
+    },
+    {
+      "id": "s0000007",
+      "type": "sketch",
+      "v": 1,
+      "name": "slot_plate_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 200, "y": 0, "construction": false},
+        {"id": "p0000003", "x": 67.12797, "y": 80, "construction": false},
+        {"id": "p0000004", "x": 200, "y": 80, "construction": false},
+        {"id": "p0000005", "x": 200, "y": 40, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000002", "from": "p0000001", "to": "p0000003", "construction": false},
+        {"id": "n0000003", "from": "p0000003", "to": "p0000004", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [
+        {"id": "a0000001", "center": "p0000005", "start": "p0000002", "end": "p0000004", "construction": false}
+      ],
+      "constraints": [],
+      "note": "TestSketcherSolver.py CreateSlotPlateSet as its constraints solve it, with its side at 50 degrees: a bottom 200 long from the origin, a side at 50 degrees to it, a top 80 up, and a half circle of radius 40 tangent to both."
+    },
+    {
+      "id": "p0000005",
+      "type": "pad",
+      "v": 1,
+      "name": "slot_plate",
+      "sketch": "s0000007",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "TestPad.py testBoxCase and testSketchOnBasePlane: the slot plate padded 10 (FreeCAD's default length), 6 faces as FreeCAD asserts, and 12 edges and 8 vertices; 10 (16000 - 3200 cot 50 + 800 pi): a trapezoid 80 high with sides 200 and 200 - 80 cot 50, and a half disc of radius 40, the top's corner at 80 cot 50 rounded to the file's nanometre. Expected: volume 158281.55322871835; faces 6; edges 12; vertices 8; box 0 0 0 240 80 10; center 131.74240821419227 37.73810761458308 5.000000000000001."
+    },
+    {
+      "id": "s0000008",
+      "type": "sketch",
+      "v": 1,
+      "name": "unit_square_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 1, "y": 0, "construction": false},
+        {"id": "p0000003", "x": 1, "y": 1, "construction": false},
+        {"id": "p0000004", "x": 0, "y": 1, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false},
+        {"id": "n0000003", "from": "p0000003", "to": "p0000004", "construction": false},
+        {"id": "n0000004", "from": "p0000004", "to": "p0000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "TestTopologicalNamingProblem.py testPartDesignElementMapPad: CreateRectangleSketch((0, 0), (1, 1))."
+    },
+    {
+      "id": "p0000006",
+      "type": "pad",
+      "v": 1,
+      "name": "unit_square_pad",
+      "sketch": "s0000008",
+      "extent": {"type": "one_side", "length": 1, "reversed": false},
+      "note": "testPartDesignElementMapPad: the unit square padded 1: 6 faces, 12 edges, 8 vertices, as FreeCAD's element map counts them. Expected: volume 1; faces 6; edges 12; vertices 8; box 0 0 0 1 1 1; center 0.5 0.5 0.5."
+    },
+    {
+      "id": "b0000001",
+      "type": "box",
+      "v": 1,
+      "name": "pocket_in_box_base",
+      "position": [0, 0, -10],
+      "length": 10,
+      "width": 10,
+      "height": 10,
+      "note": "testPartDesignElementMapPocket's box, FreeCAD's AdditiveBox (10 mm), from z = -10 so its top is the XY plane.",
+      "fingerprint": {"volume": 1000, "area": 600, "bbox": [0, 0, -10, 10, 10, 0], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "s0000009",
+      "type": "sketch",
+      "v": 1,
+      "name": "pocket_in_box_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 1, "y": 1, "construction": false},
+        {"id": "p0000002", "x": 2, "y": 1, "construction": false},
+        {"id": "p0000003", "x": 2, "y": 2, "construction": false},
+        {"id": "p0000004", "x": 1, "y": 2, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false},
+        {"id": "n0000003", "from": "p0000003", "to": "p0000004", "construction": false},
+        {"id": "n0000004", "from": "p0000004", "to": "p0000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "testPartDesignElementMapPocket: CreateRectangleSketch((1, 1), (1, 1)) on the box's top."
+    },
+    {
+      "id": "q0000003",
+      "type": "pocket",
+      "v": 1,
+      "name": "pocket_in_box",
+      "base": "b0000001",
+      "sketch": "s0000009",
+      "extent": {"type": "one_side", "length": 5, "reversed": false},
+      "note": "TestTopologicalNamingProblem.py testPartDesignElementMapPocket: a unit square pocketed 5 into the box from its top: 1000 - 5 = 995, and 11 faces, 24 edges, 16 vertices, as FreeCAD asserts (refined there; nothing merges, so unrefined alike). Expected: volume 995; faces 11; edges 24; vertices 16; box 0 0 -10 10 10 0; center 5.017587939698492 5.017587939698492 -5.0125628140703515."
+    },
+    {
+      "id": "s0000010",
+      "type": "sketch",
+      "v": 1,
+      "name": "groove_control_cylinder_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "c0000001", "center": "p0000001", "radius": 45, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": [],
+      "note": "Revolution.cpp addBaseCylinder: a circle of radius 45 at the origin."
+    },
+    {
+      "id": "p0000007",
+      "type": "pad",
+      "v": 1,
+      "name": "groove_control_cylinder",
+      "sketch": "s0000010",
+      "extent": {"type": "symmetric", "length": 100},
+      "note": "Revolution.cpp addBaseCylinder: the circle padded symmetric 100: pi 45^2 100 = 202500 pi. Expected: volume 636172.512351933; faces 3; edges 3; vertices 2; box -45 -45 -50 45 45 50; center 0 0 0."
+    },
+    {
+      "id": "s0000011",
+      "type": "sketch",
+      "v": 1,
+      "name": "groove_control_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 30, "y": 0, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "c0000001", "center": "p0000001", "radius": 10, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": [],
+      "note": "Revolution.cpp's profile: a circle of radius 10 at (30, 0)."
+    },
+    {
+      "id": "g0000001",
+      "type": "groove",
+      "v": 1,
+      "name": "groove_control",
+      "base": "p0000007",
+      "sketch": "s0000011",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "Revolution.cpp GrooveTwoSidesThroughAll's one-sided control (main's test, in 1.1.3's modes: a whole turn for its through all): the torus 2 pi^2 30 10^2 = 6000 pi^2 cut from the cylinder about its middle: 202500 pi - 6000 pi^2. Expected: volume 576954.885945397; box -45 -45 -50 45 45 50; center 0 0 0."
+    },
+    {
+      "id": "s0000012",
+      "type": "sketch",
+      "v": 1,
+      "name": "rectangle_40_by_20_xy",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 40, "y": 0, "construction": false},
+        {"id": "p0000003", "x": 40, "y": 20, "construction": false},
+        {"id": "p0000004", "x": 0, "y": 20, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false},
+        {"id": "n0000003", "from": "p0000003", "to": "p0000004", "construction": false},
+        {"id": "n0000004", "from": "p0000004", "to": "p0000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "A 40 by 20 rectangle from the origin on XY, which the pads and pockets on XY share."
+    },
+    {
+      "id": "s0000013",
+      "type": "sketch",
+      "v": 1,
+      "name": "rectangle_40_by_20_xz",
+      "plane": "xz",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 40, "y": 0, "construction": false},
+        {"id": "p0000003", "x": 40, "y": 20, "construction": false},
+        {"id": "p0000004", "x": 0, "y": 20, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false},
+        {"id": "n0000003", "from": "p0000003", "to": "p0000004", "construction": false},
+        {"id": "n0000004", "from": "p0000004", "to": "p0000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "A 40 by 20 rectangle from the origin on XZ, which the pads and pockets on XZ share."
+    },
+    {
+      "id": "s0000014",
+      "type": "sketch",
+      "v": 1,
+      "name": "rectangle_40_by_20_yz",
+      "plane": "yz",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 40, "y": 0, "construction": false},
+        {"id": "p0000003", "x": 40, "y": 20, "construction": false},
+        {"id": "p0000004", "x": 0, "y": 20, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false},
+        {"id": "n0000003", "from": "p0000003", "to": "p0000004", "construction": false},
+        {"id": "n0000004", "from": "p0000004", "to": "p0000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "A 40 by 20 rectangle from the origin on YZ, which the pads and pockets on YZ share."
+    },
+    {
+      "id": "p0000008",
+      "type": "pad",
+      "v": 1,
+      "name": "pad_one_side_xy",
+      "sketch": "s0000012",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "The rectangle on XY (normal +Z) padded 10 along the plane's normal: 40 x 20 x 10 = 8000, a block: 6 faces, 12 edges, 8 vertices. Expected: volume 8000; faces 6; edges 12; vertices 8; box 0 0 0 40 20 10; center 20 10 5."
+    },
+    {
+      "id": "p0000009",
+      "type": "pad",
+      "v": 1,
+      "name": "pad_one_side_reversed_xy",
+      "sketch": "s0000012",
+      "extent": {"type": "one_side", "length": 10, "reversed": true},
+      "note": "The rectangle on XY (normal +Z) padded 10 against the plane's normal (reversed): 40 x 20 x 10 = 8000, a block: 6 faces, 12 edges, 8 vertices. Expected: volume 8000; faces 6; edges 12; vertices 8; box 0 0 -10 40 20 0; center 20 10 -5."
+    },
+    {
+      "id": "p0000010",
+      "type": "pad",
+      "v": 1,
+      "name": "pad_symmetric_xy",
+      "sketch": "s0000012",
+      "extent": {"type": "symmetric", "length": 10},
+      "note": "The rectangle on XY (normal +Z) padded symmetric 10: 5 each way: 40 x 20 x 10 = 8000, a block: 6 faces, 12 edges, 8 vertices. Expected: volume 8000; faces 6; edges 12; vertices 8; box 0 0 -5 40 20 5; center 20 10 0."
+    },
+    {
+      "id": "p0000011",
+      "type": "pad",
+      "v": 1,
+      "name": "pad_two_sides_xy",
+      "sketch": "s0000012",
+      "extent": {"type": "two_sides", "length": 10, "length2": 5},
+      "note": "The rectangle on XY (normal +Z) padded two sides, 10 along the normal and 5 against: from -5 to 10: 40 x 20 x 15 = 12000, a block: 6 faces, 12 edges, 8 vertices. Expected: volume 12000; faces 6; edges 12; vertices 8; box 0 0 -5 40 20 10; center 20 10 2.5."
+    },
+    {
+      "id": "p0000012",
+      "type": "pad",
+      "v": 1,
+      "name": "pad_one_side_xz",
+      "sketch": "s0000013",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "The rectangle on XZ (normal -Y) padded 10 along the plane's normal: 40 x 20 x 10 = 8000, a block: 6 faces, 12 edges, 8 vertices. Expected: volume 8000; faces 6; edges 12; vertices 8; box 0 -10 0 40 0 20; center 20 -5 10."
+    },
+    {
+      "id": "p0000013",
+      "type": "pad",
+      "v": 1,
+      "name": "pad_one_side_reversed_xz",
+      "sketch": "s0000013",
+      "extent": {"type": "one_side", "length": 10, "reversed": true},
+      "note": "The rectangle on XZ (normal -Y) padded 10 against the plane's normal (reversed): 40 x 20 x 10 = 8000, a block: 6 faces, 12 edges, 8 vertices. Expected: volume 8000; faces 6; edges 12; vertices 8; box 0 0 0 40 10 20; center 20 5 10."
+    },
+    {
+      "id": "p0000014",
+      "type": "pad",
+      "v": 1,
+      "name": "pad_symmetric_xz",
+      "sketch": "s0000013",
+      "extent": {"type": "symmetric", "length": 10},
+      "note": "The rectangle on XZ (normal -Y) padded symmetric 10: 5 each way: 40 x 20 x 10 = 8000, a block: 6 faces, 12 edges, 8 vertices. Expected: volume 8000; faces 6; edges 12; vertices 8; box 0 -5 0 40 5 20; center 20 0 10."
+    },
+    {
+      "id": "p0000015",
+      "type": "pad",
+      "v": 1,
+      "name": "pad_two_sides_xz",
+      "sketch": "s0000013",
+      "extent": {"type": "two_sides", "length": 10, "length2": 5},
+      "note": "The rectangle on XZ (normal -Y) padded two sides, 10 along the normal and 5 against: from -5 to 10: 40 x 20 x 15 = 12000, a block: 6 faces, 12 edges, 8 vertices. Expected: volume 12000; faces 6; edges 12; vertices 8; box 0 -10 0 40 5 20; center 20 -2.5 10."
+    },
+    {
+      "id": "p0000016",
+      "type": "pad",
+      "v": 1,
+      "name": "pad_one_side_yz",
+      "sketch": "s0000014",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "The rectangle on YZ (normal +X) padded 10 along the plane's normal: 40 x 20 x 10 = 8000, a block: 6 faces, 12 edges, 8 vertices. Expected: volume 8000; faces 6; edges 12; vertices 8; box 0 0 0 10 40 20; center 5 20 10."
+    },
+    {
+      "id": "p0000017",
+      "type": "pad",
+      "v": 1,
+      "name": "pad_one_side_reversed_yz",
+      "sketch": "s0000014",
+      "extent": {"type": "one_side", "length": 10, "reversed": true},
+      "note": "The rectangle on YZ (normal +X) padded 10 against the plane's normal (reversed): 40 x 20 x 10 = 8000, a block: 6 faces, 12 edges, 8 vertices. Expected: volume 8000; faces 6; edges 12; vertices 8; box -10 0 0 0 40 20; center -5 20 10."
+    },
+    {
+      "id": "p0000018",
+      "type": "pad",
+      "v": 1,
+      "name": "pad_symmetric_yz",
+      "sketch": "s0000014",
+      "extent": {"type": "symmetric", "length": 10},
+      "note": "The rectangle on YZ (normal +X) padded symmetric 10: 5 each way: 40 x 20 x 10 = 8000, a block: 6 faces, 12 edges, 8 vertices. Expected: volume 8000; faces 6; edges 12; vertices 8; box -5 0 0 5 40 20; center 0 20 10."
+    },
+    {
+      "id": "p0000019",
+      "type": "pad",
+      "v": 1,
+      "name": "pad_two_sides_yz",
+      "sketch": "s0000014",
+      "extent": {"type": "two_sides", "length": 10, "length2": 5},
+      "note": "The rectangle on YZ (normal +X) padded two sides, 10 along the normal and 5 against: from -5 to 10: 40 x 20 x 15 = 12000, a block: 6 faces, 12 edges, 8 vertices. Expected: volume 12000; faces 6; edges 12; vertices 8; box -5 0 0 10 40 20; center 2.5 20 10."
+    },
+    {
+      "id": "b0000002",
+      "type": "box",
+      "v": 1,
+      "name": "pocket_one_side_xy_block",
+      "position": [-50, -50, -30],
+      "length": 70,
+      "width": 100,
+      "height": 60,
+      "note": "A block from -50 to 20 along XY's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on XY runs out through its side at x = 20.",
+      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-50, -50, -30, 20, 50, 30], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "q0000004",
+      "type": "pocket",
+      "v": 1,
+      "name": "pocket_one_side_xy",
+      "base": "b0000002",
+      "sketch": "s0000012",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "The rectangle on XY (normal +Z) pocketed 10 against the plane's normal; the block's part of it is 20 x 20 x 10: 420000 - 4000; a notch open at the side, its mouth a hole in that face: 11 faces, 24 edges, 16 vertices. Expected: volume 416000; faces 11; edges 24; vertices 16; box -50 -50 -30 20 50 30; center -15.240384615384615 -0.09615384615384616 0.04807692307692308."
+    },
+    {
+      "id": "b0000003",
+      "type": "box",
+      "v": 1,
+      "name": "pocket_one_side_reversed_xy_block",
+      "position": [-50, -50, -30],
+      "length": 70,
+      "width": 100,
+      "height": 60,
+      "note": "A block from -50 to 20 along XY's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on XY runs out through its side at x = 20.",
+      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-50, -50, -30, 20, 50, 30], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "q0000005",
+      "type": "pocket",
+      "v": 1,
+      "name": "pocket_one_side_reversed_xy",
+      "base": "b0000003",
+      "sketch": "s0000012",
+      "extent": {"type": "one_side", "length": 10, "reversed": true},
+      "note": "The rectangle on XY (normal +Z) pocketed 10 along the normal (reversed); the block's part of it is 20 x 20 x 10: 420000 - 4000; a notch open at the side, its mouth a hole in that face: 11 faces, 24 edges, 16 vertices. Expected: volume 416000; faces 11; edges 24; vertices 16; box -50 -50 -30 20 50 30; center -15.240384615384615 -0.09615384615384616 -0.04807692307692308."
+    },
+    {
+      "id": "b0000004",
+      "type": "box",
+      "v": 1,
+      "name": "pocket_symmetric_xy_block",
+      "position": [-50, -50, -30],
+      "length": 70,
+      "width": 100,
+      "height": 60,
+      "note": "A block from -50 to 20 along XY's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on XY runs out through its side at x = 20.",
+      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-50, -50, -30, 20, 50, 30], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "q0000006",
+      "type": "pocket",
+      "v": 1,
+      "name": "pocket_symmetric_xy",
+      "base": "b0000004",
+      "sketch": "s0000012",
+      "extent": {"type": "symmetric", "length": 10},
+      "note": "The rectangle on XY (normal +Z) pocketed symmetric 10: 5 each way; the block's part of it is 20 x 20 x 10: 420000 - 4000; a notch open at the side, its mouth a hole in that face: 11 faces, 24 edges, 16 vertices. Expected: volume 416000; faces 11; edges 24; vertices 16; box -50 -50 -30 20 50 30; center -15.240384615384615 -0.09615384615384616 0."
+    },
+    {
+      "id": "b0000005",
+      "type": "box",
+      "v": 1,
+      "name": "pocket_two_sides_xy_block",
+      "position": [-50, -50, -30],
+      "length": 70,
+      "width": 100,
+      "height": 60,
+      "note": "A block from -50 to 20 along XY's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on XY runs out through its side at x = 20.",
+      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-50, -50, -30, 20, 50, 30], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "q0000007",
+      "type": "pocket",
+      "v": 1,
+      "name": "pocket_two_sides_xy",
+      "base": "b0000005",
+      "sketch": "s0000012",
+      "extent": {"type": "two_sides", "length": 10, "length2": 5},
+      "note": "The rectangle on XY (normal +Z) pocketed two sides, 10 against the normal and 5 along it: from -10 to 5 along the normal; the block's part of it is 20 x 20 x 15: 420000 - 6000; a notch open at the side, its mouth a hole in that face: 11 faces, 24 edges, 16 vertices. Expected: volume 414000; faces 11; edges 24; vertices 16; box -50 -50 -30 20 50 30; center -15.36231884057971 -0.14492753623188406 0.036231884057971016."
+    },
+    {
+      "id": "b0000006",
+      "type": "box",
+      "v": 1,
+      "name": "pocket_through_all_xy_block",
+      "position": [-50, -50, -30],
+      "length": 70,
+      "width": 100,
+      "height": 60,
+      "note": "A block from -50 to 20 along XY's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on XY runs out through its side at x = 20.",
+      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-50, -50, -30, 20, 50, 30], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "q0000008",
+      "type": "pocket",
+      "v": 1,
+      "name": "pocket_through_all_xy",
+      "base": "b0000006",
+      "sketch": "s0000012",
+      "extent": {"type": "through_all", "reversed": false},
+      "note": "The rectangle on XY (normal +Z) pocketed through all against the normal, to the block's face 30 away; the block's part of it is 20 x 20 x 30: 420000 - 12000; a notch open at the side and at the face it reaches: 10 faces, 24 edges, 16 vertices. Expected: volume 408000; faces 10; edges 24; vertices 16; box -50 -50 -30 20 50 30; center -15.735294117647058 -0.29411764705882354 0.4411764705882353."
+    },
+    {
+      "id": "b0000007",
+      "type": "box",
+      "v": 1,
+      "name": "pocket_through_all_reversed_xy_block",
+      "position": [-50, -50, -30],
+      "length": 70,
+      "width": 100,
+      "height": 60,
+      "note": "A block from -50 to 20 along XY's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on XY runs out through its side at x = 20.",
+      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-50, -50, -30, 20, 50, 30], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "q0000009",
+      "type": "pocket",
+      "v": 1,
+      "name": "pocket_through_all_reversed_xy",
+      "base": "b0000007",
+      "sketch": "s0000012",
+      "extent": {"type": "through_all", "reversed": true},
+      "note": "The rectangle on XY (normal +Z) pocketed through all along the normal (reversed), to the block's face 30 away; the block's part of it is 20 x 20 x 30: 420000 - 12000; a notch open at the side and at the face it reaches: 10 faces, 24 edges, 16 vertices. Expected: volume 408000; faces 10; edges 24; vertices 16; box -50 -50 -30 20 50 30; center -15.735294117647058 -0.29411764705882354 -0.4411764705882353."
+    },
+    {
+      "id": "b0000008",
+      "type": "box",
+      "v": 1,
+      "name": "pocket_one_side_xz_block",
+      "position": [-50, -30, -50],
+      "length": 70,
+      "width": 60,
+      "height": 100,
+      "note": "A block from -50 to 20 along XZ's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on XZ runs out through its side at x = 20.",
+      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-50, -30, -50, 20, 30, 50], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "q0000010",
+      "type": "pocket",
+      "v": 1,
+      "name": "pocket_one_side_xz",
+      "base": "b0000008",
+      "sketch": "s0000013",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "The rectangle on XZ (normal -Y) pocketed 10 against the plane's normal; the block's part of it is 20 x 20 x 10: 420000 - 4000; a notch open at the side, its mouth a hole in that face: 11 faces, 24 edges, 16 vertices. Expected: volume 416000; faces 11; edges 24; vertices 16; box -50 -30 -50 20 30 50; center -15.240384615384615 -0.04807692307692308 -0.09615384615384616."
+    },
+    {
+      "id": "b0000009",
+      "type": "box",
+      "v": 1,
+      "name": "pocket_one_side_reversed_xz_block",
+      "position": [-50, -30, -50],
+      "length": 70,
+      "width": 60,
+      "height": 100,
+      "note": "A block from -50 to 20 along XZ's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on XZ runs out through its side at x = 20.",
+      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-50, -30, -50, 20, 30, 50], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "q0000011",
+      "type": "pocket",
+      "v": 1,
+      "name": "pocket_one_side_reversed_xz",
+      "base": "b0000009",
+      "sketch": "s0000013",
+      "extent": {"type": "one_side", "length": 10, "reversed": true},
+      "note": "The rectangle on XZ (normal -Y) pocketed 10 along the normal (reversed); the block's part of it is 20 x 20 x 10: 420000 - 4000; a notch open at the side, its mouth a hole in that face: 11 faces, 24 edges, 16 vertices. Expected: volume 416000; faces 11; edges 24; vertices 16; box -50 -30 -50 20 30 50; center -15.240384615384615 0.04807692307692308 -0.09615384615384616."
+    },
+    {
+      "id": "b0000010",
+      "type": "box",
+      "v": 1,
+      "name": "pocket_symmetric_xz_block",
+      "position": [-50, -30, -50],
+      "length": 70,
+      "width": 60,
+      "height": 100,
+      "note": "A block from -50 to 20 along XZ's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on XZ runs out through its side at x = 20.",
+      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-50, -30, -50, 20, 30, 50], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "q0000012",
+      "type": "pocket",
+      "v": 1,
+      "name": "pocket_symmetric_xz",
+      "base": "b0000010",
+      "sketch": "s0000013",
+      "extent": {"type": "symmetric", "length": 10},
+      "note": "The rectangle on XZ (normal -Y) pocketed symmetric 10: 5 each way; the block's part of it is 20 x 20 x 10: 420000 - 4000; a notch open at the side, its mouth a hole in that face: 11 faces, 24 edges, 16 vertices. Expected: volume 416000; faces 11; edges 24; vertices 16; box -50 -30 -50 20 30 50; center -15.240384615384615 0 -0.09615384615384616."
+    },
+    {
+      "id": "b0000011",
+      "type": "box",
+      "v": 1,
+      "name": "pocket_two_sides_xz_block",
+      "position": [-50, -30, -50],
+      "length": 70,
+      "width": 60,
+      "height": 100,
+      "note": "A block from -50 to 20 along XZ's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on XZ runs out through its side at x = 20.",
+      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-50, -30, -50, 20, 30, 50], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "q0000013",
+      "type": "pocket",
+      "v": 1,
+      "name": "pocket_two_sides_xz",
+      "base": "b0000011",
+      "sketch": "s0000013",
+      "extent": {"type": "two_sides", "length": 10, "length2": 5},
+      "note": "The rectangle on XZ (normal -Y) pocketed two sides, 10 against the normal and 5 along it: from -10 to 5 along the normal; the block's part of it is 20 x 20 x 15: 420000 - 6000; a notch open at the side, its mouth a hole in that face: 11 faces, 24 edges, 16 vertices. Expected: volume 414000; faces 11; edges 24; vertices 16; box -50 -30 -50 20 30 50; center -15.36231884057971 -0.036231884057971016 -0.14492753623188406."
+    },
+    {
+      "id": "b0000012",
+      "type": "box",
+      "v": 1,
+      "name": "pocket_through_all_xz_block",
+      "position": [-50, -30, -50],
+      "length": 70,
+      "width": 60,
+      "height": 100,
+      "note": "A block from -50 to 20 along XZ's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on XZ runs out through its side at x = 20.",
+      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-50, -30, -50, 20, 30, 50], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "q0000014",
+      "type": "pocket",
+      "v": 1,
+      "name": "pocket_through_all_xz",
+      "base": "b0000012",
+      "sketch": "s0000013",
+      "extent": {"type": "through_all", "reversed": false},
+      "note": "The rectangle on XZ (normal -Y) pocketed through all against the normal, to the block's face 30 away; the block's part of it is 20 x 20 x 30: 420000 - 12000; a notch open at the side and at the face it reaches: 10 faces, 24 edges, 16 vertices. Expected: volume 408000; faces 10; edges 24; vertices 16; box -50 -30 -50 20 30 50; center -15.735294117647058 -0.4411764705882353 -0.29411764705882354."
+    },
+    {
+      "id": "b0000013",
+      "type": "box",
+      "v": 1,
+      "name": "pocket_through_all_reversed_xz_block",
+      "position": [-50, -30, -50],
+      "length": 70,
+      "width": 60,
+      "height": 100,
+      "note": "A block from -50 to 20 along XZ's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on XZ runs out through its side at x = 20.",
+      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-50, -30, -50, 20, 30, 50], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "q0000015",
+      "type": "pocket",
+      "v": 1,
+      "name": "pocket_through_all_reversed_xz",
+      "base": "b0000013",
+      "sketch": "s0000013",
+      "extent": {"type": "through_all", "reversed": true},
+      "note": "The rectangle on XZ (normal -Y) pocketed through all along the normal (reversed), to the block's face 30 away; the block's part of it is 20 x 20 x 30: 420000 - 12000; a notch open at the side and at the face it reaches: 10 faces, 24 edges, 16 vertices. Expected: volume 408000; faces 10; edges 24; vertices 16; box -50 -30 -50 20 30 50; center -15.735294117647058 0.4411764705882353 -0.29411764705882354."
+    },
+    {
+      "id": "b0000014",
+      "type": "box",
+      "v": 1,
+      "name": "pocket_one_side_yz_block",
+      "position": [-30, -50, -50],
+      "length": 60,
+      "width": 70,
+      "height": 100,
+      "note": "A block from -50 to 20 along YZ's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on YZ runs out through its side at x = 20.",
+      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-30, -50, -50, 30, 20, 50], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "q0000016",
+      "type": "pocket",
+      "v": 1,
+      "name": "pocket_one_side_yz",
+      "base": "b0000014",
+      "sketch": "s0000014",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "The rectangle on YZ (normal +X) pocketed 10 against the plane's normal; the block's part of it is 20 x 20 x 10: 420000 - 4000; a notch open at the side, its mouth a hole in that face: 11 faces, 24 edges, 16 vertices. Expected: volume 416000; faces 11; edges 24; vertices 16; box -30 -50 -50 30 20 50; center 0.04807692307692308 -15.240384615384615 -0.09615384615384616."
+    },
+    {
+      "id": "b0000015",
+      "type": "box",
+      "v": 1,
+      "name": "pocket_one_side_reversed_yz_block",
+      "position": [-30, -50, -50],
+      "length": 60,
+      "width": 70,
+      "height": 100,
+      "note": "A block from -50 to 20 along YZ's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on YZ runs out through its side at x = 20.",
+      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-30, -50, -50, 30, 20, 50], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "q0000017",
+      "type": "pocket",
+      "v": 1,
+      "name": "pocket_one_side_reversed_yz",
+      "base": "b0000015",
+      "sketch": "s0000014",
+      "extent": {"type": "one_side", "length": 10, "reversed": true},
+      "note": "The rectangle on YZ (normal +X) pocketed 10 along the normal (reversed); the block's part of it is 20 x 20 x 10: 420000 - 4000; a notch open at the side, its mouth a hole in that face: 11 faces, 24 edges, 16 vertices. Expected: volume 416000; faces 11; edges 24; vertices 16; box -30 -50 -50 30 20 50; center -0.04807692307692308 -15.240384615384615 -0.09615384615384616."
+    },
+    {
+      "id": "b0000016",
+      "type": "box",
+      "v": 1,
+      "name": "pocket_symmetric_yz_block",
+      "position": [-30, -50, -50],
+      "length": 60,
+      "width": 70,
+      "height": 100,
+      "note": "A block from -50 to 20 along YZ's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on YZ runs out through its side at x = 20.",
+      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-30, -50, -50, 30, 20, 50], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "q0000018",
+      "type": "pocket",
+      "v": 1,
+      "name": "pocket_symmetric_yz",
+      "base": "b0000016",
+      "sketch": "s0000014",
+      "extent": {"type": "symmetric", "length": 10},
+      "note": "The rectangle on YZ (normal +X) pocketed symmetric 10: 5 each way; the block's part of it is 20 x 20 x 10: 420000 - 4000; a notch open at the side, its mouth a hole in that face: 11 faces, 24 edges, 16 vertices. Expected: volume 416000; faces 11; edges 24; vertices 16; box -30 -50 -50 30 20 50; center 0 -15.240384615384615 -0.09615384615384616."
+    },
+    {
+      "id": "b0000017",
+      "type": "box",
+      "v": 1,
+      "name": "pocket_two_sides_yz_block",
+      "position": [-30, -50, -50],
+      "length": 60,
+      "width": 70,
+      "height": 100,
+      "note": "A block from -50 to 20 along YZ's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on YZ runs out through its side at x = 20.",
+      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-30, -50, -50, 30, 20, 50], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "q0000019",
+      "type": "pocket",
+      "v": 1,
+      "name": "pocket_two_sides_yz",
+      "base": "b0000017",
+      "sketch": "s0000014",
+      "extent": {"type": "two_sides", "length": 10, "length2": 5},
+      "note": "The rectangle on YZ (normal +X) pocketed two sides, 10 against the normal and 5 along it: from -10 to 5 along the normal; the block's part of it is 20 x 20 x 15: 420000 - 6000; a notch open at the side, its mouth a hole in that face: 11 faces, 24 edges, 16 vertices. Expected: volume 414000; faces 11; edges 24; vertices 16; box -30 -50 -50 30 20 50; center 0.036231884057971016 -15.36231884057971 -0.14492753623188406."
+    },
+    {
+      "id": "b0000018",
+      "type": "box",
+      "v": 1,
+      "name": "pocket_through_all_yz_block",
+      "position": [-30, -50, -50],
+      "length": 60,
+      "width": 70,
+      "height": 100,
+      "note": "A block from -50 to 20 along YZ's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on YZ runs out through its side at x = 20.",
+      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-30, -50, -50, 30, 20, 50], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "q0000020",
+      "type": "pocket",
+      "v": 1,
+      "name": "pocket_through_all_yz",
+      "base": "b0000018",
+      "sketch": "s0000014",
+      "extent": {"type": "through_all", "reversed": false},
+      "note": "The rectangle on YZ (normal +X) pocketed through all against the normal, to the block's face 30 away; the block's part of it is 20 x 20 x 30: 420000 - 12000; a notch open at the side and at the face it reaches: 10 faces, 24 edges, 16 vertices. Expected: volume 408000; faces 10; edges 24; vertices 16; box -30 -50 -50 30 20 50; center 0.4411764705882353 -15.735294117647058 -0.29411764705882354."
+    },
+    {
+      "id": "b0000019",
+      "type": "box",
+      "v": 1,
+      "name": "pocket_through_all_reversed_yz_block",
+      "position": [-30, -50, -50],
+      "length": 60,
+      "width": 70,
+      "height": 100,
+      "note": "A block from -50 to 20 along YZ's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on YZ runs out through its side at x = 20.",
+      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-30, -50, -50, 30, 20, 50], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "q0000021",
+      "type": "pocket",
+      "v": 1,
+      "name": "pocket_through_all_reversed_yz",
+      "base": "b0000019",
+      "sketch": "s0000014",
+      "extent": {"type": "through_all", "reversed": true},
+      "note": "The rectangle on YZ (normal +X) pocketed through all along the normal (reversed), to the block's face 30 away; the block's part of it is 20 x 20 x 30: 420000 - 12000; a notch open at the side and at the face it reaches: 10 faces, 24 edges, 16 vertices. Expected: volume 408000; faces 10; edges 24; vertices 16; box -30 -50 -50 30 20 50; center -0.4411764705882353 -15.735294117647058 -0.29411764705882354."
+    },
+    {
+      "id": "s0000015",
+      "type": "sketch",
+      "v": 1,
+      "name": "torus_profile_xy",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 30, "y": 0, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "c0000001", "center": "p0000001", "radius": 10, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": [],
+      "note": "A circle of radius 10 at (30, 0) on XY, beside its y axis."
+    },
+    {
+      "id": "s0000016",
+      "type": "sketch",
+      "v": 1,
+      "name": "torus_profile_turned_xy",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 34.641016, "y": 20, "construction": false},
+        {"id": "p0000003", "x": 15, "y": -25.980762, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": true}
+      ],
+      "circles": [
+        {"id": "c0000001", "center": "p0000003", "radius": 10, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": [],
+      "note": "A construction line from the origin at 30 degrees to the x axis on XY, and a circle of radius 10 placed beside it as the y axis case's is beside its axis: (30, 0) turned by -60 degrees."
+    },
+    {
+      "id": "r0000001",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_90_one_side_xy",
+      "sketch": "s0000015",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 90, "reversed": false},
+      "note": "The circle on XY turned about the sketch's y axis from 0 to 90 degrees right-handed: 2 pi^2 30 10^2 90/360 (Pappus). The box and centre in the sketch's frame, turning (x, y) to (x cos t, y, -x sin t) along its normal, as FreeCAD turns a profile at +X about +Y toward -Z. Expected: volume 14804.406601634037; box 0 -10 -40 40 10 0; center 19.629109648000426 0 -19.629109648000426."
+    },
+    {
+      "id": "r0000002",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_90_one_side_xy_about_a_line",
+      "sketch": "s0000016",
+      "axis": "n0000001",
+      "extent": {"type": "one_side", "angle": 90, "reversed": false},
+      "note": "The circle on XY turned about the construction line from 0 to 90 degrees right-handed: 2 pi^2 d 10^2 90/360, d the circle's centre's distance from the line as the file stores them (30 to within a nanometre). The centre by Pappus's centroid, turning about the line right-handed. Expected: volume 14804.406553113775; center 9.81455482573894 -16.999307537564988 -19.629109587145035."
+    },
+    {
+      "id": "r0000003",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_90_one_side_reversed_xy",
+      "sketch": "s0000015",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 90, "reversed": true},
+      "note": "The circle on XY turned about the sketch's y axis from 0 to 90 degrees left-handed (reversed): 2 pi^2 30 10^2 90/360 (Pappus). The box and centre in the sketch's frame, turning (x, y) to (x cos t, y, -x sin t) along its normal, as FreeCAD turns a profile at +X about +Y toward -Z. Expected: volume 14804.406601634037; box 0 -10 0 40 10 40; center 19.629109648000426 0 19.629109648000426."
+    },
+    {
+      "id": "r0000004",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_90_one_side_reversed_xy_about_a_line",
+      "sketch": "s0000016",
+      "axis": "n0000001",
+      "extent": {"type": "one_side", "angle": 90, "reversed": true},
+      "note": "The circle on XY turned about the construction line from 0 to 90 degrees left-handed (reversed): 2 pi^2 d 10^2 90/360, d the circle's centre's distance from the line as the file stores them (30 to within a nanometre). The centre by Pappus's centroid, turning about the line right-handed. Expected: volume 14804.406553113775; center 9.81455482573894 -16.999307537564988 19.629109587145035."
+    },
+    {
+      "id": "r0000005",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_90_symmetric_xy",
+      "sketch": "s0000015",
+      "axis": "y_axis",
+      "extent": {"type": "symmetric", "angle": 90},
+      "note": "The circle on XY turned about the sketch's y axis 45 degrees each way: 2 pi^2 30 10^2 90/360 (Pappus). The box and centre in the sketch's frame, turning (x, y) to (x cos t, y, -x sin t) along its normal, as FreeCAD turns a profile at +X about +Y toward -Z. Expected: volume 14804.406601634037; box 14.142135623730951 -10 -28.2842712474619 40 10 28.2842712474619; center 27.759753081510773 0 0."
+    },
+    {
+      "id": "r0000006",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_90_symmetric_xy_about_a_line",
+      "sketch": "s0000016",
+      "axis": "n0000001",
+      "extent": {"type": "symmetric", "angle": 90},
+      "note": "The circle on XY turned about the construction line 45 degrees each way: 2 pi^2 d 10^2 90/360, d the circle's centre's distance from the line as the file stores them (30 to within a nanometre). The centre by Pappus's centroid, turning about the line right-handed. Expected: volume 14804.406553113775; center 13.879876543214316 -24.040651270575587 0."
+    },
+    {
+      "id": "r0000007",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_180_one_side_xy",
+      "sketch": "s0000015",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 180, "reversed": false},
+      "note": "The circle on XY turned about the sketch's y axis from 0 to 180 degrees right-handed: 2 pi^2 30 10^2 180/360 (Pappus). The box and centre in the sketch's frame, turning (x, y) to (x cos t, y, -x sin t) along its normal, as FreeCAD turns a profile at +X about +Y toward -Z. Expected: volume 29608.813203268073; box -40 -10 -40 40 10 0; center 0 0 -19.629109648000426."
+    },
+    {
+      "id": "r0000008",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_180_one_side_xy_about_a_line",
+      "sketch": "s0000016",
+      "axis": "n0000001",
+      "extent": {"type": "one_side", "angle": 180, "reversed": false},
+      "note": "The circle on XY turned about the construction line from 0 to 180 degrees right-handed: 2 pi^2 d 10^2 180/360, d the circle's centre's distance from the line as the file stores them (30 to within a nanometre). The centre by Pappus's centroid, turning about the line right-handed. Expected: volume 29608.81310622755; center 0 0 -19.629109587145038."
+    },
+    {
+      "id": "r0000009",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_180_one_side_reversed_xy",
+      "sketch": "s0000015",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 180, "reversed": true},
+      "note": "The circle on XY turned about the sketch's y axis from 0 to 180 degrees left-handed (reversed): 2 pi^2 30 10^2 180/360 (Pappus). The box and centre in the sketch's frame, turning (x, y) to (x cos t, y, -x sin t) along its normal, as FreeCAD turns a profile at +X about +Y toward -Z. Expected: volume 29608.813203268073; box -40 -10 0 40 10 40; center 0 0 19.629109648000426."
+    },
+    {
+      "id": "r0000010",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_180_one_side_reversed_xy_about_a_line",
+      "sketch": "s0000016",
+      "axis": "n0000001",
+      "extent": {"type": "one_side", "angle": 180, "reversed": true},
+      "note": "The circle on XY turned about the construction line from 0 to 180 degrees left-handed (reversed): 2 pi^2 d 10^2 180/360, d the circle's centre's distance from the line as the file stores them (30 to within a nanometre). The centre by Pappus's centroid, turning about the line right-handed. Expected: volume 29608.81310622755; center 0 0 19.629109587145038."
+    },
+    {
+      "id": "r0000011",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_180_symmetric_xy",
+      "sketch": "s0000015",
+      "axis": "y_axis",
+      "extent": {"type": "symmetric", "angle": 180},
+      "note": "The circle on XY turned about the sketch's y axis 90 degrees each way: 2 pi^2 30 10^2 180/360 (Pappus). The box and centre in the sketch's frame, turning (x, y) to (x cos t, y, -x sin t) along its normal, as FreeCAD turns a profile at +X about +Y toward -Z. Expected: volume 29608.813203268073; box 0 -10 -40 40 10 40; center 19.629109648000426 0 0."
+    },
+    {
+      "id": "r0000012",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_180_symmetric_xy_about_a_line",
+      "sketch": "s0000016",
+      "axis": "n0000001",
+      "extent": {"type": "symmetric", "angle": 180},
+      "note": "The circle on XY turned about the construction line 90 degrees each way: 2 pi^2 d 10^2 180/360, d the circle's centre's distance from the line as the file stores them (30 to within a nanometre). The centre by Pappus's centroid, turning about the line right-handed. Expected: volume 29608.81310622755; center 9.81455482573894 -16.999307537564988 0."
+    },
+    {
+      "id": "r0000013",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_360_one_side_xy",
+      "sketch": "s0000015",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "The circle on XY turned about the sketch's y axis from 0 to 360 degrees right-handed: 2 pi^2 30 10^2 360/360 (Pappus). The box and centre in the sketch's frame, turning (x, y) to (x cos t, y, -x sin t) along its normal, as FreeCAD turns a profile at +X about +Y toward -Z. Expected: volume 59217.62640653615; box -40 -10 -40 40 10 40; center 0 0 0."
+    },
+    {
+      "id": "r0000014",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_360_one_side_xy_about_a_line",
+      "sketch": "s0000016",
+      "axis": "n0000001",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "The circle on XY turned about the construction line from 0 to 360 degrees right-handed: 2 pi^2 d 10^2 360/360, d the circle's centre's distance from the line as the file stores them (30 to within a nanometre). The centre by Pappus's centroid, turning about the line right-handed. Expected: volume 59217.6262124551; center 0 0 0."
+    },
+    {
+      "id": "s0000017",
+      "type": "sketch",
+      "v": 1,
+      "name": "torus_profile_xz",
+      "plane": "xz",
+      "points": [
+        {"id": "p0000001", "x": 30, "y": 0, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "c0000001", "center": "p0000001", "radius": 10, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": [],
+      "note": "A circle of radius 10 at (30, 0) on XZ, beside its y axis."
+    },
+    {
+      "id": "s0000018",
+      "type": "sketch",
+      "v": 1,
+      "name": "torus_profile_turned_xz",
+      "plane": "xz",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 34.641016, "y": 20, "construction": false},
+        {"id": "p0000003", "x": 15, "y": -25.980762, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": true}
+      ],
+      "circles": [
+        {"id": "c0000001", "center": "p0000003", "radius": 10, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": [],
+      "note": "A construction line from the origin at 30 degrees to the x axis on XZ, and a circle of radius 10 placed beside it as the y axis case's is beside its axis: (30, 0) turned by -60 degrees."
+    },
+    {
+      "id": "r0000015",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_90_one_side_xz",
+      "sketch": "s0000017",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 90, "reversed": false},
+      "note": "The circle on XZ turned about the sketch's y axis from 0 to 90 degrees right-handed: 2 pi^2 30 10^2 90/360 (Pappus). The box and centre in the sketch's frame, turning (x, y) to (x cos t, y, -x sin t) along its normal, as FreeCAD turns a profile at +X about +Y toward -Z. Expected: volume 14804.406601634037; box 0 0 -10 40 40 10; center 19.629109648000426 19.629109648000426 0."
+    },
+    {
+      "id": "r0000016",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_90_one_side_xz_about_a_line",
+      "sketch": "s0000018",
+      "axis": "n0000001",
+      "extent": {"type": "one_side", "angle": 90, "reversed": false},
+      "note": "The circle on XZ turned about the construction line from 0 to 90 degrees right-handed: 2 pi^2 d 10^2 90/360, d the circle's centre's distance from the line as the file stores them (30 to within a nanometre). The centre by Pappus's centroid, turning about the line right-handed. Expected: volume 14804.406553113775; center 9.81455482573894 19.629109587145035 -16.999307537564988."
+    },
+    {
+      "id": "r0000017",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_90_one_side_reversed_xz",
+      "sketch": "s0000017",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 90, "reversed": true},
+      "note": "The circle on XZ turned about the sketch's y axis from 0 to 90 degrees left-handed (reversed): 2 pi^2 30 10^2 90/360 (Pappus). The box and centre in the sketch's frame, turning (x, y) to (x cos t, y, -x sin t) along its normal, as FreeCAD turns a profile at +X about +Y toward -Z. Expected: volume 14804.406601634037; box 0 -40 -10 40 0 10; center 19.629109648000426 -19.629109648000426 0."
+    },
+    {
+      "id": "r0000018",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_90_one_side_reversed_xz_about_a_line",
+      "sketch": "s0000018",
+      "axis": "n0000001",
+      "extent": {"type": "one_side", "angle": 90, "reversed": true},
+      "note": "The circle on XZ turned about the construction line from 0 to 90 degrees left-handed (reversed): 2 pi^2 d 10^2 90/360, d the circle's centre's distance from the line as the file stores them (30 to within a nanometre). The centre by Pappus's centroid, turning about the line right-handed. Expected: volume 14804.406553113775; center 9.81455482573894 -19.629109587145035 -16.999307537564988."
+    },
+    {
+      "id": "r0000019",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_90_symmetric_xz",
+      "sketch": "s0000017",
+      "axis": "y_axis",
+      "extent": {"type": "symmetric", "angle": 90},
+      "note": "The circle on XZ turned about the sketch's y axis 45 degrees each way: 2 pi^2 30 10^2 90/360 (Pappus). The box and centre in the sketch's frame, turning (x, y) to (x cos t, y, -x sin t) along its normal, as FreeCAD turns a profile at +X about +Y toward -Z. Expected: volume 14804.406601634037; box 14.142135623730951 -28.2842712474619 -10 40 28.2842712474619 10; center 27.759753081510773 0 0."
+    },
+    {
+      "id": "r0000020",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_90_symmetric_xz_about_a_line",
+      "sketch": "s0000018",
+      "axis": "n0000001",
+      "extent": {"type": "symmetric", "angle": 90},
+      "note": "The circle on XZ turned about the construction line 45 degrees each way: 2 pi^2 d 10^2 90/360, d the circle's centre's distance from the line as the file stores them (30 to within a nanometre). The centre by Pappus's centroid, turning about the line right-handed. Expected: volume 14804.406553113775; center 13.879876543214316 0 -24.040651270575587."
+    },
+    {
+      "id": "r0000021",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_180_one_side_xz",
+      "sketch": "s0000017",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 180, "reversed": false},
+      "note": "The circle on XZ turned about the sketch's y axis from 0 to 180 degrees right-handed: 2 pi^2 30 10^2 180/360 (Pappus). The box and centre in the sketch's frame, turning (x, y) to (x cos t, y, -x sin t) along its normal, as FreeCAD turns a profile at +X about +Y toward -Z. Expected: volume 29608.813203268073; box -40 0 -10 40 40 10; center 0 19.629109648000426 0."
+    },
+    {
+      "id": "r0000022",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_180_one_side_xz_about_a_line",
+      "sketch": "s0000018",
+      "axis": "n0000001",
+      "extent": {"type": "one_side", "angle": 180, "reversed": false},
+      "note": "The circle on XZ turned about the construction line from 0 to 180 degrees right-handed: 2 pi^2 d 10^2 180/360, d the circle's centre's distance from the line as the file stores them (30 to within a nanometre). The centre by Pappus's centroid, turning about the line right-handed. Expected: volume 29608.81310622755; center 0 19.629109587145038 0."
+    },
+    {
+      "id": "r0000023",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_180_one_side_reversed_xz",
+      "sketch": "s0000017",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 180, "reversed": true},
+      "note": "The circle on XZ turned about the sketch's y axis from 0 to 180 degrees left-handed (reversed): 2 pi^2 30 10^2 180/360 (Pappus). The box and centre in the sketch's frame, turning (x, y) to (x cos t, y, -x sin t) along its normal, as FreeCAD turns a profile at +X about +Y toward -Z. Expected: volume 29608.813203268073; box -40 -40 -10 40 0 10; center 0 -19.629109648000426 0."
+    },
+    {
+      "id": "r0000024",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_180_one_side_reversed_xz_about_a_line",
+      "sketch": "s0000018",
+      "axis": "n0000001",
+      "extent": {"type": "one_side", "angle": 180, "reversed": true},
+      "note": "The circle on XZ turned about the construction line from 0 to 180 degrees left-handed (reversed): 2 pi^2 d 10^2 180/360, d the circle's centre's distance from the line as the file stores them (30 to within a nanometre). The centre by Pappus's centroid, turning about the line right-handed. Expected: volume 29608.81310622755; center 0 -19.629109587145038 0."
+    },
+    {
+      "id": "r0000025",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_180_symmetric_xz",
+      "sketch": "s0000017",
+      "axis": "y_axis",
+      "extent": {"type": "symmetric", "angle": 180},
+      "note": "The circle on XZ turned about the sketch's y axis 90 degrees each way: 2 pi^2 30 10^2 180/360 (Pappus). The box and centre in the sketch's frame, turning (x, y) to (x cos t, y, -x sin t) along its normal, as FreeCAD turns a profile at +X about +Y toward -Z. Expected: volume 29608.813203268073; box 0 -40 -10 40 40 10; center 19.629109648000426 0 0."
+    },
+    {
+      "id": "r0000026",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_180_symmetric_xz_about_a_line",
+      "sketch": "s0000018",
+      "axis": "n0000001",
+      "extent": {"type": "symmetric", "angle": 180},
+      "note": "The circle on XZ turned about the construction line 90 degrees each way: 2 pi^2 d 10^2 180/360, d the circle's centre's distance from the line as the file stores them (30 to within a nanometre). The centre by Pappus's centroid, turning about the line right-handed. Expected: volume 29608.81310622755; center 9.81455482573894 0 -16.999307537564988."
+    },
+    {
+      "id": "r0000027",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_360_one_side_xz",
+      "sketch": "s0000017",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "The circle on XZ turned about the sketch's y axis from 0 to 360 degrees right-handed: 2 pi^2 30 10^2 360/360 (Pappus). The box and centre in the sketch's frame, turning (x, y) to (x cos t, y, -x sin t) along its normal, as FreeCAD turns a profile at +X about +Y toward -Z. Expected: volume 59217.62640653615; box -40 -40 -10 40 40 10; center 0 0 0."
+    },
+    {
+      "id": "r0000028",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_360_one_side_xz_about_a_line",
+      "sketch": "s0000018",
+      "axis": "n0000001",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "The circle on XZ turned about the construction line from 0 to 360 degrees right-handed: 2 pi^2 d 10^2 360/360, d the circle's centre's distance from the line as the file stores them (30 to within a nanometre). The centre by Pappus's centroid, turning about the line right-handed. Expected: volume 59217.6262124551; center 0 0 0."
+    },
+    {
+      "id": "s0000019",
+      "type": "sketch",
+      "v": 1,
+      "name": "torus_profile_yz",
+      "plane": "yz",
+      "points": [
+        {"id": "p0000001", "x": 30, "y": 0, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "c0000001", "center": "p0000001", "radius": 10, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": [],
+      "note": "A circle of radius 10 at (30, 0) on YZ, beside its y axis."
+    },
+    {
+      "id": "s0000020",
+      "type": "sketch",
+      "v": 1,
+      "name": "torus_profile_turned_yz",
+      "plane": "yz",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 34.641016, "y": 20, "construction": false},
+        {"id": "p0000003", "x": 15, "y": -25.980762, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": true}
+      ],
+      "circles": [
+        {"id": "c0000001", "center": "p0000003", "radius": 10, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": [],
+      "note": "A construction line from the origin at 30 degrees to the x axis on YZ, and a circle of radius 10 placed beside it as the y axis case's is beside its axis: (30, 0) turned by -60 degrees."
+    },
+    {
+      "id": "r0000029",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_90_one_side_yz",
+      "sketch": "s0000019",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 90, "reversed": false},
+      "note": "The circle on YZ turned about the sketch's y axis from 0 to 90 degrees right-handed: 2 pi^2 30 10^2 90/360 (Pappus). The box and centre in the sketch's frame, turning (x, y) to (x cos t, y, -x sin t) along its normal, as FreeCAD turns a profile at +X about +Y toward -Z. Expected: volume 14804.406601634037; box -40 0 -10 0 40 10; center -19.629109648000426 19.629109648000426 0."
+    },
+    {
+      "id": "r0000030",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_90_one_side_yz_about_a_line",
+      "sketch": "s0000020",
+      "axis": "n0000001",
+      "extent": {"type": "one_side", "angle": 90, "reversed": false},
+      "note": "The circle on YZ turned about the construction line from 0 to 90 degrees right-handed: 2 pi^2 d 10^2 90/360, d the circle's centre's distance from the line as the file stores them (30 to within a nanometre). The centre by Pappus's centroid, turning about the line right-handed. Expected: volume 14804.406553113775; center -19.629109587145035 9.81455482573894 -16.999307537564988."
+    },
+    {
+      "id": "r0000031",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_90_one_side_reversed_yz",
+      "sketch": "s0000019",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 90, "reversed": true},
+      "note": "The circle on YZ turned about the sketch's y axis from 0 to 90 degrees left-handed (reversed): 2 pi^2 30 10^2 90/360 (Pappus). The box and centre in the sketch's frame, turning (x, y) to (x cos t, y, -x sin t) along its normal, as FreeCAD turns a profile at +X about +Y toward -Z. Expected: volume 14804.406601634037; box 0 0 -10 40 40 10; center 19.629109648000426 19.629109648000426 0."
+    },
+    {
+      "id": "r0000032",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_90_one_side_reversed_yz_about_a_line",
+      "sketch": "s0000020",
+      "axis": "n0000001",
+      "extent": {"type": "one_side", "angle": 90, "reversed": true},
+      "note": "The circle on YZ turned about the construction line from 0 to 90 degrees left-handed (reversed): 2 pi^2 d 10^2 90/360, d the circle's centre's distance from the line as the file stores them (30 to within a nanometre). The centre by Pappus's centroid, turning about the line right-handed. Expected: volume 14804.406553113775; center 19.629109587145035 9.81455482573894 -16.999307537564988."
+    },
+    {
+      "id": "r0000033",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_90_symmetric_yz",
+      "sketch": "s0000019",
+      "axis": "y_axis",
+      "extent": {"type": "symmetric", "angle": 90},
+      "note": "The circle on YZ turned about the sketch's y axis 45 degrees each way: 2 pi^2 30 10^2 90/360 (Pappus). The box and centre in the sketch's frame, turning (x, y) to (x cos t, y, -x sin t) along its normal, as FreeCAD turns a profile at +X about +Y toward -Z. Expected: volume 14804.406601634037; box -28.2842712474619 14.142135623730951 -10 28.2842712474619 40 10; center 0 27.759753081510773 0."
+    },
+    {
+      "id": "r0000034",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_90_symmetric_yz_about_a_line",
+      "sketch": "s0000020",
+      "axis": "n0000001",
+      "extent": {"type": "symmetric", "angle": 90},
+      "note": "The circle on YZ turned about the construction line 45 degrees each way: 2 pi^2 d 10^2 90/360, d the circle's centre's distance from the line as the file stores them (30 to within a nanometre). The centre by Pappus's centroid, turning about the line right-handed. Expected: volume 14804.406553113775; center 0 13.879876543214316 -24.040651270575587."
+    },
+    {
+      "id": "r0000035",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_180_one_side_yz",
+      "sketch": "s0000019",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 180, "reversed": false},
+      "note": "The circle on YZ turned about the sketch's y axis from 0 to 180 degrees right-handed: 2 pi^2 30 10^2 180/360 (Pappus). The box and centre in the sketch's frame, turning (x, y) to (x cos t, y, -x sin t) along its normal, as FreeCAD turns a profile at +X about +Y toward -Z. Expected: volume 29608.813203268073; box -40 -40 -10 0 40 10; center -19.629109648000426 0 0."
+    },
+    {
+      "id": "r0000036",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_180_one_side_yz_about_a_line",
+      "sketch": "s0000020",
+      "axis": "n0000001",
+      "extent": {"type": "one_side", "angle": 180, "reversed": false},
+      "note": "The circle on YZ turned about the construction line from 0 to 180 degrees right-handed: 2 pi^2 d 10^2 180/360, d the circle's centre's distance from the line as the file stores them (30 to within a nanometre). The centre by Pappus's centroid, turning about the line right-handed. Expected: volume 29608.81310622755; center -19.629109587145038 0 0."
+    },
+    {
+      "id": "r0000037",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_180_one_side_reversed_yz",
+      "sketch": "s0000019",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 180, "reversed": true},
+      "note": "The circle on YZ turned about the sketch's y axis from 0 to 180 degrees left-handed (reversed): 2 pi^2 30 10^2 180/360 (Pappus). The box and centre in the sketch's frame, turning (x, y) to (x cos t, y, -x sin t) along its normal, as FreeCAD turns a profile at +X about +Y toward -Z. Expected: volume 29608.813203268073; box 0 -40 -10 40 40 10; center 19.629109648000426 0 0."
+    },
+    {
+      "id": "r0000038",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_180_one_side_reversed_yz_about_a_line",
+      "sketch": "s0000020",
+      "axis": "n0000001",
+      "extent": {"type": "one_side", "angle": 180, "reversed": true},
+      "note": "The circle on YZ turned about the construction line from 0 to 180 degrees left-handed (reversed): 2 pi^2 d 10^2 180/360, d the circle's centre's distance from the line as the file stores them (30 to within a nanometre). The centre by Pappus's centroid, turning about the line right-handed. Expected: volume 29608.81310622755; center 19.629109587145038 0 0."
+    },
+    {
+      "id": "r0000039",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_180_symmetric_yz",
+      "sketch": "s0000019",
+      "axis": "y_axis",
+      "extent": {"type": "symmetric", "angle": 180},
+      "note": "The circle on YZ turned about the sketch's y axis 90 degrees each way: 2 pi^2 30 10^2 180/360 (Pappus). The box and centre in the sketch's frame, turning (x, y) to (x cos t, y, -x sin t) along its normal, as FreeCAD turns a profile at +X about +Y toward -Z. Expected: volume 29608.813203268073; box -40 0 -10 40 40 10; center 0 19.629109648000426 0."
+    },
+    {
+      "id": "r0000040",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_180_symmetric_yz_about_a_line",
+      "sketch": "s0000020",
+      "axis": "n0000001",
+      "extent": {"type": "symmetric", "angle": 180},
+      "note": "The circle on YZ turned about the construction line 90 degrees each way: 2 pi^2 d 10^2 180/360, d the circle's centre's distance from the line as the file stores them (30 to within a nanometre). The centre by Pappus's centroid, turning about the line right-handed. Expected: volume 29608.81310622755; center 0 9.81455482573894 -16.999307537564988."
+    },
+    {
+      "id": "r0000041",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_360_one_side_yz",
+      "sketch": "s0000019",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "The circle on YZ turned about the sketch's y axis from 0 to 360 degrees right-handed: 2 pi^2 30 10^2 360/360 (Pappus). The box and centre in the sketch's frame, turning (x, y) to (x cos t, y, -x sin t) along its normal, as FreeCAD turns a profile at +X about +Y toward -Z. Expected: volume 59217.62640653615; box -40 -40 -10 40 40 10; center 0 0 0."
+    },
+    {
+      "id": "r0000042",
+      "type": "revolve",
+      "v": 1,
+      "name": "torus_360_one_side_yz_about_a_line",
+      "sketch": "s0000020",
+      "axis": "n0000001",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "The circle on YZ turned about the construction line from 0 to 360 degrees right-handed: 2 pi^2 d 10^2 360/360, d the circle's centre's distance from the line as the file stores them (30 to within a nanometre). The centre by Pappus's centroid, turning about the line right-handed. Expected: volume 59217.6262124551; center 0 0 0."
+    },
+    {
+      "id": "p0000020",
+      "type": "pad",
+      "v": 1,
+      "name": "two_holes_block",
+      "sketch": "s0000012",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "The 40 by 20 rectangle on XY padded 10: the block the two holes go through. Expected: volume 8000; faces 6; edges 12; vertices 8; box 0 0 0 40 20 10; center 20 10 5."
+    },
+    {
+      "id": "s0000021",
+      "type": "sketch",
+      "v": 1,
+      "name": "two_holes_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 10, "y": 10, "construction": false},
+        {"id": "p0000002", "x": 28, "y": 10, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "c0000001", "center": "p0000001", "radius": 3, "construction": false},
+        {"id": "c0000002", "center": "p0000002", "radius": 5, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": [],
+      "note": "Two separate circles on XY: radius 3 at (10, 10) and radius 5 at (28, 10)."
+    },
+    {
+      "id": "q0000022",
+      "type": "pocket",
+      "v": 1,
+      "name": "two_holes",
+      "base": "p0000020",
+      "sketch": "s0000021",
+      "extent": {"type": "through_all", "reversed": true},
+      "note": "A pocket of two separate regions (design S9), through all along +Z (reversed: the sketch is under the block): 8000 - pi (9 + 25) 10 = 8000 - 340 pi. Each hole a cylindrical face with its seam, two circles, and one vertex at each: 8 faces, 18 edges, 12 vertices. Expected: volume 6931.858497779471; faces 8; edges 18; vertices 12; box 0 0 0 40 20 10; center 19.501468196435948 9.999999999999998 4.999999999999999."
+    },
+    {
+      "id": "b0000020",
+      "type": "box",
+      "v": 1,
+      "name": "flush_pad_base",
+      "position": [0, 0, 0],
+      "length": 10,
+      "width": 10,
+      "height": 10,
+      "note": "A 10 mm cube at the origin.",
+      "fingerprint": {"volume": 1000, "area": 600, "bbox": [0, 0, 0, 10, 10, 10], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "s0000022",
+      "type": "sketch",
+      "v": 1,
+      "name": "flush_pad_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 10, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 20, "y": 0, "construction": false},
+        {"id": "p0000003", "x": 20, "y": 10, "construction": false},
+        {"id": "p0000004", "x": 10, "y": 10, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false},
+        {"id": "n0000003", "from": "p0000003", "to": "p0000004", "construction": false},
+        {"id": "n0000004", "from": "p0000004", "to": "p0000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "A 10 by 10 square on XY beside the cube, from (10, 0) to (20, 10)."
+    },
+    {
+      "id": "p0000021",
+      "type": "pad",
+      "v": 1,
+      "name": "flush_pad",
+      "base": "b0000020",
+      "sketch": "s0000022",
+      "extent": {"type": "one_side", "length": 5, "reversed": false},
+      "note": "A pad onto a base, flush with its side (design S9): the square padded 5 beside the cube, its bottom and its two sides flush with the cube's: 1000 + 500. Unrefined, as design S8 has it: the cube's six faces (its x = 10 face cut to the part above the pad) and the pad's five, 11 faces; an L-shaped block's 12 corners and two where the bottoms meet, 14 vertices; and 23 edges (Euler). Expected: volume 1500; faces 11; edges 23; vertices 14; box 0 0 0 20 10 10; center 8.333333333333334 5 4.166666666666667."
+    },
+    {
+      "id": "b0000021",
+      "type": "box",
+      "v": 1,
+      "name": "through_rim_block",
+      "position": [0, 0, 5],
+      "length": 20,
+      "width": 20,
+      "height": 10,
+      "note": "A 20 by 20 by 10 block from z = 5, above the XY plane.",
+      "fingerprint": {"volume": 4000, "area": 1600, "bbox": [0, 0, 5, 20, 20, 15], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "s0000023",
+      "type": "sketch",
+      "v": 1,
+      "name": "through_rim_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 2, "y": 3, "construction": false},
+        {"id": "p0000002", "x": 8, "y": 3, "construction": false},
+        {"id": "p0000003", "x": 8, "y": 7, "construction": false},
+        {"id": "p0000004", "x": 2, "y": 7, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false},
+        {"id": "n0000003", "from": "p0000003", "to": "p0000004", "construction": false},
+        {"id": "n0000004", "from": "p0000004", "to": "p0000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "A 6 by 4 rectangle on XY under the block, from (2, 3) to (8, 7)."
+    },
+    {
+      "id": "q0000023",
+      "type": "pocket",
+      "v": 1,
+      "name": "through_rim",
+      "base": "b0000021",
+      "sketch": "s0000023",
+      "extent": {"type": "one_side", "length": 20, "reversed": true},
+      "note": "A pocket from a plane below a block, reversed, through its top (design S9, the through rim): 20 along +Z from z = 0 passes through the block from z = 5 to 15: 4000 - 6 x 4 x 10 = 3760. A block with a rectangular hole through it: 10 faces, 24 edges, 16 vertices. Expected: volume 3760; faces 10; edges 24; vertices 16; box 0 0 5 20 20 15; center 10.319148936170214 10.319148936170214 10."
+    },
+    {
+      "id": "s0000024",
+      "type": "sketch",
+      "v": 1,
+      "name": "sphere_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": -10, "construction": false},
+        {"id": "p0000002", "x": 0, "y": 10, "construction": false},
+        {"id": "p0000003", "x": 0, "y": 0, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [
+        {"id": "a0000001", "center": "p0000003", "start": "p0000001", "end": "p0000002", "construction": false}
+      ],
+      "constraints": [],
+      "note": "A half disc of radius 10: its diameter on the y axis, from (0, -10) to (0, 10), and the arc through (10, 0)."
+    },
+    {
+      "id": "r0000043",
+      "type": "revolve",
+      "v": 1,
+      "name": "sphere",
+      "sketch": "s0000024",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "A revolve of a half disc on its diameter about the diameter (design S9): a sphere, 4/3 pi 10^3. Expected: volume 4188.790204786391; box -10 -10 -10 10 10 10; center 0 0 0."
+    },
+    {
+      "id": "s0000025",
+      "type": "sketch",
+      "v": 1,
+      "name": "rectangle_about_its_side_profile_xy",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 5, "y": 5, "construction": false},
+        {"id": "p0000002", "x": 15, "y": 5, "construction": false},
+        {"id": "p0000003", "x": 15, "y": 25, "construction": false},
+        {"id": "p0000004", "x": 5, "y": 25, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false},
+        {"id": "n0000003", "from": "p0000003", "to": "p0000004", "construction": false},
+        {"id": "n0000004", "from": "p0000001", "to": "p0000004", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "A 10 by 20 rectangle on XY from (5, 5) to (15, 25); its left side, from (5, 5) to (5, 25), is the axis."
+    },
+    {
+      "id": "r0000044",
+      "type": "revolve",
+      "v": 1,
+      "name": "rectangle_about_its_side_360_xy",
+      "sketch": "s0000025",
+      "axis": "n0000004",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "A rectangle turned 360 degrees about its own side, a profile line (design S9): pi 10^2 20 360/360. Expected: volume 6283.185307179586; box -5 5 -10 15 25 10; center 5 14.999999999999998 0."
+    },
+    {
+      "id": "s0000026",
+      "type": "sketch",
+      "v": 1,
+      "name": "rectangle_about_its_side_profile_yz",
+      "plane": "yz",
+      "points": [
+        {"id": "p0000001", "x": 5, "y": 5, "construction": false},
+        {"id": "p0000002", "x": 15, "y": 5, "construction": false},
+        {"id": "p0000003", "x": 15, "y": 25, "construction": false},
+        {"id": "p0000004", "x": 5, "y": 25, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false},
+        {"id": "n0000003", "from": "p0000003", "to": "p0000004", "construction": false},
+        {"id": "n0000004", "from": "p0000001", "to": "p0000004", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "A 10 by 20 rectangle on YZ from (5, 5) to (15, 25); its left side, from (5, 5) to (5, 25), is the axis."
+    },
+    {
+      "id": "r0000045",
+      "type": "revolve",
+      "v": 1,
+      "name": "rectangle_about_its_side_90_yz",
+      "sketch": "s0000026",
+      "axis": "n0000004",
+      "extent": {"type": "one_side", "angle": 90, "reversed": false},
+      "note": "A rectangle turned 90 degrees about its own side, a profile line (design S9): pi 10^2 20 90/360. Expected: volume 1570.7963267948965; box -10 5 5 0 15 25; center -4.244131815783875 9.244131815783877 14.999999999999998."
+    },
+    {
+      "id": "s0000027",
+      "type": "sketch",
+      "v": 1,
+      "name": "groove_profile_xy",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 20, "y": 10, "construction": false},
+        {"id": "p0000002", "x": 30, "y": 10, "construction": false},
+        {"id": "p0000003", "x": 30, "y": 20, "construction": false},
+        {"id": "p0000004", "x": 20, "y": 20, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false},
+        {"id": "n0000003", "from": "p0000003", "to": "p0000004", "construction": false},
+        {"id": "n0000004", "from": "p0000004", "to": "p0000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "A 10 by 10 square on XY from (20, 10) to (30, 20): 20 from the y axis, flush with the top of the cylinder the rectangle from (0, 0) to (40, 20) turns into."
+    },
+    {
+      "id": "r0000046",
+      "type": "revolve",
+      "v": 1,
+      "name": "groove_90_one_side_xy_cylinder",
+      "sketch": "s0000012",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "The 40 by 20 rectangle on XY turned a whole turn about the sketch's y axis, along which its side lies: a cylinder of radius 40 and height 20, 32000 pi. Expected: volume 100530.96491487337; box -40 0 -40 40 20 40; center 0 10 0."
+    },
+    {
+      "id": "g0000002",
+      "type": "groove",
+      "v": 1,
+      "name": "groove_90_one_side_xy",
+      "base": "r0000046",
+      "sketch": "s0000027",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 90, "reversed": false},
+      "note": "The square grooved 90 degrees right-handed about the sketch's y axis into the cylinder's top (design S9): pi 10 (30^2 - 20^2) 90/360 removed. Expected: volume 96603.97409788614; box -40 0 -40 40 20 40; center -0.655597597560111 9.796747967479673 0.6555975975601108."
+    },
+    {
+      "id": "r0000047",
+      "type": "revolve",
+      "v": 1,
+      "name": "groove_90_one_side_reversed_xy_cylinder",
+      "sketch": "s0000012",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "The 40 by 20 rectangle on XY turned a whole turn about the sketch's y axis, along which its side lies: a cylinder of radius 40 and height 20, 32000 pi. Expected: volume 100530.96491487337; box -40 0 -40 40 20 40; center 0 10 0."
+    },
+    {
+      "id": "g0000003",
+      "type": "groove",
+      "v": 1,
+      "name": "groove_90_one_side_reversed_xy",
+      "base": "r0000047",
+      "sketch": "s0000027",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 90, "reversed": true},
+      "note": "The square grooved 90 degrees left-handed (reversed) about the sketch's y axis into the cylinder's top (design S9): pi 10 (30^2 - 20^2) 90/360 removed. Expected: volume 96603.97409788614; box -40 0 -40 40 20 40; center -0.655597597560111 9.796747967479673 -0.6555975975601108."
+    },
+    {
+      "id": "r0000048",
+      "type": "revolve",
+      "v": 1,
+      "name": "groove_90_symmetric_xy_cylinder",
+      "sketch": "s0000012",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "The 40 by 20 rectangle on XY turned a whole turn about the sketch's y axis, along which its side lies: a cylinder of radius 40 and height 20, 32000 pi. Expected: volume 100530.96491487337; box -40 0 -40 40 20 40; center 0 10 0."
+    },
+    {
+      "id": "g0000004",
+      "type": "groove",
+      "v": 1,
+      "name": "groove_90_symmetric_xy",
+      "base": "r0000048",
+      "sketch": "s0000027",
+      "axis": "y_axis",
+      "extent": {"type": "symmetric", "angle": 90},
+      "note": "The square grooved 45 degrees each way about the sketch's y axis into the cylinder's top (design S9): pi 10 (30^2 - 20^2) 90/360 removed. Expected: volume 96603.97409788614; box -40 0 -40 40 20 40; center -0.9271550139287272 9.796747967479673 0."
+    },
+    {
+      "id": "r0000049",
+      "type": "revolve",
+      "v": 1,
+      "name": "groove_360_one_side_xy_cylinder",
+      "sketch": "s0000012",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "The 40 by 20 rectangle on XY turned a whole turn about the sketch's y axis, along which its side lies: a cylinder of radius 40 and height 20, 32000 pi. Expected: volume 100530.96491487337; box -40 0 -40 40 20 40; center 0 10 0."
+    },
+    {
+      "id": "g0000005",
+      "type": "groove",
+      "v": 1,
+      "name": "groove_360_one_side_xy",
+      "base": "r0000049",
+      "sketch": "s0000027",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "The square grooved 360 degrees right-handed about the sketch's y axis into the cylinder's top (design S9): pi 10 (30^2 - 20^2) 360/360 removed. Expected: volume 84823.00164692441; box -40 0 -40 40 20 40; center 0 9.074074074074073 0."
+    },
+    {
+      "id": "s0000028",
+      "type": "sketch",
+      "v": 1,
+      "name": "groove_profile_xz",
+      "plane": "xz",
+      "points": [
+        {"id": "p0000001", "x": 20, "y": 10, "construction": false},
+        {"id": "p0000002", "x": 30, "y": 10, "construction": false},
+        {"id": "p0000003", "x": 30, "y": 20, "construction": false},
+        {"id": "p0000004", "x": 20, "y": 20, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false},
+        {"id": "n0000003", "from": "p0000003", "to": "p0000004", "construction": false},
+        {"id": "n0000004", "from": "p0000004", "to": "p0000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "A 10 by 10 square on XZ from (20, 10) to (30, 20): 20 from the y axis, flush with the top of the cylinder the rectangle from (0, 0) to (40, 20) turns into."
+    },
+    {
+      "id": "r0000050",
+      "type": "revolve",
+      "v": 1,
+      "name": "groove_90_one_side_xz_cylinder",
+      "sketch": "s0000013",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "The 40 by 20 rectangle on XZ turned a whole turn about the sketch's y axis, along which its side lies: a cylinder of radius 40 and height 20, 32000 pi. Expected: volume 100530.96491487337; box -40 -40 0 40 40 20; center 0 0 10."
+    },
+    {
+      "id": "g0000006",
+      "type": "groove",
+      "v": 1,
+      "name": "groove_90_one_side_xz",
+      "base": "r0000050",
+      "sketch": "s0000028",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 90, "reversed": false},
+      "note": "The square grooved 90 degrees right-handed about the sketch's y axis into the cylinder's top (design S9): pi 10 (30^2 - 20^2) 90/360 removed. Expected: volume 96603.97409788614; box -40 -40 0 40 40 20; center -0.655597597560111 -0.6555975975601108 9.796747967479673."
+    },
+    {
+      "id": "r0000051",
+      "type": "revolve",
+      "v": 1,
+      "name": "groove_90_one_side_reversed_xz_cylinder",
+      "sketch": "s0000013",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "The 40 by 20 rectangle on XZ turned a whole turn about the sketch's y axis, along which its side lies: a cylinder of radius 40 and height 20, 32000 pi. Expected: volume 100530.96491487337; box -40 -40 0 40 40 20; center 0 0 10."
+    },
+    {
+      "id": "g0000007",
+      "type": "groove",
+      "v": 1,
+      "name": "groove_90_one_side_reversed_xz",
+      "base": "r0000051",
+      "sketch": "s0000028",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 90, "reversed": true},
+      "note": "The square grooved 90 degrees left-handed (reversed) about the sketch's y axis into the cylinder's top (design S9): pi 10 (30^2 - 20^2) 90/360 removed. Expected: volume 96603.97409788614; box -40 -40 0 40 40 20; center -0.655597597560111 0.6555975975601108 9.796747967479673."
+    },
+    {
+      "id": "r0000052",
+      "type": "revolve",
+      "v": 1,
+      "name": "groove_90_symmetric_xz_cylinder",
+      "sketch": "s0000013",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "The 40 by 20 rectangle on XZ turned a whole turn about the sketch's y axis, along which its side lies: a cylinder of radius 40 and height 20, 32000 pi. Expected: volume 100530.96491487337; box -40 -40 0 40 40 20; center 0 0 10."
+    },
+    {
+      "id": "g0000008",
+      "type": "groove",
+      "v": 1,
+      "name": "groove_90_symmetric_xz",
+      "base": "r0000052",
+      "sketch": "s0000028",
+      "axis": "y_axis",
+      "extent": {"type": "symmetric", "angle": 90},
+      "note": "The square grooved 45 degrees each way about the sketch's y axis into the cylinder's top (design S9): pi 10 (30^2 - 20^2) 90/360 removed. Expected: volume 96603.97409788614; box -40 -40 0 40 40 20; center -0.9271550139287272 0 9.796747967479673."
+    },
+    {
+      "id": "r0000053",
+      "type": "revolve",
+      "v": 1,
+      "name": "groove_360_one_side_xz_cylinder",
+      "sketch": "s0000013",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "The 40 by 20 rectangle on XZ turned a whole turn about the sketch's y axis, along which its side lies: a cylinder of radius 40 and height 20, 32000 pi. Expected: volume 100530.96491487337; box -40 -40 0 40 40 20; center 0 0 10."
+    },
+    {
+      "id": "g0000009",
+      "type": "groove",
+      "v": 1,
+      "name": "groove_360_one_side_xz",
+      "base": "r0000053",
+      "sketch": "s0000028",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "The square grooved 360 degrees right-handed about the sketch's y axis into the cylinder's top (design S9): pi 10 (30^2 - 20^2) 360/360 removed. Expected: volume 84823.00164692441; box -40 -40 0 40 40 20; center 0 0 9.074074074074073."
+    },
+    {
+      "id": "s0000029",
+      "type": "sketch",
+      "v": 1,
+      "name": "groove_profile_yz",
+      "plane": "yz",
+      "points": [
+        {"id": "p0000001", "x": 20, "y": 10, "construction": false},
+        {"id": "p0000002", "x": 30, "y": 10, "construction": false},
+        {"id": "p0000003", "x": 30, "y": 20, "construction": false},
+        {"id": "p0000004", "x": 20, "y": 20, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false},
+        {"id": "n0000003", "from": "p0000003", "to": "p0000004", "construction": false},
+        {"id": "n0000004", "from": "p0000004", "to": "p0000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "A 10 by 10 square on YZ from (20, 10) to (30, 20): 20 from the y axis, flush with the top of the cylinder the rectangle from (0, 0) to (40, 20) turns into."
+    },
+    {
+      "id": "r0000054",
+      "type": "revolve",
+      "v": 1,
+      "name": "groove_90_one_side_yz_cylinder",
+      "sketch": "s0000014",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "The 40 by 20 rectangle on YZ turned a whole turn about the sketch's y axis, along which its side lies: a cylinder of radius 40 and height 20, 32000 pi. Expected: volume 100530.96491487337; box -40 -40 0 40 40 20; center 0 0 10."
+    },
+    {
+      "id": "g0000010",
+      "type": "groove",
+      "v": 1,
+      "name": "groove_90_one_side_yz",
+      "base": "r0000054",
+      "sketch": "s0000029",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 90, "reversed": false},
+      "note": "The square grooved 90 degrees right-handed about the sketch's y axis into the cylinder's top (design S9): pi 10 (30^2 - 20^2) 90/360 removed. Expected: volume 96603.97409788614; box -40 -40 0 40 40 20; center 0.6555975975601108 -0.655597597560111 9.796747967479673."
+    },
+    {
+      "id": "r0000055",
+      "type": "revolve",
+      "v": 1,
+      "name": "groove_90_one_side_reversed_yz_cylinder",
+      "sketch": "s0000014",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "The 40 by 20 rectangle on YZ turned a whole turn about the sketch's y axis, along which its side lies: a cylinder of radius 40 and height 20, 32000 pi. Expected: volume 100530.96491487337; box -40 -40 0 40 40 20; center 0 0 10."
+    },
+    {
+      "id": "g0000011",
+      "type": "groove",
+      "v": 1,
+      "name": "groove_90_one_side_reversed_yz",
+      "base": "r0000055",
+      "sketch": "s0000029",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 90, "reversed": true},
+      "note": "The square grooved 90 degrees left-handed (reversed) about the sketch's y axis into the cylinder's top (design S9): pi 10 (30^2 - 20^2) 90/360 removed. Expected: volume 96603.97409788614; box -40 -40 0 40 40 20; center -0.6555975975601108 -0.655597597560111 9.796747967479673."
+    },
+    {
+      "id": "r0000056",
+      "type": "revolve",
+      "v": 1,
+      "name": "groove_90_symmetric_yz_cylinder",
+      "sketch": "s0000014",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "The 40 by 20 rectangle on YZ turned a whole turn about the sketch's y axis, along which its side lies: a cylinder of radius 40 and height 20, 32000 pi. Expected: volume 100530.96491487337; box -40 -40 0 40 40 20; center 0 0 10."
+    },
+    {
+      "id": "g0000012",
+      "type": "groove",
+      "v": 1,
+      "name": "groove_90_symmetric_yz",
+      "base": "r0000056",
+      "sketch": "s0000029",
+      "axis": "y_axis",
+      "extent": {"type": "symmetric", "angle": 90},
+      "note": "The square grooved 45 degrees each way about the sketch's y axis into the cylinder's top (design S9): pi 10 (30^2 - 20^2) 90/360 removed. Expected: volume 96603.97409788614; box -40 -40 0 40 40 20; center 0 -0.9271550139287272 9.796747967479673."
+    },
+    {
+      "id": "r0000057",
+      "type": "revolve",
+      "v": 1,
+      "name": "groove_360_one_side_yz_cylinder",
+      "sketch": "s0000014",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "The 40 by 20 rectangle on YZ turned a whole turn about the sketch's y axis, along which its side lies: a cylinder of radius 40 and height 20, 32000 pi. Expected: volume 100530.96491487337; box -40 -40 0 40 40 20; center 0 0 10."
+    },
+    {
+      "id": "g0000013",
+      "type": "groove",
+      "v": 1,
+      "name": "groove_360_one_side_yz",
+      "base": "r0000057",
+      "sketch": "s0000029",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "The square grooved 360 degrees right-handed about the sketch's y axis into the cylinder's top (design S9): pi 10 (30^2 - 20^2) 360/360 removed. Expected: volume 84823.00164692441; box -40 -40 0 40 40 20; center 0 0 9.074074074074073."
+    },
+    {
+      "id": "s1000001",
+      "type": "sketch",
+      "v": 1,
+      "name": "groove_both_sides_cylinder_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "c0000001", "center": "p0000001", "radius": 20, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": [],
+      "note": "The council's round 2: a circle of radius 20 at the origin, padded for each groove of regions either side of its axis."
+    },
+    {
+      "id": "s1000002",
+      "type": "sketch",
+      "v": 1,
+      "name": "groove_both_sides_profile",
+      "plane": "xz",
+      "points": [
+        {"id": "pa000001", "x": 15, "y": 5, "construction": false},
+        {"id": "pa000002", "x": 25, "y": 5, "construction": false},
+        {"id": "pa000003", "x": 25, "y": 10, "construction": false},
+        {"id": "pa000004", "x": 15, "y": 10, "construction": false},
+        {"id": "pb000001", "x": -25, "y": 7, "construction": false},
+        {"id": "pb000002", "x": -15, "y": 7, "construction": false},
+        {"id": "pb000003", "x": -15, "y": 12, "construction": false},
+        {"id": "pb000004", "x": -25, "y": 12, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false},
+        {"id": "nb000001", "from": "pb000001", "to": "pb000002", "construction": false},
+        {"id": "nb000002", "from": "pb000002", "to": "pb000003", "construction": false},
+        {"id": "nb000003", "from": "pb000003", "to": "pb000004", "construction": false},
+        {"id": "nb000004", "from": "pb000004", "to": "pb000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "Rectangles A (x 15..25, z 5..10) and B (x -25..-15, z 7..12), either side of the sketch's y axis."
+    },
+    {
+      "id": "p1000011",
+      "type": "pad",
+      "v": 1,
+      "name": "groove_both_sides_360_cylinder",
+      "sketch": "s1000001",
+      "extent": {"type": "one_side", "length": 20, "reversed": false},
+      "note": "The circle of radius 20 padded 20: 8000 pi. Expected: volume 25132.741228718343; faces 3; edges 3; vertices 2; box -20 -20 0 20 20 20."
+    },
+    {
+      "id": "g1000001",
+      "type": "groove",
+      "v": 1,
+      "name": "groove_both_sides_360",
+      "base": "p1000011",
+      "sketch": "s1000002",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "The council's round 2 critical: A turns through the ring 15..20 from z 5 to 10, B from 7 to 12, each a whole turn: their union, the ring from z 5 to 12, pi (20^2 - 15^2) 7 removed, with the regions' solids cut as separate tools as FreeCAD does. Expected: volume 21284.290228070848."
+    },
+    {
+      "id": "p1000012",
+      "type": "pad",
+      "v": 1,
+      "name": "groove_both_sides_181_cylinder",
+      "sketch": "s1000001",
+      "extent": {"type": "one_side", "length": 20, "reversed": false},
+      "note": "The circle of radius 20 padded 20: 8000 pi. Expected: volume 25132.741228718343; faces 3; edges 3; vertices 2; box -20 -20 0 20 20 20."
+    },
+    {
+      "id": "g1000002",
+      "type": "groove",
+      "v": 1,
+      "name": "groove_both_sides_181",
+      "base": "p1000012",
+      "sketch": "s1000002",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 181, "reversed": false},
+      "note": "A over 0..181 degrees, B over 180..361: z 5..7 and 10..12 181 degrees each, z 7..10 the whole ring: pi (20^2 - 15^2) (3 + 4 181/360) removed. Expected: volume 22377.739004445295."
+    },
+    {
+      "id": "p1000013",
+      "type": "pad",
+      "v": 1,
+      "name": "groove_both_sides_180_cylinder",
+      "sketch": "s1000001",
+      "extent": {"type": "one_side", "length": 20, "reversed": false},
+      "note": "The circle of radius 20 padded 20: 8000 pi. Expected: volume 25132.741228718343; faces 3; edges 3; vertices 2; box -20 -20 0 20 20 20."
+    },
+    {
+      "id": "g1000003",
+      "type": "groove",
+      "v": 1,
+      "name": "groove_both_sides_180",
+      "base": "p1000013",
+      "sketch": "s1000002",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 180, "reversed": false},
+      "note": "A over 0..180 degrees, B over 180..360: half rings, z 7..10 whole: pi (20^2 - 15^2) 5 removed. Expected: volume 22383.847656827274."
+    },
+    {
+      "id": "s1000003",
+      "type": "sketch",
+      "v": 1,
+      "name": "groove_both_sides_near_profile",
+      "plane": "xz",
+      "points": [
+        {"id": "pa000001", "x": 15, "y": 5, "construction": false},
+        {"id": "pa000002", "x": 25, "y": 5, "construction": false},
+        {"id": "pa000003", "x": 25, "y": 10, "construction": false},
+        {"id": "pa000004", "x": 15, "y": 10, "construction": false},
+        {"id": "pb000001", "x": -18, "y": 7, "construction": false},
+        {"id": "pb000002", "x": -12, "y": 7, "construction": false},
+        {"id": "pb000003", "x": -12, "y": 12, "construction": false},
+        {"id": "pb000004", "x": -18, "y": 12, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false},
+        {"id": "nb000001", "from": "pb000001", "to": "pb000002", "construction": false},
+        {"id": "nb000002", "from": "pb000002", "to": "pb000003", "construction": false},
+        {"id": "nb000003", "from": "pb000003", "to": "pb000004", "construction": false},
+        {"id": "nb000004", "from": "pb000004", "to": "pb000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "Rectangles A (x 15..25, z 5..10) and B (x -18..-12, z 7..12), either side of the sketch's y axis."
+    },
+    {
+      "id": "p1000014",
+      "type": "pad",
+      "v": 1,
+      "name": "groove_both_sides_near_270_cylinder",
+      "sketch": "s1000001",
+      "extent": {"type": "one_side", "length": 20, "reversed": false},
+      "note": "The circle of radius 20 padded 20: 8000 pi. Expected: volume 25132.741228718343; faces 3; edges 3; vertices 2; box -20 -20 0 20 20 20."
+    },
+    {
+      "id": "g1000004",
+      "type": "groove",
+      "v": 1,
+      "name": "groove_both_sides_near_270",
+      "base": "p1000014",
+      "sketch": "s1000003",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 270, "reversed": false},
+      "note": "A (ring 15..20, z 5..10) over 0..270 degrees, B (ring 12..18, z 7..12) over 180..450: each alone three quarters, their overlap (ring 15..18, z 7..10) whole: (3 pi/4) ((175 5 - 99 3) + (180 5 - 99 3)) + pi 99 3 = 1182.75 pi removed. Expected: volume 21417.022517685014."
+    },
+    {
+      "id": "s1000004",
+      "type": "sketch",
+      "v": 1,
+      "name": "groove_both_sides_mirrored_profile",
+      "plane": "xz",
+      "points": [
+        {"id": "pa000001", "x": 15, "y": 5, "construction": false},
+        {"id": "pa000002", "x": 25, "y": 5, "construction": false},
+        {"id": "pa000003", "x": 25, "y": 10, "construction": false},
+        {"id": "pa000004", "x": 15, "y": 10, "construction": false},
+        {"id": "pb000001", "x": -25, "y": 5, "construction": false},
+        {"id": "pb000002", "x": -15, "y": 5, "construction": false},
+        {"id": "pb000003", "x": -15, "y": 10, "construction": false},
+        {"id": "pb000004", "x": -25, "y": 10, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false},
+        {"id": "nb000001", "from": "pb000001", "to": "pb000002", "construction": false},
+        {"id": "nb000002", "from": "pb000002", "to": "pb000003", "construction": false},
+        {"id": "nb000003", "from": "pb000003", "to": "pb000004", "construction": false},
+        {"id": "nb000004", "from": "pb000004", "to": "pb000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "Rectangles A (x 15..25, z 5..10) and its mirror B (x -25..-15, z 5..10), either side of the sketch's y axis."
+    },
+    {
+      "id": "p1000015",
+      "type": "pad",
+      "v": 1,
+      "name": "groove_both_sides_mirrored_360_cylinder",
+      "sketch": "s1000001",
+      "extent": {"type": "one_side", "length": 20, "reversed": false},
+      "note": "The circle of radius 20 padded 20: 8000 pi. Expected: volume 25132.741228718343; faces 3; edges 3; vertices 2; box -20 -20 0 20 20 20."
+    },
+    {
+      "id": "g1000005",
+      "type": "groove",
+      "v": 1,
+      "name": "groove_both_sides_mirrored_360",
+      "base": "p1000015",
+      "sketch": "s1000004",
+      "axis": "y_axis",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "A and its mirror B each a whole turn through the same ring, z 5..10: pi (20^2 - 15^2) 5 removed. Expected: volume 22383.847656827274."
+    }
+  ]
+}

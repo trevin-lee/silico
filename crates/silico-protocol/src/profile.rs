@@ -13,7 +13,7 @@ pub const MAX_PROFILE_POINTS: usize = 1000;
 
 /// The smallest |direction · normal| an extrusion may have: FreeCAD's limit
 /// (`Precision::Confusion()`), below which the direction lies in the profile's plane.
-const MIN_DIRECTION_FACTOR: f64 = 1e-7;
+pub(crate) const MIN_DIRECTION_FACTOR: f64 = 1e-7;
 
 /// How far an axis's direction may lean out of a profile's plane (as the cosine of its
 /// angle to the plane's normal) before it's refused outright. Below this, the axis is in

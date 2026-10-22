@@ -26,7 +26,10 @@ fn checked(features: &[String]) -> Checked {
     Checked::new(read(text.as_bytes()).unwrap()).unwrap()
 }
 
-/// A part with every primitive and boolean, the pin's radius `pin`.
+/// A part with every primitive and boolean, the pin's radius `pin`: one solid, every piece
+/// meeting the block (the ring's tube from z 9.5, so the cap sits on the block's top; it
+/// was at z 12, the cap floating apart, two solids, which D2 at M2's booleans refuses since
+/// Fable's decision of 2026-10-18).
 fn part(pin: f64) -> Checked {
     checked(&[
         r#"{"id": "b0000001", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}"#.to_owned(),
@@ -35,7 +38,7 @@ fn part(pin: f64) -> Checked {
         r#"{"id": "s0000001", "type": "sphere", "v": 1, "name": "Ball", "position": [40, 20, 10], "radius": 4}"#.to_owned(),
         r#"{"id": "f0000001", "type": "fuse", "v": 1, "name": "Knob", "base": "h0000001", "tool": "s0000001"}"#.to_owned(),
         r#"{"id": "k0000001", "type": "cone", "v": 1, "name": "Tip", "position": [5, 5, 10], "radius1": 3, "radius2": 0, "height": 6}"#.to_owned(),
-        r#"{"id": "t0000001", "type": "torus", "v": 1, "name": "Ring", "position": [5, 5, 12], "radius1": 3, "radius2": 1}"#.to_owned(),
+        r#"{"id": "t0000001", "type": "torus", "v": 1, "name": "Ring", "position": [5, 5, 10.5], "radius1": 3, "radius2": 1}"#.to_owned(),
         r#"{"id": "m0000001", "type": "common", "v": 1, "name": "Cap", "base": "k0000001", "tool": "t0000001"}"#.to_owned(),
         r#"{"id": "f0000002", "type": "fuse", "v": 1, "name": "All", "base": "f0000001", "tool": "m0000001"}"#.to_owned(),
     ])

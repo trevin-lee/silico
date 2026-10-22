@@ -223,12 +223,14 @@ fn a_name_reads_its_features_type_as_written_whatever_the_feature_is_now() {
         ),
         "{name:?}"
     );
-    // Every one of the ten words, on an element by its number.
+    // Every one of the fifteen words, on an element by its number: a sketch's only number
+    // is its only region's, Face1 (M3.6, S4).
     for made in TypeWord::all() {
-        let text = format!("cccccccc.{made}.Face2");
+        let face = if made.word() == "sketch" { 1 } else { 2 };
+        let text = format!("cccccccc.{made}.Face{face}");
         assert_eq!(parse(&text).unwrap().to_string(), text);
     }
-    assert_eq!(TypeWord::all().count(), 10);
+    assert_eq!(TypeWord::all().count(), 15);
 }
 
 #[test]
@@ -717,4 +719,123 @@ fn a_name_256_deep_through_any_slot_is_read_and_one_deeper_is_not() {
             "{open}"
         );
     }
+}
+
+/// The features of M3.6's grammar tests: a sketch `ssssssss`, a pad `pppppppp`, and a
+/// pocket `qqqqqqqq`.
+fn sweep_makers(feature: &FeatureId) -> Option<Maker> {
+    match feature.as_str() {
+        "ssssssss" => Some(Maker::By(OpCode::Sketch)),
+        "pppppppp" => Some(Maker::By(OpCode::Pad)),
+        "qqqqqqqq" => Some(Maker::By(OpCode::Pocket)),
+        "aaaaaaaa" => Some(Maker::Itself(PrimitiveKind::Box)),
+        _ => None,
+    }
+}
+
+#[test]
+fn a_sketchs_elements_read_by_their_ids_inside_what_a_feature_made_of_them() {
+    // M3.6, design S4: a sketch's curve `s.sketch.Edge.<id>`, its point
+    // `s.sketch.Vertex.<id>`, a circle's vertex `s.sketch.Vertex(U s.sketch.Edge.<id>)`,
+    // its only region `s.sketch.Face1`, and one of several `s.sketch.Face(L
+    // s.sketch.Edge.<id>)`; each as a source of a pad's or pocket's element, read as the
+    // name written, the sketch's elements as `Name::Sketch` by ID.
+    let parse = |text: &str| Name::parse(text, &sweep_makers);
+    let curve = Arc::new(Name::Sketch {
+        feature: id("ssssssss"),
+        kind: ElementKind::Edge,
+        id: silico_core::document::ElementId::new("6t7v8w9x").unwrap(),
+    });
+    let wall = Name::Derived {
+        feature: id("pppppppp"),
+        operation: OpCode::Pad,
+        kind: ElementKind::Face,
+        first: source(Relation::Generated, None, Arc::clone(&curve)),
+        more: Vec::new(),
+    };
+    let text = "pppppppp.pad.Face(G ssssssss.sketch.Edge.6t7v8w9x)";
+    assert_eq!(wall.to_string(), text);
+    assert_eq!(parse(text).unwrap(), wall);
+    for text in [
+        "pppppppp.pad.Edge(M ssssssss.sketch.Edge.6t7v8w9x)",
+        "pppppppp.pad.Edge(G ssssssss.sketch.Vertex.0a1b2c3d)",
+        "pppppppp.pad.Face(G ssssssss.sketch.Face1)",
+        "pppppppp.pad.Face(M ssssssss.sketch.Face1)",
+        "pppppppp.pad.Edge(G ssssssss.sketch.Vertex(U ssssssss.sketch.Edge.c1rc1e00))",
+        "qqqqqqqq.pocket.Face(G ssssssss.sketch.Face(L ssssssss.sketch.Edge.6t7v8w9x))",
+        // An ID that's all digits: the dot keeps it apart from a number.
+        "qqqqqqqq.pocket.Face(G ssssssss.sketch.Edge.12345678)",
+        "qqqqqqqq.pocket.Edge(G aaaaaaaa.box.Face6, G qqqqqqqq.pocket.Face(G ssssssss.sketch.Edge.6t7v8w9x))",
+        "qqqqqqqq.pocket.Face(M1/2 qqqqqqqq.pocket.Face(G ssssssss.sketch.Edge.6t7v8w9x))",
+    ] {
+        let name = parse(text).unwrap_or_else(|e| panic!("{text}: {e}"));
+        assert_eq!(name.to_string(), text);
+    }
+    // A sketch's only region is stable: a name by number that is, by design.
+    let region = parse("pppppppp.pad.Face(G ssssssss.sketch.Face1)").unwrap();
+    assert_ne!(
+        region,
+        parse("pppppppp.pad.Face(M ssssssss.sketch.Face1)").unwrap()
+    );
+}
+
+#[test]
+fn a_sketchs_name_in_any_other_form_or_whole_is_refused_saying_why() {
+    // Design S4: `sketch` takes only Face1, the ID forms, and U and L, never M or G derived
+    // (a sketch derives nothing); no other type names by ID; and a whole name that's a
+    // sketch's element is refused as a reference, its elements being in no solid.
+    let parse = |text: &str| Name::parse(text, &sweep_makers);
+    for (text, column, why) in [
+        (
+            "ssssssss.sketch.Edge.6t7v8w9x",
+            1,
+            "ssssssss is a sketch: its elements are in no solid; name what a feature made of it",
+        ),
+        (
+            "ssssssss.sketch.Face1",
+            1,
+            "ssssssss is a sketch: its elements are in no solid",
+        ),
+        (
+            "pppppppp.pad.Face(G ssssssss.sketch.Edge3)",
+            37,
+            "a sketch names its curves and points by ID",
+        ),
+        (
+            "pppppppp.pad.Face(G ssssssss.sketch.Face2)",
+            37,
+            "its only region `Face1`: no other number",
+        ),
+        (
+            "pppppppp.pad.Face(G ssssssss.sketch.Face(G ssssssss.sketch.Edge.6t7v8w9x))",
+            42,
+            "a sketch derives nothing",
+        ),
+        (
+            "pppppppp.pad.Face(G ssssssss.sketch.Face.6t7v8w9x)",
+            37,
+            "a sketch names its curves (`Edge.`) and points (`Vertex.`) by ID",
+        ),
+        (
+            "pppppppp.pad.Face(G aaaaaaaa.box.Edge.6t7v8w9x)",
+            38,
+            "only a sketch's are by ID",
+        ),
+        (
+            "pppppppp.pad.Face(G ssssssss.sketch.Edge.6t7v8w9)",
+            42,
+            "a sketch element's ID",
+        ),
+        (
+            "pppppppp.pad.Face(G ssssssss.sketch.Edge.6T7V8W9X)",
+            42,
+            "a sketch element's ID",
+        ),
+    ] {
+        let error = parse(text).unwrap_err();
+        assert!(error.why.contains(why), "{text}: {error}");
+        assert_eq!(error.column, column, "{text}: {error}");
+    }
+    // A sketch's name inside a feature's is a source: read.
+    assert!(parse("pppppppp.pad.Face(G ssssssss.sketch.Edge.6t7v8w9x)").is_ok());
 }

@@ -44,6 +44,9 @@ fn main() -> std::process::ExitCode {
         | Op::Extrude { .. }
         | Op::Revolve { .. }
         | Op::MakeFaces(_)
+        | Op::Prism { .. }
+        | Op::PrismThroughAll { .. }
+        | Op::Revolution { .. }
             if matches!(
                 misbehavior,
                 Some(Misbehavior::BadHistory | Misbehavior::HistoryForNoInputs)

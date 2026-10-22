@@ -652,7 +652,8 @@ fn a_merge_of_a_kind_change_and_a_new_fillet_on_other_lines_breaks_the_fillet() 
 #[test]
 fn a_fillet_of_a_sketch_or_of_a_sketchs_element_is_refused_saying_it_makes_no_solid() {
     // M3.2's sketches, met on rebasing M2.8 onto them: a sketch makes no solid, so a fillet
-    // can't round one, and no name can be of its elements.
+    // can't round one. M3.6 names a sketch's elements (design S4), as sources in what a
+    // feature made of them only: a whole name of one, in any form, is refused, saying so.
     let sketch = r#"{"id": "s0000001", "type": "sketch", "v": 1, "name": "Profile", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": []}"#;
     let said = refused(&document(&[
         sketch,
@@ -663,15 +664,17 @@ fn a_fillet_of_a_sketch_or_of_a_sketchs_element_is_refused_saying_it_makes_no_so
             .any(|(p, m)| p == "base" && m.contains("makes no solid")),
         "{said:?}"
     );
-    let said = refused(&document(&[
-        sketch,
-        &fillet("f0000001", "m3tq8v0z", &["s0000001.Edge1"], "1"),
-    ]));
-    assert!(
-        said.iter().any(|(p, m)| p == "edges.0"
-            && m.contains(
-                "s0000001 makes no solid (a sketch): it has no faces, edges, or vertices"
-            )),
-        "{said:?}"
-    );
+    for name in ["s0000001.Edge1", "s0000001.sketch.Edge.pa000000"] {
+        let said = refused(&document(&[
+            sketch,
+            &fillet("f0000001", "m3tq8v0z", &[name], "1"),
+        ]));
+        assert!(
+            said.iter().any(|(p, m)| p == "edges.0"
+                && m.contains(
+                    "isn't an edge's name: s0000001 is a sketch: its elements are in no solid; name what a feature made of it, at column 1"
+                )),
+            "{said:?}"
+        );
+    }
 }

@@ -131,7 +131,110 @@ def build(doc, spec):
         return s
     if kind == "revolve":
         return face(a["profile"]).revolve(V(*a["origin"]), V(*a["direction"]), a["angle"])
+    if kind == "part_design":
+        return part_design(doc, a["features"])
     raise ValueError("unknown operation " + kind)
+
+
+# Silico's primitives as Part makes them at a position: the shape's geometry is placed, with
+# no placement of its own for PartDesign's base feature to drop.
+MAKE = {
+    "box": lambda p, v: Part.makeBox(v[0], v[1], v[2], p),
+    "cylinder": lambda p, v: Part.makeCylinder(v[0], v[1], p),
+    "sphere": lambda p, v: Part.makeSphere(v[0], p),
+    "cone": lambda p, v: Part.makeCone(v[0], v[1], v[2], p),
+    "torus": lambda p, v: Part.makeTorus(v[0], v[1], p),
+}
+
+
+def recomputed(doc, o):
+    doc.recompute()
+    if not o.isValid():
+        raise RuntimeError("%s: %s" % (o.Label, o.getStatusString()))
+    return o
+
+
+def sketch_axis(sketch, curves, line):
+    """The sub-element a Revolution takes for a line of its sketch: a construction line's
+    AxisN (N counting the sketch's construction line segments, from 0), any other line's
+    edge of the sketch's shape, found by its ends."""
+    index, g = curves[line]
+    if g["construction"]:
+        n = sum(1 for i, geo in enumerate(sketch.Geometry)
+                if i < index and sketch.getConstruction(i) and isinstance(geo, Part.LineSegment))
+        return "Axis%d" % n
+    local = sketch.Placement.inverse()
+    want = sorted([tuple(g["start"]), tuple(g["end"])])
+    for i, e in enumerate(sketch.Shape.Edges):
+        ends = sorted((local.multVec(v.Point).x, local.multVec(v.Point).y) for v in e.Vertexes)
+        if len(ends) == 2 and all(abs(a - b) < 1e-9 for p, q in zip(ends, want) for a, b in zip(p, q)):
+            return "Edge%d" % (i + 1)
+    raise RuntimeError("line %s isn't an edge of its sketch" % line)
+
+
+def part_design(doc, features):
+    """A sketch-feature case (silico-oracle's features.rs): its features in one PartDesign
+    body, sketches attached to the body's origin planes with their curves where the
+    document stores them, and FreeCAD's Pad, Pocket, Revolution, and Groove, each
+    unrefined. The last feature's shape."""
+    body = doc.addObject("PartDesign::Body", "Body")
+    planes = {o.Role: o for o in body.Origin.OriginFeatures}
+    sketches = {}
+    last = None
+    for f in features:
+        kind = f["kind"]
+        if kind == "primitive":
+            if last is not None:
+                raise ValueError("a primitive is only a body's first feature")
+            holder = doc.addObject("Part::Feature", "Shape")
+            holder.Shape = MAKE[f["shape"]](V(*f["position"]), f["values"])
+            base = body.newObject("PartDesign::FeatureBase", "Base")
+            base.BaseFeature = holder
+            last = recomputed(doc, base)
+        elif kind == "sketch":
+            sk = body.newObject("Sketcher::SketchObject", "Sketch")
+            sk.AttachmentSupport = (planes[f["plane"]], [""])
+            sk.MapMode = "FlatFace"
+            curves = {}
+            for g in f["geometry"]:
+                c = g["curve"]
+                if c == "line":
+                    geo = Part.LineSegment(V(g["start"][0], g["start"][1], 0), V(g["end"][0], g["end"][1], 0))
+                else:
+                    circle = Part.Circle(V(g["center"][0], g["center"][1], 0), V(0, 0, 1), g["radius"])
+                    geo = circle if c == "circle" else Part.ArcOfCircle(circle, g["from"], g["to"])
+                curves[g["id"]] = (sk.addGeometry(geo, g["construction"]), g)
+            sketches[f["id"]] = (recomputed(doc, sk), curves)
+        elif kind in ("pad", "pocket"):
+            o = body.newObject("PartDesign::Pad" if kind == "pad" else "PartDesign::Pocket", kind)
+            o.Profile = sketches[f["sketch"]][0]
+            # Not refined (design S8): its default comes from the user's preferences.
+            o.Refine = False
+            o.SideType = f["side_type"]
+            o.Type = f["method"]
+            if f["side_type"] == "Two sides":
+                o.Type2 = "Length"
+            o.Length = f["length"]
+            o.Length2 = f["length2"]
+            o.Reversed = f["reversed"]
+            last = recomputed(doc, o)
+        elif kind in ("revolution", "groove"):
+            o = body.newObject("PartDesign::Revolution" if kind == "revolution" else "PartDesign::Groove", kind)
+            sk, curves = sketches[f["sketch"]]
+            o.Profile = sk
+            (where, axis), = f["axis"].items()
+            o.ReferenceAxis = (sk, [axis if where == "sketch" else sketch_axis(sk, curves, axis)])
+            o.Refine = False
+            o.Type = "Angle"
+            o.Angle = f["angle"]
+            o.Midplane = f["midplane"]
+            o.Reversed = f["reversed"]
+            last = recomputed(doc, o)
+        else:
+            raise ValueError("unknown feature " + kind)
+    if last is None or body.Tip != last:
+        raise RuntimeError("the body's tip isn't the case's feature")
+    return last.Shape.copy()
 
 
 def measure(s):

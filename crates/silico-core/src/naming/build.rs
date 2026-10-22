@@ -17,14 +17,20 @@
 //!    references then use the number).
 //!
 //! FreeCAD's second round, which names elements from a whole generated solid (an
-//! extrusion's top), arrives with extrusions (M3); none of M2's operations reports one.
+//! extrusion's top), isn't needed: a sweep of a profile's faces reports each element's end
+//! itself (OCCT's `LastShape`, docs/design/m3.6-sketch-features.md, S4), and its whole solid
+//! names nothing. Which side of each input a step keeps is `OpCode::side`: a sweep keeps
+//! neither side of its profile, so its start elements are its own, one `M`, never collapsed.
+//! A sketch's faces are named by its IDs ([`ElementMap::sketch`]), not from history.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use super::{ElementMap, LastOp, Name, OpCode, Place, Raw, Relation, Source, TypeWord, freecad};
-use crate::document::FeatureId;
+use super::{
+    ElementMap, LastOp, Name, OpCode, Place, Raw, Relation, Side, Source, Stage, TypeWord, freecad,
+};
+use crate::document::{ElementId, FeatureId};
 use crate::kernel::{ElementKind, ElementRef, History};
 
 /// The most sources a name lists, the first and four more, as FreeCAD's do.
@@ -53,26 +59,133 @@ impl ElementMap {
         inputs: &[&ElementMap],
         history: &History,
     ) -> Self {
-        let mut builder = Builder {
-            map: ElementMap {
-                feature,
-                made: TypeWord::Operation(operation),
-                names: BTreeMap::new(),
-                elements: BTreeMap::new(),
-                unstable: BTreeSet::new(),
-            },
-            operation,
-            sizes: BTreeMap::new(),
-            inputs: BTreeMap::new(),
-            duplicated: BTreeSet::new(),
-            numbered: BTreeSet::new(),
-        };
+        Self::step(feature, operation, Stage::Last, inputs, history)
+    }
+
+    /// The map of a pad's, pocket's, revolve's, or groove's sweep of its profile's faces
+    /// (`faces`, the sketch's map: [`ElementMap::sketch`]), by `history`, which the core
+    /// has checked (`History::validate`, `History::sweep_fault`): every element the
+    /// feature's own, named from the sketch's elements in one level, the start counterparts
+    /// `M` and never collapsed, since the sweep keeps neither side of its profile
+    /// (docs/design/m3.6-sketch-features.md, S4: `p.pad.Face(G s.sketch.Edge.c)`, a side;
+    /// `p.pad.Face(M s.sketch.Face1)`, the bottom; `p.pad.Face(G s.sketch.Face1)`, the top).
+    /// The feature's fuse or cut then names its solid from its base's map and this one
+    /// ([`ElementMap::operation`], whose every input a sweep feature bites).
+    pub fn swept(
+        feature: FeatureId,
+        operation: OpCode,
+        faces: &ElementMap,
+        history: &History,
+    ) -> Self {
+        Self::step(feature, operation, Stage::Sweep, &[faces], history)
+    }
+
+    fn step(
+        feature: FeatureId,
+        operation: OpCode,
+        stage: Stage,
+        inputs: &[&ElementMap],
+        history: &History,
+    ) -> Self {
+        let mut builder = Builder::new(feature, operation, stage);
         builder.kept(inputs, history);
         builder.derived(inputs, history);
         builder.named_from_above(history);
         builder.named_from_below(history);
         builder.by_number(history);
         builder.settle(inputs);
+        builder.map
+    }
+
+    /// The map of the faces a sketch's profile makes (`KernelRequest::make_faces`), named
+    /// from the sketch's IDs (design S4), with `history` the faces' (which the core has
+    /// checked: each curve kept as one edge, each point as one vertex, face `n` region
+    /// `n`): curve `curves[i]`'s edge `feature.sketch.Edge.<id>`, the `i`th sent; point
+    /// `points[k]`'s vertex `feature.sketch.Vertex.<id>`, the `k`th sent; a circle's one
+    /// vertex, which no point is, from the edge it bounds, `feature.sketch.Vertex(U
+    /// feature.sketch.Edge.<id>)`; the only region `feature.sketch.Face1`, whatever its
+    /// curves; and each of several regions from below, by `regions[n]`, its outer loop's
+    /// curve with the smallest ID, `feature.sketch.Face(L feature.sketch.Edge.<id>)`. An
+    /// element nothing names is named by its number, unstable.
+    pub fn sketch(
+        feature: FeatureId,
+        curves: &[ElementId],
+        points: &[ElementId],
+        regions: &[ElementId],
+        history: &History,
+    ) -> Self {
+        let mut builder = Builder::new(feature.clone(), OpCode::Sketch, Stage::Last);
+        let id_name = |kind, id: &ElementId| {
+            Arc::new(Name::Sketch {
+                feature: feature.clone(),
+                kind,
+                id: id.clone(),
+            })
+        };
+        if let Some(input) = history.inputs.first() {
+            for (kind, ids, fates) in [
+                (ElementKind::Edge, curves, &input.edges),
+                (ElementKind::Vertex, points, &input.vertices),
+            ] {
+                for (id, fate) in ids.iter().zip(fates) {
+                    if let Some(kept) = fate.kept {
+                        builder.set(element_ref(kind, kept), id_name(kind, id));
+                    }
+                }
+            }
+        }
+        // Each vertex no point is (a circle's), from the edges it bounds.
+        let mut above: BTreeMap<u32, Vec<Arc<Name>>> = BTreeMap::new();
+        for (e, ends) in history.topology.edge_vertices.iter().enumerate() {
+            let Some(edge) = builder.primary(element(ElementKind::Edge, e)) else {
+                continue;
+            };
+            for &v in ends {
+                if !builder.is_named(element_ref(ElementKind::Vertex, v)) {
+                    above.entry(v).or_default().push(Arc::clone(&edge));
+                }
+            }
+        }
+        for (v, mut edges) in above {
+            edges.sort();
+            edges.dedup();
+            let mut edges = edges.into_iter().take(MOST_SOURCES);
+            let Some(upper) = edges.next() else { continue };
+            let name = Name::Upper {
+                feature: feature.clone(),
+                operation: OpCode::Sketch,
+                kind: ElementKind::Vertex,
+                upper,
+                more: edges.collect(),
+                place: None,
+                nth: Raw(NonZeroU32::MIN),
+            };
+            builder.set(element_ref(ElementKind::Vertex, v), Arc::new(name));
+        }
+        // The regions: the only one Face1, several each by its outer loop's smallest curve.
+        let faces = history.result.faces;
+        if faces == 1 {
+            let face = element_ref(ElementKind::Face, 1);
+            let name = Arc::new(Name::Element {
+                feature: feature.clone(),
+                made: TypeWord::Operation(OpCode::Sketch),
+                element: face,
+            });
+            builder.set(face, name);
+        } else {
+            for (n, id) in (1..=faces).zip(regions) {
+                let name = Name::Lower {
+                    feature: feature.clone(),
+                    operation: OpCode::Sketch,
+                    kind: ElementKind::Face,
+                    first: id_name(ElementKind::Edge, id),
+                    more: Vec::new(),
+                };
+                builder.set(element_ref(ElementKind::Face, n), Arc::new(name));
+            }
+        }
+        builder.by_number(history);
+        builder.settle(&[]);
         builder.map
     }
 }
@@ -86,6 +199,9 @@ type SourceKey = (u8, usize, Arc<str>, Arc<Name>);
 struct Builder {
     map: ElementMap,
     operation: OpCode,
+    /// Which of the feature's steps it names, for what it keeps of each input
+    /// ([`OpCode::side`]).
+    stage: Stage,
     /// Each name measured so far, by its address (the name held, so the address is never
     /// another's): how deep it nests and how many names it's made of.
     sizes: BTreeMap<usize, (Arc<Name>, u32, u64)>,
@@ -104,6 +220,29 @@ struct Builder {
 }
 
 impl Builder {
+    fn new(feature: FeatureId, operation: OpCode, stage: Stage) -> Self {
+        Builder {
+            map: ElementMap {
+                feature,
+                made: TypeWord::Operation(operation),
+                names: BTreeMap::new(),
+                elements: BTreeMap::new(),
+                unstable: BTreeSet::new(),
+            },
+            operation,
+            stage,
+            sizes: BTreeMap::new(),
+            inputs: BTreeMap::new(),
+            duplicated: BTreeSet::new(),
+            numbered: BTreeSet::new(),
+        }
+    }
+
+    /// What this step keeps of input `input`.
+    fn side(&self, input: usize) -> Side {
+        self.operation.side(self.stage, input)
+    }
+
     /// How deep `name` nests and how many names it's made of, written out.
     fn size(&mut self, name: &Arc<Name>) -> (u32, u64) {
         let address = Arc::as_ptr(name) as usize;
@@ -252,7 +391,8 @@ impl Builder {
     }
 
     /// Step 1: each input element the result has unchanged keeps its names, where the
-    /// operation bites its input; where it doesn't, it's the feature's own piece, `I` (N9).
+    /// operation bites its input; where it keeps its inside, it's the feature's own piece,
+    /// `I` (N9); where it keeps neither side (a sweep's profile), the feature's own, one `M`.
     fn kept(&mut self, inputs: &[&ElementMap], history: &History) {
         for (i, (input, map)) in history.inputs.iter().zip(inputs).enumerate() {
             for kind in KINDS {
@@ -267,11 +407,12 @@ impl Builder {
                     };
                     for name in names {
                         // Kept whole where the operation keeps what of the input lies
-                        // inside its other operand: the feature's own piece (N9).
-                        let name = if self.operation.bites(i) {
-                            name
-                        } else {
-                            self.inside(kept, name)
+                        // inside its other operand: the feature's own piece (N9); of a
+                        // profile, the feature's own (S4).
+                        let name = match self.side(i) {
+                            Side::Outside => name,
+                            Side::Inside => self.own(kept, name, Relation::Inside),
+                            Side::Neither => self.own(kept, name, Relation::Modified),
                         };
                         self.set(kept, name);
                     }
@@ -280,16 +421,16 @@ impl Builder {
         }
     }
 
-    /// `name`'s element kept whole inside the other operand: the feature's own piece of
-    /// it, `I`, with no OCCT position (FreeCAD's form writes it as the source, as
-    /// FreeCAD's `mapSubElement` does).
-    fn inside(&mut self, element: ElementRef, name: Arc<Name>) -> Arc<Name> {
+    /// `name`'s element kept whole as the feature's own: inside the other operand, its
+    /// piece, `I`; of a profile, `M`. With no OCCT position (FreeCAD's form writes it as the
+    /// source, as FreeCAD's `mapSubElement` does).
+    fn own(&mut self, element: ElementRef, name: Arc<Name>, relation: Relation) -> Arc<Name> {
         let name = Name::Derived {
             feature: self.map.feature.clone(),
             operation: self.operation,
             kind: element.kind,
             first: Source {
-                relation: Relation::Inside,
+                relation,
                 place: None,
                 position: Raw(None),
                 name,
@@ -351,15 +492,20 @@ impl Builder {
                 continue;
             }
             let first_input = keyed.keys().next().map_or(usize::MAX, |key| key.1);
-            // One source, which became this element and nothing else of its kind.
-            let alone = keyed.len() == 1 && keyed.values().all(|&(_, _, sole)| sole);
-            let operation = self.operation;
+            // One source, which became this element and nothing else of its kind, of an
+            // input whose outside the operation keeps (a profile's never collapses: S4).
+            let alone = keyed.len() == 1
+                && keyed.values().all(|&(_, _, sole)| sole)
+                && self.side(first_input) == Side::Outside;
+            let (operation, stage) = (self.operation, self.stage);
             let mut sources = keyed.into_iter().take(MOST_SOURCES).map(
                 |((_, input, _, name), (relation, position, _))| Source {
                     // Modified where the operation keeps what lies inside its other
                     // operand is the feature's own piece, `I` (N9).
                     relation: match relation {
-                        Relation::Modified if !operation.bites(input) => Relation::Inside,
+                        Relation::Modified if operation.side(stage, input) == Side::Inside => {
+                            Relation::Inside
+                        }
                         relation => relation,
                     },
                     place: None,

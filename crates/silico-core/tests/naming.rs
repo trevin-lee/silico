@@ -1254,8 +1254,41 @@ fn which_operations_keep_an_inputs_outside_is_a_fixed_table() {
     for op in [OpCode::Fillet, OpCode::Chamfer] {
         assert!(op.bites(0), "{op:?}");
     }
+    // M3.6 adds the sweep features and the sketch (design S4): every type word the document
+    // writes.
     let words: Vec<&str> = OpCode::ALL.iter().map(|op| op.word()).collect();
-    assert_eq!(words, ["fuse", "cut", "common", "fillet", "chamfer"]);
+    assert_eq!(
+        words,
+        [
+            "fuse", "cut", "common", "fillet", "chamfer", "pad", "pocket", "revolve", "groove",
+            "sketch"
+        ]
+    );
+}
+
+#[test]
+fn what_each_step_keeps_of_each_input_is_the_designs_three_valued_table() {
+    // docs/design/m3.6-sketch-features.md, S4's `bites` table, row by row: a sweep keeps
+    // neither side of its profile (input 0); a pad's and a revolve's fuse bites its base
+    // and its own sweep; a pocket's and a groove's cut bites both too, unlike a `cut`
+    // feature's tool. And M2's operations as N9 has them, whatever the step is called.
+    use silico_core::naming::{Side, Stage};
+    for op in [OpCode::Pad, OpCode::Pocket, OpCode::Revolve, OpCode::Groove] {
+        assert_eq!(op.side(Stage::Sweep, 0), Side::Neither, "{op:?}");
+        assert_eq!(op.side(Stage::Last, 0), Side::Outside, "{op:?}");
+        assert_eq!(op.side(Stage::Last, 1), Side::Outside, "{op:?}");
+        assert_eq!((op.bites(0), op.bites(1)), (true, true), "{op:?}");
+    }
+    for stage in [Stage::Sweep, Stage::Last] {
+        assert_eq!(OpCode::Cut.side(stage, 0), Side::Outside);
+        assert_eq!(OpCode::Cut.side(stage, 1), Side::Inside);
+        assert_eq!(OpCode::Common.side(stage, 0), Side::Inside);
+        assert_eq!(OpCode::Common.side(stage, 1), Side::Inside);
+        assert_eq!(OpCode::Fuse.side(stage, 0), Side::Outside);
+        assert_eq!(OpCode::Fuse.side(stage, 1), Side::Outside);
+        assert_eq!(OpCode::Fillet.side(stage, 0), Side::Outside);
+        assert_eq!(OpCode::Chamfer.side(stage, 0), Side::Outside);
+    }
 }
 
 #[test]

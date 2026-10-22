@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crate::document::{ElementName, FeatureId, PROBLEMS_LISTED};
 use crate::kernel::{ElementKind, ElementRef};
-use crate::naming::{ElementMap, Maker, Name, TypeWord};
+use crate::naming::{ElementMap, Maker, Name, OpCode, TypeWord};
 use crate::{Error, ErrorCode};
 
 /// A feature's broken references: the first [`PROBLEMS_LISTED`], each its
@@ -224,6 +224,7 @@ fn retyped<'a>(
     while let Some(name) = stack.pop() {
         let (feature, said) = match name {
             Name::Element { feature, made, .. } => (feature, *made),
+            Name::Sketch { feature, .. } => (feature, TypeWord::Operation(OpCode::Sketch)),
             Name::Derived {
                 feature, operation, ..
             }
@@ -239,8 +240,7 @@ fn retyped<'a>(
             }
         };
         match makers(feature).map(Maker::type_word) {
-            Some(Some(now)) if now != said => return Some((feature, said.word(), now.word())),
-            Some(None) => return Some((feature, said.word(), "sketch")),
+            Some(now) if now != said => return Some((feature, said.word(), now.word())),
             _ => {}
         }
         // The parts after, the first nearest the top.
@@ -260,13 +260,13 @@ fn element_word(element: ElementRef) -> &'static str {
 }
 
 /// The elements a name is made from, all the way down (itself, if it's one): each named by
-/// its number.
+/// its number, or a sketch's by its ID.
 fn leaves(name: &Name) -> BTreeSet<Name> {
     let mut found = BTreeSet::new();
     let mut stack: Vec<&Name> = vec![name];
     while let Some(name) = stack.pop() {
         match name {
-            Name::Element { .. } => {
+            Name::Element { .. } | Name::Sketch { .. } => {
                 found.insert(name.clone());
             }
             _ => stack.extend(name.parts().into_iter().map(Arc::as_ref)),

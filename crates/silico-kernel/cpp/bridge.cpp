@@ -192,11 +192,11 @@ bool tight_box(const TopoDS_Shape &shape, Point3 &low, Point3 &high) {
 }
 }  // namespace
 
-Measures measure(const Shape &shape) {
-  // Integrated adaptively to a relative precision of 1e-9. OCCT's default, a fixed order
-  // of Gauss points per face (FreeCAD's Shape.Volume), misjudges faces trimmed by curves:
-  // the common of two tori (R 2, r 1) 2.2 apart measures 12.238 for 12.3586, 1% low.
-  constexpr double precision = 1e-9;
+Measures measure(const Shape &shape, double precision) {
+  // Integrated adaptively to the relative precision Rust passes (silico_protocol's
+  // MEASURE_PRECISION, 1e-9). OCCT's default, a fixed order of Gauss points per face
+  // (FreeCAD's Shape.Volume), misjudges faces trimmed by curves: the common of two tori
+  // (R 2, r 1) 2.2 apart measures 12.238 for 12.3586, 1% low.
   GProp_GProps volume;
   BRepGProp::VolumeProperties(shape.shape, volume, precision);
   GProp_GProps surface;
@@ -855,6 +855,154 @@ std::unique_ptr<Shape> revolve(const Shape &face, Point3 origin, Point3 directio
   return std::make_unique<Shape>(Shape{result});
 }
 
+Flat flat_normal(const Shape &shape) {
+  Flat out{false, Point3{0.0, 0.0, 0.0}};
+  bool first = true;
+  gp_Dir normal;
+  for (TopExp_Explorer faces(shape.shape, TopAbs_FACE); faces.More(); faces.Next()) {
+    TopLoc_Location location;
+    const Handle(Geom_Surface) surface =
+        BRep_Tool::Surface(TopoDS::Face(faces.Current()), location);
+    const Handle(Geom_Plane) plane = Handle(Geom_Plane)::DownCast(surface);
+    if (plane.IsNull()) {
+      return out;
+    }
+    const gp_Dir here = plane->Axis().Direction().Transformed(location.Transformation());
+    if (first) {
+      normal = here;
+      first = false;
+    } else if (!normal.IsParallel(here, Precision::Angular())) {
+      return out;
+    }
+  }
+  if (first) {
+    return out;
+  }
+  return Flat{true, Point3{normal.X(), normal.Y(), normal.Z()}};
+}
+
+Bounds tight_bounds(const Shape &shape) {
+  Point3 low{0.0, 0.0, 0.0};
+  Point3 high{0.0, 0.0, 0.0};
+  const bool bounded = tight_box(shape.shape, low, high);
+  return Bounds{bounded, low, high};
+}
+
+namespace {
+// `shape` moved by `move`, with one location (the move composed with its own), as translate
+// places a shape; the shape itself for a move by nothing.
+TopoDS_Shape placed(const TopoDS_Shape &shape, const gp_Trsf &move) {
+  if (is_identity(move)) {
+    return shape;
+  }
+  const gp_Trsf composed = move * shape.Location().Transformation();
+  return is_identity(composed) ? shape.Located(TopLoc_Location())
+                               : shape.Located(TopLoc_Location(composed));
+}
+
+// Reports what a sweep (`maker`) of `moved`, which is `source` moved to where the sweep
+// starts, did to each of `source`'s faces, edges, and vertices: its start counterpart
+// (OCCT's FirstShape of its moved copy) as Modified, never Kept, even where it's the element
+// itself; its end counterpart (LastShape) as Generated, unless it's the start (an element on
+// a revolution's axis); and what OCCT says it Generated (its sides). Each numbered in the
+// result, 0 where the result doesn't have it, with its position in OCCT's Generated list
+// (1 for the start and the end, which aren't in one). Facts only: Rust checks the rules.
+template <class Maker>
+void capture_sweep(Maker &maker, const TopoDS_Shape &source, const TopoDS_Shape &moved,
+                   const TopoDS_Shape &result, rust::Vec<HistoryEntry> &history) {
+  ShapeMap results[4];
+  TopExp::MapShapes(result, TopAbs_VERTEX, results[0]);
+  TopExp::MapShapes(result, TopAbs_EDGE, results[1]);
+  TopExp::MapShapes(result, TopAbs_FACE, results[2]);
+  TopExp::MapShapes(result, TopAbs_SOLID, results[3]);
+  for (TopAbs_ShapeEnum type : {TopAbs_FACE, TopAbs_EDGE, TopAbs_VERTEX}) {
+    const Kind input_kind = kind_of(type);
+    ShapeMap inputs, copies;
+    TopExp::MapShapes(source, type, inputs);
+    TopExp::MapShapes(moved, type, copies);
+    if (inputs.Extent() != copies.Extent()) {
+      throw Standard_Failure("the moved faces don't have the faces' elements");
+    }
+    for (int i = 1; i <= inputs.Extent(); ++i) {
+      const TopoDS_Shape &copy = copies(i);
+      if (!inputs(i).IsPartner(copy) || inputs(i).Orientation() != copy.Orientation()) {
+        throw Standard_Failure("the moved faces' elements aren't the faces', in order");
+      }
+      auto record = [&](Relation relation, const TopoDS_Shape &output, uint32_t position) {
+        if (output.IsNull()) {
+          return;
+        }
+        const Kind kind = kind_of(output.ShapeType());
+        const int index =
+            kind == Kind::Other ? 0 : results[static_cast<uint8_t>(kind)].FindIndex(output);
+        history.push_back(HistoryEntry{0, input_kind, static_cast<uint32_t>(i), relation, kind,
+                                       static_cast<uint32_t>(index), position});
+      };
+      const TopoDS_Shape first = maker.FirstShape(copy);
+      const TopoDS_Shape last = maker.LastShape(copy);
+      record(Relation::Modified, first, 1);
+      if (!last.IsNull() && !(!first.IsNull() && first.IsSame(last))) {
+        record(Relation::Generated, last, 1);
+      }
+      uint32_t position = 0;
+      for (const TopoDS_Shape &output : maker.Generated(copy)) {
+        record(Relation::Generated, output, ++position);
+      }
+    }
+  }
+}
+} // namespace
+
+std::unique_ptr<Shape> sweep_prism(const Shape &faces, Point3 start, Point3 vector,
+                                   rust::Vec<HistoryEntry> &history) {
+  gp_Trsf move;
+  move.SetTranslation(gp_Vec(start.x, start.y, start.z));
+  const TopoDS_Shape moved = placed(faces.shape, move);
+  // Copy = true: the sweep builds on copies of the faces' edges and vertices, so the faces
+  // it was given are left as they were (shared, MakePrism would add the side faces' curves
+  // to their edges). FirstShape, LastShape, and Generated still answer for the faces' own
+  // elements.
+  BRepPrimAPI_MakePrism prism(moved, gp_Vec(vector.x, vector.y, vector.z), true);
+  if (!prism.IsDone()) {
+    throw Standard_Failure("the prism couldn't be built");
+  }
+  const TopoDS_Shape result = prism.Shape();
+  capture_sweep(prism, faces.shape, moved, result, history);
+  return std::make_unique<Shape>(Shape{result});
+}
+
+std::unique_ptr<Shape> sweep_revolution(const Shape &faces, Point3 origin, Point3 direction,
+                                        double start, double angle,
+                                        rust::Vec<HistoryEntry> &history) {
+  const gp_Ax1 axis(gp_Pnt(origin.x, origin.y, origin.z),
+                    gp_Dir(direction.x, direction.y, direction.z));
+  gp_Trsf turn;
+  if (start != 0.0) {
+    turn.SetRotation(axis, start);
+  }
+  const TopoDS_Shape moved = placed(faces.shape, turn);
+  // Copy = true, as for sweep_prism: the faces given are left as they were.
+  BRepPrimAPI_MakeRevol revolution(moved, axis, angle, true);
+  if (!revolution.IsDone() || revolution.Shape().IsNull()) {
+    throw Standard_Failure("the revolution couldn't be built");
+  }
+  const TopoDS_Shape result = revolution.Shape();
+  capture_sweep(revolution, faces.shape, moved, result, history);
+  return std::make_unique<Shape>(Shape{result});
+}
+
+// `shape`'s shapes, a compound's every child's that isn't a compound itself, in order:
+// FreeCAD's expandCompound (TopoShapeExpansion.cpp 122-134).
+static void expand_compound(const TopoDS_Shape &shape, NCollection_List<TopoDS_Shape> &into) {
+  if (shape.ShapeType() != TopAbs_COMPOUND) {
+    into.Append(shape);
+    return;
+  }
+  for (TopoDS_Iterator child(shape); child.More(); child.Next()) {
+    expand_compound(child.Value(), into);
+  }
+}
+
 std::unique_ptr<Shape> boolean(BooleanOp op, const Shape &base, const Shape &tool,
                                rust::Vec<HistoryEntry> &history,
                                rust::Vec<rust::String> &warnings) {
@@ -875,7 +1023,22 @@ std::unique_ptr<Shape> boolean(BooleanOp op, const Shape &base, const Shape &too
   NCollection_List<TopoDS_Shape> arguments;
   arguments.Append(base.shape);
   NCollection_List<TopoDS_Shape> tools;
-  tools.Append(tool.shape);
+  // A cut's tool that's a compound of several shapes (a pocket's or groove's sweep of
+  // several regions) is given as that many tools, as FreeCAD 1.1.3's
+  // TopoShape::makeElementBoolean expands it (expandCompound, TopoShapeExpansion.cpp
+  // 122-134 and 5905-5940): one compound of tools that overlap is a self-intersecting
+  // argument, which OCCT cuts wrongly. A compound of one is given as it is, so every
+  // single-tool boolean is unchanged. The history is still the tool's, by its own
+  // numbering, whatever order the tools are in. FreeCAD expands a fuse's tool the same
+  // way; no fuse here has a tool of several shapes yet (a pad or revolve of several
+  // regions is refused, and an M2 boolean's tool is one solid), so a fuse's tool is
+  // expanded too once multi-region pads or revolves exist.
+  if (op == BooleanOp::Cut && tool.shape.ShapeType() == TopAbs_COMPOUND &&
+      tool.shape.NbChildren() > 1) {
+    expand_compound(tool.shape, tools);
+  } else {
+    tools.Append(tool.shape);
+  }
   maker->SetArguments(arguments);
   maker->SetTools(tools);
   // Leave the inputs' sub-shapes as they are, so history reports changed elements as

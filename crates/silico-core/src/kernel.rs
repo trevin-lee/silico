@@ -13,7 +13,8 @@ use std::time::Duration;
 pub use silico_protocol::{
     Axis, Blob, BooleanOp, BuiltData, ChamferSize, Curve, ElementCounts, ElementFate, ElementKind,
     ElementRef, Ends, FaceRegions, FreecadMeasures, Generation, History, InputHistory, Mesh, Op,
-    Primitive, Profile, Region, Reported, ShapeData, ShapeSummary, SketchPlane, Topology,
+    Primitive, Profile, Region, Reported, ShapeData, ShapeSummary, SketchPlane, SweepKind,
+    Topology,
 };
 use silico_protocol::{DebugOp, Failure, LENGTH_TOLERANCE, Reply};
 
@@ -321,6 +322,70 @@ impl KernelRequest<BuiltData> {
         ))
     }
 
+    /// `faces` (a profile's, as [`make_faces`](Self::make_faces) makes them) moved by `start`,
+    /// then swept along `vector` into a solid for each face (docs/design/m3.6-sketch-features.md,
+    /// S3): the core works out both from the document, and the worker builds exactly them.
+    /// The history has the faces as its one input: each face's, edge's, and vertex's start
+    /// counterpart its one `modified` element (never kept), its end `generated` of its own
+    /// kind, and its sides `generated` ([`History::sweep_fault`]); a reply that breaks that is
+    /// the worker's fault. Values a prism can't take are refused, naming the parameter.
+    pub fn prism(faces: &ShapeData, start: [f64; 3], vector: [f64; 3]) -> Result<Self, Error> {
+        if let Err(invalid) = silico_protocol::check_prism(start, vector) {
+            return Err(refused("prism", None, invalid));
+        }
+        let op = Op::Prism {
+            faces: faces.clone(),
+            start,
+            vector,
+        };
+        Ok(Self::new(op, read_sweep(SweepKind::Prism)))
+    }
+
+    /// `faces` swept from where they are along `direction` (a unit vector) through all of
+    /// `base`, which only sizes the prism: [`silico_protocol::THROUGH_ALL_FACTOR`] times the
+    /// diagonal of the tight box around both, refused past a kilometre. The history is the
+    /// faces' alone, as [`prism`](Self::prism)'s.
+    pub fn prism_through_all(
+        faces: &ShapeData,
+        base: &ShapeData,
+        direction: [f64; 3],
+    ) -> Result<Self, Error> {
+        if let Err(invalid) = silico_protocol::check_through_all(direction) {
+            return Err(refused("through-all prism", None, invalid));
+        }
+        let op = Op::PrismThroughAll {
+            faces: faces.clone(),
+            base: base.clone(),
+            direction,
+        };
+        Ok(Self::new(op, read_sweep(SweepKind::Prism)))
+    }
+
+    /// `faces` turned `start` radians about `axis` (its direction a unit vector), then swept
+    /// `angle` radians about it, right-handed: a solid for each face (design S3). The history
+    /// is as [`prism`](Self::prism)'s, but for an element on the axis, whose end is its start,
+    /// and a whole turn ([`silico_protocol::is_whole_turn`]), which has no ends. Values a
+    /// revolution can't take are refused, naming the parameter.
+    pub fn revolution(
+        faces: &ShapeData,
+        axis: Axis,
+        start: f64,
+        angle: f64,
+    ) -> Result<Self, Error> {
+        if let Err(invalid) =
+            silico_protocol::check_revolution(axis.origin, axis.direction, start, angle)
+        {
+            return Err(refused("revolution", None, invalid));
+        }
+        let op = Op::Revolution {
+            faces: faces.clone(),
+            axis,
+            start,
+            angle,
+        };
+        Ok(Self::new(op, read_sweep(SweepKind::of_turn(angle))))
+    }
+
     /// Fuses `tool` with `base`, cuts it from `base`, or keeps what they share, and says
     /// what became of both: `base` is the history's input 0, `tool` its input 1.
     pub fn boolean(op: BooleanOp, base: &ShapeData, tool: &ShapeData) -> Self {
@@ -474,6 +539,24 @@ fn read_built(inputs: usize) -> impl FnOnce(&'static str, Reply) -> Result<Built
             .with_suggestion("start a new kernel worker")),
         },
         other => Err(unexpected(name, &other)),
+    }
+}
+
+/// Reads a sweep's result: its history checked as any one-input operation's
+/// ([`read_built`]), and by the sweep's own rule ([`History::sweep_fault`]).
+fn read_sweep(kind: SweepKind) -> impl FnOnce(&'static str, Reply) -> Result<BuiltData, Error> {
+    let read = read_built(1);
+    move |name, reply| {
+        let built = read(name, reply)?;
+        match built.history.sweep_fault(kind) {
+            None => Ok(built),
+            Some(problem) => Err(Error::new(
+                ErrorCode::ProtocolError,
+                format!("the kernel worker sent a history that breaks the sweep's rule for {name}"),
+            )
+            .with_cause(problem)
+            .with_suggestion("start a new kernel worker")),
+        }
     }
 }
 
@@ -722,6 +805,38 @@ impl KernelWorker {
     /// Faces from a profile's regions ([`KernelRequest::make_faces`]).
     pub fn make_faces(&mut self, regions: &FaceRegions) -> Result<BuiltData, Error> {
         self.run(KernelRequest::make_faces(regions)?)
+    }
+
+    /// A prism of a profile's faces ([`KernelRequest::prism`]).
+    pub fn prism(
+        &mut self,
+        faces: &ShapeData,
+        start: [f64; 3],
+        vector: [f64; 3],
+    ) -> Result<BuiltData, Error> {
+        self.run(KernelRequest::prism(faces, start, vector)?)
+    }
+
+    /// A prism of a profile's faces through all of a base
+    /// ([`KernelRequest::prism_through_all`]).
+    pub fn prism_through_all(
+        &mut self,
+        faces: &ShapeData,
+        base: &ShapeData,
+        direction: [f64; 3],
+    ) -> Result<BuiltData, Error> {
+        self.run(KernelRequest::prism_through_all(faces, base, direction)?)
+    }
+
+    /// A revolution of a profile's faces ([`KernelRequest::revolution`]).
+    pub fn revolution(
+        &mut self,
+        faces: &ShapeData,
+        axis: Axis,
+        start: f64,
+        angle: f64,
+    ) -> Result<BuiltData, Error> {
+        self.run(KernelRequest::revolution(faces, axis, start, angle)?)
     }
 
     /// A boolean ([`KernelRequest::boolean`]).
@@ -1033,6 +1148,137 @@ mod tests {
                 "{error:?}"
             );
         }
+    }
+
+    /// A prism's reply for a triangle's faces (1 face, 3 edges, 3 vertices), by the rule:
+    /// side faces 1–3, start face 4, end face 5; start edges 1–3, end edges 4–6, side edges
+    /// 7–9; start vertices 1–3, end 4–6.
+    fn triangle_prism() -> BuiltData {
+        let r = |kind, index| Reported {
+            element: ElementRef { kind, index },
+            position: 1,
+        };
+        let fate = |start, generated| ElementFate {
+            kept: None,
+            modified: vec![start],
+            generated,
+        };
+        use ElementKind::{Edge, Face, Solid, Vertex};
+        let mut face_edges = vec![vec![1, 4, 7, 8], vec![2, 5, 8, 9], vec![3, 6, 9, 7]];
+        face_edges.extend([vec![1, 2, 3], vec![4, 5, 6]]);
+        let mut edge_vertices: Vec<Vec<u32>> =
+            (0..3).map(|i| vec![i + 1, (i + 1) % 3 + 1]).collect();
+        edge_vertices.extend((0..3).map(|i| vec![i + 4, (i + 1) % 3 + 4]));
+        edge_vertices.extend((1..=3).map(|j| vec![j, j + 3]));
+        BuiltData {
+            shape: ShapeData::checked(Blob::inline(vec![]), true),
+            history: History {
+                inputs: vec![InputHistory {
+                    faces: vec![fate(r(Face, 4), vec![r(Face, 5), r(Solid, 1)])],
+                    edges: (1..=3)
+                        .map(|i| fate(r(Edge, i), vec![r(Edge, i + 3), r(Face, i)]))
+                        .collect(),
+                    vertices: (1..=3)
+                        .map(|j| fate(r(Vertex, j), vec![r(Vertex, j + 3), r(Edge, j + 6)]))
+                        .collect(),
+                }],
+                result: ElementCounts {
+                    faces: 5,
+                    edges: 9,
+                    vertices: 6,
+                    solids: 1,
+                },
+                ends: Ends::default(),
+                topology: Topology {
+                    outer_edges: face_edges
+                        .iter()
+                        .map(|l| {
+                            let mut l = l.clone();
+                            l.sort_unstable();
+                            l
+                        })
+                        .collect(),
+                    face_edges,
+                    edge_vertices,
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn a_sweep_whose_history_breaks_the_rule_is_refused_as_a_protocol_error_saying_why() {
+        let faces = ShapeData::checked(Blob::inline(vec![]), true);
+        let axis = Axis {
+            origin: [0.0; 3],
+            direction: [0.0, 1.0, 0.0],
+        };
+        let requests = || {
+            [
+                KernelRequest::prism(&faces, [0.0; 3], [0.0, 0.0, 1.0]).unwrap(),
+                KernelRequest::prism_through_all(&faces, &faces, [0.0, 0.0, 1.0]).unwrap(),
+                KernelRequest::revolution(&faces, axis, 0.0, 1.0).unwrap(),
+            ]
+        };
+        for request in requests() {
+            let name = request.name();
+            assert_eq!(
+                (request.read)(name, Reply::Built(triangle_prism())),
+                Ok(triangle_prism())
+            );
+        }
+        type Spoil = fn(&mut History);
+        let cases: [(Spoil, &str); 4] = [
+            (
+                |h| {
+                    let start = h.inputs[0].faces[0].modified.remove(0);
+                    h.inputs[0].faces[0].kept = Some(start.element.index);
+                },
+                "Face1 is kept as Face4: a sweep's start is modified, never kept",
+            ),
+            (
+                |h| {
+                    h.inputs[0].edges[0].generated.remove(0);
+                },
+                "Edge1 has 0 end",
+            ),
+            (
+                |h| h.ends.end = vec![5],
+                "the sweep reports whole-shape ends",
+            ),
+            // Inconsistent for any history: read as one first.
+            (
+                |h| h.inputs[0].vertices[0].modified[0].element.index = 99,
+                "input 1 Vertex1 names Vertex99, which the result doesn't have",
+            ),
+        ];
+        for (spoil, why) in cases {
+            for request in requests() {
+                let mut bad = triangle_prism();
+                spoil(&mut bad.history);
+                let name = request.name();
+                let error = (request.read)(name, Reply::Built(bad)).unwrap_err();
+                assert_eq!(error.code(), ErrorCode::ProtocolError, "{why}");
+                assert!(
+                    error.cause().unwrap_or_default().starts_with(why),
+                    "{error:?}"
+                );
+                assert_eq!(error.suggestion(), Some("start a new kernel worker"));
+            }
+        }
+        // A whole turn's rule is the whole turn's: the triangle's faces end, which a whole
+        // turn's never do.
+        let whole = KernelRequest::revolution(&faces, axis, 0.0, std::f64::consts::TAU).unwrap();
+        let error = (whole.read)("Revolution", Reply::Built(triangle_prism())).unwrap_err();
+        assert_eq!(
+            error.cause(),
+            Some("Face1 has 1 start counterparts in a WholeTurn sweep")
+        );
+        // The wrong kind of reply, as any request.
+        let prism = KernelRequest::prism(&faces, [0.0; 3], [0.0, 0.0, 1.0]).unwrap();
+        assert_eq!(
+            (prism.read)("Prism", Reply::Done).unwrap_err().code(),
+            ErrorCode::ProtocolError
+        );
     }
 
     #[test]

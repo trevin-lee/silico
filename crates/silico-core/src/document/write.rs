@@ -12,8 +12,8 @@ use std::fmt::Write as _;
 
 use super::fingerprint::Fingerprint;
 use super::model::{
-    Document, ElementName, Feature, FeatureId, FeatureVersion, FormatVersion, Operation, Position,
-    Units,
+    Axis, Document, ElementName, Extent, ExtentValue, Feature, FeatureId, FeatureVersion,
+    FormatVersion, Operation, Position, Units,
 };
 use super::quantity::{Angle, Length};
 use super::sketch::{
@@ -224,7 +224,60 @@ fn fields(operation: &Operation) -> Vec<(&'static str, Out<'_>)> {
                 Out::Object(vec![("distance", number(size.distance))]),
             ),
         ],
+        Operation::Pad {
+            base,
+            sketch,
+            extent,
+        } => sweep(base.as_ref(), sketch, None, Extent::Pad(*extent)),
+        Operation::Pocket {
+            base,
+            sketch,
+            extent,
+        } => sweep(Some(base), sketch, None, Extent::Pocket(*extent)),
+        Operation::Revolve {
+            base,
+            sketch,
+            axis,
+            extent,
+        } => sweep(base.as_ref(), sketch, Some(axis), Extent::Turn(*extent)),
+        Operation::Groove {
+            base,
+            sketch,
+            axis,
+            extent,
+        } => sweep(Some(base), sketch, Some(axis), Extent::Turn(*extent)),
     }
+}
+
+/// A pad's, pocket's, revolve's, or groove's fields, in schema order: its base, if it has
+/// one, its sketch, its axis, if it turns, and its extent, an object of scalars on one line.
+fn sweep<'a>(
+    base: Option<&'a FeatureId>,
+    sketch: &'a FeatureId,
+    axis: Option<&'a Axis>,
+    extent: Extent,
+) -> Vec<(&'static str, Out<'a>)> {
+    let mut fields = Vec::new();
+    if let Some(base) = base {
+        fields.push(("base", reference(base)));
+    }
+    fields.push(("sketch", reference(sketch)));
+    if let Some(axis) = axis {
+        fields.push(("axis", Out::Str(axis.as_str())));
+    }
+    let mut members = vec![("type", Out::Str(extent.type_name()))];
+    members.extend(extent.values().into_iter().map(|(field, value)| {
+        (
+            field,
+            match value {
+                ExtentValue::Length(length) => number(length),
+                ExtentValue::Angle(angle) => Out::Raw(angle.to_string()),
+                ExtentValue::Reversed(reversed) => boolean(reversed),
+            },
+        )
+    }));
+    fields.push(("extent", Out::Object(members)));
+    fields
 }
 
 /// A sketch's plane, and each of its lists as the file writes it, by the kind of element

@@ -37,6 +37,19 @@ mod ffi {
         high: Point3,
     }
 
+    /// A shape's tight bounding box, from `low` to `high`, if it's `bounded` (has geometry).
+    struct Bounds {
+        bounded: bool,
+        low: Point3,
+        high: Point3,
+    }
+
+    /// Whether a shape's faces all lie on parallel planes (`flat`), and their unit normal.
+    struct Flat {
+        flat: bool,
+        normal: Point3,
+    }
+
     /// A shape's volume and area.
     struct Amounts {
         volume: f64,
@@ -195,7 +208,9 @@ mod ffi {
         fn make_cylinder_directly(radius: f64, height: f64) -> Result<UniquePtr<Shape>>;
         fn make_cone(radius1: f64, radius2: f64, height: f64) -> Result<UniquePtr<Shape>>;
         fn make_torus(major_radius: f64, minor_radius: f64) -> Result<UniquePtr<Shape>>;
-        fn measure(shape: &Shape) -> Result<Measures>;
+        fn measure(shape: &Shape, precision: f64) -> Result<Measures>;
+        fn tight_bounds(shape: &Shape) -> Result<Bounds>;
+        fn flat_normal(shape: &Shape) -> Result<Flat>;
         fn edge_facts(shape: &Shape) -> Result<EdgeFacts>;
 
         type Dressing;
@@ -260,6 +275,20 @@ mod ffi {
             history: &mut Vec<HistoryEntry>,
             start: &mut Vec<u32>,
             end: &mut Vec<u32>,
+        ) -> Result<UniquePtr<Shape>>;
+        fn sweep_prism(
+            faces: &Shape,
+            start: Point3,
+            vector: Point3,
+            history: &mut Vec<HistoryEntry>,
+        ) -> Result<UniquePtr<Shape>>;
+        fn sweep_revolution(
+            faces: &Shape,
+            origin: Point3,
+            direction: Point3,
+            start: f64,
+            angle: f64,
+            history: &mut Vec<HistoryEntry>,
         ) -> Result<UniquePtr<Shape>>;
         fn boolean(
             op: BooleanOp,
@@ -693,7 +722,7 @@ pub fn disable_fp_traps() -> Result<(), KernelError> {
 
 /// The shape's summary: volume, area, center, topology counts, and validity.
 pub fn summarize(shape: &Shape) -> Result<ShapeSummary, KernelError> {
-    let m = ffi::measure(shape.get()?)?;
+    let m = ffi::measure(shape.get()?, silico_protocol::MEASURE_PRECISION)?;
     let point = |p: ffi::Point3| [p.x, p.y, p.z];
     Ok(ShapeSummary {
         volume: m.volume,
@@ -870,6 +899,172 @@ pub fn revolve(profile: &Profile, axis: &Axis, angle: f64) -> Result<Built, Kern
         shape: result,
         history,
     })
+}
+
+/// The unit normal of the plane `faces` lie on, if they can be swept: faces only (a
+/// profile's, as [`make_faces`] makes them), at least one, no solid, all on parallel planes.
+fn sweepable(faces: &Shape) -> Result<[f64; 3], KernelError> {
+    let inner = faces.get()?;
+    let c = ffi::count_elements(inner)?;
+    let flat = ffi::flat_normal(inner)?;
+    if c.faces == 0 || c.solids != 0 || !flat.flat {
+        return Err(KernelError::new(Refusal::InvalidParameter {
+            parameter: "faces".to_owned(),
+            message: format!(
+                "a sweep takes a profile's faces, on one plane, got a shape of {} faces and {} solids{}",
+                c.faces,
+                c.solids,
+                if flat.flat { "" } else { ", not on one plane" }
+            ),
+        }));
+    }
+    Ok([flat.normal.x, flat.normal.y, flat.normal.z])
+}
+
+/// A sweep the plane checks refuse, as the refusal that says what to do instead.
+fn flat(invalid: silico_protocol::InvalidParameter) -> KernelError {
+    KernelError::new(Refusal::SweepFlat {
+        parameter: invalid.parameter.to_owned(),
+        message: invalid.message,
+    })
+}
+
+fn point3([x, y, z]: [f64; 3]) -> ffi::Point3 {
+    ffi::Point3 { x, y, z }
+}
+
+/// A sweep's result, checked as any operation's ([`checked_result`]), and refused as an
+/// invalid result if it has no volume to speak of or is turned inside out ([`amount_of`], as a
+/// boolean's is): a flat "solid" OCCT calls valid, which the plane checks keep out, should
+/// one get past.
+fn swept(
+    faces: &Shape,
+    solid: cxx::UniquePtr<ffi::Shape>,
+    operation: Operation,
+    entries: &[ffi::HistoryEntry],
+) -> Result<Built, KernelError> {
+    let result = checked_result(&[faces], solid, operation.clone())?;
+    if !matches!(amount_of(result.get()?, &[])?, Amount::Some) {
+        return Err(KernelError::new(Refusal::ResultInvalid {
+            operation,
+            edges: Vec::new(),
+        }));
+    }
+    let history = history_of(&[faces.get()?], result.get()?, entries)?;
+    Ok(Built {
+        shape: result,
+        history,
+    })
+}
+
+/// `faces` (a profile's, [`make_faces`]) moved by `start`, then swept along `vector` into a
+/// solid for each face: one solid, or a compound of them (docs/design/m3.6-sketch-features.md,
+/// S3). The core works out the start and the vector; this builds exactly them, out of the
+/// faces' plane ([`silico_protocol::check_leaves_plane`]). The faces are left as they were.
+/// The history has the faces as its one input: each face's, edge's, and vertex's start
+/// counterpart (the element itself, or its moved copy) its one `modified` element, never
+/// kept; its end counterpart `generated`, of its own kind; and its sides `generated` (a face
+/// its solid, an edge its side face, a vertex its side edge). `History::ends` is left empty.
+pub fn prism(faces: &Shape, start: [f64; 3], vector: [f64; 3]) -> Result<Built, KernelError> {
+    silico_protocol::check_prism(start, vector).map_err(|invalid| refused(None, invalid))?;
+    let normal = sweepable(faces)?;
+    silico_protocol::check_leaves_plane("vector", normal, vector).map_err(flat)?;
+    build_prism(faces, start, vector)
+}
+
+/// The prism of [`prism`], its values checked.
+fn build_prism(faces: &Shape, start: [f64; 3], vector: [f64; 3]) -> Result<Built, KernelError> {
+    let mut entries = Vec::new();
+    // OCCT has built every prism of valid faces tried; should one fail, the refusal says
+    // what to change.
+    let solid = ffi::sweep_prism(faces.get()?, point3(start), point3(vector), &mut entries)
+        .map_err(|e| KernelError::from(e).during(Operation::Extrusion))?;
+    swept(faces, solid, Operation::Extrusion, &entries)
+}
+
+/// `faces` swept from where they are along `direction` (a unit vector, out of their plane)
+/// through all of `base`: [`silico_protocol::THROUGH_ALL_FACTOR`] times the diagonal of the
+/// tight box around both ([`silico_protocol::through_all_length`], FreeCAD's rule, design
+/// S3), refused naming `base` past a kilometre. `base` only sizes the prism; the history is
+/// the faces' alone, as [`prism`]'s.
+pub fn prism_through_all(
+    faces: &Shape,
+    base: &Shape,
+    direction: [f64; 3],
+) -> Result<Built, KernelError> {
+    silico_protocol::check_through_all(direction).map_err(|invalid| refused(None, invalid))?;
+    let normal = sweepable(faces)?;
+    silico_protocol::check_leaves_plane("direction", normal, direction).map_err(flat)?;
+    let base_inner = base.get()?;
+    if is_empty(base_inner)? {
+        return Err(KernelError::new(Refusal::InvalidParameter {
+            parameter: "base".to_owned(),
+            message: "the base has nothing in it: through all goes through a solid".to_owned(),
+        }));
+    }
+    let (a, b) = (
+        ffi::tight_bounds(base_inner)?,
+        ffi::tight_bounds(faces.get()?)?,
+    );
+    let corners = |p: &ffi::Point3| [p.x, p.y, p.z];
+    let boxes: Vec<[[f64; 3]; 2]> = [a, b]
+        .iter()
+        .filter(|b| b.bounded)
+        .map(|b| [corners(&b.low), corners(&b.high)])
+        .collect();
+    let mut around = boxes.first().copied().unwrap_or_default();
+    for [low, high] in &boxes {
+        for k in 0..3 {
+            around[0][k] = around[0][k].min(low[k]);
+            around[1][k] = around[1][k].max(high[k]);
+        }
+    }
+    let length =
+        silico_protocol::through_all_length(around).map_err(|invalid| refused(None, invalid))?;
+    let vector = direction.map(|c| c * length);
+    // The rules compose (check_prism allows a unit direction's rounding past the
+    // kilometre); should they not, the length is the base's doing, so the base is named.
+    silico_protocol::check_prism([0.0; 3], vector).map_err(|invalid| {
+        refused(
+            None,
+            silico_protocol::InvalidParameter {
+                parameter: "base",
+                message: invalid.message,
+            },
+        )
+    })?;
+    build_prism(faces, [0.0; 3], vector)
+}
+
+/// `faces` (a profile's, [`make_faces`]) turned `start` radians about `axis` (its direction a
+/// unit vector, in their plane: [`silico_protocol::check_axis_in_plane`]), then swept `angle`
+/// radians about it, right-handed: a solid for each face (design S3). The faces are left as
+/// they were. The history is as [`prism`]'s, but for an element on the axis, whose end is
+/// its start (reported once, modified), and a whole turn, which has no ends
+/// (`History::sweep_fault`).
+pub fn revolution(
+    faces: &Shape,
+    axis: &Axis,
+    start: f64,
+    angle: f64,
+) -> Result<Built, KernelError> {
+    silico_protocol::check_revolution(axis.origin, axis.direction, start, angle)
+        .map_err(|invalid| refused(None, invalid))?;
+    let normal = sweepable(faces)?;
+    silico_protocol::check_axis_in_plane(normal, axis.direction).map_err(flat)?;
+    let mut entries = Vec::new();
+    // OCCT fails on some profiles the core accepts, a side exactly 1e-7 from the axis among
+    // them (FreeCAD's OCCT too): the refusal says what to change.
+    let solid = ffi::sweep_revolution(
+        faces.get()?,
+        point3(axis.origin),
+        point3(axis.direction),
+        start,
+        angle,
+        &mut entries,
+    )
+    .map_err(|e| KernelError::from(e).during(Operation::Revolve))?;
+    swept(faces, solid, Operation::Revolve, &entries)
 }
 
 /// A face for each of `regions`' regions, on its sketch's plane, as the core sends them
@@ -1119,7 +1314,7 @@ fn amount_of(result: &ffi::Shape, inputs: &[&ffi::Shape]) -> Result<Amount, Kern
     if rough.volume > 1e-5 * diagonal * diagonal * diagonal {
         return Ok(Amount::Some);
     }
-    let precise = ffi::measure(result)?;
+    let precise = ffi::measure(result, silico_protocol::MEASURE_PRECISION)?;
     let thin = LENGTH_TOLERANCE * precise.area;
     Ok(if precise.volume.is_nan() || precise.volume.abs() <= thin {
         Amount::None
@@ -1729,6 +1924,39 @@ mod tests {
         assert_eq!(
             failed.suggestion(),
             Some("check that the shapes are solids that overlap")
+        );
+    }
+
+    #[test]
+    fn a_sweep_turned_inside_out_is_refused_as_an_invalid_result() {
+        use silico_protocol::{Operation, Refusal};
+        // A 10 × 20 × 30 box, reversed: written as OCCT's binary B-rep, whose last 9 bytes
+        // are the shape's own reference (its orientation, a byte, 0 for FORWARD, then its
+        // index and its location's, 4 bytes each: BinTools_ShapeSet::Write), with that
+        // byte set to 1, REVERSED. Each face is then reversed in it, so its volume is
+        // -6000 (-(10 × 20 × 30)): a solid turned inside out, as a sweep should never give.
+        let made = super::make_box(10.0, 20.0, 30.0).unwrap();
+        let written = super::ffi::shape_to_brep(made.get().unwrap()).unwrap();
+        let mut brep = written.as_bytes().to_vec();
+        let at = brep.len() - 9;
+        assert_eq!(brep[at], 0, "the box isn't written FORWARD where expected");
+        brep[at] = 1;
+        let reversed = super::ffi::shape_from_brep(&brep).unwrap();
+        let measured = super::ffi::measure(&reversed, silico_protocol::MEASURE_PRECISION).unwrap();
+        assert!(
+            (measured.volume + 6000.0).abs() <= 1e-9 * 6000.0,
+            "{}",
+            measured.volume
+        );
+        let refused = super::swept(&made, reversed, Operation::Extrusion, &[])
+            .err()
+            .unwrap();
+        assert_eq!(
+            refused.refusal(),
+            &Refusal::ResultInvalid {
+                operation: Operation::Extrusion,
+                edges: Vec::new(),
+            }
         );
     }
 }

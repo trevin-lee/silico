@@ -19,11 +19,19 @@
 //! keeps them all. A summary is exact for a primitive (its volume, area, center, and box by
 //! formula, where it sits as the kernel makes it) and a move; a boolean's, its own model's
 //! again, is its inputs' together, as if they didn't touch: their volumes and areas added,
-//! their centers weighed by volume, and the box around both. Faces made from a profile's
+//! their centers weighed by volume, and the box around both. A boolean is one solid (a
+//! fuse's) or its base's (a cut's and a common's), as if they met, and a cut whose tool is a
+//! sweep of faces (a sketch feature's) is its base less the share of its tool inside the
+//! base's box (`Measured::less`), so a pad adds and a pocket removes. Faces made from a profile's
 //! regions are numbered and kept as the kernel keeps them (each curve its edge, each point
-//! its vertex), with their area by formula and the box around their curves. It answers
-//! making primitives and faces, moving shapes, booleans, summaries, and echoes; anything
-//! else is refused as an internal error.
+//! its vertex), with their area by formula and the box around their curves. A sweep of
+//! faces (a prism, through all or not, or a revolution) reports each element as the kernel
+//! does (its start `modified`, its end `generated` of its own kind, its sides `generated`),
+//! with its own numbering, as if no element were on a revolution's axis, and, for a whole
+//! turn, as if no edge were square to it (each edge's start its face's seam, each vertex's
+//! itself; the face reported nothing); its measures are its own model's too (below). It
+//! answers making primitives and faces, moving shapes, booleans, sweeps of faces,
+//! summaries, and echoes; anything else is refused as an internal error.
 //!
 //! The real kernel writes some primitives (a cylinder, a torus) differently when it makes
 //! them than once it has read them back, so their bytes change once, on the first operation
@@ -44,13 +52,14 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use silico_protocol::{
-    Algorithm, Reply, ShapeSummary, SketchSystem, SolveStatus, Solved, Tag, loop_area,
+    Algorithm, Reply, ShapeSummary, SketchSystem, SolveStatus, Solved, Tag, area_and_perimeter,
+    loop_area,
 };
 
 use crate::kernel::{
-    Blob, BooleanOp, BuiltData, Curve, ElementCounts, ElementFate, ElementKind, ElementRef, Ends,
-    FaceRegions, Generation, History, InputHistory, Kernel, KernelRequest, Op, Primitive, Region,
-    Reported, ShapeData, SketchPlane, Topology, cone_caps, primitive_counts,
+    Axis, Blob, BooleanOp, BuiltData, Curve, ElementCounts, ElementFate, ElementKind, ElementRef,
+    Ends, FaceRegions, Generation, History, InputHistory, Kernel, KernelRequest, Op, Primitive,
+    Region, Reported, ShapeData, SketchPlane, SweepKind, Topology, cone_caps, primitive_counts,
 };
 use crate::pool::{MAX_WORKERS, Outcome, Pending, deliver, thread_error};
 use crate::sketch::{SketchSolver, SolveStopper};
@@ -500,7 +509,7 @@ fn answer(op: &Op) -> Result<Reply, Error> {
             let made = Symbolic::boolean(*op, base, tool);
             let history = History {
                 inputs: vec![kept(a, ElementCounts::default()), kept(b, a)],
-                result: sum(a, b),
+                result: boolean_counts(*op, a, b),
                 ends: Ends::default(),
                 topology: made.topology(),
             };
@@ -553,6 +562,75 @@ fn answer(op: &Op) -> Result<Reply, Error> {
             let shape = Symbolic::faces(regions).shape();
             Ok(Reply::Built(BuiltData { shape, history }))
         }
+        Op::Prism {
+            faces,
+            start,
+            vector,
+        } => swept(
+            faces,
+            Sweep::Prism {
+                start: *start,
+                vector: *vector,
+            },
+        ),
+        Op::PrismThroughAll {
+            faces,
+            base,
+            direction,
+        } => {
+            // As the kernel: the faces, and the direction out of their plane, first; then
+            // sized by the protocol's rule from the fake's boxes of the base and the faces,
+            // and a length that makes no prism the rules admit is the base's doing.
+            let regions = swept_faces(faces)?;
+            flat_check(
+                "PrismThroughAll",
+                silico_protocol::check_leaves_plane(
+                    "direction",
+                    regions.plane.normal(),
+                    *direction,
+                ),
+                "direction",
+            )?;
+            let [low, high] = Symbolic::read(base)?.summary().bounds.unwrap_or_default();
+            let [f_low, f_high] = Symbolic::read(faces)?.summary().bounds.unwrap_or_default();
+            let around = [
+                [0, 1, 2].map(|k| low[k].min(f_low[k])),
+                [0, 1, 2].map(|k| high[k].max(f_high[k])),
+            ];
+            let length = silico_protocol::through_all_length(around)
+                .map_err(|invalid| crate::kernel::refused("through-all prism", None, invalid))?;
+            let vector = direction.map(|c| c * length);
+            silico_protocol::check_prism([0.0; 3], vector).map_err(|invalid| {
+                crate::kernel::refused(
+                    "through-all prism",
+                    None,
+                    silico_protocol::InvalidParameter {
+                        parameter: "base",
+                        message: invalid.message,
+                    },
+                )
+            })?;
+            swept(
+                faces,
+                Sweep::Prism {
+                    start: [0.0; 3],
+                    vector,
+                },
+            )
+        }
+        Op::Revolution {
+            faces,
+            axis,
+            start,
+            angle,
+        } => swept(
+            faces,
+            Sweep::Revolution {
+                axis: *axis,
+                start: *start,
+                angle: *angle,
+            },
+        ),
         Op::Summarize { shape } => Ok(Reply::Summary(Symbolic::read(shape)?.summary())),
         Op::Echo { data } => Ok(Reply::Echo { data: data.clone() }),
         other => Err(Error::new(
@@ -560,6 +638,293 @@ fn answer(op: &Op) -> Result<Reply, Error> {
             format!("the fake kernel doesn't do {}", other.name()),
         )
         .with_suggestion("run this test on a real kernel worker")),
+    }
+}
+
+/// The fake's sweep of `faces`, which must be faces a fake kernel made from regions, as the
+/// kernel refuses a shape that isn't faces.
+fn swept(faces: &ShapeData, sweep: Sweep) -> Result<Reply, Error> {
+    let regions = swept_faces(faces)?;
+    let normal = regions.plane.normal();
+    match sweep {
+        Sweep::Prism { vector, .. } => flat_check(
+            "Prism",
+            silico_protocol::check_leaves_plane("vector", normal, vector),
+            "vector",
+        )?,
+        Sweep::Revolution { axis, .. } => flat_check(
+            "Revolution",
+            silico_protocol::check_axis_in_plane(normal, axis.direction),
+            "axis",
+        )?,
+    }
+    let made = Symbolic::read(faces)?;
+    let layout = FacesLayout::of(&regions);
+    let numbers = SweepNumbers::of(&layout, sweep.kind());
+    let history = History {
+        inputs: vec![numbers.fates()],
+        result: numbers.counts,
+        ends: Ends::default(),
+        topology: numbers.topology(&layout),
+    };
+    let Symbolic(mut steps) = made;
+    steps.push(Step::Sweep { input: 0, sweep });
+    Ok(Reply::Built(BuiltData {
+        shape: Symbolic(steps).shape(),
+        history,
+    }))
+}
+
+/// The regions of `faces`, if they're faces a fake kernel made from regions, as the kernel
+/// refuses a shape that isn't faces.
+fn swept_faces(faces: &ShapeData) -> Result<FaceRegions, Error> {
+    let made = Symbolic::read(faces)?;
+    match made.0.as_slice() {
+        [Step::Faces(regions)] => Ok(regions.as_ref().clone()),
+        _ => Err(Error::new(
+            ErrorCode::InvalidInput,
+            format!("a sweep takes a profile's faces, got {}", made.describe()),
+        )
+        .with_parameter("faces")
+        .with_suggestion("sweep the faces the kernel made of a profile")),
+    }
+}
+
+/// A sweep the plane checks refuse, as the kernel refuses it: its `Refusal::SweepFlat`,
+/// worded by the same path a worker's reply takes (`worker::failure_error`), so the two
+/// can't drift.
+fn flat_check(
+    op: &str,
+    checked: Result<(), silico_protocol::InvalidParameter>,
+    parameter: &str,
+) -> Result<(), Error> {
+    checked.map_err(|invalid| {
+        crate::worker::failure_error(
+            op,
+            silico_protocol::Failure::new(silico_protocol::Refusal::SweepFlat {
+                parameter: parameter.to_owned(),
+                message: invalid.message,
+            }),
+        )
+    })
+}
+
+/// A sweep of faces, as the fake keeps it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Sweep {
+    Prism { start: [f64; 3], vector: [f64; 3] },
+    Revolution { axis: Axis, start: f64, angle: f64 },
+}
+
+impl Sweep {
+    fn kind(&self) -> SweepKind {
+        match *self {
+            Sweep::Prism { .. } => SweepKind::Prism,
+            Sweep::Revolution { angle, .. } => SweepKind::of_turn(angle),
+        }
+    }
+
+    /// Whether the kernel's rules accept its values.
+    fn checked(&self) -> bool {
+        match *self {
+            Sweep::Prism { start, vector } => silico_protocol::check_prism(start, vector).is_ok(),
+            Sweep::Revolution { axis, start, angle } => {
+                silico_protocol::check_revolution(axis.origin, axis.direction, start, angle).is_ok()
+            }
+        }
+    }
+
+    /// Whether it sweeps faces whose plane's normal is `normal` into something with a
+    /// volume, by the kernel's plane checks: a prism out of the plane, a turn about an axis
+    /// in it.
+    fn leaves(&self, normal: [f64; 3]) -> bool {
+        match *self {
+            Sweep::Prism { vector, .. } => {
+                silico_protocol::check_leaves_plane("vector", normal, vector).is_ok()
+            }
+            Sweep::Revolution { axis, .. } => {
+                silico_protocol::check_axis_in_plane(normal, axis.direction).is_ok()
+            }
+        }
+    }
+
+    /// Its values, in the order a shape's bytes write them.
+    fn values(&self) -> Vec<f64> {
+        match *self {
+            Sweep::Prism { start, vector } => start.into_iter().chain(vector).collect(),
+            Sweep::Revolution { axis, start, angle } => axis
+                .origin
+                .into_iter()
+                .chain(axis.direction)
+                .chain([start, angle])
+                .collect(),
+        }
+    }
+
+    fn word(&self) -> &'static str {
+        match self {
+            Sweep::Prism { .. } => "prism",
+            Sweep::Revolution { .. } => "revolution",
+        }
+    }
+
+    fn parse(word: &str, v: &[f64]) -> Option<Self> {
+        let sweep = match (word, v) {
+            ("prism", &[sx, sy, sz, vx, vy, vz]) => Sweep::Prism {
+                start: [sx, sy, sz],
+                vector: [vx, vy, vz],
+            },
+            ("revolution", &[ox, oy, oz, dx, dy, dz, start, angle]) => Sweep::Revolution {
+                axis: Axis {
+                    origin: [ox, oy, oz],
+                    direction: [dx, dy, dz],
+                },
+                start,
+                angle,
+            },
+            _ => return None,
+        };
+        sweep.checked().then_some(sweep)
+    }
+}
+
+/// How the fake numbers a sweep's result, from its faces' F faces, E edges, and V vertices.
+/// A prism or a turn: side faces 1..=E (edge i's is face i), then the start faces, then the
+/// end faces; start edges 1..=E, end edges E+1..=2E, side edges after them (vertex j's is
+/// 2E + j); start vertices 1..=V, end vertices V+1..=2V; face k's solid k. A whole turn:
+/// faces 1..=E (edge i's), seams 1..=E (edge i's start), circles E+1..=E+V (vertex j's
+/// side), vertices 1..=V (each vertex its own start).
+struct SweepNumbers {
+    whole: bool,
+    faces: u32,
+    edges: u32,
+    vertices: u32,
+    counts: ElementCounts,
+}
+
+impl SweepNumbers {
+    fn of(layout: &FacesLayout, kind: SweepKind) -> Self {
+        let ElementCounts {
+            faces: f,
+            edges: e,
+            vertices: v,
+            ..
+        } = layout.counts;
+        let whole = kind == SweepKind::WholeTurn;
+        let counts = if whole {
+            ElementCounts {
+                faces: e,
+                edges: e.saturating_add(v),
+                vertices: v,
+                solids: f,
+            }
+        } else {
+            ElementCounts {
+                faces: f.saturating_mul(2).saturating_add(e),
+                edges: e.saturating_mul(2).saturating_add(v),
+                vertices: v.saturating_mul(2),
+                solids: f,
+            }
+        };
+        Self {
+            whole,
+            faces: f,
+            edges: e,
+            vertices: v,
+            counts,
+        }
+    }
+
+    fn fates(&self) -> InputHistory {
+        let (f, e, v) = (self.faces, self.edges, self.vertices);
+        let r = |kind, index| Reported {
+            element: ElementRef { kind, index },
+            position: 1,
+        };
+        let fate = |start: Option<Reported>, mut generated: Vec<Reported>| {
+            generated.sort();
+            ElementFate {
+                kept: None,
+                modified: start.into_iter().collect(),
+                generated,
+            }
+        };
+        use ElementKind::{Edge, Face, Solid, Vertex};
+        if self.whole {
+            return InputHistory {
+                faces: (1..=f).map(|_| ElementFate::default()).collect(),
+                edges: (1..=e)
+                    .map(|i| fate(Some(r(Edge, i)), vec![r(Face, i)]))
+                    .collect(),
+                vertices: (1..=v)
+                    .map(|j| fate(Some(r(Vertex, j)), vec![r(Edge, e + j)]))
+                    .collect(),
+            };
+        }
+        InputHistory {
+            faces: (1..=f)
+                .map(|k| fate(Some(r(Face, e + k)), vec![r(Face, e + f + k), r(Solid, k)]))
+                .collect(),
+            edges: (1..=e)
+                .map(|i| fate(Some(r(Edge, i)), vec![r(Edge, e + i), r(Face, i)]))
+                .collect(),
+            vertices: (1..=v)
+                .map(|j| {
+                    fate(
+                        Some(r(Vertex, j)),
+                        vec![r(Vertex, v + j), r(Edge, 2 * e + j)],
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    /// How the result's elements bound each other, by the numbering above, from the faces'.
+    fn topology(&self, layout: &FacesLayout) -> Topology {
+        let (e, v) = (self.edges, self.vertices);
+        let sorted = |mut list: Vec<u32>| {
+            list.sort_unstable();
+            list
+        };
+        let input = &layout.topology;
+        let mut topology = Topology::default();
+        // Each edge's face: its start and end (or its seam), and its vertices' sides.
+        for (i, ends) in (1u32..).zip(&input.edge_vertices) {
+            let sides = ends
+                .iter()
+                .map(|&j| if self.whole { e + j } else { 2 * e + j });
+            let edges: Vec<u32> = if self.whole {
+                std::iter::once(i).chain(sides).collect()
+            } else {
+                [i, e + i].into_iter().chain(sides).collect()
+            };
+            topology.outer_edges.push(sorted(edges.clone()));
+            topology.face_edges.push(edges);
+        }
+        if !self.whole {
+            for shift in [0, e] {
+                for (all, outer) in input.face_edges.iter().zip(&input.outer_edges) {
+                    topology
+                        .face_edges
+                        .push(all.iter().map(|&i| i + shift).collect());
+                    topology
+                        .outer_edges
+                        .push(sorted(outer.iter().map(|&i| i + shift).collect()));
+                }
+            }
+        }
+        let shifted = |ends: &Vec<u32>, by: u32| ends.iter().map(|&j| j + by).collect();
+        topology
+            .edge_vertices
+            .extend(input.edge_vertices.iter().map(|ends| shifted(ends, 0)));
+        if !self.whole {
+            topology
+                .edge_vertices
+                .extend(input.edge_vertices.iter().map(|ends| shifted(ends, v)));
+        }
+        let circle = |j: u32| if self.whole { vec![j] } else { vec![j, v + j] };
+        topology.edge_vertices.extend((1..=v).map(circle));
+        topology
     }
 }
 
@@ -609,6 +974,21 @@ fn sum(a: ElementCounts, b: ElementCounts) -> ElementCounts {
         edges: a.edges.saturating_add(b.edges),
         vertices: a.vertices.saturating_add(b.vertices),
         solids: a.solids.saturating_add(b.solids),
+    }
+}
+
+/// A boolean's counts, as the fake models it: both inputs' faces, edges, and vertices, and
+/// the solids of one that met: a fuse's one (none of none), a cut's and a common's its
+/// base's. So a boolean of the fake is one solid, as D2 holds them (`sweep`'s checks): the
+/// fake can't model a split, which tests of that rule build on the real kernel or write by
+/// hand.
+fn boolean_counts(op: BooleanOp, a: ElementCounts, b: ElementCounts) -> ElementCounts {
+    ElementCounts {
+        solids: match op {
+            BooleanOp::Fuse => u32::from(a.solids > 0 || b.solids > 0),
+            BooleanOp::Cut | BooleanOp::Common => a.solids,
+        },
+        ..sum(a, b)
     }
 }
 
@@ -748,6 +1128,11 @@ enum Step {
         base: usize,
         tool: usize,
     },
+    /// A sweep of the faces of the step before it: faces, and only faces, are swept.
+    Sweep {
+        input: usize,
+        sweep: Sweep,
+    },
     /// The fake's fillet or chamfer of the step before it: of `edges`, by `size` (a
     /// fillet's radius, an equal chamfer's distance). Every element is kept, as numbered;
     /// its measures are its input's.
@@ -821,6 +1206,10 @@ impl Symbolic {
                 base: base + shift,
                 tool: tool + shift,
             },
+            Step::Sweep { input, sweep } => Step::Sweep {
+                input: input + shift,
+                sweep,
+            },
             Step::Dress {
                 chamfer,
                 input,
@@ -859,6 +1248,12 @@ impl Symbolic {
                 } => text.push_str(&format!("translate {input} {x} {y} {z}")),
                 Step::Boolean { op, base, tool } => {
                     text.push_str(&format!("{} {base} {tool}", op.word()));
+                }
+                Step::Sweep { input, sweep } => {
+                    text.push_str(&format!("{} {input}", sweep.word()));
+                    for value in sweep.values() {
+                        text.push_str(&format!(" {value}"));
+                    }
                 }
                 Step::Dress {
                     chamfer,
@@ -922,6 +1317,14 @@ impl Symbolic {
                 Step::Dress { input, .. } => (index > 0 && *input == index - 1)
                     .then(|| sizes.get(*input).map(|s| s + 1))
                     .flatten(),
+                // Faces, and only faces, are swept: the step just before.
+                Step::Sweep { input, sweep } => (index > 0
+                    && *input == index - 1
+                    && matches!(
+                        steps.get(*input),
+                        Some(Step::Faces(regions)) if sweep.leaves(regions.plane.normal())
+                    ))
+                .then_some(2),
             };
             sizes.push(size.ok_or_else(refused)?);
             steps.push(step);
@@ -953,12 +1356,7 @@ impl Symbolic {
                     return Err(refused());
                 }
             }
-            counts.push(match step {
-                Step::Primitive(primitive) => primitive_counts(primitive),
-                Step::Faces(regions) => FacesLayout::of(regions).counts,
-                Step::Translate { input, .. } | Step::Dress { input, .. } => of(*input),
-                Step::Boolean { base, tool, .. } => sum(of(*base), of(*tool)),
-            });
+            counts.push(step_counts(&made.0, step, of));
         }
         // One shape, every step part of it, and every number as `text` writes it.
         if sizes.last() != Some(&made.0.len()) || made.text().as_bytes() != bytes {
@@ -971,13 +1369,7 @@ impl Symbolic {
         let mut counts: Vec<ElementCounts> = Vec::with_capacity(self.0.len());
         for step in &self.0 {
             let of = |i: usize| counts.get(i).copied().unwrap_or_default();
-            let made = match step {
-                Step::Primitive(primitive) => primitive_counts(primitive),
-                Step::Faces(regions) => FacesLayout::of(regions).counts,
-                Step::Translate { input, .. } | Step::Dress { input, .. } => of(*input),
-                Step::Boolean { base, tool, .. } => sum(of(*base), of(*tool)),
-            };
-            counts.push(made);
+            counts.push(step_counts(&self.0, step, of));
         }
         counts.last().copied().unwrap_or_default()
     }
@@ -1001,6 +1393,14 @@ impl Symbolic {
                     (layout.topology, layout.counts)
                 }
                 Step::Translate { input, .. } | Step::Dress { input, .. } => of(*input),
+                Step::Sweep { input, sweep } => match self.0.get(*input) {
+                    Some(Step::Faces(regions)) => {
+                        let layout = FacesLayout::of(regions);
+                        let numbers = SweepNumbers::of(&layout, sweep.kind());
+                        (numbers.topology(&layout), numbers.counts)
+                    }
+                    _ => Default::default(),
+                },
                 Step::Boolean { base, tool, .. } => {
                     let ((mut topology, a), (tool, b)) = (of(*base), of(*tool));
                     let tool = shifted(&tool, a);
@@ -1024,8 +1424,18 @@ impl Symbolic {
                 Step::Primitive(primitive) => Measured::primitive(primitive),
                 Step::Faces(regions) => Measured::faces(regions),
                 Step::Translate { input, offset } => of(*input).moved(*offset),
-                Step::Boolean { base, tool, .. } => of(*base).with(of(*tool)),
+                Step::Boolean { op, base, tool } => {
+                    let swept = matches!(self.0.get(*tool), Some(Step::Sweep { .. }));
+                    match op {
+                        BooleanOp::Cut if swept => of(*base).less(of(*tool)),
+                        _ => of(*base).with(of(*tool)),
+                    }
+                }
                 Step::Dress { input, .. } => of(*input),
+                Step::Sweep { input, sweep } => match self.0.get(*input) {
+                    Some(Step::Faces(regions)) => Measured::swept(regions, sweep),
+                    _ => Measured::default(),
+                },
             };
             measured.push(made);
         }
@@ -1078,6 +1488,14 @@ impl Symbolic {
                         parts.push(Part::Text(", ".to_owned()));
                         parts.push(Part::Step(*base));
                     }
+                    Some(Step::Sweep { input, sweep }) => {
+                        out.push_str(sweep.word());
+                        out.push('(');
+                        let values: Vec<String> =
+                            sweep.values().iter().map(f64::to_string).collect();
+                        parts.push(Part::Text(format!(", {})", values.join(", "))));
+                        parts.push(Part::Step(*input));
+                    }
                     Some(Step::Dress {
                         chamfer,
                         input,
@@ -1094,6 +1512,22 @@ impl Symbolic {
             }
         }
         out
+    }
+}
+
+/// The counts of `step`'s shape, from those of the steps before it (`of`), in `steps`.
+fn step_counts(steps: &[Step], step: &Step, of: impl Fn(usize) -> ElementCounts) -> ElementCounts {
+    match step {
+        Step::Primitive(primitive) => primitive_counts(primitive),
+        Step::Faces(regions) => FacesLayout::of(regions).counts,
+        Step::Translate { input, .. } | Step::Dress { input, .. } => of(*input),
+        Step::Boolean { op, base, tool } => boolean_counts(*op, of(*base), of(*tool)),
+        Step::Sweep { input, sweep } => match steps.get(*input) {
+            Some(Step::Faces(regions)) => {
+                SweepNumbers::of(&FacesLayout::of(regions), sweep.kind()).counts
+            }
+            _ => ElementCounts::default(),
+        },
     }
 }
 
@@ -1238,6 +1672,77 @@ impl Measured {
         }
     }
 
+    /// A sweep's measures, the fake's own model, by formula from its faces' area A,
+    /// perimeter P, and box. A prism: A times its height along the plane's normal, 2A plus P
+    /// times its length, the box of the faces at its start and its end, and the centre of
+    /// that box (exact for a rectangle swept square). A revolution, by Pappus's theorems with
+    /// the faces' box centre at distance r̄ from the axis: A·r̄·θ, P·r̄·θ (and 2A, short of a
+    /// whole turn), the centre where the axis's point is, and a cube about it reaching as far
+    /// as the faces' box's farthest corner.
+    fn swept(regions: &FaceRegions, sweep: &Sweep) -> Self {
+        let faces = Measured::faces(regions);
+        let mut perimeter = 0.0;
+        for region in &regions.regions {
+            for curves in region.loops() {
+                perimeter += area_and_perimeter(curves).1;
+            }
+        }
+        let [low, high] = faces.bounds;
+        let middle = [0, 1, 2].map(|k| (low[k] + high[k]) / 2.0);
+        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let size = |a: [f64; 3]| dot(a, a).sqrt();
+        let (volume, area, center, bounds) = match *sweep {
+            Sweep::Prism { start, vector } => {
+                let height = dot(vector, regions.plane.normal()).abs();
+                let at = |p: [f64; 3], by: [f64; 3]| [0, 1, 2].map(|k| p[k] + by[k]);
+                let end = at(start, vector);
+                let lowest = [0, 1, 2].map(|k| (low[k] + start[k]).min(low[k] + end[k]));
+                let highest = [0, 1, 2].map(|k| (high[k] + start[k]).max(high[k] + end[k]));
+                (
+                    faces.area * height,
+                    2.0 * faces.area + perimeter * size(vector),
+                    [0, 1, 2].map(|k| (lowest[k] + highest[k]) / 2.0),
+                    [lowest, highest],
+                )
+            }
+            Sweep::Revolution { axis, angle, .. } => {
+                let from = |p: [f64; 3]| {
+                    let w = [0, 1, 2].map(|k| p[k] - axis.origin[k]);
+                    let along = dot(w, axis.direction);
+                    size([0, 1, 2].map(|k| w[k] - along * axis.direction[k]))
+                };
+                let radius = from(middle);
+                let reach = (0..8)
+                    .map(|c: usize| {
+                        let corner =
+                            [0, 1, 2].map(|k| if c >> k & 1 == 1 { high[k] } else { low[k] });
+                        size([0, 1, 2].map(|k| corner[k] - axis.origin[k]))
+                    })
+                    .fold(0.0, f64::max);
+                let caps = if silico_protocol::is_whole_turn(angle) {
+                    0.0
+                } else {
+                    2.0 * faces.area
+                };
+                (
+                    faces.area * radius * angle,
+                    perimeter * radius * angle + caps,
+                    axis.origin,
+                    [
+                        axis.origin.map(|c| c - reach),
+                        axis.origin.map(|c| c + reach),
+                    ],
+                )
+            }
+        };
+        Measured {
+            volume,
+            area,
+            moment: center.map(|c| c * volume),
+            bounds,
+        }
+    }
+
     fn moved(self, offset: [f64; 3]) -> Self {
         let [low, high] = self.bounds;
         Measured {
@@ -1247,6 +1752,30 @@ impl Measured {
                 [0, 1, 2].map(|i| high[i] + offset[i]),
             ],
             ..self
+        }
+    }
+
+    /// A shape's measures less what of `tool` lies in its box, as if the tool were spread
+    /// evenly through its own box and the shape filled its: its volume and moment less the
+    /// tool's in proportion to the share of the tool's box inside the shape's, its area
+    /// more by that share of the tool's, its box its own. Exact for a prism of a rectangle
+    /// cut square into a box (a pocket); the fake's own model otherwise.
+    fn less(self, tool: Measured) -> Self {
+        let ([a_low, a_high], [b_low, b_high]) = (self.bounds, tool.bounds);
+        let size = |low: [f64; 3], high: [f64; 3]| -> f64 {
+            (0..3).map(|k| (high[k] - low[k]).max(0.0)).product()
+        };
+        let inside = size(
+            [0, 1, 2].map(|k| a_low[k].max(b_low[k])),
+            [0, 1, 2].map(|k| a_high[k].min(b_high[k])),
+        );
+        let whole = size(b_low, b_high);
+        let share = if whole > 0.0 { inside / whole } else { 0.0 };
+        Measured {
+            volume: self.volume - share * tool.volume,
+            area: self.area + share * tool.area,
+            moment: [0, 1, 2].map(|i| self.moment[i] - share * tool.moment[i]),
+            bounds: self.bounds,
         }
     }
 
@@ -1323,6 +1852,16 @@ fn parse_step(line: &str) -> Option<Step> {
         ("translate", [input, x, y, z]) => Step::Translate {
             input: index(input)?,
             offset: [number(x)?, number(y)?, number(z)?],
+        },
+        ("prism" | "revolution", [input, values @ ..]) => Step::Sweep {
+            input: index(input)?,
+            sweep: Sweep::parse(
+                name,
+                &values
+                    .iter()
+                    .map(|w| number(w))
+                    .collect::<Option<Vec<_>>>()?,
+            )?,
         },
         ("fillet" | "chamfer", [input, size, edges]) => Step::Dress {
             chamfer: name == "chamfer",

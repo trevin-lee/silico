@@ -112,6 +112,17 @@ fn write(name: &Name, out: &mut String) {
             write(name, out);
             out.push_str(&format!(";D{:x}", ordinal.get()));
         }
+        // FreeCAD names a sketch's geometry by its facade ID, `g<id>`, a vertex by its
+        // geometry's and its place (`g4v2`), with the sketch's op code: Silico's point has
+        // its own ID, so `g<id>v`.
+        Name::Sketch { kind, id, .. } => {
+            out.push('g');
+            out.push_str(id.as_str());
+            if *kind == crate::kernel::ElementKind::Vertex {
+                out.push('v');
+            }
+            out.push_str(";SKT");
+        }
     }
 }
 
@@ -202,6 +213,28 @@ mod tests {
                 "Edge999;;:L#1dae4;FUS;:H:d,E",
                 "g4v2;SKT;:H1234,F;:H5678:2,E;:G0(g1;SKT;:H9012,E);XTR;:H3456:2,F",
             ]
+        );
+    }
+
+    #[test]
+    fn a_sketchs_edge_is_g_and_its_id_and_a_vertex_adds_v() {
+        // FreeCAD names a sketch's edge `g<id>` and a vertex `g<id>v<pos>`, with the
+        // sketch's op code (docs/ports/sketch-features.md); Silico's point has its own ID,
+        // so `g<id>v`.
+        use crate::document::{ElementId, FeatureId};
+        use crate::kernel::ElementKind;
+        let sketch = |kind, id| Name::Sketch {
+            feature: FeatureId::new("ssssssss").unwrap(),
+            kind,
+            id: ElementId::new(id).unwrap(),
+        };
+        assert_eq!(
+            text(&sketch(ElementKind::Edge, "na000001")),
+            "gna000001;SKT"
+        );
+        assert_eq!(
+            text(&sketch(ElementKind::Vertex, "pa000001")),
+            "gpa000001v;SKT"
         );
     }
 

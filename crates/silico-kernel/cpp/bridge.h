@@ -44,6 +44,8 @@ static void trycatch(Try &&func, Fail &&fail) noexcept try {
 namespace silico {
 
 struct Measures;
+struct Bounds;
+struct Flat;
 struct Point3;
 struct Amounts;
 struct FreecadMeasures;
@@ -72,9 +74,18 @@ std::unique_ptr<Shape> make_cylinder_directly(double radius, double height);
 std::unique_ptr<Shape> make_cone(double radius1, double radius2, double height);
 std::unique_ptr<Shape> make_torus(double major_radius, double minor_radius);
 
-// Volume, area (each integrated to a relative precision of 1e-9), center of mass, and
-// the numbers of distinct faces, edges, and vertices.
-Measures measure(const Shape &shape);
+// Volume, area (each integrated to the relative `precision`), center of mass, the
+// numbers of distinct faces, edges, and vertices, and the tight bounding box.
+Measures measure(const Shape &shape, double precision);
+
+// The unit normal of the planes the shape's faces lie on (each face's surface's, in place),
+// if every face lies on a plane, all of them parallel (within Precision::Angular()); not
+// flat otherwise, or if it has no faces.
+Flat flat_normal(const Shape &shape);
+
+// The tight box of the shape's geometry, as measure's (Shape.optimalBoundingBox(False,
+// False)), if it has any.
+Bounds tight_bounds(const Shape &shape);
 
 // The volume and area by OCCT's quick fixed-order integration: up to 1% off on faces
 // trimmed by curves, and further on broken shapes (a "solid" of volume -2e-4 reads 1.9).
@@ -201,6 +212,23 @@ std::unique_ptr<Shape> extrude(const Shape &face, double dx, double dy, double d
 std::unique_ptr<Shape> revolve(const Shape &face, Point3 origin, Point3 direction,
                                double radians, rust::Vec<HistoryEntry> &history,
                                rust::Vec<uint32_t> &start, rust::Vec<uint32_t> &end);
+
+// `faces` (a profile's faces, or a compound of them) moved by `start`, then swept along
+// `vector` (BRepPrimAPI_MakePrism, as FreeCAD's makeElementPrism, on the moved faces, as
+// FreeCAD's symmetric and two-sided pads move theirs). Appends each of the faces' faces,
+// edges, and vertices' start counterpart (FirstShape) as Modified, end counterpart
+// (LastShape) as Generated, and sides (Generated) to `history`, 0 where the result doesn't
+// have one.
+std::unique_ptr<Shape> sweep_prism(const Shape &faces, Point3 start, Point3 vector,
+                                   rust::Vec<HistoryEntry> &history);
+
+// `faces` turned `start` radians about the axis through `origin` along `direction`, then
+// swept `angle` radians about it (BRepPrimAPI_MakeRevol, as FreeCAD's makeElementRevolve).
+// History as sweep_prism's; an element whose end is its start (on the axis) reports only
+// the start.
+std::unique_ptr<Shape> sweep_revolution(const Shape &faces, Point3 origin, Point3 direction,
+                                        double start, double angle,
+                                        rust::Vec<HistoryEntry> &history);
 
 // Fuses, cuts, or intersects `base` and `tool` with OCCT's Boolean Operations, as FreeCAD
 // does (non-destructive, OCCT's default fuzzy value), but single-threaded. Appends the

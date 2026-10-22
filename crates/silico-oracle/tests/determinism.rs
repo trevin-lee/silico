@@ -1,7 +1,8 @@
 //! determinism_sweep (docs/roadmap/m1-kernel.md, M1.9): every oracle case, and the suite's
 //! generated ones, built twice on fresh kernel workers (the second in reverse order, after
 //! the others) gives byte-identical B-reps, histories (each result's fates, counts, and
-//! ends, and, beside them, its topology), summaries, FreeCAD-style measures, and meshes.
+//! ends, and, beside them, its topology), summaries, FreeCAD-style measures, and meshes;
+//! and so does every sketch-feature case (M3.6), its document rebuilt twice by recompute.
 //! Their digests match a committed reference, recorded on the Mac, so CI on Linux checks
 //! that both platforms build every case the same, bit for bit. Rerecord (only with the
 //! maintainer's agreement, as for tests/determinism/stress-reference.json) with
@@ -12,8 +13,11 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::Serialize;
-use silico_core::kernel::{ElementCounts, Ends, History, InputHistory, KernelWorker};
-use silico_oracle::{Case, generate, load, silico::build_with_history};
+use silico_core::command::rebuild;
+use silico_core::kernel::{ElementCounts, Ends, History, InputHistory, KernelWorker, ShapeData};
+use silico_core::pool::KernelPool;
+use silico_core::recompute::{FeatureOutcome, Recompute};
+use silico_oracle::{Case, features, generate, load, silico::build_with_history};
 
 const CASES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/oracle");
 const REFERENCE: &str = concat!(
@@ -70,40 +74,43 @@ fn digest_json(value: &impl Serialize) -> String {
 /// its summary, FreeCAD-style measures, and mesh (deflection 0.1), each or the code of the
 /// error that refused it.
 fn digests(kernel: &mut KernelWorker, case: &Case) -> BTreeMap<String, String> {
+    match build_with_history(kernel, &case.shape) {
+        Ok((shape, history)) => digests_of(kernel, &shape, history.as_ref()),
+        Err(e) => BTreeMap::from([("refused".to_owned(), e.code().as_str().to_owned())]),
+    }
+}
+
+/// What a shape built with `history` gives, digested, as [`digests`] says.
+fn digests_of(
+    kernel: &mut KernelWorker,
+    shape: &ShapeData,
+    history: Option<&History>,
+) -> BTreeMap<String, String> {
     let mut found = BTreeMap::new();
-    let shape = match build_with_history(kernel, &case.shape) {
-        Ok((shape, history)) => {
-            if let Some(history) = history {
-                // Exhaustive: a new field must be given a key.
-                let History {
-                    inputs,
-                    result,
-                    ends,
-                    topology,
-                } = &history;
-                found.insert(
-                    "history".to_owned(),
-                    digest_json(&Fates {
-                        inputs,
-                        result,
-                        ends,
-                    }),
-                );
-                found.insert("topology".to_owned(), digest_json(topology));
-            }
-            shape
-        }
-        Err(e) => {
-            found.insert("refused".to_owned(), e.code().as_str().to_owned());
-            return found;
-        }
-    };
+    if let Some(history) = history {
+        // Exhaustive: a new field must be given a key.
+        let History {
+            inputs,
+            result,
+            ends,
+            topology,
+        } = history;
+        found.insert(
+            "history".to_owned(),
+            digest_json(&Fates {
+                inputs,
+                result,
+                ends,
+            }),
+        );
+        found.insert("topology".to_owned(), digest_json(topology));
+    }
     found.insert(
         "brep".to_owned(),
         Digest::default().bytes(shape.brep().as_bytes()).hex(),
     );
     let refused = |e: silico_core::Error| format!("refused: {}", e.code().as_str());
-    let s = match kernel.summarize(&shape) {
+    let s = match kernel.summarize(shape) {
         Ok(s) => s,
         Err(e) => {
             found.insert("summary".to_owned(), refused(e));
@@ -120,7 +127,7 @@ fn digests(kernel: &mut KernelWorker, case: &Case) -> BTreeMap<String, String> {
         )
         .bytes(&[u8::from(s.valid)]);
     found.insert("summary".to_owned(), d.hex());
-    let measures = kernel.measure_as_freecad(&shape).map(|m| {
+    let measures = kernel.measure_as_freecad(shape).map(|m| {
         let mut d = Digest::default();
         d.f64s([m.volume, m.area])
             .f64s(m.center)
@@ -128,7 +135,7 @@ fn digests(kernel: &mut KernelWorker, case: &Case) -> BTreeMap<String, String> {
         d.hex()
     });
     found.insert("measures".to_owned(), measures.unwrap_or_else(refused));
-    let mesh = match kernel.tessellate(&shape, 0.1) {
+    let mesh = match kernel.tessellate(shape, 0.1) {
         Ok(mesh) => mesh,
         Err(e) => {
             found.insert("mesh".to_owned(), refused(e));
@@ -164,11 +171,34 @@ fn run(cases: &[Case]) -> Digests {
         .collect()
 }
 
+/// Every sketch-feature case's digests (M3.6): the document rebuilt by recompute on a fresh
+/// pool and sketch worker, each case's solid as its feature built it (its last step's
+/// history), digested on a fresh worker, under the case's name.
+fn run_features() -> Digests {
+    let cases = features::load(Path::new(CASES)).unwrap().unwrap();
+    let engine = Recompute::new(KernelPool::start().unwrap());
+    let model = rebuild(&engine, cases.document.clone()).unwrap().unwrap();
+    let mut kernel = KernelWorker::start().unwrap();
+    cases
+        .cases
+        .iter()
+        .map(|case| {
+            let digests = match model.outcome(&case.feature) {
+                Some(FeatureOutcome::Built { built, .. }) => {
+                    digests_of(&mut kernel, &built.shape, built.history.as_ref())
+                }
+                other => BTreeMap::from([("refused".to_owned(), format!("{other:?}"))]),
+            };
+            (case.name.clone(), digests)
+        })
+        .collect()
+}
+
 #[test]
 fn every_oracle_case_builds_the_same_every_time_and_everywhere() {
     let mut cases = load(Path::new(CASES)).unwrap();
     cases.extend(generate::cases(20_261_010, 40));
-    let first = run(&cases);
+    let mut first = run(&cases);
     let mut reversed = cases.clone();
     reversed.reverse();
     let second = run(&reversed);
@@ -177,6 +207,19 @@ fn every_oracle_case_builds_the_same_every_time_and_everywhere() {
             Some(digests),
             second.get(name),
             "{name} built differently on a fresh worker"
+        );
+    }
+    // The sketch-feature cases, the document rebuilt twice, each by a fresh engine.
+    let features = run_features();
+    assert_eq!(
+        features,
+        run_features(),
+        "a sketch-feature case built differently"
+    );
+    for (name, digests) in features {
+        assert!(
+            first.insert(name.clone(), digests).is_none(),
+            "{name} is a case twice"
         );
     }
     if std::env::var_os("SILICO_DETERMINISM_RECORD").is_some() {

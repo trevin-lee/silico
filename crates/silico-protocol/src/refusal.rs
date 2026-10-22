@@ -120,6 +120,11 @@ pub enum Refusal {
     /// begun, or one ended (by its end, a solve, a begin that found conflicts, or the
     /// worker's restart).
     NoDragSession { op: String },
+    /// A sweep of a profile's faces that would make a flat "solid": a prism along their
+    /// plane, or a revolution about an axis out of it (`parameter`, the request's field:
+    /// `vector`, `direction`, or `axis`). The core never sends one; the kernel refuses it
+    /// before OCCT, which builds a solid of volume 0 and calls it valid.
+    SweepFlat { parameter: String, message: String },
 }
 
 /// What OCCT gave back nothing of.
@@ -269,7 +274,8 @@ impl Refusal {
             | Refusal::EdgesRefused { .. }
             | Refusal::DeflectionInvalid { .. }
             | Refusal::DeflectionTooFine { .. }
-            | Refusal::NoDragSession { .. } => FailureKind::InvalidInput,
+            | Refusal::NoDragSession { .. }
+            | Refusal::SweepFlat { .. } => FailureKind::InvalidInput,
             Refusal::ResultInvalid { .. } => FailureKind::InvalidResult,
             Refusal::NoShape
             | Refusal::NothingReturned { .. }
@@ -334,7 +340,9 @@ impl Refusal {
     /// was refused.
     pub fn parameter(&self) -> Option<&str> {
         match self {
-            Refusal::InvalidParameter { parameter, .. } => Some(parameter),
+            Refusal::InvalidParameter { parameter, .. } | Refusal::SweepFlat { parameter, .. } => {
+                Some(parameter)
+            }
             Refusal::NoEdges { .. }
             | Refusal::EdgeMissing { .. }
             | Refusal::EdgeTwice { .. }
@@ -586,6 +594,17 @@ impl Refusal {
                 Some(
                     "begin the drag again: a drag ends at its end, at a solve, or when the sketch worker restarts"
                         .to_owned(),
+                ),
+            ),
+            Refusal::SweepFlat { parameter, message } => (
+                message.clone(),
+                Some(
+                    if parameter == "axis" {
+                        "turn the faces about a line in their plane"
+                    } else {
+                        "sweep the faces along a vector out of their plane"
+                    }
+                    .to_owned(),
                 ),
             ),
         };
@@ -930,6 +949,10 @@ mod tests {
             Refusal::NoDragSession {
                 op: "DragMove".to_owned(),
             },
+            Refusal::SweepFlat {
+                parameter: "axis".to_owned(),
+                message: "the revolution's axis leans out of the faces' plane".to_owned(),
+            },
         ]
     }
 
@@ -1038,6 +1061,7 @@ mod tests {
             Internal,          // Internal
             ResourceExhausted, // OutOfMemory
             InvalidInput,      // NoDragSession (new with M3.7: a request out of sequence)
+            InvalidInput,      // SweepFlat
         ];
         let refusals = every_refusal();
         assert_eq!(refusals.len(), kinds.len());
@@ -1084,6 +1108,7 @@ mod tests {
             None,               // Internal
             None,               // OutOfMemory
             None,               // NoDragSession
+            Some("axis"),       // SweepFlat
         ];
         let refusals = every_refusal();
         assert_eq!(refusals.len(), parameters.len());

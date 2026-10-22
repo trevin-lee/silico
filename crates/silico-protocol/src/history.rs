@@ -110,11 +110,14 @@ impl ElementCounts {
     }
 }
 
-/// The result's faces a sweep starts and ends with (an extrusion's bottom and top, a
-/// partial revolve's two sides), as OCCT's `FirstShape` and `LastShape` give them: its
-/// history doesn't name them otherwise (FreeCAD guesses the top by its plane). Each list
-/// is sorted; both are empty for an operation that isn't a sweep, and for a full revolve,
-/// which has no ends (docs/ports/extrude-revolve.md).
+/// The result's faces one of M1's polygon sweeps (`Op::Extrude`, `Op::Revolve`) starts and
+/// ends with (an extrusion's bottom and top, a partial revolve's two sides), as OCCT's
+/// `FirstShape` and `LastShape` give them: its history doesn't name them otherwise (FreeCAD
+/// guesses the top by its plane). Each list is sorted; both are empty for an operation that
+/// isn't one of those, and for a full revolve, which has no ends
+/// (docs/ports/extrude-revolve.md). The sweeps of a profile's faces (`Op::Prism`,
+/// `Op::Revolution`) report each element's start and end in its own fate instead
+/// ([`History::sweep_fault`]), and leave these empty.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ends {
     pub start: Vec<u32>,

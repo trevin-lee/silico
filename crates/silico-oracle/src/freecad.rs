@@ -12,7 +12,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use crate::case::Case;
 use crate::compare::Outcome;
 
 /// Names a `freecadcmd` to use instead of the workspace's pixi `oracle` environment's.
@@ -79,10 +78,11 @@ pub fn freecadcmd() -> Result<PathBuf, String> {
     }
 }
 
-/// What FreeCAD builds and measures for each of `cases`, in order. A case FreeCAD crashes
-/// or hangs on is [`Outcome::Lost`], saying how FreeCAD ended and what it last wrote, and
-/// the rest run in a new FreeCAD.
-pub fn run(cases: &[Case]) -> Result<Vec<Outcome>, String> {
+/// What FreeCAD builds and measures for each of `cases` (each a [`Case`](crate::Case), or
+/// anything that writes as one does: a name and a shape `oracle.py` builds), in order. A
+/// case FreeCAD crashes or hangs on is [`Outcome::Lost`], saying how FreeCAD ended and what
+/// it last wrote, and the rest run in a new FreeCAD.
+pub fn run<C: serde::Serialize>(cases: &[C]) -> Result<Vec<Outcome>, String> {
     let scratch = Scratch::new()?;
     let script = scratch.write("oracle.py", ORACLE)?;
     let json = serde_json::to_string(cases).map_err(|e| format!("can't write the cases: {e}"))?;

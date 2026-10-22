@@ -4,6 +4,11 @@
       "description": "An angle in degrees: a number, to at most 9 decimals (nanodegrees). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
       "type": "number"
     },
+    "Axis": {
+      "description": "What a revolve or groove turns about: x_axis (the sketch's, from its origin along +x), y_axis (along +y), or the ID of a line of the sketch, construction or not, from its `from` point to its `to`.",
+      "pattern": "^([0123456789abcdefghjkmnpqrstvwxyz]{8}|x_axis|y_axis)$",
+      "type": "string"
+    },
     "ChamferSize": {
       "additionalProperties": false,
       "description": "How far a chamfer cuts each edge back: along both its faces alike. (The uneven forms,\nmeasured from one of each edge's faces, are left for later: which face is the document's\nto name, not OCCT's order to pick.)",
@@ -35,7 +40,7 @@
       "type": "string"
     },
     "ElementName": {
-      "description": "An element of an earlier feature's solid, by its name in Silico's form (feature.type.Kind(...)), never by its number.",
+      "description": "An element of an earlier feature's solid, by its name in Silico's form (feature.type.Kind(...)), never by its number. A sketch's elements appear only as sources in what a feature made of them, by ID (sketch.sketch.Edge.<id>, sketch.sketch.Vertex.<id>), its only region sketch.sketch.Face1: a pad's side face is pad.pad.Face(G sketch.sketch.Edge.<id>).",
       "minLength": 1,
       "type": "string"
     },
@@ -369,6 +374,112 @@
             "size"
           ],
           "type": "object"
+        },
+        {
+          "description": "`sketch`'s profile swept along the sketch's normal as `extent` says, and fused with\n`base`'s solid, if it has one (left out when it has none).",
+          "properties": {
+            "base": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "extent": {
+              "$ref": "#/$defs/PadExtent"
+            },
+            "sketch": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "type": {
+              "const": "pad",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "sketch",
+            "extent"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "`sketch`'s profile swept against the sketch's normal as `extent` says, and cut from\n`base`'s solid.",
+          "properties": {
+            "base": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "extent": {
+              "$ref": "#/$defs/PocketExtent"
+            },
+            "sketch": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "type": {
+              "const": "pocket",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "base",
+            "sketch",
+            "extent"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "`sketch`'s profile turned about `axis` as `extent` says, and fused with `base`'s\nsolid, if it has one (left out when it has none).",
+          "properties": {
+            "axis": {
+              "$ref": "#/$defs/Axis"
+            },
+            "base": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "extent": {
+              "$ref": "#/$defs/TurnExtent"
+            },
+            "sketch": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "type": {
+              "const": "revolve",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "sketch",
+            "axis",
+            "extent"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "`sketch`'s profile turned about `axis` as `extent` says, and cut from `base`'s solid.",
+          "properties": {
+            "axis": {
+              "$ref": "#/$defs/Axis"
+            },
+            "base": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "extent": {
+              "$ref": "#/$defs/TurnExtent"
+            },
+            "sketch": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "type": {
+              "const": "groove",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "base",
+            "sketch",
+            "axis",
+            "extent"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -479,6 +590,73 @@
       "minLength": 1,
       "type": "string"
     },
+    "PadExtent": {
+      "description": "How far a pad goes from its sketch's plane: each form holds exactly the values it needs.\nLengths are above 0; `reversed` only where it changes the solid.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "`length` along the feature's direction, or against it when `reversed`.",
+          "properties": {
+            "length": {
+              "$ref": "#/$defs/Length"
+            },
+            "reversed": {
+              "type": "boolean"
+            },
+            "type": {
+              "const": "one_side",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "length",
+            "reversed"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "`length / 2` each way from the plane.",
+          "properties": {
+            "length": {
+              "$ref": "#/$defs/Length"
+            },
+            "type": {
+              "const": "symmetric",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "length"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "`length` along the feature's direction and `length2` against it.",
+          "properties": {
+            "length": {
+              "$ref": "#/$defs/Length"
+            },
+            "length2": {
+              "$ref": "#/$defs/Length"
+            },
+            "type": {
+              "const": "two_sides",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "length",
+            "length2"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "Plane": {
       "description": "The plane a sketch is drawn on: one of the origin's, oriented as FreeCAD's (D6). On\n`xy`, the sketch's x is +X and its y +Y (normal +Z); on `xz`, x is +X and y +Z (normal\n−Y); on `yz`, x is +Y and y +Z (normal +X).",
       "enum": [
@@ -487,6 +665,91 @@
         "yz"
       ],
       "type": "string"
+    },
+    "PocketExtent": {
+      "description": "How far a pocket goes from its sketch's plane: a pad's forms, or through everything of\nits base along its direction (against it when `reversed`).",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "`length` along the feature's direction, or against it when `reversed`.",
+          "properties": {
+            "length": {
+              "$ref": "#/$defs/Length"
+            },
+            "reversed": {
+              "type": "boolean"
+            },
+            "type": {
+              "const": "one_side",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "length",
+            "reversed"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "`length / 2` each way from the plane.",
+          "properties": {
+            "length": {
+              "$ref": "#/$defs/Length"
+            },
+            "type": {
+              "const": "symmetric",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "length"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "`length` along the feature's direction and `length2` against it.",
+          "properties": {
+            "length": {
+              "$ref": "#/$defs/Length"
+            },
+            "length2": {
+              "$ref": "#/$defs/Length"
+            },
+            "type": {
+              "const": "two_sides",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "length",
+            "length2"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Through everything of its base along the feature's direction, or against it when\n`reversed`.",
+          "properties": {
+            "reversed": {
+              "type": "boolean"
+            },
+            "type": {
+              "const": "through_all",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "reversed"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "SketchArc": {
       "additionalProperties": false,
@@ -1134,6 +1397,51 @@
         "inside"
       ],
       "type": "string"
+    },
+    "TurnExtent": {
+      "description": "How far a revolve or groove turns its profile: an angle above 0° and at most 360°.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "`angle` right-handed about the axis, or left-handed when `reversed`.",
+          "properties": {
+            "angle": {
+              "$ref": "#/$defs/Angle"
+            },
+            "reversed": {
+              "type": "boolean"
+            },
+            "type": {
+              "const": "one_side",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "angle",
+            "reversed"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "`angle / 2` each way from the sketch.",
+          "properties": {
+            "angle": {
+              "$ref": "#/$defs/Angle"
+            },
+            "type": {
+              "const": "symmetric",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "angle"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "Units": {
       "additionalProperties": false,

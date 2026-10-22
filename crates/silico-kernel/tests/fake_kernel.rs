@@ -229,3 +229,107 @@ fn faces_have_the_real_kernels_history_area_and_box() {
         }
     }
 }
+
+#[test]
+fn a_prism_and_a_turn_of_faces_have_the_real_kernels_counts_and_rule() {
+    // The fake numbers a sweep its own way, but its counts are the kernel's for a prism and
+    // for a turn with nothing on the axis, and both keep the design's rule; for a rectangle
+    // swept square, its measures are the kernel's too.
+    use silico_core::kernel::{Axis, SweepKind};
+    let real = pool();
+    let fake = FakeKernel::new(2).unwrap();
+    let axis = Axis {
+        origin: [-20.0, 0.0, 0.0],
+        direction: [0.0, 1.0, 0.0],
+    };
+    for plane in SketchPlane::ALL {
+        let sweep = |faces: &ShapeData, turn: bool| {
+            if turn {
+                KernelRequest::revolution(faces, axis, -0.25, 1.0).unwrap()
+            } else {
+                KernelRequest::prism(faces, [0.0, 0.0, 0.0], plane.normal().map(|c| 7.0 * c))
+                    .unwrap()
+            }
+        };
+        let mut sent = vec![regions(plane)];
+        sent.push(FaceRegions {
+            plane,
+            regions: vec![Region {
+                outer: vec![
+                    Curve::Line {
+                        start: [0.0, 0.0],
+                        end: [4.0, 0.0],
+                    },
+                    Curve::Line {
+                        start: [4.0, 0.0],
+                        end: [4.0, 3.0],
+                    },
+                    Curve::Line {
+                        start: [4.0, 3.0],
+                        end: [0.0, 3.0],
+                    },
+                    Curve::Line {
+                        start: [0.0, 3.0],
+                        end: [0.0, 0.0],
+                    },
+                ],
+                holes: vec![],
+            }],
+        });
+        for (n, sent) in sent.iter().enumerate() {
+            for turn in [false, true] {
+                // The axis, the line x = −20 along +y, lies in the XY plane only, clear of
+                // every region, as the fake assumes of a turn's axis.
+                if turn && plane != SketchPlane::Xy {
+                    continue;
+                }
+                let kind = if turn {
+                    SweepKind::Turn
+                } else {
+                    SweepKind::Prism
+                };
+                let real_faces =
+                    done(real.submit(real.generation(), KernelRequest::make_faces(sent).unwrap()));
+                let fake_faces =
+                    done(fake.submit(fake.generation(), KernelRequest::make_faces(sent).unwrap()));
+                let real_swept =
+                    done(real.submit(real.generation(), sweep(&real_faces.shape, turn)));
+                let fake_swept =
+                    done(fake.submit(fake.generation(), sweep(&fake_faces.shape, turn)));
+                let what = format!("{plane:?} regions {n}, {kind:?}");
+                assert_eq!(
+                    fake_swept.history.result, real_swept.history.result,
+                    "{what}"
+                );
+                assert_eq!(real_swept.history.sweep_fault(kind), None, "{what}");
+                assert_eq!(fake_swept.history.sweep_fault(kind), None, "{what}");
+                if n == 1 && !turn {
+                    let real_summary: ShapeSummary = done(real.submit(
+                        real.generation(),
+                        KernelRequest::summarize(&real_swept.shape),
+                    ));
+                    let fake_summary: ShapeSummary = done(fake.submit(
+                        fake.generation(),
+                        KernelRequest::summarize(&fake_swept.shape),
+                    ));
+                    assert!(
+                        (fake_summary.volume - real_summary.volume).abs()
+                            < 1e-9 * real_summary.volume,
+                        "{what}"
+                    );
+                    assert!(
+                        (fake_summary.area - real_summary.area).abs() < 1e-9 * real_summary.area,
+                        "{what}"
+                    );
+                    for (f, r) in fake_summary.center.iter().zip(&real_summary.center) {
+                        assert!((f - r).abs() < 1e-9, "{what}");
+                    }
+                    let (f, r) = (fake_summary.bounds.unwrap(), real_summary.bounds.unwrap());
+                    for (f, r) in f.iter().flatten().zip(r.iter().flatten()) {
+                        assert!((f - r).abs() < 1e-9, "{what}");
+                    }
+                }
+            }
+        }
+    }
+}

@@ -7,18 +7,32 @@
 //! kernel's own rules, every sketch holds together (`sketch_gate`), and every element a
 //! fillet or chamfer names is named as Silico names an edge (docs/ports/naming.md), by
 //! features before it. Whether a name finds its edge is the rebuild's to say: it's in the
-//! base's solid, which only a rebuild makes.
+//! base's solid, which only a rebuild makes. A pad, pocket, revolve, or groove
+//! (docs/design/m3.6-sketch-features.md, S1) sweeps a sketch before it, which it uses
+//! without consuming (any number of features may sweep one sketch), goes a length above 0
+//! and at most a kilometre or turns an angle above 0° and at most 360°, and turns about the
+//! sketch's x or y axis or a line of the sketch. What only a solve can tell (an axis whose
+//! ends the solve brings together) is the rebuild's.
 
 use silico_protocol::{ChamferSize, MAX_LENGTH, check_fillet_radius, check_offset, format_number};
 
 use super::json::shown;
-use super::model::{Document, FeatureId, ID_LENGTH, Operation};
+use super::model::{Axis, Document, ExtentValue, FeatureId, ID_LENGTH, Operation};
+use super::quantity::Length;
+use super::sketch::ElementKind as SketchElement;
 use crate::kernel::ElementKind;
-use crate::naming::{Maker, Name, TypeWord};
+use crate::naming::{Maker, Name, OpCode, TypeWord};
 use crate::{Error, ErrorCode};
 
 /// How many of a document's problems [`Invalid`] lists; it counts the rest.
 pub const PROBLEMS_LISTED: usize = 100;
+
+/// The farthest a pad or pocket may go, in nanometres: [`MAX_LENGTH`], a kilometre, each
+/// length and a two-sided prism's whole length alike.
+const MAX_SWEEP_NM: i64 = (MAX_LENGTH * 1e6) as i64;
+
+/// The most a revolve or groove may turn, in nanodegrees: a whole turn.
+const MAX_TURN_NDEG: i64 = 360 * 1_000_000_000;
 
 /// Why a document isn't valid: its problems, in timeline order, as `invalid_input` errors
 /// naming the feature and the field.
@@ -88,6 +102,33 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
             label(index),
             shown(features[index].name.as_str())
         )
+    };
+
+    // Each sketch's elements by ID, sorted once (stably, so each ID's first element heads
+    // its run), so an axis is found in its sketch by a search, not a scan: a scan per
+    // revolve took revolves × elements (break-it).
+    let elements: Vec<Vec<(u64, SketchElement)>> = features
+        .iter()
+        .map(|feature| match &feature.operation {
+            Operation::Sketch(sketch) => {
+                let mut elements: Vec<(u64, SketchElement)> = sketch
+                    .elements()
+                    .map(|(id, kind)| (bytes_key(id.as_str()), kind))
+                    .collect();
+                elements.sort_by_key(|&(key, _)| key);
+                elements
+            }
+            _ => Vec::new(),
+        })
+        .collect();
+    // The kind of sketch `used`'s first element with ID `id`, if it has one.
+    let element_of = |used: usize, id: &str| {
+        let list = elements.get(used)?;
+        let key = bytes_key(id);
+        let at = list.partition_point(|&(k, _)| k < key);
+        list.get(at)
+            .filter(|&&(k, _)| k == key)
+            .map(|&(_, kind)| kind)
     };
 
     let mut problems = Problems::default();
@@ -186,6 +227,57 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
                 )
             });
         }
+        // A sweep's extent: each length above 0 and at most a kilometre, and a two-sided
+        // prism's whole length too; an angle above 0° and at most a whole turn. Exactly, in
+        // the file's integers.
+        if let Some(extent) = feature.operation.extent() {
+            let mut lengths = Vec::new();
+            for (field, value) in extent.values() {
+                let parameter = format!("extent.{field}");
+                match value {
+                    ExtentValue::Length(length) if (1..=MAX_SWEEP_NM).contains(&length.nm()) => {
+                        lengths.push(length.nm());
+                    }
+                    ExtentValue::Length(length) => problems.add(|| {
+                        refuse(
+                            &parameter,
+                            format!(
+                                "{what} {parameter} must be a length above 0 mm and at most {} mm (a kilometre), got {length}",
+                                format_number(MAX_LENGTH)
+                            ),
+                            format!("give the {what} a valid {parameter}"),
+                        )
+                    }),
+                    ExtentValue::Angle(angle) if (1..=MAX_TURN_NDEG).contains(&angle.ndeg()) => {}
+                    ExtentValue::Angle(angle) => problems.add(|| {
+                        refuse(
+                            &parameter,
+                            format!(
+                                "{what} {parameter} must be an angle above 0° and at most 360°, got {angle}°"
+                            ),
+                            format!("give the {what} a valid {parameter}"),
+                        )
+                    }),
+                    ExtentValue::Reversed(_) => {}
+                }
+            }
+            // Two sides, each valid alone: the prism is as long as both.
+            if let [length, length2] = lengths[..]
+                && length + length2 > MAX_SWEEP_NM
+            {
+                problems.add(|| {
+                    refuse(
+                        "extent",
+                        format!(
+                            "{what} extent.length and extent.length2 together must be at most {} mm (a kilometre), the prism's length, got {}",
+                            format_number(MAX_LENGTH),
+                            Length::from_nm(length + length2)
+                        ),
+                        "shorten extent.length or extent.length2".to_owned(),
+                    )
+                });
+            }
+        }
         // The edges a fillet or chamfer names: at least one, each an edge's name, by
         // features before it, none twice.
         if matches!(
@@ -218,8 +310,11 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
                     refuse(
                         &parameter,
                         format!(
-                            "{parameter}, {}, isn't an edge's name: {error}",
-                            shown(edge.as_str())
+                            "{parameter}, {}, isn't an edge's name: {}{}, at column {}",
+                            shown(edge.as_str()),
+                            error.why,
+                            made_of_sketch(edge.as_str(), &feature.operation, features, &makers),
+                            error.column
                         ),
                         advice.to_owned(),
                     )
@@ -370,8 +465,146 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
                 }
             }
         }
+
+        // The sketch a sweep uses: a sketch before it. It isn't consumed, so any number of
+        // features may use it.
+        let Some(target) = feature.operation.sketch() else {
+            continue;
+        };
+        let sketch_advice = || "use the ID of a sketch before this feature".to_owned();
+        let used = holder(target);
+        match used {
+            None => problems.add(|| {
+                refuse(
+                    "sketch",
+                    format!("sketch {target} isn't the ID of any feature"),
+                    sketch_advice(),
+                )
+            }),
+            Some(used) if used == index => problems.add(|| {
+                refuse(
+                    "sketch",
+                    format!("sketch {target} is this feature: a feature can't use itself"),
+                    sketch_advice(),
+                )
+            }),
+            Some(used) if !matches!(features[used].operation, Operation::Sketch(_)) => problems
+                .add(|| {
+                    refuse(
+                        "sketch",
+                        format!(
+                            "sketch {target} is {}, a {}, not a sketch",
+                            described(used),
+                            features[used].operation.type_name()
+                        ),
+                        sketch_advice(),
+                    )
+                }),
+            Some(used) if used > index => problems.add(|| {
+                refuse(
+                    "sketch",
+                    format!(
+                        "sketch {target} is {}, which comes after this feature: a feature may use only features before it",
+                        described(used)
+                    ),
+                    "move this feature after the sketch it uses, or use a sketch before it"
+                        .to_owned(),
+                )
+            }),
+            Some(_) => {}
+        }
+        // The line it turns about: one of that sketch's, construction or not. (An axis
+        // naming an element of a sketch the feature can't use is still checked against it.)
+        let swept =
+            used.filter(|&used| used != index)
+                .and_then(|used| match &features[used].operation {
+                    Operation::Sketch(_) => Some(used),
+                    _ => None,
+                });
+        if let (Some(Axis::Line(line)), Some(used)) = (feature.operation.axis(), swept) {
+            let advice = || "name a line of the sketch, x_axis, or y_axis".to_owned();
+            match element_of(used, line.as_str()) {
+                Some(SketchElement::Line) => {}
+                Some(kind) => problems.add(|| {
+                    refuse(
+                        "axis",
+                        format!(
+                            "axis {line} is a {} of sketch {}: a {what} turns about a line",
+                            kind.noun(),
+                            label(used)
+                        ),
+                        advice(),
+                    )
+                }),
+                None => problems.add(|| {
+                    refuse(
+                        "axis",
+                        format!(
+                            "axis {line} isn't an element of sketch {}: a {what} turns about a line of its sketch, x_axis, or y_axis",
+                            label(used)
+                        ),
+                        advice(),
+                    )
+                }),
+            }
+        }
     }
     problems.into_result()
+}
+
+/// Where `text` names a sketch's edge whole (`s.sketch.Edge.<id>`, which the parser
+/// refuses: its elements are in no solid), and the fillet's or chamfer's base sweeps that
+/// sketch, what to write instead. Where the sweep starts at the sketch's plane (one side,
+/// or through all), the edge it made there from that curve, its start (design S4):
+/// ` (p.pad.Edge(M s.sketch.Edge.<id>))`, the rim where the sketch lies in the base's face.
+/// Where it starts elsewhere (symmetric, two sides), that edge is cut away wherever the
+/// base is, so no name is offered that might name nothing: only the form the feature's own
+/// edges take. Otherwise nothing.
+fn made_of_sketch(
+    text: &str,
+    operation: &Operation,
+    features: &[crate::document::Feature],
+    makers: &dyn Fn(&FeatureId) -> Option<Maker>,
+) -> String {
+    let sketch = text.get(..ID_LENGTH).and_then(FeatureId::new);
+    let Some(sketch) = sketch.filter(|s| makers(s) == Some(Maker::By(OpCode::Sketch))) else {
+        return String::new();
+    };
+    let is_edge = text
+        .strip_prefix(sketch.as_str())
+        .and_then(|rest| rest.strip_prefix(".sketch.Edge."))
+        .is_some_and(|id| crate::document::ElementId::new(id).is_some());
+    let base = operation
+        .inputs()
+        .first()
+        .and_then(|(_, base)| features.iter().find(|f| &f.id == *base));
+    use super::model::{Extent, PadExtent, PocketExtent, TurnExtent};
+    match base {
+        Some(base) if is_edge && base.operation.sketch() == Some(&sketch) => {
+            let word = Maker::of(&base.operation).type_word();
+            let at_its_plane = matches!(
+                base.operation.extent(),
+                Some(
+                    Extent::Pad(PadExtent::OneSide { .. })
+                        | Extent::Pocket(
+                            PocketExtent::OneSide { .. } | PocketExtent::ThroughAll { .. }
+                        )
+                        | Extent::Turn(TurnExtent::OneSide { .. })
+                )
+            );
+            if at_its_plane {
+                format!(" ({}.{word}.Edge(M {text}))", base.id)
+            } else {
+                format!(
+                    " (an edge {} made, as it names it: {}.{word}.Edge(...); its extent, {}, doesn't start at the sketch's plane, so no edge of it is the curve's own)",
+                    base.id,
+                    base.id,
+                    base.operation.extent().map_or("extent", |e| e.type_name())
+                )
+            }
+        }
+        _ => String::new(),
+    }
 }
 
 /// Whether `name` is one no map holds stable: a duplicate's (`~n`), or names, at its top or
@@ -382,10 +615,11 @@ fn unstable(name: &Name) -> bool {
     while let Some(name) = stack.pop() {
         match name {
             Name::Duplicate { .. } => return true,
+            // A sketch's only region is named `Face1`, by design (S4): stable.
             Name::Element {
-                made: TypeWord::Operation(_),
+                made: TypeWord::Operation(op),
                 ..
-            } => {
+            } if *op != OpCode::Sketch => {
                 return true;
             }
             _ => stack.extend(name.parts().into_iter().map(std::sync::Arc::as_ref)),
@@ -399,9 +633,13 @@ fn unstable(name: &Name) -> bool {
 const _: () = assert!(ID_LENGTH <= 8);
 
 fn key(id: &FeatureId) -> u64 {
-    id.as_str()
-        .bytes()
-        .fold(0, |key, byte| (key << 8) | u64::from(byte))
+    bytes_key(id.as_str())
+}
+
+/// An ID's characters' bytes as one number, a feature's or a sketch element's alike: the
+/// reader takes only IDs of [`ID_LENGTH`] ASCII characters.
+fn bytes_key(id: &str) -> u64 {
+    id.bytes().fold(0, |key, byte| (key << 8) | u64::from(byte))
 }
 
 /// A document the validation gate passed: the only kind recompute takes, so nothing is
