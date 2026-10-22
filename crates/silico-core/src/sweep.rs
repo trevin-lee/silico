@@ -8,7 +8,7 @@
 //! result's checks of each feature when its outcome is decided, from its solid's stored
 //! measures, however the solid was had (made, kept, or read from the cache).
 
-use silico_protocol::{MEASURE_PRECISION, format_number, no_distance};
+use silico_protocol::{EndAtStart, MEASURE_PRECISION, format_number, no_distance};
 
 use crate::document::{Axis, Checked, FeatureId, Operation, PROBLEMS_LISTED, SweepFeature};
 use crate::profile::Profile;
@@ -221,9 +221,12 @@ fn reach(edge: &crate::profile::Edge, origin: [f64; 2], direction: [f64; 2]) -> 
 ///   crossing is refused as `invalid_input`, the feature the sketch (its elements are
 ///   where it's fixed), the elements the crossing region's curves reaching off the axis,
 ///   by ID, and the axis, if it's a line;
-/// - **the angle must move something**: the profile's farthest point from the axis, over
-///   every region, times the angle in radians more than the tolerance, as M1's revolve
-///   refuses one; refused as `invalid_input`, naming the feature and its `extent.angle`.
+/// - **the turn's end mustn't be where it started** ([`silico_protocol::end_at_start`], M1's
+///   revolve's rule): the profile's farthest point from the axis, over every region, must
+///   move more than the tolerance, and, short of a whole turn, stop more than that short of
+///   where it started (360 degrees less a few nanodegrees leaves ends one place, which OCCT
+///   builds as two); refused as `invalid_input`, naming the feature and its
+///   `extent.angle`.
 pub fn check_axis(
     document: &Checked,
     feature: &FeatureId,
@@ -293,18 +296,34 @@ pub fn check_axis(
         )) => angle.degrees(),
         _ => return Err(unchecked(format!("has {feature}, which turns by no angle"))),
     };
-    if farthest * silico_protocol::radians(degrees) <= tolerance {
-        return Err(Error::new(
-            ErrorCode::InvalidInput,
-            format!(
-                "{word} {feature}'s angle, {} degrees, moves its profile's farthest point, {} mm from the axis, by at most 1e-7 mm: it would make no solid",
-                format_number(degrees),
-                format_number(farthest)
-            ),
-        )
-        .with_feature(feature.as_str())
-        .with_parameter("extent.angle")
-        .with_suggestion("turn it by a larger angle"));
+    let refused = |message: String, suggestion: &str| {
+        Error::new(ErrorCode::InvalidInput, message)
+            .with_feature(feature.as_str())
+            .with_parameter("extent.angle")
+            .with_suggestion(suggestion)
+    };
+    match silico_protocol::end_at_start(farthest, silico_protocol::radians(degrees)) {
+        Some(EndAtStart::Unmoved) => {
+            return Err(refused(
+                format!(
+                    "{word} {feature}'s angle, {} degrees, moves its profile's farthest point, {} mm from the axis, by at most 1e-7 mm: it would make no solid",
+                    format_number(degrees),
+                    format_number(farthest)
+                ),
+                "turn it by a larger angle",
+            ));
+        }
+        Some(EndAtStart::ShortOfWhole) => {
+            return Err(refused(
+                format!(
+                    "{word} {feature}'s angle, {} degrees, stops its profile's farthest point, {} mm from the axis, within 1e-7 mm of where it started, short of a whole turn: its ends would be one place",
+                    format_number(degrees),
+                    format_number(farthest)
+                ),
+                "turn it by 360 degrees for a whole turn, or by less, so its ends are more than 1e-7 mm apart",
+            ));
+        }
+        None => {}
     }
     Ok(AxisLine {
         origin,

@@ -1247,3 +1247,63 @@ fn a_valid_chains_users_dont_wait_for_its_measures() {
     };
     assert!(built(&model, "pppppppp") && built(&model, "ffffffff"));
 }
+
+#[test]
+fn a_turn_short_of_a_whole_one_by_the_tolerance_is_refused_and_a_nanodegree_more_turns() {
+    // The rectangle 4 by 2 from the origin on XY about the x axis: its farthest point is 2 mm
+    // off it. A turn of 360° less k nanodegrees stops that point 2 · k · 1e-9 · π/180 mm
+    // short of where it started: within 1e-7 mm for k ≤ 1e-7 · 180 / (2π · 1e-9) = 9000/π
+    // = 2864.79. So 2864 short (359.999997136°, 9.997e-8 mm) is refused, its ends one place,
+    // and 2865 short (359.999997135°, 1.00007e-7 mm) turns, by that angle. For a revolve,
+    // and a groove into the cube below.
+    for (word, base) in [("revolve", None), ("groove", Some("bbbbbbbb"))] {
+        let feature = |degrees: &str| {
+            turned(
+                "rrrrrrrr",
+                word,
+                base,
+                "ssssssss",
+                "x_axis",
+                &angle(degrees),
+            )
+        };
+        let engine = engine();
+        let model = published(
+            &engine,
+            &[&cube_below(), &sketch("xy"), &feature("359.999997136")],
+        );
+        let error = failed(&model, "rrrrrrrr");
+        assert_eq!(error.code(), ErrorCode::InvalidInput, "{word}");
+        assert_eq!(error.feature(), Some("rrrrrrrr"), "{word}");
+        assert_eq!(error.parameter(), Some("extent.angle"), "{word}");
+        assert_eq!(
+            error.message(),
+            format!(
+                "{word} rrrrrrrr's angle, 359.999997136 degrees, stops its profile's farthest point, 2 mm from the axis, within 1e-7 mm of where it started, short of a whole turn: its ends would be one place"
+            )
+        );
+        assert_eq!(
+            error.suggestion(),
+            Some(
+                "turn it by 360 degrees for a whole turn, or by less, so its ends are more than 1e-7 mm apart"
+            )
+        );
+        assert!(error.elements().is_empty(), "{word}");
+        assert!(!names(&engine).contains(&"MakeFaces"), "{word}");
+
+        let engine = self::engine();
+        let model = published(
+            &engine,
+            &[&cube_below(), &sketch("xy"), &feature("359.999997135")],
+        );
+        assert!(
+            built(&model, "rrrrrrrr"),
+            "{word}: {:?}",
+            model.outcome(&id("rrrrrrrr"))
+        );
+        let Sweep::Revolution(_, _, sent) = the_sweep(&engine) else {
+            panic!("{word}: not a revolution");
+        };
+        assert_eq!(sent, 359.999997135 * (PI / 180.0), "{word}");
+    }
+}

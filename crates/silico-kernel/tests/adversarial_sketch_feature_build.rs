@@ -1,7 +1,7 @@
 //! Break-it on M3.6's steps iv and v on the real kernel (docs/design/m3.6-sketch-features.md,
 //! S3 to S7, S12): pads, pockets, revolves, and grooves at the edges of what the gate admits
-//! (a nanometre, a kilometre, a turn short by a nanodegree, a whole turn started half a turn
-//! back), onto bases of several solids, into bases they empty, through bases too large to go
+//! (a nanometre, a kilometre, a turn short of a whole one by the tolerance, a whole turn
+//! started half a turn back), onto bases of several solids, into bases they empty, through bases too large to go
 //! through, onto coincident faces, and the advice a refused name gives, followed. Each
 //! expected value is worked by hand from the sketch and the extent. Sketches are solved as
 //! stored, by the fake sketch solver.
@@ -237,28 +237,38 @@ fn the_advice_for_a_sketchs_edge_named_whole_resolves_on_a_symmetric_pocket() {
 }
 
 #[test]
-fn a_revolve_a_nanodegree_short_of_a_turn_is_valid_with_the_volume_it_says() {
-    // The rectangle x 2..4, y 0..2 on XY about the y axis: a whole turn is π(4² − 2²)·2 =
-    // 24π; a turn short by 1e-9° is that times (360 − 1e-9)/360. OCCT's catalog: 360° − ε
-    // sweeps as a partial turn whose ends coincide. Built, valid, the volume to 1e-9, and
-    // every element named apart.
+fn a_revolve_short_of_a_turn_by_the_tolerance_is_refused_and_a_nanodegree_more_is_valid() {
+    // The rectangle x 2..4, y 0..2 on XY about the y axis: its far side is 4 off the axis,
+    // and a whole turn is π(4² − 2²)·2 = 24π. 360° less k nanodegrees stops the far side
+    // 4 · k · 1e-9 · π/180 mm short of where it started: within 1e-7 mm for
+    // k <= 1e-7 · 180 / (4π · 1e-9) = 4500/π = 1432.39. A nanodegree short (7e-11 mm,
+    // which OCCT builds as an open ring whose ends are one place) and 1432 short are
+    // refused before the kernel is asked; 1433 short is a partial turn, valid, its volume
+    // 24π(360 − 1.433e-6)/360 to 1e-9, and every element named apart.
     let ring = rectangle("ssssssss", "xy", [2.0, 0.0], 2.0, 2.0);
+    let turn = |degrees: &str| {
+        turned(
+            "rrrrrrrr",
+            "revolve",
+            None,
+            "ssssssss",
+            "y_axis",
+            &angle(degrees),
+        )
+    };
     let engine = engine();
-    let model = publish(
-        &engine,
-        &[
-            &ring,
-            &turned(
-                "rrrrrrrr",
-                "revolve",
-                None,
-                "ssssssss",
-                "y_axis",
-                &angle("359.999999999"),
-            ),
-        ],
-    );
-    let want = 24.0 * PI * (360.0 - 1e-9) / 360.0;
+    for degrees in ["359.999999999", "359.999998568"] {
+        let model = publish(&engine, &[&ring, &turn(degrees)]);
+        let error = failed(&model, "rrrrrrrr");
+        assert_eq!(error.code(), ErrorCode::InvalidInput, "{degrees}");
+        assert_eq!(error.parameter(), Some("extent.angle"), "{degrees}");
+        assert!(
+            error.message().contains("its ends would be one place"),
+            "{degrees}: {error}"
+        );
+    }
+    let model = publish(&engine, &[&ring, &turn("359.999998567")]);
+    let want = 24.0 * PI * (360.0 - 1.433e-6) / 360.0;
     assert_close(volume(&model, "rrrrrrrr"), want, 1e-9, "the near turn");
     assert_named_apart(&model, "rrrrrrrr");
 }

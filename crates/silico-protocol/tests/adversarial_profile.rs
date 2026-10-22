@@ -501,6 +501,42 @@ fn a_revolve_angle_below_occts_angular_precision_is_refused_as_the_angle() {
 }
 
 #[test]
+fn a_revolve_short_of_a_whole_turn_by_the_tolerance_is_refused_and_a_nanodegree_more_turns() {
+    // A unit square from x = 9 about y: its far corners are 10 off the axis. 360° less k
+    // nanodegrees stops them 10 · k · 1e-9 · π/180 mm short of where they started: within
+    // 1e-7 mm for k <= 1e-7 · 180 / (10π · 1e-9) = 1800/π = 572.96. So 572 short is refused,
+    // its ends one place (FreeCAD 1.1.3 builds it, and a cut across it cuts itself), and
+    // 573 short is the turn it says. 360 is a whole turn.
+    let p = unit_square_at(9.0);
+    let plane = p.check().unwrap();
+    let y = Axis {
+        origin: [0.0; 3],
+        direction: [0.0, 1.0, 0.0],
+    };
+    for angle in [360.0 - 572e-9, 360.0 - 1e-9, 359.999_999_999_9] {
+        let e = refused(check_revolve(&plane, &p.points, &y, angle));
+        assert_eq!(e.parameter, "angle", "{angle}: {}", e.message);
+        assert!(
+            e.message.contains("within 1e-7 mm of where it started")
+                && e.message.contains("use 360 for a whole turn"),
+            "{angle}: {}",
+            e.message
+        );
+    }
+    assert_eq!(
+        refused(check_revolve(&plane, &p.points, &y, 360.0 - 572e-9)).message,
+        "the revolve's angle of 359.999999428 degrees stops the profile's farthest corner, 10 mm from the axis, within 1e-7 mm of where it started, short of a whole turn: its ends would be one place; use 360 for a whole turn, or less for ends apart"
+    );
+    for angle in [360.0 - 573e-9, 360.0] {
+        assert_eq!(
+            check_revolve(&plane, &p.points, &y, angle),
+            Ok([0.0, 1.0, 0.0]),
+            "{angle}"
+        );
+    }
+}
+
+#[test]
 fn an_extrusion_too_long_at_an_ordinary_slant_blames_its_length_not_a_flat_direction() {
     // a kilometre's rise along (1, 0, 1), 45° out of the plane, sweeps
     // 1.414e6 mm and is refused, but the message says the direction is "so nearly in the

@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::primitive::{InvalidParameter, LENGTH_TOLERANCE, MAX_LENGTH, format_number};
+use crate::sweep::EndAtStart;
 
 /// The most points a profile may have. Checking that a profile doesn't cross itself costs
 /// the square of its points.
@@ -421,9 +422,10 @@ pub fn extrusion_vector(
 /// Whether the profile can be revolved about `axis` by `angle` degrees: the axis must lie
 /// in the profile's plane (within OCCT's tolerance wherever it passes a corner) with the
 /// profile on one side of it (touching it at most), and the angle must be more than 0 and
-/// at most 360, and move the profile further than OCCT's tolerance. A turn a hair short of
-/// 360 is the turn it says, leaving a slit, as FreeCAD's is. Returns the axis's unit
-/// direction.
+/// at most 360, and move the profile further than OCCT's tolerance, and, short of a whole
+/// turn, stop it further than that from where it started ([`crate::end_at_start`]): a turn
+/// short of 360 by more is the turn it says, leaving a slit, as FreeCAD's is. Returns the
+/// axis's unit direction.
 pub fn check_revolve(
     plane: &ProfilePlane,
     points: &[[f64; 3]],
@@ -513,18 +515,27 @@ pub fn check_revolve(
             ),
         ));
     }
-    // The farthest corner travels its distance times the angle in radians.
+    // The farthest corner travels its distance times the angle in radians, and stops that
+    // far short of a whole turn's worth of it.
     let reach = low.abs().max(high.abs());
-    if reach * radians(angle) <= LENGTH_TOLERANCE {
-        return Err(invalid(
+    match crate::end_at_start(reach, radians(angle)) {
+        Some(EndAtStart::Unmoved) => Err(invalid(
             "angle",
             format!(
                 "the revolve's angle of {} degrees moves the profile less than 1e-7 mm",
                 format_number(angle)
             ),
-        ));
+        )),
+        Some(EndAtStart::ShortOfWhole) => Err(invalid(
+            "angle",
+            format!(
+                "the revolve's angle of {} degrees stops the profile's farthest corner, {} mm from the axis, within 1e-7 mm of where it started, short of a whole turn: its ends would be one place; use 360 for a whole turn, or less for ends apart",
+                format_number(angle),
+                format_number(reach)
+            ),
+        )),
+        None => Ok(unit),
     }
-    Ok(unit)
 }
 
 #[cfg(test)]

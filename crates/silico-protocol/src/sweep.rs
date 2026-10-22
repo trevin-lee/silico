@@ -212,6 +212,38 @@ pub fn is_whole_turn(angle: f64) -> bool {
     (angle - TAU).abs() <= ANGULAR_TOLERANCE
 }
 
+/// How a turn's end lies within OCCT's length tolerance of its start ([`end_at_start`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndAtStart {
+    /// The turn moves the profile's farthest point from the axis by no more than the
+    /// tolerance: it makes no solid.
+    Unmoved,
+    /// The turn stops short of a whole one by no more than the tolerance at the profile's
+    /// farthest point, and isn't a whole turn to OCCT ([`is_whole_turn`]): its ends are one
+    /// place, yet OCCT builds them as two, an open ring a later cut across finds cutting
+    /// itself.
+    ShortOfWhole,
+}
+
+/// Whether a turn of `angle` radians (more than 0, at most a whole turn) about an axis
+/// leaves its end within OCCT's length tolerance of its start, at the profile's farthest
+/// point, `farthest` from the axis: that point travels `farthest·angle` along its circle and
+/// stops `farthest·(2π − angle)` short of where it began. Points within the tolerance are
+/// one place, so either way the turn's ends are one: it moves nothing, or it's short of a
+/// whole turn by nothing OCCT can tell apart, unless it's a whole turn ([`is_whole_turn`]),
+/// which has no ends. FreeCAD checks only the angle, above `Precision::Angular()` and at
+/// most 360° (docs/ports/extrude-revolve.md). The rule for M1's revolve and for a sketch's
+/// revolve and groove alike.
+pub fn end_at_start(farthest: f64, angle: f64) -> Option<EndAtStart> {
+    if farthest * angle <= LENGTH_TOLERANCE {
+        Some(EndAtStart::Unmoved)
+    } else if !is_whole_turn(angle) && farthest * (TAU - angle) <= LENGTH_TOLERANCE {
+        Some(EndAtStart::ShortOfWhole)
+    } else {
+        None
+    }
+}
+
 /// What a sweep is, for the history it must report ([`History::sweep_fault`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SweepKind {
@@ -871,6 +903,41 @@ mod tests {
         assert!(!is_whole_turn(crate::radians(360.0 - 1e-9)));
         assert_eq!(SweepKind::of_turn(TAU), SweepKind::WholeTurn);
         assert_eq!(SweepKind::of_turn(crate::radians(90.0)), SweepKind::Turn);
+    }
+
+    #[test]
+    fn a_turn_whose_end_is_within_the_tolerance_of_its_start_either_way_is_found() {
+        // A farthest point 10 mm off the axis: 1e-7 mm of its circle is 1e-8 radians, or
+        // 1e-8 · 180/π = 5.7296e-7 degrees, 572.96 nanodegrees. So 360° less 572
+        // nanodegrees leaves its ends 9.983e-8 mm apart, one place; less 573, 1.00007e-7.
+        let short = |ndeg: f64| crate::radians(360.0 - ndeg * 1e-9);
+        assert_eq!(
+            end_at_start(10.0, short(572.0)),
+            Some(EndAtStart::ShortOfWhole)
+        );
+        assert_eq!(
+            end_at_start(10.0, short(1.0)),
+            Some(EndAtStart::ShortOfWhole)
+        );
+        assert_eq!(end_at_start(10.0, short(573.0)), None);
+        // Within OCCT's angular tolerance of a turn it's a whole turn, with no ends.
+        assert_eq!(end_at_start(10.0, TAU), None);
+        assert_eq!(end_at_start(10.0, TAU - 0.9e-12), None);
+        assert_eq!(
+            end_at_start(10.0, TAU - 2e-12),
+            Some(EndAtStart::ShortOfWhole)
+        );
+        // A kilometre off, 2e-12 radians short leaves its ends 2e-6 mm apart.
+        assert_eq!(end_at_start(1e6, TAU - 2e-12), None);
+        // The near-0 side: 572 nanodegrees moves it 9.983e-8 mm, 573 1.00007e-7.
+        assert_eq!(
+            end_at_start(10.0, crate::radians(572e-9)),
+            Some(EndAtStart::Unmoved)
+        );
+        assert_eq!(end_at_start(10.0, crate::radians(573e-9)), None);
+        // A profile so near its axis that a whole turn moves it no more than the tolerance
+        // moves nothing.
+        assert_eq!(end_at_start(1e-8, TAU), Some(EndAtStart::Unmoved));
     }
 
     #[test]
