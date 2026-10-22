@@ -802,4 +802,47 @@ mod tests {
         let err = r.charge(1).unwrap_err();
         assert_eq!(err.cause, Cause::Size);
     }
+
+    #[test]
+    fn every_format_character_is_invisible() {
+        // Found by M2.9's tests review: `invisible` says it holds every format character
+        // (Unicode's category Cf), but only a few were tested. These are all 170 of
+        // Unicode 16.0's, from the Unicode database (Python's unicodedata, category "Cf").
+        const FORMAT: &[(u32, u32)] = &[
+            (0xad, 0xad),
+            (0x600, 0x605),
+            (0x61c, 0x61c),
+            (0x6dd, 0x6dd),
+            (0x70f, 0x70f),
+            (0x890, 0x891),
+            (0x8e2, 0x8e2),
+            (0x180e, 0x180e),
+            (0x200b, 0x200f),
+            (0x202a, 0x202e),
+            (0x2060, 0x2064),
+            (0x2066, 0x206f),
+            (0xfeff, 0xfeff),
+            (0xfff9, 0xfffb),
+            (0x110bd, 0x110bd),
+            (0x110cd, 0x110cd),
+            (0x13430, 0x1343f),
+            (0x1bca0, 0x1bca3),
+            (0x1d173, 0x1d17a),
+            (0xe0001, 0xe0001),
+            (0xe0020, 0xe007f),
+        ];
+        let mut count = 0;
+        for &(first, last) in FORMAT {
+            for code in first..=last {
+                let c = char::from_u32(code).unwrap();
+                assert!(invisible(c), "U+{code:04X}");
+                count += 1;
+            }
+        }
+        assert_eq!(count, 170);
+        // Characters that are seen aren't.
+        for c in ['a', '-', '\u{e9}', '\u{2010}', '\u{5d0}', '\u{4e00}'] {
+            assert!(!invisible(c), "{c:?}");
+        }
+    }
 }

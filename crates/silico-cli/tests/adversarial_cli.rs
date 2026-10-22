@@ -499,30 +499,53 @@ fn fmt_in_a_read_only_directory_is_exit_2_and_doesnt_claim_it_wrote() {
 fn fmt_doesnt_overwrite_an_edit_made_while_it_rebuilt() {
     // BREAKS: fmt reads the file, rebuilds it (seconds to minutes for a real part), then
     // renames its text over whatever the file holds by then: an edit saved meanwhile (the
-    // user's editor, an agent, `git checkout`) is lost without a word, exit 0. Here a
-    // worker that takes 3 s to start stands in for a long rebuild, and the edit (the block
-    // 41 long) lands after 1 s. Expected: the edit kept: fmt sees the file changed since it
-    // read it and refuses (exit 2, "changed while it was formatted") or formats the new
-    // text.
+    // user's editor, an agent, `git checkout`) is lost without a word, exit 0. Here the
+    // edit (the block 41 long) lands while fmt rebuilds, every time: the worker says it's
+    // starting (fmt reads the file before it starts a worker), then waits for the edit
+    // before it serves. (Once a 1 s sleep against a 3 s start, which a loaded machine
+    // could turn into an edit before fmt read the file, so the test could pass without the
+    // race.) Expected: the edit kept, byte for byte, and fmt refusing, saying why (exit 2).
     let scratch = Scratch::new("race");
     let file = scratch.file("part.silico", EXAMPLE);
+    let started = scratch.0.join("started");
+    let edited_mark = scratch.0.join("edited");
     let slow = script(
         &scratch,
         "slow-worker",
-        &format!("sleep 3\nexec '{}' \"$@\"", worker().display()),
+        &format!(
+            "touch '{}'\nwhile [ ! -e '{}' ]; do sleep 0.05; done\nexec '{}' \"$@\"",
+            started.display(),
+            edited_mark.display(),
+            worker().display()
+        ),
     );
-    let child = command(&scratch, &slow, &[os("fmt"), os("part.silico")])
+    let mut child = command(&scratch, &slow, &[os("fmt"), os("part.silico")])
         .spawn()
         .unwrap();
-    std::thread::sleep(Duration::from_secs(1));
+    let deadline = std::time::Instant::now() + run::DEADLINE;
+    while !started.exists() {
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "fmt ended before it started a worker"
+        );
+        assert!(std::time::Instant::now() < deadline, "no worker started");
+        std::thread::sleep(Duration::from_millis(10));
+    }
     let edited = EXAMPLE.replace(r#""length": 40"#, r#""length": 41"#);
     std::fs::write(&file, &edited).unwrap();
+    std::fs::write(&edited_mark, "").unwrap();
     let out = finish(child, run::DEADLINE);
-    let now = std::fs::read_to_string(&file).unwrap();
-    assert!(
-        now.contains(r#""length": 41"#),
-        "the edit was lost (exit {:?}): {now}\n{}",
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        edited,
+        "the edit was lost (exit {:?}): {}",
         out.code(),
+        out.stderr
+    );
+    assert_eq!(out.code(), Some(2), "{}", out.stderr);
+    assert!(
+        out.stderr.contains("changed while it was rebuilt"),
+        "{}",
         out.stderr
     );
 }
