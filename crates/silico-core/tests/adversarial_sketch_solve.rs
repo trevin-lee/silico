@@ -133,6 +133,82 @@ fn a_solved_invalid_with_nothing_invalid_names_something() {
     );
 }
 
+/// The words of `text` that spell a value that isn't a finite number, as Rust or JSON
+/// writes one.
+fn non_finite_words(text: &str) -> Vec<String> {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .filter(|w| {
+            matches!(
+                *w,
+                "NaN" | "nan" | "-NaN" | "inf" | "-inf" | "Infinity" | "-Infinity"
+            )
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn a_solution_that_isnt_a_number_names_what_cant_be_built_and_goes_no_further() {
+    // A reply that calls its solution one that can't be built carries the solver's values,
+    // which may not be numbers (since M3.3): they name what can't be built, and reach no
+    // output. Each unknown in turn, and all at once, not a number or infinite: the error is
+    // the unbuildable one, naming geometry, and neither its words nor its JSON (what `check
+    // --json` writes) hold a value that isn't a number.
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        for which in [None, Some(0), Some(1), Some(2), Some(3)] {
+            let e = solve_with(move |s| {
+                let mut v = s.values.clone();
+                for (k, u) in s.unknowns.iter().enumerate() {
+                    if which.is_none_or(|w| w == k) {
+                        v[u.0 as usize] = bad;
+                    }
+                }
+                Ok(answer(s, v, SolveStatus::SolvedInvalid))
+            })
+            .unwrap_err();
+            assert_eq!(e.code(), ErrorCode::InvalidResult, "{bad} {which:?}: {e}");
+            assert!(!e.elements().is_empty(), "{bad} {which:?}: {e}");
+            let json = serde_json::to_string(&e).unwrap();
+            assert_eq!(non_finite_words(&json), Vec::<String>::new(), "{json}");
+            assert_eq!(
+                non_finite_words(&e.to_string()),
+                Vec::<String>::new(),
+                "{e}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_constraint_between_the_axes_alone_is_refused_before_it_could_be_measured() {
+    // Decision 5 measures a redundant angle by the lever of the curves it turns; the axes
+    // have none, so an angle between the two axes alone would measure as not a number, and
+    // its message would say so. The gate refuses such a constraint (on fixed geometry only),
+    // so none reaches a solve.
+    for c in [
+        r#"{"id": "k0000001", "type": "perpendicular", "a": "x_axis", "b": "y_axis"}"#,
+        r#"{"id": "k0000001", "type": "parallel", "a": "x_axis", "b": "y_axis"}"#,
+        r#"{"id": "k0000001", "type": "angle", "a": "x_axis", "b": "y_axis", "value": 90, "driving": true}"#,
+    ] {
+        let text = fixture::document(&fixture::fields(
+            r#"{"id": "p0000001", "x": 0, "y": 0, "construction": false}, {"id": "p0000002", "x": 10, "y": 0, "construction": false}"#,
+            r#"{"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false}"#,
+            "",
+            "",
+            c,
+        ));
+        let refused = Checked::new(read(text.as_bytes()).unwrap());
+        let invalid = refused.expect_err(c);
+        assert!(
+            invalid.errors().iter().any(|e| e
+                .message()
+                .contains("names only the sketch's fixed references")),
+            "{c}: {:?}",
+            invalid.errors()
+        );
+    }
+}
+
 #[test]
 fn replies_with_values_that_arent_numbers_are_refused() {
     for bad in [f64::NAN, f64::INFINITY, -f64::INFINITY, 1e6 + 1e-9, -1e300] {
