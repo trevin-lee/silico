@@ -39,9 +39,9 @@ mod fixture;
 #[path = "common/saves.rs"]
 mod saves;
 
-use fixture::{circle, line, point};
+use fixture::{circle, line, line_as, point};
 use proptest::prelude::*;
-use saves::{construction_line, k, solved, text, worker, written_back};
+use saves::{k, solved, text, worker, written_back};
 use silico_core::ErrorCode;
 use silico_core::document::{Checked, ElementId};
 use silico_core::sketch::{SketchSolution, SketchSolver, SketchWorker};
@@ -348,7 +348,7 @@ fn twice_dimensioned_beside(second: f64, length: f64, far: Option<f64>, joined: 
     if let Some(far) = far {
         points.push(point("p0000003", -500000.0, -900000.0));
         points.push(point("p0000004", -500000.0 + far, -900000.0));
-        lines.push(construction_line("n0000002", "p0000003", "p0000004"));
+        lines.push(line_as("n0000002", "p0000003", "p0000004", true));
     }
     let mut constraints = fix(1, "p0000001", 1.0, 1.0).to_vec();
     constraints.push(k(3, r#""type": "horizontal", "line": "n0000001""#));
@@ -450,7 +450,7 @@ fn twice_dimensioned_in_a_row(second: f64, to: f64) -> Checked {
     ];
     let lines = [
         line("n0000001", "p0000001", "p0000002"),
-        construction_line("n0000002", "p0000003", "p0000004"),
+        line_as("n0000002", "p0000003", "p0000004", true),
     ];
     let mut constraints = fix(1, "p0000001", 1.0, 1.0).to_vec();
     constraints.push(k(3, r#""type": "horizontal", "line": "n0000001""#));

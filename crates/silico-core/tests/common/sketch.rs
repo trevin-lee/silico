@@ -38,12 +38,24 @@ pub fn point_debug(id: &str, x: f64, y: f64) -> String {
 
 /// A line's JSON, from one point to another.
 pub fn line(id: &str, from: &str, to: &str) -> String {
-    format!(r#"{{"id": "{id}", "from": "{from}", "to": "{to}", "construction": false}}"#)
+    line_as(id, from, to, false)
+}
+
+/// A line's JSON, a construction line (which a sketch's profile leaves out) or not.
+pub fn line_as(id: &str, from: &str, to: &str, construction: bool) -> String {
+    format!(r#"{{"id": "{id}", "from": "{from}", "to": "{to}", "construction": {construction}}}"#)
 }
 
 /// A circle's JSON, its radius written as [`point`]'s coordinates are.
 pub fn circle(id: &str, center: &str, radius: f64) -> String {
-    format!(r#"{{"id": "{id}", "center": "{center}", "radius": {radius}, "construction": false}}"#)
+    circle_as(id, center, radius, false)
+}
+
+/// A circle's JSON, a construction circle or not.
+pub fn circle_as(id: &str, center: &str, radius: f64, construction: bool) -> String {
+    format!(
+        r#"{{"id": "{id}", "center": "{center}", "radius": {radius}, "construction": {construction}}}"#
+    )
 }
 
 /// An arc's JSON, counter-clockwise from `start` to `end` about `center`.

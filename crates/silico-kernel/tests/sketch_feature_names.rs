@@ -11,6 +11,9 @@
 #[path = "../../silico-core/tests/common/sweeps.rs"]
 mod sweeps;
 
+#[path = "../../silico-core/tests/common/sketch.rs"]
+mod fixture;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::PI;
 use std::path::Path;
@@ -646,14 +649,8 @@ fn a_cones_apex_is_a_degenerate_edge_generated_from_its_point() {
 /// pz000003 (−10, 25) to (0, 30), lines nz000001 to nz000004. `toggled` makes the zigzag
 /// the profile and the left side construction.
 fn zigzag(toggled: bool) -> String {
-    let point = |id: &str, x: f64, y: f64| {
-        format!(r#"{{"id": "{id}", "x": {x}, "y": {y}, "construction": false}}"#)
-    };
-    let line = |id: &str, from: &str, to: &str, construction: bool| {
-        format!(
-            r#"{{"id": "{id}", "from": "{from}", "to": "{to}", "construction": {construction}}}"#
-        )
-    };
+    let point = fixture::point;
+    let line = fixture::line_as;
     let points = [
         point("pa000001", 0.0, 0.0),
         point("pa000002", 30.0, 0.0),

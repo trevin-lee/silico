@@ -17,11 +17,6 @@ pub fn worker() -> SketchWorker {
     SketchWorker::start_worker(Path::new(WORKER)).unwrap()
 }
 
-/// A construction line, which the sketch's profile leaves out.
-pub fn construction_line(id: &str, from: &str, to: &str) -> String {
-    format!(r#"{{"id": "{id}", "from": "{from}", "to": "{to}", "construction": true}}"#)
-}
-
 /// A constraint, its ID k`n` (seven digits), of `form`: its fields after the ID.
 pub fn k(n: usize, form: &str) -> String {
     format!(r#"{{"id": "k{n:07}", {form}}}"#)

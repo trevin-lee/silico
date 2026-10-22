@@ -26,7 +26,7 @@ mod fixture;
 #[path = "common/saves.rs"]
 mod saves;
 
-use fixture::{arc, line, point};
+use fixture::{arc, circle_as, line, point};
 use proptest::prelude::*;
 use saves::{k, solved, text, worker};
 use silico_core::ErrorCode;
@@ -52,10 +52,6 @@ fn fix(id: usize, p: &str, x: f64, y: f64) -> [String; 2] {
             ),
         ),
     ]
-}
-
-fn construction_circle(id: &str, center: &str, r: f64) -> String {
-    format!(r#"{{"id": "{id}", "center": "{center}", "radius": {r}, "construction": true}}"#)
 }
 
 /// The metre line: n0000003 from p0000005, held at (0, 500) (k1, k2), to p0000006 at
@@ -110,8 +106,8 @@ fn metre_line_beside_circles(degrees: &str, x: f64, both: bool) -> Checked {
         ));
     }
     let circles = [
-        construction_circle("c0000001", "p0000001", 10.0),
-        construction_circle("c0000002", "p0000002", 10.0),
+        circle_as("c0000001", "p0000001", 10.0, true),
+        circle_as("c0000002", "p0000002", 10.0, true),
     ];
     checked(&text(&points, &lines, &circles, &[], &c))
 }
@@ -218,7 +214,7 @@ fn an_arc_101_nm_off_its_circles_centre_leaves_the_metre_line_refused() {
     let doc = checked(&text(
         &points,
         &lines,
-        &[construction_circle("c0000001", "p0000001", 10.0)],
+        &[circle_as("c0000001", "p0000001", 10.0, true)],
         &[arc("a0000001", "p0000002", "p0000003", "p0000004")],
         &c,
     ));
@@ -271,8 +267,8 @@ fn metre_line_joined_to_circles(degrees: &str, x0: f64, both: bool) -> Checked {
         ));
     }
     let circles = [
-        construction_circle("c0000001", "p0000005", 10.0),
-        construction_circle("c0000002", "p0000002", 10.0),
+        circle_as("c0000001", "p0000005", 10.0, true),
+        circle_as("c0000002", "p0000002", 10.0, true),
     ];
     checked(&text(&points, &lines, &circles, &[], &c))
 }
@@ -407,8 +403,8 @@ fn two_circles(x: f64, r2: f64, outside: bool) -> Checked {
         &points,
         &[],
         &[
-            construction_circle("c0000001", "p0000001", 10.0),
-            construction_circle("c0000002", "p0000002", r2),
+            circle_as("c0000001", "p0000001", 10.0, true),
+            circle_as("c0000002", "p0000002", r2, true),
         ],
         &[],
         &c,
