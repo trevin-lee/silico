@@ -77,3 +77,14 @@ fi
 git -C "$tree" checkout --detach --quiet --force "$commit"
 git -C "$tree" clean -fdx --quiet -e /target/ -e /.pixi/
 cd "$tree"
+# The tests' scratch (Cargo's CARGO_TARGET_TMPDIR, target/tmp: documents, logs, workers'
+# dumps) where SILICO_TEST_SCRATCH says, as CI puts it in memory (.github/scratch.sh);
+# otherwise a directory, as Cargo makes it.
+mkdir -p target
+if [ -n "${SILICO_TEST_SCRATCH-}" ]; then
+  mkdir -p "$SILICO_TEST_SCRATCH"
+  rm -rf target/tmp
+  ln -s "$SILICO_TEST_SCRATCH" target/tmp
+elif [ -L target/tmp ]; then
+  rm target/tmp
+fi
