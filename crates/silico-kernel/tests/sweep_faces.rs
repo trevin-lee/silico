@@ -11,6 +11,8 @@ mod close;
 mod imports;
 #[path = "common/numbers.rs"]
 mod numbers;
+#[path = "common/oracle.rs"]
+mod oracle;
 
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 use std::path::Path;
@@ -904,6 +906,42 @@ fn values_a_sweep_cant_take_are_refused_before_sending_naming_them() {
         assert_eq!(error.code(), ErrorCode::InvalidInput, "{error:?}");
         assert_eq!(error.parameter(), Some(parameter), "{error:?}");
         assert!(error.suggestion().is_some());
+    }
+}
+
+/// Shapes FreeCAD makes that a profile's faces never are, as its text B-reps: a box's
+/// shell (six faces on three planes, and no solid), and a solid of one flat face's open
+/// shell (one face, on one plane, but a solid).
+const NOT_FACES: &str = r#"import json, Part
+shell = Part.makeBox(1, 2, 3).Shells[0]
+solid = Part.Solid(Part.Shell([Part.makePlane(2, 3)]))
+assert (len(shell.Faces), len(shell.Solids)) == (6, 0)
+assert (len(solid.Faces), len(solid.Solids)) == (1, 1)
+print("SILICO_ORACLE " + json.dumps([shell.exportBrepToString(), solid.exportBrepToString()]))
+"#;
+
+#[test]
+fn faces_on_planes_apart_or_a_solid_of_flat_faces_arent_swept() {
+    // Each refused for its own reason: the shell's faces aren't on one plane, though it has
+    // no solid; the solid's one face is on one plane (z = 0, which the prism leaves), but
+    // it's a solid.
+    let [shell, solid]: [String; 2] = serde_json::from_value(oracle::freecad(NOT_FACES)).unwrap();
+    for (text, got) in [
+        (shell, "6 faces and 0 solids, not on one plane"),
+        (solid, "1 faces and 1 solids"),
+    ] {
+        let shape = silico_kernel::from_text_brep(text.as_bytes()).unwrap();
+        let err = prism(&shape, [0.0; 3], [0.0, 0.0, 1.0]).err().unwrap();
+        assert_eq!(
+            err.refusal(),
+            &silico_kernel::Refusal::InvalidParameter {
+                parameter: "faces".to_owned(),
+                message: format!(
+                    "a sweep takes a profile's faces, on one plane, got a shape of {got}"
+                ),
+            },
+            "{got}"
+        );
     }
 }
 
