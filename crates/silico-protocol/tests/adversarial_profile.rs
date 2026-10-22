@@ -190,6 +190,17 @@ fn a_point_is_left_or_right_of_a_line_only_where_rounding_cant_have_chosen() {
         side_of_line(c5, c6, [56.35393626839515, 111.00787253679026]),
         1
     );
+    // And just inside the bound, on the line. From (0, 0) to (1, 1 - 3ε), (1, 1) has products
+    // 1 and 1 - 3ε, both exact, and an orientation of exactly 3ε (their difference is exact):
+    // left of the line, but within the bound times the products' sum, 2 - 3ε, which by hand
+    // is 3ε + 3.5ε² - 12ε³ (rounded, 6.661338147750941e-16 against 3ε's ...939e-16). The
+    // bound with 3 - 8ε in place of 3 + 8ε gives 3ε - 12.5ε², under it, and calls the point
+    // left (#78's mutant: the bound's `+` as `-`).
+    let e = f64::EPSILON;
+    assert_eq!(
+        side_of_line([0.0, 0.0], [1.0, 1.0 - 3.0 * e], [1.0, 1.0]),
+        0
+    );
     let off = 1e-6 / 5f64.sqrt();
     assert_eq!(side_of_line(c5, c6, [61.1 - 2.0 * off, 120.5 + off]), -1);
     assert_eq!(side_of_line(c5, c6, [61.1 + 2.0 * off, 120.5 - off]), 1);
