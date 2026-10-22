@@ -217,6 +217,28 @@ mod tests {
     }
 
     #[test]
+    fn a_sketchs_edge_is_g_and_its_id_and_a_vertex_adds_v() {
+        // FreeCAD names a sketch's edge `g<id>` and a vertex `g<id>v<pos>`, with the
+        // sketch's op code (docs/ports/sketch-features.md); Silico's point has its own ID,
+        // so `g<id>v`.
+        use crate::document::{ElementId, FeatureId};
+        use crate::kernel::ElementKind;
+        let sketch = |kind, id| Name::Sketch {
+            feature: FeatureId::new("ssssssss").unwrap(),
+            kind,
+            id: ElementId::new(id).unwrap(),
+        };
+        assert_eq!(
+            text(&sketch(ElementKind::Edge, "na000001")),
+            "gna000001;SKT"
+        );
+        assert_eq!(
+            text(&sketch(ElementKind::Vertex, "pa000001")),
+            "gpa000001v;SKT"
+        );
+    }
+
+    #[test]
     fn digits_sort_before_letters_and_the_shorter_number_first() {
         // Worked from the comparator's rules.
         let less = |a: &str, b: &str| compare(a, b) == Ordering::Less;
