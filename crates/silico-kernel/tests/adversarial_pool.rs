@@ -328,7 +328,7 @@ fn a_pool_of_a_program_that_isnt_a_worker() {
     };
     for _ in 0..4 {
         let err = done(pool.submit(Generation(1), echo(&[1]))).unwrap_err();
-        assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+        assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
         assert!(
             err.cause()
                 .is_some_and(|c| c.contains("exited with code 0")),
@@ -360,7 +360,7 @@ fn a_worker_executable_deleted_and_restored_under_a_running_pool() {
     }
     for _ in 0..6 {
         let err = done(pool.submit(Generation(1), sleep(1))).unwrap_err();
-        assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+        assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
         assert!(err.message().contains(&*exe.to_string_lossy()), "{err}");
         assert!(err.cause().is_some(), "{err}");
     }
@@ -416,7 +416,7 @@ fn put_in_place(exe: &Path, text: &str) {
 
 /// Whether `err` says the pool's worker executable changed, naming it, and to restart.
 fn says_changed(err: &silico_core::Error, exe: &Path) -> bool {
-    err.code() == ErrorCode::WorkerCrashed
+    err.code() == ErrorCode::WorkerUnavailable
         && err.message().contains("changed since it started")
         && err.message().contains(&*exe.to_string_lossy())
         && err.suggestion().is_some_and(|s| s.contains("restart"))
@@ -518,7 +518,7 @@ fn link(exe: &Path, target: &Path) {
 /// the slot's wait.
 fn fail_to_start(pool: &KernelPool) {
     let err = done(pool.submit(Generation(1), echo(&[1]))).unwrap_err();
-    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
 }
 
 /// Crashes the one idle slot's worker while its binary is missing (or not runnable), then fails `more` starts
@@ -1032,6 +1032,17 @@ fn a_killer_ends_a_call_at_once_and_is_harmless_after_the_worker_is_gone() {
 #[test]
 fn has_exited_reaps_a_worker_killed_from_outside_and_its_next_call_fails_cleanly() {
     let mut worker = Worker::spawn(Path::new(TEST_WORKER)).unwrap();
+    // Answered once, so it had started: its death is a crash (killed before its first
+    // frame, it would be worker_unavailable).
+    worker
+        .call(
+            Generation(0),
+            Op::Echo {
+                data: Blob::inline(vec![0]),
+            },
+            PATIENCE,
+        )
+        .unwrap();
     let pid = worker.pid();
     kill9_and_wait(pid);
     assert!(worker.has_exited());
@@ -1347,7 +1358,7 @@ fn a_worker_that_dies_as_it_starts_isnt_started_over_while_the_pool_is_idle() {
         early.len()
     );
     let err = done(pool.submit(Generation(1), echo(&[1]))).unwrap_err();
-    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
     assert!(
         err.cause()
             .is_some_and(|c| c.contains("exited with code 3") && c.contains("no OCCT here")),
@@ -2021,7 +2032,7 @@ fn an_on_demand_pool_whose_executable_changes_before_its_first_request() {
         &format!("#!/bin/sh\n# another build\nexec '{TEST_WORKER}'\n"),
     );
     let err = done(pool.submit(Generation(1), echo(&[1]))).unwrap_err();
-    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
     assert!(err.message().contains("changed since it started"), "{err}");
     assert_eq!(pool.pids(), Vec::<u32>::new());
     write_executable(&exe, &original);
@@ -2035,7 +2046,7 @@ fn an_on_demand_pool_whose_executable_changes_before_its_first_request() {
     kill9_and_wait(held[0]);
     std::fs::remove_file(&exe).unwrap();
     let err = done(pool.submit(Generation(1), echo(&[3]))).unwrap_err();
-    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
     write_executable(&exe, &original);
     let at = Instant::now();
     assert_eq!(
@@ -2291,7 +2302,7 @@ fn an_executable_replaced_by_a_fifo_under_a_running_pool_fails_its_request_and_l
         "dropping the pool hung, its slot blocked reading a FIFO"
     );
     let err = got.ok().unwrap().done().unwrap().unwrap_err();
-    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
     assert!(err.message().contains(&*exe.to_string_lossy()), "{err}");
     assert!(err.suggestion().is_some(), "{err}");
 }
@@ -2329,7 +2340,7 @@ fn a_worker_whose_executable_becomes_a_fifo_as_it_starts_is_refused_at_once() {
         took < BOUND,
         "the request failed after {took:?} ({err}), not at its worker's refusal"
     );
-    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
     assert!(err.message().contains(&*exe.to_string_lossy()), "{err}");
     assert!(
         dropped,
@@ -2356,7 +2367,7 @@ fn a_worker_whose_executable_becomes_a_directory_as_it_starts_is_refused_naming_
     let start = Instant::now();
     let err = done(pool.submit(Generation(1), sleep(1))).unwrap_err();
     assert!(start.elapsed() < BOUND, "took {:?}", start.elapsed());
-    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
     assert!(err.message().contains(&*exe.to_string_lossy()), "{err}");
     assert!(err.suggestion().is_some(), "{err}");
     let deadline = Instant::now() + BOUND;
@@ -2393,7 +2404,7 @@ fn a_worker_whose_executable_is_deleted_as_it_starts_is_refused_then_the_pool_re
     std::fs::write(&marker, b"").unwrap();
     let pool = KernelPool::start_on_demand(&exe, 1).unwrap();
     let err = done(pool.submit(Generation(1), sleep(1))).unwrap_err();
-    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
     assert!(err.message().contains(&*exe.to_string_lossy()), "{err}");
     assert!(err.suggestion().is_some(), "{err}");
     write_executable(&exe, &script);
@@ -2454,7 +2465,7 @@ fn an_executable_replaced_by_a_fifo_written_without_end_is_refused_without_readi
         panic!("the request waited on hashing a FIFO written without end");
     };
     let err = outcome.done().expect("superseded").unwrap_err();
-    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
     assert!(err.message().contains(&*exe.to_string_lossy()), "{err}");
     assert!(
         err.cause().is_some_and(|c| c.contains("regular file")),

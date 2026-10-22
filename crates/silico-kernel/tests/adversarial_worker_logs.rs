@@ -9,6 +9,10 @@
 //!
 //! Each test installs the process's global subscriber, since the sink thread is the core's
 //! own: run under nextest (a process per test), as `pixi run test` does.
+//!
+//! The script workers here write their lines and end without ever sending a first frame, so
+//! their end is `worker_unavailable`, not `worker_crashed` (the M3 review's start-code
+//! decision); the crash report, what these tests read, is the same either way.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::scripts;
@@ -230,7 +234,7 @@ fn a_stalled_sink_has_every_line_given_or_counted_and_in_order() {
         "the crash took {:?} to report",
         asked.elapsed()
     );
-    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
     let cause = err.cause().unwrap_or_default();
     assert!(
         cause.contains(&format!("line {}", PAST_THE_QUEUE - 1)) && cause.ends_with("LAST WORDS"),
@@ -320,7 +324,7 @@ fn a_crash_report_waits_for_a_log_held_open_by_the_workers_child() {
     let err = worker
         .call(Generation(1), echo(), Duration::from_secs(20))
         .unwrap_err();
-    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
     let cause = err.cause().unwrap_or_default();
     assert!(cause.ends_with("first\nLAST WORDS"), "{cause}");
 }
@@ -343,7 +347,7 @@ fn a_stalled_sink_still_has_the_crash_report_wait_for_a_log_held_open() {
         "{:?}",
         asked.elapsed()
     );
-    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
     let cause = err.cause().unwrap_or_default();
     assert!(cause.ends_with("first\nLAST WORDS"), "{cause}");
     sink.release();
@@ -368,7 +372,7 @@ fn a_sink_that_panics_leaves_the_crash_report_whole() {
     let err = worker
         .call(Generation(1), echo(), Duration::from_secs(20))
         .unwrap_err();
-    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
     let cause = err.cause().unwrap_or_default();
     assert!(cause.ends_with("first\nLAST WORDS"), "{cause}");
     // The sink thread is every worker's: it lost the line it panicked on, and goes on.
@@ -430,7 +434,7 @@ fn a_log_sink_that_blocks_outright_never_holds_up_a_kernel_worker() {
         "the crash took {:?} to report",
         asked.elapsed()
     );
-    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
     let cause = err.cause().unwrap_or_default();
     assert!(cause.ends_with("last 25"), "{cause}");
     // Its lines wait behind the one stalled sink that every worker's go to.
@@ -493,7 +497,7 @@ fn a_text_log_written_to_a_file_has_every_line_of_a_burst() {
     let err = worker
         .call(Generation(1), echo(), Duration::from_secs(20))
         .unwrap_err();
-    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
     drop(worker);
     // The lines given, and the counts dropped, in the log so far.
     let counted = || {
@@ -760,7 +764,7 @@ fn a_crash_report_comes_after_its_workers_last_lines_are_logged() {
     let err = worker
         .call(Generation(1), echo(), Duration::from_secs(20))
         .unwrap_err();
-    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
     assert_eq!(line_numbers(&sink.seen()), (0..20).collect::<Vec<u64>>());
 }
 

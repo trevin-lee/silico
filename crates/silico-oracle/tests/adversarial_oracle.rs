@@ -935,7 +935,8 @@ fn a_freecad_that_crashes_or_hangs_on_a_case_silico_refuses_is_a_difference() {
 #[test]
 fn a_crash_of_silicos_worker_on_a_case_freecad_refuses_is_a_difference() {
     // Both failing agrees only when both refused: a side that crashed or hung compared
-    // nothing.
+    // nothing. (Its worker kills itself as it starts, before its first frame: one that
+    // can't be had, worker_unavailable, lost as a crash is.)
     let temp = scratch("crash-vs-refusal");
     let dir = temp.path();
     let freecad = dir.join("freecadcmd");
@@ -961,7 +962,7 @@ fn a_crash_of_silicos_worker_on_a_case_freecad_refuses_is_a_difference() {
     assert_eq!(ran.status.and_then(|s| s.code()), Some(1), "{}", ran.stdout);
     assert!(
         ran.stdout
-            .starts_with("box: Silico failed: worker_crashed: ")
+            .starts_with("box: Silico failed: worker_unavailable: ")
             && ran.stdout.ends_with(
                 "; FreeCAD failed: FreeCAD refused it\n1 of 1 cases differ from FreeCAD\n"
             ),

@@ -14,3 +14,4 @@ reference_broken
 over_constrained
 solve_failed
 conflict
+worker_unavailable

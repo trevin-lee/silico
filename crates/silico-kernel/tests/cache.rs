@@ -145,7 +145,7 @@ fn a_worker_rebuilt_while_the_pool_runs_isnt_started_under_its_identity() {
     let error = echo_after_kill(&pool).unwrap_err();
     assert_eq!(
         error.code(),
-        silico_core::ErrorCode::WorkerCrashed,
+        silico_core::ErrorCode::WorkerUnavailable,
         "{error}"
     );
     assert!(

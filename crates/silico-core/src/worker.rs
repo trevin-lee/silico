@@ -193,7 +193,7 @@ impl Executable {
         }
         let noun = self.kind.noun();
         Err(Error::new(
-            ErrorCode::WorkerCrashed,
+            ErrorCode::WorkerUnavailable,
             format!(
                 "the {noun} {} changed since it started: another build of it isn't started \
                  in its place",
@@ -248,7 +248,7 @@ fn hashed(exe: &Path, kind: WorkerKind) -> Result<(String, Stamp), Error> {
     })()
     .map_err(|e: io::Error| {
         Error::new(
-            ErrorCode::WorkerCrashed,
+            ErrorCode::WorkerUnavailable,
             format!("couldn't read the {noun} {}", exe.display()),
         )
         .with_cause(e.to_string())
@@ -343,7 +343,7 @@ impl Worker {
             let message = format!("couldn't start the {} {}", kind.noun(), exe.display());
             // Short of something, the worker never ran; otherwise it can't be run.
             shortage(&e, &message).unwrap_or_else(|| {
-                Error::new(ErrorCode::WorkerCrashed, message)
+                Error::new(ErrorCode::WorkerUnavailable, message)
                     .with_cause(e.to_string())
                     .with_suggestion(format!(
                         "check Silico's install: {} can't be run (missing, not executable, or \
@@ -797,8 +797,15 @@ impl Worker {
         }
         drop(tail);
         self.stopped = true;
+        // One that ended before its first frame never was a worker of this build: it can't
+        // be had (a missing library, an exit at launch), not a crash of one that ran.
+        let code = if self.has_started() {
+            ErrorCode::WorkerCrashed
+        } else {
+            ErrorCode::WorkerUnavailable
+        };
         Error::new(
-            ErrorCode::WorkerCrashed,
+            code,
             format!("the {} crashed during {name}", self.kind.noun()),
         )
         .with_cause(cause)
@@ -1697,7 +1704,7 @@ pub(crate) fn worker_path(
             return Ok(path);
         }
         return Err(Error::new(
-            ErrorCode::InvalidInput,
+            ErrorCode::WorkerUnavailable,
             format!(
                 "{env} names {:?}, which isn't a file",
                 value.to_string_lossy()
@@ -1723,7 +1730,7 @@ pub(crate) fn worker_path(
         Ok(worker)
     } else {
         Err(Error::new(
-            ErrorCode::Internal,
+            ErrorCode::WorkerUnavailable,
             format!("no {noun} at {}", worker.display()),
         )
         .with_suggestion(format!("build it ({build}), or name it in {env}")))

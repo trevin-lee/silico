@@ -510,7 +510,7 @@ fn every_way_a_worker_cant_be_started_says_what_to_try() {
             Ok(_) => panic!("{what}: started"),
             Err(e) => e,
         };
-        assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{what}: {err}");
+        assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{what}: {err}");
         assert!(
             err.message().contains(&*exe.to_string_lossy()),
             "{what}: {err}"
@@ -596,8 +596,9 @@ fn a_start_short_of_descriptors_fails_cleanly_at_every_step() {
     }
     wait_fds(fds, "after every start");
     assert!(!failures.is_empty(), "no start ran out of descriptors");
-    // Each says it's this process's shortage (`resource_exhausted`, not `worker_crashed`,
-    // which would blame a worker that never ran), and what to do about it.
+    // Each says it's this process's shortage (`resource_exhausted`, not `worker_unavailable`
+    // or `worker_crashed`, which would blame the worker or its install), and what to do
+    // about it.
     let unadvised: Vec<String> = failures
         .iter()
         .filter(|(_, e)| {
@@ -864,7 +865,10 @@ fn dropping_the_pool_amid_crashes_kills_floods_and_advances_leaves_nothing() {
                 assert!(
                     matches!(
                         e.code(),
-                        ErrorCode::WorkerCrashed | ErrorCode::ProtocolError | ErrorCode::Internal
+                        ErrorCode::WorkerCrashed
+                            | ErrorCode::WorkerUnavailable
+                            | ErrorCode::ProtocolError
+                            | ErrorCode::Internal
                     ),
                     "round {round}: {what}: {e}"
                 );
@@ -930,7 +934,7 @@ fn start_child_entry() {
     for (what, err) in [("the pool", pool), ("a worker", worker)] {
         assert_eq!(
             err.code(),
-            silico_core::ErrorCode::InvalidInput,
+            silico_core::ErrorCode::WorkerUnavailable,
             "{what}: {err}"
         );
         let says = |text: Option<&str>| text.is_some_and(|t| t.contains(KERNEL_WORKER_ENV));
@@ -943,9 +947,9 @@ fn start_child_entry() {
 
 #[test]
 fn a_worker_named_by_an_unusable_variable_says_so() {
-    // SILICO_KERNEL_WORKER empty, naming nothing, or naming a directory is refused as
-    // invalid input naming the variable, the first thing to fix, as the default path, when
-    // missing, says to set it.
+    // SILICO_KERNEL_WORKER empty, naming nothing, or naming a directory is refused as a
+    // worker that can't be had (worker_unavailable), naming the variable, the first thing
+    // to fix, as the default path, when missing, says to set it.
     use silico_core::kernel::KERNEL_WORKER_ENV;
     let me = std::env::current_exe().unwrap();
     let mut bad = Vec::new();
