@@ -140,11 +140,14 @@ jobs:
           # (`--re=` so a regex beginning with `-` isn't read as an option.)
           if [ -n "$RE" ]; then args+=("--re=$RE"); fi
           # A sixth of the machine each: the most shards that run at once is four, two runs of
-          # two, which leaves a third of it for gates. (At three a run, two runs used all of
-          # it, and a gate on a full machine could fail a test still held to a wall clock:
-          # tests/mutants.sh lists them.) Retry a failed test here, since one that fails only
-          # under load would fail the baseline or count a mutant as caught; a mutant that
-          # breaks a test fails it every time.
+          # two. (At three a run, two runs used all of it, and a gate on a full machine could
+          # fail a test still held to a wall clock: tests/mutants.sh lists them.) The shard
+          # runs at the lowest priority (nice 19, below): it's background work, so it keeps its
+          # full share when the runner VM is idle and yields the CPU to gates when it isn't.
+          # Since the VM's disk moved off ZFS (2026-10-22), CPU, not I/O, is what jobs wait
+          # on. Retry a failed test here, since one that fails only under load would fail the
+          # baseline or count a mutant as caught; a mutant that breaks a test fails it every
+          # time.
           running=6
           share=$(( $(nproc) / running > 2 ? $(nproc) / running : 2 ))
           export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share NEXTEST_RETRIES=2
@@ -160,7 +163,7 @@ jobs:
           args+=(--jobserver-tasks "$share")
           # 2: mutants missed; 3: mutants timed out. The summary reports both.
           status=0
-          pixi run mutants -- "${args[@]}" || status=$?
+          nice -n 19 pixi run mutants -- "${args[@]}" || status=$?
           case $status in 0 | 2 | 3) ;; *) exit "$status" ;; esac
           # A shard with no mutants writes nothing; it still reports.
           mkdir -p "$RUNNER_TEMP/out/mutants.out"
