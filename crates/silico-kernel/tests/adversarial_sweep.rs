@@ -900,11 +900,15 @@ proptest! {
         // Turns that move the profile less than (ten times) the tolerance are refused, rightly.
         let reach = flat.iter().map(|p| p[0].abs()).fold(0.0, f64::max);
         prop_assume!(reach * angle.to_radians() > 1e-6);
-        // So are turns short of a whole one whose slit is within (ten times) the tolerance
-        // where it's narrowest: at the nearest corner, `shift` from the axis, or, touching
-        // it, the farthest (a_revolves_slit_is_measured_at_the_profiles_nearest_corner).
-        let at = if shift > 1e-7 { shift } else { reach };
-        prop_assume!(angle == 360.0 || at * (360.0 - angle).to_radians() > 1e-6);
+        // So are turns short of a whole one whose slit is within the tolerance where it's
+        // narrowest: at the nearest corner off the axis, or the farthest if none is
+        // (a_revolves_slit_is_measured_at_the_profiles_nearest_corner).
+        let at = flat
+            .iter()
+            .map(|p| p[0].abs())
+            .filter(|&d| d > 1e-7)
+            .fold(reach, f64::min);
+        prop_assume!(angle == 360.0 || at * (360.0 - angle).to_radians() > 1e-7);
         let place = |p: [f64; 3]| {
             let p = angles.map_or(p, |a| rotate(p, a));
             [p[0] + offset[0], p[1] + offset[1], p[2] + offset[2]]

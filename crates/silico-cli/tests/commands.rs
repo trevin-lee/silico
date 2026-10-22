@@ -739,3 +739,57 @@ fn an_open_sketch_swept_twice_names_each_failed_pad_once() {
     }
     assert!(!said.contains("feature s0000001"), "{said}");
 }
+
+#[test]
+fn a_groove_whose_other_region_is_off_the_axis_is_refused_for_its_narrow_slit() {
+    // The robustness review's case (M3, round 3): a groove of two rectangles, x 0..10
+    // touching the y axis and x −2..−1 off it, into a box, 600 nanodegrees short of a whole
+    // turn. The slit is narrowest at the second's near side, 1 mm off the axis:
+    // 1 · 600e-9 · π/180 = 1.0472e-8 mm, one place, so it's refused naming the groove's
+    // angle (measured at 10 mm, 1.05e-7, it passed and OCCT cut itself).
+    let scratch = Scratch::new("groove-slit");
+    let file = scratch.file(
+        r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "features": [
+  {"id": "b0000001", "type": "box", "v": 1, "name": "B", "position": [-20, -1, -20], "length": 40, "width": 3, "height": 40},
+  {"id": "s0000001", "type": "sketch", "v": 1, "name": "s", "plane": "xy",
+   "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false},
+              {"id": "pa000002", "x": 10, "y": 0, "construction": false},
+              {"id": "pa000003", "x": 10, "y": 5, "construction": false},
+              {"id": "pa000004", "x": 0, "y": 5, "construction": false},
+              {"id": "pb000001", "x": -2, "y": 0, "construction": false},
+              {"id": "pb000002", "x": -1, "y": 0, "construction": false},
+              {"id": "pb000003", "x": -1, "y": 5, "construction": false},
+              {"id": "pb000004", "x": -2, "y": 5, "construction": false}],
+   "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+             {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+             {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+             {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false},
+             {"id": "nb000001", "from": "pb000001", "to": "pb000002", "construction": false},
+             {"id": "nb000002", "from": "pb000002", "to": "pb000003", "construction": false},
+             {"id": "nb000003", "from": "pb000003", "to": "pb000004", "construction": false},
+             {"id": "nb000004", "from": "pb000004", "to": "pb000001", "construction": false}],
+   "circles": [], "arcs": [], "constraints": []},
+  {"id": "g0000001", "type": "groove", "v": 1, "name": "g", "base": "b0000001", "sketch": "s0000001", "axis": "y_axis",
+   "extent": {"type": "one_side", "angle": 359.9999994, "reversed": false}}]}
+"#,
+    );
+    let out = silico(&scratch, &["check", "--json"], &file);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let refused: Vec<&serde_json::Value> = line["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["feature"] == "g0000001")
+        .collect();
+    assert_eq!(refused.len(), 1, "{line}");
+    assert_eq!(refused[0]["code"], "invalid_input", "{line}");
+    assert_eq!(refused[0]["parameter"], "extent.angle", "{line}");
+    let message = refused[0]["message"].as_str().unwrap();
+    assert!(
+        message.ends_with(
+            " mm at its profile's point 1 mm from the axis: within 1e-7 mm, its ends would be one place"
+        ),
+        "{message}"
+    );
+}

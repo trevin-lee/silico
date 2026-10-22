@@ -277,6 +277,40 @@ fn a_revolve_short_of_a_turn_by_the_tolerance_is_refused_and_a_nanodegree_more_i
 }
 
 #[test]
+fn a_torus_short_of_a_turn_is_measured_at_its_circles_nearest_point() {
+    // A circle of radius 2.5 about (2, 7.5) on XY, about the x axis: nearest the axis at
+    // its point (2, 5), 7.5 − 2.5 = 5 away, no curve end. Its band is 3600/π = 1145.92
+    // nanodegrees short: 1145 short is refused before the kernel is asked; 1146 short
+    // builds the open torus, its volume by Pappus the circle's area π · 2.5² times its
+    // centre's path, 7.5 · θ, θ = (360 − 1.146e-6)° in radians, to 1e-9.
+    let torus = circles("ssssssss", "xy", &[([2.0, 7.5], 2.5)]);
+    let turn = |degrees: &str| {
+        turned(
+            "rrrrrrrr",
+            "revolve",
+            None,
+            "ssssssss",
+            "x_axis",
+            &angle(degrees),
+        )
+    };
+    let engine = engine();
+    let model = publish(&engine, &[&torus, &turn("359.999998855")]);
+    let error = failed(&model, "rrrrrrrr");
+    assert_eq!(error.parameter(), Some("extent.angle"), "{error}");
+    assert!(
+        error.message().ends_with(
+            "at its profile's point 5 mm from the axis: within 1e-7 mm, its ends would be one place"
+        ),
+        "{error}"
+    );
+    let model = publish(&engine, &[&torus, &turn("359.999998854")]);
+    let theta = (360.0 - 1.146e-6) * PI / 180.0;
+    let want = PI * 2.5 * 2.5 * 7.5 * theta;
+    assert_close(volume(&model, "rrrrrrrr"), want, 1e-9, "the open torus");
+}
+
+#[test]
 fn a_symmetric_whole_turn_is_the_whole_turn_named_as_one_side_names_it() {
     // A symmetric 360° starts half a turn back (−π) and sweeps 2π: the same ring as one
     // side's, 24π, a whole turn by `SweepKind::of_turn`. Its names are the same set as the

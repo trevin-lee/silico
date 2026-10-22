@@ -1314,17 +1314,27 @@ fn a_valid_chains_users_dont_wait_for_its_measures() {
 #[test]
 fn a_turn_short_of_a_whole_one_by_the_tolerance_is_refused_and_a_nanodegree_more_turns() {
     // A turn of 360° less k nanodegrees leaves a slit of r · k · 1e-9 · π/180 mm at a point
-    // r from the axis, narrowest at the profile's nearest point: within 1e-7 mm for
-    // k ≤ 1e-7 · 180 / (r π · 1e-9). About the x axis, on XY:
-    // - the rectangle 4 by 2 from the origin touches the axis, so its slit is measured at
-    //   its farthest point, 2: k ≤ 9000/π = 2864.79, so 2864 short (359.999997136°, a slit
-    //   of 9.9973e-8) is refused and 2865 short turns;
+    // r from the axis, narrowest at the profile's nearest point off the axis: within 1e-7
+    // mm for k ≤ 1e-7 · 180 / (r π · 1e-9). About the x axis, on XY:
+    // - the rectangle 4 by 2 from the origin runs out from the axis: its corners on it are
+    //   left out, and the nearest off it are 2 away: k ≤ 9000/π = 2864.79, so 2864 short
+    //   (359.999997136°, a slit of 9.9973e-8) is refused and 2865 short turns;
     // - the rectangle 4 by 5 from (0, 5) lies 5 to 10 from it: k ≤ 3600/π = 1145.92, so
     //   1145 short (359.999998855°, 9.9920e-8 at 5) is refused and 1146 short turns; 573
-    //   short, past the band at its far side (572.96), is refused too (5.0003e-8 at 5).
+    //   short, past the band at its far side (572.96), is refused too (5.0003e-8 at 5);
+    // - a circle of radius 2.5 about (2, 7.5) is nearest the axis at (2, 5), 7.5 − 2.5 = 5
+    //   away, its point toward it, no curve end: the same band as the rectangle at 5;
+    // - an arc of radius 5 about (0, 10), counter-clockwise from (−4, 7) to (4, 7) (from
+    //   −143.13° past −90° to −36.87°), closed by its chord: its ends are 7 from the axis,
+    //   its bottom, (0, 5), inside it, 5: the band at 5 (at 7 it would be 818.51, and 1145
+    //   would turn).
     // For a revolve, and a groove into the cube below.
     let off = rectangle("ssssssss", "xy", [0.0, 5.0], 4.0, 5.0);
+    let torus = circles("ssssssss", "xy", &[([2.0, 7.5], 2.5)]);
+    let bulge = r#"{"id": "ssssssss", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 10, "construction": false}, {"id": "pa000002", "x": -4, "y": 7, "construction": false}, {"id": "pa000003", "x": 4, "y": 7, "construction": false}], "lines": [{"id": "na000001", "from": "pa000003", "to": "pa000002", "construction": false}], "circles": [], "arcs": [{"id": "aa000001", "center": "pa000001", "start": "pa000002", "end": "pa000003", "construction": false}], "constraints": []}"#.to_owned();
     let cases = [
+        (torus, "359.999998855", 5.0, 9.9920e-8, "359.999998854"),
+        (bulge, "359.999998855", 5.0, 9.9920e-8, "359.999998854"),
         (
             off.clone(),
             "359.999998855",
@@ -1398,4 +1408,85 @@ fn a_turn_short_of_a_whole_one_by_the_tolerance_is_refused_and_a_nanodegree_more
             assert_eq!(sent, turns * (PI / 180.0), "{word}");
         }
     }
+}
+
+#[test]
+fn a_slit_is_measured_at_the_nearest_point_off_the_axis_over_every_region_and_hole() {
+    // About the y axis, on XY. A profile running out from the axis has its corners there
+    // left out (their copies meet on the axis); the nearest point off it is where the slit
+    // is narrowest, though another region or the outline touches the axis. 360° less k
+    // nanodegrees leaves r · k · 1e-9 · π/180 mm at r:
+    // - the rectangle 0..10 with a hole 1..2: nearest off the axis 1 (the hole); 5000 short
+    //   leaves 8.7266e-8 there, refused (measured at 10, 8.7e-7, it passed);
+    // - a groove of the rectangles 0..1 and 5..10: nearest off it 1; 5000 short, refused;
+    // - a groove of the rectangles 0..10 and −2..−1 (the robustness review's case): nearest
+    //   off it 1, the second's near side; 600 short leaves 1.0472e-8, refused;
+    // - the control, the rectangle 0..10 alone: nearest off the axis 10; 5000 short leaves
+    //   8.7266e-7, and it turns.
+    let cases = [
+        (
+            "revolve",
+            [[0.0, 0.0, 10.0, 5.0], [1.0, 1.0, 2.0, 2.0]],
+            "359.999995",
+            8.7266e-8,
+        ),
+        (
+            "groove",
+            [[0.0, 0.0, 1.0, 5.0], [5.0, 0.0, 10.0, 5.0]],
+            "359.999995",
+            8.7266e-8,
+        ),
+        (
+            "groove",
+            [[0.0, 0.0, 10.0, 5.0], [-2.0, 0.0, -1.0, 5.0]],
+            "359.9999994",
+            1.0472e-8,
+        ),
+    ];
+    for (word, rects, short, width) in cases {
+        let base = (word == "groove").then_some("bbbbbbbb");
+        let model = published(
+            &engine(),
+            &[
+                &cube_below(),
+                &rectangles("ssssssss", "xy", &rects),
+                &turned("rrrrrrrr", word, base, "ssssssss", "y_axis", &angle(short)),
+            ],
+        );
+        let error = failed(&model, "rrrrrrrr");
+        assert_eq!(error.parameter(), Some("extent.angle"), "{rects:?}");
+        let message = error.message();
+        assert!(
+            message.ends_with(
+                " mm at its profile's point 1 mm from the axis: within 1e-7 mm, its ends would be one place"
+            ),
+            "{message}"
+        );
+        let slit: f64 = message
+            .split("leaves a slit of ")
+            .nth(1)
+            .and_then(|m| m.split(' ').next())
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(f64::NAN);
+        assert!((slit - width).abs() < 1e-12, "{message}");
+    }
+    let model = published(
+        &engine(),
+        &[
+            &rectangles("ssssssss", "xy", &[[0.0, 0.0, 10.0, 5.0]]),
+            &turned(
+                "rrrrrrrr",
+                "revolve",
+                None,
+                "ssssssss",
+                "y_axis",
+                &angle("359.999995"),
+            ),
+        ],
+    );
+    assert!(
+        built(&model, "rrrrrrrr"),
+        "{:?}",
+        model.outcome(&id("rrrrrrrr"))
+    );
 }

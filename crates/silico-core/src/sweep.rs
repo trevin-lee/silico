@@ -210,6 +210,57 @@ fn reach(edge: &crate::profile::Edge, origin: [f64; 2], direction: [f64; 2]) -> 
     }
 }
 
+/// The distances from the line through `origin` along the unit `direction` of a curve's
+/// points that could be the nearest of a profile to it: its ends; and its interior point
+/// nearest the line, where it has one: where its circle lies off the line, the circle's
+/// point toward it, the centre's distance less the radius (a circle's always; an arc's
+/// where that point lies on it). A line's points between its ends are no nearer than its
+/// nearer end, and an arc whose circle meets the line is nearest it at an end or where it
+/// meets it.
+fn nearest_points(
+    edge: &crate::profile::Edge,
+    origin: [f64; 2],
+    direction: [f64; 2],
+) -> [Option<f64>; 3] {
+    let side = |p: [f64; 2]| direction[0] * (p[1] - origin[1]) - direction[1] * (p[0] - origin[0]);
+    // The circle's point toward the line, as an angle, and its distance from the line, if
+    // the circle lies off it.
+    let toward = |center: [f64; 2], radius: f64| {
+        let c = side(center);
+        // The line's normal toward it from the centre: against the left normal from the
+        // left of it, along it from the right.
+        let normal = if c >= 0.0 {
+            [direction[1], -direction[0]]
+        } else {
+            [-direction[1], direction[0]]
+        };
+        (c.abs() > radius).then(|| (libm::atan2(normal[1], normal[0]), c.abs() - radius))
+    };
+    match edge.sent {
+        silico_protocol::Curve::Line { start, end } => {
+            [Some(side(start).abs()), Some(side(end).abs()), None]
+        }
+        silico_protocol::Curve::Circle { center, radius } => {
+            [None, None, toward(center, radius).map(|(_, d)| d)]
+        }
+        silico_protocol::Curve::Arc {
+            center,
+            start,
+            end,
+            radius,
+            start_angle,
+            end_angle,
+        } => {
+            let (from, to) = (start_angle.min(end_angle), start_angle.max(end_angle));
+            let inside = toward(center, radius).and_then(|(angle, distance)| {
+                let turned = from + (angle - from).rem_euclid(std::f64::consts::TAU);
+                (turned <= to).then_some(distance)
+            });
+            [Some(side(start).abs()), Some(side(end).abs()), inside]
+        }
+    }
+}
+
 /// Whether revolve or groove `feature` can turn its sketch's `profile` (solved as
 /// `solution`) about its axis (design S6): every check of the axis, its length first
 /// ([`check_axis_length`]), the axis found once; its line, if it passes, for the step.
@@ -224,9 +275,10 @@ fn reach(edge: &crate::profile::Edge, origin: [f64; 2], direction: [f64; 2]) -> 
 /// - **the turn's end mustn't be where it started** ([`silico_protocol::end_at_start`], M1's
 ///   revolve's rule): the profile's farthest point from the axis, over every region, must
 ///   move more than the tolerance, and, short of a whole turn, its slit must be wider than
-///   that where it's narrowest, at the profile's nearest point (its farthest, if it touches
-///   the axis): 360 degrees less a few nanodegrees leaves ends one place, which OCCT builds
-///   as two; refused as `invalid_input`, naming the feature and its `extent.angle`.
+///   that where it's narrowest, at its nearest point off the axis over every region and
+///   hole ([`nearest_points`], [`silico_protocol::slit_radius`]): 360 degrees less a few
+///   nanodegrees leaves ends one place, which OCCT builds as two; refused as
+///   `invalid_input`, naming the feature and its `extent.angle`.
 pub fn check_axis(
     document: &Checked,
     feature: &FeatureId,
@@ -240,7 +292,9 @@ pub fn check_axis(
     let word = axis.word;
     let tolerance = silico_protocol::LENGTH_TOLERANCE;
     let mut farthest = 0.0f64;
-    let mut nearest = f64::INFINITY;
+    // Every point that could be the profile's nearest to the axis, over every region and
+    // hole: where its slit is measured.
+    let mut near: Vec<f64> = Vec::new();
     for region in &profile.regions {
         let (mut low, mut high) = (0.0f64, 0.0f64);
         let mut off: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -251,15 +305,11 @@ pub fn check_axis(
             let (l, h) = reach(edge, origin, direction);
             low = low.min(l);
             high = high.max(h);
-            // Its nearest to the axis: 0 where it reaches both sides (within the
-            // tolerance, touching; past it, the crossing refused below).
-            nearest = nearest.min(if l > 0.0 {
-                l
-            } else if h < 0.0 {
-                -h
-            } else {
-                0.0
-            });
+            near.extend(
+                nearest_points(edge, origin, direction)
+                    .into_iter()
+                    .flatten(),
+            );
             if l < -tolerance || h > tolerance {
                 off.insert(edge.curve.to_string());
             }
@@ -314,7 +364,8 @@ pub fn check_axis(
             .with_suggestion(suggestion)
     };
     let turned = silico_protocol::radians(degrees);
-    match silico_protocol::end_at_start(nearest, farthest, turned) {
+    let slit_at = silico_protocol::slit_radius(near, farthest);
+    match silico_protocol::end_at_start(slit_at, farthest, turned) {
         Some(EndAtStart::Unmoved) => {
             return Err(refused(
                 format!(
@@ -325,12 +376,12 @@ pub fn check_axis(
                 "turn it by a larger angle",
             ));
         }
-        Some(EndAtStart::ShortOfWhole { at }) => {
+        Some(EndAtStart::ShortOfWhole { at, slit }) => {
             return Err(refused(
                 format!(
                     "{word} {feature}'s angle, {} degrees, short of a whole turn, leaves a slit of {} mm at its profile's point {} mm from the axis: within 1e-7 mm, its ends would be one place",
                     format_number(degrees),
-                    format_number(at * (std::f64::consts::TAU - turned)),
+                    format_number(slit),
                     format_number(at)
                 ),
                 "turn it by 360 degrees for a whole turn, or by less, so its ends are more than 1e-7 mm apart",

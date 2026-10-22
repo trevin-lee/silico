@@ -592,8 +592,9 @@ fn a_revolves_slit_is_measured_at_the_profiles_nearest_corner() {
             "{angle}"
         );
     }
-    // Touching the axis, from x = 0 to 10: the slit is measured at the far corners, 10,
-    // whose band is 572.96 nanodegrees.
+    // Touching the axis, from x = 0 to 10: its corners on the axis are left out, so the
+    // slit is measured at the nearest corners off it, 10, whose band is 572.96
+    // nanodegrees.
     let touching = Profile {
         points: vec![
             [0.0, 0.0, 0.0],
@@ -605,6 +606,36 @@ fn a_revolves_slit_is_measured_at_the_profiles_nearest_corner() {
     let plane = touching.check().unwrap();
     assert!(check_revolve(&plane, &touching.points, &y, 360.0 - 572e-9).is_err());
     assert!(check_revolve(&plane, &touching.points, &y, 360.0 - 573e-9).is_ok());
+    // The port review's case (a): (0, 0), (10, 0), (10, 5), (1, 5), touching the axis at
+    // the origin, its corner (1, 5) off it, 1 away. 5000 nanodegrees short leaves
+    // 1 · 5000e-9 · π/180 = 8.7266e-8 there: refused (measured at 10, it passed). The
+    // touching rectangle at 5000 short leaves 8.7266e-7 at 10, and turns.
+    let notched = Profile {
+        points: vec![
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [10.0, 5.0, 0.0],
+            [1.0, 5.0, 0.0],
+        ],
+    };
+    let e = refused(check_revolve(
+        &notched.check().unwrap(),
+        &notched.points,
+        &y,
+        360.0 - 5000e-9,
+    ));
+    assert!(
+        e.message
+            .contains("at the profile's corner 1 mm from the axis"),
+        "{}",
+        e.message
+    );
+    assert!(
+        (slit(&e.message) - 8.7266e-8).abs() < 1e-12,
+        "{}",
+        e.message
+    );
+    assert!(check_revolve(&plane, &touching.points, &y, 360.0 - 5000e-9).is_ok());
 }
 
 #[test]

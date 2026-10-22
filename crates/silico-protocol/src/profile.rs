@@ -516,11 +516,13 @@ pub fn check_revolve(
         ));
     }
     // A corner travels its distance times the angle in radians, and stops that far short of
-    // a whole turn's worth of it: the farthest moves most, and the nearest leaves the
-    // narrowest slit.
+    // a whole turn's worth of it: the farthest moves most, and the nearest off the axis
+    // leaves the narrowest slit.
     let reach = low.abs().max(high.abs());
-    let nearest = sides.iter().map(|s| s.abs()).fold(f64::INFINITY, f64::min);
-    match crate::end_at_start(nearest, reach, radians(angle)) {
+    // A side's points between its corners are no nearer than its nearer corner, so the
+    // corners are every point that could be nearest.
+    let at = crate::slit_radius(sides.iter().map(|s| s.abs()), reach);
+    match crate::end_at_start(at, reach, radians(angle)) {
         Some(EndAtStart::Unmoved) => Err(invalid(
             "angle",
             format!(
@@ -528,12 +530,12 @@ pub fn check_revolve(
                 format_number(angle)
             ),
         )),
-        Some(EndAtStart::ShortOfWhole { at }) => Err(invalid(
+        Some(EndAtStart::ShortOfWhole { at, slit }) => Err(invalid(
             "angle",
             format!(
                 "the revolve's angle of {} degrees, short of a whole turn, leaves a slit of {} mm at the profile's corner {} mm from the axis: within 1e-7 mm, its ends would be one place; use 360 for a whole turn, or less for ends apart",
                 format_number(angle),
-                format_number(at * (std::f64::consts::TAU - radians(angle))),
+                format_number(slit),
                 format_number(at)
             ),
         )),
