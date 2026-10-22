@@ -420,9 +420,10 @@ fn unchecked(what: String) -> Error {
 /// refusals there are, each sweep of the sketch its own, whole: `invalid_input` (or the
 /// first listed refusal's code that isn't, a bug, with a bug's advice), naming the feature
 /// and its `sketch`; the sketch's elements at fault, every refusal's, by ID (the first
-/// hundred, and their total: a sweep refusal's elements are its sketch's); each listed
-/// refusal's message and advice its cause, and how many more. The sketch itself isn't
-/// failed, and no error names it: a sketch nothing sweeps may be open.
+/// hundred, and their total: a sweep refusal's elements are its sketch's); its cause each
+/// listed refusal's message, each distinct advice given once, after the first refusal it
+/// follows, and how many more. The sketch itself isn't failed, and no error names it: a
+/// sketch nothing sweeps may be open.
 pub fn unprofiled(
     feature: &FeatureId,
     kind: SweepFeature,
@@ -435,11 +436,16 @@ pub fn unprofiled(
         .map(Error::code)
         .find(|&code| code != ErrorCode::InvalidInput)
         .unwrap_or(ErrorCode::InvalidInput);
+    // Each refusal's message, with its advice the first time that advice is given.
+    let mut given: Vec<&str> = Vec::new();
     let mut cause = listed
         .iter()
         .map(|e| match e.suggestion() {
-            Some(advice) => format!("{} ({advice})", e.message()),
-            None => e.message().to_owned(),
+            Some(advice) if !given.contains(&advice) => {
+                given.push(advice);
+                format!("{} ({advice})", e.message())
+            }
+            _ => e.message().to_owned(),
         })
         .collect::<Vec<_>>()
         .join("; ");

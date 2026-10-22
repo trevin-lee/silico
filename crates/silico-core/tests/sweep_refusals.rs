@@ -540,7 +540,7 @@ fn a_sweep_of_a_sketch_that_makes_no_profile_is_one_error_naming_it_however_many
         error.cause(),
         Some(
             format!(
-                "point p0000001 ends line n0000003 and no other profile curve, so the profile is open there ({advice}); point p0000002 ends line n0000003 and no other profile curve, so the profile is open there ({advice})"
+                "point p0000001 ends line n0000003 and no other profile curve, so the profile is open there ({advice}); point p0000002 ends line n0000003 and no other profile curve, so the profile is open there"
             )
             .as_str()
         )
@@ -587,12 +587,19 @@ fn a_sweep_of_a_sketch_that_makes_no_profile_is_one_error_naming_it_however_many
         error.message(),
         "pad p0000001 sweeps sketch k7f2qx3m, which makes no profile (102 refusals)"
     );
+    // By ID: the 51 lines (n0000003, n0000006, ... n0000153) first, then the points not
+    // a multiple of 3, the 49th of which is 3 · 24 + 1 = 73.
     assert_eq!(error.elements().len(), 100);
+    assert_eq!(error.elements()[0], "n0000003");
+    assert_eq!(error.elements()[50], "n0000153");
+    assert_eq!(error.elements()[99], "p0000073");
     assert_eq!(error.elements_total(), 153);
+    // Each refusal said, and their one advice once.
     let cause = error.cause().unwrap();
-    assert_eq!(cause.matches("so the profile is open there (").count(), 100);
+    assert_eq!(cause.matches("so the profile is open there").count(), 100);
+    assert_eq!(cause.matches("(end another curve at the point").count(), 1);
     assert!(
-        cause.ends_with("or make the curve construction geometry); and 2 more"),
+        cause.ends_with("so the profile is open there; and 2 more"),
         "{cause}"
     );
 }

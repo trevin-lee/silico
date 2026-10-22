@@ -697,7 +697,7 @@ fn an_open_sketch_swept_twice_names_each_failed_pad_once() {
     assert_eq!(line["total"], 2, "{line}");
     let advice = "end another curve at the point to close the outline, or make the curve construction geometry";
     let cause = format!(
-        "point p0000001 ends line n0000001 and no other profile curve, so the profile is open there ({advice}); point p0000004 ends line n0000003 and no other profile curve, so the profile is open there ({advice})"
+        "point p0000001 ends line n0000001 and no other profile curve, so the profile is open there ({advice}); point p0000004 ends line n0000003 and no other profile curve, so the profile is open there"
     );
     for (i, pad) in ["d0000001", "d0000009"].into_iter().enumerate() {
         let problem = &line["problems"][i];

@@ -495,7 +495,7 @@ fn a_sketch_that_makes_no_profile_fails_each_sweep_of_it_once_naming_it() {
             error.cause(),
             Some(
                 format!(
-                    "point pa000001 ends line na000001 and no other profile curve, so the profile is open there ({advice}); point pa000003 ends line na000002 and no other profile curve, so the profile is open there ({advice})"
+                    "point pa000001 ends line na000001 and no other profile curve, so the profile is open there ({advice}); point pa000003 ends line na000002 and no other profile curve, so the profile is open there"
                 )
                 .as_str()
             )
@@ -522,10 +522,10 @@ fn a_sketch_that_makes_no_profile_fails_each_sweep_of_it_once_naming_it() {
 }
 
 #[test]
-fn two_pads_of_a_two_region_sketch_are_each_refused_naming_the_pad_and_a_pocket_builds() {
+fn two_pads_of_a_two_region_sketch_are_each_refused_naming_the_pad() {
     // Design S5 in AR1's shape: two circles, two regions; each pad's error names it, with
-    // parameter `sketch` and the sketch's two circles; no error names the sketch. A pocket
-    // of the same sketch into the cube takes both regions and builds.
+    // parameter `sketch` and the sketch's two circles; no error names the sketch. (A pocket
+    // of them builds: a_pad_or_revolve_of_two_regions_is_refused_naming_them_and_a_pocket_takes_both.)
     let two = circles("ssssssss", "xy", &[([2.0, 2.0], 1.0), ([6.0, 2.0], 1.0)]);
     let model = published(
         &engine(),
@@ -547,22 +547,12 @@ fn two_pads_of_a_two_region_sketch_are_each_refused_naming_the_pad_and_a_pocket_
             (Some("p0000002"), Some("sketch"), &circles_at_fault[..]),
         ]
     );
-    let model = published(
-        &engine(),
-        &[
-            &cube_below(),
-            &two,
-            &pocket("qqqqqqqq", "bbbbbbbb", "ssssssss", TEN),
-        ],
-    );
-    assert!(built(&model, "qqqqqqqq"), "{:?}", model.features());
-    assert_eq!(model.errors().count(), 0);
 }
 
 #[test]
 fn a_pad_or_revolve_of_two_regions_is_refused_naming_them_and_a_pocket_takes_both() {
     // Decision 3, strict (design S5): with or without a base that would join them, refused
-    // before any kernel step, the feature the sketch, the elements every region's outer-loop
+    // before any kernel step, naming the feature, the elements every region's outer-loop
     // curves in region order, and their total; a pocket or groove takes every region.
     let two = circles("ssssssss", "xy", &[([2.0, 2.0], 1.0), ([6.0, 2.0], 1.0)]);
     for (feature, word) in [

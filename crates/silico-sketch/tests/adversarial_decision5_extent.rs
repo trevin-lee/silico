@@ -758,8 +758,8 @@ fn two_lines_a_nanodegree_apart_joined_are_refused_naming_the_joining_line() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(f64::NAN);
     // The solve meets the angle only to its convergence, 1e-10 rad, on a 1 mm lever (here
-    // 1.607e-11 for the hand 1.745e-11): some length above 0, under the floor.
-    assert!(length > 0.0 && length < 1e-7, "{e}");
+    // 1.607e-11 for the hand 1.745e-11): above 0, and at most the hand length and that.
+    assert!(length > 0.0 && length <= 1.745e-11 + 1e-10, "{e}");
     assert_eq!(
         e.suggestion(),
         Some("change the constraints that draw it this small: draw the line's ends further apart")
