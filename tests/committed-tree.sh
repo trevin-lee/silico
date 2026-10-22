@@ -1,10 +1,11 @@
 # Sourced by tests/gate.sh and tests/mutants.sh: checks out the committed tree (HEAD, or
 # the commit SILICO_TREE_COMMIT names, so a script can test commits older than itself) into
 # a worktree in the user cache, one per checkout, reused between runs and cleaned of
-# everything untracked except build caches (target/ and .pixi/), so runs after the first are
-# incremental, and cds into it. (Not inside the repository: Cargo would take the outer
-# checkout's workspace for the tree's.) The gate and mutation testing share it, so each
-# starts from the other's build; they take turns, under one lock.
+# everything untracked except build caches (target/, target-mutants/ and .pixi/), so runs
+# after the first are incremental, and cds into it. (Not inside the repository: Cargo would
+# take the outer checkout's workspace for the tree's.) The gate and mutation testing share
+# it, taking turns under one lock; on CI each keeps its own build in it (SILICO_TARGET,
+# below), so neither evicts the other's.
 #
 # Re-runs the sourcing script ("$0", with its arguments) holding the lock, so source it
 # before anything with side effects.
@@ -67,12 +68,13 @@ fi
 # shards build without debug info in target-mutants/, so neither build evicts the other).
 # target/occt stays in target/: the build scripts find OCCT there.
 target=${SILICO_TARGET:-target}
+target_limit_gib=${SILICO_TARGET_LIMIT_GIB:-30}
 # $target/debug keeps a copy of each crate for each set of dependencies and features it was
 # built with (each branch's Cargo.lock, cargo-mutants' baselines of a few packages), and
 # Cargo never removes them: past a bound, start it again, cold (target/occt and the other
 # caches stay). One whole gate's build is about 12 GiB, or 14 GiB with incremental
-# compilation, which CI turns off.
-target_limit_gib=30
+# compilation, which CI turns off. A build without debug info is a fraction of that, and
+# takes a smaller bound (SILICO_TARGET_LIMIT_GIB).
 if [ -d "$tree/$target/debug" ]; then
   target_kib=$(du -sk "$tree/$target/debug" | cut -f1) || {
     echo "gate: can't measure $tree/$target/debug (above); delete it by hand" >&2
