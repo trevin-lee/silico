@@ -1880,3 +1880,44 @@ fn a_slit_measured_where_the_nearest_point_off_the_axis_is_also_the_farthest_nam
         model.outcome(&id("rrrrrrrr"))
     );
 }
+
+#[test]
+fn an_arc_right_of_the_y_axis_is_measured_at_its_point_toward_the_axis() {
+    // A lens about the y axis: an arc of radius 5 about (10, 0), counter-clockwise from
+    // (6, 3) (143.13°) through (5, 0) (180°) to (6, −3) (216.87°), closed by its chord at
+    // x = 6. Right of y, the axis is to the circle's right: its point toward the axis is at
+    // 180°, (5, 0), on the arc, 10 − 5 = 5 from the axis (its ends are 6). The band at 5
+    // is 3600/π = 1145.92 nanodegrees: 1145 short (9.9920e-8) is refused, naming the arc,
+    // and 1146 short turns. (Taking the circle's point away from the axis, at 0°, which
+    // isn't on the arc, measures it at its ends, 6, where 1145 short leaves 1.199e-7.)
+    let lens = arc_sketch([10.0, 0.0], [6.0, 3.0], [6.0, -3.0]);
+    let turn = |degrees: &str| {
+        turned(
+            "rrrrrrrr",
+            "revolve",
+            None,
+            "ssssssss",
+            "y_axis",
+            &angle(degrees),
+        )
+    };
+    let model = published(&engine(), &[&lens, &turn("359.999998855")]);
+    let error = failed(&model, "rrrrrrrr");
+    assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
+    assert_eq!(error.parameter(), Some("extent.angle"), "{error}");
+    assert!(
+        error.message().ends_with(
+            " mm at its profile's point 5 mm from the axis: within 1e-7 mm, its ends would be one place"
+        ),
+        "{error}"
+    );
+    assert!((slit(error.message()) - 9.9920e-8).abs() < 1e-12, "{error}");
+    assert_eq!(error.elements(), ["aa000001"]);
+    assert_eq!(error.elements_total(), 1);
+    let model = published(&engine(), &[&lens, &turn("359.999998854")]);
+    assert!(
+        built(&model, "rrrrrrrr"),
+        "{:?}",
+        model.outcome(&id("rrrrrrrr"))
+    );
+}

@@ -794,3 +794,49 @@ fn a_sketch_at_the_limit_with_everything_moved_reports_drift_and_saves_promptly(
     );
     holds_as_saved(&saved.text);
 }
+
+#[test]
+fn a_solve_past_a_limit_not_a_size_keeps_the_solves_own_advice() {
+    // The gate's advice is carried into an unsavable solve's only when the problem is a
+    // curve too small (the floor); any other limit keeps the solve's own advice. An arc
+    // about pa000000 from (1000, 0) to (0, 1000), its centre solved to (−999001, 0): every
+    // coordinate within a kilometre, but the radius, centre to start, is 1000 + 999001 =
+    // 1000001 mm, past the kilometre the solver takes. An invalid result naming the arc,
+    // with "keep the sketch's dimensions inside their limits", not "change the constraints
+    // that draw it this small".
+    let doc = fixture::document(&fixture::fields(
+        &[
+            fixture::point("pa000000", 0.0, 0.0),
+            fixture::point("pa000001", 1000.0, 0.0),
+            fixture::point("pa000002", 0.0, 1000.0),
+        ]
+        .join(", "),
+        "",
+        "",
+        &fixture::arc("aa000001", "pa000000", "pa000001", "pa000002"),
+        "",
+    ));
+    let sketches = FakeSketches::new();
+    sketches.answer(move |system: &SketchSystem| {
+        let mut solved = FakeSketches::as_sent(system);
+        // The centre's x, the first point's first value.
+        solved.values[FIRST_POINT] = -999_001.0;
+        Ok(solved)
+    });
+    let model = published(&engine(&sketches), &doc);
+    let Some(FeatureOutcome::Failed(error)) = model.outcome(&feature()) else {
+        panic!("{:?}", model.outcome(&feature()));
+    };
+    assert_eq!(error.code(), ErrorCode::InvalidResult);
+    assert_eq!(error.elements(), ["aa000001"]);
+    assert_eq!(
+        error.message(),
+        "the sketch solves to geometry its file can't hold: arc aa000001's radius, from its center to its start, is 1000001 mm, more than the 1000000 mm (a kilometre) the solver takes"
+    );
+    assert_eq!(
+        error.suggestion(),
+        Some(
+            "keep the sketch's dimensions inside their limits, not at them: a solve meets them only to rounding"
+        )
+    );
+}
