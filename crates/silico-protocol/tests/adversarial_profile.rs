@@ -6,6 +6,7 @@
 use proptest::prelude::*;
 use silico_protocol::{
     Axis, InvalidParameter, MAX_LENGTH, Profile, ProfilePlane, check_revolve, extrusion_vector,
+    side_of_line,
 };
 
 fn profile(points: &[[f64; 3]]) -> Profile {
@@ -85,6 +86,29 @@ fn vectors_whose_length_underflows_are_refused_as_having_no_direction() {
     }
 }
 
+#[test]
+fn a_direction_exactly_at_freecads_limit_out_of_the_plane_is_extruded() {
+    // FreeCAD's Pad refuses a direction only when |direction · normal| < Confusion (1e-7,
+    // FeatureExtrude.cpp at 876271d660, line 504), so one exactly at it is extruded. Here
+    // (1, 0, z) has factor z/√(1 + z²) on the xy square, which by hand needs z = 1e-7 ×
+    // (1 + 5e-15) to be 1e-7; this z, within rounding of that, is the smallest whose factor
+    // rounds to 1e-7 exactly. It rises 0.05 mm along the normal by sweeping 0.05 / 1e-7 =
+    // 5e5 mm, under a kilometre. The baseline's surviving mutant, `factor <= ...`, refused it.
+    let plane = unit_square_at(0.0).check().unwrap();
+    let v = extrusion_vector(&plane, 0.05, Some([1.0, 0.0, 1.0000000000000049e-7])).unwrap();
+    assert!((v[0] - 5e5).abs() < 1e-6, "{v:?}");
+    assert_eq!(v[1], 0.0);
+    assert!((v[2] - 0.05).abs() < 1e-15, "{v:?}");
+    // z = 1e-7 itself has factor 1e-7/√(1 + 1e-14), just under the limit: in the plane.
+    let e = refused(extrusion_vector(&plane, 0.05, Some([1.0, 0.0, 1e-7])));
+    assert_eq!(e.parameter, "direction");
+    assert!(
+        e.message.contains("lies in the profile's plane"),
+        "{}",
+        e.message
+    );
+}
+
 // ---- Self-crossing that cancellation hides ----
 
 /// A bow tie whose sides 1 and 3 cross a third of the way along, at an angle of about
@@ -134,6 +158,243 @@ fn a_bow_tie_crossing_at_an_ordinary_angle_is_refused() {
 }
 
 // ---- Values exactly at, and one step either side of, each limit ----
+
+#[test]
+fn a_point_is_left_or_right_of_a_line_only_where_rounding_cant_have_chosen() {
+    // By hand: (0, 1) is left of the x axis run from (0, 0) to (1, 0), (0, -1) right, and
+    // (5, 0) on it.
+    let (o, x) = ([0.0, 0.0], [1.0, 0.0]);
+    assert_eq!(side_of_line(o, x, [0.0, 1.0]), 1);
+    assert_eq!(side_of_line(o, x, [0.0, -1.0]), -1);
+    assert_eq!(side_of_line(o, x, [5.0, 0.0]), 0);
+    // Corner 1 of the notch below, on the line from corner 5 to corner 6 within 1e-22 mm
+    // (exact rationals): its orientation is rounding's, so it's on the line. 1e-6 mm off it
+    // it's surely on a side: the line runs down and to the left, so its left is (2, -1)/√5.
+    let (c5, c6) = ([73.70000015, 145.7000003], [61.10000015, 120.5000003]);
+    assert_eq!(side_of_line(c5, c6, [61.1, 120.5]), 0);
+    // Corner 2, by hand 7e-15 mm off the line: its orientation rounds to -1.1e-13, inside
+    // the bound (4.2e-13) but not 0, so only the bound says it's on the line (#78's tests
+    // review).
+    assert_eq!(side_of_line(c5, c6, [48.5, 95.3]), 0);
+    // The same three corners scaled by 2^-7, which is exact, so corner 2 is still 7e-15 / 128
+    // mm off the line: by hand its orientation, -6.9e-18, is within the bound times the
+    // products' sum (2.6e-17) but over it times their product (5e-19): a bound taken on the
+    // product would trust rounding's sign near the origin (#44's surviving mutant).
+    let near = |p: [f64; 2]| [p[0] / 128.0, p[1] / 128.0];
+    assert_eq!(side_of_line(near(c5), near(c6), near([48.5, 95.3])), 0);
+    // Past the bound, rounding's sign is the exact one, and side_of_line says so: this point
+    // near the line from corner 5 to corner 6 is left of it by exact rational arithmetic,
+    // its orientation 1.76 times the bound, so a bound two to four times as wide would call
+    // it on the line (#78's mutants: the bound's `*` as `+`, its `/` as `%` or `*`).
+    assert_eq!(
+        side_of_line(c5, c6, [56.35393626839515, 111.00787253679026]),
+        1
+    );
+    // And just inside the bound, on the line. From (0, 0) to (1, 1 - 3ε), (1, 1) has products
+    // 1 and 1 - 3ε, both exact, and an orientation of exactly 3ε (their difference is exact):
+    // left of the line, but within the bound times the products' sum, 2 - 3ε, which by hand
+    // is 3ε + 3.5ε² - 12ε³ (rounded, 6.661338147750941e-16 against 3ε's ...939e-16). The
+    // bound with 3 - 8ε in place of 3 + 8ε gives 3ε - 12.5ε², under it, and calls the point
+    // left (#78's mutant: the bound's `+` as `-`).
+    let e = f64::EPSILON;
+    assert_eq!(
+        side_of_line([0.0, 0.0], [1.0, 1.0 - 3.0 * e], [1.0, 1.0]),
+        0
+    );
+    let off = 1e-6 / 5f64.sqrt();
+    assert_eq!(side_of_line(c5, c6, [61.1 - 2.0 * off, 120.5 + off]), -1);
+    assert_eq!(side_of_line(c5, c6, [61.1 + 2.0 * off, 120.5 - off]), 1);
+}
+
+#[test]
+fn a_profile_crossing_itself_in_its_plane_is_refused_though_its_corners_are_off_it() {
+    // Found by #78's robustness review: crossings are decided in the profile's plane, but
+    // were measured as touches in space, where corners within the tolerance of the plane
+    // can be twice that apart along its normal. Here the side from (500, 1000) comes down
+    // through (500, 0, h), the corner B, onto side D to E along y = 0, and carries on to
+    // (500, -10): in the plane, B is on side D to E (by hand, their x and y), a crossing;
+    // in space it's 2h = 1.2e-7 from it, over the tolerance, D and E being h below it.
+    let h = 6e-8;
+    let refusal = refused(
+        profile(&[
+            [0.0, 0.0, 0.0],
+            [490.0, 0.0, -h],
+            [510.0, 0.0, -h],
+            [1000.0, 0.0, 0.0],
+            [1000.0, 1000.0, 0.0],
+            [500.0, 1000.0, 0.0],
+            [500.0, 0.0, h],
+            [500.0, -10.0, 0.0],
+            [0.0, -10.0, 0.0],
+        ])
+        .check(),
+    );
+    assert_eq!(refusal.parameter, "points");
+    assert!(
+        refusal.message.contains("crosses or touches itself"),
+        "{}",
+        refusal.message
+    );
+}
+
+#[test]
+fn corners_apart_in_space_but_one_in_the_profiles_plane_are_the_same_point() {
+    // #78's tests review: corners 3 and 4 are 1.2e-7 mm apart, along the normal only, so
+    // in the face they're one point (by hand: both at (10, 10)).
+    let refusal = refused(
+        profile(&[
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [10.0, 10.0, -6e-8],
+            [10.0, 10.0, 6e-8],
+            [0.0, 10.0, 0.0],
+        ])
+        .check(),
+    );
+    assert!(
+        refusal
+            .message
+            .contains("corners 3 and 4 are the same point in the profile's plane"),
+        "{}",
+        refusal.message
+    );
+}
+
+/// A profile with a notch cut in it at a slant: the first side runs from `a` back along `u`
+/// for `l`, the notch goes `3` mm to the right (`m`) and up along `u` past where it began,
+/// back to the line, and down along it to `gap` short of `a`, then out to the left and back
+/// to `a`. Sides 1 (corners 1 to 2) and 5 (corners 5 to 6) are on one line, `gap` apart.
+fn notched(a: [f64; 2], u: [f64; 2], l: f64, gap: f64) -> Profile {
+    let m = [u[1], -u[0]];
+    let at = |along: f64, right: f64| {
+        z(
+            a[0] + along * u[0] + right * m[0],
+            a[1] + along * u[1] + right * m[1],
+        )
+    };
+    profile(&[
+        at(0.0, 0.0),
+        at(-l, 0.0),
+        at(-l, 3.0),
+        at(l + gap, 3.0),
+        at(l + gap, 0.0),
+        at(gap, 0.0),
+        at(gap, -3.0),
+    ])
+}
+
+#[test]
+fn two_sides_on_one_line_apart_by_more_than_the_tolerance_are_a_profile() {
+    // Found by M3.5's review: two sides on one slanted line, 3.35e-7 mm apart along it,
+    // were called crossing, each side's ends measuring as on opposite sides of the other's
+    // line by the rounding of products of nothing. By hand (exact rationals): sides 1 and 5
+    // are on the line y = 2x - 1.7 within 7e-15 mm, corner 6 is 3.354e-7 mm from corner 1,
+    // more than the tolerance, and no two sides meet; the corners turn counterclockwise
+    // round 169.0467 mm², so the profile faces +z.
+    let plane = profile(&[
+        z(61.1, 120.5),
+        z(48.5, 95.3),
+        z(51.183281572999746, 93.95835921350012),
+        z(76.38328172299974, 144.35835951350012),
+        z(73.70000015, 145.7000003),
+        z(61.10000015, 120.5000003),
+        z(58.41671850200025, 121.84164093649989),
+    ])
+    .check()
+    .unwrap();
+    assert_eq!(plane.normal, [0.0, 0.0, 1.0]);
+    // The same notch at other slants, places, and gaps: sides 1 and 5 are `gap` apart by
+    // construction, over the tolerance in every case, so every one is a profile.
+    let mut admitted_not = Vec::new();
+    for degrees in [
+        0.0,
+        7.0,
+        30.0,
+        45.0,
+        63.434948822922,
+        90.0,
+        121.0,
+        200.0,
+        333.0,
+    ] {
+        let t = f64::to_radians(degrees);
+        let u = [libm::cos(t), libm::sin(t)];
+        for a in [
+            [0.0, 0.0],
+            [61.1, 120.5],
+            [-997.5, 512.25],
+            [123456.789, -98765.4321],
+        ] {
+            for l in [1.0, 28.174456516497354, 500.0] {
+                for gap in [1.5e-7, 2e-7, 3.354101926004954e-7, 1e-6] {
+                    if let Err(e) = notched(a, u, l, gap).check() {
+                        admitted_not.push(format!(
+                            "{degrees}° at {a:?}, {l} long, {gap:e} apart: {e:?}"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        admitted_not.is_empty(),
+        "{} of 432 refused:\n{}",
+        admitted_not.len(),
+        admitted_not.join("\n")
+    );
+    // And the same notch with sides 1 and 5 overlapping along the line, or apart by less
+    // than the tolerance, touches itself, wherever it's drawn.
+    for degrees in [0.0, 30.0, 63.434948822922, 121.0] {
+        let t = f64::to_radians(degrees);
+        let u = [libm::cos(t), libm::sin(t)];
+        for a in [[0.0, 0.0], [-997.5, 512.25], [123456.789, -98765.4321]] {
+            for gap in [-1e-6, 5e-8] {
+                let refusal = refused(notched(a, u, 28.174456516497354, gap).check());
+                assert!(
+                    refusal.message.contains("crosses or touches itself"),
+                    "{degrees}° at {a:?}, {gap:e} apart: {}",
+                    refusal.message
+                );
+            }
+        }
+    }
+}
+
+/// A square of side `s` with a spike from its top right corner whose tip, near the middle
+/// of its first side's line, is `off` across it (positive) or short of it (negative).
+fn spiked(at: [f64; 2], s: f64, off: f64) -> Profile {
+    let across = [1.0 / 5f64.sqrt(), -2.0 / 5f64.sqrt()];
+    let p = |x: f64, y: f64| z(at[0] + x, at[1] + y);
+    profile(&[
+        p(0.0, 0.0),
+        p(s, s / 2.0),
+        p(s, s),
+        p(s / 2.0 + off * across[0], s / 4.0 + off * across[1]),
+        p(0.0, s),
+    ])
+}
+
+#[test]
+fn a_spike_across_a_side_by_twice_the_tolerance_is_a_crossing_at_any_size() {
+    // #78's tests review: no test held the orientation bound from being made too lenient.
+    // The spike's tip is 2e-7 mm across side 1 (the line y = x / 2, from (0, 0) to
+    // (s, s / 2)), by hand; it's further than the tolerance from every side, so only the
+    // crossing can refuse it, and sides 3 and 4 both cross side 1. At a side of 1e6 mm the
+    // tip's orientation is within ten thousand times the bound: a bound that much looser
+    // lets it through.
+    for (at, s) in [([0.0, 0.0], 1e6), ([0.0, 0.0], 1e3), ([-5e5, -5e5], 1e6)] {
+        let refusal = refused(spiked(at, s, 2e-7).check());
+        assert!(
+            refusal
+                .message
+                .contains("side 1 (corners 1 to 2) meets side 3 (corners 3 to 4)"),
+            "{s} at {at:?}: {}",
+            refusal.message
+        );
+        // Its tip 1e-6 short of the line, nothing crosses.
+        assert!(spiked(at, s, -1e-6).check().is_ok(), "{s} at {at:?}");
+    }
+}
 
 #[test]
 fn coordinates_at_a_kilometre_are_accepted_and_one_step_past_refused() {

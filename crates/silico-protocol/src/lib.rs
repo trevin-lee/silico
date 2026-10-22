@@ -35,7 +35,7 @@ pub use primitive::{
 };
 pub use profile::{
     Axis, MAX_PROFILE_POINTS, Profile, ProfilePlane, check_fillet_radius, check_revolve,
-    extrusion_vector, radians,
+    extrusion_vector, radians, side_of_line,
 };
 pub use refusal::{
     BrepDefect, ChamferKind, Described, DressingKind, EdgeTrouble, FACES_NAMED, HistoryDefect,
