@@ -161,11 +161,14 @@ fn an_arc_dimensioned_to_the_reach_saved_solves_to_the_same_file() {
 
 // --- Started again only from the same build ----------------------------------------------
 
-/// A fresh directory in cargo's temporary directory for tests, under the target directory:
-/// on the build's filesystem, so the worker can be hard-linked into it (the system's
-/// temporary directory is another filesystem on the Linux runners: EXDEV).
+/// A fresh directory beside the worker's executable: on the build's filesystem, so the
+/// worker can be hard-linked into it. Neither the system's temporary directory nor cargo's
+/// (`CARGO_TARGET_TMPDIR`) is: CI keeps both in memory (.github/scratch.sh), and a hard
+/// link across filesystems fails (EXDEV).
 fn scratch(name: &str) -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+    let dir = Path::new(WORKER)
+        .parent()
+        .unwrap()
         .join(format!("silico-break-it-m34-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
