@@ -4,7 +4,7 @@
 
 **Goal:** constrained 2D sketches, solved by PlaneGCS in a worker, that turn into faces and drive pad, pocket, and revolve.
 
-**Exit tests:** the ported FreeCAD sketcher and face-maker tests pass, interactive drag latency through the worker is measured, and the council approves with `/adversarial-review --milestone`.
+**Exit tests:** the ported FreeCAD sketcher and face-maker tests pass, interactive drag latency through the worker is measured, and the council approves with `/adversarial-review --milestone`. Two are partial or deferred at M3's close (the milestone's audit): `testConstructionToggleTNP`'s essence holds a later feature on a pad's edge (a chamfer) through construction toggles, and the pad's faces only by their names in the element map, since a later feature naming a pad's face needs sketches on faces; and `tangentBSplineAndArc` waits for B-splines.
 
 ## Study
 
