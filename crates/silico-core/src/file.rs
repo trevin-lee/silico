@@ -171,7 +171,7 @@ fn in_place(
             &e,
         ));
     }
-    let over = |file: &mut std::fs::File, text: &[u8]| {
+    let over = |file: &mut std::fs::File, text: &[u8], what: &str| {
         // Grown to its new length before a byte is written: a limit on a file's size (a
         // shell's `ulimit -f`) stops it here, with its text as it was, not part way.
         if text.len() > before.len() {
@@ -180,15 +180,15 @@ fn in_place(
         file.seek(SeekFrom::Start(0))?;
         file.write_all(text)?;
         file.set_len(text.len() as u64)?;
-        synced(file, "its text, in place")
+        synced(file, what)
     };
-    match over(file, bytes) {
+    match over(file, bytes, "its new text, in place") {
         Ok(()) => {
             let _ = std::fs::remove_file(&kept);
             Ok(())
         }
         // It fits back in the room it had.
-        Err(e) => match over(file, before) {
+        Err(e) => match over(file, before, "its old text, put back") {
             Ok(()) => {
                 let _ = std::fs::remove_file(&kept);
                 Err(limited(unwritable(format!("{e}; it's as it was")), &e))
@@ -208,7 +208,10 @@ fn synced(file: &std::fs::File, what: &str) -> std::io::Result<()> {
     let start = std::time::Instant::now();
     let synced = file.sync_all();
     let sync_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-    tracing::debug!(sync_ms, "synced {what}");
+    match &synced {
+        Ok(()) => tracing::debug!(sync_ms, "synced {what}"),
+        Err(e) => tracing::debug!(sync_ms, error = %e, "couldn't sync {what}"),
+    }
     synced
 }
 

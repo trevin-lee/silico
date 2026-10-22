@@ -1,6 +1,6 @@
 //! A save says in its span when it syncs the disk and how long that took, so a disk that
 //! stalls a save shows in the log as the line it stopped at (CI's runs stalled in `fmt`'s
-//! sync for over a minute, 2026-10-22, and logged nothing to say so).
+//! sync for over a minute, 2026-10-22 UTC, and logged nothing to say so).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::{Arc, Mutex};
@@ -158,7 +158,7 @@ fn a_save_in_place_says_when_it_syncs_the_old_text_kept_and_then_the_new() {
     syncs(
         &seen,
         took,
-        &["its old text kept beside it", "its text, in place"],
+        &["its old text kept beside it", "its new text, in place"],
     );
 }
 
