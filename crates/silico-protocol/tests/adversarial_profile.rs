@@ -86,6 +86,29 @@ fn vectors_whose_length_underflows_are_refused_as_having_no_direction() {
     }
 }
 
+#[test]
+fn a_direction_exactly_at_freecads_limit_out_of_the_plane_is_extruded() {
+    // FreeCAD's Pad refuses a direction only when |direction · normal| < Confusion (1e-7,
+    // FeatureExtrude.cpp at 876271d660, line 504), so one exactly at it is extruded. Here
+    // (1, 0, z) has factor z/√(1 + z²) on the xy square, which by hand needs z = 1e-7 ×
+    // (1 + 5e-15) to be 1e-7; this z, within rounding of that, is the smallest whose factor
+    // rounds to 1e-7 exactly. It rises 0.05 mm along the normal by sweeping 0.05 / 1e-7 =
+    // 5e5 mm, under a kilometre. The baseline's surviving mutant, `factor <= ...`, refused it.
+    let plane = unit_square_at(0.0).check().unwrap();
+    let v = extrusion_vector(&plane, 0.05, Some([1.0, 0.0, 1.0000000000000049e-7])).unwrap();
+    assert!((v[0] - 5e5).abs() < 1e-6, "{v:?}");
+    assert_eq!(v[1], 0.0);
+    assert!((v[2] - 0.05).abs() < 1e-15, "{v:?}");
+    // z = 1e-7 itself has factor 1e-7/√(1 + 1e-14), just under the limit: in the plane.
+    let e = refused(extrusion_vector(&plane, 0.05, Some([1.0, 0.0, 1e-7])));
+    assert_eq!(e.parameter, "direction");
+    assert!(
+        e.message.contains("lies in the profile's plane"),
+        "{}",
+        e.message
+    );
+}
+
 // ---- Self-crossing that cancellation hides ----
 
 /// A bow tie whose sides 1 and 3 cross a third of the way along, at an angle of about
