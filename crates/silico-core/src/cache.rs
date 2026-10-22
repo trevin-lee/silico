@@ -1143,6 +1143,26 @@ mod tests {
     }
 
     #[test]
+    fn a_put_that_fills_the_cache_exactly_doesnt_scan_and_one_byte_more_does() {
+        // 760 known of a bound of 800, nothing written since the last scan: a put of 40 makes
+        // exactly 800, within the bound, so it neither scans nor waits for one; a put of one
+        // byte more would pass it, and scans (an empty directory: room is made).
+        let scratch = Scratch::new("exactly");
+        let cache =
+            Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32]))).with_bound(800);
+        cache.usage().known = Some(760);
+        assert_eq!(cache.make_room(40), Room::Made);
+        let usage = cache.usage();
+        assert_eq!((usage.known, usage.scans), (Some(800), 0));
+        drop(usage);
+        let other =
+            Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32]))).with_bound(800);
+        other.usage().known = Some(760);
+        assert_eq!(other.make_room(41), Room::Made);
+        assert_eq!(other.usage().scans, 1);
+    }
+
+    #[test]
     fn a_put_kept_out_by_another_processs_partial_is_stuck_and_by_its_own_isnt() {
         // Found by review: a refusal for files the cache can't evict (here, another
         // process's partial, not yet stale, past the bound alone) is warned of, unlike one

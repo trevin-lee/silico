@@ -334,3 +334,25 @@ fn a_partial_dated_an_hour_ahead_is_stale_and_one_half_an_hour_ahead_is_kept() {
     published(&both, example_with_pin("3"));
     assert!(calls(&both).is_empty(), "{:?}", calls(&both));
 }
+
+#[test]
+fn a_hit_renews_its_entrys_last_use() {
+    // A session builds the example; every entry is dated an hour back; another session
+    // builds it again, every step from the disk. Each entry it read is used now: its last
+    // use is no earlier than that build's start.
+    let dir = Scratch::new("renewed");
+    published(&session(&dir.0), checked(EXAMPLE));
+    let entries = files(&dir.0);
+    assert!(!entries.is_empty());
+    for entry in &entries {
+        set_time(entry, SystemTime::now() - Duration::from_secs(3600));
+    }
+    let again = session(&dir.0);
+    let start = SystemTime::now();
+    published(&again, checked(EXAMPLE));
+    assert!(calls(&again).is_empty(), "{:?}", calls(&again));
+    for entry in &entries {
+        let used = std::fs::metadata(entry).unwrap().modified().unwrap();
+        assert!(used >= start, "{} last used {used:?}", entry.display());
+    }
+}
