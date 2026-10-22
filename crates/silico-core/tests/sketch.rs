@@ -551,6 +551,34 @@ fn a_curves_points_must_be_points_of_its_sketch() {
 }
 
 #[test]
+fn coincident_ends_that_would_collapse_a_line_leave_it_running_from_a_point_to_itself() {
+    // TestCoincidentCommandGui.py's collapse fixtures, in Silico's terms: with shared points,
+    // making two ends coincident is giving them one point. Three lines in a chain, the first
+    // one's end made the third one's start, the two ends either side of the middle line
+    // (test_transitive_coincidence_cannot_collapse_intermediate_line), leave the middle line
+    // running from that point to itself; a line's own ends made one
+    // (test_coincident_endpoints_of_same_edge_are_rejected, FreeCAD #20119) is the same. The
+    // gate refuses it, naming the line, where FreeCAD's solve fails.
+    let text = document(&fields(
+        r#"{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 10, "y": 0, "construction": false}, {"id": "pd000000", "x": 30, "y": 0, "construction": false}"#,
+        r#"{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pb000000", "construction": false}, {"id": "nc000000", "from": "pb000000", "to": "pd000000", "construction": false}"#,
+        "",
+        "",
+        "",
+    ));
+    let error = problem(&text);
+    assert_error(
+        &error,
+        "lines.1.to",
+        "line nb000000 goes from point pb000000 to itself, so it has no length",
+    );
+    assert!(
+        error.elements().iter().any(|e| e == "nb000000"),
+        "{error:?}"
+    );
+}
+
+#[test]
 fn an_arc_whose_ends_disagree_about_its_radius_is_the_solves_not_the_gates() {
     // Start 10 from the center, end 20: a hand edit the re-solve mends (D2, arcs).
     let text = document(&fields(
@@ -777,6 +805,8 @@ fn a_form_that_needs_two_elements_or_a_fitting_pair_gets_them() {
 #[test]
 fn a_constraint_on_the_fixed_references_alone_is_refused() {
     // FreeCAD's 3d7871fca5: a dimension between the origin and an axis constrains nothing.
+    // And an angle between the axes alone is the one measure decision 5 would find not a
+    // number (the axes have no lever), so none reaches a solve.
     for (constraint, what) in [
         (
             r#"{"id": "k0000000", "type": "angle", "a": "x_axis", "b": "y_axis", "value": 90, "driving": true}"#,
@@ -789,6 +819,10 @@ fn a_constraint_on_the_fixed_references_alone_is_refused() {
         (
             r#"{"id": "k0000000", "type": "perpendicular", "a": "x_axis", "b": "y_axis"}"#,
             "perpendicular",
+        ),
+        (
+            r#"{"id": "k0000000", "type": "parallel", "a": "x_axis", "b": "y_axis"}"#,
+            "parallel",
         ),
     ] {
         assert_error(

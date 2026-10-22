@@ -133,6 +133,60 @@ fn a_solved_invalid_with_nothing_invalid_names_something() {
     );
 }
 
+/// The words of `text` that spell a value that isn't a finite number, as Rust, C++, or
+/// JavaScript writes one (JSON has none: serde writes a non-finite number as `null`).
+fn non_finite_words(text: &str) -> Vec<String> {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .filter(|w| {
+            matches!(
+                *w,
+                "NaN" | "nan" | "-NaN" | "inf" | "-inf" | "Infinity" | "-Infinity"
+            )
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn a_solution_that_isnt_a_number_names_what_cant_be_built_and_goes_no_further() {
+    // A reply that calls its solution one that can't be built carries the solver's values,
+    // which may not be numbers (since M3.3): they name what can't be built, and reach no
+    // output. Each unknown in turn, and all at once, not a number or infinite: the error is
+    // the unbuildable one, naming geometry, and neither its words nor its JSON (what `check
+    // --json` writes) hold a value that isn't a number.
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        for which in [None, Some(0), Some(1), Some(2), Some(3)] {
+            let e = solve_with(move |s| {
+                let mut v = s.values.clone();
+                for (k, u) in s.unknowns.iter().enumerate() {
+                    if which.is_none_or(|w| w == k) {
+                        v[u.0 as usize] = bad;
+                    }
+                }
+                Ok(answer(s, v, SolveStatus::SolvedInvalid))
+            })
+            .unwrap_err();
+            assert_eq!(e.code(), ErrorCode::InvalidResult, "{bad} {which:?}: {e}");
+            // Geometry, by its IDs: the points that aren't numbers, and the line through them.
+            assert!(!e.elements().is_empty(), "{bad} {which:?}: {e}");
+            assert!(
+                e.elements()
+                    .iter()
+                    .all(|id| ["p0000001", "p0000002", "n0000001"].contains(&id.as_str())),
+                "{bad} {which:?}: {:?}",
+                e.elements()
+            );
+            let json = serde_json::to_string(&e).unwrap();
+            assert_eq!(non_finite_words(&json), Vec::<String>::new(), "{json}");
+            assert_eq!(
+                non_finite_words(&e.to_string()),
+                Vec::<String>::new(),
+                "{e}"
+            );
+        }
+    }
+}
+
 #[test]
 fn replies_with_values_that_arent_numbers_are_refused() {
     for bad in [f64::NAN, f64::INFINITY, -f64::INFINITY, 1e6 + 1e-9, -1e300] {
