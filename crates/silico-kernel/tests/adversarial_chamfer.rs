@@ -28,6 +28,7 @@ use kernel::kernel;
 use numbers::relative_error;
 use proptest::prelude::*;
 use silico_core::ErrorCode;
+use silico_core::kernel::KernelRequest;
 use silico_kernel::{
     Axis, BooleanOp, Built, ChamferSize, KernelError, KernelErrorKind, Primitive, Profile, Shape,
     ShapeSummary, boolean, chamfer, extrude, fillet, make, make_box, revolve, summarize,
@@ -184,6 +185,53 @@ fn kinked_prism(sag: f64) -> (Shape, u32) {
 }
 
 // ---- Breaks ----
+
+#[test]
+fn a_right_angle_chamfer_occt_hangs_on_is_refused_or_stopped() {
+    // A 271.70358837955126 × 776.8935171151478 × 1447.974451856977 box, Edge9 chamfered by
+    // 585.5979126463726 at 90° from its lower-numbered face: on a square edge a right
+    // angle never meets the other face, so there's no chamfer to make. OCCT 7.9.3 doesn't
+    // say so: it never returns (BRepFilletAPI_MakeChamfer::Build, in ChFi3d_Builder::
+    // PerformIntersectionAtEnd's Newton iteration), and FreeCAD 1.1.3's PartDesign Chamfer
+    // on the same box hadn't finished after 90 s (docs/ports/chamfer.md). The worker it runs in is stopped at
+    // its time limit, so the hang is an error saying what to try, never a hung app.
+    // Wanted: a refusal naming Edge9, or the worker stopped, with advice; anything else
+    // fails, so a change in OCCT shows here. Found by the box property test below on
+    // PROPTEST_RNG_SEED=20261021.
+    let mut k = kernel();
+    let shape = k
+        .make(Primitive::Box {
+            dx: 271.703_588_379_551_26,
+            dy: 776.893_517_115_147_8,
+            dz: 1_447.974_451_856_977,
+        })
+        .unwrap();
+    let request = KernelRequest::chamfer(&shape, &[9], angled(585.597_912_646_372_6, 90.0), false)
+        .unwrap()
+        .with_timeout(Duration::from_secs(10));
+    let started = Instant::now();
+    let err = match k.run(request) {
+        Ok(_) => panic!("a right-angle chamfer on a square edge was built"),
+        Err(err) => err,
+    };
+    if err.code() == ErrorCode::WorkerTimeout {
+        // Stopped at the request's own limit, not the default minute, with the advice for a
+        // worker stopped while running it.
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= Duration::from_secs(10) && elapsed < Duration::from_secs(30),
+            "{elapsed:?}: {err}"
+        );
+        assert!(
+            err.suggestion()
+                .is_some_and(|s| s.starts_with("simplify the operation")),
+            "{err}"
+        );
+    } else {
+        assert_eq!(err.elements(), ["Edge9"], "{err}");
+        assert!(err.suggestion().is_some(), "{err}");
+    }
+}
 
 #[test]
 fn an_edge_ending_where_two_solids_touch_at_a_corner_is_refused_not_a_crash() {
@@ -1372,7 +1420,10 @@ proptest! {
         kind in 0u8..3,
         f_ref in fraction(),
         f_other in fraction(),
-        angle in 0usize..14,
+        // Every angle but 90° (index 7): on a square edge a right angle never meets the
+        // other face, and OCCT can hang on it (the right-angle test above), which only a
+        // worker can stop.
+        angle in (0usize..13).prop_map(|i| if i < 7 { i } else { i + 1 }),
         flip in any::<bool>(),
     ) {
         let shape = make_box(dims[0], dims[1], dims[2]).unwrap();
