@@ -233,6 +233,15 @@ impl Draw {
                     assert!(e.suggestion().is_some(), "{e}");
                 }
                 assert_eq!(r.total(), r.errors().len() as u64);
+                // Every refusal listed: the elements at fault are theirs, all of them.
+                let union: BTreeSet<String> = r
+                    .errors()
+                    .iter()
+                    .flat_map(|e| e.elements().iter().cloned())
+                    .collect();
+                assert_eq!(r.elements_total(), union.len() as u64);
+                let listed: Vec<String> = union.into_iter().take(100).collect();
+                assert_eq!(r.elements(), listed);
                 r.errors().to_vec()
             }
         }

@@ -199,12 +199,13 @@ struct Found {
 }
 
 impl Found {
-    /// A refusal of `elements`: made by `error` if it's among the first listed.
-    fn add(&mut self, elements: &[String], error: impl FnOnce() -> Error) {
+    /// A refusal of `elements`: made by `error`, given them, if it's among the first
+    /// listed.
+    fn add(&mut self, elements: Vec<String>, error: impl FnOnce(Vec<String>) -> Error) {
         self.total += 1;
         self.elements.extend(elements.iter().cloned());
         if self.errors.len() < PROBLEMS_LISTED {
-            self.errors.push(error());
+            self.errors.push(error(elements));
         }
     }
 
@@ -538,8 +539,7 @@ fn of_sketch(
     }
     let mut found = Found::default();
     for (_, error) in small {
-        let elements = error.elements().to_vec();
-        found.add(&elements, || error);
+        found.add(error.elements().to_vec(), |_| error);
     }
     found.into_result()?;
 
@@ -581,14 +581,14 @@ fn of_sketch(
         if let [p] = group.as_slice() {
             let curve = &curves[at_point[*p][0]];
             let elements = vec![point_name(*p), curve.id.to_string()];
-            found.add(&elements, || {
+            found.add(elements, |elements| {
                 refuse(
                     format!(
                         "point {} ends {} and no other profile curve, so the profile is open there",
                         ids[*p],
                         curve.named()
                     ),
-                    elements.clone(),
+                    elements,
                     "end another curve at the point to close the outline, or make the curve construction geometry",
                 )
             });
@@ -617,14 +617,14 @@ fn of_sketch(
                 )
             };
             let elements: Vec<String> = names.iter().cloned().chain(curves_there).collect();
-            found.add(&elements, || {
+            found.add(elements, |elements| {
                 refuse(
                     format!(
                         "points {} end curves within {} mm of each other, but aren't one point, so the profile is open there",
                         names.join(", "),
                         format_number(LENGTH_TOLERANCE)
                     ),
-                    elements.clone(),
+                    elements,
                     &suggestion,
                 )
             });
@@ -639,14 +639,14 @@ fn of_sketch(
             let elements: Vec<String> = std::iter::once(point_name(p))
                 .chain(named.iter().map(|id| id.to_string()))
                 .collect();
-            found.add(&elements, || {
+            found.add(elements, |elements| {
                 refuse(
                     format!(
                         "{} curve ends meet at point {}: a profile's points each join two curves",
                         there.len(),
                         ids[p]
                     ),
-                    elements.clone(),
+                    elements,
                     "draw each outline so its points join two curves each, or make the extra curves construction geometry",
                 )
             });
@@ -654,31 +654,28 @@ fn of_sketch(
     }
 
     // 5. Curves that meet away from a point they share.
-    let (meets, unlisted, unlisted_curves) = meetings(&curves, &points, &shared_as);
+    let (meets, unlisted, unkept) = meetings(&curves, &points, &shared_as);
     let rule = format!(
         "a profile's curves must be more than {} mm apart except at a point they share",
         format_number(LENGTH_TOLERANCE)
     );
     let redraw = "move or remove one of them: a profile's curves meet only at the points they share, and each point joins two curves";
+    let part_name = |part: &Part| match *part {
+        Part::Curve(c) => curves[c].id.to_string(),
+        Part::Point(p) => point_name(p),
+    };
     for (&(a, b), &how) in &meets {
+        let elements: Vec<String> = how.parts(a, b).iter().map(part_name).collect();
         let (a, b) = (&curves[a], &curves[b]);
-        let pair = vec![a.id.to_string(), b.id.to_string()];
-        let elements = match how {
-            Meeting::End { point, of, .. } => {
-                let (end, other) = if of == 0 { (a, b) } else { (b, a) };
-                vec![end.id.to_string(), other.id.to_string(), point_name(point)]
-            }
-            Meeting::Cross | Meeting::Overlap | Meeting::Apart(_) => pair.clone(),
-        };
-        found.add(&elements, || match how {
+        found.add(elements, |elements| match how {
             Meeting::Cross => refuse(
                 format!("{} and {} cross", a.named(), b.named()),
-                pair,
+                elements,
                 redraw,
             ),
             Meeting::Overlap => refuse(
                 format!("{} and {} overlap", a.named(), b.named()),
-                pair,
+                elements,
                 redraw,
             ),
             Meeting::Apart(d) => refuse(
@@ -688,7 +685,7 @@ fn of_sketch(
                     b.named(),
                     format_number(d)
                 ),
-                pair,
+                elements,
                 &format!(
                     "move them more than {} mm apart",
                     format_number(LENGTH_TOLERANCE)
@@ -708,7 +705,7 @@ fn of_sketch(
                         format_number(distance),
                         other.named()
                     ),
-                    vec![end.id.to_string(), other.id.to_string(), point_name(point)],
+                    elements,
                     &format!(
                         "move point {} more than {} mm from {}, or redraw so they share a point",
                         ids[point],
@@ -719,10 +716,7 @@ fn of_sketch(
             }
         });
     }
-    found.count(
-        unlisted,
-        unlisted_curves.iter().map(|&c| curves[c].id.to_string()),
-    );
+    found.count(unlisted, unkept.iter().map(part_name));
     found.into_result()?;
 
     // The loops, then 6: loops and regions with no area, measured as the request measures
@@ -746,15 +740,15 @@ fn of_sketch(
     for l in all {
         if sliver(l.area, l.perimeter) {
             any_thin = true;
-            found.add(&named(l), || {
+            found.add(named(l), |elements| {
                 refuse(
                     format!(
                         "loop {} encloses no area to speak of ({} mm², against a perimeter of {} mm)",
-                        named(l).join(", "),
+                        elements.join(", "),
                         format_number(l.area.abs()),
                         format_number(l.perimeter)
                     ),
-                    named(l),
+                    elements,
                     &thin,
                 )
             });
@@ -768,7 +762,7 @@ fn of_sketch(
                     .chain(&region.holes)
                     .flat_map(named)
                     .collect();
-                found.add(&elements, || {
+                found.add(elements, |elements| {
                     refuse(
                         format!(
                             "the region inside loop {} less its holes encloses no area to speak of ({} mm², against a perimeter of {} mm)",
@@ -776,7 +770,7 @@ fn of_sketch(
                             format_number(region.area().abs()),
                             format_number(region.perimeter())
                         ),
-                        elements.clone(),
+                        elements,
                         &thin,
                     )
                 });
@@ -991,15 +985,38 @@ enum Meeting {
     },
 }
 
+/// A part of the sketch a meeting names: a curve or a point, by its place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Part {
+    Curve(usize),
+    Point(usize),
+}
+
+impl Meeting {
+    /// What a meeting of curves `a` and `b` names: the two curves, and for an end near the
+    /// other curve, the curve it ends first, then the other, then the end's point.
+    fn parts(self, a: usize, b: usize) -> Vec<Part> {
+        match self {
+            Meeting::End { point, of, .. } => {
+                let (end, other) = if of == 0 { (a, b) } else { (b, a) };
+                vec![Part::Curve(end), Part::Curve(other), Part::Point(point)]
+            }
+            Meeting::Cross | Meeting::Overlap | Meeting::Apart(_) => {
+                vec![Part::Curve(a), Part::Curve(b)]
+            }
+        }
+    }
+}
+
 /// Every pair of curves that meets away from a point they share, by their places (in ID
 /// order), with how: the first [`PROBLEMS_LISTED`] pairs, how many more there are, and the
-/// curves of those more, which are at fault too.
+/// parts those more name ([`Meeting::parts`]), which are at fault too.
 /// Pairs are found by a sweep over bounding boxes, whose order can't change which.
 fn meetings(
     curves: &[ProfileCurve<'_>],
     points: &[Xy],
     shared_as: &[usize],
-) -> (BTreeMap<(usize, usize), Meeting>, u64, BTreeSet<usize>) {
+) -> (BTreeMap<(usize, usize), Meeting>, u64, BTreeSet<Part>) {
     let bounds: Vec<[f64; 4]> = curves.iter().map(|c| c.shape.bounds()).collect();
     let mut by_x: Vec<usize> = (0..curves.len()).collect();
     by_x.sort_by(|&a, &b| bounds[a][0].total_cmp(&bounds[b][0]).then(a.cmp(&b)));
@@ -1009,8 +1026,9 @@ fn meetings(
     let margin = 2.0 * LENGTH_TOLERANCE;
     let mut kept: BTreeMap<(usize, usize), Meeting> = BTreeMap::new();
     let mut total = 0u64;
-    // Every meeting's curves: those of the meetings not kept are at fault too.
-    let mut met: BTreeSet<(usize, usize)> = BTreeSet::new();
+    // The parts of the meetings not kept, which are at fault too: at most every curve and
+    // point, however many meetings there are.
+    let mut unkept: BTreeSet<Part> = BTreeSet::new();
     for (k, &i) in by_x.iter().enumerate() {
         for &j in &by_x[k + 1..] {
             if bounds[j][0] > bounds[i][2] + margin {
@@ -1022,26 +1040,24 @@ fn meetings(
             let (a, b) = (i.min(j), i.max(j));
             if let Some(how) = meeting(&curves[a], &curves[b], points, shared_as) {
                 total += 1;
-                met.insert((a, b));
                 let listed = kept.len() < PROBLEMS_LISTED
                     || kept
                         .last_key_value()
                         .is_some_and(|(&last, _)| (a, b) < last);
                 if listed {
                     kept.insert((a, b), how);
-                    if kept.len() > PROBLEMS_LISTED {
-                        kept.pop_last();
+                    if kept.len() > PROBLEMS_LISTED
+                        && let Some(((c, d), dropped)) = kept.pop_last()
+                    {
+                        unkept.extend(dropped.parts(c, d));
                     }
+                } else {
+                    unkept.extend(how.parts(a, b));
                 }
             }
         }
     }
     let unlisted = total - kept.len() as u64;
-    let unkept = met
-        .iter()
-        .filter(|pair| !kept.contains_key(pair))
-        .flat_map(|&(a, b)| [a, b])
-        .collect();
     (kept, unlisted, unkept)
 }
 

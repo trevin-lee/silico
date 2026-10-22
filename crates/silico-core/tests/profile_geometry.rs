@@ -1162,3 +1162,22 @@ fn every_curve_of_every_crossing_is_at_fault_though_only_a_hundred_are_listed() 
     assert_eq!(refused.elements_total(), 22);
     assert_eq!(refused.elements().len(), 22);
 }
+
+#[test]
+fn an_end_near_a_curve_past_the_hundredth_meeting_names_its_point_too() {
+    // A bar (y 0..1, x -5..200) and 51 triangles above it, each its apex 5e-8 over the
+    // bar's top at (3i + 1, 1 + 5e-8) and its base at y = 3: each apex is an end of two
+    // sides within the tolerance of the bar's top, two meetings a triangle, 102. The first
+    // hundred are listed; the last triangle's two are past them, and name its sides and its
+    // apex too. At fault: the bar's top, and each triangle's two sides and apex,
+    // 1 + 51 × 3 = 154.
+    let mut d = Draw::new();
+    d.rectangle(-5.0, 0.0, 200.0, 1.0);
+    for i in 0..51 {
+        let x = 3.0 * f64::from(i);
+        d.polygon(&[(x + 1.0, 1.0 + 5e-8), (x + 2.0, 3.0), (x, 3.0)]);
+    }
+    let refused = d.profile().unwrap_err();
+    assert_eq!((refused.errors().len(), refused.total()), (100, 102));
+    assert_eq!(refused.elements_total(), 154);
+}
