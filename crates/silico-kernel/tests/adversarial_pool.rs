@@ -24,8 +24,8 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use launches::{
-    assert_gaps_exceed, gaps, launch_logger, launch_times, launches, log_launch, wait_launches,
-    wait_launches_after,
+    HANG, assert_gaps_exceed, gaps, launch_logger, launch_times, launches, log_launch,
+    wait_launches, wait_launches_after,
 };
 use pool::{
     PATIENCE, TEST_WORKER, WORKER, assert_reaped, children, done, echo, kill9_and_wait, outcome,
@@ -496,12 +496,6 @@ fn a_worker_whose_executable_changes_as_it_starts_isnt_used() {
     }
     wait_no_children("after the change");
 }
-
-/// How long a test here waits for a launch, a request, or a full pool before failing: long
-/// enough that only a hang reaches it, however loaded the machine. A hang guard only: what
-/// the tests measure comes from the times their workers log, or from bounds that what they
-/// rule out can't meet.
-const HANG: Duration = Duration::from_secs(60);
 
 /// A copy of the test worker that can't be run (not executable), at `dir/unrunnable`: an
 /// executable linked to it can't start a worker, but is still the pool's build (its bytes
@@ -1344,7 +1338,6 @@ fn a_worker_that_dies_as_it_starts_isnt_started_over_while_the_pool_is_idle() {
     drop(pool);
 }
 
-/// A worker script that logs the time of each launch to a file (seconds since the epoch,
 /// Now, in seconds since the epoch: the clock [`log_launch`] logs by.
 fn epoch_now() -> f64 {
     std::time::SystemTime::now()
@@ -1358,6 +1351,7 @@ fn launch_pid(log: &Path, n: usize) -> u32 {
     launches(log)[n].1
 }
 
+/// Whether process `pid` has ended: exited (a zombie), or reaped (`ps` may still list one
 /// reaped an instant before, with no state: `?`).
 fn has_ended(pid: u32) -> bool {
     state(pid).is_none_or(|s| s.starts_with('Z') || s.starts_with('?'))

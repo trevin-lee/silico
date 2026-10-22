@@ -78,7 +78,7 @@ impl Decisions {
         tracing::subscriber::set_global_default(
             tracing_subscriber::registry().with(decisions.clone()),
         )
-        .unwrap();
+        .expect("one test a process, as nextest runs them");
         decisions
     }
 

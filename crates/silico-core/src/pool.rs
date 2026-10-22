@@ -1094,7 +1094,7 @@ impl Keeper<'_> {
                 return;
             }
             // The decision, as the wait's is: what the back-off's tests follow.
-            tracing::debug!(slot, "a kernel worker ended; starting another at once");
+            tracing::debug!(slot, "a kernel worker ended, or was ended; starting another at once");
         } else if let Some(retry) = self.retry {
             // Due, the wait is kept: if this start fails too, the next wait is longer.
             if !retry.is_due(

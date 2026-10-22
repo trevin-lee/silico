@@ -5,10 +5,14 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// How long a wait for launches may take before it's a hang.
-const HANG: Duration = Duration::from_secs(60);
+/// How long a test here waits for a launch, a request, or a full pool before failing: long
+/// enough that only a hang reaches it, however loaded the machine. A hang guard only: what
+/// the tests measure comes from the times their workers log, or from bounds that what they
+/// rule out can't meet.
+pub const HANG: Duration = Duration::from_secs(60);
 
-/// as [`epoch_now`] gives them), then runs `then`.
+/// A worker script that logs the time of each launch to a file (seconds since the epoch),
+/// then runs `then`.
 pub fn launch_logger(dir: &Path, then: &str) -> (PathBuf, PathBuf) {
     let script = dir.join("worker.sh");
     let log = dir.join("launches");
@@ -74,7 +78,6 @@ pub fn wait_launches(log: &Path, n: usize) -> Vec<f64> {
     wait_launches_after(log, f64::NEG_INFINITY, n)
 }
 
-/// Whether process `pid` has ended: exited (a zombie), or reaped (`ps` may still list one
 /// The gaps between `times`.
 pub fn gaps(times: &[f64]) -> Vec<f64> {
     times.windows(2).map(|w| w[1] - w[0]).collect()
