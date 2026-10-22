@@ -241,6 +241,7 @@ fn free_values_are_each_listed_once() {
     // in; the bridge
     // sorts the list but keeps the repeats. A free line dimensioned to length 0 comes back
     // with free [0, 1, 1, 1, 2, 3]. `Solved::free` is "in increasing order", as unknowns are.
+    // (The worker's check refuses a distance of 0; the bridge is asked directly.)
     let mut b = Builder::default();
     let l = b.line((1.0, 1.0), (4.0, 5.0));
     let zero = b.fixed(0.0);
@@ -250,7 +251,7 @@ fn free_values_are_each_listed_once() {
         b: PointOf::End(l),
         value: zero,
     });
-    let solved = solve(&b.system(Algorithm::DogLeg));
+    let solved = silico_sketch::solve(&b.system(Algorithm::DogLeg)).unwrap();
     assert!(strictly_increasing(&solved.free), "{:?}", solved.free);
 }
 
@@ -385,7 +386,11 @@ fn a_line_drawn_with_no_length_is_refused_by_the_check() {
 }
 
 #[test]
-fn a_distance_of_zero_brings_the_points_together() {
+fn a_distance_of_zero_is_refused_though_planegcs_brings_the_points_together() {
+    // The worker refuses a distance that isn't above 0, as FreeCAD's `setDatum` and the gate
+    // do: a distance of 0 is a coincidence, and its solve leaves the points at one place,
+    // where the next solve's check refuses a distance between them (the M3 review's RR1).
+    // PlaneGCS itself, asked, brings them together.
     let mut b = Builder::default();
     let l = b.line((1.0, 1.0), (4.0, 5.0));
     let zero = b.fixed(0.0);
@@ -396,7 +401,13 @@ fn a_distance_of_zero_brings_the_points_together() {
         value: zero,
     });
     let system = b.system(Algorithm::DogLeg);
-    let solved = solve(&system);
+    let refused = system.check().unwrap_err();
+    assert_eq!(refused.parameter, "constraints");
+    assert_eq!(
+        refused.message,
+        "constraint 0 (tag 1): a distance's value must be above 0 (points no distance apart are coincident), got 0"
+    );
+    let solved = silico_sketch::solve(&system).unwrap();
     assert_eq!(solved.status, SolveStatus::Success);
     // Four unknowns, one equation.
     assert_eq!(solved.dofs, 3);
@@ -438,7 +449,8 @@ fn a_line_parallel_to_itself_is_redundant() {
 
 #[test]
 fn a_negative_distance_never_succeeds() {
-    // |pq| = -5 has no solution.
+    // |pq| = -5 has no solution. The worker's check refuses it, as it refuses a distance of
+    // 0; the bridge, asked directly, never claims one.
     for algorithm in [
         Algorithm::DogLeg,
         Algorithm::LevenbergMarquardt,
@@ -454,7 +466,11 @@ fn a_negative_distance_never_succeeds() {
             value: v,
         });
         let system = b.system(algorithm);
-        let solved = solve(&system);
+        assert_eq!(
+            system.check().unwrap_err().message,
+            "constraint 0 (tag 1): a distance's value must be above 0 (points no distance apart are coincident), got -5"
+        );
+        let solved = silico_sketch::solve(&system).unwrap();
         assert_ne!(solved.status, SolveStatus::Success, "{algorithm:?}");
         assert_eq!(solved.values, system.values, "{algorithm:?}");
     }

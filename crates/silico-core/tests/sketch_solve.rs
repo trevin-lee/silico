@@ -526,6 +526,98 @@ fn a_symmetry_of_two_points_drawn_at_one_place_is_refused_naming_it() {
     );
 }
 
+#[test]
+fn a_distance_or_a_tangency_at_a_circles_centre_between_points_at_one_place_is_refused() {
+    // PlaneGCS measures each by the line between its two points, so drawn at one place they
+    // gave 0/0 and were taken to conflict ("over_constrained"), though each holds once the
+    // points are apart (the M3 review's RR1): a distance of 5 between two points both at
+    // (3, 4); one from the origin to a point at (0, 0); a tangency at a line's end drawn on
+    // the circle's centre.
+    let distance = |a: &str| {
+        format!(
+            r#"{{"id": "k0000001", "type": "distance", "a": "{a}", "b": "p0000002", "value": 5, "driving": true}}"#
+        )
+    };
+    let tangency = r#"{"id": "k0000001", "type": "tangent_on", "a": "n0000001", "at": "p0000002", "b": "c0000001", "direction": "same"}"#;
+    let cases = [
+        (
+            text(
+                &[point("p0000001", 3.0, 4.0), point("p0000002", 3.0, 4.0)],
+                &[],
+                &[],
+                &[],
+                &[distance("p0000001")],
+            ),
+            "a distance between two points drawn at one place, (3, 4): the solver measures it by the line between them",
+            "draw the two points apart, about as far apart as the distance says",
+        ),
+        (
+            text(
+                &[point("p0000002", 0.0, 0.0)],
+                &[],
+                &[],
+                &[],
+                &[distance("origin")],
+            ),
+            "a distance between two points drawn at one place, (0, 0): the solver measures it by the line between them",
+            "draw the two points apart, about as far apart as the distance says",
+        ),
+        (
+            text(
+                &[
+                    point("p0000001", -10.0, 1.0),
+                    point("p0000002", 0.0, 0.0),
+                    point("p0000003", 0.0, 0.0),
+                ],
+                &[line("n0000001", "p0000001", "p0000002")],
+                &[circle("c0000001", "p0000003", 3.0)],
+                &[],
+                &[tangency.to_owned()],
+            ),
+            "a tangency at a point drawn on the circle's centre, (0, 0): the solver measures it by the line between them",
+            "draw the point on the circle, away from its centre",
+        ),
+    ];
+    for (document, message, suggestion) in &cases {
+        let e = Translation::new(&sketch_of(document)).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::InvalidInput, "{message}");
+        assert_eq!(e.elements(), ["k0000001"]);
+        assert_eq!(e.message(), *message);
+        assert_eq!(e.suggestion(), Some(*suggestion));
+    }
+    // Apart, each translates: the points (3, 4) and (3, 9), the point (0, 5) from the
+    // origin, the line's end (0, 3) on the circle.
+    for document in [
+        text(
+            &[point("p0000001", 3.0, 4.0), point("p0000002", 3.0, 9.0)],
+            &[],
+            &[],
+            &[],
+            &[distance("p0000001")],
+        ),
+        text(
+            &[point("p0000002", 0.0, 5.0)],
+            &[],
+            &[],
+            &[],
+            &[distance("origin")],
+        ),
+        text(
+            &[
+                point("p0000001", -10.0, 3.0),
+                point("p0000002", 0.0, 3.0),
+                point("p0000003", 0.0, 0.0),
+            ],
+            &[line("n0000001", "p0000001", "p0000002")],
+            &[circle("c0000001", "p0000003", 3.0)],
+            &[],
+            &[tangency.to_owned()],
+        ),
+    ] {
+        Translation::new(&sketch_of(&document)).unwrap();
+    }
+}
+
 // ---------------------------------------------------------------------------------------
 // Reading what the worker found.
 

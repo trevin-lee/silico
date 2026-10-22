@@ -592,6 +592,15 @@ enum Curve {
     Round(Round),
 }
 
+/// What two points drawn at one place would leave the solver no line between, for
+/// [`Translation::apart`]'s words.
+#[derive(Clone, Copy)]
+enum Between {
+    Symmetry,
+    Distance,
+    TangencyOnRound,
+}
+
 impl Curve {
     fn geometry(self) -> Geometry {
         match self {
@@ -1113,8 +1122,20 @@ impl Translation {
                 }
             }
         };
-        if let S::SymmetricLine { a, b, .. } | S::SymmetricPoint { a, b, .. } = sent {
-            self.apart(a, b)?;
+        match sent {
+            S::SymmetricLine { a, b, .. } | S::SymmetricPoint { a, b, .. } => {
+                self.apart(self.at(a), self.at(b), Between::Symmetry)?;
+            }
+            S::Distance { a, b, .. } if a != b => {
+                self.apart(self.at(a), self.at(b), Between::Distance)?;
+            }
+            S::TangentOn { point, b, .. } => {
+                if let Some(center) = self.center_of(b) {
+                    let center = self.xy(&self.system.values, center);
+                    self.apart(self.at(point), center, Between::TangencyOnRound)?;
+                }
+            }
+            _ => {}
         }
         Ok(Some(sent))
     }
@@ -1154,24 +1175,50 @@ impl Translation {
             .filter_map(move |(p, c)| (c == curve).then_some(p))
     }
 
-    /// That a symmetry's two points aren't drawn at one place: PlaneGCS measures a symmetry
-    /// by the line between them.
-    fn apart(&self, a: PointOf, b: PointOf) -> Result<(), Error> {
-        let (pa, pb) = (
-            self.point_of(&self.system.values, a),
-            self.point_of(&self.system.values, b),
-        );
-        if no_distance(pa, pb) {
-            return Err(Error::new(
-                ErrorCode::InvalidInput,
-                format!(
-                    "a symmetry of two points drawn at one place, ({}, {}): the solver measures it by the line between them",
-                    pa[0], pa[1]
-                ),
-            )
-            .with_suggestion("draw the two points apart, where they'd mirror each other"));
+    /// That two points aren't drawn at one place where PlaneGCS measures a constraint by the
+    /// line between them (as the worker's own check refuses, `SketchSystem::check`): there's
+    /// no such line, the solve starts from 0/0, and the constraint is taken to conflict,
+    /// though it can hold once the points are apart.
+    fn apart(&self, pa: [f64; 2], pb: [f64; 2], between: Between) -> Result<(), Error> {
+        if !no_distance(pa, pb) {
+            return Ok(());
         }
-        Ok(())
+        let (what, suggestion) = match between {
+            Between::Symmetry => (
+                "a symmetry of two points drawn at one place",
+                "draw the two points apart, where they'd mirror each other",
+            ),
+            Between::Distance => (
+                "a distance between two points drawn at one place",
+                "draw the two points apart, about as far apart as the distance says",
+            ),
+            Between::TangencyOnRound => (
+                "a tangency at a point drawn on the circle's centre",
+                "draw the point on the circle, away from its centre",
+            ),
+        };
+        Err(Error::new(
+            ErrorCode::InvalidInput,
+            format!(
+                "{what}, ({}, {}): the solver measures it by the line between them",
+                pa[0], pa[1]
+            ),
+        )
+        .with_suggestion(suggestion))
+    }
+
+    /// Where `p` is drawn.
+    fn at(&self, p: PointOf) -> [f64; 2] {
+        self.point_of(&self.system.values, p)
+    }
+
+    /// The centre of geometry `g`, if it's a circle or an arc of the sketch.
+    fn center_of(&self, g: Geometry) -> Option<PointValues> {
+        self.circles
+            .values()
+            .chain(self.arcs.values().map(|arc| &arc.round))
+            .find(|round| round.geometry == g)
+            .map(|round| round.center)
     }
 
     fn xy(&self, values: &[f64], p: PointValues) -> [f64; 2] {
