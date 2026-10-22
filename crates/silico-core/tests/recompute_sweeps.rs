@@ -1373,6 +1373,16 @@ fn a_turn_short_of_a_whole_one_by_the_tolerance_is_refused_and_a_nanodegree_more
     // (0, −5) to (5, 0), farthest at (0, −5).
     let tangent_below = circles("ssssssss", "xy", &[([0.0, -5.0], 5.0)]);
     let semicircle_below = arc([0, 0], [-5, 0], [5, 0]);
+    // A semicircle of radius 5 whose diameter lies `lift` above the axis, from (5, lift)
+    // over (0, 5 + lift) to (−5, lift): its ends within the tolerance of the axis (5e-8,
+    // and exactly 1e-7, which is still within it), so no point is off the axis and it's
+    // measured at its top, 5 + lift. The band there is 3600 / (π (1 + lift / 5)): 1145.92
+    // less 1.1e-5 at most, so 1145 short (9.9920e-8) is still refused and 1146 short turns.
+    let lifted = |lift: f64| {
+        format!(
+            r#"{{"id": "ssssssss", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{{"id": "pa000001", "x": 0, "y": {lift:?}, "construction": false}}, {{"id": "pa000002", "x": 5, "y": {lift:?}, "construction": false}}, {{"id": "pa000003", "x": -5, "y": {lift:?}, "construction": false}}], "lines": [{{"id": "na000001", "from": "pa000003", "to": "pa000002", "construction": false}}], "circles": [], "arcs": [{{"id": "aa000001", "center": "pa000001", "start": "pa000002", "end": "pa000003", "construction": false}}], "constraints": []}}"#
+        )
+    };
     // Each refusal names the sketch's curves where its slit is measured: the circle, the
     // arc at its interior point, the cap's arc and chord at their shared ends, a
     // rectangle's side there and the two sides ending on it; and where nothing is off the
@@ -1380,7 +1390,23 @@ fn a_turn_short_of_a_whole_one_by_the_tolerance_is_refused_and_a_nanodegree_more
     // arc and not its chord.
     let short = "359.999998855";
     let turns = "359.999998854";
-    let cases: [BandCase; 12] = [
+    let cases: [BandCase; 14] = [
+        (
+            lifted(5e-8),
+            short,
+            5.0 + 5e-8,
+            9.9920e-8,
+            turns,
+            &["aa000001"],
+        ),
+        (
+            lifted(1e-7),
+            short,
+            5.0 + 1e-7,
+            9.9920e-8,
+            turns,
+            &["aa000001"],
+        ),
         (
             tangent_below,
             "359.999999428",
@@ -1704,6 +1730,8 @@ fn a_slit_refusal_beside_a_measured_corner_names_the_curves_there_not_a_farthest
         ],
     );
     let error = failed(&model, "rrrrrrrr");
+    assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
+    assert_eq!(error.parameter(), Some("extent.angle"), "{error}");
     assert!(
         error.message().ends_with(
             " mm at its profile's point 5 mm from the axis: within 1e-7 mm, its ends would be one place"
@@ -1712,4 +1740,45 @@ fn a_slit_refusal_beside_a_measured_corner_names_the_curves_there_not_a_farthest
     );
     assert_eq!(error.elements(), ["nb000001", "nb000002", "nb000004"]);
     assert_eq!(error.elements_total(), 3);
+}
+
+#[test]
+fn one_region_with_an_arc_reaching_a_measured_corners_distance_names_only_the_corners_curves() {
+    // The corner test's case in one region, so a revolve takes it as well as a groove (two
+    // regions are a revolve's S5 refusal): a box 16 × 12 on the x axis less the half-disc
+    // of radius 5 about the origin, and its left side kinked out to a corner D (−7, 5):
+    // (5, 0), the arc over (0, 5) to (−5, 0), then (−8, 0), D (−7, 5), (−8, 12), (8, 12),
+    // (8, 0), and back. Its only point off the axis nearer than 12 is D, 5 away, so the
+    // slit is measured there; the arc's top is 5 away too, but no point of the arc is off
+    // the axis but it, so it isn't named. 1145 nanodegrees short is refused, naming the
+    // two sides ending at D, na000002 and na000003.
+    let kinked = r#"{"id": "ssssssss", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 5, "y": 0, "construction": false}, {"id": "pa000003", "x": -5, "y": 0, "construction": false}, {"id": "pa000004", "x": -8, "y": 0, "construction": false}, {"id": "pa000005", "x": -7, "y": 5, "construction": false}, {"id": "pa000006", "x": -8, "y": 12, "construction": false}, {"id": "pa000007", "x": 8, "y": 12, "construction": false}, {"id": "pa000008", "x": 8, "y": 0, "construction": false}], "lines": [{"id": "na000001", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000002", "from": "pa000004", "to": "pa000005", "construction": false}, {"id": "na000003", "from": "pa000005", "to": "pa000006", "construction": false}, {"id": "na000004", "from": "pa000006", "to": "pa000007", "construction": false}, {"id": "na000005", "from": "pa000007", "to": "pa000008", "construction": false}, {"id": "na000006", "from": "pa000008", "to": "pa000002", "construction": false}], "circles": [], "arcs": [{"id": "aa000001", "center": "pa000001", "start": "pa000002", "end": "pa000003", "construction": false}], "constraints": []}"#;
+    for (word, base) in [("revolve", None), ("groove", Some("bbbbbbbb"))] {
+        let model = published(
+            &engine(),
+            &[
+                &cube_below(),
+                kinked,
+                &turned(
+                    "rrrrrrrr",
+                    word,
+                    base,
+                    "ssssssss",
+                    "x_axis",
+                    &angle("359.999998855"),
+                ),
+            ],
+        );
+        let error = failed(&model, "rrrrrrrr");
+        assert_eq!(error.code(), ErrorCode::InvalidInput, "{word}: {error}");
+        assert_eq!(error.parameter(), Some("extent.angle"), "{word}");
+        assert!(
+            error.message().ends_with(
+                " mm at its profile's point 5 mm from the axis: within 1e-7 mm, its ends would be one place"
+            ),
+            "{word}: {error}"
+        );
+        assert_eq!(error.elements(), ["na000002", "na000003"], "{word}");
+        assert_eq!(error.elements_total(), 2, "{word}");
+    }
 }

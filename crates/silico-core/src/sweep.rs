@@ -373,7 +373,7 @@ pub fn check_axis(
     };
     let turned = silico_protocol::radians(degrees);
     let slit_at = silico_protocol::slit_radius(near.iter().map(|&(d, _)| d), farthest);
-    match silico_protocol::end_at_start(slit_at, farthest, turned) {
+    match silico_protocol::end_at_start(slit_at.distance(), farthest, turned) {
         Some(EndAtStart::Unmoved) => {
             return Err(refused(
                 format!(
@@ -387,13 +387,16 @@ pub fn check_axis(
         Some(EndAtStart::ShortOfWhole { at, slit }) => {
             // The sketch's curves where the slit is measured, by ID: a sweep refusal's
             // elements are its sketch's. Those with a point there that could be nearest; or,
-            // if no point is off the axis and the slit is measured at the farthest, those
+            // where the rule fell back to the farthest point (no point off the axis), those
             // reaching it. `far` names curves only in that fallback: a curve whose farthest
             // point merely lies at `at` beside a measured corner isn't named, since its edges
             // running out from the axis share the axis vertex and are harmless, and its
             // extreme sitting at `at` is a coincidence, not where the rule measured.
-            let off_axis = near.iter().any(|&(d, _)| d > tolerance);
-            let there: std::collections::BTreeSet<String> = (if off_axis { &near } else { &far })
+            let measured = match slit_at {
+                silico_protocol::SlitAt::Nearest(_) => &near,
+                silico_protocol::SlitAt::Farthest(_) => &far,
+            };
+            let there: std::collections::BTreeSet<String> = measured
                 .iter()
                 .filter(|&&(d, _)| d == at)
                 .map(|(_, curve)| curve.to_string())

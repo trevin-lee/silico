@@ -521,7 +521,7 @@ pub fn check_revolve(
     let reach = low.abs().max(high.abs());
     // A side's points between its corners are no nearer than its nearer corner, so the
     // corners are every point that could be nearest.
-    let at = crate::slit_radius(sides.iter().map(|s| s.abs()), reach);
+    let at = crate::slit_radius(sides.iter().map(|s| s.abs()), reach).distance();
     match crate::end_at_start(at, reach, radians(angle)) {
         Some(EndAtStart::Unmoved) => Err(invalid(
             "angle",

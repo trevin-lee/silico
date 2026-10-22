@@ -225,6 +225,26 @@ pub enum EndAtStart {
     ShortOfWhole { at: f64, slit: f64 },
 }
 
+/// Where a profile's slit is measured ([`slit_radius`]): at its nearest point off the
+/// axis, or, with none off it, at its farthest point. Callers name the curves there from
+/// which it is, so they and the rule can't disagree.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SlitAt {
+    /// The nearest point off the axis, this far from it.
+    Nearest(f64),
+    /// No point is off the axis: the farthest point, this far from it.
+    Farthest(f64),
+}
+
+impl SlitAt {
+    /// How far from the axis the slit is measured.
+    pub fn distance(self) -> f64 {
+        match self {
+            SlitAt::Nearest(d) | SlitAt::Farthest(d) => d,
+        }
+    }
+}
+
 /// Where a profile's slit is measured, given the distances from the axis of its points
 /// that could be nearest (its curves' ends, and each curve's interior point nearest the
 /// axis, where it has one: an arc's or a circle's): the nearest of them off the axis,
@@ -234,12 +254,12 @@ pub enum EndAtStart {
 /// every partial turn's do, and the slit beside that end is no separate place. Every
 /// region's and hole's points together, so a corner, hole, or region off the axis is
 /// measured though another touches it.
-pub fn slit_radius(distances: impl IntoIterator<Item = f64>, farthest: f64) -> f64 {
+pub fn slit_radius(distances: impl IntoIterator<Item = f64>, farthest: f64) -> SlitAt {
     distances
         .into_iter()
         .filter(|&d| d > LENGTH_TOLERANCE)
         .reduce(f64::min)
-        .unwrap_or(farthest)
+        .map_or(SlitAt::Farthest(farthest), SlitAt::Nearest)
 }
 
 /// Whether a turn of `angle` radians (more than 0, at most a whole turn) about an axis
@@ -964,15 +984,18 @@ mod tests {
         assert_eq!(end_at_start(0.0, 1e-8, TAU), Some(EndAtStart::Unmoved));
         // A slit is measured at the nearest point off the axis, past the tolerance, or at
         // the farthest if none is off it.
-        assert_eq!(slit_radius([10.0, 5.0, 7.0], 10.0), 5.0);
-        assert_eq!(slit_radius([0.0, 10.0, 1.0], 10.0), 1.0);
-        assert_eq!(slit_radius([1e-7, 10.0], 10.0), 10.0);
+        assert_eq!(slit_radius([10.0, 5.0, 7.0], 10.0), SlitAt::Nearest(5.0));
+        assert_eq!(slit_radius([0.0, 10.0, 1.0], 10.0), SlitAt::Nearest(1.0));
+        assert_eq!(slit_radius([1e-7, 10.0], 10.0), SlitAt::Nearest(10.0));
         assert_eq!(
             slit_radius([1e-7, 1e-7f64.next_up(), 10.0], 10.0),
-            1e-7f64.next_up()
+            SlitAt::Nearest(1e-7f64.next_up())
         );
-        assert_eq!(slit_radius([0.0, 5e-8], 4.0), 4.0);
-        assert_eq!(slit_radius([], 4.0), 4.0);
+        // Every point within the tolerance of the axis, or none: at the farthest.
+        assert_eq!(slit_radius([0.0, 5e-8, 1e-7], 4.0), SlitAt::Farthest(4.0));
+        assert_eq!(slit_radius([], 4.0), SlitAt::Farthest(4.0));
+        assert_eq!(SlitAt::Farthest(4.0).distance(), 4.0);
+        assert_eq!(SlitAt::Nearest(1.0).distance(), 1.0);
     }
 
     #[test]
