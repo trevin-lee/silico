@@ -122,6 +122,66 @@ fn a_bow_tie_crossing_at_a_shallow_angle_is_refused() {
 }
 
 #[test]
+fn two_sides_on_one_tilted_line_just_over_the_tolerance_apart_are_admitted() {
+    // Found in M3.5's profile check (3f85a97): two sides on one line, apart along it by a
+    // gap just over the tolerance, called crossing, since each side's ends measure as on
+    // opposite sides of the other's line by the rounding of a product of nothing. Here a
+    // polygon whose bottom runs along a tilted line with a thin spike in it: A to B and C to
+    // D on the line, B and C `gap` apart, the spike's apex above their middle. By hand the
+    // two sides are `gap` apart, more than the tolerance, and cross nothing: admitted, at
+    // every tilt and place, and with the corners a hair off the line, as a solve leaves
+    // them (two disjoint sides on nearly one line can't each straddle the other's line).
+    let mut refused = Vec::new();
+    for degrees in [7.0f64, 23.0, 31.5, 47.0, 61.0, 83.0, 119.0, 157.0] {
+        for origin in [[0.0, 0.0], [123.456789, -78.901234], [-997.5, 512.25]] {
+            for (l, gap, off) in [10.0, 100.0, 500.0].into_iter().flat_map(|l| {
+                [1.5e-7, 1.92e-7, 3e-7].into_iter().flat_map(move |g| {
+                    [
+                        [0.0; 4],
+                        [1e-14, -1e-14, 1e-14, -1e-14],
+                        [1e-13, -1e-13, -1e-13, 1e-13],
+                        [1e-12, -1e-12, 1e-12, -1e-12],
+                        [3e-11, -3e-11, -3e-11, 3e-11],
+                        [-1e-12, 1e-12, 1e-12, -1e-12],
+                    ]
+                    .map(|o| (l, g, o))
+                })
+            }) {
+                let t = degrees.to_radians();
+                let (u, n) = ([libm::cos(t), libm::sin(t)], [-libm::sin(t), libm::cos(t)]);
+                let at = |along: f64, up: f64| {
+                    z(
+                        origin[0] + along * u[0] + up * n[0],
+                        origin[1] + along * u[1] + up * n[1],
+                    )
+                };
+                let h = 5.0;
+                let polygon = profile(&[
+                    at(0.0, off[0]),
+                    at(l, off[1]),
+                    at(l + gap / 2.0, h),
+                    at(l + gap, off[2]),
+                    at(2.0 * l + gap, off[3]),
+                    at(2.0 * l + gap, -h),
+                    at(0.0, -h),
+                ]);
+                if let Err(e) = polygon.check() {
+                    refused.push(format!(
+                        "{degrees}° at {origin:?}, sides {l}, {gap:e} apart, off {off:?}: {e:?}"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        refused.is_empty(),
+        "{} refused:\n{}",
+        refused.len(),
+        refused.join("\n")
+    );
+}
+
+#[test]
 fn a_bow_tie_crossing_at_an_ordinary_angle_is_refused() {
     for (l, h) in [(10.0, 1e-6), (10.0, 1e-4), (100.0, 1e-5), (1e3, 1e-4)] {
         let e = refused(shallow_bow_tie(l, h).check());
