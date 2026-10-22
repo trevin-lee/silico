@@ -1,0 +1,642 @@
+//! M3.5's tolerance (the maintainer's decision of 2026-10-18 on docs/design/m3.5-profile.md's
+//! open question 1): two profile curves within `LENGTH_TOLERANCE`, 1e-7 mm, of each other
+//! away from a point they share are refused, inclusive; so are open ends that close
+//! (share the point) and loops and regions whose area is at most 1e-7 × their perimeter.
+//! Each boundary a step either side: values whose distance is exactly 1e-7 in f64 (checked
+//! here, since `sqrt(t·t) == t` and scaling by a power of two are exact), the next f64 above,
+//! and 0.99e-7 against 1.01e-7 where the distance is a difference of rounded values.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+#[path = "common/profile.rs"]
+mod draw;
+
+use std::f64::consts::PI;
+
+use draw::{Draw, close, named};
+use silico_core::profile::Region;
+use silico_protocol::LENGTH_TOLERANCE;
+
+const RULE: &str =
+    "a profile's curves must be more than 1e-7 mm apart except at a point they share";
+
+/// The next f64 above 1e-7.
+fn above() -> f64 {
+    LENGTH_TOLERANCE.next_up()
+}
+
+#[test]
+fn the_tolerance_is_occt_s_and_its_boundary_values_are_exact() {
+    assert_eq!(LENGTH_TOLERANCE, 1e-7);
+    assert_eq!(above(), 1.0000000000000001e-7);
+    for t in [LENGTH_TOLERANCE, above(), 5e-8] {
+        assert_eq!((t * t).sqrt(), t);
+        assert_eq!(8.0 * t / 8.0, t);
+    }
+}
+
+/// A rectangle (0, −5)–(8, 0), and above it one (2, gap)–(6, 5): A's top and B's bottom
+/// are parallel, `gap` apart, and B's bottom corners `gap` above A's top. A's top is 8 long,
+/// so the gap is measured off it exactly.
+fn stacked(gap: f64) -> (Draw, Vec<String>, Vec<String>) {
+    let mut d = Draw::new();
+    let a = d.rectangle(0.0, -5.0, 8.0, 0.0);
+    let b = d.rectangle(2.0, gap, 6.0, 5.0);
+    (d, a, b)
+}
+
+#[test]
+fn parallel_lines_exactly_1e_7_apart_are_refused_and_the_next_f64_passes() {
+    let (d, a, b) = stacked(LENGTH_TOLERANCE);
+    let top = &a[2];
+    let errors = d.refused();
+    assert_eq!(
+        named(&errors),
+        vec![
+            (
+                format!("line {top} and line {} are 1e-7 mm apart: {RULE}", b[0]),
+                vec![top.clone(), b[0].clone()]
+            ),
+            (
+                format!(
+                    "point p0000010, the end of line {}, is 1e-7 mm from line {top}: {RULE}",
+                    b[1]
+                ),
+                vec![b[1].clone(), top.clone(), "p0000010".to_owned()]
+            ),
+            (
+                format!(
+                    "point p0000009, the end of line {}, is 1e-7 mm from line {top}: {RULE}",
+                    b[3]
+                ),
+                vec![b[3].clone(), top.clone(), "p0000009".to_owned()]
+            ),
+        ]
+    );
+
+    let (d, ..) = stacked(above());
+    let p = d.made();
+    assert_eq!(p.regions.len(), 2);
+}
+
+#[test]
+fn near_lines_name_the_gap_as_measured() {
+    // 5e-8 apart, printed as the file prints numbers.
+    let (d, a, b) = stacked(5e-8);
+    let errors = d.refused();
+    assert_eq!(
+        errors[0].message(),
+        format!("line {} and line {} are 5e-8 mm apart: {RULE}", a[2], b[0])
+    );
+    assert_eq!(
+        errors[0].suggestion(),
+        Some("move them more than 1e-7 mm apart")
+    );
+    assert_eq!(errors[0].elements_total(), 2);
+}
+
+#[test]
+fn line_line_0_99e_7_apart_is_refused_and_1_01e_7_passes() {
+    assert!(stacked(0.99e-7).0.profile().is_err());
+    assert_eq!(stacked(1.01e-7).0.made().regions.len(), 2);
+}
+
+#[test]
+fn two_holes_0_99e_7_apart_are_refused_and_1_01e_7_apart_pass() {
+    // Holes (−5, −2)–(0, 2) and (g, −2)–(5, 2) in a 20 × 20 square: their facing sides,
+    // 4 long, are g apart.
+    let holes = |g: f64| {
+        let mut d = Draw::new();
+        d.rectangle(-10.0, -10.0, 10.0, 10.0);
+        let a = d.rectangle(-5.0, -2.0, 0.0, 2.0);
+        let b = d.rectangle(g, -2.0, 5.0, 2.0);
+        (d, a, b)
+    };
+    let (d, a, b) = holes(0.99e-7);
+    let errors = d.refused();
+    assert!(
+        named(&errors).iter().any(|(m, e)| {
+            m.starts_with(&format!("line {} and line {} are 9.9", a[1], b[3]))
+                && m.ends_with(&format!("e-8 mm apart: {RULE}"))
+                && e == &vec![a[1].clone(), b[3].clone()]
+        }),
+        "{:#?}",
+        named(&errors)
+    );
+    let g = 1.01e-7;
+    let p = holes(g).0.made();
+    assert_eq!(p.regions.len(), 1);
+    assert_eq!(p.regions[0].holes.len(), 2);
+    assert!(close(
+        p.regions[0].area(),
+        400.0 - 20.0 - 4.0 * (5.0 - g),
+        1e-12
+    ));
+}
+
+#[test]
+fn a_circular_hole_0_99e_7_from_a_side_is_refused_and_1_01e_7_passes() {
+    // A circle about (10, 5) of radius 5 − g in a 20 × 20 square: g from its bottom (to
+    // rounding of 5 − g, about 1e-15).
+    let near = |g: f64| {
+        let mut d = Draw::new();
+        let n = d.rectangle(0.0, 0.0, 20.0, 20.0);
+        let c = d.circle(10.0, 5.0, 5.0 - g);
+        (d, n, c)
+    };
+    let (d, n, c) = near(0.99e-7);
+    let errors = d.refused();
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].elements(), [c.clone(), n[0].clone()]);
+    assert!(
+        errors[0]
+            .message()
+            .starts_with(&format!("circle {c} and line {} are 9.9", n[0]))
+    );
+    let g = 1.01e-7;
+    let p = near(g).0.made();
+    assert!(close(
+        p.regions[0].area(),
+        400.0 - PI * (5.0 - g) * (5.0 - g),
+        1e-12
+    ));
+}
+
+#[test]
+fn concentric_circles_0_99e_7_apart_are_refused_as_near_and_1_01e_7_apart_as_a_ring() {
+    let ring = |outer: f64| {
+        let mut d = Draw::new();
+        let a = d.circle(0.0, 0.0, 1.0);
+        let b = d.circle(0.0, 0.0, outer);
+        (d, a, b)
+    };
+    let (d, a, b) = ring(1.0 + 0.99e-7);
+    let errors = d.refused();
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].elements(), [a.clone(), b.clone()]);
+    // The gap is (1 + 0.99e-7) − 1, 0.99e-7 to rounding (about 1e-16).
+    let m = errors[0].message();
+    assert!(
+        m.starts_with(&format!("circle {a} and circle {b} are 9.")),
+        "{m}"
+    );
+    assert!(m.ends_with(&format!("e-8 mm apart: {RULE}")), "{m}");
+
+    // 1.01e-7 apart they don't meet, but the ring between them, 2π × 1e-7 or so wide in
+    // all, is a region with no area to speak of (the next test's rule).
+    let (d, ..) = ring(1.0 + 1.01e-7);
+    let errors = d.refused();
+    assert_eq!(errors.len(), 1);
+    assert!(errors[0].message().starts_with("the region inside loop "));
+
+    // 1.0000001 − 1.0 is 1.00000000058e-7, past 1e-7: the circles don't meet (the ring is
+    // refused as above).
+    let outer = 1.0000001;
+    assert!(outer - 1.0 > LENGTH_TOLERANCE);
+    let (d, ..) = ring(outer);
+    assert!(
+        d.refused()[0]
+            .message()
+            .starts_with("the region inside loop ")
+    );
+}
+
+#[test]
+fn open_ends_exactly_1e_7_apart_share_the_point_and_the_next_f64_is_open() {
+    // Three sides of the 4 × 3 rectangle and the fourth, up the left side, ending `gap`
+    // above the corner it should end at.
+    let short = |gap: f64| {
+        let mut d = Draw::new();
+        let p = [
+            d.point(0.0, 0.0),
+            d.point(4.0, 0.0),
+            d.point(4.0, 3.0),
+            d.point(0.0, 3.0),
+            d.point(0.0, gap),
+        ];
+        let n = [
+            d.line(&p[0], &p[1]),
+            d.line(&p[1], &p[2]),
+            d.line(&p[2], &p[3]),
+            d.line(&p[3], &p[4]),
+        ];
+        (d, p, n)
+    };
+    for gap in [LENGTH_TOLERANCE, 0.99e-7] {
+        let (d, p, n) = short(gap);
+        let errors = d.refused();
+        assert_eq!(
+            named(&errors),
+            vec![(
+                format!(
+                    "points {}, {} end curves within 1e-7 mm of each other, but aren't one point, so the profile is open there",
+                    p[0], p[4]
+                ),
+                vec![p[0].clone(), p[4].clone(), n[0].clone(), n[3].clone()]
+            )]
+        );
+        assert_eq!(
+            errors[0].suggestion(),
+            Some("share the point: end the curves at one point")
+        );
+    }
+    for gap in [above(), 1.01e-7, 1.5e-7] {
+        let (d, p, n) = short(gap);
+        assert_eq!(
+            named(&d.refused()),
+            vec![
+                (
+                    format!(
+                        "point {} ends line {} and no other profile curve, so the profile is open there",
+                        p[0], n[0]
+                    ),
+                    vec![p[0].clone(), n[0].clone()]
+                ),
+                (
+                    format!(
+                        "point {} ends line {} and no other profile curve, so the profile is open there",
+                        p[4], n[3]
+                    ),
+                    vec![p[4].clone(), n[3].clone()]
+                ),
+            ],
+            "{gap}"
+        );
+    }
+}
+
+#[test]
+fn thin_rectangles_are_slivers_up_to_twice_the_tolerance_wide() {
+    // 10 × w: 10w against 1e-7 × (20 + 2w), so a sliver up to w ≈ 2e-7.
+    let thin = |w: f64| {
+        let mut d = Draw::new();
+        d.rectangle(0.0, 0.0, 10.0, w);
+        d
+    };
+    // The rule by hand: 10w against 1e-7 × (20 + 2w).
+    let by_hand = |w: f64| 10.0 * w <= 1e-7 * (20.0 + 2.0 * w);
+    assert!(by_hand(1.9e-7));
+    let errors = thin(1.9e-7).refused();
+    assert_eq!(errors.len(), 1);
+    assert!(errors[0].message().starts_with("loop "));
+    assert!(
+        errors[0]
+            .message()
+            .contains(" encloses no area to speak of (")
+    );
+
+    assert!(!by_hand(2.1e-7));
+    let p = thin(2.1e-7).made();
+    assert!(close(p.regions[0].area(), 2.1e-6, 1e-9));
+}
+
+#[test]
+fn a_ring_whose_loops_each_have_area_is_a_sliver_region() {
+    // Circles r 1 and 1 + g: 2πg or so against 1e-7 × 2π(2 + g), so a sliver up to
+    // g ≈ 2e-7.
+    let ring = |g: f64| {
+        let mut d = Draw::new();
+        let outer = d.circle(0.0, 0.0, 1.0 + g);
+        let hole = d.circle(0.0, 0.0, 1.0);
+        (d, outer, hole)
+    };
+    let (d, outer, hole) = ring(1.5e-7);
+    let errors = d.refused();
+    assert_eq!(errors.len(), 1);
+    let e = &errors[0];
+    assert!(
+        e.message().starts_with(&format!(
+            "the region inside loop {outer} less its holes encloses no area to speak of ("
+        )),
+        "{e}"
+    );
+    assert!(
+        e.message().contains(" mm², against a perimeter of 12.566"),
+        "{e}"
+    );
+    assert_eq!(e.elements(), [outer.clone(), hole.clone()]);
+    assert_eq!(e.elements_total(), 2);
+    assert_eq!(
+        e.suggestion(),
+        Some("give it some width: the kernel builds nothing thinner than 1e-7 mm")
+    );
+
+    let g = 3e-7;
+    let p = ring(g).0.made();
+    let area: f64 = p.regions.iter().map(Region::area).sum();
+    assert!(close(area, PI * ((1.0 + g) * (1.0 + g) - 1.0), 1e-12));
+}
+
+#[test]
+fn a_circle_whose_area_is_exactly_1e_7_times_its_perimeter_is_a_sliver() {
+    // r = 2e-7: πr² (as π·r·r) and 1e-7 × 2πr (as 1e-7 × (2π·r)) are the same f64, so the
+    // rule's ≤ decides it; the next f64 up is past it.
+    let r = 2e-7;
+    assert_eq!(PI * r * r, 1e-7 * (2.0 * PI * r));
+    let mut d = Draw::new();
+    let c = d.circle(0.0, 0.0, r);
+    let errors = d.refused();
+    assert_eq!(errors.len(), 1);
+    assert!(
+        errors[0]
+            .message()
+            .starts_with(&format!("loop {c} encloses no area to speak of ("))
+    );
+
+    let r = r.next_up();
+    assert!(PI * r * r > 1e-7 * (2.0 * PI * r));
+    let mut d = Draw::new();
+    d.circle(0.0, 0.0, r);
+    assert!(close(d.made().regions[0].area(), PI * r * r, 1e-15));
+}
+
+#[test]
+fn curves_whose_size_is_exactly_1e_7_are_too_small_and_the_next_f64_is_not() {
+    // A 10 × w rectangle: its short sides are w long. At w = 1e-7 they're too small to
+    // build, refused by the request's own rule before anything else; the next f64 up they
+    // build, and the rectangle is then a sliver.
+    let strip = |w: f64| {
+        let mut d = Draw::new();
+        let n = d.rectangle(0.0, 0.0, 10.0, w);
+        (d, n)
+    };
+    let (d, n) = strip(LENGTH_TOLERANCE);
+    let errors = d.refused();
+    assert_eq!(
+        named(&errors),
+        vec![
+            (
+                format!(
+                    "line {} is 1e-7 mm long: a profile's lines and arcs are longer than 1e-7 mm between their ends",
+                    n[1]
+                ),
+                vec![n[1].clone(), "p0000002".to_owned(), "p0000003".to_owned()]
+            ),
+            (
+                format!(
+                    "line {} is 1e-7 mm long: a profile's lines and arcs are longer than 1e-7 mm between their ends",
+                    n[3]
+                ),
+                vec![n[3].clone(), "p0000004".to_owned(), "p0000001".to_owned()]
+            ),
+        ]
+    );
+    let (d, _) = strip(above());
+    let errors = d.refused();
+    assert_eq!(errors.len(), 1);
+    assert!(errors[0].message().starts_with("loop "), "{}", errors[0]);
+
+    // A circle of radius 1e-7, and of the next f64 up (whose ring of area to perimeter,
+    // r/2, makes it a sliver).
+    let mut d = Draw::new();
+    let c = d.circle(0.0, 0.0, LENGTH_TOLERANCE);
+    let errors = d.refused();
+    assert_eq!(
+        named(&errors),
+        vec![(
+            format!(
+                "circle {c}'s radius is 1e-7 mm: a profile's arcs and circles have a radius above 1e-7 mm"
+            ),
+            vec![c.clone(), "p0000001".to_owned()]
+        )]
+    );
+    assert_eq!(errors[0].suggestion(), Some("draw it larger, or remove it"));
+    let mut d = Draw::new();
+    d.circle(0.0, 0.0, above());
+    assert!(d.refused()[0].message().starts_with("loop "));
+}
+
+#[test]
+fn a_corner_arc_of_radius_1e_7_is_too_small_naming_it_and_its_points() {
+    // A 10 × 10 square, its lower right corner rounded by an arc of radius 1e-7 about
+    // (10 − 1e-7, 1e-7): the arc's ends are 1.41e-7 apart, but its radius is the
+    // tolerance.
+    let r = LENGTH_TOLERANCE;
+    let mut d = Draw::new();
+    let a = d.point(0.0, 0.0);
+    let b = d.point(10.0 - r, 0.0);
+    let c = d.point(10.0, r);
+    let top = d.point(10.0, 10.0);
+    let left = d.point(0.0, 10.0);
+    let o = d.point(10.0 - r, r);
+    d.line(&a, &b);
+    let arc = d.arc(&o, &b, &c);
+    d.line(&c, &top);
+    d.line(&top, &left);
+    d.line(&left, &a);
+    let errors = d.refused();
+    assert_eq!(errors.len(), 1, "{:#?}", named(&errors));
+    assert_eq!(errors[0].elements(), [arc.clone(), o, b, c]);
+    assert!(
+        errors[0]
+            .message()
+            .starts_with(&format!("arc {arc}'s radius is 1e-7 mm: ")),
+        "{}",
+        errors[0]
+    );
+}
+
+#[test]
+fn a_circle_exactly_1e_7_from_a_line_is_refused_and_one_more_f64_away_is_not() {
+    // A circle of radius 2^-21 about (0, 2^-21 + 1e-7), as a hole over the bottom side of
+    // a 16 × 16 square along y = 0: 2^-21 + 1e-7 is exact, so the gap, its centre's height
+    // less its radius, is exactly 1e-7 (checked). Its centre one f64 higher, it's past.
+    let r = f64::from_bits(0x3ea0_0000_0000_0000); // 2^-21
+    let height = r + LENGTH_TOLERANCE;
+    assert_eq!(height - r, LENGTH_TOLERANCE);
+    let layout = |height: f64| {
+        let mut d = Draw::new();
+        let n = d.rectangle(-8.0, 0.0, 8.0, 16.0);
+        let c = d.circle(0.0, height, r);
+        (d, n, c)
+    };
+    let (d, n, c) = layout(height);
+    assert_eq!(
+        named(&d.refused()),
+        vec![(
+            format!("circle {c} and line {} are 1e-7 mm apart: {RULE}", n[0]),
+            vec![c.clone(), n[0].clone()]
+        )]
+    );
+    let (d, ..) = layout(height.next_up());
+    let p = d.made();
+    assert!(close(p.regions[0].area(), 256.0 - PI * r * r, 1e-15));
+}
+
+#[test]
+fn an_arcs_end_off_its_circle_by_1e_7_is_compared_though_their_boxes_are_2e_7_apart() {
+    // The quarter arc r 1 about (0, 1) from (−1, 1) to (0, −1e-7): its end 1e-7 below its
+    // circle (on it to 1e-7, so built), so 1e-7 below the circle's box, whose bottom is
+    // y = 0. A line along y = −2e-7: its box's top is 2e-7 below the arc's box, the sweep's
+    // margin exactly, and the arc's end is 1e-7 above it (8·1e-7/8 and 1·1e-7/1, exactly):
+    // they meet. The line from x = −0.5, so the arc comes first along x, and from x = −4,
+    // so the line does.
+    for from in [-0.5, -4.0] {
+        let mut d = Draw::new();
+        let o = d.point(0.0, 1.0);
+        let s = d.point(-1.0, 1.0);
+        let e = d.point(0.0, -1e-7);
+        let a = d.arc(&o, &s, &e);
+        let (l, r) = (d.point(from, -2e-7), d.point(-from, -2e-7));
+        let n = d.line(&l, &r);
+        let errors = named(&d.refused());
+        assert!(
+            errors.contains(&(
+                format!("point {e}, the end of arc {a}, is 1e-7 mm from line {n}: {RULE}"),
+                vec![a.clone(), n.clone(), e.clone()]
+            )),
+            "{from}: {errors:#?}"
+        );
+    }
+}
+
+#[test]
+fn a_thin_hole_in_a_region_with_no_area_is_refused_once_as_the_loop() {
+    // A 10 × 3.3e-7 strip with a 9.8 × 1.1e-7 hole along its middle, 1.1e-7 from each
+    // side (more than 1e-7: apart). By hand: the strip, 3.3e-6 against 1e-7 × 20, has
+    // area; the hole, 1.078e-6 against 1e-7 × 19.6, has none; the region, 2.222e-6 against
+    // 1e-7 × 39.6, has none either. The hole is refused, and the region it makes thin isn't
+    // refused again.
+    let by_hand = |area: f64, perimeter: f64| area <= 1e-7 * perimeter;
+    assert!(!by_hand(10.0 * 3.3e-7, 2.0 * (10.0 + 3.3e-7)));
+    assert!(by_hand(9.8 * 1.1e-7, 2.0 * (9.8 + 1.1e-7)));
+    assert!(by_hand(
+        10.0 * 3.3e-7 - 9.8 * 1.1e-7,
+        2.0 * (10.0 + 3.3e-7) + 2.0 * (9.8 + 1.1e-7)
+    ));
+    let mut d = Draw::new();
+    d.rectangle(0.0, 0.0, 10.0, 3.3e-7);
+    let hole = d.rectangle(0.1, 1.1e-7, 9.9, 2.2e-7);
+    let errors = d.refused();
+    assert_eq!(errors.len(), 1, "{:#?}", named(&errors));
+    assert!(errors[0].message().starts_with("loop "), "{}", errors[0]);
+    assert!(
+        errors[0]
+            .message()
+            .contains(" encloses no area to speak of ("),
+        "{}",
+        errors[0]
+    );
+    let mut elements = errors[0].elements().to_vec();
+    elements.sort();
+    assert_eq!(elements, hole);
+}
+
+/// 2⁻²⁴, about 5.96e-8: within the tolerance, and exact in every sum and difference below.
+const GAP: f64 = 1.0 / 16_777_216.0;
+
+/// A closed D: the arc about `center` counter-clockwise from `start` to `end`, and its
+/// chord back. The arc's ID.
+fn d_shape(d: &mut Draw, center: (f64, f64), start: (f64, f64), end: (f64, f64)) -> String {
+    let c = d.point(center.0, center.1);
+    let s = d.point(start.0, start.1);
+    let e = d.point(end.0, end.1);
+    let arc = d.arc(&c, &s, &e);
+    d.line(&e, &s);
+    arc
+}
+
+#[test]
+fn arcs_facing_each_other_across_the_gap_between_their_circles_are_refused() {
+    // Arc A about (0, 0), r 5, from (4, -3) to (4, 3) through (5, 0); arc B about
+    // (10 + g, 0), r 5 (its ends 4 left of its centre and 3 off), from (6 + g, 3) to
+    // (6 + g, -3) through (5 + g, 0). The circles are g apart on the line of centres, at
+    // A's (5, 0) and B's (5 + g, 0), both on the arcs: 5 - (10 + g) + 5 = -g exactly.
+    let mut d = Draw::new();
+    let a = d_shape(&mut d, (0.0, 0.0), (4.0, -3.0), (4.0, 3.0));
+    let b = d_shape(
+        &mut d,
+        (10.0 + GAP, 0.0),
+        (6.0 + GAP, 3.0),
+        (6.0 + GAP, -3.0),
+    );
+    assert_eq!(
+        named(&d.refused()),
+        vec![(
+            format!("arc {a} and arc {b} are 5.960464477539063e-8 mm apart: {RULE}"),
+            vec![a.clone(), b.clone()]
+        )]
+    );
+}
+
+#[test]
+fn an_arc_inside_another_s_circle_and_g_from_it_where_both_turn_is_refused() {
+    // Arc A about (0, 0), r 5, from (-4, 3) to (-4, -3) through (-5, 0); arc B about
+    // (5 - g, 0), r 10 (its ends 8 left of its centre and 6 off), from (-3 - g, 6) to
+    // (-3 - g, -6) through (-5 - g, 0). A's circle is inside B's, g from it on the far
+    // side of A's centre from B's: 10 - 5 - (5 - g) = g, at points of both arcs. Nothing
+    // else comes near: A's ends are 10 - sqrt(90) = 0.51 inside B's circle, and the chords
+    // x = -4 and x = -3 - g miss the other arc (the circles meet them at y = ±sqrt(19) and
+    // at (-3, ±4), 126.87 deg round A's centre, outside A's 143.13..216.87).
+    let mut d = Draw::new();
+    let a = d_shape(&mut d, (0.0, 0.0), (-4.0, 3.0), (-4.0, -3.0));
+    let b = d_shape(
+        &mut d,
+        (5.0 - GAP, 0.0),
+        (-3.0 - GAP, 6.0),
+        (-3.0 - GAP, -6.0),
+    );
+    assert_eq!(
+        named(&d.refused()),
+        vec![(
+            format!("arc {a} and arc {b} are 5.960464477539063e-8 mm apart: {RULE}"),
+            vec![a.clone(), b.clone()]
+        )]
+    );
+}
+
+#[test]
+fn a_circle_g_from_another_s_circle_where_its_arc_doesnt_turn_is_apart_from_the_arc() {
+    // A circle r 5 about (0, 0); arc B about (10 + g, 0), r 5, from (14 + g, -3) to
+    // (14 + g, 3), the side of its circle away from the circle. The circles are g apart
+    // at (5, 0), where B doesn't turn; B comes nearest the circle at its ends,
+    // sqrt(14^2 + 3^2) - 5 = 9.32 away. Areas by hand: 25 pi, and B's segment,
+    // (25 / 2)(theta - sin theta) with theta = 2 atan2(3, 4) and sin theta = 24 / 25.
+    let mut d = Draw::new();
+    d.circle(0.0, 0.0, 5.0);
+    d_shape(
+        &mut d,
+        (10.0 + GAP, 0.0),
+        (14.0 + GAP, -3.0),
+        (14.0 + GAP, 3.0),
+    );
+    let p = d.made();
+    assert_eq!(p.regions.len(), 2, "{p:#?}");
+    // By their smallest IDs: the arc's D, then the circle.
+    let theta = 2.0 * libm::atan2(3.0, 4.0);
+    assert!(close(p.regions[0].area(), 12.5 * (theta - 0.96), 1e-12));
+    assert!(close(p.regions[1].area(), 25.0 * PI, 1e-12));
+}
+
+#[test]
+fn a_tiny_circle_about_a_large_one_s_centre_is_a_hole_in_it() {
+    // Circles about the origin of radii 1e-6, drawn first, and 100: 100 - 1e-6 apart, and
+    // the small one a hole of the large one (pi 1e-12 of area, against a perimeter of
+    // 6.3e-6, more than 1e-7 times it). Area by hand: pi (100^2 - 1e-12).
+    let mut d = Draw::new();
+    let o = d.point(0.0, 0.0);
+    d.circle_about(&o, 1e-6);
+    d.circle_about(&o, 100.0);
+    let p = d.made();
+    assert_eq!(p.regions.len(), 1, "{p:#?}");
+    assert_eq!(p.regions[0].holes.len(), 1);
+    assert!(close(p.regions[0].area(), PI * (1e4 - 1e-12), 1e-12));
+}
+
+#[test]
+fn arcs_about_centres_1e_200_apart_turning_on_opposite_sides_are_apart() {
+    // Arcs r 5 about (0, 0) and about (1e-200, 0), one circle to any precision: the first
+    // from (4, 3) to (3, 4), the second from (-4, -3) to (-3, -4) (each end's offset from
+    // its centre is exact: -4 - 1e-200 rounds to -4), each closed by its chord. They turn
+    // on opposite sides, 10 apart, and nowhere come near. Each region is the segment
+    // (25 / 2)(theta - sin theta), theta = atan2(4, 3) - atan2(3, 4) and
+    // sin theta = (4 * 4 - 3 * 3) / 25.
+    let mut d = Draw::new();
+    d_shape(&mut d, (0.0, 0.0), (4.0, 3.0), (3.0, 4.0));
+    d_shape(&mut d, (1e-200, 0.0), (-4.0, -3.0), (-3.0, -4.0));
+    let p = d.made();
+    assert_eq!(p.regions.len(), 2, "{p:#?}");
+    let theta = libm::atan2(4.0, 3.0) - libm::atan2(3.0, 4.0);
+    for r in &p.regions {
+        assert!(close(r.area(), 12.5 * (theta - 0.28), 1e-9), "{}", r.area());
+    }
+}

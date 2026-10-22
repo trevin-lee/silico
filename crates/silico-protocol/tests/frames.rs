@@ -14,6 +14,7 @@ use silico_protocol::{
     Operation, OutOfTurn, Primitive, Profile, Refusal, Reply, Reported, Request, RequestId,
     Response, ShapeData, ShapeSummary, Topology, TraceId, write_message,
 };
+use silico_protocol::{Curve, FaceRegions, Region, SketchPlane};
 
 /// One request per operation. The match gives each variant its own index and every
 /// index must appear, so adding an `Op` without a case here fails: a missing arm doesn't
@@ -183,6 +184,42 @@ fn every_op() -> Vec<Op> {
             to: [-1e6, 3.000_000_000_000_000_4],
         },
         Op::DragEnd,
+        Op::MakeFaces(FaceRegions {
+            plane: SketchPlane::Xz,
+            regions: vec![
+                Region {
+                    outer: vec![
+                        Curve::Line {
+                            start: [0.0, -1.0],
+                            end: [4.0, -1.0],
+                        },
+                        Curve::Arc {
+                            center: [4.0, 0.0],
+                            start: [4.0, -1.0],
+                            end: [4.0, 1.0],
+                            radius: 1.000_000_000_000_000_2,
+                            start_angle: -std::f64::consts::FRAC_PI_2,
+                            end_angle: std::f64::consts::FRAC_PI_2,
+                        },
+                        Curve::Line {
+                            start: [4.0, 1.0],
+                            end: [-0.0, 1.0],
+                        },
+                    ],
+                    holes: vec![vec![Curve::Circle {
+                        center: [2.0, 0.0],
+                        radius: 0.25,
+                    }]],
+                },
+                Region {
+                    outer: vec![Curve::Circle {
+                        center: [-1e6, 3.000_000_000_000_000_4],
+                        radius: 1e-7,
+                    }],
+                    holes: vec![],
+                },
+            ],
+        }),
     ];
     let indices: std::collections::BTreeSet<usize> = ops
         .iter()
@@ -239,9 +276,10 @@ fn every_op() -> Vec<Op> {
             Op::DragBegin(_) => 32,
             Op::DragMove { .. } => 33,
             Op::DragEnd => 34,
+            Op::MakeFaces(_) => 35,
         })
         .collect();
-    assert_eq!(indices, (0..35).collect(), "an operation has no case");
+    assert_eq!(indices, (0..36).collect(), "an operation has no case");
     ops
 }
 
@@ -818,7 +856,8 @@ fn every_op_has_its_own_name() {
             "Solve",
             "DragBegin",
             "DragMove",
-            "DragEnd"
+            "DragEnd",
+            "MakeFaces"
         ]
     );
 }

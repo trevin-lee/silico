@@ -8,6 +8,7 @@
 //! there's no version negotiation.
 
 mod chamfer;
+mod faces;
 pub mod frame;
 mod history;
 mod primitive;
@@ -18,6 +19,10 @@ mod sketch;
 use serde::{Deserialize, Serialize};
 
 pub use chamfer::ChamferSize;
+pub use faces::{
+    ArcEnd, Curve, FaceRegions, MAX_ARC_ANGLE, MAX_FACE_CURVES, Region, SizeProblem, SketchPlane,
+    area_and_perimeter, distance, loop_area, sliver,
+};
 pub use frame::{FrameError, FrameReader, MAX_FRAME_LEN, decode, write_message, write_started};
 pub use history::{
     ElementCounts, ElementFate, ElementKind, ElementRef, Ends, History, InputHistory, Reported,
@@ -156,6 +161,11 @@ pub enum Op {
     /// Ends the drag; the core then solves the sketch where the last move left it, as a
     /// normal solve. Replies with [`Reply::Done`].
     DragEnd,
+    /// A face for each of a profile's regions, on the sketch's plane, each curve an edge
+    /// and each point a vertex shared by the curves that meet there: one face, or a
+    /// compound of them in the regions' order. Replies with [`Reply::Built`], whose history
+    /// is the regions' ([`FaceRegions`]).
+    MakeFaces(FaceRegions),
 }
 
 impl Op {
@@ -176,6 +186,7 @@ impl Op {
             Op::DragBegin(_) => "DragBegin",
             Op::DragMove { .. } => "DragMove",
             Op::DragEnd => "DragEnd",
+            Op::MakeFaces(_) => "MakeFaces",
             Op::Echo { .. } => "Echo",
             Op::Debug(op) => op.name(),
         }

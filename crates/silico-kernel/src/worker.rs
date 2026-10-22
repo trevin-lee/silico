@@ -66,6 +66,7 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
             axis,
             angle,
         } => built_reply(crate::revolve(&profile, &axis, angle).map_err(failure)?),
+        Op::MakeFaces(regions) => built_reply(crate::make_faces(&regions).map_err(failure)?),
         Op::Boolean { op, base, tool } => {
             let base = shape_of(&base)?;
             let tool = shape_of(&tool)?;

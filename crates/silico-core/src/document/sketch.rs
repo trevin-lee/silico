@@ -104,6 +104,17 @@ impl Plane {
     pub const ALL: [Plane; 3] = [Plane::Xy, Plane::Xz, Plane::Yz];
 }
 
+/// The plane as the kernel takes it, for faces made on it (`KernelRequest::make_faces`).
+impl From<Plane> for silico_protocol::SketchPlane {
+    fn from(plane: Plane) -> Self {
+        match plane {
+            Plane::Xy => silico_protocol::SketchPlane::Xy,
+            Plane::Xz => silico_protocol::SketchPlane::Xz,
+            Plane::Yz => silico_protocol::SketchPlane::Yz,
+        }
+    }
+}
+
 /// A sketch element's ID: 8 characters of Crockford's base32 in lower case, as a feature's,
 /// unique within its sketch (D5).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]

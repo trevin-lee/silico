@@ -19,9 +19,11 @@
 //! keeps them all. A summary is exact for a primitive (its volume, area, center, and box by
 //! formula, where it sits as the kernel makes it) and a move; a boolean's, its own model's
 //! again, is its inputs' together, as if they didn't touch: their volumes and areas added,
-//! their centers weighed by volume, and the box around both. It answers making primitives,
-//! moving shapes, booleans, summaries, and echoes; anything else is refused as an internal
-//! error.
+//! their centers weighed by volume, and the box around both. Faces made from a profile's
+//! regions are numbered and kept as the kernel keeps them (each curve its edge, each point
+//! its vertex), with their area by formula and the box around their curves. It answers
+//! making primitives and faces, moving shapes, booleans, summaries, and echoes; anything
+//! else is refused as an internal error.
 //!
 //! The real kernel writes some primitives (a cylinder, a torus) differently when it makes
 //! them than once it has read them back, so their bytes change once, on the first operation
@@ -41,12 +43,14 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use silico_protocol::{Algorithm, Reply, ShapeSummary, SketchSystem, SolveStatus, Solved, Tag};
+use silico_protocol::{
+    Algorithm, Reply, ShapeSummary, SketchSystem, SolveStatus, Solved, Tag, loop_area,
+};
 
 use crate::kernel::{
-    Blob, BooleanOp, BuiltData, ElementCounts, ElementFate, ElementKind, ElementRef, Ends,
-    Generation, History, InputHistory, Kernel, KernelRequest, Op, Primitive, Reported, ShapeData,
-    Topology, cone_caps, primitive_counts,
+    Blob, BooleanOp, BuiltData, Curve, ElementCounts, ElementFate, ElementKind, ElementRef, Ends,
+    FaceRegions, Generation, History, InputHistory, Kernel, KernelRequest, Op, Primitive, Region,
+    Reported, ShapeData, SketchPlane, Topology, cone_caps, primitive_counts,
 };
 use crate::pool::{MAX_WORKERS, Outcome, Pending, deliver, thread_error};
 use crate::sketch::{SketchSolver, SolveStopper};
@@ -520,6 +524,35 @@ fn answer(op: &Op) -> Result<Reply, Error> {
             )
             .with_suggestion("run this test on a real kernel worker")),
         },
+        Op::MakeFaces(regions) => {
+            // The request was checked when it was made; checked again, as the worker does.
+            if let Err(invalid) = regions.check() {
+                return Err(crate::kernel::faces_refused(invalid));
+            }
+            let layout = FacesLayout::of(regions);
+            let kept_as = |numbers: &[u32]| -> Vec<ElementFate> {
+                numbers
+                    .iter()
+                    .map(|&n| ElementFate {
+                        kept: Some(n),
+                        ..ElementFate::default()
+                    })
+                    .collect()
+            };
+            let curves: Vec<u32> = (1..=layout.counts.edges).collect();
+            let history = History {
+                inputs: vec![InputHistory {
+                    faces: Vec::new(),
+                    edges: kept_as(&curves),
+                    vertices: kept_as(&layout.points),
+                }],
+                result: layout.counts,
+                ends: Ends::default(),
+                topology: layout.topology,
+            };
+            let shape = Symbolic::faces(regions).shape();
+            Ok(Reply::Built(BuiltData { shape, history }))
+        }
         Op::Summarize { shape } => Ok(Reply::Summary(Symbolic::read(shape)?.summary())),
         Op::Echo { data } => Ok(Reply::Echo { data: data.clone() }),
         other => Err(Error::new(
@@ -700,10 +733,12 @@ fn moved(counts: ElementCounts) -> InputHistory {
 /// The first line of a fake shape's bytes.
 const HEADER: &str = "silico fake shape 1";
 
-/// One step of making a shape: a primitive, or an operation on earlier steps, by index.
+/// One step of making a shape: a primitive, faces from a profile's regions, or an operation
+/// on earlier steps, by index.
 #[derive(Debug, Clone, PartialEq)]
 enum Step {
     Primitive(Primitive),
+    Faces(Box<FaceRegions>),
     Translate {
         input: usize,
         offset: [f64; 3],
@@ -734,6 +769,10 @@ struct Symbolic(Vec<Step>);
 impl Symbolic {
     fn primitive(primitive: Primitive) -> Self {
         Symbolic(vec![Step::Primitive(primitive)])
+    }
+
+    fn faces(regions: &FaceRegions) -> Self {
+        Symbolic(vec![Step::Faces(Box::new(regions.clone()))])
     }
 
     /// This shape moved by `offset`, as the kernel composes locations.
@@ -772,7 +811,7 @@ impl Symbolic {
         let Symbolic(mut steps) = base;
         let shift = steps.len();
         steps.extend(tool.0.into_iter().map(|step| match step {
-            Step::Primitive(_) => step,
+            Step::Primitive(_) | Step::Faces(_) => step,
             Step::Translate { input, offset } => Step::Translate {
                 input: input + shift,
                 offset,
@@ -813,6 +852,7 @@ impl Symbolic {
         for step in &self.0 {
             match step {
                 Step::Primitive(primitive) => text.push_str(&primitive_line(primitive)),
+                Step::Faces(regions) => text.push_str(&faces_line(regions)),
                 Step::Translate {
                     input,
                     offset: [x, y, z],
@@ -864,7 +904,7 @@ impl Symbolic {
             let index = steps.len();
             let step = parse_step(line).ok_or_else(refused)?;
             let size = match &step {
-                Step::Primitive(_) => Some(1),
+                Step::Primitive(_) | Step::Faces(_) => Some(1),
                 Step::Translate { input, offset } => (index > 0
                     && *input == index - 1
                     && !nothing(offset)
@@ -915,6 +955,7 @@ impl Symbolic {
             }
             counts.push(match step {
                 Step::Primitive(primitive) => primitive_counts(primitive),
+                Step::Faces(regions) => FacesLayout::of(regions).counts,
                 Step::Translate { input, .. } | Step::Dress { input, .. } => of(*input),
                 Step::Boolean { base, tool, .. } => sum(of(*base), of(*tool)),
             });
@@ -932,6 +973,7 @@ impl Symbolic {
             let of = |i: usize| counts.get(i).copied().unwrap_or_default();
             let made = match step {
                 Step::Primitive(primitive) => primitive_counts(primitive),
+                Step::Faces(regions) => FacesLayout::of(regions).counts,
                 Step::Translate { input, .. } | Step::Dress { input, .. } => of(*input),
                 Step::Boolean { base, tool, .. } => sum(of(*base), of(*tool)),
             };
@@ -953,6 +995,10 @@ impl Symbolic {
             let next = match step {
                 Step::Primitive(primitive) => {
                     (primitive_topology(primitive), primitive_counts(primitive))
+                }
+                Step::Faces(regions) => {
+                    let layout = FacesLayout::of(regions);
+                    (layout.topology, layout.counts)
                 }
                 Step::Translate { input, .. } | Step::Dress { input, .. } => of(*input),
                 Step::Boolean { base, tool, .. } => {
@@ -976,6 +1022,7 @@ impl Symbolic {
             let of = |i: usize| measured.get(i).copied().unwrap_or_default();
             let made = match step {
                 Step::Primitive(primitive) => Measured::primitive(primitive),
+                Step::Faces(regions) => Measured::faces(regions),
                 Step::Translate { input, offset } => of(*input).moved(*offset),
                 Step::Boolean { base, tool, .. } => of(*base).with(of(*tool)),
                 Step::Dress { input, .. } => of(*input),
@@ -1014,6 +1061,7 @@ impl Symbolic {
                 Part::Text(text) => out.push_str(&text),
                 Part::Step(index) => match self.0.get(index) {
                     Some(Step::Primitive(primitive)) => out.push_str(&primitive_text(primitive)),
+                    Some(Step::Faces(regions)) => out.push_str(&faces_text(regions)),
                     Some(Step::Translate {
                         input,
                         offset: [x, y, z],
@@ -1128,6 +1176,68 @@ impl Measured {
         }
     }
 
+    /// Faces' measures: no volume, their area by formula ([`loop_area`]: each outer loop's,
+    /// less its holes'), and the box around their curves, on their plane.
+    fn faces(regions: &FaceRegions) -> Self {
+        let mut area = 0.0;
+        for region in &regions.regions {
+            for (contour, curves) in region.loops().enumerate() {
+                area += loop_area(curves, contour == 0);
+            }
+        }
+        let (mut low, mut high) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+        let mut include = |p: [f64; 2]| {
+            for k in 0..2 {
+                low[k] = low[k].min(p[k]);
+                high[k] = high[k].max(p[k]);
+            }
+        };
+        for curve in regions.curves() {
+            match *curve {
+                Curve::Line { start, end } => {
+                    include(start);
+                    include(end);
+                }
+                Curve::Circle { center, radius } => {
+                    include([center[0] - radius, center[1] - radius]);
+                    include([center[0] + radius, center[1] + radius]);
+                }
+                Curve::Arc {
+                    center,
+                    start,
+                    end,
+                    radius,
+                    start_angle,
+                    end_angle,
+                } => {
+                    include(start);
+                    include(end);
+                    // Each quarter turn the arc passes: where it reaches furthest along an
+                    // axis.
+                    let quarter = std::f64::consts::FRAC_PI_2;
+                    let (from, to) = (start_angle.min(end_angle), start_angle.max(end_angle));
+                    let mut k = libm::ceil(from / quarter);
+                    while k * quarter <= to {
+                        let [x, y] = match k.rem_euclid(4.0) as u8 {
+                            0 => [1.0, 0.0],
+                            1 => [0.0, 1.0],
+                            2 => [-1.0, 0.0],
+                            _ => [0.0, -1.0],
+                        };
+                        include([center[0] + radius * x, center[1] + radius * y]);
+                        k += 1.0;
+                    }
+                }
+            }
+        }
+        Measured {
+            volume: 0.0,
+            area,
+            moment: [0.0; 3],
+            bounds: [regions.plane.place(low), regions.plane.place(high)],
+        }
+    }
+
     fn moved(self, offset: [f64; 3]) -> Self {
         let [low, high] = self.bounds;
         Measured {
@@ -1199,6 +1309,9 @@ fn parse_step(line: &str) -> Option<Step> {
     let number = |w: &str| w.parse::<f64>().ok().filter(|v| v.is_finite());
     let numbers = || -> Option<Vec<f64>> { words.iter().map(|w| number(w)).collect() };
     let index = |w: &str| w.parse::<usize>().ok();
+    if name == "faces" {
+        return parse_faces(&words).map(|regions| Step::Faces(Box::new(regions)));
+    }
     if let (Some(op), [base, tool]) = (parse_boolean(name), words.as_slice()) {
         return Some(Step::Boolean {
             op,
@@ -1244,6 +1357,208 @@ fn parse_primitive(name: &str, values: &[f64]) -> Option<Primitive> {
         _ => return None,
     };
     primitive.check().is_ok().then_some(primitive)
+}
+
+/// How faces made from regions number their elements, as the kernel makes them: a face
+/// for each region in order, an edge for each curve in order, and a vertex for each point,
+/// numbered as OCCT first meets them, loop by loop (a loop's points in order, or a circle's
+/// one vertex).
+struct FacesLayout {
+    counts: ElementCounts,
+    topology: Topology,
+    /// The vertex of each point, in the order sent.
+    points: Vec<u32>,
+}
+
+impl FacesLayout {
+    fn of(regions: &FaceRegions) -> Self {
+        let mut layout = FacesLayout {
+            counts: ElementCounts::default(),
+            topology: Topology::default(),
+            points: Vec::new(),
+        };
+        let (mut edge, mut vertex) = (0u32, 0u32);
+        for region in &regions.regions {
+            let mut face_edges = Vec::new();
+            for (contour, curves) in region.loops().enumerate() {
+                let first_edge = edge + 1;
+                let first_vertex = vertex + 1;
+                let is_circle = matches!(curves, [Curve::Circle { .. }]);
+                let n = u32::try_from(curves.len()).unwrap_or(u32::MAX);
+                for i in 0..n {
+                    edge += 1;
+                    face_edges.push(edge);
+                    layout.topology.edge_vertices.push(if is_circle {
+                        vec![first_vertex]
+                    } else {
+                        vec![first_vertex + i, first_vertex + (i + 1) % n]
+                    });
+                }
+                if is_circle {
+                    vertex += 1;
+                } else {
+                    layout.points.extend(first_vertex..first_vertex + n);
+                    vertex += n;
+                }
+                if contour == 0 {
+                    layout
+                        .topology
+                        .outer_edges
+                        .push((first_edge..=edge).collect());
+                }
+            }
+            layout.topology.face_edges.push(face_edges);
+        }
+        layout.counts = ElementCounts {
+            faces: u32::try_from(regions.regions.len()).unwrap_or(u32::MAX),
+            edges: edge,
+            vertices: vertex,
+            solids: 0,
+        };
+        layout
+    }
+}
+
+/// A plane's word in a shape's bytes: `xy`, `xz`, `yz`.
+fn plane_word(plane: SketchPlane) -> &'static str {
+    // The document's word for it (D6).
+    use crate::document::Plane;
+    match plane {
+        SketchPlane::Xy => Plane::Xy,
+        SketchPlane::Xz => Plane::Xz,
+        SketchPlane::Yz => Plane::Yz,
+    }
+    .as_str()
+}
+
+/// Faces as a line of a shape's bytes: `faces xy region loop line 0 0 4 0 ... loop circle 2
+/// 1.5 0.5`, every number as Rust writes it, which reads back as the same number (a zero of
+/// either sign written as 0).
+fn faces_line(regions: &FaceRegions) -> String {
+    let mut line = format!("faces {}", plane_word(regions.plane));
+    for region in &regions.regions {
+        line.push_str(" region");
+        for curves in region.loops() {
+            line.push_str(" loop");
+            for curve in curves {
+                let (word, values): (&str, Vec<f64>) = match *curve {
+                    Curve::Line { start, end } => {
+                        ("line", vec![start[0], start[1], end[0], end[1]])
+                    }
+                    Curve::Arc {
+                        center,
+                        start,
+                        end,
+                        radius,
+                        start_angle,
+                        end_angle,
+                    } => (
+                        "arc",
+                        vec![
+                            center[0],
+                            center[1],
+                            start[0],
+                            start[1],
+                            end[0],
+                            end[1],
+                            radius,
+                            start_angle,
+                            end_angle,
+                        ],
+                    ),
+                    Curve::Circle { center, radius } => {
+                        ("circle", vec![center[0], center[1], radius])
+                    }
+                };
+                line.push(' ');
+                line.push_str(word);
+                // A zero of either sign as 0, as the kernel places points: one shape's
+                // bytes whatever the sign of its zeros.
+                for value in values {
+                    line.push_str(&format!(" {}", value + 0.0));
+                }
+            }
+        }
+    }
+    line
+}
+
+/// Faces in an expression: `faces(xy, 2 regions, 9 curves)`.
+fn faces_text(regions: &FaceRegions) -> String {
+    format!(
+        "faces({}, {} regions, {} curves)",
+        plane_word(regions.plane),
+        regions.regions.len(),
+        regions.curves().count()
+    )
+}
+
+/// The regions a `faces` line's words (after `faces`) say, if the protocol's check accepts
+/// them: the fake reads only what a request could have made.
+fn parse_faces(words: &[&str]) -> Option<FaceRegions> {
+    let (plane, rest) = words.split_first()?;
+    let plane = SketchPlane::ALL
+        .into_iter()
+        .find(|p| plane_word(*p) == *plane)?;
+    let number = |w: &str| w.parse::<f64>().ok().filter(|v| v.is_finite());
+    let point = |x: &str, y: &str| Some([number(x)?, number(y)?]);
+    let mut regions = Vec::new();
+    // Each region's words, after the "region" that starts it.
+    let mut parts = rest.split(|w| *w == "region");
+    if !parts.next()?.is_empty() {
+        return None;
+    }
+    for region in parts {
+        let mut loops = region.split(|w| *w == "loop");
+        if !loops.next()?.is_empty() {
+            return None;
+        }
+        let mut contours: Vec<Vec<Curve>> = Vec::new();
+        for words in loops {
+            let mut curves = Vec::new();
+            let mut rest = words;
+            while let Some((&word, after)) = rest.split_first() {
+                let (curve, used) = match (word, after) {
+                    ("line", [sx, sy, ex, ey, ..]) => (
+                        Curve::Line {
+                            start: point(sx, sy)?,
+                            end: point(ex, ey)?,
+                        },
+                        4,
+                    ),
+                    ("arc", [cx, cy, sx, sy, ex, ey, r, a0, a1, ..]) => (
+                        Curve::Arc {
+                            center: point(cx, cy)?,
+                            start: point(sx, sy)?,
+                            end: point(ex, ey)?,
+                            radius: number(r)?,
+                            start_angle: number(a0)?,
+                            end_angle: number(a1)?,
+                        },
+                        9,
+                    ),
+                    ("circle", [cx, cy, r, ..]) => (
+                        Curve::Circle {
+                            center: point(cx, cy)?,
+                            radius: number(r)?,
+                        },
+                        3,
+                    ),
+                    _ => return None,
+                };
+                curves.push(curve);
+                rest = after.get(used..)?;
+            }
+            contours.push(curves);
+        }
+        let mut contours = contours.into_iter();
+        regions.push(Region {
+            outer: contours.next()?,
+            holes: contours.collect(),
+        });
+    }
+    let regions = FaceRegions { plane, regions };
+    regions.check().is_ok().then_some(regions)
 }
 
 #[cfg(test)]

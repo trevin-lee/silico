@@ -14,6 +14,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Counts from a command line fed to `(0..n).map(..).collect()`: `collect` sizes the Vec up front, so `usize::MAX` panics (capacity overflow) and 1e15 aborts on allocation
 - Derived measures in fixed point sized for their inputs' units (millionths of a mm³ in an i64 hold 9.2e12 mm³, a cube 21 m on a side, while the gate admits 1 km sides): take the largest values the gate admits through every derived quantity (volume, area, products of lengths)
 - Absolute tolerances on quantities that scale with the part (OCCT's `GeomLib::NormEstim` orients a pole's or apex's normal only when \|dP/du × dP/dv\| a 1e-5 step away is over 1e-8): a ball under 0.0316 mm radius or a cone slenderer than 1:1000 gets a normal pointing into the solid
+- Angles from `atan2` at a signed zero (a point at its centre's left with y = −0 gives −π, +0 gives π): a request whose points are placed with zeros as 0 still differs by a turn, and the kernel's bytes with it
+- One rule computed twice, by the core and again by a worker (a sliver's |area| ≤ tol × perimeter about different first points, sqrt against hypot): bisect a turned thin strip's width to the core's boundary and send it; a shoelace sum of coordinates ~10 cancels to ~1e-8 relative
 
 ## Sketch geometry
 
@@ -29,6 +31,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Constraints that force geometry of no size through shared points (a line's two ends mirrored about the line itself, a circle's or arc's center on it, a line's midpoint at its own end, a line tangent to a circle centered on its end): FreeCAD's GUI refuses some, and its solve says success with a zero-length line or a radius of 0
 - Degeneracy a check compares by ID that's there by value (a line between two distinct points at the same place), and values derived from checked ones past the solver's reach (an arc's radius from points each within a kilometre is up to 2√2 km)
 - A symmetry of a line's own end and another point about that line (the gate refuses both ends, not one): the solve puts the point on the end, and the next solve refuses two points drawn at one place
+- Profiles the core takes but the kernel request's check refuses (a corner arc of radius in (1e-7/√2, 1e-7], whose ends are r√2 apart; a loop of two curves whose shared points are within the tolerance, where no end is unshared for a neighbour test to see): send every profile the core makes through the request's check
+- A lone curve whose own two ends are within the tolerance (a nearly closed arc, a 5e-8 line): "share the point" makes a curve from a point to itself, which the gate refuses; follow each refusal's suggestion and gate the result
 
 ## Sketch solver
 

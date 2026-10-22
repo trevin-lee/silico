@@ -32,6 +32,13 @@
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRepPrim_Cylinder.hxx>
 #include <gp_Ax1.hxx>
+#include <gp_Ax2.hxx>
+#include <gp_Ax3.hxx>
+#include <Geom_Plane.hxx>
+#include <TopoDS_Edge.hxx>
+#include <TopoDS_Face.hxx>
+#include <TopoDS_Vertex.hxx>
+#include <TopoDS_Wire.hxx>
 #include <gp_Circ.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Vec.hxx>
@@ -86,6 +93,7 @@
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
+#include <Standard_OutOfRange.hxx>
 #include <TopoDS_Shell.hxx>
 #include <TopoDS_Solid.hxx>
 #include <gp_Pnt.hxx>
@@ -667,6 +675,136 @@ std::unique_ptr<Shape> make_polygon_face(rust::Slice<const Point3> points) {
     throw Standard_Failure("the profile's face couldn't be built");
   }
   return std::make_unique<Shape>(Shape{face.Face()});
+}
+
+std::unique_ptr<Shape> make_faces(Point3 normal, Point3 x_axis, rust::Slice<const Point3> points,
+                                  rust::Slice<const FaceCurve> curves,
+                                  rust::Slice<const uint32_t> loop_curves,
+                                  rust::Slice<const uint32_t> region_loops,
+                                  rust::Vec<HistoryEntry> &history) {
+  const double tolerance = Precision::Confusion();
+  const gp_Dir x(x_axis.x, x_axis.y, x_axis.z);
+  BRep_Builder builder;
+  std::vector<TopoDS_Vertex> vertices;
+  vertices.reserve(points.size());
+  for (const Point3 &p : points) {
+    TopoDS_Vertex vertex;
+    builder.MakeVertex(vertex, gp_Pnt(p.x, p.y, p.z), tolerance);
+    vertices.push_back(vertex);
+  }
+  auto vertex = [&](uint32_t n) -> const TopoDS_Vertex & {
+    if (n >= vertices.size()) {
+      throw Standard_OutOfRange("a curve names a point that isn't there");
+    }
+    return vertices[n];
+  };
+  std::vector<TopoDS_Edge> edges;
+  edges.reserve(curves.size());
+  for (const FaceCurve &curve : curves) {
+    const gp_Ax2 frame(gp_Pnt(curve.center.x, curve.center.y, curve.center.z),
+                       gp_Dir(curve.axis.x, curve.axis.y, curve.axis.z), x);
+    switch (curve.kind) {
+    case CurveKind::Line: {
+      BRepBuilderAPI_MakeEdge line(vertex(curve.start), vertex(curve.end));
+      if (!line.IsDone()) {
+        throw Standard_Failure("a line of the profile couldn't be built");
+      }
+      edges.push_back(line.Edge());
+      break;
+    }
+    case CurveKind::Arc: {
+      // Built as BRepLib_MakeEdge builds an edge between two vertices, but with the range
+      // as given: MakeEdge moves a periodic curve's range into its period
+      // (ElCLib::AdjustPeriodic), and makes an arc turning less than 1e-9 radians a whole
+      // turn longer (a 0.05 mm arc of radius 100 m, a circle). Rust checks each end is on
+      // the circle where its parameter puts it.
+      if (!(curve.first < curve.last)) {
+        throw Standard_Failure("an arc's range must increase");
+      }
+      TopoDS_Edge arc;
+      builder.MakeEdge(arc, new Geom_Circle(frame, curve.radius), tolerance);
+      TopoDS_Vertex from = vertex(curve.start);
+      TopoDS_Vertex to = vertex(curve.end);
+      from.Orientation(TopAbs_FORWARD);
+      to.Orientation(TopAbs_REVERSED);
+      builder.Add(arc, from);
+      builder.Add(arc, to);
+      builder.Range(arc, curve.first, curve.last);
+      edges.push_back(arc);
+      break;
+    }
+    case CurveKind::Circle: {
+      Handle(Geom_Circle) circle = new Geom_Circle(frame, curve.radius);
+      BRepBuilderAPI_MakeEdge whole(circle);
+      if (!whole.IsDone()) {
+        throw Standard_Failure("a circle of the profile couldn't be built");
+      }
+      edges.push_back(whole.Edge());
+      break;
+    }
+    default:
+      throw Standard_Failure("a curve of an unknown kind");
+    }
+  }
+  std::vector<TopoDS_Wire> wires;
+  size_t next = 0;
+  for (uint32_t count : loop_curves) {
+    TopoDS_Wire wire;
+    builder.MakeWire(wire);
+    for (uint32_t i = 0; i < count; ++i) {
+      if (next >= edges.size()) {
+        throw Standard_OutOfRange("a loop names curves that aren't there");
+      }
+      builder.Add(wire, edges[next++]);
+    }
+    wire.Closed(BRep_Tool::IsClosed(wire));
+    wires.push_back(wire);
+  }
+  if (next != edges.size()) {
+    throw Standard_OutOfRange("a curve is in no loop");
+  }
+  const gp_Ax3 axes(gp_Pnt(0.0, 0.0, 0.0), gp_Dir(normal.x, normal.y, normal.z), x);
+  std::vector<TopoDS_Face> faces;
+  next = 0;
+  for (uint32_t count : region_loops) {
+    TopoDS_Face face;
+    builder.MakeFace(face, new Geom_Plane(axes), tolerance);
+    for (uint32_t i = 0; i < count; ++i) {
+      if (next >= wires.size()) {
+        throw Standard_OutOfRange("a region names loops that aren't there");
+      }
+      builder.Add(face, wires[next++]);
+    }
+    faces.push_back(face);
+  }
+  if (next != wires.size() || faces.empty()) {
+    throw Standard_OutOfRange("a loop is in no region");
+  }
+  TopoDS_Shape result;
+  if (faces.size() == 1) {
+    result = faces.front();
+  } else {
+    TopoDS_Compound compound;
+    builder.MakeCompound(compound);
+    for (const TopoDS_Face &face : faces) {
+      builder.Add(compound, face);
+    }
+    result = compound;
+  }
+  ShapeMap result_edges, result_vertices;
+  TopExp::MapShapes(result, TopAbs_EDGE, result_edges);
+  TopExp::MapShapes(result, TopAbs_VERTEX, result_vertices);
+  for (size_t i = 0; i < edges.size(); ++i) {
+    history.push_back(HistoryEntry{0, Kind::Edge, static_cast<uint32_t>(i + 1), Relation::Kept,
+                                   Kind::Edge,
+                                   static_cast<uint32_t>(result_edges.FindIndex(edges[i])), 0});
+  }
+  for (size_t i = 0; i < vertices.size(); ++i) {
+    history.push_back(HistoryEntry{
+        0, Kind::Vertex, static_cast<uint32_t>(i + 1), Relation::Kept, Kind::Vertex,
+        static_cast<uint32_t>(result_vertices.FindIndex(vertices[i])), 0});
+  }
+  return std::make_unique<Shape>(Shape{result});
 }
 
 namespace {

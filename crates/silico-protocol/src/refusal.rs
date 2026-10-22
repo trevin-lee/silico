@@ -150,6 +150,8 @@ pub enum Operation {
     Tessellate,
     /// Anything else: reading or writing B-reps, measuring.
     Other,
+    /// Faces made from a profile's regions.
+    MakeFaces,
 }
 
 /// A boolean's input.
@@ -244,6 +246,10 @@ const UNUSABLE_GEOMETRY: &str = "the shape's geometry is broken (a value too lar
 const REBUILD: &str = "rebuild the shape from its inputs";
 /// What to try when a boolean's result was refused as invalid.
 const NEARLY_MEET: &str = "faces or edges of the two shapes nearly meet: move one so they clearly overlap or stay clearly apart";
+/// What to try when OCCT couldn't make a profile's faces.
+const FACES_FAILED: &str = "OCCT couldn't build the profile's curves as edges: move each arc's ends onto its circle, and its curves' ends further apart";
+/// What to try when a profile's faces were refused as invalid.
+const FACES_INVALID: &str = "OCCT finds the profile's curves crossing or touching within its tolerance (1e-7 mm): move them further apart";
 /// What to try when an offset is refused.
 const OFFSET: &str = "move the shape by a finite offset, no more than a kilometre each way";
 
@@ -371,6 +377,7 @@ impl Refusal {
             Refusal::ResultInvalid { operation, edges } => (
                 match operation {
                     Operation::Primitive { name } => format!("the {name} isn't a valid solid"),
+                    Operation::MakeFaces => "the profile's faces aren't valid".to_owned(),
                     other => format!("the {}'s result isn't a valid solid", other.noun()),
                 },
                 invalid_result_advice(operation, edges, &edge),
@@ -601,6 +608,7 @@ impl Operation {
             Operation::Dressing { dressing } => format!("build the {}", dressing.name()),
             Operation::Tessellate => "mesh the shape".to_owned(),
             Operation::Other => "do it".to_owned(),
+            Operation::MakeFaces => "make the profile's faces".to_owned(),
         }
     }
 
@@ -615,6 +623,7 @@ impl Operation {
             Operation::Dressing { dressing } => dressing.name().to_owned(),
             Operation::Tessellate => "mesh".to_owned(),
             Operation::Other => "operation".to_owned(),
+            Operation::MakeFaces => "profile's faces".to_owned(),
         }
     }
 }
@@ -675,6 +684,7 @@ fn occt_advice(
             Some(blame(*dressing, edges, touching, edge))
         }
         Operation::Tessellate => Some(UNUSABLE_GEOMETRY.to_owned()),
+        Operation::MakeFaces => Some(FACES_FAILED.to_owned()),
         Operation::Primitive { .. } | Operation::Translate | Operation::Other => None,
     }
 }
@@ -692,6 +702,7 @@ fn invalid_result_advice(
         Operation::Extrusion | Operation::Revolve => sweep_advice(operation),
         Operation::Boolean { .. } => Some(NEARLY_MEET.to_owned()),
         Operation::Dressing { dressing } => Some(blame(*dressing, edges, false, edge)),
+        Operation::MakeFaces => Some(FACES_INVALID.to_owned()),
         Operation::Translate | Operation::Tessellate | Operation::Other => None,
     }
 }
@@ -1153,6 +1164,20 @@ mod tests {
         assert_eq!(
             message(Operation::Tessellate),
             "OCCT couldn't mesh the shape"
+        );
+        // A profile's faces: what OCCT couldn't do, and an invalid result said as faces,
+        // not a solid.
+        assert_eq!(
+            message(Operation::MakeFaces),
+            "OCCT couldn't make the profile's faces"
+        );
+        assert_eq!(said(occt(Operation::MakeFaces)), FACES_FAILED);
+        let faces = invalid(Operation::MakeFaces).describe(None, &|e| e.to_string());
+        assert_eq!(faces.message, "the profile's faces aren't valid");
+        assert_eq!(faces.suggestion.as_deref(), Some(FACES_INVALID));
+        assert_eq!(
+            invalid(Operation::MakeFaces).kind(),
+            crate::FailureKind::InvalidResult
         );
     }
 
