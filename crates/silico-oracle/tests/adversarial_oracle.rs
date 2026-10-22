@@ -1470,9 +1470,9 @@ fn a_case_file_cut_at_every_byte_is_refused_not_a_panic() {
     let full = std::fs::read(Path::new(CASES).join("primitives.json")).unwrap();
     let whole = load_text(&scratch("cut").path().join("x"), &full).unwrap();
     let temp = scratch("cut-each");
-    let dir = temp.path();
+    let each = temp.path().join("x");
     for at in 0..full.len() {
-        match load_text(dir, &full[..at]) {
+        match load_text(&each, &full[..at]) {
             Err(e) => assert!(e.contains("cases.json"), "{at}: {e}"),
             // Only what's cut is trailing whitespace.
             Ok(cases) => {
