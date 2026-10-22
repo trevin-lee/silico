@@ -156,12 +156,14 @@ fn a_pockets_no_op_refusal_is_the_same_fresh_warm_and_from_the_cache() {
         sketch.as_str(),
         &pocket("qqqqqqqq", "bbbbbbbb", "ssssssss", TEN),
     ];
-    let dir = std::env::temp_dir().join(format!("silico-shared-checks-{}", std::process::id()));
-    let secret = std::env::temp_dir().join(format!(
-        "silico-shared-checks-{}.secret",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
+    // The cache and its secret beside it (not in it, as a user's is), removed however the
+    // test ends.
+    let temp = tempfile::Builder::new()
+        .prefix("silico-shared-checks-")
+        .tempdir()
+        .unwrap();
+    let dir = temp.path().join("cache");
+    let secret = temp.path().join("secret");
     let session = || {
         Recompute::with_cache(
             FakeKernel::new(2).unwrap(),
@@ -181,6 +183,4 @@ fn a_pockets_no_op_refusal_is_the_same_fresh_warm_and_from_the_cache() {
     let second = session();
     assert_eq!(refused_once(&published(&second, &document)), fresh);
     assert_eq!(second.kernel().calls(), []);
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_file(&secret);
 }

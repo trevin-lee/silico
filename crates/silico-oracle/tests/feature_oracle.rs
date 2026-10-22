@@ -173,19 +173,13 @@ const SQUARE: &str = r#"{"id": "s0000001", "type": "sketch", "v": 1, "name": "S"
   "arcs": [], "constraints": []}"#;
 
 fn load(text: &str) -> Result<Option<Cases>, String> {
-    // A directory of each call's own: tests run at once.
-    static CALLS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "silico-feature-cases-{}-{call}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join(features::FILE), document(text)).unwrap();
-    let loaded = features::load(&dir);
-    std::fs::remove_dir_all(&dir).unwrap();
-    loaded
+    // A directory of each call's own (tests run at once), removed however the call ends.
+    let temp = tempfile::Builder::new()
+        .prefix("silico-feature-cases-")
+        .tempdir()
+        .unwrap();
+    std::fs::write(temp.path().join(features::FILE), document(text)).unwrap();
+    features::load(temp.path())
 }
 
 #[test]
@@ -410,10 +404,11 @@ fn a_case_file_that_would_check_less_than_it_seems_is_refused() {
     let e = load(&fused).unwrap_err();
     assert!(e.contains("f0000001 is a fuse"), "{e}");
     // No file: no cases.
-    let dir = std::env::temp_dir().join(format!("silico-feature-none-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    assert!(features::load(&dir).unwrap().is_none());
-    std::fs::remove_dir_all(&dir).unwrap();
+    let temp = tempfile::Builder::new()
+        .prefix("silico-feature-none-")
+        .tempdir()
+        .unwrap();
+    assert!(features::load(temp.path()).unwrap().is_none());
 }
 
 fn measured(case: &FeatureCase) -> silico_oracle::Measured {

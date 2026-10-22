@@ -1979,6 +1979,75 @@ fn a_reply_that_doesnt_answer_the_request_is_a_protocol_error() {
     }
 }
 
+#[test]
+fn a_reply_whose_residuals_or_algorithm_dont_fit_its_request_is_a_protocol_error() {
+    // The M3 review's lows (tests, round 1): the reply check's residual-tag rule and its
+    // algorithm rule were unexercised. The reply contract: residuals for exactly the tags
+    // sent, once each, in order; and an algorithm named exactly when the status is a
+    // solution (a failure, Failed or Converged, names none).
+    let t = translate(&ten(&[]));
+    let good = answer(&t, t.system.values.clone(), SolveStatus::Success);
+    // The horizontal and the length: two tags, so the residuals' order and tags can be wrong.
+    assert_eq!(good.residuals.len(), 2);
+    t.check_reply(&good).unwrap();
+    type Spoil = Box<dyn Fn(&mut Solved)>;
+    let spoilt: [(&str, Spoil); 4] = [
+        (
+            "residuals out of order",
+            Box::new(|s| s.residuals.reverse()),
+        ),
+        (
+            "a residual for a tag not sent",
+            Box::new(|s| s.residuals[1].0 = Tag(9)),
+        ),
+        (
+            "one tag's residual twice",
+            Box::new(|s| s.residuals[1].0 = s.residuals[0].0),
+        ),
+        (
+            "a residual too many",
+            Box::new(|s| s.residuals.push((Tag(9), Some(0.0)))),
+        ),
+    ];
+    for (what, spoil) in spoilt {
+        let mut s = good.clone();
+        spoil(&mut s);
+        assert_eq!(
+            t.check_reply(&s).unwrap_err().code(),
+            ErrorCode::ProtocolError,
+            "{what}"
+        );
+    }
+    // A solution names its algorithm, whichever solution it is.
+    for status in [
+        SolveStatus::Success,
+        SolveStatus::SolvedExceptRedundant,
+        SolveStatus::SolvedInvalid,
+    ] {
+        let mut unnamed = answer(&t, t.system.values.clone(), status);
+        unnamed.algorithm = None;
+        assert_eq!(
+            t.check_reply(&unnamed).unwrap_err().code(),
+            ErrorCode::ProtocolError,
+            "{status:?} by no algorithm"
+        );
+    }
+    for status in [SolveStatus::Failed, SolveStatus::Converged] {
+        let failed = answer(&t, t.system.values.clone(), status);
+        assert_eq!(failed.algorithm, None);
+        t.check_reply(&failed).unwrap();
+        for algorithm in [Algorithm::DogLeg, Algorithm::AnchoredSqp] {
+            let mut named = failed.clone();
+            named.algorithm = Some(algorithm);
+            assert_eq!(
+                t.check_reply(&named).unwrap_err().code(),
+                ErrorCode::ProtocolError,
+                "{status:?} by {algorithm:?}"
+            );
+        }
+    }
+}
+
 /// A stand-in for the worker: answers with `answer`, made from the system it's sent.
 struct Standing(Box<dyn Fn(&SketchSystem) -> Solved + Send>);
 

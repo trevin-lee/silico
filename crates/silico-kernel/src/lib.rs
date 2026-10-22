@@ -1729,6 +1729,58 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_prism_too_thin_for_a_volume_is_valid_to_occt_and_refused_as_empty() {
+        // The M3 review's low (M3.6's fallout): the thin-sweep refusals were tested, but not
+        // their premise, that OCCT builds such a shape and calls it valid, so it's
+        // `amount_of`, not the validity check, that refuses it. A 10 × 10 square swept
+        // 1.5e-7 (above OCCT's confusion, 1e-7, so the prism isn't degenerate) has volume
+        // 1.5e-5 and area about 200: a mean thickness of 7.5e-8, within LENGTH_TOLERANCE
+        // (1e-7) of none. Its rough volume is far below 1e-5 × the cube of its diagonal
+        // (14.14³ × 1e-5 = 0.028), so it's measured precisely.
+        use silico_protocol::{Curve, FaceRegions, Refusal, Region, SketchPlane};
+        let square = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        let outer = (0..4)
+            .map(|i| Curve::Line {
+                start: square[i],
+                end: square[(i + 1) % 4],
+            })
+            .collect();
+        let faces = super::make_faces(&FaceRegions {
+            plane: SketchPlane::Xy,
+            regions: vec![Region {
+                outer,
+                holes: Vec::new(),
+            }],
+        })
+        .unwrap()
+        .shape;
+        let thin = [0.0, 0.0, 1.5e-7];
+        let mut entries = Vec::new();
+        let solid = super::ffi::sweep_prism(
+            faces.get().unwrap(),
+            super::point3([0.0; 3]),
+            super::point3(thin),
+            &mut entries,
+        )
+        .unwrap();
+        // Valid to OCCT: the check every operation's result passes lets it through.
+        let result = super::checked_result(&[&faces], solid, super::Operation::Extrusion)
+            .unwrap_or_else(|e| panic!("OCCT called the thin prism invalid: {e}"));
+        assert!(result.is_valid().unwrap());
+        // But no volume to speak of.
+        assert!(matches!(
+            super::amount_of(result.get().unwrap(), &[]).unwrap(),
+            super::Amount::None
+        ));
+        // So the sweep is refused as an invalid result, for that, not built.
+        let refused = super::build_prism(&faces, [0.0; 3], thin).err().unwrap();
+        assert!(
+            matches!(refused.refusal(), Refusal::ResultInvalid { .. }),
+            "{refused}"
+        );
+    }
+
     use super::ffi::{HistoryEntry, Kind, Relation};
     use super::{
         ElementCounts, ElementKind, ElementRef, KernelErrorKind, Reported, assemble_history,
