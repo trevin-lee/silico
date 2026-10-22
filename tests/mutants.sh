@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Mutation testing (cargo-mutants) on the committed tree, in the gate's worktree
-# (tests/committed-tree.sh), so it starts from the gate's build and never edits a checkout
-# someone is working in. cargo-mutants has to run in place: a copy of the tree can't find
+# (tests/committed-tree.sh), so it never edits a checkout someone is working in. Off CI it
+# starts from the gate's build; on CI it keeps its own, without debug info, beside it
+# (SILICO_TARGET, .github/workflows/mutants.yml). cargo-mutants has to run in place: a copy of the tree can't find
 # OCCT, so every mutant would look unviable. .cargo/mutants.toml makes each mutant run every
 # workspace test. If a run is killed mid-mutant, the next gate or mutants run restores the
 # tree.
@@ -22,7 +23,7 @@ pixi run occt
 pixi install -e oracle
 # cargo-mutants' baseline builds and tests only the mutated packages, and their tests start
 # other packages' workers (silico-oracle's start the kernel's): build the whole workspace's
-# tests first, as the gate and each mutant build them, since target/debug may start cold
+# tests first, as the gate and each mutant build them, since the build may start cold
 # (committed-tree.sh).
 cargo nextest run --workspace --no-run
 echo "mutants: testing $commit"
