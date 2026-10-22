@@ -151,6 +151,13 @@ jobs:
           running=6
           share=$(( $(nproc) / running > 2 ? $(nproc) / running : 2 ))
           export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share NEXTEST_RETRIES=2
+          # Without debug info (Trevin, 2026-10-22): every mutant rebuilds and relinks the
+          # workspace's test binaries, and DWARF is much of what they write. Gates keep it, and
+          # so does a run off CI. A mutant's backtrace loses file:line, which nobody reads; its
+          # failing test's name and message are what triage uses. The gate tree's target/
+          # keeps both builds side by side (the setting is in each artifact's hash), so each
+          # runner builds this one cold once, and neither evicts the other.
+          export CARGO_PROFILE_DEV_DEBUG=0
           # One seed for every property run through `proptest!` (it overrides the seeds tests
           # fix in their configs; only a TestRunner made directly keeps its own), so each mutant
           # meets the same cases as the baseline. With random seeds, a property that failed now
