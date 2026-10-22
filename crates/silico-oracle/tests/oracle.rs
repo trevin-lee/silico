@@ -127,8 +127,11 @@ fn a_part_freecad_wrote_matches_as_both_sides_read_it() {
     // A filleted box FreeCAD made and wrote as a text B-rep (as the corpus's parts are):
     // Silico reads it through silico-brep-convert, FreeCAD as it is, and they match, as is
     // and moved.
-    let dir = std::env::temp_dir().join(format!("silico-brep-case-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let temp = tempfile::Builder::new()
+        .prefix("silico-brep-case-")
+        .tempdir()
+        .unwrap();
+    let dir = temp.path();
     let path = dir.join("part.brep");
     let written = silico_oracle::freecad::script(&format!(
         r#"
@@ -163,7 +166,6 @@ print("SILICO_ORACLE " + json.dumps(len(s.Faces)))
         },
     ];
     let found = run(&cases).unwrap();
-    std::fs::remove_dir_all(&dir).unwrap();
     assert!(found.refused.is_empty(), "{:?}", found.refused);
     assert!(
         found.differences.is_empty(),
@@ -177,8 +179,11 @@ fn a_part_the_converter_crashes_on_is_refused_saying_so() {
     // OCCT's text reader crashes on some corrupt text (here, a fillet's circle given a
     // negative radius): silico-brep-convert's crash is the part's refusal, saying so, and
     // the harness carries on.
-    let dir = std::env::temp_dir().join(format!("silico-brep-crash-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let temp = tempfile::Builder::new()
+        .prefix("silico-brep-crash-")
+        .tempdir()
+        .unwrap();
+    let dir = temp.path();
     let path = dir.join("part.brep");
     let text: String = serde_json::from_value(
         silico_oracle::freecad::script(
@@ -206,7 +211,6 @@ fn a_part_the_converter_crashes_on_is_refused_saying_so() {
         path: path.to_string_lossy().into_owned(),
     };
     let outcome = silico_oracle::silico::measure(&mut kernel, &part);
-    std::fs::remove_dir_all(&dir).unwrap();
     let Outcome::Failed(why) = outcome else {
         panic!("{outcome:?}")
     };
@@ -240,8 +244,11 @@ fn the_corpus_reads_its_step_files_and_names_those_freecad_cant() {
     // A box written as STEP (named with quotes and a space, which reach FreeCAD as they are)
     // and a file that isn't STEP: the box is two cases, as it is and moved, which Silico
     // meshes; the other is named as unread.
-    let dir = std::env::temp_dir().join(format!("silico-corpus-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let temp = tempfile::Builder::new()
+        .prefix("silico-corpus-")
+        .tempdir()
+        .unwrap();
+    let dir = temp.path();
     let step = dir.join("it's \"a\" box.stp");
     silico_oracle::freecad::script(&format!(
         "import json, Part\nPart.makeBox(10, 20, 30).exportStep({})\nprint('SILICO_ORACLE ' + json.dumps(1))\n",
@@ -249,7 +256,7 @@ fn the_corpus_reads_its_step_files_and_names_those_freecad_cant() {
     ))
     .unwrap();
     std::fs::write(dir.join("bad.stp"), "not a step file").unwrap();
-    let corpus = silico_oracle::corpus::cases(&dir).unwrap();
+    let corpus = silico_oracle::corpus::cases(dir).unwrap();
     let (cases, unread) = (corpus.cases, corpus.unread);
     // The box's B-rep, named with its SHA-256, which is the file's.
     use sha2::Digest;
@@ -271,7 +278,6 @@ fn the_corpus_reads_its_step_files_and_names_those_freecad_cant() {
     );
     assert!(silico_oracle::corpus::meshes(&cases).unwrap().is_empty());
     let found = run(&cases).unwrap();
-    std::fs::remove_dir_all(&dir).unwrap();
     assert!(found.differences.is_empty() && found.refused.is_empty());
     // Both sides' verdicts, for a known difference that doesn't show to be reported with.
     let validity: Vec<(&str, Option<bool>, Option<bool>)> = found
@@ -315,8 +321,11 @@ fn the_corpus_names_a_part_silico_cant_mesh() {
     // The bowtie: the corpus says Silico can't mesh it, with the deflection it tried (a
     // thousandth of the part's size, 10 mm: away from the origin, so it's the size, not
     // the distance).
-    let dir = std::env::temp_dir().join(format!("silico-corpus-mesh-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let temp = tempfile::Builder::new()
+        .prefix("silico-corpus-mesh-")
+        .tempdir()
+        .unwrap();
+    let dir = temp.path();
     let path = dir.join("bowtie.brep");
     write_bowtie(&path);
     let cases = [part(
@@ -326,7 +335,6 @@ fn the_corpus_names_a_part_silico_cant_mesh() {
         },
     )];
     let found = silico_oracle::corpus::meshes(&cases).unwrap();
-    std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(found.len(), 1, "{found:?}");
     let rest = found[0]
         .strip_prefix("bowtie: Silico can't mesh it at a deflection of ")
@@ -342,8 +350,11 @@ fn the_corpus_names_a_part_silico_cant_mesh() {
 fn a_worker_lost_on_one_part_doesnt_hide_the_next() {
     // Filleting a filleted box's Edge1 again at a radius it can't hold crashes OCCT (and the
     // worker); the bowtie after it is still meshed, on a new worker, and named.
-    let dir = std::env::temp_dir().join(format!("silico-corpus-lost-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let temp = tempfile::Builder::new()
+        .prefix("silico-corpus-lost-")
+        .tempdir()
+        .unwrap();
+    let dir = temp.path();
     let path = dir.join("bowtie.brep");
     write_bowtie(&path);
     let block = silico_oracle::Shape::Block {
@@ -371,7 +382,6 @@ fn a_worker_lost_on_one_part_doesnt_hide_the_next() {
         ),
     ];
     let found = silico_oracle::corpus::meshes(&cases).unwrap();
-    std::fs::remove_dir_all(&dir).unwrap();
     assert!(
         found
             .iter()

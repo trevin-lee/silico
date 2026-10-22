@@ -37,6 +37,7 @@ jsonschema.workspace = true
 proptest.workspace = true
 rustix = { workspace = true, features = ["fs"] }
 silico-core = { path = ".", features = ["fake"] }
+tempfile.workspace = true
 
 [lints]
 workspace = true

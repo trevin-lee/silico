@@ -186,9 +186,11 @@ fn an_edit_that_takes_a_named_edge_from_the_base_breaks_the_reference_loudly() {
 
 #[test]
 fn a_fillet_rebuilt_from_the_cache_finds_the_same_edges_without_the_kernel() {
-    let dir = std::env::temp_dir().join(format!("silico-references-cache-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let temp = tempfile::Builder::new()
+        .prefix("silico-references-cache-")
+        .tempdir()
+        .unwrap();
+    let dir = temp.path();
     let secret = dir.join("secret");
     let text = document(&[&fillet(
         "f0000001",
@@ -208,7 +210,6 @@ fn a_fillet_rebuilt_from_the_cache_finds_the_same_edges_without_the_kernel() {
         second.kernel().calls()
     );
     assert_eq!(again.features(), built.features());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// What each of `kernel`'s dressings was: a fillet (false) or a chamfer (true).
@@ -246,12 +247,11 @@ fn a_fillet_of_another_radius_or_a_chamfer_of_the_same_edges_is_another_step() {
     );
     assert_eq!(chamfers(engine.kernel()), [false, false, true]);
     // Each from a cache holding the one before it only, by a new engine each time.
-    let dir = std::env::temp_dir().join(format!(
-        "silico-references-dress-keys-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let temp = tempfile::Builder::new()
+        .prefix("silico-references-dress-keys-")
+        .tempdir()
+        .unwrap();
+    let dir = temp.path();
     let secret = dir.join("secret");
     let cache = || silico_core::cache::Cache::with_secret(dir.join("cache"), &secret);
     for (n, more) in dressings_of.iter().enumerate() {
@@ -262,7 +262,6 @@ fn a_fillet_of_another_radius_or_a_chamfer_of_the_same_edges_is_another_step() {
         assert_eq!(asked.len(), 1, "{more}: {asked:?}");
         assert_eq!(chamfers(engine.kernel()), [n == 2], "{more}");
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

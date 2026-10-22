@@ -466,10 +466,12 @@ fn every_map_a_recompute_publishes_names_each_element_once_for_hostile_layouts()
 fn names_are_the_same_from_two_pools_and_from_the_cache() {
     // The same documents recomputed on fresh pools, and from a cache another recompute
     // filled: names can't depend on which worker ran a step or whether it was rebuilt.
-    let dir = std::env::temp_dir().join(format!("silico-break-naming-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let temp = tempfile::Builder::new()
+        .prefix("silico-break-naming-")
+        .tempdir()
+        .unwrap();
+    let dir = temp.path();
     let secret = dir.join("secret");
-    std::fs::create_dir_all(&dir).unwrap();
     let cache = || silico_core::cache::Cache::with_secret(dir.join("cache"), &secret);
     let first = Recompute::with_cache(pool(), cache());
     let mut expected = Vec::new();

@@ -4190,6 +4190,7 @@ dependencies = [
  "silico-core",
  "silico-protocol",
  "socket2",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
 ]
@@ -4212,6 +4213,7 @@ dependencies = [
  "silico-oracle",
  "silico-protocol",
  "silico-worker",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
 ]
@@ -4226,6 +4228,7 @@ dependencies = [
  "sha2",
  "silico-core",
  "silico-protocol",
+ "tempfile",
 ]
 
 [[package]]

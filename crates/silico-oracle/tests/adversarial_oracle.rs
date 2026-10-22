@@ -52,13 +52,12 @@ fn fillet(shape: Shape, edges: &[u32], radius: f64) -> Shape {
     }
 }
 
-/// A fresh, empty scratch directory for this test.
-fn scratch(name: &str) -> PathBuf {
-    let dir =
-        std::env::temp_dir().join(format!("silico-break-oracle-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+/// A fresh, empty scratch directory for this test, removed when it's dropped.
+fn scratch(name: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix(&format!("silico-break-oracle-{name}-"))
+        .tempdir()
+        .unwrap()
 }
 
 fn executable(path: &Path, body: &str) {
@@ -327,8 +326,9 @@ fn chamfer_of_a_fused_shape_matches_freecad_unrefined() {
     // docs/ports/booleans.md says its results match FreeCAD's with `Refine = False`, which
     // oracle.py didn't set until /break-it found it: two unit-10 cubes fused side by side,
     // Edge1 chamfered at 1, were 11 faces in Silico and 7 in FreeCAD (refined).
-    let dir = scratch("refine");
-    let freecad = hermetic_freecad(&dir, &dir.join("home"));
+    let temp = scratch("refine");
+    let dir = temp.path();
+    let freecad = hermetic_freecad(dir, &dir.join("home"));
     let cases = dir.join("cases");
     std::fs::create_dir_all(&cases).unwrap();
     let fused = Shape::Fuse {
@@ -348,7 +348,7 @@ fn chamfer_of_a_fused_shape_matches_freecad_unrefined() {
         )],
     );
     let ran = cli(
-        &dir,
+        dir,
         &["run", cases.to_str().unwrap()],
         &[("SILICO_FREECADCMD", &freecad)],
         Duration::from_secs(90),
@@ -368,7 +368,8 @@ fn the_oracle_verdict_doesnt_depend_on_the_users_freecad_settings() {
     // Part Design preferences turned a difference into a match. Now it has settings of its
     // own, and the cases pin what they change. Here: the same case under FreeCAD's
     // defaults and under RefineModel = false.
-    let dir = scratch("settings");
+    let temp = scratch("settings");
+    let dir = temp.path();
     let (default, unrefined) = (dir.join("home-default"), dir.join("home-unrefined"));
     let set = dir.join("set.py");
     std::fs::write(
@@ -412,7 +413,7 @@ fn the_oracle_verdict_doesnt_depend_on_the_users_freecad_settings() {
     let verdict = |name: &str, home: &Path| {
         let freecad = hermetic_freecad(&dir.join(name), home);
         cli(
-            &dir,
+            dir,
             &["run", cases.to_str().unwrap()],
             &[("SILICO_FREECADCMD", &freecad)],
             Duration::from_secs(90),
@@ -476,7 +477,8 @@ fn the_oracles_freecad_never_touches_the_users_settings() {
     // is, which CFFIXED_USER_HOME overrides, elsewhere HOME or XDG_CONFIG_HOME. Here they
     // all name a scratch directory, and a run of a case leaves nothing of FreeCAD's there:
     // the harness gives FreeCAD settings of its own.
-    let dir = scratch("user-home");
+    let temp = scratch("user-home");
+    let dir = temp.path();
     let home = dir.join("user");
     std::fs::create_dir_all(&home).unwrap();
     let cases = dir.join("cases");
@@ -484,7 +486,7 @@ fn the_oracles_freecad_never_touches_the_users_settings() {
     write_cases(&cases, &[case("box", block(1.0, 2.0, 3.0))]);
     let config = home.join(".config");
     let ran = cli(
-        &dir,
+        dir,
         &["run", cases.to_str().unwrap()],
         &[
             ("HOME", &home),
@@ -513,7 +515,8 @@ fn hung_freecad_oracle_times_out() {
     // deadline, and the case is its failure, as a crash is; the harness goes on. It waited
     // forever, with `Command::output`, until /break-it found it. Here a stand-in starts the
     // cases and never answers, and the deadline is two seconds.
-    let dir = scratch("hang");
+    let temp = scratch("hang");
+    let dir = temp.path();
     let freecad = dir.join("freecadcmd");
     executable(
         &freecad,
@@ -523,7 +526,7 @@ fn hung_freecad_oracle_times_out() {
     std::fs::create_dir_all(&cases).unwrap();
     write_cases(&cases, &[case("box", block(1.0, 2.0, 3.0))]);
     let ran = cli(
-        &dir,
+        dir,
         &["run", cases.to_str().unwrap()],
         &[
             ("SILICO_FREECADCMD", &freecad),
@@ -548,7 +551,8 @@ fn a_freecad_that_keeps_printing_but_never_finishes_a_case_is_killed_at_the_dead
     // Only an outcome restarts the deadline: FreeCAD's own output doesn't, or a FreeCAD
     // that hangs printing progress would never be killed. Here a stand-in starts the cases,
     // then prints a line a second.
-    let dir = scratch("hang-chatty");
+    let temp = scratch("hang-chatty");
+    let dir = temp.path();
     let freecad = dir.join("freecadcmd");
     executable(
         &freecad,
@@ -559,7 +563,7 @@ fn a_freecad_that_keeps_printing_but_never_finishes_a_case_is_killed_at_the_dead
     std::fs::create_dir_all(&cases).unwrap();
     write_cases(&cases, &[case("box", block(1.0, 2.0, 3.0))]);
     let ran = cli(
-        &dir,
+        dir,
         &["run", cases.to_str().unwrap()],
         &[
             ("SILICO_FREECADCMD", &freecad),
@@ -585,7 +589,8 @@ fn a_freecad_that_keeps_printing_but_never_finishes_a_case_is_killed_at_the_dead
 fn a_freecad_that_floods_its_output_is_killed_at_the_deadline() {
     // Lines waiting to be read don't hold the deadline off, and can't pile up in memory:
     // FreeCAD blocks writing once a backlog waits.
-    let dir = scratch("flood");
+    let temp = scratch("flood");
+    let dir = temp.path();
     let freecad = dir.join("freecadcmd");
     executable(
         &freecad,
@@ -595,7 +600,7 @@ fn a_freecad_that_floods_its_output_is_killed_at_the_deadline() {
     std::fs::create_dir_all(&cases).unwrap();
     write_cases(&cases, &[case("box", block(1.0, 2.0, 3.0))]);
     let ran = cli(
-        &dir,
+        dir,
         &["run", cases.to_str().unwrap()],
         &[
             ("SILICO_FREECADCMD", &freecad),
@@ -619,7 +624,8 @@ fn a_freecad_that_floods_its_output_is_killed_at_the_deadline() {
 fn a_freecad_that_writes_text_that_isnt_utf8_then_goes_quiet_is_killed_at_the_deadline() {
     // Its output is read as bytes, so a line that isn't UTF-8 neither ends the reading
     // (which ended the wait's deadline with it) nor is lost from the report.
-    let dir = scratch("bad-utf8");
+    let temp = scratch("bad-utf8");
+    let dir = temp.path();
     let freecad = dir.join("freecadcmd");
     executable(
         &freecad,
@@ -629,7 +635,7 @@ fn a_freecad_that_writes_text_that_isnt_utf8_then_goes_quiet_is_killed_at_the_de
     std::fs::create_dir_all(&cases).unwrap();
     write_cases(&cases, &[case("box", block(1.0, 2.0, 3.0))]);
     let ran = cli(
-        &dir,
+        dir,
         &["run", cases.to_str().unwrap()],
         &[
             ("SILICO_FREECADCMD", &freecad),
@@ -652,7 +658,8 @@ fn a_freecad_that_writes_text_that_isnt_utf8_then_goes_quiet_is_killed_at_the_de
 #[test]
 fn a_freecad_that_closes_its_output_but_keeps_running_is_killed_at_the_deadline() {
     // Its output closing isn't taken for its end: it's given until its deadline.
-    let dir = scratch("closed-output");
+    let temp = scratch("closed-output");
+    let dir = temp.path();
     let freecad = dir.join("freecadcmd");
     executable(
         &freecad,
@@ -662,7 +669,7 @@ fn a_freecad_that_closes_its_output_but_keeps_running_is_killed_at_the_deadline(
     std::fs::create_dir_all(&cases).unwrap();
     write_cases(&cases, &[case("box", block(1.0, 2.0, 3.0))]);
     let ran = cli(
-        &dir,
+        dir,
         &["run", cases.to_str().unwrap()],
         &[
             ("SILICO_FREECADCMD", &freecad),
@@ -687,7 +694,8 @@ fn a_freecad_that_closes_its_output_but_keeps_running_is_killed_at_the_deadline(
 fn a_crash_report_keeps_the_last_20_lines_each_cut_to_1000_bytes() {
     // 25 lines, then one of 'a' and 1500 'é' (3001 bytes, byte 1000 inside an 'é'), then
     // a crash: the report keeps lines 7 to 25, and the long line cut to 999 bytes.
-    let dir = scratch("tail");
+    let temp = scratch("tail");
+    let dir = temp.path();
     let freecad = dir.join("freecadcmd");
     let long = format!("a{}", "é".repeat(1500));
     let mut body = String::from("#!/bin/sh\necho SILICO_ORACLE_READY\n");
@@ -700,7 +708,7 @@ fn a_crash_report_keeps_the_last_20_lines_each_cut_to_1000_bytes() {
     std::fs::create_dir_all(&cases).unwrap();
     write_cases(&cases, &[case("box", block(1.0, 2.0, 3.0))]);
     let ran = cli(
-        &dir,
+        dir,
         &["run", cases.to_str().unwrap()],
         &[("SILICO_FREECADCMD", &freecad)],
         Duration::from_secs(60),
@@ -723,7 +731,8 @@ fn a_crash_report_keeps_the_last_20_lines_each_cut_to_1000_bytes() {
 fn each_answer_restarts_freecads_deadline() {
     // Six cases, each answered 1 s after the last, with a deadline of 4: the run takes
     // longer than the deadline, but no case comes near it (3 s to spare on a loaded machine).
-    let dir = scratch("deadline-restarts");
+    let temp = scratch("deadline-restarts");
+    let dir = temp.path();
     let freecad = dir.join("freecadcmd");
     let answer = "sleep 1; echo 'SILICO_ORACLE_CASE {\"failed\": \"stand-in\"}'\n";
     executable(
@@ -737,7 +746,7 @@ fn each_answer_restarts_freecads_deadline() {
         .collect();
     write_cases(&cases, &all);
     let ran = cli(
-        &dir,
+        dir,
         &["run", cases.to_str().unwrap()],
         &[
             ("SILICO_FREECADCMD", &freecad),
@@ -756,7 +765,8 @@ fn each_answer_restarts_freecads_deadline() {
 fn a_run_compares_each_case_at_its_shapes_tolerance() {
     // A stand-in answers a 10 × 20 × 30 box with a volume 5e-9 too large: past the 1e-9 a
     // shape of planes is compared to, though not the 1e-5 of a boolean of curved shapes.
-    let dir = scratch("run-planar");
+    let temp = scratch("run-planar");
+    let dir = temp.path();
     let freecad = dir.join("freecadcmd");
     executable(
         &freecad,
@@ -769,7 +779,7 @@ fn a_run_compares_each_case_at_its_shapes_tolerance() {
     std::fs::create_dir_all(&cases).unwrap();
     write_cases(&cases, &[case("box", block(10.0, 20.0, 30.0))]);
     let ran = cli(
-        &dir,
+        dir,
         &["run", cases.to_str().unwrap()],
         &[("SILICO_FREECADCMD", &freecad)],
         Duration::from_secs(60),
@@ -792,12 +802,13 @@ fn a_case_both_sides_refuse_is_named_as_refused() {
     let report = run(&[case("fillet_edge0", edge0.clone())]).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.refused, ["fillet_edge0"]);
-    let dir = scratch("refused");
+    let temp = scratch("refused");
+    let dir = temp.path();
     let cases = dir.join("cases");
     std::fs::create_dir_all(&cases).unwrap();
     write_cases(&cases, &[case("fillet_edge0", edge0)]);
     let ran = cli(
-        &dir,
+        dir,
         &["run", cases.to_str().unwrap()],
         &[],
         Duration::from_secs(60),
@@ -831,7 +842,8 @@ fn a_curved_boolean_a_little_too_large_is_told_apart() {
 fn a_line_past_a_megabyte_is_cut_and_its_rest_dropped() {
     // The rest of a line too long to keep never arrives as a line of its own, so a marker
     // inside it isn't taken for an outcome.
-    let dir = scratch("long-line");
+    let temp = scratch("long-line");
+    let dir = temp.path();
     let freecad = dir.join("freecadcmd");
     executable(
         &freecad,
@@ -843,7 +855,7 @@ fn a_line_past_a_megabyte_is_cut_and_its_rest_dropped() {
     std::fs::create_dir_all(&cases).unwrap();
     write_cases(&cases, &[case("box", block(1.0, 2.0, 3.0))]);
     let ran = cli(
-        &dir,
+        dir,
         &["run", cases.to_str().unwrap()],
         &[("SILICO_FREECADCMD", &freecad)],
         Duration::from_secs(60),
@@ -862,7 +874,8 @@ fn a_line_past_a_megabyte_is_cut_and_its_rest_dropped() {
 fn a_freecad_that_crashes_or_hangs_on_a_case_silico_refuses_is_a_difference() {
     // Edge0 doesn't exist: Silico refuses it. FreeCAD crashing, hanging, or stopping on it
     // compared nothing, so the run fails, saying how FreeCAD ended.
-    let dir = scratch("freecad-lost-vs-refusal");
+    let temp = scratch("freecad-lost-vs-refusal");
+    let dir = temp.path();
     let cases = dir.join("cases");
     std::fs::create_dir_all(&cases).unwrap();
     write_cases(
@@ -895,7 +908,7 @@ fn a_freecad_that_crashes_or_hangs_on_a_case_silico_refuses_is_a_difference() {
             &format!("#!/bin/sh\necho SILICO_ORACLE_READY\n{body}\n"),
         );
         let ran = cli(
-            &dir,
+            dir,
             &["run", cases.to_str().unwrap()],
             &[
                 ("SILICO_FREECADCMD", &freecad),
@@ -923,7 +936,8 @@ fn a_freecad_that_crashes_or_hangs_on_a_case_silico_refuses_is_a_difference() {
 fn a_crash_of_silicos_worker_on_a_case_freecad_refuses_is_a_difference() {
     // Both failing agrees only when both refused: a side that crashed or hung compared
     // nothing.
-    let dir = scratch("crash-vs-refusal");
+    let temp = scratch("crash-vs-refusal");
+    let dir = temp.path();
     let freecad = dir.join("freecadcmd");
     executable(
         &freecad,
@@ -936,7 +950,7 @@ fn a_crash_of_silicos_worker_on_a_case_freecad_refuses_is_a_difference() {
     std::fs::create_dir_all(&cases).unwrap();
     write_cases(&cases, &[case("box", block(1.0, 2.0, 3.0))]);
     let ran = cli(
-        &dir,
+        dir,
         &["run", cases.to_str().unwrap()],
         &[
             ("SILICO_FREECADCMD", &freecad),
@@ -960,7 +974,8 @@ fn a_crash_of_silicos_worker_on_a_case_freecad_refuses_is_a_difference() {
 fn a_freecad_crash_is_reported_with_how_it_ended_and_what_it_last_wrote() {
     // As the worker client reports a worker's crash: its exit status and its last output,
     // in the order it wrote it (its stdout and stderr are one pipe: the stand-in checks).
-    let dir = scratch("crash-report");
+    let temp = scratch("crash-report");
+    let dir = temp.path();
     let freecad = dir.join("freecadcmd");
     executable(
         &freecad,
@@ -972,7 +987,7 @@ fn a_freecad_crash_is_reported_with_how_it_ended_and_what_it_last_wrote() {
     std::fs::create_dir_all(&cases).unwrap();
     write_cases(&cases, &[case("box", block(1.0, 2.0, 3.0))]);
     let ran = cli(
-        &dir,
+        dir,
         &["run", cases.to_str().unwrap()],
         &[("SILICO_FREECADCMD", &freecad)],
         Duration::from_secs(60),
@@ -994,8 +1009,9 @@ fn a_case_after_one_that_crashes_silicos_worker_still_matches() {
     // failure, until /break-it found it: every later case failed with "this kernel worker
     // was stopped after an earlier failure". Here the worker crashes once, on the first
     // case; the second, a plain box, matches.
-    let dir = scratch("worker-crash");
-    let freecad = hermetic_freecad(&dir, &dir.join("home"));
+    let temp = scratch("worker-crash");
+    let dir = temp.path();
+    let freecad = hermetic_freecad(dir, &dir.join("home"));
     let worker = dir.join("worker");
     let mark = dir.join("crashed-once");
     executable(
@@ -1016,7 +1032,7 @@ fn a_case_after_one_that_crashes_silicos_worker_still_matches() {
         ],
     );
     let ran = cli(
-        &dir,
+        dir,
         &["run", cases.to_str().unwrap()],
         &[
             ("SILICO_FREECADCMD", &freecad),
@@ -1046,10 +1062,11 @@ fn sweep_of_more_cases_than_memory_holds_is_refused_not_a_crash() {
     // /break-it `--count 18446744073709551615` panicked ("capacity overflow", exit 101) and
     // `--count 1000000000000000` aborted ("memory allocation of 152000000000000000 bytes
     // failed", exit 134). Now: the usage error, exit 2, as for any bad --count.
-    let dir = scratch("huge-count");
+    let temp = scratch("huge-count");
+    let dir = temp.path();
     for count in ["18446744073709551615", "1000000000000000"] {
         let ran = cli(
-            &dir,
+            dir,
             &["sweep", "--count", count],
             &[],
             Duration::from_secs(60),
@@ -1076,13 +1093,14 @@ fn a_run_of_no_cases_is_an_error_not_a_pass() {
     // saved as `.JSON` or one level down) and `sweep --count 0` printed "0 of 0 cases
     // differ from FreeCAD" and exited 0 before /break-it: nothing compared, reading as a
     // pass, which `freecad.rs` rules out for a missing FreeCAD.
-    let dir = scratch("no-cases");
+    let temp = scratch("no-cases");
+    let dir = temp.path();
     let cases = dir.join("cases");
     std::fs::create_dir_all(cases.join("nested")).unwrap();
     std::fs::write(cases.join("upper.JSON"), "[]").unwrap();
     write_cases(&cases.join("nested"), &[case("box", block(1.0, 2.0, 3.0))]);
     let ran = cli(
-        &dir,
+        dir,
         &["run", cases.to_str().unwrap()],
         &[],
         Duration::from_secs(60),
@@ -1091,7 +1109,7 @@ fn a_run_of_no_cases_is_an_error_not_a_pass() {
     assert_eq!(ran.status.and_then(|s| s.code()), Some(2), "{}", ran.stdout);
     assert_eq!(ran.stderr, refused);
     let ran = cli(
-        &dir,
+        dir,
         &["sweep", "--count", "0"],
         &[],
         Duration::from_secs(60),
@@ -1105,7 +1123,8 @@ fn a_sweep_runs_the_cases_of_its_seed_and_count() {
     // Against a FreeCAD stand-in that fails every case, each case Silico builds is a
     // difference, named for its seed and number: `--count 2 --seed 5` runs exactly
     // generated_5_0 and generated_5_1. Against FreeCAD they match.
-    let dir = scratch("sweep");
+    let temp = scratch("sweep");
+    let dir = temp.path();
     let freecad = dir.join("freecadcmd");
     executable(
         &freecad,
@@ -1115,7 +1134,7 @@ fn a_sweep_runs_the_cases_of_its_seed_and_count() {
     );
     let args = ["sweep", "--count", "2", "--seed", "5"];
     let ran = cli(
-        &dir,
+        dir,
         &args,
         &[("SILICO_FREECADCMD", &freecad)],
         Duration::from_secs(60),
@@ -1128,7 +1147,7 @@ fn a_sweep_runs_the_cases_of_its_seed_and_count() {
         "{}",
         ran.stderr
     );
-    let ran = cli(&dir, &args, &[], Duration::from_secs(90));
+    let ran = cli(dir, &args, &[], Duration::from_secs(90));
     assert_eq!(
         ran.stdout, "0 of 2 cases differ from FreeCAD\n",
         "{}",
@@ -1141,9 +1160,10 @@ fn a_sweep_runs_the_cases_of_its_seed_and_count() {
 fn a_run_of_more_than_one_directory_is_refused() {
     // `pixi run oracle` names tests/oracle; a directory after it was ignored, and the run
     // passed on cases the user didn't ask for.
-    let dir = scratch("two-dirs");
+    let temp = scratch("two-dirs");
+    let dir = temp.path();
     let ran = cli(
-        &dir,
+        dir,
         &["run", CASES, "/nonexistent"],
         &[],
         Duration::from_secs(60),
@@ -1261,8 +1281,9 @@ fn freecad_oracle_crashing_on_some_cases_loses_only_those() {
     // FreeCAD killed on the first case, the last, and two in a row in between: each is
     // FreeCAD's failure (a difference, as Silico builds it), and every other case is still
     // compared, in order.
-    let dir = scratch("freecad-crash");
-    let freecad = freecad_killed_on_sphere_13(&dir);
+    let temp = scratch("freecad-crash");
+    let dir = temp.path();
+    let freecad = freecad_killed_on_sphere_13(dir);
     let crash = || Shape::Sphere { radius: 13.0 };
     let cases = dir.join("cases");
     std::fs::create_dir_all(&cases).unwrap();
@@ -1284,7 +1305,7 @@ fn freecad_oracle_crashing_on_some_cases_loses_only_those() {
         ],
     );
     let ran = cli(
-        &dir,
+        dir,
         &["run", cases.to_str().unwrap()],
         &[("SILICO_FREECADCMD", &freecad)],
         Duration::from_secs(120),
@@ -1306,8 +1327,9 @@ fn freecad_oracle_crashing_on_some_cases_loses_only_those() {
 fn freecad_oracle_crashing_on_every_case_ends() {
     // Each case is a FreeCAD restart that crashes at once: the run still ends, every case
     // FreeCAD's failure.
-    let dir = scratch("freecad-crash-all");
-    let freecad = freecad_killed_on_sphere_13(&dir);
+    let temp = scratch("freecad-crash-all");
+    let dir = temp.path();
+    let freecad = freecad_killed_on_sphere_13(dir);
     let cases = dir.join("cases");
     std::fs::create_dir_all(&cases).unwrap();
     let all: Vec<Case> = (0..5)
@@ -1315,7 +1337,7 @@ fn freecad_oracle_crashing_on_every_case_ends() {
         .collect();
     write_cases(&cases, &all);
     let ran = cli(
-        &dir,
+        dir,
         &["run", cases.to_str().unwrap()],
         &[("SILICO_FREECADCMD", &freecad)],
         Duration::from_secs(120),
@@ -1333,7 +1355,8 @@ fn freecad_that_never_starts_the_cases_is_an_error_not_a_pass() {
     // A FreeCAD that dies before reading the cases (a broken install), one that answers
     // more cases than it was given, and one that answers garbage: each a run error (exit
     // 2) saying what went wrong, never a verdict.
-    let dir = scratch("freecad-garbage");
+    let temp = scratch("freecad-garbage");
+    let dir = temp.path();
     let cases = dir.join("cases");
     std::fs::create_dir_all(&cases).unwrap();
     write_cases(&cases, &[case("box", block(1.0, 2.0, 3.0))]);
@@ -1366,7 +1389,7 @@ fn freecad_that_never_starts_the_cases_is_an_error_not_a_pass() {
         let freecad = dir.join(name);
         executable(&freecad, body);
         let ran = cli(
-            &dir,
+            dir,
             &["run", cases.to_str().unwrap()],
             &[("SILICO_FREECADCMD", &freecad)],
             Duration::from_secs(60),
@@ -1389,7 +1412,8 @@ fn load_text(dir: &Path, text: &[u8]) -> Result<Vec<Case>, String> {
 
 #[test]
 fn hostile_case_files_are_refused_naming_the_file() {
-    let dir = scratch("hostile-files");
+    let temp = scratch("hostile-files");
+    let dir = temp.path();
     let one = r#"{"name": "a", "note": "", "shape": {"box": {"dx": 1, "dy": 2, "dz": 3}}}"#;
     let deep = format!(
         r#"[{{"name": "a", "note": "", "shape": {}{}{}}}]"#,
@@ -1444,10 +1468,11 @@ fn hostile_case_files_are_refused_naming_the_file() {
 #[test]
 fn a_case_file_cut_at_every_byte_is_refused_not_a_panic() {
     let full = std::fs::read(Path::new(CASES).join("primitives.json")).unwrap();
-    let whole = load_text(&scratch("cut").join("x"), &full).unwrap();
-    let dir = scratch("cut-each");
+    let whole = load_text(&scratch("cut").path().join("x"), &full).unwrap();
+    let temp = scratch("cut-each");
+    let each = temp.path().join("x");
     for at in 0..full.len() {
-        match load_text(&dir, &full[..at]) {
+        match load_text(&each, &full[..at]) {
             Err(e) => assert!(e.contains("cases.json"), "{at}: {e}"),
             // Only what's cut is trailing whitespace.
             Ok(cases) => {

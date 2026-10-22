@@ -665,12 +665,11 @@ fn rebuilt_from_a_partial_cache(
     Arc<silico_core::recompute::Model>,
     Vec<&'static str>,
 ) {
-    let dir = std::env::temp_dir().join(format!(
-        "silico-adversarial-references-{case}-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let temp = tempfile::Builder::new()
+        .prefix(&format!("silico-adversarial-references-{case}-"))
+        .tempdir()
+        .unwrap();
+    let dir = temp.path();
     let secret = dir.join("secret");
     let cache = || silico_core::cache::Cache::with_secret(dir.join("cache"), &secret);
     let first = Recompute::with_cache(FakeKernel::new(2).unwrap(), cache());
@@ -713,7 +712,6 @@ fn rebuilt_from_a_partial_cache(
     };
     let calls = made(&second.kernel().calls());
     assert!(calls.contains(&"MakeBox"), "{calls:?}");
-    let _ = std::fs::remove_dir_all(&dir);
     (built, model, calls)
 }
 

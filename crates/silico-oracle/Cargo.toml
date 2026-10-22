@@ -14,5 +14,8 @@ sha2.workspace = true
 silico-core.workspace = true
 silico-protocol.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

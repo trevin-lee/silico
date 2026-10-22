@@ -1187,20 +1187,9 @@ fn every_failure_says_what_to_try() {
         (
             "an exit of its own",
             {
-                let dir = std::env::temp_dir().join(format!("silico-exits-{}", std::process::id()));
-                std::fs::create_dir_all(&dir).unwrap();
-                let exe = dir.join("worker.sh");
-                std::fs::write(
-                    &exe,
-                    "#!/bin/sh\necho 'dyld: Library not loaded' >&2\nexit 3\n",
-                )
-                .unwrap();
-                std::fs::set_permissions(&exe, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-                    .unwrap();
+                let exe = script("exits", "echo 'dyld: Library not loaded' >&2\nexit 3");
                 let mut w = KernelWorker::start_worker(&exe).unwrap();
-                let err = w.make(Primitive::Sphere { radius: 1.0 }).unwrap_err();
-                std::fs::remove_dir_all(&dir).unwrap();
-                err
+                w.make(Primitive::Sphere { radius: 1.0 }).unwrap_err()
             },
             "check Silico's install",
         ),
