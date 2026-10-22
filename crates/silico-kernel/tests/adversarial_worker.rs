@@ -409,10 +409,12 @@ fn a_worker_that_closes_its_socket_mid_request_and_lingers_fails_within_its_time
         ),
     );
     let graces = Graces::record();
-    let err = within(Duration::from_secs(20), move || {
+    let (err, took) = within(Duration::from_secs(20), move || {
         let mut w = Worker::spawn(&exe).unwrap();
         wait_for(&started);
-        call_echo(&mut w, &[1], Duration::from_millis(300)).unwrap_err()
+        let start = Instant::now();
+        let err = call_echo(&mut w, &[1], Duration::from_millis(300)).unwrap_err();
+        (err, start.elapsed())
     });
     assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
     assert!(
@@ -425,6 +427,13 @@ fn a_worker_that_closes_its_socket_mid_request_and_lingers_fails_within_its_time
     assert!(
         matches!(graces[..], [grace] if (100..=300).contains(&grace)),
         "a call allowed 300 ms gave its worker {graces:?} ms to exit: {err}"
+    );
+    // And waited no more than it said: a fixed grace (2 s) anywhere it waits, for the exit,
+    // its replies, or its log, would take at least that. This one is a bound on time, with
+    // 1.7 s of room: telling 300 ms from 2 s needs one.
+    assert!(
+        took < Duration::from_secs(2),
+        "a call allowed 300 ms took {took:?}: {err}"
     );
 }
 
@@ -446,10 +455,12 @@ fn a_worker_whose_child_holds_its_pipes_fails_within_its_timeout() {
         ),
     );
     let graces = Graces::record();
-    let err = within(Duration::from_secs(20), move || {
+    let (err, took) = within(Duration::from_secs(20), move || {
         let mut w = Worker::spawn(&exe).unwrap();
         wait_for(&started);
-        call_echo(&mut w, &[1], Duration::from_millis(300)).unwrap_err()
+        let start = Instant::now();
+        let err = call_echo(&mut w, &[1], Duration::from_millis(300)).unwrap_err();
+        (err, start.elapsed())
     });
     if let Ok(pid) = std::fs::read_to_string(&pidfile) {
         let _ = std::process::Command::new("kill")
@@ -461,6 +472,13 @@ fn a_worker_whose_child_holds_its_pipes_fails_within_its_timeout() {
     assert!(
         matches!(graces[..], [grace] if (100..=300).contains(&grace)),
         "a call allowed 300 ms gave its worker {graces:?} ms to exit: {err}"
+    );
+    // And waited no more than it said: a fixed grace (2 s) anywhere it waits, for the exit,
+    // its replies, or its log, would take at least that. This one is a bound on time, with
+    // 1.7 s of room: telling 300 ms from 2 s needs one.
+    assert!(
+        took < Duration::from_secs(2),
+        "a call allowed 300 ms took {took:?}: {err}"
     );
 }
 
