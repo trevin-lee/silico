@@ -1578,11 +1578,9 @@ fn regions(
             }
             if crossings(p, curves, &outer.edges) % 2 == 1 {
                 depth[j] += 1;
-                // The loop around it with the least area is the one just around it.
-                let smaller = parent[j].is_none_or(|k| {
-                    let (now, best) = (outer.area.abs(), loops[k].area.abs());
-                    now < best || (now == best && i < k)
-                });
+                // The loop around it with the least area is the one just around it; the
+                // first smallest wins (loops around one loop that don't meet can't tie).
+                let smaller = parent[j].is_none_or(|k| outer.area.abs() < loops[k].area.abs());
                 if smaller {
                     parent[j] = Some(i);
                 }
