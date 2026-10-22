@@ -755,6 +755,10 @@ impl Worker {
                 .saturating_duration_since(Instant::now())
                 .clamp(MIN_EXIT_GRACE, EXIT_GRACE)
         });
+        tracing::debug!(
+            grace_ms = u64::try_from(grace.as_millis()).unwrap_or(u64::MAX),
+            "waiting for a worker whose socket closed to exit before it's killed"
+        );
         let until = Instant::now() + grace;
         let status = self.wait_for_exit(grace);
         // What the worker sent before it ended may say it started.

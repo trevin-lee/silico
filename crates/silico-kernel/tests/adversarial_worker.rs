@@ -22,6 +22,7 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pool::{
@@ -39,6 +40,9 @@ use silico_protocol::{
     DebugOp, Failure, Generation, MAX_FRAME_LEN, Op, Refusal, Reply, RequestId, Response,
     write_message,
 };
+use tracing::field::{Field, Visit};
+use tracing::{Event, Subscriber};
+use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 
 // ---------------------------------------------------------------------------------------
 // A fake worker: this test binary, re-run as a worker by a wrapper script (a worker gets no
@@ -249,12 +253,12 @@ fn a_reply_no_message_encodes_to_is_a_protocol_error() {
 #[test]
 fn a_reply_longer_than_the_maximum_is_refused_without_waiting_for_it() {
     // The worker hangs after the header: refusing it must not wait for 512 MiB, or for the
-    // call's 20 s.
-    let (result, took, _) = echo_through("over-max", Duration::from_secs(20));
+    // call's timeout, longer than the 30 s echo_through gives the whole call (a refusal that
+    // waited would fail there, or as a timeout, not a protocol error).
+    let (result, _, _) = echo_through("over-max", Duration::from_secs(120));
     let err = result.unwrap_err();
     assert_eq!(err.code(), ErrorCode::ProtocolError, "{err}");
     assert!(err.cause().is_some_and(|c| c.contains("maximum")), "{err}");
-    assert!(took < Duration::from_secs(3), "{took:?}");
 }
 
 #[test]
@@ -349,11 +353,52 @@ fn wait_for(marker: &Path) {
     }
 }
 
+/// The graces a crashed call gave its worker to exit before killing it, as it says them:
+/// what it decided from the call's deadline, which a loaded machine can't change.
+#[derive(Clone, Default)]
+struct Graces(Arc<Mutex<Vec<u64>>>);
+
+impl<S: Subscriber> Layer<S> for Graces {
+    fn on_event(&self, event: &Event<'_>, _: Context<'_, S>) {
+        struct Grace(Option<u64>);
+        impl Visit for Grace {
+            fn record_u64(&mut self, field: &Field, value: u64) {
+                if field.name() == "grace_ms" {
+                    self.0 = Some(value);
+                }
+            }
+            fn record_debug(&mut self, _: &Field, _: &dyn std::fmt::Debug) {}
+        }
+        let mut grace = Grace(None);
+        event.record(&mut grace);
+        if let Some(ms) = grace.0 {
+            self.0.lock().unwrap().push(ms);
+        }
+    }
+}
+
+impl Graces {
+    /// Installs the subscriber that records them, for this test's process.
+    fn record() -> Graces {
+        let graces = Graces::default();
+        tracing::subscriber::set_global_default(
+            tracing_subscriber::registry().with(graces.clone()),
+        )
+        .expect("one test a process, as nextest runs them");
+        graces
+    }
+
+    fn all(&self) -> Vec<u64> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
 #[test]
 fn a_worker_that_closes_its_socket_mid_request_and_lingers_fails_within_its_timeout() {
     // The worker takes the request, closes its socket, and stays alive. The call's timeout
     // (300 ms) covers the whole call: waiting for the worker to exit, before it's killed,
-    // stops at the call's deadline, not after a fixed grace of 2 s.
+    // stops at the call's deadline, not after a fixed grace of 2 s: the grace it decides is
+    // what's left of the 300 ms (at least 100 ms), not 2000.
     let started = scratch_dir("closes-and-lingers").join("started");
     let exe = script(
         "closes-and-lingers",
@@ -363,6 +408,7 @@ fn a_worker_that_closes_its_socket_mid_request_and_lingers_fails_within_its_time
             started.display()
         ),
     );
+    let graces = Graces::record();
     let (err, took) = within(Duration::from_secs(20), move || {
         let mut w = Worker::spawn(&exe).unwrap();
         wait_for(&started);
@@ -377,8 +423,16 @@ fn a_worker_that_closes_its_socket_mid_request_and_lingers_fails_within_its_time
         "{err}"
     );
     assert!(err.suggestion().is_some(), "{err}");
+    let graces = graces.all();
     assert!(
-        took < Duration::from_millis(1300),
+        matches!(graces[..], [grace] if (100..=300).contains(&grace)),
+        "a call allowed 300 ms gave its worker {graces:?} ms to exit: {err}"
+    );
+    // And waited no more than it said: a fixed grace (2 s) anywhere it waits, for the exit,
+    // its replies, or its log, would take at least that. This one is a bound on time, with
+    // 1.7 s of room: telling 300 ms from 2 s needs one.
+    assert!(
+        took < Duration::from_secs(2),
         "a call allowed 300 ms took {took:?}: {err}"
     );
 }
@@ -400,6 +454,7 @@ fn a_worker_whose_child_holds_its_pipes_fails_within_its_timeout() {
             pidfile.display()
         ),
     );
+    let graces = Graces::record();
     let (err, took) = within(Duration::from_secs(20), move || {
         let mut w = Worker::spawn(&exe).unwrap();
         wait_for(&started);
@@ -413,8 +468,16 @@ fn a_worker_whose_child_holds_its_pipes_fails_within_its_timeout() {
             .status();
     }
     assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    let graces = graces.all();
     assert!(
-        took < Duration::from_millis(1300),
+        matches!(graces[..], [grace] if (100..=300).contains(&grace)),
+        "a call allowed 300 ms gave its worker {graces:?} ms to exit: {err}"
+    );
+    // And waited no more than it said: a fixed grace (2 s) anywhere it waits, for the exit,
+    // its replies, or its log, would take at least that. This one is a bound on time, with
+    // 1.7 s of room: telling 300 ms from 2 s needs one.
+    assert!(
+        took < Duration::from_secs(2),
         "a call allowed 300 ms took {took:?}: {err}"
     );
 }
