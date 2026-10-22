@@ -912,3 +912,18 @@ fn sides_on_one_tilted_line_just_over_the_tolerance_apart_dont_cross() {
         p.regions[1].area()
     );
 }
+
+#[test]
+fn a_circle_off_its_outer_circle_s_centre_line_is_a_hole_in_it() {
+    // A circle r 10 about the origin, and one r 1 about (6, 5): inside it (7.81 + 1 < 10),
+    // and its probe, (7, 5), 5 above the outer's centre, where the outer circle's right
+    // side is at x = sqrt(10^2 - 5^2) = 8.66, right of the probe. Area by hand:
+    // pi (100 - 1).
+    let mut d = Draw::new();
+    d.circle(0.0, 0.0, 10.0);
+    d.circle(6.0, 5.0, 1.0);
+    let p = d.made();
+    assert_eq!(p.regions.len(), 1, "{p:#?}");
+    assert_eq!(p.regions[0].holes.len(), 1);
+    assert!(close(p.regions[0].area(), 99.0 * PI, 1e-12));
+}
