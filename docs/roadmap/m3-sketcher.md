@@ -4,7 +4,7 @@
 
 **Goal:** constrained 2D sketches, solved by PlaneGCS in a worker, that turn into faces and drive pad, pocket, and revolve.
 
-**Exit tests:** the ported FreeCAD sketcher and face-maker tests pass, interactive drag latency through the worker is measured, and the council approves with `/adversarial-review --milestone`. Two are partial or deferred at M3's close (the milestone's audit): `testConstructionToggleTNP`'s essence holds a later feature on a pad's edge (a chamfer) through construction toggles, and the pad's faces only by their names in the element map, since a later feature naming a pad's face needs sketches on faces; and `tangentBSplineAndArc` waits for B-splines.
+**Exit tests:** the ported FreeCAD sketcher and face-maker tests pass, interactive drag latency through the worker is measured, and the council approves with `/adversarial-review --milestone`. Two are partial or deferred at M3's close (the milestone's audit): `testConstructionToggleTNP`'s essence holds a later feature on a pad's edge (a chamfer) through construction toggles, and the pad's faces only by their names in the element map, since a later feature naming a pad's face needs sketches on faces; and `tangentBSplineAndArc` waits for B-splines. A partially redundant constraint is tested at the solver (silico-sketch's `a_partly_redundant_sketch_is_solved_except_its_dropped_equation` and the chained coincidences): documents rarely reach one, since shared points leave no coincidences and PlaneGCS's popularity contest keeps a constraint of more rows over a single row it repeats, so no oracle case has one; the oracle compares the list in every case anyway (Trevin, 2026-10-22: an oracle case is approved if a natural one turns up).
 
 ## Study
 
