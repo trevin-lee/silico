@@ -598,10 +598,34 @@ enum Curve {
 enum Between {
     Symmetry,
     Distance,
-    /// On a circle or an arc, as the word says.
-    TangencyOnRound(&'static str),
-    /// A point held on a circle or an arc, as the word says.
-    OnRound(&'static str),
+    /// A tangency at a point of a circle or an arc.
+    TangencyOnRound(RoundKind),
+    /// A point held on a circle or an arc.
+    OnRound(RoundKind),
+}
+
+/// Which of a sketch's round curves, for [`Translation::apart`]'s words.
+#[derive(Clone, Copy)]
+enum RoundKind {
+    Circle,
+    Arc,
+}
+
+impl RoundKind {
+    fn word(self) -> &'static str {
+        match self {
+            RoundKind::Circle => "circle",
+            RoundKind::Arc => "arc",
+        }
+    }
+
+    /// The word with its article: "a circle", "an arc".
+    fn a(self) -> &'static str {
+        match self {
+            RoundKind::Circle => "a circle",
+            RoundKind::Arc => "an arc",
+        }
+    }
 }
 
 impl Curve {
@@ -1194,36 +1218,30 @@ impl Translation {
         }
         let (what, suggestion) = match between {
             Between::Symmetry => (
-                "a symmetry of two points drawn at one place",
-                "draw the two points apart, where they'd mirror each other",
+                "a symmetry of two points drawn at one place".to_owned(),
+                "draw the two points apart, where they'd mirror each other".to_owned(),
             ),
             Between::Distance => (
-                "a distance between two points drawn at one place",
-                "draw the two points apart, about as far apart as the distance says",
+                "a distance between two points drawn at one place".to_owned(),
+                "draw the two points apart, about as far apart as the distance says".to_owned(),
             ),
-            Between::TangencyOnRound(round) | Between::OnRound(round) => {
-                let what = match between {
-                    Between::OnRound(_) => "a point on",
-                    _ => "a tangency at a point drawn on",
-                };
-                let place = match between {
-                    Between::OnRound(_) => {
-                        let article = if round == "arc" { "an" } else { "a" };
-                        format!("{what} {article} {round} drawn at its centre")
-                    }
-                    _ => format!("{what} the {round}'s centre"),
-                };
-                return Err(Error::new(
-                    ErrorCode::InvalidInput,
-                    format!(
-                        "{place}, ({}, {}): the solver measures it by the line between them",
-                        pa[0], pa[1]
-                    ),
-                )
-                .with_suggestion(format!(
-                    "draw the point on the {round}, away from its centre"
-                )));
-            }
+            Between::TangencyOnRound(round) => (
+                format!(
+                    "a tangency at a point drawn on the {}'s centre",
+                    round.word()
+                ),
+                format!(
+                    "draw the point on the {}, away from its centre",
+                    round.word()
+                ),
+            ),
+            Between::OnRound(round) => (
+                format!("a point on {} drawn at its centre", round.a()),
+                format!(
+                    "draw the point on the {}, away from its centre",
+                    round.word()
+                ),
+            ),
         };
         Err(Error::new(
             ErrorCode::InvalidInput,
@@ -1241,7 +1259,7 @@ impl Translation {
     }
 
     /// The centre of geometry `g`, if it's a circle or an arc of the sketch, and which.
-    fn center_of(&self, g: Geometry) -> Option<(PointValues, &'static str)> {
+    fn center_of(&self, g: Geometry) -> Option<(PointValues, RoundKind)> {
         let circle = self.circles.values().find(|c| c.geometry == g);
         let arc = self
             .arcs
@@ -1249,8 +1267,8 @@ impl Translation {
             .map(|a| &a.round)
             .find(|a| a.geometry == g);
         circle
-            .map(|c| (c.center, "circle"))
-            .or(arc.map(|a| (a.center, "arc")))
+            .map(|c| (c.center, RoundKind::Circle))
+            .or(arc.map(|a| (a.center, RoundKind::Arc)))
     }
 
     fn xy(&self, values: &[f64], p: PointValues) -> [f64; 2] {

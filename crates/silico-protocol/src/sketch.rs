@@ -898,20 +898,12 @@ impl SketchSystem {
                 point(p)?;
                 want(circle, &[Circle, Arc])?;
                 // Held as its distance from the centre, whose gradient there is 0/0.
-                if let (Some(at), Some(center)) =
-                    (self.place(p), self.place(PointOf::Center(circle)))
-                    && no_distance(at, center)
-                {
-                    return Err(invalid(
-                        "constraints",
-                        format!(
-                            "{what}'s point, {p}, is drawn on the centre of geometry {}, ({}, {}): the solver measures it by the line from the centre",
-                            circle.0,
-                            format_number(at[0]),
-                            format_number(at[1])
-                        ),
-                    ));
-                }
+                self.off_centre(
+                    p,
+                    circle,
+                    what,
+                    "the solver measures it by the line from the centre",
+                )?;
             }
             SolverConstraint::EqualRadius { a, b, .. }
             | SolverConstraint::TangentCircles { a, b, .. } => {
@@ -940,20 +932,13 @@ impl SketchSystem {
                 dimension(angle)?;
                 // The solver takes a round curve's direction at the point from the line
                 // from its centre: none at the centre itself.
-                if matches!(kind(b)?, Circle | Arc)
-                    && let (Some(at), Some(center)) =
-                        (self.place(p), self.place(PointOf::Center(b)))
-                    && no_distance(at, center)
-                {
-                    return Err(invalid(
-                        "constraints",
-                        format!(
-                            "{what}'s point, {p}, is drawn on the centre of geometry {}, ({}, {}): the solver takes the curve's direction there by the line from its centre",
-                            b.0,
-                            format_number(at[0]),
-                            format_number(at[1])
-                        ),
-                    ));
+                if matches!(kind(b)?, Circle | Arc) {
+                    self.off_centre(
+                        p,
+                        b,
+                        what,
+                        "the solver takes the curve's direction there by the line from its centre",
+                    )?;
                 }
             }
             SolverConstraint::AngleViaPoint {
@@ -1202,6 +1187,29 @@ impl SketchSystem {
                     "{what} of {a} and {b}, drawn at one place, ({}, {}): the solver measures it by the line between them",
                     format_number(pa[0]),
                     format_number(pa[1])
+                ),
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// That `p` isn't drawn on the centre of round geometry `round`, where `what` (worded by
+    /// `why`) has no line from the centre to measure by.
+    fn off_centre(
+        &self,
+        p: PointOf,
+        round: Geometry,
+        what: &str,
+        why: &str,
+    ) -> Result<(), InvalidParameter> {
+        match (self.place(p), self.place(PointOf::Center(round))) {
+            (Some(at), Some(center)) if no_distance(at, center) => Err(invalid(
+                "constraints",
+                format!(
+                    "{what}, with {p} drawn on the centre of geometry {}, ({}, {}): {why}",
+                    round.0,
+                    format_number(at[0]),
+                    format_number(at[1])
                 ),
             )),
             _ => Ok(()),
@@ -2436,7 +2444,7 @@ mod tests {
             assert_eq!(
                 message,
                 format!(
-                    "constraint 4 (tag 4): a tangency at an end's point, the end of geometry 0, is drawn on the centre of geometry {on}, (10, 0): the solver takes the curve's direction there by the line from its centre"
+                    "constraint 4 (tag 4): a tangency at an end, with the end of geometry 0 drawn on the centre of geometry {on}, (10, 0): the solver takes the curve's direction there by the line from its centre"
                 )
             );
         }
@@ -2456,7 +2464,7 @@ mod tests {
             assert_eq!(
                 message,
                 format!(
-                    "constraint 4 (tag 4): a point on a circle's point, the start of geometry 0, is drawn on the centre of geometry {on}, (0, 0): the solver measures it by the line from the centre"
+                    "constraint 4 (tag 4): a point on a circle, with the start of geometry 0 drawn on the centre of geometry {on}, (0, 0): the solver measures it by the line from the centre"
                 )
             );
         }
