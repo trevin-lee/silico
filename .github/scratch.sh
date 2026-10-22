@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A gate's test scratch, in memory: `start` makes a directory for the job on the VM's
+# A CI job's test scratch, in memory (a gate's, or a mutants shard's): `start` makes a directory for the job on the VM's
 # tmpfs (/dev/shm) and points TMPDIR and the tests' target/tmp (SILICO_TEST_SCRATCH, which
 # tests/committed-tree.sh links target/tmp to) into it; `end` reports how large it grew and
 # removes it. On the VM's disk, which every runner's builds and tests share, a test's fsync
@@ -19,8 +19,8 @@ warn_kib=$((8 * 1024 * 1024))
 case "${1-}" in
   start)
     # A job whose `end` never ran (its runner died, or it was force-cancelled) leaves its
-    # scratch holding memory: removed here once it's over 25 hours old, far past a gate's
-    # two-hour limit.
+    # scratch holding memory: removed here once it's over 25 hours old, past the longest
+    # job's limit (a mutants shard's, a day).
     find "$root" -maxdepth 1 -name 'silico-*' -user "$(id -u)" -mmin +1500 \
       -exec rm -rf {} + 2>/dev/null || true
     mkdir -p "$scratch/tmp" "$scratch/target-tmp"
@@ -30,8 +30,8 @@ case "${1-}" in
     } >>"$GITHUB_ENV"
     # Its peak size, sampled every 5 s until `end` removes it. What tests leave behind stays
     # until then (nothing is pruned mid-run: a later test may read what an earlier one
-    # made); a gate's is a few hundred MiB. A write after `end` fails, the directory being
-    # gone, and ends the loop.
+    # made): a gate's is a few hundred MiB, a long mutants shard's a few GiB. A write after
+    # `end` fails, the directory being gone, and ends the loop.
     (
       peak=0
       while [ -d "$scratch" ]; do
