@@ -1506,7 +1506,14 @@ fn a_wait_ended_early_by_a_newer_worker_still_doubles_on_the_next_failure() {
     signal("KILL", b);
     // B's replacement (launch 7) works; A's next (8), early, fails.
     let early = wait_launches(&log, 8)[7];
-    // Long enough for a launch after a 1 s wait (about 2 s), for the times to show.
+    // A says its wait after launch 8 once it has seen launch 8 end: waited for, so a slow
+    // machine can't drop the pool first. Then long enough for a launch after a 1 s wait
+    // (about 2 s), for the times to show.
+    let deadline = Instant::now() + HANG;
+    while decisions.of_slot(0, 7).len() < 7 {
+        assert!(Instant::now() < deadline, "A never decided after launch 8");
+        std::thread::sleep(Duration::from_millis(5));
+    }
     std::thread::sleep(Duration::from_secs(6));
     drop(pool);
     let times = launch_times(&log);
