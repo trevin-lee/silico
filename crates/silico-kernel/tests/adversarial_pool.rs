@@ -9,6 +9,8 @@
 //! `pool.rs` they assume one test per process (nextest, which `pixi run test` uses).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/launches.rs"]
+mod launches;
 #[path = "common/pool.rs"]
 mod pool;
 #[path = "common/process.rs"]
@@ -21,6 +23,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use launches::{
+    HANG, assert_gaps_exceed, gaps, launch_logger, launch_times, launches, log_launch,
+    wait_launches, wait_launches_after,
+};
 use pool::{
     PATIENCE, TEST_WORKER, WORKER, assert_reaped, children, done, echo, kill9_and_wait, outcome,
     pool, signal, sleep, spin, state, wait_full, wait_full_by, wait_no_children,
@@ -490,12 +496,6 @@ fn a_worker_whose_executable_changes_as_it_starts_isnt_used() {
     }
     wait_no_children("after the change");
 }
-
-/// How long a test here waits for a launch, a request, or a full pool before failing: long
-/// enough that only a hang reaches it, however loaded the machine. A hang guard only: what
-/// the tests measure comes from the times their workers log, or from bounds that what they
-/// rule out can't meet.
-const HANG: Duration = Duration::from_secs(60);
 
 /// A copy of the test worker that can't be run (not executable), at `dir/unrunnable`: an
 /// executable linked to it can't start a worker, but is still the pool's build (its bytes
@@ -1338,28 +1338,6 @@ fn a_worker_that_dies_as_it_starts_isnt_started_over_while_the_pool_is_idle() {
     drop(pool);
 }
 
-/// A worker script that logs the time of each launch to a file (seconds since the epoch,
-/// as [`epoch_now`] gives them), then runs `then`.
-fn launch_logger(dir: &Path, then: &str) -> (PathBuf, PathBuf) {
-    let script = dir.join("worker.sh");
-    let log = dir.join("launches");
-    std::fs::write(
-        &script,
-        format!("#!/bin/sh\n{}\n{then}\n", log_launch(&log)),
-    )
-    .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    (script, log)
-}
-
-/// A shell line that logs the time to `log`, in seconds since the epoch.
-fn log_launch(log: &Path) -> String {
-    format!(
-        "echo \"$(perl -MTime::HiRes=time -e 'print time') $$\" >> '{}'",
-        log.display()
-    )
-}
-
 /// Now, in seconds since the epoch: the clock [`log_launch`] logs by.
 fn epoch_now() -> f64 {
     std::time::SystemTime::now()
@@ -1368,54 +1346,9 @@ fn epoch_now() -> f64 {
         .as_secs_f64()
 }
 
-/// The launches logged to `log` so far, earliest first: when, and the process ID.
-fn launches(log: &Path) -> Vec<(f64, u32)> {
-    let mut launches: Vec<(f64, u32)> = std::fs::read_to_string(log)
-        .unwrap_or_default()
-        .lines()
-        .map(|l| {
-            let (time, pid) = l.trim().split_once(' ').unwrap();
-            (time.parse().unwrap(), pid.parse().unwrap())
-        })
-        .collect();
-    launches.sort_by(|a, b| a.0.total_cmp(&b.0));
-    launches
-}
-
-/// The launch times logged to `log` so far, earliest first.
-fn launch_times(log: &Path) -> Vec<f64> {
-    launches(log).into_iter().map(|(time, _)| time).collect()
-}
-
 /// The process ID of launch `n` (from 0, earliest first) logged to `log`.
 fn launch_pid(log: &Path, n: usize) -> u32 {
     launches(log)[n].1
-}
-
-/// Waits for `log` to hold `n` launches logged after `after`, and gives them, earliest
-/// first; failing only after [`HANG`].
-fn wait_launches_after(log: &Path, after: f64, n: usize) -> Vec<f64> {
-    let deadline = Instant::now() + HANG;
-    loop {
-        let times: Vec<f64> = launch_times(log)
-            .into_iter()
-            .filter(|&t| t > after)
-            .collect();
-        if times.len() >= n {
-            return times;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "{} launches after {HANG:?}, not {n}: at {times:?}",
-            times.len()
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    }
-}
-
-/// Waits for `log` to hold `n` launches, and gives them, earliest first.
-fn wait_launches(log: &Path, n: usize) -> Vec<f64> {
-    wait_launches_after(log, f64::NEG_INFINITY, n)
 }
 
 /// Whether process `pid` has ended: exited (a zombie), or reaped (`ps` may still list one
@@ -1444,26 +1377,6 @@ fn wait_let_go(pool: &KernelPool, pid: u32) {
     }
 }
 
-/// The gaps between `times`.
-fn gaps(times: &[f64]) -> Vec<f64> {
-    times.windows(2).map(|w| w[1] - w[0]).collect()
-}
-
-/// Checks that each gap between `times` is longer than the wait `waits` gives it. A slot
-/// waits from the idle check that sees its worker's end, which comes after the worker has
-/// logged its launch: so the gap from that launch to the next is longer than the wait,
-/// however late a loaded machine runs the checks.
-fn assert_gaps_exceed(times: &[f64], waits: &[f64]) {
-    let gaps = gaps(times);
-    assert!(gaps.len() >= waits.len(), "launches at {times:?}");
-    for (k, (gap, wait)) in gaps.iter().zip(waits).enumerate() {
-        assert!(
-            gap > wait,
-            "gap {k} is {gap:.3} s, not longer than its {wait} s wait: gaps {gaps:?}"
-        );
-    }
-}
-
 #[test]
 fn an_idle_slot_whose_worker_dies_at_start_waits_longer_each_time() {
     // One slot, its worker ending at once each time: it's started again after waits that
@@ -1481,32 +1394,6 @@ fn an_idle_slot_whose_worker_dies_at_start_waits_longer_each_time() {
 }
 
 #[test]
-fn an_idle_slot_whose_worker_is_killed_at_launch_backs_off_after_the_second_kill() {
-    // SIGKILL before the worker starts, every time, as macOS kills a binary whose code
-    // signature is broken. The first may be a kill from outside, so it's replaced at once;
-    // after the second in a row the slot waits as for a binary that can't start: 1 s, then
-    // 2, 4, and 8 s. Launches at about 0, 1, 3, 6, 11, and 20 s, each gap after the second
-    // longer than its wait. Not every tick (the third gap about 1 s, not over 2 s).
-    //
-    // Nor waiting from the first kill (launches at 0, 2, 5, 10, 19, and 36 s): its every
-    // wait would be twice this one's, so the fifth gap would be over 16 s, where here it's
-    // the 8 s wait and a tick. That gap is the one bound above, and leaves a loaded machine
-    // 7 s to run one idle check late.
-    let dir = scratch_dir("killed-at-launch");
-    let (script, log) = launch_logger(&dir, "kill -KILL $$");
-    let pool = KernelPool::start_workers(&script, 1).unwrap();
-    let times = wait_launches(&log, 6);
-    drop(pool);
-    let times = &times[..6];
-    assert_gaps_exceed(&times[1..], &[1.0, 2.0, 4.0, 8.0]);
-    let gaps = gaps(times);
-    assert!(
-        gaps[4] < 16.0,
-        "the wait after the fifth kill was 16 s: the first kill was waited on: gaps {gaps:?}"
-    );
-}
-
-#[test]
 fn an_idle_slot_whose_worker_starts_then_exits_a_tick_later_waits_longer_each_time() {
     // The worker says it has started, runs past an idle check (seen running), then exits on
     // its own after 1.5 s. Its having run doesn't end the slot's wait: only an answer does.
@@ -1519,38 +1406,6 @@ fn an_idle_slot_whose_worker_starts_then_exits_a_tick_later_waits_longer_each_ti
     let times = wait_launches(&log, 4);
     drop(pool);
     assert_gaps_exceed(&times[..4], &[2.5, 3.5, 5.5]);
-}
-
-#[test]
-fn a_kill_at_launch_after_an_exit_of_its_own_is_taken_as_from_outside() {
-    // The first three launches exit on their own (code 3) before they start; every later one
-    // is killed (SIGKILL) before it starts. The first kill follows an exit, not a kill, so
-    // it's taken as from outside and replaced at once; the second in a row is waited on,
-    // its wait doubled from the last exit's 4 s to 8 s. Launches at about 0, 2, 5, 10, 11,
-    // and 20 s: each gap after an exit longer than its wait (1, 2, 4 s), and the gap after
-    // the second kill longer than 8 s, so it was waited on (replacing every kill at once
-    // gives about 1 s). Had the first kill been waited on too, its gap would also be over
-    // 8 s, where here it's a tick: the one bound above, it leaves a loaded machine 7 s to
-    // run that check late.
-    let dir = scratch_dir("exit-then-kills");
-    let (script, log) = launch_logger(
-        &dir,
-        &format!(
-            "for n in 1 2 3; do mkdir '{}'/exit$n 2>/dev/null && exit 3; done\nkill -KILL $$",
-            dir.display()
-        ),
-    );
-    let pool = KernelPool::start_workers(&script, 1).unwrap();
-    let times = wait_launches(&log, 6);
-    drop(pool);
-    let times = &times[..6];
-    let gaps = gaps(times);
-    assert_gaps_exceed(&times[..4], &[1.0, 2.0, 4.0]);
-    assert!(gaps[3] < 8.0, "the first kill was waited on: gaps {gaps:?}");
-    assert!(
-        gaps[4] > 8.0,
-        "the second kill wasn't waited on: gaps {gaps:?}"
-    );
 }
 
 #[test]

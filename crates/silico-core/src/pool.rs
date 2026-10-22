@@ -1085,13 +1085,19 @@ impl Keeper<'_> {
             };
             self.discard();
             if !replace_now {
-                self.wait_to_retry();
+                let wait = self.wait_to_retry();
                 tracing::warn!(
                     slot,
+                    wait_ms = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
                     "a kernel worker ended on its own, or before it started; starting another later"
                 );
                 return;
             }
+            // The decision, as the wait's is: what the back-off's tests follow.
+            tracing::debug!(
+                slot,
+                "a kernel worker ended, or was ended; starting another at once"
+            );
         } else if let Some(retry) = self.retry {
             // Due, the wait is kept: if this start fails too, the next wait is longer.
             if !retry.is_due(
@@ -1132,8 +1138,9 @@ impl Keeper<'_> {
         }
     }
 
-    /// Puts off the next start, twice as long as the last time (or [`IDLE_CHECK`]).
-    fn wait_to_retry(&mut self) {
+    /// Puts off the next start, twice as long as the last time (or [`IDLE_CHECK`]), and
+    /// says for how long.
+    fn wait_to_retry(&mut self) -> Duration {
         let wait = self
             .retry
             .map_or(IDLE_CHECK, |retry| (retry.wait * 2).min(MAX_RETRY));
@@ -1142,6 +1149,7 @@ impl Keeper<'_> {
             wait,
             after: self.shared.spawns.load(Ordering::Relaxed),
         });
+        wait
     }
 
     fn discard(&mut self) {
