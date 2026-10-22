@@ -88,6 +88,7 @@ fn unwritable(why: impl std::fmt::Display) -> Error {
 /// (killed mid-write, the old text is in the file beside it, `.NAME.fmt-PID`). Refused if
 /// this process may not write it, or it changed since it was read.
 pub fn save(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Error> {
+    let _span = tracing::info_span!("save", bytes = bytes.len()).entered();
     let target = std::fs::canonicalize(file).map_err(unwritable)?;
     let metadata = std::fs::metadata(&target).map_err(unwritable)?;
     // Whether this process may write it, as the system says, whatever its mode bits say
@@ -124,7 +125,7 @@ pub fn save(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Error> {
         .set_len(bytes.len() as u64)
         .and_then(|()| f.write_all(bytes))
         .and_then(|()| f.set_permissions(metadata.permissions()))
-        .and_then(|()| f.sync_all())
+        .and_then(|()| synced(&f, "the new text beside it"))
         .map_err(|e| {
             let why = format!("couldn't write {}: {e}", shown_path(&partial));
             limited(unwritable(why), &e)
@@ -159,7 +160,7 @@ fn in_place(
     if let Err(e) = copy
         .set_len(before.len() as u64)
         .and_then(|()| copy.write_all(before))
-        .and_then(|()| copy.sync_all())
+        .and_then(|()| synced(&copy, "its old text kept beside it"))
     {
         let _ = std::fs::remove_file(&kept);
         return Err(limited(
@@ -179,7 +180,7 @@ fn in_place(
         file.seek(SeekFrom::Start(0))?;
         file.write_all(text)?;
         file.set_len(text.len() as u64)?;
-        file.sync_all()
+        synced(file, "its text, in place")
     };
     match over(file, bytes) {
         Ok(()) => {
@@ -198,6 +199,17 @@ fn in_place(
             )),
         },
     }
+}
+
+/// `file` on disk, as `sync_all` puts it, said in the log before and after with how long it
+/// took (debug): a disk that stalls a save shows as the line it stopped at.
+fn synced(file: &std::fs::File, what: &str) -> std::io::Result<()> {
+    tracing::debug!("syncing {what}");
+    let start = std::time::Instant::now();
+    let synced = file.sync_all();
+    let sync_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+    tracing::debug!(sync_ms, "synced {what}");
+    synced
 }
 
 /// How many names [`beside`] tries.
