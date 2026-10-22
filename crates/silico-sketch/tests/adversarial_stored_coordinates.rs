@@ -5,6 +5,10 @@
 //! silico-core's tests/adversarial_stored_coordinates.rs.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "../../silico-core/tests/common/sketch.rs"]
+mod fixture;
+
+use fixture::point_debug;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -19,10 +23,6 @@ use silico_core::sketch::{SketchSolver, SketchWorker, solve};
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-worker");
 const OTHER_BUILD: &str = env!("CARGO_BIN_EXE_silico-sketch-test-worker");
 const FEATURE: &str = "k7f2qx3m";
-
-fn point(id: &str, x: f64, y: f64) -> String {
-    format!(r#"{{"id": "{id}", "x": {x:?}, "y": {y:?}, "construction": false}}"#)
-}
 
 fn document(points: &[String], arcs: &[String], constraints: &[String]) -> String {
     format!(
@@ -65,9 +65,9 @@ fn arc_at_the_reach(start: f64) -> String {
     let (a, b) = (start.to_radians(), (start + 90.0).to_radians());
     document(
         &[
-            point("p0000000", 0.0, 0.0),
-            point("p0000001", r * libm::cos(a), r * libm::sin(a)),
-            point("p0000002", r * libm::cos(b), r * libm::sin(b)),
+            point_debug("p0000000", 0.0, 0.0),
+            point_debug("p0000001", r * libm::cos(a), r * libm::sin(a)),
+            point_debug("p0000002", r * libm::cos(b), r * libm::sin(b)),
         ],
         &[r#"{"id": "a0000001", "center": "p0000000", "start": "p0000001", "end": "p0000002", "construction": false}"#.to_owned()],
         &[
@@ -178,7 +178,7 @@ fn scratch(name: &str) -> PathBuf {
 /// p0 held at the origin: a sketch any worker solves at once.
 fn small() -> String {
     document(
-        &[point("p0000000", 3.0, 4.0)],
+        &[point_debug("p0000000", 3.0, 4.0)],
         &[],
         &[
             r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000000", "value": 0, "driving": true}"#.to_owned(),
@@ -294,7 +294,7 @@ fn a_worker_killed_from_outside_while_idle_is_started_again() {
 /// algorithm fails, slowly (512 points: a minute or more).
 fn impossible_chain(n: usize, reach: f64) -> String {
     let points: Vec<String> = (0..n)
-        .map(|i| point(&format!("p{i:07}"), i as f64 * 0.7, (i % 2) as f64 * 0.5))
+        .map(|i| point_debug(&format!("p{i:07}"), i as f64 * 0.7, (i % 2) as f64 * 0.5))
         .collect();
     let mut constraints = vec![
         r#"{"id": "a0000001", "type": "distance_x", "a": "origin", "b": "p0000000", "value": 0, "driving": true}"#.to_owned(),

@@ -1,6 +1,7 @@
 //! For tests that save a sketch and load it through the real sketch worker: a document's
 //! geometry, the gate, the solve, the file a save writes, and what a solve says (included
-//! with `#[path]`).
+//! with `#[path]`). The JSON of a sketch's elements comes from silico-core's
+//! tests/common/sketch.rs, as every sketch test's does.
 #![allow(dead_code)]
 
 use std::path::Path;
@@ -14,29 +15,6 @@ pub const FEATURE: &str = "k7f2qx3m";
 
 pub fn worker() -> SketchWorker {
     SketchWorker::start_worker(Path::new(WORKER)).unwrap()
-}
-
-pub fn point(id: &str, x: f64, y: f64) -> String {
-    format!(r#"{{"id": "{id}", "x": {x}, "y": {y}, "construction": false}}"#)
-}
-
-pub fn line(id: &str, from: &str, to: &str) -> String {
-    format!(r#"{{"id": "{id}", "from": "{from}", "to": "{to}", "construction": false}}"#)
-}
-
-/// A construction line, which the sketch's profile leaves out.
-pub fn construction_line(id: &str, from: &str, to: &str) -> String {
-    format!(r#"{{"id": "{id}", "from": "{from}", "to": "{to}", "construction": true}}"#)
-}
-
-pub fn circle(id: &str, center: &str, r: f64) -> String {
-    format!(r#"{{"id": "{id}", "center": "{center}", "radius": {r}, "construction": false}}"#)
-}
-
-pub fn arc(id: &str, center: &str, start: &str, end: &str) -> String {
-    format!(
-        r#"{{"id": "{id}", "center": "{center}", "start": "{start}", "end": "{end}", "construction": false}}"#
-    )
 }
 
 /// A constraint, its ID k`n` (seven digits), of `form`: its fields after the ID.

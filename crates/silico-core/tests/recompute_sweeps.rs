@@ -9,6 +9,9 @@
 #[path = "common/sweeps.rs"]
 mod sweeps;
 
+#[path = "common/sketch.rs"]
+mod fixture;
+
 use std::f64::consts::PI;
 use std::sync::Arc;
 use std::time::Duration;
@@ -1018,13 +1021,9 @@ fn an_axis_crossing_its_profile_and_an_angle_too_small_are_refused_in_full() {
 /// its sides na000001 from the first corner, ...), and, if given, the construction line
 /// nb000000 between two points of its own.
 fn polygon_and_line(corners: &[[f64; 2]], line: Option<([f64; 2], [f64; 2])>) -> String {
-    let point = |id: String, [x, y]: [f64; 2]| {
-        format!(r#"{{"id": "{id}", "x": {x}, "y": {y}, "construction": false}}"#)
-    };
+    let point = |id: String, [x, y]: [f64; 2]| fixture::point(&id, x, y);
     let segment = |id: String, from: String, to: String, construction: bool| {
-        format!(
-            r#"{{"id": "{id}", "from": "{from}", "to": "{to}", "construction": {construction}}}"#
-        )
+        fixture::line_as(&id, &from, &to, construction)
     };
     let n = corners.len();
     let mut points: Vec<String> = (0..n)

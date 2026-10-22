@@ -7,10 +7,13 @@
 //! distance between the two parts, which no kept row carries a direction along.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "../../silico-core/tests/common/sketch.rs"]
+mod fixture;
 #[path = "common/saves.rs"]
 mod saves;
 
-use saves::{k, point, solved, text, worker};
+use fixture::point;
+use saves::{k, solved, text, worker};
 use silico_core::ErrorCode;
 
 fn checked(text: &str) -> silico_core::document::Checked {

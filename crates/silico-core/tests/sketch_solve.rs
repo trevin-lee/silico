@@ -8,6 +8,8 @@
 #[path = "common/sketch.rs"]
 mod fixture;
 
+use fixture::{arc, circle, line, point};
+
 use std::f64::consts::PI;
 
 use silico_core::ErrorCode;
@@ -20,24 +22,6 @@ use silico_protocol::{
     Algorithm, Geometry, PointOf, PointValues, SketchGeometry, SketchSystem, SolveStatus, Solved,
     SolverConstraint, Tag, Value,
 };
-
-fn point(id: &str, x: f64, y: f64) -> String {
-    format!(r#"{{"id": "{id}", "x": {x}, "y": {y}, "construction": false}}"#)
-}
-
-fn line(id: &str, from: &str, to: &str) -> String {
-    format!(r#"{{"id": "{id}", "from": "{from}", "to": "{to}", "construction": false}}"#)
-}
-
-fn circle(id: &str, center: &str, radius: f64) -> String {
-    format!(r#"{{"id": "{id}", "center": "{center}", "radius": {radius}, "construction": false}}"#)
-}
-
-fn arc(id: &str, center: &str, start: &str, end: &str) -> String {
-    format!(
-        r#"{{"id": "{id}", "center": "{center}", "start": "{start}", "end": "{end}", "construction": false}}"#
-    )
-}
 
 /// A document of one sketch with these lists.
 fn text(
