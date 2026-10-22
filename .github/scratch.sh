@@ -16,13 +16,20 @@ scratch="$root/silico-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$RUNNER_NAME"
 # projects' runners, and its two tmpfs (this and /tmp) may each grow to 48 GB.
 warn_kib=$((8 * 1024 * 1024))
 
+# Removes scratch, made writable first: a test can leave a directory it made read-only
+# behind (cache_bound's read-only cache), whose entries rm can't unlink.
+remove() {
+  chmod -R u+w "$@" 2>/dev/null || true
+  rm -rf "$@"
+}
+
 case "${1-}" in
   start)
     # A job whose `end` never ran (its runner died, or it was force-cancelled) leaves its
     # scratch holding memory: removed here once it's over 25 hours old, past the longest
     # job's limit (a mutants shard's, a day).
-    find "$root" -maxdepth 1 -name 'silico-*' -user "$(id -u)" -mmin +1500 \
-      -exec rm -rf {} + 2>/dev/null || true
+    find "$root" -maxdepth 1 -name 'silico-*' -user "$(id -u)" -mmin +1500 -print0 2>/dev/null |
+      while IFS= read -r -d '' lost; do remove "$lost" || true; done
     mkdir -p "$scratch/tmp" "$scratch/target-tmp"
     {
       echo "TMPDIR=$scratch/tmp"
@@ -56,7 +63,7 @@ case "${1-}" in
     if [ "$peak" -gt "$warn_kib" ]; then
       echo "::warning::test scratch grew past $((warn_kib / 1024 / 1024)) GiB in memory; look for tests that leave theirs behind"
     fi
-    rm -rf "$scratch"
+    remove "$scratch"
     ;;
   *)
     echo "usage: $0 start|end" >&2
