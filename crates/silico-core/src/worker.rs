@@ -1756,7 +1756,7 @@ mod tests {
     }
 
     #[test]
-    fn draining_reads_everything_a_worker_sent_up_to_its_sockets_end() {
+    fn draining_reads_everything_a_worker_sent_up_to_where_its_replies_end() {
         // It says it started (an empty frame), then sends a frame that doesn't decode (one
         // byte, 0xff), which ends its reply thread, and runs on. Drained, everything it sent
         // has been read: that it started, and the end, with nothing left waiting.
@@ -1787,6 +1787,7 @@ mod tests {
             "{:?}",
             start.elapsed()
         );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
         // One that exits: how, as soon as it has.
         let path = script("exits", "exit 3");
         let mut worker = super::Worker::spawn(&path).unwrap();

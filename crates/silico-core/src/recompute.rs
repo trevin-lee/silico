@@ -2376,7 +2376,7 @@ mod tests {
 
     #[test]
     fn a_superseded_solve_is_left_only_what_remains_of_its_grace() {
-        // Started 4 ms ago, superseded now: it may run on for at most the 6 ms left of
+        // Started 1 ms ago, superseded now: it may run on for at most the 9 ms left of
         // SKETCH_STOP_AFTER's 10, not stopped yet. (Had this thread stalled past the
         // grace, it's stopped now instead.)
         let engine = Recompute::new(crate::fake::FakeKernel::new(1).unwrap());
@@ -2386,7 +2386,7 @@ mod tests {
             generation: Generation(1),
             number: 7,
             started: std::time::Instant::now()
-                .checked_sub(Duration::from_millis(4))
+                .checked_sub(Duration::from_millis(1))
                 .unwrap(),
             stopper: SolveStopper::new({
                 let stopped = Arc::clone(&stopped);
@@ -2396,7 +2396,7 @@ mod tests {
         match state.stop_older_solve(Generation(2)) {
             Some((left, number)) => {
                 assert_eq!(number, 7);
-                assert!(left <= Duration::from_millis(6), "{left:?} left");
+                assert!(left <= Duration::from_millis(9), "{left:?} left");
                 assert!(!stopped.load(std::sync::atomic::Ordering::SeqCst));
             }
             None => {
