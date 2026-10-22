@@ -1,7 +1,7 @@
 //! A pool's slot whose thread ends unexpectedly (a panic, which only a bug causes: here a
 //! log layer that panics once on a slot's thread) is started again by the next request,
-//! rather than counted free with no thread to take it. Alone in its binary: it installs
-//! the process's global subscriber.
+//! rather than counted free with no thread to take it, or still counted started as it
+//! ends. Alone in its binary: it installs the process's global subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::Path;
@@ -16,7 +16,12 @@ use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 
 static PANICKED: AtomicBool = AtomicBool::new(false);
 
-/// Panics at the first worker event on a slot's thread (its worker's start).
+/// Panics at the first worker event on a slot's thread (its worker's start), and holds up
+/// the pool's events as the thread unwinds (its slot's end), as a loaded machine can: a
+/// caller woken by the first request's end asks again meanwhile. Before the pool ended a
+/// slot ahead of the request it held, it failed the second request ("a kernel pool's last
+/// slot ended before it took the request") now and then on CI (#85's gate, 39755826573);
+/// held up here, every time.
 struct PanicOnce;
 
 impl<S: Subscriber> Layer<S> for PanicOnce {
@@ -24,6 +29,12 @@ impl<S: Subscriber> Layer<S> for PanicOnce {
         let on_a_slot = std::thread::current()
             .name()
             .is_some_and(|n| n.starts_with("kernel-pool-"));
+        if std::thread::panicking()
+            && on_a_slot
+            && event.metadata().target().starts_with("silico_core::pool")
+        {
+            std::thread::sleep(Duration::from_millis(500));
+        }
         if event.metadata().target().starts_with("silico_core::worker")
             && on_a_slot
             && !PANICKED.swap(true, Ordering::SeqCst)

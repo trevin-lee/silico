@@ -21,6 +21,7 @@
 //! otherwise when they do, unless they finish first. Their callers get
 //! [`Outcome::Superseded`], never a result.
 
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
@@ -779,22 +780,31 @@ impl Drop for Busy<'_> {
 
 /// A slot's thread, ending: unless the pool is stopping, its slot goes back among those
 /// not started, for a request to start again, and if no slot is left started, the requests
-/// waiting fail (none would take them).
+/// waiting fail (none would take them). Once, as the thread ends, or before, as it unwinds
+/// holding a request ([`EndedIfPanicking`]).
 struct SlotEnded<'a> {
     shared: &'a Shared,
     slot: usize,
+    ended: Cell<bool>,
 }
 
-impl Drop for SlotEnded<'_> {
-    fn drop(&mut self) {
+impl SlotEnded<'_> {
+    fn end(&self) {
+        if self.ended.replace(true) {
+            return;
+        }
+        tracing::debug!(
+            slot = self.slot,
+            "the slot's thread is ending: a request starts it again"
+        );
         let mut state = lock(&self.shared.state);
         if state.stopping {
             return;
         }
         state.started -= 1;
         state.unstarted.push(self.slot);
-        // Its worker went with its keeper; its entry goes too, so the slot started again
-        // isn't taken for still running the old request.
+        // Its entry goes, so the slot started again isn't taken for still running the old
+        // request. Its worker goes with its keeper, as the thread ends.
         self.shared.with_slot(self.slot, |s| *s = Slot::default());
         let waiting: Vec<Box<dyn Task>> = if state.started == 0 {
             state.queue.drain(..).collect()
@@ -810,6 +820,26 @@ impl Drop for SlotEnded<'_> {
                 )
                 .with_suggestion(crate::worker::SILICO_BUG),
             );
+        }
+    }
+}
+
+impl Drop for SlotEnded<'_> {
+    fn drop(&mut self) {
+        self.end();
+    }
+}
+
+/// A slot's thread unwinding while it holds a request (a panic, which only a bug causes)
+/// ends its slot before the request is dropped: a caller woken by its request's end, and
+/// asking again, finds the slot to start again, not one still counted started that fails
+/// what it's given as it ends.
+struct EndedIfPanicking<'a, 'b>(&'a SlotEnded<'b>);
+
+impl Drop for EndedIfPanicking<'_, '_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.end();
         }
     }
 }
@@ -839,8 +869,12 @@ fn serve(slot: usize, shared: &Shared, start: SlotStart) {
     let _entered = span.enter();
     // However the thread ends but by the pool's stopping (a panic, say), the slot is left
     // to start again rather than counted free: once its keeper, declared after, has let
-    // its worker go.
-    let _ended = SlotEnded { shared, slot };
+    // its worker go, or, unwinding with a request, before the request is dropped.
+    let ended = SlotEnded {
+        shared,
+        slot,
+        ended: Cell::new(false),
+    };
     let mut keeper = Keeper {
         slot,
         shared,
@@ -875,6 +909,8 @@ fn serve(slot: usize, shared: &Shared, start: SlotStart) {
             }
             Next::Task(task) => task,
         };
+        // Declared after the request, so dropped before it.
+        let _ending = EndedIfPanicking(&ended);
         // The slot is free again however its request ends: before its outcome is delivered.
         let busy = Busy(shared);
         if shared.stopping() {
