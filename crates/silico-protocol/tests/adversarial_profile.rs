@@ -189,6 +189,29 @@ fn a_profile_crossing_itself_in_its_plane_is_refused_though_its_corners_are_off_
     );
 }
 
+#[test]
+fn corners_apart_in_space_but_one_in_the_profiles_plane_are_the_same_point() {
+    // #78's tests review: corners 3 and 4 are 1.2e-7 mm apart, along the normal only, so
+    // in the face they're one point (by hand: both at (10, 10)).
+    let refusal = refused(
+        profile(&[
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [10.0, 10.0, -6e-8],
+            [10.0, 10.0, 6e-8],
+            [0.0, 10.0, 0.0],
+        ])
+        .check(),
+    );
+    assert!(
+        refusal
+            .message
+            .contains("corners 3 and 4 are the same point in the profile's plane"),
+        "{}",
+        refusal.message
+    );
+}
+
 /// A profile with a notch cut in it at a slant: the first side runs from `a` back along `u`
 /// for `l`, the notch goes `3` mm to the right (`m`) and up along `u` past where it began,
 /// back to the line, and down along it to `gap` short of `a`, then out to the left and back
@@ -309,8 +332,8 @@ fn a_spike_across_a_side_by_twice_the_tolerance_is_a_crossing_at_any_size() {
     // The spike's tip is 2e-7 mm across side 1 (the line y = x / 2, from (0, 0) to
     // (s, s / 2)), by hand; it's further than the tolerance from every side, so only the
     // crossing can refuse it, and sides 3 and 4 both cross side 1. At a side of 1e6 mm the
-    // tip's orientation is within a thousand times the bound: a bound a thousand times
-    // looser lets it through.
+    // tip's orientation is within ten thousand times the bound: a bound that much looser
+    // lets it through.
     for (at, s) in [([0.0, 0.0], 1e6), ([0.0, 0.0], 1e3), ([-5e5, -5e5], 1e6)] {
         let refusal = refused(spiked(at, s, 2e-7).check());
         assert!(
