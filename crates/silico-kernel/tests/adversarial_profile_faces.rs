@@ -24,9 +24,10 @@ use silico_core::kernel::{Kernel, KernelRequest};
 use silico_core::profile::{Profile, profile};
 use silico_kernel::{Curve, FaceRegions, Region, SketchPlane, make_faces, summarize};
 
-/// The profile, if the gate takes the sketch and the core makes one.
+/// The profile, if the gate takes the sketch's structure and the core makes one (its sizes
+/// the solution's, the gate's floor on drawn sizes aside).
 fn made(d: &Draw) -> Option<Profile> {
-    let checked = d.checked().ok()?;
+    let checked = d.structure().ok()?;
     profile(&checked, &feature(), &d.solution()).ok()
 }
 

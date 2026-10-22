@@ -79,7 +79,9 @@ fn an_arcs_start_or_end_drawn_at_its_center_is_refused() {
         only(
             &text,
             &format!("arcs.0.{key}"),
-            "is too close to its center at (0, 0) for its radius to be anything but 0",
+            &format!(
+                "arc aa000000's {key}, point pd000000 at (0, 0), is 0 mm from its center, point pa000000 at (0, 0): arcs and circles have a radius above 1e-7 mm"
+            ),
         );
     }
 }
@@ -311,7 +313,8 @@ fn reference_dimensions_take_what_a_solve_can_measure() {
 #[test]
 fn geometry_the_solver_measures_as_no_size_is_refused() {
     // 1e-200 squared underflows to 0: to the solver, a line of no length and an arc of no
-    // radius, though the points are at different places.
+    // radius, though the points are at different places. Far inside the kernel's 1e-7 mm,
+    // they're refused by its rule.
     let tiny = r#"{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 0, "y": 1e-200, "construction": false}, {"id": "pc000000", "x": 1e-200, "y": 0, "construction": false}, {"id": "pd000000", "x": 0, "y": 10, "construction": false}"#;
     only(
         &document(&fields(
@@ -322,7 +325,7 @@ fn geometry_the_solver_measures_as_no_size_is_refused() {
             "",
         )),
         "lines.0.to",
-        "line na000000's ends, points pa000000 at (0, 0) and pb000000 at (0, 1e-200), are too close",
+        "line na000000 is 1e-200 mm long, from point pa000000 at (0, 0) to pb000000 at (0, 1e-200): lines and arcs are longer than 1e-7 mm between their ends",
     );
     only(
         &document(&fields(
@@ -333,7 +336,7 @@ fn geometry_the_solver_measures_as_no_size_is_refused() {
             "",
         )),
         "arcs.0.start",
-        "is too close to its center at (0, 0) for its radius to be anything but 0 to the solver",
+        "arc aa000000's start, point pc000000 at (1e-200, 0), is 1e-200 mm from its center, point pa000000 at (0, 0)",
     );
     // A line from 0 to -0 is the same place: no length.
     only(
@@ -345,7 +348,7 @@ fn geometry_the_solver_measures_as_no_size_is_refused() {
             "",
         )),
         "lines.0.to",
-        "too close for its length to be anything but 0",
+        "line na000000 is 0 mm long, from point pa000000 at (0, 0) to pb000000 at (-0, 0)",
     );
 }
 
@@ -462,17 +465,118 @@ fn each_tangent_side_reads_as_its_own_value_and_writes_back() {
 }
 
 #[test]
-fn geometry_a_hair_apart_has_size_to_the_solver() {
-    // 1e-150 squared is 1e-300, not 0: a line and an arc radius the solver measures.
-    let tiny = r#"{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 0.000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001, "y": 0, "construction": false}, {"id": "pc000000", "x": 0, "y": 1e-150, "construction": false}"#;
-    none(&document(&fields(tiny, LINE, "", ARC, "")));
-    // The arc's end, 1e-200 from its center, has no angle to it.
+fn geometry_a_hair_apart_has_no_size_to_the_kernel() {
+    // 1e-150 squared is 1e-300, not 0, so the solver would measure a line and an arc's
+    // radius; but they're far inside the kernel's 1e-7 mm, one place to it, and refused:
+    // the line (lines.0.to), and the arc's start and end, each 1e-150 from its center.
+    let tiny = r#"{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 1e-150, "y": 0, "construction": false}, {"id": "pc000000", "x": 0, "y": 1e-150, "construction": false}"#;
+    let all = problems(&document(&fields(tiny, LINE, "", ARC, "")));
+    let refused: Vec<Option<&str>> = all.iter().map(|e| e.parameter()).collect();
+    assert_eq!(
+        refused,
+        [Some("lines.0.to"), Some("arcs.0.start"), Some("arcs.0.end")],
+        "{all:#?}"
+    );
+    // The arc's end, 1e-200 from its center, is refused by the same rule.
     let end = r#"{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 10, "y": 0, "construction": false}, {"id": "pc000000", "x": 1e-200, "y": 0, "construction": false}"#;
     only(
         &document(&fields(end, "", "", ARC, "")),
         "arcs.0.end",
-        "arc aa000000's end, point pc000000 at (1e-200, 0), is too close to its center at (0, 0)",
+        "arc aa000000's end, point pc000000 at (1e-200, 0), is 1e-200 mm from its center, point pa000000 at (0, 0): arcs and circles have a radius above 1e-7 mm, as the kernel measures them",
     );
+}
+
+/// pa at the origin, pb and pc where given.
+fn three_points(b: (f64, f64), c: (f64, f64)) -> String {
+    format!(
+        r#"{{"id": "pa000000", "x": 0, "y": 0, "construction": false}}, {{"id": "pb000000", "x": {:?}, "y": {:?}, "construction": false}}, {{"id": "pc000000", "x": {:?}, "y": {:?}, "construction": false}}"#,
+        b.0, b.1, c.0, c.1
+    )
+}
+
+#[test]
+fn a_drawn_size_at_most_the_kernels_tolerance_is_refused_and_above_it_admitted() {
+    // The kernel's 1e-7 mm (OCCT's Precision::Confusion), inclusive, measured as the
+    // profile measures a curve it sends (`Curve::size_problem`, libm's hypot).
+    let far = (0.0, 10.0);
+    let line = |b: (f64, f64), construction: bool| {
+        document(&fields(
+            &three_points(b, far),
+            &format!(
+                r#"{{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": {construction}}}"#
+            ),
+            "",
+            "",
+            "",
+        ))
+    };
+    // A line along x: 1e-7 long refused, the next float up admitted.
+    only(
+        &line((1e-7, 0.0), false),
+        "lines.0.to",
+        "line na000000 is 1e-7 mm long, from point pa000000 at (0, 0) to pb000000 at (1e-7, 0): lines and arcs are longer than 1e-7 mm between their ends, as the kernel measures them",
+    );
+    let error = &problems(&line((1e-7, 0.0), false))[0];
+    assert_eq!(error.elements(), ["pa000000", "pb000000", "na000000"]);
+    assert_eq!(
+        error.suggestion(),
+        Some("draw the line's ends further apart")
+    );
+    none(&line((1e-7f64.next_up(), 0.0), false));
+    // On a slant, 3-4-5: (0.594e-7, 0.792e-7) is 0.99e-7 long; (0.606e-7, 0.808e-7)
+    // 1.01e-7.
+    only(&line((0.594e-7, 0.792e-7), false), "lines.0.to", "mm long");
+    none(&line((0.606e-7, 0.808e-7), false));
+    // Construction lines alike.
+    only(&line((1e-7, 0.0), true), "lines.0.to", "mm long");
+
+    // A circle's radius: 1e-7 refused, 1e-6 admitted.
+    let circle = |radius: &str| {
+        document(&fields(
+            POINTS,
+            "",
+            &format!(
+                r#"{{"id": "ca000000", "center": "pa000000", "radius": {radius}, "construction": false}}"#
+            ),
+            "",
+            "",
+        ))
+    };
+    only(
+        &circle("1e-7"),
+        "circles.0.radius",
+        "circle ca000000's radius is 1e-7 mm: arcs and circles have a radius above 1e-7 mm, as the kernel measures them",
+    );
+    none(&circle("0.000001"));
+
+    // An arc about pa from pb to pc: its start 1e-7 from its center refused, 1.01e-7
+    // admitted; its end likewise.
+    let arc =
+        |b: (f64, f64), c: (f64, f64)| document(&fields(&three_points(b, c), "", "", ARC, ""));
+    only(
+        &arc((1e-7, 0.0), far),
+        "arcs.0.start",
+        "arc aa000000's start, point pb000000 at (1e-7, 0), is 1e-7 mm from its center",
+    );
+    none(&arc((1.01e-7, 0.0), (0.0, 1.01e-7)));
+    only(
+        &arc((10.0, 0.0), (0.0, 1e-7)),
+        "arcs.0.end",
+        "arc aa000000's end, point pc000000 at (0, 1e-7), is 1e-7 mm from its center",
+    );
+    none(&arc((10.0, 0.0), (0.0, 1.01e-7)));
+    // Its chord: from (10, 0) to (10, 1e-8), 1e-8 apart, refused as a circle; to
+    // (10, 1.01e-7) admitted.
+    only(
+        &arc((10.0, 0.0), (10.0, 1e-8)),
+        "arcs.0.end",
+        "arc aa000000's ends, points pb000000 and pc000000, are 1e-8 mm apart: lines and arcs are longer than 1e-7 mm between their ends, as the kernel measures them",
+    );
+    assert_eq!(
+        problems(&arc((10.0, 0.0), (10.0, 1e-8)))[0].suggestion(),
+        Some("draw a circle instead, or open the arc")
+    );
+    none(&arc((10.0, 0.0), (10.0, 1.01e-7)));
 }
 
 #[test]

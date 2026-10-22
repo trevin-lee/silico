@@ -20,10 +20,11 @@ use silico_core::ErrorCode;
 use silico_core::kernel::KernelRequest;
 use silico_core::profile::{Profile, Region, profile};
 
-/// The sketch's profile, or `None` where the gate refuses the sketch (a case the profile
-/// never sees).
+/// The sketch's profile, or `None` where the gate refuses the sketch's structure (a case
+/// the profile never sees). Its sizes are the solution's: the gate's floor on drawn sizes
+/// aside, so the profile's own rules meet hostile sizes.
 fn profile_of(d: &Draw) -> Option<Result<Profile, silico_core::profile::Refused>> {
-    let checked = d.checked().ok()?;
+    let checked = d.structure().ok()?;
     Some(profile(&checked, &feature(), &d.solution()))
 }
 

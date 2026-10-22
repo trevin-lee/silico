@@ -25,6 +25,7 @@ pub use sketch::{
     Reference, Sketch, SketchArc, SketchCircle, SketchConstraint, SketchLine, SketchPoint,
     TangentSide,
 };
+pub(crate) use sketch_gate::too_small;
 pub use sketch_gate::{MAX_ANGLE_DEGREES, MAX_REFERENCE_LENGTH};
 pub use validate::{Checked, Invalid, PROBLEMS_LISTED, validate};
 pub(crate) use write::sketch_elements;

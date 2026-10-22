@@ -300,9 +300,10 @@ impl ProfileCurve<'_> {
     }
 }
 
-/// A profile curve as the sketch draws it, where the solve put it.
+/// A profile curve as the sketch draws it, where the solve put it. The gate measures a
+/// sketch's curves by the same conversion ([`sent`]), drawn where the file stores them.
 #[derive(Debug, Clone, Copy)]
-enum Drawn {
+pub(crate) enum Drawn {
     Line {
         from: Xy,
         to: Xy,
@@ -321,7 +322,7 @@ enum Drawn {
 
 /// `p` with a zero of either sign as +0, so a point is one point, and an arc one angle,
 /// whatever the sign of its zeros (a solve can leave −0, and atan2(±0, −1) is ±π).
-fn unsigned([x, y]: Xy) -> Xy {
+pub(crate) fn unsigned([x, y]: Xy) -> Xy {
     [x + 0.0, y + 0.0]
 }
 
@@ -333,7 +334,7 @@ fn unsigned([x, y]: Xy) -> Xy {
 /// direction (the request runs it with its loop's). Its points' zeros are +0 already, as
 /// [`gather`] puts them. None for an arc whose points make none (its ends at one angle from
 /// its centre).
-fn sent(drawn: Drawn, reversed: bool) -> Option<silico_protocol::Curve> {
+pub(crate) fn sent(drawn: Drawn, reversed: bool) -> Option<silico_protocol::Curve> {
     use silico_protocol::Curve;
     Some(match drawn {
         Drawn::Line { from, to } => {
