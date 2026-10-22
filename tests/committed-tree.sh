@@ -15,6 +15,14 @@ checkout_id=$(printf '%s' "$root" | { sha256sum 2>/dev/null || shasum -a 256; } 
 tree=${XDG_CACHE_HOME:-$HOME/.cache}/silico/gate/$checkout_id
 mkdir -p "$(dirname "$tree")"
 
+# Removes trees, made writable first: a test killed before it cleans up can leave a
+# directory it made read-only (the CLI's fmt-in-a-read-only-directory test, in target/tmp),
+# whose entries rm can't unlink.
+remove_tree() {
+  chmod -R u+w "$@" 2>/dev/null || true
+  rm -rf "$@"
+}
+
 # One run at a time per checkout: a second run would switch the shared worktree to its
 # own commit halfway through the first. Re-run this script holding a lock on it (Perl's
 # flock, as third_party/occt/scripts/cache.sh does; released if the process dies).
@@ -83,7 +91,7 @@ cd "$tree"
 mkdir -p target
 if [ -n "${SILICO_TEST_SCRATCH-}" ]; then
   mkdir -p "$SILICO_TEST_SCRATCH"
-  rm -rf target/tmp
+  if [ -L target/tmp ]; then rm target/tmp; else remove_tree target/tmp; fi
   ln -s "$SILICO_TEST_SCRATCH" target/tmp
 elif [ -L target/tmp ]; then
   rm target/tmp
