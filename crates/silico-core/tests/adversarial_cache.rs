@@ -15,6 +15,8 @@ mod cache;
 mod example;
 #[path = "common/model.rs"]
 mod model;
+#[path = "common/sweeps.rs"]
+mod sweeps;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -29,8 +31,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use silico_core::cache::Cache;
 use silico_core::document::FeatureId;
-use silico_core::fake::FakeKernel;
-use silico_core::kernel::{Generation, History, InputHistory, Kernel, KernelRequest, ShapeSummary};
+use silico_core::fake::{FakeKernel, FakeSketches};
+use silico_core::kernel::{
+    ElementKind, Generation, History, InputHistory, Kernel, KernelRequest, ShapeSummary,
+};
 use silico_core::pool::Pending;
 use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 use silico_core::{Error, ErrorCode};
@@ -614,6 +618,44 @@ fn a_makes_entry_with_a_history_is_a_miss() {
     let model = published(&next, checked(EXAMPLE));
     assert_eq!(calls(&next), ["MakeBox"]);
     assert_eq!(built(&model, "k7f2qx3m").1.history, None);
+}
+
+// A sweep's entry whose history holds together (History::validate) but breaks the sweep's
+// rule (History::sweep_fault, design S3): a worker's reply with it would be refused, so a
+// hit with it is a miss too.
+#[test]
+fn a_sweeps_entry_whose_history_breaks_the_sweeps_rule_is_a_miss() {
+    let dir = Scratch::new("forged-sweep-rule");
+    let text = sweeps::document(&[
+        &sweeps::rectangle("ssssssss", "xy", [0.0, 0.0], 4.0, 2.0),
+        &sweeps::pad("pppppppp", None, "ssssssss", sweeps::TEN),
+    ]);
+    let session = || {
+        Recompute::with_cache(FakeKernel::new(2).unwrap(), cache::cache(&dir.0))
+            .with_sketches(FakeSketches::new())
+    };
+    let first = session();
+    let model = published(&first, checked(&text));
+    // A pad with no base: its solid is its prism's.
+    assert_eq!(calls(&first), ["MakeFaces", "Prism"]);
+    let (prism_key, fresh) = built(&model, "pppppppp");
+    drop(first);
+    let path = entry_path(&dir.0, &prism_key);
+    let mut entry = decode(&std::fs::read(&path).unwrap());
+    let history = entry.history.as_mut().expect("a prism has a history");
+    // A prism's face generates its solid as its side; one that doesn't still holds
+    // together, but isn't a sweep's.
+    let face = &mut history.inputs[0].faces[0];
+    let sides = face.generated.len();
+    face.generated
+        .retain(|r| r.element.kind != ElementKind::Solid);
+    assert_eq!(face.generated.len(), sides - 1);
+    assert_eq!(history.validate(1), Ok(()));
+    std::fs::write(&path, encode(&dir.0, &entry)).unwrap();
+    let next = session();
+    let model = published(&next, checked(&text));
+    assert_eq!(calls(&next), ["Prism"]);
+    assert_eq!(built(&model, "pppppppp").1.history, fresh.history);
 }
 
 // Once: an entry's checksum was a bare SHA-256, and its key a hash of public parts (the
