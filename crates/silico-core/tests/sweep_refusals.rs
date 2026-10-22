@@ -681,4 +681,17 @@ fn a_cause_gives_each_of_its_different_advices_once() {
     );
     assert!(parts[2].ends_with(cross), "{cause}");
     assert!(parts[3..].iter().all(|p| !p.ends_with(cross)), "{cause}");
+    // Each part's kind: the two open ends, then the four crossings.
+    for part in &parts[..2] {
+        assert!(
+            part.starts_with("point p") && part.contains("so the profile is open there"),
+            "{part}"
+        );
+    }
+    for part in &parts[2..] {
+        assert!(
+            part.starts_with("line n") && part.contains(" cross"),
+            "{part}"
+        );
+    }
 }

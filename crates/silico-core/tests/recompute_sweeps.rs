@@ -1368,6 +1368,11 @@ fn a_turn_short_of_a_whole_one_by_the_tolerance_is_refused_and_a_nanodegree_more
     //   at 5.
     let tangent = circles("ssssssss", "xy", &[([0.0, 5.0], 5.0)]);
     let semicircle = arc([0, 0], [5, 0], [-5, 0]);
+    // The same two mirrored below the axis, their farthest points on its other side: the
+    // circle about (0, −5), farthest at (0, −10); the semicircle from (−5, 0) through
+    // (0, −5) to (5, 0), farthest at (0, −5).
+    let tangent_below = circles("ssssssss", "xy", &[([0.0, -5.0], 5.0)]);
+    let semicircle_below = arc([0, 0], [-5, 0], [5, 0]);
     // Each refusal names the sketch's curves where its slit is measured: the circle, the
     // arc at its interior point, the cap's arc and chord at their shared ends, a
     // rectangle's side there and the two sides ending on it; and where nothing is off the
@@ -1375,7 +1380,23 @@ fn a_turn_short_of_a_whole_one_by_the_tolerance_is_refused_and_a_nanodegree_more
     // arc and not its chord.
     let short = "359.999998855";
     let turns = "359.999998854";
-    let cases: [BandCase; 10] = [
+    let cases: [BandCase; 12] = [
+        (
+            tangent_below,
+            "359.999999428",
+            10.0,
+            9.9833e-8,
+            "359.999999427",
+            &["ca000001"],
+        ),
+        (
+            semicircle_below,
+            short,
+            5.0,
+            9.9920e-8,
+            turns,
+            &["aa000001"],
+        ),
         (
             tangent,
             "359.999999428",
@@ -1605,8 +1626,93 @@ fn a_slit_refusal_lists_a_hundred_of_its_curves_and_counts_them_all() {
         ],
     );
     let error = failed(&model, "rrrrrrrr");
+    assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
     assert_eq!(error.parameter(), Some("extent.angle"), "{error}");
+    assert!(
+        error.message().ends_with(
+            " mm at its profile's point 5 mm from the axis: within 1e-7 mm, its ends would be one place"
+        ),
+        "{error}"
+    );
     let listed: Vec<String> = (1..=100).map(|k| format!("n{k:07}")).collect();
     assert_eq!(error.elements(), listed);
     assert_eq!(error.elements_total(), 242);
+}
+
+#[test]
+fn a_half_disc_right_of_the_y_axis_names_its_arc_where_its_farthest_point_is() {
+    // An arc of radius 5 about the origin from (0, −5) counter-clockwise through (5, 0) to
+    // (0, 5), its chord on the y axis, turned about y: its ends and its circle's centre
+    // are on the axis, so its slit is measured at its farthest point, (5, 0), on the
+    // axis's negative side (right of y is negative to it). The band at 5 is 3600/π =
+    // 1145.92 nanodegrees: 1145 short leaves 9.9920e-8 and is refused, naming the arc
+    // alone, and 1146 short turns.
+    let half = r#"{"id": "ssssssss", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 0, "y": -5, "construction": false}, {"id": "pa000003", "x": 0, "y": 5, "construction": false}], "lines": [{"id": "na000001", "from": "pa000003", "to": "pa000002", "construction": false}], "circles": [], "arcs": [{"id": "aa000001", "center": "pa000001", "start": "pa000002", "end": "pa000003", "construction": false}], "constraints": []}"#;
+    let turn = |degrees: &str| {
+        turned(
+            "rrrrrrrr",
+            "revolve",
+            None,
+            "ssssssss",
+            "y_axis",
+            &angle(degrees),
+        )
+    };
+    let model = published(&engine(), &[half, &turn("359.999998855")]);
+    let error = failed(&model, "rrrrrrrr");
+    assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
+    assert!(
+        error.message().ends_with(
+            " mm at its profile's point 5 mm from the axis: within 1e-7 mm, its ends would be one place"
+        ),
+        "{error}"
+    );
+    assert!((slit(error.message()) - 9.9920e-8).abs() < 1e-12, "{error}");
+    assert_eq!(error.elements(), ["aa000001"]);
+    assert_eq!(error.elements_total(), 1);
+    let model = published(&engine(), &[half, &turn("359.999998854")]);
+    assert!(
+        built(&model, "rrrrrrrr"),
+        "{:?}",
+        model.outcome(&id("rrrrrrrr"))
+    );
+}
+
+#[test]
+fn a_slit_refusal_names_every_curve_whose_farthest_point_is_where_it_is_measured() {
+    // A groove of two regions about the x axis: a semicircle of radius 5 on its diameter
+    // on the axis (no point off the axis but its arc, farthest at its top, (0, 5)), and a
+    // rectangle 10..14 × 5..10. The slit is measured at the rectangle's nearest corners,
+    // 5 away: 1145 nanodegrees short is refused there. Named: the curves with a point
+    // nearest 5 (the rectangle's bottom, nb000001, and its two sides ending on it,
+    // nb000002 and nb000004), and the curves whose farthest point is at 5, the
+    // semicircle's arc, aa000001: its top lies at the same distance, its slit as narrow.
+    let both = r#"{"id": "ssssssss", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 5, "y": 0, "construction": false}, {"id": "pa000003", "x": -5, "y": 0, "construction": false}, {"id": "pb000001", "x": 10, "y": 5, "construction": false}, {"id": "pb000002", "x": 14, "y": 5, "construction": false}, {"id": "pb000003", "x": 14, "y": 10, "construction": false}, {"id": "pb000004", "x": 10, "y": 10, "construction": false}], "lines": [{"id": "na000001", "from": "pa000003", "to": "pa000002", "construction": false}, {"id": "nb000001", "from": "pb000001", "to": "pb000002", "construction": false}, {"id": "nb000002", "from": "pb000002", "to": "pb000003", "construction": false}, {"id": "nb000003", "from": "pb000003", "to": "pb000004", "construction": false}, {"id": "nb000004", "from": "pb000004", "to": "pb000001", "construction": false}], "circles": [], "arcs": [{"id": "aa000001", "center": "pa000001", "start": "pa000002", "end": "pa000003", "construction": false}], "constraints": []}"#;
+    let model = published(
+        &engine(),
+        &[
+            &cube_below(),
+            both,
+            &turned(
+                "rrrrrrrr",
+                "groove",
+                Some("bbbbbbbb"),
+                "ssssssss",
+                "x_axis",
+                &angle("359.999998855"),
+            ),
+        ],
+    );
+    let error = failed(&model, "rrrrrrrr");
+    assert!(
+        error.message().ends_with(
+            " mm at its profile's point 5 mm from the axis: within 1e-7 mm, its ends would be one place"
+        ),
+        "{error}"
+    );
+    assert_eq!(
+        error.elements(),
+        ["aa000001", "nb000001", "nb000002", "nb000004"]
+    );
+    assert_eq!(error.elements_total(), 4);
 }
