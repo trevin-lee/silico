@@ -21,10 +21,8 @@
 //! lever; x_axis has none), a hand calculation.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "../../silico-core/tests/common/sketch.rs"]
-mod fixture;
-#[path = "common/saves.rs"]
-mod saves;
+use super::fixture;
+use super::saves;
 
 use fixture::{arc, circle_as, line, point};
 use proptest::prelude::*;

@@ -11,10 +11,8 @@
 //! solution), and under-constrained sketches with a constraint given twice.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "../../silico-core/tests/common/sketch.rs"]
-mod fixture;
-#[path = "common/saves.rs"]
-mod saves;
+use super::fixture;
+use super::saves;
 
 use fixture::{arc, circle, line, point};
 use proptest::prelude::*;

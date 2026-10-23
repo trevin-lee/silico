@@ -4,8 +4,7 @@
 //! error and is reaped; and the worker refuses what isn't its to answer.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/systems.rs"]
-mod systems;
+use super::systems;
 
 use std::path::Path;
 use std::process::Command;

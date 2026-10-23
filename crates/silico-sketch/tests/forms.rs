@@ -4,8 +4,7 @@
 //! less independent equations).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/systems.rs"]
-mod systems;
+use super::systems;
 
 use std::f64::consts::{FRAC_PI_2, PI};
 

@@ -1611,7 +1611,7 @@ fn crossings(p: Xy, curves: &[ProfileCurve<'_>], edges: &[(usize, bool)]) -> usi
 /// The loops nested into regions: each loop's depth is how many loops hold one of its
 /// points (a point on no other loop: none come within the tolerance of another once no
 /// curves meet); a loop at even depth is a region's outer loop, counter-clockwise, and one
-/// at odd depth a hole, clockwise, of the smallest loop around it.
+/// at odd depth a hole, clockwise, of the loop just around it.
 fn regions(
     curves: &[ProfileCurve<'_>],
     ids: &[&ElementId],
@@ -1651,8 +1651,8 @@ fn regions(
             Shape::Round { c, r, arc: None } => [c[0] + r, c[1]],
         }
     };
-    let mut depth = vec![0usize; loops.len()];
-    let mut parent: Vec<Option<usize>> = vec![None; loops.len()];
+    // The loops around each loop, in order.
+    let mut around: Vec<Vec<usize>> = vec![Vec::new(); loops.len()];
     for (j, inner) in loops.iter().enumerate() {
         let p = probe(inner);
         for (i, outer) in loops.iter().enumerate() {
@@ -1661,16 +1661,25 @@ fn regions(
                 continue;
             }
             if crossings(p, curves, &outer.edges) % 2 == 1 {
-                depth[j] += 1;
-                // The loop around it with the least area is the one just around it; the
-                // first smallest wins (loops around one loop that don't meet can't tie).
-                let smaller = parent[j].is_none_or(|k| outer.area.abs() < loops[k].area.abs());
-                if smaller {
-                    parent[j] = Some(i);
-                }
+                around[j].push(i);
             }
         }
     }
+    let depth: Vec<usize> = around.iter().map(Vec::len).collect();
+    // The loop just around each loop, by depth among the loops around it (not every loop at that
+    // depth, since separate outlines share depths): loops that don't meet (rule 5 refuses
+    // any that do) are disjoint or nested, so the m loops around one are nested in each
+    // other, at depths 0 to m - 1, and the innermost is the one at depth m - 1. That rests
+    // only on the crossings' parity, so no areas are compared. (Areas would tie only if
+    // rounding closed the band, at least 1e-7 wide, between two nested loops; a worst-case
+    // bound keeps it open with 6% to spare at a kilometre, and none for a loop that
+    // spirals. FreeCAD's Bullseye compares sizes instead: it sorts by squared box diagonal
+    // with a tie tolerance, and a hole sorted before its container is lost; see the port note.)
+    let parent: Vec<Option<usize>> = around
+        .iter()
+        .zip(&depth)
+        .map(|(out, &d)| out.iter().copied().find(|&k| depth[k] + 1 == d))
+        .collect();
 
     let oriented = |l: &Walked, outer: bool| -> Result<Loop, Error> {
         let mut walked = l.edges.clone();
