@@ -653,7 +653,7 @@ fn a_point_beyond_a_half_turns_end_on_its_starts_right_is_measured_from_where_it
             message,
             &format!("point {e}, the end of arc {a}, is "),
             &format!(
-                " mm from line {side} where the kernel ends the arc, at the point's angle on its circle: {RULE}"
+                " mm from line {side}, measured where the kernel ends the arc (at the point's angle on its circle): {RULE}"
             ),
         );
         assert!((gap - 5e-8).abs() < 1e-14, "{gap}");
@@ -708,7 +708,7 @@ fn a_line_near_where_an_arc_ends_but_not_its_drawn_end_meets_it() {
         &errors[0].0,
         &format!("point {e}, the end of arc {a}, is "),
         &format!(
-            " mm from line {base} where the kernel ends the arc, at the point's angle on its circle: {RULE}"
+            " mm from line {base}, measured where the kernel ends the arc (at the point's angle on its circle): {RULE}"
         ),
     );
     assert!((gap - 5e-8 / 1.0001f64.sqrt()).abs() < 1e-14, "{gap}");

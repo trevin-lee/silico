@@ -706,7 +706,7 @@ fn of_sketch(
                 // Near only where the kernel ends the arc, the point itself further: said so,
                 // as the point is what's measured otherwise.
                 let at = if built {
-                    " where the kernel ends the arc, at the point's angle on its circle"
+                    ", measured where the kernel ends the arc (at the point's angle on its circle)"
                 } else {
                     ""
                 };
@@ -1121,8 +1121,8 @@ fn meeting(
         });
     }
     // The end nearest the other curve, of those within the tolerance of it; the first by
-    // ID where two are as near. An arc's end is measured where it's drawn and where the
-    // kernel ends the arc, the nearer.
+    // ID where two are as near. An arc's end is measured where it's drawn, and if that's
+    // further than the tolerance, where the kernel ends the arc.
     let mut nearest: Option<Meeting> = None;
     for (of, ends, own, other) in [(0, ends_a, a, b), (1, ends_b, b, a)] {
         for (end, &p) in ends.iter().enumerate() {
@@ -1130,8 +1130,10 @@ fn meeting(
                 continue;
             }
             let drawn = point_distance(points[p], &other.shape);
-            let d = built_end(&own.shape, end)
-                .map_or(drawn, |at| point_distance(at, &other.shape).min(drawn));
+            let d = match built_end(&own.shape, end) {
+                Some(at) if !touching(drawn) => point_distance(at, &other.shape),
+                _ => drawn,
+            };
             let nearer = match nearest {
                 Some(Meeting::End {
                     point, distance, ..
