@@ -747,6 +747,41 @@ fn each_hole_belongs_to_the_loop_around_it_not_another_at_its_depth() {
 }
 
 #[test]
+fn a_hole_whose_box_ties_its_outline_s_is_kept_in_either_order() {
+    // A 0.05 mm square, and a diamond with its corners 2e-7 inside the square's sides: their
+    // boxes' squared diagonals differ by 2 (0.05² − (0.05 − 4e-7)²) ≈ 8e-8 mm², a tie for
+    // FreeCAD's Bullseye, which loses the hole when the diamond comes first (the port
+    // note's Edge cases). One region, the square less the diamond, 0.0025 − 2 (0.025 −
+    // 2e-7)², whichever is drawn first.
+    let (s, g) = (0.05, 2e-7);
+    let diamond = [
+        (s / 2.0, g),
+        (s - g, s / 2.0),
+        (s / 2.0, s - g),
+        (g, s / 2.0),
+    ];
+    let want = s * s - 2.0 * (s / 2.0 - g) * (s / 2.0 - g);
+    for diamond_first in [false, true] {
+        let mut d = Draw::new();
+        let (square, hole) = if diamond_first {
+            let hole = d.polygon(&diamond)[0].clone();
+            (d.rectangle(0.0, 0.0, s, s)[0].clone(), hole)
+        } else {
+            let square = d.rectangle(0.0, 0.0, s, s)[0].clone();
+            (square, d.polygon(&diamond)[0].clone())
+        };
+        let got = structure(&made(&d));
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(
+            (&got[0].0, got[0].1, &got[0].2),
+            (&square, 0, &vec![hole]),
+            "{got:?}"
+        );
+        assert!(close(got[0].3, want, EPS), "{got:?}");
+    }
+}
+
+#[test]
 fn separate_outlines_are_separate_regions() {
     // Two squares; four circles r 15 at (±20, ±20) (testPD_TNPSketchPadMultipleSolids).
     let mut d = Draw::new();
