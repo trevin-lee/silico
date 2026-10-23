@@ -9,7 +9,7 @@
 use std::fmt::Write as _;
 use std::sync::Arc;
 
-use crate::document::{self, Checked, Document, Feature, Fingerprint, Operation};
+use crate::document::{self, Checked, Document, Feature, Fingerprint, NamingScheme, Operation};
 use crate::kernel::Kernel;
 use crate::recompute::{Model, Recompute, RunOutcome};
 use crate::{Error, ErrorCode};
@@ -206,7 +206,7 @@ pub fn outline(document: &Document) -> String {
     let Document {
         silico: _,
         units: _,
-        naming: _,
+        naming: NamingScheme,
         features,
     } = document;
     let mut out = String::new();

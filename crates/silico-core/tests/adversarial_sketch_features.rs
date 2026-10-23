@@ -262,7 +262,7 @@ fn axis_spellings_near_an_axis_are_refused_by_reader_and_schema_alike() {
         let feature = format!(
             r#"{{"id": "r0000001", "type": "revolve", "v": 1, "name": "R", "sketch": "s0000003", "axis": {escaped}, "extent": {TURN}}}"#
         );
-        let text = with(&feature);
+        let text = schema_doc(&feature);
         let err = read(text.as_bytes()).unwrap_err();
         assert_eq!(err.parameter(), Some("axis"), "{axis:?}: {err}");
         assert!(!schema_valid(&text), "{axis:?}: the schema takes it");
@@ -279,6 +279,20 @@ static VALIDATOR: std::sync::LazyLock<jsonschema::Validator> = std::sync::LazyLo
 
 fn schema_valid(text: &str) -> bool {
     VALIDATOR.is_valid(&serde_json::from_str(text).unwrap())
+}
+
+/// A document of these features with the header the schema requires (`naming`, M4.0), so
+/// the schema refuses one only for what its feature says. Checked against a revolve the
+/// reader and the schema both take.
+fn schema_doc(feature: &str) -> String {
+    let doc =
+        |feature: &str| with(feature).replacen(r#""units": "#, r#""naming": 5, "units": "#, 1);
+    let good = doc(&format!(
+        r#"{{"id": "r0000001", "type": "revolve", "v": 1, "name": "R", "sketch": "s0000003", "axis": "x_axis", "extent": {TURN}}}"#
+    ));
+    assert!(read(good.as_bytes()).is_ok(), "the reader refuses {good}");
+    assert!(schema_valid(&good), "the schema refuses {good}");
+    doc(feature)
 }
 
 #[test]
@@ -313,7 +327,7 @@ fn shapes_the_reader_refuses_the_schema_refuses_too() {
         // A pad with a tool.
         r#"{"id": "p0000001", "type": "pad", "v": 1, "name": "P", "sketch": "s0000003", "tool": "k7f2qx3m", "extent": {"type": "one_side", "length": 1, "reversed": false}}"#,
     ] {
-        let text = with(feature);
+        let text = schema_doc(feature);
         assert!(read(text.as_bytes()).is_err(), "the reader takes {feature}");
         assert!(!schema_valid(&text), "the schema takes {feature}");
     }

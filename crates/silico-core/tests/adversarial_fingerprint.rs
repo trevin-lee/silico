@@ -448,15 +448,21 @@ fn the_schema_refuses_a_count_past_what_the_reader_takes() {
     // `"minimum": 0` but no `"maximum"`, and formats are annotations by default, so an
     // agent checking against the schema is told 4294967296 faces is fine; the reader
     // refuses it as too large.
+    // With the header the schema requires (`naming`, M4.0), so the schema refuses each only
+    // for its count: the good fingerprint passes the reader and the schema.
+    let with_naming = |text: String| text.replacen(r#""units": "#, r#""naming": 5, "units": "#, 1);
+    let good = with_naming(block_with(&format!("{{{GOOD}}}")));
+    assert!(read(good.as_bytes()).is_ok(), "{good}");
+    assert!(schema_valid(&good), "the schema refuses {good}");
     for (field, was) in [("faces", 6), ("edges", 12), ("vertices", 8)] {
-        let text = block_with(&format!(
+        let text = with_naming(block_with(&format!(
             "{{{}}}",
             GOOD.replacen(
                 &format!(r#""{field}": {was}"#),
                 &format!(r#""{field}": 4294967296"#),
                 1
             )
-        ));
+        )));
         assert!(text.contains("4294967296"), "{text}");
         assert!(read(text.as_bytes()).is_err(), "{text}");
         assert!(

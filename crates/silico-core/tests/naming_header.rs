@@ -7,13 +7,14 @@
 
 use silico_core::ErrorCode;
 use silico_core::document::{Checked, NamingScheme, read, schema, write};
-use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::naming::{NAMING_SCHEME, NAMING_SCHEME_NUMBER, UNRECORDED_NAMING_SCHEME};
-use silico_core::recompute::{Recompute, RunOutcome};
 
-/// The document saved under scheme 5 (protected, with the maintainer): names of each form
-/// scheme 5 writes, a piece (`I`), a kept primitive's edge, and an edge a pad generated from
-/// a sketch's line.
+/// The document saved under scheme 5 (protected, with the maintainer), by `silico fmt` on
+/// the real kernel, fingerprints and all: names of each form scheme 5 writes, a hole's rim
+/// the cut generated from the block's top and the pin's side, a kept primitive's edge, and
+/// an edge a pad generated from a sketch's line. That every name finds its edge, and every
+/// feature rebuilds to its fingerprint, is silico-cli's tests/golden.rs, on the real kernel:
+/// the fake makes no section edges, so it can't build the rim.
 fn fixture() -> String {
     let path = format!(
         "{}/tests/contract/naming-scheme-5.silico",
@@ -63,29 +64,11 @@ fn the_fixture_reads_and_writes_back_byte_for_byte() {
 }
 
 #[test]
-fn the_fixtures_names_pass_the_gate_and_each_finds_its_edge() {
+fn the_fixtures_names_pass_the_gate() {
+    // The gate parses every name under the document's scheme (M2.8): each is one scheme 5
+    // writes.
     let document = Checked::new(read(fixture().as_bytes()).unwrap()).unwrap();
-    assert_eq!(document.document().naming, NamingScheme);
-    let engine = Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(FakeSketches::new());
-    let Ok(RunOutcome::Published(model)) = engine.start(document).wait() else {
-        panic!("not published");
-    };
-    // A name that found no edge would be a `reference_broken` error of its feature.
-    let errors: Vec<_> = model.errors().collect();
-    assert!(errors.is_empty(), "{errors:?}");
-    // Each feature built: the three that name edges among them.
-    let built: Vec<String> = model
-        .features()
-        .iter()
-        .map(|(id, _)| id.to_string())
-        .collect();
-    assert_eq!(
-        built,
-        [
-            "k7f2qx3m", "a91cw0de", "m3tq8v0z", "f0000001", "c0000001", "s0000001", "p0000001",
-            "f0000002"
-        ]
-    );
+    assert_eq!(document.document().features.len(), 8);
 }
 
 #[test]

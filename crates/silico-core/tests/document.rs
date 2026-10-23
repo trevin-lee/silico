@@ -1439,6 +1439,23 @@ fn a_refused_numbers_suggestion_says_how_to_write_it() {
             fingerprinted(r#""volume": 8000"#, r#""volume": -0"#),
             "write 0",
         ),
+        // A whole number suggests a value its field takes: 1 for the format's version and a
+        // feature's (naming's 5 is in naming_header.rs).
+        (
+            example_with("\"silico\": 1", "\"silico\": 1.0"),
+            "write silico as a whole number, such as 1",
+        ),
+        (
+            example_with(
+                "\"v\": 1, \"name\": \"Block\"",
+                "\"v\": 1.0, \"name\": \"Block\"",
+            ),
+            "write v as a whole number, such as 1",
+        ),
+        (
+            fingerprinted(r#""faces": 6"#, r#""faces": 6.0"#),
+            "write fingerprint.faces as a whole number, such as 1",
+        ),
     ];
     for (text, says) in cases {
         let err = refused(&text);
