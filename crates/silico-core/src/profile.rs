@@ -1634,8 +1634,8 @@ fn regions(
     // only on the crossings' parity, so no areas are compared. (Areas would tie only if
     // rounding closed the band, at least 1e-7 wide, between two nested loops; a worst-case
     // bound keeps it open with 6% to spare at a kilometre, and none for a loop that
-    // spirals. FreeCAD's Bullseye compares no areas either: a hole goes to the face whose
-    // material holds its first vertex.)
+    // spirals. FreeCAD's Bullseye compares sizes instead: it sorts by box diagonal with a
+    // tie tolerance, and a hole sorted before its container is lost; see the port note.)
     let parent: Vec<Option<usize>> = around
         .iter()
         .zip(&depth)
