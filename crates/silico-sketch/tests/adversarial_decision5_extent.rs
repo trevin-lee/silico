@@ -34,10 +34,8 @@
 //! directions (3, 4, 5) and nanometre values, so the expected answer is a hand calculation.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "../../silico-core/tests/common/sketch.rs"]
-mod fixture;
-#[path = "common/saves.rs"]
-mod saves;
+use super::fixture;
+use super::saves;
 
 use fixture::{circle, line, line_as, point};
 use proptest::prelude::*;

@@ -4,11 +4,9 @@
 //! worked out by hand, each where it's asserted.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/systems.rs"]
-mod systems;
+use super::systems;
 
-#[path = "../../silico-core/tests/common/sketch.rs"]
-mod fixture;
+use super::fixture;
 
 use fixture::{arc, circle, line, point};
 use std::path::Path;

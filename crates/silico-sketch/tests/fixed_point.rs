@@ -7,8 +7,7 @@
 //! silico-sketch's tests/stress.rs checks the same of the worker alone, over its corpus.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/systems.rs"]
-mod systems;
+use super::systems;
 
 use std::path::Path;
 

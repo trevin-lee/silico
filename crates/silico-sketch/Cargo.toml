@@ -5,6 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+# The tests are built as a few programs, not one per file (each listed below).
+autotests = false
 
 [features]
 # Operations that exist only to test the bridge and the worker. This crate's own tests turn
@@ -41,3 +43,24 @@ cxx-build.workspace = true
 
 [lints]
 workspace = true
+
+# A few test programs, each a group of test files as modules; two stay programs of their
+# own: adversarial_document holds a test .config/nextest.toml and tests/mutants.sh name
+# exactly, and stress's module name would put every test of it under nextest's stress
+# override.
+
+[[test]]
+name = "all_solve"
+path = "tests/all_solve.rs"
+
+[[test]]
+name = "all_document"
+path = "tests/all_document.rs"
+
+[[test]]
+name = "adversarial_document"
+path = "tests/adversarial_document.rs"
+
+[[test]]
+name = "stress"
+path = "tests/stress.rs"
