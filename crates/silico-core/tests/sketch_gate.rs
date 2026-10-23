@@ -837,8 +837,8 @@ fn an_arc_whose_sent_radius_is_the_tolerance_is_refused_at_its_start_though_hypo
         silico_protocol::squared_distance([0.0, 0.0], p).sqrt(),
         1e-7
     );
-    // Its end 1.5e-7 up the y axis: 1.5e-7 from the center and 1.71e-7 from the start
-    // ((0.98e-7)² + (1.68e-7)²), both above the tolerance.
+    // Its end 1.5e-7 up the y axis: 1.5e-7 from the center and 1.95e-7 from the start
+    // (√((0.983e-7)² + (1.682e-7)²)), both above the tolerance.
     let text = document(&fields(
         &three_points(start, (0.0, 1.5e-7)),
         "",
@@ -902,9 +902,6 @@ fn unknown(text: &str, parameter: &str) -> silico_core::Error {
     all[0].clone()
 }
 
-const CANDIDATE_ADVICE: &str =
-    "the candidates are this sketch's IDs a character or two from it, none taken for it";
-
 #[test]
 fn a_curves_point_mistyped_has_the_points_a_character_or_two_off_as_candidates() {
     // pb000001 is a character from pb000000 and two from pa000000 and pc000000: nearest
@@ -921,7 +918,7 @@ fn a_curves_point_mistyped_has_the_points_a_character_or_two_off_as_candidates()
     assert_eq!(
         error.suggestion(),
         Some(
-            format!("name one of this sketch's points in lines.0.to: {CANDIDATE_ADVICE}").as_str()
+            "name one of this sketch's points in lines.0.to: the candidates are this sketch's IDs a character or two from pb000001, none taken for it"
         )
     );
 }
@@ -1038,11 +1035,14 @@ fn geometry_deleted_with_its_constraints_leaves_the_rest_as_they_were() {
     // FreeCAD's testIssue3245 (TestSketcherSolver.py:298): three horizontal lines, two
     // with their start on the y axis, each with a horizontal distance (60, 65, 70 by
     // expression). Deleting line 2 deletes its constraints (3, 4, and 8) and renumbers
-    // the rest, which lost their expressions until FreeCAD fixed it: Constraints[4] and
-    // [5] must still be 60 and 65. Here every constraint is named by its ID and holds its
-    // own value, so deleting the line, its points, and its constraints leaves the others
-    // exactly as they were. (testIssue3245_2's deleted constraint with an expression has
-    // nothing to leave behind: a constraint's value is in it.)
+    // the rest, whose expressions were left on the old numbers until FreeCAD fixed it:
+    // Constraints[4] and [5] must still be 60 and 65. That bug can't arise here: a
+    // reference is an ID, and a constraint holds its own value (testIssue3245_2's deleted
+    // constraint with an expression likewise has nothing to leave behind). So the first
+    // half only shows the deletion leaves a document the gate admits, its constraints as
+    // they were; the second is the gate's own part: a deletion that leaves constraints
+    // naming what's gone is refused, each with candidates, never dropped as FreeCAD's
+    // delGeometry drops them.
     let points = [
         fixture::point("p0a00000", -1.195999, 56.041161),
         fixture::point("p0b00000", 60.654316, 56.382877),
@@ -1096,9 +1096,8 @@ fn geometry_deleted_with_its_constraints_leaves_the_rest_as_they_were() {
         assert!(line.contains(&format!("\"value\": {value},")), "{line}");
     }
 
-    // The line and its points deleted but not its constraints: each that names them is
-    // refused, with the elements a character or two off as candidates (the gate never
-    // drops one, as FreeCAD's delGeometry does).
+    // The line and its points deleted but not its constraints: each reference to them is
+    // refused, with the elements a character or two off as candidates.
     let dangling = problems(&sketch(&points[..4], &lines[..2], &constraints));
     let found: Vec<(Option<&str>, Vec<String>)> = dangling
         .iter()

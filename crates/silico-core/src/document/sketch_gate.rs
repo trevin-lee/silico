@@ -202,6 +202,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                 format!("{field} {id} isn't the ID of any element of this sketch"),
                 with_candidates(
                     format!("name one of this sketch's points in {field}"),
+                    id,
                     &near,
                 ),
             )
@@ -449,6 +450,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                             format!("{field} {id} isn't the ID of any element of this sketch"),
                             with_candidates(
                                 format!("name {} in {field}", takes_noun(takes)),
+                                id,
                                 &near,
                             ),
                         )
@@ -814,7 +816,6 @@ impl Target {
     }
 }
 
-/// What a place takes, as messages say it.
 /// How many places two IDs differ in, character by character: a mistyped character is one,
 /// two swapped are two. Every ID has `ID_LENGTH` characters, so one with a character
 /// dropped or added isn't an ID, and the reader refuses it first.
@@ -826,18 +827,19 @@ fn differing(a: &ElementId, b: &ElementId) -> usize {
         .count()
 }
 
-/// The advice for a reference to an ID no element holds, saying what its candidates are
-/// when it has any.
-fn with_candidates(advice: String, candidates: &[String]) -> String {
+/// The advice for a reference to `id`, which no element holds, saying what its candidates
+/// are when it has any.
+fn with_candidates(advice: String, id: &ElementId, candidates: &[String]) -> String {
     if candidates.is_empty() {
         advice
     } else {
         format!(
-            "{advice}: the candidates are this sketch's IDs a character or two from it, none taken for it"
+            "{advice}: the candidates are this sketch's IDs a character or two from {id}, none taken for it"
         )
     }
 }
 
+/// What a place takes, as messages say it.
 fn takes_noun(takes: Takes) -> &'static str {
     match takes {
         Takes::Point => "a point of this sketch, or origin",
