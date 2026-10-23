@@ -715,6 +715,152 @@ fn a_line_near_where_an_arc_ends_but_not_its_drawn_end_meets_it() {
     assert_eq!(errors[0].1, vec![a.clone(), base.clone(), e.clone()]);
 }
 
+/// δ: how far inside its circle [`quarter_turn_boxed`]'s arc's end is drawn.
+const DELTA: f64 = 9e-8;
+
+/// The quarter turn r 10 about the origin from (10, 0) to (0, 10 − δ), its end drawn δ
+/// inside its circle, and a line from that end to `to`, closed back to the arc's start
+/// through `corners`. Returns the drawing, the arc, and the line from its end.
+fn quarter_turn_boxed(to: (f64, f64), corners: &[(f64, f64)]) -> (Draw, String, String) {
+    let mut d = Draw::new();
+    let o = d.point(0.0, 0.0);
+    let s = d.point(10.0, 0.0);
+    let e = d.point(0.0, 10.0 - DELTA);
+    let arc = d.arc(&o, &s, &e);
+    let mut at = d.point(to.0, to.1);
+    let line = d.line(&e, &at);
+    for &(x, y) in corners {
+        let next = d.point(x, y);
+        d.line(&at, &next);
+        at = next;
+    }
+    d.line(&at, &s);
+    (d, arc, line)
+}
+
+/// Where a line from (0, 10 − δ) at `heading` (radians from +x) leaves the circle r 10
+/// about the origin, by hand: s along it, where s² + 2s(10 − δ)·sin(heading) −
+/// (20δ − δ²) = 0 (the root of the two that's ahead), and at what angle from +x.
+fn leaves_at(heading: f64) -> (f64, f64) {
+    let (b, c) = (10.0 - DELTA, 20.0 * DELTA - DELTA * DELTA);
+    let k = b * libm::sin(heading);
+    let s = c / (k + (k * k + c).sqrt());
+    (
+        s,
+        libm::atan2(b + s * libm::sin(heading), s * libm::cos(heading)),
+    )
+}
+
+#[test]
+fn an_arcs_chord_from_its_end_drawn_inside_its_circle_doesnt_cross_it() {
+    // The quarter turn closed by its chord, from (0, 10 − δ) back to (10, 0). The chord's
+    // line meets the circle at (10, 0), which it shares, and behind its start, which is
+    // inside the circle: off the chord. It never crosses the arc. Its area, as the request
+    // measures it (the drawn ends' polygon, here only the chord, and the arc's segment by
+    // its radius and sweep, (r²/2)(θ − sin θ)), is 50(π/2 − 1) = 25π − 50; OCCT's face, its
+    // chord's end lowered by δ, is ½ × 10 × δ = 4.5e-7 more.
+    let mut d = Draw::new();
+    let o = d.point(0.0, 0.0);
+    let s = d.point(10.0, 0.0);
+    let e = d.point(0.0, 10.0 - DELTA);
+    d.arc(&o, &s, &e);
+    d.line(&e, &s);
+    let p = d.made();
+    let areas: Vec<f64> = p.regions.iter().map(|r| r.area()).collect();
+    assert_eq!(areas.len(), 1, "{p:#?}");
+    assert!(close(areas[0], 25.0 * PI - 50.0, 1e-13), "{areas:?}");
+}
+
+#[test]
+fn a_line_leaving_an_arcs_end_drawn_inside_its_circle_crosses_it_where_it_leaves_on_the_arc() {
+    // The quarter turn, and a line from its end at 30° to (4.33, 12.5), boxed back to the
+    // arc's start by (12, 12) and (12, 0). Starting inside the circle, the line leaves it
+    // 2δ = 1.8e-7 along, at (1.56e-7, 10): π/2 − 1.56e-8, on the arc (which runs to π/2),
+    // and further than the tolerance from the end it shares. It crosses the arc there.
+    let (along, angle) = leaves_at(PI / 6.0);
+    assert!((along - 1.8e-7).abs() < 1e-9, "{along}");
+    assert!(PI / 2.0 - angle > 1.5e-8, "{angle}");
+    let (d, arc, line) = quarter_turn_boxed(
+        (4.330127018922194, 12.5 - DELTA),
+        &[(12.0, 12.0), (12.0, 0.0)],
+    );
+    assert_eq!(
+        draw::named(&d.refused()),
+        [(
+            format!("arc {arc} and line {line} cross"),
+            vec![arc.clone(), line.clone()]
+        )]
+    );
+}
+
+#[test]
+fn a_line_leaving_an_arcs_end_drawn_inside_its_circle_nearly_along_it_crosses_it() {
+    // The same at 5° to (9.96, 10.87): the line leaves the circle δ/sin 5° = 1.03e-6
+    // along, at (1.03e-6, 10), π/2 − 1.03e-7, on the arc. It crosses the arc there.
+    let heading = 5f64.to_radians();
+    let (along, angle) = leaves_at(heading);
+    assert!((along - 1.0326e-6).abs() < 1e-9, "{along}");
+    assert!(PI / 2.0 - angle > 1e-7, "{angle}");
+    let (d, arc, line) = quarter_turn_boxed(
+        (
+            10.0 * libm::cos(heading),
+            10.0 - DELTA + 10.0 * libm::sin(heading),
+        ),
+        &[(12.0, 12.0), (12.0, 0.0)],
+    );
+    assert_eq!(
+        draw::named(&d.refused()),
+        [(
+            format!("arc {arc} and line {line} cross"),
+            vec![arc.clone(), line.clone()]
+        )]
+    );
+}
+
+#[test]
+fn a_line_leaving_an_arcs_end_drawn_inside_its_circle_away_from_it_doesnt_cross_it() {
+    // The quarter turn, and a line from its end at 150° to (−4.33, 12.5), boxed back to
+    // the arc's start by (12, 14) and (12, 0). It leaves the circle 1.8e-7 along, at
+    // (−1.56e-7, 10): π/2 + 1.56e-8, past the arc's end, off it. Nothing crosses.
+    let (along, angle) = leaves_at(5.0 * PI / 6.0);
+    assert!((along - 1.8e-7).abs() < 1e-9, "{along}");
+    assert!(angle - PI / 2.0 > 1.5e-8, "{angle}");
+    let (d, _, _) = quarter_turn_boxed(
+        (-4.330127018922194, 12.5 - DELTA),
+        &[(12.0, 14.0), (12.0, 0.0)],
+    );
+    assert_eq!(d.made().regions.len(), 1);
+}
+
+#[test]
+fn a_line_from_an_arcs_end_dipping_into_its_circle_crosses_it_where_it_comes_back_out() {
+    // The quarter turn r 10 from (10, 0) to (0, 10), its end on its circle, and a line
+    // from its end at α = acos(1 − 5e-9) below its tangent, towards the arc: 5e-8 inside
+    // the circle at its deepest, 10·sin α = 1e-3 along, and back out at 2e-3, at
+    // π/2 − 2α = π/2 − 2e-4, on the arc. It crosses the arc there (OCCT builds the face,
+    // its check missing a crossing so shallow), boxed back by (12, 12) and (12, 0).
+    let alpha = libm::acos(1.0 - 5e-9);
+    assert!((alpha - 1e-4).abs() < 1e-9, "{alpha}");
+    let mut d = Draw::new();
+    let o = d.point(0.0, 0.0);
+    let s = d.point(10.0, 0.0);
+    let e = d.point(0.0, 10.0);
+    let arc = d.arc(&o, &s, &e);
+    let f = d.point(4.0 * libm::cos(alpha), 10.0 - 4.0 * libm::sin(alpha));
+    let line = d.line(&e, &f);
+    let (g, h) = (d.point(12.0, 12.0), d.point(12.0, 0.0));
+    d.line(&f, &g);
+    d.line(&g, &h);
+    d.line(&h, &s);
+    assert_eq!(
+        draw::named(&d.refused()),
+        [(
+            format!("arc {arc} and line {line} cross"),
+            vec![arc.clone(), line.clone()]
+        )]
+    );
+}
+
 #[test]
 fn a_point_on_a_major_arcs_circle_in_its_gap_is_apart_from_it() {
     // The arc r 5 about the origin from (5, 0) counter-clockwise to (−3, −4), 233.13°, and

@@ -321,6 +321,26 @@ fn clockwise(curves: Vec<Curve>) -> Vec<Curve> {
 }
 
 #[test]
+fn an_arcs_chord_from_its_end_drawn_inside_its_circle_builds_its_area() {
+    // The quarter turn r 10 about the origin from (10, 0) to (0, 10 − 9e-8), its end drawn
+    // 9e-8 inside its circle, closed by its chord, which the core makes (its chord's line
+    // meets the circle only at (10, 0), shared, and behind its other end). OCCT builds it,
+    // valid: the arc's segment, 25π − 50, and the sliver its chord's lowered end adds,
+    // ½ × 10 × 9e-8 = 4.5e-7.
+    let mut d = Draw::new();
+    let o = d.point(0.0, 0.0);
+    let s = d.point(10.0, 0.0);
+    let e = d.point(0.0, 10.0 - 9e-8);
+    d.arc(&o, &s, &e);
+    d.line(&e, &s);
+    let built = area(&regions(&made(&d).unwrap())).unwrap();
+    assert!(
+        (built - (25.0 * PI - 50.0 + 4.5e-7)).abs() < 1e-12,
+        "{built}"
+    );
+}
+
+#[test]
 fn a_hole_outside_its_outline_is_not_built_as_a_face() {
     // A unit square with a 1 × 1 hole 4 mm away: no face has that hole. The kernel leaves
     // nesting to the core and says OCCT checks the faces it makes; it must not hand back a
