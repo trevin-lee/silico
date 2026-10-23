@@ -125,30 +125,37 @@ The frame is F1 and F2's.
 
 ### Where Silico differs from FreeCAD on purpose
 
-- **The x axis is stored, not derived.** FreeCAD works x out from the face's normal at every recompute (step 7). So when an edit tilts the face across a boundary of the table, the sketch turns, silently. Silico stores which axis x follows and projects it at each rebuild. On an unedited model, in the cases below, the two agree. After a tilt, Silico's sketch turns continuously. Any rule worked out from the normal alone must jump somewhere.
+- **The x axis is stored, not derived.** FreeCAD works x out from the face's normal at every recompute (step 7). So when an edit tilts the face across a boundary of the table, the sketch turns, silently. Silico stores which axis x follows and projects it at each rebuild. On an unedited model whose body FreeCAD places by the identity (begun on XY, with a primitive, or by a boolean, as every oracle case is), the two agree. After a tilt, Silico's sketch turns continuously. Any rule worked out from the normal alone must jump somewhere.
 - **How far FreeCAD jumps depends on the boundary,** which F1's "90° at 45°" understates. These are worked from the table:
   - **X and Y** (rotation about Z): no jump. Both sides give x = (−sin θ, cos θ, 0) for n = (cos θ, sin θ, 0).
   - **−Y and Z:** no jump. Both sides give +X.
   - **±X and Z:** 90°. From ±Y to (sin θ, 0, ∓cos θ).
   - **+Y and Z:** 180°. From −X to +X.
 - **A face that turns until its stored axis is parallel to its normal is refused.** FreeCAD carries on: a box's +X face turned 90° about Z takes FreeCAD to x = −X smoothly. Silico's `+y` is then parallel to n and is `reference_broken`. The agent picks another token from the candidates.
-- **Global axes, not the support's.** FreeCAD's table runs in the support object's axes (`a5c8113aaa`). Silico features have no placement of their own, so F1 uses the global axes.
+- **Global axes, not the support's** (decided 2026-10-22, open point 1 below). FreeCAD's table runs in the support object's axes (`a5c8113aaa`, written for a `Part::Box` with a rotated `Placement`). In a PartDesign body the support's axes come from how features copy placements: `ProfileBased::positionByPrevious` and `DressUp::positionByBaseFeature` copy the base's `Placement`, while primitives and `PartDesign::Boolean` keep their own, the identity by default (113: `FeatureSketchBased.cpp:126-143`, main: `:149-163`; `FeatureDressUp.cpp`). So the default depends on which feature a sketch names, not on the face. Measured in FreeCAD 1.1.3, x on a pad's +X face:
+
+  | Body | Feature whose face is sketched | FreeCAD's x |
+  |---|---|---|
+  | A pad on XZ | The pad | +Z |
+  | A pad on XZ, then an `AdditiveBox` | The box's result | +Y |
+  | A pad on XZ, then a `PartDesign::Boolean` | The boolean's result | +Y |
+  | An `AdditiveBox`, then a pad on XZ | The pad | +Y |
+
+  Silico features have no placement of their own, so the default is the table in global axes: a function of the face's normal alone, which `describe` reports. It's FreeCAD's on every body placed by the identity, and departs from it on bodies begun with a pad, pocket, revolve, or groove on `xz` or `yz` (the tables under *Worked frames*). The FreeCAD importer never takes the default: it derives the token from the sketch's actual `Placement`, and refuses, naming the sketch, one whose x is no global axis's projection. The oracle harness sets each face sketch's `AttachmentOffset` so FreeCAD's x is the document's token, so no case depends on the two defaults agreeing.
 - **The origin is the global origin's projection.** FreeCAD's is the support's placement position projected. They agree whenever that position is zero: in PartDesign bodies built on the origin planes or on a base feature, and in Silico's oracle.
 - **No tolerance for planarity.** FreeCAD accepts a face that's planar to 2e-7 RMS (step 4), and a flat B-spline face, both of which STEP imports carry. Silico refuses either for now (F1's residual). Faces Silico makes itself are expected to come out of OCCT typed as planes, but that's unverified for every feature.
 - **Never re-pointed**, where FreeCAD's TNP recovery switches the reference when the placement is unchanged.
 - **Failures as data:** `reference_broken` with candidates, and the not-planar refusal naming the face. FreeCAD instead fails the sketch with a message and leaves it at its last placement.
 - **Not in this step:** `AttachmentOffset`, the other modes, `MidPlane`, external geometry, and faces planar within a tolerance.
 
-## Open points (contradictions with A4 and F1, for the maintainer)
+## Open points (contradictions with A4 and F1)
 
 1. **"An unedited model's placement equals FreeCAD's exactly" holds only when the support's axes are global.**
    - Because of `a5c8113aaa`, FreeCAD's table runs in the support's frame, and a PartDesign body begun with a pad of an `xz` or `yz` sketch carries that plane's rotation into every feature.
    - On a box-shaped pad of an `xz` sketch, FreeCAD's x differs from F1's default on 4 of 6 faces (table below). On a pad of a `yz` sketch, it differs on 5 of 6.
-   - No FreeCAD test has a face sketch on such a body, so this comes from reading code (113: `FeatureSketchBased.cpp:126-143`, `Datums.cpp:269-270`, `Attacher.cpp:1341, 380-418`), not from a run.
-   - **Options:**
-     - (a) Pick the default in FreeCAD's frame. Walk the face's feature's `base` chain through pads, pockets, revolves, grooves, fillets, and chamfers to the first feature. A sketch on `xz` or `yz` gives that plane's axes. A primitive or a boolean gives the identity, as Part's do.
-     - (b) Keep global axes. Say so in A4, and have the oracle cases on such bodies write FreeCAD's token explicitly.
-   - Either way the token can say it: FreeCAD's x is then always ± a global axis.
+   - No FreeCAD test has a face sketch on such a body. Read from code (113: `FeatureSketchBased.cpp:126-143`, `Datums.cpp:269-270`, `Attacher.cpp:1341, 380-418`), and confirmed by runs of FreeCAD 1.1.3: all 12 faces match the tables below.
+   - The options were (a) pick the default in FreeCAD's frame, by walking the face's feature's `base` chain to the first feature, or (b) keep global axes.
+   - **Decided (b), 2026-10-22,** for the maintainer, who may veto. FreeCAD's frame is an artefact of how its features copy placements, and fragile: the same face gets another default one feature later (the table under *Where Silico differs on purpose*). (a) would give Silico a body frame it has nowhere else, a rule for every feature kind, and worse defaults: on an `xz` body FreeCAD's x points down on the −X face. F1's claim now reads "equals FreeCAD's on every body FreeCAD places by the identity", and two tests pin the line: on pads of an `xz` and a `yz` sketch, FreeCAD's x on all six faces equals the measured tables while Silico's `default_x` is the global table's; and on an XY-begun body, a primitive-begun one, and a fused pair, the two frames are equal on every planar face.
 2. **The origin differs for primitives FreeCAD positions by `Placement`** (a `Part::Box` at (px, py, pz) puts the origin at the box's corner projected). This matters only to the importer, which must move the sketch's geometry by the in-plane part of that offset, rounded to the document's nanometres. Silico's oracle builds geometry already placed, so its cases agree.
 3. **A4's tilt test has to cross the right boundary.** "A face tilted through 45° turns its sketch continuously, never a 90° snap" tells Silico from FreeCAD only across an X–Z or +Y–Z boundary. Across X–Y, FreeCAD doesn't snap either. Suggested: a box's top edge over its +X face chamfered with two distances (tilts between +X and +Z, a 90° snap in FreeCAD), and the edge over its +Y face (a 180° flip).
 4. **Ties are decided on bits.** A tie is exact only if the normal's components are bitwise equal in magnitude. Across X–Y either winner gives the same frame, but the stored token differs, and so does what a later tilt does. Across X–Z and Y–Z, a 1-ulp difference turns the default 90° or 180°. On the X–Y boundary, OCCT's components are bitwise equal: on `testPartDesignTNPChamfer`'s Face8, |nx| = |ny| = 0x1.6a09e667f3bcdp-1, with nz = −5.9e-18 (the port review's run). Whether an X–Z or Y–Z chamfer comes out as clean is unverified. FreeCAD's own 45° test (`testPartDesignTNPChamfer`) sits on the X–Y boundary, where it doesn't matter. Silico should take the tie on the normal exactly as it gets it (exactness over heuristics), and pin both X–Y winners.
@@ -240,4 +247,5 @@ Not ported: TNP `testPartDesignElementPadSketch` (544-571), which A4 lists. It h
 - A face that's gone: `reference_broken` with candidates. A cylinder's side and a flat B-spline face (a STEP face) are refused, naming the face. A later feature's face is refused as a cycle.
 - `default_x` from `describe` equals the token written at creation.
 - The document round trip: the fixture writes back byte for byte.
-- If open point 1 goes with option (a): a pad of an `xz` sketch's six faces against the oracle.
+- Open point 1's departure pinned: pads of an `xz` and a `yz` sketch, FreeCAD's x on all six faces as measured (`xz`: −Z, +Z, +X, +X, +X, −X; `yz`: +Y, +Y, −Z, +Z, +Y, −Y, for normals −X, +X, −Y, +Y, −Z, +Z), and Silico's `default_x` the global table's (`-y`, `+y`, `+x`, `-x`, `+x`, `+x`).
+- The oracle harness honours the token: each face sketch's `AttachmentOffset` turns FreeCAD's x onto the document's, so cases on `xz` and `yz` bodies may use any token.
