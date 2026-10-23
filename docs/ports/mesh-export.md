@@ -160,8 +160,8 @@ A solid's export mesh is printable when all of the following hold, checked in th
 5. **Facing outward**: each shell's signed volume, computed in `f64` from the coordinates as written, is positive for the solid's outer shell and negative for a cavity's shell (`BRepClass3d::OuterShell` says which). The solid's total is positive. FreeCAD has no such check, and its volume is an absolute value.
 6. **No degenerate triangles**: no repeated index (core.md:671), and no triangle of zero area in the coordinates as written, i.e. `f32` (core.md:588). A zero-area triangle names its face. Both FreeCAD and PrusaSlicer read `f32`, so this is checked on what they get.
 7. **Within the tolerance of the B-rep**:
-   - Every vertex is a node OCCT placed on a face, an edge, or a vertex of the solid, then rounded once to `f32`, by at most r = max|coordinate|·2⁻²⁴. That rounding isn't small beside every tolerance: a 10 mm cube at x = 5·10⁴ mm rounds by 3e-3 mm. So r counts against the tolerance below.
-   - Each edge's polygon (`Poly_PolygonOnTriangulation::Deflection()`) is within the tolerance less r, or the faces on that edge are refused, naming them. OCCT raises an edge's deflection to the gap between its vertex and its curve's end (`BRepMesh_Deflection.cxx:95`), and the face estimate below skips boundary links, so nothing else checks an edge.
+   - Every vertex is a node OCCT placed on a face, an edge, or a vertex of the solid, then rounded once to `f32`, by at most max|coordinate|·2⁻²⁴ on each axis, so by r = √3·max|coordinate|·2⁻²⁴ in all. That rounding isn't small beside every tolerance: a 10 mm cube at x = 5·10⁴ mm rounds by 3e-3 mm. So r counts against the tolerance below.
+   - Each edge's polygon's deflection, OCCT's figure for it after any raise (`Poly_PolygonOnTriangulation::Deflection()`), is within the tolerance less r, or the faces on that edge are refused, naming them. OCCT raises an edge's deflection to the gap between its vertex and its curve's end (`BRepMesh_Deflection.cxx:95`), and the face estimate below skips boundary links, so nothing else checks an edge.
    - Each face's deviation, as OCCT estimates it (`Poly_Triangulation::Deflection()` after meshing, `BRepLib.cxx:2687`), is within the tolerance less r, or the face is refused, naming it. This catches OCCT raising a face's deflection to twice its tolerance (`BRepMesh_Deflection.cxx:150`). It is OCCT's own estimate, a sample at centroids, not a bound: Silico takes it as given, as it takes OCCT's results elsewhere, and adds no measurement of its own.
    - FreeCAD never compares the deviation with the tolerance.
 
@@ -263,14 +263,13 @@ The claims about FreeCAD's several-solid and empty-shape output come from readin
 
 What M4.8's row in the M4 plan (#50) should say, given this study:
 
-- **The oracle's volume is the mesh's.** "FreeCAD reads every exported 3MF back as a solid with the volume Silico measured" has to compare with the mesh's own volume, not the B-rep's: at 0.1 mm a cylinder's mesh is 0.17% under it. FreeCAD's mesh `Volume` is a 32-bit sum that ignores the sign (above), so the case compares within that sum's precision.
+- **The oracle's volume is the mesh's.** "FreeCAD reads every exported 3MF back as a solid with the volume Silico measured" has to compare with the mesh's own volume, not the B-rep's: at 0.1 mm a cylinder's mesh is 0.17% under it. FreeCAD's mesh `Volume` is a 32-bit sum that ignores the sign, so the case doesn't use it: it compares the volume computed in doubles from `m.Topology`, as *FreeCAD tests* says.
 - **The tolerance names the angle too.** "Within the export tolerance (FreeCAD's 0.1 mm by default)" leaves out FreeCAD's angular deflection, `min(0.1, 5·tol + 0.005)` rad (`487215d2f5`), which sets the mesh below r ≈ 80 mm. The row should say whether Silico takes both, as FreeCAD does (recommended, so the oracle's meshes are comparable), or the length alone.
 - **Object names are main's, not 1.1.3's.** "Each object named by its feature" follows main (`49c80ebe5c`). 1.1.3 writes no names and its reader ignores them, so no oracle case can check a name: the name is tested by reading the archive's XML.
 - **Open meshes are refused, on purpose.** FreeCAD's fix for #10075 (`7bbc93e218`) writes every mesh as `model`, open or not. Silico's refusal is the opposite, and the row should call it a deliberate departure.
 - **A valid solid with a face OCCT can't mesh can't be exported.** Every face must be meshed (rule 1 above), so such a solid is refused, naming the face, until OCCT meshes it. The row's refusal case covers it; the docs should say there's no workaround.
-
 - **The tolerance's limits are the export's own.** The display mesh's floor (1e-4 × the diagonal) would refuse the 0.1 mm default on any part over 1000 mm across. Recommended: 1e-5 to 1e8 mm absolute, as FreeCAD's GUI takes, with the mesh's size bounded by a triangle count in the tools' limits table (amendment A1).
-- **The f32 rounding counts against the tolerance.** Rounding to `f32` moves a vertex by up to max|coordinate|·2⁻²⁴, 3e-3 mm at 5·10⁴ mm. The row's "within the export tolerance" should include it, so a part far from the origin is refused rather than written outside it.
+- **The f32 rounding counts against the tolerance.** Rounding to `f32` moves a vertex by up to √3·max|coordinate|·2⁻²⁴, about 5e-3 mm at 5·10⁴ mm. The row's "within the export tolerance" should include it, so a part far from the origin is refused rather than written outside it.
 
 ## Notes
 
