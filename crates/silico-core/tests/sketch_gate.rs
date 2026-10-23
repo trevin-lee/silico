@@ -822,3 +822,300 @@ fn a_tangent_on_at_another_circles_centre_stands() {
         r#"{"id": "k0000000", "type": "tangent_on", "a": "na000000", "at": "pa000000", "b": "cb000000", "direction": "same"}"#,
     )));
 }
+
+#[test]
+fn an_arc_whose_sent_radius_is_the_tolerance_is_refused_at_its_start_though_hypot_puts_it_beyond() {
+    // The start's own check measures center to start with libm's hypot; the request sends
+    // the radius as the square root of the squared distance. They differ by a rounding:
+    // this start is a float above 1e-7 to hypot and exactly 1e-7 to the request, so the
+    // arc's size as the kernel measures it (`Curve::size_problem`) refuses it, and the gate
+    // refuses it as it refuses any start at its center, naming the start, not the chord.
+    let start = (9.832072323405422e-8, -1.824925704604195e-8);
+    let p = [start.0, start.1];
+    assert!(silico_protocol::distance([0.0, 0.0], p) > 1e-7);
+    assert_eq!(
+        silico_protocol::squared_distance([0.0, 0.0], p).sqrt(),
+        1e-7
+    );
+    // Its end 1.5e-7 up the y axis: 1.5e-7 from the center and 1.71e-7 from the start
+    // ((0.98e-7)² + (1.68e-7)²), both above the tolerance.
+    let text = document(&fields(
+        &three_points(start, (0.0, 1.5e-7)),
+        "",
+        "",
+        ARC,
+        "",
+    ));
+    only(
+        &text,
+        "arcs.0.start",
+        "arc aa000000's start, point pb000000 at (9.832072323405422e-8, -1.824925704604195e-8), is 1e-7 mm from its center, point pa000000 at (0, 0): arcs and circles have a radius above 1e-7 mm, as the kernel measures them",
+    );
+    let error = &problems(&text)[0];
+    assert_eq!(error.elements(), ["pb000000", "pa000000", "aa000000"]);
+    assert_eq!(
+        error.suggestion(),
+        Some("draw the arc's start away from its center")
+    );
+    // A start clearly beyond, 1.01e-7 along x, is admitted with that end.
+    none(&document(&fields(
+        &three_points((1.01e-7, 0.0), (0.0, 1.5e-7)),
+        "",
+        "",
+        ARC,
+        "",
+    )));
+}
+
+#[test]
+fn a_circles_radius_past_a_kilometre_is_refused_in_the_arcs_words() {
+    let circle = |radius: f64| {
+        document(&fields(
+            POINTS,
+            "",
+            &fixture::circle("ca000000", "pa000000", radius),
+            "",
+            "",
+        ))
+    };
+    only(
+        &circle(1000001.0),
+        "circles.0.radius",
+        "circle ca000000's radius is 1000001 mm, more than the 1000000 mm (a kilometre) the solver takes",
+    );
+    assert_eq!(problems(&circle(1000001.0))[0].elements(), ["ca000000"]);
+    none(&circle(1000000.0));
+}
+
+/// The refusal of a reference to an ID no element holds: one error, at `parameter`.
+#[track_caller]
+fn unknown(text: &str, parameter: &str) -> silico_core::Error {
+    let all = problems(text);
+    assert_eq!(all.len(), 1, "{all:#?}");
+    assert_eq!(all[0].parameter(), Some(parameter), "{all:#?}");
+    assert!(
+        all[0]
+            .message()
+            .ends_with("isn't the ID of any element of this sketch"),
+        "{all:#?}"
+    );
+    all[0].clone()
+}
+
+const CANDIDATE_ADVICE: &str =
+    "the candidates are this sketch's IDs a character or two from it, none taken for it";
+
+#[test]
+fn a_curves_point_mistyped_has_the_points_a_character_or_two_off_as_candidates() {
+    // pb000001 is a character from pb000000 and two from pa000000 and pc000000: nearest
+    // first, then by ID. The line na000000 is three off, and isn't a point.
+    let text = document(&fields(
+        POINTS,
+        &fixture::line("na000000", "pa000000", "pb000001"),
+        "",
+        "",
+        "",
+    ));
+    let error = unknown(&text, "lines.0.to");
+    assert_eq!(error.candidates(), ["pb000000", "pa000000", "pc000000"]);
+    assert_eq!(
+        error.suggestion(),
+        Some(
+            format!("name one of this sketch's points in lines.0.to: {CANDIDATE_ADVICE}").as_str()
+        )
+    );
+}
+
+#[test]
+fn a_constraints_reference_mistyped_has_only_elements_its_place_takes_as_candidates() {
+    // na000001 is a character from the line na000000, and two from nb000000 (a line),
+    // ca000000 (a circle), aa000000 (an arc), and pa000000 (a point). A horizontal takes a
+    // line, so the lines are its candidates.
+    let error = unknown(
+        &with_two_lines(r#"{"id": "k0000000", "type": "horizontal", "line": "na000001"}"#),
+        "constraints.0.line",
+    );
+    assert_eq!(error.candidates(), ["na000000", "nb000000"]);
+    // An on's curve takes any curve: the circle and the arc too, the nearest first.
+    let error = unknown(
+        &with_two_lines(
+            r#"{"id": "k0000000", "type": "on", "point": "pc000000", "curve": "na000001"}"#,
+        ),
+        "constraints.0.curve",
+    );
+    assert_eq!(
+        error.candidates(),
+        ["na000000", "aa000000", "ca000000", "nb000000"]
+    );
+}
+
+#[test]
+fn a_reference_far_from_every_id_has_no_candidates_and_its_advice_says_none() {
+    let text = document(&fields(
+        POINTS,
+        &fixture::line("na000000", "pa000000", "zz999999"),
+        "",
+        "",
+        "",
+    ));
+    let error = unknown(&text, "lines.0.to");
+    assert!(error.candidates().is_empty(), "{error:#?}");
+    assert_eq!(
+        error.suggestion(),
+        Some("name one of this sketch's points in lines.0.to")
+    );
+}
+
+#[test]
+fn two_characters_swapped_are_a_candidate_and_at_most_five_are_given() {
+    // a0b1c2d3 with its last two swapped is a0b1c23d: two places off.
+    let swapped = document(&fields(
+        &[
+            fixture::point("a0b1c2d3", 0.0, 0.0),
+            fixture::point("q7w4zr8b", 10.0, 0.0),
+        ]
+        .join(", "),
+        &fixture::line("na000000", "q7w4zr8b", "a0b1c23d"),
+        "",
+        "",
+        "",
+    ));
+    assert_eq!(unknown(&swapped, "lines.0.to").candidates(), ["a0b1c2d3"]);
+    // p0000001 to p0000007 are each a character from p0000000, and p00000aa two: the
+    // first five by ID.
+    let points: Vec<String> = (1..=7)
+        .map(|k| fixture::point(&format!("p000000{k}"), f64::from(k), 0.0))
+        .chain([fixture::point("p00000aa", 0.0, 5.0)])
+        .collect();
+    let many = document(&fields(
+        &points.join(", "),
+        &fixture::line("na000000", "p0000001", "p0000000"),
+        "",
+        "",
+        "",
+    ));
+    assert_eq!(
+        unknown(&many, "lines.0.to").candidates(),
+        ["p0000001", "p0000002", "p0000003", "p0000004", "p0000005"]
+    );
+}
+
+#[test]
+fn a_constraint_naming_geometry_that_isnt_there_is_refused_not_dropped() {
+    // FreeCAD's testValidateConstraintsCase (TestSketchValidateCoincidents.py:110): two
+    // lines meeting at v1, and a constraint whose point is moved to geometry that doesn't
+    // exist. FreeCAD's validateConstraints deletes the constraint; the gate refuses it,
+    // naming it, and leaves the document as it is.
+    let points = [
+        fixture::point("pa000000", -47.680691, 18.824165000000004),
+        fixture::point("pb000000", -47.680691, -27.346279),
+        fixture::point("pc000000", 51.132679, -27.346279),
+    ]
+    .join(", ");
+    let lines = [
+        fixture::line("na000000", "pa000000", "pb000000"),
+        fixture::line("nb000000", "pb000000", "pc000000"),
+    ]
+    .join(", ");
+    let text = document(&fields(
+        &points,
+        &lines,
+        "",
+        "",
+        r#"{"id": "k0000000", "type": "on", "point": "pd000000", "curve": "nb000000"}"#,
+    ));
+    let error = unknown(&text, "constraints.0.point");
+    assert_eq!(error.code(), ErrorCode::InvalidInput);
+    assert!(
+        error.elements().contains(&"k0000000".to_owned()),
+        "{error:#?}"
+    );
+    assert_eq!(error.candidates(), ["pa000000", "pb000000", "pc000000"]);
+}
+
+#[test]
+fn geometry_deleted_with_its_constraints_leaves_the_rest_as_they_were() {
+    // FreeCAD's testIssue3245 (TestSketcherSolver.py:298): three horizontal lines, two
+    // with their start on the y axis, each with a horizontal distance (60, 65, 70 by
+    // expression). Deleting line 2 deletes its constraints (3, 4, and 8) and renumbers
+    // the rest, which lost their expressions until FreeCAD fixed it: Constraints[4] and
+    // [5] must still be 60 and 65. Here every constraint is named by its ID and holds its
+    // own value, so deleting the line, its points, and its constraints leaves the others
+    // exactly as they were. (testIssue3245_2's deleted constraint with an expression has
+    // nothing to leave behind: a constraint's value is in it.)
+    let points = [
+        fixture::point("p0a00000", -1.195999, 56.041161),
+        fixture::point("p0b00000", 60.654316, 56.382877),
+        fixture::point("p1a00000", 0.512583, 32.121155),
+        fixture::point("p1b00000", 60.654316, 31.779440),
+        fixture::point("p2a00000", 0.170867, 13.326859),
+        fixture::point("p2b00000", 61.679455, 13.326859),
+    ];
+    let lines = [
+        fixture::line("n0000000", "p0a00000", "p0b00000"),
+        fixture::line("n1000000", "p1a00000", "p1b00000"),
+        fixture::line("n2000000", "p2a00000", "p2b00000"),
+    ];
+    let constraints = [
+        r#"{"id": "c0000000", "type": "on", "point": "p0a00000", "curve": "y_axis"}"#,
+        r#"{"id": "c0000001", "type": "horizontal", "line": "n0000000"}"#,
+        r#"{"id": "c0000002", "type": "horizontal", "line": "n1000000"}"#,
+        r#"{"id": "c0000003", "type": "on", "point": "p2a00000", "curve": "y_axis"}"#,
+        r#"{"id": "c0000004", "type": "horizontal", "line": "n2000000"}"#,
+        r#"{"id": "c0000005", "type": "on", "point": "p1a00000", "curve": "y_axis"}"#,
+        r#"{"id": "c0000006", "type": "distance_x", "a": "p0a00000", "b": "p0b00000", "value": 60, "driving": true}"#,
+        r#"{"id": "c0000007", "type": "distance_x", "a": "p1a00000", "b": "p1b00000", "value": 65, "driving": true}"#,
+        r#"{"id": "c0000008", "type": "distance_x", "a": "p2a00000", "b": "p2b00000", "value": 70, "driving": true}"#,
+    ];
+    let sketch = |points: &[String], lines: &[String], constraints: &[&str]| {
+        document(&fields(
+            &points.join(", "),
+            &lines.join(", "),
+            "",
+            "",
+            &constraints.join(", "),
+        ))
+    };
+    let constraints_of = |text: &str| match &read(text.as_bytes()).unwrap().features[0].operation {
+        Operation::Sketch(s) => s.constraints.clone(),
+        other => panic!("{other:?}"),
+    };
+    let before = sketch(&points, &lines, &constraints);
+    none(&before);
+    let kept = [0, 1, 2, 5, 6, 7].map(|k| constraints[k]);
+    let after = sketch(&points[..4], &lines[..2], &kept);
+    none(&after);
+    let mut expected = constraints_of(&before);
+    expected.retain(|c| !["c0000003", "c0000004", "c0000008"].contains(&c.id.as_str()));
+    assert_eq!(constraints_of(&after), expected);
+    // 60 and 65 by hand, under their own IDs.
+    let written = write(&read(after.as_bytes()).unwrap()).unwrap();
+    for (id, value) in [("c0000006", "60"), ("c0000007", "65")] {
+        let at = written.find(id).unwrap();
+        let line = written[at..].lines().next().unwrap();
+        assert!(line.contains(&format!("\"value\": {value},")), "{line}");
+    }
+
+    // The line and its points deleted but not its constraints: each that names them is
+    // refused, with the elements a character or two off as candidates (the gate never
+    // drops one, as FreeCAD's delGeometry does).
+    let dangling = problems(&sketch(&points[..4], &lines[..2], &constraints));
+    let found: Vec<(Option<&str>, Vec<String>)> = dangling
+        .iter()
+        .map(|e| (e.parameter(), e.candidates().to_vec()))
+        .collect();
+    let near_p2a = ["p0a00000", "p1a00000", "p0b00000", "p1b00000"].map(String::from);
+    let near_p2b = ["p0b00000", "p1b00000", "p0a00000", "p1a00000"].map(String::from);
+    assert_eq!(
+        found,
+        [
+            (Some("constraints.3.point"), near_p2a.to_vec()),
+            (
+                Some("constraints.4.line"),
+                ["n0000000", "n1000000"].map(String::from).to_vec()
+            ),
+            (Some("constraints.8.a"), near_p2a.to_vec()),
+            (Some("constraints.8.b"), near_p2b.to_vec()),
+        ]
+    );
+}

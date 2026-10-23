@@ -2,7 +2,10 @@
 //! rules for sketches*): what FreeCAD finds only when it solves, or never, refused here,
 //! naming the field and the element.
 //! - Every ID is unique within its sketch; every reference names an element of a kind its
-//!   place takes.
+//!   place takes. A reference to an ID no element holds has as candidates the IDs of a
+//!   kind it takes a character or two from it, a mistyped or swapped one, none taken for it.
+//!   FreeCAD's `validateConstraints` deletes a constraint naming missing geometry
+//!   (`testValidateConstraintsCase`); the gate refuses it, naming it.
 //! - Nothing is drawn with no size as the kernel measures it (a line's ends, a circle's
 //!   radius, an arc's center to its start and to its end, and its chord, each at most
 //!   1e-7 mm, `LENGTH_TOLERANCE`, by `Curve::size_problem` as the profile converts it), or
@@ -24,9 +27,11 @@ use silico_protocol::{
     MAX_SKETCH_VALUES, SizeProblem, format_number, squared_distance,
 };
 
+use super::PROBLEMS_LISTED;
 use super::sketch::{ElementId, ElementKind, Form, Reference, Sketch, Takes, TangentSide};
 use crate::Error;
 use crate::profile::{Drawn, sent, unsigned};
+use crate::references::CANDIDATES;
 
 /// What a line or arc too small is refused for: its ends within the kernel's tolerance.
 const ENDS_RULE: &str =
@@ -142,6 +147,31 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
         }
     }
     let lookup = |id: &ElementId| by_id.get(id).copied();
+    // The IDs a reference to `id`, which no element holds, most likely meant: each of an
+    // element that `fits` its place and at most two characters from `id` (one mistyped, or
+    // two swapped), the nearest first, then by ID; at most `CANDIDATES`. Only the first
+    // `PROBLEMS_LISTED` such references get them, as no more of a document's problems are
+    // listed, so a sketch of thousands doesn't compare each with every ID.
+    let unknown = std::cell::Cell::new(0usize);
+    let candidates = |id: &ElementId, fits: &dyn Fn(Place) -> bool| -> Vec<String> {
+        let seen = unknown.get();
+        unknown.set(seen + 1);
+        if seen >= PROBLEMS_LISTED {
+            return Vec::new();
+        }
+        let mut near: Vec<(usize, &ElementId)> = by_id
+            .iter()
+            .filter(|&(_, &place)| fits(place))
+            .map(|(&other, _)| (differing(id, other), other))
+            .filter(|&(n, _)| n <= 2)
+            .collect();
+        // Stable, so IDs as near stay in the map's order, by ID.
+        near.sort_by_key(|&(n, _)| n);
+        near.into_iter()
+            .take(CANDIDATES)
+            .map(|(_, other)| other.as_str().to_owned())
+            .collect()
+    };
     // Where a point of this sketch is drawn.
     let at_of = |id: &ElementId| match lookup(id) {
         Some(Place {
@@ -166,11 +196,16 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
             false
         }
         None => {
+            let near = candidates(id, &|place| place.kind == ElementKind::Point);
             add(refuse(
                 &field,
                 format!("{field} {id} isn't the ID of any element of this sketch"),
-                format!("name one of this sketch's points in {field}"),
-            ));
+                with_candidates(
+                    format!("name one of this sketch's points in {field}"),
+                    &near,
+                ),
+            )
+            .with_candidates(near));
             false
         }
     };
@@ -239,8 +274,9 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
             add(refuse(
                 &format!("{at}.radius"),
                 format!(
-                    "{at}.radius is {} mm: a circle's radius is at most {} mm (a kilometre)",
-                    circle.radius,
+                    "circle {}'s radius is {} mm, more than the {} mm (a kilometre) the solver takes",
+                    circle.id,
+                    format_number(radius),
                     format_number(MAX_LENGTH)
                 ),
                 "draw the circle smaller".to_owned(),
@@ -267,6 +303,25 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                 ));
             }
         }
+        // An end `length` from the center, at most the tolerance: at it, with no angle.
+        let at_center = |key: &str, id: &ElementId, p: [f64; 2], c: [f64; 2], length: f64| {
+            refuse(
+                &format!("{at}.{key}"),
+                format!(
+                    "arc {}'s {key}, point {id} at ({}, {}), is {} mm from its center, point {} at ({}, {}): {RADIUS_RULE}",
+                    arc.id,
+                    format_number(p[0]),
+                    format_number(p[1]),
+                    format_number(length),
+                    arc.center,
+                    format_number(c[0]),
+                    format_number(c[1])
+                ),
+                format!("draw the arc's {key} away from its center"),
+            )
+            .with_element(id.as_str())
+            .with_element(arc.center.as_str())
+        };
         // Drawn with no size as the kernel measures it, or with a radius past what the
         // solver takes: the radius is the center's distance to the start (D2, arcs), and
         // an end within the tolerance of the center is at it, with no angle.
@@ -283,22 +338,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                 let length = silico_protocol::distance(c, p);
                 if length <= LENGTH_TOLERANCE {
                     sized = false;
-                    add(refuse(
-                        &format!("{at}.{key}"),
-                        format!(
-                            "arc {}'s {key}, point {id} at ({}, {}), is {} mm from its center, point {} at ({}, {}): {RADIUS_RULE}",
-                            arc.id,
-                            format_number(p[0]),
-                            format_number(p[1]),
-                            format_number(length),
-                            arc.center,
-                            format_number(c[0]),
-                            format_number(c[1])
-                        ),
-                        format!("draw the arc's {key} away from its center"),
-                    )
-                    .with_element(id.as_str())
-                    .with_element(arc.center.as_str()));
+                    add(at_center(key, id, p, c, length));
                 }
             }
             if let Some(p) = at_of(&arc.start) {
@@ -307,8 +347,9 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                     add(refuse(
                         &format!("{at}.start"),
                         format!(
-                            "arc {}'s radius, from its center to its start, is {radius} mm, more than the {} mm (a kilometre) the solver takes",
+                            "arc {}'s radius, from its center to its start, is {} mm, more than the {} mm (a kilometre) the solver takes",
                             arc.id,
+                            format_number(radius),
                             format_number(MAX_LENGTH)
                         ),
                         "draw the arc smaller".to_owned(),
@@ -340,27 +381,26 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                     end: b,
                 })
             {
-                let message = match problem {
-                    SizeProblem::Ends(d) => format!(
-                        "arc {}'s ends, points {} and {}, are {} mm apart: {ENDS_RULE}",
-                        arc.id,
-                        arc.start,
-                        arc.end,
-                        format_number(d)
-                    ),
-                    SizeProblem::Radius(r) => format!(
-                        "arc {}'s radius is {} mm: {RADIUS_RULE}",
-                        arc.id,
-                        format_number(r)
-                    ),
-                };
-                add(refuse(
-                    &format!("{at}.end"),
-                    message,
-                    "draw a circle instead, or open the arc".to_owned(),
-                )
-                .with_element(arc.start.as_str())
-                .with_element(arc.end.as_str()));
+                add(match problem {
+                    SizeProblem::Ends(d) => refuse(
+                        &format!("{at}.end"),
+                        format!(
+                            "arc {}'s ends, points {} and {}, are {} mm apart: {ENDS_RULE}",
+                            arc.id,
+                            arc.start,
+                            arc.end,
+                            format_number(d)
+                        ),
+                        "draw a circle instead, or open the arc".to_owned(),
+                    )
+                    .with_element(arc.start.as_str())
+                    .with_element(arc.end.as_str()),
+                    // The radius as the request carries it, the square root of the squared
+                    // distance from the center to the start, at most the tolerance where
+                    // the start's own distance, `hypot`'s, is a rounding above it: refused
+                    // as the start's check refuses it, as the start's.
+                    SizeProblem::Radius(r) => at_center("start", &arc.start, a, center, r),
+                });
             }
         }
         if start && end && arc.start == arc.end && arc.start != arc.center {
@@ -403,11 +443,16 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                 Reference::Element(id) => match lookup(id) {
                     Some(place) => Some(Target::Element(place)),
                     None => {
+                        let near = candidates(id, &|place| Target::Element(place).fits(takes));
                         add(refuse(
                             &field,
                             format!("{field} {id} isn't the ID of any element of this sketch"),
-                            format!("name {} in {field}", takes_noun(takes)),
-                        ));
+                            with_candidates(
+                                format!("name {} in {field}", takes_noun(takes)),
+                                &near,
+                            ),
+                        )
+                        .with_candidates(near));
                         None
                     }
                 },
@@ -770,6 +815,29 @@ impl Target {
 }
 
 /// What a place takes, as messages say it.
+/// How many places two IDs differ in, character by character: a mistyped character is one,
+/// two swapped are two. Every ID has `ID_LENGTH` characters, so one with a character
+/// dropped or added isn't an ID, and the reader refuses it first.
+fn differing(a: &ElementId, b: &ElementId) -> usize {
+    a.as_str()
+        .chars()
+        .zip(b.as_str().chars())
+        .filter(|(x, y)| x != y)
+        .count()
+}
+
+/// The advice for a reference to an ID no element holds, saying what its candidates are
+/// when it has any.
+fn with_candidates(advice: String, candidates: &[String]) -> String {
+    if candidates.is_empty() {
+        advice
+    } else {
+        format!(
+            "{advice}: the candidates are this sketch's IDs a character or two from it, none taken for it"
+        )
+    }
+}
+
 fn takes_noun(takes: Takes) -> &'static str {
     match takes {
         Takes::Point => "a point of this sketch, or origin",

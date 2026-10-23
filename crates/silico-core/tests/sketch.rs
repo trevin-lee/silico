@@ -635,7 +635,7 @@ fn sizes_and_places_past_a_kilometre_or_at_zero_are_refused() {
         ),
         (
             "1000001",
-            "circles.0.radius is 1000001 mm: a circle's radius is at most 1000000 mm (a kilometre)",
+            "circle ca000000's radius is 1000001 mm, more than the 1000000 mm (a kilometre) the solver takes",
         ),
     ] {
         let text = document(&fields(

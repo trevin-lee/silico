@@ -33,8 +33,9 @@ impl Broken {
     }
 }
 
-/// At most this many candidates for a broken name.
-const CANDIDATES: usize = 5;
+/// At most this many candidates for a broken name, or for a sketch's reference to an ID no
+/// element holds.
+pub(crate) const CANDIDATES: usize = 5;
 
 /// At most this many characters of a reference in its error's `elements`.
 const SHOWN: usize = 200;

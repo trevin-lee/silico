@@ -286,6 +286,9 @@ pub enum DebugOp {
     ReplyOutOfTurn(OutOfTurn),
     /// From now on, answer operations wrongly in this way.
     Misbehave(Misbehavior),
+    /// Throw `std::bad_alloc` in the worker's C++, as an allocation that fails does, and
+    /// reply with the refusal the worker reads it as (the sketch worker's).
+    ThrowBadAlloc,
 }
 
 /// How [`DebugOp::Misbehave`] makes the test worker answer.
@@ -330,6 +333,7 @@ impl DebugOp {
                 "DebugMisbehaveHistoryForNoInputs"
             }
             DebugOp::Misbehave(Misbehavior::ForgedRefusal) => "DebugMisbehaveForgedRefusal",
+            DebugOp::ThrowBadAlloc => "DebugThrowBadAlloc",
         }
     }
 }
