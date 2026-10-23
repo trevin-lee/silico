@@ -2512,6 +2512,19 @@ fn a_circle_or_arc_that_cant_be_built_is_named_and_a_free_circle_listed() {
             "{at}"
         );
     }
+    // With no equations to diagnose, PlaneGCS lists no free values, and every point,
+    // circle, and arc is free (FreeCAD's reading): shapes2's arc, three circles, and seven
+    // points.
+    let mut none = answer(&t, t.system.values.clone(), SolveStatus::Success);
+    none.no_equations = true;
+    let s = read_back(&t, &none).unwrap();
+    let mut every = vec!["a0000001".to_owned()];
+    every.extend((1..=3).map(|i| format!("c000000{i}")));
+    every.extend((1..=7).map(|i| format!("p000000{i}")));
+    assert_eq!(
+        s.free.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        every
+    );
     // Free values out of order are a reply that can't be trusted.
     let mut unordered = answer(&t, t.system.values.clone(), SolveStatus::Success);
     unordered.free = vec![Value(21), Value(20)];
