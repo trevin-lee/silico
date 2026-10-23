@@ -1,6 +1,6 @@
 # Measurement
 
-What FreeCAD's Measure module measures, for each kind of element and each pair of kinds, and what it refuses: the study for M4.5 (Measurement, docs/roadmap/m4-mcp.md), which measures elements by stable name: the least distance between two elements and the points where it's met, the angle between two planar faces or two lines, an edge's length, a circle's or a cylinder's radius and diameter, a vertex's position, and a solid's mass properties.
+What FreeCAD's Measure module measures, for each kind of element and each pair of kinds, and what it refuses (what `distance` and `angle` mean in Silico is decided: *Decided (Fable, 2026-10-23)*, below): the study for M4.5 (Measurement, docs/roadmap/m4-mcp.md), which measures elements by stable name: the least distance between two elements and the points where it's met, the angle between two planar faces or two lines, an edge's length, a circle's or a cylinder's radius and diameter, a vertex's position, and a solid's mass properties.
 
 Sources: FreeCAD **1.1.3**, the oracle's release (tag `145529fe74`, read at the tag from GitHub, since the maintainer's clone has no tags), its OCCT 7.9.3, and main at `876271d660` (2026-10-04) for history and for where main differs. 1.1.3 branched from main at `af2d42a4aa` (2025-11-13), and main has rewritten much of the module since, so this note describes 1.1.3's code and says where main differs. Every value quoted as observed was printed by the oracle (`freecadcmd`, scripts in `/tmp/measure-study/`), through the measure document objects (`Measure::MeasureDistance` and the rest) or `Measure.Measurement`, on `Part::Feature`s holding the shapes.
 
@@ -271,6 +271,24 @@ By the project's rules: exact results, structured refusals, determinism, and beh
 - **Signed components.** FreeCAD's `DistanceX`, `Y`, `Z` are absolute values. Silico returns the points; their difference is signed and exact.
 - **No document objects or GUI.** FreeCAD's measures are document objects that recompute when their links change, with view providers, labels, and units chosen for display. Silico's are commands of the core's API (M4.1), each returning a value; nothing is stored in the document. Results are in millimetres and degrees, as the document's numbers are.
 - **Finite results only.** The worker returns raw measures, checked finite before they leave it (as `check_freecad_finite` does for M1's), and the core decides; a degenerate case (a zero-length chord, a direction that isn't one) is a refusal, never a value.
+
+### Decided (Fable, 2026-10-23; the maintainer's veto open)
+
+Decisions 1 to 3, and 5 for distance, are decided; the full record, with its reasons, the build, every test, and the residual risks, is `~/.cache/silico-review/m4-measure-fable.md` on the maintainer's machine. What M4.5's design takes from it:
+
+- **Two commands, `distance` and `angle`**, each taking exactly two elements by stable name (`{"elements": [a, b], "feature": id | null}`) and returning one fixed shape, every field always present and `null` where it doesn't apply. Lengths are `Length`, angles `Angle`, points `[Length; 3]` in global coordinates.
+- **`distance`** returns `{distance, from, to, center_distance, normal_distance}`.
+  - `distance` is always the least distance between the elements as bounded, for any pair (curved faces included, following main).
+  - `from` and `to` are one pair where it's met: among the kernel's solutions, the one whose two points, as an unordered pair, come first by (x, y, z). A witness, not an identity, so this isn't a tie broken among results (decision 3's recommendation, every tied pair, is not taken).
+  - `center_distance` is present when both elements are a vertex, circle, arc, or cylinder face (its axis as an infinite line): rims r3 and r4 with centres 20 apart read 13 and 20.
+  - `normal_distance` is present when both are straight edges or planar faces whose `angle` reads exactly 0 or 180: the perpendicular distance from the second's reference point (a face's centre of area, an edge's midpoint) to the first's carrier.
+- **`angle`** returns `{angle, vertex}`, computed in the core with `libm`'s `atan2`, never `acos`.
+  - Two planar faces: `atan2(|n1 × n2|, −n1 · n2)` over their outward normals, 0 to 180, the angle of the wedge both normals point into, the same whether or not they share an edge (so a fillet can't change it). A 30° wedge reads 30, a 45° chamfer against the top 135, parallel faces 0 or 180, never refused. Not the recommendation above: "dihedral when sharing an edge, else 0 to 90" would turn 150 into 30 when a fillet is added.
+  - Two straight edges sharing exactly one B-rep vertex: the angle at it, 0 to 180, with `vertex` naming it. Other straight edges: 0 to 90 between their lines.
+  - A straight edge and a planar face: 0 to 90.
+  - Anything else (a vertex, a curved edge, a curved face) is refused, naming the element, its kind and type, and what applies to it.
+- **To check on SolidWorks:** whether two faces of a 30° wedge read 30 or 150. If 150, the face formula flips; the shape stays.
+- **Still open:** decision 4 (mass properties precise or as FreeCAD integrates them), and whether an angle takes a planar face whose surface isn't a plane (decision 5's second half).
 
 ## FreeCAD tests
 
