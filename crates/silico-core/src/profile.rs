@@ -1378,9 +1378,12 @@ fn between(a: &Shape, b: &Shape) -> f64 {
             let w = sub(c2, c1);
             let d = distance(c1, c2);
             if d == 0.0 {
-                // On one centre: two circles are their radii apart; an arc's ends, the
-                // caller's, are on the other if any of it is.
-                return if a1.is_none() && a2.is_none() {
+                // On one centre: a circle and anything round on it are their radii apart,
+                // all along the arc if one is (its ends' distances from the circle, the
+                // caller's, can differ from that by an ulp of their own measure). Two arcs
+                // are apart unless they share a stretch, which `along` has found first, or
+                // an end comes near the other, which the caller has.
+                return if a1.is_none() || a2.is_none() {
                     (r1 - r2).abs()
                 } else {
                     f64::INFINITY
