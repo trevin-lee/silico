@@ -120,17 +120,17 @@ jobs:
     timeout-minutes: ${{ inputs.filler != '' && 60 || 1440 }}
     strategy:
       fail-fast: false
-      # As many at once as there are runners labelled `mutants` (silico-5 to -12, through
-      # /etc/ci-runner/labels on the runner VM). silico-1 to -4 carry only `gate`, so gates
-      # always have four runners however many shards are queued. silico-9 to -12 carry
-      # `mutants` and `filler`, not `pve`, so no gate (nor a job from a branch older than
-      # these labels, which asks for pve) runs there and grows a gate's build; mutants ask
-      # for `mutants`, not `pve`, to reach them. The bench and the oracle sweep share this
+      # As many at once as there are runners labelled `mutants` (silico-5 to -12 and -15 to
+      # -18, through /etc/ci-runner/labels on the runner VM). silico-1 to -4 carry only
+      # `gate`, so gates always have four runners however many shards are queued. silico-9
+      # to -12 (also `filler`) and -15 to -18 carry `mutants`, not `pve`, so no gate (nor a
+      # job from a branch older than these labels, which asks for pve) runs there and grows
+      # a gate's build; mutants ask for `mutants`, not `pve`, to reach them. The bench and the oracle sweep share this
       # pool too. A run's shards spread over every free mutants runner, so one long run can
       # hold the pool for hours. The plan and summary take seconds and run on the runners
       # labelled control (silico-13, -14), so they never queue behind shards. The runners
       # share one VM, and free runners don't keep its CPU free: see the shard's share below.
-      max-parallel: 8
+      max-parallel: 12
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:
@@ -176,12 +176,14 @@ jobs:
           # A filler run is cut off after an hour: in random order (cargo-mutants shuffles each
           # shard's share after sharding), so each turn at a slice reaches different mutants.
           if [ -n "$FILLER" ]; then args+=(--shuffle); fi
-          # An eighth of the machine each: eight shards can run at once (max-parallel above). Six
-          # at a sixth each already kept the VM 95% busy (4.5% idle over 10 minutes,
-          # 2026-10-23), so more threads per shard add no throughput, only contention and
-          # memory; and a thread per vCPU across all eight gives each test about a whole CPU,
-          # well inside nextest's 2-minute limit per test, whose timeout would count a mutant
-          # as caught. (On a full machine a gate can fail a test still held to a wall clock:
+          # A twelfth of the machine each (2 threads of 30): twelve shards can run at once
+          # (max-parallel above), so a recheck starts at once beside long runs. Six at a sixth
+          # each already kept the VM 95% busy (4.5% idle over 10 minutes, 2026-10-23), so more
+          # threads per shard add no throughput, only contention and memory. And the threads
+          # of all twelve stay under a thread per vCPU: under four gates and ten shards at 3
+          # (2026-10-23), a baseline's slowest test held to nextest's 2-minute limit took 76 s,
+          # and more threads would push it toward that limit, whose timeout would count a
+          # mutant as caught. (On a full machine a gate can fail a test still held to a wall clock:
           # tests/mutants.sh lists them.) The shard runs at the lowest priority (nice 19,
           # below): it's background work, so it keeps its share when the runner VM is idle and
           # yields the CPU to gates when it isn't. Retry a failed test here, since one that
@@ -196,7 +198,7 @@ jobs:
           # a target directory of its own (below): dependencies' fingerprints hold their source's
           # absolute path in the Cargo home, so sharing target-mutants/ with real shards would
           # make each switch between them rebuild everything.
-          running=8
+          running=12
           priority=(nice -n 19)
           if [ -n "$FILLER" ]; then
             running=4
