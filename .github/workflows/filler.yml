@@ -4,9 +4,12 @@
 #
 # It starts nothing while any run or job is queued (a gate, a real run's shards, or a
 # filler run waiting for runners), or while a filler run (mutants or the oracle sweep) is
-# queued or running. Otherwise it counts the runners labelled mutants (silico-3 to -12)
-# that are running a job, real runs' shards included, and gives a filler run the rest, if
-# at least two are free. In order:
+# queued or running. Free runners aren't idle CPU: the VM is saturated by about six
+# shards, and a filler shard beside real ones only slows them. So it fills only when more
+# than a fifth of the VM's CPUs were idle over the last 5 minutes (the load average; this
+# job runs on the VM), with as many shards as the idle CPUs feed at a shard's share (a
+# tenth of the VM, mutants.yml) and the free runners labelled mutants (silico-3 to -12)
+# hold, if that's at least two. In order:
 #
 #   a. Main's new commits: mutants in what main changed in its source since the commit the
 #      last filler `a` run tested (or since main's parent, at first).
@@ -103,9 +106,20 @@ jobs:
           fi
           # The runners labelled mutants that are running a job, of any run.
           busy=$(awk -F '\t' '$1 == "in_progress" && $2 ~ /^pve-silico-([3-9]|1[0-2])-/' <<<"$jobs" | wc -l)
+          # The CPUs idle over the last 5 minutes: those the load average leaves.
+          cpus=$(nproc)
+          idle=$(awk -v cpus="$cpus" '{ i = cpus - $2; print (i > 0 ? int(i) : 0) }' /proc/loadavg)
+          if [ $((idle * 5)) -le "$cpus" ]; then
+            skip "$idle of $cpus CPUs are idle (load $(cut -d ' ' -f 2 /proc/loadavg)), a fifth or less"
+          fi
+          # A shard's share of the VM, as mutants.yml gives it: a tenth, at least 2.
+          share=$((cpus / pool > 2 ? cpus / pool : 2))
           shards=$((pool - busy))
-          if [ "$shards" -lt 2 ]; then skip "$busy of $pool mutants runners are busy"; fi
-          say "$shards of $pool mutants runners are free"
+          if [ $((idle / share)) -lt "$shards" ]; then shards=$((idle / share)); fi
+          if [ "$shards" -lt 2 ]; then
+            skip "room for $shards shards: $busy of $pool mutants runners busy, $idle of $cpus CPUs idle"
+          fi
+          say "Room for $shards shards: $busy of $pool mutants runners busy, $idle of $cpus CPUs idle"
 
           # The latest finished filler runs that weren't cancelled, newest first.
           mutants_runs=$(gh run list --workflow mutants.yml --limit 300 --json displayTitle,conclusion \
