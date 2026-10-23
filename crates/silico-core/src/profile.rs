@@ -1083,10 +1083,11 @@ fn meetings(
 /// `shared_as` takes them as one.
 /// - Sharing none, they meet if they come within the tolerance anywhere.
 /// - Sharing one or two, they meet if their lines or circles cross again on both curves,
-///   further than the tolerance from the shared points; if an end of either, not shared,
-///   is within the tolerance of the other; or if they lie on one line or circle and run
-///   along each other beyond the shared points. Near a shared point they may be as close
-///   as tangent neighbours are.
+///   further than the tolerance from the shared points (a line, where it comes back out
+///   of a circle it has dipped into deeper than the tolerance); if an end of either, not
+///   shared, is within the tolerance of the other; or if they lie on one line or circle
+///   and run along each other beyond the shared points. Near a shared point they may be
+///   as close as tangent neighbours are.
 fn meeting(
     a: &ProfileCurve<'_>,
     b: &ProfileCurve<'_>,
