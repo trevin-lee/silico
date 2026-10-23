@@ -274,7 +274,7 @@ By the project's rules: exact results, structured refusals, determinism, and beh
 
 ### Decided (Fable, 2026-10-23; the maintainer's veto open)
 
-Decisions 1 to 3, and 5 for distance, are decided; the full record, with its reasons, the build, every test, and the residual risks, is `~/.cache/silico-review/m4-measure-fable.md` on the maintainer's machine. What M4.5's design takes from it:
+Decisions 1 to 5 are decided. For 1 to 3 and 5's distance, the full record, with its reasons, the build, every test, and the residual risks, is `~/.cache/silico-review/m4-measure-fable.md` on the maintainer's machine. What M4.5's design takes from it:
 
 - **Two commands, `distance` and `angle`**, each taking exactly two elements by stable name (`{"elements": [a, b], "feature": id | null}`) and returning one fixed shape, every field always present and `null` where it doesn't apply. Lengths are `Length`, angles `Angle`, points `[Length; 3]` in global coordinates.
 - **`distance`** returns `{distance, from, to, center_distance, normal_distance}`.
@@ -288,7 +288,8 @@ Decisions 1 to 3, and 5 for distance, are decided; the full record, with its rea
   - A straight edge and a planar face: 0 to 90.
   - Anything else (a vertex, a curved edge, a curved face) is refused, naming the element, its kind and type, and what applies to it.
 - **To check on SolidWorks:** whether two faces of a 30° wedge read 30 or 150. If 150, the face formula flips; the shape stays.
-- **Still open:** decision 4 (mass properties precise or as FreeCAD integrates them), and whether an angle takes a planar face whose surface isn't a plane (decision 5's second half).
+- **Mass properties (decision 4), decided by the maintainer's standing choice** of accuracy over FreeCAD's parity in measurement (2026-10-09: summaries integrate adaptively although FreeCAD uses OCCT's default): volume, area, and centre of mass come from M1's `measure` (a relative 1e-9), the numbers a feature's fingerprint holds, and are compared with FreeCAD 1.1.3 through `measure_as_freecad` at the oracle's tolerance. M4.5's row reads "Mass properties of a solid (volume, area, center of mass, as M1's `measure` gives them, precise to a relative 1e-9; compared with FreeCAD through `measure_as_freecad`)" in place of "as M1 measures them as FreeCAD does".
+- **A face whose surface isn't a plane (decision 5's second half), decided by the recommended default, the maintainer's veto open:** an angle with it is refused, though 1.1.3 takes a face `GeomLib_IsPlanarSurface` finds planar within a tolerance (`130d5618c2`): that's a heuristic, and only a `Geom_Plane` is planar, as only an edge `describe` classifies as straight is straight. The refusal's suggestion names the face's own surface type (a B-spline surface, say). M4.5's tests read "a measure FreeCAD 1.1.3 refuses for a pair of kinds is refused, except distance to curved faces, which main measures; and an angle with a planar face whose surface isn't a plane is refused, which 1.1.3 accepts".
 
 ## FreeCAD tests
 
