@@ -2,6 +2,8 @@
 
 A part written as a 3MF file a slicer prints from: each solid tessellated within an export tolerance, its faces' triangles joined into one closed mesh, checked, and written as a `type="model"` object in millimetres, in an archive whose bytes are always the same. This is M4.8 (docs/roadmap/m4-mcp.md on the `m4-plan` branch). It builds on the display mesh (docs/ports/tessellation.md), which meshes each face on its own, and doesn't repeat it.
 
+**Built (the export core, as a library):** `silico_kernel::export_mesh` and `Op::ExportMesh` report each face's triangulation and its polygons on its edges; `silico_core::export::printable` joins and checks them in the order below; `silico_core::export::three_mf` writes the archive. The worker meshes with the tolerance less the most 32-bit rounding can move the part's vertices (`export_deflection`, from its bounding box): OCCT's own edge figure is the deflection it was asked for, not a measurement, so only meshing finer leaves room for the rounding, and a tolerance that would leave less than 1e-5 mm is refused, naming it. The `export` command and `silico export` wait for M4.1's design.
+
 Citations are to FreeCAD 1.1.3 (tag `1.1.3`, commit `145529fe74`) unless marked **main** (`876271d660`, 2026-10-07). OCCT citations are to 7.9.3, the version Silico and the oracle share. The 3MF Core Specification is v1.4.0 (`3MFConsortium/spec_core`, `373e91d066`), cited as `core.md:line`; PrusaSlicer is 2.9.6 (`src/libslic3r/Format/3mf.cpp`), cited as `PS 3mf.cpp:line`. The fetched copies are in `/tmp/mesh-export-study/`.
 
 ## What FreeCAD does
@@ -172,7 +174,7 @@ A solid's export mesh is printable when all of the following hold, checked in th
 - **Meshed single-threaded, on a copy** (as the display mesh is). FreeCAD meshes in parallel (`TopoShape.cpp:3664`, since `7822daf1f2`, 2020). Not verified: whether OCCT's parallel meshing gives the same triangles.
 - **Faces joined by topology, not by distance** (above).
 - **`INTERNAL` and `EXTERNAL` faces are left out.** They bound no change of material, and including them makes non-manifold edges. FreeCAD includes them, wound as reversed (`Tools.cpp:318-320`). This is a recommendation, open for the maintainer.
-- **One object per feature's solid**, named by the feature's `name`, with the feature's ID as `partnumber` (an attribute the core schema has, core.md:1073). FreeCAD 1.1.3 writes no name, and main uses the `Label`. Names are XML-escaped. Tab, LF and CR are written as character references, because a parser would turn them into spaces in an attribute. A name with any other control character can't be written in XML 1.0 at all, so the export is refused, naming the feature.
+- **One object per feature**, its solids in one mesh but each joined on its own, so two that touch share no vertex (FreeCAD 1.1.3 reads them back as they are, 16 points for two cubes touching along an edge). Named by the feature's `name`, with the feature's ID as `partnumber` (an attribute the core schema has, core.md:1073). FreeCAD 1.1.3 writes no name, and main uses the `Label`. Names are XML-escaped. Tab, LF and CR are written as character references, because a parser would turn them into spaces in an attribute. A name with any other control character can't be written in XML 1.0 at all, so the export is refused, naming the feature.
 - **Vertices in document coordinates, with no `transform`** (it's optional, core.md:1126). FreeCAD writes each placement as the item's transform, including identity.
 - **Coordinates as the shortest decimal that reads back to the same `f32`** (Rust's `{}` for `f32`). This is exact for every known reader, matches FreeCAD's `float` precision without its 6-digit rounding, and doesn't depend on the locale. `-0` is written as `0`.
 - **No thumbnail, no `xml:lang`, `Application` = `Silico`** with no version.
@@ -206,7 +208,7 @@ What Silico fixes:
   - fixed "version made by" and external attributes;
   - no comment;
   - plain zip, with an archive over 4 GiB refused rather than written as ZIP64.
-- **Compression**: either stored, or deflated by the pinned pure-Rust `miniz_oxide` (already in `Cargo.lock`) at a fixed level. A golden-bytes test pins whichever is chosen, so that an upgrade that changes the bytes fails.
+- **Compression**: none: every entry is stored, so the bytes depend on no compressor's version. A digest test pins a box's and a cylinder's archives on every platform CI checks.
 - **The XML**: written by hand, with fixed attribute order, indentation and newlines.
 - **The mesh**: deterministic only if OCCT's triangulation is bit-identical across platforms. Not verified here: whether the determinism sweep (`tests/determinism/`) covers tessellation.
 

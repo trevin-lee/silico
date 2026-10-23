@@ -8,6 +8,7 @@
 //! there's no version negotiation.
 
 mod chamfer;
+mod export;
 mod faces;
 pub mod frame;
 mod history;
@@ -20,6 +21,10 @@ mod sweep;
 use serde::{Deserialize, Serialize};
 
 pub use chamfer::ChamferSize;
+pub use export::{
+    DEFAULT_EXPORT_TOLERANCE, ExportMesh, MAX_EXPORT_TOLERANCE, MIN_EXPORT_TOLERANCE,
+    check_export_tolerance, export_angle, export_deflection, export_rounding,
+};
 pub use faces::{
     ArcEnd, Curve, FaceRegions, MAX_ARC_ANGLE, MAX_FACE_CURVES, Region, SizeProblem, SketchPlane,
     area_and_perimeter, distance, loop_area, on_circle, sliver,
@@ -202,6 +207,10 @@ pub enum Op {
         start: f64,
         angle: f64,
     },
+    /// A shape's solids meshed for export within `tolerance` mm, and its angular rule
+    /// ([`export_angle`]), with where each face's nodes lie on the shape's edges and
+    /// vertices. Replies with [`Reply::ExportMesh`].
+    ExportMesh { shape: ShapeData, tolerance: f64 },
 }
 
 impl Op {
@@ -218,6 +227,7 @@ impl Op {
             Op::Revolve { .. } => "Revolve",
             Op::Boolean { op, .. } => op.name(),
             Op::Tessellate { .. } => "Tessellate",
+            Op::ExportMesh { .. } => "ExportMesh",
             Op::Solve(_) => "Solve",
             Op::DragBegin(_) => "DragBegin",
             Op::DragMove { .. } => "DragMove",
@@ -372,6 +382,8 @@ pub enum Reply {
     },
     /// Where a drag's move left the sketch ([`Op::DragMove`]).
     Moved(Moved),
+    /// A shape's solids meshed for export ([`Op::ExportMesh`]), boxed, as it's many lists.
+    ExportMesh(Box<ExportMesh>),
 }
 
 impl Reply {
@@ -383,6 +395,7 @@ impl Reply {
             Reply::Summary(_) => "Summary",
             Reply::FreecadMeasures(_) => "FreecadMeasures",
             Reply::Mesh(_) => "Mesh",
+            Reply::ExportMesh(_) => "ExportMesh",
             Reply::Solved(_) => "Solved",
             Reply::DragStarted { .. } => "DragStarted",
             Reply::Moved(_) => "Moved",

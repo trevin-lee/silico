@@ -1,0 +1,694 @@
+//! A feature's solids as a printable mesh, and the mesh written as 3MF
+//! (docs/ports/mesh-export.md).
+//!
+//! The kernel worker meshes each face within the export tolerance and reports where its
+//! nodes lie on the solid's edges and vertices ([`ExportMesh`]). [`printable`] joins the
+//! faces there, by the B-rep's topology rather than by distance, and checks what a slicer
+//! needs, in this order, refusing a mesh that fails and naming the faces at fault:
+//!
+//! 1. every face meshed;
+//! 2. the faces' nodes on each shared edge paired one for one;
+//! 3. closed and manifold: every edge of the mesh on exactly two triangles;
+//! 4. consistently oriented: each shared edge running opposite ways in its two triangles;
+//! 5. facing outward: each outer shell enclosing a positive volume, each cavity a negative
+//!    one;
+//! 6. no triangle of no area, in the 32-bit coordinates a reader gets;
+//! 7. within the tolerance of the B-rep: each face's and edge's deviation, as OCCT gives it,
+//!    and each joined vertex's nodes, within the tolerance less what rounding to 32 bits
+//!    can move a vertex.
+//!
+//! [`three_mf`] writes printable meshes as a 3MF archive whose bytes depend on nothing but
+//! the meshes and their names: entries in a fixed order, stored, with the zip epoch as
+//! every time.
+
+use std::collections::BTreeMap;
+
+use silico_protocol::{ElementRef, ExportMesh, FACES_NAMED};
+
+use crate::naming::ElementMap;
+use crate::{Error, ErrorCode};
+
+/// A solid's mesh, ready to print: closed, manifold, oriented outward, with no triangle of
+/// no area, and within the export tolerance of the B-rep. Vertices are 32-bit, as 3MF's
+/// readers take them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PrintableMesh {
+    vertices: Vec<[f32; 3]>,
+    triangles: Vec<[u32; 3]>,
+    volume: f64,
+}
+
+impl PrintableMesh {
+    /// The vertices, in the order the triangles first name them.
+    pub fn vertices(&self) -> &[[f32; 3]] {
+        &self.vertices
+    }
+
+    /// Three vertex indices per triangle, counterclockwise seen from outside.
+    pub fn triangles(&self) -> &[[u32; 3]] {
+        &self.triangles
+    }
+
+    /// The volume the mesh encloses, in mm³, from its 32-bit vertices, summed in 64 bits:
+    /// the mesh's own, not the B-rep's (a curved solid's mesh, inscribed, is a little less).
+    pub fn volume(&self) -> f64 {
+        self.volume
+    }
+}
+
+/// The faces at fault in a refusal, named as the feature's element map names them (or as
+/// FreeCAD numbers them, `Face3`, without one), the first [`FACES_NAMED`], and how many
+/// there are.
+struct Faces<'a> {
+    names: Option<&'a ElementMap>,
+}
+
+impl Faces<'_> {
+    fn name(&self, face: u32) -> String {
+        let element = ElementRef::face(face);
+        self.names
+            .and_then(|map| map.name(element))
+            .map_or_else(|| element.to_string(), |name| name.to_string())
+    }
+
+    /// `message` as an error of `code`, naming `faces` (each once, in order).
+    fn refuse(
+        &self,
+        code: ErrorCode,
+        message: String,
+        faces: impl IntoIterator<Item = u32>,
+        suggestion: &str,
+    ) -> Error {
+        let faces: std::collections::BTreeSet<u32> = faces.into_iter().collect();
+        Error::new(code, message)
+            .with_elements(faces.iter().take(FACES_NAMED).map(|&f| self.name(f)))
+            .with_elements_total(faces.len() as u64)
+            .with_suggestion(suggestion)
+    }
+}
+
+/// What every refusal of an unprintable mesh suggests first.
+const FINER: &str = "export with a finer tolerance, or change the part where the faces named \
+                     meet: the kernel couldn't mesh them as a closed solid";
+
+/// Joins the faces of `mesh`, meshed within `tolerance` mm, at the edges they share, and
+/// checks the result is printable (the module's rules, in order). `names` names the faces
+/// in a refusal, as the feature's element map does; without it they're numbered (`Face3`).
+/// Each solid is joined on its own, so two solids that touch never share a vertex.
+pub fn printable(
+    mesh: &ExportMesh,
+    tolerance: f64,
+    names: Option<&ElementMap>,
+) -> Result<PrintableMesh, Error> {
+    let faces = Faces { names };
+    if let Err(invalid) = silico_protocol::check_export_tolerance(tolerance) {
+        return Err(Error::new(ErrorCode::InvalidInput, invalid.message)
+            .with_parameter("tolerance")
+            .with_suggestion("export with a tolerance from 1e-5 mm to 1e8 mm"));
+    }
+    if mesh.solids == 0 {
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            "the shape has no solid to export: a printable mesh is a solid's",
+        )
+        .with_suggestion("export a feature that makes a solid"));
+    }
+    if !mesh.loose_faces.is_empty() {
+        return Err(faces.refuse(
+            ErrorCode::InvalidInput,
+            format!(
+                "{} of the shape's faces are in no solid, and an export would leave them out",
+                mesh.loose_faces.len()
+            ),
+            mesh.loose_faces.iter().copied(),
+            "export a feature whose faces all bound a solid",
+        ));
+    }
+    // 1. Every face meshed.
+    let unmeshed: Vec<u32> = mesh.unmeshed().collect();
+    if !unmeshed.is_empty() {
+        return Err(faces.refuse(
+            ErrorCode::InvalidResult,
+            format!(
+                "the kernel couldn't mesh {} of the faces, so the mesh would have holes there",
+                unmeshed.len()
+            ),
+            unmeshed,
+            "change the faces named: the kernel can't mesh them at any tolerance (slivers too \
+             narrow for it, as FreeCAD's export leaves them as holes)",
+        ));
+    }
+
+    let ranges = mesh.face_ranges();
+    let solid_of_face = |face: usize| -> u32 { mesh.shell_solids[mesh.face_shells[face] as usize] };
+    // Each node's face, to name it.
+    let mut node_face = vec![0usize; mesh.nodes.len()];
+    for (face, range) in ranges.iter().enumerate() {
+        for n in range.clone() {
+            node_face[n as usize] = face;
+        }
+    }
+    let number = |face: usize| mesh.face_numbers[face];
+
+    // 2. Joined at the edges the faces share. Each edge's uses, and each vertex, per solid.
+    let mut joined = Joined::new(mesh.nodes.len());
+    let mut edges: BTreeMap<(u32, u32), Vec<usize>> = BTreeMap::new();
+    for (k, &face) in mesh.edge_faces.iter().enumerate() {
+        let key = (solid_of_face(face as usize), mesh.edge_numbers[k]);
+        edges.entry(key).or_default().push(k);
+    }
+    let uses: Vec<&[u32]> = mesh.edge_uses().collect();
+    let mut at_vertex: BTreeMap<(u32, u32), u32> = BTreeMap::new();
+    let mut unpaired: Vec<u32> = Vec::new();
+    for (&(solid, _), group) in &edges {
+        // The first use with nodes is the one the others pair with.
+        let first = group.iter().map(|&k| uses[k]).find(|u| !u.is_empty());
+        let mut paired = true;
+        for &k in group {
+            let nodes = uses[k];
+            if mesh.edge_degenerate[k] {
+                // A pole: every node of its polygon is its one vertex.
+                for &n in nodes {
+                    joined.join_vertex(&mut at_vertex, (solid, mesh.edge_vertices[k][0]), n);
+                }
+                continue;
+            }
+            match (nodes, first) {
+                (&[], _) | (_, None) => paired = false,
+                (nodes, Some(first)) if nodes.len() != first.len() => paired = false,
+                (nodes, Some(first)) => {
+                    for (&a, &b) in nodes.iter().zip(first) {
+                        joined.union(a, b);
+                    }
+                    let [v0, v1] = mesh.edge_vertices[k];
+                    if let (Some(&start), Some(&end)) = (nodes.first(), nodes.last()) {
+                        joined.join_vertex(&mut at_vertex, (solid, v0), start);
+                        joined.join_vertex(&mut at_vertex, (solid, v1), end);
+                    }
+                }
+            }
+        }
+        if !paired {
+            // Every face on the edge: they don't meet in the mesh there.
+            unpaired.extend(group.iter().map(|&k| number(mesh.edge_faces[k] as usize)));
+        }
+    }
+    if !unpaired.is_empty() {
+        return Err(faces.refuse(
+            ErrorCode::InvalidResult,
+            "the faces named don't meet in the mesh: the kernel meshed an edge they share \
+             differently on each"
+                .to_owned(),
+            unpaired,
+            FINER,
+        ));
+    }
+
+    // The joined vertices, numbered as the triangles first name them, each where its
+    // lowest node is (the root it's joined under); and the triangles, less those whose
+    // corners join into one vertex (a pole's), whose remaining edges cancel.
+    let mut vertex_of: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut positions: Vec<[f64; 3]> = Vec::new();
+    let mut triangles: Vec<[u32; 3]> = Vec::new();
+    let mut triangle_face: Vec<usize> = Vec::new();
+    let mut triangle_shell: Vec<u32> = Vec::new();
+    let mut start = 0usize;
+    for (face, &count) in mesh.face_triangles.iter().enumerate() {
+        let end = start + count as usize;
+        for t in &mesh.triangles[start..end] {
+            let roots = t.map(|n| joined.find(n));
+            if roots[0] == roots[1] || roots[1] == roots[2] || roots[0] == roots[2] {
+                continue;
+            }
+            let corners = roots.map(|root| {
+                *vertex_of.entry(root).or_insert_with(|| {
+                    positions.push(mesh.nodes[root as usize]);
+                    (positions.len() - 1) as u32
+                })
+            });
+            triangles.push(corners);
+            triangle_face.push(face);
+            triangle_shell.push(mesh.face_shells[face]);
+        }
+        start = end;
+    }
+
+    // 3 and 4. Each edge of the mesh on exactly two triangles, running opposite ways.
+    let mut sides: BTreeMap<(u32, u32), Vec<(bool, usize)>> = BTreeMap::new();
+    for (t, corners) in triangles.iter().enumerate() {
+        for i in 0..3 {
+            let (a, b) = (corners[i], corners[(i + 1) % 3]);
+            sides
+                .entry((a.min(b), a.max(b)))
+                .or_default()
+                .push((a < b, triangle_face[t]));
+        }
+    }
+    let open: Vec<u32> = sides
+        .values()
+        .filter(|s| s.len() == 1)
+        .flat_map(|s| s.iter().map(|&(_, f)| number(f)))
+        .collect();
+    if !open.is_empty() {
+        return Err(faces.refuse(
+            ErrorCode::InvalidResult,
+            "the mesh is open: an edge of the faces named is on one triangle only".to_owned(),
+            open,
+            FINER,
+        ));
+    }
+    let shared: Vec<u32> = sides
+        .values()
+        .filter(|s| s.len() > 2)
+        .flat_map(|s| s.iter().map(|&(_, f)| number(f)))
+        .collect();
+    if !shared.is_empty() {
+        return Err(faces.refuse(
+            ErrorCode::InvalidResult,
+            "the mesh isn't manifold: an edge of the faces named is on more than two \
+             triangles, where the solid touches itself"
+                .to_owned(),
+            shared,
+            "change the part so the faces named don't meet along an edge from both sides",
+        ));
+    }
+    let flipped: Vec<u32> = sides
+        .values()
+        .filter(|s| s[0].0 == s[1].0)
+        .flat_map(|s| s.iter().map(|&(_, f)| number(f)))
+        .collect();
+    if !flipped.is_empty() {
+        return Err(faces.refuse(
+            ErrorCode::InvalidResult,
+            "the faces named are oriented inconsistently: an edge they share runs the same \
+             way in both its triangles"
+                .to_owned(),
+            flipped,
+            FINER,
+        ));
+    }
+
+    // The vertices as a reader gets them: 32-bit, and 0 for -0.
+    let vertices: Vec<[f32; 3]> = positions
+        .iter()
+        .map(|p| p.map(|c| (c as f32) + 0.0))
+        .collect();
+    let wide = |v: u32| vertices[v as usize].map(f64::from);
+
+    // 5. Facing outward: each outer shell encloses a positive volume, each cavity a
+    // negative one.
+    let mut shell_volumes = vec![0.0f64; mesh.shell_solids.len()];
+    for (t, corners) in triangles.iter().enumerate() {
+        let [a, b, c] = corners.map(wide);
+        shell_volumes[triangle_shell[t] as usize] += dot(a, cross(b, c)) / 6.0;
+    }
+    let inward: Vec<u32> = (0..triangles.len())
+        .filter(|&t| {
+            let shell = triangle_shell[t] as usize;
+            let volume = shell_volumes[shell];
+            if mesh.shell_outer[shell] {
+                volume <= 0.0
+            } else {
+                volume >= 0.0
+            }
+        })
+        .map(|t| number(triangle_face[t]))
+        .collect();
+    if !inward.is_empty() {
+        return Err(faces.refuse(
+            ErrorCode::InvalidResult,
+            "the faces named face inward: their shell encloses the wrong side".to_owned(),
+            inward,
+            FINER,
+        ));
+    }
+
+    // 6. No triangle of no area in the 32-bit coordinates.
+    let flat: Vec<u32> = (0..triangles.len())
+        .filter(|&t| {
+            let [a, b, c] = triangles[t].map(wide);
+            cross(sub(b, a), sub(c, a)) == [0.0; 3]
+        })
+        .map(|t| number(triangle_face[t]))
+        .collect();
+    if !flat.is_empty() {
+        return Err(faces.refuse(
+            ErrorCode::InvalidResult,
+            "a triangle of the faces named has no area once its vertices are rounded to the \
+             32 bits a 3MF reader takes"
+                .to_owned(),
+            flat,
+            FINER,
+        ));
+    }
+
+    // 7. Within the tolerance of the B-rep, less what rounding to 32 bits moves a vertex
+    // (the worker meshed with the tolerance less the most its bounding box allows).
+    let reach = positions
+        .iter()
+        .flatten()
+        .fold(0.0f64, |m, c| m.max(c.abs()));
+    let allowed = tolerance - silico_protocol::export_rounding(reach);
+    let mut far: Vec<u32> = (0..mesh.face_nodes.len())
+        .filter(|&f| mesh.face_deflections[f] > allowed)
+        .map(number)
+        .collect();
+    far.extend(
+        (0..mesh.edge_faces.len())
+            .filter(|&k| mesh.edge_deflections[k] > allowed)
+            .map(|k| number(mesh.edge_faces[k] as usize)),
+    );
+    // Each joined vertex's nodes within the tolerance of the one it's placed at.
+    for n in 0..mesh.nodes.len() as u32 {
+        let first = joined.find(n);
+        if first != n && distance(mesh.nodes[n as usize], mesh.nodes[first as usize]) > allowed {
+            far.push(number(node_face[n as usize]));
+            far.push(number(node_face[first as usize]));
+        }
+    }
+    if !far.is_empty() {
+        return Err(faces.refuse(
+            ErrorCode::InvalidResult,
+            format!(
+                "the mesh of the faces named is further than the tolerance, {} mm, from the \
+                 part, as the kernel measures it once rounding to 32 bits is allowed for",
+                silico_protocol::format_number(tolerance)
+            ),
+            far,
+            FINER,
+        ));
+    }
+
+    let volume = shell_volumes.iter().sum();
+    Ok(PrintableMesh {
+        vertices,
+        triangles,
+        volume,
+    })
+}
+
+/// Nodes joined into the vertices they share: a union-find over node indices.
+struct Joined {
+    parent: Vec<u32>,
+}
+
+impl Joined {
+    fn new(nodes: usize) -> Self {
+        Self {
+            parent: (0..nodes as u32).collect(),
+        }
+    }
+
+    fn find(&mut self, mut n: u32) -> u32 {
+        while self.parent[n as usize] != n {
+            let up = self.parent[self.parent[n as usize] as usize];
+            self.parent[n as usize] = up;
+            n = up;
+        }
+        n
+    }
+
+    /// Joins `a` and `b`, the lower root the root, so each vertex's root is its lowest node
+    /// and the result doesn't depend on the order joined.
+    fn union(&mut self, a: u32, b: u32) {
+        let (a, b) = (self.find(a), self.find(b));
+        let (low, high) = (a.min(b), a.max(b));
+        self.parent[high as usize] = low;
+    }
+
+    /// Joins `node` with the nodes already at `vertex` (a solid's vertex, by number).
+    fn join_vertex(&mut self, at: &mut BTreeMap<(u32, u32), u32>, vertex: (u32, u32), node: u32) {
+        let first = *at.entry(vertex).or_insert(node);
+        self.union(first, node);
+    }
+}
+
+fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let d = sub(a, b);
+    dot(d, d).sqrt()
+}
+
+/// One object of a 3MF file: a feature's printable mesh, named by the feature's name, its
+/// ID as the part number.
+#[derive(Debug, Clone, Copy)]
+pub struct Object<'a> {
+    pub name: &'a str,
+    pub part_number: &'a str,
+    pub mesh: &'a PrintableMesh,
+}
+
+/// The largest archive [`three_mf`] writes: a plain zip's limit, 4 GiB less a byte, since
+/// ZIP64 is left out.
+const MAX_ARCHIVE: u64 = u32::MAX as u64;
+
+/// `objects` as a 3MF archive (3MF Core 1.4.0): each a `type="model"` object in
+/// millimetres, in the order given, with one build item each, its vertices in document
+/// coordinates. Its bytes depend on the objects alone: the entries are
+/// `[Content_Types].xml`, `_rels/.rels`, and `3D/3dmodel.model`, in that order, stored, each
+/// with the zip epoch (1980-01-01 00:00) as its time. A name or part number XML can't hold
+/// (a control character other than tab, line feed, and carriage return) is refused, naming
+/// the object.
+pub fn three_mf(objects: &[Object<'_>]) -> Result<Vec<u8>, Error> {
+    let mut model = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<model unit=\"millimeter\" \
+         xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\">\n \
+         <metadata name=\"Application\">Silico</metadata>\n <resources>\n",
+    );
+    for (i, object) in objects.iter().enumerate() {
+        let id = i + 1;
+        let name = attribute(object.name).ok_or_else(|| unwritable(object.name, "name"))?;
+        let part =
+            attribute(object.part_number).ok_or_else(|| unwritable(object.name, "part number"))?;
+        model.push_str(&format!(
+            "  <object id=\"{id}\" type=\"model\" name=\"{name}\" partnumber=\"{part}\">\n   \
+             <mesh>\n    <vertices>\n"
+        ));
+        for v in &object.mesh.vertices {
+            model.push_str(&format!(
+                "     <vertex x=\"{}\" y=\"{}\" z=\"{}\"/>\n",
+                v[0], v[1], v[2]
+            ));
+        }
+        model.push_str("    </vertices>\n    <triangles>\n");
+        for t in &object.mesh.triangles {
+            model.push_str(&format!(
+                "     <triangle v1=\"{}\" v2=\"{}\" v3=\"{}\"/>\n",
+                t[0], t[1], t[2]
+            ));
+        }
+        model.push_str("    </triangles>\n   </mesh>\n  </object>\n");
+    }
+    model.push_str(" </resources>\n <build>\n");
+    for i in 1..=objects.len() {
+        model.push_str(&format!("  <item objectid=\"{i}\"/>\n"));
+    }
+    model.push_str(" </build>\n</model>\n");
+    let entries: [(&str, &[u8]); 3] = [
+        ("[Content_Types].xml", CONTENT_TYPES.as_bytes()),
+        ("_rels/.rels", RELATIONSHIPS.as_bytes()),
+        ("3D/3dmodel.model", model.as_bytes()),
+    ];
+    zip(&entries)
+}
+
+const CONTENT_TYPES: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Types \
+     xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">\n <Default \
+     Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>\n \
+     <Default Extension=\"model\" \
+     ContentType=\"application/vnd.ms-package.3dmanufacturing-3dmodel+xml\"/>\n</Types>\n";
+
+const RELATIONSHIPS: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Relationships \
+     xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n <Relationship \
+     Target=\"/3D/3dmodel.model\" Id=\"rel0\" \
+     Type=\"http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel\"/>\n</Relationships>\n";
+
+fn unwritable(name: &str, what: &str) -> Error {
+    Error::new(
+        ErrorCode::InvalidInput,
+        format!(
+            "the {what} of {} has a character a 3MF file can't hold (a control character)",
+            crate::document::json::shown(name)
+        ),
+    )
+    .with_element(crate::references::cut_short(name))
+    .with_suggestion("rename the feature without control characters")
+}
+
+/// `text` escaped for an XML attribute, or none if XML 1.0 can't hold a character of it.
+/// Tab, line feed, and carriage return are written as references, which a parser would
+/// otherwise read as spaces.
+fn attribute(text: &str) -> Option<String> {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            '\t' => out.push_str("&#9;"),
+            '\n' => out.push_str("&#10;"),
+            '\r' => out.push_str("&#13;"),
+            c if (c as u32) < 0x20 || c == '\u{FFFE}' || c == '\u{FFFF}' => return None,
+            c => out.push(c),
+        }
+    }
+    Some(out)
+}
+
+/// The zip epoch, 1980-01-01, as a DOS date: day 1, month 1, year 0.
+const DOS_DATE: u16 = (1 << 5) | 1;
+
+/// `entries` as a zip archive, each stored (not compressed), with no extra fields, no data
+/// descriptors, no comment, and the zip epoch as every time. Refused if it would pass a
+/// plain zip's 4 GiB.
+fn zip(entries: &[(&str, &[u8])]) -> Result<Vec<u8>, Error> {
+    let total: u64 = entries
+        .iter()
+        .map(|(name, data)| 76 + 2 * name.len() as u64 + data.len() as u64)
+        .sum::<u64>()
+        + 22;
+    if total > MAX_ARCHIVE {
+        return Err(Error::new(
+            ErrorCode::ResourceExhausted,
+            format!("the 3MF archive would be {total} bytes, past a zip's 4 GiB"),
+        )
+        .with_suggestion("export with a coarser tolerance, or fewer parts at once"));
+    }
+    let mut out = Vec::with_capacity(total as usize);
+    let mut central = Vec::new();
+    for (name, data) in entries {
+        // Within the archive's limit, checked above, so each fits in 32 bits.
+        let offset = out.len() as u32;
+        let crc = crc32(data);
+        let size = data.len() as u32;
+        let name_len = name.len() as u16;
+        // The local header.
+        put32(&mut out, 0x0403_4b50);
+        put16(&mut out, 10); // version needed: 1.0, stored
+        put16(&mut out, 0); // flags
+        put16(&mut out, 0); // stored
+        put16(&mut out, 0); // time: 00:00
+        put16(&mut out, DOS_DATE);
+        put32(&mut out, crc);
+        put32(&mut out, size);
+        put32(&mut out, size);
+        put16(&mut out, name_len);
+        put16(&mut out, 0); // no extra field
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(data);
+        // Its central directory entry.
+        put32(&mut central, 0x0201_4b50);
+        put16(&mut central, 20); // made by: MS-DOS, 2.0
+        put16(&mut central, 10);
+        put16(&mut central, 0);
+        put16(&mut central, 0);
+        put16(&mut central, 0);
+        put16(&mut central, DOS_DATE);
+        put32(&mut central, crc);
+        put32(&mut central, size);
+        put32(&mut central, size);
+        put16(&mut central, name_len);
+        put16(&mut central, 0); // no extra field
+        put16(&mut central, 0); // no comment
+        put16(&mut central, 0); // disk 0
+        put16(&mut central, 0); // internal attributes
+        put32(&mut central, 0); // external attributes
+        put32(&mut central, offset);
+        central.extend_from_slice(name.as_bytes());
+    }
+    let directory_offset = out.len() as u32;
+    let directory_size = central.len() as u32;
+    out.extend_from_slice(&central);
+    let count = entries.len() as u16;
+    put32(&mut out, 0x0605_4b50);
+    put16(&mut out, 0);
+    put16(&mut out, 0);
+    put16(&mut out, count);
+    put16(&mut out, count);
+    put32(&mut out, directory_size);
+    put32(&mut out, directory_offset);
+    put16(&mut out, 0); // no comment
+    Ok(out)
+}
+
+fn put16(out: &mut Vec<u8>, value: u16) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn put32(out: &mut Vec<u8>, value: u32) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+/// The CRC-32 zip uses (IEEE 802.3, reflected, polynomial 0xEDB88320).
+fn crc32(data: &[u8]) -> u32 {
+    const TABLE: [u32; 256] = {
+        let mut table = [0u32; 256];
+        let mut i = 0;
+        while i < 256 {
+            let mut c = i as u32;
+            let mut k = 0;
+            while k < 8 {
+                c = if c & 1 == 1 {
+                    0xEDB8_8320 ^ (c >> 1)
+                } else {
+                    c >> 1
+                };
+                k += 1;
+            }
+            table[i] = c;
+            i += 1;
+        }
+        table
+    };
+    let mut crc = u32::MAX;
+    for &byte in data {
+        crc = TABLE[((crc ^ u32::from(byte)) & 0xFF) as usize] ^ (crc >> 8);
+    }
+    !crc
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn crc32_is_zips() {
+        // The standard check value of CRC-32/ISO-HDLC, and the empty input's.
+        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+        assert_eq!(crc32(b""), 0);
+        assert_eq!(crc32(b"a"), 0xE8B7_BE43);
+    }
+
+    #[test]
+    fn attributes_are_escaped_and_control_characters_refused() {
+        assert_eq!(
+            attribute("a&b<c>d\"e'f").as_deref(),
+            Some("a&amp;b&lt;c&gt;d&quot;e&apos;f")
+        );
+        assert_eq!(
+            attribute("a\tb\nc\rd").as_deref(),
+            Some("a&#9;b&#10;c&#13;d")
+        );
+        assert_eq!(attribute("Bracket ü").as_deref(), Some("Bracket ü"));
+        for bad in ["a\u{0}b", "\u{1b}[31m", "x\u{FFFE}", "x\u{FFFF}", "\u{1f}"] {
+            assert_eq!(attribute(bad), None, "{bad:?}");
+        }
+    }
+}

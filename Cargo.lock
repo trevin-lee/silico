@@ -4209,6 +4209,7 @@ dependencies = [
  "proptest",
  "rustix",
  "serde_json",
+ "sha2",
  "silico-core",
  "silico-kernel",
  "silico-oracle",

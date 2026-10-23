@@ -61,6 +61,8 @@ mod boolean_solids;
 mod bridge;
 #[path = "chamfer.rs"]
 mod chamfer;
+#[path = "export.rs"]
+mod export;
 #[path = "faces.rs"]
 mod faces;
 #[path = "fillet.rs"]

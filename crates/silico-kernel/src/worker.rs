@@ -103,6 +103,11 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
             let mesh = crate::tessellate(&shape, deflection).map_err(failure)?;
             Ok(Reply::Mesh(mesh))
         }
+        Op::ExportMesh { shape, tolerance } => {
+            let shape = shape_of(&shape)?;
+            let mesh = crate::export_mesh(&shape, tolerance).map_err(failure)?;
+            Ok(Reply::ExportMesh(Box::new(mesh)))
+        }
         Op::Echo { data } => Ok(Reply::Echo { data }),
         Op::Solve(_) | Op::DragBegin(_) | Op::DragMove { .. } | Op::DragEnd => {
             Err(Failure::new(Refusal::OtherWorkersOp {

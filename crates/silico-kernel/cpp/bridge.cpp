@@ -7,6 +7,7 @@
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <BRepClass3d.hxx>
 #include <BRepLib_ToolTriangulatedShape.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepBndLib.hxx>
@@ -14,6 +15,7 @@
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <GCPnts_TangentialDeflection.hxx>
+#include <Poly_PolygonOnTriangulation.hxx>
 #include <Poly_Triangulation.hxx>
 #include <BRepTools.hxx>
 #include <BRep_Builder.hxx>
@@ -244,6 +246,21 @@ double bounding_diagonal(const Shape &shape) {
   return box.IsVoid() ? 0.0 : std::sqrt(box.SquareExtent());
 }
 
+double bounding_reach(const Shape &shape) {
+  Bnd_Box box;
+  BRepBndLib::Add(shape.shape, box);
+  if (box.IsVoid()) {
+    return 0.0;
+  }
+  double x0, y0, z0, x1, y1, z1;
+  box.Get(x0, y0, z0, x1, y1, z1);
+  double reach = 0.0;
+  for (double c : {x0, y0, z0, x1, y1, z1}) {
+    reach = std::max(reach, std::abs(c));
+  }
+  return reach;
+}
+
 std::unique_ptr<Tessellation> tessellate(const Shape &shape, double deflection) {
   // Mesh a copy. Meshing changes the shape it meshes: OCCT stores the mesh on it (where
   // later meshing would reuse it) and updates edge flags, which changes the shape's B-rep
@@ -318,6 +335,116 @@ std::unique_ptr<Tessellation> tessellate(const Shape &shape, double deflection) 
       out->edge_points_.insert(out->edge_points_.end(), {p.X(), p.Y(), p.Z()});
     }
     out->edge_points_per_edge_.push_back(static_cast<uint32_t>(points.NbPoints()));
+  }
+  return out;
+}
+
+std::unique_ptr<ExportTriangulation> export_mesh(const Shape &shape, double tolerance,
+                                                 double angle) {
+  // Mesh a copy, as tessellate does, so the shape's own bytes don't change.
+  const TopoDS_Shape copy = BRepBuilderAPI_Copy(shape.shape, false, false).Shape();
+  // isRelative = false, as FreeCAD's export; isInParallel = false (deterministic).
+  BRepMesh_IncrementalMesh mesher(copy, tolerance, false, angle, false);
+  if (!mesher.IsDone()) {
+    throw Standard_Failure("the shape couldn't be meshed");
+  }
+  auto out = std::make_unique<ExportTriangulation>();
+  ShapeMap faces;
+  TopExp::MapShapes(copy, TopAbs_FACE, faces);
+  ShapeMap edges;
+  TopExp::MapShapes(copy, TopAbs_EDGE, edges);
+  ShapeMap vertices;
+  TopExp::MapShapes(copy, TopAbs_VERTEX, vertices);
+  // Faces some solid's shell holds, by number, to find those in none.
+  std::vector<bool> in_solid(static_cast<size_t>(faces.Extent()) + 1, false);
+  uint32_t shell_count = 0;
+  for (TopExp_Explorer solids(copy, TopAbs_SOLID); solids.More(); solids.Next()) {
+    const TopoDS_Solid solid = TopoDS::Solid(solids.Current());
+    const TopoDS_Shell outer = BRepClass3d::OuterShell(solid);
+    for (TopExp_Explorer shells(solid, TopAbs_SHELL); shells.More(); shells.Next()) {
+      const TopoDS_Shape &shell = shells.Current();
+      out->shell_solids_.push_back(out->solids_);
+      out->shell_outer_.push_back(shell.IsSame(outer) ? 1 : 0);
+      // Each face as the shell holds it: the explorer composes the shell's orientation and
+      // the solid's into the face's, so a reversed face winds the other way, outward.
+      for (TopExp_Explorer explorer(shell, TopAbs_FACE); explorer.More(); explorer.Next()) {
+        const TopoDS_Face face = TopoDS::Face(explorer.Current());
+        const int number = faces.FindIndex(face);
+        in_solid[static_cast<size_t>(number)] = true;
+        const TopAbs_Orientation orientation = face.Orientation();
+        if (orientation != TopAbs_FORWARD && orientation != TopAbs_REVERSED) {
+          // INTERNAL and EXTERNAL faces bound no change of material.
+          continue;
+        }
+        const uint32_t use = static_cast<uint32_t>(out->face_nodes_.size());
+        out->face_numbers_.push_back(static_cast<uint32_t>(number));
+        out->face_shells_.push_back(shell_count);
+        TopLoc_Location location;
+        const Handle(Poly_Triangulation) mesh = BRep_Tool::Triangulation(face, location);
+        if (mesh.IsNull()) {
+          out->face_nodes_.push_back(0);
+          out->face_triangles_.push_back(0);
+          out->face_deflections_.push_back(0.0);
+          continue;
+        }
+        const gp_Trsf transform = location.Transformation();
+        const uint32_t base = static_cast<uint32_t>(out->nodes_.size() / 3);
+        for (int n = 1; n <= mesh->NbNodes(); ++n) {
+          const gp_Pnt p = mesh->Node(n).Transformed(transform);
+          out->nodes_.insert(out->nodes_.end(), {p.X(), p.Y(), p.Z()});
+        }
+        const bool reversed = orientation == TopAbs_REVERSED;
+        for (int t = 1; t <= mesh->NbTriangles(); ++t) {
+          int a, b, c;
+          mesh->Triangle(t).Get(a, b, c);
+          if (reversed) {
+            std::swap(b, c);
+          }
+          out->triangles_.insert(out->triangles_.end(),
+                                 {base + static_cast<uint32_t>(a - 1),
+                                  base + static_cast<uint32_t>(b - 1),
+                                  base + static_cast<uint32_t>(c - 1)});
+        }
+        out->face_nodes_.push_back(static_cast<uint32_t>(mesh->NbNodes()));
+        out->face_triangles_.push_back(static_cast<uint32_t>(mesh->NbTriangles()));
+        out->face_deflections_.push_back(mesh->Deflection());
+        // The face's polygon on each of its edges. A seam is visited twice, once each way,
+        // and BRep_Tool gives each orientation its own polygon.
+        for (TopExp_Explorer edge_explorer(face, TopAbs_EDGE); edge_explorer.More();
+             edge_explorer.Next()) {
+          const TopoDS_Edge edge = TopoDS::Edge(edge_explorer.Current());
+          TopoDS_Vertex first, last;
+          // The edge's own vertices, at its first and last parameter, whatever its
+          // orientation: the polygon's nodes run in the parameter's order.
+          TopExp::Vertices(edge, first, last);
+          const Handle(Poly_PolygonOnTriangulation) polygon =
+              BRep_Tool::PolygonOnTriangulation(edge, mesh, location);
+          out->edge_faces_.push_back(use);
+          out->edge_numbers_.push_back(static_cast<uint32_t>(edges.FindIndex(edge)));
+          out->edge_degenerate_.push_back(BRep_Tool::Degenerated(edge) ? 1 : 0);
+          out->edge_vertices_.push_back(static_cast<uint32_t>(vertices.FindIndex(first)));
+          out->edge_vertices_.push_back(static_cast<uint32_t>(vertices.FindIndex(last)));
+          if (polygon.IsNull()) {
+            out->edge_deflections_.push_back(0.0);
+            out->edge_node_counts_.push_back(0);
+            continue;
+          }
+          out->edge_deflections_.push_back(polygon->Deflection());
+          const TColStd_Array1OfInteger &nodes = polygon->Nodes();
+          for (int k = nodes.Lower(); k <= nodes.Upper(); ++k) {
+            out->edge_nodes_.push_back(base + static_cast<uint32_t>(nodes(k) - 1));
+          }
+          out->edge_node_counts_.push_back(static_cast<uint32_t>(nodes.Length()));
+        }
+      }
+      ++shell_count;
+    }
+    ++out->solids_;
+  }
+  for (int i = 1; i <= faces.Extent(); ++i) {
+    if (!in_solid[static_cast<size_t>(i)]) {
+      out->loose_faces_.push_back(static_cast<uint32_t>(i));
+    }
   }
   return out;
 }

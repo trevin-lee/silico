@@ -12,9 +12,9 @@ use std::time::Duration;
 
 pub use silico_protocol::{
     Axis, Blob, BooleanOp, BuiltData, ChamferSize, Curve, ElementCounts, ElementFate, ElementKind,
-    ElementRef, Ends, FaceRegions, FreecadMeasures, Generation, History, InputHistory, Mesh, Op,
-    Primitive, Profile, Region, Reported, ShapeData, ShapeSummary, SketchPlane, SweepKind,
-    Topology,
+    ElementRef, Ends, ExportMesh, FaceRegions, FreecadMeasures, Generation, History, InputHistory,
+    Mesh, Op, Primitive, Profile, Region, Reported, ShapeData, ShapeSummary, SketchPlane,
+    SweepKind, Topology,
 };
 use silico_protocol::{DebugOp, Failure, LENGTH_TOLERANCE, Reply};
 
@@ -495,6 +495,35 @@ impl KernelRequest<Mesh> {
     }
 }
 
+impl KernelRequest<ExportMesh> {
+    /// `shape`'s solids meshed for export within `tolerance` mm, and its angular rule
+    /// (docs/ports/mesh-export.md): each face's triangles and where its nodes lie on the
+    /// shape's edges and vertices, for [`crate::export::printable`] to join and check. A
+    /// tolerance outside the export's range is refused, naming it.
+    pub fn export_mesh(shape: &ShapeData, tolerance: f64) -> Result<Self, Error> {
+        if let Err(invalid) = silico_protocol::check_export_tolerance(tolerance) {
+            return Err(refused("export", None, invalid));
+        }
+        let op = Op::ExportMesh {
+            shape: shape.clone(),
+            tolerance,
+        };
+        Ok(Self::new(op, |name, reply| match reply {
+            Reply::ExportMesh(mesh) => match mesh.validate() {
+                Ok(()) => Ok(*mesh),
+                // As a display mesh that doesn't hold together: the worker can't be trusted.
+                Err(problem) => Err(Error::new(
+                    ErrorCode::ProtocolError,
+                    "the kernel worker sent an inconsistent export mesh",
+                )
+                .with_cause(problem)
+                .with_suggestion("start a new kernel worker")),
+            },
+            other => Err(unexpected(name, &other)),
+        }))
+    }
+}
+
 impl KernelRequest<Blob> {
     /// `data`, sent to the worker and back: a health check, and the cheapest round trip.
     pub fn echo(data: Blob) -> Self {
@@ -862,6 +891,11 @@ impl KernelWorker {
     /// A shape's mesh ([`KernelRequest::tessellate`]).
     pub fn tessellate(&mut self, shape: &ShapeData, deflection: f64) -> Result<Mesh, Error> {
         self.run(KernelRequest::tessellate(shape, deflection))
+    }
+
+    /// [`KernelRequest::export_mesh`], run on this worker.
+    pub fn export_mesh(&mut self, shape: &ShapeData, tolerance: f64) -> Result<ExportMesh, Error> {
+        self.run(KernelRequest::export_mesh(shape, tolerance)?)
     }
 }
 
