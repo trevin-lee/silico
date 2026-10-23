@@ -22,7 +22,11 @@ use proptest::prelude::*;
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::{Kernel, KernelRequest};
 use silico_core::profile::{Profile, profile};
-use silico_kernel::{Curve, FaceRegions, Region, SketchPlane, make_faces, summarize};
+use silico_kernel::{
+    BooleanOp, Curve, FaceRegions, Region, SketchPlane, boolean, make, make_faces, prism,
+    summarize, translate,
+};
+use silico_protocol::Primitive;
 
 /// The profile, if the gate takes the sketch's structure and the core makes one (its sizes
 /// the solution's, the gate's floor on drawn sizes aside).
@@ -120,62 +124,47 @@ proptest! {
     }
 }
 
-#[test]
-fn a_spike_whose_sides_run_within_the_tolerance_near_its_tip_builds_its_area() {
-    // A 10 × 10 square with a spike 20 long out of its lower right, its sides 2e-7 apart
-    // at its base, so within 1e-7 of each other for the 10 mm nearest its tip (the
-    // decision's neighbours, which only an intersection away from the tip would refuse).
-    // Shoelace: (0,0), (30,0), (10,h), (10,10), (0,10) is 100 + 10h.
-    let h = 2e-7;
+/// The width at their base of the spike's and the crack's sides.
+const H: f64 = 2e-7;
+
+/// A 10 × 10 square with a spike 20 long out of its lower right, its sides 2e-7 apart at
+/// its base, so within 1e-7 of each other for the 10 mm nearest its tip (the decision's
+/// neighbours, which only an intersection away from the tip would refuse). Shoelace:
+/// (0,0), (30,0), (10,h), (10,10), (0,10) is 100 + 10h.
+fn spike() -> (Draw, f64) {
     let mut d = Draw::new();
     d.polygon(&[
         (0.0, 0.0),
         (30.0, 0.0),
-        (10.0, h),
+        (10.0, H),
         (10.0, 10.0),
         (0.0, 10.0),
     ]);
-    let p = made(&d).expect("the decision takes neighbours near their shared point");
-    let got = area(&regions(&p));
-    assert!(
-        got.as_ref()
-            .is_ok_and(|a| (a - (100.0 + 10.0 * h)).abs() < 1e-12),
-        "{got:?}"
-    );
+    (d, 100.0 + 10.0 * H)
 }
 
-#[test]
-fn a_crack_whose_sides_run_within_the_tolerance_near_its_tip_builds_its_area() {
-    // The same cut into a 10 × 10 square from the middle of its top: a slit 9.5 deep and
-    // 2e-7 wide at the top. 100 − 9.5h/2.
-    let h = 2e-7;
+/// The same cut into a 10 × 10 square from the middle of its top: a slit 9.5 deep and
+/// 2e-7 wide at the top. 100 − 9.5h/2.
+fn crack() -> (Draw, f64) {
     let mut d = Draw::new();
     d.polygon(&[
         (0.0, 0.0),
         (10.0, 0.0),
         (10.0, 10.0),
-        (5.0 + h, 10.0),
+        (5.0 + H, 10.0),
         (5.0, 0.5),
         (5.0, 10.0),
         (0.0, 10.0),
     ]);
-    let p = made(&d).expect("the decision takes neighbours near their shared point");
-    let got = area(&regions(&p));
-    assert!(
-        got.as_ref()
-            .is_ok_and(|a| (a - (100.0 - 9.5 * h / 2.0)).abs() < 1e-12),
-        "{got:?}"
-    );
+    (d, 100.0 - 9.5 * H / 2.0)
 }
 
-#[test]
-fn two_arcs_from_one_point_on_circles_3e_7_apart_build_their_area() {
-    // Arcs of radius 10 from (10, 0) a quarter turn round, one about the origin and one
-    // about (0, −3e-7) (through (10, 0) too), the inner one a hundredth of a radian
-    // further, closed through (−20, 20): within 1e-7 of each other for the 3.4 mm nearest
-    // the shared point and 3e-7 apart at the top, crossing nowhere else on both (their
-    // circles meet again at (−10, 0)). If the core makes it, OCCT must build it, valid,
-    // with the area the profile works out.
+/// Arcs of radius 10 from (10, 0) a quarter turn round, one about the origin and one about
+/// (0, −3e-7) (through (10, 0) too), the inner one a hundredth of a radian further, closed
+/// through (−20, 20): within 1e-7 of each other for the 3.4 mm nearest the shared point
+/// and 3e-7 apart at the top, crossing nowhere else on both (their circles meet again at
+/// (−10, 0)).
+fn arc_pair() -> Draw {
     let mut d = Draw::new();
     let s = d.point(10.0, 0.0);
     let o1 = d.point(0.0, 0.0);
@@ -190,6 +179,95 @@ fn two_arcs_from_one_point_on_circles_3e_7_apart_build_their_area() {
     let far = d.point(-20.0, 20.0);
     d.line(&e1, &far);
     d.line(&far, &e2);
+    d
+}
+
+/// That `regions`' faces, padded 5 along +Z, and pocketed 5 deep into a block from
+/// `block`'s corners on the sketch's plane down 6, are valid solids, the pad of volume
+/// `area` × 5 and the pocket removing as much, each to 1e-9 of that (as a pad and a pocket
+/// of the sketch build them: a prism of its faces, alone or cut from its base). What the
+/// pocket removed is what's measured, not the block left, so a pocket that lost a thin
+/// tip's few 1e-6 mm³ shows.
+fn padded_and_pocketed(regions: &FaceRegions, area: f64, block: [[f64; 2]; 2]) {
+    let faces = make_faces(regions).unwrap();
+    let pad = summarize(
+        &prism(&faces.shape, [0.0; 3], [0.0, 0.0, 5.0])
+            .unwrap()
+            .shape,
+    )
+    .unwrap();
+    assert!(pad.valid, "the pad isn't valid: {pad:?}");
+    assert!(
+        (pad.volume - 5.0 * area).abs() <= 1e-9 * 5.0 * area,
+        "the pad's volume is {}, not {}",
+        pad.volume,
+        5.0 * area
+    );
+    let [[x0, y0], [x1, y1]] = block;
+    let solid = make(&Primitive::Box {
+        dx: x1 - x0,
+        dy: y1 - y0,
+        dz: 6.0,
+    })
+    .unwrap();
+    let solid = translate(&solid, [x0, y0, -6.0]).unwrap().shape;
+    let whole = summarize(&solid).unwrap().volume;
+    let tool = prism(&faces.shape, [0.0; 3], [0.0, 0.0, -5.0])
+        .unwrap()
+        .shape;
+    let pocket = summarize(&boolean(BooleanOp::Cut, &solid, &tool).unwrap().shape).unwrap();
+    assert!(pocket.valid, "the pocket isn't valid: {pocket:?}");
+    let removed = whole - pocket.volume;
+    assert!(
+        (removed - 5.0 * area).abs() <= 1e-9 * 5.0 * area,
+        "the pocket removed {removed}, not {}",
+        5.0 * area
+    );
+}
+
+#[test]
+fn a_spike_whose_sides_run_within_the_tolerance_near_its_tip_builds_its_area() {
+    let (d, want) = spike();
+    let p = made(&d).expect("the decision takes neighbours near their shared point");
+    let got = area(&regions(&p));
+    assert!(
+        got.as_ref().is_ok_and(|a| (a - want).abs() < 1e-12),
+        "{got:?}"
+    );
+}
+
+#[test]
+fn a_spike_whose_sides_run_within_the_tolerance_near_its_tip_pads_and_pockets_by_its_area() {
+    // M3.6's promise (docs/design/m3.6-sketch-features.md): the spike padded 5 and pocketed
+    // 5 deep, by its area by hand.
+    let (d, want) = spike();
+    let p = made(&d).expect("the decision takes neighbours near their shared point");
+    padded_and_pocketed(&regions(&p), want, [[-1.0, -1.0], [31.0, 11.0]]);
+}
+
+#[test]
+fn a_crack_whose_sides_run_within_the_tolerance_near_its_tip_builds_its_area() {
+    let (d, want) = crack();
+    let p = made(&d).expect("the decision takes neighbours near their shared point");
+    let got = area(&regions(&p));
+    assert!(
+        got.as_ref().is_ok_and(|a| (a - want).abs() < 1e-12),
+        "{got:?}"
+    );
+}
+
+#[test]
+fn a_crack_whose_sides_run_within_the_tolerance_near_its_tip_pads_and_pockets_by_its_area() {
+    // M3.6's promise: the crack padded 5 and pocketed 5 deep, by its area by hand.
+    let (d, want) = crack();
+    let p = made(&d).expect("the decision takes neighbours near their shared point");
+    padded_and_pocketed(&regions(&p), want, [[-1.0, -1.0], [11.0, 11.0]]);
+}
+
+#[test]
+fn two_arcs_from_one_point_on_circles_3e_7_apart_build_their_area() {
+    // If the core makes it, OCCT must build it, valid, with the area the profile works out.
+    let d = arc_pair();
     let p = made(&d).expect("the decision takes neighbours near their shared point");
     let regions = regions(&p);
     let profile_area: f64 = p.regions.iter().map(|r| r.area()).sum();
@@ -199,6 +277,20 @@ fn two_arcs_from_one_point_on_circles_3e_7_apart_build_their_area() {
             .is_ok_and(|a| (a - profile_area).abs() < 1e-9 * profile_area.abs().max(1.0)),
         "{got:?}, the profile's {profile_area}"
     );
+}
+
+#[test]
+fn two_arcs_from_one_point_on_circles_3e_7_apart_pad_and_pocket_by_their_area() {
+    // M3.6's promise: the arc pair padded 5 and pocketed 5 deep, by its area by hand:
+    // Green's theorem round its loop, each arc's term r·c_x(sin b − sin a) − r·c_y(cos b −
+    // cos a) + r²(b − a) and each line's x1·y2 − x2·y1, halved, 0.5049893067498346 (of it
+    // the sliver between the arcs about 3e-6). The core's own area agrees.
+    let want = 0.504_989_306_749_834_6;
+    let d = arc_pair();
+    let p = made(&d).expect("the decision takes neighbours near their shared point");
+    let profile_area: f64 = p.regions.iter().map(|r| r.area()).sum();
+    assert!((profile_area - want).abs() < 1e-12, "{profile_area}");
+    padded_and_pocketed(&regions(&p), want, [[-21.0, -1.0], [11.0, 21.0]]);
 }
 
 fn square(x0: f64, y0: f64, side: f64) -> Vec<Curve> {
