@@ -32,7 +32,7 @@ on:
         description: "Only mutants whose names match this regex, cargo-mutants' --re, searched in each name (path:line:col: what was replaced, often ending ' in fn'); match a survivor by its description rather than its line, which moves; escape regex characters; no single quotes (write . for one) or newlines (empty: every mutant)"
         default: ""
       shards:
-        description: "Number of shards to share the work (1 to 16; at most two run at once, so more than two only helps a run whose shard would pass the 1,440-minute limit)"
+        description: "Number of shards to share the work (1 to 16; up to ten run at once, one per runner labelled mutants)"
         default: "2"
 
 permissions:
@@ -46,7 +46,7 @@ env:
 
 jobs:
   plan:
-    runs-on: [self-hosted, linux, x64, pve]
+    runs-on: [self-hosted, linux, x64]
     timeout-minutes: 5
     outputs:
       shards: ${{ steps.plan.outputs.shards }}
@@ -84,20 +84,22 @@ jobs:
 
   shard:
     needs: plan
-    runs-on: [self-hosted, linux, x64, pve]
+    runs-on: [self-hosted, linux, x64, mutants]
     # A whole-workspace run is about 2,300 mutants: hours, even sharded.
     timeout-minutes: 1440
     strategy:
       fail-fast: false
-      # At most two at once, whatever the shard count. A run's cap doesn't count other
-      # runs' shards, so two runs together take four of the eight runners and leave four for
-      # gates and the other workflows (bench, whose timings a busy machine skews, and the
-      # nightly oracle sweep). At three a milestone-wide run and another together held six
-      # runners for hours, and gates queued behind them on the two left. (Runner labels could
-      # reserve runners for gates, but the VM's runners are single-use and minted with fixed
-      # labels.) The runners share one VM, and free runners don't keep its CPU free: see the
-      # shard's share below.
-      max-parallel: 2
+      # As many at once as there are runners labelled `mutants` (silico-3 to -12, through
+      # /etc/ci-runner/labels on the runner VM). silico-1 and -2 carry only `gate`, so gates
+      # always have two runners however many shards are queued. silico-9 to -12 carry only
+      # `mutants`, not `pve`, so no gate (nor a job from a branch older than these labels,
+      # which asks for pve) runs there and grows a gate's build; mutants ask for `mutants`,
+      # not `pve`, to reach them. The bench and the oracle sweep share this pool too. A
+      # run's shards spread over every free mutants runner, so one long run can hold the
+      # pool for hours. The plan and summary take seconds and run on any runner, so a
+      # finished run's summary never queues behind other runs' shards. The runners share
+      # one VM, and free runners don't keep its CPU free: see the shard's share below.
+      max-parallel: 10
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:
@@ -139,16 +141,18 @@ jobs:
           # One regex, as given: cargo-mutants matches it against each mutant's name.
           # (`--re=` so a regex beginning with `-` isn't read as an option.)
           if [ -n "$RE" ]; then args+=("--re=$RE"); fi
-          # A sixth of the machine each: the most shards that run at once is four, two runs of
-          # two. (At three a run, two runs used all of it, and a gate on a full machine could
-          # fail a test still held to a wall clock: tests/mutants.sh lists them.) The shard
-          # runs at the lowest priority (nice 19, below): it's background work, so it keeps its
-          # full share when the runner VM is idle and yields the CPU to gates when it isn't.
-          # Since the VM's disk moved off ZFS (2026-10-22), CPU, not I/O, is what jobs wait
-          # on. Retry a failed test here, since one that fails only under load would fail the
-          # baseline or count a mutant as caught; a mutant that breaks a test fails it every
-          # time.
-          running=6
+          # A tenth of the machine each: ten shards can run at once (max-parallel above). Six
+          # at a sixth each already kept the VM 95% busy (4.5% idle over 10 minutes,
+          # 2026-10-23), so more threads per shard add no throughput, only contention and
+          # memory; and a thread per vCPU across all ten gives each test about a whole CPU,
+          # well inside nextest's 2-minute limit per test, whose timeout would count a mutant
+          # as caught. (On a full machine a gate can fail a test still held to a wall clock:
+          # tests/mutants.sh lists them.) The shard runs at the lowest priority (nice 19,
+          # below): it's background work, so it keeps its share when the runner VM is idle and
+          # yields the CPU to gates when it isn't. Retry a failed test here, since one that
+          # fails only under load would fail the baseline or count a mutant as caught; a mutant
+          # that breaks a test fails it every time.
+          running=10
           share=$(( $(nproc) / running > 2 ? $(nproc) / running : 2 ))
           export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share NEXTEST_RETRIES=2
           # Without debug info (Trevin, 2026-10-22): every mutant rebuilds and relinks the
@@ -192,7 +196,7 @@ jobs:
     needs: [plan, shard]
     # Even when the run is cancelled, to gather what the shards finished.
     if: ${{ always() && needs.plan.result == 'success' }}
-    runs-on: [self-hosted, linux, x64, pve]
+    runs-on: [self-hosted, linux, x64]
     timeout-minutes: 10
     steps:
       - uses: actions/download-artifact@v4

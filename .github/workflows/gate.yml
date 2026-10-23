@@ -26,7 +26,7 @@ env:
 
 jobs:
   gate:
-    runs-on: [self-hosted, linux, x64, pve]
+    runs-on: [self-hosted, linux, x64, pve, gate]
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
