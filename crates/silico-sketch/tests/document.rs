@@ -550,6 +550,45 @@ fn a_thirty_sixty_ninety_triangle_from_two_hundred_starts_keeps_its_implied_angl
 }
 
 #[test]
+fn a_point_held_at_a_lines_middle_and_on_it_lands_at_the_middle() {
+    // The oracle's on_repeats_a_midpoint, whose FreeCAD solve the oracle can't compare
+    // (FreeCAD writes no geometry back for a redundant sketch): a line held at (0, 0) and
+    // (10, 0), and a point at its middle that an on constraint also holds on it. The on
+    // repeats one of the midpoint's two equations, so one is redundant and met exactly; the
+    // point, from 50 starts about it, lands at the middle, (5, 0), by hand.
+    let mut rng = Rng(0x500);
+    let mut w = worker();
+    for start in 0..50 {
+        let (x, y) = (5.0 + rng.range(-3.0, 3.0), rng.range(-3.0, 3.0));
+        let doc = document(
+            &[
+                point("p0000001", 0.0, 0.0),
+                point("p0000002", 10.0, 0.0),
+                point("p0000003", x, y),
+            ],
+            &[line("n0000001", "p0000001", "p0000002")],
+            &[],
+            &[],
+            &[
+                r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+                r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+                r#"{"id": "k0000003", "type": "distance_x", "a": "origin", "b": "p0000002", "value": 10, "driving": true}"#,
+                r#"{"id": "k0000004", "type": "distance_y", "a": "origin", "b": "p0000002", "value": 0, "driving": true}"#,
+                r#"{"id": "k0000005", "type": "midpoint", "point": "p0000003", "line": "n0000001"}"#,
+                r#"{"id": "k0000006", "type": "on", "point": "p0000003", "curve": "n0000001"}"#,
+            ],
+        );
+        let s = solved(&doc, &mut w).unwrap_or_else(|e| panic!("start {start}: {e}"));
+        assert_eq!(s.redundant.len(), 1, "start {start}: {s:?}");
+        assert!(
+            s.redundant.values().all(|&gap| gap <= 1e-9),
+            "start {start}: {s:?}"
+        );
+        assert_at(&s, "p0000003", [5.0, 0.0]);
+    }
+}
+
+#[test]
 fn a_line_ending_tangent_on_a_circle_lands_at_the_analytic_point() {
     // The roadmap's oracle case: a line from (−20, 10.5), held there, ending on a circle of
     // radius 10 about the origin, tangent, the line's direction leaving its end the same as
