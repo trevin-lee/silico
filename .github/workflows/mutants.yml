@@ -192,7 +192,10 @@ jobs:
           # only what nothing else wants, so it can't slow a real shard or a gate. Four can run
           # (the runners labelled filler), so it takes a quarter of the machine. It has a Cargo
           # home of its own (the toolchains stay on PATH): starved of CPU, it could hold the
-          # package cache's lock, which every other build on the VM shares, for minutes.
+          # package cache's lock, which every other build on the VM shares, for minutes. And so
+          # a target directory of its own (below): dependencies' fingerprints hold their source's
+          # absolute path in the Cargo home, so sharing target-mutants/ with real shards would
+          # make each switch between them rebuild everything.
           running=8
           priority=(nice -n 19)
           if [ -n "$FILLER" ]; then
@@ -211,6 +214,7 @@ jobs:
           # would evict each other, and gates would start cold. Its bound is about 1.5 times
           # one debug-free build (4.2 GiB, measured 2026-10-22).
           export CARGO_PROFILE_DEV_DEBUG=0 SILICO_TARGET=target-mutants SILICO_TARGET_LIMIT_GIB=6
+          if [ -n "$FILLER" ]; then export SILICO_TARGET=target-filler; fi
           # One seed for every property run through `proptest!` (it overrides the seeds tests
           # fix in their configs; only a TestRunner made directly keeps its own), so each mutant
           # meets the same cases as the baseline. With random seeds, a property that failed now

@@ -1,7 +1,7 @@
 # Sourced by tests/gate.sh and tests/mutants.sh: checks out the committed tree (HEAD, or
 # the commit SILICO_TREE_COMMIT names, so a script can test commits older than itself) into
 # a worktree in the user cache, one per checkout, reused between runs and cleaned of
-# everything untracked except build caches (target/, target-mutants/ and .pixi/), so runs
+# everything untracked except build caches (target/, target-mutants/, target-filler/ and .pixi/), so runs
 # after the first are incremental, and cds into it. (Not inside the repository: Cargo would
 # take the outer checkout's workspace for the tree's.) The gate and mutation testing share
 # it, taking turns under one lock; on CI each keeps its own build in it (SILICO_TARGET,
@@ -48,13 +48,13 @@ if [ -e "$tree/.git" ] && ! git -C "$tree" rev-parse --git-dir >/dev/null 2>&1; 
   # Its checkout is gone, cloned again at the same path (a CI runner's is, every job):
   # start the worktree again, keeping its build caches.
   keep=$(mktemp -d "$tree.keep.XXXXXX")
-  for cache in target target-mutants .pixi; do
+  for cache in target target-mutants target-filler .pixi; do
     if [ -e "$tree/$cache" ]; then mv "$tree/$cache" "$keep/"; fi
   done
   rm -rf "$tree"
   git -C "$root" worktree prune
   git -C "$root" worktree add --detach --quiet "$tree" "$commit"
-  for cache in target target-mutants .pixi; do
+  for cache in target target-mutants target-filler .pixi; do
     if [ -e "$keep/$cache" ]; then mv "$keep/$cache" "$tree/"; fi
   done
   rmdir "$keep"
@@ -65,7 +65,8 @@ if [ ! -e "$tree/.git" ]; then
   git -C "$root" worktree add --detach --quiet "$tree" "$commit"
 fi
 # The build's own target directory: target/, or the one SILICO_TARGET names (CI's mutants
-# shards build without debug info in target-mutants/, so neither build evicts the other).
+# shards build without debug info in target-mutants/, and filler shards, with a Cargo home of
+# their own, in target-filler/, so no build evicts or invalidates another).
 # target/occt stays in target/: the build scripts find OCCT there.
 target=${SILICO_TARGET:-target}
 target_limit_gib=${SILICO_TARGET_LIMIT_GIB:-30}
@@ -89,7 +90,7 @@ if [ -d "$tree/$target/debug" ]; then
   fi
 fi
 git -C "$tree" checkout --detach --quiet --force "$commit"
-git -C "$tree" clean -fdx --quiet -e /target/ -e /target-mutants/ -e /.pixi/
+git -C "$tree" clean -fdx --quiet -e /target/ -e /target-mutants/ -e /target-filler/ -e /.pixi/
 cd "$tree"
 if [ "$target" != target ]; then export CARGO_TARGET_DIR="$tree/$target"; fi
 # The tests' scratch (Cargo's CARGO_TARGET_TMPDIR, target/tmp: documents, logs, workers'
