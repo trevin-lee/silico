@@ -492,7 +492,9 @@ pub fn solve(
 ///
 /// [`Translation::solve`]'s load path runs it on every solve that moves the drawing, on the
 /// file a save would write (`SketchSolution::written` and the load's `stored` are one
-/// `written()`); a solve that doesn't move it leaves the file the gate already took. So a
+/// `written()`, the same file but where a reference's measure can't be written, which then
+/// keeps a value the gate already took); a solve that doesn't move it leaves the file the
+/// gate already took. So a
 /// solution [`solve`] returns is always one a save can write (the M3 review's mutants found
 /// a second check of it, after the solve, that no input could reach, and it went).
 fn holdable(file: &Sketch) -> Result<(), Error> {
