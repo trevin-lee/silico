@@ -1552,7 +1552,10 @@ mod tests {
             (PointOf::Center(arc), Some(pv(7, 8))),
             (PointOf::Point(point), Some(pv(16, 17))),
             (PointOf::Start(point), None),
+            (PointOf::End(point), None),
             (PointOf::Center(point), None),
+            (PointOf::Point(circle), None),
+            (PointOf::Point(arc), None),
             // Geometry the system doesn't have.
             (PointOf::Start(Geometry(9)), None),
         ];
