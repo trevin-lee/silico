@@ -429,7 +429,10 @@ fn a_line_dipping_into_an_arcs_circle_past_the_tolerance_is_no_valid_face_to_occ
     };
     regions.check().unwrap();
     let got = area(&regions);
-    assert!(got.is_err(), "built a valid face of area {got:?}");
+    assert!(
+        got.as_ref().is_err_and(|e| e.contains("ResultInvalid")),
+        "built a valid face, or refused it otherwise: {got:?}"
+    );
 }
 
 #[test]

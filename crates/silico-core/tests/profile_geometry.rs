@@ -964,8 +964,10 @@ fn a_cove_whose_arc_ends_an_ulp_inside_its_circle_is_a_profile() {
     // (0, b), b = 9.999999999999998, an ulp under 10, and the lines (0, b)–(10, b) and
     // (10, b)–(10, 0), each along the arc's tangent at an end. The top line dips
     // 10 − b = 1.8e-15 into the circle and crosses it again √(2·10·1.8e-15) = 1.9e-7
-    // along, on the arc: rounding, not a crossing. The region: the polygon's 5b less the
-    // segment, 100 − 25π.
+    // along, on the arc: rounding, not a crossing. (Drawn square to the axes, the centre's
+    // foot on each line is exactly its shared end, so neither dips at all as walked from
+    // there: this pins that rule; the turned coves below pin the depth's.) The region: the
+    // polygon's 5b less the segment, 100 − 25π.
     let b = 9.999999999999998;
     let (d, _, _) = quarter_turn_boxed(10.0 - b, (10.0, b), &[]);
     let area = made_area(&d);
@@ -975,7 +977,7 @@ fn a_cove_whose_arc_ends_an_ulp_inside_its_circle_is_a_profile() {
 proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
 
-    /// A cove anywhere, of any size, turned any way, its arc's end moved as far as a solve
+    /// A cove anywhere, of any size (r from 1e-3 to 1e3, on a log scale), turned any way, its arc's end moved as far as a solve
     /// leaves one from its circle, is a profile of r²(1 − π/4): the arc r about c from S at
     /// `turn` to E a quarter turn on, E moved `off` along its radius, and the lines from E
     /// to the square's corner K = S + r·(−sin, cos)(turn), and from K to S, each along the
@@ -984,11 +986,12 @@ proptest::proptest! {
     #[test]
     fn a_cove_anywhere_turned_any_way_is_a_profile(
         turn in 0.0..std::f64::consts::TAU,
-        r in 1e-3..1e3f64,
+        log_r in -3.0..3.0f64,
         cx in -1e3..1e3f64,
         cy in -1e3..1e3f64,
         off in -1e-12..1e-12f64,
     ) {
+        let r = libm::pow(10.0, log_r);
         let (cos, sin) = (libm::cos(turn), libm::sin(turn));
         let mut d = Draw::new();
         let c = d.point(cx, cy);
