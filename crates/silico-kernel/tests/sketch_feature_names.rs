@@ -8,11 +8,9 @@
 //! fake sketch solver.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "../../silico-core/tests/common/sweeps.rs"]
-mod sweeps;
+use super::sweeps;
 
-#[path = "../../silico-core/tests/common/sketch.rs"]
-mod fixture;
+use super::fixture;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::PI;

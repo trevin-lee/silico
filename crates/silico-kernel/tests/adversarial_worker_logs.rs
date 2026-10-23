@@ -11,8 +11,7 @@
 //! own: run under nextest (a process per test), as `pixi run test` does.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/scripts.rs"]
-mod scripts;
+use super::scripts;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};

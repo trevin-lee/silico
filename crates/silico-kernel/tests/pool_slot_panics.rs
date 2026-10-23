@@ -1,8 +1,9 @@
 //! A pool's slot whose thread ends unexpectedly (a panic, which only a bug causes: here a
-//! log layer that panics once on a slot's thread, as it starts its worker) is started
-//! again by the next request, rather than counted free with no thread to take it, or the
-//! request failed for want of a slot. Alone in its binary: it installs the process's global
-//! subscriber. `pool_slot_panics_in_run` has the panic inside a request's run.
+//! log layer that panics once on a slot's thread, as it starts its worker) is started again
+//! by the next request, rather than counted free with no thread to take it, or the request
+//! failed for want of a slot. Alone in its process (nextest runs each test in its own): it
+//! installs the process's global subscriber. `pool_slot_panics_in_run` has the panic inside
+//! a request's run.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::Path;

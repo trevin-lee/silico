@@ -1,10 +1,9 @@
 //! Waiting on a worker costs the core no CPU: its threads sleep in poll, both while a
-//! worker is idle and while a send waits for a worker that isn't reading. In its own test
-//! binary, so the CPU time it measures is only its own.
+//! worker is idle and while a send waits for a worker that isn't reading. Alone in its
+//! process (nextest runs each test in its own), so the CPU time it measures is only its own.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/scripts.rs"]
-mod scripts;
+use super::scripts;
 
 use std::path::Path;
 use std::time::Duration;

@@ -4,14 +4,10 @@
 //! box is the hand calculation in common/box_edges.rs.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/box_edges.rs"]
-mod box_edges;
-#[path = "common/chamfer_sizes.rs"]
-mod chamfer_sizes;
-#[path = "common/face_where.rs"]
-mod face_where;
-#[path = "common/kernel.rs"]
-mod kernel;
+use super::box_edges;
+use super::chamfer_sizes;
+use super::face_where;
+use super::kernel;
 
 use box_edges::{at_fault, failed, named, runs_past};
 use chamfer_sizes::{angled, equal, two};

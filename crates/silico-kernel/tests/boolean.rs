@@ -2,14 +2,10 @@
 //! calculations, FreeCAD's own tests, FreeCAD's element names, and through a worker.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/close.rs"]
-mod close;
-#[path = "common/imports.rs"]
-mod imports;
-#[path = "common/numbers.rs"]
-mod numbers;
-#[path = "common/oracle.rs"]
-mod oracle;
+use super::close;
+use super::imports;
+use super::numbers;
+use super::oracle;
 
 use std::path::Path;
 use std::time::Duration;

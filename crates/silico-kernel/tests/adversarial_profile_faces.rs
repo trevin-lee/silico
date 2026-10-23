@@ -7,10 +7,8 @@
 //! kernel says it leaves to OCCT's check.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "../../silico-core/tests/common/profile.rs"]
-mod draw;
-#[path = "../../silico-core/tests/common/hostile_profiles.rs"]
-mod hostile;
+use super::draw;
+use super::hostile;
 
 use std::f64::consts::PI;
 use std::sync::OnceLock;

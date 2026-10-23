@@ -4,10 +4,8 @@
 //! by other sessions, with a cache or without, to the same bytes.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/cached.rs"]
-mod cached;
-#[path = "../../silico-core/tests/common/example.rs"]
-mod example;
+use super::cached;
+use super::example;
 
 use std::f64::consts::PI;
 use std::path::Path;

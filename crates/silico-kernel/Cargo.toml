@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+# The tests are built as a few programs, not one per file (each listed below): a new test
+# file must be added as a module of one (tests/all_*.rs) or as one here, or it never runs
+# (tests/all_pools.rs's every_test_file_is_built says which aren't).
+autotests = false
 
 [features]
 # Operations that exist only to test the bridge. This crate's own tests turn it on
@@ -59,3 +63,49 @@ cxx-build.workspace = true
 
 [lints]
 workspace = true
+
+# A few test programs, each a group of test files as modules (tests relying on a process of
+# their own, as nextest runs each test in, say so). Six stay programs of their own: four run
+# their own program again by a test's name; pool_slot_spawn_fails takes its process's
+# threads (.config/nextest.toml runs it alone, by its program's name); and cxx_env includes
+# a module of its own name.
+
+[[test]]
+name = "all_recompute"
+path = "tests/all_recompute.rs"
+
+[[test]]
+name = "all_naming"
+path = "tests/all_naming.rs"
+
+[[test]]
+name = "all_geometry"
+path = "tests/all_geometry.rs"
+
+[[test]]
+name = "all_pools"
+path = "tests/all_pools.rs"
+
+[[test]]
+name = "adversarial_pool"
+path = "tests/adversarial_pool.rs"
+
+[[test]]
+name = "adversarial_worker"
+path = "tests/adversarial_worker.rs"
+
+[[test]]
+name = "pool"
+path = "tests/pool.rs"
+
+[[test]]
+name = "worker"
+path = "tests/worker.rs"
+
+[[test]]
+name = "cxx_env"
+path = "tests/cxx_env.rs"
+
+[[test]]
+name = "pool_slot_spawn_fails"
+path = "tests/pool_slot_spawn_fails.rs"

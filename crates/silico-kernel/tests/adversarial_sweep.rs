@@ -4,8 +4,7 @@
 //! (the angle times the profile's first moment about the axis) for a revolve.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/numbers.rs"]
-mod numbers;
+use super::numbers;
 
 use std::f64::consts::{PI, TAU};
 use std::path::Path;

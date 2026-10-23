@@ -7,16 +7,11 @@
 //! ones whose sines and cosines are square roots, so no platform trigonometry is needed.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/chamfer_sizes.rs"]
-mod chamfer_sizes;
-#[path = "common/close.rs"]
-mod close;
-#[path = "common/face_where.rs"]
-mod face_where;
-#[path = "common/kernel.rs"]
-mod kernel;
-#[path = "common/numbers.rs"]
-mod numbers;
+use super::chamfer_sizes;
+use super::close;
+use super::face_where;
+use super::kernel;
+use super::numbers;
 
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 use std::time::{Duration, Instant};
