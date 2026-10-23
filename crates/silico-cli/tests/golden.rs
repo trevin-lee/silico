@@ -130,6 +130,72 @@ fn every_golden_model_rebuilds_to_its_fingerprints_and_formats_to_its_own_bytes(
 }
 
 #[test]
+fn a_golden_model_saved_before_naming_was_recorded_is_checked_clean_and_formatted_to_its_bytes() {
+    // M4.0: a document saved before the header recorded its naming scheme reads as scheme
+    // 5. `check` finds nothing wrong with it (as with any layout that isn't canonical);
+    // `fmt --check` says `fmt` would rewrite it; `fmt` writes exactly the committed model,
+    // its one new line `"naming": 5`, and nothing else; and then leaves it as it is.
+    for model in ["chamfered-box.silico", "plate-with-boss.silico"] {
+        let scratch = Scratch::new(&format!(
+            "before-naming-{}",
+            model.trim_end_matches(".silico")
+        ));
+        let committed = std::fs::read_to_string(golden().join(model)).unwrap();
+        let line = "  \"naming\": 5,\n";
+        assert_eq!(committed.matches(line).count(), 1, "{model}");
+        let before = committed.replacen(line, "", 1);
+        let file = scratch.0.join(model);
+        std::fs::write(&file, &before).unwrap();
+        let checked = silico(&scratch, &["check"], &file);
+        assert_eq!(
+            checked.status.code(),
+            Some(0),
+            "{model}: {}",
+            String::from_utf8_lossy(&checked.stderr)
+        );
+        assert!(checked.stderr.is_empty(), "{model}");
+        let dry = silico(&scratch, &["fmt", "--check"], &file);
+        assert_eq!(dry.status.code(), Some(1), "{model}");
+        assert_eq!(
+            String::from_utf8_lossy(&dry.stderr),
+            format!(
+                "{}: not in canonical form; `silico fmt` would rewrite it\n",
+                file.display()
+            ),
+            "{model}"
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), before, "{model}");
+        let saved = silico(&scratch, &["fmt"], &file);
+        assert_eq!(
+            saved.status.code(),
+            Some(0),
+            "{model}: {}",
+            String::from_utf8_lossy(&saved.stderr)
+        );
+        // No fingerprint or solve written: the field is all that changed.
+        assert!(
+            saved.stderr.is_empty(),
+            "{model}: {}",
+            String::from_utf8_lossy(&saved.stderr)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            committed,
+            "{model}"
+        );
+        let again = silico(&scratch, &["fmt", "--check"], &file);
+        assert_eq!(again.status.code(), Some(0), "{model}");
+        let again = silico(&scratch, &["fmt"], &file);
+        assert_eq!(again.status.code(), Some(0), "{model}");
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            committed,
+            "{model}"
+        );
+    }
+}
+
+#[test]
 fn the_plate_with_a_boss_measures_what_its_features_make_by_hand() {
     // M3.6's golden model (docs/design/m3.6-sketch-features.md, S10): the 60 × 30 rectangle
     // about the origin padded 8 (14400); holes of radii 3 and 4 pocketed through it, up from
