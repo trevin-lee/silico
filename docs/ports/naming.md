@@ -135,6 +135,8 @@ FreeCAD's form writes one op code for every element a sweep feature names, its s
 
 The naming scheme is 5. Tested on the fake (silico-core `tests/sweep_names.rs`, every row of S4's tables; `tests/name_parse.rs`, the grammar; `tests/naming.rs`, the three-valued table) and pinned on the real kernel (silico-kernel `tests/sketch_feature_names.rs`: a pad and a blind pocket in a box's top, the pocket made through, a pocket through a slot, a pocket up through a block, a whole revolve and a 360° groove, a cone's apex, `testConstructionToggleTNP`'s essence, a pocket made a pad, and fillets of a pad's top edge and of a flush pad's rim, each by its volume worked out by hand).
 
+From M4.0 a document records the scheme its names were written under: `"naming": 5` in its header (`naming::NAMING_SCHEME_NUMBER`), written by every save. The reader refuses any other scheme, naming it, so a name is never read under a scheme other than its own; a document saved before the field is read as scheme 5 (`naming::UNRECORDED_NAMING_SCHEME`, which stays 5), and `silico fmt` writes the field. FreeCAD records an element-map version with each shape (`ComplexGeoData::getElementMapVersion`, `src/App/ComplexGeoData.cpp:212`, "5" too), and on a restore under another version resets and re-resolves every reference to it (`GeoFeature::updateElementReference`, `src/App/GeoFeature.cpp:264-273`), so a reference can re-point silently; Silico refuses instead, so the next scheme bump has to say how scheme 5's names are read (a migration of the names, or refusal). silico-core's `tests/contract/naming-scheme-5.silico` (protected) is a document saved under scheme 5, whose names each find their edge.
+
 ### Not yet
 
 - References and resolution: M2.8.
