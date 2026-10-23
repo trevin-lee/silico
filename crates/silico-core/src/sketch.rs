@@ -480,23 +480,23 @@ pub fn solve(
     let translation = Translation::new(sketch).map_err(|e| e.with_feature(feature.as_str()))?;
     let named = |e: Error| e.with_feature(feature.as_str());
     let answer = translation.solve(solver).map_err(named)?;
-    let solution = answer.outcome.map_err(named)?;
-    savable(sketch, &solution).map_err(named)?;
-    Ok(solution)
+    answer.outcome.map_err(named)
 }
 
-/// Whether `solution`, written into `sketch`, is a sketch the gate takes: a solve can be
+/// Whether `file`, a sketch with a solve written back, is one the gate takes: a solve can be
 /// met only to rounding, and where a value is at its limit the file's measure of it can
 /// land past (break-it: an arc of radius 1 km solved to points 1 km and an ulp apart, which
 /// the gate, measuring an arc's radius from its points, refuses), so a save of it would
 /// write a file that can't be opened again. Refused as an invalid result, naming what the
 /// gate names.
-fn savable(sketch: &Sketch, solution: &SketchSolution) -> Result<(), Error> {
-    holdable(&solution.written(sketch))
-}
-
-/// Whether `file`, a sketch with a solve written back, is one the gate takes; refused as
-/// [`savable`] says, if not.
+///
+/// [`Translation::solve`]'s load path runs it on every solve that moves the drawing, on the
+/// file a save would write (`SketchSolution::written` and the load's `stored` are one
+/// `written()`, the same file but where a reference's measure can't be written, which then
+/// keeps a value the gate already took); a solve that doesn't move it leaves the file the
+/// gate already took. So a
+/// solution [`solve`] returns is always one a save can write (the M3 review's mutants found
+/// a second check of it, after the solve, that no input could reach, and it went).
 fn holdable(file: &Sketch) -> Result<(), Error> {
     let problems = crate::document::sketch_problems(file);
     let Some(first) = problems.first() else {
@@ -1343,7 +1343,7 @@ impl Translation {
                 Ok(file) => file,
                 Err(e) => return Ok(refusal(first, Err(e))),
             };
-            // A file the gate refuses can't be saved (`savable`) or loaded.
+            // A file the gate refuses can't be saved or loaded (`holdable`).
             if let Err(e) = holdable(&file) {
                 return Ok(refusal(first, Err(e)));
             }
