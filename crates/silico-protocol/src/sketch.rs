@@ -1522,6 +1522,43 @@ mod tests {
     }
 
     #[test]
+    fn each_kind_of_geometry_has_its_points_where_it_says() {
+        // FreeCAD's testGetPointFromGeom* (tests/src/Mod/Sketcher/App/SketchObject.cpp): what
+        // start, end, and centre are for each kind. A line has its start and end; a circle
+        // only its centre; an arc all three, its start counter-clockwise first, as the file
+        // draws it; a point only itself. In `system()`: the line from values (0, 1) to (2, 3),
+        // the circle about (4, 5), the arc about (7, 8) from (12, 13) to (14, 15); here a
+        // point at (16, 17) too.
+        let mut s = system();
+        let pv = |x: u32, y: u32| PointValues {
+            x: Value(x),
+            y: Value(y),
+        };
+        s.geometry.push(SketchGeometry::Point(pv(16, 17)));
+        let (line, circle, arc, point) = (Geometry(0), Geometry(1), Geometry(2), Geometry(3));
+        let cases = [
+            (PointOf::Start(line), Some(pv(0, 1))),
+            (PointOf::End(line), Some(pv(2, 3))),
+            (PointOf::Center(line), None),
+            (PointOf::Point(line), None),
+            (PointOf::Center(circle), Some(pv(4, 5))),
+            (PointOf::Start(circle), None),
+            (PointOf::End(circle), None),
+            (PointOf::Start(arc), Some(pv(12, 13))),
+            (PointOf::End(arc), Some(pv(14, 15))),
+            (PointOf::Center(arc), Some(pv(7, 8))),
+            (PointOf::Point(point), Some(pv(16, 17))),
+            (PointOf::Start(point), None),
+            (PointOf::Center(point), None),
+            // Geometry the system doesn't have.
+            (PointOf::Start(Geometry(9)), None),
+        ];
+        for (p, want) in cases {
+            assert_eq!(s.point_values(p), want, "{p}");
+        }
+    }
+
+    #[test]
     fn a_well_formed_system_passes() {
         system().check().unwrap();
     }
