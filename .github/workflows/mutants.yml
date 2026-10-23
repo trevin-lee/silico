@@ -34,6 +34,9 @@ on:
       shards:
         description: "Number of shards to share the work (1 to 16; at most two run at once, so more than two only helps a run whose shard would pass the 1,440-minute limit)"
         default: "2"
+      threads:
+        description: "Build jobs and test threads per shard (empty: half the runner VM's CPUs). Shards run at nice 19, so gates preempt them; this fills what gates leave"
+        default: ""
 
 permissions:
   contents: read
@@ -117,6 +120,7 @@ jobs:
           RE: ${{ inputs.re }}
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ inputs.shards }}
+          THREADS: ${{ inputs.threads }}
         run: |
           # Branch names as they are on GitHub, and commits, abbreviated or not.
           resolve() { git rev-parse --verify --quiet "origin/$1^{commit}" || git rev-parse --verify "$1^{commit}"; }
@@ -139,17 +143,15 @@ jobs:
           # One regex, as given: cargo-mutants matches it against each mutant's name.
           # (`--re=` so a regex beginning with `-` isn't read as an option.)
           if [ -n "$RE" ]; then args+=("--re=$RE"); fi
-          # A sixth of the machine each: the most shards that run at once is four, two runs of
-          # two. (At three a run, two runs used all of it, and a gate on a full machine could
-          # fail a test still held to a wall clock: tests/mutants.sh lists them.) The shard
-          # runs at the lowest priority (nice 19, below): it's background work, so it keeps its
-          # full share when the runner VM is idle and yields the CPU to gates when it isn't.
-          # Since the VM's disk moved off ZFS (2026-10-22), CPU, not I/O, is what jobs wait
-          # on. Retry a failed test here, since one that fails only under load would fail the
-          # baseline or count a mutant as caught; a mutant that breaks a test fails it every
-          # time.
-          running=6
-          share=$(( $(nproc) / running > 2 ? $(nproc) / running : 2 ))
+          # Half the runner VM each, oversubscribed on purpose: the shard runs at the lowest
+          # priority (nice 19, below), so gates preempt it, and much of a shard's time is
+          # spent in serial steps (each mutant's link, cargo-mutants' bookkeeping). At a sixth
+          # each, six shards left the VM about half idle (2026-10-23). Since the VM's disk
+          # moved off ZFS (2026-10-22), CPU, not I/O, is what jobs wait on. Retry a failed
+          # test here, since one that fails only under load would fail the baseline or count a
+          # mutant as caught; a mutant that breaks a test fails it every time.
+          share=${THREADS:-$(( $(nproc) / 2 ))}
+          if [ "$share" -lt 2 ]; then share=2; fi
           export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share NEXTEST_RETRIES=2
           # Without debug info (Trevin, 2026-10-22): every mutant rebuilds and relinks the
           # workspace's test binaries, and DWARF is much of what they write. Gates keep it, and
