@@ -8,10 +8,17 @@
 #   gh workflow run mutants.yml --ref main -f files="crates/silico-core/src/cache.rs crates/silico-core/src/naming/*.rs"
 #   gh workflow run mutants.yml --ref main -f ref=<branch> -f re='profile\.rs:.* in (meeting|on_arc)$'
 #     (re-checks survivors: only the mutants whose names match, in minutes)
+#
+# Real runs come first. The filler (.github/workflows/filler.yml) starts runs of its own on
+# idle runners, marked by the `filler` input: one whose plan sees `filler` empty cancels
+# every filler run, of this workflow or the oracle sweep, queued or running, so its shards
+# take their runners. A cancelled or cut-off filler run keeps what its shards finished:
+# each uploads its harvest, and the summary gathers it.
 name: mutants
 # The ref, base, packages, files, and regex, so concurrent runs can be told apart
-# (review-tests finds its run by this title).
-run-name: "mutants ${{ inputs.ref || github.ref_name }} since ${{ inputs.base || 'nothing' }} in ${{ inputs.packages || 'every package' }}${{ inputs.files && format(' files {0}', inputs.files) || '' }}${{ inputs.re && format(' matching {0}', inputs.re) || '' }}"
+# (review-tests finds its run by this title). A filler run's starts "filler a" or "filler
+# b<k>": the filler reads its own last runs back from these titles.
+run-name: "${{ inputs.filler && format('filler {0} ', inputs.filler) || '' }}mutants ${{ inputs.ref || github.ref_name }} since ${{ inputs.base || 'nothing' }} in ${{ inputs.packages || 'every package' }}${{ inputs.files && format(' files {0}', inputs.files) || '' }}${{ inputs.re && format(' matching {0}', inputs.re) || '' }}"
 
 on:
   workflow_dispatch:
@@ -34,8 +41,13 @@ on:
       shards:
         description: "Number of shards to share the work (1 to 16; up to ten run at once, one per runner labelled mutants)"
         default: "2"
+      filler:
+        description: "Empty for a real run. Set only by the filler (filler.yml): a, the commits main gained since its last such run, or b<k>, the k-th slice of the source; such a run yields to real ones, stops after an hour, tests its mutants in random order, and fails only on misses not in .github/mutants-triaged.txt"
+        default: ""
 
+# actions: write, for a real run's plan to cancel filler runs.
 permissions:
+  actions: write
   contents: read
 
 env:
@@ -57,6 +69,9 @@ jobs:
           PACKAGES: ${{ inputs.packages }}
           FILES: ${{ inputs.files }}
           RE: ${{ inputs.re }}
+          FILLER: ${{ inputs.filler }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           case $SHARDS in
           [1-9] | 1[0-6]) ;;
@@ -80,13 +95,30 @@ jobs:
           case $RE in
           *"'"* | *$'\n'*) echo "::error::the regex has a single quote or a newline: write . for a quote"; exit 1 ;;
           esac
+          if ! [[ $FILLER =~ ^(a|b[0-9]+)?$ ]]; then
+            echo "::error::filler must be empty, a, or b and a number, not '$FILLER'"
+            exit 1
+          fi
+          # A real run takes precedence over filler: it cancels every filler run, of this
+          # workflow or the oracle sweep, queued or running (each title starts "filler ").
+          # Its own shards then queue for the runners that frees, like any other run's.
+          if [ -z "$FILLER" ]; then
+            for workflow in mutants.yml oracle-sweep.yml; do
+              gh run list --workflow "$workflow" --limit 100 --json databaseId,status,displayTitle \
+                --jq '.[] | select(.status != "completed" and (.displayTitle | startswith("filler "))) | .databaseId'
+            done | while read -r run; do
+              echo "Cancelling filler run $run, for this real one"
+              gh run cancel "$run" || echo "::warning::couldn't cancel filler run $run (it may have just ended)"
+            done
+          fi
           echo "shards=[$(seq -s, 0 $((SHARDS - 1)))]" >>"$GITHUB_OUTPUT"
 
   shard:
     needs: plan
     runs-on: [self-hosted, linux, x64, mutants]
-    # A whole-workspace run is about 2,300 mutants: hours, even sharded.
-    timeout-minutes: 1440
+    # A whole-workspace run is about 2,300 mutants: hours, even sharded. A filler run stops
+    # after an hour: it fills idle time, and comes back to its work on a later turn.
+    timeout-minutes: ${{ inputs.filler != '' && 60 || 1440 }}
     strategy:
       fail-fast: false
       # As many at once as there are runners labelled `mutants` (silico-3 to -12, through
@@ -119,6 +151,7 @@ jobs:
           RE: ${{ inputs.re }}
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ inputs.shards }}
+          FILLER: ${{ inputs.filler }}
         run: |
           # Branch names as they are on GitHub, and commits, abbreviated or not.
           resolve() { git rev-parse --verify --quiet "origin/$1^{commit}" || git rev-parse --verify "$1^{commit}"; }
@@ -141,6 +174,9 @@ jobs:
           # One regex, as given: cargo-mutants matches it against each mutant's name.
           # (`--re=` so a regex beginning with `-` isn't read as an option.)
           if [ -n "$RE" ]; then args+=("--re=$RE"); fi
+          # A filler run is cut off after an hour: in random order (cargo-mutants shuffles each
+          # shard's share after sharding), so each turn at a slice reaches different mutants.
+          if [ -n "$FILLER" ]; then args+=(--shuffle); fi
           # A tenth of the machine each: ten shards can run at once (max-parallel above). Six
           # at a sixth each already kept the VM 95% busy (4.5% idle over 10 minutes,
           # 2026-10-23), so more threads per shard add no throughput, only contention and
@@ -218,6 +254,7 @@ jobs:
           PACKAGES: ${{ inputs.packages }}
           FILES: ${{ inputs.files }}
           RE: ${{ inputs.re }}
+          FILLER: ${{ inputs.filler }}
         run: |
           mkdir -p all
           for outcome in caught missed timeout unviable; do
@@ -268,7 +305,7 @@ jobs:
           ' .github/mutants-triaged.txt all/missed.txt all/timeout.txt >all/new.txt
           sort -o all/new.txt all/new.txt
           {
-            echo "## Mutants: $REF${BASE:+ since $BASE}${PACKAGES:+ ($PACKAGES)}${FILES:+ in $FILES}${RE:+ matching \`$RE\`}"
+            echo "## Mutants${FILLER:+ (filler $FILLER)}: $REF${BASE:+ since $BASE}${PACKAGES:+ ($PACKAGES)}${FILES:+ in $FILES}${RE:+ matching \`$RE\`}"
             echo
             echo "| Caught | Missed | Timed out | Unviable | New misses | Shards reported |"
             echo "|---|---|---|---|---|---|"
@@ -295,6 +332,18 @@ jobs:
             done
           } >>"$GITHUB_STEP_SUMMARY"
           cat "$GITHUB_STEP_SUMMARY"
+          # A filler run is cut off by design and may test a slice with no mutants: it fails
+          # only on new misses, which are what someone has to look at.
+          if [ -n "$FILLER" ]; then
+            if [ "$SHARD_RESULT" != success ] || [ "$reported" -ne "$SHARDS" ]; then
+              echo "::notice::a filler run, cut off or cancelled: the results are partial"
+            fi
+            if [ -s all/new.txt ]; then
+              echo "::error::$(count new) new misses: mutants missed or timed out that .github/mutants-triaged.txt doesn't hold"
+              exit 1
+            fi
+            exit 0
+          fi
           if [ "$SHARD_RESULT" != success ] || [ "$reported" -ne "$SHARDS" ]; then
             # A shard stopped mid-mutant may list that mutant as caught by a test it killed.
             echo "::error::a shard failed or didn't report: the results are incomplete, and a stopped shard's caught list may hold a mutant whose tests were killed"

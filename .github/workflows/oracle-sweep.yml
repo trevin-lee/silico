@@ -4,12 +4,21 @@
 # corpus of real parts (M1.9; `pixi run corpus`). A failed night opens an issue for the
 # part that failed (sweep, corpus, or setup), or comments on the open one; a green night
 # closes the corpus's and setup's and comments on the sweep's (.github/nightly-report.sh).
+# The filler (filler.yml) also starts it every four hours on idle runners, as
+# `filler: true`: its title then starts "filler", it reports as a night does, and a real
+# mutants run cancels it (mutants.yml), without a report.
 name: oracle-sweep
+run-name: "${{ inputs.filler && 'filler ' || '' }}oracle sweep, seed ${{ github.run_number }}"
 
 on:
   schedule:
     - cron: "17 9 * * *"
   workflow_dispatch:
+    inputs:
+      filler:
+        description: "Set only by the filler (filler.yml): a run on idle runners, which yields to real work"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -37,8 +46,9 @@ jobs:
 
   report:
     needs: sweep
-    # Scheduled nights only: a run started by hand reports to whoever started it.
-    if: ${{ always() && github.event_name == 'schedule' }}
+    # Scheduled nights, and the filler's runs unless a real run cancelled them: a run
+    # started by hand reports to whoever started it.
+    if: ${{ always() && (github.event_name == 'schedule' || (inputs.filler && !cancelled())) }}
     runs-on: [self-hosted, linux, x64, mutants]
     timeout-minutes: 10
     permissions:
