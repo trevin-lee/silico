@@ -17,7 +17,25 @@ permissions:
   contents: read
 
 jobs:
+  # A bench is real work, and filler shards beside it would skew its times: filler runs
+  # yield to it.
+  yield:
+    runs-on: [self-hosted, linux, x64, control]
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: .github
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash .github/cancel-filler.sh
+
   drag:
+    needs: yield
     runs-on: [self-hosted, linux, x64, mutants]
     # A full solve a frame at the largest sizes takes seconds: each mode stops after a
     # minute, so the whole run is some minutes, after the build.

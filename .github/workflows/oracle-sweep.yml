@@ -5,8 +5,9 @@
 # part that failed (sweep, corpus, or setup), or comments on the open one; a green night
 # closes the corpus's and setup's and comments on the sweep's (.github/nightly-report.sh).
 # The filler (filler.yml) also starts it every four hours on idle runners, as
-# `filler: true`: its title then starts "filler", it reports as a night does, and a real
-# mutants run cancels it (mutants.yml), without a report.
+# `filler: true`: its title then starts "filler", it runs on the runners labelled filler,
+# it reports only a failure, and real work cancels it (.github/cancel-filler.sh), without a
+# report. A scheduled night cancels filler first.
 name: oracle-sweep
 run-name: "${{ inputs.filler && 'filler ' || '' }}oracle sweep, seed ${{ github.run_number }}"
 
@@ -24,8 +25,27 @@ permissions:
   contents: read
 
 jobs:
+  # A night is real work: filler runs yield to it.
+  yield:
+    if: ${{ github.event_name == 'schedule' }}
+    runs-on: [self-hosted, linux, x64, control]
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: .github
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash .github/cancel-filler.sh
+
   sweep:
-    runs-on: [self-hosted, linux, x64, mutants]
+    needs: yield
+    if: ${{ !cancelled() }}
+    runs-on: ${{ inputs.filler && fromJSON('["self-hosted", "linux", "x64", "filler"]') || fromJSON('["self-hosted", "linux", "x64", "mutants"]') }}
     timeout-minutes: 120
     outputs:
       sweep: ${{ steps.sweep.outcome }}
@@ -46,10 +66,10 @@ jobs:
 
   report:
     needs: sweep
-    # Scheduled nights, and the filler's runs unless a real run cancelled them: a run
-    # started by hand reports to whoever started it.
-    if: ${{ always() && (github.event_name == 'schedule' || (inputs.filler && !cancelled())) }}
-    runs-on: [self-hosted, linux, x64, mutants]
+    # Scheduled nights, and the filler's runs that failed (not those real work cancelled):
+    # a run started by hand reports to whoever started it.
+    if: ${{ always() && (github.event_name == 'schedule' || (inputs.filler && needs.sweep.result == 'failure')) }}
+    runs-on: [self-hosted, linux, x64, control]
     timeout-minutes: 10
     permissions:
       contents: read

@@ -10,8 +10,9 @@
 #     (re-checks survivors: only the mutants whose names match, in minutes)
 #
 # Real runs come first. The filler (.github/workflows/filler.yml) starts runs of its own on
-# idle runners, marked by the `filler` input: one whose plan sees `filler` empty cancels
-# every filler run, of this workflow or the oracle sweep, queued or running, so its shards
+# idle CPU, marked by the `filler` input, whose shards run only on the runners labelled
+# filler, at the idle scheduling class. A real run's plan cancels every filler run, of this
+# workflow or the oracle sweep, queued or running (.github/cancel-filler.sh), so its shards
 # take their runners. A cancelled or cut-off filler run keeps what its shards finished:
 # each uploads its harvest, and the summary gathers it.
 name: mutants
@@ -58,11 +59,16 @@ env:
 
 jobs:
   plan:
-    runs-on: [self-hosted, linux, x64]
+    # On a runner labelled control (silico-13, -14), which runs only short jobs like this, so
+    # a real run's plan never waits behind shards to cancel filler.
+    runs-on: [self-hosted, linux, x64, control]
     timeout-minutes: 5
     outputs:
       shards: ${{ steps.plan.outputs.shards }}
     steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: .github
       - id: plan
         env:
           SHARDS: ${{ inputs.shards }}
@@ -99,23 +105,16 @@ jobs:
             echo "::error::filler must be empty, a, or b and a number, not '$FILLER'"
             exit 1
           fi
-          # A real run takes precedence over filler: it cancels every filler run, of this
-          # workflow or the oracle sweep, queued or running (each title starts "filler ").
-          # Its own shards then queue for the runners that frees, like any other run's.
-          if [ -z "$FILLER" ]; then
-            for workflow in mutants.yml oracle-sweep.yml; do
-              gh run list --workflow "$workflow" --limit 100 --json databaseId,status,displayTitle \
-                --jq '.[] | select(.status != "completed" and (.displayTitle | startswith("filler "))) | .databaseId'
-            done | while read -r run; do
-              echo "Cancelling filler run $run, for this real one"
-              gh run cancel "$run" || echo "::warning::couldn't cancel filler run $run (it may have just ended)"
-            done
-          fi
+          # A real run takes precedence over filler: it cancels every filler run. Its own
+          # shards then queue for the runners that frees, like any other run's.
+          if [ -z "$FILLER" ]; then bash .github/cancel-filler.sh; fi
           echo "shards=[$(seq -s, 0 $((SHARDS - 1)))]" >>"$GITHUB_OUTPUT"
 
   shard:
     needs: plan
-    runs-on: [self-hosted, linux, x64, mutants]
+    # A filler run's shards only on the runners labelled filler (silico-9 to -12), which
+    # take no gates: so filler never holds a runner a gate could use.
+    runs-on: ${{ inputs.filler != '' && fromJSON('["self-hosted", "linux", "x64", "filler"]') || fromJSON('["self-hosted", "linux", "x64", "mutants"]') }}
     # A whole-workspace run is about 2,300 mutants: hours, even sharded. A filler run stops
     # after an hour: it fills idle time, and comes back to its work on a later turn.
     timeout-minutes: ${{ inputs.filler != '' && 60 || 1440 }}
@@ -188,7 +187,16 @@ jobs:
           # yields the CPU to gates when it isn't. Retry a failed test here, since one that
           # fails only under load would fail the baseline or count a mutant as caught; a mutant
           # that breaks a test fails it every time.
+          #
+          # A filler shard runs at the idle scheduling class, for the CPU and for I/O: it gets
+          # only what nothing else wants, so it can't slow a real shard or a gate. Four can run
+          # (the runners labelled filler), so it takes a quarter of the machine.
           running=10
+          priority=(nice -n 19)
+          if [ -n "$FILLER" ]; then
+            running=4
+            priority=(chrt --idle 0 ionice -c 3 nice -n 19)
+          fi
           share=$(( $(nproc) / running > 2 ? $(nproc) / running : 2 ))
           export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share NEXTEST_RETRIES=2
           # Without debug info (Trevin, 2026-10-22): every mutant rebuilds and relinks the
@@ -212,7 +220,7 @@ jobs:
           args+=(--jobserver-tasks "$share")
           # 2: mutants missed; 3: mutants timed out. The summary reports both.
           status=0
-          nice -n 19 pixi run mutants -- "${args[@]}" || status=$?
+          "${priority[@]}" pixi run mutants -- "${args[@]}" || status=$?
           case $status in 0 | 2 | 3) ;; *) exit "$status" ;; esac
           # A shard with no mutants writes nothing; it still reports.
           mkdir -p "$RUNNER_TEMP/out/mutants.out"
@@ -232,7 +240,7 @@ jobs:
     needs: [plan, shard]
     # Even when the run is cancelled, to gather what the shards finished.
     if: ${{ always() && needs.plan.result == 'success' }}
-    runs-on: [self-hosted, linux, x64]
+    runs-on: [self-hosted, linux, x64, control]
     timeout-minutes: 10
     steps:
       # Only the triaged list, from the branch this runs on (also clearing what an earlier
