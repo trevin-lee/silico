@@ -7,7 +7,8 @@
 //! named (the grammar, the map's builder, a primitive's numbers) changes the digest and
 //! fails this until the version is bumped too, since a fillet's result kept on disk is
 //! keyed by it (a result made from the edges an older scheme's names found must not be
-//! taken for today's). Bump NAMING_SCHEME, then pin the new digest here.
+//! taken for today's). Bump NAMING_SCHEME (and NAMING_SCHEME_NUMBER, which documents
+//! record, with it), then pin the new digest here.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use sha2::{Digest, Sha256};

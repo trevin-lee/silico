@@ -13,7 +13,7 @@ use std::fmt::Write as _;
 use super::fingerprint::Fingerprint;
 use super::model::{
     Axis, Document, ElementName, Extent, ExtentValue, Feature, FeatureId, FeatureVersion,
-    FormatVersion, Operation, Position, Units,
+    FormatVersion, NamingScheme, Operation, Position, Units,
 };
 use super::quantity::{Angle, Length};
 use super::sketch::{
@@ -83,6 +83,7 @@ fn tree(document: &Document) -> Out<'_> {
     let Document {
         silico: FormatVersion,
         units: Units,
+        naming: NamingScheme,
         features,
     } = document;
     Out::Object(vec![
@@ -94,6 +95,8 @@ fn tree(document: &Document) -> Out<'_> {
                 ("resolution", Out::Str(Units::RESOLUTION)),
             ]),
         ),
+        // Always written, so a document read without it (saved before M4.0) is saved with it.
+        ("naming", Out::Raw(NamingScheme::NUMBER.to_string())),
         (
             "features",
             Out::Array(features.iter().map(feature).collect()),

@@ -10,7 +10,8 @@ mod sweeps;
 
 use silico_core::document::{
     Angle, Axis, Checked, Document, ElementId, Feature, FeatureVersion, FormatVersion, Length,
-    Name, Operation, PadExtent, PocketExtent, TurnExtent, Units, read, schema, validate, write,
+    Name, NamingScheme, Operation, PadExtent, PocketExtent, TurnExtent, Units, read, schema,
+    validate, write,
 };
 use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
@@ -49,6 +50,7 @@ fn mm(nm: i64) -> Length {
 const EXAMPLE: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
   "features": [
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Outline", "plane": "xy", "points": [], "lines": [], "circles": [], "arcs": [], "constraints": []},
     {
@@ -140,7 +142,7 @@ fn the_designs_example_reads_as_its_values_and_writes_back_byte_for_byte() {
 /// writes it (the feature over lines).
 fn with_feature(lines: &str) -> String {
     format!(
-        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"features\": [\n    {}\n  ]\n}}\n",
+        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 5,\n  \"features\": [\n    {}\n  ]\n}}\n",
         lines
     )
 }
@@ -562,7 +564,7 @@ fn a_groove_refuses_the_origin_as_a_groove() {
     let err = refused(&text);
     assert!(
         err.message().starts_with(
-            "axis origin is the sketch's origin, a point: a groove turns about a line, at line 5"
+            "axis origin is the sketch's origin, a point: a groove turns about a line, at line 6"
         ),
         "{err}"
     );
@@ -826,6 +828,7 @@ fn a_document_built_in_memory_round_trips() {
     let document = Document {
         silico: FormatVersion,
         units: Units,
+        naming: NamingScheme,
         features: vec![feature(
             "g0000001",
             "Groove",

@@ -15,7 +15,7 @@ use model::{WAIT, checked, described, id, made, published};
 use proptest::prelude::*;
 use silico_core::document::{
     Checked, Document, Feature, FeatureId, FeatureVersion, Fingerprint, FormatVersion, Length,
-    Measure, Name, Operation, Units, read, schema, write,
+    Measure, Name, NamingScheme, Operation, Units, read, schema, write,
 };
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::Op;
@@ -237,6 +237,7 @@ fn with_fingerprint(fingerprint: Option<Fingerprint>) -> Document {
     Document {
         silico: FormatVersion,
         units: Units,
+        naming: NamingScheme,
         features: vec![Feature {
             id: FeatureId::new("k7f2qx3m").unwrap(),
             operation: Operation::Sphere {

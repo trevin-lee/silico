@@ -9,14 +9,15 @@ use super::fingerprint::{Fingerprint, MEASURE_DECIMALS, Measure};
 use super::json::{At, Member, Node, SHOWN_CHARS, SyntaxError, Value, shown};
 use super::model::{
     Axis, ChamferSize, Document, ElementName, FEATURE_TYPES, Feature, FeatureId, FeatureVersion,
-    FormatVersion, ID_LENGTH, Name, Operation, PadExtent, PocketExtent, Position, SweepFeature,
-    TurnExtent, Units,
+    FormatVersion, ID_LENGTH, Name, NamingScheme, Operation, PadExtent, PocketExtent, Position,
+    SweepFeature, TurnExtent, Units,
 };
 use super::quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
 use super::sketch::{
     CONSTRAINT_TYPES, Coordinate, Direction, ElementId, Form, LineSide, Plane, Reference, Sketch,
     SketchArc, SketchCircle, SketchConstraint, SketchLine, SketchPoint, TangentSide,
 };
+use crate::naming::UNRECORDED_NAMING_SCHEME;
 use crate::{Error, ErrorCode};
 
 /// The document `bytes` hold, or why they don't hold one.
@@ -41,6 +42,7 @@ pub fn decode(bytes: &[u8]) -> Result<Document, Error> {
         ));
     }
     units(top.take("units")?)?;
+    let naming = naming(top.optional("naming"), top.at)?;
     let features = top.take("features")?;
     let Value::Array(items) = features.value else {
         return Err(wrong_kind(
@@ -59,6 +61,7 @@ pub fn decode(bytes: &[u8]) -> Result<Document, Error> {
     Ok(Document {
         silico: FormatVersion,
         units: Units,
+        naming,
         features,
     })
 }
@@ -221,9 +224,8 @@ fn field_name(key: &str) -> String {
     if plain { key.to_owned() } else { shown(key) }
 }
 
-/// A non-negative whole number's digits, as `silico`, `v`, and a fingerprint's counts are
-/// written: compared as text,
-/// so no number is too large to say which it is.
+/// A non-negative whole number's digits, as `silico`, `naming`, `v`, and a fingerprint's
+/// counts are written: compared as text, so no number is too large to say which it is.
 fn whole_number(node: &Node, feature: Option<&str>, parameter: &str) -> Result<String, Error> {
     let Value::Number(text) = &node.value else {
         return Err(wrong_kind(feature, parameter, node, "a whole number"));
@@ -283,6 +285,40 @@ fn units(node: Node) -> Result<(), Error> {
         }
     }
     fields.finish()
+}
+
+/// The naming scheme the document's names were written under (`naming`, M4.0): read as
+/// `silico` is, so it's a whole number, and refused, naming it, unless it's the scheme this
+/// Silico names by, the only one whose names it reads: so no name is read under a scheme
+/// other than the one it was written under. A document without it was saved before the
+/// header recorded it, so its names are [`UNRECORDED_NAMING_SCHEME`]'s (`document_at`, where
+/// the document starts, is where a refusal of that scheme points).
+fn naming(node: Option<Node>, document_at: At) -> Result<NamingScheme, Error> {
+    let (scheme, at) = match &node {
+        Some(node) => (whole_number(node, None, "naming")?, node.at),
+        None => (UNRECORDED_NAMING_SCHEME.to_string(), document_at),
+    };
+    if scheme == NamingScheme::NUMBER.to_string() {
+        return Ok(NamingScheme);
+    }
+    let said = if node.is_some() {
+        "the document's names were written under"
+    } else {
+        "the document records no naming scheme, so its names are read as written under"
+    };
+    Err(refuse(
+        None,
+        "naming",
+        at,
+        format!(
+            "{said} naming scheme {}, which this Silico doesn't read",
+            shown_number(&scheme)
+        ),
+        format!(
+            "this Silico reads naming scheme {}: open it in the Silico that wrote it",
+            NamingScheme::NUMBER
+        ),
+    ))
 }
 
 fn id(node: Node, feature: Option<&str>, parameter: &str) -> Result<FeatureId, Error> {

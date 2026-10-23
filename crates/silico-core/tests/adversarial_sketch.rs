@@ -1310,8 +1310,8 @@ mod constructed {
     use super::*;
     use silico_core::document::{
         Angle, Coordinate, Direction, Document, ElementId, Feature, FeatureVersion, Form,
-        FormatVersion, Length, LineSide, Name, Plane, Reference, SketchArc, SketchCircle,
-        SketchConstraint, SketchLine, SketchPoint, TangentSide, Units,
+        FormatVersion, Length, LineSide, Name, NamingScheme, Plane, Reference, SketchArc,
+        SketchCircle, SketchConstraint, SketchLine, SketchPoint, TangentSide, Units,
     };
 
     fn element() -> impl Strategy<Value = ElementId> {
@@ -1510,6 +1510,7 @@ mod constructed {
         Document {
             silico: FormatVersion,
             units: Units,
+            naming: NamingScheme,
             features: vec![Feature {
                 id: FeatureId::new(FEATURE).unwrap(),
                 operation: Operation::Sketch(sketch),

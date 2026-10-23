@@ -21,6 +21,8 @@ pub struct Document {
     pub silico: FormatVersion,
     /// The units every length and angle is written in.
     pub units: Units,
+    /// The naming scheme the document's element names were written under.
+    pub naming: NamingScheme,
     /// The features, in timeline order: each may use only features before it.
     pub features: Vec<Feature>,
 }
@@ -42,6 +44,36 @@ impl JsonSchema for FormatVersion {
         json_schema!({
             "description": "The format's version: 1.",
             "const": 1
+        })
+    }
+}
+
+/// The naming scheme a document's element names were written under (`naming`, M4.0): the
+/// one Silico names by ([`crate::naming::NAMING_SCHEME_NUMBER`]), the only one it reads, so
+/// a name is never read under a scheme other than its own. A document of another scheme is
+/// refused, naming it; one that records none was saved before the header recorded it, and
+/// is read as scheme [`crate::naming::UNRECORDED_NAMING_SCHEME`] (and written with it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NamingScheme;
+
+impl NamingScheme {
+    pub const NUMBER: u32 = crate::naming::NAMING_SCHEME_NUMBER;
+}
+
+impl JsonSchema for NamingScheme {
+    fn schema_name() -> Cow<'static, str> {
+        "NamingScheme".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        let description = format!(
+            "The naming scheme the document's element names were written under: {}. A document without it was saved before Silico recorded it, and is read as scheme {}.",
+            NamingScheme::NUMBER,
+            crate::naming::UNRECORDED_NAMING_SCHEME
+        );
+        json_schema!({
+            "description": description,
+            "const": NamingScheme::NUMBER
         })
     }
 }

@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 use proptest::prelude::*;
 use silico_core::document::{
     Angle, Axis, Checked, Coordinate, Document, ElementId, Feature, FeatureVersion, FormatVersion,
-    ID_ALPHABET, Length, Name, Operation, PadExtent, PocketExtent, TurnExtent, Units, read, schema,
-    validate, write,
+    ID_ALPHABET, Length, Name, NamingScheme, Operation, PadExtent, PocketExtent, TurnExtent, Units,
+    read, schema, validate, write,
 };
 use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
@@ -399,7 +399,10 @@ proptest! {
     /// reader takes (numbers are plain integers and IDs valid, so only shape decides).
     #[test]
     fn the_schema_and_the_reader_agree_on_a_sweeps_shape(feature in sweep_text()) {
-        let text = with(&feature);
+        // With the header the schema requires (`naming`, M4.0): the reader takes a document
+        // without it too, as written before it, so only a sweep's shape decides here.
+        let text = with(&feature).replacen(r#""units": "#, r#""naming": 5, "units": "#, 1);
+        prop_assert!(text.contains(r#""naming": 5"#));
         let read_ok = read(text.as_bytes()).is_ok();
         let schema_ok = schema_valid(&text);
         prop_assert_eq!(read_ok, schema_ok, "{}", feature);
@@ -514,6 +517,7 @@ proptest! {
         let document = Document {
             silico: FormatVersion,
             units: Units,
+            naming: NamingScheme,
             features: vec![Feature {
                 id: id("x0000001"),
                 operation,
