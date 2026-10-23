@@ -9,10 +9,8 @@
 //! Tests marked BREAKS were bug reports, each since fixed: they say what broke.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/generate.rs"]
-mod generate;
-#[path = "common/systems.rs"]
-mod systems;
+use super::generate;
+use super::systems;
 
 use std::path::Path;
 use std::time::{Duration, Instant};

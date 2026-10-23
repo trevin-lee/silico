@@ -3,8 +3,7 @@
 //! sketch (unknowns less independent equations).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/systems.rs"]
-mod systems;
+use super::systems;
 
 use silico_protocol::{
     Algorithm, PointOf, PointValues, Refusal, SketchGeometry, SolveStatus, SolverConstraint, Tag,

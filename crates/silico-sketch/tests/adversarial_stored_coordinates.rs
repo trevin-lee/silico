@@ -5,8 +5,7 @@
 //! silico-core's tests/adversarial_stored_coordinates.rs.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "../../silico-core/tests/common/sketch.rs"]
-mod fixture;
+use super::fixture;
 
 use fixture::point_debug;
 use std::path::{Path, PathBuf};

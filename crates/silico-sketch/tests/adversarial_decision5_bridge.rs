@@ -7,10 +7,8 @@
 //! distance between the two parts, which no kept row carries a direction along.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "../../silico-core/tests/common/sketch.rs"]
-mod fixture;
-#[path = "common/saves.rs"]
-mod saves;
+use super::fixture;
+use super::saves;
 
 use fixture::point;
 use saves::{k, solved, text, worker};
