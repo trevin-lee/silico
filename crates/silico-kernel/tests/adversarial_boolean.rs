@@ -4,8 +4,7 @@
 //! note with their inputs.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/numbers.rs"]
-mod numbers;
+use super::numbers;
 
 use std::f64::consts::PI;
 use std::path::Path;

@@ -4,10 +4,8 @@
 //! source is a session with no cache at all, on its own pool.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/cached.rs"]
-mod cached;
-#[path = "../../silico-core/tests/common/example.rs"]
-mod example;
+use super::cached;
+use super::example;
 
 use std::sync::Arc;
 

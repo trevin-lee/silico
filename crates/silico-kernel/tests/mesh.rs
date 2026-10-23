@@ -4,12 +4,9 @@
 //! (docs/ports/tessellation.md).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/mesh_geometry.rs"]
-mod geometry;
-#[path = "common/imports.rs"]
-mod imports;
-#[path = "common/numbers.rs"]
-mod numbers;
+use super::geometry;
+use super::imports;
+use super::numbers;
 
 use geometry::{apart, cross, cylinder, dot, faces, norm, sub, wide};
 use numbers::relative_error;

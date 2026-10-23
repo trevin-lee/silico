@@ -3541,6 +3541,29 @@ mod tests {
         );
     }
 
+    /// A sweep feature's naming key, pinned as the others are (the milestone's mutants:
+    /// no test held its arm, so its op code's byte could be anything): the scheme's line,
+    /// the step's key, the ID, 1 + the sweep's op code (a pad's, 5, so 6), its faces' naming
+    /// key, then the inputs'. Computed by hand with Python's hashlib from bytes chosen here
+    /// (each key a byte repeated), not from any key the code makes.
+    #[test]
+    fn a_sweeps_naming_key_holds_its_op_code_and_its_faces_key() {
+        let id = |text: &str| FeatureId::new(text).unwrap();
+        let pad = Naming::Sweep(Arc::new(SweepNaming {
+            operation: OpCode::Pad,
+            sketch: id("ssssssss"),
+            curves: Vec::new(),
+            points: Vec::new(),
+            regions: Vec::new(),
+            faces: NamingKey([2; 32]),
+        }));
+        let key = naming_key(Key([1; 32]), &id("cccccccc"), &pad, &[NamingKey([3; 32])]);
+        assert_eq!(
+            crate::hex(&key.0),
+            "d50b3f99aaaedeaf675e75fce819ff74fe1a54adae4324b0dee633af355362f6"
+        );
+    }
+
     /// M3.6's step kinds' keys (design S3), pinned, computed by hand with Python's hashlib
     /// from the lines their doc describes: a faces step's plane, its regions and loops
     /// marked, each curve by its kind and its values' bits; a prism's faces key, start, and

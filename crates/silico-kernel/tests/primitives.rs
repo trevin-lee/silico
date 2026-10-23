@@ -2,14 +2,10 @@
 //! and centers are analytic; invalid values are refused before any request is sent.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/imports.rs"]
-mod imports;
-#[path = "common/kernel.rs"]
-mod kernel;
-#[path = "common/numbers.rs"]
-mod numbers;
-#[path = "common/oracle.rs"]
-mod oracle;
+use super::imports;
+use super::kernel;
+use super::numbers;
+use super::oracle;
 
 use std::f64::consts::PI;
 use std::path::Path;

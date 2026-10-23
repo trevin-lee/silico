@@ -7,10 +7,8 @@
 //! that isn't the core blaming the worker (`protocol_error`, "start a new kernel worker").
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/imports.rs"]
-mod imports;
-#[path = "common/numbers.rs"]
-mod numbers;
+use super::imports;
+use super::numbers;
 
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 use std::path::Path;

@@ -1,7 +1,7 @@
 //! M2.4: a request whose worker will never say it's done lets go of the span it was asked
 //! in all the same: one the core refuses before sending it (too large to send), one whose
-//! worker crashes, and one superseded and stopped. Alone in its binary: it installs the
-//! process's global subscriber.
+//! worker crashes, and one superseded and stopped. Alone in its process (nextest runs each
+//! test in its own): it installs the process's global subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::Path;

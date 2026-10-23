@@ -8,12 +8,9 @@
 //! it must name only edges at fault.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/box_edges.rs"]
-mod box_edges;
-#[path = "common/kernel.rs"]
-mod kernel;
-#[path = "common/oracle.rs"]
-mod oracle;
+use super::box_edges;
+use super::kernel;
+use super::oracle;
 
 use box_edges::{failed, named};
 use kernel::kernel;

@@ -2048,6 +2048,14 @@ fn a_reply_whose_residuals_or_algorithm_dont_fit_its_request_is_a_protocol_error
     }
 }
 
+#[test]
+fn a_solve_stopper_shows_as_what_it_is() {
+    // The milestone's mutants: its Debug, which test output and any client prints, could
+    // write nothing. It shows its type, having nothing else it can show (a closure).
+    let stopper = silico_core::sketch::SolveStopper::new(|| {});
+    assert_eq!(format!("{stopper:?}"), "SolveStopper");
+}
+
 /// A stand-in for the worker: answers with `answer`, made from the system it's sent.
 struct Standing(Box<dyn Fn(&SketchSystem) -> Solved + Send>);
 
@@ -2055,6 +2063,37 @@ impl SketchSolver for Standing {
     fn solve(&mut self, system: SketchSystem) -> Result<Solved, silico_core::Error> {
         Ok((self.0)(&system))
     }
+}
+
+#[test]
+fn a_solve_to_geometry_the_file_cant_hold_is_refused_as_an_invalid_result() {
+    // A solve that lands on geometry the gate refuses is refused, so its save never writes a
+    // file that can't be opened again (`holdable`, from the solve's load path; the M3
+    // review's mutants found a second check after it that no input could reach, which went).
+    // Here the worker says it solved, with every unknown scaled by 5e-9: n0000001, from the
+    // origin to (5e-8, 0), is a line with a length, so the solution reads and builds, but
+    // shorter than the gate's floor, the length tolerance 1e-7 (#90: the gate floored at the
+    // tolerance), so the file it writes would be refused.
+    let text = ten(&[]);
+    let checked = Checked::new(read(text.as_bytes()).unwrap()).unwrap();
+    let feature = FeatureId::new(fixture::FEATURE).unwrap();
+    let mut collapses = Standing(Box::new(|s: &SketchSystem| {
+        let t = Translation::new(&sketch_of(&ten(&[]))).unwrap();
+        let mut values = s.values.clone();
+        for v in &s.unknowns {
+            values[v.0 as usize] *= 5e-9;
+        }
+        answer(&t, values, SolveStatus::Success)
+    }));
+    let e = solve(&checked, &feature, &mut collapses).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::InvalidResult, "{e}");
+    assert_eq!(e.feature(), Some(fixture::FEATURE), "{e}");
+    assert!(
+        e.message()
+            .starts_with("the sketch solves to geometry its file can't hold: "),
+        "{e}"
+    );
+    assert!(e.elements().iter().any(|n| n == "n0000001"), "{e:?}");
 }
 
 #[test]

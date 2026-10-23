@@ -2,10 +2,8 @@
 //! error instead of aborting.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/imports.rs"]
-mod imports;
-#[path = "common/numbers.rs"]
-mod numbers;
+use super::imports;
+use super::numbers;
 
 use numbers::relative_error;
 use silico_kernel::test_ops::{

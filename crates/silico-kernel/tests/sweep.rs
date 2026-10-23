@@ -3,16 +3,10 @@
 //! and through a worker.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/close.rs"]
-mod close;
-#[path = "common/facts.rs"]
-mod facts;
-#[path = "common/imports.rs"]
-mod imports;
-#[path = "common/numbers.rs"]
-mod numbers;
-#[path = "common/oracle.rs"]
-mod oracle;
+use super::close;
+use super::facts;
+use super::imports;
+use super::oracle;
 
 use std::f64::consts::PI;
 use std::path::Path;

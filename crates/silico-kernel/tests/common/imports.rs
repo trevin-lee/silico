@@ -1,4 +1,4 @@
-//! Shared by every test binary of silico-kernel (included with `#[path]`): each one links
+//! Shared by silico-kernel's test programs (included with `#[path]`): each one links
 //! OCCT and the bridge, so each must import no inexact platform math (ARCHITECTURE.md,
 //! Deterministic kernel).
 

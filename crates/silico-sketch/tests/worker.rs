@@ -270,3 +270,53 @@ fn the_worker_imports_no_platform_math() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[test]
+fn a_begun_solve_whose_worker_then_died_says_it_ended_and_to_solve_again() {
+    // The milestone's mutants: a solve begun with a stopper starts no worker, and one whose
+    // worker has died fails at once, saying the worker ended during the solve and that the
+    // next solve starts another, rather than sending the request to the dead worker and
+    // reporting a crash during it (`is_stopped() || has_exited()` read as `&&` passed every
+    // test). It answered once first, so it had started: its death is a crash.
+    use silico_core::sketch::{SketchSolver, SketchWorker};
+    let mut w = SketchWorker::start_worker(Path::new(WORKER)).unwrap();
+    w.solve(rectangle_40_by_20().b.system(Algorithm::DogLeg))
+        .unwrap();
+    let _stopper = w.stopper().unwrap();
+    let pid = w.pid().to_string();
+    assert!(
+        Command::new("kill")
+            .args(["-9", &pid])
+            .status()
+            .unwrap()
+            .success()
+    );
+    // Until it has exited (a zombie, or gone): the solve finds it so.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let ps = Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid])
+            .output()
+            .unwrap();
+        let stat = String::from_utf8_lossy(&ps.stdout).trim().to_owned();
+        if stat.is_empty() || stat.starts_with('Z') {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the worker didn't exit");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let e = w
+        .solve(rectangle_40_by_20().b.system(Algorithm::DogLeg))
+        .unwrap_err();
+    assert_eq!(e.code(), ErrorCode::WorkerCrashed, "{e}");
+    assert_eq!(
+        e.message(),
+        "the sketch worker ended during the solve",
+        "{e}"
+    );
+    assert_eq!(
+        e.suggestion(),
+        Some("solve again: the next solve starts another worker"),
+        "{e}"
+    );
+}

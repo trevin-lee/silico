@@ -1,12 +1,11 @@
 //! What the pool logs of a request it doesn't deliver. A superseded request that failed is
-//! a worker failing, logged at warn, unless the failure was the pool's own stopping of it (a
-//! kill that found its worker alive), logged at debug; one that succeeded isn't logged. Each
-//! is logged in the span the request was submitted in. Alone in its binary: it installs the
-//! process's global subscriber.
+//! a worker failing, logged at warn, unless the failure was the pool's own stopping of it
+//! (a kill that found its worker alive), logged at debug; one that succeeded isn't logged.
+//! Each is logged in the span the request was submitted in. Alone in its process (nextest
+//! runs each test in its own): it installs the process's global subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/scripts.rs"]
-mod scripts;
+use super::scripts;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

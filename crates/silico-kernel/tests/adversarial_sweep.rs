@@ -4,8 +4,7 @@
 //! (the angle times the profile's first moment about the axis) for a revolve.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/numbers.rs"]
-mod numbers;
+use super::numbers;
 
 use std::f64::consts::{PI, TAU};
 use std::path::Path;
@@ -522,7 +521,11 @@ fn a_cut_across_where_a_nearly_full_turn_would_leave_its_gap_removes_what_it_cov
     // 1.047e-7 at its near corners, about the narrowest the rules take (one within 1e-7 is
     // refused); a box (0.5 × 0.5 × 1 = 0.25) across it lies wholly inside the ring, so the
     // cut removes exactly 0.25. (OCCT 8.0.1 removed nothing, a regression from the 7.9.3
-    // that Silico and FreeCAD's oracle run.)
+    // that Silico and FreeCAD's oracle run.) The slit is inside OCCT's Boolean vertex-merge
+    // band (3e-7: tolV1 + tolV2 + Confusion, BOPTools_AlgoTools::ComputeVV), where cuts
+    // across real slits up to about 1e-6 can come out self-intersecting, an accepted wrong
+    // result (docs/ports/extrude-revolve.md): its pass is this geometry's, kept as a canary
+    // for an OCCT that changes it, not a promise for every slit this narrow.
     let ring = revolve(&rect(1.0, 0.0, 1.0, 1.0), &axis([0.0; 3], Y), 360.0 - 6e-6).unwrap();
     let block = silico_kernel::make(&silico_kernel::Primitive::Box {
         dx: 0.5,

@@ -4,10 +4,8 @@
 //! same bytes.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/cached.rs"]
-mod cached;
-#[path = "../../silico-core/tests/common/example.rs"]
-mod example;
+use super::cached;
+use super::example;
 
 use std::path::Path;
 use std::sync::Arc;

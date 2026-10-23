@@ -2,8 +2,7 @@
 //! to the same bytes again on another pool: recompute adds nothing that varies between runs.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "../../silico-core/tests/common/example.rs"]
-mod example;
+use super::example;
 
 use std::path::Path;
 use std::sync::Arc;

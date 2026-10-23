@@ -6,8 +6,7 @@
 //! circles) are written here, in OCCT's text format.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/oracle.rs"]
-mod oracle;
+use super::oracle;
 
 use std::collections::BTreeMap;
 

@@ -5,12 +5,8 @@
 //! worker and in it.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/close.rs"]
-mod close;
-#[path = "common/imports.rs"]
-mod imports;
-#[path = "common/numbers.rs"]
-mod numbers;
+use super::close;
+use super::imports;
 
 use std::f64::consts::{FRAC_PI_2, PI};
 use std::path::Path;

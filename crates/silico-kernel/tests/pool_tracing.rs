@@ -1,7 +1,8 @@
 //! A request through the pool runs in the tracing span it was submitted in, so its worker's
 //! call (and the worker's logs, which carry that call's trace ID) trace back to the user
 //! action and the feature that asked for it (ARCHITECTURE.md, invariant 9), as a call on a
-//! `KernelWorker` does. Alone in its binary: it installs the process's global subscriber.
+//! `KernelWorker` does. Alone in its process (nextest runs each test in its own): it
+//! installs the process's global subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::Path;
