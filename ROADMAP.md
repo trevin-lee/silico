@@ -46,7 +46,7 @@ Can run in parallel with M2, except M3.6, which needs M2.7–M2.8. PlaneGCS in a
 **Done when** the ported FreeCAD sketcher tests pass, and the latency of interactive drags through the worker has been measured. That measurement settles the IPC transport question.
 
 ### M4 – MCP, before any UI
-The command API exposed over MCP: transactions, geometry queries that return stable names, measurement, offscreen PNG rendering, and `read_logs`.
+The command API exposed over MCP: transactions, geometry queries that return stable names, measurement, offscreen PNG rendering, and `read_logs`. With it, a check's warnings, which M3 deferred here: M3.2's D2 warning for two curve ends at one place that aren't one point, and `silico fmt --merge-touching` to join them on request (docs/design/m3.2-sketch-format.md, D2).
 
 **Done when** an agent designs a bracket headlessly and exports a printable 3MF.
 
