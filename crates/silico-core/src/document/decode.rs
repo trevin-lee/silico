@@ -17,7 +17,7 @@ use super::sketch::{
     CONSTRAINT_TYPES, Coordinate, Direction, ElementId, Form, LineSide, Plane, Reference, Sketch,
     SketchArc, SketchCircle, SketchConstraint, SketchLine, SketchPoint, TangentSide,
 };
-use crate::naming::UNRECORDED_NAMING_SCHEME;
+use crate::naming::{NAMING_SCHEME_NUMBER, UNRECORDED_NAMING_SCHEME};
 use crate::{Error, ErrorCode};
 
 /// The document `bytes` hold, or why they don't hold one.
@@ -25,7 +25,7 @@ pub fn decode(bytes: &[u8]) -> Result<Document, Error> {
     let root = super::json::read(bytes).map_err(syntax)?;
     let mut top = Fields::of(root, None, None, "the document")?;
     let silico = top.take("silico")?;
-    let version = whole_number(&silico, None, "silico")?;
+    let version = whole_number(&silico, None, "silico", FormatVersion::NUMBER)?;
     if version != FormatVersion::NUMBER.to_string() {
         return Err(refuse(
             None,
@@ -225,8 +225,14 @@ fn field_name(key: &str) -> String {
 }
 
 /// A non-negative whole number's digits, as `silico`, `naming`, `v`, and a fingerprint's
-/// counts are written: compared as text, so no number is too large to say which it is.
-fn whole_number(node: &Node, feature: Option<&str>, parameter: &str) -> Result<String, Error> {
+/// counts are written: compared as text, so no number is too large to say which it is. A
+/// refusal suggests `example`, a value the field takes.
+fn whole_number(
+    node: &Node,
+    feature: Option<&str>,
+    parameter: &str,
+    example: u32,
+) -> Result<String, Error> {
     let Value::Number(text) = &node.value else {
         return Err(wrong_kind(feature, parameter, node, "a whole number"));
     };
@@ -238,7 +244,7 @@ fn whole_number(node: &Node, feature: Option<&str>, parameter: &str) -> Result<S
         parameter,
         node.at,
         format!("{parameter} is {}, not a whole number", shown_number(text)),
-        format!("write {parameter} as a whole number, such as 1"),
+        format!("write {parameter} as a whole number, such as {example}"),
     ))
 }
 
@@ -295,7 +301,10 @@ fn units(node: Node) -> Result<(), Error> {
 /// the document starts, is where a refusal of that scheme points).
 fn naming(node: Option<Node>, document_at: At) -> Result<NamingScheme, Error> {
     let (scheme, at) = match &node {
-        Some(node) => (whole_number(node, None, "naming")?, node.at),
+        Some(node) => (
+            whole_number(node, None, "naming", NAMING_SCHEME_NUMBER)?,
+            node.at,
+        ),
         None => (UNRECORDED_NAMING_SCHEME.to_string(), document_at),
     };
     if scheme == NamingScheme::NUMBER.to_string() {
@@ -350,7 +359,7 @@ fn feature(index: usize, node: Node) -> Result<Feature, Error> {
     let type_at = type_node.at;
     let type_name = string(type_node, feature, "type")?;
     let version_node = fields.take("v")?;
-    let version = whole_number(&version_node, feature, "v")?;
+    let version = whole_number(&version_node, feature, "v", 1)?;
     if !FEATURE_TYPES.contains(&type_name.as_str()) {
         return Err(refuse(
             feature,
@@ -459,7 +468,7 @@ fn count(fields: &mut Fields, key: &str) -> Result<u32, Error> {
     let node = fields.take(key)?;
     let name = fields.name(key);
     let feature = fields.feature();
-    let digits = whole_number(&node, feature, &name)?;
+    let digits = whole_number(&node, feature, &name, 1)?;
     digits.parse::<u32>().map_err(|_| {
         refuse(
             feature,

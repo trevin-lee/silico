@@ -169,7 +169,7 @@ fn a_scheme_that_isnt_a_whole_number_is_refused_as_silico_would_be() {
         );
         assert_eq!(
             err.suggestion(),
-            Some("write naming as a whole number, such as 1"),
+            Some("write naming as a whole number, such as 5"),
             "{value}"
         );
     }
