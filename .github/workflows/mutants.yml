@@ -199,6 +199,12 @@ jobs:
     runs-on: [self-hosted, linux, x64]
     timeout-minutes: 10
     steps:
+      # Only the triaged list, from the branch this runs on (also clearing what an earlier
+      # job left in the workspace).
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: .github/mutants-triaged.txt
+          sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@v4
         with:
           pattern: mutants-shard-*
@@ -222,12 +228,58 @@ jobs:
           # A shard that finished writes its marker; a stopped one uploads what it reached
           # without it.
           reported=$(find shards -mindepth 2 -maxdepth 2 -name shard 2>/dev/null | wc -l)
+          # The missed and timed-out mutants .github/mutants-triaged.txt doesn't account for.
+          # Its lines are "file | function | description | #PR", one per mutant argued
+          # equivalent or unreachable, keyed without the line and column, which move. A key
+          # missed more times than the list has it is new, and each of its misses is listed.
+          awk -v list=.github/mutants-triaged.txt '
+            # The key of a mutant named "file:line:col: description[ in function]".
+            function key(name,   c, file, desc, at, off, j, fn, end) {
+              c = index(name, ": ")
+              file = substr(name, 1, c - 1)
+              sub(/:[0-9]+:[0-9]+$/, "", file)
+              desc = substr(name, c + 2)
+              # The function follows the last " in ".
+              at = 0
+              off = 0
+              while ((j = index(substr(desc, off + 1), " in ")) > 0) { at = off + j; off = at + 3 }
+              if (at) return file " | " substr(desc, at + 4) " | " substr(desc, 1, at - 1)
+              # A whole function replaced names it; outside a function, there is none.
+              fn = ""
+              if (desc ~ /^replace ([A-Za-z_]|<impl )/) {
+                fn = substr(desc, 9)
+                end = index(fn, " -> ")
+                if (!end) end = index(fn, " with ")
+                fn = substr(fn, 1, end - 1)
+              }
+              return file " | " fn " | " desc
+            }
+            FILENAME == list {
+              if ($0 !~ /^#/ && NF) { sub(/ \| #[0-9]+[ \t]*$/, ""); triaged[$0]++ }
+              next
+            }
+            {
+              n++
+              name[n] = $0 (FILENAME ~ /timeout/ ? " (timed out)" : "")
+              k[n] = key($0)
+              seen[k[n]]++
+            }
+            END { for (i = 1; i <= n; i++) if (seen[k[i]] > triaged[k[i]]) print name[i] }
+          ' .github/mutants-triaged.txt all/missed.txt all/timeout.txt >all/new.txt
+          sort -o all/new.txt all/new.txt
           {
             echo "## Mutants: $REF${BASE:+ since $BASE}${PACKAGES:+ ($PACKAGES)}${FILES:+ in $FILES}${RE:+ matching \`$RE\`}"
             echo
-            echo "| Caught | Missed | Timed out | Unviable | Shards reported |"
-            echo "|---|---|---|---|---|"
-            echo "| $(count caught) | $(count missed) | $(count timeout) | $(count unviable) | $reported of $SHARDS |"
+            echo "| Caught | Missed | Timed out | Unviable | New misses | Shards reported |"
+            echo "|---|---|---|---|---|---|"
+            echo "| $(count caught) | $(count missed) | $(count timeout) | $(count unviable) | $(count new) | $reported of $SHARDS |"
+            if [ -s all/new.txt ]; then
+              echo
+              echo "### New misses (missed or timed out, not in .github/mutants-triaged.txt)"
+              echo '```'
+              cat all/new.txt
+              echo '```'
+            fi
             # A recheck (a regex) is small: list what it tested, so a survivor its regex
             # missed shows by its absence.
             listed="missed timeout"
