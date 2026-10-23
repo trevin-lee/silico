@@ -7,8 +7,7 @@
 //! stored, by the fake sketch solver.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "../../silico-core/tests/common/sweeps.rs"]
-mod sweeps;
+use super::sweeps;
 
 use std::collections::BTreeSet;
 use std::f64::consts::PI;

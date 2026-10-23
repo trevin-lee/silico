@@ -13,12 +13,9 @@
 //! turns, 3-4-5 triangles, and integer quaternions).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/mesh_geometry.rs"]
-mod geometry;
-#[path = "common/kernel.rs"]
-mod kernel;
-#[path = "common/oracle.rs"]
-mod oracle;
+use super::geometry;
+use super::kernel;
+use super::oracle;
 
 use geometry::{apart, cross, cylinder, dot, faces, norm, sub, wide};
 use kernel::kernel;

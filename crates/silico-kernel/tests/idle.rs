@@ -3,8 +3,7 @@
 //! binary, so the CPU time it measures is only its own.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/scripts.rs"]
-mod scripts;
+use super::scripts;
 
 use std::path::Path;
 use std::time::Duration;

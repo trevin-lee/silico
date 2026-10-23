@@ -3,10 +3,8 @@
 //! app receives it through a worker (docs/ports/history.md).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/imports.rs"]
-mod imports;
-#[path = "common/oracle.rs"]
-mod oracle;
+use super::imports;
+use super::oracle;
 
 use std::path::Path;
 use std::time::Duration;

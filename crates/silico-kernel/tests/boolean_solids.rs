@@ -6,10 +6,8 @@
 //! worked out by hand from where the boxes and sketches are.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/cached.rs"]
-mod cached;
-#[path = "../../silico-core/tests/common/sweeps.rs"]
-mod sweeps;
+use super::cached;
+use super::sweeps;
 
 use std::path::Path;
 use std::sync::Arc;

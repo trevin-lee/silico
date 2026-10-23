@@ -3,14 +3,10 @@
 //! bridge, and the deterministic OCCT build, and agrees with FreeCAD).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/imports.rs"]
-mod imports;
-#[path = "common/kernel.rs"]
-mod kernel;
-#[path = "common/numbers.rs"]
-mod numbers;
-#[path = "common/oracle.rs"]
-mod oracle;
+use super::imports;
+use super::kernel;
+use super::numbers;
+use super::oracle;
 
 use kernel::kernel;
 use numbers::relative_error;

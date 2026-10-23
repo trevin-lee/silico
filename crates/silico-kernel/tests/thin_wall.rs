@@ -6,10 +6,7 @@
 //! (design S7, `silico_core::sweep::check_result`).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/close.rs"]
-mod close;
-#[path = "common/numbers.rs"]
-mod numbers;
+use super::close;
 
 use close::assert_close;
 use silico_core::ErrorCode;

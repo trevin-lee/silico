@@ -7,14 +7,9 @@
 //! are written by FreeCAD.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/close.rs"]
-mod close;
-#[path = "common/imports.rs"]
-mod imports;
-#[path = "common/numbers.rs"]
-mod numbers;
-#[path = "common/oracle.rs"]
-mod oracle;
+use super::close;
+use super::imports;
+use super::oracle;
 
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 use std::path::Path;

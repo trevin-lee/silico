@@ -6,8 +6,7 @@
 //! the subscriber it installs sees only its pool.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/launches.rs"]
-mod launches;
+use super::launches;
 
 use launches::{Decision, Decisions, assert_gaps_exceed, gaps, launch_logger, wait_launches};
 use silico_core::pool::KernelPool;

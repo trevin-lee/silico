@@ -5,8 +5,7 @@
 //! profile and the faces, not the solver; the faces' own cases are tests/faces.rs.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "../../silico-core/tests/common/sketch.rs"]
-mod fixture;
+use super::fixture;
 
 use fixture::{arc, circle, line, point};
 use std::f64::consts::PI;
