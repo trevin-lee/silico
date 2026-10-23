@@ -11,7 +11,7 @@
 name: mutants
 # The ref, base, packages, files, and regex, so concurrent runs can be told apart
 # (review-tests finds its run by this title).
-run-name: "mutants ${{ inputs.ref || github.ref_name }} since ${{ inputs.base || 'nothing' }} in ${{ inputs.packages || 'every package' }}${{ inputs.files && format(' files {0}', inputs.files) || '' }}${{ inputs.re && format(' matching {0}', inputs.re) || '' }}"
+run-name: "mutants ${{ inputs.ref || github.ref_name }} since ${{ inputs.base || 'nothing' }} in ${{ inputs.packages || 'every package' }}${{ inputs.files && format(' files {0}', inputs.files) || '' }}${{ inputs.re && format(' matching {0}', inputs.re) || '' }}${{ inputs.threads && format(' at {0} build jobs', inputs.threads) || '' }}"
 
 on:
   workflow_dispatch:
@@ -35,7 +35,7 @@ on:
         description: "Number of shards to share the work (1 to 16; at most two run at once, so more than two only helps a run whose shard would pass the 1,440-minute limit)"
         default: "2"
       threads:
-        description: "Build jobs and test threads per shard (empty: half the runner VM's CPUs). Shards run at nice 19, so gates preempt them; this fills what gates leave"
+        description: "Build jobs per shard, 2 to 60 (empty: half the runner VM's CPUs). Shards run at nice 19, so gates preempt them; this fills what gates leave. Test threads stay a sixth"
         default: ""
 
 permissions:
@@ -60,10 +60,15 @@ jobs:
           PACKAGES: ${{ inputs.packages }}
           FILES: ${{ inputs.files }}
           RE: ${{ inputs.re }}
+          THREADS: ${{ inputs.threads }}
         run: |
           case $SHARDS in
           [1-9] | 1[0-6]) ;;
           *) echo "::error::shards must be 1 to 16, not '$SHARDS'"; exit 1 ;;
+          esac
+          case $THREADS in
+          '' | [2-9] | [1-5][0-9] | 60) ;;
+          *) echo "::error::threads must be empty or 2 to 60, not '$THREADS'"; exit 1 ;;
           esac
           for package in $PACKAGES; do
             case $package in
@@ -143,16 +148,20 @@ jobs:
           # One regex, as given: cargo-mutants matches it against each mutant's name.
           # (`--re=` so a regex beginning with `-` isn't read as an option.)
           if [ -n "$RE" ]; then args+=("--re=$RE"); fi
-          # Half the runner VM each, oversubscribed on purpose: the shard runs at the lowest
-          # priority (nice 19, below), so gates preempt it, and much of a shard's time is
-          # spent in serial steps (each mutant's link, cargo-mutants' bookkeeping). At a sixth
-          # each, six shards left the VM about half idle (2026-10-23). Since the VM's disk
-          # moved off ZFS (2026-10-22), CPU, not I/O, is what jobs wait on. Retry a failed
-          # test here, since one that fails only under load would fail the baseline or count a
-          # mutant as caught; a mutant that breaks a test fails it every time.
-          share=${THREADS:-$(( $(nproc) / 2 ))}
-          if [ "$share" -lt 2 ]; then share=2; fi
-          export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share NEXTEST_RETRIES=2
+          # Builds take half the runner VM each, oversubscribed on purpose: the shard runs at
+          # the lowest priority (nice 19, below), so gates preempt it, and parts of a shard's
+          # time are serial (the mutated crate's own compile, the longest tests at the end of
+          # the test phase). At a sixth each, six shards left the VM 10-48% idle (2026-10-23).
+          # Tests keep a sixth: each test has nextest's 2-minute limit, and its timeout would
+          # count the mutant as caught; on a full machine, more test threads per shard would
+          # give each test less CPU and push slow ones (150 OCCT cuts, 38 s now) toward it.
+          # (On a full machine a gate can also fail a test held to a wall clock:
+          # tests/mutants.sh lists those.) Retry a failed test here, since one that fails
+          # only under load would fail the baseline or count a mutant as caught; a mutant that
+          # breaks a test fails it every time.
+          build=${THREADS:-$(( $(nproc) / 2 ))}
+          tests=$(( $(nproc) / 6 > 2 ? $(nproc) / 6 : 2 ))
+          export CARGO_BUILD_JOBS=$build NEXTEST_TEST_THREADS=$tests NEXTEST_RETRIES=2
           # Without debug info (Trevin, 2026-10-22): every mutant rebuilds and relinks the
           # workspace's test binaries, and DWARF is much of what they write. Gates keep it, and
           # so does a run off CI. A mutant's backtrace loses file:line, which nobody reads; its
@@ -171,10 +180,13 @@ jobs:
           # .proptest-regressions files are replayed for each mutant, and a case saved during
           # the run comes from the seed's own cases. The gate keeps random seeds.
           export PROPTEST_RNG_SEED=20261021
-          args+=(--jobserver-tasks "$share")
+          args+=(--jobserver-tasks "$build")
           # 2: mutants missed; 3: mutants timed out. The summary reports both.
           status=0
-          nice -n 19 pixi run mutants -- "${args[@]}" || status=$?
+          # First for the OOM killer too (no swap on the VM): a mutant that removes a size
+          # bound can make tests allocate without limit, and then a shard's process, not a
+          # gate's, is the one killed.
+          choom -n 1000 -- nice -n 19 pixi run mutants -- "${args[@]}" || status=$?
           case $status in 0 | 2 | 3) ;; *) exit "$status" ;; esac
           # A shard with no mutants writes nothing; it still reports.
           mkdir -p "$RUNNER_TEMP/out/mutants.out"
