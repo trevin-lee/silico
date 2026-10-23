@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 use proptest::prelude::*;
 use silico_core::document::{
     Angle, Axis, Checked, Coordinate, Document, ElementId, Feature, FeatureVersion, FormatVersion,
-    ID_ALPHABET, Length, Name, Operation, PadExtent, PocketExtent, TurnExtent, Units, read, schema,
-    validate, write,
+    ID_ALPHABET, Length, Name, NamingScheme, Operation, PadExtent, PocketExtent, TurnExtent, Units,
+    read, schema, validate, write,
 };
 use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
@@ -262,7 +262,7 @@ fn axis_spellings_near_an_axis_are_refused_by_reader_and_schema_alike() {
         let feature = format!(
             r#"{{"id": "r0000001", "type": "revolve", "v": 1, "name": "R", "sketch": "s0000003", "axis": {escaped}, "extent": {TURN}}}"#
         );
-        let text = with(&feature);
+        let text = schema_doc(&feature);
         let err = read(text.as_bytes()).unwrap_err();
         assert_eq!(err.parameter(), Some("axis"), "{axis:?}: {err}");
         assert!(!schema_valid(&text), "{axis:?}: the schema takes it");
@@ -279,6 +279,20 @@ static VALIDATOR: std::sync::LazyLock<jsonschema::Validator> = std::sync::LazyLo
 
 fn schema_valid(text: &str) -> bool {
     VALIDATOR.is_valid(&serde_json::from_str(text).unwrap())
+}
+
+/// A document of these features with the header the schema requires (`naming`, M4.0), so
+/// the schema refuses one only for what its feature says. Checked against a revolve the
+/// reader and the schema both take.
+fn schema_doc(feature: &str) -> String {
+    let doc =
+        |feature: &str| with(feature).replacen(r#""units": "#, r#""naming": 5, "units": "#, 1);
+    let good = doc(&format!(
+        r#"{{"id": "r0000001", "type": "revolve", "v": 1, "name": "R", "sketch": "s0000003", "axis": "x_axis", "extent": {TURN}}}"#
+    ));
+    assert!(read(good.as_bytes()).is_ok(), "the reader refuses {good}");
+    assert!(schema_valid(&good), "the schema refuses {good}");
+    doc(feature)
 }
 
 #[test]
@@ -313,7 +327,7 @@ fn shapes_the_reader_refuses_the_schema_refuses_too() {
         // A pad with a tool.
         r#"{"id": "p0000001", "type": "pad", "v": 1, "name": "P", "sketch": "s0000003", "tool": "k7f2qx3m", "extent": {"type": "one_side", "length": 1, "reversed": false}}"#,
     ] {
-        let text = with(feature);
+        let text = schema_doc(feature);
         assert!(read(text.as_bytes()).is_err(), "the reader takes {feature}");
         assert!(!schema_valid(&text), "the schema takes {feature}");
     }
@@ -399,7 +413,10 @@ proptest! {
     /// reader takes (numbers are plain integers and IDs valid, so only shape decides).
     #[test]
     fn the_schema_and_the_reader_agree_on_a_sweeps_shape(feature in sweep_text()) {
-        let text = with(&feature);
+        // With the header the schema requires (`naming`, M4.0): the reader takes a document
+        // without it too, as written before it, so only a sweep's shape decides here.
+        let text = with(&feature).replacen(r#""units": "#, r#""naming": 5, "units": "#, 1);
+        prop_assert!(text.contains(r#""naming": 5"#));
         let read_ok = read(text.as_bytes()).is_ok();
         let schema_ok = schema_valid(&text);
         prop_assert_eq!(read_ok, schema_ok, "{}", feature);
@@ -514,6 +531,7 @@ proptest! {
         let document = Document {
             silico: FormatVersion,
             units: Units,
+            naming: NamingScheme,
             features: vec![Feature {
                 id: id("x0000001"),
                 operation,

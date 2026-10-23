@@ -31,6 +31,19 @@ use crate::kernel::{BooleanOp, ElementCounts, ElementKind, ElementRef};
 /// re-pointing a fillet after the cone's numbers changed).
 pub const NAMING_SCHEME: &[u8] = b"silico naming 5\n";
 
+/// The naming scheme's number, the one [`NAMING_SCHEME`] holds: what a document's header
+/// records (`naming`, M4.0) as the scheme its names were written under. Bumped with it.
+pub const NAMING_SCHEME_NUMBER: u32 = 5;
+
+/// The scheme a document that records none is read as: 5, the scheme Silico named by when
+/// the header gained `naming` (M4.0). Only documents saved before then lack the field, and
+/// their names read safely as scheme 5's: those saved under scheme 4 are the same names,
+/// and scheme 2's are refused or find nothing, never re-pointed (docs/ports/naming.md).
+/// This stays 5 when [`NAMING_SCHEME_NUMBER`] moves on, and such a document is then read as
+/// scheme 5's (and refused, as any other scheme's is, until Silico reads 5's names), never
+/// as the new scheme's.
+pub const UNRECORDED_NAMING_SCHEME: u32 = 5;
+
 /// The operation that derived an element: written in Silico's form as the document's type
 /// (`cut`), as a primitive's element writes its type (N8, 2026-10-18), so a boolean whose
 /// type is changed under its ID names none of its old elements; and FreeCAD's op code

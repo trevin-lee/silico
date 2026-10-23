@@ -9,7 +9,7 @@
 use std::fmt::Write as _;
 use std::sync::Arc;
 
-use crate::document::{self, Checked, Document, Feature, Fingerprint, Operation};
+use crate::document::{self, Checked, Document, Feature, Fingerprint, NamingScheme, Operation};
 use crate::kernel::Kernel;
 use crate::recompute::{Model, Recompute, RunOutcome};
 use crate::{Error, ErrorCode};
@@ -201,11 +201,12 @@ pub fn format(model: &Model) -> Result<Result<Formatted, Problems>, Error> {
 pub fn outline(document: &Document) -> String {
     // Every field taken apart, so one added to a document or a feature is a compile error
     // here until the outline says it or says why not: what it leaves out, `git diff`
-    // through it never shows. The format's version, the units, and a feature's version
-    // each have one value so far.
+    // through it never shows. The format's version, the units, the naming scheme, and a
+    // feature's version each have one value so far.
     let Document {
         silico: _,
         units: _,
+        naming: NamingScheme,
         features,
     } = document;
     let mut out = String::new();

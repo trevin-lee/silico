@@ -11,8 +11,8 @@ use std::time::Duration;
 use proptest::prelude::*;
 use silico_core::ErrorCode;
 use silico_core::document::{
-    Document, Feature, FeatureId, FeatureVersion, FormatVersion, Invalid, Length, Name, Operation,
-    Units, read, validate, write,
+    Document, Feature, FeatureId, FeatureVersion, FormatVersion, Invalid, Length, Name,
+    NamingScheme, Operation, Units, read, validate, write,
 };
 use silico_protocol::Primitive;
 
@@ -46,6 +46,7 @@ fn document(features: Vec<Feature>) -> Document {
     Document {
         silico: FormatVersion,
         units: Units,
+        naming: NamingScheme,
         features,
     }
 }

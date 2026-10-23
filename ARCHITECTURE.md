@@ -89,6 +89,7 @@ A `.silico` file is strict JSON describing the feature timeline. Silico rebuilds
 {
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
   "features": [
     {
       "id": "k7f2qx3m", "type": "sketch", "v": 1, "name": "base", "plane": "xy",
@@ -120,6 +121,7 @@ A `.silico` file is strict JSON describing the feature timeline. Silico rebuilds
 - **Sketches** (docs/design/m3.2-sketch-format.md) list points their curves share, lines, circles, arcs, and constraints, each element with its own ID and each list sorted by ID; points' coordinates are the solver's, written in full. (Canonical form writes a feature that holds objects one member per line; the example is compressed.)
 - **IDs** are random 8-character lowercase base32, unique within the document, so parallel branches don't collide. Display names are separate and don't need to be unique.
 - **Units** are declared in the `units` header. Version 1 accepts only millimetres at 1 nm resolution, with angles in degrees at 1 nanodegree resolution. The header exists so other scales, such as nanometre-scale documents, can be added later without breaking the format. The length unit is also the kernel's working unit, because OCCT's tolerances are absolute: a 5 nm feature in a millimetre document would be only 50× OCCT's tolerance. Display units are a UI setting. Expressions are strings starting with `=` (`"length": "=width * 2"`).
+- **The naming scheme** the document's element names were written under is declared in the `naming` header (5, M4.0). A document of another scheme is refused, naming it, so a name is never read under a scheme other than its own; a document saved before the header recorded it is read as scheme 5.
 - **Parameters** are named, typed values with units, stored at the top of the document. Expressions reference them. This is the data model only. How parameters are presented and edited (a spreadsheet, a parameter panel, inline in dimension fields) is a separate UX decision.
 - **Sketches store solved coordinates.** On load they are the solver's initial guess. If the constraints changed, for example after a hand edit, the sketch is re-solved and `silico fmt` writes the corrected coordinates back.
 - **Fingerprints** record volume, area, bounding box, and face/edge/vertex counts for each feature, much as a lockfile does. A rebuild that doesn't match its fingerprint is flagged loudly, and CI fails on drift. Fingerprints also make PR diffs meaningful. As with a lockfile, an edit by hand or in a merge leaves the fingerprints it affects stale until the document is saved again (or `silico fmt` is run); a feature that fails to build keeps its last fingerprint.

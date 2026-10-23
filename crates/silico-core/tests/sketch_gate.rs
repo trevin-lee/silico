@@ -187,9 +187,13 @@ fn the_schema_refuses_sketches_the_reader_refuses_by_shape() {
     let schema: serde_json::Value =
         serde_json::from_str(&silico_core::document::schema().unwrap()).unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
+    // With the header the schema requires (`naming`, M4.0), which the reader also takes
+    // away, as written before it.
     let base = with_two_lines(
         r#"{"id": "k0000000", "type": "horizontal", "line": "na000000"}, {"id": "k0000001", "type": "length", "line": "na000000", "value": 3, "driving": true}"#,
-    );
+    )
+    .replacen(r#""units": "#, r#""naming": 5, "units": "#, 1);
+    assert!(base.contains(r#""naming": 5"#));
     assert!(read(base.as_bytes()).is_ok());
     assert!(validator.is_valid(&serde_json::from_str(&base).unwrap()));
     let mut admitted = Vec::new();

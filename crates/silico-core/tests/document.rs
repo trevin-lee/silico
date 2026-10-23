@@ -11,8 +11,8 @@ use proptest::prelude::*;
 use silico_core::ErrorCode;
 use silico_core::document::{
     Angle, Axis, ChamferSize, Document, ElementId, ElementName, Feature, FeatureId, FeatureVersion,
-    FormatVersion, ID_ALPHABET, Length, Name, Operation, PadExtent, PocketExtent, TurnExtent,
-    Units, read, schema, write,
+    FormatVersion, ID_ALPHABET, Length, Name, NamingScheme, Operation, PadExtent, PocketExtent,
+    TurnExtent, Units, read, schema, write,
 };
 
 fn mm(nm: i64) -> Length {
@@ -49,6 +49,7 @@ fn the_example_reads_as_its_values_and_writes_back_byte_for_byte() {
     let want = Document {
         silico: FormatVersion,
         units: Units,
+        naming: NamingScheme,
         features: vec![
             feature(
                 "k7f2qx3m",
@@ -81,6 +82,7 @@ fn every_feature_type_reads_and_writes_on_one_line() {
     let text = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
   "features": [
     {"id": "00000000", "type": "sphere", "v": 1, "name": "S", "position": [1, 2, 3], "radius": 0.000001},
     {"id": "11111111", "type": "cone", "v": 1, "name": "C", "position": [0, 0, 0], "radius1": 5, "radius2": 0, "height": 7.25},
@@ -125,7 +127,7 @@ fn every_feature_type_reads_and_writes_on_one_line() {
 
 #[test]
 fn a_document_with_no_features_writes_an_empty_array() {
-    let text = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"features\": []\n}\n";
+    let text = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": []\n}\n";
     let document = read(text.as_bytes()).unwrap();
     assert!(document.features.is_empty());
     assert_eq!(write(&document).unwrap(), text);
@@ -174,6 +176,7 @@ fn any_spelling_of_the_same_document_writes_the_same_canonical_bytes() {
     let tidy = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
   "features": [
     {"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de", "note": "Clearance for an M5 bolt"}
   ]
@@ -240,7 +243,7 @@ fn a_value_that_doesnt_fit_is_refused_naming_its_feature_field_and_place() {
             Some("k7f2qx3m"),
             Some("length"),
             "length 0.0000001 has more than 6 decimals",
-            "line 5, column 97",
+            "line 6, column 97",
         ),
         (
             "\"length\": 40",
@@ -248,7 +251,7 @@ fn a_value_that_doesnt_fit_is_refused_naming_its_feature_field_and_place() {
             Some("k7f2qx3m"),
             Some("length"),
             "is zero written with a minus sign",
-            "line 5",
+            "line 6",
         ),
         (
             "\"length\": 40",
@@ -256,7 +259,7 @@ fn a_value_that_doesnt_fit_is_refused_naming_its_feature_field_and_place() {
             Some("k7f2qx3m"),
             Some("length"),
             "is too large",
-            "line 5",
+            "line 6",
         ),
         (
             "\"length\": 40",
@@ -264,7 +267,7 @@ fn a_value_that_doesnt_fit_is_refused_naming_its_feature_field_and_place() {
             Some("k7f2qx3m"),
             Some("length"),
             "length is a string, not a length in millimetres",
-            "line 5",
+            "line 6",
         ),
         (
             "[20, 10, -1]",
@@ -272,7 +275,7 @@ fn a_value_that_doesnt_fit_is_refused_naming_its_feature_field_and_place() {
             Some("a91cw0de"),
             Some("position.2"),
             "position.2 -1.0000001 has more than 6 decimals",
-            "line 6, column 88",
+            "line 7, column 88",
         ),
         (
             "[20, 10, -1]",
@@ -280,7 +283,7 @@ fn a_value_that_doesnt_fit_is_refused_naming_its_feature_field_and_place() {
             Some("a91cw0de"),
             Some("position"),
             "position has 2 values, not 3",
-            "line 6",
+            "line 7",
         ),
         (
             "\"radius\": 2.5, ",
@@ -288,7 +291,7 @@ fn a_value_that_doesnt_fit_is_refused_naming_its_feature_field_and_place() {
             Some("a91cw0de"),
             Some("radius"),
             "feature a91cw0de has no radius",
-            "line 6, column 5",
+            "line 7, column 5",
         ),
         (
             "\"height\": 12}",
@@ -296,7 +299,7 @@ fn a_value_that_doesnt_fit_is_refused_naming_its_feature_field_and_place() {
             Some("a91cw0de"),
             Some("depth"),
             "feature a91cw0de has a key it can't have: \"depth\"",
-            "line 6",
+            "line 7",
         ),
         (
             "\"type\": \"cut\"",
@@ -304,7 +307,7 @@ fn a_value_that_doesnt_fit_is_refused_naming_its_feature_field_and_place() {
             Some("m3tq8v0z"),
             Some("type"),
             "\"loft\" isn't a feature type",
-            "line 7",
+            "line 8",
         ),
         (
             "\"type\": \"box\", \"v\": 1",
@@ -312,7 +315,7 @@ fn a_value_that_doesnt_fit_is_refused_naming_its_feature_field_and_place() {
             Some("k7f2qx3m"),
             Some("v"),
             "this Silico has no box of version 2",
-            "line 5",
+            "line 6",
         ),
         (
             "\"v\": 1, \"name\": \"Block\"",
@@ -320,7 +323,7 @@ fn a_value_that_doesnt_fit_is_refused_naming_its_feature_field_and_place() {
             Some("k7f2qx3m"),
             Some("v"),
             "v is 1.0, not a whole number",
-            "line 5",
+            "line 6",
         ),
         (
             "\"name\": \"Pin\"",
@@ -328,7 +331,7 @@ fn a_value_that_doesnt_fit_is_refused_naming_its_feature_field_and_place() {
             Some("a91cw0de"),
             Some("name"),
             "name is empty",
-            "line 6",
+            "line 7",
         ),
         (
             "\"tool\": \"a91cw0de\"",
@@ -336,7 +339,7 @@ fn a_value_that_doesnt_fit_is_refused_naming_its_feature_field_and_place() {
             Some("m3tq8v0z"),
             Some("tool"),
             "tool \"A91CW0DE\" isn't a feature ID",
-            "line 7",
+            "line 8",
         ),
         (
             "\"id\": \"k7f2qx3m\"",
@@ -344,7 +347,7 @@ fn a_value_that_doesnt_fit_is_refused_naming_its_feature_field_and_place() {
             Some("features[0]"),
             Some("id"),
             "id \"k7f2qx3l\" isn't a feature ID",
-            "line 5, column 12",
+            "line 6, column 12",
         ),
         (
             "\"note\": \"Clearance for an M5 bolt\"",
@@ -352,7 +355,7 @@ fn a_value_that_doesnt_fit_is_refused_naming_its_feature_field_and_place() {
             Some("m3tq8v0z"),
             Some("note"),
             "note is null, not a string",
-            "line 7",
+            "line 8",
         ),
         (
             "\"silico\": 1",
@@ -669,6 +672,7 @@ fn every_feature_type_is_read_written_and_in_the_schema() {
         let document = Document {
             silico: FormatVersion,
             units: Units,
+            naming: NamingScheme,
             features: vec![feature("22222222", "F", operation)],
         };
         let text = write(&document).unwrap();
@@ -1167,6 +1171,7 @@ fn any_document() -> impl Strategy<Value = Document> {
     prop::collection::vec(any_feature(), 0..6).prop_map(|features| Document {
         silico: FormatVersion,
         units: Units,
+        naming: NamingScheme,
         features,
     })
 }
@@ -1433,6 +1438,23 @@ fn a_refused_numbers_suggestion_says_how_to_write_it() {
         (
             fingerprinted(r#""volume": 8000"#, r#""volume": -0"#),
             "write 0",
+        ),
+        // A whole number suggests a value its field takes: 1 for the format's version and a
+        // feature's (naming's 5 is in naming_header.rs).
+        (
+            example_with("\"silico\": 1", "\"silico\": 1.0"),
+            "write silico as a whole number, such as 1",
+        ),
+        (
+            example_with(
+                "\"v\": 1, \"name\": \"Block\"",
+                "\"v\": 1.0, \"name\": \"Block\"",
+            ),
+            "write v as a whole number, such as 1",
+        ),
+        (
+            fingerprinted(r#""faces": 6"#, r#""faces": 6.0"#),
+            "write fingerprint.faces as a whole number, such as 1",
         ),
     ];
     for (text, says) in cases {

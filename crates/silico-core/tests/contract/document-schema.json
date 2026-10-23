@@ -590,6 +590,10 @@
       "minLength": 1,
       "type": "string"
     },
+    "NamingScheme": {
+      "const": 5,
+      "description": "The naming scheme the document's element names were written under: 5. A document without it was saved before Silico recorded it, and is read as scheme 5."
+    },
     "PadExtent": {
       "description": "How far a pad goes from its sketch's plane: each form holds exactly the values it needs.\nLengths are above 0; `reversed` only where it changes the solid.",
       "oneOf": [
@@ -1472,6 +1476,10 @@
       },
       "type": "array"
     },
+    "naming": {
+      "$ref": "#/$defs/NamingScheme",
+      "description": "The naming scheme the document's element names were written under."
+    },
     "silico": {
       "$ref": "#/$defs/FormatVersion",
       "description": "The format's version."
@@ -1484,6 +1492,7 @@
   "required": [
     "silico",
     "units",
+    "naming",
     "features"
   ],
   "title": "Silico document",
