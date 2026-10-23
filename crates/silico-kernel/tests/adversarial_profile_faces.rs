@@ -183,9 +183,11 @@ fn arc_pair() -> Draw {
 }
 
 /// That `regions`' faces, padded 5 along +Z, and pocketed 5 deep into a block from
-/// `block`'s corners on the sketch's plane down 10, are valid solids: the pad of volume
-/// `area` × 5, the pocketed block its own less that, each to 1e-9 relative (as a pad and a
-/// pocket of the sketch build them: a prism of its faces, fused or cut).
+/// `block`'s corners on the sketch's plane down 6, are valid solids, the pad of volume
+/// `area` × 5 and the pocket removing as much, each to 1e-9 of that (as a pad and a pocket
+/// of the sketch build them: a prism of its faces, alone or cut from its base). What the
+/// pocket removed is what's measured, not the block left, so a pocket that lost a thin
+/// tip's few 1e-6 mm³ shows.
 fn padded_and_pocketed(regions: &FaceRegions, area: f64, block: [[f64; 2]; 2]) {
     let faces = make_faces(regions).unwrap();
     let pad = summarize(
@@ -205,20 +207,21 @@ fn padded_and_pocketed(regions: &FaceRegions, area: f64, block: [[f64; 2]; 2]) {
     let solid = make(&Primitive::Box {
         dx: x1 - x0,
         dy: y1 - y0,
-        dz: 10.0,
+        dz: 6.0,
     })
     .unwrap();
-    let solid = translate(&solid, [x0, y0, -10.0]).unwrap().shape;
+    let solid = translate(&solid, [x0, y0, -6.0]).unwrap().shape;
+    let whole = summarize(&solid).unwrap().volume;
     let tool = prism(&faces.shape, [0.0; 3], [0.0, 0.0, -5.0])
         .unwrap()
         .shape;
     let pocket = summarize(&boolean(BooleanOp::Cut, &solid, &tool).unwrap().shape).unwrap();
-    let want = (x1 - x0) * (y1 - y0) * 10.0 - 5.0 * area;
     assert!(pocket.valid, "the pocket isn't valid: {pocket:?}");
+    let removed = whole - pocket.volume;
     assert!(
-        (pocket.volume - want).abs() <= 1e-9 * want,
-        "the pocket's volume is {}, not {want}",
-        pocket.volume
+        (removed - 5.0 * area).abs() <= 1e-9 * 5.0 * area,
+        "the pocket removed {removed}, not {}",
+        5.0 * area
     );
 }
 
@@ -239,7 +242,7 @@ fn a_spike_whose_sides_run_within_the_tolerance_near_its_tip_pads_and_pockets_by
     // 5 deep, by its area by hand.
     let (d, want) = spike();
     let p = made(&d).expect("the decision takes neighbours near their shared point");
-    padded_and_pocketed(&regions(&p), want, [[-5.0, -5.0], [35.0, 15.0]]);
+    padded_and_pocketed(&regions(&p), want, [[-1.0, -1.0], [31.0, 11.0]]);
 }
 
 #[test]
@@ -258,7 +261,7 @@ fn a_crack_whose_sides_run_within_the_tolerance_near_its_tip_pads_and_pockets_by
     // M3.6's promise: the crack padded 5 and pocketed 5 deep, by its area by hand.
     let (d, want) = crack();
     let p = made(&d).expect("the decision takes neighbours near their shared point");
-    padded_and_pocketed(&regions(&p), want, [[-5.0, -5.0], [15.0, 15.0]]);
+    padded_and_pocketed(&regions(&p), want, [[-1.0, -1.0], [11.0, 11.0]]);
 }
 
 #[test]
@@ -278,12 +281,16 @@ fn two_arcs_from_one_point_on_circles_3e_7_apart_build_their_area() {
 
 #[test]
 fn two_arcs_from_one_point_on_circles_3e_7_apart_pad_and_pocket_by_their_area() {
-    // M3.6's promise: the arc pair padded 5 and pocketed 5 deep, by the area the profile
-    // works out (the core's, apart from OCCT's).
+    // M3.6's promise: the arc pair padded 5 and pocketed 5 deep, by its area by hand:
+    // Green's theorem round its loop, each arc's term r·c_x(sin b − sin a) − r·c_y(cos b −
+    // cos a) + r²(b − a) and each line's x1·y2 − x2·y1, halved, 0.5049893067498346 (of it
+    // the sliver between the arcs about 3e-6). The core's own area agrees.
+    let want = 0.504_989_306_749_834_6;
     let d = arc_pair();
     let p = made(&d).expect("the decision takes neighbours near their shared point");
     let profile_area: f64 = p.regions.iter().map(|r| r.area()).sum();
-    padded_and_pocketed(&regions(&p), profile_area, [[-25.0, -5.0], [15.0, 25.0]]);
+    assert!((profile_area - want).abs() < 1e-12, "{profile_area}");
+    padded_and_pocketed(&regions(&p), want, [[-21.0, -1.0], [11.0, 21.0]]);
 }
 
 fn square(x0: f64, y0: f64, side: f64) -> Vec<Curve> {

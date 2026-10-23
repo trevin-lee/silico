@@ -1524,9 +1524,12 @@ mod tests {
     #[test]
     fn each_kind_of_geometry_has_its_points_where_it_says() {
         // FreeCAD's testGetPointFromGeom* (tests/src/Mod/Sketcher/App/SketchObject.cpp): what
-        // start, end, and centre are for each kind. A line has its start and end; a circle
-        // only its centre; an arc all three, its start counter-clockwise first, as the file
-        // draws it; a point only itself. In `system()`: the line from values (0, 1) to (2, 3),
+        // start, end, and centre are for each kind, as Silico has them. A line has its start
+        // and end; an arc all three; a circle only its centre; a point only itself, as
+        // `PointOf::Point`. FreeCAD differs there: a point's start, mid, and end are all the
+        // point (Sketch.cpp's addPoint gives the three one id), and a circle's start and end
+        // are (cx + r, cy). So an importer maps FreeCAD's (point, start) to `Point`, and has no
+        // circle start or end to send. In `system()`: the line from values (0, 1) to (2, 3),
         // the circle about (4, 5), the arc about (7, 8) from (12, 13) to (14, 15); here a
         // point at (16, 17) too.
         let mut s = system();
