@@ -98,6 +98,11 @@ jobs:
           if awk -F '\t' '$4 ~ /^filler / { found = 1 } END { exit !found }' <<<"$active"; then
             skip "a filler run is going"
           fi
+          # A bench measures times, and a night's sweep holds cases to deadlines: no filler
+          # beside them, even on idle CPU (caches, memory bandwidth, SMT siblings).
+          if awk -F '\t' '$2 == "bench.yml" || ($2 == "oracle-sweep.yml" && $4 !~ /^filler /) { found = 1 } END { exit !found }' <<<"$active"; then
+            skip "a bench or a night's sweep is going"
+          fi
 
           # The unfinished jobs of every run going: their status and runner. A run in
           # progress can still have jobs waiting for runners, which come first.
@@ -140,7 +145,7 @@ jobs:
           head=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
 
           # a. What main changed in its source since the last commit a filler run tested.
-          tested=$(last '^filler a mutants (?<x>[0-9a-f]{40}) ')
+          tested=$(last '^filler a mutants (?P<x>[0-9a-f]{40}) ')
           if [ "$head" != "$tested" ]; then
             base=${tested:-$(gh api "repos/$GH_REPO/commits/$head" --jq '.parents[0].sha')}
             changed=$(gh api "repos/$GH_REPO/compare/$base...$head" \
@@ -177,7 +182,7 @@ jobs:
             echo "::error::found no source files in main's tree at $head"
             exit 1
           fi
-          previous=$(last '^filler b(?<x>[0-9]+) mutants ')
+          previous=$(last '^filler b(?P<x>[0-9]+) mutants ')
           k=0
           if [ -n "$previous" ] && [ $((10#$previous + 1)) -lt "${#slices[@]}" ]; then
             k=$((10#$previous + 1))

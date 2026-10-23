@@ -120,17 +120,17 @@ jobs:
     timeout-minutes: ${{ inputs.filler != '' && 60 || 1440 }}
     strategy:
       fail-fast: false
-      # As many at once as there are runners labelled `mutants` (silico-3 to -12, through
-      # /etc/ci-runner/labels on the runner VM). silico-1 and -2 carry only `gate`, so gates
-      # always have two runners however many shards are queued. silico-9 to -12 carry only
-      # `mutants`, not `pve`, so no gate (nor a job from a branch older than these labels,
-      # which asks for pve) runs there and grows a gate's build; mutants ask for `mutants`,
-      # not `pve`, to reach them. The bench and the oracle sweep share this pool too. A
-      # run's shards spread over every free mutants runner, so one long run can hold the
-      # pool for hours. The plan and summary take seconds and run on any runner, so a
-      # finished run's summary never queues behind other runs' shards. The runners share
-      # one VM, and free runners don't keep its CPU free: see the shard's share below.
-      max-parallel: 10
+      # As many at once as there are runners labelled `mutants` (silico-5 to -12, through
+      # /etc/ci-runner/labels on the runner VM). silico-1 to -4 carry only `gate`, so gates
+      # always have four runners however many shards are queued. silico-9 to -12 carry
+      # `mutants` and `filler`, not `pve`, so no gate (nor a job from a branch older than
+      # these labels, which asks for pve) runs there and grows a gate's build; mutants ask
+      # for `mutants`, not `pve`, to reach them. The bench and the oracle sweep share this
+      # pool too. A run's shards spread over every free mutants runner, so one long run can
+      # hold the pool for hours. The plan and summary take seconds and run on the runners
+      # labelled control (silico-13, -14), so they never queue behind shards. The runners
+      # share one VM, and free runners don't keep its CPU free: see the shard's share below.
+      max-parallel: 8
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:
@@ -176,10 +176,10 @@ jobs:
           # A filler run is cut off after an hour: in random order (cargo-mutants shuffles each
           # shard's share after sharding), so each turn at a slice reaches different mutants.
           if [ -n "$FILLER" ]; then args+=(--shuffle); fi
-          # A tenth of the machine each: ten shards can run at once (max-parallel above). Six
+          # An eighth of the machine each: eight shards can run at once (max-parallel above). Six
           # at a sixth each already kept the VM 95% busy (4.5% idle over 10 minutes,
           # 2026-10-23), so more threads per shard add no throughput, only contention and
-          # memory; and a thread per vCPU across all ten gives each test about a whole CPU,
+          # memory; and a thread per vCPU across all eight gives each test about a whole CPU,
           # well inside nextest's 2-minute limit per test, whose timeout would count a mutant
           # as caught. (On a full machine a gate can fail a test still held to a wall clock:
           # tests/mutants.sh lists them.) The shard runs at the lowest priority (nice 19,
@@ -190,12 +190,15 @@ jobs:
           #
           # A filler shard runs at the idle scheduling class, for the CPU and for I/O: it gets
           # only what nothing else wants, so it can't slow a real shard or a gate. Four can run
-          # (the runners labelled filler), so it takes a quarter of the machine.
-          running=10
+          # (the runners labelled filler), so it takes a quarter of the machine. It has a Cargo
+          # home of its own (the toolchains stay on PATH): starved of CPU, it could hold the
+          # package cache's lock, which every other build on the VM shares, for minutes.
+          running=8
           priority=(nice -n 19)
           if [ -n "$FILLER" ]; then
             running=4
             priority=(chrt --idle 0 ionice -c 3 nice -n 19)
+            export CARGO_HOME=$HOME/.cargo-filler
           fi
           share=$(( $(nproc) / running > 2 ? $(nproc) / running : 2 ))
           export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share NEXTEST_RETRIES=2
