@@ -575,9 +575,10 @@ fn gap_in(message: &str, start: &str, end: &str) -> f64 {
 /// end 5·2⁻²⁶ (7.45e-8) inside its circle and exactly opposite its start (3·e.y − 4·e.x is
 /// exactly 0, as on_arc computes it). The kernel ends it at its end's angle on its circle,
 /// (−3, −4) to an ulp. Then a triangle beyond its end: the corner `corner`, (−7, −8), and
-/// (−3, −12), its sides leaving the corner away from the arc and from its end. Returns the
-/// arc's end, the arc, the corner, and the sides from and to the corner.
-fn half_turn_and_triangle(d: &mut Draw, corner: [f64; 2]) -> [String; 5] {
+/// (−3, −12), its sides leaving the corner away from the arc and from its end; the corner
+/// `named` if given, otherwise the next point. Returns the arc's end, the arc, the corner,
+/// and the sides from and to the corner.
+fn half_turn_and_triangle(d: &mut Draw, corner: [f64; 2], named: Option<&str>) -> [String; 5] {
     let (sxy, exy) = (
         [3.0, 4.0],
         [
@@ -594,7 +595,10 @@ fn half_turn_and_triangle(d: &mut Draw, corner: [f64; 2]) -> [String; 5] {
     let e = d.point(exy[0], exy[1]);
     let a = d.arc(&o, &s, &e);
     d.line(&e, &s);
-    let corner = d.point(corner[0], corner[1]);
+    let corner = match named {
+        Some(name) => d.point_named(name, corner[0], corner[1]),
+        None => d.point(corner[0], corner[1]),
+    };
     let (wide, low) = (d.point(-7.0, -8.0), d.point(-3.0, -12.0));
     let from = d.line(&corner, &wide);
     d.line(&wide, &low);
@@ -613,7 +617,8 @@ fn a_point_beyond_a_half_turns_end_on_its_starts_left_is_measured_off_its_circle
     // as it would be if it were off the arc, the arc's end would be named: it's as far from
     // the corner, which is nearest it on each side, and drawn first.
     let mut d = Draw::new();
-    let [_, a, corner, from, to] = half_turn_and_triangle(&mut d, [-3.000000048, -4.000000014]);
+    let [_, a, corner, from, to] =
+        half_turn_and_triangle(&mut d, [-3.000000048, -4.000000014], None);
     let errors = draw::named(&d.refused());
     assert_eq!(errors.len(), 2, "{errors:#?}");
     for ((message, elements), side) in errors.iter().zip([&from, &to]) {
@@ -637,19 +642,44 @@ fn a_point_beyond_a_half_turns_end_on_its_starts_right_is_measured_from_where_it
     // ends alone, nothing meets), and 4e-8 off the circle (which it would be named at if it
     // were on the arc). The arc's end is as far from the corner, which is nearest it on each
     // side: one distance, by `hypot` of the same difference either way round, so the first
-    // by ID is named, the arc's end, drawn before the corner.
+    // by ID is named, the arc's end, drawn before the corner, and said to be measured where
+    // the kernel ends the arc.
     let mut d = Draw::new();
-    let [e, a, _, from, to] = half_turn_and_triangle(&mut d, [-3.0, -4.00000005]);
+    let [e, a, _, from, to] = half_turn_and_triangle(&mut d, [-3.0, -4.00000005], None);
     let errors = draw::named(&d.refused());
     assert_eq!(errors.len(), 2, "{errors:#?}");
     for ((message, elements), side) in errors.iter().zip([&from, &to]) {
         let gap = gap_in(
             message,
             &format!("point {e}, the end of arc {a}, is "),
-            &format!(" mm from line {side}: {RULE}"),
+            &format!(
+                " mm from line {side} where the kernel ends the arc, at the point's angle on its circle: {RULE}"
+            ),
         );
         assert!((gap - 5e-8).abs() < 1e-14, "{gap}");
         assert_eq!(elements, &vec![a.clone(), side.clone(), e.clone()]);
+    }
+}
+
+#[test]
+fn a_point_beyond_a_half_turns_end_on_its_starts_right_named_first_is_named_from_where_it_ends() {
+    // a_point_beyond_a_half_turns_end_on_its_starts_right_is_measured_from_where_it_ends,
+    // the corner given an ID before the arc's end, so of the two as far apart, the corner is
+    // named: 5e-8 from the arc, measured off the arc from where the arc ends, (−3, −4) (from
+    // the end's point it's 1.18e-7, and wouldn't meet).
+    let mut d = Draw::new();
+    let [_, a, corner, from, to] =
+        half_turn_and_triangle(&mut d, [-3.0, -4.00000005], Some("p0000000"));
+    let errors = draw::named(&d.refused());
+    assert_eq!(errors.len(), 2, "{errors:#?}");
+    for ((message, elements), side) in errors.iter().zip([&from, &to]) {
+        let gap = gap_in(
+            message,
+            &format!("point {corner}, the end of line {side}, is "),
+            &format!(" mm from arc {a}: {RULE}"),
+        );
+        assert!((gap - 5e-8).abs() < 1e-14, "{gap}");
+        assert_eq!(elements, &vec![side.clone(), a.clone(), corner.clone()]);
     }
 }
 
@@ -660,8 +690,10 @@ fn a_line_near_where_an_arc_ends_but_not_its_drawn_end_meets_it() {
     // (0, 10), to an ulp.
     // A triangle on the base (−1, 9.99000005)–(1, 10.01000005), slope 0.01 through
     // (0, 10.00000005), apex (0, 12): the base is 5e-8 / √(1 + 0.01²) = 4.99975e-8 from where
-    // the arc ends, though 1.4e-7 / √1.0001 = 1.39993e-7 from the end's point, and nearest
-    // the rest of the circle at 90.57°, off the arc. They meet (the M3 review's #95).
+    // the arc ends, though 1.4e-7 / √1.0001 = 1.39993e-7 from the end's point. It cuts the
+    // circle twice, both off the arc, past its end: where 1.0001x² + 0.200000001x +
+    // 1.0000000025e-6 = 0, at x = −5.0001e-6 (90.00003°) and x = −0.199975 (91.15°). They meet
+    // (the M3 review's #95), said to be measured where the kernel ends the arc.
     let mut d = Draw::new();
     let o = d.point(0.0, 0.0);
     let s = d.point(10.0, 0.0);
@@ -675,7 +707,9 @@ fn a_line_near_where_an_arc_ends_but_not_its_drawn_end_meets_it() {
     let gap = gap_in(
         &errors[0].0,
         &format!("point {e}, the end of arc {a}, is "),
-        &format!(" mm from line {base}: {RULE}"),
+        &format!(
+            " mm from line {base} where the kernel ends the arc, at the point's angle on its circle: {RULE}"
+        ),
     );
     assert!((gap - 5e-8 / 1.0001f64.sqrt()).abs() < 1e-14, "{gap}");
     assert_eq!(errors[0].1, vec![a.clone(), base.clone(), e.clone()]);

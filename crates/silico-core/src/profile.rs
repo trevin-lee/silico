@@ -258,6 +258,11 @@ struct Arc {
     end: Xy,
     from: f64,
     to: f64,
+    /// Where the kernel ends it, start and end: at its angles on its circle, of its start's
+    /// radius, as the request's check has it ([`on_circle`]; bridge.cpp builds the arc from
+    /// `from` to `to`). A drawn end can be as far as the tolerance from there (the request
+    /// refuses one further), along its ray from the centre.
+    built: [Xy; 2],
 }
 
 /// A curve's geometry, solved.
@@ -695,11 +700,19 @@ fn of_sketch(
                 point,
                 of,
                 distance,
+                built,
             } => {
                 let (end, other) = if of == 0 { (a, b) } else { (b, a) };
+                // Near only where the kernel ends the arc, the point itself further: said so,
+                // as the point is what's measured otherwise.
+                let at = if built {
+                    " where the kernel ends the arc, at the point's angle on its circle"
+                } else {
+                    ""
+                };
                 refuse(
                     format!(
-                        "point {}, the end of {}, is {} mm from {}: {rule}",
+                        "point {}, the end of {}, is {} mm from {}{at}: {rule}",
                         ids[point],
                         end.named(),
                         format_number(distance),
@@ -915,6 +928,7 @@ fn gather<'a>(
                     end: points[e],
                     from,
                     to,
+                    built: [from, to].map(|angle| on_circle(points[c], r, angle)),
                 }),
             },
         });
@@ -977,11 +991,13 @@ enum Meeting {
     /// They come within the tolerance of each other, at their nearest this far apart.
     Apart(f64),
     /// An end of one, `point`, not shared, is `distance` from the other; `of` is the curve
-    /// it ends (0 the first of the pair, 1 the second).
+    /// it ends (0 the first of the pair, 1 the second). `built` when it's only where the
+    /// kernel ends an arc that's that near, the point itself further than the tolerance.
     End {
         point: usize,
         of: usize,
         distance: f64,
+        built: bool,
     },
 }
 
@@ -1113,10 +1129,9 @@ fn meeting(
             if shared.contains(&shared_as[p]) {
                 continue;
             }
-            let d = end_places(&own.shape, points[p], end)
-                .map(|at| point_distance(at, &other.shape))
-                .into_iter()
-                .fold(f64::INFINITY, f64::min);
+            let drawn = point_distance(points[p], &other.shape);
+            let d = built_end(&own.shape, end)
+                .map_or(drawn, |at| point_distance(at, &other.shape).min(drawn));
             let nearer = match nearest {
                 Some(Meeting::End {
                     point, distance, ..
@@ -1128,6 +1143,7 @@ fn meeting(
                     point: p,
                     of,
                     distance: d,
+                    built: !touching(drawn),
                 });
             }
         }
@@ -1215,24 +1231,12 @@ fn along(a: &Shape, b: &Shape) -> Option<f64> {
     }
 }
 
-/// Where the kernel ends an arc: at its angles on its circle, of its start's radius, as
-/// the request's check has it ([`on_circle`]; bridge.cpp builds the arc from `from` to
-/// `to`). Its drawn end can be as far as the tolerance from there (the request refuses one
-/// further), along the end's ray from the centre.
-fn built_ends(c: Xy, r: f64, arc: &Arc) -> [Xy; 2] {
-    [on_circle(c, r, arc.from), on_circle(c, r, arc.to)]
-}
-
-/// Where a curve's end `end` (0 its start, 1 its end) is to be measured from: where it's
-/// drawn, and for an arc's, where the kernel ends the arc too.
-fn end_places(shape: &Shape, drawn: Xy, end: usize) -> [Xy; 2] {
+/// Where the kernel ends a curve at its end `end` (0 its start, 1 its end), if that isn't
+/// where the end is drawn: an arc's.
+fn built_end(shape: &Shape, end: usize) -> Option<Xy> {
     match *shape {
-        Shape::Round {
-            c,
-            r,
-            arc: Some(arc),
-        } => [drawn, built_ends(c, r, &arc)[end]],
-        _ => [drawn, drawn],
+        Shape::Round { arc: Some(arc), .. } => Some(arc.built[end]),
+        _ => None,
     }
 }
 
@@ -1245,7 +1249,7 @@ fn point_distance(p: Xy, shape: &Shape) -> f64 {
             let d = distance(c, p);
             match arc {
                 Some(arc) if !(d > 0.0 && on_arc(c, &arc, p)) => {
-                    let [start, end] = built_ends(c, r, &arc);
+                    let [start, end] = arc.built;
                     distance(p, arc.start)
                         .min(distance(p, arc.end))
                         .min(distance(p, start))
