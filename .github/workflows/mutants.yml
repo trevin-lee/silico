@@ -141,16 +141,18 @@ jobs:
           # One regex, as given: cargo-mutants matches it against each mutant's name.
           # (`--re=` so a regex beginning with `-` isn't read as an option.)
           if [ -n "$RE" ]; then args+=("--re=$RE"); fi
-          # A sixth of the machine each: the most shards that run at once is four, two runs of
-          # two. (At three a run, two runs used all of it, and a gate on a full machine could
-          # fail a test still held to a wall clock: tests/mutants.sh lists them.) The shard
-          # runs at the lowest priority (nice 19, below): it's background work, so it keeps its
-          # full share when the runner VM is idle and yields the CPU to gates when it isn't.
-          # Since the VM's disk moved off ZFS (2026-10-22), CPU, not I/O, is what jobs wait
-          # on. Retry a failed test here, since one that fails only under load would fail the
-          # baseline or count a mutant as caught; a mutant that breaks a test fails it every
-          # time.
-          running=6
+          # A tenth of the machine each: ten shards can run at once (max-parallel above). Six
+          # at a sixth each already kept the VM 95% busy (4.5% idle over 10 minutes,
+          # 2026-10-23), so more threads per shard add no throughput, only contention and
+          # memory; and a thread per vCPU across all ten gives each test about a whole CPU,
+          # well inside nextest's 2-minute limit per test, whose timeout would count a mutant
+          # as caught. (On a full machine a gate can fail a test still held to a wall clock:
+          # tests/mutants.sh lists them.) The shard runs at the lowest priority (nice 19,
+          # below): it's background work, so it keeps its share when the runner VM is idle and
+          # yields the CPU to gates when it isn't. Retry a failed test here, since one that
+          # fails only under load would fail the baseline or count a mutant as caught; a mutant
+          # that breaks a test fails it every time.
+          running=10
           share=$(( $(nproc) / running > 2 ? $(nproc) / running : 2 ))
           export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share NEXTEST_RETRIES=2
           # Without debug info (Trevin, 2026-10-22): every mutant rebuilds and relinks the
