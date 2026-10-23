@@ -160,16 +160,36 @@ fn a_short_line_drawn_first_ending_just_past_a_long_lines_end_doesnt_cross_it() 
 
 #[test]
 fn an_arc_and_a_circle_on_one_centre_the_tolerance_apart_meet_though_its_ends_measure_over() {
-    // An arc r 2.5e-7 about the origin (its start (2.0742859626077817e-7,
-    // 1.3954704387153133e-7), whose squared length gives 2.5e-7 but whose hypot gives
-    // 2.5000000000000004e-7; its end (9.4e-8, 2.37e-7)), closed by its chord, and a circle
-    // r 1.5e-7 about the same centre: exactly 1e-7 apart all along the arc, which touches
-    // (within 1e-7, inclusive), though its ends measure 1.0000000000000005e-7 and 1.05e-7
-    // from the circle (the M3 review's #95).
+    // An arc r 2.5e-7 about the origin from (2.0742859626077817e-7, 1.3954704387153133e-7),
+    // whose squared length gives 2.5e-7 but whose hypot gives 2.5000000000000004e-7, to
+    // (1.0203970485069385e-7, 2.2822773414724007e-7), 0.56 rad round, drawn on its circle
+    // where the kernel ends it, bit for bit; closed by its chord. A circle r 1.5e-7 about the
+    // same centre: exactly 1e-7 apart all along the arc, which touches (within 1e-7,
+    // inclusive), though each of the arc's ends measures 1.0000000000000005e-7 from the
+    // circle, where it's drawn and where the kernel ends it (the M3 review's #95).
+    let (start, end) = (
+        [2.0742859626077817e-7, 1.3954704387153133e-7],
+        [1.0203970485069385e-7, 2.2822773414724007e-7],
+    );
+    // The premises, as the request measures them.
+    let [r, from, to] = silico_protocol::arc_from_points([0.0; 2], start, end).unwrap();
+    assert_eq!(r - 1.5e-7, 1e-7);
+    for p in [
+        start,
+        end,
+        silico_protocol::on_circle([0.0; 2], r, from),
+        silico_protocol::on_circle([0.0; 2], r, to),
+    ] {
+        assert_eq!(
+            silico_protocol::distance([0.0; 2], p) - 1.5e-7,
+            1.0000000000000005e-7,
+            "{p:?}"
+        );
+    }
     let mut d = Draw::new();
     let center = d.point(0.0, 0.0);
-    let start = d.point(2.0742859626077817e-7, 1.3954704387153133e-7);
-    let end = d.point(9.4e-8, 2.37e-7);
+    let start = d.point(start[0], start[1]);
+    let end = d.point(end[0], end[1]);
     let arc = d.arc(&center, &start, &end);
     d.line(&end, &start);
     let circle = d.circle_about(&center, 1.5e-7);

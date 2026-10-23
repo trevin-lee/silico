@@ -526,141 +526,159 @@ fn a_point_on_a_major_arc_before_its_half_turn_is_on_it() {
 #[test]
 fn a_point_beyond_a_major_arcs_end_is_measured_off_its_circle_not_from_its_end() {
     // The arc r 5 about the origin from (5, 0) counter-clockwise to (0, −(5 − 2⁻²⁵)), three
-    // quarters of a turn, its end 2⁻²⁵ (3e-8) inside its circle, and its chord; a triangle
-    // (0, −(5 + 3·2⁻²⁵)), (3, −9), (−3, −9) below it, its corner straight below the arc's
-    // end, on the ray of the end's angle: 3·2⁻²⁵ (8.94e-8) outside the circle, so that far
-    // from the arc there, though 2⁻²³ (1.19e-7) from the end's point. Its sides leave the
-    // corner downwards, away from the arc's end, so the end is 2⁻²³ from each.
+    // quarters of a turn, its end 2⁻²⁵ (2.98e-8) inside its circle, and its chord. The
+    // kernel ends it at its end's angle on its circle, at (0, −5) to an ulp. A triangle
+    // (−4.5e-8, −(5 + 6e-8)), (3, −9), (−3, −9) below it, its corner past the arc's end and
+    // 4.5e-8 back onto the arc (to the end's left about the centre, so on it): 6e-8 off the
+    // circle (√(4.5e-8² + (5 + 6e-8)²) − 5 = 6e-8 + 2e-16), so that far from the arc, though
+    // √(4.5² + 6²)e-8 = 7.5e-8 from where the arc ends and √(4.5² + 8.98²)e-8 = 1.0045e-7
+    // from the end's point. Its sides leave the corner downwards, away from the arc, so the
+    // arc's end is 7.5e-8 from each, at the corner.
     let mut d = Draw::new();
     let o = d.point(0.0, 0.0);
     let s = d.point(5.0, 0.0);
     let e = d.point(0.0, -(5.0 - libm::exp2(-25.0)));
     let a = d.arc(&o, &s, &e);
     d.line(&e, &s);
-    let corner = d.point(0.0, -(5.0 + 3.0 * libm::exp2(-25.0)));
+    let corner = d.point(-4.5e-8, -(5.0 + 6e-8));
     let (right, left) = (d.point(3.0, -9.0), d.point(-3.0, -9.0));
     let sides = [
         d.line(&corner, &right),
         d.line(&right, &left),
         d.line(&left, &corner),
     ];
-    assert_eq!(
-        draw::named(&d.refused()),
-        [&sides[0], &sides[2]]
-            .map(|side| (
-                format!(
-                    "point {corner}, the end of line {side}, is 8.940696716308594e-8 mm from arc {a}: {RULE}"
-                ),
-                vec![side.clone(), a.clone(), corner.clone()]
-            ))
-            .to_vec()
-    );
+    let errors = draw::named(&d.refused());
+    assert_eq!(errors.len(), 2, "{errors:#?}");
+    for ((message, elements), side) in errors.iter().zip([&sides[0], &sides[2]]) {
+        let gap = gap_in(
+            message,
+            &format!("point {corner}, the end of line {side}, is "),
+            &format!(" mm from arc {a}: {RULE}"),
+        );
+        assert!((gap - 6e-8).abs() < 1e-14, "{gap}");
+        assert_eq!(elements, &vec![side.clone(), a.clone(), corner.clone()]);
+    }
 }
 
-#[test]
-fn a_point_beyond_a_half_turns_end_is_on_it_by_its_start_alone() {
-    // The half turn r 5 about the origin from (3, 4) counter-clockwise to
-    // −(1 − 2⁻²⁶)·(3, 4) = (−3 + 3·2⁻²⁶, −4 + 4·2⁻²⁶): its end 5·2⁻²⁶ (7.45e-8) inside
-    // its circle, exactly opposite its start (3·e.y − 4·e.x is exactly 0), and its chord
-    // through the centre. A triangle beyond the end: its corner (−3.000000024000001,
-    // −4.000000032000002), −(3, 4) scaled by 1 + 8e-9 to a few ulps, so 5 × 8e-9 = 4e-8
-    // outside the circle and 4e-8 + 7.45e-8 = 1.145e-7 from the end's point. The corner is
-    // on the arc's last ray to the last bit: its cross with the start rounds to 0 (the
-    // start's left, inclusive) though its cross with the end rounds to −1.8e-15. A half
-    // turn is the start's left, so the corner is 4e-8 from the arc. The triangle's other
-    // corners are (−7, −4) and (−3, −8): its sides leave the circle at the corner, along
-    // −x and −y, away from the arc's end.
-    let mut d = Draw::new();
-    let o = d.point(0.0, 0.0);
-    let s = d.point(3.0, 4.0);
-    let e = d.point(
-        -3.0 + 3.0 * libm::exp2(-26.0),
-        -4.0 + 4.0 * libm::exp2(-26.0),
-    );
-    let a = d.arc(&o, &s, &e);
-    d.line(&e, &s);
-    let (sxy, exy, cxy) = (
+/// The distance a refusal's `message` gives between `start` and `end`.
+fn gap_in(message: &str, start: &str, end: &str) -> f64 {
+    message
+        .strip_prefix(start)
+        .and_then(|m| m.strip_suffix(end))
+        .unwrap_or_else(|| panic!("{message}"))
+        .parse()
+        .unwrap()
+}
+
+/// The half turn r 5 about the origin from (3, 4) counter-clockwise to
+/// −(1 − 2⁻²⁶)·(3, 4) = (−3 + 3·2⁻²⁶, −4 + 4·2⁻²⁶), and its chord through the centre: its
+/// end 5·2⁻²⁶ (7.45e-8) inside its circle and exactly opposite its start (3·e.y − 4·e.x is
+/// exactly 0, as on_arc computes it). The kernel ends it at its end's angle on its circle,
+/// (−3, −4) to an ulp. Then a triangle beyond its end: the corner `corner`, (−7, −8), and
+/// (−3, −12), its sides leaving the corner away from the arc and from its end. Returns the
+/// arc's end, the arc, the corner, and the sides from and to the corner.
+fn half_turn_and_triangle(d: &mut Draw, corner: [f64; 2]) -> [String; 5] {
+    let (sxy, exy) = (
         [3.0, 4.0],
         [
             -3.0 + 3.0 * libm::exp2(-26.0),
             -4.0 + 4.0 * libm::exp2(-26.0),
         ],
-        [-3.000000024000001, -4.000000032000002],
     );
     // The premises, as on_arc computes them about the origin.
     let cross = |a: [f64; 2], b: [f64; 2]| a[0] * b[1] - a[1] * b[0];
     assert_eq!(cross(sxy, exy), 0.0, "the ends are opposite, as computed");
     assert!(sxy[0] * exy[0] + sxy[1] * exy[1] < 0.0);
-    assert_eq!(
-        cross(sxy, cxy),
-        0.0,
-        "the corner is on the start's line, as computed"
-    );
-    assert!(cross(cxy, exy) < 0.0, "but to the end's right, as computed");
-    let corner = d.point(cxy[0], cxy[1]);
-    let (left, low) = (d.point(-7.0, -4.0), d.point(-3.0, -8.0));
-    let sides = [
-        d.line(&corner, &left),
-        d.line(&left, &low),
-        d.line(&low, &corner),
-    ];
+    let o = d.point(0.0, 0.0);
+    let s = d.point(sxy[0], sxy[1]);
+    let e = d.point(exy[0], exy[1]);
+    let a = d.arc(&o, &s, &e);
+    d.line(&e, &s);
+    let corner = d.point(corner[0], corner[1]);
+    let (wide, low) = (d.point(-7.0, -8.0), d.point(-3.0, -12.0));
+    let from = d.line(&corner, &wide);
+    d.line(&wide, &low);
+    let to = d.line(&low, &corner);
+    [e, a, corner, from, to]
+}
+
+#[test]
+fn a_point_beyond_a_half_turns_end_on_its_starts_left_is_measured_off_its_circle() {
+    // The corner (−3.000000048, −4.000000014): −(3, 4) moved 4e-8 out along the end's ray
+    // and 3e-8 back across it onto the arc, along (−0.8, 0.6), so 3·(−4.000000014) −
+    // 4·(−3.000000048) = 1.5e-7 to the start's left, which for a half turn is on it. It's
+    // √((5 + 4e-8)² + 3e-8²) − 5 = 4e-8 + 1e-16 off the circle, so that far from the arc,
+    // though √(4² + 3²)e-8 = 5e-8 from where the arc ends and
+    // √((4 + 7.45)² + 3²)e-8 = 1.18e-7 from the end's point. Measured from the arc's end,
+    // as it would be if it were off the arc, the arc's end would be named: it's as far from
+    // the corner, which is nearest it on each side, and drawn first.
+    let mut d = Draw::new();
+    let [_, a, corner, from, to] = half_turn_and_triangle(&mut d, [-3.000000048, -4.000000014]);
     let errors = draw::named(&d.refused());
     assert_eq!(errors.len(), 2, "{errors:#?}");
-    for ((message, elements), side) in errors.iter().zip([&sides[0], &sides[2]]) {
-        let start = format!("point {corner}, the end of line {side}, is ");
-        let end = format!(" mm from arc {a}: {RULE}");
-        let gap: f64 = message
-            .strip_prefix(&start)
-            .and_then(|m| m.strip_suffix(&end))
-            .unwrap_or_else(|| panic!("{message}"))
-            .parse()
-            .unwrap();
+    for ((message, elements), side) in errors.iter().zip([&from, &to]) {
+        let gap = gap_in(
+            message,
+            &format!("point {corner}, the end of line {side}, is "),
+            &format!(" mm from arc {a}: {RULE}"),
+        );
         assert!((gap - 4e-8).abs() < 1e-14, "{gap}");
         assert_eq!(elements, &vec![side.clone(), a.clone(), corner.clone()]);
     }
 }
 
 #[test]
-fn a_point_just_right_of_a_half_turns_start_line_is_off_it_though_its_cross_with_the_end_is_0() {
-    // a_point_beyond_a_half_turns_end_is_on_it_by_its_start_alone's half turn and triangle,
-    // the corner moved out to (−3.0000000300000003, −4.000000040000001): −(3, 4) scaled by
-    // 1 + 1e-8, so 5 × 1e-8 = 5e-8 outside the circle and 5e-8 + 7.45e-8 = 1.245e-7 from the
-    // end's point. As computed, its cross with the start rounds to −1.8e-15 (the start's
-    // right) and its cross with the end to 0. A half turn is the start's left, so the corner
-    // is off the arc: 1.245e-7 from it, at its end, more than 1e-7. Nothing meets; the
-    // regions are the half disc, 12.5π (the line back runs along the start's own diameter,
-    // through the centre, so it adds no area), and the triangle, ½ × 4 × 4 = 8 less 1.4e-7
-    // for the corner's move: twice its area is (4 − 3e-8)(4 − 4e-8) − 4e-8 × 3e-8 =
-    // 16 − 2.8e-7.
-    let (sxy, exy, cxy) = (
-        [3.0, 4.0],
-        [
-            -3.0 + 3.0 * libm::exp2(-26.0),
-            -4.0 + 4.0 * libm::exp2(-26.0),
-        ],
-        [-3.0000000300000003, -4.000000040000001],
-    );
-    // The premises, as on_arc computes them about the origin.
-    let cross = |a: [f64; 2], b: [f64; 2]| a[0] * b[1] - a[1] * b[0];
-    assert_eq!(cross(sxy, exy), 0.0, "the ends are opposite, as computed");
-    assert!(sxy[0] * exy[0] + sxy[1] * exy[1] < 0.0);
-    assert!(
-        cross(sxy, cxy) < 0.0,
-        "the corner is to the start's right, as computed"
-    );
-    assert_eq!(cross(cxy, exy), 0.0, "and on the end's line, as computed");
+fn a_point_beyond_a_half_turns_end_on_its_starts_right_is_measured_from_where_it_ends() {
+    // The corner (−3, −4.00000005): −(3, 4) moved 4e-8 out along the end's ray and 3e-8
+    // across it away from the arc, along (0.8, −0.6), so 3·(−4.00000005) − 4·(−3) = −1.5e-7
+    // to the start's right, which for a half turn is off it. It's measured from the arc's
+    // ends: √(4² + 3²)e-8 = 5e-8 from where the arc ends, (−3, −4), though
+    // √((4 + 7.45)² + 3²)e-8 = 1.18e-7 from the end's point (so measured from the drawn
+    // ends alone, nothing meets), and 4e-8 off the circle (which it would be named at if it
+    // were on the arc). The arc's end is as far from the corner, which is nearest it on each
+    // side: one distance, by `hypot` of the same difference either way round, so the first
+    // by ID is named, the arc's end, drawn before the corner.
+    let mut d = Draw::new();
+    let [e, a, _, from, to] = half_turn_and_triangle(&mut d, [-3.0, -4.00000005]);
+    let errors = draw::named(&d.refused());
+    assert_eq!(errors.len(), 2, "{errors:#?}");
+    for ((message, elements), side) in errors.iter().zip([&from, &to]) {
+        let gap = gap_in(
+            message,
+            &format!("point {e}, the end of arc {a}, is "),
+            &format!(" mm from line {side}: {RULE}"),
+        );
+        assert!((gap - 5e-8).abs() < 1e-14, "{gap}");
+        assert_eq!(elements, &vec![a.clone(), side.clone(), e.clone()]);
+    }
+}
+
+#[test]
+fn a_line_near_where_an_arc_ends_but_not_its_drawn_end_meets_it() {
+    // The quarter turn r 10 about the origin from (10, 0) to (0, 9.99999991), its end drawn
+    // 9e-8 inside its circle, closed by its radii through the centre; the kernel ends it at
+    // (0, 10), to an ulp.
+    // A triangle on the base (−1, 9.99000005)–(1, 10.01000005), slope 0.01 through
+    // (0, 10.00000005), apex (0, 12): the base is 5e-8 / √(1 + 0.01²) = 4.99975e-8 from where
+    // the arc ends, though 1.4e-7 / √1.0001 = 1.39993e-7 from the end's point, and nearest
+    // the rest of the circle at 90.57°, off the arc. They meet (the M3 review's #95).
     let mut d = Draw::new();
     let o = d.point(0.0, 0.0);
-    let s = d.point(sxy[0], sxy[1]);
-    let e = d.point(exy[0], exy[1]);
-    d.arc(&o, &s, &e);
-    d.line(&e, &s);
-    d.polygon(&[(cxy[0], cxy[1]), (-7.0, -4.0), (-3.0, -8.0)]);
-    let p = d.made();
-    let areas: Vec<f64> = p.regions.iter().map(|r| r.area()).collect();
-    assert_eq!(areas.len(), 2, "{p:#?}");
-    assert!(close(areas[0], 12.5 * PI, 1e-14), "{areas:?}");
-    assert!(close(areas[1], 8.0 - 1.4e-7, 1e-12), "{areas:?}");
+    let s = d.point(10.0, 0.0);
+    let e = d.point(0.0, 9.99999991);
+    let a = d.arc(&o, &s, &e);
+    d.line(&e, &o);
+    d.line(&o, &s);
+    let base = d.polygon(&[(-1.0, 9.99000005), (1.0, 10.01000005), (0.0, 12.0)])[0].clone();
+    let errors = draw::named(&d.refused());
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    let gap = gap_in(
+        &errors[0].0,
+        &format!("point {e}, the end of arc {a}, is "),
+        &format!(" mm from line {base}: {RULE}"),
+    );
+    assert!((gap - 5e-8 / 1.0001f64.sqrt()).abs() < 1e-14, "{gap}");
+    assert_eq!(errors[0].1, vec![a.clone(), base.clone(), e.clone()]);
 }
 
 #[test]

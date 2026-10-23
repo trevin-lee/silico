@@ -40,7 +40,7 @@ use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use silico_protocol::{
     LENGTH_TOLERANCE, SizeProblem, arc_from_points, area_and_perimeter, distance, format_number,
-    loop_area, side_of_line, sliver,
+    loop_area, on_circle, side_of_line, sliver,
 };
 
 use crate::document::{Checked, ElementId, FeatureId, Operation, PROBLEMS_LISTED, Plane, Sketch};
@@ -1105,14 +1105,18 @@ fn meeting(
         });
     }
     // The end nearest the other curve, of those within the tolerance of it; the first by
-    // ID where two are as near.
+    // ID where two are as near. An arc's end is measured where it's drawn and where the
+    // kernel ends the arc, the nearer.
     let mut nearest: Option<Meeting> = None;
-    for (of, ends, other) in [(0, ends_a, b), (1, ends_b, a)] {
-        for &p in ends {
+    for (of, ends, own, other) in [(0, ends_a, a, b), (1, ends_b, b, a)] {
+        for (end, &p) in ends.iter().enumerate() {
             if shared.contains(&shared_as[p]) {
                 continue;
             }
-            let d = point_distance(points[p], &other.shape);
+            let d = end_places(&own.shape, points[p], end)
+                .map(|at| point_distance(at, &other.shape))
+                .into_iter()
+                .fold(f64::INFINITY, f64::min);
             let nearer = match nearest {
                 Some(Meeting::End {
                     point, distance, ..
@@ -1211,7 +1215,29 @@ fn along(a: &Shape, b: &Shape) -> Option<f64> {
     }
 }
 
-/// The distance from `p` to a curve.
+/// Where the kernel ends an arc: at its angles on its circle, of its start's radius, as
+/// the request's check has it ([`on_circle`]; bridge.cpp builds the arc from `from` to
+/// `to`). Its drawn end can be as far as the tolerance from there (the request refuses one
+/// further), along the end's ray from the centre.
+fn built_ends(c: Xy, r: f64, arc: &Arc) -> [Xy; 2] {
+    [on_circle(c, r, arc.from), on_circle(c, r, arc.to)]
+}
+
+/// Where a curve's end `end` (0 its start, 1 its end) is to be measured from: where it's
+/// drawn, and for an arc's, where the kernel ends the arc too.
+fn end_places(shape: &Shape, drawn: Xy, end: usize) -> [Xy; 2] {
+    match *shape {
+        Shape::Round {
+            c,
+            r,
+            arc: Some(arc),
+        } => [drawn, built_ends(c, r, &arc)[end]],
+        _ => [drawn, drawn],
+    }
+}
+
+/// The distance from `p` to a curve: from an arc's ends where they're drawn and where the
+/// kernel ends it, where `p` is off the arc.
 fn point_distance(p: Xy, shape: &Shape) -> f64 {
     match *shape {
         Shape::Line { a, b } => point_segment_distance(p, a, b),
@@ -1219,7 +1245,11 @@ fn point_distance(p: Xy, shape: &Shape) -> f64 {
             let d = distance(c, p);
             match arc {
                 Some(arc) if !(d > 0.0 && on_arc(c, &arc, p)) => {
-                    distance(p, arc.start).min(distance(p, arc.end))
+                    let [start, end] = built_ends(c, r, &arc);
+                    distance(p, arc.start)
+                        .min(distance(p, arc.end))
+                        .min(distance(p, start))
+                        .min(distance(p, end))
                 }
                 _ => (d - r).abs(),
             }
