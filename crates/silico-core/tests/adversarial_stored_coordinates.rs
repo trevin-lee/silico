@@ -254,7 +254,7 @@ fn radius() -> impl Strategy<Value = f64> {
 
 #[test]
 fn a_solve_to_a_radius_at_the_floor_is_refused_naming_the_circle() {
-    // The gate's floor reaches every solve (M3.4's savable): a solve that leaves the circle
+    // The gate's floor reaches every solve (M3.4's check that a solve's file is one the gate takes, `holdable`): a solve that leaves the circle
     // a radius of 1e-7 mm or less, the kernel's tolerance, is an invalid result naming it,
     // with the gate's own advice; the next float up is kept, bit for bit.
     for r in [1e-7, 1e-9, 5e-324] {

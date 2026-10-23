@@ -2060,9 +2060,9 @@ impl SketchSolver for Standing {
 #[test]
 fn a_solve_to_geometry_the_file_cant_hold_is_refused_as_an_invalid_result() {
     // A solve that lands on geometry the gate refuses is refused, so its save never writes a
-    // file that can't be opened again (the load path's check, which runs on the same file
-    // `savable` would: the milestone's mutant of `savable` is equivalent, as m3-open says,
-    // and this pins the refusal itself at the core). Here the worker says it solved, with
+    // file that can't be opened again (`holdable`, from the solve's load path; the M3
+    // review's mutants found a second check after it that no input could reach, which went).
+    // Here the worker says it solved, with
     // every unknown scaled by 5e-9: n0000001, from the origin to (5e-8, 0), is a line with
     // a length, so the solution reads and builds, but shorter than the gate's floor, the
     // length tolerance 1e-7 (#90: the gate floored at the tolerance), so the file it writes
