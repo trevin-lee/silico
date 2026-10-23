@@ -1218,3 +1218,82 @@ fn meetings_found_out_of_id_order_still_name_every_part_of_those_dropped() {
         assert!(!listed.contains(id), "{id}");
     }
 }
+
+#[test]
+fn a_hole_level_with_the_top_of_an_arc_that_starts_there_is_a_hole() {
+    // An arc about (0, 512.14) from (0, 1536.14), straight above its centre, counter-
+    // clockwise past the left and the bottom to (1024, 512.14), closed by lines up to
+    // (1024, 2560.14), across to (0, 2560.14), and down to the start: three quarters of a
+    // disc of r 1024 and the rectangle 1024 x 2048 beside it. 1536.14 - 512.14 is just over
+    // 1024 and rounds to it, so r is 1024, and the circle's top, 512.14 + 1024, rounds to
+    // 1536.1399999999999, a step (2^-42) below the start. A triangle (5e-6, that height),
+    // (500, 1000), (500, 2000) is inside the rectangle, its probe 5e-6 right of the line
+    // down to the start. At the probe's height less the centre's, 1023.9999999999999 (a
+    // step under 1024), the circle's half-width is sqrt(2^-43 * 2048) = 2^-16, about
+    // 1.5e-5, more than the probe's 5e-6: the arc, from its circle's top, runs down its
+    // left side (at -1.5e-5, left of the probe); split as though it ran down the right
+    // (at +1.5e-5), the start's step down to the top would cross the ray. The triangle is
+    // a hole. Area by hand: (3/4) pi 1024^2 + 1024 x 2048, less the triangle's
+    // (1000 / 2)(500 - 5e-6).
+    let mut d = Draw::new();
+    let o = d.point(0.0, 512.14);
+    let s = d.point(0.0, 1536.14);
+    let e = d.point(1024.0, 512.14);
+    let up = d.point(1024.0, 2560.14);
+    let across = d.point(0.0, 2560.14);
+    d.arc(&o, &s, &e);
+    d.line(&e, &up);
+    d.line(&up, &across);
+    d.line(&across, &s);
+    d.polygon(&[
+        (5e-6, 1_536.139_999_999_999_9),
+        (500.0, 1000.0),
+        (500.0, 2000.0),
+    ]);
+    let p = d.made();
+    assert_eq!(p.regions.len(), 1, "{p:#?}");
+    assert_eq!(p.regions[0].holes.len(), 1);
+    let want = 0.75 * PI * 1024.0 * 1024.0 + 1024.0 * 2048.0 - 500.0 * (500.0 - 5e-6);
+    assert!(
+        close(p.regions[0].area(), want, 1e-12),
+        "{} against {want}",
+        p.regions[0].area()
+    );
+}
+
+#[test]
+fn a_loop_level_with_an_arc_s_end_at_its_circle_s_top_beside_it_is_no_hole() {
+    // A D: the arc about the origin from (-600, -800) counter-clockwise past the bottom and
+    // the right to (0, 999.9999999999999), straight above the centre a step (2^-43) under
+    // its circle's top (r 1000, from the start), closed by the chord back. A triangle
+    // (-5e-6, that height), (-100, 1200), (100, 1200) is outside it: above the chord, which
+    // falls 3 for every 1 left from the end, and left of the arc, which ends at the top.
+    // Level with the end, the circle's half-width is sqrt(2^-43 * 2000), about 1.5e-5,
+    // more than the probe's 5e-6 from the centre line: the arc's only cut is its circle's
+    // bottom, and no piece of it spans that height; the circle's top, as a cut, would put
+    // the probe inside. Two regions, no holes. Areas by hand: the D's segment,
+    // (1000^2 / 2)(theta - sin theta), theta = 3 pi / 2 - atan2(4, 3), sin theta = -0.6;
+    // the triangle's (200 / 2)(1200 - 999.9999999999999).
+    let mut d = Draw::new();
+    d_shape(
+        &mut d,
+        (0.0, 0.0),
+        (-600.0, -800.0),
+        (0.0, 999.999_999_999_999_9),
+    );
+    d.polygon(&[
+        (-5e-6, 999.999_999_999_999_9),
+        (-100.0, 1200.0),
+        (100.0, 1200.0),
+    ]);
+    let p = d.made();
+    assert_eq!(p.regions.len(), 2, "{p:#?}");
+    assert!(p.regions.iter().all(|r| r.holes.is_empty()), "{p:#?}");
+    let mut areas: Vec<f64> = p.regions.iter().map(|r| r.area()).collect();
+    areas.sort_by(f64::total_cmp);
+    let theta = 1.5 * PI - libm::atan2(4.0, 3.0);
+    let segment = 500_000.0 * (theta + 0.6);
+    let triangle = 100.0 * (1200.0 - 999.999_999_999_999_9);
+    assert!(close(areas[0], triangle, 1e-12), "{areas:?}");
+    assert!(close(areas[1], segment, 1e-12), "{areas:?}");
+}
