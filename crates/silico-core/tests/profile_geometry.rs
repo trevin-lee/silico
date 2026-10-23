@@ -718,14 +718,18 @@ fn a_line_near_where_an_arc_ends_but_not_its_drawn_end_meets_it() {
 /// δ: how far inside its circle [`quarter_turn_boxed`]'s arc's end is drawn.
 const DELTA: f64 = 9e-8;
 
-/// The quarter turn r 10 about the origin from (10, 0) to (0, 10 − δ), its end drawn δ
-/// inside its circle, and a line from that end to `to`, closed back to the arc's start
-/// through `corners`. Returns the drawing, the arc, and the line from its end.
-fn quarter_turn_boxed(to: (f64, f64), corners: &[(f64, f64)]) -> (Draw, String, String) {
+/// The quarter turn r 10 about the origin from (10, 0) to (0, 10 − `inside`), its end
+/// drawn that far inside its circle, and a line from that end to `to`, closed back to the
+/// arc's start through `corners`. Returns the drawing, the arc, and the line from its end.
+fn quarter_turn_boxed(
+    inside: f64,
+    to: (f64, f64),
+    corners: &[(f64, f64)],
+) -> (Draw, String, String) {
     let mut d = Draw::new();
     let o = d.point(0.0, 0.0);
     let s = d.point(10.0, 0.0);
-    let e = d.point(0.0, 10.0 - DELTA);
+    let e = d.point(0.0, 10.0 - inside);
     let arc = d.arc(&o, &s, &e);
     let mut at = d.point(to.0, to.1);
     let line = d.line(&e, &at);
@@ -744,114 +748,146 @@ fn quarter_turn_boxed(to: (f64, f64), corners: &[(f64, f64)]) -> (Draw, String, 
 fn leaves_at(heading: f64) -> (f64, f64) {
     let (b, c) = (10.0 - DELTA, 20.0 * DELTA - DELTA * DELTA);
     let k = b * libm::sin(heading);
-    let s = c / (k + (k * k + c).sqrt());
+    let s = c / (k + libm::sqrt(k * k + c));
     (
         s,
         libm::atan2(b + s * libm::sin(heading), s * libm::cos(heading)),
     )
 }
 
+/// The one region's area, as the request measures it.
+fn made_area(d: &Draw) -> f64 {
+    let p = d.made();
+    assert_eq!(p.regions.len(), 1, "{p:#?}");
+    p.regions[0].area()
+}
+
+// A line sharing an arc's end crosses the arc only where it comes back out of the arc's
+// circle after dipping into it deeper than the tolerance: before that, the two run within
+// the tolerance of each other, as tangent neighbours may. (Where a line that never parts
+// from the circle further than that crosses it again is rounding's to say: a line tangent
+// at an end an ulp inside its circle crosses it again √(2r·ulp) along. Counting every
+// crossing further than the tolerance from the shared point refused a cove in one place
+// in fourteen, #110's review.) Areas are the request's measure: the drawn corners'
+// polygon, by the shoelace, and the arc's segment, r²(θ − sin θ)/2, 25π − 50 here.
+
 #[test]
 fn an_arcs_chord_from_its_end_drawn_inside_its_circle_doesnt_cross_it() {
     // The quarter turn closed by its chord, from (0, 10 − δ) back to (10, 0). The chord's
     // line meets the circle at (10, 0), which it shares, and behind its start, which is
-    // inside the circle: off the chord. It never crosses the arc. Its area, as the request
-    // measures it (the drawn ends' polygon, here only the chord, and the arc's segment by
-    // its radius and sweep, (r²/2)(θ − sin θ)), is 50(π/2 − 1) = 25π − 50; OCCT's face, its
-    // chord's end lowered by δ, is ½ × 10 × δ = 4.5e-7 more.
+    // inside the circle: off the chord. Its polygon has no area, so the region is the
+    // segment, 25π − 50 (OCCT's face, its chord's end lowered by δ, is ½ × 10 × δ =
+    // 4.5e-7 more).
     let mut d = Draw::new();
     let o = d.point(0.0, 0.0);
     let s = d.point(10.0, 0.0);
     let e = d.point(0.0, 10.0 - DELTA);
     d.arc(&o, &s, &e);
     d.line(&e, &s);
-    let p = d.made();
-    let areas: Vec<f64> = p.regions.iter().map(|r| r.area()).collect();
-    assert_eq!(areas.len(), 1, "{p:#?}");
-    assert!(close(areas[0], 25.0 * PI - 50.0, 1e-13), "{areas:?}");
+    assert!(close(made_area(&d), 25.0 * PI - 50.0, 1e-13));
 }
 
 #[test]
-fn a_line_leaving_an_arcs_end_drawn_inside_its_circle_crosses_it_where_it_leaves_on_the_arc() {
-    // The quarter turn, and a line from its end at 30° to (4.33, 12.5), boxed back to the
-    // arc's start by (12, 12) and (12, 0). Starting inside the circle, the line leaves it
-    // 2δ = 1.8e-7 along, at (1.56e-7, 10): π/2 − 1.56e-8, on the arc (which runs to π/2),
-    // and further than the tolerance from the end it shares. It crosses the arc there.
+fn a_line_leaving_an_arcs_end_drawn_inside_its_circle_on_the_arcs_side_runs_beside_it() {
+    // The quarter turn, and a line from its end at 30° to (4.33, 12.5 − δ), boxed back to
+    // the arc's start by (12, 12) and (12, 0). From the end, δ = 9e-8 inside the circle
+    // (its deepest: the centre's foot is behind it), it leaves the circle 2δ = 1.8e-7 along,
+    // at (1.56e-7, 10), π/2 − 1.56e-8, on the arc: within 9e-8 of the circle all the way,
+    // so beside the arc, not across it. The region: the polygon's 92.66987269622209 less
+    // the segment.
     let (along, angle) = leaves_at(PI / 6.0);
     assert!((along - 1.8e-7).abs() < 1e-9, "{along}");
     assert!(PI / 2.0 - angle > 1.5e-8, "{angle}");
-    let (d, arc, line) = quarter_turn_boxed(
+    let (d, _, _) = quarter_turn_boxed(
+        DELTA,
         (4.330127018922194, 12.5 - DELTA),
         &[(12.0, 12.0), (12.0, 0.0)],
     );
-    assert_eq!(
-        draw::named(&d.refused()),
-        [(
-            format!("arc {arc} and line {line} cross"),
-            vec![arc.clone(), line.clone()]
-        )]
+    let area = made_area(&d);
+    assert!(
+        close(area, 92.66987269622209 - (25.0 * PI - 50.0), 1e-13),
+        "{area}"
     );
 }
 
 #[test]
-fn a_line_leaving_an_arcs_end_drawn_inside_its_circle_nearly_along_it_crosses_it() {
-    // The same at 5° to (9.96, 10.87): the line leaves the circle δ/sin 5° = 1.03e-6
-    // along, at (1.03e-6, 10), π/2 − 1.03e-7, on the arc. It crosses the arc there.
+fn a_line_leaving_an_arcs_end_drawn_inside_its_circle_nearly_along_it_runs_beside_it() {
+    // The same at 5° to (9.96, 10.87): it leaves the circle δ/sin 5° = 1.03e-6 along, at
+    // (1.03e-6, 10), π/2 − 1.03e-7, on the arc, within 9e-8 of the circle all the way.
+    // The region: the polygon's 77.2673970456544 less the segment.
     let heading = 5f64.to_radians();
     let (along, angle) = leaves_at(heading);
     assert!((along - 1.0326e-6).abs() < 1e-9, "{along}");
     assert!(PI / 2.0 - angle > 1e-7, "{angle}");
-    let (d, arc, line) = quarter_turn_boxed(
+    let (d, _, _) = quarter_turn_boxed(
+        DELTA,
         (
             10.0 * libm::cos(heading),
             10.0 - DELTA + 10.0 * libm::sin(heading),
         ),
         &[(12.0, 12.0), (12.0, 0.0)],
     );
-    assert_eq!(
-        draw::named(&d.refused()),
-        [(
-            format!("arc {arc} and line {line} cross"),
-            vec![arc.clone(), line.clone()]
-        )]
+    let area = made_area(&d);
+    assert!(
+        close(area, 77.2673970456544 - (25.0 * PI - 50.0), 1e-12),
+        "{area}"
     );
 }
 
 #[test]
 fn a_line_leaving_an_arcs_end_drawn_inside_its_circle_away_from_it_doesnt_cross_it() {
-    // The quarter turn, and a line from its end at 150° to (−4.33, 12.5), boxed back to
-    // the arc's start by (12, 14) and (12, 0). It leaves the circle 1.8e-7 along, at
-    // (−1.56e-7, 10): π/2 + 1.56e-8, past the arc's end, off it. Nothing crosses.
+    // The quarter turn, and a line from its end at 150° to (−4.33, 12.5 − δ), boxed back
+    // by (12, 14) and (12, 0): it leaves the circle 1.8e-7 along, at (−1.56e-7, 10),
+    // π/2 + 1.56e-8, past the arc's end. The region: the polygon's 117.66025414270011 less
+    // the segment.
     let (along, angle) = leaves_at(5.0 * PI / 6.0);
     assert!((along - 1.8e-7).abs() < 1e-9, "{along}");
     assert!(angle - PI / 2.0 > 1.5e-8, "{angle}");
     let (d, _, _) = quarter_turn_boxed(
+        DELTA,
         (-4.330127018922194, 12.5 - DELTA),
         &[(12.0, 14.0), (12.0, 0.0)],
     );
-    assert_eq!(d.made().regions.len(), 1);
+    let area = made_area(&d);
+    assert!(
+        close(area, 117.66025414270011 - (25.0 * PI - 50.0), 1e-13),
+        "{area}"
+    );
+}
+
+/// The quarter turn, its end on its circle at (0, 10), and a line from its end at α below
+/// its tangent towards the arc, α = acos(1 − `dip`/10), so `dip` inside the circle at its
+/// deepest, 10·sin α along, and back out at 20·sin α, at π/2 − 2α, on the arc; boxed back
+/// by (12, 12) and (12, 0).
+fn dipping(dip: f64, inside: f64) -> (Draw, String, String) {
+    let alpha = libm::acos(1.0 - dip / 10.0);
+    quarter_turn_boxed(
+        inside,
+        (
+            4.0 * libm::cos(alpha),
+            10.0 - inside - 4.0 * libm::sin(alpha),
+        ),
+        &[(12.0, 12.0), (12.0, 0.0)],
+    )
 }
 
 #[test]
-fn a_line_from_an_arcs_end_dipping_into_its_circle_crosses_it_where_it_comes_back_out() {
-    // The quarter turn r 10 from (10, 0) to (0, 10), its end on its circle, and a line
-    // from its end at α = acos(1 − 5e-9) below its tangent, towards the arc: 5e-8 inside
-    // the circle at its deepest, 10·sin α = 1e-3 along, and back out at 2e-3, at
-    // π/2 − 2α = π/2 − 2e-4, on the arc. It crosses the arc there (OCCT builds the face,
-    // its check missing a crossing so shallow), boxed back by (12, 12) and (12, 0).
-    let alpha = libm::acos(1.0 - 5e-9);
-    assert!((alpha - 1e-4).abs() < 1e-9, "{alpha}");
-    let mut d = Draw::new();
-    let o = d.point(0.0, 0.0);
-    let s = d.point(10.0, 0.0);
-    let e = d.point(0.0, 10.0);
-    let arc = d.arc(&o, &s, &e);
-    let f = d.point(4.0 * libm::cos(alpha), 10.0 - 4.0 * libm::sin(alpha));
-    let line = d.line(&e, &f);
-    let (g, h) = (d.point(12.0, 12.0), d.point(12.0, 0.0));
-    d.line(&f, &g);
-    d.line(&g, &h);
-    d.line(&h, &s);
+fn a_line_from_an_arcs_end_dipping_into_its_circle_less_than_the_tolerance_runs_beside_it() {
+    // A dip of 5e-8: α = 1e-4, back out 2e-3 along, within 5e-8 of the circle all the way.
+    // The region: the polygon's 77.99760002001028 less the segment.
+    let (d, _, _) = dipping(5e-8, 0.0);
+    let area = made_area(&d);
+    assert!(
+        close(area, 77.99760002001028 - (25.0 * PI - 50.0), 1e-13),
+        "{area}"
+    );
+}
+
+#[test]
+fn a_line_from_an_arcs_end_dipping_into_its_circle_more_than_the_tolerance_crosses_it() {
+    // A dip of 2e-7: α = 2e-4, back out 4e-3 along, at π/2 − 4e-4, on the arc, after
+    // parting from the circle by 2e-7. It crosses the arc there.
+    let (d, arc, line) = dipping(2e-7, 0.0);
     assert_eq!(
         draw::named(&d.refused()),
         [(
@@ -859,6 +895,113 @@ fn a_line_from_an_arcs_end_dipping_into_its_circle_crosses_it_where_it_comes_bac
             vec![arc.clone(), line.clone()]
         )]
     );
+}
+
+#[test]
+fn a_shallow_line_from_an_arcs_end_drawn_inside_its_circle_crossing_it_far_off_crosses_it() {
+    // The end δ inside, and a line from it at α = 1e-3 below its tangent: within δ of the
+    // circle near the end, as the 30° line is, but 10(1 − cos α) = 5e-6 inside it at its
+    // deepest, 1e-2 along, and back out at about 2e-2, at π/2 − 2e-3, on the arc, 0.02 mm
+    // from the end. The dip can't hide a crossing that far.
+    let (d, arc, line) = dipping(10.0 * (1.0 - libm::cos(1e-3)), DELTA);
+    assert_eq!(
+        draw::named(&d.refused()),
+        [(
+            format!("arc {arc} and line {line} cross"),
+            vec![arc.clone(), line.clone()]
+        )]
+    );
+}
+
+/// An arc r 5e-7 about the origin from (5e-7, 0) counter-clockwise to (−3e-7, `y`), a
+/// line from its end along y = `y` to (1e-5, `y`), and back to its start by
+/// (1e-5, −1e-5).
+/// Returns the drawing, the arc, and the line.
+fn chord_below_the_top(y: f64) -> (Draw, String, String) {
+    let mut d = Draw::new();
+    let o = d.point(0.0, 0.0);
+    let s = d.point(5e-7, 0.0);
+    let e = d.point(-3e-7, y);
+    let arc = d.arc(&o, &s, &e);
+    let f = d.point(1e-5, y);
+    let line = d.line(&e, &f);
+    let g = d.point(1e-5, -1e-5);
+    d.line(&f, &g);
+    d.line(&g, &s);
+    (d, arc, line)
+}
+
+#[test]
+fn a_line_from_an_arcs_end_dipping_into_its_circle_exactly_the_tolerance_runs_beside_it() {
+    // The line y = 4e-7 below the top of the circle r 5e-7: 5e-7 − 4e-7 is exactly 1e-7
+    // (as computed, and the centre's foot (0, 4e-7) is exactly 4e-7 from it), within the
+    // tolerance, inclusive, as every closeness rule of a profile is. It meets the circle
+    // again at (3e-7, 4e-7), 53.13°, on the arc (to 126.87°), but beside it.
+    assert_eq!(5e-7 - 4e-7, 1e-7);
+    let (d, _, _) = chord_below_the_top(4e-7);
+    assert_eq!(d.made().regions.len(), 1);
+}
+
+#[test]
+fn a_line_from_an_arcs_end_dipping_into_its_circle_an_ulp_past_the_tolerance_crosses_it() {
+    // The same an ulp lower, y = 3.9999999999999993e-7: 1.0000000000000005e-7 inside the
+    // circle, past the tolerance. It crosses the arc at (3e-7, y).
+    let y = 3.9999999999999993e-7;
+    assert_eq!(5e-7 - y, 1.0000000000000005e-7);
+    let (d, arc, line) = chord_below_the_top(y);
+    assert_eq!(
+        draw::named(&d.refused()),
+        [(
+            format!("arc {arc} and line {line} cross"),
+            vec![arc.clone(), line.clone()]
+        )]
+    );
+}
+
+#[test]
+fn a_cove_whose_arc_ends_an_ulp_inside_its_circle_is_a_profile() {
+    // A square corner less a quarter disc (#110's review): the arc r 10 from (10, 0) to
+    // (0, b), b = 9.999999999999998, an ulp under 10, and the lines (0, b)–(10, b) and
+    // (10, b)–(10, 0), each along the arc's tangent at an end. The top line dips
+    // 10 − b = 1.8e-15 into the circle and crosses it again √(2·10·1.8e-15) = 1.9e-7
+    // along, on the arc: rounding, not a crossing. The region: the polygon's 5b less the
+    // segment, 100 − 25π.
+    let b = 9.999999999999998;
+    let (d, _, _) = quarter_turn_boxed(10.0 - b, (10.0, b), &[]);
+    let area = made_area(&d);
+    assert!(close(area, 5.0 * b - (25.0 * PI - 50.0), 1e-13), "{area}");
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
+
+    /// A cove anywhere, of any size, turned any way, its arc's end moved as far as a solve
+    /// leaves one from its circle, is a profile of r²(1 − π/4): the arc r about c from S at
+    /// `turn` to E a quarter turn on, E moved `off` along its radius, and the lines from E
+    /// to the square's corner K = S + r·(−sin, cos)(turn), and from K to S, each along the
+    /// arc's tangent at an end. (Every crossing further than the tolerance from a shared
+    /// point refused one in fourteen to two in five, #110's review.)
+    #[test]
+    fn a_cove_anywhere_turned_any_way_is_a_profile(
+        turn in 0.0..std::f64::consts::TAU,
+        r in 1e-3..1e3f64,
+        cx in -1e3..1e3f64,
+        cy in -1e3..1e3f64,
+        off in -1e-12..1e-12f64,
+    ) {
+        let (cos, sin) = (libm::cos(turn), libm::sin(turn));
+        let mut d = Draw::new();
+        let c = d.point(cx, cy);
+        let s = d.point(cx + r * cos, cy + r * sin);
+        let e = d.point(cx - (r + off) * sin, cy + (r + off) * cos);
+        let k = d.point(cx + r * (cos - sin), cy + r * (sin + cos));
+        d.arc(&c, &s, &e);
+        d.line(&e, &k);
+        d.line(&k, &s);
+        let area = made_area(&d);
+        let expected = r * r * (1.0 - PI / 4.0);
+        proptest::prop_assert!((area - expected).abs() <= 1e-8 * r * r, "{area} {expected}");
+    }
 }
 
 #[test]
