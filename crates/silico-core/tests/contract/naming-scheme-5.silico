@@ -1,0 +1,76 @@
+{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
+    {"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de", "note": "Clearance for an M5 bolt"},
+    {
+      "id": "f0000001",
+      "type": "fillet",
+      "v": 1,
+      "name": "Rim",
+      "base": "m3tq8v0z",
+      "edges": [
+        "m3tq8v0z.cut.Edge(I a91cw0de.cylinder.Edge2)"
+      ],
+      "radius": 0.5,
+      "note": "The hole's top rim: a piece of the pin's top circle, inside the block"
+    },
+    {
+      "id": "c0000001",
+      "type": "chamfer",
+      "v": 1,
+      "name": "Bevel",
+      "base": "f0000001",
+      "edges": [
+        "k7f2qx3m.box.Edge1"
+      ],
+      "size": {"distance": 1},
+      "note": "A block's edge, kept by the cut and the fillet under its own name"
+    },
+    {
+      "id": "s0000001",
+      "type": "sketch",
+      "v": 1,
+      "name": "Tab outline",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 50, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 60, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 60, "y": 10, "construction": false},
+        {"id": "pa000004", "x": 50, "y": 10, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000001",
+      "type": "pad",
+      "v": 1,
+      "name": "Tab",
+      "sketch": "s0000001",
+      "extent": {"type": "one_side", "length": 5, "reversed": false}
+    },
+    {
+      "id": "f0000002",
+      "type": "fillet",
+      "v": 1,
+      "name": "Tab edge",
+      "base": "p0000001",
+      "edges": [
+        "p0000001.pad.Edge(G s0000001.sketch.Edge.na000003)"
+      ],
+      "radius": 0.5,
+      "note": "The tab's back side edge: the side face line na000003 generated"
+    }
+  ]
+}
