@@ -113,7 +113,7 @@ fn two_arcs_of_one_circle_that_share_no_stretch_are_apart() {
 
 /// The ends of a long line, (0, 0) to (65536, 65536), and of a short one from just past its
 /// end: r is 1.77e-7 from q, within rounding of p–q's line, and r–s, kinked toward p–q's
-/// line, crosses it 1e-3 short of q, but stops at r. Nothing comes within 1e-7 of the
+/// line, crosses it 1.4e-3 short of q, but stops at r. Nothing comes within 1e-7 of the
 /// other (by hand): no meeting.
 fn joint(d: &mut Draw) -> [String; 4] {
     [
