@@ -13,7 +13,7 @@ Citations are to FreeCAD 1.1.3 (tag `1.1.3`, commit `145529fe74`) unless marked 
 - It's the `tolerance` argument, or the preference `Mod/Mesh/MaxDeviationExport`, or 0.1 (`AppMeshPy.cpp:219`). The GUI accepts 1e-5 to 1e8 mm (`src/Mod/Mesh/Gui/DlgSettingsImportExport.ui:46-56`). The Python path doesn't check the value at all (`AppMeshPy.cpp:224-238`).
 - It reaches the mesher as a `float`, because `Exporter::addObject(App::DocumentObject*, float tol)` takes one (`src/Mod/Mesh/App/Exporter.h:62`). So the deflection is 0.1f, which is 0.10000000149011612, not 0.1.
 - `TopoShape::getFaces` (`src/Mod/Part/App/TopoShape.cpp:3650-3669`) runs `BRepMesh_IncrementalMesh(shape, tol, isRelative = false, defaultAngularDeflection(tol), isInParallel = true)`. The deflection is **absolute**, in millimetres.
-- `defaultAngularDeflection(tol)` is `min(0.1, 5·tol + 0.005)` radians (`TopoShape.cpp:223-231`, from `487215d2f5`). At 0.1 mm that is 0.1 rad. OCCT then refines face interiors to twice that angle (`BRepMesh_IncrementalMesh.hxx:103-105`).
+- `defaultAngularDeflection(tol)` is `min(0.1, 5·tol + 0.005)` radians (`TopoShape.cpp:224-232`, from `487215d2f5`). At 0.1 mm that is 0.1 rad. OCCT allows face interiors twice that angle, 0.2 rad (`AngleInterior = 2·Angle`, `BRepMesh_IncrementalMesh.hxx:103-105`): a looser limit inside a face, not a finer one.
 - **The angle governs most curves, not the 0.1 mm.** A circle of radius r needs n ≥ 2π/0.1 = 63 segments to meet the angle. It needs only n ≥ π/arccos(1 − 0.1/r) segments to meet the deflection, which is 16 at r = 5. The two limits cross at r = 0.1/(1 − cos 0.05) ≈ 80 mm. Below that radius, FreeCAD's export mesh is set by the angle.
 - `MeshPart.meshFromShape` (`src/Mod/MeshPart/App/Mesher.cpp:227-239`, `createStandard`) is a different path. It is not export. It runs `BRepTools::Clean` first, takes its own `LinearDeflection`, `AngularDeflection` (default 0.5) and `Relative` (`Mesher.h:228-231`), and then joins faces through the same `Part::BRepMesh` as export.
 
@@ -21,7 +21,7 @@ OCCT treats the deflection as a target, not a bound:
 
 - An edge's deflection is raised to the gap between its vertices and its curve's ends (`BRepMesh_Deflection.cxx:68-95`).
 - A face's deflection is the largest of three values: the one asked for, the mean of its wires' deflections, and twice its largest tolerance (`BRepMesh_Deflection.cxx:127-152`).
-- After meshing, OCCT measures each face's real deviation at triangle centroids and interior link midpoints, skipping boundary links and the triangles at degenerate edges. It stores the result as the triangulation's `Deflection()` (`BRepLib::UpdateDeflection`, `BRepLib.cxx:2591-2687`, called from `BRepMesh_ModelPostProcessor.cxx:184`).
+- After meshing, OCCT estimates each face's deviation, as the distance from each triangle's centroid, and each interior link's midpoint, to the surface point at its UV (a sample, not a bound), skipping boundary links and the triangles at degenerate edges. It stores the result as the triangulation's `Deflection()` (`BRepLib::UpdateDeflection`, `BRepLib.cxx:2591-2687`, called from `BRepMesh_ModelPostProcessor.cxx:184`).
 - `getFaces` doesn't clean the shape first. OCCT keeps an existing triangulation whose deflection is under 1.1 times the one asked for (`BRepMesh_Deflection::IsConsistent`, `BRepMesh_Deflection.cxx:159-170`, used by `BRepMesh_ModelPreProcessor.cxx:64-94`).
   - In a GUI session, a finer display mesh on the same faces could therefore be exported instead. Not verified: whether the view provider's shape shares its faces with the shape that `getFaces` meshes.
   - Headless, as the oracle runs, there is no earlier mesh.
@@ -40,7 +40,7 @@ How the merge tolerance changed:
 
 | Commit | Merge rule |
 |---|---|
-| `120ca87015` (2011, the import) | a fuzzy `std::set` at `gp::Resolution()` (about 1e-290), which in practice means exact |
+| `120ca87015` (2011, a refactor of the DLL defines, already with the merge) | a fuzzy `std::set` at `gp::Resolution()` (about 1e-290), which in practice means exact |
 | `ad605d6e23` (2024, #11985) | the same fuzzy set at 10·DBL_EPSILON |
 | `eb32abe7ef` (2024, #12744) | the exact set, then the 1e-7 pass |
 
@@ -146,7 +146,7 @@ These are the differences in the files this note reads. The rest are formatting 
 A solid's export mesh is printable when all of the following hold, checked in this order before anything is written. Each refusal names the faces at fault, as the display mesh's refusal does (the first hundred, and the total).
 
 1. **Every face meshed.** A face with no triangles leaves a hole. The refusal names the face, whether or not the B-rep is valid. This is stricter than the display mesh, which leaves out an unmeshed sliver on a valid shape (docs/ports/tessellation.md).
-2. **Joined at the edges the faces share, without a tolerance.** Nodes on a B-rep edge are identified through each face's polygon on its triangulation for that edge (`BRep_Tool::PolygonOnTriangulation`; a seam has one polygon for each orientation), and nodes on a B-rep vertex through that vertex. Each welded vertex takes its position from the first face in `TopExp::MapShapes` order.
+2. **Joined at the edges the faces share, without a tolerance.** Nodes on a B-rep edge are identified through each face's polygon on its triangulation for that edge (`BRep_Tool::PolygonOnTriangulation`; a seam has one polygon for each orientation), and nodes on a B-rep vertex through that vertex. Every node of a degenerated edge (a sphere's or cone's pole) welds to that edge's vertex: its polygon belongs to one face only, so pairing polygons alone wouldn't merge them. Each welded vertex takes its position from the first face in `TopExp::MapShapes` order.
    - This is exact where FreeCAD's coordinate merge isn't. It neither misses nor wrongly merges.
    - It doesn't depend on two faces with different locations rounding their shared nodes the same way. Today's watertightness test (`closed_solid_mesh_watertight`) joins by bitwise-equal coordinates and passes for a box, a cylinder, and a box minus a cylinder.
    - A triangle whose corners weld to a repeated index is dropped, as `BRepMesh.cpp:275-279` drops it. Its two remaining edges cancel each other, so closure is unaffected. A sphere's poles are the known case.
@@ -160,16 +160,16 @@ A solid's export mesh is printable when all of the following hold, checked in th
 5. **Facing outward**: each shell's signed volume, computed in `f64` from the coordinates as written, is positive for the solid's outer shell and negative for a cavity's shell (`BRepClass3d::OuterShell` says which). The solid's total is positive. FreeCAD has no such check, and its volume is an absolute value.
 6. **No degenerate triangles**: no repeated index (core.md:671), and no triangle of zero area in the coordinates as written, i.e. `f32` (core.md:588). A zero-area triangle names its face. Both FreeCAD and PrusaSlicer read `f32`, so this is checked on what they get.
 7. **Within the tolerance of the B-rep**:
-   - Every vertex is a node OCCT placed on a face, an edge, or a vertex of the solid, then rounded once to `f32`. The rounding is at most |x|·6e-8, and the display mesh's deflection floor of 1e-4 times the diagonal (`MIN_RELATIVE_DEFLECTION`, `crates/silico-kernel/src/lib.rs:1576`) is always far above it, so the floor needs nothing new.
-   - Each edge's polygon is held to the tolerance by OCCT.
-   - Each face's measured deviation (`Poly_Triangulation::Deflection()` after meshing, `BRepLib.cxx:2687`) must not exceed the tolerance, or the face is refused, naming it. This catches OCCT raising a face's deflection to twice its tolerance (`BRepMesh_Deflection.cxx:150`). It is OCCT's own measurement: Silico takes it as given, as it takes OCCT's results elsewhere, and adds no measurement of its own.
+   - Every vertex is a node OCCT placed on a face, an edge, or a vertex of the solid, then rounded once to `f32`, by at most r = max|coordinate|·2⁻²⁴. That rounding isn't small beside every tolerance: a 10 mm cube at x = 5·10⁴ mm rounds by 3e-3 mm. So r counts against the tolerance below.
+   - Each edge's polygon (`Poly_PolygonOnTriangulation::Deflection()`) is within the tolerance less r, or the faces on that edge are refused, naming them. OCCT raises an edge's deflection to the gap between its vertex and its curve's end (`BRepMesh_Deflection.cxx:95`), and the face estimate below skips boundary links, so nothing else checks an edge.
+   - Each face's deviation, as OCCT estimates it (`Poly_Triangulation::Deflection()` after meshing, `BRepLib.cxx:2687`), is within the tolerance less r, or the face is refused, naming it. This catches OCCT raising a face's deflection to twice its tolerance (`BRepMesh_Deflection.cxx:150`). It is OCCT's own estimate, a sample at centroids, not a bound: Silico takes it as given, as it takes OCCT's results elsewhere, and adds no measurement of its own.
    - FreeCAD never compares the deviation with the tolerance.
 
 ## Where Silico differs on purpose
 
 - **Refused, never written.** FreeCAD writes every mesh as `type="model"`, holes and all (`7bbc93e218`). A slicer then repairs it, or prints it wrong. Silico refuses a mesh that fails the checks above, naming the faces, and writes nothing.
-- **The tolerance is a length, in f64.** 0.1 means 0.1, not 0.1f. If 0.1f vs 0.1 ever changes a node count, the oracle case below shows it. Within limits: above zero, finite, and no finer than the display floor. FreeCAD's GUI range is 1e-5 to 1e8 (`DlgSettingsImportExport.ui:46-56`), and its Python path has no limits.
-- **Meshed single-threaded, on a copy** (as the display mesh is). FreeCAD meshes in parallel (`TopoShape.cpp:3664`). Not verified: whether OCCT's parallel meshing gives the same triangles.
+- **The tolerance is a length, in f64.** 0.1 means 0.1, not 0.1f. If 0.1f vs 0.1 ever changes a node count, the oracle case below shows it. Within limits, and not the display mesh's: its floor, max(1e-4 × the diagonal, 1e-7) (`crates/silico-kernel/src/lib.rs:1576`, `:1593`), would refuse the 0.1 mm default on any part over 1000 mm across, which FreeCAD exports. Recommended: FreeCAD's GUI range, 1e-5 to 1e8 mm, absolute (`DlgSettingsImportExport.ui:46-56`; its Python path has no limits), with the mesh's size bounded by a triangle count in the tools' limits table rather than by the tolerance. Open for M4.8's design.
+- **Meshed single-threaded, on a copy** (as the display mesh is). FreeCAD meshes in parallel (`TopoShape.cpp:3664`, since `7822daf1f2`, 2020). Not verified: whether OCCT's parallel meshing gives the same triangles.
 - **Faces joined by topology, not by distance** (above).
 - **`INTERNAL` and `EXTERNAL` faces are left out.** They bound no change of material, and including them makes non-manifold edges. FreeCAD includes them, wound as reversed (`Tools.cpp:318-320`). This is a recommendation, open for the maintainer.
 - **One object per feature's solid**, named by the feature's `name`, with the feature's ID as `partnumber` (an attribute the core schema has, core.md:1073). FreeCAD 1.1.3 writes no name, and main uses the `Label`. Names are XML-escaped. Tab, LF and CR are written as character references, because a parser would turn them into spaces in an attribute. A name with any other control character can't be written in XML 1.0 at all, so the export is refused, naming the feature.
@@ -219,7 +219,7 @@ FreeCAD has no test of `Writer3MF`'s output, of `MeshEvalSolid` on a mesh that f
 | `tests/src/Mod/Part/App/BRepMesh.cpp:133` `testNoDomains`, `:144` `testEmptyDomains` | No faces, or two faces with no triangles, give no points and no triangles | Analytic: the weld of no faces is empty. An export whose faces are all unmeshed is refused, naming them. |
 | `BRepMesh.cpp:155` `testConnectedDomains` | Two squares sharing an edge, 4 nodes each: 6 points and 4 triangles | Analytic: the same two faces welded at their shared edge give 6 vertices and 4 triangles, with the shared edge used twice in opposite directions |
 | `BRepMesh.cpp:166` `testUnconnectedDomains` | Shared nodes 1e-10 apart are merged: 6 points, 4 triangles | Ported for the topological weld: nodes identified by the edge are welded even when their coordinates differ by 1e-10. Two nodes 1e-10 apart that share no edge are **not** merged (FreeCAD would merge them). |
-| `tests/src/Mod/Mesh/App/Importer.cpp:20` `Test3MF` | A box read from 3MF: 8 points, 18 edges, 12 triangles | Analytic: a 10 × 20 × 30 box's 3MF has 8 vertices, 18 edges and 12 triangles (V − E + F = 2), and its signed volume is 6000 exactly |
+| `tests/src/Mod/Mesh/App/Importer.cpp:20` `Test3MF` | A box read from 3MF: 8 points, 18 edges, 12 triangles | Analytic: a 10 × 20 × 30 box's 3MF has 8 vertices, 18 edges and 12 triangles (V − E + F = 2), and its signed volume is 6000 exactly. The test's file has a second object too (`ids.size() == 2`: 652 points, 1950 edges, 1300 triangles); Silico's two-object case is a box beside a cylinder, each object's counts checked on its own |
 | `tests/src/Mod/Mesh/App/Exporter.cpp:78` `TestSingleMesh`, `:102` `TestMultipleMeshes`, `:127` `TestMeshesInPart` | A 10 mm cube (centered) placed at (10, 5, 2) exports with bounding box [5, 15] × [0, 10] × [−3, 7], alone, beside another, and inside a placed `App::Part` | Analytic, with Silico's translate: a box moved by (10, 5, 2) has those bounds in the 3MF exactly. The `App::Part` case waits for placements. |
 | `src/Mod/Mesh/App/MeshTestsApp.py:96-197` `MeshSplitTestCases` | After splitting a box's facets, `isSolid()`, no non-manifolds, no corrupted facets | Analytic, for the checks: a 12-triangle box passes. Remove one triangle and it's open (naming that face); duplicate one and it's non-manifold; flip one and it's inconsistently oriented; flip all and it faces inward. FreeCAD tests only the passing case. |
 | `MeshTestsApp.py:55` `testCorruptedFacet` | A facet with a repeated point is removed by `fixIndices` (6 → 5) | Analytic: a triangle that welds to a repeated index is dropped, and the mesh still closes |
@@ -230,7 +230,7 @@ Silico's own tests, from independent sources:
 
 - **A cylinder's volume** (r = 5, h = 10, tolerance 0.1, angle 0.1):
   - Every vertex lies on the surface, so the mesh is inscribed and V < πr²h = 785.398.
-  - Read n, the number of segments on a cap, from the mesh. Assert n ≥ ⌈2π/0.1⌉ = 63 and V = (n/2)·r²·h·sin(2π/n) to 1e-12 relative. That gives V ≥ 784.097 at n = 63.
+  - Read n, the number of segments on a cap, from the mesh. Assert n ≥ ⌈2π/0.1⌉ = 63 and V = (n/2)·r²·h·sin(2π/n) to 1e-6 relative: V is computed from the coordinates as written, in `f32`, about 6e-8 relative each. That gives V ≥ 784.097 at n = 63.
   - The deflection alone would allow n = 16 (V ≥ 765.367), which shows the angle is ported.
   - Looser, and true of any mesh whose sagitta is within t: V ≥ π(r − t)²h = 754.296.
 - **A sphere** welds closed. Its pole triangles are dropped, and no vertex is repeated.
@@ -268,6 +268,9 @@ What M4.8's row in the M4 plan (#50) should say, given this study:
 - **Object names are main's, not 1.1.3's.** "Each object named by its feature" follows main (`49c80ebe5c`). 1.1.3 writes no names and its reader ignores them, so no oracle case can check a name: the name is tested by reading the archive's XML.
 - **Open meshes are refused, on purpose.** FreeCAD's fix for #10075 (`7bbc93e218`) writes every mesh as `model`, open or not. Silico's refusal is the opposite, and the row should call it a deliberate departure.
 - **A valid solid with a face OCCT can't mesh can't be exported.** Every face must be meshed (rule 1 above), so such a solid is refused, naming the face, until OCCT meshes it. The row's refusal case covers it; the docs should say there's no workaround.
+
+- **The tolerance's limits are the export's own.** The display mesh's floor (1e-4 × the diagonal) would refuse the 0.1 mm default on any part over 1000 mm across. Recommended: 1e-5 to 1e8 mm absolute, as FreeCAD's GUI takes, with the mesh's size bounded by a triangle count in the tools' limits table (amendment A1).
+- **The f32 rounding counts against the tolerance.** Rounding to `f32` moves a vertex by up to max|coordinate|·2⁻²⁴, 3e-3 mm at 5·10⁴ mm. The row's "within the export tolerance" should include it, so a part far from the origin is refused rather than written outside it.
 
 ## Notes
 
