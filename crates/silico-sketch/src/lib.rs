@@ -167,10 +167,10 @@ mod ffi {
         /// A sketch built and diagnosed once, to be solved by one algorithm after another.
         type Solver;
         fn solver_new(input: &SolveInput) -> Result<UniquePtr<Solver>>;
-        // A `Result`, as every other call here that does work has: what it does now can't
-        // throw (its `rust::Vec` pushes are `noexcept`, and run out of memory by aborting, as
-        // Rust's allocations do), but C++ added to it later that throws comes back as a
-        // refusal, not `std::terminate` across the bridge.
+        // A `Result`, as every other call here that can fail has: what it does now can't
+        // throw (it pushes plain integers into `rust::Vec`s, whose growth is `noexcept` and
+        // runs out of memory by aborting, as Rust's allocations do), but C++ added to it
+        // later that throws comes back as a refusal, not `std::terminate` across the bridge.
         fn solver_diagnosis(solver: &Solver) -> Result<Diagnosed>;
         fn solver_try(solver: Pin<&mut Solver>, algorithm: AlgorithmIn) -> Result<Attempt>;
         fn solver_residuals(
