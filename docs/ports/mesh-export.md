@@ -259,12 +259,16 @@ Silico's own tests, from independent sources:
 
 The claims about FreeCAD's several-solid and empty-shape output come from reading the code, not from running it.
 
+## For M4.8's design
+
+What M4.8's row in the M4 plan (#50) should say, given this study:
+
+- **The oracle's volume is the mesh's.** "FreeCAD reads every exported 3MF back as a solid with the volume Silico measured" has to compare with the mesh's own volume, not the B-rep's: at 0.1 mm a cylinder's mesh is 0.17% under it. FreeCAD's mesh `Volume` is a 32-bit sum that ignores the sign (above), so the case compares within that sum's precision.
+- **The tolerance names the angle too.** "Within the export tolerance (FreeCAD's 0.1 mm by default)" leaves out FreeCAD's angular deflection, `min(0.1, 5·tol + 0.005)` rad (`487215d2f5`), which sets the mesh below r ≈ 80 mm. The row should say whether Silico takes both, as FreeCAD does (recommended, so the oracle's meshes are comparable), or the length alone.
+- **Object names are main's, not 1.1.3's.** "Each object named by its feature" follows main (`49c80ebe5c`). 1.1.3 writes no names and its reader ignores them, so no oracle case can check a name: the name is tested by reading the archive's XML.
+- **Open meshes are refused, on purpose.** FreeCAD's fix for #10075 (`7bbc93e218`) writes every mesh as `model`, open or not. Silico's refusal is the opposite, and the row should call it a deliberate departure.
+- **A valid solid with a face OCCT can't mesh can't be exported.** Every face must be meshed (rule 1 above), so such a solid is refused, naming the face, until OCCT meshes it. The row's refusal case covers it; the docs should say there's no workaround.
+
 ## Notes
 
-- **The M4.8 row and this note.**
-  - FreeCAD's fix for #10075 was to write open meshes as `model`. Silico's refusal is the opposite, on purpose.
-  - Names come from main, not 1.1.3, and the 1.1.3 oracle ignores them.
-  - "The volume Silico measured" has to be the mesh's volume, not the B-rep's. A cylinder's mesh is 0.17% under it at 0.1 mm.
-  - A valid solid with an unmeshable sliver face can't be exported until OCCT meshes it.
-  - FreeCAD's export mesh is set by its angular deflection below r ≈ 80 mm, so "within the export tolerance" needs the angle too.
 - STEP export (decision 6) has its own note when it comes.
