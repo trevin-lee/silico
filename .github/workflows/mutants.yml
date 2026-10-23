@@ -46,7 +46,7 @@ env:
 
 jobs:
   plan:
-    runs-on: [self-hosted, linux, x64, mutants]
+    runs-on: [self-hosted, linux, x64]
     timeout-minutes: 5
     outputs:
       shards: ${{ steps.plan.outputs.shards }}
@@ -90,13 +90,15 @@ jobs:
     strategy:
       fail-fast: false
       # As many at once as there are runners labelled `mutants` (silico-3 to -12, through
-      # /etc/ci-runner/labels on the runner VM): silico-1 and -2 carry only `gate`, so gates
-      # always have two runners however many shards are queued, and silico-9 to -12 carry
-      # only `mutants`, and not `pve` either, so they never take a gate (or a job from a
-      # branch older than these labels, which asks only for pve) and never grow a gate's
-      # build. Mutants ask for `mutants`, not `pve`, to reach them. A run's shards spread over every
-      # free mutants runner. The runners share one VM, and free runners don't keep its CPU
-      # free: see the shard's share and priority below.
+      # /etc/ci-runner/labels on the runner VM). silico-1 and -2 carry only `gate`, so gates
+      # always have two runners however many shards are queued. silico-9 to -12 carry only
+      # `mutants`, not `pve`, so no gate (nor a job from a branch older than these labels,
+      # which asks for pve) runs there and grows a gate's build; mutants ask for `mutants`,
+      # not `pve`, to reach them. The bench and the oracle sweep share this pool too. A
+      # run's shards spread over every free mutants runner, so one long run can hold the
+      # pool for hours. The plan and summary take seconds and run on any runner, so a
+      # finished run's summary never queues behind other runs' shards. The runners share
+      # one VM, and free runners don't keep its CPU free: see the shard's share below.
       max-parallel: 10
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
@@ -192,7 +194,7 @@ jobs:
     needs: [plan, shard]
     # Even when the run is cancelled, to gather what the shards finished.
     if: ${{ always() && needs.plan.result == 'success' }}
-    runs-on: [self-hosted, linux, x64, mutants]
+    runs-on: [self-hosted, linux, x64]
     timeout-minutes: 10
     steps:
       - uses: actions/download-artifact@v4

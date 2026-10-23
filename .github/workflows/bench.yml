@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   drag:
-    runs-on: [self-hosted, linux, x64, pve, gate]
+    runs-on: [self-hosted, linux, x64, mutants]
     # A full solve a frame at the largest sizes takes seconds: each mode stops after a
     # minute, so the whole run is some minutes, after the build.
     timeout-minutes: 120

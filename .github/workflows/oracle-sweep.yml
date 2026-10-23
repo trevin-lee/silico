@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   sweep:
-    runs-on: [self-hosted, linux, x64, pve, gate]
+    runs-on: [self-hosted, linux, x64, mutants]
     timeout-minutes: 120
     outputs:
       sweep: ${{ steps.sweep.outcome }}
@@ -39,7 +39,7 @@ jobs:
     needs: sweep
     # Scheduled nights only: a run started by hand reports to whoever started it.
     if: ${{ always() && github.event_name == 'schedule' }}
-    runs-on: [self-hosted, linux, x64, pve, gate]
+    runs-on: [self-hosted, linux, x64, mutants]
     timeout-minutes: 10
     permissions:
       contents: read
