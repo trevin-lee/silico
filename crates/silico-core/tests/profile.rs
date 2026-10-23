@@ -597,6 +597,190 @@ fn a_square_and_circles_about_its_centre_nest_to_any_depth_in_any_order() {
     assert_areas(&made(&d), &[(3600.0, 0), (100.0, 2)]);
 }
 
+/// Each region by its outer loop's first curve: its depth, its holes' first curves, and its
+/// area.
+fn structure(p: &Profile) -> Vec<(String, usize, Vec<String>, f64)> {
+    p.regions
+        .iter()
+        .map(|r| {
+            let first = |l: &Loop| l.curves[0].curve.to_string();
+            let holes = r.holes.iter().map(first).collect();
+            (first(&r.outer), r.depth, holes, r.area())
+        })
+        .collect()
+}
+
+#[test]
+fn each_hole_belongs_to_the_loop_just_around_it_at_every_depth() {
+    // Squares, about (10, 10): A 20 (0 to 20), B 14 (3 to 17), C 8 (6 to 14), D 2 (9 to
+    // 11), nested; E, 2 x 2 at (17.5, 0.5), in A beside B; F, 1 x 1 at (7, 7), in C beside
+    // D. Depths: A 0, B and E 1, C 2, D and F 3. So A's region has holes B and E, and
+    // C's has D and F: 400 - 196 - 4 = 200, and 64 - 4 - 1 = 59. A hole given to any
+    // loop around it but the innermost (A for D, say) moves it to another region. Drawn
+    // outermost first and innermost first, so the loops around one come in either order.
+    for innermost_first in [false, true] {
+        let mut d = Draw::new();
+        let mut squares = vec![
+            ("A", (0.0, 0.0, 20.0, 20.0)),
+            ("B", (3.0, 3.0, 17.0, 17.0)),
+            ("E", (17.5, 0.5, 19.5, 2.5)),
+            ("C", (6.0, 6.0, 14.0, 14.0)),
+            ("F", (7.0, 7.0, 8.0, 8.0)),
+            ("D", (9.0, 9.0, 11.0, 11.0)),
+        ];
+        if innermost_first {
+            squares.reverse();
+        }
+        let mut first = std::collections::BTreeMap::new();
+        for (name, (x0, y0, x1, y1)) in squares {
+            first.insert(name, d.rectangle(x0, y0, x1, y1)[0].clone());
+        }
+        let p = made(&d);
+        let mut got = structure(&p);
+        got.sort_by_key(|r| r.1);
+        let holes = |a: &str, b: &str| {
+            let mut h = vec![first[a].clone(), first[b].clone()];
+            h.sort();
+            h
+        };
+        let want = [
+            (first["A"].clone(), 0, holes("B", "E"), 200.0),
+            (first["C"].clone(), 2, holes("D", "F"), 59.0),
+        ];
+        assert_eq!(got.len(), 2, "{got:?}");
+        for (g, w) in got.iter().zip(&want) {
+            assert_eq!((&g.0, g.1, &g.2), (&w.0, w.1, &w.2), "{got:?}");
+            assert!(close(g.3, w.3, EPS), "{got:?}");
+        }
+    }
+}
+
+#[test]
+fn circles_nested_four_deep_beside_a_square_s_islands_belong_where_they_lie() {
+    // A 100 x 100 square from the origin; in it, circles r 40, 30, 20, 10 about (50, 50)
+    // (depths 1 to 4) and a circle r 4 about (95, 5), beside them (depth 1); in the r 30
+    // island, a circle r 3 about (50, 25), between the r 30 and r 20 circles (depth 3).
+    // Regions: the square less the r 40 and r 4 circles, 10000 - 1616 pi; the r 30
+    // island less the r 20 and r 3 circles, 900 pi - 400 pi - 9 pi = 491 pi; the r 10
+    // island, 100 pi. Each hole's loop just around it is also the least in area of the loops
+    // around it, so the depth rule and the area rule it replaced agree here.
+    let mut d = Draw::new();
+    let square = d.rectangle(0.0, 0.0, 100.0, 100.0)[0].clone();
+    let r40 = d.circle(50.0, 50.0, 40.0);
+    let r30 = d.circle(50.0, 50.0, 30.0);
+    let r20 = d.circle(50.0, 50.0, 20.0);
+    let r10 = d.circle(50.0, 50.0, 10.0);
+    let r4 = d.circle(95.0, 5.0, 4.0);
+    let r3 = d.circle(50.0, 25.0, 3.0);
+    let p = made(&d);
+    let mut got = structure(&p);
+    got.sort_by_key(|r| r.1);
+    let want = [
+        (square, 0, vec![r40, r4], 10_000.0 - 1616.0 * PI),
+        (r30, 2, vec![r20, r3], 491.0 * PI),
+        (r10, 4, vec![], 100.0 * PI),
+    ];
+    assert_eq!(got.len(), 3, "{got:?}");
+    for (g, w) in got.iter().zip(&want) {
+        assert_eq!((&g.0, g.1, &g.2), (&w.0, w.1, &w.2), "{got:?}");
+        assert!(close(g.3, w.3, EPS), "{got:?}");
+    }
+}
+
+#[test]
+fn each_hole_belongs_to_the_loop_around_it_not_another_at_its_depth() {
+    // Two 10 x 10 squares, from (0, 0) and (20, 0), each with a circle r 2 at its centre:
+    // two regions at depth 0, each 100 - 4 pi with its own circle. Drawn in either order.
+    // Any loop one shallower than a hole would give both circles to one square.
+    for right_first in [false, true] {
+        let mut d = Draw::new();
+        let mut parts = vec![
+            (0.0, String::new(), String::new()),
+            (20.0, String::new(), String::new()),
+        ];
+        if right_first {
+            parts.reverse();
+        }
+        for (x, square, circle) in &mut parts {
+            *square = d.rectangle(*x, 0.0, *x + 10.0, 10.0)[0].clone();
+            *circle = d.circle(*x + 5.0, 5.0, 2.0);
+        }
+        let p = made(&d);
+        let mut got = structure(&p);
+        got.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut want: Vec<_> = parts
+            .into_iter()
+            .map(|(_, square, circle)| (square, 0, vec![circle], 100.0 - 4.0 * PI))
+            .collect();
+        want.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(got.len(), 2, "{got:?}");
+        for (g, w) in got.iter().zip(&want) {
+            assert_eq!((&g.0, g.1, &g.2), (&w.0, w.1, &w.2), "{got:?}");
+            assert!(close(g.3, w.3, EPS), "{got:?}");
+        }
+    }
+
+    // A 100 x 100 square with a hole from 10 to 90 holding two islands, 20 to 40 and 60 to
+    // 80, each with a circle r 5 at its centre: the square less its hole, 3600, and each
+    // island less its own circle, 400 - 25 pi, at depth 2.
+    let mut d = Draw::new();
+    let outer = d.rectangle(0.0, 0.0, 100.0, 100.0)[0].clone();
+    let hole = d.rectangle(10.0, 10.0, 90.0, 90.0)[0].clone();
+    let low = d.rectangle(20.0, 20.0, 40.0, 40.0)[0].clone();
+    let high = d.rectangle(60.0, 60.0, 80.0, 80.0)[0].clone();
+    let low_circle = d.circle(30.0, 30.0, 5.0);
+    let high_circle = d.circle(70.0, 70.0, 5.0);
+    let p = made(&d);
+    let mut got = structure(&p);
+    got.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut want = vec![
+        (outer, 0, vec![hole], 3600.0),
+        (low, 2, vec![low_circle], 400.0 - 25.0 * PI),
+        (high, 2, vec![high_circle], 400.0 - 25.0 * PI),
+    ];
+    want.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(got.len(), 3, "{got:?}");
+    for (g, w) in got.iter().zip(&want) {
+        assert_eq!((&g.0, g.1, &g.2), (&w.0, w.1, &w.2), "{got:?}");
+        assert!(close(g.3, w.3, EPS), "{got:?}");
+    }
+}
+
+#[test]
+fn a_hole_whose_box_ties_its_outline_s_is_kept_in_either_order() {
+    // A 0.05 mm square, and a diamond with its corners 2e-7 inside the square's sides: their
+    // boxes' squared diagonals differ by 2 (0.05² − (0.05 − 4e-7)²) ≈ 8e-8 mm², a tie for
+    // FreeCAD's Bullseye, which loses the hole when the diamond comes first (the port
+    // note's Edge cases). One region, the square less the diamond, 0.0025 − 2 (0.025 −
+    // 2e-7)², whichever is drawn first.
+    let (s, g) = (0.05, 2e-7);
+    let diamond = [
+        (s / 2.0, g),
+        (s - g, s / 2.0),
+        (s / 2.0, s - g),
+        (g, s / 2.0),
+    ];
+    let want = s * s - 2.0 * (s / 2.0 - g) * (s / 2.0 - g);
+    for diamond_first in [false, true] {
+        let mut d = Draw::new();
+        let (square, hole) = if diamond_first {
+            let hole = d.polygon(&diamond)[0].clone();
+            (d.rectangle(0.0, 0.0, s, s)[0].clone(), hole)
+        } else {
+            let square = d.rectangle(0.0, 0.0, s, s)[0].clone();
+            (square, d.polygon(&diamond)[0].clone())
+        };
+        let got = structure(&made(&d));
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(
+            (&got[0].0, got[0].1, &got[0].2),
+            (&square, 0, &vec![hole]),
+            "{got:?}"
+        );
+        assert!(close(got[0].3, want, EPS), "{got:?}");
+    }
+}
+
 #[test]
 fn separate_outlines_are_separate_regions() {
     // Two squares; four circles r 15 at (±20, ±20) (testPD_TNPSketchPadMultipleSolids).
