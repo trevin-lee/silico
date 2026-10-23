@@ -688,6 +688,65 @@ fn circles_nested_four_deep_beside_a_square_s_islands_belong_where_they_lie() {
 }
 
 #[test]
+fn each_hole_belongs_to_the_loop_around_it_not_another_at_its_depth() {
+    // Two 10 x 10 squares, from (0, 0) and (20, 0), each with a circle r 2 at its centre:
+    // two regions at depth 0, each 100 - 4 pi with its own circle. Drawn in either order.
+    // Any loop one shallower than a hole would give both circles to one square.
+    for right_first in [false, true] {
+        let mut d = Draw::new();
+        let mut parts = vec![
+            (0.0, String::new(), String::new()),
+            (20.0, String::new(), String::new()),
+        ];
+        if right_first {
+            parts.reverse();
+        }
+        for (x, square, circle) in &mut parts {
+            *square = d.rectangle(*x, 0.0, *x + 10.0, 10.0)[0].clone();
+            *circle = d.circle(*x + 5.0, 5.0, 2.0);
+        }
+        let p = made(&d);
+        let mut got = structure(&p);
+        got.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut want: Vec<_> = parts
+            .into_iter()
+            .map(|(_, square, circle)| (square, 0, vec![circle], 100.0 - 4.0 * PI))
+            .collect();
+        want.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(got.len(), 2, "{got:?}");
+        for (g, w) in got.iter().zip(&want) {
+            assert_eq!((&g.0, g.1, &g.2), (&w.0, w.1, &w.2), "{got:?}");
+            assert!(close(g.3, w.3, EPS), "{got:?}");
+        }
+    }
+
+    // A 100 x 100 square with a hole from 10 to 90 holding two islands, 20 to 40 and 60 to
+    // 80, each with a circle r 5 at its centre: the square less its hole, 3600, and each
+    // island less its own circle, 400 - 25 pi, at depth 2.
+    let mut d = Draw::new();
+    let outer = d.rectangle(0.0, 0.0, 100.0, 100.0)[0].clone();
+    let hole = d.rectangle(10.0, 10.0, 90.0, 90.0)[0].clone();
+    let low = d.rectangle(20.0, 20.0, 40.0, 40.0)[0].clone();
+    let high = d.rectangle(60.0, 60.0, 80.0, 80.0)[0].clone();
+    let low_circle = d.circle(30.0, 30.0, 5.0);
+    let high_circle = d.circle(70.0, 70.0, 5.0);
+    let p = made(&d);
+    let mut got = structure(&p);
+    got.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut want = vec![
+        (outer, 0, vec![hole], 3600.0),
+        (low, 2, vec![low_circle], 400.0 - 25.0 * PI),
+        (high, 2, vec![high_circle], 400.0 - 25.0 * PI),
+    ];
+    want.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(got.len(), 3, "{got:?}");
+    for (g, w) in got.iter().zip(&want) {
+        assert_eq!((&g.0, g.1, &g.2), (&w.0, w.1, &w.2), "{got:?}");
+        assert!(close(g.3, w.3, EPS), "{got:?}");
+    }
+}
+
+#[test]
 fn separate_outlines_are_separate_regions() {
     // Two squares; four circles r 15 at (±20, ±20) (testPD_TNPSketchPadMultipleSolids).
     let mut d = Draw::new();

@@ -1627,7 +1627,8 @@ fn regions(
         }
     }
     let depth: Vec<usize> = around.iter().map(Vec::len).collect();
-    // The loop just around each loop, by depth alone: loops that don't meet (rule 5 refuses
+    // The loop just around each loop, by depth among the loops around it (not every loop at that
+    // depth, since separate outlines share depths): loops that don't meet (rule 5 refuses
     // any that do) are disjoint or nested, so the m loops around one are nested in each
     // other, at depths 0 to m - 1, and the innermost is the one at depth m - 1. That rests
     // only on the crossings' parity, so no areas are compared. (Areas would tie only if
