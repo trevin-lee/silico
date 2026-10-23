@@ -5,7 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
-# The tests are built as a few programs, not one per file (each listed below).
+# The tests are built as a few programs, not one per file (each listed below): a new test
+# file must be added as a module of one (tests/all_*.rs) or as one here, or it never runs
+# (tests/all_solve.rs's every_test_file_is_built says which aren't).
 autotests = false
 
 [features]
