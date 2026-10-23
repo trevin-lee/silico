@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+# The tests are built as a few programs, not one per file (each listed below): a new test
+# file must be added as a module of one (tests/all_protocol.rs) or as one here, or it never
+# runs (tests/all_protocol.rs's every_test_file_is_built says which aren't).
+autotests = false
 
 [dependencies]
 serde.workspace = true
@@ -18,3 +22,14 @@ stats_alloc.workspace = true
 
 [lints]
 workspace = true
+
+# One test program of the test files as modules; allocation stays its own: it installs a
+# counting global allocator, which would count every test that shared its program.
+
+[[test]]
+name = "all_protocol"
+path = "tests/all_protocol.rs"
+
+[[test]]
+name = "allocation"
+path = "tests/allocation.rs"
