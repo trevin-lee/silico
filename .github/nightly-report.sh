@@ -13,18 +13,8 @@
 # ran), WORKFLOW, RUN_URL, and SEED.
 set -euo pipefail
 
-GH_VERSION=2.102.1
-GH_SHA256=77b9e297e94c50336823d0f84de7ef1be60cba704601fa0d98f129f47a94987b
-
-# The runners are single-use: gh, verified, if the image hasn't it.
-if ! command -v gh >/dev/null 2>&1; then
-  dir=$(mktemp -d)
-  curl -fsSL -o "$dir/gh.tar.gz" \
-    "https://github.com/cli/cli/releases/download/v$GH_VERSION/gh_${GH_VERSION}_linux_amd64.tar.gz"
-  echo "$GH_SHA256  $dir/gh.tar.gz" | sha256sum -c --quiet
-  tar zxf "$dir/gh.tar.gz" -C "$dir" --strip-components 2 "gh_${GH_VERSION}_linux_amd64/bin/gh"
-  PATH="$dir:$PATH"
-fi
+# gh, verified.
+. "${BASH_SOURCE[0]%/*}/gh.sh"
 
 # Every open issue's number and title, from the issue list itself (not the search index,
 # which lags and can be down: a missed lookup would open a duplicate).
