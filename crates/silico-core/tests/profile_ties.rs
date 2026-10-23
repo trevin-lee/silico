@@ -1,8 +1,9 @@
-//! M3.5's profile where its rules meet a tie or an exact tangency (the M3 milestone's
-//! mutants run): the end named of two as near another curve, which line two of one length
-//! along one line are measured from, and a line exactly tangent to an arc's circle off the
-//! arc. Each failed on a mutant of the code before it was added; expected values are by
-//! hand.
+//! M3.5's profile where its rules meet a tie, an exact tangency, or rounding's edge (the
+//! M3 milestone's mutants run): the end named of two as near another curve, which line two
+//! of one length along one line are measured from, a line exactly tangent to an arc's
+//! circle off the arc, a short line ending just past a long one's end, and an arc and a
+//! circle on one centre. All but two arcs of one circle failed on a mutant of the code
+//! before they were added; expected values are by hand.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 #[path = "common/profile.rs"]
@@ -108,4 +109,74 @@ fn two_arcs_of_one_circle_that_share_no_stretch_are_apart() {
     assert_eq!(areas.len(), 2, "{areas:?}");
     assert!(close(areas[0], 12.5 * (theta - 0.96), 1e-12), "{areas:?}");
     assert!(close(areas[1], 25.0 * PI / 2.0, 1e-12), "{areas:?}");
+}
+
+/// The ends of a long line, (0, 0) to (65536, 65536), and of a short one from just past its
+/// end: r is 1.77e-7 from q, within rounding of p–q's line, and r–s, kinked toward p–q's
+/// line, crosses it 1e-3 short of q, but stops at r. Nothing comes within 1e-7 of the
+/// other (by hand): no meeting.
+fn joint(d: &mut Draw) -> [String; 4] {
+    [
+        d.point(0.0, 0.0),
+        d.point(65536.0, 65536.0),
+        d.point(65536.000000125, 65536.00000012502),
+        d.point(65537.000000125, 65537.00000013957),
+    ]
+}
+
+/// The refusals naming both `a` and `b`.
+fn naming_both(d: &Draw, a: &str, b: &str) -> Vec<String> {
+    d.refused()
+        .iter()
+        .map(|e| e.message().to_owned())
+        .filter(|m| m.contains(a) && m.contains(b))
+        .collect()
+}
+
+#[test]
+fn a_short_line_just_past_a_long_lines_end_kinked_toward_its_line_doesnt_cross_it() {
+    // The short line's end r is on the long line's line to rounding (its side 0), and the
+    // long line's ends are surely on either side of the short one's line. Both must be
+    // surely across for a crossing (the M3 review's #95, refuting #78's argument).
+    let mut d = Draw::new();
+    let [p, q, r, s] = joint(&mut d);
+    let long = d.line(&p, &q);
+    let short = d.line(&r, &s);
+    let met = naming_both(&d, &long, &short);
+    assert!(met.is_empty(), "{met:#?}");
+}
+
+#[test]
+fn a_short_line_drawn_first_ending_just_past_a_long_lines_end_doesnt_cross_it() {
+    // The same, the short line drawn first from s to r, so the end whose side can't be
+    // told is its second: the other order of the crossing's test.
+    let mut d = Draw::new();
+    let [p, q, r, s] = joint(&mut d);
+    let short = d.line(&s, &r);
+    let long = d.line(&p, &q);
+    let met = naming_both(&d, &short, &long);
+    assert!(met.is_empty(), "{met:#?}");
+}
+
+#[test]
+fn an_arc_and_a_circle_on_one_centre_the_tolerance_apart_meet_though_its_ends_measure_over() {
+    // An arc r 2.5e-7 about the origin (its start (2.0742859626077817e-7,
+    // 1.3954704387153133e-7), whose squared length gives 2.5e-7 but whose hypot gives
+    // 2.5000000000000004e-7; its end (9.4e-8, 2.37e-7)), closed by its chord, and a circle
+    // r 1.5e-7 about the same centre: exactly 1e-7 apart all along the arc, which touches
+    // (within 1e-7, inclusive), though its ends measure 1.0000000000000005e-7 and 1.05e-7
+    // from the circle (the M3 review's #95).
+    let mut d = Draw::new();
+    let center = d.point(0.0, 0.0);
+    let start = d.point(2.0742859626077817e-7, 1.3954704387153133e-7);
+    let end = d.point(9.4e-8, 2.37e-7);
+    let arc = d.arc(&center, &start, &end);
+    d.line(&end, &start);
+    let circle = d.circle_about(&center, 1.5e-7);
+    let met = naming_both(&d, &arc, &circle);
+    assert_eq!(met.len(), 1, "{met:#?}");
+    assert!(
+        met[0].starts_with(&format!("arc {arc} and circle {circle} are 1e-7 mm apart")),
+        "{met:#?}"
+    );
 }

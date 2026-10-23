@@ -1033,3 +1033,21 @@ fn only_a_negative_turn_is_told_to_reverse_the_axis() {
         assert!(!e.message.contains("reverse"), "{angle}: {}", e.message);
     }
 }
+
+#[test]
+fn a_side_just_past_anothers_end_kinked_toward_its_line_is_no_crossing() {
+    // Sides p–q, (0, 0) to (65536, 65536), and r–s, from r 1.77e-7 past q (within rounding
+    // of p–q's line, its side 0) to s, its line crossing p–q's 1e-3 short of q though r–s
+    // stops at r: no side within 1e-7 of another but at their shared corners, so a
+    // profile. Both of a crossing's pairs must be surely across (the M3 review's #95,
+    // refuting #78's argument for this check). The corner furthest from the first is on
+    // +x, so the plane's frame is the sketch's exactly and the sides' signs are those
+    // worked out for these coordinates.
+    let (p, q) = (z(0.0, 0.0), z(65536.0, 65536.0));
+    let (r, s) = (
+        z(65536.000000125, 65536.00000012502),
+        z(65537.000000125, 65537.00000013957),
+    );
+    let p = profile(&[p, q, z(65536.0, 70000.0), r, s, z(200000.0, 0.0)]);
+    p.check().unwrap();
+}
