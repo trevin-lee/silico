@@ -58,6 +58,9 @@ jobs:
     runs-on: [self-hosted, linux, x64, control]
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: .github
       - name: Fill
         env:
           GH_TOKEN: ${{ github.token }}
@@ -67,6 +70,7 @@ jobs:
           BRANCH: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          . .github/gh.sh
           # Runners labelled filler (silico-9 to -12), the only ones filler shards run on.
           pool=4
           # A slice's source: about 80 mutants, at the workspace's 3.4 a KiB (2026-10-23).
