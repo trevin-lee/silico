@@ -131,6 +131,7 @@ fn every_op() -> Vec<Op> {
         Op::Debug(DebugOp::Misbehave(Misbehavior::BadHistory)),
         Op::Debug(DebugOp::Misbehave(Misbehavior::HistoryForNoInputs)),
         Op::Debug(DebugOp::Misbehave(Misbehavior::ForgedRefusal)),
+        Op::Debug(DebugOp::ThrowBadAlloc),
         Op::Solve(SketchSystem {
             values: vec![0.0, 0.5, 10.0, -0.25, 10.0],
             unknowns: vec![Value(0), Value(1), Value(2), Value(3)],
@@ -299,9 +300,10 @@ fn every_op() -> Vec<Op> {
             Op::Prism { .. } => 36,
             Op::PrismThroughAll { .. } => 37,
             Op::Revolution { .. } => 38,
+            Op::Debug(DebugOp::ThrowBadAlloc) => 39,
         })
         .collect();
-    assert_eq!(indices, (0..39).collect(), "an operation has no case");
+    assert_eq!(indices, (0..40).collect(), "an operation has no case");
     ops
 }
 
@@ -875,6 +877,7 @@ fn every_op_has_its_own_name() {
             "DebugMisbehaveBadHistory",
             "DebugMisbehaveHistoryForNoInputs",
             "DebugMisbehaveForgedRefusal",
+            "DebugThrowBadAlloc",
             "Solve",
             "DragBegin",
             "DragMove",

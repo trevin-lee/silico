@@ -154,6 +154,7 @@ fn production_worker_refuses_debug_ops() {
         Op::Debug(DebugOp::Segfault),
         Op::Debug(DebugOp::Garbage),
         Op::Debug(DebugOp::ReplyOutOfTurn(OutOfTurn::WrongId)),
+        Op::Debug(DebugOp::ThrowBadAlloc),
     ] {
         let name = op.name();
         let err = w.call(Generation(1), op, TIMEOUT).unwrap_err();
@@ -163,6 +164,28 @@ fn production_worker_refuses_debug_ops() {
             "{name}: {err}"
         );
     }
+    assert!(echo(&mut w));
+}
+
+#[test]
+fn std_bad_alloc_in_the_bridge_is_the_cores_resource_exhausted_and_the_worker_lives_on() {
+    // libc++'s std::bad_alloc thrown in the worker's C++, read as a solve reads it,
+    // sent as a refusal, and worded by the core: the whole way a sketch that runs the
+    // solver out of memory takes.
+    let mut w = test_worker();
+    let err = w
+        .call(Generation(1), Op::Debug(DebugOp::ThrowBadAlloc), TIMEOUT)
+        .unwrap_err();
+    assert_eq!(
+        (err.code(), err.message(), err.cause(), err.suggestion()),
+        (
+            ErrorCode::ResourceExhausted,
+            "DebugThrowBadAlloc ran out of memory",
+            Some("std::bad_alloc"),
+            Some("free some memory, or make the part or sketch simpler, and try again")
+        ),
+        "{err}"
+    );
     assert!(echo(&mut w));
 }
 
