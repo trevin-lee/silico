@@ -1,0 +1,269 @@
+# Measurement
+
+What FreeCAD's Measure module measures, for each kind of element and each pair of kinds, and what it refuses: the study for M4.5 (Measurement, docs/roadmap/m4-mcp.md), which measures elements by stable name: the least distance between two elements and the points where it's met, the angle between two planar faces or two lines, an edge's length, a circle's or a cylinder's radius and diameter, a vertex's position, and a solid's mass properties.
+
+Sources: FreeCAD **1.1.3**, the oracle's release (tag `145529fe74`, read at the tag from GitHub, since the maintainer's clone has no tags), its OCCT 7.9.3, and main at `876271d660` (2026-10-04) for history and for where main differs. 1.1.3 branched from main at `af2d42a4aa` (2025-11-13), and main has rewritten much of the module since, so this note describes 1.1.3's code and says where main differs. Every value quoted as observed was printed by the oracle (`freecadcmd`, scripts in `/tmp/measure-study/`), through the measure document objects (`Measure::MeasureDistance` and the rest) or `Measure.Measurement`, on `Part::Feature`s holding the shapes.
+
+## What FreeCAD does
+
+### Two front ends
+
+- **`Measure::Measurement`** (`src/Mod/Measure/App/Measurement.cpp`, 2016). A list of references (object and sub-element) that `findType` sorts into one `MeasureType` (`Points`, `PointToPoint`, `PointToEdge`, `PointToSurface`, `PointToCircle`, `PointToCylinder`, `Line`, `TwoLines`, `TwoParallelLines`, `Circle`, `CircleArc`, `TwoCircles`, `CircleToEdge`, `CircleToSurface`, `CircleToCylinder`, `Edges`, `Plane`, `TwoPlanes`, `Cylinder`, `CylinderSection`, `TwoCylinders`, `Cone`, `Sphere`, `Torus`, `Surfaces`, `Volumes`, `Invalid`), by counting vertices, edges by curve type, faces by surface type, and solids. Any other shape (a wire, a shell, a compound) makes the whole list `Invalid` (`54c278c123`). Its methods (`length`, `delta`, `angle`, `radius`, `diameter`, `area`, `volume`, `massCenter`, `planePlaneDistance`, `lineLineDistance`, `circleCenterDistance`, `cylinderAxisDistance`) each act only on some types. QuickMeasure (the status bar's readout, `src/Mod/Measure/Gui/QuickMeasure.cpp`) picks which to show for each type; TechDraw's dimensions and Python's `Measure.Measurement` use it too.
+- **The measure objects** (`MeasureBase` subclasses, since `36d16b2243`, 2024-01): `MeasureDistance`, `MeasureAngle`, `MeasureLength`, `MeasureArea`, `MeasureRadius`, `MeasurePosition`, and, in 1.1.3, the Python `MeasureCOM` (`src/Mod/Measure/MeasureCOM.py`). There is no `MeasureDiameter` in 1.1.3 (main adds it in `5e482a8310`, 2026-01; `addObject("Measure::MeasureDiameter")` fails on the oracle), no C++ `MeasureCOM` (main, `0034774e76`, 2026-09), and no mass-properties object (main, `aedd7645b1`, 2026-03). Each takes its elements as links, asks Part's handlers (`src/Mod/Part/App/MeasureClient.cpp`) for the geometry, and computes in `execute`. Each also has a selection gate, `isValidSelection`, that the GUI's Measure tool uses to decide which measure a selection makes. The gate isn't checked by `execute`: a measure object made from Python computes whatever its code computes for any element.
+
+The gate sorts each element (`PartMeasureTypeCb`, 1.1.3):
+
+| Element | Kind |
+|---|---|
+| Vertex | `POINT` |
+| Edge on a line | `LINESEGMENT` (`LINE` on a datum) |
+| Edge on a circle, closed or an arc | `CIRCLE` (1.1.3 never returns `ARC`) |
+| Edge on a B-spline or Bézier with exactly 2 poles | `LINESEGMENT` (`de14265ba7`) |
+| Other B-spline, Bézier, ellipse, hyperbola, parabola edge | `CURVE` |
+| Edge on any other curve (offset, other) | `INVALID` |
+| Face on a plane | `PLANE` |
+| Face on a cylinder | `CYLINDER` |
+| Any other face | `PLANE` if `GeomLib_IsPlanarSurface` finds it planar (to `AttachEnginePlane::planarPrecision`), else `SURFACE` (spheres, cones, tori, B-spline surfaces) |
+| Shell | `SURFACE` |
+| Solid | `VOLUME` |
+
+Every result is in millimetres and degrees (FreeCAD's quantities), in the document's global coordinates: each element is taken with its object's global placement (`getLocatedShape`). Observed: a box placed at (100, 0, 0) and turned 90° about Z has its local (10, 0, 0) at (100, 10, 0).
+
+### Distance (`MeasureDistance`)
+
+Takes two elements. Gate: each `POINT`, `LINE`, `LINESEGMENT`, `CIRCLE`, `ARC`, `CURVE`, `PLANE`, or `CYLINDER`; so no sphere, cone, torus, or B-spline face, and no solid (main adds `SPHERE`, `TORUS`, `SURFACE`, `DISC`, `CONE` in `917aad2c5d` and `1b280a4d18`).
+
+`execute`:
+
+1. If both elements are edges (or wires) on circles, closed or arcs, the result is the distance between the **circles' centres**, with the centres as the two points (`distanceCircleCircle`, `04a6f38ec8`, forum t=91570, for measuring between holes). This is not the least distance: two circles that cross measure the distance between their centres (3, not 0), two concentric circles measure 0 (their least distance is the difference of their radii), two arcs of one circle measure 0, and two hole rims 20 apart, radii 3 and 4, measure 20 where their least distance is 13.
+2. Otherwise `BRepExtrema_DistShapeShape(shape1, shape2)` with its defaults (precision `Precision::Confusion()`, 1e-7; one thread), and the result is its **first solution**: `PointOnShape1(1)`, `PointOnShape2(1)`, and their distance (`distanceGeneric`). If the extrema aren't done or there are none, it throws "Could not get extrema".
+3. Main adds a third path for two datums (planes and lines treated as infinite, `1dee6f3393`).
+
+The result: `Distance`, the two points `Position1` and `Position2`, and `DistanceX`, `DistanceY`, `DistanceZ`, the **absolute** differences of their coordinates. The least distance between finite elements is between the elements as bounded, not their infinite carriers: segments (0,0,0)–(10,0,0) and (5,−1,1)–(5,1,1) measure 1 between (5,0,0) and (5,0,1). A point inside a solid, measured to the whole solid, is at 0 (BRepExtrema counts the inside).
+
+Where the least distance is met in more than one place (parallel faces that overlap, parallel edges), BRepExtrema gives several solutions and FreeCAD reports the first, which is OCCT's traversal order. Observed: a 10 mm box's bottom and top measure 10 between (0,10,0) and (0,10,10), the first of four vertex pairs.
+
+`Measure.Measurement` measures distance differently by type: two vertices by their points; a vertex and an edge or face by BRepExtrema's first solution (`delta`, `length`); two parallel planes by the distance between the infinite planes (`planePlaneDistance`, "Nominal distance" in QuickMeasure); two parallel lines by the distance between the infinite lines (`lineLineDistance`); circles and cylinders by centres and axes (`circleCenterDistance`, `cylinderAxisDistance`, `0c4e125e44`). Two skew lines are `TwoLines`, for which `length` is the **sum of the two edges' lengths** (observed: 20 for two 10 mm lines) and `delta` is zero: it measures no distance between them.
+
+### Angle (`MeasureAngle`)
+
+Takes two elements. Gate: each `LINE`, `LINESEGMENT`, or `PLANE`; so straight edges and planar faces only (main adds `DISC`, `CYLINDER`, `CONE`).
+
+Each element gives a direction and a location (`MeasureAngleHandler`, through `Part::VectorAdapter`):
+
+- An edge: the chord from its first vertex to its last, normalized, whatever its curve. A closed edge has a zero chord and no direction. Location: its centre of mass (`BRepGProp::LinearProperties`).
+- A face: if its surface is elementary (`Geom_ElementarySurface`: a plane, cylinder, cone, sphere, or torus), the surface's axis direction, reversed if the face is reversed: a plane's normal, but a cylinder's, cone's, sphere's, or torus's axis. Otherwise, if `GeomLib_IsPlanarSurface` finds the surface planar, its normal at the parameter range's corner. Otherwise no direction. Location: its centre of area.
+- A vertex or a solid: no direction.
+
+`execute` (1.1.3, from `1818911c5f`, backported): if the two directions are parallel or opposite within `Base::Precision::Angular()` (1e-12 rad), the angle is 0. Otherwise each direction is flipped to point away from the midpoint of the two locations, and the angle between them is reported, from 0° to 180°. Before `1818911c5f` it was the plain angle between the two vectors, so it depended on which way an edge ran.
+
+What that means, observed:
+
+- Two planar faces measure the angle between their normals, each turned away from the middle of the two faces. For a convex solid that is the angle between the outward normals: 180° less the dihedral angle through the material. A wedge whose faces meet at 30° measures 150; where they meet at 60°, 120; two faces of a box, 90. The result depends on where the faces' centres are, not only on their planes.
+- Two lines measure from 0° to 180°: lines from a common point at 60° measure 60, at 120° measure 120, whichever way each edge runs.
+- A planar face and a line measure the angle between the line and the face's **normal**, not the plane: a line rising 30° from a plane measures 120, a line at 45° measures 135, a line along the normal measures 0, and a line parallel to the plane measures 90.
+- Parallel and opposite directions measure 0, so two faces on opposite sides of a box measure 0.
+- Directions closer than about 1.5e-8 rad measure 0, and near that the angle is coarse: `GetAngle` is `acos` of a dot product. Lines 1e-8 rad apart measure 0, 3e-8 rad apart 14% low, 1e-7 rad apart 4e-4 low.
+
+From Python, outside the gate: a cylinder, cone, or sphere face measures by its axis (a cylinder's side against a box's bottom, 0); an arc measures by its chord (a quarter circle against a line, 135); a B-spline edge by its chord. A closed circle, a vertex, or a solid gives no direction, and the angle is **NaN, with the object's status valid**.
+
+`Measure.Measurement::angle` measures only two lines (`TwoLines`: the smaller of the angle and its supplement, so 0° to 90°, `aeeb62d204`), three vertices (the angle at the second; but the third is read from the second reference's object, `objects.at(1)` with `subElements.at(2)`, since `92819be7fd`, so three vertices of three objects throw "Unknown C++ exception", observed), and the axes of two circles or cylinders. Two planes, planar or not, throw "Unexpected error for angle measurement"; parallel lines too; a face and a line throw "MeasureType is Invalid for angle measurement".
+
+Main replaced 1.1.3's algorithm (`760a72c33c`, `165c08f9ff`, `a7ad0ebbc1`, `a48d5e2a15`): two faces measure π less the angle between normals oriented along the line between their centres, which reads 30 for the 30° wedge (read from the code, not run); a face and a line measure the line against its projection on the plane (main's test: a 45° line reads 45), except a line along the normal, which reads 0 or 180 (main's `EdgeParallelToFaceNormal`); cylinder and cone axes fold to the acute angle. The 1.1.3 oracle gives 135 for main's 45° case, 150 for its 30° axis-to-edge cases, and 135 for its 45° skew axes.
+
+### Length (`MeasureLength`)
+
+Takes one or more edges and reports the sum of their lengths. Gate: `LINESEGMENT`, `CIRCLE`, `ARC`, `CURVE`. Each length is `BRepGProp::LinearProperties(edge).Mass()` with OCCT's default integration (a fixed number of Gauss points). An element that isn't an edge stops the measure: "Cannot calculate length" (a face, a vertex, a whole solid, observed). The same edge given twice counts twice.
+
+Default integration is exact for lines and circles but not for other curves. Observed: an ellipse of radii 6 and 3 measures 29.103517873432498 where its perimeter is 29.065344661643 (0.13% long; `Edge.Length`, which integrates to a tolerance of 1e-7, gives 29.065344661642655, and Simpson's rule with 200,000 intervals 29.06534466164364); a cubic B-spline measures 10.341933305648372 where it is 10.341939837467 (6e-7 short). `Measure.Measurement::length` computes lines from their ends, circles as radius times angle, and other curves with `GCPnts_AbscissaPoint::Length(curve)` without a tolerance, which gives the same 29.103517873432498 for the ellipse. An edge on a curve it doesn't handle throws "Measurement - length - Curve type not currently handled".
+
+### Area (`MeasureArea`)
+
+Takes one or more faces, shells, or solids and reports the sum of `BRepGProp::SurfaceProperties(shape).Mass()`, with default integration. Gate: `PLANE`, `CYLINDER`, `SURFACE`, `VOLUME` (a solid's whole surface: a 10 mm box measures 600). An edge or a vertex: "Cannot calculate area". The default integration is close on simple faces (a 10 × 10 square measures 99.99999999999999).
+
+### Radius (`MeasureRadius`) and diameter
+
+Takes one element. Gate: `CIRCLE` or `ARC`. 1.1.3's handler takes edges only: for an edge on a circle it returns the circle's radius, for any other edge it returns **0 as a valid result** (a line, an ellipse, a B-spline: observed 0 with the status valid; only the gate keeps them out). A face, even a cylinder's, is refused: "Cannot calculate radius". The handler returns the radius as a C++ `float` (`getRadius`), so 1.1.3 rounds every radius to single precision: observed, a circle of radius 1/3 measures 0.3333333432674408, of 0.1 measures 0.10000000149011612, of 123.456789 measures 123.456787109375. Main returns a double and adds faces (`356fe85d01`, `f153960396`, `1b280a4d18`).
+
+`Measure.Measurement::radius` is exact (a double from the geometry) and takes more: a circle or arc edge, a cylinder face whole or a section (observed: a hole's wall, 3; half a cylinder, 5), a sphere face, and a torus face (its **minor** radius: observed 2 for a torus of radii 10 and 2). A cone face or a disc in 1.1.3 gives 0 with "Invalid References3D Provided" on the console.
+
+There is no diameter object in 1.1.3. `Measurement::diameter` is twice the radius for a closed circle and a whole cylinder only; QuickMeasure shows "Diameter" for those two and "Radius" for an arc, a cylinder section, a sphere, and a torus. `diameter` isn't reachable from Python in 1.1.3 (not in `Measurement.pyi`), so it wasn't run on the oracle. Main's `MeasureDiameter` is twice its radius handler's value, for circles, arcs, cylinders, discs, spheres, and tori (a torus's tube).
+
+### Position (`MeasurePosition`)
+
+Takes one vertex and reports its point (`BRep_Tool::Pnt`, placed). Gate: `POINT`. An edge or a face: "Cannot calculate position".
+
+### Centre of mass (`MeasureCOM`, Python in 1.1.3)
+
+Takes one element, or a whole object, and reports `CenterOfMass` of the shape: for a solid, `BRepGProp::VolumeProperties` with default integration (`TopoShapeSolidPy::getCenterOfMass`); for a shell or face, the centre of area; for an edge, the centre of length. Gate: a sub-object with a `CenterOfMass` attribute. `execute` returns without setting anything when the shape has none, so a vertex or a compound of two solids **leaves the result at (0, 0, 0) with the status valid** (observed). Observed values: a box (5, 5, 5); a frustum of radii 5 and 2, height 10, at z = 3.6538461538461537 (analytic 3.653846153846154).
+
+`Measure.Measurement::volume`, `area`, and `massCenter` take solids (`Volumes`) and add them up, with default integration; a compound isn't a solid, so its volume is 0 with "measureType is not Volumes" on the console (observed).
+
+### What FreeCAD refuses, and how
+
+FreeCAD refuses in three ways, and only the first two say so:
+
+1. **The gate.** The GUI's Measure tool never makes a measure the gate rejects. Nothing is reported; the tool picks another measure, or none.
+2. **An error from `execute`**, which marks the object invalid with a message: "Submitted object(s) is not valid", "No geometry element picked", "Could not get shape" (an element that doesn't exist, observed for `Face99`), "Could not get extrema", "Cannot calculate length", "Cannot calculate area", "Cannot calculate radius", "Cannot calculate position". The message names neither element. The measure's value keeps what it was (a new distance's points stay at their defaults, (0,0,0) and (0,1,0)).
+3. **A silent wrong value**, with the status valid: an angle of NaN, a radius of 0, a centre of mass never set, and from `Measure.Measurement` a 0 with a line on the console.
+
+### The element-kind matrix (1.1.3)
+
+Single elements. "Gate" is what the Measure tool offers; "computes" is what `execute` gives for it.
+
+| Element | Length | Area | Radius | Position | Centre of mass |
+|---|---|---|---|---|---|
+| Vertex | refused (error) | refused (error) | refused (error) | the point | nothing set, no error |
+| Straight edge | its length | refused (error) | gate refuses; computes 0 | refused (error) | centre of length |
+| Circle or arc edge | its length | refused (error) | radius, rounded to float | refused (error) | centre of length |
+| Ellipse, B-spline, other curve | default integration (0.13% off on an ellipse) | refused (error) | gate refuses; computes 0 | refused (error) | centre of length |
+| Planar face | refused (error) | its area | refused (error) | refused (error) | centre of area |
+| Cylinder face | refused (error) | its area | refused (error); QuickMeasure: radius, diameter if whole | refused (error) | centre of area |
+| Sphere, torus face | refused (error) | its area | refused (error); QuickMeasure: radius (torus: minor) | refused (error) | centre of area |
+| Cone, B-spline face | refused (error) | its area | refused (error); QuickMeasure: 0 | refused (error) | centre of area |
+| Solid | refused (error) | whole surface | refused (error) | refused (error) | centre of volume |
+
+Pairs:
+
+| Pair | Distance | Angle |
+|---|---|---|
+| Vertex, vertex | the two points | gate refuses; computes NaN |
+| Vertex, edge or face | least distance (BRepExtrema's first solution); gate refuses sphere, cone, torus, B-spline faces | gate refuses; computes NaN |
+| Straight edge, straight edge | least distance between the segments | 0 to 180, oriented from the midpoint of their centres; parallel or opposite, 0 |
+| Circle or arc, circle or arc | **centre to centre** | gate refuses; computes by chords, NaN for a closed circle |
+| Other edge pairs | least distance | gate refuses; computes by chords |
+| Edge, face | least distance; same face limits | straight edge and planar face: the angle between the line and the **normal**; others gate-refused |
+| Planar face, planar face | least distance between the bounded faces | the angle between normals oriented away from the faces' midpoint: 180 less the dihedral angle on a convex solid |
+| Curved face, any face | least distance (gate: cylinders only) | gate refuses; computes by the surface's axis, NaN for B-spline surfaces |
+| A solid, anything | gate refuses; computes (0 for a point inside) | NaN |
+
+## Edge cases, measured on the oracle
+
+A is a 10 mm box at the origin (Face1 x = 0, Face2 x = 10, Face3 y = 0, Face4 y = 10, Face5 z = 0, Face6 z = 10). Distances through `MeasureDistance`, angles through `MeasureAngle`.
+
+| Case | FreeCAD 1.1.3 | Exact |
+|---|---|---|
+| A's bottom and top | 10, (0,10,0) to (0,10,10) | 10; met over the whole face |
+| A's Face2 and a box 10 beyond it | 10, (10,0,10) to (20,0,10) | 10 |
+| Parallel faces that don't overlap: A's top and a box at (25,25,5) | 21.79449471770337, (10,10,10) to (25,25,5) | √475 = 21.794494717703369 |
+| Adjacent faces, A's Face1 and Face3 | 0, at (0,0,10) | 0, along an edge |
+| Crossing faces, A's top and a box at (5,5,5) | 0, at (5,10,10) | 0 |
+| A face and itself | 0 | 0 |
+| Faces 1e-9 apart | 1.000000082740371e-9 | 1e-9 (the gap rounds at 10.000000001) |
+| Skew lines (0,0,0)–(10,0,0) and (5,−5,3)–(5,5,3) | 3, (5,0,0) to (5,0,3) | 3 |
+| Segments (0,0,0)–(10,0,0) and (5,−1,1)–(5,1,1) | 1, (5,0,0) to (5,0,1) | 1 |
+| Parallel segments 2 apart | 2, (0,0,0) to (0,2,0) | 2; met along their length |
+| Collinear segments with a gap of 10 | 10 | 10 |
+| Crossing segments | 0, at (5,0,0) | 0 |
+| A circle of radius 5 at the origin and the line x = 10 | 5, (5,0,0) to (10,0,0) | 5 |
+| Circles of radius 5, centres 3 apart, crossing | **3**, the centres | 0 |
+| Concentric circles, radii 5 and 2 | **0**, the centres | 3 |
+| Two quarter arcs of one circle | **0**, the centre | 7.0710678 (opposite quarters) |
+| Hole rims, radii 3 and 4, centres 20 apart | **20**, the centres | 13 (`distToShape`) |
+| The two holes' walls (cylinder faces) | 13 | 13 |
+| A vertex 10 above A's top's middle, to the top | 10, (5,5,20) to (5,5,10) | 10 |
+| A vertex beyond the top's corner, to the top | 12.24744871391589, to the corner (10,10,10) | √150 |
+| A vertex inside A, to A's top | 5 | 5 |
+| A vertex inside A, to A as a whole | 0 | 0 (inside) |
+| A small box inside a big one, whole solids | 0 | 0 (inside) |
+| A cylinder's side (r 5) and a box face at x = 20 | 15, (5, −1.2e-15, 10) to (20,0,10) | 15 |
+| A sphere's face (r 5) and that box face | 15 (main's `testCurvedFaceDistance`) | 15 |
+| An element that doesn't exist | "Could not get shape", 0 kept | refused |
+| Wedge faces meeting at 30° | **150** | 30 through the material |
+| Wedge faces meeting at 60°, at 90° | 119.99999999999999, 90 | 60, 90 |
+| Lines from one point at 60°, either running backwards | 59.99999999999999 | 60 |
+| Lines from one point at 120° | 120.00000000000001 | 120 |
+| Skew perpendicular lines | 90 | 90 |
+| Parallel lines, opposite lines, collinear lines | 0 | 0 |
+| A plane and a line rising 30°, either order | **120** | 30 |
+| A plane and a line rising 45° (main's `testFaceEdgeLineToPlane`) | **135** | 45 |
+| A plane and a line along its normal | **0** | 90 |
+| A plane and a line parallel to it | **90** | 0 |
+| A cylinder's side and A's bottom | 0 (by the axis) | gate refuses |
+| A quarter arc and a line | 135 (by the chord) | gate refuses |
+| A closed circle and a line; a vertex and a line; two solids | **NaN**, valid | refused |
+| Lines 1e-8 rad apart; 3e-8 | 0; 1.4787793334710982e-6° | 5.729577951308232e-7°; 1.7188733853924696e-6° |
+| A line, a circle (r 5), a quarter arc, lengths | 10, 31.41592653589793, 7.853981633974483 | 10, 10π, 2.5π |
+| An ellipse (6, 3), length | **29.103517873432498** | 29.065344661643 |
+| A cubic B-spline, length | 10.341933305648372 | 10.341939837467 |
+| A face's length | "Cannot calculate length" | refused |
+| A cylinder's side (r 5, h 10), a sphere (r 5), a torus (10, 2), areas | 314.1592653589793, 314.1592653589794, 789.5683520871487 | 100π, 100π, 80π² |
+| Radius of circles 1/3, 0.1, 123.456789 | **0.3333333432674408, 0.10000000149011612, 123.456787109375** | exact |
+| Radius of a line, an ellipse, a B-spline | **0**, valid | refused |
+| Radius of a hole's wall (`MeasureRadius`; `Measurement`) | "Cannot calculate radius"; 3 | 3 |
+| Position of a vertex; of an edge | the point; "Cannot calculate position" | the point; refused |
+| Centre of mass of a box; a face; an edge | (5,5,5); (0,5,5); (5,0,0) | the same |
+| Centre of mass of a vertex; of a compound of two boxes | **(0,0,0)**, valid | refused; (15, 5, 5) |
+| The common of two tori (2, 1) 2.2 apart, volume and centre (`Measurement`) | 12.358402952815341; (1.099992541373971, −1.08e-5, −8.76e-6) | centre (1.1, 0, 0) by symmetry |
+
+## Bug fixes from FreeCAD's history
+
+| Commit | What it fixed | In Silico |
+|---|---|---|
+| `aeeb62d204` (2022-11) | `Measurement::angle` of two lines returned the supplement depending on which way the lines ran; now the smaller of the two. | An angle never depends on which way an edge runs or a face is oriented. |
+| `92819be7fd` (2022-10) | Added the three-point angle, reading the third point from the second reference's object, a bug still on main (observed: an exception). | Not ported: M4.5 has no three-point angle. If one comes, each vertex by its own name. |
+| `075cbb64f0` (2022-11), `0be29b11b7` (2024-09), `49a38defe0` (2026-07), `383d14533d` (2026-08) | Elements measured without their global placement, then with placements applied twice or lost inside containers and links. | Silico measures each feature's solid where the timeline built it; there are no containers or links. Tests measure after a translate. |
+| `54c278c123` (2024-09, #16794), `69676a0f9d` (#16820), `1acafb240a` (2025-02, #19452, #19349) | Segfaults from mixed known and unknown selections and from null shapes. | Every name is resolved before a request reaches the worker, and the worker checks every element it's sent. |
+| `2b2a82d901` (2025-01) | A crash measuring the length of an infinite edge (a datum line). | Silico's B-reps hold no infinite geometry (refused when read, M1.9). |
+| `62a44a94f6` (2024-09, #16183) | A crash when a measured element was removed; and `MeasureArea` and `MeasureLength` skipped an element they couldn't measure, summing the rest. Now they fail. | A name that finds nothing is `reference_broken` with candidates (M2.8); nothing is skipped. |
+| `7e6775d2c0` (2025-06, #22016) | A segfault measuring a position with no element. | The request's schema requires its elements. |
+| `14ec1e6603` (2024-07, #15349) | A leaked copy of every measured shape. | Not applicable. |
+| `04a6f38ec8` (2024-10, forum t=91570) | Two circles measured their least distance; now their centres. | The least distance stays the distance; the centres' distance is its own result (below). |
+| `0c4e125e44` (2025-08, #23385) | QuickMeasure: centre and axis distances for holes, and a vertex-to-cylinder distance that wasn't computed. | As above. |
+| `de14265ba7` (2025-08, #22878) | A B-spline or Bézier edge with two poles, straight, couldn't be used for an angle. | A two-pole B-spline or Bézier edge is straight exactly, so it's a line for angles. |
+| `171389d9d3`, `a431ccc156` (2025-10) | Ellipse, hyperbola, and parabola edges couldn't be measured for length. | Any edge has a length. |
+| `75236d4b13`, `c9b87c5862` (2025) | Area only for planes and cylinders. | Any face has an area. |
+| `1818911c5f` (2026-02, #27254; backported, in 1.1.3) | The angle depended on edge and face orientation; now flipped about the midpoint of the elements' centres. | Its results are the defects above; not ported. |
+| `165c08f9ff` (2026-06, #24514), `a7ad0ebbc1` (2026-07), main | Main's new angle failed for parallel faces, and divided by zero for a line along a face's normal (now 0 or 180). | A line along a plane's normal is at 90° to it. |
+| `a48d5e2a15` (2026-09, #31905), main | Cylinder and cone axes in angles, folded to the acute angle. | Later: M4.5 has lines and planes. |
+| `917aad2c5d` (2026-04, #29235), `1b280a4d18` (2026-04, #29369), main | The tool wouldn't measure distance to spheres, cones, tori, and B-spline faces, though its computation handles them. | Any two elements. |
+| `5e482a8310` (#24853), `356fe85d01` (#27044), `f153960396` (#27415), `cb32435d74` (#30331), main | A diameter measure; radius and diameter of cylinder faces and discs; a division by zero placing the radius label; the radius kept as a double. | Exact radius and diameter of circles and cylinders. 1.1.3's float radius isn't ported. |
+| `b9155035fe` (2026-05), main | Lengths and areas held as `float`. | Every measure is a double. |
+| `aedd7645b1` (2026-03), main | A mass-properties object (volume, mass, centre, inertia). | M4.5's mass properties are M1's. |
+
+## Silico today
+
+M1 measures a solid two ways (`crates/silico-kernel/cpp/bridge.cpp`):
+
+- `measure`: volume, area, and centre of mass integrated adaptively to a relative 1e-9 (`silico_protocol::MEASURE_PRECISION`), with the face, edge, and vertex counts and the tight bounding box. It's what `Op::Summarize` returns and what fingerprints hold (volume, area, box, counts; `document::Fingerprint`).
+- `measure_as_freecad`: the same with OCCT's default integration, the calls `Shape.Volume`, `Shape.Area`, and `Shape.CenterOfMass` make, for comparing with the oracle like for like (`Op::MeasureAsFreecad`).
+
+The Measure module's volume, area, and centre of mass are `BRepGProp` with default integration (`Measurement::volume`, `area`, `massCenter`, `MeasureArea`, `MeasureCOM`), so they are `measure_as_freecad`'s numbers: the same calls on the same OCCT. Default integration is up to 1% off on faces trimmed by curves (docs/ports/booleans.md), and its centre of mass for the tori above is 1e-5 off. M4.4's `describe` (each element's area, length, position, axis, and radius) is the other measure M4.5 builds on.
+
+## Where Silico differs on purpose
+
+Recommendations for M4.5, by the project's rules (exact results, structured refusals, determinism, behaviour after SolidWorks). The first two are decisions for the maintainer, since they choose what a measure means; the rest follow from the rules. SolidWorks' behaviour is quoted from its documentation, not checked on SolidWorks.
+
+- **Distance is always the least distance (decision).** FreeCAD measures two circles centre to centre and everything else by least distance, so the same request means two things, and crossing circles read 3 where they meet. SolidWorks' Measure measures arcs and circles centre to centre by default, with an option for the least or greatest distance. Recommended: `distance` is the least distance between any two elements, as M4.5 says, with its two points; for circles, arcs, and cylinder faces the result also carries the distance between their centres or axes, as its own field, and for two parallel planar faces the distance between their planes (FreeCAD's `planePlaneDistance`, SolidWorks' normal distance). Nothing is chosen silently, and an agent reads the one it means. M4.5's oracle cases for circle pairs then compare the centre field with FreeCAD's `Distance`, and the least distance with `distToShape`.
+- **The angle is between the elements' lines and planes (decision).** 1.1.3 reports 150 for a 30° wedge and 120 for a line 30° off a plane, values that depend on where the faces' centres are; main reports 30 for both but 0 for a line normal to a plane; QuickMeasure folds lines to 0–90. Recommended: two planar faces measure the dihedral angle through the material when they share an edge (30 for the wedge, as main), and otherwise the angle between their planes, 0 to 90; two straight edges measure the angle between them from their common vertex when they share one (60 or 120), and otherwise between their lines, 0 to 90; a planar face and a straight edge measure the angle between the line and the plane, 0 to 90 (a line along the normal is 90). Computed as `atan2(|a × b|, a · b)`, exact near 0 and 180, never `acos`. M4.5's oracle cases compare the folded angle, min(a, 180 − a), where Silico's convention differs from FreeCAD's, and say so.
+- **Refusals name both elements, never NaN or 0.** Every pair or element a measure doesn't take is refused with a structured error naming each element by its stable name with its kind and geometry type, the measure, why ("an angle needs straight edges and planar faces; `…Edge3` is a circle"), and which measures do apply. That covers FreeCAD's NaN angles, its radius of 0 for a line, its centre of mass that's never set, and its unchanged values after "Could not get shape". The refused pairs, as FreeCAD's gate refuses them: an angle with a vertex, a curved edge (circle, arc, ellipse, B-spline that isn't two-pole), a curved face, or a solid; a radius or diameter of anything but a circle or arc edge or a cylinder face, whole or a section (M4.5's scope: sphere and torus radii come with `describe`, and a torus has two); a length of anything but an edge; a position of anything but a vertex. A name that finds nothing is `reference_broken` with candidates (M2.8).
+- **Distances between elements, not whole solids, in M4.5.** FreeCAD's gate refuses solids for distance, and its computation measures a point inside a solid as 0 from it. M4.5 measures faces, edges, and vertices by name; between two features' solids comes later, with that 0 decided then.
+- **Ties are resolved without OCCT's list order.** Where the least distance is met at several pairs, FreeCAD reports BRepExtrema's first, which is OCCT's traversal order. Silico reports the pair whose first point is least by (x, y, z), then whose second is, among BRepExtrema's solutions, and says that the least distance is met at more than one place, so the points never depend on an order OCCT may change (the lesson of naming's positions, docs/ports/naming.md). BRepExtrema runs on one thread, as in FreeCAD.
+- **Lengths integrated precisely.** FreeCAD's Measure lengths use default integration (0.13% long on an ellipse). Silico measures a line from its ends, a circle or arc as radius times angle, and other curves with `GCPnts_AbscissaPoint::Length` to a relative 1e-9 (`MEASURE_PRECISION`, as volumes). The oracle comparison takes FreeCAD's `Edge.Length`, which agrees, not `MeasureLength`.
+- **Radius and diameter exact.** From the geometry, as doubles (FreeCAD 1.1.3 rounds `MeasureRadius` to float); diameter is twice the radius, exactly.
+- **Mass properties are M1's precise measure.** Volume, area, and centre of mass of a feature's solid from `measure` (relative 1e-9), the numbers its fingerprint holds, not FreeCAD's default integration; the oracle cases compare them with `measure_as_freecad`'s tolerance, as the oracle harness does.
+- **One computation per number.** A face's area, an edge's length, a vertex's position, and a circle's radius from M4.5 are `describe`'s numbers (M4.4), so a measure and the element list never disagree.
+- **Signed components.** FreeCAD's `DistanceX`, `Y`, `Z` are absolute values. Silico returns the two points; their difference is signed and exact.
+- **No document objects or GUI.** FreeCAD's measures are document objects that recompute when their links change, with view providers, labels, and units chosen for display. Silico's are commands of the core's API (M4.1), each returning a value; nothing is stored in the document. Results are in millimetres and degrees, as the document's numbers are.
+- **Finite results only.** The worker returns raw measures, checked finite before they leave it (as `check_freecad_finite` does for M1's), and the core decides; a degenerate case (a zero-length chord, a direction that isn't one) is a refusal, never a value.
+
+## FreeCAD tests
+
+1.1.3 has one Measure test file, `tests/src/Mod/Measure/App/MeasureDistance.cpp`; main has four. No Python tests exercise the module (`TDPyTest.py` only imports it).
+
+| FreeCAD test | What it checks | Status |
+|---|---|---|
+| `MeasureDistance.cpp` `testCircleCircle` (1.1.3) | Circles of radius 1 at (0,0,0) and (3,4,0): distance 5, components 3, 4, 0, the points the centres. | Port as the centre-distance field: 5 between the centres. The least distance is 3 (5 less both radii), by hand. |
+| `testCircleCircleWithPlacement` (main) | The same circles placed at (10,0,0) and (10,0,5): 5, components 0, 0, 5. | Port with translate features (observed 5 on 1.1.3). |
+| `testCurvedFaceDistance` (main) | A sphere's face (r 5) and a box's face at x = 20: 15. | Port (observed 15 on 1.1.3). |
+| `testTwoBoxesMovedByContainers`, `testLinkedCompoundKeepsInternalLocation` (main) | Distances through containers and links: 50, 20. | Port the first with translated boxes: 50; links don't exist in Silico. |
+| `testCurvedFaceValidSelection` (main) | The gate accepts a sphere's face. | Not ported: no gate; covered by the distance above. |
+| `MeasureAngle.cpp` `testEdgeEdgePerpendicular`, `testFaceFacePerpendicular` (main) | 90 for perpendicular lines and planes. | Port (1.1.3 agrees, observed). |
+| `testFaceEdgeLineToPlane` (main) | A 45° line against a plane: 45. | Port: 45 (1.1.3 gives 135). |
+| `EdgeParallelToFaceNormal` (main) | A line along a plane's normal: 0 or 180. | Port the case, with 90 expected: the line is perpendicular to the plane. |
+| `testCylinderAxisToEdge`, `testSkewCylinderAxes`, `testObtuseAxisPairFoldsDirections`, `testParallelCylinderAxes`, `testConeAxisToEdge`, `testCylinderAxisToPlane` (main) | Axes of cylinders and cones as lines: 30, 45, 30, 0, 30, 45. | Later, with axes in angles; 1.1.3 gives 150, 135, 150, 0, 150, 135. |
+| `testValidSelectionAcceptsCylinderAndCone`, `testPrioritizedSelection*` (main) | The GUI's choice of measure. | Not ported. |
+| `MeasurePosition.cpp` `testVertexNoPlacement`, `testVertexWithLocalPlacement` (main) | A vertex at (1,2,3); moved by (10,20,30), at (11,22,33). | Port with a translate (1.1.3 agrees, observed). The container cases aren't applicable. |
+| `QuickMeasure.cpp` (main) | Discs: two parallel discs 7.5 apart with axes 3 apart; a disc and a plane 8 apart. | Port as the planes' distance (7.5, 8; 1.1.3 agrees, observed) and the least distance (7.5 for the discs, which overlap in plan, observed); the disc type and axis distance are later. |
+
+Silico's own, with expected values by hand: a box's opposite faces at its height, with their points; parallel faces that don't overlap (√475); skew and crossing lines; circles crossing, concentric, and coaxial, least and centre distances; a hole's wall's radius and diameter, and a half cylinder's; the angles of a 30°, 60°, 90° wedge (30, 60, 90 through the material); lines at 60° and 120° from a common vertex; a line at 30° to a plane, along its normal, and in it (30, 90, 0); the length of an ellipse against its perimeter (29.065344661643) and of a B-spline against a fine polyline; a refusal for each refused pair, naming both elements; ties reported the same whatever order the worker's solutions come in; and the oracle's cases above, as M4.5's protected oracle cases.
