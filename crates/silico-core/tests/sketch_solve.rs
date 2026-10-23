@@ -2058,6 +2058,38 @@ impl SketchSolver for Standing {
 }
 
 #[test]
+fn a_solve_to_geometry_the_file_cant_hold_is_refused_as_an_invalid_result() {
+    // A solve that lands on geometry the gate refuses is refused, so its save never writes a
+    // file that can't be opened again (the load path's check, which runs on the same file
+    // `savable` would: the milestone's mutant of `savable` is equivalent, as m3-open says,
+    // and this pins the refusal itself at the core). Here the worker says it solved, with
+    // every unknown scaled by 5e-9: n0000001, from the origin to (5e-8, 0), is a line with
+    // a length, so the solution reads and builds, but shorter than the gate's floor, the
+    // length tolerance 1e-7 (#90: the gate floored at the tolerance), so the file it writes
+    // would be refused.
+    let text = ten(&[]);
+    let checked = Checked::new(read(text.as_bytes()).unwrap()).unwrap();
+    let feature = FeatureId::new(fixture::FEATURE).unwrap();
+    let mut collapses = Standing(Box::new(|s: &SketchSystem| {
+        let t = Translation::new(&sketch_of(&ten(&[]))).unwrap();
+        let mut values = s.values.clone();
+        for v in &s.unknowns {
+            values[v.0 as usize] *= 5e-9;
+        }
+        answer(&t, values, SolveStatus::Success)
+    }));
+    let e = solve(&checked, &feature, &mut collapses).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::InvalidResult, "{e}");
+    assert_eq!(e.feature(), Some(fixture::FEATURE), "{e}");
+    assert!(
+        e.message()
+            .starts_with("the sketch solves to geometry its file can't hold: "),
+        "{e}"
+    );
+    assert!(e.elements().iter().any(|n| n == "n0000001"), "{e:?}");
+}
+
+#[test]
 fn solving_a_documents_sketch_names_the_feature_in_its_errors() {
     let text = ten(&[]);
     let checked = Checked::new(read(text.as_bytes()).unwrap()).unwrap();
