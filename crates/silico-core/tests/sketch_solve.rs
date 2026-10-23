@@ -2512,9 +2512,22 @@ fn a_circle_or_arc_that_cant_be_built_is_named_and_a_free_circle_listed() {
             "{at}"
         );
     }
+    // An arc with its radius or either angle free is free: values 23, 24, and 25 (it's the
+    // last curve, after the three circles' radii, 20 to 22).
+    for at in [23, 24, 25] {
+        let mut free = answer(&t, t.system.values.clone(), SolveStatus::Success);
+        free.free = vec![Value(at)];
+        let s = read_back(&t, &free).unwrap();
+        assert_eq!(
+            s.free.into_iter().collect::<Vec<_>>(),
+            [silico_core::document::ElementId::new("a0000001").unwrap()],
+            "{at}"
+        );
+    }
     // With no equations to diagnose, PlaneGCS lists no free values, and every point,
     // circle, and arc is free (FreeCAD's reading): shapes2's arc, three circles, and seven
-    // points.
+    // points. (The flag alone is what's tested: a real worker wouldn't send it for this
+    // sketch, which has a constraint.)
     let mut none = answer(&t, t.system.values.clone(), SolveStatus::Success);
     none.no_equations = true;
     let s = read_back(&t, &none).unwrap();
