@@ -1,6 +1,7 @@
 //! A log that blocks (a client's stderr that no one reads) doesn't hold up the pool: the
 //! pool logs a superseded request's failure outside its lock, in the span the request was
-//! submitted in. Alone in its binary: it installs the process's global subscriber.
+//! submitted in. Alone in its process (nextest runs each test in its own): it installs the
+//! process's global subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::Path;

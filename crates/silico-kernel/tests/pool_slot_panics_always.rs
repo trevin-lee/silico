@@ -3,7 +3,8 @@
 //! per request waiting, never in a loop of its own: each start takes a request, which ends
 //! with it, and with none waiting no worker is started. (A slot started again with no
 //! request would start no worker, so this counts worker starts, not threads.) Alone in its
-//! binary: it installs the process's global subscriber.
+//! process (nextest runs each test in its own): it installs the process's global
+//! subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::cell::Cell;

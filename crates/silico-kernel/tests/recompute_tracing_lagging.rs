@@ -3,8 +3,8 @@
 //! they're for, however far behind: the log thread reads each line as it comes, finds its
 //! request's span, and queues the line holding it for the sink thread. The sink here waits
 //! at the first worker line until every recompute has run, so the sink thread is certainly
-//! behind by all of them, on any machine. Alone in its binary: it installs the process's
-//! global subscriber.
+//! behind by all of them, on any machine. Alone in its process (nextest runs each test in
+//! its own): it installs the process's global subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::Path;

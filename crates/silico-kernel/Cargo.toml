@@ -62,10 +62,11 @@ cxx-build.workspace = true
 [lints]
 workspace = true
 
-# A few test programs, each a group of test files as modules; five stay programs of their
-# own: four run their own program again by a test's name, pool_slot_spawn_fails takes its
-# process's threads (.config/nextest.toml runs it alone, by its program's name), and cxx_env
-# includes a module of its own name.
+# A few test programs, each a group of test files as modules (tests relying on a process of
+# their own, as nextest runs each test in, say so). Six stay programs of their own: four run
+# their own program again by a test's name; pool_slot_spawn_fails takes its process's
+# threads (.config/nextest.toml runs it alone, by its program's name); and cxx_env includes
+# a module of its own name.
 
 [[test]]
 name = "all_recompute"

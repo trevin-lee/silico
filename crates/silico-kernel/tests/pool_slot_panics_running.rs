@@ -1,7 +1,8 @@
 //! A pool's slot whose thread ends unexpectedly while running a request (a panic, which
 //! only a bug causes: here a log layer that panics once as a request's span opens) leaves
 //! no entry behind: no worker listed for the dead slot, and the next request starts it
-//! again and is answered. Alone in its binary: it installs the process's global subscriber.
+//! again and is answered. Alone in its process (nextest runs each test in its own): it
+//! installs the process's global subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::Path;

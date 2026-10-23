@@ -1,8 +1,8 @@
 //! M2.4: at the default log level (warnings), a warning OCCT raises in a worker during a
 //! recompute reaches the core's log under the step that asked for it (which names the
 //! feature), the recompute, and the edit that started it: spans follow work across the
-//! worker boundary (ARCHITECTURE.md, invariant 9). Alone in its binary: it installs the
-//! process's global subscriber.
+//! worker boundary (ARCHITECTURE.md, invariant 9). Alone in its process (nextest runs each
+//! test in its own): it installs the process's global subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::Path;

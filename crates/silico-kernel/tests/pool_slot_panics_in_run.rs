@@ -2,8 +2,8 @@
 //! layer that panics once at the worker's "sent", inside the request's run) is started
 //! again by the next request. The request's reply goes as its run unwinds, before the slot
 //! ends, so the caller asks again while the slot is still counted started; its end then
-//! starts it again for that request (#86's review). Alone in its binary: it installs the
-//! process's global subscriber.
+//! starts it again for that request (#86's review). Alone in its process (nextest runs each
+//! test in its own): it installs the process's global subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::Path;

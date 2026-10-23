@@ -1,6 +1,7 @@
 //! M2.4: a recompute's spans, and the edit's that started it, close once it's done: a
 //! worker lets the span of a request go when it has read the request's last log line, not
-//! at its next request. Alone in its binary: it installs the process's global subscriber.
+//! at its next request. Alone in its process (nextest runs each test in its own): it
+//! installs the process's global subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::Path;

@@ -1,6 +1,9 @@
 //! silico-kernel's pools tests, as one test program: each file a module, its tests
 //! as they were, the modules they share loaded once: fewer programs to build and link than
 //! one a file, for every change (each mutant's build most of all).
+//!
+//! Some install the process's global tracing subscriber, or measure the process's CPU time:
+//! each test needs a process of its own, as nextest runs each in (`pixi run test`).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 // Shared by the files below, each loaded once.
