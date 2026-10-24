@@ -39,6 +39,22 @@ fn thousandths(x: f64) -> f64 {
     (x * 1000.0).round() / 1000.0
 }
 
+/// Generated cases whose difference from FreeCAD is understood, as the corpus's are
+/// ([`crate::corpus::Known`]): reported as known wherever a sweep makes them.
+pub const KNOWN: &[crate::corpus::Known] = &[crate::corpus::Known {
+    case: "generated_15_96",
+    difference: "FreeCAD built it; Silico failed: invalid_result: Cut gave an invalid result, \
+                 which was refused: the cut's result isn't a valid solid. Suggestion: faces or \
+                 edges of the two shapes nearly meet: move one so they clearly overlap or stay \
+                 clearly apart.",
+    why: "a torus (R 12.531, r 9.057) less a torus (R 23.399, r 12.985) moved (-3.965, 0.164, \
+          1.576): FreeCAD 1.1.3's cut is empty (no solid, volume 0, which its isValid passes), \
+          but the base within 6.446 of its axis is outside the tool, at least 908 mm³ \
+          (about 5854 by Monte Carlo); Silico's OCCT boolean (non-destructive, single-threaded) \
+          gives an invalid result, refused (docs/ports/booleans.md, Known wrong results)",
+    platforms: &["aarch64-macos", "x86_64-linux"],
+}];
+
 /// `count` cases from `seed`, named `generated_<seed>_<n>`.
 pub fn cases(seed: u64, count: usize) -> Vec<Case> {
     let mut random = Random(seed);

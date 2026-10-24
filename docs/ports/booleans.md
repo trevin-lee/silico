@@ -79,6 +79,12 @@ OCCT also returns an invalid fuse, which Silico refuses (and FreeCAD's `Shape.fu
 
 Their commons are empty and refused as empty, and their cuts are the first shape whole, as they should be (`a_cylinder_tangent_to_a_boxs_face_along_a_line_never_fuses_wrong`). A cylinder inscribed in a box, touching it from inside, OCCT gets right (`cylinder_inscribed_in_a_box_tangent_to_four_faces`). These are for reporting to OCCT too.
 
+A torus (R 12.531, r 9.057) less a torus (R 23.399, r 12.985) moved (−3.965, 0.164, 1.576), the oracle sweep's `generated_15_96` (seed 15):
+- **FreeCAD 1.1.3** returns an empty cut: no solid, volume 0. Its `isValid` passes that, and the sweep compares FreeCAD's built shape with Silico's refusal.
+- **Silico** gets a result from OCCT 7.9.3 (non-destructive, single-threaded, above) that isn't a valid solid, and refuses it.
+- **The right answer** isn't empty. The axes are 3.968 apart, and the tool's tube comes no nearer its axis than 10.414, so everything of the base within 6.446 of its axis is left: at least 908 mm³, by the integral, and about 5854 by Monte Carlo.
+- **Pinned by** `a_torus_cut_by_a_larger_torus_freecad_finds_empty_is_right_or_refused` (right or refused, never empty), and the case is in the oracle's known list for generated cases (`generate::KNOWN`).
+
 The tori moved along y cross Silico's torus's seam, which is on its inner equator, as `Part::Torus` builds it; along x, OCCT gets most of them right, but not all (0.3 above). OCCT's own torus (seamed on the outer equator) gets some of these right and fails others, so the seam isn't shown to be the cause. These are for reporting to OCCT.
 
 Silico ran OCCT 8.0.1 until M1.5. It gets all of these wrong too, and one more that 7.9.3 and 7.8.1 get right: a box cut across the slit of a revolve within about 1.5e-6 degrees of a full turn (the rectangle x 100..200, y 0..1 about y by 360 − 1e-7, and a 0.5 × 0.5 × 1 box at (120, 0.2, −0.5)) removes nothing, in a stock 8.0.1 build and in FreeCAD 26.3 on it alike. That regression is why Silico runs 7.9.3, the same release as its FreeCAD oracle (`a_cut_across_a_large_nearly_full_ring_removes_what_it_covers` checks 7.9.3 cuts it right).

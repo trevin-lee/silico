@@ -112,6 +112,8 @@ pub fn platform() -> String {
 /// A difference the corpus shows that's understood: the case, the difference as it's
 /// written, why, and the platforms it shows on (a part's B-rep is the platform's FreeCAD's
 /// reading of its STEP file, so a borderline check can fall either way by platform).
+/// Generated cases have theirs too ([`generate::KNOWN`](crate::generate::KNOWN)).
+#[derive(Clone, Copy)]
 pub struct Known {
     pub case: &'static str,
     pub difference: &'static str,

@@ -1064,3 +1064,37 @@ fn a_cylinder_tangent_to_a_boxs_face_along_a_line_never_fuses_wrong() {
         sound(&what, BooleanOp::Cut, &a, &b, va);
     }
 }
+
+#[test]
+fn a_torus_cut_by_a_larger_torus_freecad_finds_empty_is_right_or_refused() {
+    // The oracle sweep's generated_15_96: a torus (R 12.531, r 9.057) less a torus
+    // (R 23.399, r 12.985) moved (−3.965, 0.164, 1.576). Their axes are parallel and
+    // 3.968 apart, and the tool's tube comes no nearer its own axis than
+    // 23.399 − 12.985 = 10.414, so all of the base within 10.414 − 3.968 = 6.446 of its
+    // axis is outside the tool: at least ∫ 2πρ · 2√(r² − (ρ − R)²) dρ from 3.474 to 6.446
+    // = 908 mm³ is left (about 5854 ± 22, by 400 000 points). FreeCAD 1.1.3's cut is
+    // empty, no solid at all (which its isValid passes); OCCT's, as Silico runs it, isn't
+    // a valid solid, and is refused. Either a refusal or the right solid; never empty.
+    let base = make(&Primitive::Torus {
+        major_radius: 12.531,
+        minor_radius: 9.057,
+    })
+    .unwrap();
+    let tool = make(&Primitive::Torus {
+        major_radius: 23.399,
+        minor_radius: 12.985,
+    })
+    .unwrap();
+    let tool = translate(&tool, [-3.965, 0.164, 1.576]).unwrap().shape;
+    match boolean(BooleanOp::Cut, &base, &tool) {
+        Ok(built) => {
+            let s = summarize(&built.shape).unwrap();
+            assert!(s.valid, "{s:?}");
+            assert!((s.volume - 5854.0).abs() < 100.0, "{s:?}");
+        }
+        Err(e) => {
+            assert_eq!(e.kind(), KernelErrorKind::InvalidResult, "{e}");
+            assert!(matches!(e.refusal(), Refusal::ResultInvalid { .. }), "{e}");
+        }
+    }
+}

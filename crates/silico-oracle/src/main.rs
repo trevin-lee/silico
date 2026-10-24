@@ -51,7 +51,8 @@ fn main() -> ExitCode {
                     .map(|d| d.to_string()),
             );
         }
-        let (mut problems, mut known, mut notes) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut problems, mut notes) = (Vec::new(), Vec::new());
+        let known;
         if let Some(CorpusNotes { unread, breps }) = corpus {
             problems = unread;
             problems.extend(corpus::meshes(&cases)?);
@@ -65,6 +66,21 @@ fn main() -> ExitCode {
             problems.extend(missing);
             // What each platform's FreeCAD wrote, so two platforms' runs can be compared.
             notes = breps;
+        } else {
+            // Generated cases' known differences, those of the cases this run made.
+            let here: Vec<corpus::Known> = generate::KNOWN
+                .iter()
+                .filter(|k| cases.iter().any(|c| c.name == k.case))
+                .copied()
+                .collect();
+            let missing;
+            (report.differences, known, missing) = corpus::without_known(
+                report.differences,
+                &here,
+                &corpus::platform(),
+                &report.validity,
+            );
+            problems.extend(missing);
         }
         Ok((
             cases.len() + sketches.len() + feature_count,
@@ -102,7 +118,7 @@ fn main() -> ExitCode {
                 ),
             };
             if !problems.is_empty() {
-                let _ = writeln!(out, "{} more problems with the corpus", problems.len());
+                let _ = writeln!(out, "{} more problems with the cases", problems.len());
             }
             if found == 0 && problems.is_empty() {
                 ExitCode::SUCCESS
