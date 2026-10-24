@@ -1586,3 +1586,38 @@ fn a_client_that_outlives_its_pool_ends_its_requests_without_a_result() {
     drop(client);
     wait_no_children("after the pool and its client");
 }
+
+#[test]
+fn a_clients_submits_racing_its_pools_drop_leave_no_worker_behind() {
+    // A client submitting as fast as its requests end while its pool, starting its workers
+    // on demand, is dropped from another thread, at a different moment each time: each
+    // request either runs or ends saying the pool stopped, and once the pool and client are
+    // gone no worker is left, though a submit may have started a slot after the drop looked.
+    for attempt in 0..40u64 {
+        let pool = KernelPool::start_on_demand(Path::new(TEST_WORKER), 4).unwrap();
+        let client = pool.client();
+        std::thread::scope(|scope| {
+            let submitter = scope.spawn(|| {
+                loop {
+                    match outcome(client.submit(Generation(0), echo(&[1]))) {
+                        Outcome::Done(Ok(_)) => {}
+                        Outcome::Done(Err(e)) => {
+                            assert_eq!(
+                                e.message(),
+                                "the kernel pool stopped before Echo was done",
+                                "attempt {attempt}: {e}"
+                            );
+                            return;
+                        }
+                        Outcome::Superseded => panic!("attempt {attempt}: superseded"),
+                    }
+                }
+            });
+            spin(Duration::from_micros(attempt * 250));
+            drop(pool);
+            submitter.join().unwrap();
+        });
+        drop(client);
+    }
+    wait_no_children("after the pools and their clients");
+}
