@@ -5,15 +5,13 @@
 //! the pool's documented guarantees (pool.rs) and the real kernel's (silico-kernel lib.rs).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/echo.rs"]
-mod echo;
+use super::echo::{echo, echoed};
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use echo::{echo, echoed};
 use proptest::prelude::*;
 use silico_core::ErrorCode;
 use silico_core::fake::FakeKernel;

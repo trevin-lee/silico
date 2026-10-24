@@ -4,12 +4,9 @@
 //! the real kernel in silico-kernel's tests/fake_kernel.rs), and shapes described as built.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/echo.rs"]
-mod echo;
+use super::echo::{echo, echoed};
 
 use std::time::Duration;
-
-use echo::{echo, echoed};
 
 use silico_core::ErrorCode;
 use silico_core::fake::FakeKernel;
