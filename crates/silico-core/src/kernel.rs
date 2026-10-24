@@ -29,7 +29,8 @@ use crate::{Error, ErrorCode};
 /// [`PoolClient`](crate::pool::PoolClient), `fake::FakeClient`). Every request is for a
 /// generation of the client that submits it; starting a newer one supersedes that client's
 /// older requests, which come to [`Outcome::Superseded`](crate::pool::Outcome::Superseded),
-/// never a result, and never another client's. A kernel itself is its own first client, [`ClientId::KERNEL`].
+/// never a result, and never another client's. A kernel itself is its own first client,
+/// [`ClientId::KERNEL`].
 pub trait Kernel: Send + Sync {
     /// What the kernel is, for keying results kept on disk ([`crate::cache`]): two kernels
     /// with the same identity give the same result for the same request, and a kernel that
