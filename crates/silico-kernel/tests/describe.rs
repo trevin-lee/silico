@@ -102,7 +102,7 @@ fn a_boxs_edges_are_lines_of_its_sides_and_its_vertices_its_corners() {
 #[test]
 fn a_cylinders_side_is_a_cylinder_of_its_radius_about_its_axis() {
     // r 2.5, h 10: the side a cylinder of radius 2.5 about the z axis (its direction as its
-    // surface has it, of either sign: Silico's and FreeCAD's point −z), area
+    // surface has it: −z, as FreeCAD's Part::Cylinder's), area
     // 2π · 2.5 · 10 = 50π, its centre of area (0, 0, 5); the caps planes of area 6.25π,
     // facing −z and +z; the rims circles of radius 2.5, length 5π, about +z or −z; the seam
     // a line 10 long.
@@ -121,11 +121,9 @@ fn a_cylinders_side_is_a_cylinder_of_its_radius_about_its_axis() {
                     [axis.origin[0], axis.origin[1], 0.0],
                     [0.0; 3],
                 );
-                assert_point(
-                    "the side's direction",
-                    axis.direction.map(f64::abs),
-                    [0.0, 0.0, 1.0],
-                );
+                // −z, as FreeCAD 1.1.3's Part::Cylinder has it: (−0, −0, −1), its face
+                // reversed (Part.makeCylinder's is +z).
+                assert_point("the side's direction", axis.direction, [0.0, 0.0, -1.0]);
                 assert_close("the side's area", face.area, 50.0 * PI, 1e-12);
                 assert_point("the side's centre", face.centroid, [0.0, 0.0, 5.0]);
             }
