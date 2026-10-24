@@ -269,8 +269,9 @@ pub fn distance(a: [f64; 2], b: [f64; 2]) -> f64 {
 }
 
 /// The point at `angle` on the circle of `radius` about `center`, as the arc's angles put
-/// it (`libm`'s `cos` and `sin`, the same on every platform).
-fn on_circle(center: [f64; 2], radius: f64, angle: f64) -> [f64; 2] {
+/// it (`libm`'s `cos` and `sin`, the same on every platform): where the kernel ends an arc,
+/// to an ulp (OCCT evaluates its circle in 3D, by the platform's `cos` and `sin`).
+pub fn on_circle(center: [f64; 2], radius: f64, angle: f64) -> [f64; 2] {
     [
         center[0] + radius * libm::cos(angle),
         center[1] + radius * libm::sin(angle),

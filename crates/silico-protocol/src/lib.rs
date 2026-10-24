@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 pub use chamfer::ChamferSize;
 pub use faces::{
     ArcEnd, Curve, FaceRegions, MAX_ARC_ANGLE, MAX_FACE_CURVES, Region, SizeProblem, SketchPlane,
-    area_and_perimeter, distance, loop_area, sliver,
+    area_and_perimeter, distance, loop_area, on_circle, sliver,
 };
 pub use frame::{FrameError, FrameReader, MAX_FRAME_LEN, decode, write_message, write_started};
 pub use history::{
