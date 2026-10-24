@@ -505,9 +505,17 @@ fn steps_a_cancelled_recompute_finished_arent_run_again() {
         .kernel()
         .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Cylinder { .. })));
     let run = engine.start(checked(EXAMPLE));
-    // Both started, and only the held cylinder still running: the box was made.
+    // Both started, and only the held cylinder still running: the box was made. Waited on
+    // the makers themselves: the box's Summarize is a call too, so two calls (the box and its
+    // Summarize) with neither running came before the cylinder had started, when the second
+    // recompute thread was slow to start it (CI, run 40138730974: started was ["MakeBox"]).
     let deadline = Instant::now() + WAIT;
-    while engine.kernel().calls().len() < 2
+    let makers = || {
+        let mut made = calls_since(&engine, 0);
+        made.sort_unstable();
+        made
+    };
+    while makers() != ["MakeBox", "MakeCylinder"]
         || engine.kernel().wait_running(2, Duration::from_millis(1))
     {
         assert!(Instant::now() < deadline, "the box never finished");
