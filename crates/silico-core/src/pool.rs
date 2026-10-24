@@ -36,7 +36,7 @@ use std::path::Path;
 use std::process::ExitStatus;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -447,22 +447,10 @@ impl crate::kernel::Kernel for PoolClient {
 impl Drop for PoolClient {
     fn drop(&mut self) {
         let _span = tracing::debug_span!("retire_client", client = self.id.number()).entered();
-        let waiting = {
-            let mut state = lock(&self.shared.state);
-            state.generations.remove(&self.id);
-            let waiting = state.queues.remove(&self.id).unwrap_or_default();
-            state.queued -= waiting.len();
-            if !state.stopping {
-                // Its requests running are superseded now: those that have run the
-                // stop-after are stopped at once, the rest by the stopper when they're due.
-                self.shared.stop_superseded(&state);
-            }
-            waiting
-        };
-        self.shared.due.notify_all();
-        for task in waiting {
-            task.supersede();
-        }
+        let mut state = lock(&self.shared.state);
+        state.generations.remove(&self.id);
+        // Every request it submitted is superseded now, running ones included.
+        self.shared.supersede_stale(state, self.id, |_| true);
     }
 }
 
@@ -711,25 +699,37 @@ impl Shared {
     /// dropped without running, and those running are stopped once they've run the
     /// stop-after. Every other client's requests are left as they are.
     fn advance(&self, client: ClientId, generation: Generation) {
-        let superseded: VecDeque<Box<dyn Task>> = {
-            let mut state = lock(&self.state);
-            match state.generations.get_mut(&client) {
-                Some(current) if generation > *current => *current = generation,
-                // Not newer, or the client is retired.
-                _ => return,
-            }
-            let queue = state.queues.remove(&client).unwrap_or_default();
-            let (stale, current): (VecDeque<_>, VecDeque<_>) = queue
-                .into_iter()
-                .partition(|task| task.generation() < generation);
-            if !current.is_empty() {
-                state.queues.insert(client, current);
-            }
-            state.queued -= stale.len();
+        let mut state = lock(&self.state);
+        match state.generations.get_mut(&client) {
+            Some(current) if generation > *current => *current = generation,
+            // Not newer, or the client is retired.
+            _ => return,
+        }
+        self.supersede_stale(state, client, |task| task.generation() < generation);
+    }
+
+    /// Ends `client`'s requests that its generation, or its retirement, just changed in
+    /// `state` has superseded: those waiting that `stale` picks are dropped without running,
+    /// and those running are stopped once they've run the stop-after (now, if they have; the
+    /// stopper, woken here, stops the rest when they're due). Takes `state` and `slots`,
+    /// never `threads`; the waiting requests are told after the lock is let go.
+    fn supersede_stale(
+        &self,
+        mut state: MutexGuard<'_, State>,
+        client: ClientId,
+        stale: impl Fn(&dyn Task) -> bool,
+    ) {
+        let queue = state.queues.remove(&client).unwrap_or_default();
+        let (superseded, current): (VecDeque<_>, VecDeque<_>) =
+            queue.into_iter().partition(|task| stale(task.as_ref()));
+        if !current.is_empty() {
+            state.queues.insert(client, current);
+        }
+        state.queued -= superseded.len();
+        if !state.stopping {
             self.stop_superseded(&state);
-            stale
-        };
-        // The rest are the stopper's, when they're due.
+        }
+        drop(state);
         self.due.notify_all();
         for task in superseded {
             task.supersede();
@@ -953,8 +953,13 @@ impl<T: Send + 'static> Task for Submitted<T> {
         } = *self;
         let name = request.name();
         let result = span.in_scope(|| {
-            tracing::debug_span!("kernel_pool_request", slot, client = client.number())
-                .in_scope(|| request.run_on(worker, generation))
+            tracing::debug_span!(
+                "kernel_pool_request",
+                slot,
+                client = client.number(),
+                generation = generation.0
+            )
+            .in_scope(|| request.run_on(worker, generation))
         });
         // Ended, decided, and sent under the lock `advance` takes, so once `advance` has
         // returned no result of an older generation is delivered, and an `advance` after the
