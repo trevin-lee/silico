@@ -820,3 +820,133 @@ proptest! {
         }
     }
 }
+
+fn stop_error<T: std::fmt::Debug>(outcome: Outcome<T>) {
+    let Outcome::Done(Err(error)) = outcome else {
+        panic!("expected the stop's error, got {outcome:?}")
+    };
+    assert_eq!(error.code(), ErrorCode::Internal);
+    assert_eq!(
+        error.message(),
+        "the fake kernel stopped before Echo was done"
+    );
+}
+
+#[test]
+fn a_client_that_outlives_its_kernel_gets_the_stops_error_never_a_hang() {
+    let kernel = FakeKernel::new(1).unwrap();
+    let client = kernel.client();
+    let hold = kernel.hold(|_| true);
+    let held = client.submit(Generation(0), KernelRequest::echo(Blob::inline(vec![1])));
+    assert!(kernel.wait_running(1, WAIT));
+    let waiting = client.submit(Generation(0), KernelRequest::echo(Blob::inline(vec![2])));
+    drop(kernel);
+    stop_error(within(
+        held,
+        "a held request of a client, its kernel dropped",
+    ));
+    stop_error(within(
+        waiting,
+        "a waiting request of a client, its kernel dropped",
+    ));
+    // Asked again, after the kernel is gone: the same, at once, and its generations still
+    // its own.
+    client.advance(Generation(3));
+    assert_eq!(client.generation(), Generation(3));
+    let late = client.submit(Generation(3), KernelRequest::echo(Blob::inline(vec![3])));
+    stop_error(within(late, "a request to a client whose kernel is gone"));
+    drop(hold);
+    drop(client);
+}
+
+#[test]
+fn a_retired_clients_turn_passes_to_the_next_client_waiting() {
+    let kernel = FakeKernel::new(1).unwrap();
+    let (a, b, c) = (kernel.client(), kernel.client(), kernel.client());
+    let hold = kernel.hold(|_| true);
+    let echo = |byte: u8| KernelRequest::echo(Blob::inline(vec![byte]));
+    let a1 = a.submit(Generation(0), echo(11));
+    assert!(kernel.wait_running(1, WAIT));
+    let a2 = a.submit(Generation(0), echo(12));
+    let b1 = b.submit(Generation(0), echo(21));
+    let c1 = c.submit(Generation(0), echo(31));
+    // `a`'s turn was last; retired, its two end superseded, and the kernel goes on to `b`
+    // and then `c`.
+    drop(a);
+    assert!(matches!(within(a1, "a1"), Outcome::Superseded));
+    assert!(matches!(within(a2, "a2"), Outcome::Superseded));
+    hold.release();
+    assert_eq!(done(within(b1, "b1")).as_bytes(), [21]);
+    assert_eq!(done(within(c1, "c1")).as_bytes(), [31]);
+    let started: Vec<(u64, u8)> = kernel
+        .calls()
+        .iter()
+        .map(|call| match &call.op {
+            Op::Echo { data } => (call.client.number(), data.as_bytes()[0]),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(started, [(1, 11), (2, 21), (3, 31)]);
+}
+
+#[test]
+fn a_storm_of_clients_made_advanced_and_dropped_never_supersedes_another_clients_request() {
+    let kernel = Arc::new(FakeKernel::new(2).unwrap());
+    let keeper = kernel.client();
+    keeper.advance(Generation(1));
+    let hold = kernel.hold(|op| matches!(op, Op::Echo { data } if data.as_bytes() == [0xaa]));
+    let kept = keeper.submit(Generation(1), KernelRequest::echo(Blob::inline(vec![0xaa])));
+    let own = kernel.submit(Generation(0), KernelRequest::echo(Blob::inline(vec![0xbb])));
+    assert!(kernel.wait_running(1, WAIT));
+    let storm: Vec<_> = (0..8u64)
+        .map(|seed| {
+            let kernel = Arc::clone(&kernel);
+            std::thread::spawn(move || {
+                let mut rng = Lcg(seed + 1);
+                for _ in 0..50 {
+                    let client = kernel.client();
+                    let mut pending = Vec::new();
+                    for _ in 0..(rng.next() % 4) {
+                        let generation = Generation(rng.next() % 1000);
+                        client.advance(generation);
+                        pending.push(client.submit(
+                            Generation(rng.next() % 1000),
+                            KernelRequest::echo(Blob::inline(vec![1])),
+                        ));
+                    }
+                    // Half dropped with their requests still waiting, half waited for.
+                    if rng.next().is_multiple_of(2) {
+                        for p in pending {
+                            let _ = within(p, "a storm client's request");
+                        }
+                        drop(client);
+                    } else {
+                        drop(client);
+                        for p in pending {
+                            let outcome = within(p, "a dropped storm client's request");
+                            assert!(!matches!(outcome, Outcome::Done(Err(_))), "{outcome:?}");
+                        }
+                    }
+                }
+            })
+        })
+        .collect();
+    for thread in storm {
+        thread.join().unwrap();
+    }
+    // 400 clients made, advanced to generations up to 999, and gone: the keeper's request
+    // and the kernel's own are untouched.
+    assert_eq!(keeper.generation(), Generation(1));
+    assert_eq!(kernel.generation(), Generation(0));
+    hold.release();
+    assert_eq!(
+        done(within(kept, "the keeper's request")).as_bytes(),
+        [0xaa]
+    );
+    assert_eq!(
+        done(within(own, "the kernel's own request")).as_bytes(),
+        [0xbb]
+    );
+    // Numbered in the order given, never again: the keeper 1, the storm's 2 to 401.
+    assert_eq!(kernel.client().id().number(), 402);
+}
