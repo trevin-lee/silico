@@ -92,11 +92,17 @@ jobs:
           # The clock (filler-clock.yml) starts this every 15 minutes, a chain of its own runs.
           # If no clock run is queued, running, or waiting its turn, the chain was lost: start
           # it again (this runs whenever a real run ends, so that's soon after).
+          # Best effort: a clock disabled on purpose, or GitHub not answering, mustn't stop the
+          # filler deciding (a failed look counts as the clock running).
           clock=$(gh run list --workflow filler-clock.yml --limit 10 --json status \
-            --jq '[.[] | select(.status != "completed")] | length')
+            --jq '[.[] | select(.status != "completed")] | length') || clock=1
           if [ "$clock" -eq 0 ]; then
-            say "The clock isn't running: starting it"
-            if [ "$DRY" != true ]; then gh workflow run filler-clock.yml --ref main; fi
+            if [ "$DRY" = true ]; then
+              say "The clock isn't running (dry: not started)"
+            else
+              gh workflow run filler-clock.yml --ref main && say "The clock wasn't running: started it" ||
+                say "The clock isn't running and couldn't be started (disabled?)"
+            fi
           fi
 
           # Every queued or running run but this one: its id, workflow file, status, title.
