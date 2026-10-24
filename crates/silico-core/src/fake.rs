@@ -1,6 +1,8 @@
 //! An in-memory kernel for tests: the [`Kernel`] that core tests run on, so they need no
 //! OCCT and can see what was asked of the kernel. It runs requests on threads as the pool
-//! runs them on workers, with the same generations, and keeps a record of every call.
+//! runs them on workers, keeps generations for each of its clients, and keeps a record of
+//! every call. Its own client ([`ClientId::KERNEL`]) behaves as the pool's one generation
+//! does.
 //!
 //! Its shapes are symbolic, and their bytes say all there is to them, as a B-rep's do: any
 //! fake kernel reads a shape any other made. A shape is the steps that made it, one to a
@@ -45,14 +47,14 @@
 //! Tests can hold requests until they're released ([`FakeKernel::hold`]), to see what runs
 //! at once or to supersede a request while it runs, and have requests refused.
 //!
-//! As the pool, it has clients ([`Clients`]): the kernel's own ([`ClientId::KERNEL`]), and
-//! each [`FakeClient`] it gives, each with its own generations, its waiting requests served
-//! in turn with the other clients'.
+//! It has clients ([`Clients`]): the kernel's own ([`ClientId::KERNEL`]), and each
+//! [`FakeClient`] it gives, each with its own generations, its waiting requests served in
+//! turn with the other clients'. The pool gets clients in M4.2's next step.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ops::Bound;
 use std::sync::mpsc::{self, SyncSender};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -120,7 +122,7 @@ type Refuses = dyn Fn(&Op) -> Option<Error> + Send + Sync;
 
 struct Shared {
     state: Mutex<State>,
-    /// The queue changed, or the kernel is stopping.
+    /// A queue changed, or the kernel is stopping.
     work: Condvar,
     /// A request started or ended, or a hold was released.
     changed: Condvar,
@@ -356,16 +358,9 @@ impl Kernel for FakeClient {
 impl Drop for FakeClient {
     fn drop(&mut self) {
         let _span = tracing::debug_span!("retire_client", client = self.id.number()).entered();
-        let waiting = {
-            let mut state = lock(&self.shared.state);
-            state.generations.remove(&self.id);
-            state.queues.remove(&self.id)
-        };
-        // Its held requests stop.
-        self.shared.changed.notify_all();
-        for task in waiting.into_iter().flatten() {
-            task.supersede();
-        }
+        let mut state = lock(&self.shared.state);
+        state.generations.remove(&self.id);
+        self.shared.supersede_stale(state, self.id, |_| true);
     }
 }
 
@@ -382,22 +377,31 @@ impl Shared {
 
     /// Starts `generation` for `client`, superseding its older requests waiting and held.
     fn advance(&self, client: ClientId, generation: Generation) {
-        let stale: Vec<Box<dyn Task>> = {
-            let mut state = lock(&self.state);
-            match state.generations.get_mut(&client) {
-                Some(current) if generation > *current => *current = generation,
-                _ => return,
-            }
-            let queue = state.queues.remove(&client).unwrap_or_default();
-            let (stale, current): (VecDeque<_>, VecDeque<_>) = queue
-                .into_iter()
-                .partition(|task| task.generation() < generation);
-            if !current.is_empty() {
-                state.queues.insert(client, current);
-            }
-            stale.into_iter().collect()
-        };
-        // Held requests of older generations stop.
+        let mut state = lock(&self.state);
+        match state.generations.get_mut(&client) {
+            Some(current) if generation > *current => *current = generation,
+            _ => return,
+        }
+        self.supersede_stale(state, client, |task| task.generation() < generation);
+    }
+
+    /// Ends `client`'s requests that its generation (or its retirement), just changed in
+    /// `state`, supersedes: those waiting that `stale` picks are taken out of its queue under
+    /// the lock, its held ones are woken to stop themselves, and the waiting ones are told
+    /// outside the lock.
+    fn supersede_stale(
+        &self,
+        mut state: MutexGuard<'_, State>,
+        client: ClientId,
+        stale: impl Fn(&dyn Task) -> bool,
+    ) {
+        let queue = state.queues.remove(&client).unwrap_or_default();
+        let (stale, current): (VecDeque<_>, VecDeque<_>) =
+            queue.into_iter().partition(|task| stale(task.as_ref()));
+        if !current.is_empty() {
+            state.queues.insert(client, current);
+        }
+        drop(state);
         self.changed.notify_all();
         for task in stale {
             task.supersede();
@@ -532,6 +536,12 @@ impl<T: Send + 'static> Task for Submitted<T> {
             span,
         } = *self;
         let result = span.in_scope(|| {
+            let _request = tracing::debug_span!(
+                "fake_kernel_request",
+                client = client.number(),
+                generation = generation.0
+            )
+            .entered();
             let reply = match refusal {
                 Some(error) => Err(error),
                 None => answer(request.op()),

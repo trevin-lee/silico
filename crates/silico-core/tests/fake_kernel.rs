@@ -4,10 +4,15 @@
 //! the real kernel in silico-kernel's tests/fake_kernel.rs), and shapes described as built.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/echo.rs"]
+mod echo;
+
 use std::time::Duration;
 
+use echo::{echo, echoed};
+
 use silico_core::ErrorCode;
-use silico_core::fake::{Call, FakeKernel};
+use silico_core::fake::FakeKernel;
 use silico_core::kernel::{
     Blob, BooleanOp, BuiltData, ClientId, Clients, Curve, ElementCounts, ElementKind, FaceRegions,
     Generation, Kernel, KernelRequest, Op, Primitive, Region, ShapeData, SketchPlane,
@@ -1378,21 +1383,6 @@ fn a_fuse_has_a_solid_where_either_side_has_one() {
 // Each client of a kernel has its own generations, and the kernel serves its clients' queues
 // in turn. Expected values are the call record's, worked by hand from what each test asks.
 
-fn echo(byte: u8) -> KernelRequest<Blob> {
-    KernelRequest::echo(Blob::inline(vec![byte]))
-}
-
-/// The echoes' bytes in `calls`, in the order they started.
-fn echoed(calls: &[Call]) -> Vec<u8> {
-    calls
-        .iter()
-        .map(|call| match &call.op {
-            Op::Echo { data } => data.as_bytes()[0],
-            other => panic!("not an echo: {other:?}"),
-        })
-        .collect()
-}
-
 #[test]
 fn a_clients_newer_generation_supersedes_only_its_own_requests() {
     let kernel = FakeKernel::new(2).unwrap();
@@ -1410,13 +1400,15 @@ fn a_clients_newer_generation_supersedes_only_its_own_requests() {
     );
     assert!(kernel.wait_running(2, WAIT));
     b.advance(Generation(2));
+    // `b`'s sphere stops while still held; `a`'s box stays held, with no outcome.
+    assert!(matches!(sphere.wait_timeout(WAIT), Ok(Outcome::Superseded)));
+    let boxed = boxed.try_take().err().unwrap();
     hold.release();
     let boxed = done(boxed.wait());
     assert_eq!(
         FakeKernel::describe(&boxed).as_deref(),
         Some("box(40, 20, 10)")
     );
-    assert!(matches!(sphere.wait(), Outcome::Superseded));
     // Both started, at generation 1: `a`'s first, as it was queued first and `a` is the
     // lower client.
     let calls = kernel.calls();
@@ -1523,6 +1515,29 @@ fn clients_waiting_requests_are_served_in_turn() {
     let clients: Vec<ClientId> = calls.iter().map(|c| c.client).collect();
     assert_eq!(clients, [a.id(), b.id(), a.id(), b.id(), a.id(), b.id()]);
     assert_eq!(echoed(&calls), [11, 21, 12, 22, 13, 23]);
+}
+
+#[test]
+fn a_client_with_nothing_waiting_is_passed_over_for_the_next_one_with_some() {
+    // `a`, `b`, `c`, with `b` idle between them: after `a`'s turn, the next with work is
+    // `c`, then `a` again. A kernel that went to the next-numbered client or else the first
+    // would serve `a`, `a`, `c`.
+    let kernel = FakeKernel::new(1).unwrap();
+    let (a, b, c) = (kernel.client(), kernel.client(), kernel.client());
+    let hold = kernel.hold(|_| true);
+    let mut pending = vec![a.submit(Generation(0), echo(11))];
+    assert!(kernel.wait_running(1, WAIT));
+    pending.push(a.submit(Generation(0), echo(12)));
+    pending.push(c.submit(Generation(0), echo(31)));
+    hold.release();
+    for p in pending {
+        done(p.wait_timeout(WAIT).ok().unwrap());
+    }
+    let calls = kernel.calls();
+    let clients: Vec<ClientId> = calls.iter().map(|c| c.client).collect();
+    assert_eq!(clients, [a.id(), c.id(), a.id()]);
+    assert_eq!(echoed(&calls), [11, 31, 12]);
+    assert!(calls.iter().all(|call| call.client != b.id()));
 }
 
 #[test]

@@ -25,7 +25,7 @@ use crate::{Error, ErrorCode};
 
 /// What runs kernel requests for recompute: the worker pool
 /// ([`KernelPool`](crate::pool::KernelPool)), or, in tests, the in-memory fake
-/// (`fake::FakeKernel`, with the `fake` feature), or a client of either ([`Clients`]). Every
+/// (`fake::FakeKernel`, with the `fake` feature), or a client of the fake ([`Clients`]). Every
 /// request is for a generation of the client that submits it; starting a newer one
 /// supersedes that client's older requests, which come to
 /// [`Outcome::Superseded`](crate::pool::Outcome::Superseded), never a result, and never
@@ -108,13 +108,14 @@ impl ClientId {
 /// handle's [`advance`](Kernel::advance) supersedes only the requests that handle
 /// submitted, never another handle's or the kernel's own, and the kernel serves its
 /// clients' waiting requests in turn, so one client's long queue doesn't starve another.
-/// Each document's engine (a session's) takes a client; a session may take more than one
-/// (a second, for reads its rebuilds must never stop). A handle has the kernel's identity,
-/// so the results kept on disk are shared between clients. Dropping a handle retires its
-/// client: its requests still waiting or held come to
-/// [`Outcome::Superseded`](crate::pool::Outcome::Superseded), and those running are
-/// stopped as superseded requests are.
-pub trait Clients: Kernel {
+/// Every handle has the same identity, the kernel's, so the results kept on disk are shared
+/// between clients. Dropping a handle retires its client: its requests still waiting or held
+/// come to [`Outcome::Superseded`](crate::pool::Outcome::Superseded), and those running are
+/// stopped as superseded requests are. Only the handles are clients to submit through: the
+/// trait gives no [`Kernel`] of its own, so code generic over it can't submit as the kernel's
+/// own client by mistake. How sessions use their clients is
+/// docs/design/m4.1-command-api.md's (section 3, and decision 33's read lane).
+pub trait Clients: Send + Sync {
     /// A handle on the kernel, as a client of its own.
     type Client: Kernel + 'static;
 
