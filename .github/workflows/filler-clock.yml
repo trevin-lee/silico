@@ -7,6 +7,11 @@
 # runner labelled clock (silico-19), which runs nothing else, so its wait holds no runner
 # other work could use.
 #
+# The filler also starts the clock whenever no clock run is going, so its `workflow_run`
+# trigger restarts a lost chain soon after any real run ends. Both always start the chain
+# on main. To stop it on purpose, disable it (`gh workflow disable filler-clock`):
+# cancelling a tick doesn't, since a pending one or the schedule starts it again.
+#
 #   gh workflow run filler-clock.yml --ref main   (starts the chain by hand)
 name: filler-clock
 
@@ -38,8 +43,11 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           . .github/gh.sh
-          gh workflow run filler.yml --ref "$GITHUB_REF_NAME"
+          gh workflow run filler.yml --ref main
+      # Even if starting the filler failed (the filler disabled, say): a tick that didn't
+      # wait would start the next at once, and the chain would spin.
       - name: Wait
+        if: ${{ !cancelled() }}
         run: sleep 840
       # Even if starting the filler failed: the chain is what keeps it going.
       - name: Start the next tick
@@ -49,4 +57,9 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           . .github/gh.sh
-          gh workflow run filler-clock.yml --ref "$GITHUB_REF_NAME"
+          # A failed start would end the chain until the schedule or the filler restarts it.
+          for try in 1 2 3; do
+            gh workflow run filler-clock.yml --ref main && exit 0
+            sleep 30
+          done
+          exit 1

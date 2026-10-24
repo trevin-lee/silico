@@ -89,14 +89,25 @@ jobs:
             gh workflow run "$workflow" --ref "$BRANCH" "$@"
           }
 
+          # The clock (filler-clock.yml) starts this every 15 minutes, a chain of its own runs.
+          # If no clock run is queued, running, or waiting its turn, the chain was lost: start
+          # it again (this runs whenever a real run ends, so that's soon after).
+          clock=$(gh run list --workflow filler-clock.yml --limit 10 --json status \
+            --jq '[.[] | select(.status != "completed")] | length')
+          if [ "$clock" -eq 0 ]; then
+            say "The clock isn't running: starting it"
+            if [ "$DRY" != true ]; then gh workflow run filler-clock.yml --ref main; fi
+          fi
+
           # Every queued or running run but this one: its id, workflow file, status, title.
           active=$(for status in queued in_progress; do
             gh api "repos/$GH_REPO/actions/runs?status=$status&per_page=100" --jq \
               ".workflow_runs[] | select(.id != $GITHUB_RUN_ID)
                 | [.id, (.path | ltrimstr(\".github/workflows/\")), .status, .display_title] | @tsv"
           done)
-          # Runs of this workflow are decisions like this one, not work.
-          active=$(awk -F '\t' '$2 != "filler.yml"' <<<"$active")
+          # Runs of this workflow are decisions like this one, and the clock's (filler-clock.yml)
+          # only start them: neither is work, nor waits for a runner work could use.
+          active=$(awk -F '\t' '$2 != "filler.yml" && $2 != "filler-clock.yml"' <<<"$active")
           if awk -F '\t' '$3 == "queued" { found = 1 } END { exit !found }' <<<"$active"; then
             skip "a run is queued, waiting for runners"
           fi
