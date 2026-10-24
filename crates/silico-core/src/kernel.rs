@@ -25,11 +25,11 @@ use crate::{Error, ErrorCode};
 
 /// What runs kernel requests for recompute: the worker pool
 /// ([`KernelPool`](crate::pool::KernelPool)), or, in tests, the in-memory fake
-/// (`fake::FakeKernel`, with the `fake` feature), or a client of the fake ([`Clients`]). Every
-/// request is for a generation of the client that submits it; starting a newer one
-/// supersedes that client's older requests, which come to
-/// [`Outcome::Superseded`](crate::pool::Outcome::Superseded), never a result, and never
-/// another client's. A kernel itself is its own first client, [`ClientId::KERNEL`].
+/// (`fake::FakeKernel`, with the `fake` feature), or a client of either ([`Clients`]:
+/// [`PoolClient`](crate::pool::PoolClient), `fake::FakeClient`). Every request is for a
+/// generation of the client that submits it; starting a newer one supersedes that client's
+/// older requests, which come to [`Outcome::Superseded`](crate::pool::Outcome::Superseded),
+/// never a result, and never another client's. A kernel itself is its own first client, [`ClientId::KERNEL`].
 pub trait Kernel: Send + Sync {
     /// What the kernel is, for keying results kept on disk ([`crate::cache`]): two kernels
     /// with the same identity give the same result for the same request, and a kernel that
