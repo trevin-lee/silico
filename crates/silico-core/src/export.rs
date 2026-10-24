@@ -7,15 +7,20 @@
 //! needs, in this order, refusing a mesh that fails and naming the faces at fault:
 //!
 //! 1. every face meshed;
-//! 2. the faces' nodes on each shared edge paired one for one;
+//! 2. the faces' nodes on each shared edge paired one for one (and a face's nodes at one
+//!    place, as OCCT can leave inside a cone's face, one vertex: exactly, not by distance);
 //! 3. closed and manifold: every edge of the mesh on exactly two triangles;
 //! 4. consistently oriented: each shared edge running opposite ways in its two triangles;
-//! 5. facing outward: each outer shell enclosing a positive volume, each cavity a negative
-//!    one;
-//! 6. no triangle of no area, in the 32-bit coordinates a reader gets;
-//! 7. within the tolerance of the B-rep: each face's and edge's deviation, as OCCT gives it,
-//!    and each joined vertex's nodes, within the tolerance less what rounding to 32 bits
-//!    can move a vertex.
+//! 5. no triangle with two corners at one place in the 32-bit coordinates a reader gets,
+//!    which would read them as one vertex (a triangle whose corners are apart but on a line,
+//!    as OCCT leaves on a cone at times, is written: 3MF asks only that triangles SHOULD
+//!    have area, core.md:588, and FreeCAD writes them);
+//! 6. facing outward: each outer shell enclosing a positive volume, each cavity a negative
+//!    one, and each solid a positive volume in all;
+//! 7. within the tolerance of the B-rep, less what rounding to 32 bits can move a vertex:
+//!    each edge's deflection as OCCT gives it (it raises one to the gap between a vertex and
+//!    its curve), and each joined vertex's nodes. A face's own deviation is OCCT's to meet,
+//!    as FreeCAD takes it: OCCT's estimate of it overstates a cone's by 10 to 1000 times.
 //!
 //! [`three_mf`] writes printable meshes as a 3MF archive whose bytes depend on nothing but
 //! the meshes and their names: entries in a fixed order, stored, with the zip epoch as
@@ -87,9 +92,9 @@ impl Faces<'_> {
     }
 }
 
-/// What every refusal of an unprintable mesh suggests first.
-const FINER: &str = "export with a finer tolerance, or change the part where the faces named \
-                     meet: the kernel couldn't mesh them as a closed solid";
+/// What a refusal of a mesh that doesn't close suggests.
+const FINER: &str = "export with another tolerance, or change the part where the faces named \
+                     meet: the kernel's mesh of them isn't a closed solid";
 
 /// Joins the faces of `mesh`, meshed within `tolerance` mm, at the edges they share, and
 /// checks the result is printable (the module's rules, in order). `names` names the faces
@@ -105,6 +110,16 @@ pub fn printable(
         return Err(Error::new(ErrorCode::InvalidInput, invalid.message)
             .with_parameter("tolerance")
             .with_suggestion("export with a tolerance from 1e-5 mm to 1e8 mm"));
+    }
+    // A report that doesn't hold together can't be indexed: one from the worker is checked
+    // as it's read (`KernelRequest::export_mesh`), and any other here.
+    if let Err(problem) = mesh.validate() {
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            "the export mesh doesn't hold together",
+        )
+        .with_cause(problem)
+        .with_suggestion("export the mesh the kernel worker reports, as it reports it"));
     }
     if mesh.solids == 0 {
         return Err(Error::new(
@@ -191,6 +206,18 @@ pub fn printable(
         if !paired {
             // Every face on the edge: they don't meet in the mesh there.
             unpaired.extend(group.iter().map(|&k| number(mesh.edge_faces[k] as usize)));
+        }
+    }
+    // A face's own nodes at one place are one vertex (OCCT leaves two inside a cone's face
+    // at times, NIST's CTC 01): joined only where their coordinates are the same, so it's
+    // exact, and within one face, so two faces never meet but at their edges. Triangles they
+    // flatten are left out below, as FreeCAD's merge leaves them (`BRepMesh.cpp:275-279`).
+    for range in &ranges {
+        let mut at: BTreeMap<[u64; 3], u32> = BTreeMap::new();
+        for n in range.clone() {
+            let place = mesh.nodes[n as usize].map(|c| (c + 0.0).to_bits());
+            let first = *at.entry(place).or_insert(n);
+            joined.union(first, n);
         }
     }
     if !unpaired.is_empty() {
@@ -295,16 +322,41 @@ pub fn printable(
         .collect();
     let wide = |v: u32| vertices[v as usize].map(f64::from);
 
-    // 5. Facing outward: each outer shell encloses a positive volume, each cavity a
-    // negative one.
+    // 5. No triangle with two corners at one place in the 32-bit coordinates.
+    let flat: Vec<u32> = (0..triangles.len())
+        .filter(|&t| {
+            let [a, b, c] = triangles[t].map(|v| vertices[v as usize]);
+            a == b || b == c || a == c
+        })
+        .map(|t| number(triangle_face[t]))
+        .collect();
+    if !flat.is_empty() {
+        return Err(faces.refuse(
+            ErrorCode::InvalidResult,
+            "a triangle of the faces named has two corners at one place once rounded to the \
+             32 bits a 3MF reader takes, which would read them as one vertex"
+                .to_owned(),
+            flat,
+            "move the part nearer the origin, or make the faces named larger: 32-bit \
+             coordinates can't hold their triangles' corners apart where they are",
+        ));
+    }
+
+    // 6. Facing outward: each outer shell encloses a positive volume, each cavity a
+    // negative one, and each solid a positive volume in all. A shell with no triangles
+    // encloses none, and is refused with the rest.
     let mut shell_volumes = vec![0.0f64; mesh.shell_solids.len()];
     for (t, corners) in triangles.iter().enumerate() {
         let [a, b, c] = corners.map(wide);
         shell_volumes[triangle_shell[t] as usize] += dot(a, cross(b, c)) / 6.0;
     }
-    let inward: Vec<u32> = (0..triangles.len())
-        .filter(|&t| {
-            let shell = triangle_shell[t] as usize;
+    let shell_faces = |shell: usize| {
+        (0..mesh.face_shells.len())
+            .filter(move |&f| mesh.face_shells[f] as usize == shell)
+            .map(number)
+    };
+    let inward: Vec<u32> = (0..shell_volumes.len())
+        .filter(|&shell| {
             let volume = shell_volumes[shell];
             if mesh.shell_outer[shell] {
                 volume <= 0.0
@@ -312,33 +364,41 @@ pub fn printable(
                 volume >= 0.0
             }
         })
-        .map(|t| number(triangle_face[t]))
+        .flat_map(shell_faces)
         .collect();
-    if !inward.is_empty() {
+    let unbounded = (0..shell_volumes.len()).any(|shell| shell_volumes[shell] == 0.0);
+    if unbounded || !inward.is_empty() {
         return Err(faces.refuse(
             ErrorCode::InvalidResult,
-            "the faces named face inward: their shell encloses the wrong side".to_owned(),
+            if unbounded {
+                "a shell of the solid encloses no volume: its mesh has no triangles, or none \
+                 that enclose anything"
+                    .to_owned()
+            } else {
+                "the faces named face inward: their shell encloses the wrong side".to_owned()
+            },
             inward,
-            FINER,
+            "the kernel's solid is inside out where the faces named are: check the feature \
+             makes a valid solid",
         ));
     }
-
-    // 6. No triangle of no area in the 32-bit coordinates.
-    let flat: Vec<u32> = (0..triangles.len())
-        .filter(|&t| {
-            let [a, b, c] = triangles[t].map(wide);
-            cross(sub(b, a), sub(c, a)) == [0.0; 3]
-        })
-        .map(|t| number(triangle_face[t]))
+    let mut solid_volumes = vec![0.0f64; mesh.solids as usize];
+    for (shell, &solid) in mesh.shell_solids.iter().enumerate() {
+        solid_volumes[solid as usize] += shell_volumes[shell];
+    }
+    let hollow: Vec<u32> = (0..mesh.shell_solids.len())
+        .filter(|&shell| solid_volumes[mesh.shell_solids[shell] as usize] <= 0.0)
+        .flat_map(shell_faces)
         .collect();
-    if !flat.is_empty() {
+    if !hollow.is_empty() || solid_volumes.iter().any(|&v| v <= 0.0) {
         return Err(faces.refuse(
             ErrorCode::InvalidResult,
-            "a triangle of the faces named has no area once its vertices are rounded to the \
-             32 bits a 3MF reader takes"
+            "a solid encloses no volume in all: its cavities enclose as much as its outer \
+             shell, or it has no shell"
                 .to_owned(),
-            flat,
-            FINER,
+            hollow,
+            "the kernel's solid is inside out where the faces named are: check the feature \
+             makes a valid solid",
         ));
     }
 
@@ -349,15 +409,10 @@ pub fn printable(
         .flatten()
         .fold(0.0f64, |m, c| m.max(c.abs()));
     let allowed = tolerance - silico_protocol::export_rounding(reach);
-    let mut far: Vec<u32> = (0..mesh.face_nodes.len())
-        .filter(|&f| mesh.face_deflections[f] > allowed)
-        .map(number)
+    let mut far: Vec<u32> = (0..mesh.edge_faces.len())
+        .filter(|&k| mesh.edge_deflections[k] > allowed)
+        .map(|k| number(mesh.edge_faces[k] as usize))
         .collect();
-    far.extend(
-        (0..mesh.edge_faces.len())
-            .filter(|&k| mesh.edge_deflections[k] > allowed)
-            .map(|k| number(mesh.edge_faces[k] as usize)),
-    );
     // Each joined vertex's nodes within the tolerance of the one it's placed at.
     for n in 0..mesh.nodes.len() as u32 {
         let first = joined.find(n);
@@ -371,15 +426,17 @@ pub fn printable(
             ErrorCode::InvalidResult,
             format!(
                 "the mesh of the faces named is further than the tolerance, {} mm, from the \
-                 part, as the kernel measures it once rounding to 32 bits is allowed for",
+                 part once rounding to 32 bits is allowed for: the kernel meshed an edge of \
+                 theirs more coarsely than asked, or joined vertices further apart",
                 silico_protocol::format_number(tolerance)
             ),
             far,
-            FINER,
+            "export with a coarser tolerance: the kernel can't mesh the edges of the faces \
+             named as finely as asked (their vertices lie off their curves by more)",
         ));
     }
 
-    let volume = shell_volumes.iter().sum();
+    let volume = solid_volumes.iter().sum();
     Ok(PrintableMesh {
         vertices,
         triangles,
@@ -465,6 +522,14 @@ const MAX_ARCHIVE: u64 = u32::MAX as u64;
 /// (a control character other than tab, line feed, and carriage return) is refused, naming
 /// the object.
 pub fn three_mf(objects: &[Object<'_>]) -> Result<Vec<u8>, Error> {
+    if objects.is_empty() {
+        // As FreeCAD refuses an export with nothing to mesh (04005b5e45).
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            "a 3MF file needs at least one object, and there are none to write",
+        )
+        .with_suggestion("export at least one feature that makes a solid"));
+    }
     let mut model = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<model unit=\"millimeter\" \
          xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\">\n \

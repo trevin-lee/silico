@@ -11,10 +11,10 @@ use silico_protocol::{
 
 #[test]
 fn a_deflection_is_never_more_than_its_tolerance_whatever_the_reach() {
-    // BREAKS: export_deflection takes a negative reach (the worker passes an absolute
-    // value, but the function is public and says nothing of the sign) and returns a
-    // deflection coarser than the tolerance: tolerance 0.1, reach -1e6 gives 0.2032...
-    // A mesh within that is not within the tolerance.
+    // Break-it found (fixed): export_deflection takes a negative reach (the worker passes
+    // an absolute value, but the function is public and says nothing of the sign) and
+    // returns a deflection coarser than the tolerance: tolerance 0.1, reach -1e6 gives
+    // 0.2032... A mesh within that is not within the tolerance.
     for reach in [-1e6, -1.0, -0.0, f64::MIN_POSITIVE] {
         if let Ok(deflection) = export_deflection(0.1, reach) {
             assert!(deflection <= 0.1, "reach {reach}: deflection {deflection}");
@@ -39,13 +39,15 @@ fn the_deflection_at_each_end_of_the_tolerance_range() {
         d < MAX_EXPORT_TOLERANCE && d > MAX_EXPORT_TOLERANCE - 0.2,
         "{d}"
     );
-    // The finest tolerance leaves nothing for rounding: only a part at the origin (every
-    // coordinate 0) takes it.
+    // The finest tolerance takes rounding of up to half of it: √3·reach·2⁻²⁴ ≤ 5e-6 out to
+    // 48.43 mm, so a part within 48 mm of the origin takes it, and one 49 mm out doesn't.
     assert_eq!(
         export_deflection(MIN_EXPORT_TOLERANCE, 0.0).unwrap(),
         MIN_EXPORT_TOLERANCE
     );
-    assert!(export_deflection(MIN_EXPORT_TOLERANCE, 1e-3).is_err());
+    assert!(export_deflection(MIN_EXPORT_TOLERANCE, 1e-3).is_ok());
+    assert!(export_deflection(MIN_EXPORT_TOLERANCE, 48.0).is_ok());
+    assert!(export_deflection(MIN_EXPORT_TOLERANCE, 49.0).is_err());
     // The angle is finite and in (0, 0.1] across the range.
     for t in [
         MIN_EXPORT_TOLERANCE,

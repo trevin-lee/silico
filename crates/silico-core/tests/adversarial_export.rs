@@ -137,10 +137,11 @@ type Corrupt = Box<dyn Fn(&mut ExportMesh)>;
 
 #[test]
 fn printable_on_a_report_that_fails_validate_is_an_error_not_a_panic() {
-    // BREAKS: printable is public and takes any ExportMesh (its fields are public, and
-    // nothing says it must be validated first), but it indexes the report unchecked: a
-    // report that fails ExportMesh::validate panics it (index out of bounds) instead of
-    // being refused. Only KernelRequest::export_mesh validates before handing one over.
+    // Break-it found (fixed): printable is public and takes any ExportMesh (its fields are
+    // public, and nothing says it must be validated first), but it indexes the report
+    // unchecked: a report that fails ExportMesh::validate panics it (index out of bounds)
+    // instead of being refused. Only KernelRequest::export_mesh validates before handing
+    // one over.
     let corruptions: Vec<(&str, Corrupt)> = vec![
         ("faces in no shell", Box::new(|m| m.face_shells.clear())),
         ("a face in shell 5 of 1", Box::new(|m| m.face_shells[0] = 5)),
@@ -203,11 +204,11 @@ fn printable_on_a_report_that_fails_validate_is_an_error_not_a_panic() {
 
 #[test]
 fn a_solid_whose_shell_has_no_faces_is_refused_not_an_empty_mesh() {
-    // BREAKS: a report of one solid whose one shell has no faces passes validate, and
-    // printable returns it as a printable mesh of no vertices, no triangles, and volume 0:
-    // rule 5 is checked triangle by triangle, so a shell with none is never checked. The
-    // port note (docs/ports/mesh-export.md, da0f810282) says "A solid with no triangles is
-    // refused".
+    // Break-it found (fixed): a report of one solid whose one shell has no faces passes
+    // validate, and printable returns it as a printable mesh of no vertices, no triangles,
+    // and volume 0: rule 5 is checked triangle by triangle, so a shell with none is never
+    // checked. The port note (docs/ports/mesh-export.md, da0f810282) says "A solid with no
+    // triangles is refused".
     let empty = ExportMesh {
         deflection: 0.1,
         solids: 1,
@@ -238,10 +239,10 @@ fn a_solid_whose_shell_has_no_faces_is_refused_not_an_empty_mesh() {
 
 #[test]
 fn a_face_whose_triangles_all_weld_into_one_vertex_is_refused_not_an_empty_mesh() {
-    // BREAKS: one face of three nodes at one point, one triangle over them, and a degenerate
-    // edge whose polygon holds all three (as a pole's does): the nodes weld into one
-    // vertex, the triangle is dropped as a pole's, and what's left is an empty "printable"
-    // mesh of volume 0, which the port note says is refused.
+    // Break-it found (fixed): one face of three nodes at one point, one triangle over them,
+    // and a degenerate edge whose polygon holds all three (as a pole's does): the nodes
+    // weld into one vertex, the triangle is dropped as a pole's, and what's left is an
+    // empty "printable" mesh of volume 0, which the port note says is refused.
     let m = ExportMesh {
         deflection: 0.1,
         nodes: vec![[1.0, 2.0, 3.0]; 3],
@@ -274,10 +275,10 @@ fn a_face_whose_triangles_all_weld_into_one_vertex_is_refused_not_an_empty_mesh(
 
 #[test]
 fn a_cavity_larger_than_its_solid_is_refused_not_a_negative_volume() {
-    // BREAKS: rule 5 checks each shell's sign on its own, and the port note adds "The
-    // solid's total is positive", but nothing checks the total: an outer shell of 1/6 with
-    // a cavity shell (correctly inward) of 8/6 around it is taken, and the printable mesh's
-    // volume is -7/6.
+    // Break-it found (fixed): rule 5 checks each shell's sign on its own, and the port note
+    // adds "The solid's total is positive", but nothing checks the total: an outer shell of
+    // 1/6 with a cavity shell (correctly inward) of 8/6 around it is taken, and the
+    // printable mesh's volume is -7/6.
     let big: Vec<[f64; 3]> = P.iter().map(|p| p.map(|c| 2.0 * c - 0.5)).collect();
     let inward: Vec<[[usize; 3]; 1]> = TETRA
         .iter()
@@ -306,9 +307,10 @@ fn a_solid_whose_only_shell_is_a_cavity_is_refused() {
     let faces: Vec<&[[usize; 3]]> = inward.iter().map(|f| f.as_slice()).collect();
     let mut m = report(&P, &faces);
     m.shell_outer = vec![false];
-    // BREAKS: taken, with volume -1/6: a solid with no outer shell is exported inside out
-    // (the existing test, a_shell_facing_inward_is_refused_and_a_cavity_must_face_inward,
-    // asserts exactly this is Ok; the solid's total is never checked).
+    // Break-it found (fixed): taken, with volume -1/6: a solid with no outer shell is
+    // exported inside out (the existing test,
+    // a_shell_facing_inward_is_refused_and_a_cavity_must_face_inward, asserts exactly this
+    // is Ok; the solid's total is never checked).
     let got = printable(&m, 0.1, None);
     assert!(
         got.is_err(),
@@ -579,9 +581,10 @@ fn corrupted_reports_never_panic_and_whatever_is_taken_is_printable() {
 
 #[test]
 fn an_archive_of_no_objects_is_refused() {
-    // BREAKS: three_mf(&[]) writes a 3MF with no object and an empty build, which a slicer
-    // opens as nothing. FreeCAD refuses an export with nothing to mesh ("None of the
-    // objects can be exported", 04005b5e45), and the port note ports that guard.
+    // Break-it found (fixed): three_mf(&[]) writes a 3MF with no object and an empty build,
+    // which a slicer opens as nothing. FreeCAD refuses an export with nothing to mesh
+    // ("None of the objects can be exported", 04005b5e45), and the port note ports that
+    // guard.
     let got = three_mf(&[]);
     assert!(
         got.is_err(),

@@ -34,28 +34,29 @@ pub fn check_export_tolerance(tolerance: f64) -> Result<(), InvalidParameter> {
 
 /// How far rounding a vertex to the 32-bit floats a 3MF reader takes can move it, at most,
 /// for vertices no further than `reach` mm from the origin on any axis: half a 32-bit unit
-/// in the last place of `reach` on each of three axes, √3 · `reach` · 2⁻²⁴.
+/// in the last place of `reach` on each of three axes, √3 · |`reach`| · 2⁻²⁴.
 pub fn export_rounding(reach: f64) -> f64 {
-    3f64.sqrt() * reach * f64::from(f32::EPSILON) / 2.0
+    3f64.sqrt() * reach.abs() * f64::from(f32::EPSILON) / 2.0
 }
 
 /// The deflection an export of a shape that reaches `reach` mm from the origin (on any
 /// axis) meshes with, for the mesh, once rounded to 32 bits, to stay within `tolerance`:
-/// the tolerance less [`export_rounding`]. Refused when that's finer than
-/// [`MIN_EXPORT_TOLERANCE`], as no export meshes finer.
+/// the tolerance less [`export_rounding`]. Refused when the rounding would take more than
+/// half the tolerance, which leaves the mesher at least the other half: a part far enough
+/// from the origin for the tolerance to be mostly its 32-bit rounding is better moved nearer
+/// it, or exported more coarsely.
 pub fn export_deflection(tolerance: f64, reach: f64) -> Result<f64, InvalidParameter> {
     check_export_tolerance(tolerance)?;
     let rounding = export_rounding(reach);
-    let deflection = tolerance - rounding;
-    if deflection >= MIN_EXPORT_TOLERANCE {
-        return Ok(deflection);
+    if rounding.is_finite() && rounding <= tolerance / 2.0 {
+        return Ok(tolerance - rounding);
     }
     Err(InvalidParameter {
         parameter: "tolerance",
         message: format!(
-            "an export's tolerance of {} mm leaves less than 1e-5 mm for the mesh once rounding \
-             to the 32 bits a 3MF reader takes moves the part's coordinates, by up to {} mm as \
-             far as {} mm from the origin",
+            "an export's tolerance of {} mm is less than twice what rounding to the 32 bits a \
+             3MF reader takes moves the part's coordinates, by up to {} mm as far as {} mm \
+             from the origin",
             format_number(tolerance),
             format_number(rounding),
             format_number(reach)
@@ -308,7 +309,7 @@ mod tests {
     }
 
     #[test]
-    fn the_deflection_is_the_tolerance_less_the_rounding_and_never_below_the_finest() {
+    fn the_deflection_is_the_tolerance_less_the_rounding_and_the_rounding_at_most_half_of_it() {
         // √3 · 2⁻²⁴ ≈ 1.0324e-7 per mm of reach: at 100 mm, 1.0324e-5.
         let per_mm = 3f64.sqrt() / 16_777_216.0;
         assert_eq!(export_rounding(100.0), 100.0 * per_mm);
@@ -318,10 +319,20 @@ mod tests {
         let invalid = export_deflection(1e-3, 5e4).unwrap_err();
         assert_eq!(invalid.parameter, "tolerance");
         assert!(invalid.message.contains("rounding"), "{}", invalid.message);
-        // At the edge: a reach that leaves exactly 1e-5 is taken; a little more isn't.
-        let reach = (0.1 - 1e-5) / per_mm;
+        // At the edge: a reach whose rounding is half the tolerance is taken; a little more
+        // isn't. The finest tolerance, 1e-5 mm, is taken out to 48.4 mm.
+        let reach = 0.05 / per_mm;
         assert!(export_deflection(0.1, reach * (1.0 - 1e-9)).is_ok());
         assert!(export_deflection(0.1, reach * (1.0 + 1e-9)).is_err());
+        assert!(export_deflection(1e-5, 48.0).is_ok());
+        assert!(export_deflection(1e-5, 49.0).is_err());
+        // A reach is a magnitude, and one that isn't finite is refused.
+        assert_eq!(
+            export_deflection(0.1, -100.0),
+            export_deflection(0.1, 100.0)
+        );
+        assert!(export_deflection(0.1, f64::INFINITY).is_err());
+        assert!(export_deflection(0.1, f64::NAN).is_err());
         // The tolerance's own range first.
         assert!(export_deflection(1e-6, 0.0).is_err());
     }

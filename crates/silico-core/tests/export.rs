@@ -174,10 +174,16 @@ fn a_shell_facing_inward_is_refused_and_a_cavity_must_face_inward() {
         &["Face1", "Face2", "Face3", "Face4"],
     );
     // The same shell as a cavity's (not its solid's outer shell): enclosing a negative
-    // volume is right for a cavity, and outward is wrong.
+    // volume is right for a cavity, and outward is wrong. But a solid that's only a cavity
+    // encloses -1/6 in all, and is refused (break-it: it was taken, its volume negative).
     let mut cavity = m.clone();
     cavity.shell_outer = vec![false];
-    assert_eq!(printable(&cavity, 0.1, None).unwrap().volume(), -1.0 / 6.0);
+    refused(
+        &cavity,
+        ErrorCode::InvalidResult,
+        "encloses no volume in all",
+        &["Face1", "Face2", "Face3", "Face4"],
+    );
     let mut outward_cavity = tetra();
     outward_cavity.shell_outer = vec![false];
     refused(
@@ -189,11 +195,15 @@ fn a_shell_facing_inward_is_refused_and_a_cavity_must_face_inward() {
 }
 
 #[test]
-fn a_triangle_flat_once_rounded_to_32_bits_is_refused_naming_its_face() {
+fn a_triangle_flat_once_rounded_to_32_bits_but_with_its_corners_apart_is_written() {
     // The base split by M, a hair outside its slanted edge P1P2: (0.5 + 1e-9, 0.5 + 1e-9,
     // 0), which rounds to (0.5, 0.5, 0) in 32 bits (their spacing at 0.5 is 6e-8), on the
-    // edge. The sliver (P1, P2, M), part of Face1, has area in 64 bits and none in 32; the
-    // slanted face is split at M to meet it. Closed, oriented, and enclosing a sixth.
+    // edge. The sliver (P1, P2, M), part of Face1, has area in 64 bits and none in 32, its
+    // corners still apart; the slanted face is split at M to meet it. Closed, oriented, and
+    // enclosing a sixth. 3MF asks only that a triangle SHOULD have area (core.md:588), and
+    // FreeCAD writes such needles, as OCCT leaves on a cone at times: written, not refused
+    // (break-it: NIST's CTC 01 was refused at 0.1 mm for them). Corners at one place are
+    // refused (the test after).
     let mut points = P.to_vec();
     points.push([0.5 + 1e-9, 0.5 + 1e-9, 0.0]);
     let m = report(
@@ -205,8 +215,9 @@ fn a_triangle_flat_once_rounded_to_32_bits_is_refused_naming_its_face() {
             &[[1, 4, 3], [4, 2, 3]],
         ],
     );
-    refused(&m, ErrorCode::InvalidResult, "has no area", &["Face1"]);
-    // The same 1e-6 out is a triangle in 32 bits too, and passes.
+    let mesh = printable(&m, 0.1, None).unwrap();
+    assert_eq!(mesh.triangles().len(), 6);
+    // The same 1e-6 out is a triangle with area in 32 bits too, and passes.
     let mut points = P.to_vec();
     points.push([0.5 + 1e-6, 0.5 + 1e-6, 0.0]);
     let m = report(
@@ -257,18 +268,23 @@ fn faces_whose_polygons_on_an_edge_dont_pair_are_refused_naming_them() {
 #[test]
 fn deviations_past_the_tolerance_less_the_rounding_are_refused() {
     // The tetrahedron reaches 1 mm: rounding moves it by up to √3 · 2⁻²⁴ ≈ 1.03e-7 mm, so
-    // 0.1 − 1.1e-7 is past what's allowed, and 0.1 − 1.1e-7 + … is the edge use's 0.1 − 1e-6.
+    // an edge's 0.1 − 0.5e-7 is past what's allowed, and 0.1 − 1.5e-7 within it.
     let rounding = 3f64.sqrt() / 16_777_216.0;
     let mut m = tetra();
-    m.face_deflections[1] = 0.1 - rounding * 0.5;
+    m.edge_deflections[0] = 0.1 - rounding * 0.5;
     refused(
         &m,
         ErrorCode::InvalidResult,
         "further than the tolerance",
-        &["Face2"],
+        &["Face1"],
     );
     let mut m = tetra();
-    m.face_deflections[1] = 0.1 - rounding * 1.5;
+    m.edge_deflections[0] = 0.1 - rounding * 1.5;
+    assert!(printable(&m, 0.1, None).is_ok());
+    // A face's own deviation, as OCCT estimates it, isn't held to the tolerance, as FreeCAD
+    // takes it: the estimate overstates a cone's by 10 to 1000 times (break-it).
+    let mut m = tetra();
+    m.face_deflections[1] = 1.0;
     assert!(printable(&m, 0.1, None).is_ok());
     // An edge use's deflection raised past it names its face.
     let mut m = tetra();
@@ -295,12 +311,13 @@ fn deviations_past_the_tolerance_less_the_rounding_are_refused() {
 
 #[test]
 fn shapes_without_solids_and_faces_outside_them_are_refused() {
-    let mut m = tetra();
-    m.solids = 0;
-    m.shell_solids.clear();
-    m.shell_outer.clear();
-    m.face_shells.clear();
-    // Not a valid report any more (faces in no shell), but the check comes first.
+    // A shape of no solid at all, as a face alone reports it: no face in a solid.
+    let m = ExportMesh {
+        deflection: 0.1,
+        loose_faces: vec![1],
+        ..ExportMesh::default()
+    };
+    m.validate().unwrap();
     let error = printable(&m, 0.1, None).unwrap_err();
     assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
     assert!(error.message().contains("no solid"), "{error}");
@@ -532,4 +549,32 @@ fn faces_at_fault_are_named_as_the_features_element_map_names_them() {
     m.face_triangles[3] = 0;
     let error = printable(&m, 0.1, Some(&map)).unwrap_err();
     assert_eq!(error.elements(), ["k7f2qx3m.cut.Face4"], "{error}");
+}
+
+#[test]
+fn vertices_apart_in_64_bits_but_one_in_32_are_refused_before_anything_is_written() {
+    // M at (1 + 1e-9, 0, 0), beside P1 (1, 0, 0) and outside the slanted edge P1P2: distinct
+    // in 64 bits, and P1 exactly in
+    // the 32 a reader parses (their spacing at 1 is 1.2e-7). The sliver (P1, P2, M),
+    // Face1's, and Face4's (P1, M, P3) each have two corners at one place once rounded, so no
+    // area: the mesh is refused, not written with vertices its readers would read as one.
+    let mut points = P.to_vec();
+    points.push([1.0 + 1e-9, 0.0, 0.0]);
+    let m = report(
+        &points,
+        &[
+            &[[0, 2, 1], [1, 2, 4]],
+            TETRA[1],
+            TETRA[2],
+            &[[1, 4, 3], [4, 2, 3]],
+        ],
+    );
+    assert_ne!(points[4], points[1]);
+    assert_eq!(points[4].map(|c| c as f32), points[1].map(|c| c as f32));
+    refused(
+        &m,
+        ErrorCode::InvalidResult,
+        "two corners at one place",
+        &["Face1", "Face4"],
+    );
 }
