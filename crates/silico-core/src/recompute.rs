@@ -3436,6 +3436,56 @@ mod tests {
         }
     }
 
+    /// A solver that reads, during each solve, the number the engine gave it.
+    struct Numbered {
+        engine: Arc<std::sync::OnceLock<std::sync::Weak<Engine<crate::fake::FakeKernel>>>>,
+        seen: Arc<Mutex<Vec<Option<u64>>>>,
+    }
+
+    impl SketchSolver for Numbered {
+        fn solve(
+            &mut self,
+            system: silico_protocol::SketchSystem,
+        ) -> Result<silico_protocol::Solved, Error> {
+            let engine = self.engine.get().and_then(std::sync::Weak::upgrade);
+            let number = engine.and_then(|e| lock(&e.state).solving.as_ref().map(|s| s.number));
+            lock(&self.seen).push(number);
+            Ok(crate::fake::FakeSketches::as_sent(&system))
+        }
+
+        fn stopper(&mut self) -> Result<Option<SolveStopper>, Error> {
+            Ok(Some(SolveStopper::new(|| {})))
+        }
+    }
+
+    #[test]
+    fn each_solve_is_numbered_after_the_last() {
+        // A late stop finds its solve by number (`stop_later`), so no two solves may share
+        // one: the first solve is 1, the next 2 (M3's milestone mutants: `solves *= 1`
+        // numbered every solve 0, which stored_coordinates.rs's late-stop race caught only
+        // when the newer solve began within the older's grace).
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let handle = Arc::new(std::sync::OnceLock::new());
+        let engine =
+            Recompute::new(crate::fake::FakeKernel::new(1).unwrap()).with_sketches(Numbered {
+                engine: Arc::clone(&handle),
+                seen: Arc::clone(&seen),
+            });
+        assert!(handle.set(Arc::downgrade(&engine.engine)).is_ok());
+        for x in ["10", "11"] {
+            let text = format!(
+                r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "features": [{{"id": "k7f2qx3m", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{{"id": "pa000000", "x": 0, "y": 0, "construction": false}}, {{"id": "pb000000", "x": {x}, "y": 0, "construction": false}}], "lines": [{{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}}], "circles": [], "arcs": [], "constraints": [{{"id": "k0000001", "type": "horizontal", "line": "na000000"}}]}}]}}"#
+            );
+            let document = crate::document::read(text.as_bytes()).unwrap();
+            let run = engine.start(crate::document::Checked::new(document).unwrap());
+            assert!(matches!(
+                run.wait_timeout(Duration::from_secs(20)),
+                Ok(Ok(RunOutcome::Published(_)))
+            ));
+        }
+        assert_eq!(*lock(&seen), [Some(1), Some(2)]);
+    }
+
     #[test]
     fn a_naming_key_debugs_as_its_hex() {
         let key = NamingKey(core::array::from_fn(|i| i as u8));
