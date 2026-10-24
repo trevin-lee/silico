@@ -904,7 +904,16 @@ fn an_entry_written_by_a_superseded_recompute_is_sound() {
     let engine = session(&dir.0);
     let hold = engine.kernel().hold(|op| op.name() == "Cut");
     let first = engine.start(checked(EXAMPLE));
-    assert!(engine.kernel().wait_running(1, Duration::from_secs(10)));
+    // Once the held Cut has started, so the steps before it have been written (waiting for
+    // any request to run let the second start supersede the first before it wrote anything).
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !engine.kernel().calls().iter().any(|c| c.op.name() == "Cut") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the Cut never started"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
     let second = engine.start(example_with_pin("3"));
     hold.release();
     assert!(matches!(
