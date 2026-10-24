@@ -321,6 +321,121 @@ fn clockwise(curves: Vec<Curve>) -> Vec<Curve> {
 }
 
 #[test]
+fn an_arcs_chord_from_its_end_drawn_inside_its_circle_builds_its_area() {
+    // The quarter turn r 10 about the origin from (10, 0) to (0, 10 − 9e-8), its end drawn
+    // 9e-8 inside its circle, closed by its chord, which the core makes (its chord's line
+    // meets the circle only at (10, 0), shared, and behind its other end). OCCT builds it,
+    // valid: the arc's segment, 25π − 50, and the sliver its chord's lowered end adds,
+    // ½ × 10 × 9e-8 = 4.5e-7.
+    let mut d = Draw::new();
+    let o = d.point(0.0, 0.0);
+    let s = d.point(10.0, 0.0);
+    let e = d.point(0.0, 10.0 - 9e-8);
+    d.arc(&o, &s, &e);
+    d.line(&e, &s);
+    let built = area(&regions(&made(&d).unwrap())).unwrap();
+    assert!(
+        (built - (25.0 * PI - 50.0 + 4.5e-7)).abs() < 1e-12,
+        "{built}"
+    );
+}
+
+/// The quarter turn r 10 about the origin from (10, 0) to (0, 10 − `inside`), a line from
+/// its end to `to`, and back to its start by (12, 12) and (12, 0).
+fn quarter_turn_boxed(inside: f64, to: (f64, f64)) -> Draw {
+    let mut d = Draw::new();
+    let o = d.point(0.0, 0.0);
+    let s = d.point(10.0, 0.0);
+    let e = d.point(0.0, 10.0 - inside);
+    d.arc(&o, &s, &e);
+    let f = d.point(to.0, to.1);
+    let (g, h) = (d.point(12.0, 12.0), d.point(12.0, 0.0));
+    d.line(&e, &f);
+    d.line(&f, &g);
+    d.line(&g, &h);
+    d.line(&h, &s);
+    d
+}
+
+#[test]
+fn lines_the_core_lets_run_beside_an_arc_from_its_end_build_valid_faces() {
+    // As the core's profile_geometry has them: from the end drawn 9e-8 inside at 30° and
+    // at 5°, within 9e-8 of the circle until they leave it on the arc; and from the end on
+    // its circle, dipping 5e-8 into it. OCCT builds each valid, of its area as the request
+    // measures it to 1e-6 (OCCT's arc runs to its true end, the request's chord to the
+    // drawn one).
+    let five = 5f64.to_radians();
+    let dip = libm::acos(1.0 - 5e-9);
+    for (inside, to, measured) in [
+        (9e-8, (4.330127018922194, 12.5 - 9e-8), 92.66987269622209),
+        (
+            9e-8,
+            (10.0 * libm::cos(five), 10.0 - 9e-8 + 10.0 * libm::sin(five)),
+            77.2673970456544,
+        ),
+        (
+            0.0,
+            (4.0 * libm::cos(dip), 10.0 - 4.0 * libm::sin(dip)),
+            77.99760002001028,
+        ),
+    ] {
+        let d = quarter_turn_boxed(inside, to);
+        let built = area(&regions(&made(&d).unwrap())).unwrap();
+        let expected = measured - (25.0 * PI - 50.0);
+        assert!(
+            (built - expected).abs() < 1e-6,
+            "{to:?}: {built} {expected}"
+        );
+    }
+}
+
+#[test]
+fn a_line_dipping_into_an_arcs_circle_past_the_tolerance_is_no_valid_face_to_occt_either() {
+    // A line from the quarter turn's end (0, 10) at α = acos(1 − 2e-8) = 2e-4 below its
+    // tangent, 2e-7 into the circle at its deepest and back out across the arc 4e-3 along,
+    // which the core refuses as crossing it: sent anyway, OCCT finds no valid face.
+    let alpha = libm::acos(1.0 - 2e-8);
+    let (s, e) = ([10.0, 0.0], [0.0, 10.0]);
+    let f = [4.0 * libm::cos(alpha), 10.0 - 4.0 * libm::sin(alpha)];
+    let outer = vec![
+        Curve::Line {
+            start: s,
+            end: [12.0, 0.0],
+        },
+        Curve::Line {
+            start: [12.0, 0.0],
+            end: [12.0, 12.0],
+        },
+        Curve::Line {
+            start: [12.0, 12.0],
+            end: f,
+        },
+        Curve::Line { start: f, end: e },
+        Curve::Arc {
+            center: [0.0, 0.0],
+            start: e,
+            end: s,
+            radius: 10.0,
+            start_angle: PI / 2.0,
+            end_angle: 0.0,
+        },
+    ];
+    let regions = FaceRegions {
+        plane: SketchPlane::Xy,
+        regions: vec![Region {
+            outer,
+            holes: vec![],
+        }],
+    };
+    regions.check().unwrap();
+    let got = area(&regions);
+    assert!(
+        got.as_ref().is_err_and(|e| e.contains("ResultInvalid")),
+        "built a valid face, or refused it otherwise: {got:?}"
+    );
+}
+
+#[test]
 fn a_hole_outside_its_outline_is_not_built_as_a_face() {
     // A unit square with a 1 × 1 hole 4 mm away: no face has that hole. The kernel leaves
     // nesting to the core and says OCCT checks the faces it makes; it must not hand back a

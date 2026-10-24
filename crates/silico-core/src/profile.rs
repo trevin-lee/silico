@@ -1083,10 +1083,11 @@ fn meetings(
 /// `shared_as` takes them as one.
 /// - Sharing none, they meet if they come within the tolerance anywhere.
 /// - Sharing one or two, they meet if their lines or circles cross again on both curves,
-///   further than the tolerance from the shared points; if an end of either, not shared,
-///   is within the tolerance of the other; or if they lie on one line or circle and run
-///   along each other beyond the shared points. Near a shared point they may be as close
-///   as tangent neighbours are.
+///   further than the tolerance from the shared points (a line, where it comes back out
+///   of a circle it has dipped into deeper than the tolerance); if an end of either, not
+///   shared, is within the tolerance of the other; or if they lie on one line or circle
+///   and run along each other beyond the shared points. Near a shared point they may be
+///   as close as tangent neighbours are.
 fn meeting(
     a: &ProfileCurve<'_>,
     b: &ProfileCurve<'_>,
@@ -1156,17 +1157,18 @@ fn meeting(
     let crossed = if shared.is_empty() {
         cross_apart(&a.shape, &b.shape)
     } else {
-        // Each curve's own ends at the shared points.
-        let at_shared = |c: &ProfileCurve<'_>| -> Vec<Shared> {
-            let mut v = Vec::new();
+        // Each curve's own ends at the shared points, and where the kernel ends an arc
+        // there.
+        let (mut at, mut built) = (Vec::new(), Vec::new());
+        for c in [a, b] {
             for (end, &p) in c.ends.iter().flatten().enumerate() {
                 if shared.contains(&shared_as[p]) {
-                    v.push(Shared { end, at: points[p] });
+                    at.push(points[p]);
+                    built.extend(built_end(&c.shape, end));
                 }
             }
-            v
-        };
-        cross_beside(&a.shape, &b.shape, &at_shared(a), &at_shared(b))
+        }
+        cross_beside(&a.shape, &b.shape, &at, &built)
     };
     if crossed {
         return Some(Meeting::Cross);
@@ -1320,6 +1322,25 @@ fn foot(p: Xy, q: Xy, c: Xy) -> (f64, Xy, f64) {
     (t, f, distance(f, c))
 }
 
+/// Where the segment `p`–`q` passes through the circle about `c` of radius `r`: the points
+/// of its line on the circle (none for a tangent, which touches without passing through)
+/// that are on the segment.
+fn line_circle_crossings(p: Xy, q: Xy, c: Xy, r: f64) -> impl Iterator<Item = Xy> {
+    let u = sub(q, p);
+    let (t, _, d) = foot(p, q, c);
+    // Half the chord, along the segment: none (NaN, on no segment) unless it passes
+    // through.
+    let h = if d < r {
+        ((r - d) * (r + d)).sqrt() / dot(u, u).sqrt()
+    } else {
+        f64::NAN
+    };
+    [t - h, t + h]
+        .into_iter()
+        .filter(|t| (0.0..=1.0).contains(t))
+        .map(move |t| add(p, scale(u, t)))
+}
+
 /// Whether two curves that share no point cross: two segments whose ends are each surely
 /// on opposite sides of the other's line ([`side_of_line`]), or a line or a
 /// circle passing through a circle at a point on both curves. A tangent, which touches
@@ -1337,15 +1358,7 @@ fn cross_apart(a: &Shape, b: &Shape) -> bool {
         }
         (Shape::Line { a: p, b: q }, Shape::Round { c, r, arc })
         | (Shape::Round { c, r, arc }, Shape::Line { a: p, b: q }) => {
-            let u = sub(q, p);
-            let (t, _, d) = foot(p, q, c);
-            if d >= r {
-                return false;
-            }
-            let h = ((r - d) * (r + d)).sqrt() / dot(u, u).sqrt();
-            [t - h, t + h]
-                .into_iter()
-                .any(|t| (0.0..=1.0).contains(&t) && on_round(c, arc.as_ref(), add(p, scale(u, t))))
+            line_circle_crossings(p, q, c, r).any(|x| on_round(c, arc.as_ref(), x))
         }
         (
             Shape::Round {
@@ -1358,25 +1371,28 @@ fn cross_apart(a: &Shape, b: &Shape) -> bool {
                 r: r2,
                 arc: a2,
             },
-        ) => {
-            let w = sub(c2, c1);
-            let d = distance(c1, c2);
-            if d == 0.0 || d >= r1 + r2 || d <= (r1 - r2).abs() {
-                return false;
-            }
-            let u = scale(w, 1.0 / d);
-            // Along the line of centres from c1 to the chord through the crossings, and
-            // half the chord.
-            let along = (d + (r1 - r2) * (r1 + r2) / d) / 2.0;
-            let half = ((r1 - along) * (r1 + along)).max(0.0).sqrt();
-            let m = add(c1, scale(u, along));
-            let across = [-u[1], u[0]];
-            [-half, half].into_iter().any(|k| {
-                let x = add(m, scale(across, k));
-                on_round(c1, a1.as_ref(), x) && on_round(c2, a2.as_ref(), x)
-            })
-        }
+        ) => circle_crossings(c1, r1, c2, r2)
+            .any(|x| on_round(c1, a1.as_ref(), x) && on_round(c2, a2.as_ref(), x)),
     }
+}
+
+/// Where the circles about `c1` of radius `r1` and about `c2` of radius `r2` pass through
+/// each other: none for circles apart, one inside the other, on one centre, or tangent.
+fn circle_crossings(c1: Xy, r1: f64, c2: Xy, r2: f64) -> impl Iterator<Item = Xy> {
+    let w = sub(c2, c1);
+    let d = distance(c1, c2);
+    let crossing = !(d == 0.0 || d >= r1 + r2 || d <= (r1 - r2).abs());
+    let u = scale(w, 1.0 / d);
+    // Along the line of centres from c1 to the chord through the crossings, and half the
+    // chord.
+    let along = (d + (r1 - r2) * (r1 + r2) / d) / 2.0;
+    let half = ((r1 - along) * (r1 + along)).max(0.0).sqrt();
+    let m = add(c1, scale(u, along));
+    let across = [-u[1], u[0]];
+    [-half, half]
+        .into_iter()
+        .filter(move |_| crossing)
+        .map(move |k| add(m, scale(across, k)))
 }
 
 /// How near two curves that share no point and don't cross come between their ends (an
@@ -1440,36 +1456,40 @@ fn between(a: &Shape, b: &Shape) -> f64 {
     }
 }
 
-/// One of a curve's ends at a point it shares with another curve.
-#[derive(Clone, Copy)]
-struct Shared {
-    /// Which end: 0 for a line's from or an arc's start, 1 for the other.
-    end: usize,
-    /// Where this curve's end is.
-    at: Xy,
-}
-
-/// Whether two curves that share points (each curve's own ends there) cross again, away
-/// from them: where their lines and circles meet again, further than the tolerance from
-/// every shared point, at a point on both. Two lines from one point meet again only along
-/// each other, and two arcs of one circle only by running along each other ([`along`]'s).
-fn cross_beside(a: &Shape, b: &Shape, shared_a: &[Shared], shared_b: &[Shared]) -> bool {
-    let away = |x: Xy| {
-        shared_a
-            .iter()
-            .chain(shared_b)
-            .all(|s| !touching(distance(x, s.at)))
-    };
+/// Whether two curves that share points (each curve's own ends there, `at`, and where the
+/// kernel ends an arc there, `built`) cross again, further than the tolerance from all of
+/// those, at a point on both. Near a shared point they may be as close as tangent
+/// neighbours are, and the point can be off a circle by the tolerance, so a line counts
+/// only where it comes back out of a circle it has dipped into deeper than the tolerance:
+/// before that the two run within the tolerance of each other, and where they cross
+/// there is rounding's to say (a line tangent to an arc at an end drawn an ulp inside its
+/// circle crosses it again √(2r·ulp) along). Two rounds cross at the shared point
+/// mirrored in their line of centres. Two lines from one point meet again only along each
+/// other, and two arcs of one circle only by running along each other ([`along`]'s).
+fn cross_beside(a: &Shape, b: &Shape, at: &[Xy], built: &[Xy]) -> bool {
+    let away = |x: Xy| at.iter().chain(built).all(|&s| !touching(distance(x, s)));
     match (*a, *b) {
         (Shape::Line { .. }, Shape::Line { .. }) => false,
-        (Shape::Line { a: p0, b: q0 }, Shape::Round { c, arc, .. }) => {
-            line_round_beside(p0, q0, shared_a, c, arc.as_ref(), &away)
-        }
-        (Shape::Round { c, arc, .. }, Shape::Line { a: p0, b: q0 }) => {
-            line_round_beside(p0, q0, shared_b, c, arc.as_ref(), &away)
+        (Shape::Line { a: p0, b: q0 }, Shape::Round { c, r, arc })
+        | (Shape::Round { c, r, arc }, Shape::Line { a: p0, b: q0 }) => {
+            // From its shared end, `p`: where it comes back out of the circle, if it's
+            // deeper than the tolerance in it somewhere before that. Its distance from the
+            // centre is least at the centre's foot and grows away from it, so it's deepest
+            // at the foot if that's ahead of `p`, and at `p` otherwise (deeper than the
+            // tolerance only for an end taken as one point with the arc's, but not it).
+            let (p, q) = if at.contains(&p0) { (p0, q0) } else { (q0, p0) };
+            let u = sub(q, p);
+            let (t, _, d) = foot(p, q, c);
+            let deepest = distance(c, add(p, scale(u, t.max(0.0))));
+            let out = t + ((r - d) * (r + d)).sqrt() / dot(u, u).sqrt();
+            let x = add(p, scale(u, out));
+            !touching(r - deepest)
+                && (0.0..=1.0).contains(&out)
+                && away(x)
+                && on_round(c, arc.as_ref(), x)
         }
         (Shape::Round { c: c1, arc: a1, .. }, Shape::Round { c: c2, arc: a2, .. }) => {
-            let Some(p) = shared_a.first().map(|s| s.at) else {
+            let Some(&p) = at.first() else {
                 return false;
             };
             let d = sub(c2, c1);
@@ -1483,26 +1503,6 @@ fn cross_beside(a: &Shape, b: &Shape, shared_a: &[Shared], shared_b: &[Shared]) 
             away(x) && on_round(c1, a1.as_ref(), x) && on_round(c2, a2.as_ref(), x)
         }
     }
-}
-
-/// Whether the line `p0`–`q0`, which shares `shared` with the round, crosses it again away
-/// from them: where the line meets the circle again, taking the shared point as on it.
-fn line_round_beside(
-    p0: Xy,
-    q0: Xy,
-    shared: &[Shared],
-    c: Xy,
-    arc: Option<&Arc>,
-    away: &dyn Fn(Xy) -> bool,
-) -> bool {
-    let Some(first) = shared.first() else {
-        return false;
-    };
-    let (p, q) = if first.end == 0 { (p0, q0) } else { (q0, p0) };
-    let u = sub(q, p);
-    let t = -2.0 * dot(u, sub(p, c)) / dot(u, u);
-    let x = add(p, scale(u, t));
-    (0.0..=1.0).contains(&t) && away(x) && on_round(c, arc, x)
 }
 
 /// A loop as walked: its curves (by place) and whether each is reversed, and its area
