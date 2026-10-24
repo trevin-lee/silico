@@ -6,6 +6,8 @@
 #[path = "../../silico-core/tests/common/test_programs.rs"]
 mod test_programs;
 
+#[path = "adversarial_export.rs"]
+mod adversarial_export;
 #[path = "adversarial_parts.rs"]
 mod adversarial_parts;
 #[path = "adversarial_profile.rs"]
