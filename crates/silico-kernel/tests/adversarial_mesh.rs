@@ -13,10 +13,12 @@
 //! turns, 3-4-5 triangles, and integer quaternions).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::brep_fixture;
 use super::geometry;
 use super::kernel;
 use super::oracle;
 
+use brep_fixture::{fixture, with_crc};
 use geometry::{apart, cross, cylinder, dot, faces, norm, sub, wide};
 use kernel::kernel;
 use proptest::prelude::*;
@@ -981,14 +983,6 @@ fn a_mirror_on_a_second_placement_of_a_shared_shape_is_refused() {
     assert_refused(&bad, "a mirrored second placement", "mirrors or scales");
 }
 
-/// A B-rep OCCT wrote (tests/fixtures/brep), with Silico's checksum.
-fn fixture(name: &str) -> Vec<u8> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/brep")
-        .join(name);
-    with_crc(std::fs::read(path).unwrap())
-}
-
 #[test]
 fn a_mirror_raised_to_an_even_power_is_read() {
     // powered_far.bin's link rewritten: a mirror (moving 5 along x) raised to 2 is the
@@ -1110,12 +1104,6 @@ fn a_face_of_only_a_triangulation_is_refused() {
             );
         }
     }
-}
-
-/// `body` with Silico's checksum after it.
-fn with_crc(mut body: Vec<u8>) -> Vec<u8> {
-    body.extend_from_slice(&crc32fast::hash(&body).to_le_bytes());
-    body
 }
 
 /// `brep` with the doubles `from` rewritten as `to` (found once, in either byte order),

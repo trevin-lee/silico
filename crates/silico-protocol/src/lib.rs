@@ -207,7 +207,7 @@ pub enum Op {
         start: f64,
         angle: f64,
     },
-    /// A shape's solids meshed for export within `tolerance` mm, and its angular rule
+    /// A shape's solids meshed for export at `tolerance` mm, and its angular rule
     /// ([`export_angle`]), with where each face's nodes lie on the shape's edges and
     /// vertices. Replies with [`Reply::ExportMesh`].
     ExportMesh { shape: ShapeData, tolerance: f64 },

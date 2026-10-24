@@ -364,22 +364,6 @@ std::unique_ptr<ExportTriangulation> export_mesh(const Shape &shape, double tole
     const TopoDS_Shell outer = BRepClass3d::OuterShell(solid);
     for (TopExp_Explorer shells(solid, TopAbs_SHELL); shells.More(); shells.Next()) {
       const TopoDS_Shape &shell = shells.Current();
-      // A shell of unoriented faces only (as OCCT's general fuse makes of a face inside a
-      // solid) is a membrane, no boundary of the solid: its faces are reported apart, and
-      // it isn't a shell of the mesh.
-      bool oriented = false;
-      for (TopExp_Explorer explorer(shell, TopAbs_FACE); explorer.More(); explorer.Next()) {
-        const TopAbs_Orientation o = explorer.Current().Orientation();
-        oriented = oriented || o == TopAbs_FORWARD || o == TopAbs_REVERSED;
-      }
-      if (!oriented) {
-        for (TopExp_Explorer explorer(shell, TopAbs_FACE); explorer.More(); explorer.Next()) {
-          const int number = faces.FindIndex(explorer.Current());
-          in_solid[static_cast<size_t>(number)] = true;
-          out->unoriented_faces_.push_back(static_cast<uint32_t>(number));
-        }
-        continue;
-      }
       out->shell_solids_.push_back(out->solids_);
       out->shell_outer_.push_back(shell.IsSame(outer) ? 1 : 0);
       // Each face as the shell holds it: the explorer composes the shell's orientation and
@@ -390,16 +374,18 @@ std::unique_ptr<ExportTriangulation> export_mesh(const Shape &shape, double tole
         in_solid[static_cast<size_t>(number)] = true;
         const TopAbs_Orientation orientation = face.Orientation();
         if (orientation != TopAbs_FORWARD && orientation != TopAbs_REVERSED) {
-          // INTERNAL and EXTERNAL faces bound no change of material: reported apart, for
-          // the core to leave out and say so.
+          // INTERNAL and EXTERNAL faces bound no change of material: reported apart, with
+          // their shell, for the core to leave out and say so (a shell of nothing else,
+          // as OCCT's general fuse makes of a face inside a solid, is a membrane).
           out->unoriented_faces_.push_back(static_cast<uint32_t>(number));
+          out->unoriented_shells_.push_back(shell_count);
           continue;
         }
         const uint32_t use = static_cast<uint32_t>(out->face_nodes_.size());
         out->face_numbers_.push_back(static_cast<uint32_t>(number));
         out->face_shells_.push_back(shell_count);
         // The largest tolerance of the face, its edges, and its vertices: OCCT meshes the
-        // face no finer than twice it (BRepMesh_Deflection.cxx:146-147).
+        // face no finer than twice it (BRepMesh_Deflection.cxx:149-152).
         out->face_tolerances_.push_back(BRepMesh_ShapeTool::MaxFaceTolerance(face));
         TopLoc_Location location;
         const Handle(Poly_Triangulation) mesh = BRep_Tool::Triangulation(face, location);

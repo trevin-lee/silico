@@ -6,6 +6,8 @@
 // Shared by the files below, each loaded once.
 #[path = "common/box_edges.rs"]
 mod box_edges;
+#[path = "common/brep_fixture.rs"]
+mod brep_fixture;
 #[path = "common/cached.rs"]
 mod cached;
 #[path = "common/chamfer_sizes.rs"]

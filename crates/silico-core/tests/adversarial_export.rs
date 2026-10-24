@@ -152,6 +152,7 @@ fn a_face_whose_triangles_all_weld_into_one_vertex_is_refused_not_an_empty_mesh(
         face_shells: vec![0],
         face_tolerances: vec![1e-7],
         unoriented_faces: vec![],
+        unoriented_shells: vec![],
         shell_solids: vec![0],
         shell_outer: vec![true],
         solids: 1,

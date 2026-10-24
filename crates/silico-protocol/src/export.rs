@@ -73,7 +73,8 @@ pub fn export_angle(tolerance: f64) -> f64 {
 ///
 /// Faces are listed as they're used: solid by solid, shell by shell, each face as its shell
 /// holds it (`TopExp_Explorer`), its triangles wound counterclockwise seen from outside.
-/// `INTERNAL` and `EXTERNAL` faces, which bound no change of material, are left out.
+/// `INTERNAL` and `EXTERNAL` faces, which bound no change of material, are reported apart
+/// (`unoriented_faces`), with no triangles.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ExportMesh {
     /// The export tolerance it was meshed for, in mm, which its checks are held to.
@@ -100,11 +101,14 @@ pub struct ExportMesh {
     pub face_shells: Vec<u32>,
     /// Each face's tolerance as OCCT meshes it: the largest of the face's, its edges', and
     /// its vertices' (`BRepMesh_ShapeTool::MaxFaceTolerance`). OCCT meshes a face no finer
-    /// than twice it (`BRepMesh_Deflection.cxx:146-147`).
+    /// than twice it (`BRepMesh_Deflection.cxx:149-152`).
     pub face_tolerances: Vec<f64>,
     /// Faces of a solid's shell neither FORWARD nor REVERSED (INTERNAL or EXTERNAL), by
     /// number: they bound no change of material, so they're left out of the mesh.
     pub unoriented_faces: Vec<u32>,
+    /// The shell each unoriented face is in, as `face_shells` counts shells. A shell of
+    /// nothing else is a membrane (as OCCT's general fuse makes of a face inside a solid).
+    pub unoriented_shells: Vec<u32>,
     /// The solid each shell is in, counted from 0.
     pub shell_solids: Vec<u32>,
     /// Whether each shell is its solid's outer one (`BRepClass3d::OuterShell`), not a
@@ -165,7 +169,19 @@ impl ExportMesh {
                 self.shell_outer.len()
             ));
         }
-        if let Some(&s) = self.face_shells.iter().find(|&&s| s as usize >= shells) {
+        if self.unoriented_shells.len() != self.unoriented_faces.len() {
+            return Err(format!(
+                "{} shells for {} unoriented faces",
+                self.unoriented_shells.len(),
+                self.unoriented_faces.len()
+            ));
+        }
+        if let Some(&s) = self
+            .face_shells
+            .iter()
+            .chain(&self.unoriented_shells)
+            .find(|&&s| s as usize >= shells)
+        {
             return Err(format!(
                 "a face is in shell {s}, past the {shells} there are"
             ));

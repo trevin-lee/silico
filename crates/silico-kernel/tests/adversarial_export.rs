@@ -6,9 +6,11 @@
 //! used workers; and the archive read back by Python's own zip and XML readers (FreeCAD's).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::brep_fixture;
 use super::exported;
 use super::kernel;
 
+use brep_fixture::fixture;
 use exported::{data, exported};
 use kernel::kernel;
 use silico_core::ErrorCode;
@@ -123,6 +125,11 @@ fn raw_deviation(raw: &silico_protocol::ExportMesh, surface: &dyn Fn([f64; 3]) -
     worst
 }
 
+/// How far, as a multiple of the tolerance, a sphere's mesh may be from it: OCCT's sphere
+/// mesher misses along the seam by up to 2.1 times (m4.8-export-fable, item 2; the pinned
+/// ratios' largest is 2.078 here, 2.104 in FreeCAD's mesher at r 300, 0.01).
+const SPHERE_SEAM: f64 = 2.2;
+
 #[test]
 fn every_round_primitive_is_exported_exactly_when_its_mesh_is_within_the_tolerance() {
     // Rule 7, measured against each primitive's own surface rather than OCCT's figures, at
@@ -135,9 +142,13 @@ fn every_round_primitive_is_exported_exactly_when_its_mesh_is_within_the_toleran
     // sample at each triangle's centroid in the face's parameters, not the nearest point)
     // is far off on a cone (for r 300 mm, h 1 mm, 1.277 mm at a 1 mm tolerance, where the
     // mesh is 1.0e-3 mm from it). Fixed as FreeCAD has it: a face's estimate isn't compared
-    // with the tolerance. Where OCCT's mesh is in fact past the tolerance, the export takes
-    // it as FreeCAD's does, OCCT's result: pinned here as `KNOWN`, so another miss fails.
+    // with the tolerance. Where OCCT's mesh is in fact past the tolerance (a sphere, along
+    // its seam), the export takes it as FreeCAD's does: held here to SPHERE_SEAM, and each
+    // miss pinned by a_spheres_mesh_misses_the_tolerance_at_its_seam_by_what_occt_makes.
     let primitives = [
+        Primitive::Sphere { radius: 5.0 },
+        Primitive::Sphere { radius: 1e-2 },
+        Primitive::Sphere { radius: 300.0 },
         Primitive::Cylinder {
             radius: 5.0,
             height: 10.0,
@@ -197,7 +208,13 @@ fn every_round_primitive_is_exported_exactly_when_its_mesh_is_within_the_toleran
             match printable(&raw, None) {
                 Ok(mesh) => {
                     let d = deviation(&mesh, &*surface);
-                    if d > tolerance {
+                    // A sphere's interior is OCCT's to meet, and misses along its seam by
+                    // up to 2.1 times (the next test pins the misses): held to 2.2 times.
+                    let bound = match primitive {
+                        Primitive::Sphere { .. } => SPHERE_SEAM * tolerance,
+                        _ => tolerance,
+                    };
+                    if d > bound {
                         wrong.push(format!(
                             "{primitive:?} at {tolerance}: taken, {d} from the surface"
                         ));
@@ -815,16 +832,6 @@ fn a_nist_part_whose_cones_mesh_with_coincident_nodes_exports_as_freecad_exports
     assert_eq!(mesh.vertices().len(), 5_420);
 }
 
-/// A B-rep OCCT wrote (tests/fixtures/brep), with Silico's checksum.
-fn fixture(name: &str) -> Vec<u8> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/brep")
-        .join(name);
-    let mut body = std::fs::read(path).unwrap();
-    body.extend_from_slice(&crc32fast::hash(&body).to_le_bytes());
-    body
-}
-
 #[test]
 fn a_box_whose_face_is_unoriented_is_refused_as_open_saying_the_face_was_left_out() {
     // Decided (m4.8-export-fable, item 5): INTERNAL and EXTERNAL faces bound no change of
@@ -893,13 +900,13 @@ print("SILICO_ORACLE " + json.dumps({{"faces": len(s.Faces)}}))
     assert_eq!(mesh.triangles().len(), 12);
     assert_eq!(mesh.vertices().len(), 8);
     assert_eq!(mesh.volume(), 6000.0);
-    assert_eq!(mesh.left_out(), [7]);
+    assert_eq!(mesh.left_out(), ["Face7"]);
 }
 
 #[test]
 fn a_face_meshed_coarser_than_asked_for_its_own_tolerance_is_refused_naming_the_tolerance() {
     // Decided (m4.8-export-fable, item 2b): OCCT meshes a face no finer than twice its
-    // tolerance (BRepMesh_Deflection.cxx:146-147). A 50 mm sphere whose sub-shapes FreeCAD
+    // tolerance (BRepMesh_Deflection.cxx:149-152). A 50 mm sphere whose sub-shapes FreeCAD
     // gave a tolerance of 0.02 (fixTolerance): at 0.01 OCCT meshes it at 0.04, 3.9 times the
     // tolerance (the port review's run), so it's refused, naming Face1 and the tolerance; at
     // 0.04, 2·0.02 = 0.04 is past the deflection, 0.04 less the rounding, and it's refused;

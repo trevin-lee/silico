@@ -579,3 +579,39 @@ fn faces_that_share_no_edge_are_never_joined_however_close_their_nodes() {
         );
     }
 }
+
+#[test]
+fn a_map_that_names_no_face_of_the_shape_is_a_silico_bug() {
+    // The council's tests lens: a map of another shape, naming fewer faces than the mesh
+    // has, would name the face at fault by a number no document holds.
+    use silico_core::document::FeatureId;
+    use silico_core::naming::{ElementMap, OpCode};
+    let map = |faces: u32| {
+        ElementMap::by_number(
+            FeatureId::new("k7f2qx3m").unwrap(),
+            OpCode::Cut,
+            silico_protocol::ElementCounts {
+                faces,
+                edges: 6,
+                vertices: 4,
+                solids: 1,
+            },
+        )
+    };
+    let error = printable(&tetra(), Some(&map(3))).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::Internal, "{error}");
+    assert!(error.message().contains("names no Face4"), "{error}");
+    // A loose face, and a face left out, the map must name too.
+    let mut m = tetra();
+    m.loose_faces = vec![5];
+    let error = printable(&m, Some(&map(4))).unwrap_err();
+    assert!(error.message().contains("names no Face5"), "{error}");
+    let mut m = tetra();
+    m.unoriented_faces = vec![5];
+    m.unoriented_shells = vec![0];
+    let error = printable(&m, Some(&map(4))).unwrap_err();
+    assert!(error.message().contains("names no Face5"), "{error}");
+    // With every face named, the faces left out are named as the map names them.
+    let mesh = printable(&m, Some(&map(5))).unwrap();
+    assert_eq!(mesh.left_out(), ["k7f2qx3m.cut.Face5"]);
+}

@@ -496,7 +496,7 @@ impl KernelRequest<Mesh> {
 }
 
 impl KernelRequest<ExportMesh> {
-    /// `shape`'s solids meshed for export within `tolerance` mm, and its angular rule
+    /// `shape`'s solids meshed for export at `tolerance` mm, and its angular rule
     /// (docs/ports/mesh-export.md): each face's triangles and where its nodes lie on the
     /// shape's edges and vertices, for [`crate::export::printable`] to join and check. A
     /// tolerance outside the export's range is refused, naming it.
@@ -508,7 +508,21 @@ impl KernelRequest<ExportMesh> {
             shape: shape.clone(),
             tolerance,
         };
-        Ok(Self::new(op, |name, reply| match reply {
+        Ok(Self::new(op, move |name, reply| match reply {
+            // A report for another tolerance would hold the export's checks to it: the
+            // worker's, not the request's.
+            Reply::ExportMesh(mesh) if mesh.tolerance.to_bits() != tolerance.to_bits() => {
+                Err(Error::new(
+                    ErrorCode::ProtocolError,
+                    format!(
+                        "the kernel worker sent an export mesh for a tolerance of {} mm, not the \
+                         {} mm asked for",
+                        silico_protocol::format_number(mesh.tolerance),
+                        silico_protocol::format_number(tolerance)
+                    ),
+                )
+                .with_suggestion("start a new kernel worker"))
+            }
             Reply::ExportMesh(mesh) => match mesh.validate() {
                 Ok(()) => Ok(*mesh),
                 // As a display mesh that doesn't hold together: the worker can't be trusted.
@@ -1021,6 +1035,42 @@ pub(crate) fn cone_caps(radius1: f64, radius2: f64, height: f64) -> (bool, bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_export_mesh_for_another_tolerance_than_asked_is_a_protocol_error() {
+        // The council's robustness lens: the export's checks are held to the tolerance in
+        // the report, so a report for 10 mm taken for a 0.1 mm export would hold them to
+        // 10. One for another tolerance than the request's, by its bits, is the worker's
+        // fault.
+        let mesh = |tolerance: f64| silico_protocol::ExportMesh {
+            tolerance,
+            deflection: tolerance,
+            nodes: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            face_nodes: vec![3],
+            triangles: vec![[0, 1, 2]],
+            face_triangles: vec![1],
+            face_numbers: vec![1],
+            face_deflections: vec![0.0],
+            face_shells: vec![0],
+            face_tolerances: vec![1e-7],
+            shell_solids: vec![0],
+            shell_outer: vec![true],
+            solids: 1,
+            ..Default::default()
+        };
+        let shape = ShapeData::checked(Blob::inline(vec![]), true);
+        let asked = |tolerance: f64| {
+            KernelRequest::export_mesh(&shape, 0.1)
+                .unwrap()
+                .answer(Ok(Reply::ExportMesh(Box::new(mesh(tolerance)))))
+        };
+        let error = asked(10.0).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::ProtocolError, "{error}");
+        assert!(error.message().contains("10 mm, not the 0.1 mm"), "{error}");
+        // The next float up is another tolerance too.
+        assert!(asked(0.1f64.next_up()).is_err());
+        assert_eq!(asked(0.1).unwrap().tolerance, 0.1);
+    }
 
     /// A 4 × 3 rectangle on XY with a circle hole, and a circle beside it: two regions,
     /// six curves, four points.

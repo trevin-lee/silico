@@ -335,6 +335,7 @@ mod ffi {
         fn face_shells(self: &ExportTriangulation) -> &[u32];
         fn face_tolerances(self: &ExportTriangulation) -> &[f64];
         fn unoriented_faces(self: &ExportTriangulation) -> &[u32];
+        fn unoriented_shells(self: &ExportTriangulation) -> &[u32];
         fn shell_solids(self: &ExportTriangulation) -> &[u32];
         fn shell_outer(self: &ExportTriangulation) -> &[u8];
         fn solids(self: &ExportTriangulation) -> u32;
@@ -1725,6 +1726,7 @@ pub fn export_mesh(shape: &Shape, tolerance: f64) -> Result<ExportMesh, KernelEr
         face_shells: raw.face_shells().to_vec(),
         face_tolerances: raw.face_tolerances().to_vec(),
         unoriented_faces: raw.unoriented_faces().to_vec(),
+        unoriented_shells: raw.unoriented_shells().to_vec(),
         shell_solids: raw.shell_solids().to_vec(),
         shell_outer: raw.shell_outer().iter().map(|&b| b != 0).collect(),
         solids: raw.solids(),

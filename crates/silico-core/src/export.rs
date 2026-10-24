@@ -1,7 +1,7 @@
 //! A feature's solids as a printable mesh, and the mesh written as 3MF
 //! (docs/ports/mesh-export.md).
 //!
-//! The kernel worker meshes each face within the export tolerance and reports where its
+//! The kernel worker meshes each face at the export tolerance and reports where its
 //! nodes lie on the solid's edges and vertices ([`ExportMesh`]). [`printable`] joins the
 //! faces there, by the B-rep's topology rather than by distance, and checks what a slicer
 //! needs, in this order, refusing a mesh that fails and naming the faces at fault:
@@ -48,7 +48,7 @@ pub struct PrintableMesh {
     vertices: Vec<[f32; 3]>,
     triangles: Vec<[u32; 3]>,
     volume: f64,
-    left_out: Vec<u32>,
+    left_out: Vec<String>,
 }
 
 impl PrintableMesh {
@@ -68,9 +68,10 @@ impl PrintableMesh {
         self.volume
     }
 
-    /// Faces of the solid left out, by number: INTERNAL and EXTERNAL faces, which bound no
-    /// change of material (as OCCT's own volume leaves them out, `BRepGProp.cxx:264-270`).
-    pub fn left_out(&self) -> &[u32] {
+    /// Faces of the solid left out, named as the feature's element map names them (as
+    /// FreeCAD numbers them, `Face7`, without one): INTERNAL and EXTERNAL faces, which bound
+    /// no change of material (as OCCT's own volume leaves them out, `BRepGProp.cxx:264-270`).
+    pub fn left_out(&self) -> &[String] {
         &self.left_out
     }
 }
@@ -115,7 +116,7 @@ const FINER: &str = "export with another tolerance, or change the part where the
                      meet: the kernel's mesh of them isn't a closed solid";
 
 /// Joins the faces of `mesh` at the edges they share, and checks the result is printable
-/// within the tolerance it was meshed for (the module's rules, in order). `names` names the
+/// at the tolerance it was meshed for (the module's rules, in order). `names` names the
 /// faces in a refusal, as the feature's element map does, and must name every face of the
 /// shape; without it they're numbered (`Face3`). Each solid is joined on its own, so two
 /// solids that touch never share a vertex.
@@ -173,6 +174,7 @@ fn checked(mesh: &ExportMesh, names: Option<&ElementMap>) -> Result<PrintableMes
             .face_numbers
             .iter()
             .chain(&mesh.loose_faces)
+            .chain(&mesh.unoriented_faces)
             .find(|&&f| map.name(ElementRef::face(f)).is_none())
     {
         return Err(Error::new(
@@ -434,14 +436,21 @@ fn checked(mesh: &ExportMesh, names: Option<&ElementMap>) -> Result<PrintableMes
             .filter(move |&f| mesh.face_shells[f] as usize == shell)
             .map(number)
     };
+    // A shell of unoriented faces only is a membrane, no boundary: it encloses nothing, and
+    // isn't held to.
+    let membrane = |shell: usize| {
+        !mesh.face_shells.iter().any(|&s| s as usize == shell)
+            && mesh.unoriented_shells.iter().any(|&s| s as usize == shell)
+    };
     let inward: Vec<u32> = (0..shell_volumes.len())
+        .filter(|&shell| !membrane(shell))
         .filter(|&shell| {
             let volume = shell_volumes[shell];
             !encloses(volume, mesh.shell_outer[shell])
         })
         .flat_map(shell_faces)
         .collect();
-    let unbounded = shell_volumes.contains(&0.0);
+    let unbounded = (0..shell_volumes.len()).any(|s| !membrane(s) && shell_volumes[s] == 0.0);
     if unbounded || !inward.is_empty() {
         return Err(faces.refuse(
             ErrorCode::InvalidResult,
@@ -475,10 +484,10 @@ fn checked(mesh: &ExportMesh, names: Option<&ElementMap>) -> Result<PrintableMes
         ));
     }
 
-    // 7. Within the tolerance of the B-rep, less what rounding to 32 bits moves a vertex
+    // 7. Meshed at the tolerance, less what rounding to 32 bits moves a vertex
     // (the worker meshed with the tolerance less the most its bounding box allows). First,
     // OCCT's own raise: it meshes a face no finer than twice its tolerance (the largest of
-    // the face's, its edges', and its vertices', `BRepMesh_Deflection.cxx:146-147`), so a
+    // the face's, its edges', and its vertices', `BRepMesh_Deflection.cxx:149-152`), so a
     // face whose geometry is exact only to more than half the deflection was meshed more
     // coarsely than asked.
     let raised: Vec<usize> = (0..mesh.face_nodes.len())
@@ -489,7 +498,11 @@ fn checked(mesh: &ExportMesh, names: Option<&ElementMap>) -> Result<PrintableMes
             .iter()
             .map(|&f| mesh.face_tolerances[f])
             .fold(0.0f64, f64::max);
-        let rounding = tolerance - allowed;
+        // The margin the worker meshed with, from the part's bounding box (which reaches
+        // further than its nodes, by the shape's tolerances): the next export's too, so the
+        // least tolerance that works is twice the loosest face's tolerance plus it, and a
+        // hair more, so the worker's own subtraction can't land a rounding short.
+        let margin = mesh.tolerance - mesh.deflection;
         return Err(faces
             .refuse(
                 ErrorCode::InvalidResult,
@@ -505,7 +518,7 @@ fn checked(mesh: &ExportMesh, names: Option<&ElementMap>) -> Result<PrintableMes
                 &format!(
                     "export with a tolerance of at least {} mm, or rebuild the part so the faces \
                      named meet more precisely",
-                    silico_protocol::format_number(2.0 * loosest + rounding)
+                    silico_protocol::format_number((2.0 * loosest + margin).next_up())
                 ),
             )
             .with_parameter("tolerance"));
@@ -542,7 +555,11 @@ fn checked(mesh: &ExportMesh, names: Option<&ElementMap>) -> Result<PrintableMes
         vertices,
         triangles,
         volume,
-        left_out: mesh.unoriented_faces.clone(),
+        left_out: mesh
+            .unoriented_faces
+            .iter()
+            .map(|&f| faces.name(f))
+            .collect(),
     })
 }
 

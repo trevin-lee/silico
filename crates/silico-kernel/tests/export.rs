@@ -35,6 +35,18 @@ fn hex(bytes: &[u8]) -> String {
 
 #[test]
 fn a_boxs_mesh_is_its_8_corners_12_triangles_and_exactly_its_volume() {
+    // The report is for the tolerance asked, meshed at it less the rounding its box allows
+    // (the box reaches 30 mm, and a little further by OCCT's enlargement by its tolerances).
+    let raw = kernel()
+        .export_mesh(&data(&make_box(10.0, 20.0, 30.0).unwrap()), 0.1)
+        .unwrap();
+    assert_eq!(raw.tolerance.to_bits(), 0.1f64.to_bits());
+    let rounding = 0.1 - raw.deflection;
+    assert!(
+        rounding >= silico_protocol::export_rounding(30.0)
+            && rounding <= silico_protocol::export_rounding(30.001),
+        "{rounding}"
+    );
     let mesh = exported(&make_box(10.0, 20.0, 30.0).unwrap(), 0.1).unwrap();
     assert_eq!(mesh.triangles().len(), 12);
     let mut corners: Vec<[f32; 3]> = mesh.vertices().to_vec();
