@@ -1,6 +1,7 @@
 # The CI VM's idle time, filled with useful background work that never delays real work.
-# Every 15 minutes, and whenever a mutants run or an oracle sweep ends, one short job looks
-# at the runners, starts at most one filler run, and exits.
+# Every 15 minutes (started by filler-clock.yml: GitHub throttles this file's schedule, which
+# stays as a backstop), and whenever a mutants run or an oracle sweep someone started ends,
+# one short job looks at the runners, starts at most one filler run, and exits.
 #
 # It starts nothing while any run or job is queued (a gate, a real run's shards, or a
 # filler run waiting for runners), or while a filler run (mutants or the oracle sweep) is
@@ -88,14 +89,31 @@ jobs:
             gh workflow run "$workflow" --ref "$BRANCH" "$@"
           }
 
+          # The clock (filler-clock.yml) starts this every 15 minutes, a chain of its own runs.
+          # If no clock run is queued, running, or waiting its turn, the chain was lost: start
+          # it again (this runs whenever a real run ends, so that's soon after).
+          # Best effort: a clock disabled on purpose, or GitHub not answering, mustn't stop the
+          # filler deciding (a failed look counts as the clock running).
+          clock=$(gh run list --workflow filler-clock.yml --limit 10 --json status \
+            --jq '[.[] | select(.status != "completed")] | length') || clock=1
+          if [ "$clock" -eq 0 ]; then
+            if [ "$DRY" = true ]; then
+              say "The clock isn't running (dry: not started)"
+            else
+              gh workflow run filler-clock.yml --ref main && say "The clock wasn't running: started it" ||
+                say "The clock isn't running and couldn't be started (disabled?)"
+            fi
+          fi
+
           # Every queued or running run but this one: its id, workflow file, status, title.
           active=$(for status in queued in_progress; do
             gh api "repos/$GH_REPO/actions/runs?status=$status&per_page=100" --jq \
               ".workflow_runs[] | select(.id != $GITHUB_RUN_ID)
                 | [.id, (.path | ltrimstr(\".github/workflows/\")), .status, .display_title] | @tsv"
           done)
-          # Runs of this workflow are decisions like this one, not work.
-          active=$(awk -F '\t' '$2 != "filler.yml"' <<<"$active")
+          # Runs of this workflow are decisions like this one, and the clock's (filler-clock.yml)
+          # only start them: neither is work, nor waits for a runner work could use.
+          active=$(awk -F '\t' '$2 != "filler.yml" && $2 != "filler-clock.yml"' <<<"$active")
           if awk -F '\t' '$3 == "queued" { found = 1 } END { exit !found }' <<<"$active"; then
             skip "a run is queued, waiting for runners"
           fi
