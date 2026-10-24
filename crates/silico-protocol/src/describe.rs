@@ -573,6 +573,45 @@ mod tests {
             ),
             (
                 |d| {
+                    d.faces[1].surface = Surface::Cylinder {
+                        axis: tilted(),
+                        radius: 1.0,
+                    }
+                },
+                "the kernel's Face2's axis's direction",
+            ),
+            (
+                |d| {
+                    d.faces[2].surface = Surface::Cone {
+                        axis: tilted(),
+                        radius: 1.0,
+                        half_angle: 0.5,
+                    }
+                },
+                "the kernel's Face3's axis's direction",
+            ),
+            (
+                |d| {
+                    d.faces[4].surface = Surface::Torus {
+                        axis: tilted(),
+                        major_radius: 10.0,
+                        minor_radius: 2.0,
+                    }
+                },
+                "the kernel's Face5's axis's direction",
+            ),
+            (
+                |d| {
+                    d.edges[2].curve = EdgeCurve::Ellipse {
+                        axis: tilted(),
+                        major_radius: 3.0,
+                        minor_radius: 1.0,
+                    }
+                },
+                "the kernel's Edge3's axis's direction",
+            ),
+            (
+                |d| {
                     d.faces[4].surface = Surface::Torus {
                         axis: z_axis(),
                         major_radius: 10.0,
@@ -830,6 +869,20 @@ mod tests {
             |kind, was, now| format!("{kind:?}: {was} then {now}"),
         );
         assert_eq!(refused.unwrap_err(), "Edge: 2500 then 1500");
+    }
+
+    #[test]
+    fn each_kind_has_its_plural() {
+        assert_eq!(
+            [
+                ElementKind::Face,
+                ElementKind::Edge,
+                ElementKind::Vertex,
+                ElementKind::Solid
+            ]
+            .map(ElementKind::plural),
+            ["faces", "edges", "vertices", "solids"]
+        );
     }
 
     #[test]

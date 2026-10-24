@@ -880,9 +880,10 @@ fn bsplines_beziers_extrusions_and_revolutions_are_each_their_kind_with_their_po
     for (face, area) in [(1, 1.0), (3, 8.35476640348216)] {
         assert_close("a face's area", d.faces[face].area, area, 1e-9);
     }
-    // The ruled surface is the cubic B-spline (3.2682882396736437 long) extruded 2 at right
+    // The ruled surface is the cubic B-spline (3.2682882396736437 long, FreeCAD's Edge.Length,
+    // which an independent Gauss integration agrees with to 2.5e-13) extruded 2 at right
     // angles to its plane: 2 × that = 6.536576479347287 by hand. OCCT gives
-    // 6.53657440325774 either way it integrates, 3.2e-7 short: its wrong answer, as the
+    // 6.53657440325774 either way it integrates, 3.2e-7 short, relatively: its wrong answer, as the
     // extruded face's below. Right, or that wrong answer.
     let ruled = d.faces[0].area;
     assert!(

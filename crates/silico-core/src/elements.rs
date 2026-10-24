@@ -75,7 +75,7 @@ pub fn elements(map: &ElementMap, description: Description) -> Result<Vec<Elemen
                 map,
                 format!(
                     "{}: the kernel describes {}, and its element map names {named}",
-                    kind_words(kind).1,
+                    kind.plural(),
                     geometries.len()
                 ),
             ));
@@ -88,8 +88,8 @@ pub fn elements(map: &ElementMap, description: Description) -> Result<Vec<Elemen
                 return Err(mismatch(
                     map,
                     format!(
-                        "its element map doesn't name its {} {index}",
-                        kind_words(kind).0
+                        "its element map doesn't name its {}",
+                        ElementRef { kind, index }
                     ),
                 ));
             };
@@ -107,16 +107,6 @@ pub fn elements(map: &ElementMap, description: Description) -> Result<Vec<Elemen
         out.extend(of_kind.into_iter().map(|(_, element)| element));
     }
     Ok(out)
-}
-
-/// A kind's word, for one and for many.
-fn kind_words(kind: ElementKind) -> (&'static str, &'static str) {
-    match kind {
-        ElementKind::Face => ("face", "faces"),
-        ElementKind::Edge => ("edge", "edges"),
-        ElementKind::Vertex => ("vertex", "vertices"),
-        ElementKind::Solid => ("solid", "solids"),
-    }
 }
 
 fn mismatch(map: &ElementMap, cause: String) -> Error {

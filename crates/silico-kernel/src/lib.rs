@@ -963,11 +963,7 @@ pub fn describe_whole(shape: &Shape) -> Result<silico_protocol::Description, Ker
             KernelError::new(silico_protocol::Refusal::Internal {
                 what: format!(
                     "the shape's count of {} changed between batches, {was} then {now}",
-                    match kind {
-                        ElementKind::Face => "faces",
-                        ElementKind::Edge => "edges",
-                        _ => "vertices",
-                    }
+                    kind.plural()
                 ),
             })
         },
