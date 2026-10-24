@@ -426,12 +426,7 @@ impl Drag {
         } else {
             status
         };
-        let values = if status == SolveStatus::Success {
-            check_reach(&out.values)?;
-            Some(out.values)
-        } else {
-            None
-        };
+        let values = (status == SolveStatus::Success).then_some(out.values);
         Ok(Moved { status, values })
     }
 }

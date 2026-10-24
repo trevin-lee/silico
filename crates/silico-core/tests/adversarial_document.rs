@@ -17,8 +17,8 @@ use proptest::prelude::*;
 use silico_core::ErrorCode;
 use silico_core::document::json::{self, Value};
 use silico_core::document::{
-    Angle, Document, Feature, FeatureId, FeatureVersion, FormatVersion, Length, Name, NumberError,
-    Operation, Units, read, write,
+    Angle, Document, Feature, FeatureId, FeatureVersion, FormatVersion, Length, Name, NamingScheme,
+    NumberError, Operation, Units, read, write,
 };
 use within::within;
 
@@ -84,6 +84,7 @@ fn one_feature(feature: Feature) -> Document {
     Document {
         silico: FormatVersion,
         units: Units,
+        naming: NamingScheme,
         features: vec![feature],
     }
 }
@@ -380,7 +381,7 @@ fn names_of_every_awkward_character_round_trip_byte_for_byte() {
         assert!(!text.contains('\r'), "{name:?}: {text}");
         assert_eq!(
             text.lines().count(),
-            7,
+            8,
             "{name:?}: one feature, one line: {text}"
         );
         let back = read(text.as_bytes()).unwrap_or_else(|e| panic!("{name:?}: {e}"));
@@ -478,7 +479,7 @@ fn every_byte_of_a_multibyte_name_cut_is_refused_as_not_utf8() {
         bytes.extend_from_slice(&text.as_bytes()[start + 4..]);
         let err = read(&bytes).unwrap_err();
         assert!(
-            err.message().contains("isn't UTF-8, at line 5, column 56"),
+            err.message().contains("isn't UTF-8, at line 6, column 56"),
             "{k}: {err}"
         );
     }
@@ -646,7 +647,7 @@ fn a_feature_that_isnt_an_object_is_refused_naming_its_place() {
 fn a_feature_written_with_its_fields_out_of_order_and_respaced_is_canonical() {
     let text = "{\"features\":[{\"height\":1,\"width\":1,\"length\":1,\"position\":[0,0,0],\"name\":\"B\",\
                 \"v\":1,\"type\":\"box\",\"id\":\"k7f2qx3m\"}],\"units\":{\"resolution\":\"1nm\",\"length\":\"mm\"},\"silico\":1}";
-    let want = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"features\": [\n    \
+    let want = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    \
                 {\"id\": \"k7f2qx3m\", \"type\": \"box\", \"v\": 1, \"name\": \"B\", \"position\": [0, 0, 0], \"length\": 1, \"width\": 1, \"height\": 1}\n  ]\n}\n";
     assert_eq!(write(&read(text.as_bytes()).unwrap()).unwrap(), want);
 }
@@ -691,7 +692,7 @@ fn a_hundred_thousand_features_read_and_write_promptly() {
         (document.features.len(), write(&document).unwrap())
     });
     assert_eq!(n, 100_000);
-    assert_eq!(written.lines().count(), 100_000 + 6);
+    assert_eq!(written.lines().count(), 100_000 + 7);
 }
 
 #[test]
@@ -914,6 +915,7 @@ fn any_document() -> impl Strategy<Value = Document> {
     prop::collection::vec(feature, 0..5).prop_map(|features| Document {
         silico: FormatVersion,
         units: Units,
+        naming: NamingScheme,
         features,
     })
 }
@@ -1034,7 +1036,7 @@ proptest! {
         prop_assert_eq!(write(&back).unwrap(), text.clone());
         // One feature per line, LF only, a trailing newline.
         let n = document.features.len();
-        prop_assert_eq!(text.lines().count(), if n == 0 { 5 } else { 6 + n });
+        prop_assert_eq!(text.lines().count(), if n == 0 { 6 } else { 7 + n });
         let canonical = !text.contains('\r') && text.ends_with("}\n");
         prop_assert!(canonical);
     }

@@ -54,12 +54,26 @@ tests_of() {
   echo "package($package) & ($tests)"
 }
 filter="not ($(tests_of silico-core "${core_wall_clock[@]}") | $(tests_of silico-sketch "${sketch_wall_clock[@]}"))"
-# Each mutant's tests, and the baseline's, given 20 minutes: no multiple of the baseline,
+# Each test given 5 minutes a try, not the 2 its slow-timeout gives (.config/nextest.toml):
+# the shards run niced, and while gates build and test at full priority a niced test that
+# takes 20 s alone can take minutes. Ended at 2, under retries no longer than a burst of
+# gates, its failure would count the mutant as caught: a false kill, which hides a miss. A
+# mutant that hangs a test is still caught: three tries of 5 minutes end inside the 30
+# below. The tree's own config with a profile added (tests that allow longer keep it), by
+# --config-file, so trees older than this script take it too.
+nextest_config=$(mktemp "${TMPDIR:-/tmp}/silico-mutants-nextest.XXXXXX")
+trap 'rm -f "$nextest_config"' EXIT
+{
+  cat .config/nextest.toml
+  printf '\n[profile.silico-mutants]\nslow-timeout = { period = "60s", terminate-after = 5 }\n'
+} >"$nextest_config"
+# Each mutant's tests, and the baseline's, given 30 minutes: no multiple of the baseline,
 # which runs only the mutated packages' tests. The workspace's take 4 to 5 minutes on a
 # loaded runner, and Cargo can wait as long again before them on the package cache's lock,
 # which every runner on the VM shares. (At 300 s, every test had passed so far in 10 of
-# run 39630661896's 11 timeouts.) A hang is mostly nextest's to stop: it ends a test past
-# its slow-timeout (.config/nextest.toml), and the failure catches the mutant. A hang in a
-# test allowed 10 minutes, retried on CI, still times out here; so does a run past 20
-# minutes. A timeout is triaged as missed.
-cargo mutants --in-place --timeout 1200 --cargo-test-arg=-E --cargo-test-arg="$filter" "$@"
+# run 39630661896's 11 timeouts.) A hung test, retried twice on CI, takes 15 minutes from
+# when it starts, at most about 5 into the run: nextest ends it first, and its failure
+# catches the mutant. A run past 30 minutes times out, and a timeout is triaged as missed.
+cargo mutants --in-place --timeout 1800 --cargo-test-arg=-E --cargo-test-arg="$filter" \
+  --cargo-test-arg=--config-file --cargo-test-arg="$nextest_config" \
+  --cargo-test-arg=--profile --cargo-test-arg=silico-mutants "$@"

@@ -1,0 +1,66 @@
+# Mutants argued equivalent or unreachable, one line per mutant: file | function |
+# description | #PR, the pull request whose body gives the argument.
+# The mutants workflow's summary lists as "New misses" only the missed and timed-out
+# mutants this list doesn't account for (.github/workflows/mutants.yml); it never changes
+# which mutants are tested.
+#
+# The key is cargo-mutants' name without its line and column, which move: the file, the
+# function after the last " in " (for a whole function replaced, the function it names;
+# outside a function, empty), and the description before it. Mutants with one key are told
+# apart only by how many there are: a key missed more times than it's listed here is new,
+# and all its misses are listed. Add a mutant with the PR that argues it; remove its line
+# when a test kills it or its code goes.
+crates/silico-core/src/document/validate.rs | bytes_key | replace | with ^ | #84
+crates/silico-core/src/document/validate.rs | validate | replace > with >= | #84
+crates/silico-core/src/document/validate.rs | validate | replace > with >= | #84
+crates/silico-core/src/fake.rs | Measured::swept | replace == with != | #84
+crates/silico-core/src/profile.rs | between | replace && with || | #95
+crates/silico-core/src/profile.rs | between | replace - with + | #95
+crates/silico-core/src/profile.rs | cross_apart | replace * with / | #95
+crates/silico-core/src/profile.rs | cross_apart | replace < with <= | #95
+crates/silico-core/src/profile.rs | cross_apart | replace < with <= | #95
+crates/silico-core/src/profile.rs | crossings | replace > with < | #98
+crates/silico-core/src/profile.rs | crossings | replace > with >= | #98
+crates/silico-core/src/profile.rs | crossings | replace > with >= | #98
+crates/silico-core/src/profile.rs | meetings | replace * with + | #95
+crates/silico-core/src/profile.rs | meetings | replace * with / | #95
+crates/silico-core/src/profile.rs | meetings | replace < with <= | #95
+crates/silico-core/src/profile.rs | meetings | replace < with <= | #95
+crates/silico-core/src/profile.rs | meetings | replace > with == | #95
+crates/silico-core/src/profile.rs | meetings | replace > with >= | #95
+crates/silico-core/src/profile.rs | meetings | replace || with && | #95
+crates/silico-core/src/profile.rs | on_arc | replace > with >= | #95
+crates/silico-core/src/profile.rs | on_arc | replace > with >= | #95
+crates/silico-core/src/profile.rs | one_point_groups | replace * with + | #95
+crates/silico-core/src/profile.rs | one_point_groups | replace * with / | #95
+crates/silico-core/src/profile.rs | one_point_groups | replace + with * | #95
+crates/silico-core/src/profile.rs | one_point_groups | replace > with == | #95
+crates/silico-core/src/profile.rs | one_point_groups | replace > with >= | #95
+crates/silico-core/src/profile.rs | regions | replace + with - | #98
+crates/silico-core/src/profile.rs | regions | replace < with <= | #98
+crates/silico-core/src/profile.rs | regions | replace < with <= | #98
+crates/silico-core/src/profile.rs | regions | replace < with <= | #98
+crates/silico-core/src/profile.rs | regions | replace < with == | #98
+crates/silico-core/src/profile.rs | regions | replace < with == | #98
+crates/silico-core/src/profile.rs | regions | replace > with == | #98
+crates/silico-core/src/profile.rs | regions | replace > with == | #98
+crates/silico-core/src/profile.rs | regions | replace > with >= | #98
+crates/silico-core/src/profile.rs | regions | replace > with >= | #98
+crates/silico-core/src/profile.rs | regions | replace > with >= | #98
+crates/silico-core/src/profile.rs | regions | replace || with && | #98
+crates/silico-core/src/profile.rs | regions | replace || with && | #98
+crates/silico-core/src/profile.rs | regions | replace || with && | #98
+crates/silico-core/src/recompute.rs | Engine<K>::serve | replace && with || | #96
+crates/silico-core/src/recompute.rs | Engine<K>::serve | replace -= with += | #96
+crates/silico-core/src/recompute.rs | Engine<K>::serve | replace -= with /= | #96
+crates/silico-core/src/recompute.rs | Engine<K>::serve | replace == with != | #96
+crates/silico-core/src/recompute.rs | Engine<K>::serve | replace || with && | #96
+crates/silico-core/src/recompute.rs | EngineState::stop_older_solve | replace < with <= | #96
+crates/silico-core/src/recompute.rs | sweep_step | replace * with / | #84
+crates/silico-core/src/sketch.rs | savable | replace savable -> Result<(), Error> with Ok(()) | #96
+crates/silico-core/src/sweep.rs | nearest_distances | replace > with >= | #90
+crates/silico-core/src/sweep.rs | significant | replace || with && | #84
+crates/silico-core/src/sweep.rs | significant | replace || with && | #84
+crates/silico-kernel/src/lib.rs | make_faces | replace > with >= | #44
+crates/silico-oracle/src/features.rs | run | replace || with && | #84
+crates/silico-protocol/src/faces.rs | check_area | replace > with >= | #44

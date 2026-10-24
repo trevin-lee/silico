@@ -6,8 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use silico_core::document::{
     Checked, Coordinate, Document, ElementId, Feature, FeatureId, FeatureVersion, FormatVersion,
-    Invalid, Name, Operation, Plane, Sketch, SketchArc, SketchCircle, SketchLine, SketchPoint,
-    Units,
+    Invalid, Name, NamingScheme, Operation, Plane, Sketch, SketchArc, SketchCircle, SketchLine,
+    SketchPoint, Units,
 };
 use silico_core::profile::{Profile, Refused, profile};
 use silico_core::sketch::SketchSolution;
@@ -171,6 +171,7 @@ impl Draw {
         Checked::new(Document {
             silico: FormatVersion,
             units: Units,
+            naming: NamingScheme,
             features: vec![Feature {
                 id: feature(),
                 operation: Operation::Sketch(self.sketch.clone()),

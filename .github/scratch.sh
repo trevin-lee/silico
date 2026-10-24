@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # A CI job's test scratch, in memory (a gate's, or a mutants shard's): `start` makes a directory for the job on the VM's
 # tmpfs (/dev/shm) and points TMPDIR and the tests' tmp/ in the build's target directory
-# (target/tmp or target-mutants/tmp: SILICO_TEST_SCRATCH, which tests/committed-tree.sh
-# links it to) into it; `end` reports how large it grew,
+# (target/tmp, target-mutants/tmp or target-filler/tmp: SILICO_TEST_SCRATCH, which
+# tests/committed-tree.sh links it to) into it; `end` reports how large it grew,
 # puts that tmp/ back as a directory, and removes it. On the VM's disk, which every runner's builds and tests share, a test's fsync
 # stalled for 70 to 102 s with three gates writing at once (#75), past nextest's limit.
 # Build outputs stay on disk.

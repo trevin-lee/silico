@@ -17,7 +17,7 @@
 use silico_protocol::{ChamferSize, MAX_LENGTH, check_fillet_radius, check_offset, format_number};
 
 use super::json::shown;
-use super::model::{Axis, Document, ExtentValue, FeatureId, ID_LENGTH, Operation};
+use super::model::{Axis, Document, ExtentValue, FeatureId, ID_LENGTH, NamingScheme, Operation};
 use super::quantity::Length;
 use super::sketch::ElementKind as SketchElement;
 use crate::kernel::ElementKind;
@@ -59,6 +59,11 @@ impl Invalid {
 /// problem with them. Within a feature, problems come in the order of its fields: its ID,
 /// its values, its references.
 pub fn validate(document: &Document) -> Result<(), Invalid> {
+    // The names below are read under the scheme Silico names by (`Name::parse`), the only
+    // one a document can record (`NamingScheme`: the reader refuses every other), so no
+    // name is read under a scheme other than the one it was written under. A scheme added
+    // beside it makes this pattern refutable, and the gate has to say how it reads each.
+    let NamingScheme = document.naming;
     let features = &document.features;
     let _span = tracing::debug_span!("document_validate", features = features.len()).entered();
 

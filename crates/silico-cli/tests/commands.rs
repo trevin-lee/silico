@@ -187,6 +187,38 @@ fn a_document_that_doesnt_pass_the_gate_is_exit_1_and_left_as_it_was() {
 }
 
 #[test]
+fn a_document_of_another_naming_scheme_is_exit_1_naming_the_field_and_left_as_it_was() {
+    // M4.0: names are never read under a scheme other than their own.
+    let scratch = Scratch::new("other-scheme");
+    let text = EXAMPLE.replacen("\n  \"features\"", "\n  \"naming\": 4,\n  \"features\"", 1);
+    assert!(text.contains("\"naming\": 4,"));
+    let file = scratch.file(&text);
+    let out = silico(&scratch, &["check", "--json"], &file);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(line["ok"], false);
+    assert_eq!(line["total"], 1);
+    let problem = &line["problems"][0];
+    assert_eq!(problem["code"], "invalid_input");
+    assert_eq!(problem["parameter"], "naming");
+    assert_eq!(
+        problem["message"],
+        "the document's names were written under naming scheme 4, which this Silico doesn't \
+         read, at line 4, column 13"
+    );
+    assert_eq!(
+        problem["suggestion"],
+        "this Silico reads naming scheme 5: open it in the Silico that wrote it"
+    );
+    for command in ["fmt", "check"] {
+        let out = silico(&scratch, &[command], &file);
+        assert_eq!(out.status.code(), Some(1), "{command}: {}", stderr(&out));
+        assert!(stderr(&out).contains("naming scheme 4"), "{}", stderr(&out));
+    }
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+}
+
+#[test]
 fn show_prints_the_outline_without_a_kernel() {
     let scratch = Scratch::new("show");
     let file = scratch.file(EXAMPLE);

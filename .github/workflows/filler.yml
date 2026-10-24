@@ -1,0 +1,195 @@
+# The CI VM's idle time, filled with useful background work that never delays real work.
+# Every 15 minutes, and whenever a mutants run or an oracle sweep ends, one short job looks
+# at the runners, starts at most one filler run, and exits.
+#
+# It starts nothing while any run or job is queued (a gate, a real run's shards, or a
+# filler run waiting for runners), or while a filler run (mutants or the oracle sweep) is
+# queued or running. Free runners aren't idle CPU: the VM is saturated by about six
+# shards. So it fills only when more than a fifth of the VM's CPUs are idle (over 15
+# seconds; this job runs on the VM), with as many shards as the idle CPUs feed at a
+# filler shard's share (a quarter of the VM) and the free runners labelled filler
+# (silico-9 to -12) hold. Filler shards run only there, at the idle scheduling class
+# (mutants.yml), so they hold no runner a gate could use and take no CPU real work wants.
+# In order:
+#   a. Main's new commits: mutants in what main changed in its source since the commit the
+#      last filler `a` run tested (or since main's parent, at first).
+#   c. Every four hours: the oracle sweep, with a new seed (its run number).
+#   b. Otherwise the next slice of the workspace's source (crates/*/src/**/*.rs in path
+#      order, as many files as fit in 24 KiB, or one larger file), after the last filler
+#      `b` run's, wrapping around.
+#
+# Its state is the runs it started, on its own branch: their titles start "filler a
+# <commit>", "filler b<k>", or "filler oracle sweep" (mutants.yml, oracle-sweep.yml). Every
+# finished run counts as done, so the rotation never stalls on a slice that's always cut
+# off or cancelled; what one run didn't reach, later turns do (shards test in random order).
+# Filler mutants runs stop after an hour and fail only on misses not in
+# .github/mutants-triaged.txt. Real work (a real mutants run, the bench, the nightly sweep)
+# cancels them first (.github/cancel-filler.sh), from a runner labelled control
+# (silico-13, -14), which runs only short jobs.
+#
+#   gh workflow run filler.yml --ref main -f dry=true   (says what it would start)
+name: filler
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  # When a run ends, its runners are free.
+  workflow_run:
+    workflows: [mutants, oracle-sweep]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      dry:
+        description: "Only say what it would start"
+        type: boolean
+        default: false
+
+permissions:
+  actions: write
+  contents: read
+
+# One decision at a time.
+concurrency:
+  group: filler
+
+jobs:
+  fill:
+    # On a runner labelled control (silico-13, -14), for short jobs only.
+    runs-on: [self-hosted, linux, x64, control]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: .github
+      - name: Fill
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DRY: ${{ inputs.dry || false }}
+          # Filler runs use the workflows on the branch this runs on (main, when scheduled).
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          . .github/gh.sh
+          # Runners labelled filler (silico-9 to -12), the only ones filler shards run on.
+          pool=4
+          # A slice's source: about 80 mutants, at the workspace's 3.4 a KiB (2026-10-23).
+          # A run cut off at its hour has tested a random part of its slice.
+          slice_kib=24
+          oracle_every=$((4 * 3600))
+
+          say() { echo "$1"; echo "$1" >>"$GITHUB_STEP_SUMMARY"; }
+          skip() { say "Nothing started: $1."; exit 0; }
+          start() {
+            local workflow=$1
+            shift
+            say "Starting $workflow $*"
+            if [ "$DRY" = true ]; then say "(dry: not started)"; return; fi
+            gh workflow run "$workflow" --ref "$BRANCH" "$@"
+          }
+
+          # Every queued or running run but this one: its id, workflow file, status, title.
+          active=$(for status in queued in_progress; do
+            gh api "repos/$GH_REPO/actions/runs?status=$status&per_page=100" --jq \
+              ".workflow_runs[] | select(.id != $GITHUB_RUN_ID)
+                | [.id, (.path | ltrimstr(\".github/workflows/\")), .status, .display_title] | @tsv"
+          done)
+          # Runs of this workflow are decisions like this one, not work.
+          active=$(awk -F '\t' '$2 != "filler.yml"' <<<"$active")
+          if awk -F '\t' '$3 == "queued" { found = 1 } END { exit !found }' <<<"$active"; then
+            skip "a run is queued, waiting for runners"
+          fi
+          if awk -F '\t' '$4 ~ /^filler / { found = 1 } END { exit !found }' <<<"$active"; then
+            skip "a filler run is going"
+          fi
+          # A bench measures times, and a night's sweep holds cases to deadlines: no filler
+          # beside them, even on idle CPU (caches, memory bandwidth, SMT siblings).
+          if awk -F '\t' '$2 == "bench.yml" || ($2 == "oracle-sweep.yml" && $4 !~ /^filler /) { found = 1 } END { exit !found }' <<<"$active"; then
+            skip "a bench or a night's sweep is going"
+          fi
+
+          # The unfinished jobs of every run going: their status and runner. A run in
+          # progress can still have jobs waiting for runners, which come first.
+          jobs=$(awk -F '\t' '$3 == "in_progress" { print $1 }' <<<"$active" | while read -r run; do
+            gh api "repos/$GH_REPO/actions/runs/$run/jobs?per_page=100" \
+              --jq '.jobs[] | select(.status != "completed") | [.status, (.runner_name // "")] | @tsv'
+          done)
+          if awk -F '\t' '$1 != "" && $1 != "in_progress" { found = 1 } END { exit !found }' <<<"$jobs"; then
+            skip "a job is queued, waiting for a runner"
+          fi
+          # The runners labelled filler that are running a job, of any run.
+          busy=$(awk -F '\t' '$1 == "in_progress" && $2 ~ /^pve-silico-(9|1[0-2])-/' <<<"$jobs" | wc -l)
+          # The CPUs idle now, over 15 seconds (this job runs on the VM; the load average lags
+          # minutes behind a run that just ended): idle and I/O wait over all time spent.
+          cpu() { awk '/^cpu / { print $2 + $3 + $4 + $5 + $6 + $7 + $8 + $9, $5 + $6 }' /proc/stat; }
+          read -r total0 idle0 < <(cpu)
+          sleep 15
+          read -r total1 idle1 < <(cpu)
+          cpus=$(nproc)
+          idle=$(( cpus * (idle1 - idle0) / (total1 - total0 > 0 ? total1 - total0 : 1) ))
+          if [ $((idle * 5)) -le "$cpus" ]; then
+            skip "$idle of $cpus CPUs are idle, a fifth or less"
+          fi
+          # A filler shard's share of the VM, as mutants.yml gives it: a quarter, at least 2.
+          share=$((cpus / pool > 2 ? cpus / pool : 2))
+          shards=$((pool - busy))
+          if [ $((idle / share)) -lt "$shards" ]; then shards=$((idle / share)); fi
+          if [ "$shards" -lt 1 ]; then
+            skip "no room: $busy of $pool filler runners busy, $idle of $cpus CPUs idle"
+          fi
+          say "Room for $shards shards: $busy of $pool filler runners busy, $idle of $cpus CPUs idle"
+
+          # The latest filler run on this branch whose title matches $1, captured as x. Every
+          # finished run counts as done, cut off or cancelled too, so no slice or range is
+          # tried forever: what a cut-off run didn't reach, later turns of the rotation do.
+          last() {
+            gh run list --workflow mutants.yml --branch "$BRANCH" --status completed --limit 300 \
+              --json displayTitle --jq "[.[].displayTitle | capture(\"$1\").x][0] // empty"
+          }
+          head=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
+
+          # a. What main changed in its source since the last commit a filler run tested.
+          tested=$(last '^filler a mutants (?P<x>[0-9a-f]{40}) ')
+          if [ "$head" != "$tested" ]; then
+            base=${tested:-$(gh api "repos/$GH_REPO/commits/$head" --jq '.parents[0].sha')}
+            changed=$(gh api "repos/$GH_REPO/compare/$base...$head" \
+              --jq '[.files[]?.filename | select(test("^crates/[^/]+/src/.+\\.rs$"))] | length')
+            if [ "$changed" -gt 0 ]; then
+              start mutants.yml -f ref="$head" -f base="$base" -f shards="$shards" -f filler=a
+              exit 0
+            fi
+            say "Main's source is unchanged since ${base:0:12}"
+          fi
+
+          # c. The oracle sweep, if no filler sweep started in the last four hours.
+          recent=$(gh run list --workflow oracle-sweep.yml --branch "$BRANCH" --limit 100 --json displayTitle,createdAt \
+            --jq "[.[] | select((.displayTitle | startswith(\"filler \"))
+                    and now - (.createdAt | fromdateiso8601) < $oracle_every)] | length")
+          if [ "$recent" -eq 0 ]; then
+            start oracle-sweep.yml -f filler=true
+            exit 0
+          fi
+
+          # b. The slice after the last filler run's: main's source files in path order, as
+          # many to a slice as fit in slice_kib (a larger file is a slice of its own). A
+          # change in the files moves the slices' edges; the rotation goes on by number.
+          mapfile -t slices < <(
+            gh api "repos/$GH_REPO/git/trees/$head?recursive=1" --jq \
+              '.tree[] | select(.type == "blob" and (.path | test("^crates/[^/]+/src/.+\\.rs$"))) | "\(.path) \(.size)"' |
+              LC_ALL=C sort |
+              awk -v limit=$((slice_kib * 1024)) '
+                files != "" && size + $2 > limit { print files; files = ""; size = 0 }
+                { files = files (files == "" ? "" : " ") $1; size += $2 }
+                END { if (files != "") print files }'
+          )
+          if [ "${#slices[@]}" -eq 0 ]; then
+            echo "::error::found no source files in main's tree at $head"
+            exit 1
+          fi
+          previous=$(last '^filler b(?P<x>[0-9]+) mutants ')
+          k=0
+          if [ -n "$previous" ] && [ $((10#$previous + 1)) -lt "${#slices[@]}" ]; then
+            k=$((10#$previous + 1))
+          fi
+          say "Slice $k, of 0 to $((${#slices[@]} - 1))"
+          start mutants.yml -f ref="$head" -f files="${slices[$k]}" -f shards="$shards" -f filler="b$k"

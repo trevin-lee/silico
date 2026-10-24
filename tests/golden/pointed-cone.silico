@@ -1,6 +1,7 @@
 {
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
   "features": [
     {
       "id": "kkkkkkkk",
