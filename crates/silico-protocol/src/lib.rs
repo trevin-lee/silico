@@ -147,10 +147,6 @@ pub enum Op {
     /// A triangle mesh of a shape for display, no further than `deflection` from its
     /// surface. Replies with [`Reply::Mesh`].
     Tessellate { shape: ShapeData, deflection: f64 },
-    /// Each of a shape's faces, edges, and vertices: its geometry and its measures, in
-    /// `TopExp::MapShapes` order (docs/design/m4.4-describe.md). Replies with
-    /// [`Reply::Described`].
-    Describe { shape: ShapeData },
     /// Sends `data` straight back as [`Reply::Echo`]: a health check, and the cheapest
     /// round trip, which the IPC benchmark measures.
     Echo { data: Blob },
@@ -208,6 +204,10 @@ pub enum Op {
         start: f64,
         angle: f64,
     },
+    /// Each of a shape's faces, edges, and vertices: its geometry and its measures, in
+    /// `TopExp::MapShapes` order (docs/design/m4.4-describe.md). Replies with
+    /// [`Reply::Described`].
+    Describe { shape: ShapeData },
 }
 
 impl Op {
@@ -363,8 +363,6 @@ pub enum Reply {
     Summary(ShapeSummary),
     FreecadMeasures(FreecadMeasures),
     Mesh(Mesh),
-    /// What a shape's elements are ([`Op::Describe`]).
-    Described(Description),
     Echo {
         data: Blob,
     },
@@ -381,6 +379,8 @@ pub enum Reply {
     },
     /// Where a drag's move left the sketch ([`Op::DragMove`]).
     Moved(Moved),
+    /// What a shape's elements are ([`Op::Describe`]).
+    Described(Description),
 }
 
 impl Reply {

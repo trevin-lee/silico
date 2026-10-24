@@ -15,6 +15,7 @@
 pub mod cache;
 pub mod command;
 pub mod document;
+pub mod elements;
 mod error;
 #[cfg(feature = "fake")]
 pub mod fake;

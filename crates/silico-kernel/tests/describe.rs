@@ -65,8 +65,10 @@ fn a_boxs_edges_are_lines_of_its_sides_and_its_vertices_its_corners() {
         assert_eq!(e.curve, EdgeCurve::Line, "{what}");
         assert!(e.curve.is_straight());
         assert!(!e.degenerated);
-        let span: f64 = (0..3).map(|k| (e.end[k] - e.start[k]).powi(2)).sum();
-        assert_close(&what, e.length, span.sqrt(), 1e-12);
+        let span: f64 = (0..3)
+            .map(|k| (e.end[k] - e.start[k]) * (e.end[k] - e.start[k]))
+            .sum();
+        assert_close(&what, e.length, libm::sqrt(span), 1e-12);
         assert_point(
             &what,
             e.middle,

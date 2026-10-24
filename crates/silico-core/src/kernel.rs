@@ -11,10 +11,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub use silico_protocol::{
-    Axis, Blob, BooleanOp, BuiltData, ChamferSize, Curve, ElementCounts, ElementFate, ElementKind,
-    ElementRef, Ends, FaceRegions, FreecadMeasures, Generation, History, InputHistory, Mesh, Op,
-    Primitive, Profile, Region, Reported, ShapeData, ShapeSummary, SketchPlane, SweepKind,
-    Topology,
+    Axis, Blob, BooleanOp, BuiltData, ChamferSize, Curve, Description, EdgeCurve, EdgeDescription,
+    ElementCounts, ElementFate, ElementKind, ElementRef, Ends, FaceDescription, FaceRegions,
+    FreecadMeasures, Generation, History, InputHistory, Mesh, Op, Primitive, Profile, Region,
+    Reported, ShapeData, ShapeSummary, SketchPlane, Surface, SweepKind, Topology,
 };
 use silico_protocol::{DebugOp, Failure, LENGTH_TOLERANCE, Reply};
 
@@ -462,6 +462,29 @@ impl KernelRequest<FreecadMeasures> {
     }
 }
 
+impl KernelRequest<Description> {
+    /// Each of the shape's faces, edges, and vertices: its geometry and measures, in OCCT's
+    /// order (docs/design/m4.4-describe.md). The description is checked before it's
+    /// returned ([`Description::check`]), so a value can be trusted as its type says.
+    pub fn describe(shape: &ShapeData) -> Self {
+        let op = Op::Describe {
+            shape: shape.clone(),
+        };
+        Self::new(op, |name, reply| match reply {
+            Reply::Described(description) => match description.check() {
+                Ok(()) => Ok(description),
+                Err(problem) => Err(Error::new(
+                    ErrorCode::ProtocolError,
+                    "the kernel worker sent a description it can't have",
+                )
+                .with_cause(problem)
+                .with_suggestion("start a new kernel worker")),
+            },
+            other => Err(unexpected(name, &other)),
+        })
+    }
+}
+
 impl KernelRequest<Mesh> {
     /// A triangle mesh of `shape` for display, no further than `deflection` from its
     /// surface. The mesh is checked before it's returned, so it can be indexed safely. A face
@@ -857,6 +880,11 @@ impl KernelWorker {
     /// A shape measured as FreeCAD measures it ([`KernelRequest::measure_as_freecad`]).
     pub fn measure_as_freecad(&mut self, shape: &ShapeData) -> Result<FreecadMeasures, Error> {
         self.run(KernelRequest::measure_as_freecad(shape))
+    }
+
+    /// A shape's elements described ([`KernelRequest::describe`]).
+    pub fn describe(&mut self, shape: &ShapeData) -> Result<Description, Error> {
+        self.run(KernelRequest::describe(shape))
     }
 
     /// A shape's mesh ([`KernelRequest::tessellate`]).

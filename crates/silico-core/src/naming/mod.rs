@@ -914,6 +914,11 @@ impl ElementMap {
         self.unstable.iter()
     }
 
+    /// How many elements of `kind` it names.
+    pub fn count(&self, kind: ElementKind) -> usize {
+        self.names.keys().filter(|e| e.kind == kind).count()
+    }
+
     /// Every element and its names, in element order.
     pub fn iter(&self) -> impl Iterator<Item = (ElementRef, &[Arc<Name>])> {
         self.names
