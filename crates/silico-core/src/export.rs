@@ -338,7 +338,23 @@ pub fn printable(mesh: &ExportMesh, names: Option<&ElementMap>) -> Result<Printa
         ));
     }
 
-    // The vertices as a reader gets them: 32-bit, and 0 for -0.
+    // The vertices as a reader gets them: 32-bit, and 0 for -0. First, the worker's own
+    // rule on the vertices the mesh has: the rounding may take at most half the tolerance
+    // (and a vertex past 32 bits takes it all), or the checks below would be of other
+    // vertices than are written.
+    let reach = positions
+        .iter()
+        .flatten()
+        .fold(0.0f64, |m, c| m.max(c.abs()));
+    let allowed = match silico_protocol::export_deflection(tolerance, reach) {
+        Ok(allowed) => allowed,
+        Err(refusal) => {
+            return Err(crate::worker::failure_error(
+                "ExportMesh",
+                silico_protocol::Failure::new(refusal),
+            ));
+        }
+    };
     let vertices: Vec<[f32; 3]> = positions
         .iter()
         .map(|p| p.map(|c| (c as f32) + 0.0))
@@ -421,21 +437,6 @@ pub fn printable(mesh: &ExportMesh, names: Option<&ElementMap>) -> Result<Printa
 
     // 7. Within the tolerance of the B-rep, less what rounding to 32 bits moves a vertex
     // (the worker meshed with the tolerance less the most its bounding box allows).
-    let reach = positions
-        .iter()
-        .flatten()
-        .fold(0.0f64, |m, c| m.max(c.abs()));
-    // The worker's own rule, on the vertices the mesh has: the rounding may take at most
-    // half the tolerance (and a reach that overflows 32 bits takes it all).
-    let allowed = match silico_protocol::export_deflection(tolerance, reach) {
-        Ok(allowed) => allowed,
-        Err(refusal) => {
-            return Err(crate::worker::failure_error(
-                "ExportMesh",
-                silico_protocol::Failure::new(refusal),
-            ));
-        }
-    };
     let mut far: Vec<u32> = (0..mesh.edge_faces.len())
         .filter(|&k| mesh.edge_deflections[k] > allowed)
         .map(|k| number(mesh.edge_faces[k] as usize))

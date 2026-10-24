@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::panic::AssertUnwindSafe;
 
-use super::export_report::{P, TETRA, report, tetra, with_shell};
+use super::export_report::{P, TETRA, refused, report, tetra, with_shell};
 
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestRunner};
@@ -114,11 +114,11 @@ fn a_solid_whose_shell_has_no_faces_is_refused_not_an_empty_mesh() {
         ..ExportMesh::default()
     };
     empty.validate().unwrap();
-    let got = printable(&empty, None);
-    assert!(
-        got.is_err(),
-        "an empty solid exported as {:?}",
-        got.map(|m| (m.vertices().len(), m.triangles().len(), m.volume()))
+    refused(
+        &empty,
+        ErrorCode::InvalidResult,
+        "a shell of the solid encloses no volume",
+        &[],
     );
     // Beside a good solid, the empty one is dropped without a word.
     let mut two = tetra();
@@ -126,11 +126,11 @@ fn a_solid_whose_shell_has_no_faces_is_refused_not_an_empty_mesh() {
     two.shell_solids.push(1);
     two.shell_outer.push(true);
     two.validate().unwrap();
-    let got = printable(&two, None);
-    assert!(
-        got.is_err(),
-        "a solid of no faces beside a tetrahedron exported as {:?}",
-        got.map(|m| (m.triangles().len(), m.volume()))
+    refused(
+        &two,
+        ErrorCode::InvalidResult,
+        "a shell of the solid encloses no volume",
+        &[],
     );
 }
 
@@ -163,11 +163,11 @@ fn a_face_whose_triangles_all_weld_into_one_vertex_is_refused_not_an_empty_mesh(
         edge_nodes: vec![0, 1, 2],
     };
     m.validate().unwrap();
-    let got = printable(&m, None);
-    assert!(
-        got.is_err(),
-        "a face welded to a point exported as {:?}",
-        got.map(|m| (m.vertices().len(), m.triangles().len(), m.volume()))
+    refused(
+        &m,
+        ErrorCode::InvalidResult,
+        "a shell of the solid encloses no volume",
+        &["Face1"],
     );
 }
 
@@ -185,11 +185,13 @@ fn a_cavity_larger_than_its_solid_is_refused_not_a_negative_volume() {
     let faces: Vec<&[[usize; 3]]> = inward.iter().map(|f| f.as_slice()).collect();
     let cavity = report(&big, &faces);
     let m = with_shell(&tetra(), &cavity, 0, false);
-    let got = printable(&m, None);
-    assert!(
-        got.is_err(),
-        "exported with volume {:?}",
-        got.map(|m| m.volume())
+    let all: Vec<String> = (1..=8).map(|f| format!("Face{f}")).collect();
+    let all: Vec<&str> = all.iter().map(String::as_str).collect();
+    refused(
+        &m,
+        ErrorCode::InvalidResult,
+        "encloses no volume in all",
+        &all,
     );
 }
 
@@ -209,11 +211,11 @@ fn a_solid_whose_only_shell_is_a_cavity_is_refused() {
     // exported inside out (the existing test,
     // a_shell_facing_inward_is_refused_and_a_cavity_must_face_inward, asserts exactly this
     // is Ok; the solid's total is never checked).
-    let got = printable(&m, None);
-    assert!(
-        got.is_err(),
-        "exported with volume {:?}",
-        got.map(|m| m.volume())
+    refused(
+        &m,
+        ErrorCode::InvalidResult,
+        "encloses no volume in all",
+        &["Face1", "Face2", "Face3", "Face4"],
     );
 }
 
@@ -236,8 +238,11 @@ fn a_report_far_enough_out_that_32_bits_overflow_is_refused_without_panicking() 
     // Finite in 64 bits, past f32::MAX: the vertices written would be infinite.
     let far: Vec<[f64; 3]> = P.iter().map(|p| p.map(|c| c * 1e39 + 1e39)).collect();
     let m = report(&far, &TETRA);
+    // Refused as the worker refuses such a part: the rounding to 32 bits takes more than
+    // half the tolerance (all of it, past f32::MAX), the tolerance named.
     let error = printable(&m, None).unwrap_err();
-    assert_eq!(error.code(), ErrorCode::InvalidResult, "{error}");
+    assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
+    assert_eq!(error.parameter(), Some("tolerance"), "{error}");
 }
 
 #[test]
@@ -488,12 +493,10 @@ fn an_archive_of_no_objects_is_refused() {
     // which a slicer opens as nothing. FreeCAD refuses an export with nothing to mesh
     // ("None of the objects can be exported", 04005b5e45), and the port note ports that
     // guard.
-    let got = three_mf(&[]);
-    assert!(
-        got.is_err(),
-        "wrote {} bytes",
-        got.map(|b| b.len()).unwrap_or(0)
-    );
+    let error = three_mf(&[]).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
+    assert!(error.message().contains("at least one object"), "{error}");
+    assert!(error.suggestion().is_some(), "{error}");
 }
 
 #[test]
@@ -590,4 +593,93 @@ fn an_archives_size_is_what_its_limit_counts() {
         at += 30 + name + size;
     }
     assert_eq!(archive.len(), expected);
+}
+
+#[test]
+fn a_report_claiming_more_solids_than_shells_is_refused_without_allocating_for_them() {
+    // The council's robustness lens: a count of solids no shell bears out made printable
+    // allocate for each (32 GiB for u32::MAX). Every solid has a shell, so validate refuses
+    // more solids than shells, before anything is sized by the count.
+    let mut m = tetra();
+    m.solids = u32::MAX;
+    assert!(m.validate().is_err());
+    let error = printable(&m, None).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
+    assert!(error.message().contains("doesn't hold together"), "{error}");
+    assert!(
+        error.cause().is_some_and(|c| c.contains("solids")),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_vertex_past_32_bits_is_refused_even_with_no_edge_to_check() {
+    // The council's robustness lens: one face holding all four of the tetrahedron's
+    // triangles, P1 at 1e39 (past f32::MAX, so infinite as written), and no edge uses: the
+    // volume came out NaN, which no volume check refused, and the 3MF was written with
+    // x="inf". The rounding rule, applied to the vertices, refuses it, naming the tolerance.
+    let mut points = P;
+    points[1] = [1e39, 0.0, 0.0];
+    let one_face: [[usize; 3]; 4] = [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]];
+    let mut m = report(&points, &[&one_face]);
+    m.edge_faces.clear();
+    m.edge_numbers.clear();
+    m.edge_degenerate.clear();
+    m.edge_vertices.clear();
+    m.edge_deflections.clear();
+    m.edge_node_counts.clear();
+    m.edge_nodes.clear();
+    m.validate().unwrap();
+    let error = printable(&m, None).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
+    assert_eq!(error.parameter(), Some("tolerance"), "{error}");
+    // And at 1e30, finite in 32 bits but past what the rounding allows, likewise.
+    let mut points = P;
+    points[1] = [1e30, 0.0, 0.0];
+    let mut m = report(&points, &[&one_face]);
+    m.edge_faces.clear();
+    m.edge_numbers.clear();
+    m.edge_degenerate.clear();
+    m.edge_vertices.clear();
+    m.edge_deflections.clear();
+    m.edge_node_counts.clear();
+    m.edge_nodes.clear();
+    let error = printable(&m, None).unwrap_err();
+    assert_eq!(error.parameter(), Some("tolerance"), "{error}");
+}
+
+#[test]
+fn a_report_with_a_value_that_isnt_finite_or_an_element_numbered_0_is_refused() {
+    // The council's tests lens: validate's finiteness and numbering checks are all that
+    // keep NaN geometry from being exported.
+    let corruptions: [fn(&mut ExportMesh); 7] = [
+        |m| m.nodes[0][0] = f64::NAN,
+        |m| m.nodes[5][2] = f64::INFINITY,
+        |m| m.edge_deflections[0] = f64::NAN,
+        |m| m.edge_deflections[0] = -1.0,
+        |m| m.deflection = f64::NAN,
+        |m| m.face_numbers[0] = 0,
+        |m| m.edge_vertices[0][1] = 0,
+    ];
+    for (k, corrupt) in corruptions.iter().enumerate() {
+        let mut m = tetra();
+        corrupt(&mut m);
+        assert!(m.validate().is_err(), "corruption {k}");
+        let error = printable(&m, None).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::InvalidInput, "{k}: {error}");
+        assert!(
+            error.message().contains("doesn't hold together"),
+            "{k}: {error}"
+        );
+    }
+}
+
+#[test]
+fn a_refusal_names_the_first_hundred_faces_and_counts_them_all() {
+    let mut m = tetra();
+    m.loose_faces = (1..=150).collect();
+    let error = printable(&m, None).unwrap_err();
+    let first: Vec<String> = (1..=100).map(|f| format!("Face{f}")).collect();
+    assert_eq!(error.elements(), first, "{error}");
+    assert_eq!(error.elements_total(), 150, "{error}");
 }

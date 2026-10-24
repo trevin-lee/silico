@@ -3,21 +3,11 @@
 //! real kernel's meshes are silico-kernel's tests/export.rs.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use super::export_report::{P, TETRA, report, tetra};
+use super::export_report::{P, TETRA, refused, report, tetra};
 
 use silico_core::ErrorCode;
 use silico_core::export::{Object, PrintableMesh, printable, three_mf};
 use silico_protocol::ExportMesh;
-
-#[track_caller]
-fn refused(m: &ExportMesh, code: ErrorCode, says: &str, faces: &[&str]) {
-    let error = printable(m, None).unwrap_err();
-    assert_eq!(error.code(), code, "{error}");
-    assert!(error.message().contains(says), "{error}");
-    assert_eq!(error.elements(), faces, "{error}");
-    assert_eq!(error.elements_total(), faces.len() as u64, "{error}");
-    assert!(error.suggestion().is_some(), "{error}");
-}
 
 #[test]
 fn a_tetrahedron_joins_into_four_vertices_and_encloses_a_sixth() {
@@ -520,4 +510,71 @@ fn vertices_apart_in_64_bits_but_one_in_32_are_refused_before_anything_is_writte
         "two corners at one place",
         &["Face1", "Face4"],
     );
+}
+
+#[test]
+fn each_object_is_its_own_mesh_with_its_own_id_and_build_item() {
+    // The council's tests lens: every build item's objectid, and each object's own
+    // vertices, not the first object's.
+    let a = tetra_mesh();
+    let big: Vec<[f64; 3]> = P.iter().map(|p| p.map(|c| 2.0 * c)).collect();
+    let b = printable(&report(&big, &TETRA), None).unwrap();
+    let archive = three_mf(&[
+        Object {
+            name: "A",
+            part_number: "a",
+            mesh: &a,
+        },
+        Object {
+            name: "B",
+            part_number: "b",
+            mesh: &b,
+        },
+    ])
+    .unwrap();
+    let model = String::from_utf8(entries(&archive)[2].1.clone()).unwrap();
+    let (first, second) = model
+        .split_once(r#"<object id="2" type="model" name="B" partnumber="b">"#)
+        .unwrap();
+    assert!(first.contains(r#"<object id="1" type="model" name="A" partnumber="a">"#));
+    assert!(first.contains(r#"<vertex x="1" y="0" z="0"/>"#), "{first}");
+    assert!(!first.contains(r#"x="2""#), "{first}");
+    assert!(
+        second.contains(r#"<vertex x="2" y="0" z="0"/>"#),
+        "{second}"
+    );
+    assert!(
+        model.ends_with(
+            " <build>\n  <item objectid=\"1\"/>\n  <item objectid=\"2\"/>\n </build>\n</model>\n"
+        ),
+        "{model}"
+    );
+}
+
+#[test]
+fn faces_that_share_no_edge_are_never_joined_however_close_their_nodes() {
+    // The ported half of FreeCAD's testUnconnectedDomains that Silico departs on
+    // (tests/src/Mod/Part/App/BRepMesh.cpp:166, eb32abe7ef): FreeCAD merges nodes 1e-10
+    // apart; Silico joins faces only at the B-rep edges they share. Face4 given edges and
+    // vertices of its own, at the same places (0 apart) or 1e-10 apart: the mesh is open.
+    for offset in [0.0, 1e-10] {
+        let mut m = tetra();
+        let top = *m.edge_numbers.iter().max().unwrap();
+        for k in 0..m.edge_faces.len() {
+            if m.edge_faces[k] == 3 {
+                m.edge_numbers[k] += top;
+                m.edge_vertices[k] = m.edge_vertices[k].map(|v| v + 4);
+            }
+        }
+        for n in m.face_ranges()[3].clone() {
+            m.nodes[n as usize][0] += offset;
+        }
+        m.validate().unwrap();
+        refused(
+            &m,
+            ErrorCode::InvalidResult,
+            "the mesh is open",
+            &["Face1", "Face2", "Face3", "Face4"],
+        );
+    }
 }

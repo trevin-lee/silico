@@ -4,6 +4,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use silico_core::ErrorCode;
+use silico_core::export::printable;
 use silico_protocol::ExportMesh;
 
 /// The unit tetrahedron's corners: P0 at the origin, P1, P2, P3 on the axes.
@@ -113,4 +115,16 @@ pub fn with_shell(base: &ExportMesh, extra: &ExportMesh, solid: u32, outer: bool
         .extend(extra.edge_nodes.iter().map(|n| n + offset));
     m.validate().unwrap();
     m
+}
+
+/// `m` refused by `printable`: an error of `code` whose message says `says`, naming exactly
+/// `faces`, with a suggestion.
+#[track_caller]
+pub fn refused(m: &ExportMesh, code: ErrorCode, says: &str, faces: &[&str]) {
+    let error = printable(m, None).unwrap_err();
+    assert_eq!(error.code(), code, "{error}");
+    assert!(error.message().contains(says), "{error}");
+    assert_eq!(error.elements(), faces, "{error}");
+    assert_eq!(error.elements_total(), faces.len() as u64, "{error}");
+    assert!(error.suggestion().is_some(), "{error}");
 }
