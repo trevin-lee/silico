@@ -35,3 +35,8 @@ BinTools::Write(box, out, false, false, BinTools_FormatVersion_CURRENT);
   with `BRepTools::Read` and written with `BinTools::Write`, as `meshonly.bin` was (FreeCAD's
   own `exportBinary` writes a form `from_brep` doesn't read). The two differ in one byte, the
   face's orientation.
+
+- `mirrored_box.brep`: a text B-rep (not binary: read with `from_text_brep`) of a 10 × 20 × 30
+  box mirrored in the plane x = 0 by FreeCAD 1.1.3 (`Part.makeBox(10, 20, 30).mirror(V(0, 0, 0),
+  V(1, 0, 0)).exportBrep(...)`): the mirror is in its geometry, not a location, so each plane's
+  axes are left-handed (its normal, Du × Dv, opposite to its axis). For `describe`'s tests.

@@ -265,8 +265,15 @@ FaceOut describe_face(const TopoDS_Face &face, double precision) {
   const BRepAdaptor_Surface surface(face, false);
   switch (surface.GetType()) {
   case GeomAbs_Plane: {
-    // The plane's own normal, reversed where the face is: out of a solid.
-    gp_Dir normal = surface.Plane().Axis().Direction();
+    // The surface's normal, Du × Dv: the plane's axis, or its opposite where the plane's
+    // frame is left-handed (a chamfer's, a revolve's, a mirrored shape's), as FreeCAD's
+    // Face.normalAt has it; reversed where the face is, so out of a solid. (An internal or
+    // external face's is its surface's: neither way is out.)
+    const gp_Pln plane = surface.Plane();
+    gp_Dir normal = plane.Axis().Direction();
+    if (!plane.Position().Direct()) {
+      normal.Reverse();
+    }
     if (face.Orientation() == TopAbs_REVERSED) {
       normal.Reverse();
     }
@@ -329,9 +336,16 @@ FaceOut describe_face(const TopoDS_Face &face, double precision) {
 EdgeOut describe_edge(const TopoDS_Edge &edge, double precision) {
   EdgeOut out{};
   // Its ends as it runs in the shape (the edge's own orientation taken).
+  // Its ends as it runs in the shape: its vertices as it runs forward, swapped where it's
+  // reversed. (TopExp::Vertices with the edge's own orientation finds none for an internal
+  // or external edge, which a boolean can leave in a valid face: its vertices are neither
+  // forward nor reversed in it.)
   TopoDS_Vertex first;
   TopoDS_Vertex last;
-  TopExp::Vertices(edge, first, last, true);
+  TopExp::Vertices(TopoDS::Edge(edge.Oriented(TopAbs_FORWARD)), first, last, false);
+  if (edge.Orientation() == TopAbs_REVERSED) {
+    std::swap(first, last);
+  }
   if (first.IsNull() || last.IsNull()) {
     throw Standard_Failure("an edge without both its vertices");
   }

@@ -32,8 +32,9 @@ pub struct FaceDescription {
 /// what says which way a face faces).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Surface {
-    /// Its unit normal, pointing out of a solid (the plane's own, reversed where the face
-    /// is reversed).
+    /// Its unit normal, pointing out of a solid: the surface's (Du × Dv, which is the
+    /// plane's axis's opposite where its frame is left-handed), reversed where the face is
+    /// reversed. An internal or external face's is its surface's.
     Plane {
         normal: [f64; 3],
     },
@@ -180,7 +181,8 @@ impl Description {
                     half_angle,
                 } => {
                     add(&at, "axis", &[axis.origin, axis.direction].concat());
-                    add(&at, "radius", &[*radius, *half_angle]);
+                    add(&at, "radius", &[*radius]);
+                    add(&at, "half-angle", &[*half_angle]);
                 }
                 Surface::Torus {
                     axis,
