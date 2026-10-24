@@ -1,6 +1,7 @@
 # The CI VM's idle time, filled with useful background work that never delays real work.
-# Every 15 minutes, and whenever a mutants run or an oracle sweep ends, one short job looks
-# at the runners, starts at most one filler run, and exits.
+# Every 15 minutes (started by filler-clock.yml: GitHub throttles this file's schedule, which
+# stays as a backstop), and whenever a mutants run or an oracle sweep someone started ends,
+# one short job looks at the runners, starts at most one filler run, and exits.
 #
 # It starts nothing while any run or job is queued (a gate, a real run's shards, or a
 # filler run waiting for runners), or while a filler run (mutants or the oracle sweep) is
