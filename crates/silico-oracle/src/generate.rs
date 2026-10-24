@@ -48,10 +48,11 @@ pub const KNOWN: &[crate::corpus::Known] = &[crate::corpus::Known {
                  edges of the two shapes nearly meet: move one so they clearly overlap or stay \
                  clearly apart.",
     why: "a torus (R 12.531, r 9.057) less a torus (R 23.399, r 12.985) moved (-3.965, 0.164, \
-          1.576): FreeCAD 1.1.3's cut is empty (no solid, volume 0, which its isValid passes), \
-          but the base within 6.446 of its axis is outside the tool, at least 908 mm³ \
-          (about 5854 by Monte Carlo); Silico's OCCT boolean (non-destructive, single-threaded) \
-          gives an invalid result, refused (docs/ports/booleans.md, Known wrong results)",
+          1.576): OCCT finds no intersection and takes the tool as inside the base, so \
+          FreeCAD 1.1.3's cut is one solid turned inside out, volume -57587.21 (the base less \
+          the whole tool), which its isValid and check pass; Silico refuses it as invalid. The \
+          base within 6.446 of its axis is outside the tool: at least 908 mm³ is left (about \
+          5854 by Monte Carlo) (docs/ports/booleans.md, Known wrong results)",
     platforms: &["aarch64-macos", "x86_64-linux"],
 }];
 
@@ -258,6 +259,25 @@ fn revolve(random: &mut Random) -> Shape {
 #[cfg(test)]
 mod tests {
     use super::cases;
+
+    #[test]
+    fn the_known_generated_case_is_the_torus_cut_it_says() {
+        // generate::KNOWN's case, as seed 15 makes it: if the generator changes, its entry
+        // is about another case and must be redone.
+        let case = &cases(15, 97)[96];
+        assert_eq!(case.name, super::KNOWN[0].case);
+        let json = serde_json::to_value(&case.shape).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"cut": {
+                "base": {"torus": {"major_radius": 12.531, "minor_radius": 9.057}},
+                "tool": {"translate": {
+                    "shape": {"torus": {"major_radius": 23.399, "minor_radius": 12.985}},
+                    "by": [-3.965, 0.164, 1.576]
+                }}
+            }})
+        );
+    }
 
     #[test]
     fn a_seed_gives_the_same_cases_every_time() {
