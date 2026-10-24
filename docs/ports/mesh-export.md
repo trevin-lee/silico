@@ -16,7 +16,7 @@ Citations are to FreeCAD 1.1.3 (tag `1.1.3`, commit `145529fe74`) unless marked 
 - It reaches the mesher as a `float`, because `Exporter::addObject(App::DocumentObject*, float tol)` takes one (`src/Mod/Mesh/App/Exporter.h:62`). So the deflection is 0.1f, which is 0.10000000149011612, not 0.1.
 - `TopoShape::getFaces` (`src/Mod/Part/App/TopoShape.cpp:3650-3669`) runs `BRepMesh_IncrementalMesh(shape, tol, isRelative = false, defaultAngularDeflection(tol), isInParallel = true)`. The deflection is **absolute**, in millimetres.
 - `defaultAngularDeflection(tol)` is `min(0.1, 5·tol + 0.005)` radians (`TopoShape.cpp:224-232`, from `487215d2f5`). At 0.1 mm that is 0.1 rad. OCCT allows face interiors twice that angle, 0.2 rad (`AngleInterior = 2·Angle`, `BRepMesh_IncrementalMesh.hxx:103-105`): a looser limit inside a face, not a finer one.
-- **The angle governs most curves, not the 0.1 mm.** A circle of radius r needs n ≥ 2π/0.1 = 63 segments to meet the angle. It needs only n ≥ π/arccos(1 − 0.1/r) segments to meet the deflection, which is 16 at r = 5. The two limits cross at r = 0.1/(1 − cos 0.05) ≈ 80 mm. Below that radius, FreeCAD's export mesh is set by the angle.
+- **The angle governs most curves, not the 0.1 mm.** A circle of radius r needs n ≥ 2π/0.1 = 63 segments to meet the angle (OCCT's mesh of a cylinder of r 5 has 126 per circle, in FreeCAD's export as in Silico's). It needs only n ≥ π/arccos(1 − 0.1/r) segments to meet the deflection, which is 16 at r = 5. The two limits cross at r = 0.1/(1 − cos 0.05) ≈ 80 mm. Below that radius, FreeCAD's export mesh is set by the angle.
 - `MeshPart.meshFromShape` (`src/Mod/MeshPart/App/Mesher.cpp:227-239`, `createStandard`) is a different path. It is not export. It runs `BRepTools::Clean` first, takes its own `LinearDeflection`, `AngularDeflection` (default 0.5) and `Relative` (`Mesher.h:228-231`), and then joins faces through the same `Part::BRepMesh` as export.
 
 OCCT treats the deflection as a target, not a bound:
@@ -192,7 +192,7 @@ Every vertex is rounded to `f32` before any check, and written as the shortest d
 ## Same as FreeCAD
 
 - A 3MF of `type="model"` in millimetres, at `3D/3dmodel.model`, with one build item per object.
-- Default deflection 0.1 mm, absolute. Angular deflection `min(0.1, 5·tol + 0.005)`.
+- Default tolerance 0.1 mm, absolute (Silico meshes at it less the rounding margin, rule 7). Angular deflection `min(0.1, 5·tol + 0.005)`. The points and facets equal FreeCAD's own export's (kernel export.rs), but where the margin meshes finer: a 1000 mm disc at 0.01 mm takes 3,992 facets to FreeCAD's 3,972.
 - A reversed face's triangles wound the other way.
 - Triangles that weld to a repeated index dropped.
 

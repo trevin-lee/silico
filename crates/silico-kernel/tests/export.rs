@@ -376,3 +376,181 @@ fn freecad_reads_each_export_back_as_a_solid_with_the_volume_silico_measured() {
         assert!(volume > 0.0, "{name}: {volume}");
     }
 }
+
+/// What FreeCAD 1.1.3's own `Mesh.export` of `part` (a Python expression for a shape) at
+/// `tolerance` gives, read back: its points and facets.
+fn freecads_export(part: &str, tolerance: f64, path: &std::path::Path) -> (u64, u64) {
+    let read = super::oracle::freecad(&format!(
+        r#"
+import json, FreeCAD, Mesh, Part
+doc = FreeCAD.newDocument()
+o = doc.addObject("Part::Feature", "P")
+o.Shape = {part}
+Mesh.export([o], {path:?}, tolerance={tolerance})
+m = Mesh.Mesh({path:?})
+print("SILICO_ORACLE " + json.dumps({{"points": m.CountPoints, "facets": m.CountFacets}}))
+"#,
+        path = path.to_str().unwrap()
+    ));
+    (
+        read["points"].as_u64().unwrap(),
+        read["facets"].as_u64().unwrap(),
+    )
+}
+
+#[test]
+fn silicos_meshes_are_freecads_own_exports_but_where_the_rounding_margin_meshes_finer() {
+    // The council's tests and port lenses: the same parts, meshed by FreeCAD's own export
+    // (Mesh.export, getFaces, in parallel) and by Silico's (serially, at the tolerance less
+    // the rounding the part's box allows): the same points and facets at each tolerance.
+    // Where the margin makes OCCT mesh finer, it's listed below.
+    // The disc reaches 1000 mm: its margin, √3·1000·2⁻²⁴ ≈ 1.03e-4 mm, leaves OCCT 0.0099 mm
+    // at 0.01, and the rim's circle takes ten more segments (3,992 facets to FreeCAD's 3,972).
+    const FINER: [&str; 1] = ["disc at 0.01"];
+    let dir = tempfile::Builder::new()
+        .prefix("silico-export-counts-")
+        .tempdir()
+        .unwrap();
+    let parts = [
+        (
+            "cylinder",
+            make(&Primitive::Cylinder {
+                radius: 5.0,
+                height: 10.0,
+            })
+            .unwrap(),
+            "Part.makeCylinder(5, 10)",
+        ),
+        (
+            "sphere",
+            make(&Primitive::Sphere { radius: 5.0 }).unwrap(),
+            "Part.makeSphere(5)",
+        ),
+        (
+            "disc",
+            make(&Primitive::Cylinder {
+                radius: 1000.0,
+                height: 1.0,
+            })
+            .unwrap(),
+            "Part.makeCylinder(1000, 1)",
+        ),
+        (
+            "box",
+            make_box(10.0, 20.0, 30.0).unwrap(),
+            "Part.makeBox(10, 20, 30)",
+        ),
+    ];
+    let mut finer = Vec::new();
+    let mut wrong = Vec::new();
+    for (name, shape, part) in &parts {
+        for tolerance in [1e-2, 0.1, 1.0] {
+            let mesh = exported(shape, tolerance).unwrap();
+            let path = dir.path().join(format!("{name}-{tolerance}.3mf"));
+            let (points, facets) = freecads_export(part, tolerance, &path);
+            let ours = (mesh.vertices().len() as u64, mesh.triangles().len() as u64);
+            if ours != (points, facets) {
+                let case = format!("{name} at {tolerance}");
+                if FINER.contains(&case.as_str()) && ours.1 > facets {
+                    finer.push(case);
+                } else {
+                    wrong.push(format!(
+                        "{case}: Silico {ours:?}, FreeCAD {:?}",
+                        (points, facets)
+                    ));
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    assert_eq!(finer, FINER);
+}
+
+#[test]
+fn a_box_moved_by_10_5_2_is_written_at_exactly_its_bounds() {
+    // FreeCAD's TestSingleMesh (tests/src/Mod/Mesh/App/Exporter.cpp:78): a placed part's
+    // bounds in the 3MF are where it's placed. Silico's translate sets a location, which the
+    // export applies to each node once (FreeCAD fixed it applied twice or not at all,
+    // 0f9eba7d96, b52694c87b, b1a96bde5f).
+    let moved = translate(&make_box(10.0, 10.0, 10.0).unwrap(), [10.0, 5.0, 2.0])
+        .unwrap()
+        .shape;
+    let mesh = exported(&moved, 0.1).unwrap();
+    let low = [0, 1, 2].map(|i| {
+        mesh.vertices()
+            .iter()
+            .map(|v| v[i])
+            .fold(f32::MAX, f32::min)
+    });
+    let high = [0, 1, 2].map(|i| {
+        mesh.vertices()
+            .iter()
+            .map(|v| v[i])
+            .fold(f32::MIN, f32::max)
+    });
+    assert_eq!((low, high), ([10.0, 5.0, 2.0], [20.0, 15.0, 12.0]));
+    assert!((mesh.volume() - 1000.0).abs() <= 1e-9, "{}", mesh.volume());
+}
+
+#[test]
+fn a_box_beside_a_cylinder_is_two_objects_each_with_its_own_counts() {
+    // FreeCAD's Test3MF's two objects (tests/src/Mod/Mesh/App/Importer.cpp:20): each object
+    // its own mesh, counted on its own.
+    let block = exported(&make_box(10.0, 20.0, 30.0).unwrap(), 0.1).unwrap();
+    let rod = exported(
+        &make(&Primitive::Cylinder {
+            radius: 5.0,
+            height: 10.0,
+        })
+        .unwrap(),
+        0.1,
+    )
+    .unwrap();
+    let archive = three_mf(&[
+        Object {
+            name: "Block",
+            part_number: "b0000000",
+            mesh: &block,
+        },
+        Object {
+            name: "Rod",
+            part_number: "r0000000",
+            mesh: &rod,
+        },
+    ])
+    .unwrap();
+    let text = String::from_utf8_lossy(&archive);
+    let model = &text[text.find("<model").unwrap()..];
+    let (first, second) = model.split_once("<object id=\"2\"").unwrap();
+    assert_eq!(first.matches("<vertex ").count(), 8);
+    assert_eq!(first.matches("<triangle ").count(), 12);
+    assert_eq!(second.matches("<vertex ").count(), 252);
+    assert_eq!(second.matches("<triangle ").count(), 500);
+}
+
+#[test]
+fn a_face_beside_a_solid_is_refused_naming_it() {
+    // The council's tests lens: a compound of a box and a free face (as STEP files carry,
+    // 11 of NIST's 33 parts), made by FreeCAD: the worker reports the face as in no solid,
+    // and the export refuses it, naming it, rather than leave it out.
+    let dir = tempfile::Builder::new()
+        .prefix("silico-export-loose-")
+        .tempdir()
+        .unwrap();
+    let path = dir.path().join("loose.brep");
+    super::oracle::freecad(&format!(
+        r#"
+import json, FreeCAD, Part
+c = Part.Compound([Part.makeBox(1, 1, 1), Part.makePlane(1, 1, FreeCAD.Vector(5, 0, 0))])
+c.exportBrep({path:?})
+print("SILICO_ORACLE " + json.dumps({{"faces": len(c.Faces)}}))
+"#,
+        path = path.to_str().unwrap()
+    ));
+    let shape = silico_kernel::from_text_brep(&std::fs::read(&path).unwrap()).unwrap();
+    let raw = kernel().export_mesh(&data(&shape), 0.1).unwrap();
+    assert_eq!((raw.solids, raw.loose_faces.clone()), (1, vec![7]));
+    let error = printable(&raw, None).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
+    assert_eq!(error.elements(), ["Face7"], "{error}");
+}

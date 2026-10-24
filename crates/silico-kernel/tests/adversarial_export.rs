@@ -785,5 +785,7 @@ fn a_nist_part_whose_cones_mesh_with_coincident_nodes_exports_as_freecad_exports
     let text = std::fs::read(dir.join("nist_ctc_01_asme1_ap242-e1.brep")).unwrap();
     let shape = silico_kernel::from_text_brep(&text).unwrap();
     let mesh = exported(&shape, 0.1).unwrap();
+    // FreeCAD's 10,876 facets on 5,420 points.
     assert_eq!(mesh.triangles().len(), 10_876);
+    assert_eq!(mesh.vertices().len(), 5_420);
 }
