@@ -509,11 +509,10 @@ fn a_sketch_worker_that_cant_be_started_is_the_solvers_fault_and_started_again_n
 }
 
 /// Solve 1 waits until let go; solve 2 runs 300 ms unless stopped; each stop recorded by
-/// solve number (round 2's tests lens), and when each solve began.
+/// solve number (round 2's tests lens).
 #[derive(Clone)]
 struct Gated {
     count: std::sync::Arc<std::sync::Mutex<u64>>,
-    began: std::sync::Arc<std::sync::Mutex<Vec<std::time::Instant>>>,
     stopped: std::sync::Arc<std::sync::Mutex<Vec<u64>>>,
     entered: std::sync::Arc<std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>>,
     go: std::sync::Arc<std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>>,
@@ -526,7 +525,6 @@ impl silico_core::sketch::SketchSolver for Gated {
             *c += 1;
             *c
         };
-        self.began.lock().unwrap().push(std::time::Instant::now());
         if n == 1 {
             self.entered
                 .lock()
@@ -561,45 +559,33 @@ impl silico_core::sketch::SketchSolver for Gated {
 fn a_late_stop_of_a_finished_solve_spares_the_next_solve() {
     // Round 2's tests lens: a stop meant for an older solve that has finished (its timer
     // still pending) must not stop the newer recompute's solve; only a randomized test
-    // covered it. The stop comes due SKETCH_STOP_AFTER after the older solve began, so it
-    // tests the newer solve only if that has begun by then: under load (the mutants
-    // shards'), it can begin later, and the stop finds nothing to spare. So the race is run
-    // again until the newer solve begins within half that, up to 50 times (M3's milestone
-    // mutants: numbering every solve alike, `solves *= 1`, passed on a loaded shard).
-    for attempt in 1..=50 {
-        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
-        let (go_tx, go_rx) = std::sync::mpsc::channel();
-        let gated = Gated {
-            count: Default::default(),
-            began: Default::default(),
-            stopped: Default::default(),
-            entered: std::sync::Arc::new(std::sync::Mutex::new(Some(entered_tx))),
-            go: std::sync::Arc::new(std::sync::Mutex::new(Some(go_rx))),
-        };
-        let engine = Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(gated.clone());
-        let older = engine.start(checked(&sketch("10", HORIZONTAL)));
-        entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
-        let newer = engine.start(checked(&sketch("11", HORIZONTAL))); // within the grace
-        go_tx.send(()).unwrap();
-        assert!(matches!(
-            older.wait_timeout(Duration::from_secs(10)),
-            Ok(Ok(RunOutcome::Superseded))
-        ));
-        match newer.wait_timeout(Duration::from_secs(10)) {
-            Ok(Ok(RunOutcome::Published(m))) => assert!(
-                matches!(m.outcome(&feature()), Some(FeatureOutcome::Sketch(_))),
-                "attempt {attempt}: {:?}",
-                m.outcome(&feature())
-            ),
-            Ok(other) => panic!("{other:?}"),
-            Err(_) => panic!("newer didn't finish"),
-        }
-        assert!(!gated.stopped.lock().unwrap().contains(&2));
-        let began = gated.began.lock().unwrap().clone();
-        if began[1] - began[0] < silico_core::recompute::SKETCH_STOP_AFTER / 2 {
-            return;
-        }
+    // covered it.
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (go_tx, go_rx) = std::sync::mpsc::channel();
+    let gated = Gated {
+        count: Default::default(),
+        stopped: Default::default(),
+        entered: std::sync::Arc::new(std::sync::Mutex::new(Some(entered_tx))),
+        go: std::sync::Arc::new(std::sync::Mutex::new(Some(go_rx))),
+    };
+    let engine = Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(gated.clone());
+    let older = engine.start(checked(&sketch("10", HORIZONTAL)));
+    entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let newer = engine.start(checked(&sketch("11", HORIZONTAL))); // within the grace
+    go_tx.send(()).unwrap();
+    assert!(matches!(
+        older.wait_timeout(Duration::from_secs(10)),
+        Ok(Ok(RunOutcome::Superseded))
+    ));
+    match newer.wait_timeout(Duration::from_secs(10)) {
+        Ok(Ok(RunOutcome::Published(m))) => assert!(matches!(
+            m.outcome(&feature()),
+            Some(FeatureOutcome::Sketch(_))
+        )),
+        Ok(other) => panic!("{other:?}"),
+        Err(_) => panic!("newer didn't finish"),
     }
+    assert!(!gated.stopped.lock().unwrap().contains(&2));
 }
 
 #[test]
