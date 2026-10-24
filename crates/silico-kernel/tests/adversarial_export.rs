@@ -138,9 +138,6 @@ fn every_round_primitive_is_exported_exactly_when_its_mesh_is_within_the_toleran
     // with the tolerance. Where OCCT's mesh is in fact past the tolerance, the export takes
     // it as FreeCAD's does, OCCT's result: pinned here as `KNOWN`, so another miss fails.
     let primitives = [
-        Primitive::Sphere { radius: 5.0 },
-        Primitive::Sphere { radius: 1e-2 },
-        Primitive::Sphere { radius: 300.0 },
         Primitive::Cylinder {
             radius: 5.0,
             height: 10.0,
@@ -187,9 +184,6 @@ fn every_round_primitive_is_exported_exactly_when_its_mesh_is_within_the_toleran
             minor_radius: 1.0,
         },
     ];
-    /// Meshes OCCT makes past the tolerance, taken as FreeCAD takes them.
-    const KNOWN: [&str; 1] = ["Sphere { radius: 300.0 } at 0.01"];
-    let mut known = Vec::new();
     let mut wrong = Vec::new();
     let mut worker = kernel();
     for primitive in &primitives {
@@ -203,13 +197,10 @@ fn every_round_primitive_is_exported_exactly_when_its_mesh_is_within_the_toleran
             match printable(&raw, None) {
                 Ok(mesh) => {
                     let d = deviation(&mesh, &*surface);
-                    let case = format!("{primitive:?} at {tolerance}");
                     if d > tolerance {
-                        if KNOWN.contains(&case.as_str()) {
-                            known.push(case);
-                        } else {
-                            wrong.push(format!("{case}: taken, {d} from the surface"));
-                        }
+                        wrong.push(format!(
+                            "{primitive:?} at {tolerance}: taken, {d} from the surface"
+                        ));
                     }
                 }
                 Err(error) if error.message().contains("further than the tolerance") => {
@@ -227,7 +218,40 @@ fn every_round_primitive_is_exported_exactly_when_its_mesh_is_within_the_toleran
         }
     }
     assert!(wrong.is_empty(), "{wrong:#?}");
-    assert_eq!(known, KNOWN, "OCCT's known misses");
+}
+
+#[test]
+fn a_spheres_mesh_misses_the_tolerance_at_its_seam_by_what_occt_makes() {
+    // Decided (m4.8-export-fable, item 2): the export tolerance is the mesher's deflection, as
+    // FreeCAD's, and a face's interior is OCCT's to meet. On a sphere it doesn't: OCCT's
+    // sphere mesher does no deflection control (BRepMesh_MeshAlgoFactory.cxx:74-77), and by
+    // the seam its Delaunay loses the grid's nearest nodes, so a band of triangles there
+    // spans 1.7 grid steps, their sagitta up to 2.1 times the tolerance. Taken, as FreeCAD's
+    // export takes it, and pinned here, worst deviation over tolerance, measured as the
+    // round-primitives test measures: the same ratios FreeCAD 1.1.3's mesher gives with
+    // these parameters (m4.8-export-fable's table), so a change in OCCT or in the export's
+    // parameters shows.
+    let cases: [(f64, f64, f64); 7] = [
+        (5.0, 0.01, 0.386),
+        (20.0, 0.01, 1.545),
+        (50.0, 0.01, 1.471),
+        (100.0, 0.01, 2.078),
+        (50.0, 0.1, 1.314),
+        (300.0, 0.1, 0.761),
+        (1000.0, 0.1, 2.078),
+    ];
+    let mut worker = kernel();
+    let mut got = Vec::new();
+    for (radius, tolerance, _) in cases {
+        let sphere = Primitive::Sphere { radius };
+        let raw = worker
+            .export_mesh(&data(&make(&sphere).unwrap()), tolerance)
+            .unwrap();
+        let mesh = printable(&raw, None).unwrap();
+        let ratio = deviation(&mesh, &*surface_of(&sphere)) / tolerance;
+        got.push((radius, tolerance, (ratio * 1e3).round() / 1e3));
+    }
+    assert_eq!(got, cases);
 }
 
 #[test]
@@ -676,10 +700,11 @@ fn a_tolerance_too_fine_to_mesh_in_time_ends_as_a_worker_timeout_naming_the_expo
     // A 1 mm sphere at 1e-3 mm, a hundred times the finest tolerance taken: FreeCAD's
     // angular rule (0.01 rad there, whatever the part's size) makes 805,418 triangles,
     // which OCCT takes about three minutes to make (FreeCAD 1.1.3's own export of it, on
-    // the same OCCT, makes 805,416 facets in 201 s). Nothing estimates the mesh before
-    // making it (break-it): the request runs to its time limit and fails loudly, as a
-    // worker_timeout naming the export. A limit on the triangles is left to M4.1's table of
-    // the tools' limits (docs/ports/mesh-export.md).
+    // the same OCCT, makes 805,416 facets in 201 s). Decided (m4.8-export-fable, item 1): no
+    // exact rule says before meshing how many triangles OCCT will make, and a deadline would
+    // depend on the machine, so the request runs to its time limit and fails loudly, as a
+    // worker_timeout naming the export. The deterministic limit is a count of the triangles
+    // made, in M4.1's table of the tools' limits (docs/ports/mesh-export.md, Open).
     use std::time::Duration;
     let sphere = data(&make(&Primitive::Sphere { radius: 1.0 }).unwrap());
     let request = silico_core::kernel::KernelRequest::export_mesh(&sphere, 1e-3)
@@ -788,4 +813,128 @@ fn a_nist_part_whose_cones_mesh_with_coincident_nodes_exports_as_freecad_exports
     // FreeCAD's 10,876 facets on 5,420 points.
     assert_eq!(mesh.triangles().len(), 10_876);
     assert_eq!(mesh.vertices().len(), 5_420);
+}
+
+/// A B-rep OCCT wrote (tests/fixtures/brep), with Silico's checksum.
+fn fixture(name: &str) -> Vec<u8> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/brep")
+        .join(name);
+    let mut body = std::fs::read(path).unwrap();
+    body.extend_from_slice(&crc32fast::hash(&body).to_le_bytes());
+    body
+}
+
+#[test]
+fn a_box_whose_face_is_unoriented_is_refused_as_open_saying_the_face_was_left_out() {
+    // Decided (m4.8-export-fable, item 5): INTERNAL and EXTERNAL faces bound no change of
+    // material, so they're left out, as OCCT's own volume leaves them out. A box whose x = 0
+    // face is INTERNAL or EXTERNAL (tests/fixtures/brep) is then open as material: refused
+    // as open, naming the four faces around the hole (those with a node on x = 0), the cause
+    // saying which face was left out.
+    for name in ["box_internal_face1.bin", "box_external_face1.bin"] {
+        let shape = silico_kernel::from_brep(&fixture(name)).unwrap();
+        let raw = kernel().export_mesh(&data(&shape), 0.1).unwrap();
+        assert_eq!(raw.unoriented_faces.len(), 1, "{name}");
+        let ranges = raw.face_ranges();
+        let mut around: Vec<String> = (0..raw.face_numbers.len())
+            .filter(|&f| ranges[f].clone().any(|n| raw.nodes[n as usize][0] == 0.0))
+            .map(|f| format!("Face{}", raw.face_numbers[f]))
+            .collect();
+        around.sort();
+        assert_eq!(around.len(), 4, "{name}: {around:?}");
+        let error = printable(&raw, None).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::InvalidResult, "{name}: {error}");
+        assert!(
+            error.message().contains("the mesh is open"),
+            "{name}: {error}"
+        );
+        let mut named = error.elements().to_vec();
+        named.sort();
+        assert_eq!(named, around, "{name}: {error}");
+        let left = format!("Face{}", raw.unoriented_faces[0]);
+        assert!(
+            error
+                .cause()
+                .is_some_and(|c| c.contains("left out") && c.contains(&left)),
+            "{name}: {error}"
+        );
+    }
+}
+
+#[test]
+fn a_membrane_inside_a_box_is_left_out_and_the_box_exported_whole() {
+    // A 10 × 20 × 30 box fused with a square inside it at x = 5 (FreeCAD 1.1.3's
+    // generalFuse, which keeps the square as an INTERNAL face of the box, valid): the
+    // membrane is left out, and the box is the box, 12 triangles on 8 vertices enclosing
+    // 6000. (FreeCAD's Part.Solid drops an unoriented face, so it can't make one.)
+    let dir = tempfile::Builder::new()
+        .prefix("silico-export-membrane-")
+        .tempdir()
+        .unwrap();
+    let path = dir.path().join("membrane.brep");
+    super::oracle::freecad(&format!(
+        r#"
+import json, FreeCAD, Part
+V = FreeCAD.Vector
+m = Part.Face(Part.makePolygon([V(5, 5, 5), V(5, 15, 5), V(5, 15, 25), V(5, 5, 25), V(5, 5, 5)]))
+fused, _ = Part.makeBox(10, 20, 30).generalFuse([m])
+s = fused.Solids[0]
+assert s.isValid() and [f.Orientation for f in s.Faces].count("Internal") == 1
+s.exportBrep({path:?})
+print("SILICO_ORACLE " + json.dumps({{"faces": len(s.Faces)}}))
+"#,
+        path = path.to_str().unwrap()
+    ));
+    let shape = silico_kernel::from_text_brep(&std::fs::read(&path).unwrap()).unwrap();
+    let raw = kernel().export_mesh(&data(&shape), 0.1).unwrap();
+    assert_eq!(raw.unoriented_faces, [7]);
+    let mesh = printable(&raw, None).unwrap();
+    assert_eq!(mesh.triangles().len(), 12);
+    assert_eq!(mesh.vertices().len(), 8);
+    assert_eq!(mesh.volume(), 6000.0);
+    assert_eq!(mesh.left_out(), [7]);
+}
+
+#[test]
+fn a_face_meshed_coarser_than_asked_for_its_own_tolerance_is_refused_naming_the_tolerance() {
+    // Decided (m4.8-export-fable, item 2b): OCCT meshes a face no finer than twice its
+    // tolerance (BRepMesh_Deflection.cxx:146-147). A 50 mm sphere whose sub-shapes FreeCAD
+    // gave a tolerance of 0.02 (fixTolerance): at 0.01 OCCT meshes it at 0.04, 3.9 times the
+    // tolerance (the port review's run), so it's refused, naming Face1 and the tolerance; at
+    // 0.04, 2·0.02 = 0.04 is past the deflection, 0.04 less the rounding, and it's refused;
+    // at 0.05 it's taken.
+    let dir = tempfile::Builder::new()
+        .prefix("silico-export-loose-tolerance-")
+        .tempdir()
+        .unwrap();
+    let path = dir.path().join("sphere.brep");
+    super::oracle::freecad(&format!(
+        r#"
+import json, Part
+s = Part.makeSphere(50)
+s.fixTolerance(0.02)
+s.exportBrep({path:?})
+print("SILICO_ORACLE " + json.dumps({{"tolerance": s.getTolerance(1)}}))
+"#,
+        path = path.to_str().unwrap()
+    ));
+    let shape = silico_kernel::from_text_brep(&std::fs::read(&path).unwrap()).unwrap();
+    for tolerance in [0.01, 0.04] {
+        let raw = kernel().export_mesh(&data(&shape), tolerance).unwrap();
+        let error = printable(&raw, None).unwrap_err();
+        assert_eq!(
+            error.code(),
+            ErrorCode::InvalidResult,
+            "{tolerance}: {error}"
+        );
+        assert_eq!(error.parameter(), Some("tolerance"), "{tolerance}: {error}");
+        assert_eq!(error.elements(), ["Face1"], "{tolerance}: {error}");
+        assert!(
+            error.message().contains("at 0.04 mm") && error.message().contains("to 0.02 mm"),
+            "{tolerance}: {error}"
+        );
+    }
+    let raw = kernel().export_mesh(&data(&shape), 0.05).unwrap();
+    printable(&raw, None).unwrap();
 }

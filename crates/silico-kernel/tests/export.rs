@@ -248,6 +248,12 @@ fn an_export_is_the_same_bytes_every_time_and_on_every_platform() {
             cylinder,
             "cda466128befd11902210c565bab88d94b5484bb4b5e54c0ce8865c7373e800a",
         ),
+        // A sphere: its seam's band is where OCCT's Delaunay meshes irregularly
+        // (m4.8-export-fable, item 2), so the likeliest place for platforms to differ.
+        (
+            make(&Primitive::Sphere { radius: 50.0 }).unwrap(),
+            "545173fd17c1b6e77fd73be89470a3185b58bbf67cf6b68788a8413499733889",
+        ),
     ] {
         let first = written(&exported(&shape, 0.1).unwrap());
         let again = written(&exported(&shape, 0.1).unwrap());

@@ -150,6 +150,8 @@ fn a_face_whose_triangles_all_weld_into_one_vertex_is_refused_not_an_empty_mesh(
         face_numbers: vec![1],
         face_deflections: vec![0.0],
         face_shells: vec![0],
+        face_tolerances: vec![1e-7],
+        unoriented_faces: vec![],
         shell_solids: vec![0],
         shell_outer: vec![true],
         solids: 1,
@@ -652,7 +654,7 @@ fn a_vertex_past_32_bits_is_refused_even_with_no_edge_to_check() {
 fn a_report_with_a_value_that_isnt_finite_or_an_element_numbered_0_is_refused() {
     // The council's tests lens: validate's finiteness and numbering checks are all that
     // keep NaN geometry from being exported.
-    let corruptions: [fn(&mut ExportMesh); 7] = [
+    let corruptions: [fn(&mut ExportMesh); 12] = [
         |m| m.nodes[0][0] = f64::NAN,
         |m| m.nodes[5][2] = f64::INFINITY,
         |m| m.edge_deflections[0] = f64::NAN,
@@ -660,6 +662,16 @@ fn a_report_with_a_value_that_isnt_finite_or_an_element_numbered_0_is_refused() 
         |m| m.deflection = f64::NAN,
         |m| m.face_numbers[0] = 0,
         |m| m.edge_vertices[0][1] = 0,
+        // A face's tolerance, one per face, a finite length.
+        |m| m.face_tolerances[2] = f64::NAN,
+        |m| {
+            m.face_tolerances.pop();
+        },
+        // An unoriented face numbered from 1, and neither a face of the mesh nor loose.
+        |m| m.unoriented_faces = vec![0],
+        |m| m.unoriented_faces = vec![2],
+        // A deflection past the tolerance it was meant to meet.
+        |m| m.deflection = 0.2,
     ];
     for (k, corrupt) in corruptions.iter().enumerate() {
         let mut m = tetra();

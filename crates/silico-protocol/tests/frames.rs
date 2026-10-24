@@ -411,6 +411,8 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             face_numbers: vec![1],
             face_deflections: vec![0.0],
             face_shells: vec![0],
+            face_tolerances: vec![1e-7],
+            unoriented_faces: vec![5],
             shell_solids: vec![0],
             shell_outer: vec![true],
             solids: 1,

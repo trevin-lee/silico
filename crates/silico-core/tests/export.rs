@@ -293,6 +293,7 @@ fn two_solids_are_joined_each_on_its_own() {
         .extend(one.face_numbers.iter().map(|n| n + faces));
     two.face_deflections.extend(&one.face_deflections);
     two.face_shells.extend(one.face_shells.iter().map(|_| 1));
+    two.face_tolerances.extend(&one.face_tolerances);
     two.edge_faces
         .extend(one.edge_faces.iter().map(|f| f + faces));
     two.edge_numbers.extend(&one.edge_numbers);

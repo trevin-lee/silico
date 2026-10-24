@@ -58,6 +58,8 @@ pub fn report(points: &[[f64; 3]], faces: &[&[[usize; 3]]]) -> ExportMesh {
         m.face_numbers.push(f as u32 + 1);
         m.face_deflections.push(0.0);
         m.face_shells.push(0);
+        // OCCT's own tolerance, Precision::Confusion, as a box's faces carry it.
+        m.face_tolerances.push(1e-7);
         for (a, b) in sides {
             let next = edge_numbers.len() as u32 + 1;
             let number = *edge_numbers.entry((a, b)).or_insert(next);
@@ -100,6 +102,7 @@ pub fn with_shell(base: &ExportMesh, extra: &ExportMesh, solid: u32, outer: bool
     m.face_numbers
         .extend(extra.face_numbers.iter().map(|n| n + faces));
     m.face_deflections.extend(&extra.face_deflections);
+    m.face_tolerances.extend(&extra.face_tolerances);
     m.face_shells
         .extend(extra.face_shells.iter().map(|_| shell));
     m.edge_faces

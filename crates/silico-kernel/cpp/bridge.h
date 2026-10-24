@@ -135,6 +135,8 @@ public:
   std::vector<uint32_t> face_numbers_;
   std::vector<double> face_deflections_;
   std::vector<uint32_t> face_shells_;
+  std::vector<double> face_tolerances_;
+  std::vector<uint32_t> unoriented_faces_;
   std::vector<uint32_t> shell_solids_;
   std::vector<uint8_t> shell_outer_;
   uint32_t solids_ = 0;
@@ -161,6 +163,12 @@ public:
   }
   rust::Slice<const uint32_t> face_shells() const {
     return {face_shells_.data(), face_shells_.size()};
+  }
+  rust::Slice<const double> face_tolerances() const {
+    return {face_tolerances_.data(), face_tolerances_.size()};
+  }
+  rust::Slice<const uint32_t> unoriented_faces() const {
+    return {unoriented_faces_.data(), unoriented_faces_.size()};
   }
   rust::Slice<const uint32_t> shell_solids() const {
     return {shell_solids_.data(), shell_solids_.size()};

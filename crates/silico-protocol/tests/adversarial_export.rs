@@ -173,6 +173,8 @@ fn report(r: &Raw) -> ExportMesh {
         face_numbers: l(3),
         face_deflections: floats(r.lists[3].len()),
         face_shells: l(4),
+        face_tolerances: floats(r.lists[3].len()),
+        unoriented_faces: l(6).into_iter().map(|f| f.saturating_add(1000)).collect(),
         shell_solids: l(5),
         shell_outer: r.flags.clone(),
         solids: r.solids,

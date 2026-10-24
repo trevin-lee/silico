@@ -98,6 +98,13 @@ pub struct ExportMesh {
     pub face_deflections: Vec<f64>,
     /// The shell each face is in, counted from 0 over the whole shape.
     pub face_shells: Vec<u32>,
+    /// Each face's tolerance as OCCT meshes it: the largest of the face's, its edges', and
+    /// its vertices' (`BRepMesh_ShapeTool::MaxFaceTolerance`). OCCT meshes a face no finer
+    /// than twice it (`BRepMesh_Deflection.cxx:146-147`).
+    pub face_tolerances: Vec<f64>,
+    /// Faces of a solid's shell neither FORWARD nor REVERSED (INTERNAL or EXTERNAL), by
+    /// number: they bound no change of material, so they're left out of the mesh.
+    pub unoriented_faces: Vec<u32>,
     /// The solid each shell is in, counted from 0.
     pub shell_solids: Vec<u32>,
     /// Whether each shell is its solid's outer one (`BRepClass3d::OuterShell`), not a
@@ -145,6 +152,7 @@ impl ExportMesh {
             ("face numbers", self.face_numbers.len()),
             ("face deflections", self.face_deflections.len()),
             ("face shells", self.face_shells.len()),
+            ("face tolerances", self.face_tolerances.len()),
         ] {
             if len != faces {
                 return Err(format!("{len} {what} for {faces} faces"));
@@ -233,10 +241,15 @@ impl ExportMesh {
                 ));
             }
         }
-        if [&self.face_numbers, &self.edge_numbers, &self.loose_faces]
-            .into_iter()
-            .flatten()
-            .any(|&n| n == 0)
+        if [
+            &self.face_numbers,
+            &self.edge_numbers,
+            &self.loose_faces,
+            &self.unoriented_faces,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|&n| n == 0)
             || self.edge_vertices.iter().flatten().any(|&v| v == 0)
         {
             return Err("an element is numbered 0, but elements are numbered from 1".to_owned());
@@ -261,9 +274,22 @@ impl ExportMesh {
             .face_deflections
             .iter()
             .chain(&self.edge_deflections)
+            .chain(&self.face_tolerances)
             .all(|d| d.is_finite() && *d >= 0.0)
         {
-            return Err("a deflection isn't a finite length".to_owned());
+            return Err("a deflection or a tolerance isn't a finite length".to_owned());
+        }
+        // An unoriented face is left out of the mesh, so it's neither a face of it nor loose.
+        let meshed: std::collections::BTreeSet<u32> = self
+            .face_numbers
+            .iter()
+            .chain(&self.loose_faces)
+            .copied()
+            .collect();
+        if let Some(&f) = self.unoriented_faces.iter().find(|f| meshed.contains(f)) {
+            return Err(format!(
+                "Face{f} is both left out as unoriented and in the mesh or loose"
+            ));
         }
         Ok(())
     }
