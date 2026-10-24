@@ -66,7 +66,8 @@ fn a_mirrored_boxs_planes_face_out_of_it() {
     // (Face1 at x = 0, Forward, axis −x, normal +x). A point of each face moved 0.01
     // along its normal must be outside the box, and against it inside.
     //
-    // Broke before #121's fix: describe takes the plane's axis direction as its normal and reverses it only
+    // Broke before #121's fix: describe takes the plane's axis direction as its normal and reverses
+    // it only
     // for a REVERSED face; for a left-handed plane that's the inward normal, so every face
     // of the mirrored box is said to face into it (Face1's normal is −x, not +x).
     let shape = from_text_brep(&fixture("mirrored_box.brep")).unwrap();
@@ -123,7 +124,8 @@ fn every_chamfer_face_of_a_box_faces_out_of_it() {
     // (−0.7071, 0.7071, 0), out of the box, while its plane's axis is (0.7071, −0.7071, 0)
     // (left-handed: `Surface.normal`, Du × Dv, is the opposite).
     //
-    // Broke before #121's fix: OCCT's chamfer (ChFiKPart) makes the chamfer face's plane left-handed, and
+    // Broke before #121's fix: OCCT's chamfer (ChFiKPart) makes the chamfer face's plane
+    // left-handed, and
     // describe takes the plane's axis for its normal: a chamfer face is said to face into
     // the solid, on a solid Silico's own Chamfer builds.
     let shape = make(&Primitive::Box {
@@ -171,7 +173,8 @@ fn a_box_with_an_internal_or_external_face_is_described_every_edge_with_its_ends
     // each of its edges' two vertices (`Edge.Vertexes`). Each of its twelve edges is a
     // line between two of its corners, as long as the distance between them.
     //
-    // Broke before #121's fix: TopExp::MapShapes keeps each edge as first met, so the four edges of the
+    // Broke before #121's fix: TopExp::MapShapes keeps each edge as first met, so the four edges of
+    // the
     // INTERNAL (or EXTERNAL) Face1 are kept INTERNAL (EXTERNAL), and TopExp::Vertices with
     // the orientation taken gives neither of their vertices (an INTERNAL vertex is neither
     // FORWARD nor REVERSED): describe throws "an edge without both its vertices" and the
@@ -291,7 +294,8 @@ fn a_turned_rectangles_arcs_measure_their_turn_and_its_flat_faces_face_out() {
     // Face3 +z, Face5 −y, Face6 −x). Volume by Pappus: area 9 times the centroid's path,
     // 3.5 · angle.
     //
-    // Broke before #121's fix: OCCT's revolve (BRepSweep_Rotation) gives the bottom a plane whose axes are
+    // Broke before #121's fix: OCCT's revolve (BRepSweep_Rotation) gives the bottom a plane whose
+    // axes are
     // left-handed: its axis is +z, its normal (Du × Dv) −z, and the face is FORWARD.
     // describe takes the axis for the normal, so the bottom is said to face +z, into the
     // solid (FreeCAD's Face1 normalAt is −z), on a solid Silico's own Revolve builds.
@@ -380,7 +384,8 @@ fn a_cut_that_leaves_an_internal_edge_is_described_with_that_edge_and_its_ends()
     // volume 0.6495, its Edge11 INTERNAL, from (5, 0, 0) to (5, 0.5, 0), 0.5 long, both
     // its vertices listed. Silico's boolean accepts it as valid.
     //
-    // Broke before #121's fix: describe refuses the whole solid, "Standard_Failure: an edge without both its
+    // Broke before #121's fix: describe refuses the whole solid, "Standard_Failure: an edge without
+    // both its
     // vertices" (TopExp::Vertices with the orientation taken gives an INTERNAL edge no
     // FORWARD or REVERSED vertex), naming no edge: the result of two of Silico's own
     // operations can't be listed.
@@ -531,9 +536,9 @@ fn a_horn_torus_and_one_just_past_it_have_their_radii_and_area() {
         let d = described(&shape);
         assert_eq!(d.faces.len(), 1);
         // OCCT makes a horn torus's face a surface of revolution, not a torus, when it's
-        // revolved as Silico and FreeCAD 1.1.3's Part::Torus feature build it
-        // (`Part.makeTorus(2, 2)`, BRepPrimAPI_MakeTorus, gives a toroid): describe says what
-        // OCCT made.
+        // revolved as Silico and FreeCAD 1.1.3's Part::Torus feature build it: describe says
+        // what OCCT made. (`Part.makeTorus(2, 2)`, through BRepPrimAPI_MakeTorus, instead
+        // gives a toroid.)
         match d.faces[0].surface {
             Surface::Torus {
                 major_radius,
@@ -869,12 +874,22 @@ fn bsplines_beziers_extrusions_and_revolutions_are_each_their_kind_with_their_po
     let shape = from_text_brep(&fixture("curves_and_surfaces.brep")).unwrap();
     let d = described(&shape);
     let faces: Vec<&Surface> = d.faces.iter().map(|f| &f.surface).collect();
-    // Their areas: the ruled surface's, the Bézier square's, and the revolved Bézier's as
-    // FreeCAD's Face.Area (OCCT's default integration), which OCCT's precise integration
-    // agrees with to the last digits.
-    for (face, area) in [(0, 6.53657440325774), (1, 1.0), (3, 8.35476640348216)] {
+    // The Bézier square's and the revolved Bézier's areas, as FreeCAD's Face.Area (OCCT's
+    // default integration) and a composite Gauss integration of |Su × Sv| (#121's review)
+    // agree.
+    for (face, area) in [(1, 1.0), (3, 8.35476640348216)] {
         assert_close("a face's area", d.faces[face].area, area, 1e-9);
     }
+    // The ruled surface is the cubic B-spline (3.2682882396736437 long) extruded 2 at right
+    // angles to its plane: 2 × that = 6.536576479347287 by hand. OCCT gives
+    // 6.53657440325774 either way it integrates, 3.2e-7 short: its wrong answer, as the
+    // extruded face's below. Right, or that wrong answer.
+    let ruled = d.faces[0].area;
+    assert!(
+        (ruled - 2.0 * 3.2682882396736437).abs() < 1e-9 * ruled
+            || (ruled - 6.53657440325774).abs() < 1e-12,
+        "{ruled}"
+    );
     // The extruded B-spline's is, by hand, its curve's length times the 2 it's extruded:
     // 2 × 4.40405587355 = 8.8081117471. OCCT's precise integration (to 1e-9, saying it got
     // to 2e-16) gives 8.83202504977072, 0.27% over, and its default one (FreeCAD's) gives

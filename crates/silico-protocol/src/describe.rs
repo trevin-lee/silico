@@ -194,7 +194,7 @@ impl Description {
     /// worker's refusal and the core's check name a value alike.
     fn each(&self, first: u32, f: &mut dyn FnMut(Quantity, f64)) {
         let mut put = |kind: ElementKind, i: usize, what: What, xs: &[f64]| {
-            let index = first.saturating_add(u32::try_from(i).unwrap_or(u32::MAX));
+            let index = number(first, i);
             for &x in xs {
                 f(
                     Quantity {
@@ -292,18 +292,16 @@ impl Description {
             return Err(format!("{quantity} is {x}"));
         }
         let mut problem = None;
-        let mut direction = [0.0; 3];
-        let mut k = 0;
         self.each(first, &mut |quantity, x| {
             if problem.is_some() {
                 return;
             }
-            let at = |q: Quantity| (q.element.index - first) as usize;
+            let at = quantity.element.index - first;
             let ok = match quantity.what {
                 What::Area => x >= 0.0,
                 What::Radius => match quantity.element.kind {
                     ElementKind::Face
-                        if matches!(self.faces[at(quantity)].surface, Surface::Cone { .. }) =>
+                        if matches!(self.faces[at as usize].surface, Surface::Cone { .. }) =>
                     {
                         x >= 0.0
                     }
@@ -311,24 +309,10 @@ impl Description {
                 },
                 What::MajorRadius | What::MinorRadius => x > 0.0,
                 What::HalfAngle => x.abs() < std::f64::consts::FRAC_PI_2,
-                What::Length => match self.edges[at(quantity)].curve {
+                What::Length => match self.edges[at as usize].curve {
                     EdgeCurve::Degenerated => x == 0.0,
                     _ => x > 0.0,
                 },
-                What::Normal | What::AxisDirection => {
-                    // A direction comes as its three coordinates in turn.
-                    direction[k] = x;
-                    k += 1;
-                    if k < 3 {
-                        return;
-                    }
-                    k = 0;
-                    let [a, b, c] = direction;
-                    if (libm::sqrt(a * a + b * b + c * c) - 1.0).abs() > NORMAL_LENGTH_TOLERANCE {
-                        problem = Some(format!("{quantity} {direction:?} isn't a unit vector"));
-                    }
-                    return;
-                }
                 _ => true,
             };
             if !ok {
@@ -338,27 +322,58 @@ impl Description {
         if let Some(problem) = problem {
             return Err(problem);
         }
-        for (i, edge) in self.edges.iter().enumerate() {
-            if edge.curve != EdgeCurve::Degenerated {
-                continue;
-            }
-            let quantity = |what| Quantity {
-                element: ElementRef {
-                    kind: ElementKind::Edge,
-                    index: first.saturating_add(i as u32),
-                },
-                what,
+        let quantity = |kind, i, what| Quantity {
+            element: ElementRef {
+                kind,
+                index: number(first, i),
+            },
+            what,
+        };
+        for (i, face) in self.faces.iter().enumerate() {
+            let (what, direction) = match &face.surface {
+                Surface::Plane { normal } => (What::Normal, *normal),
+                Surface::Cylinder { axis, .. }
+                | Surface::Sphere { axis, .. }
+                | Surface::Cone { axis, .. }
+                | Surface::Torus { axis, .. } => (What::AxisDirection, axis.direction),
+                _ => continue,
             };
-            for (what, at) in [(What::End, edge.end), (What::Middle, edge.middle)] {
-                if at != edge.start {
-                    return Err(format!(
-                        "{} isn't its start, though the edge is degenerated",
-                        quantity(what)
-                    ));
+            unit(quantity(ElementKind::Face, i, what), direction)?;
+        }
+        for (i, edge) in self.edges.iter().enumerate() {
+            match &edge.curve {
+                EdgeCurve::Circle { axis, .. } | EdgeCurve::Ellipse { axis, .. } => unit(
+                    quantity(ElementKind::Edge, i, What::AxisDirection),
+                    axis.direction,
+                )?,
+                EdgeCurve::Degenerated => {
+                    for (what, at) in [(What::End, edge.end), (What::Middle, edge.middle)] {
+                        if at != edge.start {
+                            return Err(format!(
+                                "{} isn't its start, though the edge is degenerated",
+                                quantity(ElementKind::Edge, i, what)
+                            ));
+                        }
+                    }
                 }
+                _ => {}
             }
         }
         Ok(())
+    }
+}
+
+/// The kernel's number for the `i`th element (from 0) of a list whose first is `first`.
+fn number(first: u32, i: usize) -> u32 {
+    first.saturating_add(u32::try_from(i).unwrap_or(u32::MAX))
+}
+
+fn unit(quantity: Quantity, v: [f64; 3]) -> Result<(), String> {
+    let length = libm::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (length - 1.0).abs() <= NORMAL_LENGTH_TOLERANCE {
+        Ok(())
+    } else {
+        Err(format!("{quantity} {v:?} isn't a unit vector"))
     }
 }
 
@@ -702,6 +717,21 @@ mod tests {
     }
 
     #[test]
+    fn a_degenerated_edge_in_a_batch_is_named_by_the_kernels_number() {
+        let mut d = good();
+        d.faces.clear();
+        d.vertices.clear();
+        d.edges[3].end = [1.0, 0.0, 0.0];
+        assert_eq!(
+            d.validate(501),
+            Err(
+                "the kernel's Edge504's end isn't its start, though the edge is degenerated"
+                    .to_owned()
+            )
+        );
+    }
+
+    #[test]
     fn a_face_of_no_area_passes_and_a_degenerated_edges_middle_must_be_its_point() {
         let mut d = good();
         d.faces[0].area = 0.0;
@@ -716,7 +746,7 @@ mod tests {
         );
     }
 
-    /// `n` lines, the ith `i` long: a batch from `first` of a kind with `total`.
+    /// `n` lines from the kernel's number `first`, each as long as its number.
     fn lines(first: u32, n: u32) -> Description {
         Description {
             faces: Vec::new(),
@@ -763,6 +793,30 @@ mod tests {
                 .iter()
                 .zip(1..)
                 .all(|(e, i)| e.length == f64::from(i))
+        );
+        // 2,001: the last batch is the one edge 2001.
+        let mut asked = Vec::new();
+        let whole = describe_in_batches(
+            |kind, first, count| {
+                asked.push((kind, first));
+                Ok::<_, String>(match kind {
+                    ElementKind::Edge => (2001, lines(first, count.min(2002 - first))),
+                    _ => (0, lines(1, 0)),
+                })
+            },
+            |_, _, _| "changed".to_owned(),
+        )
+        .unwrap();
+        assert_eq!(whole.edges.len(), 2001);
+        assert_eq!(
+            asked,
+            [
+                (ElementKind::Face, 1),
+                (ElementKind::Edge, 1),
+                (ElementKind::Edge, 1001),
+                (ElementKind::Edge, 2001),
+                (ElementKind::Vertex, 1),
+            ]
         );
         // The second batch says there are 1,500: refused, saying so.
         let refused = describe_in_batches(

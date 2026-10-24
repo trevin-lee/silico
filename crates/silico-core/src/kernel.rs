@@ -523,6 +523,16 @@ impl KernelRequest<DescribedBatch> {
     }
 }
 
+/// A kind's word for many, for messages.
+fn kind_plural(kind: ElementKind) -> &'static str {
+    match kind {
+        ElementKind::Face => "faces",
+        ElementKind::Edge => "edges",
+        ElementKind::Vertex => "vertices",
+        ElementKind::Solid => "solids",
+    }
+}
+
 /// What's wrong with a batch of a description for a request of `count` elements of `kind`
 /// from `first`, of `total`, if anything: a value it can't hold, elements of another kind,
 /// or more or fewer than there are from `first` up to `count`.
@@ -972,7 +982,8 @@ impl KernelWorker {
                     "the kernel worker sent a description it can't have",
                 )
                 .with_cause(format!(
-                    "it said the shape has {was} of a kind ({kind:?}), then {now}"
+                    "it said the shape has {was} {}, then {now}",
+                    kind_plural(kind)
                 ))
                 .with_suggestion("start a new kernel worker")
             },

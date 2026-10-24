@@ -348,7 +348,8 @@ fn faces_a_cut_turns_round_face_out_of_the_solid() {
 fn a_boxs_edges_and_vertices_are_freecads_by_number_each_edge_from_its_curves_start() {
     // A 10 × 20 × 30 box, as FreeCAD 1.1.3's Part::Box gives it (Shape.Edges[i] with
     // firstVertex() and lastVertex(), the curve's own order, and Shape.Vertexes): six of
-    // its edges (3, 4, 5, 6, 10, and 11) are reversed in the faces OCCT meets them in first, but each runs from its
+    // its edges (3, 4, 5, 6, 10, and 11) are reversed in the faces OCCT meets them in first, but
+    // each runs from its
     // curve's start, so an edit that reorders the faces can't swap its ends.
     let d = described(Primitive::Box {
         dx: 10.0,
@@ -444,7 +445,11 @@ fn a_batch_from_the_middle_is_those_elements_by_the_kernels_numbers() {
     assert_eq!(ends, [([0.0, 20.0, 30.0], [10.0, 20.0, 30.0])]);
     let (total, d) = describe(&shape, ElementKind::Edge, 13, 5).unwrap();
     assert_eq!((total, d.edges.len()), (12, 0));
-    assert!(describe(&shape, ElementKind::Edge, 0, 5).is_err());
+    let from_0 = describe(&shape, ElementKind::Edge, 0, 5).unwrap_err();
+    assert!(
+        from_0.to_string().contains("elements are numbered from 1"),
+        "{from_0}"
+    );
 }
 
 #[test]
