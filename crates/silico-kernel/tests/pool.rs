@@ -17,7 +17,7 @@ mod scripts;
 
 use std::collections::BTreeSet;
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use kernel::kernel;
@@ -1266,51 +1266,8 @@ fn test_binary_imports_no_platform_math() {
 }
 
 // The pool's clients (M4.2): each a handle with generations of its own, its requests served
-// in turn with the others'. Some tests count the workers the pool started from a log each
-// worker writes as it launches, so a worker stopped and replaced shows as a launch more.
-// (Written here, not with `common/launches.rs`, whose other helpers this program doesn't
-// use.)
-
-/// A pool of `size` test workers, all started now, each logging its process ID as it
-/// launches, before it runs: the pool, and the log.
-fn logged_pool(what: &str, size: usize) -> (KernelPool, PathBuf) {
-    let log = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
-        "silico-pool-{what}-{}.launches",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_file(&log);
-    let script = scripts::script(
-        &format!("launch-logging-{what}"),
-        &format!("echo $$ >> '{}'\nexec '{TEST_WORKER}'", log.display()),
-    );
-    let pool = KernelPool::start_workers(&script, size).unwrap();
-    // A worker counts as started once its process is; its log line may come just after.
-    wait_launches(&log, size);
-    assert_eq!(launches(&log).len(), size, "the pool's first workers");
-    (pool, log)
-}
-
-/// The process IDs of the workers logged to `log` so far, in the order they launched.
-fn launches(log: &Path) -> Vec<u32> {
-    std::fs::read_to_string(log)
-        .unwrap_or_default()
-        .lines()
-        .map(|line| line.trim().parse().unwrap())
-        .collect()
-}
-
-/// Waits for `log` to hold `n` launches, failing after [`HANG`].
-fn wait_launches(log: &Path, n: usize) {
-    let deadline = Instant::now() + HANG;
-    while launches(log).len() < n {
-        assert!(
-            Instant::now() < deadline,
-            "{:?} launched, not {n}",
-            launches(log)
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    }
-}
+// in turn with the others'. (Those that count the workers launched are adversarial_pool.rs's,
+// with the launch log there.)
 
 #[test]
 fn a_pools_clients_are_numbered_from_one_and_share_its_identity() {
@@ -1330,71 +1287,15 @@ fn a_pools_clients_are_numbered_from_one_and_share_its_identity() {
 }
 
 #[test]
-fn another_clients_advances_never_stop_a_running_request() {
-    // `a`'s 300 ms sleep, running at its generation 1, outlasts `b`'s advances to its
-    // generations 2 to 10, on a pool of one that stops every superseded request at once.
-    // `b`'s generations aren't `a`'s, so the sleep runs to its end on the worker it started
-    // on: still the pool's one launch. (With one generation for the whole pool, `b`'s first
-    // advance stopped it: `Superseded`, and a second launch for the worker put in its
-    // place.)
-    let (pool, log) = logged_pool("another-clients-advance", 1);
-    pool.set_stop_after(Duration::ZERO);
-    let (a, b) = (pool.client(), pool.client());
-    a.advance(Generation(1));
-    let running = a.submit(Generation(1), sleep(300));
-    std::thread::sleep(Duration::from_millis(100));
-    for g in 2..=10 {
-        b.advance(Generation(g));
-    }
-    let ran = outcome(running);
-    assert!(matches!(ran, Outcome::Done(Ok(()))), "{ran:?}");
-    // A request after it runs on the pool's worker: a replacement would have logged its
-    // launch before it could take it.
-    let after = outcome(a.submit(Generation(1), echo(&[1])));
-    assert!(matches!(after, Outcome::Done(Ok(_))), "{after:?}");
-    assert_eq!(launches(&log).len(), 1, "{:?}", launches(&log));
-    // Each client's generation is its own, and the pool's own is untouched.
-    assert_eq!(a.generation(), Generation(1));
-    assert_eq!(b.generation(), Generation(10));
-    assert_eq!(pool.generation(), Generation(0));
-}
-
-#[test]
-fn a_clients_own_advance_stops_its_running_request_and_no_others() {
-    // The same sleep, but `a` advances: its sleep is superseded and stopped (its worker
-    // killed, and a second launched in its place), as the pool's own requests are. `b`'s
-    // request, waiting behind it at `b`'s generation 0, is left alone and runs.
-    let (pool, log) = logged_pool("own-advance", 1);
-    pool.set_stop_after(Duration::ZERO);
-    let (a, b) = (pool.client(), pool.client());
-    a.advance(Generation(1));
-    let running = a.submit(Generation(1), sleep(300));
-    std::thread::sleep(Duration::from_millis(100));
-    let waiting = b.submit(Generation(0), echo(&[2]));
-    for g in 2..=10 {
-        a.advance(Generation(g));
-    }
-    let stopped = outcome(running);
-    assert!(matches!(stopped, Outcome::Superseded), "{stopped:?}");
-    assert_eq!(done(waiting).unwrap(), Blob::inline(vec![2]));
-    assert_eq!(
-        done(a.submit(Generation(10), echo(&[3]))).unwrap(),
-        Blob::inline(vec![3])
-    );
-    wait_launches(&log, 2);
-    assert_eq!(launches(&log).len(), 2, "{:?}", launches(&log));
-}
-
-#[test]
 fn a_clients_long_queue_never_starves_another() {
-    // On a pool of one, `a` queues ten 50 ms sleeps, then `b` one echo. The pool takes the
+    // On a pool of one, `a` queues ten 200 ms sleeps, then `b` one echo. The pool takes the
     // clients in turn, so `b`'s echo runs after at most the sleep already running: second,
-    // or third if this thread wakes a sleep late to look; never eleventh, after all of `a`'s
-    // (as one queue for the pool, first come first served, ran it).
+    // or third if this thread wakes a whole sleep late to look; never eleventh, after all of
+    // `a`'s (as one queue for the pool, first come first served, ran it).
     let pool = pool(TEST_WORKER, 1);
     let (a, b) = (pool.client(), pool.client());
     let sleeps: Vec<_> = (0..10)
-        .map(|_| a.submit(Generation(0), sleep(50)))
+        .map(|_| a.submit(Generation(0), sleep(200)))
         .collect();
     let echoed = b.submit(Generation(0), echo(&[1]));
     assert_eq!(done(echoed).unwrap(), Blob::inline(vec![1]));
@@ -1512,51 +1413,6 @@ fn many_clients_submitting_and_advancing_never_get_a_failure_or_anothers_superse
 }
 
 #[test]
-fn dropping_a_client_mid_request_stops_its_work_and_no_others() {
-    // On a pool of two, `a`'s 30 s sleep and `b`'s 1 s sleep run at once, and a second sleep
-    // of `a`'s waits. `a` is dropped: its waiting sleep is superseded at once, and its
-    // running one stopped once it has run the stop-after (well before its 30 s), its worker
-    // replaced (a third launch). `b`'s sleep runs to its end on its worker, which the pool
-    // still holds.
-    let (pool, log) = logged_pool("drop-client", 2);
-    let first = pool.pids();
-    let (a, b) = (pool.client(), pool.client());
-    let long = a.submit(Generation(0), sleep(30_000));
-    let other = b.submit(Generation(0), sleep(1_000));
-    let queued = a.submit(Generation(0), echo(&[1]));
-    std::thread::sleep(Duration::from_millis(200));
-    let start = Instant::now();
-    drop(a);
-    assert!(
-        matches!(queued.try_take(), Ok(Outcome::Superseded)),
-        "a's waiting request wasn't superseded as a was dropped"
-    );
-    let stopped = outcome(long);
-    assert!(matches!(stopped, Outcome::Superseded), "{stopped:?}");
-    assert!(
-        start.elapsed() < Duration::from_secs(10),
-        "a's sleep ran on {:?} after a was dropped",
-        start.elapsed()
-    );
-    let ran = outcome(other);
-    assert!(matches!(ran, Outcome::Done(Ok(()))), "{ran:?}");
-    wait_launches(&log, 3);
-    assert_eq!(launches(&log).len(), 3, "{:?}", launches(&log));
-    // One of the first two workers, b's, is still the pool's; a's is gone.
-    let now: BTreeSet<u32> = wait_full(&pool, 2, &BTreeSet::new()).into_iter().collect();
-    assert_eq!(
-        first.iter().filter(|p| now.contains(p)).count(),
-        1,
-        "{first:?} → {now:?}"
-    );
-    // And b goes on.
-    assert_eq!(
-        done(b.submit(Generation(0), echo(&[2]))).unwrap(),
-        Blob::inline(vec![2])
-    );
-}
-
-#[test]
 fn a_client_that_outlives_its_pool_ends_its_requests_without_a_result() {
     // A client's request running as its pool is dropped, and one it submits after, end
     // without a result, saying the pool stopped and to take a client of a running one; no
@@ -1588,36 +1444,35 @@ fn a_client_that_outlives_its_pool_ends_its_requests_without_a_result() {
 }
 
 #[test]
-fn a_clients_submits_racing_its_pools_drop_leave_no_worker_behind() {
-    // A client submitting as fast as its requests end while its pool, starting its workers
-    // on demand, is dropped from another thread, at a different moment each time: each
-    // request either runs or ends saying the pool stopped, and once the pool and client are
-    // gone no worker is left, though a submit may have started a slot after the drop looked.
-    for attempt in 0..40u64 {
-        let pool = KernelPool::start_on_demand(Path::new(TEST_WORKER), 4).unwrap();
-        let client = pool.client();
-        std::thread::scope(|scope| {
-            let submitter = scope.spawn(|| {
-                loop {
-                    match outcome(client.submit(Generation(0), echo(&[1]))) {
-                        Outcome::Done(Ok(_)) => {}
-                        Outcome::Done(Err(e)) => {
-                            assert_eq!(
-                                e.message(),
-                                "the kernel pool stopped before Echo was done",
-                                "attempt {attempt}: {e}"
-                            );
-                            return;
-                        }
-                        Outcome::Superseded => panic!("attempt {attempt}: superseded"),
-                    }
-                }
-            });
-            spin(Duration::from_micros(attempt * 250));
-            drop(pool);
-            submitter.join().unwrap();
-        });
-        drop(client);
-    }
-    wait_no_children("after the pools and their clients");
+fn an_idle_pool_still_tends_its_worker_after_a_clients_waiting_requests_are_superseded() {
+    // A client's advance takes its waiting request out of the count of those waiting, so
+    // the idle slot, finding none, tends its worker: one killed from outside is replaced.
+    // (A count left at one keeps the slot waiting for work that isn't there.)
+    let pool = pool(TEST_WORKER, 1);
+    let a = pool.client();
+    let running = a.submit(Generation(0), sleep(300));
+    std::thread::sleep(Duration::from_millis(100));
+    let waiting = a.submit(Generation(0), echo(&[1]));
+    a.advance(Generation(1));
+    assert!(matches!(waiting.try_take(), Ok(Outcome::Superseded)));
+    assert!(matches!(outcome(running), Outcome::Superseded));
+    let before = wait_full(&pool, 1, &BTreeSet::new());
+    signal("9", before[0]);
+    wait_full(&pool, 1, &BTreeSet::from([before[0]]));
+}
+
+#[test]
+fn a_clients_stale_submit_is_superseded_at_once() {
+    // `a` at generation 2 submits for its generation 1, while `b`'s sleep holds the pool's
+    // one worker: superseded at once, by `a`'s own generation (the pool's own is still 0),
+    // and `b`'s sleep runs on.
+    let pool = pool(TEST_WORKER, 1);
+    let (a, b) = (pool.client(), pool.client());
+    let busy = b.submit(Generation(0), sleep(300));
+    std::thread::sleep(Duration::from_millis(100));
+    a.advance(Generation(2));
+    let late = a.submit(Generation(1), echo(&[1]));
+    let late = late.try_take().map_err(|_| "still waiting").unwrap();
+    assert!(matches!(late, Outcome::Superseded), "{late:?}");
+    assert!(matches!(outcome(busy), Outcome::Done(Ok(()))));
 }
