@@ -1600,6 +1600,14 @@ mod tests {
         assert_eq!(queues.add_client().number(), 3);
         assert_eq!(drain(&mut queues), [(1, 1)]);
         assert_eq!(queues.take_all().len(), 0);
+        // All taken out at once (the pool stopping, or a slot that can't start), with requests
+        // still waiting: none left to count, so an idle slot isn't kept from tending its worker.
+        queues.push(Box::new(Request(a, Generation(3), 4)));
+        queues.push(Box::new(Request(a, Generation(3), 5)));
+        assert_eq!(queues.queued(), 2);
+        assert_eq!(queues.take_all().len(), 2);
+        assert_eq!(queues.queued(), 0);
+        assert!(queues.next().is_none());
     }
 
     #[test]
