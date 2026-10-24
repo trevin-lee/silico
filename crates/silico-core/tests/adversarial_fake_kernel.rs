@@ -5,14 +5,19 @@
 //! the pool's documented guarantees (pool.rs) and the real kernel's (silico-kernel lib.rs).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::echo::{echo, echoed};
+
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use proptest::prelude::*;
 use silico_core::ErrorCode;
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::{
-    Blob, BooleanOp, ChamferSize, Generation, Kernel, KernelRequest, Op, Primitive, ShapeData,
+    Blob, BooleanOp, ChamferSize, ClientId, Clients, Generation, Kernel, KernelRequest, Op,
+    Primitive, ShapeData,
 };
 use silico_core::pool::{Outcome, Pending};
 
@@ -63,7 +68,7 @@ fn a_panicking_refusal_rule_leaves_the_kernel_able_to_answer() {
     assert_eq!(error.code(), ErrorCode::Internal);
     // The next, ordinary, request must still be answered.
     let next = within(
-        kernel.submit(Generation(0), KernelRequest::echo(Blob::inline(vec![1]))),
+        kernel.submit(Generation(0), echo(1)),
         "an ordinary request after a rule panicked",
     );
     assert_eq!(done(next), Blob::inline(vec![1]));
@@ -83,7 +88,7 @@ fn a_panicking_hold_rule_leaves_the_kernel_able_to_answer() {
         "the request whose rule panicked",
     );
     let next = within(
-        kernel.submit(Generation(0), KernelRequest::echo(Blob::inline(vec![1]))),
+        kernel.submit(Generation(0), echo(1)),
         "an ordinary request after a rule panicked",
     );
     assert_eq!(done(next), Blob::inline(vec![1]));
@@ -326,8 +331,8 @@ fn a_request_for_a_future_generation_survives_an_advance_short_of_it() {
     let hold = kernel.hold(|op| matches!(op, Op::Echo { data } if data.as_bytes() == [0]));
     let blocker = kernel.submit(Generation(5), KernelRequest::echo(Blob::inline(vec![0])));
     assert!(kernel.wait_running(1, WAIT));
-    let future = kernel.submit(Generation(5), KernelRequest::echo(Blob::inline(vec![1])));
-    let stale = kernel.submit(Generation(2), KernelRequest::echo(Blob::inline(vec![2])));
+    let future = kernel.submit(Generation(5), echo(1));
+    let stale = kernel.submit(Generation(2), echo(2));
     kernel.advance(Generation(3));
     assert_eq!(kernel.generation(), Generation(3));
     assert!(matches!(within(stale, "stale"), Outcome::Superseded));
@@ -672,4 +677,353 @@ fn a_dressing_in_shape_bytes_of_no_edge_a_repeated_one_or_one_past_the_shapes_is
         assert_eq!(FakeKernel::describe(&shape), None, "{bytes:?}");
         assert_eq!(FakeKernel::counts(&shape), None, "{bytes:?}");
     }
+}
+
+// --- Clients (M4.2, MA2) ------------------------------------------------------------------
+
+/// What a test does to a fake kernel with clients: on the kernel's own client (0) or one of
+/// three it gave (1 to 3), submit an echo or advance; or let everything held run, and
+/// collect what came of it.
+#[derive(Debug, Clone)]
+enum Act {
+    Submit { client: usize, generation: u64 },
+    Advance { client: usize, generation: u64 },
+    Settle,
+}
+
+fn act() -> impl Strategy<Value = Act> {
+    prop_oneof![
+        4 => (0..4usize, 0..8u64).prop_map(|(client, generation)| Act::Submit { client, generation }),
+        2 => (0..4usize, 0..8u64).prop_map(|(client, generation)| Act::Advance { client, generation }),
+        1 => Just(Act::Settle),
+    ]
+}
+
+/// A request submitted and not yet come to anything: whose, for which generation, and the
+/// number its echo carries.
+struct Unsettled {
+    client: usize,
+    generation: u64,
+    number: u32,
+    pending: Pending<Blob>,
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 96,
+        failure_persistence: None,
+        rng_seed: proptest::test_runner::RngSeed::Fixed(0xc1_1e_47),
+        ..ProptestConfig::default()
+    })]
+
+    // Every request is held until a settle, so every advance before it comes before its
+    // delivery: it comes to `Superseded` if and only if its own client's newest generation,
+    // as the test keeps it, is past the request's. Another client's advances never matter.
+    #[test]
+    fn a_request_is_superseded_only_by_its_own_clients_advance(
+        size in 1..4usize,
+        acts in proptest::collection::vec(act(), 1..40),
+    ) {
+        let kernel = FakeKernel::new(size).unwrap();
+        let clients = [kernel.client(), kernel.client(), kernel.client()];
+        let ids = [ClientId::KERNEL, clients[0].id(), clients[1].id(), clients[2].id()];
+        let submit = |client: usize, generation: u64, number: u32| {
+            let request = KernelRequest::echo(Blob::inline(number.to_le_bytes().to_vec()));
+            match client {
+                0 => kernel.submit(Generation(generation), request),
+                c => clients[c - 1].submit(Generation(generation), request),
+            }
+        };
+        let advance = |client: usize, generation: u64| match client {
+            0 => kernel.advance(Generation(generation)),
+            c => clients[c - 1].advance(Generation(generation)),
+        };
+        // The test's own account of each client's newest generation.
+        let mut newest = [0u64; 4];
+        let mut hold = Some(kernel.hold(|_| true));
+        let mut out: Vec<Unsettled> = Vec::new();
+        // Each request that ran: (client, generation), by its number; and those that never
+        // could start.
+        let mut ran: BTreeMap<u32, (ClientId, Generation)> = BTreeMap::new();
+        let mut never: Vec<u32> = Vec::new();
+        let mut number = 0u32;
+        let settle = |hold: &mut Option<silico_core::fake::Hold>,
+                      out: &mut Vec<Unsettled>,
+                      newest: &[u64; 4],
+                      ran: &mut BTreeMap<u32, (ClientId, Generation)>|
+         -> Result<(), TestCaseError> {
+            drop(hold.take());
+            for o in out.drain(..) {
+                let superseded = o.generation < newest[o.client];
+                match within(o.pending, "a request after its settle") {
+                    Outcome::Superseded => prop_assert!(
+                        superseded,
+                        "request {} of client {} at {} superseded, its client at {}",
+                        o.number, o.client, o.generation, newest[o.client]
+                    ),
+                    Outcome::Done(result) => {
+                        prop_assert!(
+                            !superseded,
+                            "request {} of client {} at {} done, its client at {}",
+                            o.number, o.client, o.generation, newest[o.client]
+                        );
+                        let echoed = result.unwrap();
+                        prop_assert_eq!(echoed.as_bytes(), o.number.to_le_bytes());
+                        ran.insert(o.number, (ids[o.client], Generation(o.generation)));
+                    }
+                }
+            }
+            *hold = Some(kernel.hold(|_| true));
+            Ok(())
+        };
+        for act in acts {
+            match act {
+                Act::Submit { client, generation } => {
+                    number += 1;
+                    let pending = submit(client, generation, number);
+                    if generation < newest[client] {
+                        // Superseded at once, before `submit` returns.
+                        prop_assert!(matches!(pending.try_take(), Ok(Outcome::Superseded)));
+                        never.push(number);
+                    } else {
+                        out.push(Unsettled { client, generation, number, pending });
+                    }
+                }
+                Act::Advance { client, generation } => {
+                    newest[client] = newest[client].max(generation);
+                    advance(client, generation);
+                }
+                Act::Settle => settle(&mut hold, &mut out, &newest, &mut ran)?,
+            }
+        }
+        settle(&mut hold, &mut out, &newest, &mut ran)?;
+        for (client, id) in ids.iter().enumerate() {
+            let generation = match client {
+                0 => kernel.generation(),
+                c => clients[c - 1].generation(),
+            };
+            prop_assert_eq!(generation, Generation(newest[client]), "client {:?}", id);
+        }
+        // Each call is recorded as its request's client and generation; every request that
+        // ran is there once, and none superseded at once is.
+        let calls = kernel.calls();
+        let mut seen = BTreeMap::new();
+        for call in &calls {
+            let Op::Echo { data } = &call.op else { panic!("{call:?}") };
+            let n = u32::from_le_bytes(data.as_bytes().try_into().unwrap());
+            prop_assert!(!never.contains(&n), "request {} started", n);
+            *seen.entry(n).or_insert(0u32) += 1;
+            if let Some(&(client, generation)) = ran.get(&n) {
+                prop_assert_eq!((call.client, call.generation), (client, generation));
+            }
+        }
+        for n in ran.keys() {
+            prop_assert_eq!(seen.get(n), Some(&1), "request {}", n);
+        }
+    }
+}
+
+fn stop_error<T: std::fmt::Debug>(outcome: Outcome<T>) {
+    let Outcome::Done(Err(error)) = outcome else {
+        panic!("expected the stop's error, got {outcome:?}")
+    };
+    assert_eq!(error.code(), ErrorCode::Internal);
+    assert_eq!(
+        error.message(),
+        "the fake kernel stopped before Echo was done"
+    );
+}
+
+#[test]
+fn a_client_that_outlives_its_kernel_gets_the_stops_error_never_a_hang() {
+    let kernel = FakeKernel::new(1).unwrap();
+    let client = kernel.client();
+    let hold = kernel.hold(|_| true);
+    let held = client.submit(Generation(0), echo(1));
+    assert!(kernel.wait_running(1, WAIT));
+    let waiting = client.submit(Generation(0), echo(2));
+    drop(kernel);
+    stop_error(within(
+        held,
+        "a held request of a client, its kernel dropped",
+    ));
+    stop_error(within(
+        waiting,
+        "a waiting request of a client, its kernel dropped",
+    ));
+    // Asked again, after the kernel is gone: the same, at once, and its generations still
+    // its own.
+    client.advance(Generation(3));
+    assert_eq!(client.generation(), Generation(3));
+    let late = client.submit(Generation(3), echo(3));
+    stop_error(within(late, "a request to a client whose kernel is gone"));
+    drop(hold);
+    drop(client);
+}
+
+#[test]
+fn a_retired_clients_turn_passes_to_the_next_client_waiting() {
+    let kernel = FakeKernel::new(1).unwrap();
+    let (a, b, c) = (kernel.client(), kernel.client(), kernel.client());
+    let hold = kernel.hold(|_| true);
+    let a1 = a.submit(Generation(0), echo(11));
+    assert!(kernel.wait_running(1, WAIT));
+    let a2 = a.submit(Generation(0), echo(12));
+    let b1 = b.submit(Generation(0), echo(21));
+    let c1 = c.submit(Generation(0), echo(31));
+    // `a`'s turn was last; retired, its two end superseded, and the kernel goes on to `b`
+    // and then `c`.
+    drop(a);
+    assert!(matches!(within(a1, "a1"), Outcome::Superseded));
+    assert!(matches!(within(a2, "a2"), Outcome::Superseded));
+    hold.release();
+    assert_eq!(done(within(b1, "b1")).as_bytes(), [21]);
+    assert_eq!(done(within(c1, "c1")).as_bytes(), [31]);
+    let calls = kernel.calls();
+    let clients: Vec<u64> = calls.iter().map(|call| call.client.number()).collect();
+    assert_eq!(clients, [1, 2, 3]);
+    assert_eq!(echoed(&calls), [11, 21, 31]);
+}
+
+#[test]
+fn a_storm_of_clients_made_advanced_and_dropped_never_supersedes_another_clients_request() {
+    let kernel = Arc::new(FakeKernel::new(2).unwrap());
+    let keeper = kernel.client();
+    keeper.advance(Generation(1));
+    let hold = kernel.hold(|op| matches!(op, Op::Echo { data } if data.as_bytes() == [0xaa]));
+    let kept = keeper.submit(Generation(1), echo(0xaa));
+    let own = kernel.submit(Generation(0), echo(0xbb));
+    assert!(kernel.wait_running(1, WAIT));
+    let storm: Vec<_> = (0..8u64)
+        .map(|seed| {
+            let kernel = Arc::clone(&kernel);
+            std::thread::spawn(move || {
+                let mut rng = Lcg(seed + 1);
+                for _ in 0..50 {
+                    let client = kernel.client();
+                    let mut pending = Vec::new();
+                    for _ in 0..(rng.next() % 4) {
+                        let generation = Generation(rng.next() % 1000);
+                        client.advance(generation);
+                        pending.push(client.submit(Generation(rng.next() % 1000), echo(1)));
+                    }
+                    // Half dropped with their requests still waiting, half waited for.
+                    if rng.next().is_multiple_of(2) {
+                        for p in pending {
+                            let _ = within(p, "a storm client's request");
+                        }
+                        drop(client);
+                    } else {
+                        drop(client);
+                        for p in pending {
+                            let outcome = within(p, "a dropped storm client's request");
+                            assert!(!matches!(outcome, Outcome::Done(Err(_))), "{outcome:?}");
+                        }
+                    }
+                }
+            })
+        })
+        .collect();
+    for thread in storm {
+        thread.join().unwrap();
+    }
+    // 400 clients made, advanced to generations up to 999, and gone: the keeper's request
+    // and the kernel's own are untouched.
+    assert_eq!(keeper.generation(), Generation(1));
+    assert_eq!(kernel.generation(), Generation(0));
+    hold.release();
+    assert_eq!(
+        done(within(kept, "the keeper's request")).as_bytes(),
+        [0xaa]
+    );
+    assert_eq!(
+        done(within(own, "the kernel's own request")).as_bytes(),
+        [0xbb]
+    );
+    // Numbered in the order given, never again: the keeper 1, the storm's 2 to 401.
+    assert_eq!(kernel.client().id().number(), 402);
+}
+
+// Sweeps a client's drop across its unheld request's run: whatever point the drop lands at
+// (the request waiting, running, or done), a request with no outcome once the drop has
+// returned comes to `Superseded`, since an outcome is decided and sent under the lock the
+// drop takes. A delivery that read a retired client as current would hand it a result.
+#[test]
+fn a_running_request_of_a_dropped_client_comes_to_superseded() {
+    let kernel = FakeKernel::new(1).unwrap();
+    let mut spin = 0u32;
+    for round in 0..5000u32 {
+        let client = kernel.client();
+        let pending = client.submit(Generation(0), echo(1));
+        spin = (spin + 37) % 4000;
+        for _ in 0..spin {
+            std::hint::spin_loop();
+        }
+        drop(client);
+        match pending.try_take() {
+            // Arrived before the drop: its result, or superseded by it.
+            Ok(Outcome::Done(result)) => assert_eq!(result.unwrap().as_bytes(), [1]),
+            Ok(Outcome::Superseded) => {}
+            Err(pending) => {
+                let outcome = within(pending, "a dropped client's request");
+                assert!(
+                    matches!(outcome, Outcome::Superseded),
+                    "round {round}: a result after the client was dropped: {outcome:?}"
+                );
+            }
+        }
+    }
+}
+
+// The same sweep for a client's advance, with another client advancing all the while: a
+// request of `a`'s with no outcome once `a` has advanced past it comes to `Superseded`,
+// and `b`'s advances never decide it.
+#[test]
+fn a_clients_advance_across_its_running_request_supersedes_it_whatever_another_does() {
+    let kernel = Arc::new(FakeKernel::new(1).unwrap());
+    let stop = Arc::new(AtomicBool::new(false));
+    let other = {
+        let (kernel, stop) = (Arc::clone(&kernel), Arc::clone(&stop));
+        std::thread::spawn(move || {
+            let b = kernel.client();
+            let mut generation = 0u64;
+            while !stop.load(Ordering::Relaxed) {
+                generation += 1;
+                b.advance(Generation(generation));
+            }
+            generation
+        })
+    };
+    let a = kernel.client();
+    let mut spin = 0u32;
+    let mut done_before = 0u32;
+    for generation in 0..5000u64 {
+        let pending = a.submit(Generation(generation), echo(1));
+        spin = (spin + 37) % 4000;
+        for _ in 0..spin {
+            std::hint::spin_loop();
+        }
+        a.advance(Generation(generation + 1));
+        match pending.try_take() {
+            Ok(Outcome::Done(result)) => {
+                assert_eq!(result.unwrap().as_bytes(), [1]);
+                done_before += 1;
+            }
+            Ok(Outcome::Superseded) => {}
+            Err(pending) => {
+                let outcome = within(pending, "a request its client advanced past");
+                assert!(
+                    matches!(outcome, Outcome::Superseded),
+                    "generation {generation}: a result after its client advanced: {outcome:?}"
+                );
+            }
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    let b_reached = other.join().unwrap();
+    assert!(b_reached > 0);
+    assert_eq!(a.generation(), Generation(5000));
+    // Global generations would supersede nearly every request of `a`'s at `b`'s next
+    // advance; most here finish before `a`'s own.
+    assert!(done_before > 0);
 }
