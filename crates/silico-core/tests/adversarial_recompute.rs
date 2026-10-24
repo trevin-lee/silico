@@ -501,27 +501,85 @@ fn an_edit_that_shares_a_step_the_superseded_run_had_in_flight_runs_it_again() {
 fn steps_a_cancelled_recompute_finished_arent_run_again() {
     // docs/ports/recompute.md, open question 3: kept by key.
     let engine = engine(2);
-    let hold = engine
-        .kernel()
-        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Cylinder { .. })));
-    let run = engine.start(checked(EXAMPLE));
-    // Both started, and only the held cylinder still running: the box was made.
-    let deadline = Instant::now() + WAIT;
-    while engine.kernel().calls().len() < 2
-        || engine.kernel().wait_running(2, Duration::from_millis(1))
-    {
-        assert!(Instant::now() < deadline, "the box never finished");
+    kept_after_a_cancel(&engine, engine.kernel());
+}
+
+#[test]
+fn steps_a_cancelled_recompute_finished_arent_run_again_when_the_cylinder_starts_late() {
+    // The same, with the cylinder's request sent only once the box and its Summarize are
+    // done and nothing runs: the ordering a loaded runner made (CI run 40138730974), where
+    // a wait on any two calls ended before the cylinder had started.
+    let engine = Recompute::new(LateCylinder(FakeKernel::new(2).unwrap()));
+    kept_after_a_cancel(&engine, &engine.kernel().0);
+}
+
+/// The fake kernel, but the cylinder's request is sent only once the box's Summarize has
+/// run and nothing is running, and 100 ms after: well after a box and its Summarize alone.
+struct LateCylinder(FakeKernel);
+
+impl Kernel for LateCylinder {
+    fn identity(&self) -> &str {
+        self.0.identity()
     }
-    let mut started = calls_since(&engine, 0);
-    started.sort_unstable();
-    assert_eq!(started, ["MakeBox", "MakeCylinder"]);
+
+    fn generation(&self) -> Generation {
+        self.0.generation()
+    }
+
+    fn advance(&self, generation: Generation) {
+        self.0.advance(generation);
+    }
+
+    fn submit<T: Send + 'static>(
+        &self,
+        generation: Generation,
+        request: KernelRequest<T>,
+    ) -> Pending<T> {
+        if request.name() == "MakeCylinder" {
+            let deadline = Instant::now() + WAIT;
+            while !(self.0.calls().iter().any(|c| c.op.name() == "Summarize")
+                && !self.0.wait_running(1, Duration::ZERO))
+            {
+                assert!(Instant::now() < deadline, "the box's Summarize never ran");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        self.0.submit(generation, request)
+    }
+}
+
+/// EXAMPLE recomputed on `engine` (whose fake kernel is `fake`) and cancelled once the box
+/// is made and the cylinder held, then again: only the steps the cancelled run didn't
+/// finish are run.
+fn kept_after_a_cancel<K: Kernel + 'static>(engine: &Recompute<K>, fake: &FakeKernel) {
+    let hold = fake.hold(|op| matches!(op, Op::MakePrimitive(Primitive::Cylinder { .. })));
+    let run = engine.start(checked(EXAMPLE));
+    // Both started, and only the held cylinder still running: the box was made. Waited on
+    // the makers themselves: the box's Summarize is a call too, so two calls (the box and its
+    // Summarize) with neither running can come before the cylinder has started.
+    let deadline = Instant::now() + WAIT;
+    let makers = || {
+        let mut made = made(&fake.calls());
+        made.sort_unstable();
+        made
+    };
+    while makers() != ["MakeBox", "MakeCylinder"] || fake.wait_running(2, Duration::from_millis(1))
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the box and the cylinder never both started, the box done: {:?}",
+            makers()
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
     engine.cancel();
     assert_eq!(run.wait().unwrap(), RunOutcome::Superseded);
     drop(hold);
-    let before = engine.kernel().calls().len();
-    published(&engine, checked(EXAMPLE));
+    let before = fake.calls().len();
+    published(engine, checked(EXAMPLE));
     assert_eq!(
-        calls_since(&engine, before),
+        made(&fake.calls()[before..]),
         ["MakeCylinder", "Translate", "Cut"]
     );
 }
