@@ -57,6 +57,8 @@ crates/silico-core/src/recompute.rs | Engine<K>::serve | replace == with != | #9
 crates/silico-core/src/recompute.rs | Engine<K>::serve | replace || with && | #96
 crates/silico-core/src/recompute.rs | EngineState::stop_older_solve | replace < with <= | #96
 crates/silico-core/src/recompute.rs | sweep_step | replace * with / | #84
+crates/silico-core/src/sketch.rs | Translation::gap | replace - with + | #118
+crates/silico-core/src/sketch.rs | Translation::gap | replace || with && | #118
 crates/silico-core/src/sketch.rs | savable | replace savable -> Result<(), Error> with Ok(()) | #96
 crates/silico-core/src/sweep.rs | nearest_distances | replace > with >= | #90
 crates/silico-core/src/sweep.rs | significant | replace || with && | #84
