@@ -986,15 +986,40 @@ fn a_line_from_an_end_deeper_than_the_tolerance_in_an_arcs_circle_crosses_it_whe
 }
 
 #[test]
+fn a_line_from_an_end_deeper_than_the_tolerance_in_an_arcs_circle_heading_out_crosses_it() {
+    // The same, the line rising 1e-5 over its 10 to (10, 10 − 1.9e-7 + 1e-5): the centre's
+    // foot is behind its start (t < 0), so it's deepest at its start, 1.9e-7, and it still
+    // leaves the circle about 1.95e-3 along, on the arc, crossing it there (#110's round 3).
+    let mut d = Draw::new();
+    let o = d.point(0.0, 0.0);
+    let s = d.point(10.0, 0.0);
+    let e = d.point(0.0, 10.0 - DELTA);
+    let arc = d.arc(&o, &s, &e);
+    let p = d.point(0.0, 10.0 - 1.9e-7);
+    let k = d.point(10.0, 10.0 - 1.9e-7 + 1e-5);
+    let line = d.line(&p, &k);
+    d.line(&k, &s);
+    let errors = draw::named(&d.refused());
+    assert!(
+        errors.contains(&(
+            format!("arc {arc} and line {line} cross"),
+            vec![arc.clone(), line.clone()]
+        )),
+        "{errors:#?}"
+    );
+}
+
+#[test]
 fn a_cove_whose_arc_ends_an_ulp_inside_its_circle_is_a_profile() {
     // A square corner less a quarter disc (#110's review): the arc r 10 from (10, 0) to
     // (0, b), b = 9.999999999999998, an ulp under 10, and the lines (0, b)–(10, b) and
     // (10, b)–(10, 0), each along the arc's tangent at an end. The top line dips
     // 10 − b = 1.8e-15 into the circle and crosses it again √(2·10·1.8e-15) = 1.9e-7
     // along, on the arc: rounding, not a crossing. (Drawn square to the axes, the centre's
-    // foot on each line is exactly its shared end, so neither dips at all as walked from
-    // there: this pins that rule; the turned coves below pin the depth's.) The region: the
-    // polygon's 5b less the segment, 100 − 25π.
+    // foot on each line is exactly its shared end, so each is deepest there, 1.8e-15 and 0:
+    // this pins the depth measured at the end; the turned coves below pin it at a foot
+    // ahead of the end or behind it.) The region: the polygon's 5b less the segment,
+    // 100 − 25π.
     let b = 9.999999999999998;
     let (d, _, _) = quarter_turn_boxed(10.0 - b, (10.0, b), &[]);
     let area = made_area(&d);

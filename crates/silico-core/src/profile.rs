@@ -1480,7 +1480,7 @@ fn cross_beside(a: &Shape, b: &Shape, at: &[Xy], built: &[Xy]) -> bool {
             let (p, q) = if at.contains(&p0) { (p0, q0) } else { (q0, p0) };
             let u = sub(q, p);
             let (t, _, d) = foot(p, q, c);
-            let deepest = if t > 0.0 { d } else { distance(c, p) };
+            let deepest = distance(c, add(p, scale(u, t.max(0.0))));
             let out = t + ((r - d) * (r + d)).sqrt() / dot(u, u).sqrt();
             let x = add(p, scale(u, out));
             !touching(r - deepest)
