@@ -37,7 +37,7 @@ echo "mutants: testing $commit"
 # many elements is written once and stays within its size bound (silico-core's
 # naming/build.rs, MOST_WEIGHT, which names_that_would_double_... tests too).
 core_wall_clock=(
-  a_name_reported_for_many_elements_is_written_once
+  a_name_reported_for_many_elements_is_written_once_promptly
 )
 # The largest sketch no algorithm solves, bounded by its wall clock (a minute or two loaded,
 # against SKETCH_TIMEOUT): what it alone tests is that the worker's time covers every

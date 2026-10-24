@@ -1,6 +1,7 @@
-//! silico-core's document, command, fingerprint, and cache tests, as one test program: each file a module, its tests as they
-//! were, the modules they share loaded once: fewer programs to build and link than one a
-//! file, for every change (each mutant's build most of all).
+//! silico-core's document tests (documents, commands, fingerprints, references, type words,
+//! and the cache, with the result checks the cache shares), as one test program: each file
+//! a module, its tests as they were, the modules they share loaded once: fewer programs to
+//! build and link than one a file, for every change (each mutant's build most of all).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 // Shared by the files below, each loaded once.
