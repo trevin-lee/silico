@@ -1472,14 +1472,21 @@ fn cross_beside(a: &Shape, b: &Shape, at: &[Xy], built: &[Xy]) -> bool {
         (Shape::Line { .. }, Shape::Line { .. }) => false,
         (Shape::Line { a: p0, b: q0 }, Shape::Round { c, r, arc })
         | (Shape::Round { c, r, arc }, Shape::Line { a: p0, b: q0 }) => {
-            // From its shared end, `p`: where it comes back out of the circle, past its
-            // deepest, the foot of the centre (none if that's behind `p`).
+            // From its shared end, `p`: where it comes back out of the circle, if it's
+            // deeper than the tolerance in it somewhere before that. Its distance from the
+            // centre is least at the centre's foot and grows away from it, so it's deepest
+            // at the foot if that's ahead of `p`, and at `p` otherwise (deeper than the
+            // tolerance only for an end taken as one point with the arc's, but not it).
             let (p, q) = if at.contains(&p0) { (p0, q0) } else { (q0, p0) };
             let u = sub(q, p);
             let (t, _, d) = foot(p, q, c);
+            let deepest = if t > 0.0 { d } else { distance(c, p) };
             let out = t + ((r - d) * (r + d)).sqrt() / dot(u, u).sqrt();
             let x = add(p, scale(u, out));
-            t > 0.0 && !touching(r - d) && out <= 1.0 && away(x) && on_round(c, arc.as_ref(), x)
+            !touching(r - deepest)
+                && (0.0..=1.0).contains(&out)
+                && away(x)
+                && on_round(c, arc.as_ref(), x)
         }
         (Shape::Round { c: c1, arc: a1, .. }, Shape::Round { c: c2, arc: a2, .. }) => {
             let Some(&p) = at.first() else {

@@ -959,6 +959,33 @@ fn a_line_from_an_arcs_end_dipping_into_its_circle_an_ulp_past_the_tolerance_cro
 }
 
 #[test]
+fn a_line_from_an_end_deeper_than_the_tolerance_in_an_arcs_circle_crosses_it_where_it_leaves() {
+    // The quarter turn, its end δ = 9e-8 inside its circle at (0, 10 − δ), and a line from
+    // 1e-7 below it, (0, 10 − 1.9e-7), along the tangent to (10, 10 − 1.9e-7), back to the
+    // arc's start: the two ends are taken as one point (and refused for not being one).
+    // The line's centre's foot is its start, 1.9e-7 inside the circle, deeper than the
+    // tolerance; it leaves the circle √(2·10·1.9e-7) = 1.95e-3 along, at π/2 − 1.95e-4,
+    // on the arc, crossing it there (#110's mutants: the deepest point is its start).
+    let mut d = Draw::new();
+    let o = d.point(0.0, 0.0);
+    let s = d.point(10.0, 0.0);
+    let e = d.point(0.0, 10.0 - DELTA);
+    let arc = d.arc(&o, &s, &e);
+    let p = d.point(0.0, 10.0 - 1.9e-7);
+    let k = d.point(10.0, 10.0 - 1.9e-7);
+    let line = d.line(&p, &k);
+    d.line(&k, &s);
+    let errors = draw::named(&d.refused());
+    assert!(
+        errors.contains(&(
+            format!("arc {arc} and line {line} cross"),
+            vec![arc.clone(), line.clone()]
+        )),
+        "{errors:#?}"
+    );
+}
+
+#[test]
 fn a_cove_whose_arc_ends_an_ulp_inside_its_circle_is_a_profile() {
     // A square corner less a quarter disc (#110's review): the arc r 10 from (10, 0) to
     // (0, b), b = 9.999999999999998, an ulp under 10, and the lines (0, b)–(10, b) and
