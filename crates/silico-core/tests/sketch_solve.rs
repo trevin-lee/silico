@@ -3119,3 +3119,195 @@ fn an_outside_tangency_with_its_centres_apart_along_y_is_kept() {
     )
     .unwrap();
 }
+
+// ---------------------------------------------------------------------------------------
+// M3's milestone mutants (core sketch.rs): each test fails under the one named.
+
+#[test]
+fn circles_whose_centres_are_exactly_the_concentric_bound_apart_are_not_concentric() {
+    // `squared < CONCENTRIC_TANGENCY`, not `<=` (sketch.rs concentric_outside): p2 at
+    // (6.999999999999979e-8, 7.141428428542871e-8) is d² = 1e-14 exactly from p1 (their
+    // squares sum to the double 1e-14), PlaneGCS's mm² form, so the outside tangency isn't
+    // refused as concentric there; the next double down in x is.
+    let t = tangent_pair(
+        [30.0, 0.0],
+        [10.0, 12.0],
+        "p0000002",
+        "outside",
+        false,
+        [5.0, 5.0],
+    );
+    let p2 = second_circle(&t).0;
+    let (x, y) = (6.999999999999979e-8f64, 7.141428428542871e-8f64);
+    assert_eq!(x * x + y * y, 1e-14);
+    assert!(x.next_down() * x.next_down() + y * y < 1e-14);
+    let at = |x: f64| {
+        let mut v = t.system.values.clone();
+        v[p2.x.0 as usize] = x;
+        v[p2.y.0 as usize] = y;
+        v
+    };
+    read_back(&t, &answer(&t, at(x), SolveStatus::Success)).unwrap();
+    let e = read_back(&t, &answer(&t, at(x.next_down()), SolveStatus::Success)).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::InvalidResult, "{e}");
+    assert!(e.message().contains("concentric"), "{e}");
+}
+
+#[test]
+fn a_reference_dimension_from_the_origin_is_measured_from_it() {
+    // The origin arm of `point_at`: p3 is drawn at (4, 3), so its distances from the origin
+    // are 4 across, 3 up, and 5.
+    let t = translate(&ten(&[
+        r#"{"id": "r0000001", "type": "distance_x", "a": "origin", "b": "p0000003", "value": 0, "driving": false}"#,
+        r#"{"id": "r0000002", "type": "distance_y", "a": "origin", "b": "p0000003", "value": 0, "driving": false}"#,
+        r#"{"id": "r0000003", "type": "distance", "a": "p0000003", "b": "origin", "value": 1, "driving": false}"#,
+    ]));
+    let solution = read_back(
+        &t,
+        &answer(&t, t.system.values.clone(), SolveStatus::Success),
+    )
+    .unwrap();
+    let r = |s: &str| solution.references[&silico_core::document::ElementId::new(s).unwrap()];
+    assert_eq!(r("r0000001"), Measured::Length(4.0));
+    assert_eq!(r("r0000002"), Measured::Length(3.0));
+    assert_eq!(r("r0000003"), Measured::Length(5.0));
+}
+
+#[test]
+fn a_point_exactly_on_its_line_keeps_the_side_its_reference_distance_gives() {
+    // `d > 0.0`, not `>=`, in the reference point-line distance: p4 at (5, 0) is on the
+    // line n1 from (0, 0) to (10, 0) exactly (its signed distance is 0), so the side
+    // stays the one given, right or left; off the line it's where the point is.
+    for (y, given, want) in [
+        (0.0, "right", LineSide::Right),
+        (0.0, "left", LineSide::Left),
+        (1.0, "right", LineSide::Left),
+        (-1.0, "left", LineSide::Right),
+    ] {
+        let t = translate(&text(
+            &[
+                point("p0000001", 0.0, 0.0),
+                point("p0000002", 10.0, 0.0),
+                point("p0000004", 5.0, y),
+            ],
+            &[line("n0000001", "p0000001", "p0000002")],
+            &[],
+            &[],
+            &[format!(
+                r#"{{"id": "r0000001", "type": "point_line_distance", "point": "p0000004", "line": "n0000001", "value": 0, "side": "{given}", "driving": false}}"#
+            )],
+        ));
+        let solution = read_back(
+            &t,
+            &answer(&t, t.system.values.clone(), SolveStatus::Success),
+        )
+        .unwrap();
+        assert_eq!(
+            solution.references[&silico_core::document::ElementId::new("r0000001").unwrap()],
+            Measured::FromLine {
+                distance: y.abs(),
+                side: want
+            },
+            "{y} {given}"
+        );
+    }
+}
+
+#[test]
+fn a_redundant_vertical_distance_between_points_off_the_x_axis_is_met_by_their_difference() {
+    // DistanceY's gap, p(b).y − p(a).y − value (not p(b).y + p(a).y): from p3 (4, 3) up to
+    // p4 (7, 8) is 5; dropped as redundant, met as drawn (gap 0), and 5 + 1e-6 isn't.
+    for (value, kept) in [("5", true), ("5.000001", false)] {
+        let t = translate(&text(
+            &[point("p0000003", 4.0, 3.0), point("p0000004", 7.0, 8.0)],
+            &[],
+            &[],
+            &[],
+            &[format!(
+                r#"{{"id": "k0000001", "type": "distance_y", "a": "p0000003", "b": "p0000004", "value": {value}, "driving": true}}"#
+            )],
+        ));
+        let read = read_back(&t, &dropping_tag(&t, t.system.values.clone(), 1));
+        match read {
+            Ok(solution) => {
+                assert!(kept, "{value}: kept");
+                let id = silico_core::document::ElementId::new("k0000001").unwrap();
+                assert_eq!(solution.redundant[&id], 0.0);
+            }
+            Err(e) => {
+                assert!(!kept, "{value}: {e}");
+                assert_eq!(e.code(), ErrorCode::OverConstrained, "{e}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_redundant_symmetry_about_a_point_off_the_x_axis_mirrors_in_both_coordinates() {
+    // SymmetricPoint's gap, one point's distance from the other's mirror image 2m − b (not
+    // m + … in y): p3 (2, 5) and p4 (6, 7) about p5 (4, 6) are mirror images (gap 0), and
+    // with p4 at (6, 7.001) the gap is 0.001.
+    for (y4, gap) in [(7.0, Some(0.0)), (7.001, None)] {
+        let t = translate(&text(
+            &[
+                point("p0000003", 2.0, 5.0),
+                point("p0000004", 6.0, y4),
+                point("p0000005", 4.0, 6.0),
+            ],
+            &[],
+            &[],
+            &[],
+            &[
+                r#"{"id": "k0000001", "type": "symmetric", "a": "p0000003", "b": "p0000004", "about": "p0000005"}"#.to_owned(),
+            ],
+        ));
+        match (
+            read_back(&t, &dropping_tag(&t, t.system.values.clone(), 1)),
+            gap,
+        ) {
+            (Ok(solution), Some(want)) => {
+                let id = silico_core::document::ElementId::new("k0000001").unwrap();
+                assert_eq!(solution.redundant[&id], want);
+            }
+            (Err(e), None) => assert_eq!(e.code(), ErrorCode::OverConstrained, "{e}"),
+            (other, _) => panic!("{y4}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_redundant_tangency_between_two_arcs_is_carried_by_their_radii() {
+    // A tangency's gap is its turn carried by the smaller lever of its curves, and an arc's
+    // lever is its radius (lever_of's circle and arc arm): two arcs of radius 5 meeting at
+    // p3 (0, 5), a about the origin from (5, 0) to p3, b about (0, 10) from p3 to (5, 10),
+    // their normals there opposite. Of the two directions a tangent_at can be given, the
+    // one the drawing meets is kept with gap 0; without an arc's lever the gap isn't a
+    // number, and neither is kept.
+    let mut kept = 0;
+    for direction in ["same", "opposite"] {
+        let t = translate(&text(
+            &[
+                point("p0000001", 0.0, 0.0),
+                point("p0000002", 5.0, 0.0),
+                point("p0000003", 0.0, 5.0),
+                point("p0000004", 0.0, 10.0),
+                point("p0000005", 5.0, 10.0),
+            ],
+            &[],
+            &[],
+            &[
+                arc("a0000001", "p0000001", "p0000002", "p0000003"),
+                arc("a0000002", "p0000004", "p0000003", "p0000005"),
+            ],
+            &[format!(
+                r#"{{"id": "k0000001", "type": "tangent_at", "a": "a0000001", "b": "a0000002", "at": "p0000003", "direction": "{direction}"}}"#
+            )],
+        ));
+        if let Ok(solution) = read_back(&t, &dropping_tag(&t, t.system.values.clone(), 1)) {
+            let id = silico_core::document::ElementId::new("k0000001").unwrap();
+            assert!(solution.redundant[&id].abs() < 1e-12, "{direction}");
+            kept += 1;
+        }
+    }
+    assert_eq!(kept, 1);
+}
