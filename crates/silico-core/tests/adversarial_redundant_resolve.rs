@@ -7,10 +7,7 @@
 //! tests/adversarial_redundant_resolve.rs has the same breaks through the real worker.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/sketch.rs"]
-mod fixture;
-#[path = "common/stand_in.rs"]
-mod stand_in;
+use super::stand_in;
 
 use std::sync::{Arc, Mutex};
 

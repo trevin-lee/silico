@@ -1,5 +1,6 @@
 //! M2.4: a step whose input failed in an earlier recompute, its failure kept, isn't started
-//! at all: counted by its span. Its own file: it sets the process's tracing subscriber.
+//! at all: counted by its span. Alone in its process (nextest runs each test in its own),
+//! it sets the process's tracing subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::{Arc, Mutex};

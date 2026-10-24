@@ -5,8 +5,7 @@
 //! silico-sketch's tests/document.rs.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/sketch.rs"]
-mod fixture;
+use super::fixture;
 
 use fixture::{arc, circle, line, point};
 

@@ -4,14 +4,10 @@
 //! recompute under test.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/example.rs"]
-mod example;
-#[path = "common/lateness.rs"]
-mod lateness;
-#[path = "common/model.rs"]
-mod model;
-#[path = "common/recompute.rs"]
-mod recompute;
+use super::example;
+use super::lateness;
+use super::model;
+use super::recompute;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::AssertUnwindSafe;

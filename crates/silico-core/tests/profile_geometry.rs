@@ -6,8 +6,7 @@
 //! Each failed on a mutant of the code before it was added; expected values are by hand.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/profile.rs"]
-mod draw;
+use super::draw;
 
 use std::f64::consts::PI;
 

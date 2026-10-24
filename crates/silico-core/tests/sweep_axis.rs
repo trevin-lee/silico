@@ -4,8 +4,7 @@
 //! apart, and the sketch's own axes.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/sweeps.rs"]
-mod sweeps;
+use super::sweeps;
 
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -6,10 +6,8 @@
 //! (a hand edit through `silico check` and `fmt`) and silico-sketch's tests/fixed_point.rs.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/command.rs"]
-mod commands;
-#[path = "common/sketch.rs"]
-mod fixture;
+use super::commands;
+use super::fixture;
 
 use std::time::Duration;
 

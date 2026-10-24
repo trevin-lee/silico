@@ -4,8 +4,7 @@
 //! against floats written as literals.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/sketch.rs"]
-mod fixture;
+use super::fixture;
 
 use fixture::{
     ARC, CIRCLE, FEATURE, LINE, POINTS, arc, circle, constrained, document, fields, line, point,

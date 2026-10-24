@@ -6,8 +6,7 @@
 //! contract (ARCHITECTURE.md, the module docs), never from the code under test.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/model.rs"]
-mod model;
+use super::model;
 
 use std::f64::consts::PI;
 

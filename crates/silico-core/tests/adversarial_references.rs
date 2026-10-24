@@ -21,12 +21,9 @@ use silico_core::naming::{
 use silico_core::recompute::{FeatureOutcome, Recompute, RunOutcome};
 use silico_core::{Error, ErrorCode};
 
-#[path = "common/model.rs"]
-mod model;
-#[path = "common/references.rs"]
-mod references;
-#[path = "common/within.rs"]
-mod within;
+use super::model;
+use super::references;
+use super::within;
 
 use model::{checked, described, id, made, published};
 use references::{document, dressings, engine, fillet};

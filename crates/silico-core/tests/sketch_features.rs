@@ -5,8 +5,7 @@
 //! from the design. (The gate's rules: tests/sketch_features_gate.rs.)
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/sweeps.rs"]
-mod sweeps;
+use super::sweeps;
 
 use silico_core::document::{
     Angle, Axis, Checked, Document, ElementId, Feature, FeatureVersion, FormatVersion, Length,

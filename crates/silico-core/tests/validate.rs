@@ -4,8 +4,7 @@
 //! zero and at most a kilometre (10^12 nm), a position at most a kilometre either way.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/example.rs"]
-mod example;
+use super::example;
 
 use example::EXAMPLE;
 use proptest::prelude::*;

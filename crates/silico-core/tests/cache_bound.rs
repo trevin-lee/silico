@@ -7,14 +7,10 @@
 //! which kernel calls each session makes.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/bound.rs"]
-mod bound;
-#[path = "common/cache.rs"]
-mod cache;
-#[path = "common/example.rs"]
-mod example;
-#[path = "common/model.rs"]
-mod model;
+use super::bound;
+use super::cache;
+use super::example;
+use super::model;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};

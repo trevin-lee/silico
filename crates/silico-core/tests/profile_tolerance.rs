@@ -7,8 +7,7 @@
 //! and 0.99e-7 against 1.01e-7 where the distance is a difference of rounded values.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/profile.rs"]
-mod draw;
+use super::draw;
 
 use std::f64::consts::PI;
 

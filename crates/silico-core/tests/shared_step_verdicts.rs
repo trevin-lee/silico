@@ -6,8 +6,7 @@
 //! is ever reported as a step that wasn't run.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/sweeps.rs"]
-mod sweeps;
+use super::sweeps;
 
 use std::sync::Arc;
 use std::time::Duration;

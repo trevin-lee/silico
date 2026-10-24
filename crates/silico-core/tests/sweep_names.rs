@@ -7,8 +7,7 @@
 //! (tests/sketch_feature_names.rs in silico-kernel pins the real kernel's).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/sweeps.rs"]
-mod sweeps;
+use super::sweeps;
 
 use std::collections::BTreeSet;
 use std::sync::Arc;

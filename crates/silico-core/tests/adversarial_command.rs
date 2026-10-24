@@ -5,10 +5,8 @@
 //! bidirectional and format characters (UAX #9, General_Category=Cf), and hand counts.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/command.rs"]
-mod commands;
-#[path = "common/example.rs"]
-mod example;
+use super::commands;
+use super::example;
 
 use commands::{check_bytes, engine, format_bytes};
 use example::EXAMPLE;

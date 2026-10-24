@@ -6,8 +6,7 @@
 //! Only the work its users alone need is left out.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/sweeps.rs"]
-mod sweeps;
+use super::sweeps;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

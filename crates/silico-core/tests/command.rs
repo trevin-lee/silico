@@ -3,10 +3,8 @@
 //! measures them (tests/fingerprint.rs works them out).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/command.rs"]
-mod commands;
-#[path = "common/example.rs"]
-mod example;
+use super::commands;
+use super::example;
 
 use commands::{check_bytes, engine, format_bytes};
 use example::EXAMPLE;

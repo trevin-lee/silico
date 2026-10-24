@@ -9,14 +9,10 @@
 //! which kernel calls a session makes, and the fake's description of each shape.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/cache.rs"]
-mod cache;
-#[path = "common/example.rs"]
-mod example;
-#[path = "common/model.rs"]
-mod model;
-#[path = "common/sweeps.rs"]
-mod sweeps;
+use super::cache;
+use super::example;
+use super::model;
+use super::sweeps;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

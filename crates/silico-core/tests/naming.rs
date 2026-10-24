@@ -3,10 +3,8 @@
 //! FreeCAD's own names, on OCCT's histories, are checked in silico-kernel's tests/naming.rs.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/example.rs"]
-mod example;
-#[path = "common/model.rs"]
-mod model;
+use super::example;
+use super::model;
 
 use std::sync::Arc;
 
