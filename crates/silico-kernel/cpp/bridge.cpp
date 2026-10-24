@@ -3,8 +3,10 @@
 
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <algorithm>
 #include <GCPnts_AbscissaPoint.hxx>
 #include <Geom_BSplineCurve.hxx>
+#include <Geom_BezierCurve.hxx>
 #include <gp_Cone.hxx>
 #include <gp_Cylinder.hxx>
 #include <gp_Elips.hxx>
@@ -335,17 +337,14 @@ FaceOut describe_face(const TopoDS_Face &face, double precision) {
 
 EdgeOut describe_edge(const TopoDS_Edge &edge, double precision) {
   EdgeOut out{};
-  // Its ends as it runs in the shape (the edge's own orientation taken).
-  // Its ends as it runs in the shape: its vertices as it runs forward, swapped where it's
-  // reversed. (TopExp::Vertices with the edge's own orientation finds none for an internal
-  // or external edge, which a boolean can leave in a valid face: its vertices are neither
-  // forward nor reversed in it.)
+  // Its ends in its curve's own order: its vertices as the edge runs forward, whatever
+  // orientation the face OCCT met it in first gives it, as FreeCAD's Edge.firstVertex()
+  // gives them, so they don't swap when an upstream edit reorders the faces. (Taken from the
+  // edge turned forward, since an internal or external edge, which a boolean can leave in a
+  // valid face, has no vertex forward or reversed in it as it is.)
   TopoDS_Vertex first;
   TopoDS_Vertex last;
   TopExp::Vertices(TopoDS::Edge(edge.Oriented(TopAbs_FORWARD)), first, last, false);
-  if (edge.Orientation() == TopAbs_REVERSED) {
-    std::swap(first, last);
-  }
   if (first.IsNull() || last.IsNull()) {
     throw Standard_Failure("an edge without both its vertices");
   }
@@ -390,9 +389,13 @@ EdgeOut describe_edge(const TopoDS_Edge &edge, double precision) {
   case GeomAbs_Parabola:
     out.curve = CurveType::Parabola;
     break;
-  case GeomAbs_BezierCurve:
+  case GeomAbs_BezierCurve: {
+    const Handle(Geom_BezierCurve) b = curve.Bezier();
     out.curve = CurveType::Bezier;
+    out.degree = static_cast<uint32_t>(b->Degree());
+    out.poles = static_cast<uint32_t>(b->NbPoles());
     break;
+  }
   case GeomAbs_BSplineCurve: {
     const Handle(Geom_BSplineCurve) b = curve.BSpline();
     out.curve = CurveType::Bspline;
@@ -411,22 +414,41 @@ EdgeOut describe_edge(const TopoDS_Edge &edge, double precision) {
 }
 } // namespace
 
-DescribeOut describe(const Shape &shape, double precision) {
-  TopTools_IndexedMapOfShape faces;
-  TopTools_IndexedMapOfShape edges;
-  TopTools_IndexedMapOfShape vertices;
-  TopExp::MapShapes(shape.shape, TopAbs_FACE, faces);
-  TopExp::MapShapes(shape.shape, TopAbs_EDGE, edges);
-  TopExp::MapShapes(shape.shape, TopAbs_VERTEX, vertices);
+DescribeOut describe(const Shape &shape, Kind kind, uint32_t first, uint32_t count,
+                     double precision) {
+  // Elements of `kind` numbered first to first + count - 1 (from 1), as many as there are.
+  TopAbs_ShapeEnum type = TopAbs_FACE;
+  switch (kind) {
+  case Kind::Face:
+    type = TopAbs_FACE;
+    break;
+  case Kind::Edge:
+    type = TopAbs_EDGE;
+    break;
+  case Kind::Vertex:
+    type = TopAbs_VERTEX;
+    break;
+  default:
+    throw Standard_Failure("describe takes faces, edges, or vertices");
+  }
+  TopTools_IndexedMapOfShape elements;
+  TopExp::MapShapes(shape.shape, type, elements);
   DescribeOut out;
-  for (int i = 1; i <= faces.Extent(); ++i) {
-    out.faces.push_back(describe_face(TopoDS::Face(faces(i)), precision));
-  }
-  for (int i = 1; i <= edges.Extent(); ++i) {
-    out.edges.push_back(describe_edge(TopoDS::Edge(edges(i)), precision));
-  }
-  for (int i = 1; i <= vertices.Extent(); ++i) {
-    out.vertices.push_back(point3(BRep_Tool::Pnt(TopoDS::Vertex(vertices(i))).XYZ()));
+  out.total = static_cast<uint32_t>(elements.Extent());
+  const uint64_t last = std::min<uint64_t>(uint64_t{first} + count, uint64_t{out.total} + 1);
+  for (uint64_t i = std::max<uint64_t>(first, 1); i < last; ++i) {
+    const TopoDS_Shape &element = elements(static_cast<int>(i));
+    switch (kind) {
+    case Kind::Face:
+      out.faces.push_back(describe_face(TopoDS::Face(element), precision));
+      break;
+    case Kind::Edge:
+      out.edges.push_back(describe_edge(TopoDS::Edge(element), precision));
+      break;
+    default:
+      out.vertices.push_back(point3(BRep_Tool::Pnt(TopoDS::Vertex(element)).XYZ()));
+      break;
+    }
   }
   return out;
 }

@@ -21,7 +21,9 @@ mod sweep;
 use serde::{Deserialize, Serialize};
 
 pub use chamfer::ChamferSize;
-pub use describe::{Description, EdgeCurve, EdgeDescription, FaceDescription, Surface};
+pub use describe::{
+    DESCRIBE_BATCH, Description, EdgeCurve, EdgeDescription, FaceDescription, Quantity, Surface,
+};
 pub use faces::{
     ArcEnd, Curve, FaceRegions, MAX_ARC_ANGLE, MAX_FACE_CURVES, Region, SizeProblem, SketchPlane,
     area_and_perimeter, distance, loop_area, on_circle, sliver,
@@ -204,10 +206,16 @@ pub enum Op {
         start: f64,
         angle: f64,
     },
-    /// Each of a shape's faces, edges, and vertices: its geometry and its measures, in
-    /// `TopExp::MapShapes` order (docs/design/m4.4-describe.md). Replies with
+    /// The geometry and measures of `shape`'s elements of `kind` numbered from `first` (from
+    /// 1, in `TopExp::MapShapes` order), `count` of them or as many as there are
+    /// (docs/design/m4.4-describe.md): one batch, at most [`DESCRIBE_BATCH`]. Replies with
     /// [`Reply::Described`].
-    Describe { shape: ShapeData },
+    Describe {
+        shape: ShapeData,
+        kind: ElementKind,
+        first: u32,
+        count: u32,
+    },
 }
 
 impl Op {
@@ -379,8 +387,13 @@ pub enum Reply {
     },
     /// Where a drag's move left the sketch ([`Op::DragMove`]).
     Moved(Moved),
-    /// What a shape's elements are ([`Op::Describe`]).
-    Described(Description),
+    /// A batch of a shape's elements ([`Op::Describe`]): how many of the kind asked for the
+    /// shape has, and those asked for, in the description's list for that kind (its others
+    /// empty).
+    Described {
+        total: u32,
+        description: Description,
+    },
 }
 
 impl Reply {
@@ -392,7 +405,7 @@ impl Reply {
             Reply::Summary(_) => "Summary",
             Reply::FreecadMeasures(_) => "FreecadMeasures",
             Reply::Mesh(_) => "Mesh",
-            Reply::Described(_) => "Described",
+            Reply::Described { .. } => "Described",
             Reply::Solved(_) => "Solved",
             Reply::DragStarted { .. } => "DragStarted",
             Reply::Moved(_) => "Moved",

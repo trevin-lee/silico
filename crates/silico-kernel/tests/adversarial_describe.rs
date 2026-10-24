@@ -16,8 +16,8 @@ use proptest::prelude::*;
 use silico_core::ErrorCode;
 use silico_core::kernel::KernelWorker;
 use silico_kernel::{
-    Axis, BooleanOp, ChamferSize, Primitive, Profile, Shape, boolean, chamfer, describe, extrude,
-    from_brep, from_text_brep, make, revolve, summarize, translate,
+    Axis, BooleanOp, ChamferSize, Primitive, Profile, Shape, boolean, chamfer, describe_whole,
+    extrude, from_brep, from_text_brep, make, revolve, summarize, translate,
 };
 use silico_protocol::{Blob, Description, EdgeCurve, ShapeData, Surface};
 
@@ -36,8 +36,8 @@ fn with_crc(mut body: Vec<u8>) -> Vec<u8> {
 }
 
 fn described(shape: &Shape) -> Description {
-    let d = describe(shape).unwrap();
-    d.check().unwrap();
+    let d = describe_whole(shape).unwrap();
+    d.validate().unwrap();
     d
 }
 
@@ -66,7 +66,7 @@ fn a_mirrored_boxs_planes_face_out_of_it() {
     // (Face1 at x = 0, Forward, axis −x, normal +x). A point of each face moved 0.01
     // along its normal must be outside the box, and against it inside.
     //
-    // BREAKS: describe takes the plane's axis direction as its normal and reverses it only
+    // Broke before #121's fix: describe takes the plane's axis direction as its normal and reverses it only
     // for a REVERSED face; for a left-handed plane that's the inward normal, so every face
     // of the mirrored box is said to face into it (Face1's normal is −x, not +x).
     let shape = from_text_brep(&fixture("mirrored_box.brep")).unwrap();
@@ -105,9 +105,9 @@ fn a_mirrored_boxs_planes_measure_its_volume_by_the_divergence_theorem() {
     // The same mirrored box: for a solid of flat faces, V = ⅓ Σ A·(n · c) over its faces
     // (n outward, c the centre of area), 6000.
     //
-    // BREAKS: with every normal pointing in, the sum is −6000.
+    // Broke before #121's fix: with every normal pointing in, the sum is −6000.
     let shape = from_text_brep(&fixture("mirrored_box.brep")).unwrap();
-    let (_, volume) = flat_sums(&described(&shape));
+    let (_, volume, _) = flat_sums(&described(&shape));
     assert_close("⅓ Σ A (n · c)", volume, 6000.0, 1e-9);
 }
 
@@ -123,7 +123,7 @@ fn every_chamfer_face_of_a_box_faces_out_of_it() {
     // (−0.7071, 0.7071, 0), out of the box, while its plane's axis is (0.7071, −0.7071, 0)
     // (left-handed: `Surface.normal`, Du × Dv, is the opposite).
     //
-    // BREAKS: OCCT's chamfer (ChFiKPart) makes the chamfer face's plane left-handed, and
+    // Broke before #121's fix: OCCT's chamfer (ChFiKPart) makes the chamfer face's plane left-handed, and
     // describe takes the plane's axis for its normal: a chamfer face is said to face into
     // the solid, on a solid Silico's own Chamfer builds.
     let shape = make(&Primitive::Box {
@@ -147,7 +147,7 @@ fn every_chamfer_face_of_a_box_faces_out_of_it() {
             unreachable!()
         };
         let away = [0, 1, 2].map(|k| slanted[0].centroid[k] - middle[k]);
-        let (closure, volume) = flat_sums(&d);
+        let (closure, volume, _) = flat_sums(&d);
         if dot(normal, away) <= 0.0 || closure > 1e-9 {
             wrong.push(format!(
                 "Edge{edge}: normal {normal:?} at {:?}, Σ A·n {closure:e}, ⅓ Σ A (n · c) {volume}",
@@ -171,16 +171,16 @@ fn a_box_with_an_internal_or_external_face_is_described_every_edge_with_its_ends
     // each of its edges' two vertices (`Edge.Vertexes`). Each of its twelve edges is a
     // line between two of its corners, as long as the distance between them.
     //
-    // BREAKS: TopExp::MapShapes keeps each edge as first met, so the four edges of the
+    // Broke before #121's fix: TopExp::MapShapes keeps each edge as first met, so the four edges of the
     // INTERNAL (or EXTERNAL) Face1 are kept INTERNAL (EXTERNAL), and TopExp::Vertices with
     // the orientation taken gives neither of their vertices (an INTERNAL vertex is neither
     // FORWARD nor REVERSED): describe throws "an edge without both its vertices" and the
     // whole shape is refused, as a kernel failure that names no edge.
     for name in ["box_internal_face1.bin", "box_external_face1.bin"] {
         let shape = from_brep(&with_crc(fixture(name))).unwrap();
-        let d =
-            describe(&shape).unwrap_or_else(|e| panic!("{name}: refused: {e} ({:?})", e.kind()));
-        d.check().unwrap();
+        let d = describe_whole(&shape)
+            .unwrap_or_else(|e| panic!("{name}: refused: {e} ({:?})", e.kind()));
+        d.validate().unwrap();
         assert_eq!(d.edges.len(), 12, "{name}");
         for (i, e) in d.edges.iter().enumerate() {
             let span = norm([0, 1, 2].map(|k| e.end[k] - e.start[k]));
@@ -291,7 +291,7 @@ fn a_turned_rectangles_arcs_measure_their_turn_and_its_flat_faces_face_out() {
     // Face3 +z, Face5 −y, Face6 −x). Volume by Pappus: area 9 times the centroid's path,
     // 3.5 · angle.
     //
-    // BREAKS: OCCT's revolve (BRepSweep_Rotation) gives the bottom a plane whose axes are
+    // Broke before #121's fix: OCCT's revolve (BRepSweep_Rotation) gives the bottom a plane whose axes are
     // left-handed: its axis is +z, its normal (Du × Dv) −z, and the face is FORWARD.
     // describe takes the axis for the normal, so the bottom is said to face +z, into the
     // solid (FreeCAD's Face1 normalAt is −z), on a solid Silico's own Revolve builds.
@@ -380,7 +380,7 @@ fn a_cut_that_leaves_an_internal_edge_is_described_with_that_edge_and_its_ends()
     // volume 0.6495, its Edge11 INTERNAL, from (5, 0, 0) to (5, 0.5, 0), 0.5 long, both
     // its vertices listed. Silico's boolean accepts it as valid.
     //
-    // BREAKS: describe refuses the whole solid, "Standard_Failure: an edge without both its
+    // Broke before #121's fix: describe refuses the whole solid, "Standard_Failure: an edge without both its
     // vertices" (TopExp::Vertices with the orientation taken gives an INTERNAL edge no
     // FORWARD or REVERSED vertex), naming no edge: the result of two of Silico's own
     // operations can't be listed.
@@ -403,8 +403,8 @@ fn a_cut_that_leaves_an_internal_edge_is_described_with_that_edge_and_its_ends()
     let summary = summarize(&cut).unwrap();
     assert!(summary.valid);
     assert_close("the volume", summary.volume, 0.649519052838329, 1e-9);
-    let d = describe(&cut).unwrap_or_else(|e| panic!("refused: {e} ({:?})", e.kind()));
-    d.check().unwrap();
+    let d = describe_whole(&cut).unwrap_or_else(|e| panic!("refused: {e} ({:?})", e.kind()));
+    d.validate().unwrap();
     assert_eq!((d.faces.len(), d.edges.len(), d.vertices.len()), (5, 11, 8));
     let internal: Vec<_> = d
         .edges
@@ -457,7 +457,11 @@ fn a_cone_from_a_point_has_its_apex_at_its_base() {
         PI * 4.0 * libm::sqrt(52.0),
         1e-12,
     );
-    let apexes: Vec<_> = d.edges.iter().filter(|e| e.degenerated).collect();
+    let apexes: Vec<_> = d
+        .edges
+        .iter()
+        .filter(|e| e.curve == EdgeCurve::Degenerated)
+        .collect();
     assert_eq!(apexes.len(), 1);
     assert_point("the degenerated edge", apexes[0].start, [0.0; 3], 1e-12);
 }
@@ -641,8 +645,8 @@ fn a_worker_asked_to_describe_garbage_says_so_and_goes_on() {
 
 /// For a solid of flat faces: Σ A·n over its faces (0 for a closed solid), as its length
 /// relative to the total area, and ⅓ Σ A·(n · c), its volume.
-fn flat_sums(d: &Description) -> (f64, f64) {
-    let (mut sum, mut total, mut volume) = ([0.0; 3], 0.0, 0.0);
+fn flat_sums(d: &Description) -> (f64, f64, f64) {
+    let (mut sum, mut total, mut volume, mut scale) = ([0.0; 3], 0.0, 0.0, 0.0);
     for f in &d.faces {
         let Surface::Plane { normal } = f.surface else {
             panic!("a face that isn't flat: {f:?}")
@@ -652,8 +656,9 @@ fn flat_sums(d: &Description) -> (f64, f64) {
         }
         total += f.area;
         volume += f.area * dot(normal, f.centroid) / 3.0;
+        scale += f.area * dot(normal, f.centroid).abs() / 3.0;
     }
-    (norm(sum) / total, volume)
+    (norm(sum) / total, volume, scale)
 }
 
 /// A unit vector from two angles.
@@ -795,7 +800,13 @@ fn build(part: &Part) -> Option<Shape> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 1000, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig {
+        cases: 1000,
+        failure_persistence: None,
+        // Fixed, so a red run is red every time (as adversarial_fillet's).
+        rng_seed: proptest::test_runner::RngSeed::Fixed(0xde5c_01be),
+        ..ProptestConfig::default()
+    })]
 
     #[test]
     fn every_flat_solid_is_closed_and_measures_its_volume_by_its_faces(
@@ -829,14 +840,17 @@ proptest! {
         if !summary.valid || summary.volume <= 1e-9 {
             return Ok(());
         }
-        let d = describe(&shape).unwrap();
-        prop_assert_eq!(d.check(), Ok(()));
-        prop_assert_eq!(&describe(&shape).unwrap(), &d, "describe twice, differently");
-        let (closure, volume) = flat_sums(&d);
+        let d = describe_whole(&shape).unwrap();
+        prop_assert_eq!(d.validate(), Ok(()));
+        prop_assert_eq!(&describe_whole(&shape).unwrap(), &d, "describe twice, differently");
+        let (closure, volume, scale) = flat_sums(&d);
         prop_assert!(closure < 1e-8, "Σ A·n is {closure:e} of the area: {d:?}");
+        // To 1e-8 of the terms' size (⅓ Σ A |n · c|), not of the volume: a sliver far from
+        // the origin is a difference of terms each ~1e9 times it (#121's review: 0.001 ×
+        // 0.5 × 0.001 at (5, −8, 5), 5.157e-9, off by 3.4e-16).
         prop_assert!(
-            relative_error(volume, summary.volume) < 1e-8,
-            "⅓ Σ A (n · c) = {volume}, volume {}", summary.volume
+            (volume - summary.volume).abs() <= 1e-8 * scale,
+            "⅓ Σ A (n · c) = {volume}, volume {}, terms {scale}", summary.volume
         );
         for (i, e) in d.edges.iter().enumerate() {
             prop_assert!(e.curve.is_straight(), "Edge{} isn't straight: {e:?}", i + 1);
@@ -845,5 +859,68 @@ proptest! {
             let mid = [0, 1, 2].map(|k| (e.start[k] + e.end[k]) / 2.0);
             prop_assert!(norm([0, 1, 2].map(|k| e.middle[k] - mid[k])) <= 1e-9 * (1.0 + span));
         }
+    }
+}
+
+#[test]
+fn bsplines_beziers_extrusions_and_revolutions_are_each_their_kind_with_their_poles() {
+    // curves_and_surfaces.brep (the fixtures' README), each element as FreeCAD 1.1.3 types
+    // it (`type(Face.Surface)`, `type(Edge.Curve)`, its `Degree` and `NbPoles`, its
+    // `Length`), in order; straight where it's a line or has two poles (FreeCAD's
+    // de14265ba7).
+    let shape = from_text_brep(&fixture("curves_and_surfaces.brep")).unwrap();
+    let d = described(&shape);
+    let faces: Vec<&Surface> = d.faces.iter().map(|f| &f.surface).collect();
+    assert_eq!(
+        faces,
+        [
+            &Surface::Bspline,
+            &Surface::Bezier,
+            &Surface::Extrusion,
+            &Surface::Revolution
+        ]
+    );
+    let bezier = |degree, poles| EdgeCurve::Bezier { degree, poles };
+    let bspline = |degree, poles| EdgeCurve::Bspline { degree, poles };
+    let want = [
+        (bezier(1, 2), 5.0),
+        (bezier(2, 3), 2.29558714939),
+        (bspline(1, 2), 4.0),
+        (bspline(3, 5), 4.40405587355),
+        (bspline(3, 4), 3.26828823967),
+        (bspline(1, 2), 2.0),
+        (bspline(3, 4), 3.26828823967),
+        (bspline(1, 2), 2.0),
+        (bezier(1, 2), 1.0),
+        (bezier(1, 2), 1.0),
+        (bezier(1, 2), 1.0),
+        (bezier(1, 2), 1.0),
+        (EdgeCurve::Line, 2.0),
+        (EdgeCurve::Line, 2.0),
+        (bspline(3, 5), 4.40405587355),
+        (bspline(3, 5), 4.40405587355),
+    ];
+    for (i, (e, (curve, length))) in d.edges.iter().zip(&want).enumerate() {
+        let what = format!("Edge{}", i + 1);
+        assert_eq!(&e.curve, curve, "{what}");
+        assert_close(&what, e.length, *length, 1e-11);
+        let straight = matches!(
+            curve,
+            EdgeCurve::Line
+                | EdgeCurve::Bezier { poles: 2, .. }
+                | EdgeCurve::Bspline { poles: 2, .. }
+        );
+        assert_eq!(e.curve.is_straight(), straight, "{what}");
+    }
+    // Then the turn's two arcs, of radius 2 (the Bézier's ends are 2 from the x axis), a
+    // quarter turn, so π long; and the turned Bézier at each end.
+    assert_eq!(d.edges.len(), 20);
+    for e in &d.edges[16..18] {
+        assert!(matches!(e.curve, EdgeCurve::Circle { .. }), "{e:?}");
+        assert_close("a turned end's arc", e.length, std::f64::consts::PI, 1e-11);
+    }
+    for e in &d.edges[18..] {
+        assert_eq!(e.curve, bezier(2, 3));
+        assert_close("a turned Bézier", e.length, 2.29558714939, 1e-11);
     }
 }

@@ -11,13 +11,30 @@ use crate::kernel::{Description, EdgeDescription, ElementKind, ElementRef, FaceD
 use crate::naming::{ElementMap, Name};
 use crate::{Error, ErrorCode};
 
-/// One of a solid's faces, edges, or vertices: its own name (the first of its names, which a
-/// reference by any of them finds), which element of the solid it is, and what it is.
+/// One of a solid's faces, edges, or vertices: its names (its own first, then any other
+/// derivations that reach it, by any of which a reference finds it), the kernel's number for
+/// it among its kind (from 1, in OCCT's order), and what it is.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Element {
-    pub name: Arc<Name>,
-    pub element: ElementRef,
+    pub names: Vec<Arc<Name>>,
+    pub number: u32,
     pub geometry: Geometry,
+}
+
+impl Element {
+    /// Its own name, the first of its names.
+    pub fn name(&self) -> &Arc<Name> {
+        &self.names[0]
+    }
+
+    /// Which kind of element it is.
+    pub fn kind(&self) -> ElementKind {
+        match self.geometry {
+            Geometry::Face(_) => ElementKind::Face,
+            Geometry::Edge(_) => ElementKind::Edge,
+            Geometry::Vertex(_) => ElementKind::Vertex,
+        }
+    }
 }
 
 /// What an element is and measures, as the kernel describes it.
@@ -32,31 +49,27 @@ pub enum Geometry {
 /// Each of a solid's elements, named by `map` and described by `description` (the solid's,
 /// in OCCT's order), in the element list's order. Refused, as a fault, if the two don't
 /// describe the same solid: a count that differs, or an element the map doesn't name.
-pub fn elements(map: &ElementMap, description: &Description) -> Result<Vec<Element>, Error> {
+pub fn elements(map: &ElementMap, description: Description) -> Result<Vec<Element>, Error> {
     let mut out = Vec::new();
     for (kind, geometries) in [
         (
             ElementKind::Face,
             description
                 .faces
-                .iter()
-                .map(|f| Geometry::Face(f.clone()))
+                .into_iter()
+                .map(Geometry::Face)
                 .collect::<Vec<_>>(),
         ),
         (
             ElementKind::Edge,
-            description
-                .edges
-                .iter()
-                .map(|e| Geometry::Edge(e.clone()))
-                .collect(),
+            description.edges.into_iter().map(Geometry::Edge).collect(),
         ),
         (
             ElementKind::Vertex,
             description
                 .vertices
-                .iter()
-                .map(|&v| Geometry::Vertex(v))
+                .into_iter()
+                .map(Geometry::Vertex)
                 .collect(),
         ),
     ] {
@@ -65,29 +78,30 @@ pub fn elements(map: &ElementMap, description: &Description) -> Result<Vec<Eleme
             return Err(mismatch(
                 map,
                 format!(
-                    "the kernel describes {} {}, and its element map names {named}",
-                    geometries.len(),
-                    kind_words(kind).1
+                    "{}: the kernel describes {}, and its element map names {named}",
+                    kind_words(kind).1,
+                    geometries.len()
                 ),
             ));
         }
         let mut of_kind = Vec::with_capacity(geometries.len());
         for (index, geometry) in (1..).zip(geometries) {
             let element = ElementRef { kind, index };
-            let name = map.name(element).ok_or_else(|| {
-                mismatch(
+            let names = map.names(element);
+            let Some(own) = names.first() else {
+                return Err(mismatch(
                     map,
                     format!(
                         "its element map doesn't name its {} {index}",
                         kind_words(kind).0
                     ),
-                )
-            })?;
+                ));
+            };
             of_kind.push((
-                name.to_string(),
+                own.to_string(),
                 Element {
-                    name,
-                    element,
+                    names,
+                    number: index,
                     geometry,
                 },
             ));
@@ -156,7 +170,6 @@ mod tests {
                     start: [0.0; 3],
                     end: [i as f64, 0.0, 0.0],
                     middle: [i as f64 / 2.0, 0.0, 0.0],
-                    degenerated: false,
                 })
                 .collect(),
             vertices: vec![[1.0, 2.0, 3.0]],
@@ -165,8 +178,8 @@ mod tests {
 
     #[test]
     fn faces_edges_and_vertices_are_listed_in_turn_each_by_name_byte_by_byte() {
-        let listed = elements(&map(2, 11, 1), &description(2, 11)).unwrap();
-        let names: Vec<String> = listed.iter().map(|e| e.name.to_string()).collect();
+        let listed = elements(&map(2, 11, 1), description(2, 11)).unwrap();
+        let names: Vec<String> = listed.iter().map(|e| e.name().to_string()).collect();
         let want: Vec<String> = [
             "Face1", "Face2", "Edge1", "Edge10", "Edge11", "Edge2", "Edge3", "Edge4", "Edge5",
             "Edge6", "Edge7", "Edge8", "Edge9", "Vertex1",
@@ -177,7 +190,7 @@ mod tests {
         assert_eq!(names, want);
         // Each name on its own element: Edge10 is OCCT's tenth edge, 10 long.
         let edge10 = &listed[3];
-        assert_eq!(edge10.element, ElementRef::edge(10));
+        assert_eq!((edge10.kind(), edge10.number), (ElementKind::Edge, 10));
         match &edge10.geometry {
             Geometry::Edge(e) => assert_eq!(e.length, 10.0),
             other => panic!("{other:?}"),
@@ -195,20 +208,20 @@ mod tests {
             (
                 map(2, 11, 1),
                 description(3, 11),
-                "the kernel describes 3 faces, and its element map names 2",
+                "faces: the kernel describes 3, and its element map names 2",
             ),
             (
                 map(2, 11, 1),
                 description(2, 10),
-                "the kernel describes 10 edges, and its element map names 11",
+                "edges: the kernel describes 10, and its element map names 11",
             ),
             (
                 map(2, 11, 2),
                 description(2, 11),
-                "the kernel describes 1 vertices, and its element map names 2",
+                "vertices: the kernel describes 1, and its element map names 2",
             ),
         ] {
-            let e = elements(&map, &description).unwrap_err();
+            let e = elements(&map, description).unwrap_err();
             assert_eq!(e.code(), ErrorCode::Internal);
             assert_eq!(e.feature(), Some("k7f2qx3m"));
             assert_eq!(e.cause(), Some(cause));

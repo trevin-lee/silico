@@ -28,13 +28,18 @@ fn a_cones_half_angle_not_finite_is_named_as_its_half_angle() {
     // (`Refusal::NotFinite { quantity }`); the core's check names a cone's half-angle as
     // "Face1's half-angle". A NaN half-angle is the half-angle, not the radius.
     //
-    // BREAKS: `non_finite` files a cone's half-angle under "radius", so the worker's
-    // refusal says "Face1's radius" is NaN while the radius, 4, is fine.
+    // (It filed a cone's half-angle under "radius", so the worker's refusal said
+    // "Face1's radius" was NaN while the radius, 4, was fine: fixed by one walk of a
+    // description's values for both.)
     let d = cone(4.0, f64::NAN);
-    assert!(d.check().unwrap_err().starts_with("Face1's half-angle"));
+    assert!(
+        d.validate()
+            .unwrap_err()
+            .starts_with("the kernel's Face1's half-angle")
+    );
     let (what, value) = d.non_finite().unwrap();
     assert!(value.is_nan());
-    assert_eq!(what, "Face1's half-angle");
+    assert_eq!(what.to_string(), "the kernel's Face1's half-angle");
 }
 
 #[test]
@@ -51,7 +56,7 @@ fn a_cones_half_angle_at_a_right_angle_or_its_radius_below_zero_is_refused() {
         (4.0, f64::INFINITY, false),
     ] {
         assert_eq!(
-            cone(radius, half_angle).check().is_ok(),
+            cone(radius, half_angle).validate().is_ok(),
             ok,
             "radius {radius}, half-angle {half_angle}"
         );

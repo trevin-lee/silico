@@ -8,12 +8,12 @@ use super::close;
 use std::f64::consts::PI;
 
 use close::assert_close;
-use silico_kernel::{BooleanOp, Primitive, boolean, describe, make, translate};
+use silico_kernel::{BooleanOp, Primitive, boolean, describe_whole, make, translate};
 use silico_protocol::{Description, EdgeCurve, Surface};
 
 fn described(p: Primitive) -> Description {
-    let d = describe(&make(&p).unwrap()).unwrap();
-    d.check().unwrap();
+    let d = describe_whole(&make(&p).unwrap()).unwrap();
+    d.validate().unwrap();
     d
 }
 
@@ -64,7 +64,7 @@ fn a_boxs_edges_are_lines_of_its_sides_and_its_vertices_its_corners() {
         let what = format!("Edge{}", i + 1);
         assert_eq!(e.curve, EdgeCurve::Line, "{what}");
         assert!(e.curve.is_straight());
-        assert!(!e.degenerated);
+        assert!(e.curve != EdgeCurve::Degenerated);
         let span: f64 = (0..3)
             .map(|k| (e.end[k] - e.start[k]) * (e.end[k] - e.start[k]))
             .sum();
@@ -180,12 +180,16 @@ fn a_spheres_poles_are_degenerated_edges_of_no_length() {
     }
     assert_close("the area", d.faces[0].area, 36.0 * PI, 1e-12);
     assert_point("the centre of area", d.faces[0].centroid, [0.0; 3]);
-    let poles: Vec<_> = d.edges.iter().filter(|e| e.degenerated).collect();
+    let poles: Vec<_> = d
+        .edges
+        .iter()
+        .filter(|e| e.curve == EdgeCurve::Degenerated)
+        .collect();
     assert_eq!(poles.len(), 2);
     let mut heights: Vec<f64> = poles
         .iter()
         .map(|e| {
-            assert_eq!((e.length, &e.curve), (0.0, &EdgeCurve::Other));
+            assert_eq!((e.length, &e.curve), (0.0, &EdgeCurve::Degenerated));
             assert_eq!(e.start, e.end);
             assert_eq!(e.start, e.middle);
             e.start[2]
@@ -193,7 +197,11 @@ fn a_spheres_poles_are_degenerated_edges_of_no_length() {
         .collect();
     heights.sort_by(f64::total_cmp);
     assert_point("the poles", [heights[0], heights[1], 0.0], [-3.0, 3.0, 0.0]);
-    let seam: Vec<_> = d.edges.iter().filter(|e| !e.degenerated).collect();
+    let seam: Vec<_> = d
+        .edges
+        .iter()
+        .filter(|e| e.curve != EdgeCurve::Degenerated)
+        .collect();
     assert_eq!(seam.len(), 1);
     assert_close("the seam's length", seam[0].length, 3.0 * PI, 1e-12);
 }
@@ -251,7 +259,11 @@ fn a_cones_side_has_its_half_angle_and_its_apex_where_its_radius_would_be_none()
         }
     );
     assert_close("the base's area", base.area, 16.0 * PI, 1e-12);
-    let apexes: Vec<_> = d.edges.iter().filter(|e| e.degenerated).collect();
+    let apexes: Vec<_> = d
+        .edges
+        .iter()
+        .filter(|e| e.curve == EdgeCurve::Degenerated)
+        .collect();
     assert_eq!(apexes.len(), 1);
     assert_point("the degenerated edge", apexes[0].start, [0.0, 0.0, 6.0]);
 }
@@ -302,8 +314,8 @@ fn faces_a_cut_turns_round_face_out_of_the_solid() {
     .unwrap();
     let bar = translate(&bar, [4.0, 4.0, -5.0]).unwrap().shape;
     let cut = boolean(BooleanOp::Cut, &cube, &bar).unwrap().shape;
-    let d = describe(&cut).unwrap();
-    d.check().unwrap();
+    let d = describe_whole(&cut).unwrap();
+    d.validate().unwrap();
     let inside = |p: [f64; 3]| {
         let in_cube = p.iter().all(|&c| (0.0..=10.0).contains(&c));
         let in_hole = (4.0..=6.0).contains(&p[0]) && (4.0..=6.0).contains(&p[1]);
@@ -333,4 +345,76 @@ fn faces_a_cut_turns_round_face_out_of_the_solid() {
         }
     }
     assert_eq!(hole, 4);
+}
+
+#[test]
+fn a_boxs_edges_and_vertices_are_freecads_by_number_each_edge_from_its_curves_start() {
+    // A 10 × 20 × 30 box, as FreeCAD 1.1.3's Part::Box gives it (Shape.Edges[i] with
+    // firstVertex() and lastVertex(), the curve's own order, and Shape.Vertexes): seven of
+    // its edges are reversed in the faces OCCT meets them in first, but each runs from its
+    // curve's start, so an edit that reorders the faces can't swap its ends.
+    let d = described(Primitive::Box {
+        dx: 10.0,
+        dy: 20.0,
+        dz: 30.0,
+    });
+    let ends = [
+        ([0.0, 0.0, 0.0], [0.0, 0.0, 30.0]),
+        ([0.0, 0.0, 30.0], [0.0, 20.0, 30.0]),
+        ([0.0, 20.0, 0.0], [0.0, 20.0, 30.0]),
+        ([0.0, 0.0, 0.0], [0.0, 20.0, 0.0]),
+        ([10.0, 0.0, 0.0], [10.0, 0.0, 30.0]),
+        ([10.0, 0.0, 30.0], [10.0, 20.0, 30.0]),
+        ([10.0, 20.0, 0.0], [10.0, 20.0, 30.0]),
+        ([10.0, 0.0, 0.0], [10.0, 20.0, 0.0]),
+        ([0.0, 0.0, 0.0], [10.0, 0.0, 0.0]),
+        ([0.0, 0.0, 30.0], [10.0, 0.0, 30.0]),
+        ([0.0, 20.0, 0.0], [10.0, 20.0, 0.0]),
+        ([0.0, 20.0, 30.0], [10.0, 20.0, 30.0]),
+    ];
+    assert_eq!(d.edges.len(), 12);
+    for (i, (e, (start, end))) in d.edges.iter().zip(ends).enumerate() {
+        assert_eq!((e.start, e.end), (start, end), "Edge{}", i + 1);
+    }
+    assert_eq!(
+        d.vertices,
+        [
+            [0.0, 0.0, 30.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 20.0, 30.0],
+            [0.0, 20.0, 0.0],
+            [10.0, 0.0, 30.0],
+            [10.0, 0.0, 0.0],
+            [10.0, 20.0, 30.0],
+            [10.0, 20.0, 0.0],
+        ]
+    );
+}
+
+#[test]
+fn a_moved_spheres_centre_and_poles_move_with_it() {
+    // r 3 moved to (5, −7, 2): its centre and centre of area there, its poles at
+    // (5, −7, 2 ± 3).
+    let sphere = make(&Primitive::Sphere { radius: 3.0 }).unwrap();
+    let moved = translate(&sphere, [5.0, -7.0, 2.0]).unwrap().shape;
+    let d = describe_whole(&moved).unwrap();
+    d.validate().unwrap();
+    match &d.faces[0].surface {
+        Surface::Sphere { axis, radius } => {
+            assert_eq!(*radius, 3.0);
+            assert_point("the centre", axis.origin, [5.0, -7.0, 2.0]);
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_point("the centre of area", d.faces[0].centroid, [5.0, -7.0, 2.0]);
+    let mut poles: Vec<[f64; 3]> = d
+        .edges
+        .iter()
+        .filter(|e| e.curve == EdgeCurve::Degenerated)
+        .map(|e| e.start)
+        .collect();
+    poles.sort_by(|a, b| a[2].total_cmp(&b[2]));
+    assert_eq!(poles.len(), 2);
+    assert_point("the low pole", poles[0], [5.0, -7.0, -1.0]);
+    assert_point("the high pole", poles[1], [5.0, -7.0, 5.0]);
 }

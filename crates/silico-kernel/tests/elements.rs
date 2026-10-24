@@ -38,13 +38,13 @@ fn the_holes_elements() -> Vec<Element> {
     };
     let mut worker = KernelWorker::start_worker(Path::new(WORKER)).unwrap();
     let description = worker.describe(&built.shape).unwrap();
-    elements(model.element_map(&hole).unwrap(), &description).unwrap()
+    elements(model.element_map(&hole).unwrap(), description).unwrap()
 }
 
 fn named<'a>(listed: &'a [Element], name: &str) -> &'a Element {
     listed
         .iter()
-        .find(|e| e.name.to_string() == name)
+        .find(|e| e.name().to_string() == name)
         .unwrap_or_else(|| panic!("no {name}"))
 }
 
@@ -56,11 +56,11 @@ fn every_element_of_a_cut_is_listed_once_by_its_maps_name_in_order() {
     let listed = the_holes_elements();
     // Every element the map names, by its own name, once.
     let own: BTreeSet<String> = map.iter().map(|(_, names)| names[0].to_string()).collect();
-    let got: BTreeSet<String> = listed.iter().map(|e| e.name.to_string()).collect();
+    let got: BTreeSet<String> = listed.iter().map(|e| e.name().to_string()).collect();
     assert_eq!(got, own);
     assert_eq!(listed.len(), own.len());
     // Faces, then edges, then vertices; within each, by name byte by byte.
-    let kinds: Vec<ElementKind> = listed.iter().map(|e| e.element.kind).collect();
+    let kinds: Vec<ElementKind> = listed.iter().map(|e| e.kind()).collect();
     let mut sorted = kinds.clone();
     sorted.sort_by_key(|k| match k {
         ElementKind::Face => 0,
@@ -69,12 +69,12 @@ fn every_element_of_a_cut_is_listed_once_by_its_maps_name_in_order() {
     });
     assert_eq!(kinds, sorted);
     for pair in listed.windows(2) {
-        if pair[0].element.kind == pair[1].element.kind {
+        if pair[0].kind() == pair[1].kind() {
             assert!(
-                pair[0].name.to_string().as_bytes() < pair[1].name.to_string().as_bytes(),
+                pair[0].name().to_string().as_bytes() < pair[1].name().to_string().as_bytes(),
                 "{} before {}",
-                pair[0].name,
-                pair[1].name
+                pair[0].name(),
+                pair[1].name()
             );
         }
     }
@@ -132,4 +132,26 @@ fn a_solid_is_described_the_same_bytes_by_two_workers() {
         serde_json::to_string(&worker.describe(&built.shape).unwrap()).unwrap()
     };
     assert_eq!(describe(), describe());
+}
+
+#[test]
+fn the_holes_rims_are_circles_about_its_axis_where_the_block_meets_the_pin() {
+    // Each rim named by the block's face and the pin's side that make it: the bottom's
+    // (Face5, z = 0) and the top's (Face6, z = 10), circles of radius 2.5 about
+    // (20, 10, z), 5π long.
+    let listed = the_holes_elements();
+    for (face, z) in [("Face5", 0.0), ("Face6", 10.0)] {
+        let name = format!("m3tq8v0z.cut.Edge(G k7f2qx3m.box.{face}, G a91cw0de.cylinder.Face1)");
+        let rim = named(&listed, &name);
+        let Geometry::Edge(edge) = &rim.geometry else {
+            panic!("{rim:?}")
+        };
+        let silico_core::kernel::EdgeCurve::Circle { axis, radius } = &edge.curve else {
+            panic!("{name}: {edge:?}")
+        };
+        assert_eq!(*radius, 2.5, "{name}");
+        assert_eq!(axis.origin, [20.0, 10.0, z], "{name}");
+        assert_eq!(axis.direction.map(f64::abs), [0.0, 0.0, 1.0], "{name}");
+        assert!((edge.length - 5.0 * PI).abs() < 1e-9, "{name}: {edge:?}");
+    }
 }

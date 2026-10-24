@@ -9,8 +9,8 @@ use std::io::Write;
 use std::process::ExitCode;
 
 use silico_protocol::{
-    Blob, BuiltData, Failure, FreecadMeasures, Generation, Op, Refusal, Reply, RequestId,
-    ShapeData, ShapeSummary,
+    Blob, BuiltData, Description, Failure, FreecadMeasures, Generation, Op, Refusal, Reply,
+    RequestId, ShapeData, ShapeSummary,
 };
 
 use crate::KernelError;
@@ -34,13 +34,21 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
             check_freecad_finite(&measures)?;
             Ok(Reply::FreecadMeasures(measures))
         }
-        Op::Describe { shape } => {
+        Op::Describe {
+            shape,
+            kind,
+            first,
+            count,
+        } => {
             let shape = shape_of(&shape)?;
-            let description = crate::describe(&shape).map_err(failure)?;
-            if let Some((quantity, value)) = description.non_finite() {
-                return Err(Failure::new(Refusal::NotFinite { quantity, value }));
-            }
-            Ok(Reply::Described(description))
+            let (total, description) = crate::describe(
+                &shape,
+                kind,
+                first,
+                count.min(silico_protocol::DESCRIBE_BATCH),
+            )
+            .map_err(failure)?;
+            described(total, description)
         }
         Op::Fillet {
             shape,
@@ -159,6 +167,18 @@ fn check_finite(summary: &ShapeSummary) -> Result<(), Failure> {
 }
 
 /// As [`check_finite`], for a shape measured as FreeCAD measures it.
+/// A batch of a description as the worker sends it: refused, naming the value, if one isn't
+/// finite (the core's check, `Description::validate`, names a value the same way).
+fn described(total: u32, description: Description) -> Result<Reply, Failure> {
+    match description.non_finite() {
+        Some((quantity, value)) => Err(Failure::new(Refusal::NotFinite {
+            quantity: quantity.to_string(),
+            value,
+        })),
+        None => Ok(Reply::Described { total, description }),
+    }
+}
+
 fn check_freecad_finite(m: &FreecadMeasures) -> Result<(), Failure> {
     measures_finite(m.volume, m.area, m.center, m.bounds)
 }
@@ -232,6 +252,36 @@ where
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_description_with_a_value_not_finite_is_refused_naming_it() {
+        use super::{Refusal, Reply, described};
+        use silico_protocol::{Description, EdgeCurve, EdgeDescription};
+        let mut d = Description {
+            faces: Vec::new(),
+            edges: vec![EdgeDescription {
+                curve: EdgeCurve::Line,
+                length: 1.0,
+                start: [0.0; 3],
+                end: [1.0, 0.0, 0.0],
+                middle: [0.5, f64::NAN, 0.0],
+            }],
+            vertices: Vec::new(),
+        };
+        match described(1, d.clone()).unwrap_err().refusal {
+            Refusal::NotFinite { quantity, value } => {
+                assert_eq!(quantity, "the kernel's Edge1's middle");
+                assert!(value.is_nan());
+            }
+            other => panic!("{other:?}"),
+        }
+        d.edges[0].middle[1] = 0.0;
+        assert!(matches!(
+            described(1, d),
+            Ok(Reply::Described { total: 1, .. })
+        ));
+    }
+
     #[test]
     fn a_kernel_error_reaches_the_app_as_its_refusal_and_occts_words_only() {
         use silico_protocol::{DressingKind, EdgeTrouble, Operation, Refusal, Trouble};

@@ -243,6 +243,9 @@ fn every_op() -> Vec<Op> {
         },
         Op::Describe {
             shape: ShapeData::checked(Blob::inline(vec![8, 9]), true),
+            kind: ElementKind::Edge,
+            first: 1001,
+            count: u32::MAX,
         },
     ];
     let indices: std::collections::BTreeSet<usize> = ops
@@ -436,76 +439,82 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             values: None,
         })),
         // Every kind of surface and curve, at extremes a frame must carry exactly.
-        Ok(Reply::Described(Description {
-            faces: [
-                Surface::Plane {
-                    normal: [0.0, 0.0, -1.0],
-                },
-                Surface::Cylinder {
-                    axis: AXIS,
-                    radius: 5e-324,
-                },
-                Surface::Cone {
-                    axis: AXIS,
-                    radius: 0.0,
-                    half_angle: -1.5,
-                },
-                Surface::Sphere {
-                    axis: AXIS,
-                    radius: 1e6,
-                },
-                Surface::Torus {
-                    axis: AXIS,
-                    major_radius: 10.0,
-                    minor_radius: 2.0,
-                },
-                Surface::Bezier,
-                Surface::Bspline,
-                Surface::Revolution,
-                Surface::Extrusion,
-                Surface::Offset,
-                Surface::Other,
-            ]
-            .into_iter()
-            .map(|surface| FaceDescription {
-                surface,
-                area: 0.1 + 0.2,
-                centroid: [-0.0, 1.0, f64::MIN_POSITIVE],
-            })
-            .collect(),
-            edges: [
-                EdgeCurve::Line,
-                EdgeCurve::Circle {
-                    axis: AXIS,
-                    radius: 2.5,
-                },
-                EdgeCurve::Ellipse {
-                    axis: AXIS,
-                    major_radius: 3.0,
-                    minor_radius: 1.0,
-                },
-                EdgeCurve::Hyperbola,
-                EdgeCurve::Parabola,
-                EdgeCurve::Bezier,
-                EdgeCurve::Bspline {
-                    degree: 1,
-                    poles: u32::MAX,
-                },
-                EdgeCurve::Offset,
-                EdgeCurve::Other,
-            ]
-            .into_iter()
-            .map(|curve| EdgeDescription {
-                degenerated: curve == EdgeCurve::Other,
-                curve,
-                length: 1e-7,
-                start: [0.0; 3],
-                end: [1e6, -1e6, 0.0],
-                middle: [0.5, -0.5, -0.0],
-            })
-            .collect(),
-            vertices: vec![[1e-300, -1e300, 0.0]],
-        })),
+        Ok(Reply::Described {
+            total: u32::MAX,
+            description: Description {
+                faces: [
+                    Surface::Plane {
+                        normal: [0.0, 0.0, -1.0],
+                    },
+                    Surface::Cylinder {
+                        axis: AXIS,
+                        radius: 5e-324,
+                    },
+                    Surface::Cone {
+                        axis: AXIS,
+                        radius: 0.0,
+                        half_angle: -1.5,
+                    },
+                    Surface::Sphere {
+                        axis: AXIS,
+                        radius: 1e6,
+                    },
+                    Surface::Torus {
+                        axis: AXIS,
+                        major_radius: 10.0,
+                        minor_radius: 2.0,
+                    },
+                    Surface::Bezier,
+                    Surface::Bspline,
+                    Surface::Revolution,
+                    Surface::Extrusion,
+                    Surface::Offset,
+                    Surface::Other,
+                ]
+                .into_iter()
+                .map(|surface| FaceDescription {
+                    surface,
+                    area: 0.1 + 0.2,
+                    centroid: [-0.0, 1.0, f64::MIN_POSITIVE],
+                })
+                .collect(),
+                edges: [
+                    EdgeCurve::Line,
+                    EdgeCurve::Circle {
+                        axis: AXIS,
+                        radius: 2.5,
+                    },
+                    EdgeCurve::Ellipse {
+                        axis: AXIS,
+                        major_radius: 3.0,
+                        minor_radius: 1.0,
+                    },
+                    EdgeCurve::Hyperbola,
+                    EdgeCurve::Parabola,
+                    EdgeCurve::Bezier {
+                        degree: 1,
+                        poles: 2,
+                    },
+                    EdgeCurve::Bspline {
+                        degree: 1,
+                        poles: u32::MAX,
+                    },
+                    EdgeCurve::Offset,
+                    EdgeCurve::Other,
+                    EdgeCurve::Degenerated,
+                ]
+                .into_iter()
+                .map(|curve| EdgeDescription {
+                    curve,
+                    length: 1e-7,
+                    start: [0.0; 3],
+                    end: [1e6, -1e6, 0.0],
+                    middle: [0.5, -0.5, -0.0],
+                })
+                .collect(),
+                vertices: vec![[1e-300, -1e300, 0.0]],
+            },
+        }),
         Err(Failure::new(Refusal::NoDragSession {
             op: "DragEnd".to_owned(),
         })),
@@ -551,7 +560,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             Ok(Reply::Solved(_)) => 13,
             Ok(Reply::DragStarted { .. }) => 14,
             Ok(Reply::Moved(_)) => 15,
-            Ok(Reply::Described(_)) => 16,
+            Ok(Reply::Described { .. }) => 16,
             Err(failure) => match failure.kind() {
                 FailureKind::InvalidInput => 5,
                 FailureKind::KernelFailed => 6,

@@ -11,10 +11,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub use silico_protocol::{
-    Axis, Blob, BooleanOp, BuiltData, ChamferSize, Curve, Description, EdgeCurve, EdgeDescription,
-    ElementCounts, ElementFate, ElementKind, ElementRef, Ends, FaceDescription, FaceRegions,
-    FreecadMeasures, Generation, History, InputHistory, Mesh, Op, Primitive, Profile, Region,
-    Reported, ShapeData, ShapeSummary, SketchPlane, Surface, SweepKind, Topology,
+    Axis, Blob, BooleanOp, BuiltData, ChamferSize, Curve, DESCRIBE_BATCH, Description, EdgeCurve,
+    EdgeDescription, ElementCounts, ElementFate, ElementKind, ElementRef, Ends, FaceDescription,
+    FaceRegions, FreecadMeasures, Generation, History, InputHistory, Mesh, Op, Primitive, Profile,
+    Region, Reported, ShapeData, ShapeSummary, SketchPlane, Surface, SweepKind, Topology,
 };
 use silico_protocol::{DebugOp, Failure, LENGTH_TOLERANCE, Reply};
 
@@ -462,26 +462,81 @@ impl KernelRequest<FreecadMeasures> {
     }
 }
 
-impl KernelRequest<Description> {
-    /// Each of the shape's faces, edges, and vertices: its geometry and measures, in OCCT's
-    /// order (docs/design/m4.4-describe.md). The description is checked before it's
-    /// returned ([`Description::check`]), so a value can be trusted as its type says.
-    pub fn describe(shape: &ShapeData) -> Self {
+/// A batch of a shape's elements described ([`KernelRequest::describe`]): how many of its kind
+/// the shape has, and those asked for.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DescribedBatch {
+    pub total: u32,
+    pub description: Description,
+}
+
+impl KernelRequest<DescribedBatch> {
+    /// The geometry and measures of the shape's elements of `kind` numbered from `first`
+    /// (from 1, in OCCT's order), `count` of them (at most [`DESCRIBE_BATCH`]) or as many as
+    /// there are (docs/design/m4.4-describe.md). The batch is checked before it's returned
+    /// ([`Description::validate`], and that it holds what was asked for), so a value can be
+    /// trusted as its type says.
+    pub fn describe(shape: &ShapeData, kind: ElementKind, first: u32, count: u32) -> Self {
+        let count = count.min(DESCRIBE_BATCH);
         let op = Op::Describe {
             shape: shape.clone(),
+            kind,
+            first,
+            count,
         };
-        Self::new(op, |name, reply| match reply {
-            Reply::Described(description) => match description.check() {
-                Ok(()) => Ok(description),
-                Err(problem) => Err(Error::new(
-                    ErrorCode::ProtocolError,
-                    "the kernel worker sent a description it can't have",
-                )
-                .with_cause(problem)
-                .with_suggestion("start a new kernel worker")),
-            },
+        Self::new(op, move |name, reply| match reply {
+            Reply::Described { total, description } => {
+                match batch_problem(kind, first, count, total, &description) {
+                    None => Ok(DescribedBatch { total, description }),
+                    Some(problem) => Err(Error::new(
+                        ErrorCode::ProtocolError,
+                        "the kernel worker sent a description it can't have",
+                    )
+                    .with_cause(problem)
+                    .with_suggestion("start a new kernel worker")),
+                }
+            }
             other => Err(unexpected(name, &other)),
         })
+    }
+}
+
+/// What's wrong with a batch of a description for a request of `count` elements of `kind`
+/// from `first`, of `total`, if anything: a value it can't hold, elements of another kind,
+/// or more or fewer than there are from `first` up to `count`.
+fn batch_problem(
+    kind: ElementKind,
+    first: u32,
+    count: u32,
+    total: u32,
+    description: &Description,
+) -> Option<String> {
+    if let Err(problem) = description.validate() {
+        return Some(problem);
+    }
+    let (faces, edges, vertices) = (
+        description.faces.len(),
+        description.edges.len(),
+        description.vertices.len(),
+    );
+    let (of_kind, others) = match kind {
+        ElementKind::Face => (faces, edges + vertices),
+        ElementKind::Edge => (edges, faces + vertices),
+        ElementKind::Vertex => (vertices, faces + edges),
+        ElementKind::Solid => return Some("it describes solids, which it can't".to_owned()),
+    };
+    let left = u64::from(total).saturating_sub(u64::from(first.max(1)) - 1);
+    let want = left.min(u64::from(count));
+    if others != 0 {
+        Some(format!(
+            "it describes {others} elements of a kind not asked for"
+        ))
+    } else if of_kind as u64 != want {
+        Some(format!(
+            "it describes {of_kind} elements, where {want} were asked for (from {first}, of {total})"
+        ))
+    } else {
+        None
     }
 }
 
@@ -882,9 +937,31 @@ impl KernelWorker {
         self.run(KernelRequest::measure_as_freecad(shape))
     }
 
-    /// A shape's elements described ([`KernelRequest::describe`]).
+    /// Every one of a shape's faces, edges, and vertices described, a batch
+    /// ([`KernelRequest::describe`]) of at most [`DESCRIBE_BATCH`] after another, joined.
     pub fn describe(&mut self, shape: &ShapeData) -> Result<Description, Error> {
-        self.run(KernelRequest::describe(shape))
+        let mut whole = Description {
+            faces: Vec::new(),
+            edges: Vec::new(),
+            vertices: Vec::new(),
+        };
+        for kind in [ElementKind::Face, ElementKind::Edge, ElementKind::Vertex] {
+            let mut first = 1;
+            loop {
+                let batch =
+                    self.run(KernelRequest::describe(shape, kind, first, DESCRIBE_BATCH))?;
+                let d = batch.description;
+                let got = (d.faces.len() + d.edges.len() + d.vertices.len()) as u32;
+                whole.faces.extend(d.faces);
+                whole.edges.extend(d.edges);
+                whole.vertices.extend(d.vertices);
+                first += got;
+                if got == 0 || first > batch.total {
+                    break;
+                }
+            }
+        }
+        Ok(whole)
     }
 
     /// A shape's mesh ([`KernelRequest::tessellate`]).
@@ -1014,6 +1091,54 @@ pub(crate) fn cone_caps(radius1: f64, radius2: f64, height: f64) -> (bool, bool)
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_description_batch_that_isnt_what_was_asked_for_is_a_protocol_error() {
+        use silico_protocol::{EdgeCurve, EdgeDescription};
+        let line = EdgeDescription {
+            curve: EdgeCurve::Line,
+            length: 1.0,
+            start: [0.0; 3],
+            end: [1.0, 0.0, 0.0],
+            middle: [0.5, 0.0, 0.0],
+        };
+        let edges = |n: usize| Description {
+            faces: Vec::new(),
+            edges: vec![line.clone(); n],
+            vertices: Vec::new(),
+        };
+        let shape = ShapeData::unchecked(Blob::inline(vec![1]));
+        let answer = |total: u32, description: Description| {
+            KernelRequest::describe(&shape, ElementKind::Edge, 3, 2)
+                .answer(Ok(Reply::Described { total, description }))
+        };
+        // Edges 3 and 4 of 12; or the last of 3, edge 3 alone.
+        assert_eq!(answer(12, edges(2)).unwrap().total, 12);
+        assert_eq!(answer(3, edges(1)).unwrap().description, edges(1));
+        let mut bent = edges(2);
+        bent.edges[1].length = 0.0;
+        let mut faced = edges(2);
+        faced.vertices.push([0.0; 3]);
+        for (total, description, cause) in [
+            (
+                12,
+                edges(1),
+                "it describes 1 elements, where 2 were asked for (from 3, of 12)",
+            ),
+            (
+                3,
+                edges(2),
+                "it describes 2 elements, where 1 were asked for (from 3, of 3)",
+            ),
+            (12, faced, "it describes 1 elements of a kind not asked for"),
+            (12, bent, "the kernel's Edge2's length is 0"),
+        ] {
+            let e = answer(total, description).unwrap_err();
+            assert_eq!(e.code(), ErrorCode::ProtocolError);
+            assert_eq!(e.cause(), Some(cause));
+        }
+    }
+
     use super::*;
 
     /// A 4 × 3 rectangle on XY with a circle hole, and a circle beside it: two regions,
