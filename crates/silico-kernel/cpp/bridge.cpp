@@ -2,6 +2,15 @@
 #include "silico-kernel/src/lib.rs.h"
 
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepAdaptor_Surface.hxx>
+#include <GCPnts_AbscissaPoint.hxx>
+#include <Geom_BSplineCurve.hxx>
+#include <gp_Cone.hxx>
+#include <gp_Cylinder.hxx>
+#include <gp_Elips.hxx>
+#include <gp_Pln.hxx>
+#include <gp_Sphere.hxx>
+#include <gp_Torus.hxx>
 #include <BRepAlgo.hxx>
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
@@ -236,6 +245,176 @@ FreecadMeasures measure_as_freecad(const Shape &shape) {
   const bool bounded = tight_box(shape.shape, low, high);
   return FreecadMeasures{volume.Mass(), surface.Mass(), Point3{c.X(), c.Y(), c.Z()},
                          bounded,       low,           high};
+}
+
+namespace {
+Point3 point3(const gp_XYZ &p) { return Point3{p.X(), p.Y(), p.Z()}; }
+
+// An axis's origin and direction, into `origin` and `direction`.
+void put_axis(const gp_Ax1 &axis, Point3 &origin, Point3 &direction) {
+  origin = point3(axis.Location().XYZ());
+  direction = point3(axis.Direction().XYZ());
+}
+
+FaceOut describe_face(const TopoDS_Face &face, double precision) {
+  FaceOut out{};
+  GProp_GProps props;
+  BRepGProp::SurfaceProperties(face, props, precision);
+  out.area = props.Mass();
+  out.centroid = point3(props.CentreOfMass().XYZ());
+  const BRepAdaptor_Surface surface(face, false);
+  switch (surface.GetType()) {
+  case GeomAbs_Plane: {
+    // The plane's own normal, reversed where the face is: out of a solid.
+    gp_Dir normal = surface.Plane().Axis().Direction();
+    if (face.Orientation() == TopAbs_REVERSED) {
+      normal.Reverse();
+    }
+    out.surface = SurfaceType::Plane;
+    out.normal = point3(normal.XYZ());
+    break;
+  }
+  case GeomAbs_Cylinder: {
+    const gp_Cylinder c = surface.Cylinder();
+    out.surface = SurfaceType::Cylinder;
+    put_axis(c.Axis(), out.origin, out.direction);
+    out.radius = c.Radius();
+    break;
+  }
+  case GeomAbs_Cone: {
+    const gp_Cone c = surface.Cone();
+    out.surface = SurfaceType::Cone;
+    put_axis(c.Axis(), out.origin, out.direction);
+    out.radius = c.RefRadius();
+    out.angle = c.SemiAngle();
+    break;
+  }
+  case GeomAbs_Sphere: {
+    const gp_Sphere c = surface.Sphere();
+    out.surface = SurfaceType::Sphere;
+    put_axis(c.Position().Axis(), out.origin, out.direction);
+    out.radius = c.Radius();
+    break;
+  }
+  case GeomAbs_Torus: {
+    const gp_Torus c = surface.Torus();
+    out.surface = SurfaceType::Torus;
+    put_axis(c.Axis(), out.origin, out.direction);
+    out.radius = c.MajorRadius();
+    out.radius2 = c.MinorRadius();
+    break;
+  }
+  case GeomAbs_BezierSurface:
+    out.surface = SurfaceType::Bezier;
+    break;
+  case GeomAbs_BSplineSurface:
+    out.surface = SurfaceType::Bspline;
+    break;
+  case GeomAbs_SurfaceOfRevolution:
+    out.surface = SurfaceType::Revolution;
+    break;
+  case GeomAbs_SurfaceOfExtrusion:
+    out.surface = SurfaceType::Extrusion;
+    break;
+  case GeomAbs_OffsetSurface:
+    out.surface = SurfaceType::Offset;
+    break;
+  default:
+    out.surface = SurfaceType::Other;
+    break;
+  }
+  return out;
+}
+
+EdgeOut describe_edge(const TopoDS_Edge &edge, double precision) {
+  EdgeOut out{};
+  // Its ends as it runs in the shape (the edge's own orientation taken).
+  TopoDS_Vertex first;
+  TopoDS_Vertex last;
+  TopExp::Vertices(edge, first, last, true);
+  if (first.IsNull() || last.IsNull()) {
+    throw Standard_Failure("an edge without both its vertices");
+  }
+  out.start = point3(BRep_Tool::Pnt(first).XYZ());
+  out.end = point3(BRep_Tool::Pnt(last).XYZ());
+  if (BRep_Tool::Degenerated(edge)) {
+    // No curve: a point (a sphere's pole, a cone's apex).
+    out.curve = CurveType::Other;
+    out.degenerated = true;
+    out.middle = out.start;
+    return out;
+  }
+  const BRepAdaptor_Curve curve(edge);
+  out.middle =
+      point3(curve.Value((curve.FirstParameter() + curve.LastParameter()) / 2.0).XYZ());
+  // OCCT's tolerance for a length is absolute (the integration stops when two estimates
+  // are that close): `precision` of a first estimate's length, so relative, as areas are.
+  const double rough = GCPnts_AbscissaPoint::Length(curve);
+  out.length = GCPnts_AbscissaPoint::Length(curve, precision * rough);
+  switch (curve.GetType()) {
+  case GeomAbs_Line:
+    out.curve = CurveType::Line;
+    break;
+  case GeomAbs_Circle: {
+    const gp_Circ c = curve.Circle();
+    out.curve = CurveType::Circle;
+    put_axis(c.Axis(), out.origin, out.direction);
+    out.radius = c.Radius();
+    break;
+  }
+  case GeomAbs_Ellipse: {
+    const gp_Elips c = curve.Ellipse();
+    out.curve = CurveType::Ellipse;
+    put_axis(c.Axis(), out.origin, out.direction);
+    out.radius = c.MajorRadius();
+    out.radius2 = c.MinorRadius();
+    break;
+  }
+  case GeomAbs_Hyperbola:
+    out.curve = CurveType::Hyperbola;
+    break;
+  case GeomAbs_Parabola:
+    out.curve = CurveType::Parabola;
+    break;
+  case GeomAbs_BezierCurve:
+    out.curve = CurveType::Bezier;
+    break;
+  case GeomAbs_BSplineCurve: {
+    const Handle(Geom_BSplineCurve) b = curve.BSpline();
+    out.curve = CurveType::Bspline;
+    out.degree = static_cast<uint32_t>(b->Degree());
+    out.poles = static_cast<uint32_t>(b->NbPoles());
+    break;
+  }
+  case GeomAbs_OffsetCurve:
+    out.curve = CurveType::Offset;
+    break;
+  default:
+    out.curve = CurveType::Other;
+    break;
+  }
+  return out;
+}
+} // namespace
+
+DescribeOut describe(const Shape &shape, double precision) {
+  TopTools_IndexedMapOfShape faces;
+  TopTools_IndexedMapOfShape edges;
+  TopTools_IndexedMapOfShape vertices;
+  TopExp::MapShapes(shape.shape, TopAbs_FACE, faces);
+  TopExp::MapShapes(shape.shape, TopAbs_EDGE, edges);
+  TopExp::MapShapes(shape.shape, TopAbs_VERTEX, vertices);
+  DescribeOut out;
+  for (int i = 1; i <= faces.Extent(); ++i) {
+    out.faces.push_back(describe_face(TopoDS::Face(faces(i)), precision));
+  }
+  for (int i = 1; i <= edges.Extent(); ++i) {
+    out.edges.push_back(describe_edge(TopoDS::Edge(edges(i)), precision));
+  }
+  for (int i = 1; i <= vertices.Extent(); ++i) {
+    out.vertices.push_back(point3(BRep_Tool::Pnt(TopoDS::Vertex(vertices(i))).XYZ()));
+  }
+  return out;
 }
 
 double bounding_diagonal(const Shape &shape) {

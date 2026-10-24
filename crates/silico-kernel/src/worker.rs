@@ -34,6 +34,14 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
             check_freecad_finite(&measures)?;
             Ok(Reply::FreecadMeasures(measures))
         }
+        Op::Describe { shape } => {
+            let shape = shape_of(&shape)?;
+            let description = crate::describe(&shape).map_err(failure)?;
+            if let Some((quantity, value)) = description.non_finite() {
+                return Err(Failure::new(Refusal::NotFinite { quantity, value }));
+            }
+            Ok(Reply::Described(description))
+        }
         Op::Fillet {
             shape,
             edges,

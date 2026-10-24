@@ -8,6 +8,7 @@
 //! there's no version negotiation.
 
 mod chamfer;
+mod describe;
 mod faces;
 pub mod frame;
 mod history;
@@ -20,6 +21,7 @@ mod sweep;
 use serde::{Deserialize, Serialize};
 
 pub use chamfer::ChamferSize;
+pub use describe::{Description, EdgeCurve, EdgeDescription, FaceDescription, Surface};
 pub use faces::{
     ArcEnd, Curve, FaceRegions, MAX_ARC_ANGLE, MAX_FACE_CURVES, Region, SizeProblem, SketchPlane,
     area_and_perimeter, distance, loop_area, on_circle, sliver,
@@ -145,6 +147,10 @@ pub enum Op {
     /// A triangle mesh of a shape for display, no further than `deflection` from its
     /// surface. Replies with [`Reply::Mesh`].
     Tessellate { shape: ShapeData, deflection: f64 },
+    /// Each of a shape's faces, edges, and vertices: its geometry and its measures, in
+    /// `TopExp::MapShapes` order (docs/design/m4.4-describe.md). Replies with
+    /// [`Reply::Described`].
+    Describe { shape: ShapeData },
     /// Sends `data` straight back as [`Reply::Echo`]: a health check, and the cheapest
     /// round trip, which the IPC benchmark measures.
     Echo { data: Blob },
@@ -218,6 +224,7 @@ impl Op {
             Op::Revolve { .. } => "Revolve",
             Op::Boolean { op, .. } => op.name(),
             Op::Tessellate { .. } => "Tessellate",
+            Op::Describe { .. } => "Describe",
             Op::Solve(_) => "Solve",
             Op::DragBegin(_) => "DragBegin",
             Op::DragMove { .. } => "DragMove",
@@ -356,6 +363,8 @@ pub enum Reply {
     Summary(ShapeSummary),
     FreecadMeasures(FreecadMeasures),
     Mesh(Mesh),
+    /// What a shape's elements are ([`Op::Describe`]).
+    Described(Description),
     Echo {
         data: Blob,
     },
@@ -383,6 +392,7 @@ impl Reply {
             Reply::Summary(_) => "Summary",
             Reply::FreecadMeasures(_) => "FreecadMeasures",
             Reply::Mesh(_) => "Mesh",
+            Reply::Described(_) => "Described",
             Reply::Solved(_) => "Solved",
             Reply::DragStarted { .. } => "DragStarted",
             Reply::Moved(_) => "Moved",
