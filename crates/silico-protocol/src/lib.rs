@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 pub use chamfer::ChamferSize;
 pub use describe::{
     DESCRIBE_BATCH, Description, EdgeCurve, EdgeDescription, FaceDescription, Quantity, Surface,
+    What, describe_in_batches,
 };
 pub use faces::{
     ArcEnd, Curve, FaceRegions, MAX_ARC_ANGLE, MAX_FACE_CURVES, Region, SizeProblem, SketchPlane,

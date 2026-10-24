@@ -48,7 +48,7 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
                 count.min(silico_protocol::DESCRIBE_BATCH),
             )
             .map_err(failure)?;
-            described(total, description)
+            described(first, total, description)
         }
         Op::Fillet {
             shape,
@@ -166,11 +166,11 @@ fn check_finite(summary: &ShapeSummary) -> Result<(), Failure> {
     measures_finite(summary.volume, summary.area, summary.center, summary.bounds)
 }
 
-/// As [`check_finite`], for a shape measured as FreeCAD measures it.
-/// A batch of a description as the worker sends it: refused, naming the value, if one isn't
-/// finite (the core's check, `Description::validate`, names a value the same way).
-fn described(total: u32, description: Description) -> Result<Reply, Failure> {
-    match description.non_finite() {
+/// A batch of a description, its first numbered `first`, as the worker sends it: refused,
+/// naming the value by the kernel's number for its element, if one isn't finite (the core's
+/// check, `Description::validate`, names a value the same way).
+fn described(first: u32, total: u32, description: Description) -> Result<Reply, Failure> {
+    match description.non_finite(first) {
         Some((quantity, value)) => Err(Failure::new(Refusal::NotFinite {
             quantity: quantity.to_string(),
             value,
@@ -179,6 +179,7 @@ fn described(total: u32, description: Description) -> Result<Reply, Failure> {
     }
 }
 
+/// As [`check_finite`], for a shape measured as FreeCAD measures it.
 fn check_freecad_finite(m: &FreecadMeasures) -> Result<(), Failure> {
     measures_finite(m.volume, m.area, m.center, m.bounds)
 }
@@ -268,16 +269,17 @@ mod tests {
             }],
             vertices: Vec::new(),
         };
-        match described(1, d.clone()).unwrap_err().refusal {
+        // A batch from 1001: its first edge is the kernel's Edge1001.
+        match described(1001, 1001, d.clone()).unwrap_err().refusal {
             Refusal::NotFinite { quantity, value } => {
-                assert_eq!(quantity, "the kernel's Edge1's middle");
+                assert_eq!(quantity, "the kernel's Edge1001's middle");
                 assert!(value.is_nan());
             }
             other => panic!("{other:?}"),
         }
         d.edges[0].middle[1] = 0.0;
         assert!(matches!(
-            described(1, d),
+            described(1, 1, d),
             Ok(Reply::Described { total: 1, .. })
         ));
     }

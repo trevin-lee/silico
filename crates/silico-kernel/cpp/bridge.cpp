@@ -431,12 +431,15 @@ DescribeOut describe(const Shape &shape, Kind kind, uint32_t first, uint32_t cou
   default:
     throw Standard_Failure("describe takes faces, edges, or vertices");
   }
+  if (first == 0) {
+    throw Standard_Failure("elements are numbered from 1");
+  }
   TopTools_IndexedMapOfShape elements;
   TopExp::MapShapes(shape.shape, type, elements);
   DescribeOut out;
   out.total = static_cast<uint32_t>(elements.Extent());
   const uint64_t last = std::min<uint64_t>(uint64_t{first} + count, uint64_t{out.total} + 1);
-  for (uint64_t i = std::max<uint64_t>(first, 1); i < last; ++i) {
+  for (uint64_t i = first; i < last; ++i) {
     const TopoDS_Shape &element = elements(static_cast<int>(i));
     switch (kind) {
     case Kind::Face:

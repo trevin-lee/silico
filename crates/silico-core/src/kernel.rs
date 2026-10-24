@@ -476,7 +476,29 @@ impl KernelRequest<DescribedBatch> {
     /// there are (docs/design/m4.4-describe.md). The batch is checked before it's returned
     /// ([`Description::validate`], and that it holds what was asked for), so a value can be
     /// trusted as its type says.
-    pub fn describe(shape: &ShapeData, kind: ElementKind, first: u32, count: u32) -> Self {
+    ///
+    /// Refused if `kind` is solids, which the kernel doesn't describe, or `first` is 0, which
+    /// numbers nothing.
+    pub fn describe(
+        shape: &ShapeData,
+        kind: ElementKind,
+        first: u32,
+        count: u32,
+    ) -> Result<Self, Error> {
+        if kind == ElementKind::Solid {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                "a description is of faces, edges, or vertices, not solids",
+            )
+            .with_parameter("kind"));
+        }
+        if first == 0 {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                "elements are numbered from 1, so a description can't start at 0",
+            )
+            .with_parameter("first"));
+        }
         let count = count.min(DESCRIBE_BATCH);
         let op = Op::Describe {
             shape: shape.clone(),
@@ -484,7 +506,7 @@ impl KernelRequest<DescribedBatch> {
             first,
             count,
         };
-        Self::new(op, move |name, reply| match reply {
+        Ok(Self::new(op, move |name, reply| match reply {
             Reply::Described { total, description } => {
                 match batch_problem(kind, first, count, total, &description) {
                     None => Ok(DescribedBatch { total, description }),
@@ -497,7 +519,7 @@ impl KernelRequest<DescribedBatch> {
                 }
             }
             other => Err(unexpected(name, &other)),
-        })
+        }))
     }
 }
 
@@ -511,7 +533,7 @@ fn batch_problem(
     total: u32,
     description: &Description,
 ) -> Option<String> {
-    if let Err(problem) = description.validate() {
+    if let Err(problem) = description.validate(first) {
         return Some(problem);
     }
     let (faces, edges, vertices) = (
@@ -522,18 +544,17 @@ fn batch_problem(
     let (of_kind, others) = match kind {
         ElementKind::Face => (faces, edges + vertices),
         ElementKind::Edge => (edges, faces + vertices),
-        ElementKind::Vertex => (vertices, faces + edges),
-        ElementKind::Solid => return Some("it describes solids, which it can't".to_owned()),
+        _ => (vertices, faces + edges),
     };
-    let left = u64::from(total).saturating_sub(u64::from(first.max(1)) - 1);
+    let left = u64::from(total).saturating_sub(u64::from(first) - 1);
     let want = left.min(u64::from(count));
     if others != 0 {
         Some(format!(
-            "it describes {others} elements of a kind not asked for"
+            "it describes elements of a kind not asked for ({others} of them)"
         ))
     } else if of_kind as u64 != want {
         Some(format!(
-            "it describes {of_kind} elements, where {want} were asked for (from {first}, of {total})"
+            "it describes {of_kind}, not {want} (from {first}, of {total})"
         ))
     } else {
         None
@@ -940,28 +961,22 @@ impl KernelWorker {
     /// Every one of a shape's faces, edges, and vertices described, a batch
     /// ([`KernelRequest::describe`]) of at most [`DESCRIBE_BATCH`] after another, joined.
     pub fn describe(&mut self, shape: &ShapeData) -> Result<Description, Error> {
-        let mut whole = Description {
-            faces: Vec::new(),
-            edges: Vec::new(),
-            vertices: Vec::new(),
-        };
-        for kind in [ElementKind::Face, ElementKind::Edge, ElementKind::Vertex] {
-            let mut first = 1;
-            loop {
-                let batch =
-                    self.run(KernelRequest::describe(shape, kind, first, DESCRIBE_BATCH))?;
-                let d = batch.description;
-                let got = (d.faces.len() + d.edges.len() + d.vertices.len()) as u32;
-                whole.faces.extend(d.faces);
-                whole.edges.extend(d.edges);
-                whole.vertices.extend(d.vertices);
-                first += got;
-                if got == 0 || first > batch.total {
-                    break;
-                }
-            }
-        }
-        Ok(whole)
+        silico_protocol::describe_in_batches(
+            |kind, first, count| {
+                let batch = self.run(KernelRequest::describe(shape, kind, first, count)?)?;
+                Ok((batch.total, batch.description))
+            },
+            |kind, was, now| {
+                Error::new(
+                    ErrorCode::ProtocolError,
+                    "the kernel worker sent a description it can't have",
+                )
+                .with_cause(format!(
+                    "it said the shape has {was} of a kind ({kind:?}), then {now}"
+                ))
+                .with_suggestion("start a new kernel worker")
+            },
+        )
     }
 
     /// A shape's mesh ([`KernelRequest::tessellate`]).
@@ -1092,6 +1107,8 @@ pub(crate) fn cone_caps(radius1: f64, radius2: f64, height: f64) -> (bool, bool)
 #[cfg(test)]
 mod tests {
 
+    use super::*;
+
     #[test]
     fn a_description_batch_that_isnt_what_was_asked_for_is_a_protocol_error() {
         use silico_protocol::{EdgeCurve, EdgeDescription};
@@ -1110,6 +1127,7 @@ mod tests {
         let shape = ShapeData::unchecked(Blob::inline(vec![1]));
         let answer = |total: u32, description: Description| {
             KernelRequest::describe(&shape, ElementKind::Edge, 3, 2)
+                .unwrap()
                 .answer(Ok(Reply::Described { total, description }))
         };
         // Edges 3 and 4 of 12; or the last of 3, edge 3 alone.
@@ -1120,26 +1138,34 @@ mod tests {
         let mut faced = edges(2);
         faced.vertices.push([0.0; 3]);
         for (total, description, cause) in [
+            (12, edges(1), "it describes 1, not 2 (from 3, of 12)"),
+            (3, edges(2), "it describes 2, not 1 (from 3, of 3)"),
             (
                 12,
-                edges(1),
-                "it describes 1 elements, where 2 were asked for (from 3, of 12)",
+                faced,
+                "it describes elements of a kind not asked for (1 of them)",
             ),
-            (
-                3,
-                edges(2),
-                "it describes 2 elements, where 1 were asked for (from 3, of 3)",
-            ),
-            (12, faced, "it describes 1 elements of a kind not asked for"),
-            (12, bent, "the kernel's Edge2's length is 0"),
+            // Edges 3 and 4 asked for, the second the kernel's Edge4.
+            (12, bent, "the kernel's Edge4's length is 0"),
         ] {
             let e = answer(total, description).unwrap_err();
             assert_eq!(e.code(), ErrorCode::ProtocolError);
             assert_eq!(e.cause(), Some(cause));
         }
+        // A request for solids, or from 0, isn't sent.
+        for (kind, first, parameter) in [
+            (ElementKind::Solid, 1, "kind"),
+            (ElementKind::Edge, 0, "first"),
+        ] {
+            let e = KernelRequest::describe(&shape, kind, first, 2)
+                .err()
+                .unwrap();
+            assert_eq!(
+                (e.code(), e.parameter()),
+                (ErrorCode::InvalidInput, Some(parameter))
+            );
+        }
     }
-
-    use super::*;
 
     /// A 4 × 3 rectangle on XY with a circle hole, and a circle beside it: two regions,
     /// six curves, four points.

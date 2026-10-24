@@ -8,12 +8,13 @@ use super::close;
 use std::f64::consts::PI;
 
 use close::assert_close;
-use silico_kernel::{BooleanOp, Primitive, boolean, describe_whole, make, translate};
+use silico_kernel::{BooleanOp, Primitive, boolean, describe, describe_whole, make, translate};
+use silico_protocol::ElementKind;
 use silico_protocol::{Description, EdgeCurve, Surface};
 
 fn described(p: Primitive) -> Description {
     let d = describe_whole(&make(&p).unwrap()).unwrap();
-    d.validate().unwrap();
+    d.validate(1).unwrap();
     d
 }
 
@@ -208,8 +209,8 @@ fn a_spheres_poles_are_degenerated_edges_of_no_length() {
 
 #[test]
 fn a_cones_side_has_its_half_angle_and_its_apex_where_its_radius_would_be_none() {
-    // r 4 to 0, h 6: its side a cone whose half-angle is atan(4/6) in size (narrowing up
-    // its axis, so OCCT's is negative), of radius 4 at its axis's origin (0, 0, 0), so its
+    // r 4 to 0, h 6: its side a cone whose half-angle is atan(−4/6) (narrowing up its axis,
+    // so negative), of radius 4 at its axis's origin (0, 0, 0), so its
     // apex, origin − direction · radius / tan(half-angle), is (0, 0, 6); its area
     // π · 4 · √(4² + 6²); its base a plane of area 16π facing −z; its apex a degenerated
     // edge.
@@ -231,12 +232,8 @@ fn a_cones_side_has_its_half_angle_and_its_apex_where_its_radius_would_be_none()
     else {
         unreachable!()
     };
-    assert_close(
-        "the half-angle",
-        half_angle.abs(),
-        libm::atan(4.0 / 6.0),
-        1e-12,
-    );
+    // −0.5880026035475675, narrowing up its axis, as FreeCAD 1.1.3's Part::Cone gives it.
+    assert_close("the half-angle", *half_angle, libm::atan(-4.0 / 6.0), 1e-12);
     assert_eq!(*radius, 4.0);
     let apex =
         [0, 1, 2].map(|k| axis.origin[k] - axis.direction[k] * radius / libm::tan(*half_angle));
@@ -315,7 +312,7 @@ fn faces_a_cut_turns_round_face_out_of_the_solid() {
     let bar = translate(&bar, [4.0, 4.0, -5.0]).unwrap().shape;
     let cut = boolean(BooleanOp::Cut, &cube, &bar).unwrap().shape;
     let d = describe_whole(&cut).unwrap();
-    d.validate().unwrap();
+    d.validate(1).unwrap();
     let inside = |p: [f64; 3]| {
         let in_cube = p.iter().all(|&c| (0.0..=10.0).contains(&c));
         let in_hole = (4.0..=6.0).contains(&p[0]) && (4.0..=6.0).contains(&p[1]);
@@ -350,8 +347,8 @@ fn faces_a_cut_turns_round_face_out_of_the_solid() {
 #[test]
 fn a_boxs_edges_and_vertices_are_freecads_by_number_each_edge_from_its_curves_start() {
     // A 10 × 20 × 30 box, as FreeCAD 1.1.3's Part::Box gives it (Shape.Edges[i] with
-    // firstVertex() and lastVertex(), the curve's own order, and Shape.Vertexes): seven of
-    // its edges are reversed in the faces OCCT meets them in first, but each runs from its
+    // firstVertex() and lastVertex(), the curve's own order, and Shape.Vertexes): six of
+    // its edges (3, 4, 5, 6, 10, and 11) are reversed in the faces OCCT meets them in first, but each runs from its
     // curve's start, so an edit that reorders the faces can't swap its ends.
     let d = described(Primitive::Box {
         dx: 10.0,
@@ -398,7 +395,7 @@ fn a_moved_spheres_centre_and_poles_move_with_it() {
     let sphere = make(&Primitive::Sphere { radius: 3.0 }).unwrap();
     let moved = translate(&sphere, [5.0, -7.0, 2.0]).unwrap().shape;
     let d = describe_whole(&moved).unwrap();
-    d.validate().unwrap();
+    d.validate(1).unwrap();
     match &d.faces[0].surface {
         Surface::Sphere { axis, radius } => {
             assert_eq!(*radius, 3.0);
@@ -417,4 +414,79 @@ fn a_moved_spheres_centre_and_poles_move_with_it() {
     assert_eq!(poles.len(), 2);
     assert_point("the low pole", poles[0], [5.0, -7.0, -1.0]);
     assert_point("the high pole", poles[1], [5.0, -7.0, 5.0]);
+}
+
+#[test]
+fn a_batch_from_the_middle_is_those_elements_by_the_kernels_numbers() {
+    // The 10 × 20 × 30 box's edges 5 to 7, as FreeCAD 1.1.3 numbers them (the test above's
+    // ends); its last edge alone; none past it, the total still 12; and none from 0, which
+    // numbers nothing.
+    let shape = make(&Primitive::Box {
+        dx: 10.0,
+        dy: 20.0,
+        dz: 30.0,
+    })
+    .unwrap();
+    let (total, d) = describe(&shape, ElementKind::Edge, 5, 3).unwrap();
+    assert_eq!(total, 12);
+    let ends: Vec<_> = d.edges.iter().map(|e| (e.start, e.end)).collect();
+    assert_eq!(
+        ends,
+        [
+            ([10.0, 0.0, 0.0], [10.0, 0.0, 30.0]),
+            ([10.0, 0.0, 30.0], [10.0, 20.0, 30.0]),
+            ([10.0, 20.0, 0.0], [10.0, 20.0, 30.0]),
+        ]
+    );
+    assert!(d.faces.is_empty() && d.vertices.is_empty());
+    let (_, d) = describe(&shape, ElementKind::Edge, 12, 1000).unwrap();
+    let ends: Vec<_> = d.edges.iter().map(|e| (e.start, e.end)).collect();
+    assert_eq!(ends, [([0.0, 20.0, 30.0], [10.0, 20.0, 30.0])]);
+    let (total, d) = describe(&shape, ElementKind::Edge, 13, 5).unwrap();
+    assert_eq!((total, d.edges.len()), (12, 0));
+    assert!(describe(&shape, ElementKind::Edge, 0, 5).is_err());
+}
+
+#[test]
+fn a_solid_of_more_than_a_batch_is_described_whole_each_element_once() {
+    // A prism of a regular 340-gon (radius 10, 1 high): by hand, 342 faces (the sides and
+    // the two caps), 1,020 edges (340 round each cap and 340 up the sides), and 680
+    // vertices: the edges two batches. Every edge described once (no two alike, end to
+    // end), in this process and through a worker.
+    let corners = 340;
+    let points = (0..corners)
+        .map(|i| {
+            let t = std::f64::consts::TAU * f64::from(i) / f64::from(corners);
+            [10.0 * libm::cos(t), 10.0 * libm::sin(t), 0.0]
+        })
+        .collect();
+    let built = silico_kernel::extrude(&silico_kernel::Profile { points }, 1.0, None).unwrap();
+    let d = describe_whole(&built.shape).unwrap();
+    assert_eq!(
+        (d.faces.len(), d.edges.len(), d.vertices.len()),
+        (342, 1020, 680)
+    );
+    let distinct = |d: &Description| {
+        let ends: std::collections::BTreeSet<String> = d
+            .edges
+            .iter()
+            .map(|e| format!("{:?}", (e.start, e.end)))
+            .collect();
+        ends.len()
+    };
+    assert_eq!(distinct(&d), 1020);
+    let mut worker = silico_core::kernel::KernelWorker::start_worker(std::path::Path::new(env!(
+        "CARGO_BIN_EXE_silico-kernel-worker"
+    )))
+    .unwrap();
+    let data = silico_core::kernel::ShapeData::checked(
+        silico_core::kernel::Blob::inline(silico_kernel::to_brep(&built.shape).unwrap()),
+        true,
+    );
+    // Through a worker, which reads the shape from its B-rep: as the shape read back from
+    // that B-rep describes in this process, to the bit.
+    let through = worker.describe(&data).unwrap();
+    let read = silico_kernel::from_brep(&silico_kernel::to_brep(&built.shape).unwrap()).unwrap();
+    assert_eq!(through, describe_whole(&read).unwrap());
+    assert_eq!(distinct(&through), 1020);
 }

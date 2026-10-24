@@ -37,7 +37,7 @@ fn with_crc(mut body: Vec<u8>) -> Vec<u8> {
 
 fn described(shape: &Shape) -> Description {
     let d = describe_whole(shape).unwrap();
-    d.validate().unwrap();
+    d.validate(1).unwrap();
     d
 }
 
@@ -180,7 +180,7 @@ fn a_box_with_an_internal_or_external_face_is_described_every_edge_with_its_ends
         let shape = from_brep(&with_crc(fixture(name))).unwrap();
         let d = describe_whole(&shape)
             .unwrap_or_else(|e| panic!("{name}: refused: {e} ({:?})", e.kind()));
-        d.validate().unwrap();
+        d.validate(1).unwrap();
         assert_eq!(d.edges.len(), 12, "{name}");
         for (i, e) in d.edges.iter().enumerate() {
             let span = norm([0, 1, 2].map(|k| e.end[k] - e.start[k]));
@@ -404,7 +404,7 @@ fn a_cut_that_leaves_an_internal_edge_is_described_with_that_edge_and_its_ends()
     assert!(summary.valid);
     assert_close("the volume", summary.volume, 0.649519052838329, 1e-9);
     let d = describe_whole(&cut).unwrap_or_else(|e| panic!("refused: {e} ({:?})", e.kind()));
-    d.validate().unwrap();
+    d.validate(1).unwrap();
     assert_eq!((d.faces.len(), d.edges.len(), d.vertices.len()), (5, 11, 8));
     let internal: Vec<_> = d
         .edges
@@ -418,7 +418,7 @@ fn a_cut_that_leaves_an_internal_edge_is_described_with_that_edge_and_its_ends()
 
 #[test]
 fn a_cone_from_a_point_has_its_apex_at_its_base() {
-    // r 0 to 4, h 6: its apex at the origin, its half-angle atan(4/6) in size; its radius
+    // r 0 to 4, h 6: its apex at the origin, its half-angle atan(4/6); its radius
     // at its axis's origin at least 0, and origin − direction · radius / tan(half-angle)
     // the apex; its side's area π · 4 · √(4² + 6²).
     let d = described(
@@ -442,12 +442,8 @@ fn a_cone_from_a_point_has_its_apex_at_its_base() {
     else {
         unreachable!()
     };
-    assert_close(
-        "the half-angle",
-        half_angle.abs(),
-        libm::atan(4.0 / 6.0),
-        1e-12,
-    );
+    // +0.5880026035475675, widening up its axis, as FreeCAD 1.1.3's Part::Cone gives it.
+    assert_close("the half-angle", *half_angle, libm::atan(4.0 / 6.0), 1e-12);
     let apex =
         [0, 1, 2].map(|k| axis.origin[k] - axis.direction[k] * radius / libm::tan(*half_angle));
     assert_point("the apex", apex, [0.0; 3], 1e-9);
@@ -534,8 +530,10 @@ fn a_horn_torus_and_one_just_past_it_have_their_radii_and_area() {
         };
         let d = described(&shape);
         assert_eq!(d.faces.len(), 1);
-        // OCCT makes a horn torus's face a surface of revolution, not a torus (FreeCAD's
-        // `Part.makeTorus(2, 2)` likewise): describe says what OCCT made.
+        // OCCT makes a horn torus's face a surface of revolution, not a torus, when it's
+        // revolved as Silico and FreeCAD 1.1.3's Part::Torus feature build it
+        // (`Part.makeTorus(2, 2)`, BRepPrimAPI_MakeTorus, gives a toroid): describe says what
+        // OCCT made.
         match d.faces[0].surface {
             Surface::Torus {
                 major_radius,
@@ -841,7 +839,7 @@ proptest! {
             return Ok(());
         }
         let d = describe_whole(&shape).unwrap();
-        prop_assert_eq!(d.validate(), Ok(()));
+        prop_assert_eq!(d.validate(1), Ok(()));
         prop_assert_eq!(&describe_whole(&shape).unwrap(), &d, "describe twice, differently");
         let (closure, volume, scale) = flat_sums(&d);
         prop_assert!(closure < 1e-8, "Σ A·n is {closure:e} of the area: {d:?}");
@@ -871,6 +869,23 @@ fn bsplines_beziers_extrusions_and_revolutions_are_each_their_kind_with_their_po
     let shape = from_text_brep(&fixture("curves_and_surfaces.brep")).unwrap();
     let d = described(&shape);
     let faces: Vec<&Surface> = d.faces.iter().map(|f| &f.surface).collect();
+    // Their areas: the ruled surface's, the Bézier square's, and the revolved Bézier's as
+    // FreeCAD's Face.Area (OCCT's default integration), which OCCT's precise integration
+    // agrees with to the last digits.
+    for (face, area) in [(0, 6.53657440325774), (1, 1.0), (3, 8.35476640348216)] {
+        assert_close("a face's area", d.faces[face].area, area, 1e-9);
+    }
+    // The extruded B-spline's is, by hand, its curve's length times the 2 it's extruded:
+    // 2 × 4.40405587355 = 8.8081117471. OCCT's precise integration (to 1e-9, saying it got
+    // to 2e-16) gives 8.83202504977072, 0.27% over, and its default one (FreeCAD's) gives
+    // 8.808420588300923: OCCT's wrong answer, accepted as FreeCAD accepts OCCT's
+    // (docs/design/m4.4-describe.md, Known wrong results). Right, or that wrong answer.
+    let extruded = d.faces[2].area;
+    assert!(
+        (extruded - 2.0 * 4.40405587355).abs() < 1e-9 * extruded
+            || (extruded - 8.83202504977072).abs() < 1e-12,
+        "{extruded}"
+    );
     assert_eq!(
         faces,
         [
@@ -915,8 +930,16 @@ fn bsplines_beziers_extrusions_and_revolutions_are_each_their_kind_with_their_po
     // Then the turn's two arcs, of radius 2 (the Bézier's ends are 2 from the x axis), a
     // quarter turn, so π long; and the turned Bézier at each end.
     assert_eq!(d.edges.len(), 20);
-    for e in &d.edges[16..18] {
-        assert!(matches!(e.curve, EdgeCurve::Circle { .. }), "{e:?}");
+    // FreeCAD's Edge17 and Edge18: circles of radius 2 about (0, 20, 0) and (2, 20, 0).
+    for (e, centre) in d.edges[16..18]
+        .iter()
+        .zip([[0.0, 20.0, 0.0], [2.0, 20.0, 0.0]])
+    {
+        let EdgeCurve::Circle { axis, radius } = &e.curve else {
+            panic!("{e:?}")
+        };
+        assert_close("a turned end's radius", *radius, 2.0, 1e-12);
+        assert_point("a turned end's centre", axis.origin, centre, 1e-12);
         assert_close("a turned end's arc", e.length, std::f64::consts::PI, 1e-11);
     }
     for e in &d.edges[18..] {

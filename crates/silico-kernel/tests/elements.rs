@@ -44,7 +44,7 @@ fn the_holes_elements() -> Vec<Element> {
 fn named<'a>(listed: &'a [Element], name: &str) -> &'a Element {
     listed
         .iter()
-        .find(|e| e.name().to_string() == name)
+        .find(|e| e.name.to_string() == name)
         .unwrap_or_else(|| panic!("no {name}"))
 }
 
@@ -56,7 +56,7 @@ fn every_element_of_a_cut_is_listed_once_by_its_maps_name_in_order() {
     let listed = the_holes_elements();
     // Every element the map names, by its own name, once.
     let own: BTreeSet<String> = map.iter().map(|(_, names)| names[0].to_string()).collect();
-    let got: BTreeSet<String> = listed.iter().map(|e| e.name().to_string()).collect();
+    let got: BTreeSet<String> = listed.iter().map(|e| e.name.to_string()).collect();
     assert_eq!(got, own);
     assert_eq!(listed.len(), own.len());
     // Faces, then edges, then vertices; within each, by name byte by byte.
@@ -71,10 +71,10 @@ fn every_element_of_a_cut_is_listed_once_by_its_maps_name_in_order() {
     for pair in listed.windows(2) {
         if pair[0].kind() == pair[1].kind() {
             assert!(
-                pair[0].name().to_string().as_bytes() < pair[1].name().to_string().as_bytes(),
+                pair[0].name.to_string().as_bytes() < pair[1].name.to_string().as_bytes(),
                 "{} before {}",
-                pair[0].name(),
-                pair[1].name()
+                pair[0].name,
+                pair[1].name
             );
         }
     }

@@ -830,9 +830,11 @@ pub fn measure_as_freecad(shape: &Shape) -> Result<silico_protocol::FreecadMeasu
     })
 }
 
-/// Each of `shape`'s faces, edges, and vertices: its geometry and its measures, its areas
-/// and lengths to the relative [`MEASURE_PRECISION`](silico_protocol::MEASURE_PRECISION),
-/// in `TopExp::MapShapes` order (docs/design/m4.4-describe.md).
+/// The geometry and measures of `shape`'s elements of `kind` numbered from `first` (from 1,
+/// in `TopExp::MapShapes` order), `count` of them or as many as there are, its areas and
+/// lengths to the relative [`MEASURE_PRECISION`](silico_protocol::MEASURE_PRECISION), and
+/// how many of `kind` it has (docs/design/m4.4-describe.md): one batch of
+/// [`Op::Describe`](silico_protocol::Op::Describe).
 pub fn describe(
     shape: &Shape,
     kind: ElementKind,
@@ -952,28 +954,19 @@ pub fn describe(
 }
 
 /// Every one of `shape`'s faces, edges, and vertices described, a batch of at most
-/// [`DESCRIBE_BATCH`](silico_protocol::DESCRIBE_BATCH) after another, joined.
+/// [`DESCRIBE_BATCH`](silico_protocol::DESCRIBE_BATCH) after another, joined
+/// ([`silico_protocol::describe_in_batches`], as the core asks a worker).
 pub fn describe_whole(shape: &Shape) -> Result<silico_protocol::Description, KernelError> {
-    let mut whole = silico_protocol::Description {
-        faces: Vec::new(),
-        edges: Vec::new(),
-        vertices: Vec::new(),
-    };
-    for kind in [ElementKind::Face, ElementKind::Edge, ElementKind::Vertex] {
-        let mut first = 1;
-        loop {
-            let (total, batch) = describe(shape, kind, first, silico_protocol::DESCRIBE_BATCH)?;
-            let got = (batch.faces.len() + batch.edges.len() + batch.vertices.len()) as u32;
-            whole.faces.extend(batch.faces);
-            whole.edges.extend(batch.edges);
-            whole.vertices.extend(batch.vertices);
-            first += got;
-            if got == 0 || first > total {
-                break;
-            }
-        }
-    }
-    Ok(whole)
+    silico_protocol::describe_in_batches(
+        |kind, first, count| describe(shape, kind, first, count),
+        |kind, was, now| {
+            KernelError::new(silico_protocol::Refusal::Internal {
+                what: format!(
+                    "the shape's {kind:?} count changed between batches, {was} then {now}"
+                ),
+            })
+        },
+    )
 }
 
 /// `shape` moved by `offset`. Each face, edge, and vertex is modified into its moved

@@ -7,7 +7,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Axis, ElementKind, NORMAL_LENGTH_TOLERANCE};
+use crate::{Axis, ElementKind, ElementRef, NORMAL_LENGTH_TOLERANCE};
 
 /// The most elements one [`Op::Describe`](crate::Op::Describe) asks for, so no request nears
 /// the kernel's timeout (docs/design/m4.1-command-api.md, the `elements` command).
@@ -135,132 +135,200 @@ impl EdgeCurve {
 }
 
 /// What a value of a [`Description`] is, for a message: its element, by the kernel's number
-/// for it among those described (`Face3`), and what of it (`area`). It's formatted only when
-/// a message needs it.
+/// for it (`Face3`), and what of it (`area`). It's formatted only when a message needs it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Quantity {
-    pub kind: ElementKind,
-    pub number: usize,
-    pub what: &'static str,
+    pub element: ElementRef,
+    pub what: What,
+}
+
+/// Which of an element's values a [`Quantity`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum What {
+    Area,
+    Centroid,
+    Normal,
+    AxisOrigin,
+    AxisDirection,
+    Radius,
+    MajorRadius,
+    MinorRadius,
+    HalfAngle,
+    Length,
+    Start,
+    End,
+    Middle,
+    Point,
+}
+
+impl fmt::Display for What {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            What::Area => "area",
+            What::Centroid => "centre of area",
+            What::Normal => "normal",
+            What::AxisOrigin => "axis's origin",
+            What::AxisDirection => "axis's direction",
+            What::Radius => "radius",
+            What::MajorRadius => "major radius",
+            What::MinorRadius => "minor radius",
+            What::HalfAngle => "half-angle",
+            What::Length => "length",
+            What::Start => "start",
+            What::End => "end",
+            What::Middle => "middle",
+            What::Point => "point",
+        })
+    }
 }
 
 impl fmt::Display for Quantity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let kind = match self.kind {
-            ElementKind::Face => "Face",
-            ElementKind::Edge => "Edge",
-            ElementKind::Vertex => "Vertex",
-            ElementKind::Solid => "Solid",
-        };
-        write!(f, "the kernel's {kind}{}'s {}", self.number, self.what)
+        write!(f, "the kernel's {}'s {}", self.element, self.what)
     }
 }
 
 impl Description {
-    /// Every number it holds, with what each is, in order: one walk, so the worker's refusal
-    /// and the core's check name a value alike.
-    fn each(&self, f: &mut dyn FnMut(Quantity, f64)) {
-        let mut put = |kind: ElementKind, number: usize, what: &'static str, xs: &[f64]| {
+    /// Every number it holds, with what each is, in order, its lists' first elements numbered
+    /// `first` (1 for a whole description, a batch's first otherwise): one walk, so the
+    /// worker's refusal and the core's check name a value alike.
+    fn each(&self, first: u32, f: &mut dyn FnMut(Quantity, f64)) {
+        let mut put = |kind: ElementKind, i: usize, what: What, xs: &[f64]| {
+            let index = first.saturating_add(u32::try_from(i).unwrap_or(u32::MAX));
             for &x in xs {
-                f(Quantity { kind, number, what }, x);
+                f(
+                    Quantity {
+                        element: ElementRef { kind, index },
+                        what,
+                    },
+                    x,
+                );
             }
         };
+        let axis = |put: &mut dyn FnMut(What, &[f64]), axis: &Axis| {
+            put(What::AxisOrigin, &axis.origin);
+            put(What::AxisDirection, &axis.direction);
+        };
         for (i, face) in self.faces.iter().enumerate() {
-            let (k, n) = (ElementKind::Face, i + 1);
-            put(k, n, "area", &[face.area]);
-            put(k, n, "centre of area", &face.centroid);
+            let mut at = |what, xs: &[f64]| put(ElementKind::Face, i, what, xs);
+            at(What::Area, &[face.area]);
+            at(What::Centroid, &face.centroid);
             match &face.surface {
-                Surface::Plane { normal } => put(k, n, "normal", normal),
-                Surface::Cylinder { axis, radius } | Surface::Sphere { axis, radius } => {
-                    put(k, n, "axis's origin", &axis.origin);
-                    put(k, n, "axis's direction", &axis.direction);
-                    put(k, n, "radius", &[*radius]);
+                Surface::Plane { normal } => at(What::Normal, normal),
+                Surface::Cylinder { axis: a, radius } | Surface::Sphere { axis: a, radius } => {
+                    axis(&mut at, a);
+                    at(What::Radius, &[*radius]);
                 }
                 Surface::Cone {
-                    axis,
+                    axis: a,
                     radius,
                     half_angle,
                 } => {
-                    put(k, n, "axis's origin", &axis.origin);
-                    put(k, n, "axis's direction", &axis.direction);
-                    put(k, n, "radius", &[*radius]);
-                    put(k, n, "half-angle", &[*half_angle]);
+                    axis(&mut at, a);
+                    at(What::Radius, &[*radius]);
+                    at(What::HalfAngle, &[*half_angle]);
                 }
                 Surface::Torus {
-                    axis,
+                    axis: a,
                     major_radius,
                     minor_radius,
                 } => {
-                    put(k, n, "axis's origin", &axis.origin);
-                    put(k, n, "axis's direction", &axis.direction);
-                    put(k, n, "major radius", &[*major_radius]);
-                    put(k, n, "minor radius", &[*minor_radius]);
+                    axis(&mut at, a);
+                    at(What::MajorRadius, &[*major_radius]);
+                    at(What::MinorRadius, &[*minor_radius]);
                 }
                 _ => {}
             }
         }
         for (i, edge) in self.edges.iter().enumerate() {
-            let (k, n) = (ElementKind::Edge, i + 1);
-            put(k, n, "length", &[edge.length]);
-            put(k, n, "start", &edge.start);
-            put(k, n, "end", &edge.end);
-            put(k, n, "middle", &edge.middle);
+            let mut at = |what, xs: &[f64]| put(ElementKind::Edge, i, what, xs);
+            at(What::Length, &[edge.length]);
+            at(What::Start, &edge.start);
+            at(What::End, &edge.end);
+            at(What::Middle, &edge.middle);
             match &edge.curve {
-                EdgeCurve::Circle { axis, radius } => {
-                    put(k, n, "axis's origin", &axis.origin);
-                    put(k, n, "axis's direction", &axis.direction);
-                    put(k, n, "radius", &[*radius]);
+                EdgeCurve::Circle { axis: a, radius } => {
+                    axis(&mut at, a);
+                    at(What::Radius, &[*radius]);
                 }
                 EdgeCurve::Ellipse {
-                    axis,
+                    axis: a,
                     major_radius,
                     minor_radius,
                 } => {
-                    put(k, n, "axis's origin", &axis.origin);
-                    put(k, n, "axis's direction", &axis.direction);
-                    put(k, n, "major radius", &[*major_radius]);
-                    put(k, n, "minor radius", &[*minor_radius]);
+                    axis(&mut at, a);
+                    at(What::MajorRadius, &[*major_radius]);
+                    at(What::MinorRadius, &[*minor_radius]);
                 }
                 _ => {}
             }
         }
         for (i, vertex) in self.vertices.iter().enumerate() {
-            put(ElementKind::Vertex, i + 1, "point", vertex);
+            put(ElementKind::Vertex, i, What::Point, vertex);
         }
     }
 
-    /// Its first value that isn't finite, with what it is, if any: what a worker refuses to
-    /// send.
-    pub fn non_finite(&self) -> Option<(Quantity, f64)> {
-        let mut first = None;
-        self.each(&mut |quantity, x| {
-            if first.is_none() && !x.is_finite() {
-                first = Some((quantity, x));
+    /// Its first value that isn't finite, with what it is, if any, its lists' first elements
+    /// numbered `first`: what a worker refuses to send.
+    pub fn non_finite(&self, first: u32) -> Option<(Quantity, f64)> {
+        let mut found = None;
+        self.each(first, &mut |quantity, x| {
+            if found.is_none() && !x.is_finite() {
+                found = Some((quantity, x));
             }
         });
-        first
+        found
     }
 
     /// Whether it can be trusted: every value finite; every direction a unit vector (within
     /// [`NORMAL_LENGTH_TOLERANCE`]); every radius above 0 (a cone's at least 0, at its apex),
     /// a cone's half-angle within a right angle, every area at least 0, and every edge's
-    /// length above 0 but a degenerated one's, which is 0. Says what's wrong, by element
-    /// (the kernel's `Face3`), if not.
-    pub fn validate(&self) -> Result<(), String> {
-        if let Some((quantity, x)) = self.non_finite() {
+    /// length above 0 but a degenerated one's, which is 0, its ends and middle one point.
+    /// Says what's wrong, naming the value by the kernel's number for its element, its
+    /// lists' first numbered `first` (1 for a whole description, a batch's first otherwise),
+    /// if not.
+    pub fn validate(&self, first: u32) -> Result<(), String> {
+        if let Some((quantity, x)) = self.non_finite(first) {
             return Err(format!("{quantity} is {x}"));
         }
         let mut problem = None;
-        self.each(&mut |quantity, x| {
+        let mut direction = [0.0; 3];
+        let mut k = 0;
+        self.each(first, &mut |quantity, x| {
             if problem.is_some() {
                 return;
             }
+            let at = |q: Quantity| (q.element.index - first) as usize;
             let ok = match quantity.what {
-                "area" => x >= 0.0,
-                "radius" if is_cone(self, quantity) => x >= 0.0,
-                "radius" | "major radius" | "minor radius" => x > 0.0,
-                "half-angle" => x.abs() < std::f64::consts::FRAC_PI_2,
-                "length" => edge_length_ok(self, quantity, x),
+                What::Area => x >= 0.0,
+                What::Radius => match quantity.element.kind {
+                    ElementKind::Face
+                        if matches!(self.faces[at(quantity)].surface, Surface::Cone { .. }) =>
+                    {
+                        x >= 0.0
+                    }
+                    _ => x > 0.0,
+                },
+                What::MajorRadius | What::MinorRadius => x > 0.0,
+                What::HalfAngle => x.abs() < std::f64::consts::FRAC_PI_2,
+                What::Length => match self.edges[at(quantity)].curve {
+                    EdgeCurve::Degenerated => x == 0.0,
+                    _ => x > 0.0,
+                },
+                What::Normal | What::AxisDirection => {
+                    // A direction comes as its three coordinates in turn.
+                    direction[k] = x;
+                    k += 1;
+                    if k < 3 {
+                        return;
+                    }
+                    k = 0;
+                    let [a, b, c] = direction;
+                    if (libm::sqrt(a * a + b * b + c * c) - 1.0).abs() > NORMAL_LENGTH_TOLERANCE {
+                        problem = Some(format!("{quantity} {direction:?} isn't a unit vector"));
+                    }
+                    return;
+                }
                 _ => true,
             };
             if !ok {
@@ -270,63 +338,65 @@ impl Description {
         if let Some(problem) = problem {
             return Err(problem);
         }
-        for (i, face) in self.faces.iter().enumerate() {
-            let at = |what| Quantity {
-                kind: ElementKind::Face,
-                number: i + 1,
-                what,
-            };
-            match &face.surface {
-                Surface::Plane { normal } => unit(at("normal"), *normal)?,
-                Surface::Cylinder { axis, .. }
-                | Surface::Sphere { axis, .. }
-                | Surface::Cone { axis, .. }
-                | Surface::Torus { axis, .. } => unit(at("axis's direction"), axis.direction)?,
-                _ => {}
-            }
-        }
         for (i, edge) in self.edges.iter().enumerate() {
-            let at = |what| Quantity {
-                kind: ElementKind::Edge,
-                number: i + 1,
+            if edge.curve != EdgeCurve::Degenerated {
+                continue;
+            }
+            let quantity = |what| Quantity {
+                element: ElementRef {
+                    kind: ElementKind::Edge,
+                    index: first.saturating_add(i as u32),
+                },
                 what,
             };
-            match &edge.curve {
-                EdgeCurve::Circle { axis, .. } | EdgeCurve::Ellipse { axis, .. } => {
-                    unit(at("axis's direction"), axis.direction)?;
-                }
-                EdgeCurve::Degenerated if edge.start != edge.end || edge.start != edge.middle => {
+            for (what, at) in [(What::End, edge.end), (What::Middle, edge.middle)] {
+                if at != edge.start {
                     return Err(format!(
                         "{} isn't its start, though the edge is degenerated",
-                        at("end")
+                        quantity(what)
                     ));
                 }
-                _ => {}
             }
         }
         Ok(())
     }
 }
 
-fn is_cone(d: &Description, q: Quantity) -> bool {
-    q.kind == ElementKind::Face && matches!(d.faces[q.number - 1].surface, Surface::Cone { .. })
-}
-
-fn edge_length_ok(d: &Description, q: Quantity, length: f64) -> bool {
-    if d.edges[q.number - 1].curve == EdgeCurve::Degenerated {
-        length == 0.0
-    } else {
-        length > 0.0
+/// Every one of a shape's faces, edges, and vertices described, a batch of at most
+/// [`DESCRIBE_BATCH`] after another, joined: `batch(kind, first, count)` gets one (its kind's
+/// total, and its elements), and `changed(kind, was, now)` is the error for a kind whose
+/// total isn't what an earlier batch said. Each side, the core over a worker and the kernel
+/// in its own process, asks this way.
+pub fn describe_in_batches<E>(
+    mut batch: impl FnMut(ElementKind, u32, u32) -> Result<(u32, Description), E>,
+    changed: impl Fn(ElementKind, u32, u32) -> E,
+) -> Result<Description, E> {
+    let mut whole = Description {
+        faces: Vec::new(),
+        edges: Vec::new(),
+        vertices: Vec::new(),
+    };
+    for kind in [ElementKind::Face, ElementKind::Edge, ElementKind::Vertex] {
+        let (mut first, mut total) = (1, None);
+        loop {
+            let (now, d) = batch(kind, first, DESCRIBE_BATCH)?;
+            if let Some(was) = total
+                && was != now
+            {
+                return Err(changed(kind, was, now));
+            }
+            total = Some(now);
+            let got = d.faces.len() + d.edges.len() + d.vertices.len();
+            whole.faces.extend(d.faces);
+            whole.edges.extend(d.edges);
+            whole.vertices.extend(d.vertices);
+            first = first.saturating_add(u32::try_from(got).unwrap_or(u32::MAX));
+            if got == 0 || first > now {
+                break;
+            }
+        }
     }
-}
-
-fn unit(quantity: Quantity, v: [f64; 3]) -> Result<(), String> {
-    let length = libm::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-    if (length - 1.0).abs() <= NORMAL_LENGTH_TOLERANCE {
-        Ok(())
-    } else {
-        Err(format!("{quantity} {v:?} isn't a unit vector"))
-    }
+    Ok(whole)
 }
 
 #[cfg(test)]
@@ -417,7 +487,7 @@ mod tests {
 
     #[test]
     fn a_sound_description_passes_and_each_spoiled_value_is_named() {
-        assert_eq!(good().validate(), Ok(()));
+        assert_eq!(good().validate(1), Ok(()));
         type Spoil = fn(&mut Description);
         let spoiled: Vec<(Spoil, &str)> = vec![
             (
@@ -566,18 +636,18 @@ mod tests {
         for (spoil, says) in spoiled {
             let mut d = good();
             spoil(&mut d);
-            let e = d.validate().unwrap_err();
+            let e = d.validate(1).unwrap_err();
             assert!(e.starts_with(says), "{e}, not {says}");
         }
     }
 
     #[test]
     fn the_first_value_not_finite_is_named_whatever_element_it_is_of() {
-        assert_eq!(good().non_finite(), None);
+        assert_eq!(good().non_finite(1), None);
         let first = |spoil: fn(&mut Description)| {
             let mut d = good();
             spoil(&mut d);
-            let (quantity, value) = d.non_finite().unwrap();
+            let (quantity, value) = d.non_finite(1).unwrap();
             (quantity.to_string(), value.is_nan() || value.is_infinite())
         };
         type Spoil = fn(&mut Description);
@@ -611,6 +681,101 @@ mod tests {
         for (spoil, says) in cases {
             assert_eq!(first(spoil), (says.to_owned(), true));
         }
+    }
+
+    #[test]
+    fn a_batchs_values_are_named_by_the_kernels_numbers_from_its_first() {
+        // A batch of edges from 1001: its second is the kernel's Edge1002.
+        let mut d = Description {
+            faces: Vec::new(),
+            edges: vec![edge(EdgeCurve::Line); 2],
+            vertices: Vec::new(),
+        };
+        d.edges[1].length = 0.0;
+        assert_eq!(
+            d.validate(1001),
+            Err("the kernel's Edge1002's length is 0".to_owned())
+        );
+        d.edges[1].length = f64::NAN;
+        let (quantity, _) = d.non_finite(1001).unwrap();
+        assert_eq!(quantity.to_string(), "the kernel's Edge1002's length");
+    }
+
+    #[test]
+    fn a_face_of_no_area_passes_and_a_degenerated_edges_middle_must_be_its_point() {
+        let mut d = good();
+        d.faces[0].area = 0.0;
+        assert_eq!(d.validate(1), Ok(()));
+        d.edges[3].middle = [0.0, 0.0, 2.0];
+        assert_eq!(
+            d.validate(1),
+            Err(
+                "the kernel's Edge4's middle isn't its start, though the edge is degenerated"
+                    .to_owned()
+            )
+        );
+    }
+
+    /// `n` lines, the ith `i` long: a batch from `first` of a kind with `total`.
+    fn lines(first: u32, n: u32) -> Description {
+        Description {
+            faces: Vec::new(),
+            edges: (first..first + n)
+                .map(|i| EdgeDescription {
+                    length: f64::from(i),
+                    ..edge(EdgeCurve::Line)
+                })
+                .collect(),
+            vertices: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn batches_are_joined_in_order_and_a_total_that_changes_is_refused() {
+        // 2,500 edges, in batches from 1, 1001, and 2001; no faces or vertices, one request
+        // each that finds none.
+        let mut asked = Vec::new();
+        let whole = describe_in_batches(
+            |kind, first, count| {
+                asked.push((kind, first, count));
+                Ok::<_, String>(match kind {
+                    ElementKind::Edge => (2500, lines(first, count.min(2501 - first))),
+                    _ => (0, lines(1, 0)),
+                })
+            },
+            |_, _, _| "changed".to_owned(),
+        )
+        .unwrap();
+        assert_eq!(
+            asked,
+            [
+                (ElementKind::Face, 1, DESCRIBE_BATCH),
+                (ElementKind::Edge, 1, DESCRIBE_BATCH),
+                (ElementKind::Edge, 1001, DESCRIBE_BATCH),
+                (ElementKind::Edge, 2001, DESCRIBE_BATCH),
+                (ElementKind::Vertex, 1, DESCRIBE_BATCH),
+            ]
+        );
+        assert_eq!(whole.edges.len(), 2500);
+        assert!(
+            whole
+                .edges
+                .iter()
+                .zip(1..)
+                .all(|(e, i)| e.length == f64::from(i))
+        );
+        // The second batch says there are 1,500: refused, saying so.
+        let refused = describe_in_batches(
+            |kind, first, count| {
+                Ok::<_, String>(match (kind, first) {
+                    (ElementKind::Edge, 1) => (2500, lines(1, count)),
+                    (ElementKind::Edge, _) => (1500, lines(first, 500)),
+                    _ => (0, lines(1, 0)),
+                })
+            },
+            |kind, was, now| format!("{kind:?}: {was} then {now}"),
+        );
+        assert_eq!(refused.unwrap_err(), "Edge: 2500 then 1500");
     }
 
     #[test]

@@ -11,22 +11,18 @@ use crate::kernel::{Description, EdgeDescription, ElementKind, ElementRef, FaceD
 use crate::naming::{ElementMap, Name};
 use crate::{Error, ErrorCode};
 
-/// One of a solid's faces, edges, or vertices: its names (its own first, then any other
-/// derivations that reach it, by any of which a reference finds it), the kernel's number for
+/// One of a solid's faces, edges, or vertices: its own name, its aliases (any other
+/// derivations that reach it: a reference by any of them finds it), the kernel's number for
 /// it among its kind (from 1, in OCCT's order), and what it is.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Element {
-    pub names: Vec<Arc<Name>>,
+    pub name: Arc<Name>,
+    pub aliases: Vec<Arc<Name>>,
     pub number: u32,
     pub geometry: Geometry,
 }
 
 impl Element {
-    /// Its own name, the first of its names.
-    pub fn name(&self) -> &Arc<Name> {
-        &self.names[0]
-    }
-
     /// Which kind of element it is.
     pub fn kind(&self) -> ElementKind {
         match self.geometry {
@@ -87,8 +83,8 @@ pub fn elements(map: &ElementMap, description: Description) -> Result<Vec<Elemen
         let mut of_kind = Vec::with_capacity(geometries.len());
         for (index, geometry) in (1..).zip(geometries) {
             let element = ElementRef { kind, index };
-            let names = map.names(element);
-            let Some(own) = names.first() else {
+            let mut names = map.names(element).into_iter();
+            let Some(name) = names.next() else {
                 return Err(mismatch(
                     map,
                     format!(
@@ -98,9 +94,10 @@ pub fn elements(map: &ElementMap, description: Description) -> Result<Vec<Elemen
                 ));
             };
             of_kind.push((
-                own.to_string(),
+                name.to_string(),
                 Element {
-                    names,
+                    name,
+                    aliases: names.collect(),
                     number: index,
                     geometry,
                 },
@@ -179,7 +176,7 @@ mod tests {
     #[test]
     fn faces_edges_and_vertices_are_listed_in_turn_each_by_name_byte_by_byte() {
         let listed = elements(&map(2, 11, 1), description(2, 11)).unwrap();
-        let names: Vec<String> = listed.iter().map(|e| e.name().to_string()).collect();
+        let names: Vec<String> = listed.iter().map(|e| e.name.to_string()).collect();
         let want: Vec<String> = [
             "Face1", "Face2", "Edge1", "Edge10", "Edge11", "Edge2", "Edge3", "Edge4", "Edge5",
             "Edge6", "Edge7", "Edge8", "Edge9", "Vertex1",
