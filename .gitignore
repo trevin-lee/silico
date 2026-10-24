@@ -24,3 +24,6 @@ target/
 
 # Claude Code runtime state
 .claude/scheduled_tasks.lock
+
+# Python bytecode, from running the oracle's script
+__pycache__/
