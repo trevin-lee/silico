@@ -33,9 +33,10 @@ use silico_protocol::{ElementRef, ExportMesh, FACES_NAMED};
 use crate::naming::ElementMap;
 use crate::{Error, ErrorCode};
 
-/// A solid's mesh, ready to print: closed, manifold, oriented outward, with no triangle of
-/// no area, and within the export tolerance of the B-rep. Vertices are 32-bit, as 3MF's
-/// readers take them.
+/// A solid's mesh, ready to print: closed, manifold, oriented outward, no triangle with two
+/// corners at one place (a triangle whose corners are apart but on a line can occur, as 3MF
+/// allows), and its edges and joined vertices within the export tolerance of the B-rep.
+/// Vertices are 32-bit, as 3MF's readers take them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PrintableMesh {
     vertices: Vec<[f32; 3]>,
@@ -61,14 +62,14 @@ impl PrintableMesh {
     }
 }
 
-/// The faces at fault in a refusal, named as the feature's element map names them (or as
-/// FreeCAD numbers them, `Face3`, without one), the first [`FACES_NAMED`], and how many
-/// there are.
-struct Faces<'a> {
+/// Names faces in a refusal as the feature's element map names them (or as FreeCAD numbers
+/// them, `Face3`, without one), and makes the refusal: the first [`FACES_NAMED`], and how
+/// many there are.
+struct FaceNamer<'a> {
     names: Option<&'a ElementMap>,
 }
 
-impl Faces<'_> {
+impl FaceNamer<'_> {
     fn name(&self, face: u32) -> String {
         let element = ElementRef::face(face);
         self.names
@@ -92,25 +93,27 @@ impl Faces<'_> {
     }
 }
 
+/// What a refusal of a solid inside out suggests.
+const INSIDE_OUT: &str = "the kernel's solid is inside out where the faces named are: check the \
+                          feature makes a valid solid";
+
 /// What a refusal of a mesh that doesn't close suggests.
 const FINER: &str = "export with another tolerance, or change the part where the faces named \
                      meet: the kernel's mesh of them isn't a closed solid";
 
-/// Joins the faces of `mesh`, meshed within `tolerance` mm, at the edges they share, and
-/// checks the result is printable (the module's rules, in order). `names` names the faces
-/// in a refusal, as the feature's element map does; without it they're numbered (`Face3`).
-/// Each solid is joined on its own, so two solids that touch never share a vertex.
-pub fn printable(
-    mesh: &ExportMesh,
-    tolerance: f64,
-    names: Option<&ElementMap>,
-) -> Result<PrintableMesh, Error> {
-    let faces = Faces { names };
-    if let Err(invalid) = silico_protocol::check_export_tolerance(tolerance) {
-        return Err(Error::new(ErrorCode::InvalidInput, invalid.message)
-            .with_parameter("tolerance")
-            .with_suggestion("export with a tolerance from 1e-5 mm to 1e8 mm"));
-    }
+/// Joins the faces of `mesh` at the edges they share, and checks the result is printable
+/// within the tolerance it was meshed for (the module's rules, in order). `names` names the
+/// faces in a refusal, as the feature's element map does, and must name every face of the
+/// shape; without it they're numbered (`Face3`). Each solid is joined on its own, so two
+/// solids that touch never share a vertex.
+pub fn printable(mesh: &ExportMesh, names: Option<&ElementMap>) -> Result<PrintableMesh, Error> {
+    let _span = tracing::info_span!(
+        "printable",
+        faces = mesh.face_nodes.len(),
+        triangles = mesh.triangles.len(),
+        solids = mesh.solids
+    )
+    .entered();
     // A report that doesn't hold together can't be indexed: one from the worker is checked
     // as it's read (`KernelRequest::export_mesh`), and any other here.
     if let Err(problem) = mesh.validate() {
@@ -120,6 +123,26 @@ pub fn printable(
         )
         .with_cause(problem)
         .with_suggestion("export the mesh the kernel worker reports, as it reports it"));
+    }
+    let tolerance = mesh.tolerance;
+    let faces = FaceNamer { names };
+    // A map that doesn't name a face of the shape is another shape's: the error would name
+    // the face by a number no document holds.
+    if let Some(map) = names
+        && let Some(&missing) = mesh
+            .face_numbers
+            .iter()
+            .chain(&mesh.loose_faces)
+            .find(|&&f| map.name(ElementRef::face(f)).is_none())
+    {
+        return Err(Error::new(
+            ErrorCode::Internal,
+            format!(
+                "the element map given for the export names no Face{missing}: it isn't the map \
+                 of the shape exported"
+            ),
+        )
+        .with_suggestion(crate::worker::SILICO_BUG));
     }
     if mesh.solids == 0 {
         return Err(Error::new(
@@ -344,7 +367,7 @@ pub fn printable(
 
     // 6. Facing outward: each outer shell encloses a positive volume, each cavity a
     // negative one, and each solid a positive volume in all. A shell with no triangles
-    // encloses none, and is refused with the rest.
+    // encloses none, and is refused with the rest; so is a volume that isn't a number.
     let mut shell_volumes = vec![0.0f64; mesh.shell_solids.len()];
     for (t, corners) in triangles.iter().enumerate() {
         let [a, b, c] = corners.map(wide);
@@ -358,15 +381,11 @@ pub fn printable(
     let inward: Vec<u32> = (0..shell_volumes.len())
         .filter(|&shell| {
             let volume = shell_volumes[shell];
-            if mesh.shell_outer[shell] {
-                volume <= 0.0
-            } else {
-                volume >= 0.0
-            }
+            !encloses(volume, mesh.shell_outer[shell])
         })
         .flat_map(shell_faces)
         .collect();
-    let unbounded = (0..shell_volumes.len()).any(|shell| shell_volumes[shell] == 0.0);
+    let unbounded = shell_volumes.contains(&0.0);
     if unbounded || !inward.is_empty() {
         return Err(faces.refuse(
             ErrorCode::InvalidResult,
@@ -378,8 +397,7 @@ pub fn printable(
                 "the faces named face inward: their shell encloses the wrong side".to_owned()
             },
             inward,
-            "the kernel's solid is inside out where the faces named are: check the feature \
-             makes a valid solid",
+            INSIDE_OUT,
         ));
     }
     let mut solid_volumes = vec![0.0f64; mesh.solids as usize];
@@ -387,18 +405,17 @@ pub fn printable(
         solid_volumes[solid as usize] += shell_volumes[shell];
     }
     let hollow: Vec<u32> = (0..mesh.shell_solids.len())
-        .filter(|&shell| solid_volumes[mesh.shell_solids[shell] as usize] <= 0.0)
+        .filter(|&shell| !encloses(solid_volumes[mesh.shell_solids[shell] as usize], true))
         .flat_map(shell_faces)
         .collect();
-    if !hollow.is_empty() || solid_volumes.iter().any(|&v| v <= 0.0) {
+    if !hollow.is_empty() || solid_volumes.iter().any(|&v| !encloses(v, true)) {
         return Err(faces.refuse(
             ErrorCode::InvalidResult,
             "a solid encloses no volume in all: its cavities enclose as much as its outer \
              shell, or it has no shell"
                 .to_owned(),
             hollow,
-            "the kernel's solid is inside out where the faces named are: check the feature \
-             makes a valid solid",
+            INSIDE_OUT,
         ));
     }
 
@@ -408,7 +425,17 @@ pub fn printable(
         .iter()
         .flatten()
         .fold(0.0f64, |m, c| m.max(c.abs()));
-    let allowed = tolerance - silico_protocol::export_rounding(reach);
+    // The worker's own rule, on the vertices the mesh has: the rounding may take at most
+    // half the tolerance (and a reach that overflows 32 bits takes it all).
+    let allowed = match silico_protocol::export_deflection(tolerance, reach) {
+        Ok(allowed) => allowed,
+        Err(refusal) => {
+            return Err(crate::worker::failure_error(
+                "ExportMesh",
+                silico_protocol::Failure::new(refusal),
+            ));
+        }
+    };
     let mut far: Vec<u32> = (0..mesh.edge_faces.len())
         .filter(|&k| mesh.edge_deflections[k] > allowed)
         .map(|k| number(mesh.edge_faces[k] as usize))
@@ -442,6 +469,12 @@ pub fn printable(
         triangles,
         volume,
     })
+}
+
+/// Whether a shell's or solid's signed `volume` is enclosed the right way: positive for an
+/// outer shell or a solid, negative for a cavity. Not a number is neither.
+fn encloses(volume: f64, outer: bool) -> bool {
+    if outer { volume > 0.0 } else { volume < 0.0 }
 }
 
 /// Nodes joined into the vertices they share: a union-find over node indices.
@@ -522,6 +555,7 @@ const MAX_ARCHIVE: u64 = u32::MAX as u64;
 /// (a control character other than tab, line feed, and carriage return) is refused, naming
 /// the object.
 pub fn three_mf(objects: &[Object<'_>]) -> Result<Vec<u8>, Error> {
+    let _span = tracing::info_span!("three_mf", objects = objects.len()).entered();
     if objects.is_empty() {
         // As FreeCAD refuses an export with nothing to mesh (04005b5e45).
         return Err(Error::new(
@@ -703,30 +737,7 @@ fn put32(out: &mut Vec<u8>, value: u32) {
 
 /// The CRC-32 zip uses (IEEE 802.3, reflected, polynomial 0xEDB88320).
 fn crc32(data: &[u8]) -> u32 {
-    const TABLE: [u32; 256] = {
-        let mut table = [0u32; 256];
-        let mut i = 0;
-        while i < 256 {
-            let mut c = i as u32;
-            let mut k = 0;
-            while k < 8 {
-                c = if c & 1 == 1 {
-                    0xEDB8_8320 ^ (c >> 1)
-                } else {
-                    c >> 1
-                };
-                k += 1;
-            }
-            table[i] = c;
-            i += 1;
-        }
-        table
-    };
-    let mut crc = u32::MAX;
-    for &byte in data {
-        crc = TABLE[((crc ^ u32::from(byte)) & 0xFF) as usize] ^ (crc >> 8);
-    }
-    !crc
+    crc32fast::hash(data)
 }
 
 #[cfg(test)]

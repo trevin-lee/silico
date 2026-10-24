@@ -25,8 +25,8 @@ fn a_deflection_is_never_more_than_its_tolerance_whatever_the_reach() {
 #[test]
 fn a_reach_that_isnt_finite_is_refused_naming_the_tolerance() {
     for reach in [f64::NAN, f64::INFINITY] {
-        let invalid = export_deflection(0.1, reach).unwrap_err();
-        assert_eq!(invalid.parameter, "tolerance", "{reach}");
+        let refusal = export_deflection(0.1, reach).unwrap_err();
+        assert_eq!(refusal.parameter(), Some("tolerance"), "{reach}");
     }
 }
 
@@ -159,6 +159,7 @@ fn report(r: &Raw) -> ExportMesh {
         .sum::<u64>()
         .min(16) as usize;
     ExportMesh {
+        tolerance: 0.1,
         deflection: r.deflection,
         nodes: floats(nodes * 3)
             .chunks_exact(3)

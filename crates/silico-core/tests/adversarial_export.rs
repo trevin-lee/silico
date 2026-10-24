@@ -6,120 +6,16 @@
 //! kernel's meshes are silico-kernel's tests/adversarial_export.rs.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::panic::AssertUnwindSafe;
+
+use super::export_report::{P, TETRA, report, tetra, with_shell};
 
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestRunner};
 use silico_core::ErrorCode;
 use silico_core::export::{Object, PrintableMesh, printable, three_mf};
 use silico_protocol::ExportMesh;
-
-/// The unit tetrahedron's corners: P0 at the origin, P1, P2, P3 on the axes.
-const P: [[f64; 3]; 4] = [
-    [0.0, 0.0, 0.0],
-    [1.0, 0.0, 0.0],
-    [0.0, 1.0, 0.0],
-    [0.0, 0.0, 1.0],
-];
-
-/// Its faces, each one triangle counterclockwise seen from outside.
-const TETRA: [&[[usize; 3]]; 4] = [&[[0, 2, 1]], &[[0, 1, 3]], &[[0, 3, 2]], &[[1, 2, 3]]];
-
-/// A one-solid, one-shell report of faces made of `triangles` over `points`, as the worker
-/// reports a B-rep's (the same construction as tests/export.rs): each face its own copy of
-/// the points it uses, an edge use for each side of its triangles, numbered by the two
-/// points it joins, its vertices the points'.
-fn report(points: &[[f64; 3]], faces: &[&[[usize; 3]]]) -> ExportMesh {
-    let mut m = ExportMesh {
-        deflection: 0.1,
-        solids: 1,
-        shell_solids: vec![0],
-        shell_outer: vec![true],
-        ..ExportMesh::default()
-    };
-    let mut edge_numbers: BTreeMap<(usize, usize), u32> = BTreeMap::new();
-    for (f, triangles) in faces.iter().enumerate() {
-        let base = m.nodes.len() as u32;
-        let mut local: BTreeMap<usize, u32> = BTreeMap::new();
-        let mut node = |p: usize, m: &mut ExportMesh| {
-            *local.entry(p).or_insert_with(|| {
-                m.nodes.push(points[p]);
-                m.nodes.len() as u32 - 1
-            })
-        };
-        let mut sides = BTreeSet::new();
-        for t in *triangles {
-            let corners = t.map(|p| node(p, &mut m));
-            m.triangles.push(corners);
-            for i in 0..3 {
-                let (a, b) = (t[i], t[(i + 1) % 3]);
-                sides.insert((a.min(b), a.max(b)));
-            }
-        }
-        m.face_nodes.push(m.nodes.len() as u32 - base);
-        m.face_triangles.push(triangles.len() as u32);
-        m.face_numbers.push(f as u32 + 1);
-        m.face_deflections.push(0.0);
-        m.face_shells.push(0);
-        for (a, b) in sides {
-            let next = edge_numbers.len() as u32 + 1;
-            let number = *edge_numbers.entry((a, b)).or_insert(next);
-            m.edge_faces.push(f as u32);
-            m.edge_numbers.push(number);
-            m.edge_degenerate.push(false);
-            m.edge_vertices.push([a as u32 + 1, b as u32 + 1]);
-            m.edge_deflections.push(0.0);
-            m.edge_node_counts.push(2);
-            let (na, nb) = (node(a, &mut m), node(b, &mut m));
-            m.edge_nodes.extend([na, nb]);
-        }
-    }
-    m.validate().unwrap();
-    m
-}
-
-fn tetra() -> ExportMesh {
-    report(&P, &TETRA)
-}
-
-/// `extra`'s faces appended to `base` as shell `shell` of solid `solid` (a new shell, and a
-/// new solid if `solid` is past `base`'s), its edges and vertices renumbered past `base`'s
-/// so the two share none.
-fn with_shell(base: &ExportMesh, extra: &ExportMesh, solid: u32, outer: bool) -> ExportMesh {
-    let mut m = base.clone();
-    let offset = m.nodes.len() as u32;
-    let faces = m.face_nodes.len() as u32;
-    let shell = m.shell_solids.len() as u32;
-    let edges = m.edge_numbers.iter().copied().max().unwrap_or(0);
-    let vertices = m.edge_vertices.iter().flatten().copied().max().unwrap_or(0);
-    m.shell_solids.push(solid);
-    m.shell_outer.push(outer);
-    m.solids = m.solids.max(solid + 1);
-    m.nodes.extend(&extra.nodes);
-    m.face_nodes.extend(&extra.face_nodes);
-    m.triangles
-        .extend(extra.triangles.iter().map(|t| t.map(|n| n + offset)));
-    m.face_triangles.extend(&extra.face_triangles);
-    m.face_numbers
-        .extend(extra.face_numbers.iter().map(|n| n + faces));
-    m.face_deflections.extend(&extra.face_deflections);
-    m.face_shells
-        .extend(extra.face_shells.iter().map(|_| shell));
-    m.edge_faces
-        .extend(extra.edge_faces.iter().map(|f| f + faces));
-    m.edge_numbers
-        .extend(extra.edge_numbers.iter().map(|n| n + edges));
-    m.edge_degenerate.extend(&extra.edge_degenerate);
-    m.edge_vertices
-        .extend(extra.edge_vertices.iter().map(|v| v.map(|v| v + vertices)));
-    m.edge_deflections.extend(&extra.edge_deflections);
-    m.edge_node_counts.extend(&extra.edge_node_counts);
-    m.edge_nodes
-        .extend(extra.edge_nodes.iter().map(|n| n + offset));
-    m.validate().unwrap();
-    m
-}
 
 /// `f`'s result, or its panic's message.
 fn caught<T>(f: impl FnOnce() -> T) -> Result<T, String> {
@@ -192,7 +88,7 @@ fn printable_on_a_report_that_fails_validate_is_an_error_not_a_panic() {
         let mut m = tetra();
         corrupt(&mut m);
         assert!(m.validate().is_err(), "{what}: validate took it");
-        match caught(|| printable(&m, 0.1, None)) {
+        match caught(|| printable(&m, None)) {
             Err(panic) => panicked.push(format!("{what}: {panic}")),
             Ok(Ok(_)) => panicked.push(format!("{what}: printable took it")),
             // Any refusal will do, rather than a panic.
@@ -210,6 +106,7 @@ fn a_solid_whose_shell_has_no_faces_is_refused_not_an_empty_mesh() {
     // checked. The port note (docs/ports/mesh-export.md, da0f810282) says "A solid with no
     // triangles is refused".
     let empty = ExportMesh {
+        tolerance: 0.1,
         deflection: 0.1,
         solids: 1,
         shell_solids: vec![0],
@@ -217,7 +114,7 @@ fn a_solid_whose_shell_has_no_faces_is_refused_not_an_empty_mesh() {
         ..ExportMesh::default()
     };
     empty.validate().unwrap();
-    let got = printable(&empty, 0.1, None);
+    let got = printable(&empty, None);
     assert!(
         got.is_err(),
         "an empty solid exported as {:?}",
@@ -229,7 +126,7 @@ fn a_solid_whose_shell_has_no_faces_is_refused_not_an_empty_mesh() {
     two.shell_solids.push(1);
     two.shell_outer.push(true);
     two.validate().unwrap();
-    let got = printable(&two, 0.1, None);
+    let got = printable(&two, None);
     assert!(
         got.is_err(),
         "a solid of no faces beside a tetrahedron exported as {:?}",
@@ -244,6 +141,7 @@ fn a_face_whose_triangles_all_weld_into_one_vertex_is_refused_not_an_empty_mesh(
     // weld into one vertex, the triangle is dropped as a pole's, and what's left is an
     // empty "printable" mesh of volume 0, which the port note says is refused.
     let m = ExportMesh {
+        tolerance: 0.1,
         deflection: 0.1,
         nodes: vec![[1.0, 2.0, 3.0]; 3],
         face_nodes: vec![3],
@@ -265,7 +163,7 @@ fn a_face_whose_triangles_all_weld_into_one_vertex_is_refused_not_an_empty_mesh(
         edge_nodes: vec![0, 1, 2],
     };
     m.validate().unwrap();
-    let got = printable(&m, 0.1, None);
+    let got = printable(&m, None);
     assert!(
         got.is_err(),
         "a face welded to a point exported as {:?}",
@@ -287,7 +185,7 @@ fn a_cavity_larger_than_its_solid_is_refused_not_a_negative_volume() {
     let faces: Vec<&[[usize; 3]]> = inward.iter().map(|f| f.as_slice()).collect();
     let cavity = report(&big, &faces);
     let m = with_shell(&tetra(), &cavity, 0, false);
-    let got = printable(&m, 0.1, None);
+    let got = printable(&m, None);
     assert!(
         got.is_err(),
         "exported with volume {:?}",
@@ -311,7 +209,7 @@ fn a_solid_whose_only_shell_is_a_cavity_is_refused() {
     // exported inside out (the existing test,
     // a_shell_facing_inward_is_refused_and_a_cavity_must_face_inward, asserts exactly this
     // is Ok; the solid's total is never checked).
-    let got = printable(&m, 0.1, None);
+    let got = printable(&m, None);
     assert!(
         got.is_err(),
         "exported with volume {:?}",
@@ -328,7 +226,7 @@ fn a_node_welded_through_a_chain_of_vertices_is_checked_against_where_it_lands()
     let mut m = tetra();
     let p1_face4 = m.face_ranges()[3].start;
     m.nodes[p1_face4 as usize] = [1.0 + 0.05, 0.0, 0.0];
-    let mesh = printable(&m, 0.1, None).unwrap();
+    let mesh = printable(&m, None).unwrap();
     assert!(mesh.vertices().contains(&[1.0, 0.0, 0.0]));
     assert!(!mesh.vertices().contains(&[1.05, 0.0, 0.0]));
 }
@@ -338,16 +236,16 @@ fn a_report_far_enough_out_that_32_bits_overflow_is_refused_without_panicking() 
     // Finite in 64 bits, past f32::MAX: the vertices written would be infinite.
     let far: Vec<[f64; 3]> = P.iter().map(|p| p.map(|c| c * 1e39 + 1e39)).collect();
     let m = report(&far, &TETRA);
-    let error = printable(&m, 0.1, None).unwrap_err();
+    let error = printable(&m, None).unwrap_err();
     assert_eq!(error.code(), ErrorCode::InvalidResult, "{error}");
 }
 
 #[test]
 fn printable_is_the_same_every_time() {
     let m = with_shell(&tetra(), &tetra(), 1, true);
-    let first = printable(&m, 0.1, None).unwrap();
+    let first = printable(&m, None).unwrap();
     for _ in 0..20 {
-        assert_eq!(printable(&m, 0.1, None).unwrap(), first);
+        assert_eq!(printable(&m, None).unwrap(), first);
     }
 }
 
@@ -552,7 +450,7 @@ fn corrupted_reports_never_panic_and_whatever_is_taken_is_printable() {
                 if m.validate().is_err() {
                     return Ok(());
                 }
-                let got = caught(|| printable(&m, 0.1, None));
+                let got = caught(|| printable(&m, None));
                 let got = match got {
                     Err(panic) => {
                         return Err(TestCaseError::fail(format!("panicked: {panic}")));
@@ -570,7 +468,12 @@ fn corrupted_reports_never_panic_and_whatever_is_taken_is_printable() {
                             "{error}"
                         );
                         prop_assert!(error.suggestion().is_some(), "{error}");
-                        prop_assert!(!error.elements().is_empty(), "{error}");
+                        // A refusal names the faces at fault, or the tolerance where the
+                        // part is too far out for it (the whole part's, no face's).
+                        prop_assert!(
+                            !error.elements().is_empty() || error.parameter() == Some("tolerance"),
+                            "{error}"
+                        );
                     }
                 }
                 Ok(())
@@ -595,7 +498,7 @@ fn an_archive_of_no_objects_is_refused() {
 
 #[test]
 fn a_part_number_xml_cant_hold_is_refused_naming_the_object_and_saying_which() {
-    let mesh = printable(&tetra(), 0.1, None).unwrap();
+    let mesh = printable(&tetra(), None).unwrap();
     let error = three_mf(&[Object {
         name: "Bracket",
         part_number: "k7\u{0}x",
@@ -626,7 +529,7 @@ fn a_part_number_xml_cant_hold_is_refused_naming_the_object_and_saying_which() {
 fn every_character_xml_1_0_holds_is_written_and_every_other_refused() {
     // XML 1.0's Char: #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] |
     // [#x10000-#x10FFFF]. Every other scalar value (C0 controls, U+FFFE, U+FFFF) refused.
-    let mesh = printable(&tetra(), 0.1, None).unwrap();
+    let mesh = printable(&tetra(), None).unwrap();
     let write = |name: &str| {
         three_mf(&[Object {
             name,
@@ -669,7 +572,7 @@ fn every_character_xml_1_0_holds_is_written_and_every_other_refused() {
 fn an_archives_size_is_what_its_limit_counts() {
     // The 4 GiB check counts 76 bytes and the name twice per entry, and 22 for the end: the
     // archive written must be exactly that long, or the limit is off.
-    let mesh = printable(&tetra(), 0.1, None).unwrap();
+    let mesh = printable(&tetra(), None).unwrap();
     let archive = three_mf(&[Object {
         name: "T",
         part_number: "p",

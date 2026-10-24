@@ -1685,9 +1685,10 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
 /// (`TopoShape::getFaces`): absolute, with angular deflection [`export_angle`], but
 /// single-threaded, so the same shape always gives the same mesh, and with the deflection
 /// the tolerance less what rounding to 32 bits can move the shape's vertices, as far out as
-/// its bounding box reaches ([`export_deflection`]), so the mesh as a 3MF reader gets it
-/// stays within the tolerance. It leaves the shape as it was. Reports each face's triangles and where its nodes lie on the
-/// shape's edges and vertices, for the core to join and check (docs/ports/mesh-export.md).
+/// its bounding box reaches ([`export_deflection`]): a tolerance whose rounding there would
+/// take more than half of it is refused ([`Refusal::RoundingPastTolerance`]). It leaves the
+/// shape as it was. Reports each face's triangles and where its nodes lie on the shape's
+/// edges and vertices, for the core to join and check (docs/ports/mesh-export.md).
 pub fn export_mesh(shape: &Shape, tolerance: f64) -> Result<ExportMesh, KernelError> {
     check_export_tolerance(tolerance)?;
     let inner = shape.get()?;
@@ -1695,7 +1696,7 @@ pub fn export_mesh(shape: &Shape, tolerance: f64) -> Result<ExportMesh, KernelEr
     if !reach.is_finite() {
         return Err(KernelError::new(Refusal::ExtentNotFinite));
     }
-    let deflection = export_deflection(tolerance, reach)?;
+    let deflection = export_deflection(tolerance, reach).map_err(KernelError::new)?;
     let raw = ffi::export_mesh(inner, deflection, export_angle(tolerance))
         .map_err(|e| KernelError::from(e).during(Operation::Tessellate))?;
     let raw = raw.as_ref().ok_or_else(|| {
@@ -1707,6 +1708,7 @@ pub fn export_mesh(shape: &Shape, tolerance: f64) -> Result<ExportMesh, KernelEr
         values.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect()
     };
     Ok(ExportMesh {
+        tolerance,
         deflection,
         nodes: triples(raw.nodes()),
         face_nodes: raw.face_nodes().to_vec(),

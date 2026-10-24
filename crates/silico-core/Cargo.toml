@@ -12,6 +12,7 @@ autotests = false
 
 [dependencies]
 command-fds.workspace = true
+crc32fast.workspace = true
 hmac.workspace = true
 libc.workspace = true
 libm.workspace = true

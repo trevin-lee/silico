@@ -402,6 +402,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         })),
         Ok(Reply::Done),
         Ok(Reply::ExportMesh(Box::new(ExportMesh {
+            tolerance: 0.1,
             deflection: 0.099_999_9,
             nodes: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             face_nodes: vec![3],

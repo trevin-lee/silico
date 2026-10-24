@@ -4,28 +4,18 @@
 //! Meshes built by hand, one per rule, are silico-core's tests/export.rs.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::exported;
 use super::kernel;
 
+use exported::{data, exported};
 use kernel::kernel;
 use sha2::{Digest, Sha256};
 use silico_core::ErrorCode;
 use silico_core::export::{Object, PrintableMesh, printable, three_mf};
-use silico_core::kernel::ShapeData;
 use silico_kernel::{
-    BooleanOp, KernelErrorKind, Primitive, Shape, boolean, export_mesh, make, make_box, to_brep,
-    translate,
+    BooleanOp, KernelErrorKind, Primitive, boolean, export_mesh, make, make_box, to_brep, translate,
 };
-use silico_protocol::{Blob, ChamferSize};
-
-fn data(shape: &Shape) -> ShapeData {
-    ShapeData::unchecked(Blob::inline(to_brep(shape).unwrap()))
-}
-
-/// `shape` exported through the kernel worker, as the core exports, at `tolerance`.
-fn exported(shape: &Shape, tolerance: f64) -> Result<PrintableMesh, silico_core::Error> {
-    let mesh = kernel().export_mesh(&data(shape), tolerance)?;
-    printable(&mesh, tolerance, None)
-}
+use silico_protocol::ChamferSize;
 
 fn written(mesh: &PrintableMesh) -> Vec<u8> {
     three_mf(&[Object {
@@ -278,7 +268,7 @@ fn a_box_with_a_cavity_is_two_shells_the_cavitys_facing_in() {
     assert_eq!(raw.solids, 1);
     assert_eq!(raw.shell_outer.iter().filter(|&&o| o).count(), 1);
     assert_eq!(raw.shell_outer.len(), 2);
-    let mesh = printable(&raw, 0.1, None).unwrap();
+    let mesh = printable(&raw, None).unwrap();
     assert_eq!(mesh.vertices().len(), 16);
     assert_eq!(mesh.triangles().len(), 24);
     assert!(

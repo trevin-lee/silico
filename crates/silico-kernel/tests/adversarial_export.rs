@@ -6,24 +6,15 @@
 //! used workers; and the archive read back by Python's own zip and XML readers (FreeCAD's).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::exported;
 use super::kernel;
 
+use exported::{data, exported};
 use kernel::kernel;
 use silico_core::ErrorCode;
 use silico_core::export::{Object, PrintableMesh, printable, three_mf};
-use silico_core::kernel::ShapeData;
-use silico_kernel::{BooleanOp, Primitive, Shape, boolean, make, make_box, to_brep, translate};
-use silico_protocol::{Blob, ChamferSize, export_rounding};
-
-fn data(shape: &Shape) -> ShapeData {
-    ShapeData::unchecked(Blob::inline(to_brep(shape).unwrap()))
-}
-
-/// `shape` exported through a kernel worker, as the core exports, at `tolerance`.
-fn exported(shape: &Shape, tolerance: f64) -> Result<PrintableMesh, silico_core::Error> {
-    let mesh = kernel().export_mesh(&data(shape), tolerance)?;
-    printable(&mesh, tolerance, None)
-}
+use silico_kernel::{BooleanOp, Primitive, boolean, make, make_box, translate};
+use silico_protocol::{ChamferSize, export_rounding};
 
 fn wide(v: [f32; 3]) -> [f64; 3] {
     v.map(f64::from)
@@ -209,7 +200,7 @@ fn every_round_primitive_is_exported_exactly_when_its_mesh_is_within_the_toleran
                 continue;
             }
             let raw = worker.export_mesh(&shape, tolerance).unwrap();
-            match printable(&raw, tolerance, None) {
+            match printable(&raw, None) {
                 Ok(mesh) => {
                     let d = deviation(&mesh, &*surface);
                     let case = format!("{primitive:?} at {tolerance}");
@@ -290,7 +281,7 @@ fn a_cylinder_with_its_rim_chamfered_exports_at_ordinary_tolerances() {
                 })
                 .expect("the nodes lie on one of the two profiles");
             let surface = |p: [f64; 3]| to_revolved(&profile[..], p);
-            match printable(&raw, tolerance, None) {
+            match printable(&raw, None) {
                 Ok(mesh) => {
                     let d = deviation(&mesh, &surface);
                     assert!(d <= tolerance, "Edge{edge} at {tolerance}: {d}");
@@ -440,7 +431,7 @@ fn a_solid_touching_itself_along_an_edge_is_refused_as_not_manifold() {
     let cut = boolean(BooleanOp::Cut, &block, &quarter).unwrap().shape;
     let cut = boolean(BooleanOp::Cut, &cut, &other).unwrap().shape;
     let raw = kernel().export_mesh(&data(&cut), 0.1).unwrap();
-    match printable(&raw, 0.1, None) {
+    match printable(&raw, None) {
         Ok(mesh) => {
             assert_eq!(raw.solids, 2, "one solid, taken");
             assert_eq!(mesh.vertices().len(), 16);
@@ -566,7 +557,7 @@ fn an_export_refused_leaves_the_worker_able_to_export() {
     assert!(worker.export_mesh(&far, 1e-3).is_err());
     assert!(worker.export_mesh(&far, 1e-2).is_err());
     let mesh = worker.export_mesh(&cube, 0.1).unwrap();
-    let volume = printable(&mesh, 0.1, None).unwrap().volume();
+    let volume = printable(&mesh, None).unwrap().volume();
     assert!((volume - 1.0).abs() <= 1e-12, "{volume}");
 }
 
@@ -738,7 +729,7 @@ fn a_countersunk_hole_exports_at_a_fine_tolerance_its_mesh_meets() {
     };
     for tolerance in [0.1, 0.05, 0.01] {
         let raw = kernel().export_mesh(&data(&sunk), tolerance).unwrap();
-        let Err(error) = printable(&raw, tolerance, None) else {
+        let Err(error) = printable(&raw, None) else {
             continue;
         };
         // The cone's face: the one whose nodes all lie on the cone.

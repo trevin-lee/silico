@@ -7,6 +7,8 @@
 // Shared by the files below, each loaded once.
 #[path = "common/profile.rs"]
 mod draw;
+#[path = "common/export_report.rs"]
+mod export_report;
 #[path = "common/sketch.rs"]
 mod fixture;
 #[path = "common/hostile_profiles.rs"]

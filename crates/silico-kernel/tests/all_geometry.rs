@@ -14,6 +14,8 @@ mod chamfer_sizes;
 mod close;
 #[path = "../../silico-core/tests/common/profile.rs"]
 mod draw;
+#[path = "common/exported.rs"]
+mod exported;
 #[path = "common/face_where.rs"]
 mod face_where;
 #[path = "common/facts.rs"]

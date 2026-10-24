@@ -125,6 +125,15 @@ pub enum Refusal {
     /// `vector`, `direction`, or `axis`). The core never sends one; the kernel refuses it
     /// before OCCT, which builds a solid of volume 0 and calls it valid.
     SweepFlat { parameter: String, message: String },
+    /// An export whose tolerance, in mm, is less than twice what rounding the shape's
+    /// coordinates to the 32 bits a 3MF reader takes can move them (`rounding`, for a shape
+    /// reaching `reach` mm from the origin): the rounding may take at most half of it
+    /// (`export_deflection`).
+    RoundingPastTolerance {
+        tolerance: f64,
+        rounding: f64,
+        reach: f64,
+    },
 }
 
 /// What OCCT gave back nothing of.
@@ -275,7 +284,8 @@ impl Refusal {
             | Refusal::DeflectionInvalid { .. }
             | Refusal::DeflectionTooFine { .. }
             | Refusal::NoDragSession { .. }
-            | Refusal::SweepFlat { .. } => FailureKind::InvalidInput,
+            | Refusal::SweepFlat { .. }
+            | Refusal::RoundingPastTolerance { .. } => FailureKind::InvalidInput,
             Refusal::ResultInvalid { .. } => FailureKind::InvalidResult,
             Refusal::NoShape
             | Refusal::NothingReturned { .. }
@@ -351,6 +361,7 @@ impl Refusal {
                 Some("deflection")
             }
             Refusal::CornersMerged { .. } => Some("profile"),
+            Refusal::RoundingPastTolerance { .. } => Some("tolerance"),
             Refusal::BooleanInputEmpty { role, .. } => Some(role.name()),
             _ => None,
         }
@@ -595,6 +606,25 @@ impl Refusal {
                     "begin the drag again: a drag ends at its end, at a solve, or when the sketch worker restarts"
                         .to_owned(),
                 ),
+            ),
+            Refusal::RoundingPastTolerance {
+                tolerance,
+                rounding,
+                reach,
+            } => (
+                format!(
+                    "an export's tolerance of {} mm is less than twice what rounding to the 32 \
+                     bits a 3MF reader takes moves the part's coordinates, by up to {} mm as far \
+                     as {} mm from the origin",
+                    format_number(*tolerance),
+                    format_number(*rounding),
+                    format_number(*reach)
+                ),
+                Some(format!(
+                    "export with a tolerance of at least {} mm, or move the part nearer the \
+                     origin",
+                    format_number(2.0 * rounding)
+                )),
             ),
             Refusal::SweepFlat { parameter, message } => (
                 message.clone(),
@@ -953,6 +983,11 @@ mod tests {
                 parameter: "axis".to_owned(),
                 message: "the revolution's axis leans out of the faces' plane".to_owned(),
             },
+            Refusal::RoundingPastTolerance {
+                tolerance: 1e-3,
+                rounding: 5.16e-3,
+                reach: 5e4,
+            },
         ]
     }
 
@@ -1062,6 +1097,7 @@ mod tests {
             ResourceExhausted, // OutOfMemory
             InvalidInput,      // NoDragSession (new with M3.7: a request out of sequence)
             InvalidInput,      // SweepFlat
+            InvalidInput,      // RoundingPastTolerance
         ];
         let refusals = every_refusal();
         assert_eq!(refusals.len(), kinds.len());
@@ -1109,6 +1145,7 @@ mod tests {
             None,               // OutOfMemory
             None,               // NoDragSession
             Some("axis"),       // SweepFlat
+            Some("tolerance"),  // RoundingPastTolerance
         ];
         let refusals = every_refusal();
         assert_eq!(refusals.len(), parameters.len());

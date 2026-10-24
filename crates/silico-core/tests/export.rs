@@ -3,84 +3,15 @@
 //! real kernel's meshes are silico-kernel's tests/export.rs.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::collections::BTreeMap;
+use super::export_report::{P, TETRA, report, tetra};
 
 use silico_core::ErrorCode;
 use silico_core::export::{Object, PrintableMesh, printable, three_mf};
 use silico_protocol::ExportMesh;
 
-/// The unit tetrahedron's corners: P0 at the origin, P1, P2, P3 on the axes.
-const P: [[f64; 3]; 4] = [
-    [0.0, 0.0, 0.0],
-    [1.0, 0.0, 0.0],
-    [0.0, 1.0, 0.0],
-    [0.0, 0.0, 1.0],
-];
-
-/// Its faces, each one triangle counterclockwise seen from outside: Face1 on z = 0, Face2
-/// on y = 0, Face3 on x = 0, Face4 the slanted one.
-const TETRA: [&[[usize; 3]]; 4] = [&[[0, 2, 1]], &[[0, 1, 3]], &[[0, 3, 2]], &[[1, 2, 3]]];
-
-/// A one-solid, one-shell report of faces made of `triangles` over `points`, as the worker
-/// reports a B-rep's: each face its own copy of the points it uses, and an edge use for each
-/// side of its triangles, numbered by the two points it joins (lower first, so its nodes run
-/// from the lower point's to the higher's), its vertices the points'.
-fn report(points: &[[f64; 3]], faces: &[&[[usize; 3]]]) -> ExportMesh {
-    let mut m = ExportMesh {
-        deflection: 0.1,
-        solids: 1,
-        shell_solids: vec![0],
-        shell_outer: vec![true],
-        ..ExportMesh::default()
-    };
-    let mut edge_numbers: BTreeMap<(usize, usize), u32> = BTreeMap::new();
-    for (f, triangles) in faces.iter().enumerate() {
-        let base = m.nodes.len() as u32;
-        let mut local: BTreeMap<usize, u32> = BTreeMap::new();
-        let mut node = |p: usize, m: &mut ExportMesh| {
-            *local.entry(p).or_insert_with(|| {
-                m.nodes.push(points[p]);
-                m.nodes.len() as u32 - 1
-            })
-        };
-        let mut sides = std::collections::BTreeSet::new();
-        for t in *triangles {
-            let corners = t.map(|p| node(p, &mut m));
-            m.triangles.push(corners);
-            for i in 0..3 {
-                let (a, b) = (t[i], t[(i + 1) % 3]);
-                sides.insert((a.min(b), a.max(b)));
-            }
-        }
-        m.face_nodes.push(m.nodes.len() as u32 - base);
-        m.face_triangles.push(triangles.len() as u32);
-        m.face_numbers.push(f as u32 + 1);
-        m.face_deflections.push(0.0);
-        m.face_shells.push(0);
-        for (a, b) in sides {
-            let next = edge_numbers.len() as u32 + 1;
-            let number = *edge_numbers.entry((a, b)).or_insert(next);
-            m.edge_faces.push(f as u32);
-            m.edge_numbers.push(number);
-            m.edge_degenerate.push(false);
-            m.edge_vertices.push([a as u32 + 1, b as u32 + 1]);
-            m.edge_deflections.push(0.1 - 1e-6);
-            m.edge_node_counts.push(2);
-            let (na, nb) = (node(a, &mut m), node(b, &mut m));
-            m.edge_nodes.extend([na, nb]);
-        }
-    }
-    m.validate().unwrap();
-    m
-}
-
-fn tetra() -> ExportMesh {
-    report(&P, &TETRA)
-}
-
 #[track_caller]
 fn refused(m: &ExportMesh, code: ErrorCode, says: &str, faces: &[&str]) {
-    let error = printable(m, 0.1, None).unwrap_err();
+    let error = printable(m, None).unwrap_err();
     assert_eq!(error.code(), code, "{error}");
     assert!(error.message().contains(says), "{error}");
     assert_eq!(error.elements(), faces, "{error}");
@@ -90,7 +21,7 @@ fn refused(m: &ExportMesh, code: ErrorCode, says: &str, faces: &[&str]) {
 
 #[test]
 fn a_tetrahedron_joins_into_four_vertices_and_encloses_a_sixth() {
-    let mesh = printable(&tetra(), 0.1, None).unwrap();
+    let mesh = printable(&tetra(), None).unwrap();
     // Vertices as the triangles first name them: Face1's P0, P2, P1, then Face2's P3.
     assert_eq!(
         mesh.vertices(),
@@ -215,7 +146,7 @@ fn a_triangle_flat_once_rounded_to_32_bits_but_with_its_corners_apart_is_written
             &[[1, 4, 3], [4, 2, 3]],
         ],
     );
-    let mesh = printable(&m, 0.1, None).unwrap();
+    let mesh = printable(&m, None).unwrap();
     assert_eq!(mesh.triangles().len(), 6);
     // The same 1e-6 out is a triangle with area in 32 bits too, and passes.
     let mut points = P.to_vec();
@@ -229,7 +160,7 @@ fn a_triangle_flat_once_rounded_to_32_bits_but_with_its_corners_apart_is_written
             &[[1, 4, 3], [4, 2, 3]],
         ],
     );
-    assert!(printable(&m, 0.1, None).is_ok());
+    assert!(printable(&m, None).is_ok());
 }
 
 #[test]
@@ -280,12 +211,12 @@ fn deviations_past_the_tolerance_less_the_rounding_are_refused() {
     );
     let mut m = tetra();
     m.edge_deflections[0] = 0.1 - rounding * 1.5;
-    assert!(printable(&m, 0.1, None).is_ok());
+    assert!(printable(&m, None).is_ok());
     // A face's own deviation, as OCCT estimates it, isn't held to the tolerance, as FreeCAD
     // takes it: the estimate overstates a cone's by 10 to 1000 times (break-it).
     let mut m = tetra();
     m.face_deflections[1] = 1.0;
-    assert!(printable(&m, 0.1, None).is_ok());
+    assert!(printable(&m, None).is_ok());
     // An edge use's deflection raised past it names its face.
     let mut m = tetra();
     m.edge_deflections[0] = 0.1;
@@ -313,12 +244,13 @@ fn deviations_past_the_tolerance_less_the_rounding_are_refused() {
 fn shapes_without_solids_and_faces_outside_them_are_refused() {
     // A shape of no solid at all, as a face alone reports it: no face in a solid.
     let m = ExportMesh {
+        tolerance: 0.1,
         deflection: 0.1,
         loose_faces: vec![1],
         ..ExportMesh::default()
     };
     m.validate().unwrap();
-    let error = printable(&m, 0.1, None).unwrap_err();
+    let error = printable(&m, None).unwrap_err();
     assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
     assert!(error.message().contains("no solid"), "{error}");
     let mut m = tetra();
@@ -332,11 +264,22 @@ fn shapes_without_solids_and_faces_outside_them_are_refused() {
 }
 
 #[test]
-fn a_tolerance_outside_the_exports_range_is_refused_naming_it() {
+fn a_report_of_a_tolerance_outside_the_exports_range_is_refused() {
+    // The tolerance a report was meshed for is checked with the report: a request for one
+    // outside the range is refused before it's sent (KernelRequest::export_mesh).
     for bad in [1e-6, 0.0, -1.0, f64::NAN, 1e9] {
-        let error = printable(&tetra(), bad, None).unwrap_err();
+        let mut m = tetra();
+        m.tolerance = bad;
+        let error = printable(&m, None).unwrap_err();
         assert_eq!(error.code(), ErrorCode::InvalidInput, "{bad}: {error}");
-        assert_eq!(error.parameter(), Some("tolerance"), "{bad}: {error}");
+        assert!(
+            error.message().contains("doesn't hold together"),
+            "{bad}: {error}"
+        );
+        assert!(
+            error.cause().is_some_and(|c| c.contains("tolerance")),
+            "{bad}: {error}"
+        );
     }
 }
 
@@ -370,7 +313,7 @@ fn two_solids_are_joined_each_on_its_own() {
     two.edge_nodes
         .extend(one.edge_nodes.iter().map(|n| n + offset));
     two.validate().unwrap();
-    let mesh = printable(&two, 0.1, None).unwrap();
+    let mesh = printable(&two, None).unwrap();
     assert_eq!(mesh.vertices().len(), 8);
     assert_eq!(mesh.triangles().len(), 8);
     assert_eq!(mesh.volume(), 2.0 / 6.0);
@@ -412,7 +355,7 @@ fn entries(archive: &[u8]) -> Vec<(String, Vec<u8>)> {
 }
 
 fn tetra_mesh() -> PrintableMesh {
-    printable(&tetra(), 0.1, None).unwrap()
+    printable(&tetra(), None).unwrap()
 }
 
 #[test]
@@ -493,7 +436,7 @@ fn coordinates_are_the_shortest_decimal_of_their_32_bit_value_and_minus_zero_is_
         *p = [p[0] * 0.1 - 0.0, p[1] / 3.0, -p[2] * 0.0];
     }
     points[3] = [0.0, 0.0, 1.0 / 3.0];
-    let mesh = printable(&report(&points, &TETRA), 0.1, None).unwrap();
+    let mesh = printable(&report(&points, &TETRA), None).unwrap();
     let archive = three_mf(&[Object {
         name: "T",
         part_number: "p",
@@ -547,7 +490,7 @@ fn faces_at_fault_are_named_as_the_features_element_map_names_them() {
     let mut m = tetra();
     m.triangles.pop();
     m.face_triangles[3] = 0;
-    let error = printable(&m, 0.1, Some(&map)).unwrap_err();
+    let error = printable(&m, Some(&map)).unwrap_err();
     assert_eq!(error.elements(), ["k7f2qx3m.cut.Face4"], "{error}");
 }
 

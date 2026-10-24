@@ -125,7 +125,7 @@ public:
 // A shape's solids meshed for export (docs/ports/mesh-export.md), as flat lists read from
 // Rust as slices: each face's nodes and triangles, solid by solid and shell by shell, and
 // each face's polygon on each of its edges, which the core joins the faces by. Facts only:
-// lib.rs's ExportMesh documents each list.
+// silico-protocol's ExportMesh (src/export.rs) documents each list.
 class ExportTriangulation {
 public:
   std::vector<double> nodes_; // x, y, z per node

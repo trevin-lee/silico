@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{InvalidParameter, format_number};
+use crate::{InvalidParameter, Refusal, format_number};
 
 /// The finest export tolerance, in millimetres, as FreeCAD's export settings take it
 /// (`DlgSettingsImportExport.ui:46-56`).
@@ -26,7 +26,9 @@ pub fn check_export_tolerance(tolerance: f64) -> Result<(), InvalidParameter> {
     Err(InvalidParameter {
         parameter: "tolerance",
         message: format!(
-            "an export's tolerance must be a length from 1e-5 mm to 1e8 mm, got {}",
+            "an export's tolerance must be a length from {} mm to {} mm, got {}",
+            format_number(MIN_EXPORT_TOLERANCE),
+            format_number(MAX_EXPORT_TOLERANCE),
             format_number(tolerance)
         ),
     })
@@ -41,26 +43,20 @@ pub fn export_rounding(reach: f64) -> f64 {
 
 /// The deflection an export of a shape that reaches `reach` mm from the origin (on any
 /// axis) meshes with, for the mesh, once rounded to 32 bits, to stay within `tolerance`:
-/// the tolerance less [`export_rounding`]. Refused when the rounding would take more than
+/// the tolerance less [`export_rounding`], for a tolerance [`check_export_tolerance`] takes.
+/// Refused ([`Refusal::RoundingPastTolerance`]) when the rounding would take more than
 /// half the tolerance, which leaves the mesher at least the other half: a part far enough
 /// from the origin for the tolerance to be mostly its 32-bit rounding is better moved nearer
 /// it, or exported more coarsely.
-pub fn export_deflection(tolerance: f64, reach: f64) -> Result<f64, InvalidParameter> {
-    check_export_tolerance(tolerance)?;
+pub fn export_deflection(tolerance: f64, reach: f64) -> Result<f64, Refusal> {
     let rounding = export_rounding(reach);
     if rounding.is_finite() && rounding <= tolerance / 2.0 {
         return Ok(tolerance - rounding);
     }
-    Err(InvalidParameter {
-        parameter: "tolerance",
-        message: format!(
-            "an export's tolerance of {} mm is less than twice what rounding to the 32 bits a \
-             3MF reader takes moves the part's coordinates, by up to {} mm as far as {} mm \
-             from the origin",
-            format_number(tolerance),
-            format_number(rounding),
-            format_number(reach)
-        ),
+    Err(Refusal::RoundingPastTolerance {
+        tolerance,
+        rounding,
+        reach: reach.abs(),
     })
 }
 
@@ -80,7 +76,10 @@ pub fn export_angle(tolerance: f64) -> f64 {
 /// `INTERNAL` and `EXTERNAL` faces, which bound no change of material, are left out.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ExportMesh {
-    /// The deflection OCCT meshed with ([`export_deflection`]).
+    /// The export tolerance it was meshed for, in mm, which its checks are held to.
+    pub tolerance: f64,
+    /// The deflection OCCT meshed with ([`export_deflection`]): the tolerance less the
+    /// rounding the shape's bounding box allows for.
     pub deflection: f64,
     /// Every face's nodes, face after face, each where its face places it.
     pub nodes: Vec<[f64; 3]>,
@@ -93,7 +92,9 @@ pub struct ExportMesh {
     /// Each face's number in the shape, from 1 (`Face1`), in `TopExp::MapShapes` order.
     pub face_numbers: Vec<u32>,
     /// Each face's deviation from its surface as OCCT estimates it after meshing
-    /// (`Poly_Triangulation::Deflection`): a sample at its triangles, not a bound.
+    /// (`Poly_Triangulation::Deflection`): a sample at its triangles, not a bound. For
+    /// diagnosis only: no rule holds it to the tolerance, as it overstates a cone's 10 to
+    /// 1000 times (docs/ports/mesh-export.md, rule 7).
     pub face_deflections: Vec<f64>,
     /// The shell each face is in, counted from 0 over the whole shape.
     pub face_shells: Vec<u32>,
@@ -160,6 +161,10 @@ impl ExportMesh {
             return Err(format!(
                 "a face is in shell {s}, past the {shells} there are"
             ));
+        }
+        // Every solid has a shell, so a count of solids costs no more than the shells sent.
+        if self.solids as usize > shells {
+            return Err(format!("{} solids for {shells} shells", self.solids));
         }
         if let Some(&s) = self.shell_solids.iter().find(|&&s| s >= self.solids) {
             return Err(format!(
@@ -236,10 +241,16 @@ impl ExportMesh {
         {
             return Err("an element is numbered 0, but elements are numbered from 1".to_owned());
         }
-        if !(self.deflection.is_finite() && self.deflection > 0.0) {
+        if check_export_tolerance(self.tolerance).is_err() {
             return Err(format!(
-                "the deflection, {}, isn't a length",
-                self.deflection
+                "the tolerance, {}, isn't one an export takes",
+                self.tolerance
+            ));
+        }
+        if !(self.deflection > 0.0 && self.deflection <= self.tolerance) {
+            return Err(format!(
+                "the deflection, {}, isn't a length within the tolerance, {}",
+                self.deflection, self.tolerance
             ));
         }
         let finite = |p: &[f64; 3]| p.iter().all(|c| c.is_finite());
@@ -316,9 +327,14 @@ mod tests {
         assert_eq!(export_deflection(0.1, 100.0).unwrap(), 0.1 - 100.0 * per_mm);
         assert_eq!(export_deflection(0.1, 0.0).unwrap(), 0.1);
         // 1e-3 mm 5e4 mm out: the rounding, 5.16e-3, is more than the tolerance.
-        let invalid = export_deflection(1e-3, 5e4).unwrap_err();
-        assert_eq!(invalid.parameter, "tolerance");
-        assert!(invalid.message.contains("rounding"), "{}", invalid.message);
+        assert_eq!(
+            export_deflection(1e-3, 5e4),
+            Err(Refusal::RoundingPastTolerance {
+                tolerance: 1e-3,
+                rounding: 5e4 * per_mm,
+                reach: 5e4
+            })
+        );
         // At the edge: a reach whose rounding is half the tolerance is taken; a little more
         // isn't. The finest tolerance, 1e-5 mm, is taken out to 48.4 mm.
         let reach = 0.05 / per_mm;
@@ -333,8 +349,6 @@ mod tests {
         );
         assert!(export_deflection(0.1, f64::INFINITY).is_err());
         assert!(export_deflection(0.1, f64::NAN).is_err());
-        // The tolerance's own range first.
-        assert!(export_deflection(1e-6, 0.0).is_err());
     }
 
     #[test]
