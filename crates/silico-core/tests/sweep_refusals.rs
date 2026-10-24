@@ -5,8 +5,7 @@
 //! boundary from the design's own numbers: on a 1000 mm³ base, 1e-9 of it is 1e-6 mm³.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/profile.rs"]
-mod draw;
+use super::draw;
 
 use silico_core::ErrorCode;
 use silico_core::document::SweepFeature;

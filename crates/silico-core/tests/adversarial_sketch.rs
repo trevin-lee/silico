@@ -7,11 +7,9 @@
 //! calculation. Tests marked `BREAKS:` were bug reports, each since fixed.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/sketch.rs"]
-mod fixture;
+use super::fixture;
 
-#[path = "common/within.rs"]
-mod within;
+use super::within;
 
 use std::sync::OnceLock;
 use std::time::Duration;

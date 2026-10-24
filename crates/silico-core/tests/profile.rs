@@ -6,8 +6,7 @@
 //! by the code under test.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/profile.rs"]
-mod draw;
+use super::draw;
 
 use std::f64::consts::PI;
 

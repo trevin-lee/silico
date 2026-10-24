@@ -1,11 +1,10 @@
 //! M2.4: at the default log level (warnings), a warning raised on a step's thread during a
 //! recompute is under its step's span, naming the feature, its recompute's, naming the
-//! generation, and the edit that started it (ARCHITECTURE.md, invariant 9). Its own file:
-//! it sets the process's tracing subscriber.
+//! generation, and the edit that started it (ARCHITECTURE.md, invariant 9). Alone in its
+//! process (nextest runs each test in its own), it sets the process's tracing subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/example.rs"]
-mod example;
+use super::example;
 
 use std::sync::{Arc, Mutex};
 

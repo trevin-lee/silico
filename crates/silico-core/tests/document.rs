@@ -3,8 +3,7 @@
 //! nanometres as integers, canonical text as text.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/example.rs"]
-mod example;
+use super::example;
 
 use example::EXAMPLE;
 use proptest::prelude::*;

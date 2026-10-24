@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+# The tests are built as a few programs, not one per file (each listed below): a new test
+# file must be added as a module of one (tests/all_*.rs) or as one here, or it never runs
+# (tests/all_document.rs's every_test_file_is_built says which aren't).
+autotests = false
 
 [dependencies]
 command-fds.workspace = true
@@ -41,3 +45,45 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+# A few test programs, each a group of test files as modules (tests relying on a process of
+# their own, as nextest runs each test in, say so). Five stay programs of their own: cache and
+# file run their own program again by a test's name; adversarial_naming holds the test
+# tests/mutants.sh names to keep out of the mutants' baseline; recompute and references
+# include a module of their own name.
+
+[[test]]
+name = "all_sketch"
+path = "tests/all_sketch.rs"
+
+[[test]]
+name = "all_document"
+path = "tests/all_document.rs"
+
+[[test]]
+name = "all_recompute"
+path = "tests/all_recompute.rs"
+
+[[test]]
+name = "all_geometry"
+path = "tests/all_geometry.rs"
+
+[[test]]
+name = "cache"
+path = "tests/cache.rs"
+
+[[test]]
+name = "file"
+path = "tests/file.rs"
+
+[[test]]
+name = "adversarial_naming"
+path = "tests/adversarial_naming.rs"
+
+[[test]]
+name = "recompute"
+path = "tests/recompute.rs"
+
+[[test]]
+name = "references"
+path = "tests/references.rs"

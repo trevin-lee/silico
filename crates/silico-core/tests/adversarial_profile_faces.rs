@@ -6,10 +6,8 @@
 //! area in closed form). No kernel worker: the request's check runs in the core.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/profile.rs"]
-mod draw;
-#[path = "common/hostile_profiles.rs"]
-mod hostile;
+use super::draw;
+use super::hostile;
 
 use std::f64::consts::PI;
 

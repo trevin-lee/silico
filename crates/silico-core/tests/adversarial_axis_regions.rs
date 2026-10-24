@@ -4,8 +4,7 @@
 //! orders of the regions; and a sweep feature whose solid, or whose base's, can't be
 //! measured can't be checked, so it fails with the measure's error, naming itself.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-#[path = "common/sweeps.rs"]
-mod sweeps;
+use super::sweeps;
 
 use std::sync::Arc;
 use std::time::Duration;

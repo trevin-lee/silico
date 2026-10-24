@@ -8,14 +8,10 @@
 //! refusals the fake gives.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/cache.rs"]
-mod cache;
-#[path = "common/example.rs"]
-mod example;
-#[path = "common/model.rs"]
-mod model;
-#[path = "common/refusals.rs"]
-mod refusals;
+use super::cache;
+use super::example;
+use super::model;
+use super::refusals;
 
 use cache::{HOLE, Scratch, calls, example_with_pin, files, hole, session};
 use example::EXAMPLE;

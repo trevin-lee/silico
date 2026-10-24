@@ -1,6 +1,7 @@
 //! M2.4: a recompute's steps run in its span, under whatever started it, and name their
-//! feature, so a worker's call traces back to the edit (ARCHITECTURE.md, invariant 9). Its
-//! own file: it sets the process's tracing subscriber.
+//! feature, so a worker's call traces back to the edit (ARCHITECTURE.md, invariant 9).
+//! Alone in its process (nextest runs each test in its own), it sets the process's tracing
+//! subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::{Arc, Mutex};

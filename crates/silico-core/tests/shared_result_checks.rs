@@ -5,8 +5,7 @@
 //! proofs, then each path (fresh, warm in memory, the disk cache) for a sweep feature's
 //! no-op refusal: the same refusal, in the feature's own words, once.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-#[path = "common/sweeps.rs"]
-mod sweeps;
+use super::sweeps;
 
 use std::sync::Arc;
 use std::time::Duration;

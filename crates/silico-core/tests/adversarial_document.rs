@@ -5,10 +5,8 @@
 //! marked `Once:` failed on the code as it was first written: each records a bug fixed.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/example.rs"]
-mod example;
-#[path = "common/within.rs"]
-mod within;
+use super::example;
+use super::within;
 
 use std::time::Duration;
 

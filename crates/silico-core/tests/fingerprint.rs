@@ -5,10 +5,8 @@
 //! boolean's, its inputs' together), rounded to 6 decimals with Python's exact decimals.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/example.rs"]
-mod example;
-#[path = "common/model.rs"]
-mod model;
+use super::example;
+use super::model;
 
 use example::EXAMPLE;
 use model::{WAIT, checked, described, id, made, published};

@@ -11,10 +11,8 @@
 //! function of where it starts (p3's y), as PlaneGCS diagnoses where the sketch is drawn.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/sketch.rs"]
-mod fixture;
-#[path = "common/stand_in.rs"]
-mod stand_in;
+use super::fixture;
+use super::stand_in;
 
 use silico_core::document::{Checked, FeatureId, Operation, read, write};
 use silico_core::sketch::{MAX_LOAD_RESOLVES, SketchSolution, SketchSolver, solve};

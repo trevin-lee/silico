@@ -2,7 +2,8 @@
 //! already named, so naming a chain of fillets costs a map or two a fillet, not every map
 //! before it (planning was quadratic in the chain). Counted from each `resolve` span's
 //! `sources`, the maps a fillet's names were read from, so the bound holds to no clock.
-//! Its own file: it sets the process's tracing subscriber.
+//! Alone in its process (nextest runs each test in its own), it sets the process's tracing
+//! subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::{Arc, Mutex};

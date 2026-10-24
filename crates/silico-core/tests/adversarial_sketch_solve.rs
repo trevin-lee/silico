@@ -4,8 +4,7 @@
 //! fixed, and marked where it was found.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/sketch.rs"]
-mod fixture;
+use super::fixture;
 
 use silico_core::document::{Checked, FeatureId, Operation, Sketch, read};
 use silico_core::sketch::{SketchSolver, Translation, solve};

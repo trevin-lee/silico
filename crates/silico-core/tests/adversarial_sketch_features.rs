@@ -7,8 +7,7 @@
 //! refusal's effect on what's stored. Expected values are from the design's text.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/sweeps.rs"]
-mod sweeps;
+use super::sweeps;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};

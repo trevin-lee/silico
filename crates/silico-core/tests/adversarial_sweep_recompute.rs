@@ -6,8 +6,7 @@
 //! sketch names where they don't belong.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/sweeps.rs"]
-mod sweeps;
+use super::sweeps;
 
 use std::sync::Arc;
 use std::time::Duration;

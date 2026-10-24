@@ -6,11 +6,9 @@
 //! pad's edge by name. Sketches are solved as stored, by the fake sketch solver.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/sweeps.rs"]
-mod sweeps;
+use super::sweeps;
 
-#[path = "common/sketch.rs"]
-mod fixture;
+use super::fixture;
 
 use std::f64::consts::PI;
 use std::sync::Arc;

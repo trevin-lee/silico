@@ -9,10 +9,8 @@
 //! tests/adversarial_stored_coordinates.rs.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/command.rs"]
-mod commands;
-#[path = "common/sketch.rs"]
-mod fixture;
+use super::commands;
+use super::fixture;
 
 use fixture::{line, point_debug};
 

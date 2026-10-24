@@ -3,8 +3,7 @@
 //! any list order. Expected values are closed form.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/profile.rs"]
-mod draw;
+use super::draw;
 
 use std::f64::consts::PI;
 

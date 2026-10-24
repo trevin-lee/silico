@@ -5,10 +5,8 @@
 //! tolerance is a hand calculation from the part's own points.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/sketch.rs"]
-mod fixture;
-#[path = "common/within.rs"]
-mod within;
+use super::fixture;
+use super::within;
 
 use fixture::{circle, point};
 
