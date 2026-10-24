@@ -7,10 +7,10 @@
 use std::time::Duration;
 
 use silico_core::ErrorCode;
-use silico_core::fake::FakeKernel;
+use silico_core::fake::{Call, FakeKernel};
 use silico_core::kernel::{
-    Blob, BooleanOp, BuiltData, Curve, ElementCounts, ElementKind, FaceRegions, Generation, Kernel,
-    KernelRequest, Op, Primitive, Region, ShapeData, SketchPlane,
+    Blob, BooleanOp, BuiltData, ClientId, Clients, Curve, ElementCounts, ElementKind, FaceRegions,
+    Generation, Kernel, KernelRequest, Op, Primitive, Region, ShapeData, SketchPlane,
 };
 use silico_core::pool::Outcome;
 
@@ -1372,4 +1372,201 @@ fn a_fuse_has_a_solid_where_either_side_has_one() {
             FakeKernel::describe(&fused.shape)
         );
     }
+}
+
+// --- Clients (M4.2, MA2) ------------------------------------------------------------------
+// Each client of a kernel has its own generations, and the kernel serves its clients' queues
+// in turn. Expected values are the call record's, worked by hand from what each test asks.
+
+fn echo(byte: u8) -> KernelRequest<Blob> {
+    KernelRequest::echo(Blob::inline(vec![byte]))
+}
+
+/// The echoes' bytes in `calls`, in the order they started.
+fn echoed(calls: &[Call]) -> Vec<u8> {
+    calls
+        .iter()
+        .map(|call| match &call.op {
+            Op::Echo { data } => data.as_bytes()[0],
+            other => panic!("not an echo: {other:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn a_clients_newer_generation_supersedes_only_its_own_requests() {
+    let kernel = FakeKernel::new(2).unwrap();
+    let (a, b) = (kernel.client(), kernel.client());
+    a.advance(Generation(1));
+    b.advance(Generation(1));
+    let hold = kernel.hold(|_| true);
+    let boxed = a.submit(
+        Generation(1),
+        KernelRequest::make(block(40.0, 20.0, 10.0)).unwrap(),
+    );
+    let sphere = b.submit(
+        Generation(1),
+        KernelRequest::make(Primitive::Sphere { radius: 5.0 }).unwrap(),
+    );
+    assert!(kernel.wait_running(2, WAIT));
+    b.advance(Generation(2));
+    hold.release();
+    let boxed = done(boxed.wait());
+    assert_eq!(
+        FakeKernel::describe(&boxed).as_deref(),
+        Some("box(40, 20, 10)")
+    );
+    assert!(matches!(sphere.wait(), Outcome::Superseded));
+    // Both started, at generation 1: `a`'s first, as it was queued first and `a` is the
+    // lower client.
+    let calls = kernel.calls();
+    let started: Vec<(ClientId, Generation)> =
+        calls.iter().map(|c| (c.client, c.generation)).collect();
+    assert_eq!(started, [(a.id(), Generation(1)), (b.id(), Generation(1))]);
+}
+
+#[test]
+fn a_clients_queue_survives_another_clients_advance() {
+    let kernel = FakeKernel::new(1).unwrap();
+    let (a, b) = (kernel.client(), kernel.client());
+    a.advance(Generation(1));
+    let hold = kernel.hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { .. })));
+    let boxes: Vec<_> = (1..=3)
+        .map(|n| {
+            a.submit(
+                Generation(1),
+                KernelRequest::make(block(f64::from(n), 1.0, 1.0)).unwrap(),
+            )
+        })
+        .collect();
+    // The first holds the kernel's one thread; the other two wait behind it.
+    assert!(kernel.wait_running(1, WAIT));
+    b.advance(Generation(9));
+    hold.release();
+    let made: Vec<String> = boxes
+        .into_iter()
+        .map(|p| FakeKernel::describe(&done(p.wait())).unwrap())
+        .collect();
+    assert_eq!(made, ["box(1, 1, 1)", "box(2, 1, 1)", "box(3, 1, 1)"]);
+    let calls = kernel.calls();
+    assert_eq!(calls.len(), 3);
+    assert!(
+        calls
+            .iter()
+            .all(|c| c.client == a.id() && c.generation == Generation(1))
+    );
+    assert_eq!(a.generation(), Generation(1));
+    assert_eq!(b.generation(), Generation(9));
+}
+
+#[test]
+fn each_client_has_its_own_generation_and_the_kernels_identity() {
+    let kernel = FakeKernel::new(1).unwrap();
+    let (a, b) = (kernel.client(), kernel.client());
+    // Numbered from one, in the order given; the kernel's own is 0.
+    assert_eq!(
+        [ClientId::KERNEL, a.id(), b.id()].map(ClientId::number),
+        [0, 1, 2]
+    );
+    // One identity, so the clients' steps share the results kept on disk.
+    assert_eq!(a.identity(), "silico fake kernel 1");
+    assert_eq!(b.identity(), kernel.identity());
+    a.advance(Generation(5));
+    assert_eq!(a.generation(), Generation(5));
+    assert_eq!(b.generation(), Generation(0));
+    assert_eq!(kernel.generation(), Generation(0));
+    kernel.advance(Generation(2));
+    assert_eq!(a.generation(), Generation(5));
+    assert_eq!(b.generation(), Generation(0));
+    assert_eq!(kernel.generation(), Generation(2));
+    // Each request is judged by its own client's generation: `b`'s 1 and the kernel's 2
+    // run, below `a`'s 5, and `a`'s 4 is superseded at once, never starting.
+    assert_eq!(
+        done(b.submit(Generation(1), echo(1)).wait()).as_bytes(),
+        [1]
+    );
+    assert_eq!(
+        done(kernel.submit(Generation(2), echo(2)).wait()).as_bytes(),
+        [2]
+    );
+    assert!(matches!(
+        a.submit(Generation(4), echo(4)).wait(),
+        Outcome::Superseded
+    ));
+    let calls = kernel.calls();
+    let started: Vec<(ClientId, Generation)> =
+        calls.iter().map(|c| (c.client, c.generation)).collect();
+    assert_eq!(
+        started,
+        [(b.id(), Generation(1)), (ClientId::KERNEL, Generation(2))]
+    );
+    assert_eq!(echoed(&calls), [1, 2]);
+}
+
+#[test]
+fn clients_waiting_requests_are_served_in_turn() {
+    let kernel = FakeKernel::new(1).unwrap();
+    let (a, b) = (kernel.client(), kernel.client());
+    let hold = kernel.hold(|_| true);
+    // `a`'s first takes the kernel's one thread; then `a` queues two more and `b` three.
+    let first = a.submit(Generation(0), echo(11));
+    assert!(kernel.wait_running(1, WAIT));
+    let mut pending = vec![first];
+    pending.extend([12, 13].map(|n| a.submit(Generation(0), echo(n))));
+    pending.extend([21, 22, 23].map(|n| b.submit(Generation(0), echo(n))));
+    hold.release();
+    for p in pending {
+        done(p.wait());
+    }
+    let calls = kernel.calls();
+    // In turn: a, b, a, b, a, b. Served first come, it would be a, a, a, b, b, b.
+    let clients: Vec<ClientId> = calls.iter().map(|c| c.client).collect();
+    assert_eq!(clients, [a.id(), b.id(), a.id(), b.id(), a.id(), b.id()]);
+    assert_eq!(echoed(&calls), [11, 21, 12, 22, 13, 23]);
+}
+
+#[test]
+fn dropping_a_client_supersedes_its_work_and_leaves_another_clients() {
+    let kernel = FakeKernel::new(2).unwrap();
+    let (a, b) = (kernel.client(), kernel.client());
+    let hold = kernel.hold(|_| true);
+    let boxed = a.submit(
+        Generation(0),
+        KernelRequest::make(block(40.0, 20.0, 10.0)).unwrap(),
+    );
+    let sphere = b.submit(
+        Generation(0),
+        KernelRequest::make(Primitive::Sphere { radius: 5.0 }).unwrap(),
+    );
+    assert!(kernel.wait_running(2, WAIT));
+    // Both threads are held, so `a`'s cylinder waits.
+    let cylinder = a.submit(
+        Generation(0),
+        KernelRequest::make(Primitive::Cylinder {
+            radius: 2.5,
+            height: 12.0,
+        })
+        .unwrap(),
+    );
+    drop(a);
+    // Its held box and its waiting cylinder end superseded, with the hold not released.
+    assert!(matches!(boxed.wait_timeout(WAIT), Ok(Outcome::Superseded)));
+    assert!(matches!(
+        cylinder.wait_timeout(WAIT),
+        Ok(Outcome::Superseded)
+    ));
+    // `b`'s sphere is still held: one request running, and no outcome yet.
+    assert!(!kernel.wait_running(2, Duration::from_millis(100)));
+    assert!(kernel.wait_running(1, Duration::ZERO));
+    let sphere = sphere.try_take().err().unwrap();
+    hold.release();
+    assert_eq!(
+        FakeKernel::describe(&done(sphere.wait())).as_deref(),
+        Some("sphere(5)")
+    );
+    // Only the box and the sphere started; the cylinder never did.
+    let names: Vec<&str> = kernel.calls().iter().map(|c| c.op.name()).collect();
+    assert_eq!(names, ["MakeBox", "MakeSphere"]);
+    // A client's number isn't given again once it's retired.
+    assert_eq!(kernel.client().id().number(), 3);
 }

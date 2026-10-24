@@ -5,14 +5,17 @@
 //! the pool's documented guarantees (pool.rs) and the real kernel's (silico-kernel lib.rs).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use proptest::prelude::*;
 use silico_core::ErrorCode;
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::{
-    Blob, BooleanOp, ChamferSize, Generation, Kernel, KernelRequest, Op, Primitive, ShapeData,
+    Blob, BooleanOp, ChamferSize, ClientId, Clients, Generation, Kernel, KernelRequest, Op,
+    Primitive, ShapeData,
 };
 use silico_core::pool::{Outcome, Pending};
 
@@ -671,5 +674,149 @@ fn a_dressing_in_shape_bytes_of_no_edge_a_repeated_one_or_one_past_the_shapes_is
         let shape = ShapeData::checked(Blob::inline(bytes.clone().into_bytes()), true);
         assert_eq!(FakeKernel::describe(&shape), None, "{bytes:?}");
         assert_eq!(FakeKernel::counts(&shape), None, "{bytes:?}");
+    }
+}
+
+// --- Clients (M4.2, MA2) ------------------------------------------------------------------
+
+/// What a test does to a fake kernel with clients: on the kernel's own client (0) or one of
+/// three it gave (1 to 3), submit an echo or advance; or let everything held run, and
+/// collect what came of it.
+#[derive(Debug, Clone)]
+enum Act {
+    Submit { client: usize, generation: u64 },
+    Advance { client: usize, generation: u64 },
+    Settle,
+}
+
+fn act() -> impl Strategy<Value = Act> {
+    prop_oneof![
+        4 => (0..4usize, 0..8u64).prop_map(|(client, generation)| Act::Submit { client, generation }),
+        2 => (0..4usize, 0..8u64).prop_map(|(client, generation)| Act::Advance { client, generation }),
+        1 => Just(Act::Settle),
+    ]
+}
+
+/// A request submitted and not yet come to anything: whose, for which generation, and the
+/// number its echo carries.
+struct Out {
+    client: usize,
+    generation: u64,
+    number: u32,
+    pending: Pending<Blob>,
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 96,
+        failure_persistence: None,
+        rng_seed: proptest::test_runner::RngSeed::Fixed(0xc1_1e_47),
+        ..ProptestConfig::default()
+    })]
+
+    // Every request is held until a settle, so every advance before it comes before its
+    // delivery: it comes to `Superseded` if and only if its own client's newest generation,
+    // as the test keeps it, is past the request's. Another client's advances never matter.
+    #[test]
+    fn a_request_is_superseded_only_by_its_own_clients_advance(
+        size in 1..4usize,
+        acts in proptest::collection::vec(act(), 1..40),
+    ) {
+        let kernel = FakeKernel::new(size).unwrap();
+        let clients = [kernel.client(), kernel.client(), kernel.client()];
+        let ids = [ClientId::KERNEL, clients[0].id(), clients[1].id(), clients[2].id()];
+        let submit = |client: usize, generation: u64, number: u32| {
+            let request = KernelRequest::echo(Blob::inline(number.to_le_bytes().to_vec()));
+            match client {
+                0 => kernel.submit(Generation(generation), request),
+                c => clients[c - 1].submit(Generation(generation), request),
+            }
+        };
+        let advance = |client: usize, generation: u64| match client {
+            0 => kernel.advance(Generation(generation)),
+            c => clients[c - 1].advance(Generation(generation)),
+        };
+        // The test's own account of each client's newest generation.
+        let mut newest = [0u64; 4];
+        let mut hold = Some(kernel.hold(|_| true));
+        let mut out: Vec<Out> = Vec::new();
+        // Each request that ran: (client, generation), by its number; and those that never
+        // could start.
+        let mut ran: BTreeMap<u32, (ClientId, Generation)> = BTreeMap::new();
+        let mut never: Vec<u32> = Vec::new();
+        let mut number = 0u32;
+        let settle = |hold: &mut Option<silico_core::fake::Hold>,
+                      out: &mut Vec<Out>,
+                      newest: &[u64; 4],
+                      ran: &mut BTreeMap<u32, (ClientId, Generation)>|
+         -> Result<(), TestCaseError> {
+            drop(hold.take());
+            for o in out.drain(..) {
+                let superseded = o.generation < newest[o.client];
+                match within(o.pending, "a request after its settle") {
+                    Outcome::Superseded => prop_assert!(
+                        superseded,
+                        "request {} of client {} at {} superseded, its client at {}",
+                        o.number, o.client, o.generation, newest[o.client]
+                    ),
+                    Outcome::Done(result) => {
+                        prop_assert!(
+                            !superseded,
+                            "request {} of client {} at {} done, its client at {}",
+                            o.number, o.client, o.generation, newest[o.client]
+                        );
+                        let echoed = result.unwrap();
+                        prop_assert_eq!(echoed.as_bytes(), o.number.to_le_bytes());
+                        ran.insert(o.number, (ids[o.client], Generation(o.generation)));
+                    }
+                }
+            }
+            *hold = Some(kernel.hold(|_| true));
+            Ok(())
+        };
+        for act in acts {
+            match act {
+                Act::Submit { client, generation } => {
+                    number += 1;
+                    let pending = submit(client, generation, number);
+                    if generation < newest[client] {
+                        // Superseded at once, before `submit` returns.
+                        prop_assert!(matches!(pending.try_take(), Ok(Outcome::Superseded)));
+                        never.push(number);
+                    } else {
+                        out.push(Out { client, generation, number, pending });
+                    }
+                }
+                Act::Advance { client, generation } => {
+                    newest[client] = newest[client].max(generation);
+                    advance(client, generation);
+                }
+                Act::Settle => settle(&mut hold, &mut out, &newest, &mut ran)?,
+            }
+        }
+        settle(&mut hold, &mut out, &newest, &mut ran)?;
+        for (client, id) in ids.iter().enumerate() {
+            let generation = match client {
+                0 => kernel.generation(),
+                c => clients[c - 1].generation(),
+            };
+            prop_assert_eq!(generation, Generation(newest[client]), "client {:?}", id);
+        }
+        // Each call is recorded as its request's client and generation; every request that
+        // ran is there once, and none superseded at once is.
+        let calls = kernel.calls();
+        let mut seen = BTreeMap::new();
+        for call in &calls {
+            let Op::Echo { data } = &call.op else { panic!("{call:?}") };
+            let n = u32::from_le_bytes(data.as_bytes().try_into().unwrap());
+            prop_assert!(!never.contains(&n), "request {} started", n);
+            *seen.entry(n).or_insert(0u32) += 1;
+            if let Some(&(client, generation)) = ran.get(&n) {
+                prop_assert_eq!((call.client, call.generation), (client, generation));
+            }
+        }
+        for n in ran.keys() {
+            prop_assert_eq!(seen.get(n), Some(&1), "request {}", n);
+        }
     }
 }

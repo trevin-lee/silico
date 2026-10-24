@@ -25,24 +25,28 @@ use crate::{Error, ErrorCode};
 
 /// What runs kernel requests for recompute: the worker pool
 /// ([`KernelPool`](crate::pool::KernelPool)), or, in tests, the in-memory fake
-/// (`fake::FakeKernel`, with the `fake` feature). Every request is for a document generation;
-/// starting a newer one supersedes the older ones' requests, which come to
-/// [`Outcome::Superseded`](crate::pool::Outcome::Superseded), never a result.
+/// (`fake::FakeKernel`, with the `fake` feature), or a client of either ([`Clients`]). Every
+/// request is for a generation of the client that submits it; starting a newer one
+/// supersedes that client's older requests, which come to
+/// [`Outcome::Superseded`](crate::pool::Outcome::Superseded), never a result, and never
+/// another client's. A kernel itself is its own first client, [`ClientId::KERNEL`].
 pub trait Kernel: Send + Sync {
     /// What the kernel is, for keying results kept on disk ([`crate::cache`]): two kernels
     /// with the same identity give the same result for the same request, and a kernel that
     /// might not (another build of the worker) has another identity.
     fn identity(&self) -> &str;
 
-    /// The generation requests are for: the newest [`advance`](Self::advance) started.
+    /// The generation this client's requests are for: the newest [`advance`](Self::advance)
+    /// started.
     fn generation(&self) -> Generation;
 
-    /// Starts `generation`, superseding every older one. A generation no newer than the
-    /// current one changes nothing.
+    /// Starts `generation` for this client, superseding every older one of its own. A
+    /// generation no newer than the client's current one changes nothing.
     fn advance(&self, generation: Generation);
 
-    /// Queues `request` for `generation`, to run when the kernel is free. A request for a
-    /// generation older than the current one is superseded at once.
+    /// Queues `request` for this client's `generation`, to run when the kernel is free and
+    /// it's the client's turn. A request for a generation older than the client's current
+    /// one is superseded at once.
     fn submit<T: Send + 'static>(
         &self,
         generation: Generation,
@@ -50,9 +54,11 @@ pub trait Kernel: Send + Sync {
     ) -> Pending<T>;
 }
 
-/// A kernel shared, by the recomputes of several documents run one after another (the CLI's
-/// files): each starts a generation newer than the kernel's, so none supersedes another's
-/// finished work. Run at once, the newest supersedes the others, as on one engine.
+/// A kernel shared as one client, by the recomputes of several documents run one after
+/// another (the CLI's files): each starts a generation newer than the client's, so none
+/// supersedes another's finished work. Run at once on one client, the newest supersedes the
+/// others, as on one engine; engines that run at once each take a client of their own
+/// ([`Clients::client`]), and then none supersedes another's.
 impl<K: Kernel> Kernel for Arc<K> {
     fn identity(&self) -> &str {
         (**self).identity()
@@ -72,6 +78,56 @@ impl<K: Kernel> Kernel for Arc<K> {
         request: KernelRequest<T>,
     ) -> Pending<T> {
         (**self).submit(generation, request)
+    }
+}
+
+/// One client of a kernel: whose requests a generation is of. Each client's generations
+/// are its own, so one client's newer generation supersedes only its own older requests,
+/// and a kernel serves its clients' waiting requests in turn. [`ClientId::KERNEL`] is the
+/// kernel's own; every other is a [`Clients::client`] handle's, numbered from one in the
+/// order the kernel gave them, and never given again by that kernel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ClientId(u64);
+
+impl ClientId {
+    /// The kernel's own client: what a kernel's own [`Kernel`] implementation submits as.
+    pub const KERNEL: ClientId = ClientId(0);
+
+    /// The client numbered `number` by its kernel.
+    pub(crate) const fn new(number: u64) -> Self {
+        ClientId(number)
+    }
+
+    /// Its number: 0 for the kernel's own, then 1, 2, ... in the order the kernel gave them.
+    pub const fn number(self) -> u64 {
+        self.0
+    }
+}
+
+/// A kernel that gives handles of its own, each a client with its own generations: a
+/// handle's [`advance`](Kernel::advance) supersedes only the requests that handle
+/// submitted, never another handle's or the kernel's own, and the kernel serves its
+/// clients' waiting requests in turn, so one client's long queue doesn't starve another.
+/// Each document's engine (a session's) takes a client; a session may take more than one
+/// (a second, for reads its rebuilds must never stop). A handle has the kernel's identity,
+/// so the results kept on disk are shared between clients. Dropping a handle retires its
+/// client: its requests still waiting or held come to
+/// [`Outcome::Superseded`](crate::pool::Outcome::Superseded), and those running are
+/// stopped as superseded requests are.
+pub trait Clients: Kernel {
+    /// A handle on the kernel, as a client of its own.
+    type Client: Kernel + 'static;
+
+    /// A new client of the kernel, at generation 0. It may outlive the kernel: its requests
+    /// then end as the kernel's do once it stops.
+    fn client(&self) -> Self::Client;
+}
+
+impl<K: Clients> Clients for Arc<K> {
+    type Client = K::Client;
+
+    fn client(&self) -> K::Client {
+        (**self).client()
     }
 }
 

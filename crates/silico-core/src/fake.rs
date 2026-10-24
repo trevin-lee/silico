@@ -44,8 +44,13 @@
 //!
 //! Tests can hold requests until they're released ([`FakeKernel::hold`]), to see what runs
 //! at once or to supersede a request while it runs, and have requests refused.
+//!
+//! As the pool, it has clients ([`Clients`]): the kernel's own ([`ClientId::KERNEL`]), and
+//! each [`FakeClient`] it gives, each with its own generations, its waiting requests served
+//! in turn with the other clients'.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::ops::Bound;
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
@@ -57,9 +62,10 @@ use silico_protocol::{
 };
 
 use crate::kernel::{
-    Axis, Blob, BooleanOp, BuiltData, Curve, ElementCounts, ElementFate, ElementKind, ElementRef,
-    Ends, FaceRegions, Generation, History, InputHistory, Kernel, KernelRequest, Op, Primitive,
-    Region, Reported, ShapeData, SketchPlane, SweepKind, Topology, cone_caps, primitive_counts,
+    Axis, Blob, BooleanOp, BuiltData, ClientId, Clients, Curve, ElementCounts, ElementFate,
+    ElementKind, ElementRef, Ends, FaceRegions, Generation, History, InputHistory, Kernel,
+    KernelRequest, Op, Primitive, Region, Reported, ShapeData, SketchPlane, SweepKind, Topology,
+    cone_caps, primitive_counts,
 };
 use crate::pool::{MAX_WORKERS, Outcome, Pending, deliver, thread_error};
 use crate::sketch::{SketchSolver, SolveStopper};
@@ -70,9 +76,15 @@ use crate::{Error, ErrorCode};
 /// couldn't start.
 pub(crate) const KERNEL: &str = "fake kernel";
 
-/// A request the fake kernel started: the generation it was for, and its operation.
+/// What the fake is, for the cache's keys: the same for the kernel and each of its clients,
+/// so they share the results kept on disk.
+const IDENTITY: &str = "silico fake kernel 1";
+
+/// A request the fake kernel started: the client that submitted it, the generation of that
+/// client's it was for, and its operation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Call {
+    pub client: ClientId,
     pub generation: Generation,
     pub op: Op,
 }
@@ -84,9 +96,19 @@ pub struct FakeKernel {
     threads: Vec<JoinHandle<()>>,
 }
 
+/// A client of a [`FakeKernel`] ([`Clients::client`]): a handle with generations of its own,
+/// whose advances supersede only the requests it submitted. Dropping it retires the client:
+/// its requests waiting or held come to [`Outcome::Superseded`], as do those running when
+/// they end. It may outlive its kernel: its requests then end without a result, as the
+/// kernel's do once it's dropped.
+pub struct FakeClient {
+    shared: Arc<Shared>,
+    id: ClientId,
+}
+
 /// Holds requests a predicate picks, from when they start until it's released or dropped,
-/// or their generation is superseded (which stops them, as the pool stops a superseded
-/// request).
+/// or they're superseded, by a newer generation of their client's or its retirement (which
+/// stops them, as the pool stops a superseded request).
 #[must_use = "dropping a hold releases it"]
 pub struct Hold {
     shared: Arc<Shared>,
@@ -105,8 +127,17 @@ struct Shared {
 }
 
 struct State {
-    generation: Generation,
-    queue: VecDeque<Box<dyn Task>>,
+    /// Each client's generation, the kernel's own always among them. A client absent is
+    /// retired: whatever it submitted is superseded.
+    generations: BTreeMap<ClientId, Generation>,
+    /// Each client's requests waiting, in the order it submitted them; only clients with
+    /// some.
+    queues: BTreeMap<ClientId, VecDeque<Box<dyn Task>>>,
+    /// The client whose request started last: the next is the next client after it with
+    /// one waiting.
+    turn: Option<ClientId>,
+    /// The number the next client gets.
+    next_client: u64,
     stopping: bool,
     calls: Vec<Call>,
     running: usize,
@@ -126,8 +157,10 @@ impl FakeKernel {
     pub fn new(size: usize) -> Result<Self, Error> {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
-                generation: Generation(0),
-                queue: VecDeque::new(),
+                generations: BTreeMap::from([(ClientId::KERNEL, Generation(0))]),
+                queues: BTreeMap::new(),
+                turn: None,
+                next_client: 1,
                 stopping: false,
                 calls: Vec::new(),
                 running: 0,
@@ -237,32 +270,15 @@ impl FakeKernel {
 
 impl Kernel for FakeKernel {
     fn identity(&self) -> &str {
-        "silico fake kernel 1"
+        IDENTITY
     }
 
     fn generation(&self) -> Generation {
-        lock(&self.shared.state).generation
+        self.shared.generation(ClientId::KERNEL)
     }
 
     fn advance(&self, generation: Generation) {
-        let stale: Vec<Box<dyn Task>> = {
-            let mut state = lock(&self.shared.state);
-            if generation <= state.generation {
-                return;
-            }
-            state.generation = generation;
-            let (stale, current): (VecDeque<_>, VecDeque<_>) = state
-                .queue
-                .drain(..)
-                .partition(|task| task.generation() < generation);
-            state.queue = current;
-            stale.into_iter().collect()
-        };
-        // Held requests of older generations stop.
-        self.shared.changed.notify_all();
-        for task in stale {
-            task.supersede();
-        }
+        self.shared.advance(ClientId::KERNEL, generation);
     }
 
     fn submit<T: Send + 'static>(
@@ -270,37 +286,34 @@ impl Kernel for FakeKernel {
         generation: Generation,
         request: KernelRequest<T>,
     ) -> Pending<T> {
-        let (reply, outcome) = mpsc::sync_channel(1);
-        let pending = Pending::new(request.name(), KERNEL, outcome);
-        let task = Box::new(Submitted {
-            generation,
-            request,
-            reply,
-            span: tracing::Span::current(),
-        });
+        self.shared.submit(ClientId::KERNEL, generation, request)
+    }
+}
+
+impl Clients for FakeKernel {
+    type Client = FakeClient;
+
+    fn client(&self) -> FakeClient {
         let mut state = lock(&self.shared.state);
-        if state.stopping {
-            // Dropping the task tells the caller the kernel stopped.
-            return pending;
-        }
-        if generation < state.generation {
-            drop(state);
-            task.supersede();
-            return pending;
-        }
-        state.queue.push_back(task);
+        // Never given again: 2^64 clients can't be made in any run.
+        let id = ClientId::new(state.next_client);
+        state.next_client = state.next_client.saturating_add(1);
+        state.generations.insert(id, Generation(0));
         drop(state);
-        self.shared.work.notify_one();
-        pending
+        tracing::debug!(client = id.number(), "fake kernel client started");
+        FakeClient {
+            shared: Arc::clone(&self.shared),
+            id,
+        }
     }
 }
 
 impl Drop for FakeKernel {
     fn drop(&mut self) {
-        let waiting: Vec<Box<dyn Task>> = {
+        let waiting: Vec<VecDeque<Box<dyn Task>>> = {
             let mut state = lock(&self.shared.state);
             state.stopping = true;
-            state.queue.drain(..).collect()
+            std::mem::take(&mut state.queues).into_values().collect()
         };
         drop(waiting);
         self.shared.work.notify_all();
@@ -308,6 +321,148 @@ impl Drop for FakeKernel {
         for thread in self.threads.drain(..) {
             let _ = thread.join();
         }
+    }
+}
+
+impl FakeClient {
+    /// The client it is: what its requests' [`Call`]s say.
+    pub fn id(&self) -> ClientId {
+        self.id
+    }
+}
+
+impl Kernel for FakeClient {
+    fn identity(&self) -> &str {
+        IDENTITY
+    }
+
+    fn generation(&self) -> Generation {
+        self.shared.generation(self.id)
+    }
+
+    fn advance(&self, generation: Generation) {
+        self.shared.advance(self.id, generation);
+    }
+
+    fn submit<T: Send + 'static>(
+        &self,
+        generation: Generation,
+        request: KernelRequest<T>,
+    ) -> Pending<T> {
+        self.shared.submit(self.id, generation, request)
+    }
+}
+
+impl Drop for FakeClient {
+    fn drop(&mut self) {
+        let _span = tracing::debug_span!("retire_client", client = self.id.number()).entered();
+        let waiting = {
+            let mut state = lock(&self.shared.state);
+            state.generations.remove(&self.id);
+            state.queues.remove(&self.id)
+        };
+        // Its held requests stop.
+        self.shared.changed.notify_all();
+        for task in waiting.into_iter().flatten() {
+            task.supersede();
+        }
+    }
+}
+
+impl Shared {
+    /// `client`'s generation: the newest it started.
+    fn generation(&self, client: ClientId) -> Generation {
+        // Only a live client asks, and a live client's generation is there.
+        lock(&self.state)
+            .generations
+            .get(&client)
+            .copied()
+            .unwrap_or(Generation(0))
+    }
+
+    /// Starts `generation` for `client`, superseding its older requests waiting and held.
+    fn advance(&self, client: ClientId, generation: Generation) {
+        let stale: Vec<Box<dyn Task>> = {
+            let mut state = lock(&self.state);
+            match state.generations.get_mut(&client) {
+                Some(current) if generation > *current => *current = generation,
+                _ => return,
+            }
+            let queue = state.queues.remove(&client).unwrap_or_default();
+            let (stale, current): (VecDeque<_>, VecDeque<_>) = queue
+                .into_iter()
+                .partition(|task| task.generation() < generation);
+            if !current.is_empty() {
+                state.queues.insert(client, current);
+            }
+            stale.into_iter().collect()
+        };
+        // Held requests of older generations stop.
+        self.changed.notify_all();
+        for task in stale {
+            task.supersede();
+        }
+    }
+
+    /// Queues `request`, `client`'s, for `generation`.
+    fn submit<T: Send + 'static>(
+        &self,
+        client: ClientId,
+        generation: Generation,
+        request: KernelRequest<T>,
+    ) -> Pending<T> {
+        let (reply, outcome) = mpsc::sync_channel(1);
+        let pending = Pending::new(request.name(), KERNEL, outcome);
+        let task = Box::new(Submitted {
+            client,
+            generation,
+            request,
+            reply,
+            span: tracing::Span::current(),
+        });
+        let mut state = lock(&self.state);
+        if state.stopping {
+            // Dropping the task tells the caller the kernel stopped.
+            return pending;
+        }
+        if state.superseded(client, generation) {
+            drop(state);
+            task.supersede();
+            return pending;
+        }
+        state.queues.entry(client).or_default().push_back(task);
+        drop(state);
+        self.work.notify_one();
+        pending
+    }
+}
+
+impl State {
+    /// Whether a request of `client`'s for `generation` is superseded: the client has
+    /// started a newer generation, or is retired.
+    fn superseded(&self, client: ClientId, generation: Generation) -> bool {
+        self.generations
+            .get(&client)
+            .is_none_or(|&current| generation < current)
+    }
+
+    /// The next request to start: the first waiting of the next client after the one whose
+    /// request started last, round the clients in order, so each client's turn comes.
+    fn next(&mut self) -> Option<Box<dyn Task>> {
+        let after = self.turn.map_or(Bound::Unbounded, Bound::Excluded);
+        let client = self
+            .queues
+            .range((after, Bound::Unbounded))
+            .next()
+            .or_else(|| self.queues.first_key_value())
+            .map(|(&client, _)| client)?;
+        let queue = self.queues.get_mut(&client)?;
+        let task = queue.pop_front();
+        if queue.is_empty() {
+            self.queues.remove(&client);
+        }
+        self.turn = Some(client);
+        task
     }
 }
 
@@ -331,13 +486,14 @@ impl Drop for Hold {
 
 /// A queued request, its result's type hidden.
 trait Task: Send {
+    fn client(&self) -> ClientId;
     fn generation(&self) -> Generation;
     fn op(&self) -> &Op;
     /// Answers the request (with `refusal`, if a rule gave one), reads the answer as a
     /// worker's is read, in the span it was submitted in, and ends it: under the lock
     /// `advance` takes, as the pool does, it stops counting as running and its outcome is
-    /// sent, superseded if a newer generation has started. Once `advance` returns, no result
-    /// of an older generation can still arrive.
+    /// sent, superseded if its client has started a newer generation or is retired. Once
+    /// `advance` returns, no result of the client's older generations can still arrive.
     fn run(self: Box<Self>, refusal: Option<Error>, shared: &Shared);
     /// Ends a request that started without running it, under the lock, as `run` does.
     fn stop(self: Box<Self>, shared: &Shared);
@@ -346,6 +502,7 @@ trait Task: Send {
 }
 
 struct Submitted<T> {
+    client: ClientId,
     generation: Generation,
     request: KernelRequest<T>,
     reply: SyncSender<Outcome<T>>,
@@ -354,6 +511,10 @@ struct Submitted<T> {
 }
 
 impl<T: Send + 'static> Task for Submitted<T> {
+    fn client(&self) -> ClientId {
+        self.client
+    }
+
     fn generation(&self) -> Generation {
         self.generation
     }
@@ -364,6 +525,7 @@ impl<T: Send + 'static> Task for Submitted<T> {
 
     fn run(self: Box<Self>, refusal: Option<Error>, shared: &Shared) {
         let Submitted {
+            client,
             generation,
             request,
             reply,
@@ -378,7 +540,7 @@ impl<T: Send + 'static> Task for Submitted<T> {
         });
         let mut state = lock(&shared.state);
         state.running -= 1;
-        let outcome = if generation < state.generation {
+        let outcome = if state.superseded(client, generation) {
             Outcome::Superseded
         } else {
             Outcome::Done(result)
@@ -405,7 +567,8 @@ impl<T: Send + 'static> Task for Submitted<T> {
     }
 }
 
-/// One of the kernel's threads: runs queued requests until the kernel stops.
+/// One of the kernel's threads: runs queued requests, the clients' in turn, until the
+/// kernel stops.
 fn serve(shared: &Shared) {
     loop {
         let mut state = lock(&shared.state);
@@ -413,7 +576,7 @@ fn serve(shared: &Shared) {
             if state.stopping {
                 return;
             }
-            if let Some(task) = state.queue.pop_front() {
+            if let Some(task) = state.next() {
                 break task;
             }
             state = shared
@@ -424,6 +587,7 @@ fn serve(shared: &Shared) {
         state.running += 1;
         state.most_running = state.most_running.max(state.running);
         state.calls.push(Call {
+            client: task.client(),
             generation: task.generation(),
             op: task.op().clone(),
         });
@@ -441,7 +605,7 @@ fn serve(shared: &Shared) {
         }
         while broken.is_none()
             && !state.stopping
-            && task.generation() >= state.generation
+            && !state.superseded(task.client(), task.generation())
             && holding
                 .iter()
                 .any(|&index| state.holds.get(index).is_some_and(|rule| !rule.released))
@@ -451,7 +615,7 @@ fn serve(shared: &Shared) {
                 .wait(state)
                 .unwrap_or_else(PoisonError::into_inner);
         }
-        if state.stopping || task.generation() < state.generation {
+        if state.stopping || state.superseded(task.client(), task.generation()) {
             drop(state);
             task.stop(shared);
             continue;
