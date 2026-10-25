@@ -16,6 +16,8 @@ mod adversarial_render;
 mod bench;
 #[path = "client.rs"]
 mod client;
+#[path = "command.rs"]
+mod command;
 #[path = "worker.rs"]
 mod worker;
 
