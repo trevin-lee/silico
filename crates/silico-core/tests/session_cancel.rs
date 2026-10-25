@@ -143,6 +143,10 @@ fn cancel_naming_the_running_check_stops_its_rebuild_and_the_check_answers_cance
     );
     // Its box never let go by the test: the cancel stopped it, as a superseded request is.
     let stopped = answer(check);
+    assert!(
+        f.kernel.wait_idle(HANG),
+        "the cancelled check's box still runs"
+    );
     assert_eq!(refusal(&stopped), cancelled("check"));
     assert_eq!(stopped.model, None);
     assert_eq!(stopped.session.unwrap().revision, Revision::OPENED);
@@ -237,14 +241,22 @@ fn a_cancel_of_nothing_running_or_that_comes_late_is_refused_and_stops_nothing_a
     // A name no command has is said quoted, so it can't act on a terminal.
     let (_, message, _, _) = refusal(&f.sessions.cancel(&f.id, "che\u{1b}ck"));
     assert_eq!(message, "no \"che\\u{1b}ck\" is running in session s1");
-    // The check runs to its end; a cancel after it is refused.
-    let (hold, check) = f.running_held(|| f.sessions.check(&f.id));
+    // The check runs to its end; the edit queued after it runs, its box (41 long) held; a
+    // cancel of the check that comes now is refused, naming the edit, and leaves it be.
+    let hold = f
+        .kernel
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx > 40.5));
+    let check = f.sessions.check(&f.id);
     let edit = f.longer();
-    hold.release();
     assert!(answer(check).result.unwrap().is_empty());
+    assert!(f.kernel.wait_running(1, HANG));
     let late = f.sessions.cancel(&f.id, "check");
-    assert!(late.result.is_err(), "{late:?}");
-    // The edit queued after it is untouched: saved, 41 long.
+    assert_eq!(
+        late.result.unwrap_err().errors()[0].candidates(),
+        ["set_field".to_owned()]
+    );
+    hold.release();
+    // Saved, 41 long.
     let edited = answer(edit);
     assert!(
         edited.result.unwrap().commit.unwrap().written,

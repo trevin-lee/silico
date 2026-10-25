@@ -219,6 +219,33 @@ impl FakeKernel {
         true
     }
 
+    /// Waits up to `timeout` until no request is running: whether none was. A held request
+    /// stops running once it's superseded, its hold still in place.
+    pub fn wait_idle(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now().checked_add(timeout);
+        let mut state = lock(&self.shared.state);
+        while state.running > 0 {
+            state = match deadline {
+                Some(deadline) => {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        return false;
+                    }
+                    self.shared
+                        .changed
+                        .wait_timeout(state, left)
+                        .map_or_else(|e| e.into_inner().0, |(state, _)| state)
+                }
+                None => self
+                    .shared
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner),
+            };
+        }
+        true
+    }
+
     /// Holds every request `picks` (called once for each request as it starts, with the
     /// kernel's state locked, so it mustn't call the kernel) until the hold is released.
     pub fn hold(&self, picks: impl Fn(&Op) -> bool + Send + Sync + 'static) -> Hold {
