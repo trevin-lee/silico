@@ -16,6 +16,10 @@ use crate::document::{Feature, FeatureId};
 use crate::recompute::Model;
 use crate::{Error, ErrorCode};
 
+/// A session's ID as a request's schema gives it, the IDs [`SessionId::parse`] reads: `s`
+/// and a whole number from 1, with no leading zeros.
+pub(crate) const SESSION_ID_PATTERN: &str = r"^s[1-9][0-9]*$";
+
 /// A session's ID, written `s1`, `s2`, ...: the process's count of opens, never reused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SessionId(pub(super) u64);

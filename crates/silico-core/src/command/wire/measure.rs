@@ -8,6 +8,7 @@ use schemars::JsonSchema;
 use super::elements::ModelChoiceSchema;
 use super::{Json, RequestFields, ToWire, wire_shape};
 use crate::command::measure::{Bodies, MassProperties};
+use crate::command::session::SESSION_ID_PATTERN;
 use crate::command::{ModelChoice, Problems, SessionId};
 use crate::document::json::Node;
 use crate::document::{FeatureId, Length, Measure};
@@ -45,7 +46,7 @@ impl ToWire for MassPropertiesRequest {
             ("model", self.model.to_wire()),
             (
                 "feature",
-                Json::or_null(self.feature.as_ref(), |f| Json::str(f.as_str())),
+                Json::or_null(self.feature.as_ref(), ToWire::to_wire),
             ),
         ])
     }
@@ -54,7 +55,7 @@ impl ToWire for MassPropertiesRequest {
 impl ToWire for MassProperties {
     fn to_wire(&self) -> Json<'_> {
         Json::object([
-            ("feature", Json::str(self.feature.as_str())),
+            ("feature", self.feature.to_wire()),
             ("volume", Json::measure(self.volume)),
             ("area", Json::measure(self.area)),
             ("center_of_mass", Json::point(self.center_of_mass)),
@@ -78,7 +79,7 @@ impl ToWire for Bodies {
 #[schemars(rename = "MassPropertiesRequest", transform = wire_shape)]
 pub struct MassPropertiesRequestSchema {
     /// The session's ID, as `open` gave it.
-    #[schemars(regex(pattern = r"^s[1-9][0-9]*$"))]
+    #[schemars(regex(pattern = SESSION_ID_PATTERN))]
     pub session: String,
     pub model: ModelChoiceSchema,
     /// The feature whose solid to measure (any feature that built one, consumed or not), or

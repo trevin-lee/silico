@@ -9,6 +9,7 @@
 use schemars::JsonSchema;
 
 use super::{ErrorSchema, Json, RequestFields, ToWire, problems, wire_shape};
+use crate::command::session::SESSION_ID_PATTERN;
 use crate::command::{Begun, Committed, Problems, Reformatted, RolledBack, SessionId};
 use crate::document::json::Node;
 use crate::document::{FeatureId, PROBLEMS_LISTED};
@@ -66,15 +67,13 @@ impl ToWire for FormatRequest {
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("session", self.session.to_wire()),
-            ("features", Json::or_null(self.features.as_deref(), ids)),
+            (
+                "features",
+                Json::or_null(self.features.as_deref(), Json::ids),
+            ),
             ("write", Json::bool(self.write)),
         ])
     }
-}
-
-/// Features' IDs, in order.
-pub(super) fn ids(ids: &[FeatureId]) -> Json<'_> {
-    Json::array(ids.iter().map(|id| Json::str(id.as_str())))
 }
 
 impl ToWire for Begun {
@@ -93,8 +92,8 @@ impl ToWire for Committed {
         Json::object([
             ("written", Json::bool(self.written)),
             ("path", Json::str(&self.path)),
-            ("refingerprinted", ids(&self.refingerprinted)),
-            ("resolved", ids(&self.resolved)),
+            ("refingerprinted", Json::ids(&self.refingerprinted)),
+            ("resolved", Json::ids(&self.resolved)),
             ("problems", problems),
             ("problems_total", problems_total),
         ])
@@ -118,9 +117,9 @@ impl ToWire for Reformatted {
             ("changed", Json::bool(self.changed)),
             ("written", Json::bool(self.written)),
             ("path", Json::str(&self.path)),
-            ("refingerprinted", ids(&self.refingerprinted)),
-            ("resolved", ids(&self.resolved)),
-            ("accepted", ids(&self.accepted)),
+            ("refingerprinted", Json::ids(&self.refingerprinted)),
+            ("resolved", Json::ids(&self.resolved)),
+            ("accepted", Json::ids(&self.accepted)),
             ("problems", problems),
             ("problems_total", problems_total),
         ])
@@ -133,7 +132,7 @@ impl ToWire for Reformatted {
 #[schemars(rename = "BeginRequest", transform = wire_shape)]
 pub struct BeginRequestSchema {
     /// The session's ID, as `open` gave it.
-    #[schemars(regex(pattern = r"^s[1-9][0-9]*$"))]
+    #[schemars(regex(pattern = SESSION_ID_PATTERN))]
     pub session: String,
 }
 
@@ -151,7 +150,7 @@ pub struct BeginResultSchema {
 #[schemars(rename = "CommitRequest", transform = wire_shape)]
 pub struct CommitRequestSchema {
     /// The session's ID, as `open` gave it.
-    #[schemars(regex(pattern = r"^s[1-9][0-9]*$"))]
+    #[schemars(regex(pattern = SESSION_ID_PATTERN))]
     pub session: String,
 }
 
@@ -184,7 +183,7 @@ pub struct CommitResultSchema {
 #[schemars(rename = "RollbackRequest", transform = wire_shape)]
 pub struct RollbackRequestSchema {
     /// The session's ID, as `open` gave it.
-    #[schemars(regex(pattern = r"^s[1-9][0-9]*$"))]
+    #[schemars(regex(pattern = SESSION_ID_PATTERN))]
     pub session: String,
 }
 
@@ -204,7 +203,7 @@ pub struct RollbackResultSchema {
 #[schemars(rename = "FormatRequest", transform = wire_shape)]
 pub struct FormatRequestSchema {
     /// The session's ID, as `open` gave it.
-    #[schemars(regex(pattern = r"^s[1-9][0-9]*$"))]
+    #[schemars(regex(pattern = SESSION_ID_PATTERN))]
     pub session: String,
     /// The features whose drift to accept, by ID, or null for every feature's. Any other
     /// drifted feature keeps its stored fingerprint and is a problem.

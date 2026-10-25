@@ -92,6 +92,7 @@ pub use types::{
     Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running, SessionId,
     SessionInfo, Status,
 };
+pub(crate) use types::SESSION_ID_PATTERN;
 use types::{READ_STOPPED, SESSION_STOPPED};
 
 /// The most sessions one process holds open at once (decision 18): each may start a sketch

@@ -857,7 +857,7 @@ fn schema_prints_the_documents_or_a_commands_as_committed() {
         String::from_utf8(schema(&["document"]).stdout).unwrap(),
         core_contract("document-schema.json")
     );
-    for command in ["elements", "query", "mass_properties", "schema"] {
+    for (command, _) in silico_core::command::wire::COMMANDS {
         let out = schema(&[command]);
         assert_eq!(out.status.code(), Some(0), "{command}: {}", stderr(&out));
         assert!(out.stderr.is_empty(), "{command}");

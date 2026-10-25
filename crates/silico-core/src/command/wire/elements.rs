@@ -16,6 +16,7 @@ use crate::command::elements::{
     MEASURES_AT_MOST, MeasureName, Order, Quantity, QuantityKind, Queried, Query, Range, Tied,
     too_many_ranges,
 };
+use crate::command::session::SESSION_ID_PATTERN;
 use crate::command::{ModelChoice, Problems, SessionId};
 use crate::document::json::Node;
 use crate::document::{Angle, FeatureId, Length, Measure};
@@ -140,7 +141,8 @@ fn range(f: &mut RequestFields<'_>) -> Option<Range> {
         Some(QuantityKind::Length) => f.nullable_length(key).map(|b| b.map(Quantity::Length)),
         Some(QuantityKind::Angle) => f.nullable_angle(key).map(|b| b.map(Quantity::Angle)),
         None => {
-            f.unread(key);
+            // Taken unread: its measure was refused.
+            f.node(key);
             None
         }
     };
@@ -161,7 +163,7 @@ impl ToWire for ElementsRequest {
             ("model", self.model.to_wire()),
             (
                 "feature",
-                Json::or_null(self.feature.as_ref(), |f| Json::str(f.as_str())),
+                Json::or_null(self.feature.as_ref(), ToWire::to_wire),
             ),
             ("after", Json::or_null(self.after.as_ref(), ToWire::to_wire)),
             ("limit", Json::whole(self.limit.into())),
@@ -178,7 +180,7 @@ impl ToWire for QueryRequest {
             ("model", self.model.to_wire()),
             (
                 "feature",
-                Json::or_null(q.feature.as_ref(), |f| Json::str(f.as_str())),
+                Json::or_null(q.feature.as_ref(), ToWire::to_wire),
             ),
             ("kind", Json::str(q.kind.word())),
             ("type", Json::or_null(q.r#type, |t| Json::str(t.word()))),
@@ -246,7 +248,7 @@ impl ToWire for Entry {
                 Json::array(self.aliases.iter().map(ToWire::to_wire)),
             ),
             ("stable", Json::bool(self.stable)),
-            ("feature", Json::str(self.feature.as_str())),
+            ("feature", self.feature.to_wire()),
             ("kind", Json::str(self.kind.word())),
             ("type", Json::str(self.r#type.word())),
             ("area", Json::or_null(self.area, Json::measure)),
@@ -301,7 +303,7 @@ impl ToWire for Cursor {
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("revision", self.revision.to_wire()),
-            ("feature", Json::str(self.feature.as_str())),
+            ("feature", self.feature.to_wire()),
             ("name", Json::str(&self.name)),
         ])
     }
@@ -476,7 +478,7 @@ pub struct CursorSchema {
 #[schemars(rename = "ElementsRequest", transform = wire_shape)]
 pub struct ElementsRequestSchema {
     /// The session's ID, as `open` gave it.
-    #[schemars(regex(pattern = r"^s[1-9][0-9]*$"))]
+    #[schemars(regex(pattern = SESSION_ID_PATTERN))]
     pub session: String,
     pub model: ModelChoiceSchema,
     /// The feature whose solid to list, or null for every body (the solids no later
@@ -615,7 +617,7 @@ pub struct OrderSchema {
 #[schemars(rename = "QueryRequest", transform = wire_shape)]
 pub struct QueryRequestSchema {
     /// The session's ID, as `open` gave it.
-    #[schemars(regex(pattern = r"^s[1-9][0-9]*$"))]
+    #[schemars(regex(pattern = SESSION_ID_PATTERN))]
     pub session: String,
     pub model: ModelChoiceSchema,
     /// The feature whose solid to query, or null for every body.
