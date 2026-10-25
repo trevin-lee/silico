@@ -32,7 +32,7 @@ fn dropping_the_client_with_renders_queued_behind_a_hung_one_returns_promptly() 
     let c = client(
         TEST_WORKER,
         RenderSettings {
-            timeout: Duration::from_secs(2),
+            timeout: Duration::from_secs(10),
             ..RenderSettings::default()
         },
     );

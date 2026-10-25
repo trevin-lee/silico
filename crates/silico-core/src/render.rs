@@ -238,7 +238,9 @@ pub struct RenderClient {
     shared: Arc<Shared>,
 }
 
-/// What the client and its thread share.
+/// What the client and its thread share. Its locks and a render's `stage` are never held
+/// together, so no two threads can each hold one the other waits for: a render's `stage`
+/// is held only with its worker's own lock, taken under it when a cancel kills the worker.
 #[derive(Default)]
 struct Shared {
     /// The worker's process ID while it runs, for tests that watch it stop.
@@ -321,7 +323,10 @@ impl Drop for RenderClient {
     fn drop(&mut self) {
         self.shared.closing.store(true, Ordering::SeqCst);
         lock(&self.jobs).take();
-        if let Some(current) = lock(&self.shared.current).as_ref() {
+        // Taken out of its lock before it's cancelled: no lock is held while another is
+        // taken (see `Shared`).
+        let current = lock(&self.shared.current).clone();
+        if let Some(current) = current {
             current.cancel();
         }
         if let Some(thread) = self.thread.take() {
@@ -372,16 +377,17 @@ fn serve(exe: &Arc<Executable>, settings: &RenderSettings, queue: &Receiver<Job>
             lock(&shared.current).take();
             continue;
         }
-        {
-            // A render cancelled while queued has answered: its turn is skipped.
+        // A render cancelled while queued has answered: its turn is skipped.
+        let skipped = {
             let mut stage = lock(&job.state.stage);
-            if stage.cancelled {
-                lock(&shared.current).take();
-                continue;
+            if !stage.cancelled {
+                stage.sent = true;
             }
-            stage.sent = true;
-        }
-        let Some(scene) = job.scene.take() else {
+            stage.cancelled
+        };
+        let scene = job.scene.take();
+        let Some(scene) = scene.filter(|_| !skipped) else {
+            lock(&shared.current).take();
             continue;
         };
         let outcome = server.turn(scene, &job.state);

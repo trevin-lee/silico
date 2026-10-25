@@ -1,5 +1,6 @@
-//! `classify`: whether a point is inside a shape or on its boundary, by OCCT's solid
-//! classifier (M4.6: a camera's eye inside a body), against what each shape is by hand.
+//! `classify`: where a point is against a shape (inside, on its boundary, or outside), by
+//! OCCT's solid classifier (M4.6: a camera's eye inside a body), against what each shape is
+//! by hand.
 
 use silico_kernel::{
     BooleanOp, PointPlace, Primitive, Shape, boolean, classify, make, make_box, translate,
