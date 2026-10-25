@@ -6,7 +6,8 @@
 //! errors name fields by their paths alone). A feature is removed from the document as it
 //! is; a text replaced is read as a file is. Each edited document is then written in
 //! canonical form, and that text put through the reader and the gate, once: a bad edit is
-//! refused whole, with every error the gate finds, places counted as that text has them.
+//! refused whole, with every error the gate finds, places counted as the edited document
+//! has them (the request's or the text's own order, not the canonical text's).
 //! What's accepted is that text and the document it reads as, so the document a session
 //! holds after an edit is always its canonical text's (its sketches' lists in ID order).
 //!
@@ -21,8 +22,8 @@ use std::sync::Arc;
 use super::{Gated, Problems};
 use crate::document::json::{self, Member, Node, Plain, Value};
 use crate::document::{
-    self, Document, ElementId, ElementKind, Feature, FeatureId, FeatureVersion, ID_ALPHABET,
-    ID_LENGTH, NamingScheme, Operation, PROBLEMS_LISTED, Sketch,
+    self, Checked, Document, ElementId, ElementKind, Feature, FeatureId, FeatureVersion,
+    ID_ALPHABET, ID_LENGTH, NamingScheme, Operation, PROBLEMS_LISTED, Sketch,
 };
 use crate::{Error, ErrorCode};
 
@@ -34,14 +35,19 @@ pub(super) struct Candidate {
 }
 
 /// `document`, edited, written in canonical form, and that text through the reader and the
-/// gate, once: so the document held is the text's, and the gate's errors count places as
-/// the text has them; or every error the gate found. `field` is the request's field that
-/// holds the edit, which a document too long to write names.
+/// gate, once: so the document held is the text's. Or, refused, every error the gate finds
+/// in `document` as given, its places counted in its own order (a sketch's members as the
+/// request or the text gave them, as `silico check` counts a file's), not the canonical
+/// text's; or the canonical text's errors, if the gate takes `document` as given. `field`
+/// is the request's field that holds the edit, which a document too long to write names.
 fn candidate(document: &Document, field: &str) -> Result<Candidate, Problems> {
     let text = document::write(document).map_err(|e| e.with_parameter(field))?;
     let gated = Gated::of(text.as_bytes());
     if !matches!(gated, Gated::Checked(_)) {
-        return Err(gated.problems());
+        return Err(match Checked::try_new(document.clone()) {
+            Err((_, invalid)) => Problems::from(invalid),
+            Ok(_) => gated.problems(),
+        });
     }
     Ok(Candidate {
         text: Arc::new(text.into_bytes()),
@@ -594,8 +600,9 @@ fn repeated_ids(
 
 /// `feature`, a feature as the document writes it, added to the end of `document`'s
 /// timeline (the design's `add_feature`): with the ID `new_id` makes if it gives none, and
-/// the feature type's current version if it gives no `v` (each `null` given as none: the
-/// design's section 2); the feature as the document then holds it, and the state it leads
+/// the feature type's current version if it gives no `v` (each `null` given as none, as is
+/// a `null` fingerprint, note, or other member the feature may leave out: the design's
+/// section 2); the feature as the document then holds it, and the state it leads
 /// to. Refused for a feature that isn't an object, gives a fingerprint (a commit writes
 /// it), or gives an ID that isn't one, or that the document holds (each naming
 /// `feature.id`); and with every error the reader or the gate finds in the document with
@@ -615,6 +622,22 @@ pub(super) fn add_feature(
             .with_suggestion("give the feature as the document writes it: an object"),
         ));
     };
+    // A member given as `null` that the feature may leave out is left out (the design's
+    // section 2): its ID, its version, its fingerprint, and the members of its type that
+    // may be ([`document::optional_members`]).
+    let type_name = members
+        .iter()
+        .find(|m| m.key == "type")
+        .and_then(|m| m.value.value.as_str())
+        .map(str::to_owned);
+    let optional = type_name
+        .as_deref()
+        .map_or(&[][..], document::optional_members);
+    members.retain(|m| {
+        !(m.value.value == Value::Null
+            && (matches!(m.key.as_str(), "id" | "v" | "fingerprint")
+                || optional.contains(&m.key.as_str())))
+    });
     if members.iter().any(|m| m.key == "fingerprint") {
         return Err(Problems::from(
             Error::new(
@@ -625,7 +648,6 @@ pub(super) fn add_feature(
             .with_suggestion("leave fingerprint out"),
         ));
     }
-    members.retain(|m| !(matches!(m.key.as_str(), "id" | "v") && m.value.value == Value::Null));
     let unplaced = |value: Value| Node {
         at: json::At::UNPLACED,
         value,

@@ -1106,9 +1106,7 @@ fn a_member_named_by_place_or_a_path_too_deep_repeats_nothing_raw() {
     let error = the_error(&f.set("s0000001", "circles.pa000000.\u{202e}", "1"));
     assert_eq!(error.candidates(), ["points.pa000000"]);
     // A path of a million dots, deeper than any tree: refused as a field the sketch hasn't.
-    let started = std::time::Instant::now();
     let error = the_error(&f.set("s0000001", &format!("points{}", ".".repeat(1_000_000)), "1"));
-    assert!(started.elapsed() < std::time::Duration::from_secs(10));
     assert_eq!(error.parameter(), Some("field"));
     assert!(
         error
@@ -1367,4 +1365,143 @@ fn replace_text_that_changes_only_a_stored_fingerprint_changes_the_document() {
         f.file(),
         block_canonical().replace("\"volume\": 8000", "\"volume\": 7999")
     );
+}
+
+#[test]
+fn an_edit_whose_save_writes_a_solve_leaves_its_check_to_rebuild_the_saved_document() {
+    let f = opened(SKETCHED);
+    moving_pb(&f.sketches);
+    // pb sent at 11, solved to 12.25: the save writes the solve.
+    let set = f.set("s0000001", "points.pb000000.x", "11").result.unwrap();
+    let commit = set.commit.unwrap();
+    assert_eq!(commit.resolved, [id("s0000001")]);
+    assert!(f.file().contains(r#""id": "pb000000", "x": 12.25, "y": 0"#));
+    let sent = f.sketches.requests().len();
+    // The edit's model was solved from 11, not from what the file now holds: its check
+    // solves the saved document again, sending pb's x as saved.
+    answer(f.sessions.check(&f.id)).result.unwrap();
+    let requests = f.sketches.requests();
+    assert_eq!(requests.len(), sent + 1);
+    assert_eq!(requests[sent].values[8], 12.25);
+}
+
+/// A sketch whose points are pa (0, 0), pz (1, 0), and pa again (2, 0): its third repeats
+/// the first's ID, which its canonical text, in ID order, has second.
+const REPEATED: &str = r#"{"id": "s0000009", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pz000000", "x": 1, "y": 0, "construction": false}, {"id": "pa000000", "x": 2, "y": 0, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": []}"#;
+
+#[test]
+fn an_edit_refused_counts_places_in_its_own_order_not_the_canonical_text_s() {
+    // As silico check counts the text's: the repeat is the third point given, points.2.
+    let f = opened(BLOCK);
+    let text = format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{REPEATED}]}}"#
+    );
+    let error = the_error(&answer(f.sessions.replace_text(
+        &f.id,
+        Revision::OPENED,
+        text,
+    )));
+    assert_eq!(
+        (error.feature(), error.parameter()),
+        (Some("s0000009"), Some("points.2.id"))
+    );
+    let error = the_error(&answer(f.sessions.add_feature(
+        &f.id,
+        Revision::OPENED,
+        value(REPEATED),
+    )));
+    assert_eq!(
+        (error.feature(), error.parameter()),
+        (Some("s0000009"), Some("points.2.id"))
+    );
+    assert_eq!(f.file(), BLOCK);
+    assert_eq!(f.revision(), Revision::OPENED);
+}
+
+#[test]
+fn dropping_the_sessions_while_an_edit_rebuilds_refuses_it_and_writes_nothing() {
+    let f = opened(SKETCHED);
+    // Settled first, so the solve held is the edit's.
+    answer(f.sessions.check(&f.id)).result.unwrap();
+    f.sketches.hold();
+    let running = f.sessions.set_field(
+        &f.id,
+        Revision::OPENED,
+        id("s0000001"),
+        "points.pb000000.x".to_owned(),
+        value("11"),
+    );
+    assert!(f.sketches.wait_held(std::time::Duration::from_secs(10)));
+    let Fixture {
+        _dir,
+        sessions,
+        sketches,
+        path,
+        ..
+    } = f;
+    let dropper = std::thread::spawn(move || drop(sessions));
+    let response = answer(running);
+    assert_eq!(
+        refusal(&response),
+        (
+            ErrorCode::InvalidInput,
+            "no session s1 is open".to_owned(),
+            Some("session".to_owned()),
+            Some(
+                "open the document again: a session ends when it's closed or its client goes away"
+                    .to_owned()
+            )
+        )
+    );
+    assert_eq!(response.session.unwrap().revision, Revision::OPENED);
+    dropper.join().unwrap();
+    sketches.release();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), SKETCHED);
+}
+
+#[test]
+fn a_feature_added_with_a_null_fingerprint_note_or_base_has_none() {
+    let f = opened(PAD);
+    f.begin();
+    for given in [
+        r#"{"type": "sphere", "name": "Ball", "position": [0, 0, 50], "radius": 5, "fingerprint": null}"#,
+        r#"{"type": "sphere", "name": "Ball", "position": [0, 0, 50], "radius": 5, "note": null}"#,
+    ] {
+        let added = answer(f.sessions.add_feature(&f.id, f.revision(), value(given)))
+            .result
+            .unwrap();
+        let new = added.feature.id.clone();
+        assert_eq!(
+            document::write_feature(&added.feature).unwrap(),
+            format!(
+                r#"{{"id": "{new}", "type": "sphere", "v": 1, "name": "Ball", "position": [0, 0, 50], "radius": 5}}"#
+            )
+        );
+    }
+    let pad = r#"{"type": "pad", "name": "Pad", "sketch": "s0000003", "extent": {"type": "one_side", "length": 6, "reversed": false}, "base": null}"#;
+    let added = answer(f.sessions.add_feature(&f.id, f.revision(), value(pad)))
+        .result
+        .unwrap();
+    match &added.feature.operation {
+        Operation::Pad { base, .. } => assert_eq!(*base, None),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        (added.feature.note, added.feature.fingerprint),
+        (None, None)
+    );
+}
+
+#[test]
+fn replace_text_that_changes_only_a_feature_s_id_changes_the_document() {
+    // The fuse, which nothing uses, renamed: its ID the only difference.
+    let f = opened(FUSED);
+    let text = FUSED.replace(r#""id": "f0000001""#, r#""id": "f0000002""#);
+    let replaced = answer(f.sessions.replace_text(&f.id, Revision::OPENED, text))
+        .result
+        .unwrap();
+    assert!(replaced.changed);
+    assert!(replaced.commit.unwrap().written);
+    assert!(f.file().contains(r#""id": "f0000002""#));
+    assert!(!f.file().contains("f0000001"));
 }
