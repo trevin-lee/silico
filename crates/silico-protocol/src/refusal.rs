@@ -8,7 +8,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{BooleanOp, ElementRef, FailureKind, LENGTH_TOLERANCE, OFFSET_FIELD, format_number};
+use crate::{
+    BooleanOp, ElementKind, ElementRef, FailureKind, LENGTH_TOLERANCE, OFFSET_FIELD, format_number,
+};
 
 /// What to do when the kernel runs out of memory.
 pub const OUT_OF_MEMORY: &str =
@@ -141,6 +143,17 @@ pub enum Refusal {
     /// An export's mesh of more `triangles`, in all, than the `limit` an export may have
     /// ([`crate::MAX_EXPORT_TRIANGLES`]).
     TooManyTriangles { triangles: u64, limit: u64 },
+    /// OCCT's `BRepExtrema_DistShapeShape` found no least distance between two elements
+    /// ([`crate::Op::Distance`]): it isn't done.
+    DistanceNotDone,
+    /// An element a request names, by `parameter`, that its shape hasn't: `element`, of a
+    /// shape with `count` of its kind ([`crate::Op::Distance`]). As [`Refusal::EdgeMissing`],
+    /// it isn't the shape's, so it's named by its parameter and its number.
+    ElementMissing {
+        parameter: String,
+        element: ElementRef,
+        count: u32,
+    },
 }
 
 /// What OCCT gave back nothing of.
@@ -293,7 +306,8 @@ impl Refusal {
             | Refusal::NoDragSession { .. }
             | Refusal::SweepFlat { .. }
             | Refusal::RoundingPastTolerance { .. }
-            | Refusal::TooManyTriangles { .. } => FailureKind::InvalidInput,
+            | Refusal::TooManyTriangles { .. }
+            | Refusal::ElementMissing { .. } => FailureKind::InvalidInput,
             Refusal::ResultInvalid { .. } | Refusal::DescriptionImpossible { .. } => {
                 FailureKind::InvalidResult
             }
@@ -306,7 +320,8 @@ impl Refusal {
             | Refusal::ExtentNotFinite
             | Refusal::FacesUnmeshed { .. }
             | Refusal::NotFinite { .. }
-            | Refusal::SolutionOutOfReach { .. } => FailureKind::KernelFailed,
+            | Refusal::SolutionOutOfReach { .. }
+            | Refusal::DistanceNotDone => FailureKind::KernelFailed,
             Refusal::TestOperation { .. } | Refusal::OtherWorkersOp { .. } => {
                 FailureKind::UnknownOp
             }
@@ -360,9 +375,9 @@ impl Refusal {
     /// was refused.
     pub fn parameter(&self) -> Option<&str> {
         match self {
-            Refusal::InvalidParameter { parameter, .. } | Refusal::SweepFlat { parameter, .. } => {
-                Some(parameter)
-            }
+            Refusal::InvalidParameter { parameter, .. }
+            | Refusal::SweepFlat { parameter, .. }
+            | Refusal::ElementMissing { parameter, .. } => Some(parameter),
             Refusal::NoEdges { .. }
             | Refusal::EdgeMissing { .. }
             | Refusal::EdgeTwice { .. }
@@ -642,6 +657,29 @@ impl Refusal {
                     format_number(2.0 * rounding)
                 )),
             ),
+            Refusal::ElementMissing {
+                parameter,
+                element,
+                count,
+            } => (
+                format!(
+                    "{parameter}, {} {}, doesn't exist: its shape has {}",
+                    one_of(element.kind),
+                    element.index,
+                    match count {
+                        0 => format!("no {}", element.kind.plural()),
+                        n => format!("{} 1 to {n}", element.kind.plural()),
+                    }
+                ),
+                None,
+            ),
+            Refusal::DistanceNotDone => (
+                "the kernel couldn't find the least distance between these elements".to_owned(),
+                Some(
+                    "report it with the document: the kernel couldn't measure this pair"
+                        .to_owned(),
+                ),
+            ),
             Refusal::TooManyTriangles { triangles, limit } => (
                 format!(
                     "an export's mesh has {triangles} triangles, more than the {limit} an export \
@@ -898,6 +936,16 @@ fn listed(items: &[String]) -> String {
     }
 }
 
+/// The word for one element of `kind`, as a refusal names one by its number (`edge 13`).
+fn one_of(kind: ElementKind) -> &'static str {
+    match kind {
+        ElementKind::Face => "face",
+        ElementKind::Edge => "edge",
+        ElementKind::Vertex => "vertex",
+        ElementKind::Solid => "solid",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1021,6 +1069,12 @@ mod tests {
                 triangles: 10_000_001,
                 limit: 10_000_000,
             },
+            Refusal::DistanceNotDone,
+            Refusal::ElementMissing {
+                parameter: "second".to_owned(),
+                element: ElementRef::face(7),
+                count: 6,
+            },
         ]
     }
 
@@ -1141,6 +1195,8 @@ mod tests {
             InvalidInput,      // SweepFlat
             InvalidInput,      // RoundingPastTolerance
             InvalidInput,      // TooManyTriangles
+            KernelFailed,      // DistanceNotDone (new with M4.5)
+            InvalidInput,      // ElementMissing (new with M4.5)
         ];
         let refusals = every_refusal();
         assert_eq!(refusals.len(), kinds.len());
@@ -1191,6 +1247,8 @@ mod tests {
             Some("axis"),       // SweepFlat
             Some("tolerance"),  // RoundingPastTolerance
             Some("tolerance"),  // TooManyTriangles
+            None,               // DistanceNotDone
+            Some("second"),     // ElementMissing
         ];
         let refusals = every_refusal();
         assert_eq!(refusals.len(), parameters.len());
