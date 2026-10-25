@@ -106,7 +106,8 @@ fn clean(response: &Response<command::Problems>) {
         response.model,
         Some(ModelRead {
             revision: Revision::OPENED,
-            of: ModelChoice::Current
+            of: ModelChoice::Current,
+            fault: None,
         })
     );
 }
@@ -272,7 +273,8 @@ fn a_sessions_check_gives_its_models_failures() {
         response.model,
         Some(ModelRead {
             revision: Revision::OPENED,
-            of: ModelChoice::Current
+            of: ModelChoice::Current,
+            fault: None,
         })
     );
     let problems = response.result.unwrap();
@@ -296,25 +298,110 @@ fn a_sessions_check_gives_drift_of_a_stored_fingerprint() {
     assert_eq!(problems.errors()[0].feature(), Some("k7f2qx3m"));
 }
 
-#[test]
-fn a_kernel_fault_is_a_checks_refusal_and_the_next_check_rebuilds() {
-    // A worker that crashes on every request: each check is refused with the crash, not a
-    // problem of the document, and each asks the kernel again.
-    let f = fixture();
-    f.kernel
-        .refuse(|_| Some(silico_core::Error::new(ErrorCode::WorkerCrashed, "crashed")));
-    let s = f.open(&f.file("s.silico", SPHERE));
-    let first = answer(f.sessions.check(&s));
-    assert_eq!(refusal(&first).0, ErrorCode::WorkerCrashed);
-    let asked = f.kernel.calls().len();
-    assert!(asked > 0);
-    let second = answer(f.sessions.check(&s));
-    assert_eq!(refusal(&second).0, ErrorCode::WorkerCrashed);
-    assert!(f.kernel.calls().len() > asked);
+/// [`BOX`] and [`SPHERE`]'s ball, neither using the other: two features a worker that
+/// crashes on every request stops alike.
+const BOX_AND_BALL: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}, {"id": "a91cw0de", "type": "sphere", "v": 1, "name": "Ball", "position": [0, 0, 0], "radius": 5}]}"#;
+
+/// What a kept crash or timeout advises (decision 32): a new revision, never the worker's
+/// "try again", which reading again wouldn't do.
+const KEPT: &str = "edit the document to try again: this revision keeps the fault, so reading it again won't try again; if the same feature faults again, report it with the document";
+
+/// The fault `response`'s model read gives: its code, feature, message, and suggestion.
+fn fault<T>(response: &Response<T>) -> (ErrorCode, Option<String>, String, Option<String>) {
+    let fault = response.model.as_ref().unwrap().fault.as_ref().unwrap();
+    (
+        fault.code(),
+        fault.feature().map(str::to_owned),
+        fault.message().to_owned(),
+        fault.suggestion().map(str::to_owned),
+    )
 }
 
 #[test]
-fn a_check_after_a_fault_that_passed_tries_the_rebuild_again() {
+fn a_kernel_fault_is_given_once_beside_the_checks_result_and_kept_for_the_revision() {
+    // A worker that crashes on every request stops both features: the check answers, the
+    // document's problems none (a fault is the kernel's), and the fault given once, the
+    // first the timeline met (the box's), not once a feature (AR1's pattern).
+    let f = fixture();
+    f.kernel.refuse(|_| {
+        Some(
+            silico_core::Error::new(ErrorCode::WorkerCrashed, "crashed")
+                .with_suggestion("try again"),
+        )
+    });
+    let s = f.open(&f.file("s.silico", BOX_AND_BALL));
+    let first = answer(f.sessions.check(&s));
+    assert!(first.result.as_ref().unwrap().is_empty(), "{first:?}");
+    assert_eq!(first.model.as_ref().unwrap().revision, Revision::OPENED);
+    assert_eq!(
+        fault(&first),
+        (
+            ErrorCode::WorkerCrashed,
+            Some("k7f2qx3m".to_owned()),
+            "crashed".to_owned(),
+            Some(KEPT.to_owned())
+        )
+    );
+    // The box and the ball, each asked once.
+    assert_eq!(f.kernel.calls().len(), 2);
+    // Kept as the revision's outcome: the next check reads the same model, asking the
+    // kernel nothing, and gives the same fault.
+    let second = answer(f.sessions.check(&s));
+    assert_eq!(f.kernel.calls().len(), 2);
+    assert_eq!(second.model, first.model);
+    assert_eq!(second.result, first.result);
+}
+
+#[test]
+fn a_sketch_solver_that_cant_be_had_is_one_fault_naming_no_feature() {
+    // The solver's start fails every sketch with the same error (AR1's pattern): the check
+    // gives it once, naming none of them, since it says nothing of any.
+    let two = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "s0000001", "type": "sketch", "v": 1, "name": "A", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": []}, {"id": "s0000002", "type": "sketch", "v": 1, "name": "B", "plane": "xy", "points": [{"id": "pa000000", "x": 1, "y": 0, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": []}]}"#;
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("secret");
+    let starts = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&starts);
+    let sessions = Sessions::with_stand_ins(
+        FakeKernel::new(1).unwrap(),
+        move |cache| Cache::with_secret(cache, &secret),
+        move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Err(silico_core::Error::new(
+                ErrorCode::WorkerUnavailable,
+                "SILICO_SKETCH_WORKER names /nowhere, which isn't a file",
+            )
+            .with_suggestion("name the sketch worker's executable"))
+        },
+    );
+    let path = dir.path().join("two.silico");
+    std::fs::write(&path, two).unwrap();
+    let s = answer(sessions.open(&path, false)).session.unwrap().id;
+    let checked = answer(sessions.check(&s));
+    assert!(checked.result.as_ref().unwrap().is_empty(), "{checked:?}");
+    assert_eq!(
+        fault(&checked),
+        (
+            ErrorCode::WorkerUnavailable,
+            None,
+            "SILICO_SKETCH_WORKER names /nowhere, which isn't a file".to_owned(),
+            Some(
+                "once a worker can be had (the log says why none could), edit the document to try again: this revision keeps the fault, so reading it again won't try again"
+                    .to_owned()
+            )
+        )
+    );
+    assert_eq!(
+        sessions.status(&s).result.unwrap().rebuild.state,
+        command::RebuildState::Faulted
+    );
+    // Kept: the next check starts no solver.
+    let again = answer(sessions.check(&s));
+    assert_eq!(again.model, checked.model);
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_fault_that_passed_is_tried_again_only_at_a_new_revision() {
     let f = fixture();
     let a = f.open(&f.file("a.silico", BOX));
     let once = Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -325,8 +412,33 @@ fn a_check_after_a_fault_that_passed_tries_the_rebuild_again() {
         .then(|| silico_core::Error::new(ErrorCode::WorkerTimeout, "timed out"))
     });
     let faulted = answer(f.sessions.check(&a));
-    assert_eq!(refusal(&faulted).0, ErrorCode::WorkerTimeout);
-    clean(&answer(f.sessions.check(&a)));
+    assert!(faulted.result.as_ref().unwrap().is_empty());
+    assert_eq!(fault(&faulted).0, ErrorCode::WorkerTimeout);
+    // Passed, but the revision keeps it: no box made again.
+    let again = answer(f.sessions.check(&a));
+    assert_eq!(fault(&again).0, ErrorCode::WorkerTimeout);
+    assert_eq!(f.boxes(), 1);
+    // An edit, its block renamed: a new revision, whose rebuild makes the box again, and
+    // builds.
+    let renamed = BOX.replace("\"Block\"", "\"Plate\"");
+    let edited = answer(
+        f.sessions
+            .replace_text(&a, Revision::OPENED, renamed.clone()),
+    );
+    let saved = edited.session.as_ref().unwrap().revision;
+    assert_eq!(saved, Revision::OPENED.next().unwrap());
+    assert_eq!(edited.model.as_ref().unwrap().fault, None, "{edited:?}");
+    assert_eq!(f.boxes(), 2);
+    let checked = answer(f.sessions.check(&a));
+    assert!(checked.result.unwrap().is_empty());
+    assert_eq!(
+        checked.model,
+        Some(ModelRead {
+            revision: saved,
+            of: ModelChoice::Current,
+            fault: None,
+        })
+    );
 }
 
 #[test]
@@ -376,7 +488,8 @@ fn a_published_read_never_waits_for_a_rebuild() {
         read.model,
         Some(ModelRead {
             revision: Revision::OPENED,
-            of: ModelChoice::Published
+            of: ModelChoice::Published,
+            fault: None,
         })
     );
     assert_eq!(read.result.unwrap().revision, Revision::OPENED);
@@ -494,10 +607,10 @@ fn a_check_whose_recompute_failed_is_refused_with_why_once_and_the_next_rebuilds
 }
 
 #[test]
-fn a_check_after_a_measure_that_faulted_tries_the_rebuild_again() {
+fn a_measure_that_faulted_is_the_revisions_fault_and_not_measured_again() {
     // The box's measure times out once: no failure of the box, a fault in its drift (a
-    // stored fingerprint the rebuild couldn't measure to compare), so the check is refused
-    // with it and the next measures again.
+    // stored fingerprint the rebuild couldn't measure to compare), given once beside the
+    // check's result, and kept: the next check measures nothing again.
     let stored = BOX.replace(
         "\"height\": 10}",
         "\"height\": 10, \"fingerprint\": {\"volume\": 8000, \"area\": 2800, \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}}",
@@ -510,9 +623,28 @@ fn a_check_after_a_measure_that_faulted_tries_the_rebuild_again() {
             .then(|| silico_core::Error::new(ErrorCode::WorkerTimeout, "timed out"))
     });
     let a = f.open(&f.file("a.silico", &stored));
+    let measures = || {
+        f.kernel
+            .calls()
+            .iter()
+            .filter(|c| matches!(c.op, Op::Summarize { .. }))
+            .count()
+    };
     let faulted = answer(f.sessions.check(&a));
-    assert_eq!(refusal(&faulted).0, ErrorCode::WorkerTimeout);
-    clean(&answer(f.sessions.check(&a)));
+    assert!(faulted.result.as_ref().unwrap().is_empty());
+    assert_eq!(
+        fault(&faulted),
+        (
+            ErrorCode::WorkerTimeout,
+            Some("k7f2qx3m".to_owned()),
+            "timed out".to_owned(),
+            Some(KEPT.to_owned())
+        )
+    );
+    assert_eq!(measures(), 1);
+    let again = answer(f.sessions.check(&a));
+    assert_eq!(again.model, faulted.model);
+    assert_eq!(measures(), 1);
 }
 
 /// A read that gives the box's volume, as its fingerprint says it, and what it read.
@@ -531,11 +663,13 @@ const EIGHT_THOUSAND: Measure = Measure::from_millionths(8_000_000_000);
 const CURRENT: ModelRead = ModelRead {
     revision: Revision::OPENED,
     of: ModelChoice::Current,
+    fault: None,
 };
 
 const PUBLISHED: ModelRead = ModelRead {
     revision: Revision::OPENED,
     of: ModelChoice::Published,
+    fault: None,
 };
 
 #[test]

@@ -14,8 +14,8 @@ use super::registry::Unclaimed;
 #[cfg(doc)]
 use super::registry::claim;
 use super::{
-    Begun, Committed, Gated, ModelChoice, ModelRead, Problems, Published, Reformatted, Revision,
-    RolledBack, Session, SessionId, shown,
+    Begun, Committed, Faults, Gated, ModelChoice, ModelRead, Problems, Published, Reformatted,
+    Revision, RolledBack, Session, SessionId, shown,
 };
 use crate::command::edit::Candidate;
 use crate::document::json::MAX_INPUT_LEN;
@@ -212,6 +212,7 @@ impl<C: Kernel + 'static> Session<C> {
             ));
         }
         let revision = held.revision;
+        self.keep()?;
         // Under the held state's lock, then the rebuilds' (the only order both are taken
         // in), so a model published meanwhile is either seen here or kept by its watcher.
         let mut rebuilds = lock(&self.rebuilds);
@@ -252,6 +253,7 @@ impl<C: Kernel + 'static> Session<C> {
         let mut held = lock(&self.held);
         self.transaction(&held)?;
         let revision = held.next()?;
+        self.keep()?;
         let mut rebuilds = lock(&self.rebuilds);
         let Some((begun, kept)) = end_transaction(&mut held, &mut rebuilds) else {
             return Err(Problems::from(no_transaction(self.id)));
@@ -275,7 +277,7 @@ impl<C: Kernel + 'static> Session<C> {
             if rebuilds.running.take().is_some() {
                 rebuilds.engine.cancel();
             }
-            rebuilds.failed = None;
+            rebuilds.ended = None;
             match (kept.model, &*begun.gated) {
                 (Some(model), _) => rebuilds.published = Some(Published { revision, model }),
                 (None, Gated::Checked(checked)) if kept.started => {
@@ -311,9 +313,11 @@ impl<C: Kernel + 'static> Session<C> {
     /// (`changed_outside`, before the command), which then waits for no rebuild. Refused,
     /// the transaction left open and nothing written, if none is open, the file was found
     /// changed or gone before the command (a conflict, before any rebuild) or unreadable
-    /// (its `io_failed`), the model can't be had (a kernel fault, until decision 32 saves
-    /// around one), the canonical text is too long, or the save is (a file changed since: a
-    /// conflict too).
+    /// (its `io_failed`), the model can't be had (the session closed, a recompute that failed,
+    /// the commit cancelled), the canonical text is too long, or the save is (a file changed
+    /// since: a conflict too). A kernel fault the model holds is saved around (decision 32):
+    /// the features it stopped keep what's stored with them, as failed ones do, and it's
+    /// given once, in the model read, not among the problems.
     pub(super) fn commit(
         self: &Arc<Self>,
         changed_outside: Option<Outside>,
@@ -464,11 +468,8 @@ impl<C: Kernel + 'static> Session<C> {
             Through::Transaction => self.model(revision, checked)?,
             Through::Candidate => self.candidate_model(revision, checked)?,
         };
-        *read = Some(ModelRead {
-            revision,
-            of: ModelChoice::Current,
-        });
-        let formatted = crate::command::formatted(&model, &reach, &model.drifted())
+        *read = Some(ModelRead::of(revision, ModelChoice::Current, &model));
+        let formatted = crate::command::formatted(&model, &reach, &model.drifted(), Faults::Aside)
             .map_err(Problems::from)??;
         if unchanged {
             if through == Through::Transaction {
@@ -487,8 +488,13 @@ impl<C: Kernel + 'static> Session<C> {
         }
         let saved = Arc::new(formatted.text.into_bytes());
         // A candidate's model is the saved revision's too, unless the save wrote a sketch's
-        // solve, which a rebuild of the saved document would solve again from.
-        let publish = through == Through::Candidate && formatted.resolved.is_empty();
+        // solve, which a rebuild of the saved document would solve again from; but one that
+        // holds a kernel fault is the saved revision's whatever it wrote, since the saved
+        // revision is the first its fault is the outcome of, and a rebuild of it would meet
+        // the fault again (decision 32: a fault is never paid twice for one state). Its
+        // sketches' solves are those the save wrote, so its drift is none of theirs.
+        let publish = through == Through::Candidate
+            && (formatted.resolved.is_empty() || model.fault().is_some());
         let written = self.write(saved, &model, &reach, publish, saver, claim)?;
         Ok((
             Committed {
@@ -513,6 +519,7 @@ impl<C: Kernel + 'static> Session<C> {
     /// same document in canonical form, say), whose model is `revision`'s if it was
     /// published.
     fn unwritten(&self, begun: &Snapshot, revision: Revision) -> Result<(), Problems> {
+        self.keep()?;
         let mut held = lock(&self.held);
         let next = if held.text == begun.text {
             None
@@ -548,7 +555,7 @@ impl<C: Kernel + 'static> Session<C> {
     /// new file claimed with `claim`, the session then at a new revision, its saved
     /// text. Refused, writing nothing, inside a transaction, for a document the gate
     /// refused (its problems), for a feature in `accept` the document hasn't, and as a
-    /// commit is.
+    /// commit is. A kernel fault is saved around, as a commit saves around it.
     pub(super) fn format(
         self: &Arc<Self>,
         accept: Option<&[FeatureId]>,
@@ -580,10 +587,7 @@ impl<C: Kernel + 'static> Session<C> {
             Some(accept) => Some(named(document, accept)?),
         };
         let model = self.model(revision, checked)?;
-        *read = Some(ModelRead {
-            revision,
-            of: ModelChoice::Current,
-        });
+        *read = Some(ModelRead::of(revision, ModelChoice::Current, &model));
         // Each feature's drift, once: a feature edits reached isn't drift.
         let drift = model.drifted();
         let drifted: BTreeSet<&FeatureId> = model
@@ -603,8 +607,8 @@ impl<C: Kernel + 'static> Session<C> {
             .filter(|id| drifted.contains(id) && writes.contains(*id) && model.records(id))
             .cloned()
             .collect();
-        let formatted =
-            crate::command::formatted(&model, &writes, &drift).map_err(Problems::from)??;
+        let formatted = crate::command::formatted(&model, &writes, &drift, Faults::Aside)
+            .map_err(Problems::from)??;
         let saved = formatted.text.into_bytes();
         let changed = saved != *bytes;
         let written = write && changed;
@@ -635,7 +639,8 @@ impl<C: Kernel + 'static> Session<C> {
     /// save that wrote only fingerprints, whose document a rebuild would build from the
     /// steps `model` took. The document saved, as the gate found it, which the session now
     /// holds. Refused, nothing changed, as the save is, a conflict with what `saver`
-    /// advises.
+    /// advises; or, `cancelled`, if the command was stopped before the save began (past it,
+    /// a cancel comes too late, and the command answers with its real result).
     fn write(
         &self,
         saved: Arc<Vec<u8>>,
@@ -654,6 +659,7 @@ impl<C: Kernel + 'static> Session<C> {
                 Arc::clone(&held.bytes),
             )
         };
+        self.keep()?;
         self.save(&path, &resolved, &bytes, &saved, saver)?;
         claim(&resolved);
         let carried = reach

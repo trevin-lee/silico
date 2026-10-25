@@ -232,11 +232,11 @@ pub struct Listed {
 /// feature's (or each body's), the cursor's, then the limit's.
 ///
 /// A model that holds a kernel fault (a worker that crashed or hung) may not be the
-/// revision's next read: a session rebuilds it (`Session::model`), and a feature that
-/// failed for the fault consumes nothing, so its inputs are bodies until it builds. So a
-/// listing of its every body gives no cursor, and a cursor on one is a `conflict`: pages of
-/// two models of one revision are never joined (until a revision's fault is its outcome,
-/// decision 32). A feature's own listing pages on: its elements don't change.
+/// revision's next read: a session keeps it as the revision's outcome (decision 32), but
+/// M4.3's `check` with `fresh` rebuilds it, and a feature that failed for the fault consumes
+/// nothing, so its inputs are bodies until it builds. So a listing of its every body gives no
+/// cursor, and a cursor on one is a `conflict`: pages of two models of one revision are never
+/// joined. A feature's own listing pages on: its elements don't change.
 pub fn list(
     model: &Model,
     revision: Revision,

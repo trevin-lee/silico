@@ -27,9 +27,9 @@ mod session;
 pub mod wire;
 
 pub use session::{
-    Added, Begun, Committed, FieldSet, MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice, ModelRead,
-    Opened, Published, Read, Reformatted, Removed, Replaced, Response, Revision, RolledBack,
-    Running, SessionId, SessionInfo, Sessions, Status,
+    Added, Begun, Cancelled, Committed, FieldSet, MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice,
+    ModelRead, Opened, Published, Read, Rebuild, RebuildState, Reformatted, Removed, Replaced,
+    Response, Revision, RolledBack, Running, SessionId, SessionInfo, Sessions, Status,
 };
 
 /// The command API's version (docs/design/m4.1-command-api.md, section 8): one more for
@@ -267,30 +267,54 @@ pub fn rebuild<K: Kernel + 'static>(
 /// failure, not the document's.
 pub fn check(model: &Model) -> Result<Problems, Error> {
     let _span = tracing::info_span!("check").entered();
-    check_except(model, &BTreeSet::new())
+    check_except(model, &BTreeSet::new(), Faults::Refuse)
+}
+
+/// What a command does with a kernel fault its model holds (docs/design/m4.1-command-api.md,
+/// section 6): one that says nothing about the document, so is never one of its problems.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Faults {
+    /// The command's failure, as [`check`] and [`format`] give it: the first fault met.
+    Refuse,
+    /// Set aside: the document's own problems given without it, and a save made around it,
+    /// as a session's commands do, which give the fault once, beside their result, in the
+    /// model read (`ModelRead::fault`, decision 32).
+    Aside,
 }
 
 /// [`check`], but no drift of a feature in `except` (`Model::drift_except`): one a
-/// session's edits reached since its last save, which its commit writes anew (decision 28).
-fn check_except(model: &Model, except: &BTreeSet<FeatureId>) -> Result<Problems, Error> {
-    let mut problems = failures(model)?;
+/// session's edits reached since its last save, which its commit writes anew (decision 28);
+/// a kernel fault as `faults` says.
+fn check_except(
+    model: &Model,
+    except: &BTreeSet<FeatureId>,
+    faults: Faults,
+) -> Result<Problems, Error> {
+    let mut problems = failures(model, faults)?;
     let unlisted = model.unlisted_errors();
-    problems.extend(own(model.drift_except(except))?);
+    problems.extend(own(model.drift_except(except), faults)?);
     Ok(Problems::with_unlisted(problems, unlisted))
 }
 
-/// The model's failed features, as problems of the document; or, if one failed for a
-/// reason that isn't the document's, that.
-fn failures(model: &Model) -> Result<Vec<Error>, Error> {
-    own(model.errors().cloned().collect())
+/// The model's failed features, as problems of the document; a kernel fault among them as
+/// `faults` says.
+fn failures(model: &Model, faults: Faults) -> Result<Vec<Error>, Error> {
+    own(model.errors().cloned().collect(), faults)
 }
 
-/// `errors`, the document's own problems; or the first that's the kernel's (a solid whose
-/// measure timed out, say), which isn't.
-fn own(errors: Vec<Error>) -> Result<Vec<Error>, Error> {
-    match errors.iter().find(|e| e.code().is_kernel_fault()) {
-        Some(fault) => Err(fault.clone()),
-        None => Ok(errors),
+/// `errors`, the document's own problems, and any that's the kernel's (a solid whose
+/// measure timed out, say), which isn't: the first of those the refusal, or every one set
+/// aside, as `faults` says.
+fn own(errors: Vec<Error>, faults: Faults) -> Result<Vec<Error>, Error> {
+    match faults {
+        Faults::Refuse => match errors.iter().find(|e| e.code().is_kernel_fault()) {
+            Some(fault) => Err(fault.clone()),
+            None => Ok(errors),
+        },
+        Faults::Aside => Ok(errors
+            .into_iter()
+            .filter(|e| !e.code().is_kernel_fault())
+            .collect()),
     }
 }
 
@@ -326,7 +350,7 @@ pub fn format(model: &Model) -> Result<Result<Formatted, Problems>, Error> {
         .iter()
         .map(|f| f.id.clone())
         .collect();
-    formatted(model, &every, &model.drifted())
+    formatted(model, &every, &model.drifted(), Faults::Refuse)
 }
 
 /// The model's document in canonical form with the fingerprint and solve of each feature in
@@ -335,13 +359,15 @@ pub fn format(model: &Model) -> Result<Result<Formatted, Problems>, Error> {
 /// (every feature but those whose drift it doesn't accept, decision 31), as [`format`]
 /// writes every feature's. Its problems are the failures, the solids that couldn't be
 /// measured, and of `drift` (the model's, `Model::drifted`), that of every feature whose
-/// record it doesn't write, which it leaves as stored.
+/// record it doesn't write, which it leaves as stored; a kernel fault as `faults` says (a
+/// feature it stopped keeps what's stored with it, as a failed one does).
 fn formatted(
     model: &Model,
     writes: &BTreeSet<FeatureId>,
     drift: &[(FeatureId, Error)],
+    faults: Faults,
 ) -> Result<Result<Formatted, Problems>, Error> {
-    let mut problems = failures(model)?;
+    let mut problems = failures(model, faults)?;
     let unlisted = model.unlisted_errors();
     let written = model.saved_for(writes);
     let pairs = || model.document().features.iter().zip(&written.features);
@@ -379,10 +405,13 @@ fn formatted(
     };
     // Problems the save can't fix: the failures, the solids that couldn't be measured, and
     // the drift of what it leaves as stored; drift of what it writes is what it fixes.
-    problems.extend(own(model
-        .drift_left(drift, writes)
-        .map(|(_, error)| error.clone())
-        .collect())?);
+    problems.extend(own(
+        model
+            .drift_left(drift, writes)
+            .map(|(_, error)| error.clone())
+            .collect(),
+        faults,
+    )?);
     Ok(Ok(Formatted {
         text,
         refingerprinted,

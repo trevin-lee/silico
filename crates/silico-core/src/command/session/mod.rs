@@ -47,12 +47,22 @@
 //! A session's path is UTF-8, so every response names it exactly: `open` refuses one that
 //! isn't.
 //!
+//! A command can be stopped (decisions 10 and 34): through its handle
+//! ([`Running::cancel`], MCP's cancellation), or by [`Sessions::cancel`], naming the command
+//! running. Either way it stops before its work leaves a trace and answers `cancelled`, or,
+//! if it had done its work (an edit saved), answers with its real result. A kernel fault
+//! (a worker that crashed, hung, or couldn't be had) is given once, beside a command's
+//! result, in the model it read ([`ModelRead::fault`]), never among the document's problems,
+//! and kept as its revision's outcome: no read of that revision rebuilds it, and a save
+//! writes around it, its features keeping what's stored with them (decision 32).
+//!
 //! What it doesn't bound: the caches, one kept for each directory a session has opened a
 //! document in, for the process's life; and each session's queue, which holds every command
 //! queued and not yet run. Nor does it choose which files may be opened: `open` and `text`
 //! read any file this user may read, so a server for clients it doesn't trust gives them a
 //! workspace (decision 26) once there is one.
 
+mod cancel;
 mod edits;
 mod rebuilds;
 mod registry;
@@ -62,12 +72,11 @@ mod types;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 
 use super::edit::{self, FeatureIds};
-use super::{Gated, Problems};
+use super::{Faults, Gated, Problems};
 use crate::cache::Cache;
 use crate::document::json::Node;
 use crate::document::{self, FeatureId};
@@ -78,6 +87,7 @@ use crate::sketch::SketchSolver;
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
+use cancel::{Interrupt, Ticket, cancelled, not_running};
 use edits::{as_committed, not_given_back};
 pub(super) use rebuilds::faulted;
 use rebuilds::{Rebuilds, Unbuilt, published_answer};
@@ -85,13 +95,13 @@ use registry::{
     Book, CacheOpener, Registry, Release, SketchStarter, Started, claim, reclaim, serve, start,
 };
 pub use threads::MAX_PUBLISHED_READS;
-use threads::{Reads, Threads, Unanswered};
+use threads::{Counted, Reads, Threads};
 use transaction::{Claim, Held, Reload, Rereads, transaction_open};
 pub(crate) use types::SESSION_ID_PATTERN;
 pub use types::{
-    Added, Begun, Committed, FieldSet, ModelChoice, ModelRead, Opened, Published, Read,
-    Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running, SessionId,
-    SessionInfo, Status,
+    Added, Begun, Cancelled, Committed, FieldSet, ModelChoice, ModelRead, Opened, Published, Read,
+    Rebuild, RebuildState, Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running,
+    SessionId, SessionInfo, Status,
 };
 use types::{READ_STOPPED, SESSION_STOPPED};
 
@@ -114,8 +124,9 @@ pub struct Sessions<P: Clients + 'static> {
 /// registry.
 ///
 /// Its locks, and the registry's, are taken in one order, each let go before one earlier in
-/// the order is taken: the registry's book, then a session's published reads, then its held
-/// state, then its rebuilds, then its queue. The registry's `feature_ids` is taken alone.
+/// the order is taken: the registry's book, then a session's published reads (then those
+/// unanswered), then its held state, then its rebuilds, then its queue, then the command
+/// running, under which none is taken. The registry's `feature_ids` is taken alone.
 struct Session<C: Kernel + 'static> {
     id: SessionId,
     held: Mutex<Held>,
@@ -129,6 +140,18 @@ struct Session<C: Kernel + 'static> {
     rebuilt: Condvar,
     /// Its published reads.
     reads: Mutex<Reads>,
+    /// The queued command running, if one is: its stop, which `cancel` finds here.
+    command: Mutex<Option<Arc<Ticket>>>,
+}
+
+/// A command waiting on a session's rebuild is woken by its cancel, to stop it.
+impl<C: Kernel + 'static> Interrupt for Session<C> {
+    fn interrupt(&self) {
+        // Under the rebuilds' lock, so a waiter that saw no cancel before it waited is
+        // waiting when it's told.
+        let _rebuilds = lock(&self.rebuilds);
+        self.rebuilt.notify_all();
+    }
 }
 
 /// A command queued on a session: run on its thread with the session, or, if the session
@@ -189,6 +212,30 @@ impl<C: Kernel + 'static> Session<C> {
 
     fn closed(&self) -> bool {
         lock(&self.queue).is_none()
+    }
+
+    /// The names of its published reads running, in the order they started.
+    fn reads_running(&self) -> Vec<&'static str> {
+        let reads = lock(&self.reads);
+        lock(&reads.unanswered)
+            .tickets()
+            .map(|ticket| ticket.command())
+            .collect()
+    }
+
+    /// The stop of the queued command running, if one is.
+    fn ticket(&self) -> Option<Arc<Ticket>> {
+        lock(&self.command).clone()
+    }
+
+    /// The point past which the queued command running leaves a trace ([`Ticket::keep`]):
+    /// refused, `cancelled`, if it was stopped before.
+    fn keep(&self) -> Result<(), Problems> {
+        match self.ticket() {
+            Some(ticket) => ticket.keep().map_err(Problems::from),
+            // Not a queued command's work (the sessions dropped, rolling back).
+            None => Ok(()),
+        }
     }
 }
 
@@ -309,6 +356,8 @@ impl<P: Clients + 'static> Sessions<P> {
         let (reply, answer) = mpsc::sync_channel(1);
         let registry = Arc::clone(&self.registry);
         let caller = tracing::Span::current();
+        let ticket = Ticket::new("open");
+        let stop = Arc::clone(&ticket);
         // Spawned with the book held, so the thread is recorded opening before it can end.
         let started = std::thread::Builder::new()
             .name(format!("session-{id}"))
@@ -324,7 +373,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     let _span =
                         tracing::info_span!("session_command", session = %id, command = "open")
                             .entered();
-                    start(registry, id, &path, create, &reply)
+                    start(registry, id, &path, create, &stop, &reply)
                 };
                 if let Some(Started { session, jobs }) = started {
                     serve(&session, &jobs);
@@ -334,7 +383,7 @@ impl<P: Clients + 'static> Sessions<P> {
             Ok(thread) => {
                 book.opening.insert(id);
                 book.threads.push(thread);
-                Running::new(answer, SESSION_STOPPED)
+                Running::new(answer, SESSION_STOPPED, Some(ticket))
             }
             Err(e) => Running::answered(refused(crate::pool::thread_error("session", &e))),
         }
@@ -344,7 +393,9 @@ impl<P: Clients + 'static> Sessions<P> {
     /// after it are told the session closed. Its file is then free to open again. Refused
     /// while a transaction is open (commit or roll back first), so nothing is dropped
     /// without the client saying so. It never reads the file (decision 2), so a file gone or
-    /// changed never keeps it open.
+    /// changed never keeps it open. It doesn't cancel the command ahead of it: commands run
+    /// in the order they arrive, each to its end (the design's section 3), and stopping one
+    /// is said by naming it ([`cancel`](Self::cancel)).
     pub fn close(&self, session: &SessionId) -> Running<()> {
         let registry = Arc::downgrade(&self.registry);
         self.queued_with(session, "close", Rereads::Never, move |session, _, _| {
@@ -354,6 +405,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     "close the session",
                 )));
             }
+            session.keep()?;
             session.close();
             if let Some(registry) = registry.upgrade() {
                 lock(&registry.book).release(session.id);
@@ -363,22 +415,89 @@ impl<P: Clients + 'static> Sessions<P> {
     }
 
     /// `session`'s status, answered on the caller's thread from what the session holds,
-    /// even while one of its commands runs: it never reads the file (decision 2).
+    /// even while one of its commands runs: it never reads the file (decision 2). Besides
+    /// what it holds, the queued command running, the published reads running, and its
+    /// current revision's rebuild: `faulted` if its model holds a kernel fault, kept as the
+    /// revision's outcome (decision 32), `stopped` if it was cancelled.
     pub fn status(&self, session: &SessionId) -> Response<Status> {
         let Some(found) = self.find(session) else {
             return refused(not_open(*session));
         };
+        let reads = found.reads_running();
+        let running = found.ticket().map(|ticket| ticket.command());
         let held = lock(&found.held);
+        let gated = matches!(*held.gated, Gated::Checked(_));
+        let rebuild = if gated {
+            lock(&found.rebuilds).state(held.revision)
+        } else {
+            Rebuild {
+                revision: held.revision,
+                state: RebuildState::None,
+            }
+        };
         Response {
             session: Some(found.info_of(&held, false)),
             model: None,
             result: Ok(Status {
                 features: held.gated.document().ok().map(|d| d.features.len()),
-                gated: matches!(*held.gated, Gated::Checked(_)),
+                gated,
                 transaction: held.transaction.as_ref().map(|begun| Begun {
                     base: begun.revision,
                 }),
+                running,
+                reads,
+                rebuild,
             }),
+        }
+    }
+
+    /// Stops `session`'s command named `command` (decision 34), answered at once on the
+    /// caller's thread, never queued and never reading the file: the queued command, if
+    /// it's the one running, and every published read of that name running. Each stops as
+    /// [`Running::cancel`] stops it, and answers too: `cancelled` if it left no trace, its
+    /// real result if it had done its work. The answer says which (`stopped`: whether any
+    /// was stopped before it had). Refused, naming `command`, if no command of that name is
+    /// running, what is given as candidates: so a cancel that comes late never stops the
+    /// command queued after the one it meant.
+    pub fn cancel(&self, session: &SessionId, command: &str) -> Response<Cancelled> {
+        let _span = tracing::info_span!("session_command", session = %session, command = "cancel")
+            .entered();
+        let Some(found) = self.find(session) else {
+            return refused(not_open(*session));
+        };
+        let queued = found.ticket();
+        let reads: Vec<Arc<Ticket>> = {
+            let reads = lock(&found.reads);
+            lock(&reads.unanswered).tickets().cloned().collect()
+        };
+        let named: Vec<&Arc<Ticket>> = queued
+            .iter()
+            .chain(&reads)
+            .filter(|ticket| ticket.command() == command)
+            .collect();
+        let result = if named.is_empty() {
+            let mut running: Vec<&'static str> = Vec::new();
+            for name in queued.iter().chain(&reads).map(|ticket| ticket.command()) {
+                if !running.contains(&name) {
+                    running.push(name);
+                }
+            }
+            Err(Problems::from(not_running(found.id, command, &running)))
+        } else {
+            // Every one stopped, none passed over once one is.
+            let stopped = named
+                .iter()
+                .fold(false, |stopped, ticket| ticket.cancel() | stopped);
+            tracing::info!(command, stopped, "cancelled");
+            Ok(Cancelled {
+                command: command.to_owned(),
+                stopped,
+            })
+        };
+        Response {
+            session: Some(found.info(false)),
+            model: None,
+            result,
         }
     }
 
@@ -415,15 +534,16 @@ impl<P: Clients + 'static> Sessions<P> {
     /// it hasn't been: decision 13), each failed feature's and each drift of a feature no
     /// edit reached since the last save (decision 28: a reached feature's stored fingerprint
     /// was measured from other inputs, and a commit writes its new one). A kernel fault (a
-    /// worker that crashed or hung) is the command's refusal, as `command::check` gives it,
-    /// and the next check rebuilds, until faults are reported beside the result and kept as
-    /// the revision's outcome (decision 32).
+    /// worker that crashed or hung) isn't the document's: it's given once, beside them, in
+    /// the response's `model` ([`ModelRead::fault`]), and kept as the revision's outcome, so
+    /// the next check of the revision reads the same model (decision 32).
     pub fn check(&self, session: &SessionId) -> Running<Problems> {
         self.queued(session, "check", |session, model| match session.current() {
             Ok(current) => {
                 *model = Some(current.read);
                 let _span = tracing::info_span!("check").entered();
-                super::check_except(&current.model, &current.reached).map_err(Problems::from)
+                super::check_except(&current.model, &current.reached, Faults::Aside)
+                    .map_err(Problems::from)
             }
             Err(Unbuilt::Gated(problems)) => Ok(problems),
             Err(Unbuilt::Unavailable(problems)) => Err(problems),
@@ -452,10 +572,12 @@ impl<P: Clients + 'static> Sessions<P> {
         match choice {
             ModelChoice::Current => self.queued(session, command, move |session, model| {
                 let current = session.current().map_err(Unbuilt::problems)?;
-                *model = Some(current.read);
+                *model = Some(current.read.clone());
+                let ticket = session.ticket();
                 read(Read {
                     model: &current.model,
                     read: current.read,
+                    ticket: ticket.as_deref(),
                 })
             }),
             ModelChoice::Published => {
@@ -480,7 +602,7 @@ impl<P: Clients + 'static> Sessions<P> {
                         result: Err(Problems::from(error)),
                     })
                 };
-                if unanswered.load(Ordering::SeqCst) >= MAX_PUBLISHED_READS {
+                if lock(unanswered).len() >= MAX_PUBLISHED_READS {
                     return refused_here(
                         Error::new(
                             ErrorCode::InvalidInput,
@@ -495,7 +617,9 @@ impl<P: Clients + 'static> Sessions<P> {
                 let (reply, answer) = mpsc::sync_channel(1);
                 let caller = tracing::Span::current();
                 let session = Arc::clone(&found);
-                let counted = Unanswered::count(unanswered);
+                let ticket = Ticket::new(command);
+                let counted = Counted::count(unanswered, &ticket);
+                let stop = Arc::clone(&ticket);
                 let started = std::thread::Builder::new()
                     .name(format!("session-{}-read", found.id))
                     .spawn(move || {
@@ -507,20 +631,38 @@ impl<P: Clients + 'static> Sessions<P> {
                             model = "published"
                         )
                         .entered();
-                        let (info, published) = session.published_now();
-                        let response = published_answer(info, published, |published, model| {
-                            read(Read {
-                                model: &published.model,
-                                read: model,
+                        let response = if stop.cancelled() {
+                            Response {
+                                session: Some(session.info(false)),
+                                model: None,
+                                result: Err(Problems::from(cancelled(command))),
+                            }
+                        } else {
+                            let (info, published) = session.published_now();
+                            published_answer(info, published, |published, model| {
+                                read(Read {
+                                    model: &published.model,
+                                    read: model,
+                                    ticket: Some(&stop),
+                                })
                             })
-                        });
+                        };
+                        // Its answer, unless it was stopped first.
+                        let response = match stop.keep() {
+                            Ok(()) => response,
+                            Err(cancelled) => Response {
+                                session: response.session,
+                                model: None,
+                                result: Err(Problems::from(cancelled)),
+                            },
+                        };
                         drop(counted);
                         let _ = reply.send(response);
                     });
                 match started {
                     Ok(thread) => {
                         threads.push(thread);
-                        Running::new(answer, READ_STOPPED)
+                        Running::new(answer, READ_STOPPED, Some(ticket))
                     }
                     // The read, and its count, dropped with the thread that never started.
                     Err(e) => refused_here(crate::pool::thread_error("published read", &e)),
@@ -571,8 +713,10 @@ impl<P: Clients + 'static> Sessions<P> {
     /// one `begin` saw writes nothing, even over a file changed outside the session. Refused,
     /// the transaction left open, if none is open, if the file changed since the session
     /// read or wrote it or is gone (`conflict`), or can't be read (`io_failed`), if its text
-    /// would pass the limit, if it can't be written (`io_failed`), or if a kernel fault kept
-    /// the rebuild from being had (until faults are saved around, decision 32).
+    /// would pass the limit, if it can't be written (`io_failed`), or if it's cancelled
+    /// before it writes. A kernel fault is saved around (decision 32): the features it
+    /// stopped keep what's stored with them, as failed ones do, and it's given once, in the
+    /// response's `model`.
     pub fn commit(&self, session: &SessionId) -> Running<Committed> {
         let registry = Arc::downgrade(&self.registry);
         self.queued_with(
@@ -828,6 +972,10 @@ impl<P: Clients + 'static> Sessions<P> {
         let (reply, answer) = mpsc::sync_channel(1);
         let caller = tracing::Span::current();
         let registry = Arc::downgrade(&self.registry);
+        let ticket = Ticket::new(command);
+        let woken: Weak<dyn Interrupt> = Arc::downgrade(&found) as Weak<dyn Interrupt>;
+        ticket.interrupt_with(woken);
+        let stop = Arc::clone(&ticket);
         found.queue(Box::new(move |turn| {
             let response = match turn {
                 Turn::Run(session) => {
@@ -838,30 +986,47 @@ impl<P: Clients + 'static> Sessions<P> {
                         command
                     )
                     .entered();
-                    let mut model = None;
-                    let id = session.id;
-                    let claimed = |found: Claim<'_>| match registry.upgrade() {
-                        Some(registry) => {
-                            claim(&registry, found.opened, found.resolved, found.found_at, id)
+                    *lock(&session.command) = Some(Arc::clone(&stop));
+                    let response = if stop.cancelled() {
+                        // Cancelled while it was queued: never run.
+                        Response {
+                            session: Some(session.info(false)),
+                            model: None,
+                            result: Err(Problems::from(cancelled(command))),
                         }
-                        // The sessions are being dropped: no claim is kept.
-                        None => Ok(()),
+                    } else {
+                        let mut model = None;
+                        let id = session.id;
+                        let claimed = |found: Claim<'_>| match registry.upgrade() {
+                            Some(registry) => {
+                                claim(&registry, found.opened, found.resolved, found.found_at, id)
+                            }
+                            // The sessions are being dropped: no claim is kept.
+                            None => Ok(()),
+                        };
+                        let (reloaded, result) = match session.reload(rereads, &claimed) {
+                            Ok(reload) => (reload.reloaded(), work(session, &mut model, reload)),
+                            Err(problems) => (false, Err(problems)),
+                        };
+                        // Its answer, unless it was stopped before it kept its work.
+                        let (model, result) = match stop.keep() {
+                            Ok(()) => (model, result),
+                            Err(cancelled) => (None, Err(Problems::from(cancelled))),
+                        };
+                        Response {
+                            session: Some(session.info(reloaded)),
+                            model,
+                            result,
+                        }
                     };
-                    let (reloaded, result) = match session.reload(rereads, &claimed) {
-                        Ok(reload) => (reload.reloaded(), work(session, &mut model, reload)),
-                        Err(problems) => (false, Err(problems)),
-                    };
-                    Response {
-                        session: Some(session.info(reloaded)),
-                        model,
-                        result,
-                    }
+                    lock(&session.command).take();
+                    response
                 }
                 Turn::Closed(id) => refused(not_open(id)),
             };
             let _ = reply.send(response);
         }));
-        Running::new(answer, SESSION_STOPPED)
+        Running::new(answer, SESSION_STOPPED, Some(ticket))
     }
 }
 

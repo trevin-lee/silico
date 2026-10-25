@@ -372,6 +372,34 @@ impl Model {
         })
     }
 
+    /// The first kernel fault the rebuild met, in timeline order: a failure that says
+    /// nothing about the document (a worker that crashed, hung, or couldn't be had, a reply
+    /// that couldn't be read, a shortage, a bug), in a feature's failure or in a measure of
+    /// its solid. One, however many features it stopped: a sketch solver that couldn't
+    /// start fails every sketch with it, and is still one fault (docs/design/m4.1-command-api.md,
+    /// section 6, after AR1). None if the rebuild met none.
+    pub fn fault(&self) -> Option<&Error> {
+        let mut unmeasured = self.unmeasured.iter().peekable();
+        for (id, outcome) in &self.features {
+            let failed: &[Error] = match outcome {
+                FeatureOutcome::Failed(error) => std::slice::from_ref(error),
+                FeatureOutcome::Broken { errors, .. } => errors,
+                FeatureOutcome::Built { .. }
+                | FeatureOutcome::Blocked { .. }
+                | FeatureOutcome::Sketch(_) => &[],
+            };
+            if let Some(fault) = failed.iter().find(|e| e.code().is_kernel_fault()) {
+                return Some(fault);
+            }
+            if let Some((_, error)) = unmeasured.next_if(|(feature, _)| feature == id)
+                && error.code().is_kernel_fault()
+            {
+                return Some(error);
+            }
+        }
+        None
+    }
+
     /// The names of the elements of the feature `id`'s solid, if it built. The recompute
     /// that published the model names every feature's elements in the background once
     /// it's published; asked before then, this names the feature's now, on the caller's

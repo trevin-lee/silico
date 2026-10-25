@@ -334,12 +334,12 @@ impl ToWire for SessionInfo {
 
 impl ToWire for ModelRead {
     /// Its revision, whether it was the current or the published, and the kernel fault its
-    /// rebuild met, none until faults are kept as a revision's outcome (decision 32).
+    /// rebuild met, if it met one, kept as the revision's outcome (decision 32).
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("revision", self.revision.to_wire()),
             ("of", self.of.to_wire()),
-            ("fault", Json::null()),
+            ("fault", Json::or_null(self.fault.as_ref(), Error::to_wire)),
         ])
     }
 }

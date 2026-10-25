@@ -16,6 +16,7 @@ impl<C: Kernel + 'static> Session<C> {
     /// carrying what was carried: how an edit inside a transaction is applied (the design's
     /// section 4), starting no rebuild (decision 13).
     pub(super) fn hold(&self, candidate: Candidate) -> Result<Revision, Problems> {
+        self.keep()?;
         let mut held = lock(&self.held);
         let next = held.next()?;
         let carried = Arc::clone(&held.carried);

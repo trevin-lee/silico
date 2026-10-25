@@ -245,7 +245,8 @@ fn on_a_session_it_says_which_model_it_read_and_a_published_read_waits_for_one()
         current.model,
         Some(ModelRead {
             revision: Revision::OPENED,
-            of: ModelChoice::Current
+            of: ModelChoice::Current,
+            fault: None,
         })
     );
     assert_eq!(current.result.unwrap().bodies.len(), 2);
@@ -258,7 +259,8 @@ fn on_a_session_it_says_which_model_it_read_and_a_published_read_waits_for_one()
         published.model,
         Some(ModelRead {
             revision: Revision::OPENED,
-            of: ModelChoice::Published
+            of: ModelChoice::Published,
+            fault: None,
         })
     );
     assert_eq!(published.result.unwrap().bodies[0].feature, id("bbbbbbbb"));

@@ -96,6 +96,7 @@ fn examples() -> [(&'static str, String); 3] {
         model: Some(ModelRead {
             revision: revision(6),
             of: ModelChoice::Published,
+            fault: None,
         }),
         result: Ok(Clean),
     };
@@ -997,6 +998,7 @@ fn a_response_past_its_limit_is_answered_with_a_refusal_saying_so() {
         model: Some(ModelRead {
             revision: revision(3),
             of: ModelChoice::Current,
+            fault: None,
         }),
         result: Ok(Long("x".repeat(2000))),
     };

@@ -167,7 +167,8 @@ fn a_field_set_outside_a_transaction_is_saved_with_the_fingerprints_it_reached()
         response.model,
         Some(ModelRead {
             revision: session.revision,
-            of: ModelChoice::Current
+            of: ModelChoice::Current,
+            fault: None,
         })
     );
     let set = response.result.unwrap();

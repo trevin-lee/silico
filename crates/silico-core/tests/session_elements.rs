@@ -33,7 +33,8 @@ fn elements_of_the_current_model_wait_for_its_rebuild_and_say_which_model_they_r
         listed.model,
         Some(ModelRead {
             revision: Revision::OPENED,
-            of: ModelChoice::Current
+            of: ModelChoice::Current,
+            fault: None,
         })
     );
     let listed = listed.result.unwrap();
@@ -90,7 +91,8 @@ fn a_published_read_asks_the_kernel_nothing_its_solids_described_as_they_were_re
         published.model,
         Some(ModelRead {
             revision: Revision::OPENED,
-            of: ModelChoice::Published
+            of: ModelChoice::Published,
+            fault: None,
         })
     );
     assert_eq!(published.result.unwrap().entries, current.entries);
@@ -135,10 +137,10 @@ const FUSED: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1n
 fn a_model_that_holds_a_fault_gives_no_cursor_and_refuses_one_as_a_conflict() {
     // The format review's: a worker crashes on the fuse, so the model of revision 1 holds a
     // fault, and its bodies are the two boxes (a failed feature consumes nothing). The
-    // next read of the current model rebuilds it, the fuse builds, and the body is the
-    // fusion: another model of the same revision. A page of the faulted one gives no
-    // cursor, and a cursor read against it is a conflict, so pages of the two are never
-    // joined; once rebuilt, the listing goes on by cursor as any does.
+    // revision keeps it (decision 32), but M4.3's `fresh` will rebuild it, the fuse built,
+    // the body the fusion: another model of the same revision. So a page of the faulted
+    // one gives no cursor, and a cursor read against it is a conflict, and pages of the two
+    // are never joined; a new revision's listing goes on by cursor as any does.
     let f = fixture();
     let fault = Arc::new(AtomicBool::new(true));
     let faulting = Arc::clone(&fault);
@@ -208,8 +210,34 @@ fn a_model_that_holds_a_fault_gives_no_cursor_and_refuses_one_as_a_conflict() {
         refused.errors()[0].suggestion(),
         Some("check again, then list from the start")
     );
-    // The current model is rebuilt, the fault passed: the fusion alone, its cursor given,
-    // and the box's cursor names nothing it holds.
+    // The current model is the revision's, kept, fault and all: the same page, no cursor,
+    // and nothing asked of the kernel.
+    let asked = f.kernel.calls().len();
+    let kept = answer(
+        f.sessions
+            .elements(&s, ModelChoice::Current, None, None, 10),
+    );
+    assert_eq!(
+        kept.model
+            .as_ref()
+            .unwrap()
+            .fault
+            .as_ref()
+            .map(|e| e.code()),
+        Some(ErrorCode::WorkerCrashed)
+    );
+    let kept = kept.result.unwrap();
+    assert_eq!(
+        (kept.total, &kept.entries, kept.next),
+        (52, &page.entries, None)
+    );
+    assert_eq!(f.kernel.calls().len(), asked);
+    // A new revision (the fusion renamed) is rebuilt, the fault passed: the fusion alone, its
+    // cursor given, and the box's cursor, of revision 1, a conflict.
+    let renamed = FUSED.replace("\"Both\"", "\"Joined\"");
+    let edited = answer(f.sessions.replace_text(&s, Revision::OPENED, renamed));
+    let saved = edited.session.unwrap().revision;
+    assert_eq!(saved, Revision::OPENED.next().unwrap());
     let rebuilt = answer(
         f.sessions
             .elements(&s, ModelChoice::Current, None, None, 10),
@@ -221,7 +249,7 @@ fn a_model_that_holds_a_fault_gives_no_cursor_and_refuses_one_as_a_conflict() {
         FeatureId::new("ffffffff").unwrap()
     );
     let next = rebuilt.next.unwrap();
-    assert_eq!(next.revision, Revision::OPENED);
+    assert_eq!(next.revision, saved);
     let on = answer(
         f.sessions
             .elements(&s, ModelChoice::Current, None, Some(next), 10),
@@ -237,6 +265,6 @@ fn a_model_that_holds_a_fault_gives_no_cursor_and_refuses_one_as_a_conflict() {
     .unwrap_err();
     assert_eq!(
         codes(&stale),
-        [(ErrorCode::InvalidInput, Some("after".to_owned()))]
+        [(ErrorCode::Conflict, Some("after".to_owned()))]
     );
 }
