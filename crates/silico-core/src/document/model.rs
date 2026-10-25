@@ -28,6 +28,28 @@ pub struct Document {
 }
 
 impl Document {
+    /// Whether `self` and `other` are the same document as canonical form writes it, so
+    /// each writes the other's text: every value equal, but each sketch's lists compared in
+    /// ID order ([`Sketch::canonically_eq`](super::Sketch::canonically_eq)), as the writer
+    /// puts them. A document read from a file whose sketch lists aren't in ID order is the
+    /// one its canonical text reads as, though `==` (which counts the order held) says not.
+    pub fn canonically_eq(&self, other: &Document) -> bool {
+        let Document {
+            silico,
+            units,
+            naming,
+            features,
+        } = self;
+        *silico == other.silico
+            && *units == other.units
+            && *naming == other.naming
+            && features.len() == other.features.len()
+            && features
+                .iter()
+                .zip(&other.features)
+                .all(|(a, b)| a.canonically_eq(b))
+    }
+
     /// The feature whose ID is `id`; or, refused naming `feature`, why there's no one such
     /// feature: none has it, or (in a document the gate refused) more than one does.
     pub fn feature(&self, id: &FeatureId) -> Result<&Feature, crate::Error> {
@@ -241,6 +263,29 @@ pub struct Feature {
     #[serde(default)]
     #[schemars(with = "Fingerprint")]
     pub fingerprint: Option<Fingerprint>,
+}
+
+impl Feature {
+    /// Whether `self` and `other` are the same feature as canonical form writes it: every
+    /// field equal, a sketch's lists compared in ID order
+    /// ([`Operation::canonically_eq`]).
+    pub fn canonically_eq(&self, other: &Feature) -> bool {
+        // Every field taken apart, so one added is a compile error here until it's compared.
+        let Feature {
+            id,
+            operation,
+            version,
+            name,
+            note,
+            fingerprint,
+        } = self;
+        *id == other.id
+            && operation.canonically_eq(&other.operation)
+            && *version == other.version
+            && *name == other.name
+            && *note == other.note
+            && *fingerprint == other.fingerprint
+    }
 }
 
 /// A feature's version: changing a feature type's behaviour bumps it, and a document keeps
@@ -601,6 +646,16 @@ pub enum Made {
 }
 
 impl Operation {
+    /// Whether `self` and `other` are the same as canonical form writes them: equal, but
+    /// two sketches compared with their lists in ID order
+    /// ([`Sketch::canonically_eq`](super::Sketch::canonically_eq)).
+    pub fn canonically_eq(&self, other: &Operation) -> bool {
+        match (self, other) {
+            (Operation::Sketch(a), Operation::Sketch(b)) => a.canonically_eq(b),
+            _ => self == other,
+        }
+    }
+
     /// What the feature makes its solid with: a primitive from nothing, a boolean of two
     /// earlier solids, or a fillet or chamfer of one; or, for a sketch, no solid. Every
     /// kind of feature is one, so a new kind has to say which (and so how its elements are

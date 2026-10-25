@@ -37,6 +37,32 @@ impl Sketch {
             .flat_map(move |kind| self.ids(kind).into_iter().map(move |id| (id, kind)))
     }
 
+    /// Whether `self` and `other` are the same sketch as its canonical text writes it: the
+    /// same plane, and each list the same members once both are in ID order, as the writer
+    /// sorts them (stably). So a sketch read from a file whose lists aren't in ID order is
+    /// the sketch its canonical text reads as, as two texts that write it are one document.
+    pub fn canonically_eq(&self, other: &Sketch) -> bool {
+        // Taken apart whole, so a field added to a sketch is a compile error here until
+        // it's compared too.
+        let Sketch {
+            plane,
+            points,
+            lines,
+            circles,
+            arcs,
+            constraints,
+        } = self;
+        fn same<T: PartialEq>(a: &[T], b: &[T], id: impl Fn(&T) -> &ElementId) -> bool {
+            a.len() == b.len() && in_id_order(a, &id) == in_id_order(b, &id)
+        }
+        *plane == other.plane
+            && same(points, &other.points, |p| &p.id)
+            && same(lines, &other.lines, |l| &l.id)
+            && same(circles, &other.circles, |c| &c.id)
+            && same(arcs, &other.arcs, |a| &a.id)
+            && same(constraints, &other.constraints, |c| &c.id)
+    }
+
     /// The IDs of the elements of `kind`, in the order held.
     pub fn ids(&self, kind: ElementKind) -> Vec<&ElementId> {
         match kind {
@@ -47,6 +73,14 @@ impl Sketch {
             ElementKind::Constraint => self.constraints.iter().map(|c| &c.id).collect(),
         }
     }
+}
+
+/// A sketch list's members in ID order, as the file writes them: stable, so members sharing
+/// an ID (which the gate refuses) keep their order.
+pub(super) fn in_id_order<T>(items: &[T], id: impl Fn(&T) -> &ElementId) -> Vec<&T> {
+    let mut sorted: Vec<&T> = items.iter().collect();
+    sorted.sort_by(|a, b| id(a).cmp(id(b)));
+    sorted
 }
 
 /// The dotted paths of a sketch's members, as every error's `parameter` names them
@@ -207,6 +241,17 @@ impl ElementKind {
             ElementKind::Circle => "circle",
             ElementKind::Arc => "arc",
             ElementKind::Constraint => "constraint",
+        }
+    }
+
+    /// The element with its article, as messages name one: "a point", "an arc", ...
+    pub fn a_noun(self) -> &'static str {
+        match self {
+            ElementKind::Point => "a point",
+            ElementKind::Line => "a line",
+            ElementKind::Circle => "a circle",
+            ElementKind::Arc => "an arc",
+            ElementKind::Constraint => "a constraint",
         }
     }
 

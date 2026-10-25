@@ -88,6 +88,49 @@ fn a_name_a_note_and_a_fingerprint_reach_nothing() {
     assert_eq!(reached(&part(), &after), ids(&[]));
 }
 
+/// A sketch whose every list is out of ID order (points pb then pa, lines nb then na,
+/// circles cb then ca, arcs ab then aa, constraints k0000002 then k0000001), and a pad of
+/// it. Read without the gate: only its values matter here.
+const UNSORTED: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [
+  {"id": "s0000001", "type": "sketch", "v": 1, "name": "Sketch", "plane": "xy", "points": [{"id": "pb000000", "x": 10, "y": 0, "construction": false}, {"id": "pa000000", "x": 0, "y": 0, "construction": false}], "lines": [{"id": "nb000000", "from": "pb000000", "to": "pa000000", "construction": false}, {"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}], "circles": [{"id": "cb000000", "center": "pb000000", "radius": 2, "construction": false}, {"id": "ca000000", "center": "pa000000", "radius": 1, "construction": false}], "arcs": [{"id": "ab000000", "center": "pa000000", "start": "pb000000", "end": "pa000000", "construction": false}, {"id": "aa000000", "center": "pb000000", "start": "pa000000", "end": "pb000000", "construction": false}], "constraints": [{"id": "k0000002", "type": "length", "line": "na000000", "value": 10, "driving": true}, {"id": "k0000001", "type": "horizontal", "line": "na000000"}]},
+  {"id": "p0000001", "type": "pad", "v": 1, "name": "Plate", "sketch": "s0000001", "extent": {"type": "one_side", "length": 10, "reversed": false}}
+]}"#;
+
+#[test]
+fn canonical_order_alone_reaches_nothing() {
+    let file = read(UNSORTED.as_bytes()).unwrap();
+    // Its canonical text, read again: the sketch's lists in ID order.
+    let canonical = read(silico_core::document::write(&file).unwrap().as_bytes()).unwrap();
+    assert_ne!(file, canonical, "the lists are held in another order");
+    assert!(reached(&file, &canonical).is_empty());
+    assert!(reached(&canonical, &file).is_empty());
+    assert!(net_reach(Before::Read(&file), &BTreeSet::new(), &canonical).is_empty());
+    // A value of any list changed, or the plane, is still the sketch's change, and the
+    // pad's, whichever order the lists are in.
+    for (from, to) in [
+        (r#""x": 10, "y": 0"#, r#""x": 11, "y": 0"#),
+        (
+            r#""to": "pb000000", "construction": false"#,
+            r#""to": "pb000000", "construction": true"#,
+        ),
+        (r#""radius": 1,"#, r#""radius": 3,"#),
+        (
+            r#""end": "pb000000", "construction": false"#,
+            r#""end": "pb000000", "construction": true"#,
+        ),
+        (r#""value": 10,"#, r#""value": 12,"#),
+        (r#""plane": "xy""#, r#""plane": "xz""#),
+    ] {
+        assert_eq!(UNSORTED.matches(from).count(), 1, "{from}");
+        let changed = read(UNSORTED.replacen(from, to, 1).as_bytes()).unwrap();
+        assert_eq!(
+            reached(&canonical, &changed),
+            ids(&["s0000001", "p0000001"]),
+            "{to}"
+        );
+    }
+}
+
 #[test]
 fn a_feature_made_another_type_under_its_id_is_reached() {
     let after = edited(
