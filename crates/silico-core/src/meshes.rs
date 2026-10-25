@@ -130,6 +130,9 @@ impl<K: Ord + Clone> MeshCache<K> {
             return mesh;
         }
         let id = (key.clone(), used.to_bits());
+        // A mesh made at the step's floor, asked at it (`deflection_for` gave it), keeps the
+        // floor though the eviction below drops the step's other meshes.
+        let at_floor = inner.floors.get(key).is_some_and(|&floor| floor == used);
         // Replaced, it's the step's still: its floor stays.
         inner.remove(&id, false);
         while inner.bytes.saturating_add(bytes) > inner.bound {
@@ -150,7 +153,7 @@ impl<K: Ord + Clone> MeshCache<K> {
             },
         );
         inner.bytes = inner.bytes.saturating_add(bytes);
-        if used > asked {
+        if used > asked || at_floor {
             inner.floors.insert(key.clone(), used);
         }
         mesh
@@ -311,6 +314,14 @@ mod tests {
         assert_eq!(cache.deflection_for(&1, 1e-9), 0.0173);
         cache.put(&3, 0.5, at(0.5, mesh(1)));
         assert_eq!(cache.deflection_for(&1, 1e-9), 1e-9);
+        // Found by round 2: a step's floor mesh put again, asked at the floor, as the
+        // step's other mesh is dropped to fit it, keeps the floor.
+        let cache = MeshCache::new(mesh_bytes(&mesh(1)) + mesh_bytes(&mesh(2)));
+        cache.put(&1u32, 1.0 / 128.0, at(0.0173, mesh(1)));
+        cache.put(&1, 0.5, at(0.5, mesh(2)));
+        cache.put(&1, 0.0173, at(0.0173, mesh(3)));
+        assert!(cache.get(&1, 0.5).is_none(), "the coarser mesh kept");
+        assert_eq!(cache.deflection_for(&1, 1e-9), 0.0173);
     }
 
     #[test]
