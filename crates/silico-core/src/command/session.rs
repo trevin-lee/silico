@@ -2650,14 +2650,22 @@ mod tests {
     }
 
     fn opened(text: &str) -> Fixture {
+        opened_solving(text, &crate::fake::FakeSketches::new())
+    }
+
+    /// [`opened`], its sketches solved by `sketches`.
+    fn opened_solving(text: &str, sketches: &crate::fake::FakeSketches) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let secret = dir.path().join("secret");
         let path = dir.path().join("a.silico");
         std::fs::write(&path, text).unwrap();
         let kernel = Arc::new(FakeKernel::new(2).unwrap());
-        let sessions = Sessions::with_cache_opener(Arc::clone(&kernel), move |cache| {
-            Cache::with_secret(cache, &secret)
-        });
+        let solver = sketches.clone();
+        let sessions = Sessions::with_stand_ins(
+            Arc::clone(&kernel),
+            move |cache| Cache::with_secret(cache, &secret),
+            move || Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>),
+        );
         let id = sessions.open(&path, false).wait().session.unwrap().id;
         Fixture {
             _dir: dir,
@@ -3055,6 +3063,68 @@ mod tests {
         } = f;
         drop(sessions);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), STORED);
+    }
+
+    /// Two sketches, each a line from `pa` at (0, 0) to `pb` at (10, 0) on xy, held
+    /// horizontal; the second's `pb` at `x` instead.
+    fn two_sketches(x: &str) -> String {
+        let sketch = |id: &str, name: &str, x: &str| {
+            format!(
+                r#"{{"id": "{id}", "type": "sketch", "v": 1, "name": "{name}", "plane": "xy", "points": [{{"id": "pa000000", "x": 0, "y": 0, "construction": false}}, {{"id": "pb000000", "x": {x}, "y": 0, "construction": false}}], "lines": [{{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}}], "circles": [], "arcs": [], "constraints": [{{"id": "k0000001", "type": "horizontal", "line": "na000000"}}]}}"#
+            )
+        };
+        format!(
+            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}, {}]}}"#,
+            sketch("s0000001", "First", "10"),
+            sketch("s0000002", "Second", x)
+        )
+    }
+
+    /// Where `pb`, the second point, of sketch `sketch` in `text` is along x.
+    fn pb_x(text: &str, sketch: &str) -> f64 {
+        let document = document::read(text.as_bytes()).unwrap();
+        match &document.feature(&id(sketch)).unwrap().operation {
+            document::Operation::Sketch(found) => found.points[1].x.mm(),
+            _ => panic!("{sketch} isn't a sketch"),
+        }
+    }
+
+    #[test]
+    fn a_commit_writes_the_solves_only_of_the_sketches_edits_reached() {
+        // A solve from `pb` at 10 or 12 puts it 1 to the right, and from anywhere else
+        // leaves it, so a solve loaded again stays (the values sent are the origin and the
+        // axes' ends, 0 to 5, then `pa`'s x and y, 6 and 7, then `pb`'s, 8 and 9): both
+        // sketches solve to other values than they store.
+        let sketches = crate::fake::FakeSketches::new();
+        sketches.answer(|system| {
+            let mut solved = crate::fake::FakeSketches::as_sent(system);
+            if solved.values[8] == 10.0 || solved.values[8] == 12.0 {
+                solved.values[8] += 1.0;
+            }
+            Ok(solved)
+        });
+        let f = opened_solving(&two_sketches("10"), &sketches);
+        f.begin();
+        // The second's `pb` moved to 12: the edit reaches it alone.
+        f.edit(&two_sketches("12"));
+        let committed = f.sessions.commit(&f.id).wait().result.unwrap();
+        assert!(committed.written);
+        assert_eq!(committed.resolved, [id("s0000002")]);
+        assert!(committed.refingerprinted.is_empty());
+        // The first's drift kept as stored, and said; the second's solve, 12 + 1, written.
+        assert_eq!(committed.problems.total(), 1, "{:?}", committed.problems);
+        let drift = &committed.problems.errors()[0];
+        assert_eq!(
+            (drift.code(), drift.feature(), drift.elements()),
+            (
+                ErrorCode::Drift,
+                Some("s0000001"),
+                &["pb000000".to_owned()][..]
+            )
+        );
+        let saved = f.file();
+        assert_eq!(pb_x(&saved, "s0000001"), 10.0);
+        assert_eq!(pb_x(&saved, "s0000002"), 13.0);
     }
 
     #[test]
