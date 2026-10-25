@@ -1650,7 +1650,8 @@ impl<C: Kernel + 'static> Session<C> {
     /// the file's bytes are the session's text at a new revision, through the gate (a
     /// document it refuses held with its problems, as `open` holds one, decision 21),
     /// reaching nothing (a hand edit, the design's section 5: its stale fingerprints are
-    /// drift until `format` accepts them), its new file claimed with `claim`. Inside one,
+    /// drift until `format` accepts them), not even what was carried (so the session is as
+    /// a fresh `open` of the file), its new file claimed with `claim`. Inside one,
     /// nothing is reloaded, and the change is marked for a `commit` to refuse. Whether it
     /// reloaded: the response's `reloaded`. Refused, the session as it was, if the file is
     /// gone or can't be read (its own error), if it's longer than Silico reads of a
@@ -1689,9 +1690,9 @@ impl<C: Kernel + 'static> Session<C> {
         let gated = Arc::new(Gated::of(&now));
         let mut held = lock(&self.held);
         let next = held.next()?;
-        let carried = Arc::clone(&held.carried);
         let now = Arc::new(now);
-        held.change(next, Arc::clone(&now), gated, carried);
+        // Nothing carried: a reloaded session is as a fresh `open`.
+        held.change(next, Arc::clone(&now), gated, Arc::new(BTreeSet::new()));
         held.bytes = now;
         held.reloaded = Some(next);
         drop(held);
@@ -4784,6 +4785,78 @@ mod tests {
             .collect();
         let mm = |whole: i128| Measure::from_millionths(whole * 1_000_000);
         assert_eq!(measures, [(mm(3000), mm(1400)), (mm(11000), mm(4200))]);
+    }
+
+    #[test]
+    fn a_reload_carries_nothing_so_a_hand_edits_drift_is_said_and_not_written_over() {
+        // As `a_reached_feature_that_failed_stays_reached_after_its_commit`: the lug and the
+        // fuse carried after the commit, their fingerprints as stored (the lug 1000, the
+        // fuse 9000). Then the lug made 30 long by hand, which builds: 30 × 10 × 10 = 3000,
+        // area 2(300 + 100 + 300) = 1400; the fuse 8000 + 3000 = 11000, area 2800 + 1400 =
+        // 4200. A hand edit reaches nothing, and a reload is as a fresh open: the lug's and
+        // the fuse's stale fingerprints are drift, with the block's (stored 1e-6 over).
+        let f = opened(STORED);
+        refuse_the_longer_lug(&f, ErrorCode::KernelFailed);
+        f.begin();
+        f.edit(&longer());
+        assert!(f.sessions.commit(&f.id).wait().result.unwrap().written);
+        assert_eq!(
+            *lock(&f.session().held).carried,
+            BTreeSet::from([id("b0000001"), id("f0000001")])
+        );
+        let by_hand = f.file().replace("\"length\": 20,", "\"length\": 30,");
+        assert_ne!(by_hand, f.file());
+        std::fs::write(&f.path, &by_hand).unwrap();
+        let check = f.sessions.check(&f.id).wait();
+        let session = check.session.unwrap();
+        assert!(session.reloaded);
+        let drift: Vec<(ErrorCode, Option<&str>)> = check
+            .result
+            .as_ref()
+            .unwrap()
+            .errors()
+            .iter()
+            .map(|e| (e.code(), e.feature()))
+            .collect();
+        assert_eq!(
+            drift,
+            [
+                (ErrorCode::Drift, Some("k7f2qx3m")),
+                (ErrorCode::Drift, Some("b0000001")),
+                (ErrorCode::Drift, Some("f0000001"))
+            ]
+        );
+        assert!(lock(&f.session().held).carried.is_empty());
+        // A note's edit reaches nothing: its commit writes no fingerprint over the drift.
+        let note = f
+            .sessions
+            .set_field(
+                &f.id,
+                session.revision,
+                id("k7f2qx3m"),
+                "note".to_owned(),
+                crate::document::json::read(br#""by hand""#).unwrap(),
+            )
+            .wait()
+            .result
+            .unwrap();
+        let commit = note.commit.unwrap();
+        assert!(commit.written);
+        assert!(commit.refingerprinted.is_empty(), "{commit:?}");
+        let saved = document::read(f.file().as_bytes()).unwrap();
+        let volumes: Vec<Measure> = saved
+            .features
+            .iter()
+            .map(|feature| feature.fingerprint.unwrap().volume)
+            .collect();
+        assert_eq!(
+            volumes,
+            [
+                Measure::from_millionths(8_000_000_001),
+                Measure::from_millionths(1_000_000_000),
+                Measure::from_millionths(9_000_000_000)
+            ]
+        );
     }
 
     #[test]
