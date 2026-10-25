@@ -165,6 +165,85 @@ impl NamedView {
     }
 }
 
+/// Half a pixel of `camera`'s image, `height` pixels high, in mm: what a body is meshed to
+/// ([`crate::meshes::mesh_level`]). An orthographic view's is the same everywhere; a
+/// perspective view's is taken at the target's distance. None for a camera that fails its
+/// check.
+pub fn half_pixel(camera: &Camera, height: u32) -> Option<f64> {
+    let frame = camera.frame().ok()?;
+    let view_height = match camera.projection {
+        Projection::Orthographic { view_height } => view_height,
+        Projection::Perspective { field_of_view } => {
+            2.0 * frame.distance * libm::tan(field_of_view.to_radians() / 2.0)
+        }
+    };
+    Some(view_height / f64::from(height) / 2.0)
+}
+
+/// Whether `camera`'s view, `width` by `height` pixels, may see any of a tight box,
+/// `[low, high]`: false only when the whole box is outside the view (beside an orthographic
+/// view's sides, which don't clip along the view; or behind a perspective eye, or past one
+/// of its sides), so a body left out is never one the image shows. None for a camera that
+/// fails its check.
+pub fn sees(camera: &Camera, width: u32, height: u32, [low, high]: [[f64; 3]; 2]) -> Option<bool> {
+    let frame = camera.frame().ok()?;
+    let corners = (0..8).map(|i| {
+        [
+            if i & 1 == 0 { low[0] } else { high[0] },
+            if i & 2 == 0 { low[1] } else { high[1] },
+            if i & 4 == 0 { low[2] } else { high[2] },
+        ]
+    });
+    let aspect = f64::from(width) / f64::from(height);
+    Some(match camera.projection {
+        Projection::Orthographic { view_height } => {
+            let (half_up, half_right) = (view_height / 2.0, view_height * aspect / 2.0);
+            let (mut up, mut right) = (
+                (f64::INFINITY, f64::NEG_INFINITY),
+                (f64::INFINITY, f64::NEG_INFINITY),
+            );
+            for c in corners {
+                let d = [
+                    c[0] - camera.target[0],
+                    c[1] - camera.target[1],
+                    c[2] - camera.target[2],
+                ];
+                let (u, r) = (dot(d, frame.up), dot(d, frame.right));
+                up = (up.0.min(u), up.1.max(u));
+                right = (right.0.min(r), right.1.max(r));
+            }
+            up.0 <= half_up && up.1 >= -half_up && right.0 <= half_right && right.1 >= -half_right
+        }
+        Projection::Perspective { field_of_view } => {
+            let ty = libm::tan(field_of_view.to_radians() / 2.0);
+            let tx = ty * aspect;
+            // Each corner's depth along the view and its offsets across it, from the eye:
+            // the box is out of view if every corner is behind the eye, or past one side.
+            let mut outside = [true; 5];
+            for c in corners {
+                let d = [
+                    c[0] - camera.eye[0],
+                    c[1] - camera.eye[1],
+                    c[2] - camera.eye[2],
+                ];
+                let depth = -dot(d, frame.back);
+                let (x, y) = (dot(d, frame.right), dot(d, frame.up));
+                let tests = [
+                    depth <= 0.0,
+                    x > depth * tx,
+                    -x > depth * tx,
+                    y > depth * ty,
+                    -y > depth * ty,
+                ];
+                for (side, out) in outside.iter_mut().zip(tests) {
+                    *side = *side && out;
+                }
+            }
+            !outside.iter().any(|&out| out)
+        }
+    })
+}
+
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
@@ -179,8 +258,8 @@ fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 
 #[cfg(test)]
 mod tests {
-    use super::{NAMED_VIEWS, NamedView, cross, dot};
-    use silico_protocol::Projection;
+    use super::{NAMED_VIEWS, NamedView, cross, dot, half_pixel, sees};
+    use silico_protocol::{Camera, Projection};
 
     const BLOCK: [[f64; 3]; 2] = [[0.0, 0.0, 0.0], [40.0, 20.0, 10.0]];
 
@@ -311,6 +390,89 @@ mod tests {
                 ];
                 assert!(dot(d, view.direction()) > 2100f64.sqrt() / 2.0, "{view:?}");
             }
+        }
+    }
+
+    /// From −y, looking at the origin, up +z, 100 away: orthographic 44 high, or
+    /// perspective 40° high.
+    fn from_front(projection: Projection) -> Camera {
+        Camera {
+            projection,
+            eye: [0.0, -100.0, 0.0],
+            target: [0.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+        }
+    }
+
+    const ORTHO: Projection = Projection::Orthographic { view_height: 44.0 };
+    const PERSPECTIVE: Projection = Projection::Perspective {
+        field_of_view: 40.0,
+    };
+
+    #[test]
+    fn half_a_pixel_is_the_view_over_its_pixels_at_the_targets_distance() {
+        assert_eq!(
+            half_pixel(&from_front(ORTHO), 400),
+            Some(44.0 / 400.0 / 2.0)
+        );
+        // 2 × 100 × tan 20° high at the target, over 200 pixels, halved; tan 20° by hand.
+        let tan20 = 0.363_970_234_266_202_4;
+        let got = half_pixel(&from_front(PERSPECTIVE), 200).unwrap();
+        assert!((got - 100.0 * tan20 / 200.0).abs() <= 1e-15, "{got}");
+        let mut bad = from_front(ORTHO);
+        bad.eye = bad.target;
+        assert_eq!(half_pixel(&bad, 200), None);
+    }
+
+    #[test]
+    fn a_box_is_left_out_only_when_wholly_outside_the_view() {
+        let cube = |c: [f64; 3], half: f64| {
+            [
+                [c[0] - half, c[1] - half, c[2] - half],
+                [c[0] + half, c[1] + half, c[2] + half],
+            ]
+        };
+        // Orthographic, 44 high and wide (square): x and z within ±22 are in view, at any
+        // depth (nothing clipped behind the eye).
+        let ortho = from_front(ORTHO);
+        for (centre, half, seen) in [
+            ([0.0, 0.0, 0.0], 1.0, true),
+            ([0.0, 500.0, 0.0], 1.0, true),
+            ([0.0, -500.0, 0.0], 1.0, true),
+            ([22.5, 0.0, 0.0], 1.0, true),
+            ([23.5, 0.0, 0.0], 1.0, false),
+            ([0.0, 0.0, -23.5], 1.0, false),
+            ([40.0, 0.0, 40.0], 30.0, true),
+        ] {
+            assert_eq!(
+                sees(&ortho, 300, 300, cube(centre, half)),
+                Some(seen),
+                "{centre:?} {half}"
+            );
+        }
+        // Twice as wide as high: x within ±44 in view.
+        assert_eq!(
+            sees(&ortho, 600, 300, cube([40.0, 0.0, 0.0], 1.0)),
+            Some(true)
+        );
+        // Perspective, 40° high, square: at the target, 100 from the eye, ±36.4 in view;
+        // behind the eye, nothing.
+        let perspective = from_front(PERSPECTIVE);
+        for (centre, half, seen) in [
+            ([0.0, 0.0, 0.0], 1.0, true),
+            ([35.0, 0.0, 0.0], 1.0, true),
+            ([38.0, 0.0, 0.0], 1.0, false),
+            ([0.0, 0.0, -38.0], 1.0, false),
+            ([0.0, -150.0, 0.0], 1.0, false),
+            // Around the eye: corners on every side.
+            ([0.0, -100.0, 0.0], 5.0, true),
+            ([0.0, 900.0, 0.0], 1.0, true),
+        ] {
+            assert_eq!(
+                sees(&perspective, 300, 300, cube(centre, half)),
+                Some(seen),
+                "{centre:?} {half}"
+            );
         }
     }
 }
