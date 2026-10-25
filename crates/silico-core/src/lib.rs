@@ -33,6 +33,7 @@ mod references;
 pub mod render;
 pub mod sketch;
 pub mod sweep;
+pub mod views;
 pub mod worker;
 
 pub use error::{Error, ErrorCode};
