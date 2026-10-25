@@ -14,7 +14,7 @@ use silico_core::command::measure::mass_properties;
 use silico_core::command::{ModelChoice, ModelRead, Revision};
 use silico_core::document::Fingerprint;
 use silico_core::fake::FakeKernel;
-use silico_core::recompute::{FeatureOutcome, Model, Recompute};
+use silico_core::recompute::{Model, Recompute};
 
 /// The fingerprint the feature `feature`'s rebuild gives, as `fmt` writes it.
 fn fingerprint(model: &Model, feature: &str) -> Fingerprint {
