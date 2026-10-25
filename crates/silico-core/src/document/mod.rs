@@ -154,34 +154,18 @@ fn smaller(feature: &Feature) -> &'static str {
 /// The JSON Schema of a document (draft 2020-12), as agents get it. The reader is the
 /// authority where a schema can't say enough: a seventh decimal, a key written twice.
 pub fn schema() -> Result<String, Error> {
-    schema_of::<Document>("the document", Presence::AsDerived)
-}
-
-/// Which of a schema's fields it requires: those its type requires (a document's optional
-/// fields may be left out), or every one, as a command's response always holds every field,
-/// `null` where it doesn't apply (docs/design/m4.1-command-api.md, section 2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Presence {
-    AsDerived,
-    Always,
+    schema_of::<Document>("the document")
 }
 
 /// The JSON Schema of `T` (draft 2020-12), its keys sorted, pretty, with a trailing newline:
 /// as the protected snapshots hold it, the document's and the command API's
 /// (`command::wire::snapshot`). `what` names it for the error a schema that couldn't be
 /// written gives.
-pub(crate) fn schema_of<T: schemars::JsonSchema>(
-    what: &str,
-    presence: Presence,
-) -> Result<String, Error> {
+pub(crate) fn schema_of<T: schemars::JsonSchema>(what: &str) -> Result<String, Error> {
     let schema = SchemaSettings::draft2020_12()
         .into_generator()
         .into_root_schema_for::<T>();
-    let mut value = schema.as_value().clone();
-    if presence == Presence::Always {
-        require_every_property(&mut value);
-    }
-    serde_json::to_string_pretty(&sorted(&value))
+    serde_json::to_string_pretty(&sorted(schema.as_value()))
         .map(|text| text + "\n")
         .map_err(|e| {
             Error::new(
@@ -191,38 +175,6 @@ pub(crate) fn schema_of<T: schemars::JsonSchema>(
             .with_cause(e.to_string())
             .with_suggestion(crate::worker::SILICO_BUG)
         })
-}
-
-/// Every object schema in `value` requiring each of its properties: schemars leaves an
-/// `Option` field out of `required`, where a response writes it always, as `null` if it has
-/// nothing (its type keeps `null`).
-fn require_every_property(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::Object(map) => {
-            let keys: Option<Vec<serde_json::Value>> = map
-                .get("properties")
-                .and_then(serde_json::Value::as_object)
-                .map(|properties| {
-                    let mut keys: Vec<&String> = properties.keys().collect();
-                    keys.sort();
-                    keys.into_iter()
-                        .map(|k| serde_json::Value::String(k.clone()))
-                        .collect()
-                });
-            if let Some(keys) = keys {
-                map.insert("required".to_owned(), serde_json::Value::Array(keys));
-            }
-            for v in map.values_mut() {
-                require_every_property(v);
-            }
-        }
-        serde_json::Value::Array(items) => {
-            for v in items {
-                require_every_property(v);
-            }
-        }
-        _ => {}
-    }
 }
 
 /// `value` with every object's keys in sorted order. serde_json keeps an object's keys in

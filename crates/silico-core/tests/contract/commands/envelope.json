@@ -91,7 +91,7 @@
         },
         "revision": {
           "format": "uint64",
-          "minimum": 0,
+          "minimum": 1,
           "type": "integer"
         }
       },
@@ -143,9 +143,11 @@
       "description": "A command refused: every reason, the first hundred, and how many there are.",
       "properties": {
         "errors": {
+          "description": "The first `PROBLEMS_LISTED`.",
           "items": {
             "$ref": "#/$defs/ErrorSchema"
           },
+          "maxItems": 100,
           "type": "array"
         },
         "model": {
@@ -201,8 +203,9 @@
           "type": "boolean"
         },
         "revision": {
+          "description": "From 1, at `open`.",
           "format": "uint64",
-          "minimum": 0,
+          "minimum": 1,
           "type": "integer"
         },
         "transaction": {

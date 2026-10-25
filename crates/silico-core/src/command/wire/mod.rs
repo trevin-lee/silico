@@ -552,9 +552,31 @@ fn written(node: &Node) -> String {
     }
 }
 
+/// A wire type's schema requiring each of its own properties, for a container transform
+/// (`#[schemars(transform = always_present)]`) on every wire mirror struct: a response holds
+/// every field, `null` where it has nothing (section 2), where schemars leaves an `Option`
+/// field out of `required`; its type still takes `null`. Only the struct's own properties:
+/// a document type a result carries (a feature) keeps the document's own `required`.
+pub fn always_present(schema: &mut schemars::Schema) {
+    let keys: Option<Vec<serde_json::Value>> = schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+        .map(|properties| {
+            let mut keys: Vec<&String> = properties.keys().collect();
+            keys.sort();
+            keys.into_iter()
+                .map(|k| serde_json::Value::String(k.clone()))
+                .collect()
+        });
+    if let Some(keys) = keys {
+        schema.insert("required".to_owned(), serde_json::Value::Array(keys));
+    }
+}
+
 /// The error contract's shape, for the snapshots: the envelope's `errors` and every
 /// result's `problems` reference this one schema.
 #[derive(JsonSchema)]
+#[schemars(transform = always_present)]
 pub struct ErrorSchema {
     pub code: String,
     pub message: String,
@@ -569,10 +591,13 @@ pub struct ErrorSchema {
 
 /// A session as a response gives it, for the envelope's snapshot.
 #[derive(JsonSchema)]
+#[schemars(transform = always_present)]
 pub struct SessionSchema {
     /// `s1`, `s2`, ...
     pub id: String,
     pub path: String,
+    /// From 1, at `open`.
+    #[schemars(range(min = 1))]
     pub revision: u64,
     pub transaction: bool,
     pub reloaded: bool,
@@ -588,7 +613,9 @@ pub enum ModelOfSchema {
 
 /// The model a command read, for the envelope's snapshot.
 #[derive(JsonSchema)]
+#[schemars(transform = always_present)]
 pub struct ModelSchema {
+    #[schemars(range(min = 1))]
     pub revision: u64,
     pub of: ModelOfSchema,
     /// The kernel fault its rebuild met, once (decision 32): always null until then.
@@ -597,6 +624,7 @@ pub struct ModelSchema {
 
 /// A command that ran: its result, which each command's snapshot gives.
 #[derive(JsonSchema)]
+#[schemars(transform = always_present)]
 pub struct RanSchema {
     #[schemars(extend("const" = true))]
     pub ok: bool,
@@ -607,11 +635,14 @@ pub struct RanSchema {
 
 /// A command refused: every reason, the first hundred, and how many there are.
 #[derive(JsonSchema)]
+#[schemars(transform = always_present)]
 pub struct RefusedSchema {
     #[schemars(extend("const" = false))]
     pub ok: bool,
     pub session: Option<SessionSchema>,
     pub model: Option<ModelSchema>,
+    /// The first `PROBLEMS_LISTED`.
+    #[schemars(length(max = 100))]
     pub errors: Vec<ErrorSchema>,
     pub total: u64,
 }
@@ -627,6 +658,7 @@ pub enum EnvelopeSchema {
 /// A command's snapshot: its request's schema and its result's, under one root, so the
 /// two share their definitions.
 #[derive(JsonSchema)]
+#[schemars(transform = always_present)]
 pub struct CommandSchema<Request: JsonSchema, Result: JsonSchema> {
     pub request: Request,
     pub result: Result,
@@ -637,10 +669,7 @@ pub struct CommandSchema<Request: JsonSchema, Result: JsonSchema> {
 /// document's schema is, its keys sorted, pretty, with a trailing newline.
 pub fn snapshot(of: &str) -> Option<Result<String, Error>> {
     match of {
-        "envelope" => Some(crate::document::schema_of::<EnvelopeSchema>(
-            "the envelope",
-            crate::document::Presence::Always,
-        )),
+        "envelope" => Some(crate::document::schema_of::<EnvelopeSchema>("the envelope")),
         _ => None,
     }
 }

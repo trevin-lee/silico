@@ -365,3 +365,42 @@ fn the_envelopes_examples_are_the_designs_own_text() {
         assert_eq!(format!("{block}\n"), *file);
     }
 }
+
+/// A wire type holding a type of its own that isn't one, as a result holds a document's
+/// feature.
+#[derive(schemars::JsonSchema)]
+#[schemars(transform = super::always_present)]
+struct Wire {
+    optional: Option<u32>,
+    held: Held,
+}
+
+#[derive(schemars::JsonSchema)]
+struct Held {
+    note: Option<String>,
+    id: String,
+}
+
+#[test]
+fn a_wire_type_requires_its_own_fields_and_a_type_it_holds_keeps_its_own() {
+    // (A value of them, read, as a schema mirror's never is.)
+    let value = Wire {
+        optional: None,
+        held: Held {
+            note: None,
+            id: "k7f2qx3m".to_owned(),
+        },
+    };
+    assert_eq!(
+        (value.optional, value.held.note, value.held.id.len()),
+        (None, None, 8)
+    );
+    let text = crate::document::schema_of::<Wire>("a test").unwrap();
+    let schema: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(schema["required"], serde_json::json!(["held", "optional"]));
+    // Held's `note` may still be left out; its `id` may not.
+    assert_eq!(
+        schema["$defs"]["Held"]["required"],
+        serde_json::json!(["id"])
+    );
+}
