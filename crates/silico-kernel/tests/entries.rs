@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use silico_core::command::Revision;
 use silico_core::command::elements::{AxisToken, ElementType, Entry, entries, list};
-use silico_core::document::{Checked, FeatureId, Length, read};
+use silico_core::document::{Angle, Checked, FeatureId, Length, read};
 use silico_core::kernel::ElementKind;
 use silico_core::pool::KernelPool;
 use silico_core::recompute::{Model, Recompute, RunOutcome};
@@ -207,11 +207,8 @@ fn a_cone_to_a_point_has_its_signed_half_angle_and_apex_and_no_radius() {
     let cone = cone[0];
     // r 4 to 0 over 6: half-angle atan(−4 / 6), narrowing up its axis, −33.690067526° as
     // FreeCAD 1.1.3's Part::Cone gives it; its apex at (200, 0, 6).
-    let half = cone.half_angle.unwrap().degrees();
-    assert!(
-        (half - (-4.0f64 / 6.0).atan().to_degrees()).abs() <= 1e-9,
-        "{half}"
-    );
+    // atan(2 / 3) is 33.69006752597979°, to 9 places 33.690067526.
+    assert_eq!(cone.half_angle, Some(Angle::from_ndeg(-33_690_067_526)));
     close_point("the apex", point(cone.apex), [200.0, 0.0, 6.0]);
     // Its radius is OCCT's reference radius, which isn't an entry's.
     assert_eq!((cone.radius, cone.diameter), (None, None));

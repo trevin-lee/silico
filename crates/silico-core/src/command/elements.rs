@@ -426,19 +426,17 @@ pub fn entries(model: &Model, id: &FeatureId) -> Result<Vec<Entry>, Problems> {
     };
     let Some(description) = built.description() else {
         // Why: its description refused or failed, or, before that, its summary.
-        return Err(
-            match built.description_refused().or(built.measure_refused()) {
-                Some(refused) => refused.clone(),
-                None => Error::new(
-                    ErrorCode::KernelFailed,
-                    format!("{id}'s solid couldn't be described, so its elements aren't known"),
-                )
-                .with_suggestion("check the document again: its rebuild describes it again"),
-            }
-            .with_feature(id.as_str())
-            .with_parameter("feature")
-            .into(),
-        );
+        return Err(match built.why_undescribed().or(built.measure_refused()) {
+            Some(refused) => refused.clone(),
+            None => Error::new(
+                ErrorCode::KernelFailed,
+                format!("{id}'s solid couldn't be described, so its elements aren't known"),
+            )
+            .with_suggestion("check the document again: its rebuild describes it again"),
+        }
+        .with_feature(id.as_str())
+        .with_parameter("feature")
+        .into());
     };
     let Some(map) = model.element_map(id) else {
         return Err(fault(id, "its solid built, but its elements couldn't be named").into());
@@ -617,7 +615,7 @@ fn twice(id: &FeatureId, radius: Length) -> Result<Length, Error> {
 /// `half_angle` (radians, signed) along `axis.direction`. `None` where it lies past what a
 /// length holds (a cone all but a cylinder), or the cone has no apex (a half-angle of 0).
 fn apex(axis: &Axis, radius: f64, half_angle: f64) -> Option<[Length; 3]> {
-    let along = radius / half_angle.tan();
+    let along = radius / libm::tan(half_angle);
     if !along.is_finite() {
         return None;
     }
@@ -901,7 +899,7 @@ fn faces(normal: [f64; 3], facing: &Facing) -> bool {
     ];
     let sin = cross.iter().map(|c| c * c).sum::<f64>().sqrt();
     let cos: f64 = normal.iter().zip(d).map(|(n, d)| n * d).sum();
-    Angle::rounded(sin.atan2(cos).to_degrees()).is_some_and(|angle| angle <= facing.within)
+    Angle::rounded(libm::atan2(sin, cos).to_degrees()).is_some_and(|angle| angle <= facing.within)
 }
 
 /// Every reason `query` is refused, in the order its fields come.
