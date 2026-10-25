@@ -1733,6 +1733,17 @@ mod tests {
     }
 
     #[test]
+    fn a_published_read_racing_a_close_is_refused_as_not_open() {
+        // Closed (its queue ended) but not yet gone from the registry, as a close is for a
+        // moment: the read refuses it, though a model is published.
+        let (_dir, _kernel, sessions, id) = at_two(SPHERE);
+        sessions.find(&id).unwrap().close();
+        let response = sessions.published(&id);
+        assert_eq!(response.model, None);
+        assert_eq!(response.result.unwrap_err().errors()[0], not_open(id));
+    }
+
+    #[test]
     fn a_rebuild_is_refused_only_under_a_newer_revisions() {
         let kernel = FakeKernel::new(1).unwrap();
         let (session, _jobs) = session(&kernel);
