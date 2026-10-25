@@ -1,11 +1,12 @@
 //! M4.6's first step, proved: a 40 × 20 × 10 box drawn headless, each face an instance of its
 //! own (its picking instance the face's number, as OCCT numbers a box's faces), from the front,
-//! and its ID buffer read back and checked against the front face's rectangle projected by
-//! hand (docs/design/m4.6-render.md, Build steps, 1).
+//! off the image's centre so a flipped or mirrored image shows, and its ID buffer read back
+//! and checked against the front face's rectangle projected by hand (docs/design/m4.6-render.md,
+//! Build steps, 1).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use re_renderer::mesh::{CpuMesh, GpuMesh, Material};
 use re_renderer::renderer::{GpuMeshInstance, MeshDrawData};
@@ -25,13 +26,29 @@ pub struct Probed {
     pub adapter: String,
     /// Pixels by (body, face) in the ID buffer; (0, 0) is the background.
     pub ids: BTreeMap<(u64, u64), u64>,
+    /// The first and last columns and rows (from the top) the front face covers, if any.
+    pub front: Option<[u32; 4]>,
     /// Pixels more than one pixel inside the front face's hand-projected rectangle that
     /// aren't the front face, or more than one outside it that aren't the background.
     pub off: u64,
-    /// Seconds to make the render context, and to render and read back.
-    pub context_seconds: f64,
-    pub render_seconds: f64,
+    /// How long making the render context took.
+    pub context: Duration,
+    /// How long the render and its readback took.
+    pub render: Duration,
 }
+
+/// Where the box's front face lands in the view, about its centre: x from −14 to 26 mm, z
+/// from −3 to 7 mm, so it's off the image's centre both ways.
+pub const FRONT: [f64; 4] = [-14.0, 26.0, -3.0, 7.0];
+/// The point of the box drawn at the view's centre: (14, 0, 3) puts the front face at
+/// [`FRONT`].
+const CENTRE: [f32; 3] = [14., 10., 3.];
+/// The view's height, 1.1 × the box's 40 mm width.
+pub const VIEW_HEIGHT: f32 = 44.0;
+/// Frames to wait for the picking readback: re_renderer delivers it in a later frame, and
+/// each frame here waits for the GPU, so it comes in the first or second. The bound is for
+/// a driver that never delivers it.
+const READBACK_FRAMES: u32 = 100;
 
 /// The box's faces, in OCCT's order for a box from the origin: x = 0, x = 40, y = 0, y = 20,
 /// z = 0, z = 10, each its outward normal and its corners counterclockwise from outside.
@@ -77,9 +94,14 @@ const FACES: [([f32; 3], [[f32; 3]; 4]); 6] = [
     ),
 ];
 
-/// The box from `front` (from −Y, +Z up) on `adapter`, `size` pixels square, its view 44 mm
-/// high (1.1 × its 40 mm width), drawn about its centre.
-pub fn front_of_a_box(adapter: &wgpu::Adapter, size: u32) -> Result<Probed, String> {
+/// The box from the front (from −Y, +Z up) on `adapter`, `size` pixels square, its view
+/// [`VIEW_HEIGHT`] high, with its front face at [`FRONT`]. `while_held` runs after the
+/// render, before the render context is dropped (to measure its memory).
+pub fn front_of_a_box<T>(
+    adapter: &wgpu::Adapter,
+    size: u32,
+    while_held: impl FnOnce() -> T,
+) -> Result<(Probed, T), String> {
     let started = Instant::now();
     let caps = re_renderer::device_caps::DeviceCaps::from_adapter(adapter)
         .map_err(|e| format!("the adapter can't be used: {e}"))?;
@@ -93,10 +115,10 @@ pub fn front_of_a_box(adapter: &wgpu::Adapter, size: u32) -> Result<Probed, Stri
         RenderConfig::best_for_device_caps,
     )
     .map_err(|e| format!("no render context: {e}"))?;
-    let context_seconds = started.elapsed().as_secs_f64();
+    let context = started.elapsed();
     ctx.begin_frame();
 
-    let centre = glam::Vec3::new(20., 10., 5.);
+    let centre = glam::Vec3::from(CENTRE);
     let white = ctx.texture_manager_2d.white_texture_unorm_handle().clone();
     let mut instances = Vec::new();
     for (i, (normal, corners)) in FACES.iter().enumerate() {
@@ -137,7 +159,6 @@ pub fn front_of_a_box(adapter: &wgpu::Adapter, size: u32) -> Result<Probed, Stri
             cull_mode: None,
         });
     }
-    let view_height = 44.0f32;
     let view_from_world = macaw::IsoTransform::look_at_rh(
         glam::Vec3::new(0., -50., 0.),
         glam::Vec3::ZERO,
@@ -152,7 +173,7 @@ pub fn front_of_a_box(adapter: &wgpu::Adapter, size: u32) -> Result<Probed, Stri
             view_from_world,
             projection_from_view: Projection::Orthographic {
                 camera_mode: OrthographicCameraMode::NearPlaneCenter,
-                vertical_world_size: view_height,
+                vertical_world_size: VIEW_HEIGHT,
                 far_plane_distance: 1000.0,
             },
             picking_config: Some(ViewPickingConfiguration {
@@ -185,7 +206,7 @@ pub fn front_of_a_box(adapter: &wgpu::Adapter, size: u32) -> Result<Probed, Stri
         .poll(wait())
         .map_err(|e| format!("the GPU didn't finish: {e}"))?;
     let mut picked = None;
-    for _ in 0..100 {
+    for _ in 0..READBACK_FRAMES {
         ctx.begin_frame();
         ctx.device
             .poll(wait())
@@ -197,19 +218,22 @@ pub fn front_of_a_box(adapter: &wgpu::Adapter, size: u32) -> Result<Probed, Stri
         ctx.before_submit();
     }
     let picked = picked.ok_or("the picking layer was never read back")?;
-    let render_seconds = rendering.elapsed().as_secs_f64();
+    let render = rendering.elapsed();
+    let held = while_held();
 
     let mut ids = BTreeMap::new();
     for id in &picked.picking_id_data {
         *ids.entry((id.object.0, id.instance.0)).or_insert(0u64) += 1;
     }
-    // The front face (Face3, y = 0) projects to x in [-20, 20] and z in [-5, 5] about the
-    // centre; the image spans 44 mm, rows from the top.
-    let pixel = size as f64 / f64::from(view_height);
+    // The front face (Face3, y = 0) projects to [`FRONT`] about the centre; the image spans
+    // VIEW_HEIGHT, rows from the top (so z up is rows up).
+    let pixel = f64::from(size) / f64::from(VIEW_HEIGHT);
     let half = f64::from(size) / 2.0;
-    let (x0, x1) = (half - 20.0 * pixel, half + 20.0 * pixel);
-    let (y0, y1) = (half - 5.0 * pixel, half + 5.0 * pixel);
+    let [left, right, bottom, top] = FRONT;
+    let (x0, x1) = (half + left * pixel, half + right * pixel);
+    let (y0, y1) = (half - top * pixel, half - bottom * pixel);
     let mut off = 0;
+    let mut front: Option<[u32; 4]> = None;
     for row in 0..size {
         for col in 0..size {
             let (cx, cy) = (f64::from(col) + 0.5, f64::from(row) + 0.5);
@@ -219,16 +243,24 @@ pub fn front_of_a_box(adapter: &wgpu::Adapter, size: u32) -> Result<Probed, Stri
             let inside = cx > x0 + 1.0 && cx < x1 - 1.0 && cy > y0 + 1.0 && cy < y1 - 1.0;
             let outside = cx < x0 - 1.0 || cx > x1 + 1.0 || cy < y0 - 1.0 || cy > y1 + 1.0;
             let face = (id.object.0, id.instance.0);
+            if face == (1, 3) {
+                let b = front.get_or_insert([col, col, row, row]);
+                *b = [b[0].min(col), b[1].max(col), b[2].min(row), b[3].max(row)];
+            }
             if (inside && face != (1, 3)) || (outside && face != (0, 0)) {
                 off += 1;
             }
         }
     }
-    Ok(Probed {
-        adapter: adapter.get_info().name,
-        ids,
-        off,
-        context_seconds,
-        render_seconds,
-    })
+    Ok((
+        Probed {
+            adapter: adapter.get_info().name,
+            ids,
+            front,
+            off,
+            context,
+            render,
+        },
+        held,
+    ))
 }

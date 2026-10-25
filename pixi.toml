@@ -6,7 +6,11 @@ platforms = ["osx-arm64", "linux-64"]
 # The pinned C++ toolchain. Determinism depends on every machine compiling
 # worker C++ with the same compiler (ARCHITECTURE.md, Deterministic kernel).
 [dependencies]
-clangxx = "21.1.8.*"
+# The compiler's build pinned too (clangxx and clang-21, the compiler itself): adding
+# M4.6's lavapipe once moved the Mac's from build 6 to 7, which would change what OCCT is
+# compiled with.
+clangxx = { version = "21.1.8.*", build = "*_6" }
+clang-21 = { version = "21.1.8.*", build = "*_6" }
 # Runtime and headers pinned together: OCCT calls libc++ (std::sort, ...) at runtime.
 libcxx = "21.1.8.*"
 libcxx-devel = "21.1.8.*"

@@ -11,6 +11,14 @@ fn main() -> std::io::Result<()> {
     let prefix = std::env::var_os("CONDA_PREFIX").map(PathBuf::from);
     let icd = prefix.as_deref().and_then(lavapipe_icd);
     let lib = prefix.as_ref().map(|p| p.join("lib"));
+    // Installing or removing lavapipe in the same environment changes what's found.
+    if let Some(dir) = prefix
+        .as_ref()
+        .map(|p| p.join("share/vulkan/icd.d"))
+        .filter(|d| d.is_dir())
+    {
+        writeln!(out, "cargo:rerun-if-changed={}", dir.display())?;
+    }
     // Empty when built outside pixi: the worker then has no lavapipe, and says so.
     let shown = |p: Option<PathBuf>| p.map(|p| p.display().to_string()).unwrap_or_default();
     writeln!(out, "cargo:rustc-env=SILICO_LAVAPIPE_ICD={}", shown(icd))?;

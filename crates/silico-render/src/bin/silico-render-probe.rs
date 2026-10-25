@@ -1,10 +1,11 @@
 //! M4.6's first step as a program: re-executes itself with lavapipe, renders the box's front
 //! at the size given (400 pixels if none), and writes what it found, one `key value` a line,
-//! and on Linux its peak and present memory (`VmHWM`, `VmRSS`). With `--hold SECONDS` after the
-//! size, it then drops the render context and waits, writing its memory then, for the
-//! footprint a worker keeps after a render (`ps -o rss` reads it on macOS). Exits 1 if it
-//! can't render.
+//! and on Linux its peak memory and its memory while the render context is held (`VmHWM`,
+//! `VmRSS`). With `--hold SECONDS` after the size, it then waits with the context dropped,
+//! and writes its memory then, for the footprint a worker keeps after a render (`ps -o rss`
+//! reads it on macOS). Exits 1, saying why, if its arguments are wrong or it can't render.
 
+use std::ffi::OsString;
 use std::io::Write;
 use std::process::ExitCode;
 
@@ -18,18 +19,18 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<(), String> {
-    silico_render::lavapipe::reexec_with()?;
-    let args: Vec<String> = std::env::args().collect();
-    let hold = match args.iter().position(|a| a == "--hold") {
-        Some(i) => Some(
-            args.get(i + 1)
-                .and_then(|s| s.parse::<u64>().ok())
-                .ok_or("--hold takes a number of seconds")?,
-        ),
-        None => None,
+/// The size and the seconds to hold, from the arguments after the program's name.
+fn arguments(args: &[OsString]) -> Result<(u32, Option<u64>), String> {
+    let text = |a: &OsString| {
+        a.to_str()
+            .map(str::to_owned)
+            .ok_or(format!("{a:?} isn't text"))
     };
-    let size = match args.get(1).filter(|a| *a != "--hold") {
+    let (size, rest) = match args.first() {
+        Some(first) if first != "--hold" => (Some(text(first)?), &args[1..]),
+        _ => (None, args),
+    };
+    let size = match size {
         Some(arg) => arg
             .parse::<u32>()
             .ok()
@@ -37,8 +38,25 @@ fn run() -> Result<(), String> {
             .ok_or_else(|| format!("{arg:?} isn't a size from 1 to 4096 pixels"))?,
         None => 400,
     };
+    let hold = match rest {
+        [] => None,
+        [flag, seconds] if flag == "--hold" => Some(
+            text(seconds)?
+                .parse::<u64>()
+                .map_err(|_| "--hold takes a number of seconds".to_owned())?,
+        ),
+        [flag] if flag == "--hold" => return Err("--hold takes a number of seconds".to_owned()),
+        _ => return Err(format!("unexpected arguments: {rest:?}")),
+    };
+    Ok((size, hold))
+}
+
+fn run() -> Result<(), String> {
+    silico_render::lavapipe::reexec_with()?;
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let (size, hold) = arguments(&args)?;
     let adapter = silico_render::cpu_adapter()?;
-    let probed = silico_render::probe::front_of_a_box(&adapter, size)?;
+    let (probed, held) = silico_render::probe::front_of_a_box(&adapter, size, || memory("VmRSS:"))?;
     let peak = memory("VmHWM:");
     let mut out = std::io::stdout().lock();
     let ids: Vec<String> = probed
@@ -46,14 +64,18 @@ fn run() -> Result<(), String> {
         .iter()
         .map(|((body, face), n)| format!("{body}:{face}={n}"))
         .collect();
+    let front = probed.front.map_or("none".to_owned(), |[c0, c1, r0, r1]| {
+        format!("{c0},{c1},{r0},{r1}")
+    });
     writeln!(out, "adapter {}", probed.adapter)
         .and_then(|()| writeln!(out, "size {size}"))
         .and_then(|()| writeln!(out, "ids {}", ids.join(",")))
+        .and_then(|()| writeln!(out, "front {front}"))
         .and_then(|()| writeln!(out, "off {}", probed.off))
-        .and_then(|()| writeln!(out, "context_seconds {:.3}", probed.context_seconds))
-        .and_then(|()| writeln!(out, "render_seconds {:.3}", probed.render_seconds))
+        .and_then(|()| writeln!(out, "context_seconds {:.3}", probed.context.as_secs_f64()))
+        .and_then(|()| writeln!(out, "render_seconds {:.3}", probed.render.as_secs_f64()))
         .and_then(|()| writeln!(out, "peak_memory {peak}"))
-        .and_then(|()| writeln!(out, "memory_after_render {}", memory("VmRSS:")))
+        .and_then(|()| writeln!(out, "memory_with_context {held}"))
         .and_then(|()| out.flush())
         .map_err(|e| format!("couldn't write the result: {e}"))?;
     if let Some(seconds) = hold {

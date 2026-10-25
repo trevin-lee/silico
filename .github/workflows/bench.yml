@@ -14,6 +14,8 @@ on:
         default: ""
       bench:
         description: "What to measure: drag (the sketch worker's drag latency) or render (M4.6's probe: a 4096 by 4096 render on lavapipe, its time and memory)"
+        type: choice
+        options: [drag, render]
         default: drag
 
 permissions:
@@ -93,8 +95,9 @@ jobs:
           {
             for size in 400 4096; do
               echo "--- $size"
-              # Its own peak and present memory (VmHWM, VmRSS) are in what it writes.
-              time env -i PATH="$PATH" target/release/silico-render-probe "$size" --hold 5 2>&1
+              # Its own times and memory (VmHWM, VmRSS) are in what it writes; the shell's
+              # time is the whole process's, its start and restart included.
+              { time env -i PATH="$PATH" target/release/silico-render-probe "$size" --hold 5; } 2>&1
             done
             echo "--- cpu"
             grep -m1 'model name' /proc/cpuinfo

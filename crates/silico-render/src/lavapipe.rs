@@ -10,6 +10,11 @@ pub const VULKAN_LIB: &str = env!("SILICO_VULKAN_LIB");
 /// llvmpipe's threads: renders are small, and the machine's other work needs its cores.
 pub const THREADS: &str = "2";
 
+/// Set in the restarted process, so a restart whose variables didn't all survive (macOS
+/// strips `DYLD_*` from children of its protected programs) fails instead of restarting
+/// forever.
+const RESTARTED: &str = "SILICO_RENDER_RESTARTED";
+
 /// The library path variable the loader is found through on this platform.
 const LIBRARY_PATH: &str = if cfg!(target_os = "macos") {
     "DYLD_FALLBACK_LIBRARY_PATH"
@@ -29,22 +34,29 @@ pub fn environment() -> Option<[(&'static str, &'static str); 3]> {
 
 /// Re-executes this process with lavapipe's variables unless it already has them, before
 /// anything touches `wgpu`. Returns at once if it has them or there's no lavapipe; otherwise
-/// returns only if the exec fails, with why. Descriptors without close-on-exec (a worker's
-/// inherited socket) survive the exec.
+/// returns only if the exec fails, or if this is the restart and a variable didn't survive
+/// it, with why. Descriptors without close-on-exec (a worker's inherited socket) survive the
+/// exec.
 pub fn reexec_with() -> Result<(), String> {
     let Some(vars) = environment() else {
         return Ok(());
     };
-    if vars
+    let missing = vars
         .iter()
-        .all(|(k, v)| std::env::var(k).is_ok_and(|have| have == *v))
-    {
+        .find(|(k, v)| std::env::var(k).map_or(true, |have| have != *v));
+    let Some((missing, _)) = missing else {
         return Ok(());
+    };
+    if std::env::var_os(RESTARTED).is_some() {
+        return Err(format!(
+            "restarted with lavapipe's variables, but {missing} didn't reach the restart"
+        ));
     }
     let exe = std::env::current_exe().map_err(|e| format!("can't find this program: {e}"))?;
     let error = std::process::Command::new(&exe)
         .args(std::env::args_os().skip(1))
         .envs(vars)
+        .env(RESTARTED, "1")
         .exec();
     Err(format!(
         "couldn't restart {} with lavapipe: {error}",

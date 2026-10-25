@@ -48,6 +48,17 @@ libm = { version = "=0.2.16", default-features = false }
 libc = "0.2"
 # Debug views of geometry until the app exists: the logging SDK only, not the viewer.
 rerun = { version = "=0.38.1", default-features = false, features = ["sdk"] }
+# Rerun's renderer, the one M5's viewport grows from, pinned with the Rerun SDK above
+# (silico-render; docs/design/m4.6-render.md, R1). Its importers are off: nothing reads a
+# mesh file with it.
+re_renderer = { version = "=0.38.1", default-features = false }
+# wgpu as re_renderer uses it, with Vulkan (lavapipe) and Metal, and Vulkan's portability
+# enumeration so lavapipe is found on macOS.
+wgpu = { version = "30", default-features = false, features = ["vulkan", "vulkan-portability", "metal", "wgsl", "std"] }
+glam = "0.30"
+macaw = "0.30"
+pollster = "0.4"
+smallvec = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
