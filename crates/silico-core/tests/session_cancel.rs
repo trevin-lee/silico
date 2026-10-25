@@ -505,3 +505,20 @@ fn status_says_none_of_a_revision_nothing_rebuilt_or_whose_document_the_gate_ref
         ["none", "running", "done", "faulted", "stopped"]
     );
 }
+
+#[test]
+fn a_command_that_has_answered_is_past_a_cancel_whether_it_ran_or_was_refused() {
+    // Its answer settles its stop: a check, which leaves no trace of its own, and an open
+    // refused before it opened, are each past a cancel once they've answered.
+    let f = opened();
+    let check = f.sessions.check(&f.id);
+    let stopper = check.stopper();
+    assert!(answer(check).result.unwrap().is_empty());
+    assert!(!stopper.cancel());
+    let opening = f
+        .sessions
+        .open(f.path.with_file_name("missing.silico"), false);
+    let stopper = opening.stopper();
+    assert!(answer(opening).result.is_err());
+    assert!(!stopper.cancel());
+}

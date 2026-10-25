@@ -13,7 +13,9 @@ use crate::{Error, ErrorCode};
 
 /// What a stopped command's work is told to stop: a wait it may be in (a session's, for its
 /// rebuild), or, for a published read, the kernel work it asks for (its own client, which
-/// M4.5's reads give each read and this retires), told why.
+/// M4.5's reads give each read and this retires), told why. It may be told more than once (a
+/// cancel and a close, or a cancel racing the interrupt's adding), so telling it again must
+/// do nothing more.
 pub(super) trait Interrupt: Send + Sync {
     fn interrupt(&self, why: Why);
 }
@@ -46,8 +48,9 @@ pub(super) struct Ticket {
     /// Whether its session closed ([`close`](Self::close)): kept, so what's interrupted
     /// after is interrupted at once.
     closed: AtomicBool,
-    /// What it interrupts, each told once it's cancelled or its session closes (at once, if
-    /// it's added after): each once, and none whose owner has gone.
+    /// What it interrupts, each told when it's cancelled or its session closes (at once, if
+    /// it's added after): each added once, and none whose owner has gone kept, though one may
+    /// be told more than once ([`Interrupt`]).
     interrupts: Mutex<Vec<Weak<dyn Interrupt>>>,
 }
 

@@ -6,7 +6,7 @@
 //! what it returns. These are the commands' answers from a model; a session runs them on the
 //! model a read names (decision 33).
 
-use super::session::kept_fault;
+use super::session::{kept_fault, retried};
 use super::{ModelChoice, Problems, Revision, Running, SessionId, Sessions};
 use crate::document::{Angle, FeatureId, Length, Measure};
 pub use crate::elements::{Alias, AxisToken, ElementType, Entry, EntryAxis};
@@ -76,7 +76,7 @@ fn solid<'m>(model: &'m Model, id: &FeatureId, asked: bool) -> Result<&'m [Entry
     let built = built(model, id, asked)?;
     match model.entries(id) {
         Some(Ok(entries)) => Ok(entries),
-        Some(Err(fault)) => Err(kept(fault).into()),
+        Some(Err(fault)) => Err(worded(fault).into()),
         // Not described. Why: its description refused or failed, or, before that, its
         // summary.
         None => Err(named(
@@ -86,7 +86,7 @@ fn solid<'m>(model: &'m Model, id: &FeatureId, asked: bool) -> Result<&'m [Entry
                 .or(built.measure_refused())
                 .or(model.unmeasured(id))
             {
-                Some(refused) => kept(refused),
+                Some(refused) => worded(refused),
                 None => Error::new(
                     ErrorCode::KernelFailed,
                     format!("{id}'s solid couldn't be described, so its elements aren't known"),
@@ -110,7 +110,7 @@ fn named(asked: bool, error: Error) -> Error {
 
 /// The feature `id`'s built solid, or why it has none: a feature the document doesn't
 /// have, a sketch, or one that failed (its failure, as `check` reports it, a kernel fault
-/// as the revision keeps it) or was blocked (on a kernel fault, saying so);
+/// as the revision keeps it) or was blocked (on a kernel fault, refused with the fault);
 /// naming the request's `feature` if `asked`, as [`entries`] names it. Every read of a
 /// feature's solid (`elements`, `query`, `mass_properties`) refuses one alike.
 pub(crate) fn built<'m>(
@@ -137,35 +137,30 @@ pub(crate) fn built<'m>(
             .with_suggestion("name a feature that makes a solid"),
         )
         .into()),
-        Some(FeatureOutcome::Failed(error)) => Err(kept(error).into()),
+        Some(FeatureOutcome::Failed(error)) => Err(worded(error).into()),
         Some(FeatureOutcome::Broken { errors, total }) => Err(Problems::with_unlisted(
-            errors.iter().map(kept).collect(),
+            errors.iter().map(worded).collect(),
             total.saturating_sub(errors.len() as u64),
         )),
         Some(FeatureOutcome::Blocked { on }) => {
-            // A kernel fault isn't the document's, so `check` doesn't list it: the model
-            // read gives it.
-            let faulted = model.outcome(on).is_some_and(|outcome| {
+            // Blocked by a kernel fault, which isn't the document's (so `check` doesn't list
+            // it): refused with the fault itself, naming the feature it met (the design's
+            // section 6).
+            if let Some(fault) = model.outcome(on).and_then(|outcome| {
                 outcome
                     .errors()
                     .iter()
-                    .any(|error| error.code().is_kernel_fault())
-            });
-            let suggestion = if faulted {
-                format!(
-                    "nothing to mend: {on} met a kernel fault, which the response's model.fault \
-                     gives; close the session and open the document again to try again"
-                )
-            } else {
-                format!("mend {on} first: `check` says why it failed")
-            };
+                    .find(|error| error.code().is_kernel_fault())
+            }) {
+                return Err(worded(fault).into());
+            }
             Err(named(
                 Error::new(
                     ErrorCode::InvalidInput,
                     format!("{id} didn't build, since it uses {on}, which failed"),
                 )
                 .with_feature(id.as_str())
-                .with_suggestion(suggestion),
+                .with_suggestion(format!("mend {on} first: `check` says why it failed")),
             )
             .into())
         }
@@ -188,7 +183,7 @@ pub(crate) fn summarized<'m>(
         return Ok(summary);
     }
     let why = match built.measure_refused().or(model.unmeasured(id)) {
-        Some(why) => kept(why),
+        Some(why) => worded(why),
         // A recompute measures every solid it builds, or keeps why it couldn't.
         None => Error::new(
             ErrorCode::Internal,
@@ -329,7 +324,7 @@ pub fn list(
 /// `error`, met in the model read, as the read gives it: a kernel fault worded as the
 /// revision's outcome ([`kept_fault`]), since reading the revision again won't try again; any
 /// other as it is.
-fn kept(error: &Error) -> Error {
+fn worded(error: &Error) -> Error {
     if error.code().is_kernel_fault() {
         kept_fault(error)
     } else {
@@ -369,9 +364,11 @@ fn cursor_name(
                  model the cursor's pages were listed from",
                 revision.number()
             ),
-            "list from the start with a larger limit, or each body by its feature, whose \
-             pages go on; a new revision, or the document opened again in a new session, \
-             rebuilds it without the fault",
+            &format!(
+                "list from the start with a larger limit, or each body by its feature, whose \
+                 pages go on; {}",
+                retried("rebuilds it")
+            ),
         ));
         return None;
     }

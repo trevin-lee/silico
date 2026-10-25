@@ -2264,8 +2264,8 @@ fn each_change_of_what_the_session_holds_is_past_a_cancel() {
 #[test]
 fn a_kept_fault_keeps_the_workers_own_suggestion_and_says_how_to_try_again() {
     // Decision 32: reading the revision again won't run it again, so the suggestion says
-    // so after the worker's own, and names the retry that leaves no trace.
-    const KEPT: &str = "this revision keeps the fault, so reading it again won't run it again: close the session and open the document again to retry (M4.3's check with fresh will do it in place)";
+    // so after the worker's own, and what does.
+    const KEPT: &str = "reading this revision again won't, since it keeps the fault; an edit that changes the document, reopening the session, or (M4.3) check with fresh tries again; a save that writes only fingerprints keeps the fault";
     let said = |error: &Error| {
         (
             error.code(),
@@ -2284,7 +2284,7 @@ fn a_kept_fault_keeps_the_workers_own_suggestion_and_says_how_to_try_again() {
             "the worker crashed".to_owned(),
             Some("f0000001".to_owned()),
             Some(format!(
-                "change the operation's values, or report it with the document; {KEPT}"
+                "change the operation's values, or report it with the document; to try again here: {KEPT}"
             ))
         )
     );
@@ -2298,7 +2298,7 @@ fn a_kept_fault_keeps_the_workers_own_suggestion_and_says_how_to_try_again() {
             ErrorCode::WorkerUnavailable,
             "no worker".to_owned(),
             None,
-            Some(format!("restart Silico; {KEPT}"))
+            Some(format!("restart Silico; to try again here: {KEPT}"))
         )
     );
     // With no suggestion of its own, the note alone.
@@ -2416,4 +2416,31 @@ fn a_sessions_close_interrupts_its_reads_as_closed_and_each_counted_after_at_onc
     // A cancel says it was cancelled.
     assert!(running.cancel());
     assert_eq!(before.whys(), [Why::Closed, Why::Cancelled]);
+}
+
+#[test]
+fn a_format_that_writes_a_solve_publishes_no_model_and_the_next_check_solves_again() {
+    // The sketch's pb, stored at 10, solves to 11: format writes the solve, so its model,
+    // solved from the stored values, isn't the saved revision's, and the check after it
+    // solves again, from 11, which holds.
+    let sketches = crate::fake::FakeSketches::new();
+    sketches.answer(|system| {
+        let mut solved = crate::fake::FakeSketches::as_sent(system);
+        if solved.values[8] == 10.0 {
+            solved.values[8] += 1.0;
+        }
+        Ok(solved)
+    });
+    let f = opened_solving(&sketch_and_box("10"), &sketches);
+    let response = f.sessions.format(&f.id, None, true).wait();
+    let saved = response.session.unwrap().revision;
+    let formatted = response.result.unwrap();
+    assert!(formatted.written);
+    assert_eq!(formatted.resolved, [id("s0000001")]);
+    assert_eq!(pb_x(&f.file(), "s0000001"), 11.0);
+    let solved = sketches.requests().len();
+    let checked = f.sessions.check(&f.id).wait();
+    assert_eq!(sketches.requests().len(), solved + 1);
+    assert_eq!(checked.model.unwrap().revision, saved);
+    assert!(checked.result.unwrap().is_empty());
 }

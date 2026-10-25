@@ -293,7 +293,10 @@ impl<C: Kernel + 'static> Session<C> {
                 return Err(Problems::from(why.clone()));
             }
             // Not built, or superseded: started again, unless the session has gone; and
-            // stopped by a cancel that comes before the wait does.
+            // stopped by a cancel that comes before the wait does. One that comes after the
+            // stop check above and before this start costs a rebuild started and stopped at
+            // once (the next turn of the loop stops what it started): accepted, since
+            // checking again here would only narrow that window, never close it.
             if self.start_unless_newer(&mut rebuilds, revision, checked)? {
                 waited.clone_from(&rebuilds.running);
             } else {
@@ -585,23 +588,34 @@ pub(super) fn published_answer<T>(
     }
 }
 
+/// What does `done` for a revision whose model holds a kernel fault, kept as its outcome
+/// (decision 32), and what doesn't: so every suggestion that says how to try again says it
+/// alike. A save that writes only fingerprints keeps the fault for the revision it saves
+/// (its model, rebound, is that revision's).
+pub(in crate::command) fn retried(done: &str) -> String {
+    format!(
+        "an edit that changes the document, reopening the session, or (M4.3) check with fresh \
+         {done}; a save that writes only fingerprints keeps the fault"
+    )
+}
+
 /// A kernel fault as the model read gives it (the envelope's `model.fault`, decision 32), and
 /// as a command that needs a faulted feature's solid is refused with it: kept as the
 /// revision's outcome, so its suggestion, the worker's own kept, goes on to say that reading
-/// it again won't try again, and how to: closing the session and opening it again leaves no
-/// trace (until M4.3's `check` with `fresh` does it in place). A worker that couldn't be had
-/// says nothing of the feature that asked for it, so it names none.
+/// it again won't try again, and what does ([`retried`]). A worker that couldn't be had says
+/// nothing of the feature that asked for it, so it names none.
 pub(in crate::command) fn kept_fault(fault: &Error) -> Error {
-    const KEPT: &str = "this revision keeps the fault, so reading it again won't run it again: \
-                        close the session and open the document again to retry (M4.3's check \
-                        with fresh will do it in place)";
+    let kept = format!(
+        "reading this revision again won't, since it keeps the fault; {}",
+        retried("tries again")
+    );
     let fault = match fault.code() {
         ErrorCode::WorkerUnavailable => fault.clone().without_feature(),
         _ => fault.clone(),
     };
     let suggestion = match fault.suggestion() {
-        Some(own) => format!("{own}; {KEPT}"),
-        None => KEPT.to_owned(),
+        Some(own) => format!("{own}; to try again here: {kept}"),
+        None => kept,
     };
     fault.with_suggestion(suggestion)
 }

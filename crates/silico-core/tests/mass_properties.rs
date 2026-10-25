@@ -86,6 +86,42 @@ fn a_solid_that_cant_be_read_is_refused_as_elements_refuses_it() {
 }
 
 #[test]
+fn a_feature_a_fault_stopped_or_blocked_is_refused_with_the_fault_as_elements_refuses_it() {
+    // The worker crashes making the pin: the pin fails with the fault, and the cut that
+    // uses it is blocked on it. Either's mass properties are refused with the fault itself,
+    // naming the pin, which met it (the design's section 6), as the revision keeps it.
+    let engine = Recompute::new(FakeKernel::new(2).unwrap());
+    engine.kernel().refuse(|op| {
+        (op.name() == "MakeCylinder")
+            .then(|| silico_core::Error::new(ErrorCode::WorkerCrashed, "crashed"))
+    });
+    let model = published(&engine, checked(EXAMPLE));
+    let fault = (
+        ErrorCode::WorkerCrashed,
+        "crashed".to_owned(),
+        Some("a91cw0de".to_owned()),
+        Some(
+            "reading this revision again won't, since it keeps the fault; an edit that changes the document, reopening the session, or (M4.3) check with fresh tries again; a save that writes only fingerprints keeps the fault"
+                .to_owned(),
+        ),
+    );
+    for feature in ["a91cw0de", "m3tq8v0z"] {
+        let refused = mass_properties(&model, Some(&id(feature))).unwrap_err();
+        assert_eq!(refused.total(), 1, "{feature}");
+        let e = &refused.errors()[0];
+        let said = (
+            e.code(),
+            e.message().to_owned(),
+            e.feature().map(str::to_owned),
+            e.suggestion().map(str::to_owned),
+        );
+        assert_eq!(said, fault, "{feature}");
+        let entries = silico_core::command::elements::entries(&model, &id(feature)).unwrap_err();
+        assert_eq!(entries.errors(), refused.errors(), "{feature}");
+    }
+}
+
+#[test]
 fn a_solid_whose_summary_the_kernel_refused_is_refused_with_its_refusal_and_each_is_said() {
     // Every summary refused for its values: each body's refusal, in timeline order, each
     // naming its feature and not the request's field, which was null.
@@ -141,7 +177,7 @@ fn a_solid_a_worker_failed_to_measure_is_refused_with_that_failure_as_check_says
         // The worker's own advice, then that the revision keeps the fault, as `elements`
         // gives it for the same solid.
         let advice = Some(
-            "check again: a new worker is started; this revision keeps the fault, so reading it again won't run it again: close the session and open the document again to retry (M4.3's check with fresh will do it in place)",
+            "check again: a new worker is started; to try again here: reading this revision again won't, since it keeps the fault; an edit that changes the document, reopening the session, or (M4.3) check with fresh tries again; a save that writes only fingerprints keeps the fault",
         );
         assert_eq!(
             said,

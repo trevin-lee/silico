@@ -302,10 +302,9 @@ fn a_sessions_check_gives_drift_of_a_stored_fingerprint() {
 /// crashes on every request stops alike.
 const BOX_AND_BALL: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}, {"id": "a91cw0de", "type": "sphere", "v": 1, "name": "Ball", "position": [0, 0, 0], "radius": 5}]}"#;
 
-/// What a kept fault's suggestion says after the worker's own (decision 32): reading the
-/// revision again won't run it again, and closing the session and opening it again is the
-/// retry that leaves no trace (until M4.3's `fresh`).
-const KEPT: &str = "this revision keeps the fault, so reading it again won't run it again: close the session and open the document again to retry (M4.3's check with fresh will do it in place)";
+/// What a kept fault's suggestion says, after the worker's own and "; to try again here: "
+/// (decision 32): reading the revision again won't, and what will, and what won't.
+const KEPT: &str = "reading this revision again won't, since it keeps the fault; an edit that changes the document, reopening the session, or (M4.3) check with fresh tries again; a save that writes only fingerprints keeps the fault";
 
 /// The fault `response`'s model read gives: its code, feature, message, and suggestion.
 fn fault<T>(response: &Response<T>) -> (ErrorCode, Option<String>, String, Option<String>) {
@@ -340,7 +339,7 @@ fn a_kernel_fault_is_given_once_beside_the_checks_result_and_kept_for_the_revisi
             ErrorCode::WorkerCrashed,
             Some("k7f2qx3m".to_owned()),
             "crashed".to_owned(),
-            Some(format!("try again; {KEPT}"))
+            Some(format!("try again; to try again here: {KEPT}"))
         )
     );
     // The box and the ball, each asked once.
@@ -416,7 +415,9 @@ fn a_sketch_solver_that_cant_be_had_is_one_fault_naming_no_feature() {
             ErrorCode::WorkerUnavailable,
             None,
             "SILICO_SKETCH_WORKER names /nowhere, which isn't a file".to_owned(),
-            Some(format!("name the sketch worker's executable; {KEPT}"))
+            Some(format!(
+                "name the sketch worker's executable; to try again here: {KEPT}"
+            ))
         )
     );
     assert_eq!(

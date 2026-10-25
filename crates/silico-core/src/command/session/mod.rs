@@ -96,8 +96,8 @@ use crate::{Error, ErrorCode};
 use cancel::{Interrupt, Ticket, Why, not_running};
 use edits::{as_committed, not_given_back};
 use holding::Holding;
-pub(super) use rebuilds::kept_fault;
 use rebuilds::{Rebuilds, Unbuilt, published_answer};
+pub(super) use rebuilds::{kept_fault, retried};
 use registry::{
     Book, CacheOpener, Registry, Release, SketchStarter, Started, claim, reclaim, serve, start,
 };
@@ -240,8 +240,9 @@ impl<C: Kernel + 'static> Session<C> {
                 "close the session",
             )));
         }
-        // Settled with no transaction open: from here it closes. Let go first, as the
-        // queue's lock comes after the held state's.
+        // Settled with no transaction open: from here it closes. Let go first: `close`
+        // takes the published reads' locks (the reads', then those unanswered), which come
+        // before the held state's.
         drop(held.changing(stop)?);
         self.close();
         Ok(())
