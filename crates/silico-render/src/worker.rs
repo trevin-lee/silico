@@ -6,7 +6,7 @@
 
 use silico_protocol::{Failure, Op, Refusal, Reply};
 
-use crate::render::Renderer;
+use crate::render::{RenderFailure, Renderer};
 
 /// The render worker's platform: it has no C++ to read floating-point traps through, and
 /// reading them from Rust takes inline assembly, so they're unchecked, as data (R5).
@@ -55,19 +55,26 @@ impl State {
                 })?;
                 let renderer = match &mut self.renderer {
                     Some(renderer) => renderer,
-                    None => {
-                        let adapter = crate::adapter(self.policy)
-                            .map_err(|cause| Failure::new(Refusal::NoAdapter { cause }))?;
-                        tracing::info!(adapter = adapter.get_info().name, "render context");
-                        self.renderer
-                            .insert(Renderer::new(&adapter).map_err(internal)?)
-                    }
+                    None => self.renderer.insert(renderer(self.policy)?),
                 };
-                let rendered = renderer.render(&scene).map_err(internal)?;
-                Ok(Reply::Rendered {
-                    png: rendered.png,
-                    ids: rendered.ids,
-                })
+                match renderer.render(&scene) {
+                    Ok(rendered) => Ok(Reply::Rendered {
+                        png: rendered.png,
+                        ids: rendered.ids,
+                    }),
+                    Err(failure) => {
+                        // Nothing vouches for the context after a failure: the next render
+                        // makes a new one.
+                        self.renderer = None;
+                        Err(match failure {
+                            RenderFailure::OutOfMemory(cause) => Failure {
+                                refusal: Refusal::OutOfMemory,
+                                cause: Some(cause),
+                            },
+                            RenderFailure::Failed(what) => internal(what),
+                        })
+                    }
+                }
             }
             Op::Echo { data } => Ok(Reply::Echo { data }),
             Op::Debug(_) => Err(Failure::new(Refusal::TestOperation {
@@ -78,6 +85,27 @@ impl State {
             })),
         }
     }
+}
+
+/// A render context on the first adapter `policy` allows that can make one, or why none
+/// can: a fault of the machine, not of the scene.
+fn renderer(policy: RenderAdapter) -> Result<Renderer, Failure> {
+    let unavailable = |cause| Failure::new(Refusal::NoAdapter { cause });
+    let mut tried = Vec::new();
+    for adapter in crate::adapters(policy).map_err(unavailable)? {
+        let name = adapter.get_info().name;
+        match Renderer::new(&adapter) {
+            Ok(renderer) => {
+                tracing::info!(adapter = name, "render context");
+                return Ok(renderer);
+            }
+            Err(why) => tried.push(format!("{name}: {why}")),
+        }
+    }
+    Err(unavailable(format!(
+        "no adapter could make a render context ({})",
+        tried.join("; ")
+    )))
 }
 
 fn internal(what: String) -> Failure {

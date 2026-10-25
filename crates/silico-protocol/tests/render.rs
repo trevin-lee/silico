@@ -2,8 +2,9 @@
 //! scene the worker can draw passes; each way one can't is refused, naming its field.
 
 use silico_protocol::{
-    Camera, EDGE_BIT, InvalidParameter, MAX_FIELD_OF_VIEW, MAX_RENDER_COORDINATE, MAX_RENDER_SIDE,
-    MIN_FIELD_OF_VIEW, Mesh, Projection, RenderBody, RenderScene,
+    Camera, EDGE_BIT, InvalidParameter, MAX_FIELD_OF_VIEW, MAX_RENDER_COORDINATE, MAX_RENDER_EDGES,
+    MAX_RENDER_FACES, MAX_RENDER_SIDE, MIN_EYE_DISTANCE, MIN_FIELD_OF_VIEW, Mesh, Projection,
+    RenderBody, RenderScene,
 };
 
 /// A way to break a camera or a mesh, and what its refusal names.
@@ -222,17 +223,97 @@ fn a_camera_that_cant_make_a_view_is_refused_naming_its_field() {
 
 #[test]
 fn bodies_numbered_0_or_out_of_order_are_refused() {
-    for numbers in [[0, 4], [4, 4], [4, 1]] {
+    // Each names the body at fault, its number, and the one before it.
+    for (numbers, says) in [
+        (
+            [0, 4],
+            "bodies[0]'s number 0 must be at least 1 and above the one before it (0)",
+        ),
+        (
+            [4, 4],
+            "bodies[1]'s number 4 must be at least 1 and above the one before it (4)",
+        ),
+        (
+            [4, 1],
+            "bodies[1]'s number 1 must be at least 1 and above the one before it (4)",
+        ),
+    ] {
         let mut s = scene();
         s.bodies[0].body = numbers[0];
         s.bodies[1].body = numbers[1];
         let (parameter, message) = refused(&s);
         assert_eq!(parameter, "bodies");
-        assert!(
-            message.contains(&numbers[0].max(numbers[1]).to_string()) || message.contains('0'),
-            "{message}"
-        );
+        assert_eq!(message, says);
     }
+}
+
+#[test]
+fn an_eye_within_a_nanometre_of_the_target_is_refused_and_one_at_it_passes() {
+    let mut s = scene();
+    s.camera.eye = [0.5, 0.5, MIN_EYE_DISTANCE];
+    s.camera.target = [0.5, 0.5, 0.0];
+    s.check().unwrap();
+    s.camera.eye = [0.5, 0.5, MIN_EYE_DISTANCE * 0.999];
+    let (parameter, message) = refused(&s);
+    assert_eq!(parameter, "camera.eye");
+    assert!(
+        message.contains("must be at least 0.000001 mm from camera.target"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_scene_past_the_most_faces_or_edges_a_render_draws_is_refused() {
+    // MAX_RENDER_FACES and MAX_RENDER_EDGES across the bodies: at them it passes, one past
+    // is refused. Faces with no triangles and edges with no points count.
+    let square = |faces: usize, edges: usize| {
+        let mut m = square();
+        m.face_triangles = vec![0; faces];
+        m.face_triangles[0] = 2;
+        m.edge_point_counts = vec![0; edges];
+        m.edge_point_counts[0] = 5;
+        m
+    };
+    let mut s = scene();
+    s.bodies[0].mesh = square(MAX_RENDER_FACES - 1, 1);
+    s.bodies[0].highlight_faces.clear();
+    s.bodies[0].highlight_edges.clear();
+    s.bodies[1].mesh = square(1, MAX_RENDER_EDGES - 1);
+    s.check().unwrap();
+    s.bodies[1].mesh = square(2, MAX_RENDER_EDGES - 1);
+    let (parameter, message) = refused(&s);
+    assert_eq!(parameter, "bodies");
+    assert_eq!(
+        message,
+        format!(
+            "the bodies have {} faces, more than the {MAX_RENDER_FACES} a render draws within its time",
+            MAX_RENDER_FACES + 1
+        )
+    );
+    s.bodies[1].mesh = square(1, MAX_RENDER_EDGES);
+    let (_, message) = refused(&s);
+    assert!(
+        message.starts_with(&format!("the bodies have {} edges", MAX_RENDER_EDGES + 1)),
+        "{message}"
+    );
+}
+
+#[test]
+fn an_orthographic_views_least_height_counts_edge_points_too() {
+    // The bodies reach from the target to their farthest point, an edge's as well as a
+    // mesh's: an edge point 1e5 from the target needs a view at least 1 high.
+    let mut s = scene();
+    s.camera.projection = Projection::Orthographic { view_height: 0.999 };
+    s.check().unwrap();
+    s.bodies[1].mesh.edge_points[0] = [0.5, 0.5 + 1e5, 0.0];
+    let (parameter, message) = refused(&s);
+    assert_eq!(parameter, "camera.view_height");
+    assert!(
+        message.contains("is too small to draw the bodies in view, which reach 100000.0 mm"),
+        "{message}"
+    );
+    s.camera.projection = Projection::Orthographic { view_height: 1.0 };
+    s.check().unwrap();
 }
 
 #[test]

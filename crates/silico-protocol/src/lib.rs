@@ -54,9 +54,9 @@ pub use refusal::{
     OUT_OF_MEMORY, Operation, Refusal, Returned, Role, Trouble,
 };
 pub use render::{
-    Camera, EDGE_BIT, Frame, MAX_FIELD_OF_VIEW, MAX_RENDER_COORDINATE, MAX_RENDER_SIDE,
-    MIN_FIELD_OF_VIEW, MIN_UP_ACROSS_VIEW, MIN_VIEW_HEIGHT, MIN_VIEW_HEIGHT_OF_REACH, PixelId,
-    Projection, RenderBody, RenderScene,
+    Camera, EDGE_BIT, Frame, MAX_FIELD_OF_VIEW, MAX_RENDER_COORDINATE, MAX_RENDER_EDGES,
+    MAX_RENDER_FACES, MAX_RENDER_SIDE, MIN_EYE_DISTANCE, MIN_FIELD_OF_VIEW, MIN_UP_ACROSS_VIEW,
+    MIN_VIEW_HEIGHT, MIN_VIEW_HEIGHT_OF_REACH, PixelId, Projection, RenderBody, RenderScene,
 };
 pub use sketch::{
     Algorithm, DragBegin, Geometry, MAX_DRAG_UNKNOWNS, MAX_JACOBIAN_ENTRIES,

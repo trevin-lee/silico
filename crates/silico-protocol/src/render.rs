@@ -27,6 +27,20 @@ pub const MAX_RENDER_COORDINATE: f64 = 1e12;
 /// The least an orthographic view's height may be, in mm: a nanometre.
 pub const MIN_VIEW_HEIGHT: f64 = 1e-6;
 
+/// The least the eye may be from the target, in mm: a nanometre. Nearer, a perspective
+/// view's near plane is 0 in f32 and its projection degenerate.
+pub const MIN_EYE_DISTANCE: f64 = 1e-6;
+
+/// The most faces a scene may have, across its bodies. Each is drawn as a mesh of its own
+/// (its own ID in the ID buffer), at about 75 KiB of the worker's memory each: 100,000
+/// held 7.5 GiB, and a million took past the 30 s a render has. 20,000, about 1.4 GiB, is
+/// far past a real part's hundreds to thousands.
+pub const MAX_RENDER_FACES: usize = 20_000;
+
+/// The most edges a scene may have, across its bodies: a million held 0.6 GiB and drew in
+/// 6.5 s (a debug build); 200,000 leaves room beside the faces.
+pub const MAX_RENDER_EDGES: usize = 200_000;
+
 /// The least an orthographic view's height may be against how far the scene reaches from
 /// the target: deeper, the scene's far points land past where f32 clips them exactly, and
 /// pixels go missing (lavapipe drew a 40 mm face whole at 1e-4 of its reach, not at 1e-5).
@@ -175,11 +189,13 @@ impl Camera {
                 format!("camera.up {:?} isn't finite", self.up),
             ));
         }
-        let Some((distance, back)) = length_and_unit(sub(self.eye, self.target)) else {
+        let apart = length_and_unit(sub(self.eye, self.target))
+            .filter(|(distance, _)| *distance >= MIN_EYE_DISTANCE);
+        let Some((distance, back)) = apart else {
             return Err(invalid(
                 "camera.eye",
                 format!(
-                    "camera.eye {:?} must be apart from camera.target {:?}",
+                    "camera.eye {:?} must be at least {MIN_EYE_DISTANCE} mm from camera.target {:?}",
                     self.eye, self.target
                 ),
             ));
@@ -271,6 +287,33 @@ impl RenderScene {
             }
             last = body.body;
             body.check(i)?;
+        }
+        for (what, count, most) in [
+            (
+                "faces",
+                self.bodies
+                    .iter()
+                    .map(|b| b.mesh.face_triangles.len())
+                    .sum::<usize>(),
+                MAX_RENDER_FACES,
+            ),
+            (
+                "edges",
+                self.bodies
+                    .iter()
+                    .map(|b| b.mesh.edge_point_counts.len())
+                    .sum(),
+                MAX_RENDER_EDGES,
+            ),
+        ] {
+            if count > most {
+                return Err(invalid(
+                    "bodies",
+                    format!(
+                        "the bodies have {count} {what}, more than the {most} a render draws within its time"
+                    ),
+                ));
+            }
         }
         if let Projection::Orthographic { view_height } = self.camera.projection {
             let reach = self.reach(self.camera.target);

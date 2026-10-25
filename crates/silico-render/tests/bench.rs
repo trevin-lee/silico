@@ -1,7 +1,6 @@
 //! The render bench's program: it restarts itself with lavapipe as the worker does (the
 //! library's `lavapipe::reexec_with`, which the worker shares), refuses a restart that lost
 //! a variable rather than restarting again, refuses arguments it can't use, and renders.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::BTreeMap;
 use std::process::{Command, Output};

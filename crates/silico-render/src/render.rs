@@ -44,9 +44,6 @@ const CLEARANCE: f64 = 0.01;
 const NEAR_PLANE_OF_REACH: f64 = 1e-6;
 /// How far edges are drawn toward the eye, so an edge on a face isn't hidden by it.
 const EDGE_DEPTH_OFFSET: re_renderer::DepthOffset = 1;
-/// The readbacks' identifiers.
-const PICKING: u64 = 1;
-const SCREENSHOT: u64 = 2;
 /// Frames to wait for the readbacks: re_renderer delivers them in a later frame, and each
 /// frame here waits for the GPU, so they come in the first or second. The bound is for a
 /// driver that never delivers them.
@@ -61,9 +58,30 @@ pub struct Rendered {
     pub ids: Option<Vec<PixelId>>,
 }
 
+/// Why a render failed.
+#[derive(Debug)]
+pub enum RenderFailure {
+    /// The GPU (lavapipe's, here: the machine's memory) ran out of memory.
+    OutOfMemory(String),
+    /// Anything else: the renderer's own fault.
+    Failed(String),
+}
+
+impl std::fmt::Display for RenderFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RenderFailure::OutOfMemory(what) => write!(f, "out of GPU memory: {what}"),
+            RenderFailure::Failed(what) => f.write_str(what),
+        }
+    }
+}
+
 /// A render context on one adapter, kept between renders.
 pub struct Renderer {
     ctx: RenderContext,
+    /// The next render's readbacks' identifiers (each render takes two), so a render that
+    /// failed never leaves a readback a later one could take as its own.
+    readback: u64,
 }
 
 impl Renderer {
@@ -81,11 +99,38 @@ impl Renderer {
             RenderConfig::best_for_device_caps,
         )
         .map_err(|e| format!("no render context: {e}"))?;
-        Ok(Renderer { ctx })
+        Ok(Renderer { ctx, readback: 1 })
     }
 
-    /// `scene` drawn. The scene must have passed [`RenderScene::check`].
-    pub fn render(&mut self, scene: &RenderScene) -> Result<Rendered, String> {
+    /// `scene` drawn. The scene must have passed [`RenderScene::check`]. Errors the GPU
+    /// reports while it draws (out of memory, or anything wgpu finds invalid) fail the
+    /// render rather than leave a blank image.
+    pub fn render(&mut self, scene: &RenderScene) -> Result<Rendered, RenderFailure> {
+        let device = self.ctx.device.clone();
+        let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validity = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let ids = (self.readback, self.readback + 1);
+        self.readback += 2;
+        let drawn = self.draw(scene, ids);
+        let invalid = pollster::block_on(validity.pop());
+        let short = pollster::block_on(memory.pop());
+        if let Some(e) = short {
+            return Err(RenderFailure::OutOfMemory(e.to_string()));
+        }
+        if let Some(e) = invalid {
+            return Err(RenderFailure::Failed(format!(
+                "the GPU found the render invalid: {e}"
+            )));
+        }
+        drawn.map_err(RenderFailure::Failed)
+    }
+
+    /// `scene` drawn, its readbacks identified by `(picking, screenshot)`.
+    fn draw(
+        &mut self,
+        scene: &RenderScene,
+        (picking, screenshot): (u64, u64),
+    ) -> Result<Rendered, String> {
         let ctx = &mut self.ctx;
         ctx.begin_frame();
         let camera = &scene.camera;
@@ -116,7 +161,7 @@ impl Renderer {
                     min: glam::IVec2::ZERO,
                     extent: glam::UVec2::new(scene.width, scene.height),
                 },
-                readback_identifier: PICKING,
+                readback_identifier: picking,
                 show_debug_view: false,
             }),
             ..Default::default()
@@ -142,14 +187,14 @@ impl Renderer {
             drop(lines);
         }
         builder
-            .schedule_screenshot(ctx, SCREENSHOT, ())
+            .schedule_screenshot(ctx, screenshot, ())
             .map_err(|e| format!("couldn't schedule the image's readback: {e}"))?;
         let commands = builder
             .draw(ctx, srgb(BACKGROUND))
             .map_err(|e| format!("couldn't draw: {e}"))?;
         ctx.before_submit();
         ctx.queue.submit([commands]);
-        read_back(ctx, scene)
+        read_back(ctx, scene, picking, screenshot)
     }
 }
 
@@ -391,7 +436,12 @@ fn edges(
 }
 
 /// The image, and the ID buffer if asked, read back once the GPU has drawn them.
-fn read_back(ctx: &mut RenderContext, scene: &RenderScene) -> Result<Rendered, String> {
+fn read_back(
+    ctx: &mut RenderContext,
+    scene: &RenderScene,
+    picking: u64,
+    screenshot: u64,
+) -> Result<Rendered, String> {
     let wait = || wgpu::PollType::Wait {
         submission_index: None,
         timeout: Some(GPU_WAIT),
@@ -407,13 +457,13 @@ fn read_back(ctx: &mut RenderContext, scene: &RenderScene) -> Result<Rendered, S
             .poll(wait())
             .map_err(|e| format!("the GPU didn't finish: {e}"))?;
         if image.is_none() {
-            ScreenshotProcessor::next_readback_result(ctx, SCREENSHOT, |data, _, ()| {
+            ScreenshotProcessor::next_readback_result(ctx, screenshot, |data, _, ()| {
                 image = Some(data.to_vec());
             });
         }
         if scene.ids
             && ids.is_none()
-            && let Some(result) = PickingLayerProcessor::readback_result(ctx, PICKING)
+            && let Some(result) = PickingLayerProcessor::readback_result(ctx, picking)
         {
             // Every ID drawn is a body's u32 and an element's u32; one that isn't would be
             // re_renderer's, shown as u32::MAX rather than wrapped onto another's.

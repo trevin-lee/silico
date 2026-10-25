@@ -5,7 +5,6 @@
 //!
 //! Tests marked `Was a break:` each found a bug the break-it run reported, since fixed;
 //! they guard against its return.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::cell::RefCell;
 use std::io::Write;
@@ -17,7 +16,8 @@ use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
 use silico_core::worker::{Worker, WorkerKind};
 use silico_core::{Error, ErrorCode};
 use silico_protocol::{
-    Camera, EDGE_BIT, Generation, Mesh, Op, PixelId, Projection, RenderBody, RenderScene, Reply,
+    Camera, EDGE_BIT, Generation, MAX_RENDER_EDGES, MAX_RENDER_FACES, Mesh, Op, PixelId,
+    Projection, RenderBody, RenderScene, Reply,
 };
 use silico_render::bench::{box_mesh, front_of_a_box};
 use silico_render::render::{AMBIENT, BACKGROUND, BODY};
@@ -584,11 +584,12 @@ fn timed(w: &mut Worker, scene: &RenderScene) -> (Duration, Result<Drawn, Error>
 }
 
 #[test]
-fn a_million_highlighted_edges_draw_within_the_limit() {
+fn the_most_edges_a_scene_may_have_draw_within_the_limit_and_one_more_is_refused() {
     let mut w = worker();
     let mut mesh = the_box();
-    let n = 1_000_000u32;
-    // A million short edges in a grid over the left of the view, in front of the box.
+    // MAX_RENDER_EDGES in all: the box's 12 and the rest short edges in a grid over the left
+    // of the view, in front of the box, each highlighted.
+    let n = u32::try_from(MAX_RENDER_EDGES).unwrap() - 12;
     for k in 0..n {
         let (i, j) = (f64::from(k % 1000), f64::from(k / 1000));
         let (x, z) = (-1.0 + i * 0.001, j * 0.01);
@@ -607,6 +608,21 @@ fn a_million_highlighted_edges_draw_within_the_limit() {
         "no flood edge drawn"
     );
     assert_eq!(ids[front_centre(400, 300)], FRONT_FACE);
+    // One more edge, in a body of its own: past the scene's limit, refused before drawing.
+    let mut more = scene.clone();
+    more.bodies.push(body(2, the_box()));
+    more.bodies[1].mesh.edge_point_counts.truncate(1);
+    more.bodies[1].mesh.edge_points.truncate(2);
+    more.bodies[1].mesh.edge_point_counts[0] = 2;
+    refused(
+        &mut w,
+        &more,
+        "bodies",
+        &format!(
+            "the bodies have {} edges, more than the {MAX_RENDER_EDGES}",
+            MAX_RENDER_EDGES + 1
+        ),
+    );
 }
 
 #[test]
@@ -631,18 +647,29 @@ fn ten_thousand_highlighted_faces_draw_within_a_tenth_of_the_limit() {
 }
 
 #[test]
-fn a_hundred_thousand_faces_are_drawn_or_refused_within_the_limit() {
-    // The scene check takes any number of faces under the edge bit; the worker must draw a
-    // hundred thousand inside the core's 30 s or refuse them, never be killed for them.
+fn the_most_faces_a_scene_may_have_draw_within_the_limit_and_one_more_is_refused() {
+    // Each face is a mesh of its own, about 75 KiB of the worker's memory: MAX_RENDER_FACES
+    // draw within the core's 30 s, and one more is refused before drawing, never killed.
     let mut w = worker();
-    let n = 100_000;
+    let n = u32::try_from(MAX_RENDER_FACES).unwrap() - 6;
     let mut scene = with_mesh(400, 300, tiles(n));
     scene.bodies[0].highlight_faces = (0..1000).collect();
     let (took, result) = timed(&mut w, &scene);
-    match result {
-        Ok(_) => assert!(took < LIMIT, "{took:?}"),
-        Err(e) => assert_eq!(e.code(), ErrorCode::InvalidInput, "{took:?}: {e:?}"),
-    }
+    result.unwrap_or_else(|e| panic!("{took:?}: {e:?}"));
+    assert!(took < LIMIT, "{took:?}");
+    scene.bodies.push(body(2, tiles(1)));
+    scene.bodies[1].mesh.face_triangles.truncate(1);
+    let keep = scene.bodies[1].mesh.face_triangles[0] as usize;
+    scene.bodies[1].mesh.triangles.truncate(keep);
+    refused(
+        &mut w,
+        &scene,
+        "bodies",
+        &format!(
+            "the bodies have {} faces, more than the {MAX_RENDER_FACES}",
+            MAX_RENDER_FACES + 1
+        ),
+    );
 }
 
 /// A part of real size and density, made here: a 680 x 860 x 400 slab of `faces` curved
@@ -782,11 +809,18 @@ fn an_orthographic_eye_nearer_the_target_than_f32_holds_draws_the_same() {
         height: 150,
         ids: true,
     };
+    // Now refused, naming the eye: a nanometre is the nearest it may be, which draws as
+    // one 60 away does (an orthographic view uses only the eye's direction).
     let want = ids(&mut w, &scene(60.0));
     assert_eq!(want[front_centre(200, 150)], FRONT_FACE);
-    assert!(scene(1e-30).check().is_ok());
-    let got = ids(&mut w, &scene(1e-30));
-    assert_same_away_from_boundaries(&want, &got, 200, 150, "eye 1e-30 from the target");
+    refused(
+        &mut w,
+        &scene(1e-30),
+        "camera.eye",
+        "must be at least 0.000001 mm from camera.target",
+    );
+    let got = ids(&mut w, &scene(1e-6));
+    assert_same_away_from_boundaries(&want, &got, 200, 150, "eye a nanometre from the target");
 }
 
 #[test]
@@ -1412,8 +1446,12 @@ fn no_software_adapter_is_refused_as_data_not_as_a_bug_in_silico() {
                 let refusal = format!("{failure:?}");
                 writeln!(std::io::stdout(), "NO_LAVAPIPE_CHILD refused: {refusal}").unwrap();
                 assert!(
-                    !refusal.contains("Internal"),
-                    "a missing rasterizer refused as internal: {refusal}"
+                    matches!(
+                        &failure.refusal,
+                        silico_protocol::Refusal::NoAdapter { cause }
+                            if cause.contains("no software rasterizer was found")
+                    ),
+                    "a missing rasterizer refused as other than NoAdapter: {refusal}"
                 );
             }
         }
@@ -1422,7 +1460,7 @@ fn no_software_adapter_is_refused_as_data_not_as_a_bug_in_silico() {
     let out = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "no_software_adapter_is_refused_as_data_not_as_a_bug_in_silico",
+            "adversarial_render::no_software_adapter_is_refused_as_data_not_as_a_bug_in_silico",
             "--nocapture",
         ])
         .env_clear()
@@ -1475,11 +1513,12 @@ fn a_position_past_f32_about_the_target_is_refused_not_an_internal_error() {
 }
 
 #[test]
-fn five_thousand_bodies_draw_within_a_tenth_of_the_limit_each_with_its_number() {
+fn three_thousand_bodies_draw_within_a_tenth_of_the_limit_each_with_its_number() {
     // A pattern of pins left unfused is a body each: each body is a line batch of its own
     // and each face a mesh of its own.
     let mut w = worker();
-    let n = 5000u32;
+    // 18,000 faces, within MAX_RENDER_FACES.
+    let n = 3000u32;
     let bodies: Vec<RenderBody> = (0..n)
         .map(|k| {
             let (i, j) = (f64::from(k % 100), f64::from(k / 100));
@@ -1494,14 +1533,14 @@ fn five_thousand_bodies_draw_within_a_tenth_of_the_limit_each_with_its_number() 
     let (_, ids) = result.unwrap_or_else(|e| panic!("{took:?}: {e:?}"));
     assert!(took < LIMIT / 10, "{took:?}");
     // By hand: body k + 1's front face is x 0.4i to 0.4i + 0.3, z 0.2j to 0.2j + 0.15, about
-    // the view's centre at (21, 7): the last row's first, j = 49 and i = 0 (body 4901), at
-    // z 9.8 to 9.95; its front face's centre is (0.15, 9.875), 2 by 1 pixels, so its face's
+    // the view's centre at (21, 7): the last row's first, j = 29 and i = 0 (body 2901), at
+    // z 5.8 to 5.95; its front face's centre is (0.15, 5.875), 2 by 1 pixels, so its face's
     // or an edge's.
     let ids = ids.unwrap();
     let pixel = 300.0 / 44.0;
     let col = (200.0 + (0.15 - 21.0) * pixel) as usize;
-    let row = (150.0 - (9.875 - 7.0) * pixel) as usize;
-    assert_eq!(ids[row * 400 + col][0], 4901, "{:?}", ids[row * 400 + col]);
+    let row = (150.0 - (5.875 - 7.0) * pixel) as usize;
+    assert_eq!(ids[row * 400 + col][0], 2901, "{:?}", ids[row * 400 + col]);
 }
 
 #[test]

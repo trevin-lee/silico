@@ -30,8 +30,10 @@ document-heavy = { max-threads = 1 }
 # fsyncs there taking up to seconds.
 cli = { max-threads = 4 }
 thread-exhausting = { max-threads = 1 }
-# The render worker's tests: a 4096-pixel render takes 1.6 GiB, so one at a time
-# (docs/design/m4.6-render.md), each with every test thread, so nothing runs beside it.
+# The render worker's scale tests (named below: renaming one means renaming it here and in
+# tests/mutants.sh): a 4,096-pixel render, or the most faces a scene may have, holds GiBs
+# (docs/design/m4.6-render.md), so one at a time, each with every test thread, so nothing
+# runs beside it. The render worker's other tests are small and run as any.
 render = { max-threads = 1 }
 
 [[profile.default.overrides]]
@@ -81,6 +83,6 @@ filter = 'package(silico-cli)'
 test-group = 'cli'
 
 [[profile.default.overrides]]
-filter = 'package(silico-render)'
+filter = 'package(silico-render) & test(/the_most_edges_a_scene_may_have|the_most_faces_a_scene_may_have|a_part_of_ctc_size_at_4096_square|three_thousand_bodies_draw|ten_thousand_highlighted_faces|a_box_from_the_front_is_its_front_face_over_its_projection/)'
 test-group = 'render'
 threads-required = 'num-test-threads'

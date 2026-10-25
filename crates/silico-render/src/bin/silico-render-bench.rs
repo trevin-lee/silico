@@ -61,12 +61,17 @@ fn run() -> Result<(), String> {
     silico_render::lavapipe::reexec_with()?;
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let (size, hold) = arguments(&args)?;
-    let adapter = silico_render::adapter(RenderAdapter::Software)?;
     let started = Instant::now();
+    let adapter = silico_render::adapters(RenderAdapter::Software)?
+        .into_iter()
+        .next()
+        .ok_or("no adapter")?;
     let mut renderer = Renderer::new(&adapter)?;
     let context = started.elapsed();
     let rendering = Instant::now();
-    let rendered = renderer.render(&silico_render::bench::front_of_a_box(size, size))?;
+    let rendered = renderer
+        .render(&silico_render::bench::front_of_a_box(size, size))
+        .map_err(|failure| failure.to_string())?;
     let render = rendering.elapsed();
     let held = memory("VmRSS:");
     let peak = memory("VmHWM:");

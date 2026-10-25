@@ -1,7 +1,6 @@
 //! The render worker, driven as the core drives it (`silico_core::worker::Worker`, its
 //! environment cleared): a box's ID buffer and PNG read against its projection computed
 //! by hand, never against a stored image (docs/design/m4.6-render.md, Tests; R5).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::Path;
 use std::time::Duration;
@@ -408,4 +407,236 @@ fn a_scene_that_fails_its_check_is_refused_naming_the_field_and_nothing_else_is_
         Reply::Echo { data } => assert_eq!(data, Blob::inline(vec![5])),
         other => panic!("Echo replied {other:?}"),
     }
+}
+
+/// sRGB to linear light, and back to an 8-bit sRGB value: the standard's formulas,
+/// independently of the renderer's.
+fn linear(c: u8) -> f64 {
+    let c = f64::from(c) / 255.0;
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        libm::pow((c + 0.055) / 1.055, 2.4)
+    }
+}
+
+fn srgb(l: f64) -> f64 {
+    let c = if l <= 0.003_130_8 {
+        l * 12.92
+    } else {
+        1.055 * libm::pow(l, 1.0 / 2.4) - 0.055
+    };
+    (c * 255.0).round()
+}
+
+/// The bench's box from its top front right corner, (1, −1, 1) from its centre,
+/// orthographic, 40 mm high, `size` pixels square.
+fn corner(size: u32) -> RenderScene {
+    let d = 60.0 / 3.0f64.sqrt();
+    RenderScene {
+        camera: Camera {
+            projection: Projection::Orthographic { view_height: 40.0 },
+            eye: [20.0 + d, 10.0 - d, 5.0 + d],
+            target: [20.0, 10.0, 5.0],
+            up: [0.0, 0.0, 1.0],
+        },
+        ..front_of_a_box(size, size)
+    }
+}
+
+/// The pixels whose ID is `id`.
+fn pixels_of(ids: &[PixelId], width: u32, id: PixelId) -> Vec<(u32, u32)> {
+    let width = usize::try_from(width).unwrap();
+    ids.iter()
+        .enumerate()
+        .filter(|(_, p)| **p == id)
+        .map(|(i, _)| {
+            (
+                u32::try_from(i % width).unwrap(),
+                u32::try_from(i / width).unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// For each pixel, whether it's within `reach` pixels (each way) of one where `on` holds.
+fn within(ids: &[PixelId], width: u32, reach: u32, on: impl Fn(PixelId) -> bool) -> Vec<bool> {
+    let w = usize::try_from(width).unwrap();
+    let h = ids.len() / w;
+    let reach = usize::try_from(reach).unwrap();
+    let mut out = vec![false; ids.len()];
+    for (i, id) in ids.iter().enumerate() {
+        if on(*id) {
+            let (c, r) = (i % w, i / w);
+            for rr in r.saturating_sub(reach)..=(r + reach).min(h - 1) {
+                for cc in c.saturating_sub(reach)..=(c + reach).min(w - 1) {
+                    out[rr * w + cc] = true;
+                }
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn a_highlighted_face_changes_only_itself_and_its_outline() {
+    // From the corner the top (Face6), front (Face3), and right (Face2) faces are seen;
+    // with the top highlighted, the front and right faces away from it are unchanged, the
+    // top face away from its boundary is bluer, and the outline (1.5 pixels) changes pixels
+    // just past the top face.
+    let mut w = worker();
+    let size = 300;
+    let plain = corner(size);
+    let mut lit = plain.clone();
+    lit.bodies[0].highlight_faces = vec![5];
+    let (before, ids) = render(&mut w, plain);
+    let (after, _) = render(&mut w, lit);
+    let ids = ids.unwrap();
+    let near_top = within(&ids, size, 3, |id| id == [1, 6]);
+    let near_others = within(&ids, size, 3, |id| id != [1, 6]);
+    let (mut away, mut inside, mut outlined) = (0, 0, 0);
+    for row in 0..size {
+        for col in 0..size {
+            let i = usize::try_from(row * size + col).unwrap();
+            let (b, a) = (before.at(col, row), after.at(col, row));
+            if ids[i] == [1, 6] {
+                if !near_others[i] {
+                    assert!(a[2] > b[2] && a[0] < b[0], "({col}, {row}) on the top face");
+                    inside += 1;
+                }
+            } else if !near_top[i] {
+                assert_eq!(a, b, "({col}, {row}), {:?}, away from the top face", ids[i]);
+                away += 1;
+            } else if a != b {
+                outlined += 1;
+            }
+        }
+    }
+    assert!(
+        away > 1000 && inside > 1000 && outlined > 0,
+        "{away} away, {inside} inside, {outlined} outlined"
+    );
+}
+
+#[test]
+fn a_highlighted_edge_changes_only_itself_and_is_drawn_wider() {
+    // Front view, Edge1 (the front face's bottom) highlighted: Edge3 (its top) is unchanged,
+    // and Edge1 covers more of the ID buffer (3 pixels wide, not 1.5).
+    let mut w = worker();
+    let (width, height) = (400, 300);
+    let plain = front_of_a_box(width, height);
+    let mut lit = plain.clone();
+    lit.bodies[0].highlight_edges = vec![0];
+    let (before, ids) = render(&mut w, plain);
+    let (after, lit_ids) = render(&mut w, lit);
+    let (ids, lit_ids) = (ids.unwrap(), lit_ids.unwrap());
+    let edge1 = pixels_of(&ids, width, [1, EDGE_BIT | 1]);
+    let edge3 = pixels_of(&ids, width, [1, EDGE_BIT | 3]);
+    assert!(!edge1.is_empty() && !edge3.is_empty());
+    let near_edge1 = within(&ids, width, 4, |id| id == [1, EDGE_BIT | 1]);
+    for &(col, row) in &edge3 {
+        if !near_edge1[usize::try_from(row * width + col).unwrap()] {
+            assert_eq!(
+                after.at(col, row),
+                before.at(col, row),
+                "({col}, {row}) on Edge3"
+            );
+        }
+    }
+    let wider = pixels_of(&lit_ids, width, [1, EDGE_BIT | 1]).len();
+    assert!(
+        wider * 2 >= edge1.len() * 3,
+        "Edge1 highlighted covers {wider} pixels, plain {}",
+        edge1.len()
+    );
+}
+
+#[test]
+fn edges_are_drawn_darker_than_the_faces_they_bound() {
+    // Every edge drawn in EDGE's dark grey, antialiased: the darkest pixel the ID buffer
+    // gives an edge is well under the body's colour.
+    let mut w = worker();
+    let size = 300;
+    let (image, ids) = render(&mut w, corner(size));
+    let ids = ids.unwrap();
+    let darkest = (0..size * size)
+        .filter(|i| ids[usize::try_from(*i).unwrap()][1] & EDGE_BIT != 0)
+        .map(|i| image.at(i % size, i / size)[0])
+        .min()
+        .unwrap();
+    assert!(
+        darkest < BODY[0] - 30,
+        "the darkest edge pixel's red is {darkest}"
+    );
+}
+
+#[test]
+fn a_face_seen_at_an_angle_is_lit_by_lamberts_law_by_hand() {
+    // Orthographic, from the corner: the top face's normal (0, 0, 1) is at 1/√3 to the view,
+    // so its light is 0.35 + 0.65/√3 of the albedo, in linear light.
+    let mut w = worker();
+    let size = 300;
+    let (image, ids) = render(&mut w, corner(size));
+    let ids = ids.unwrap();
+    let top = pixels_of(&ids, size, [1, 6]);
+    let (col, row) = top[top.len() / 2];
+    let light = 0.35 + 0.65 / 3.0f64.sqrt();
+    let got = image.at(col, row);
+    for k in 0..3 {
+        let want = srgb(linear(BODY[k]) * light);
+        assert!(
+            (f64::from(got[k]) - want).abs() <= 1.0,
+            "the top face {got:?}, want {want} in {k}"
+        );
+    }
+    // Perspective, the eye 20 from the front face's centre: each corner of it is lit from
+    // the eye's direction there, (±20, −20, ±5)/√825 against the normal (0, −1, 0), so
+    // 0.35 + 0.65 × 20/√825 everywhere on it.
+    let mut scene = front_of_a_box(200, 200);
+    scene.camera = Camera {
+        projection: Projection::Perspective {
+            field_of_view: 120.0,
+        },
+        eye: [20.0, -20.0, 5.0],
+        target: [20.0, 0.0, 5.0],
+        up: [0.0, 0.0, 1.0],
+    };
+    let (image, ids) = render(&mut w, scene);
+    assert_eq!(ids.unwrap()[100 * 200 + 100], [1, 3]);
+    let light = 0.35 + 0.65 * 20.0 / 825.0f64.sqrt();
+    let got = image.at(100, 100);
+    for k in 0..3 {
+        let want = srgb(linear(BODY[k]) * light);
+        assert!(
+            (f64::from(got[k]) - want).abs() <= 1.0,
+            "the front face {got:?}, want {want} in {k}"
+        );
+    }
+}
+
+#[test]
+fn a_perspective_view_wider_than_high_isnt_stretched() {
+    // 400 x 200, from 80 in front of the front face's centre, 40° high: the box's left edge,
+    // 20 left of the centre, lands at 200 − (20/80)/tan 20° × 100 = 131.3 pixels (half the
+    // height to each tan's unit, the same across as up and down).
+    let mut w = worker();
+    let mut scene = front_of_a_box(400, 200);
+    scene.camera = Camera {
+        projection: Projection::Perspective {
+            field_of_view: 40.0,
+        },
+        eye: [20.0, -80.0, 5.0],
+        target: [20.0, 0.0, 5.0],
+        up: [0.0, 0.0, 1.0],
+    };
+    let (_, ids) = render(&mut w, scene);
+    let ids = ids.unwrap();
+    let edge = 200.0 - (20.0 / 80.0) / libm::tan(20f64.to_radians()) * 100.0;
+    assert!((edge - 131.3).abs() < 0.1, "{edge}");
+    let at = |col: f64| ids[100 * 400 + col as usize];
+    assert_eq!(at(edge + 4.0), [1, 3], "inside the left edge");
+    assert_eq!(at(edge - 4.0), [0, 0], "outside the left edge");
+    // And the right edge, 20 right: 268.7.
+    assert_eq!(at(400.0 - edge - 4.0), [1, 3], "inside the right edge");
+    assert_eq!(at(400.0 - edge + 4.0), [0, 0], "outside the right edge");
 }

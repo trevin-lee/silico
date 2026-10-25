@@ -640,9 +640,7 @@ impl Refusal {
             Refusal::NoAdapter { cause } => (
                 format!("the render worker found nothing it may draw on: {cause}"),
                 Some(
-                    "build Silico in its pixi environment, which brings Mesa's lavapipe, or \
-                     let the render worker use a GPU"
-                        .to_owned(),
+                    "build Silico in its pixi environment, which brings Mesa's lavapipe".to_owned(),
                 ),
             ),
             Refusal::TooManyTriangles { triangles, limit } => (
