@@ -222,8 +222,9 @@ fn a_description_refused_for_its_values_keeps_the_summary_and_the_refusal() {
         assert!(model.drift().is_empty(), "{code:?}: {:?}", model.drift());
         assert_eq!(hole(&model), HOLE);
         assert_summarized_not_described(&model, code);
-        // Each solid's three batches sent at once, every one refused.
-        assert_eq!(settled(first.kernel(), describe, 9), 9, "{code:?}");
+        // Each solid's batches one after another (a batch of each kind, so not at once): its
+        // first, its faces, refused, and no more asked of it.
+        assert_eq!(settled(first.kernel(), describe, 3), 3, "{code:?}");
         // Asked once a solid in the session.
         let asked_before = first.kernel().calls().len();
         let kept = published(&first, checked(EXAMPLE));
@@ -286,10 +287,11 @@ fn a_description_a_worker_failed_is_asked_again_and_only_it() {
         let failed = published(&failing, checked(EXAMPLE));
         assert!(failed.drift().is_empty(), "{code:?}: {:?}", failed.drift());
         assert_summarized_not_described(&failed, code);
-        // Each solid's three batches sent at once: nine asked, and nine again.
-        assert_eq!(settled(failing.kernel(), describe, 9), 9, "{code:?}");
+        // Each solid's faces asked first, and failing, nothing more of it: three asked, and
+        // three again.
+        assert_eq!(settled(failing.kernel(), describe, 3), 3, "{code:?}");
         let again = published(&failing, checked(EXAMPLE));
-        assert_eq!(settled(failing.kernel(), describe, 18), 18, "{code:?}");
+        assert_eq!(settled(failing.kernel(), describe, 6), 6, "{code:?}");
         assert_eq!(asked(failing.kernel(), "Summarize"), 3, "{code:?}");
         assert_summarized_not_described(&again, code);
         let next = session(&dir.0);

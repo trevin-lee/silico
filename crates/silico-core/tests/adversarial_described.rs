@@ -327,12 +327,14 @@ fn a_face_batch_whose_total_isnt_the_summarys_is_a_workers_fault_kept_beside_the
     );
     assert_described_whole(&model, "a91cw0de");
     assert_described_whole(&model, "m3tq8v0z");
-    // The block's three batches, sent at once.
-    assert_eq!(settled(first.kernel(), describes_block, 3), 3);
+    // The block's batches one at a time (a batch each of its kinds, so not at once): its
+    // faces refused, nothing more is asked of it.
+    assert_eq!(settled(first.kernel(), describes_block, 1), 1);
     let again = published(&first, checked(EXAMPLE));
-    assert_eq!(settled(first.kernel(), describes_block, 6), 6);
+    assert_eq!(settled(first.kernel(), describes_block, 2), 2);
     assert_eq!(asked(first.kernel(), "Summarize"), 3, "summarized again");
-    assert_eq!(asked(first.kernel(), "Describe"), 12);
+    // The pin's three and the hole's three, and the block's faces twice.
+    assert_eq!(asked(first.kernel(), "Describe"), 8);
     assert_refused_beside_its_summary(&again, "k7f2qx3m", ErrorCode::ProtocolError);
     let (key, _) = built(&model, "k7f2qx3m");
     assert!(matches!(
@@ -421,9 +423,23 @@ fn a_batch_holding_more_elements_than_it_should_is_a_workers_fault_kept_beside_t
         let block = assert_refused_beside_its_summary(&model, "k7f2qx3m", ErrorCode::ProtocolError);
         assert_eq!(block.why_undescribed().unwrap().cause(), Some(cause));
         assert_described_whole(&model, "m3tq8v0z");
-        assert_eq!(settled(engine.kernel(), describes_block, 3), 3, "{cause}");
+        // One at a time: up to the batch at fault, of faces, edges, then vertices.
+        let asked_of_block = match of {
+            ElementKind::Face => 1,
+            ElementKind::Edge => 2,
+            ElementKind::Vertex | ElementKind::Solid => 3,
+        };
+        assert_eq!(
+            settled(engine.kernel(), describes_block, asked_of_block),
+            asked_of_block,
+            "{cause}"
+        );
         published(&engine, checked(EXAMPLE));
-        assert_eq!(settled(engine.kernel(), describes_block, 6), 6, "{cause}");
+        assert_eq!(
+            settled(engine.kernel(), describes_block, 2 * asked_of_block),
+            2 * asked_of_block,
+            "{cause}"
+        );
         assert_eq!(asked(engine.kernel(), "Summarize"), 3, "{cause}");
     }
 }
@@ -434,6 +450,38 @@ fn a_batch_holding_more_elements_than_it_should_is_a_workers_fault_kept_beside_t
 /// Whether `op` describes the last fusion of `fused_tree(8)`: 256 boxes, 3,072 edges.
 fn describes_the_tree(op: &Op) -> bool {
     matches!(op, Op::Describe { shape, .. } if FakeKernel::counts(shape).is_some_and(|c| c.edges == 3072))
+}
+
+#[test]
+fn a_small_solids_batches_are_sent_one_at_a_time() {
+    // The block has a batch of each kind (6 faces, 12 edges, 8 vertices): sent at once, they
+    // would start a worker each on a pool that starts them as it needs them, so they're sent
+    // one after another. With its faces held on a kernel of eight threads, no second is
+    // asked until they come back; released, all three are, faces, edges, then vertices.
+    let engine = Recompute::new(FakeKernel::new(8).unwrap());
+    let hold = engine.kernel().hold(describes_block);
+    let run = engine.start(checked(EXAMPLE));
+    assert_eq!(settled(engine.kernel(), describes_block, 1), 1);
+    hold.release();
+    match run.wait_timeout(WAIT) {
+        Ok(Ok(RunOutcome::Published(model))) => assert_described_whole(&model, "k7f2qx3m"),
+        Ok(other) => panic!("not published: {other:?}"),
+        Err(_) => panic!("the recompute didn't finish in {WAIT:?}"),
+    }
+    let kinds: Vec<ElementKind> = engine
+        .kernel()
+        .calls()
+        .iter()
+        .filter(|call| describes_block(&call.op))
+        .filter_map(|call| match call.op {
+            Op::Describe { kind, .. } => Some(kind),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [ElementKind::Face, ElementKind::Edge, ElementKind::Vertex]
+    );
 }
 
 #[test]

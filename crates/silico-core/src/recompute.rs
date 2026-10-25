@@ -55,8 +55,8 @@ use crate::document::{
     SweepFeature,
 };
 use crate::kernel::{
-    BooleanOp, BuiltData, FaceRegions, Generation, History, Kernel, KernelRequest, Primitive,
-    ShapeData, ShapeSummary, SweepKind,
+    BooleanOp, BuiltData, DESCRIBE_BATCH, FaceRegions, Generation, History, Kernel, KernelRequest,
+    Primitive, ShapeData, ShapeSummary, SweepKind,
 };
 use crate::naming::{ElementMap, Maker, NAMING_SCHEME, OpCode};
 use crate::pool::Outcome;
@@ -221,7 +221,10 @@ impl Built {
 }
 
 /// The most batches of one solid's description in flight at once: each carries the solid's
-/// B-rep, so it bounds the copies held, while the pool's workers describe in parallel.
+/// B-rep, so it bounds the copies held, while the pool's workers describe in parallel. Only
+/// a solid of more than one batch of a kind is described so: a smaller one's batches are
+/// quick, and asking them at once would start a worker for each (a small document's check
+/// starting three where it needs one).
 const DESCRIBE_AT_ONCE: usize = 4;
 
 /// What became of a feature in a recompute.
@@ -3054,9 +3057,13 @@ impl<K: Kernel + 'static> Engine<K> {
             edges: Vec::new(),
             vertices: Vec::new(),
         };
+        let large = [summary.faces, summary.edges, summary.vertices]
+            .iter()
+            .any(|&n| n > DESCRIBE_BATCH);
+        let at_once = if large { DESCRIBE_AT_ONCE } else { 1 };
         let mut in_flight = VecDeque::new();
         loop {
-            while in_flight.len() < DESCRIBE_AT_ONCE
+            while in_flight.len() < at_once
                 && let Some((kind, first, count)) = planned.next()
             {
                 let request = match KernelRequest::describe(shape, kind, first, count) {
