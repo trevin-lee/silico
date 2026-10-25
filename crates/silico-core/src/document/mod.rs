@@ -11,7 +11,7 @@ mod quantity;
 mod sketch;
 mod sketch_gate;
 mod validate;
-mod write;
+pub(crate) mod write;
 
 pub use fingerprint::{Difference, Fingerprint, MEASURE_DECIMALS, Measure};
 pub use model::{
@@ -152,15 +152,23 @@ fn smaller(feature: &Feature) -> &'static str {
 /// The JSON Schema of a document (draft 2020-12), as agents get it. The reader is the
 /// authority where a schema can't say enough: a seventh decimal, a key written twice.
 pub fn schema() -> Result<String, Error> {
+    schema_of::<Document>("the document")
+}
+
+/// The JSON Schema of `T` (draft 2020-12), its keys sorted, pretty, with a trailing newline:
+/// as the protected snapshots hold it, the document's and the command API's
+/// (`command::wire::snapshot`). `what` names it for the error a schema that couldn't be
+/// written gives.
+pub(crate) fn schema_of<T: schemars::JsonSchema>(what: &str) -> Result<String, Error> {
     let schema = SchemaSettings::draft2020_12()
         .into_generator()
-        .into_root_schema_for::<Document>();
+        .into_root_schema_for::<T>();
     serde_json::to_string_pretty(&sorted(schema.as_value()))
         .map(|text| text + "\n")
         .map_err(|e| {
             Error::new(
                 ErrorCode::Internal,
-                "the document schema couldn't be written",
+                format!("{what}'s schema couldn't be written"),
             )
             .with_cause(e.to_string())
             .with_suggestion(crate::worker::SILICO_BUG)

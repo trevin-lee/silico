@@ -17,6 +17,7 @@ use crate::recompute::{Model, Recompute, RunOutcome};
 use crate::{Error, ErrorCode};
 
 mod session;
+pub mod wire;
 
 pub use session::{
     MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice, ModelRead, Opened, Published, Read, Response,

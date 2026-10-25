@@ -64,6 +64,20 @@ impl SessionId {
     pub const fn number(self) -> u64 {
         self.0
     }
+
+    /// The ID `text` writes, `s1`, `s2`, ...: `s` and a whole number from 1, with no
+    /// leading zeros; none for anything else. A request names its session so
+    /// (`command::wire`).
+    pub fn parse(text: &str) -> Option<SessionId> {
+        let digits = text.strip_prefix('s')?;
+        if digits.is_empty()
+            || digits.starts_with('0')
+            || !digits.bytes().all(|b| b.is_ascii_digit())
+        {
+            return None;
+        }
+        digits.parse().ok().map(SessionId)
+    }
 }
 
 impl fmt::Display for SessionId {

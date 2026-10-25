@@ -1,0 +1,224 @@
+{
+  "$defs": {
+    "ErrorSchema": {
+      "description": "The error contract's shape, for the snapshots: the envelope's `errors` and every\nresult's `problems` reference this one schema.",
+      "properties": {
+        "candidates": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "cause": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "code": {
+          "type": "string"
+        },
+        "elements": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "elements_total": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "feature": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "parameter": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "suggestion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "elements",
+        "elements_total",
+        "candidates"
+      ],
+      "type": "object"
+    },
+    "ModelOfSchema": {
+      "description": "Which model was read, for the envelope's snapshot.",
+      "enum": [
+        "current",
+        "published"
+      ],
+      "type": "string"
+    },
+    "ModelSchema": {
+      "description": "The model a command read, for the envelope's snapshot.",
+      "properties": {
+        "fault": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorSchema"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The kernel fault its rebuild met, once (decision 32): always null until then."
+        },
+        "of": {
+          "$ref": "#/$defs/ModelOfSchema"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "revision",
+        "of"
+      ],
+      "type": "object"
+    },
+    "RanSchema": {
+      "description": "A command that ran: its result, which each command's snapshot gives.",
+      "properties": {
+        "model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ok": {
+          "const": true,
+          "type": "boolean"
+        },
+        "result": true,
+        "session": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "ok",
+        "result"
+      ],
+      "type": "object"
+    },
+    "RefusedSchema": {
+      "description": "A command refused: every reason, the first hundred, and how many there are.",
+      "properties": {
+        "errors": {
+          "items": {
+            "$ref": "#/$defs/ErrorSchema"
+          },
+          "type": "array"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ok": {
+          "const": false,
+          "type": "boolean"
+        },
+        "session": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "total": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "ok",
+        "errors",
+        "total"
+      ],
+      "type": "object"
+    },
+    "SessionSchema": {
+      "description": "A session as a response gives it, for the envelope's snapshot.",
+      "properties": {
+        "id": {
+          "description": "`s1`, `s2`, ...",
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "reloaded": {
+          "type": "boolean"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "transaction": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "revision",
+        "transaction",
+        "reloaded"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/RanSchema"
+    },
+    {
+      "$ref": "#/$defs/RefusedSchema"
+    }
+  ],
+  "description": "Every response: one that ran, or one refused.",
+  "title": "EnvelopeSchema"
+}

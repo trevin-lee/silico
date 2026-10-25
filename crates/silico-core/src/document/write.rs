@@ -54,10 +54,13 @@ pub fn feature_fits(feature: &Feature, limit: usize) -> bool {
         .is_ok()
 }
 
-/// A value to write: a number's or literal's text, a string, an array, or an object.
-enum Out<'a> {
+/// A value to write: a number's or literal's text, a string (borrowed, or owned), an
+/// array, or an object. The command API's results are written as these too
+/// (`command::wire`), so the two write alike.
+pub(crate) enum Out<'a> {
     Raw(String),
     Str(&'a str),
+    Owned(String),
     Array(Vec<Out<'a>>),
     /// An array written an item to a line, whatever it holds.
     Lines(Vec<Out<'a>>),
@@ -68,7 +71,7 @@ impl Out<'_> {
     /// Whether it is, or holds, an object anywhere inside it.
     fn holds_object(&self) -> bool {
         match self {
-            Out::Raw(_) | Out::Str(_) => false,
+            Out::Raw(_) | Out::Str(_) | Out::Owned(_) => false,
             // Written over lines, as an object is.
             Out::Object(_) | Out::Lines(_) => true,
             Out::Array(items) => items.iter().any(Out::holds_object),
@@ -79,7 +82,7 @@ impl Out<'_> {
     /// arrays of them counts as holding none).
     fn one_line(&self) -> bool {
         match self {
-            Out::Raw(_) | Out::Str(_) => true,
+            Out::Raw(_) | Out::Str(_) | Out::Owned(_) => true,
             Out::Array(items) => !items.iter().any(Out::holds_object),
             Out::Lines(items) => items.is_empty(),
             Out::Object(members) => !members.iter().any(|(_, v)| v.holds_object()),
@@ -553,6 +556,17 @@ fn reference(id: &FeatureId) -> Out<'_> {
     Out::Str(id.as_str())
 }
 
+/// `value` written in canonical form (D7) with no trailing newline, or, `one_line`, all on
+/// one line with the same members in the same order: as the command API writes its
+/// requests and results (docs/design/m4.1-command-api.md, section 2's *Layout*).
+pub(crate) fn text(value: &Out<'_>, one_line: bool) -> String {
+    let mut writer = Writer::new(usize::MAX, true);
+    writer.one_line = one_line;
+    // Never past usize::MAX bytes: a String can't hold more.
+    let _ = writer.put(value, 0);
+    writer.out
+}
+
 /// Canonical text, written (or only counted) up to a limit.
 struct Writer {
     out: String,
@@ -561,6 +575,9 @@ struct Writer {
     limit: usize,
     /// Whether the text is kept, or only counted.
     keep: bool,
+    /// Whether everything is written on one line, as a transport that takes one message a
+    /// line needs (the command API's, design section 2).
+    one_line: bool,
 }
 
 impl Writer {
@@ -570,6 +587,7 @@ impl Writer {
             len: 0,
             limit,
             keep,
+            one_line: false,
         }
     }
 
@@ -600,10 +618,11 @@ impl Writer {
         match value {
             Out::Raw(text) => self.push(text),
             Out::Str(text) => self.quote(text),
+            Out::Owned(text) => self.quote(text),
             Out::Array(items) | Out::Lines(items) => {
                 if items.is_empty() {
                     self.push("[]")
-                } else if value.one_line() {
+                } else if self.one_line || value.one_line() {
                     self.push("[")?;
                     for (i, item) in items.iter().enumerate() {
                         if i > 0 {
@@ -626,7 +645,7 @@ impl Writer {
             Out::Object(members) => {
                 if members.is_empty() {
                     self.push("{}")
-                } else if value.one_line() {
+                } else if self.one_line || value.one_line() {
                     self.push("{")?;
                     for (i, (key, member)) in members.iter().enumerate() {
                         if i > 0 {
