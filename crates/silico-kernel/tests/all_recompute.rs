@@ -24,6 +24,8 @@ mod adversarial_recompute;
 mod cache;
 #[path = "elements.rs"]
 mod elements;
+#[path = "entries.rs"]
+mod entries;
 #[path = "fake_kernel.rs"]
 mod fake_kernel;
 #[path = "fingerprint.rs"]
