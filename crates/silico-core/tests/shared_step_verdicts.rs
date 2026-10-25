@@ -200,7 +200,8 @@ fn cuts(engine: &Recompute<FakeKernel>) -> usize {
 }
 
 /// Whether the cache under `dir` holds an entry whose shape has a step `word` (`"\ncut "`,
-/// `"\nbox "`: the fake writes a shape as its steps, a line each) and none `without`. A
+/// `"\ntranslate "`: the fake writes a shape as its steps, a line each, a boolean's with
+/// all of both its inputs') and none `without`. A
 /// feature's solid is written to the cache only once it's measured, after its measure's
 /// verdict is decided: so its entry there means the scheduler has judged it. A step that's
 /// no feature's solid (the box a moved box is made from) is kept as soon as it's made.
@@ -262,11 +263,11 @@ fn a_verdict_that_lands_mid_recompute_stops_what_hasnt_started() {
     let run = engine.start(checked_document(&[&cube_above, &s, &q, &r, &t]));
     wait_for("the second cut didn't start", || cuts(&engine) == 2);
     drop(measure);
-    // The cube's own entry, its box moved into place and no cut: the box made at the origin
-    // is a step of its own, kept as soon as it's made, so "a box" was met by it before the
-    // cube was measured, and with the cube's measure late, the first pocket wasn't yet
-    // refused when the second cut was let go: the third started (run 40185654927, its
-    // first attempt).
+    // The cube's own entry, its box moved into place and no cut. "A box" was met before the
+    // cube was measured, twice over: by the box made at the origin, a step of its own kept
+    // as soon as it's made, and by the first cut's entry, which holds its base's steps too.
+    // With the cube's measure late, the first pocket wasn't yet refused when the second cut
+    // was let go: the third started (run 40185654927, its first attempt).
     wait_for("the cube and the first cut weren't measured", || {
         cached(&dir.join("cache"), b"\ncut ", None)
             && cached(&dir.join("cache"), b"\ntranslate ", Some(b"\ncut "))
