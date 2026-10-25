@@ -52,11 +52,15 @@
         }
       },
       "required": [
+        "candidates",
+        "cause",
         "code",
-        "message",
         "elements",
         "elements_total",
-        "candidates"
+        "feature",
+        "message",
+        "parameter",
+        "suggestion"
       ],
       "type": "object"
     },
@@ -92,8 +96,9 @@
         }
       },
       "required": [
-        "revision",
-        "of"
+        "fault",
+        "of",
+        "revision"
       ],
       "type": "object"
     },
@@ -127,8 +132,10 @@
         }
       },
       "required": [
+        "model",
         "ok",
-        "result"
+        "result",
+        "session"
       ],
       "type": "object"
     },
@@ -172,8 +179,10 @@
         }
       },
       "required": [
-        "ok",
         "errors",
+        "model",
+        "ok",
+        "session",
         "total"
       ],
       "type": "object"
@@ -203,9 +212,9 @@
       "required": [
         "id",
         "path",
+        "reloaded",
         "revision",
-        "transaction",
-        "reloaded"
+        "transaction"
       ],
       "type": "object"
     }

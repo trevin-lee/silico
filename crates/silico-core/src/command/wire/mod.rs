@@ -637,7 +637,10 @@ pub struct CommandSchema<Request: JsonSchema, Result: JsonSchema> {
 /// document's schema is, its keys sorted, pretty, with a trailing newline.
 pub fn snapshot(of: &str) -> Option<Result<String, Error>> {
     match of {
-        "envelope" => Some(crate::document::schema_of::<EnvelopeSchema>("the envelope")),
+        "envelope" => Some(crate::document::schema_of::<EnvelopeSchema>(
+            "the envelope",
+            crate::document::Presence::Always,
+        )),
         _ => None,
     }
 }
