@@ -148,6 +148,10 @@ impl Model {
         if size(triangles) > bound {
             return;
         }
+        let at_floor = self
+            .floors
+            .iter()
+            .any(|&(k, f)| k == key && f.to_bits() == used.to_bits());
         self.kept
             .retain(|&(k, d, _)| (k, d) != (key, used.to_bits()));
         while self.bytes() + size(triangles) > bound && !self.kept.is_empty() {
@@ -157,7 +161,7 @@ impl Model {
             }
         }
         self.kept.push((key, used.to_bits(), triangles));
-        if used > asked {
+        if used > asked || at_floor {
             self.floors.retain(|&(k, _)| k != key);
             self.floors.push((key, used));
         }
