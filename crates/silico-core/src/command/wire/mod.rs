@@ -32,8 +32,8 @@
 //! against (that is M4.9's to build from these and the envelope's). Each is added with the
 //! command's wire types ([`COMMANDS`]: [`transaction`], for `begin`, `commit`, `rollback`,
 //! and `format`; [`edits`], for `add_feature`, `set_field`, `remove_feature`, and
-//! `replace_text`; [`elements`], for `elements` and `query`; [`measure`], for
-//! `mass_properties`; and [`schema`]).
+//! `replace_text`; [`elements`], for `elements` and `query`; [`schema`]; and [`measure`],
+//! for `mass_properties`).
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -154,13 +154,13 @@ impl<'a> Json<'a> {
 
     /// A feature's field `field` (a path, as `set_field` names one), `value` its value
     /// before or after an edit, laid out as the document's canonical form lays it out: a
-    /// fillet's or a chamfer's `edges` a name to a line ([`write::NAMES_FIELD`]), as
-    /// [`feature`](Json::feature) writes them; any other value as [`plain`](Json::plain)
-    /// writes it.
+    /// list as [`write::field_list`] lays out that field's (a fillet's or a chamfer's
+    /// `edges` a name to a line, as [`feature`](Json::feature) writes them); any other value
+    /// as [`plain`](Json::plain) writes it.
     pub fn field(field: &str, value: &'a Plain) -> Self {
         match value {
-            Plain::Array(items) if field == write::NAMES_FIELD => {
-                Json(Out::Lines(items.iter().map(walked).collect()))
+            Plain::Array(items) => {
+                Json(write::field_list(field, items.iter().map(walked).collect()))
             }
             _ => Json::plain(value),
         }
@@ -1338,9 +1338,8 @@ pub enum ResponseSchema {
 /// What makes a command's snapshot: its JSON Schemas, from its mirror structs.
 pub type MakeSnapshot = fn() -> serde_json::Value;
 
-/// The commands whose wire types are built, each by name with what makes its snapshot: what
-/// `schema` describes besides the document. The session's and the edits' are in the
-/// design's order (section 7), then the rest as they were added.
+/// The commands whose wire types are built, each by name with what makes its snapshot, in
+/// the design's order (section 7): what `schema` describes besides the document.
 pub const COMMANDS: [(&str, MakeSnapshot); 12] = [
     (
         "begin",
@@ -1383,12 +1382,12 @@ pub const COMMANDS: [(&str, MakeSnapshot); 12] = [
         command_schema::<elements::QueryRequestSchema, elements::QueryResultSchema>,
     ),
     (
-        "mass_properties",
-        command_schema::<measure::MassPropertiesRequestSchema, measure::MassPropertiesResultSchema>,
-    ),
-    (
         "schema",
         command_schema::<schema::SchemaRequestSchema, schema::SchemaResultSchema>,
+    ),
+    (
+        "mass_properties",
+        command_schema::<measure::MassPropertiesRequestSchema, measure::MassPropertiesResultSchema>,
     ),
 ];
 

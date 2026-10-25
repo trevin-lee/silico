@@ -711,8 +711,8 @@ fn schema_answers_the_document_and_each_command_as_committed() {
                 "replace_text",
                 "elements",
                 "query",
-                "mass_properties",
-                "schema"
+                "schema",
+                "mass_properties"
             ]
         );
     }

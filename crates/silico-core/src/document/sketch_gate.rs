@@ -800,7 +800,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                 let kind = if driving { "" } else { "reference " };
                 add(refuse(
                     &format!("{at}.value"),
-                    format!("a {kind}{what}'s value is {value} mm, but it's {range}"),
+                    format!("a {kind}{what}'s value is {value} mm, but it must be {range}"),
                     format!("give the {what} a value {range}"),
                 ));
             }
@@ -811,7 +811,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
             add(refuse(
                 &format!("{at}.value"),
                 format!(
-                    "an angle's value is {value} degrees, but it's at most {MAX_ANGLE_DEGREES} either way"
+                    "an angle's value is {value} degrees, but it must be at most {MAX_ANGLE_DEGREES} either way"
                 ),
                 format!(
                     "give the angle a value from -{MAX_ANGLE_DEGREES} to {MAX_ANGLE_DEGREES} degrees"

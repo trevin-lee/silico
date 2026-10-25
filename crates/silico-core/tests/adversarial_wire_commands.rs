@@ -994,8 +994,8 @@ fn schema_refuses_names_that_arent_names_safely_and_briefly() {
                 "replace_text",
                 "elements",
                 "query",
-                "mass_properties",
-                "schema"
+                "schema",
+                "mass_properties"
             ]
         );
         assert!(printable(error.message()), "{of:?}: {:?}", error.message());
