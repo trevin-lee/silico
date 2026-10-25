@@ -39,15 +39,12 @@ pub fn schema(of: &str) -> Result<SchemaAnswer, Problems> {
         None => Err(Error::new(
             ErrorCode::InvalidInput,
             format!(
-                "of must be document or a command with a schema, got {}",
+                "of must be document or the name of a command with a schema, got {}",
                 document::field_name(of)
             ),
         )
         .with_parameter("of")
-        .with_suggestion(
-            "give document, or the name of a command with a schema: the candidates are every \
-             one there is so far",
-        )
+        .with_suggestion("give document, or one of the candidates")
         .with_candidates(
             std::iter::once("document")
                 .chain(wire::COMMANDS)

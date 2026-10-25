@@ -989,7 +989,7 @@ fn schema_refuses_names_that_arent_names_safely_and_briefly() {
         assert!(
             error
                 .message()
-                .starts_with("of must be document or a command with a schema, got "),
+                .starts_with("of must be document or the name of a command with a schema, got "),
             "{}",
             error.message()
         );
