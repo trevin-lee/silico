@@ -34,6 +34,8 @@ mod entries;
 mod fake_kernel;
 #[path = "fingerprint.rs"]
 mod fingerprint;
+#[path = "mass_properties.rs"]
+mod mass_properties;
 #[path = "recompute.rs"]
 mod recompute;
 #[path = "recompute_spans_close.rs"]

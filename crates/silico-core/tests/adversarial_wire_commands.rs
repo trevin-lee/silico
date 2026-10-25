@@ -982,7 +982,7 @@ fn schema_refuses_names_that_arent_names_safely_and_briefly() {
         assert_eq!(error.parameter(), Some("of"));
         assert_eq!(
             error.candidates(),
-            ["document", "elements", "query", "schema"]
+            ["document", "elements", "query", "mass_properties", "schema"]
         );
         assert!(printable(error.message()), "{of:?}: {:?}", error.message());
         assert!(error.message().len() < 300, "{of:?}");

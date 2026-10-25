@@ -58,6 +58,8 @@ mod command;
 mod document;
 #[path = "fingerprint.rs"]
 mod fingerprint;
+#[path = "mass_properties.rs"]
+mod mass_properties;
 #[path = "reach.rs"]
 mod reach;
 #[path = "refused_from_a_partial_cache.rs"]

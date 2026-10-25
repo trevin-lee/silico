@@ -857,7 +857,7 @@ fn schema_prints_the_documents_or_a_commands_as_committed() {
         String::from_utf8(schema(&["document"]).stdout).unwrap(),
         core_contract("document-schema.json")
     );
-    for command in ["elements", "query", "schema"] {
+    for command in ["elements", "query", "mass_properties", "schema"] {
         let out = schema(&[command]);
         assert_eq!(out.status.code(), Some(0), "{command}: {}", stderr(&out));
         assert!(out.stderr.is_empty(), "{command}");
@@ -876,7 +876,7 @@ fn schema_prints_the_documents_or_a_commands_as_committed() {
         stderr(&out),
         "silico schema: invalid_input: of must be document or the name of a command with a \
          schema, got envelope (parameter of). Suggestion: give one of the candidates. \
-         Candidates: document, elements, query, schema.\n"
+         Candidates: document, elements, query, mass_properties, schema.\n"
     );
     // Two names: a usage error.
     let out = schema(&["query", "elements"]);

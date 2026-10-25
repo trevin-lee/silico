@@ -12,7 +12,7 @@ use crate::document::{Angle, FeatureId, Length, Measure};
 pub use crate::elements::{Alias, AxisToken, ElementType, Entry, EntryAxis};
 use crate::kernel::{Clients, ElementKind};
 use crate::naming::{Maker, Name};
-use crate::recompute::{FeatureOutcome, Model};
+use crate::recompute::{Built, FeatureOutcome, Model};
 use crate::{Error, ErrorCode};
 
 impl<P: Clients + 'static> Sessions<P> {
@@ -73,61 +73,14 @@ pub fn entries<'m>(model: &'m Model, id: &FeatureId) -> Result<&'m [Entry], Prob
 /// `feature` if `asked` (the request named it), and otherwise only the feature (a body of
 /// a listing of every body, its `feature` null).
 fn solid<'m>(model: &'m Model, id: &FeatureId, asked: bool) -> Result<&'m [Entry], Problems> {
-    let named = |error: Error| {
-        if asked {
-            error.with_parameter("feature")
-        } else {
-            error
-        }
-    };
-    let built = match model.outcome(id) {
-        None => {
-            return Err(named(
-                Error::new(
-                    ErrorCode::InvalidInput,
-                    format!("the document has no feature {id}"),
-                )
-                .with_suggestion("name a feature of the document, by its ID"),
-            )
-            .into());
-        }
-        Some(FeatureOutcome::Sketch(_)) => {
-            return Err(named(
-                Error::new(
-                    ErrorCode::InvalidInput,
-                    format!("{id} is a sketch, which makes no solid"),
-                )
-                .with_feature(id.as_str())
-                .with_suggestion("name a feature that makes a solid"),
-            )
-            .into());
-        }
-        Some(FeatureOutcome::Failed(error)) => return Err(error.clone().into()),
-        Some(FeatureOutcome::Broken { errors, total }) => {
-            return Err(Problems::with_unlisted(
-                errors.clone(),
-                total.saturating_sub(errors.len() as u64),
-            ));
-        }
-        Some(FeatureOutcome::Blocked { on }) => {
-            return Err(named(
-                Error::new(
-                    ErrorCode::InvalidInput,
-                    format!("{id} didn't build, since it uses {on}, which failed"),
-                )
-                .with_feature(id.as_str())
-                .with_suggestion(format!("mend {on} first: `check` says why it failed")),
-            )
-            .into());
-        }
-        Some(FeatureOutcome::Built { built, .. }) => built,
-    };
+    let built = built(model, id, asked)?;
     match model.entries(id) {
         Some(Ok(entries)) => Ok(entries),
         Some(Err(fault)) => Err(fault.clone().into()),
         // Not described. Why: its description refused or failed, or, before that, its
         // summary.
         None => Err(named(
+            asked,
             match built.why_undescribed().or(built.measure_refused()) {
                 Some(refused) => refused.clone(),
                 None => Error::new(
@@ -139,6 +92,61 @@ fn solid<'m>(model: &'m Model, id: &FeatureId, asked: bool) -> Result<&'m [Entry
             .with_feature(id.as_str()),
         )
         .into()),
+    }
+}
+
+/// `error`, naming the request's `feature` if `asked`.
+fn named(asked: bool, error: Error) -> Error {
+    if asked {
+        error.with_parameter("feature")
+    } else {
+        error
+    }
+}
+
+/// The feature `id`'s built solid, or why it has none: a feature the document doesn't
+/// have, a sketch, or one that failed (its failure, as `check` reports it) or was blocked;
+/// naming the request's `feature` if `asked`, as [`entries`] names it. Every read of a
+/// feature's solid (`elements`, `query`, `mass_properties`) refuses one alike.
+pub(crate) fn built<'m>(
+    model: &'m Model,
+    id: &FeatureId,
+    asked: bool,
+) -> Result<&'m Built, Problems> {
+    let named = |error: Error| named(asked, error);
+    match model.outcome(id) {
+        None => Err(named(
+            Error::new(
+                ErrorCode::InvalidInput,
+                format!("the document has no feature {id}"),
+            )
+            .with_suggestion("name a feature of the document, by its ID"),
+        )
+        .into()),
+        Some(FeatureOutcome::Sketch(_)) => Err(named(
+            Error::new(
+                ErrorCode::InvalidInput,
+                format!("{id} is a sketch, which makes no solid"),
+            )
+            .with_feature(id.as_str())
+            .with_suggestion("name a feature that makes a solid"),
+        )
+        .into()),
+        Some(FeatureOutcome::Failed(error)) => Err(error.clone().into()),
+        Some(FeatureOutcome::Broken { errors, total }) => Err(Problems::with_unlisted(
+            errors.clone(),
+            total.saturating_sub(errors.len() as u64),
+        )),
+        Some(FeatureOutcome::Blocked { on }) => Err(named(
+            Error::new(
+                ErrorCode::InvalidInput,
+                format!("{id} didn't build, since it uses {on}, which failed"),
+            )
+            .with_feature(id.as_str())
+            .with_suggestion(format!("mend {on} first: `check` says why it failed")),
+        )
+        .into()),
+        Some(FeatureOutcome::Built { built, .. }) => Ok(built),
     }
 }
 
