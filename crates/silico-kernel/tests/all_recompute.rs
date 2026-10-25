@@ -14,6 +14,8 @@ mod example;
 
 #[path = "adversarial_cache.rs"]
 mod adversarial_cache;
+#[path = "adversarial_entries.rs"]
+mod adversarial_entries;
 #[path = "adversarial_fake_kernel.rs"]
 mod adversarial_fake_kernel;
 #[path = "adversarial_fingerprint.rs"]
