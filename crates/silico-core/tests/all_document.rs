@@ -14,6 +14,8 @@ mod cache;
 mod commands;
 #[path = "common/example.rs"]
 mod example;
+#[path = "common/lateness.rs"]
+mod lateness;
 #[path = "common/model.rs"]
 mod model;
 #[path = "common/references.rs"]
@@ -52,6 +54,8 @@ mod fingerprint;
 mod refused_from_a_partial_cache;
 #[path = "session.rs"]
 mod session;
+#[path = "session_rebuild.rs"]
+mod session_rebuild;
 #[path = "session_tracing.rs"]
 mod session_tracing;
 #[path = "shared_result_checks.rs"]
