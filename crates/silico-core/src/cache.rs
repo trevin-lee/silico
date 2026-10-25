@@ -878,7 +878,8 @@ fn lasting(refused: &crate::Error) -> bool {
 }
 
 /// The result `entry` keeps, checked as a worker's reply is: a summary no shape has, or a
-/// description a worker couldn't send, is a measure to make again, and a refusal is worded
+/// description a worker couldn't send (a value out of range, or more or fewer of a kind than
+/// the summary counts), is a measure to make again, and a refusal is worded
 /// now, by this core, and kept only if the cache would keep it (this core may judge it
 /// otherwise than the one that wrote it).
 fn built_of(entry: Entry) -> Built {
@@ -888,7 +889,8 @@ fn built_of(entry: Entry) -> Built {
             summary,
             description,
         } if crate::kernel::summary_fault(&summary).is_none()
-            && description.validate(1).is_ok() =>
+            && description.validate(1).is_ok()
+            && crate::kernel::description_fault(&summary, &description).is_none() =>
         {
             Built::new(shape, entry.history, Some((summary, description)))
         }

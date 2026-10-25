@@ -2963,7 +2963,9 @@ impl<K: Kernel + 'static> Engine<K> {
 
     /// Measures `built`, a feature's solid, on the kernel, for `generation`: a copy of it
     /// with its summary and its elements described, a batch at a time, so a read of the
-    /// model it's published in asks the kernel nothing.
+    /// model it's published in asks the kernel nothing. A description of more or fewer of a
+    /// kind than the summary counts is a worker's fault, as a batch that isn't what it asked
+    /// for is.
     fn measure(&self, built: &Built, generation: Generation) -> Outcome<Built> {
         let summary = match self
             .kernel
@@ -2988,7 +2990,15 @@ impl<K: Kernel + 'static> Engine<K> {
             |kind, was, now| Some(crate::kernel::description_changed(kind, was, now)),
         );
         match described {
-            Ok(description) => Outcome::Done(Ok(built.measured(summary, description))),
+            Ok(description) => match crate::kernel::description_fault(&summary, &description) {
+                None => Outcome::Done(Ok(built.measured(summary, description))),
+                Some(fault) => Outcome::Done(Err(Error::new(
+                    ErrorCode::ProtocolError,
+                    "the kernel worker sent a description it can't have",
+                )
+                .with_cause(fault)
+                .with_suggestion("start a new kernel worker"))),
+            },
             Err(Some(error)) => Outcome::Done(Err(error)),
             Err(None) => Outcome::Superseded,
         }

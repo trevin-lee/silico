@@ -596,6 +596,32 @@ pub(crate) fn description_changed(kind: ElementKind, was: u32, now: u32) -> Erro
     .with_suggestion("start a new kernel worker")
 }
 
+/// What's wrong with `description` as the whole of a shape whose summary is `summary`, if
+/// anything: a kind it describes more or fewer of than the summary counts (both are counted
+/// in `TopExp::MapShapes` order, of the same shape, so a shape's agree).
+pub(crate) fn description_fault(
+    summary: &ShapeSummary,
+    description: &Description,
+) -> Option<String> {
+    [
+        (ElementKind::Face, summary.faces, description.faces.len()),
+        (ElementKind::Edge, summary.edges, description.edges.len()),
+        (
+            ElementKind::Vertex,
+            summary.vertices,
+            description.vertices.len(),
+        ),
+    ]
+    .into_iter()
+    .find(|(_, counted, described)| u64::from(*counted) != *described as u64)
+    .map(|(kind, counted, described)| {
+        format!(
+            "it describes {described} {}, and its summary counts {counted}",
+            kind.plural()
+        )
+    })
+}
+
 /// What's wrong with a batch of a description for a request of `count` elements of `kind`
 /// from `first`, of `total`, if anything: a value it can't hold, elements of another kind,
 /// or more or fewer than there are from `first` up to `count`.
@@ -1825,6 +1851,59 @@ mod tests {
             assert_eq!(
                 error.message(),
                 "the kernel worker answered Summarize with a summary no shape has"
+            );
+        }
+    }
+
+    #[test]
+    fn a_description_of_more_or_fewer_of_a_kind_than_its_summary_counts_is_at_fault() {
+        // A box's summary counts 6 faces, 12 edges, and 8 vertices, by hand; a description
+        // of each kind one short or one long is named for that kind, and one of 6, 12, and
+        // 8 fits.
+        let summary = ShapeSummary {
+            volume: 1.0,
+            area: 6.0,
+            center: [0.5; 3],
+            faces: 6,
+            edges: 12,
+            vertices: 8,
+            bounds: Some([[0.0; 3], [1.0; 3]]),
+            valid: true,
+        };
+        let of = |faces: usize, edges: usize, vertices: usize| Description {
+            faces: vec![
+                FaceDescription {
+                    surface: silico_protocol::Surface::Other,
+                    area: 1.0,
+                    centroid: [0.0; 3],
+                };
+                faces
+            ],
+            edges: vec![
+                EdgeDescription {
+                    curve: EdgeCurve::Other,
+                    length: 1.0,
+                    start: [0.0; 3],
+                    end: [1.0, 0.0, 0.0],
+                    middle: [0.5, 0.0, 0.0],
+                };
+                edges
+            ],
+            vertices: vec![[0.0; 3]; vertices],
+        };
+        assert_eq!(description_fault(&summary, &of(6, 12, 8)), None);
+        for (description, said) in [
+            (of(5, 12, 8), "it describes 5 faces, and its summary counts 6"),
+            (of(7, 12, 8), "it describes 7 faces, and its summary counts 6"),
+            (of(6, 11, 8), "it describes 11 edges, and its summary counts 12"),
+            (of(6, 13, 8), "it describes 13 edges, and its summary counts 12"),
+            (of(6, 12, 7), "it describes 7 vertices, and its summary counts 8"),
+            (of(6, 12, 9), "it describes 9 vertices, and its summary counts 8"),
+            (of(0, 0, 0), "it describes 0 faces, and its summary counts 6"),
+        ] {
+            assert_eq!(
+                description_fault(&summary, &description).as_deref(),
+                Some(said)
             );
         }
     }
