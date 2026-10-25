@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 
-use silico_core::document::{Document, FeatureId, reached, read, with_users};
+use silico_core::document::{Before, Document, FeatureId, net_reach, reached, read, with_users};
 
 /// Two sketches, a pad of the first, a pocket of the second in the pad, a box apart, a
 /// second box, and a cut of the second box from the pocket: who uses whom is
@@ -122,4 +122,52 @@ fn with_users_follows_every_use_and_leaves_out_ids_the_document_hasnt() {
         ids(&["s0000001", "p0000001", "q0000001", "c0000001"])
     );
     assert_eq!(with_users(&part(), &ids(&["k7f2qx3m"])), ids(&["k7f2qx3m"]));
+}
+
+#[test]
+fn net_reach_carries_what_was_reached_and_an_edit_undone_reaches_nothing() {
+    // An edit undone (the pad 12 long, then 10 again) leaves the part as it was: nothing.
+    assert_eq!(
+        net_reach(Before::Read(&part()), &ids(&[]), &part()),
+        ids(&[])
+    );
+    // The lug carried from before (its record unwritten): it and the cut that uses it.
+    assert_eq!(
+        net_reach(Before::Read(&part()), &ids(&["b0000001"]), &part()),
+        ids(&["b0000001", "c0000001"])
+    );
+    // And a change since, with what it reaches.
+    let after = edited(
+        r#""position": [0, 0, 0], "length": 40"#,
+        r#""position": [0, 0, 0], "length": 41"#,
+    );
+    assert_eq!(
+        net_reach(Before::Read(&part()), &ids(&["b0000001"]), &after),
+        ids(&["b0000001", "c0000001", "k7f2qx3m"])
+    );
+}
+
+#[test]
+fn from_text_that_didnt_read_only_features_whose_ids_it_hasnt_are_reached() {
+    // A merge's markers in the text before: every feature of the part but the cut is named
+    // in it, quoted; the cut, whose ID it hasn't, is reached (and nothing uses it).
+    let before = PART
+        .replacen("[", "[\n<<<<<<< ours", 1)
+        .replace(
+            r#",
+  {"id": "c0000001", "type": "cut", "v": 1, "name": "Notch", "base": "q0000001", "tool": "b0000001"}"#,
+            "",
+        );
+    assert!(read(before.as_bytes()).is_err());
+    assert!(!before.contains("c0000001"));
+    assert_eq!(
+        net_reach(Before::Unread(before.as_bytes()), &ids(&[]), &part()),
+        ids(&["c0000001"])
+    );
+    // An ID that only appears unquoted, inside another word, isn't one the text holds.
+    let unquoted = before.replace(r#""id": "k7f2qx3m""#, r#""id": "xk7f2qx3m""#);
+    assert_eq!(
+        net_reach(Before::Unread(unquoted.as_bytes()), &ids(&[]), &part()),
+        ids(&["c0000001", "k7f2qx3m"])
+    );
 }
