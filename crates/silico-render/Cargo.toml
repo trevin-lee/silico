@@ -9,6 +9,11 @@ publish.workspace = true
 # wgpu and re_renderer: every file in tests/ is a module of it.
 autotests = false
 
+[features]
+# The test operations (sleeping, aborting, garbage, replies out of turn), answered by the
+# test worker only. This crate's own tests turn it on (the dev-dependency on itself).
+test_ops = ["silico-worker/test_ops"]
+
 [dependencies]
 re_renderer.workspace = true
 wgpu.workspace = true
@@ -27,6 +32,20 @@ tracing.workspace = true
 silico-core.workspace = true
 libm.workspace = true
 proptest.workspace = true
+silico-render = { path = ".", features = ["test_ops"] }
+
+[[bin]]
+name = "silico-render-worker"
+path = "src/bin/silico-render-worker.rs"
+
+[[bin]]
+name = "silico-render-bench"
+path = "src/bin/silico-render-bench.rs"
+
+[[bin]]
+name = "silico-render-test-worker"
+path = "src/bin/silico-render-test-worker.rs"
+required-features = ["test_ops"]
 
 [[test]]
 name = "all_render"

@@ -9,6 +9,8 @@ mod test_programs;
 mod adversarial_render;
 #[path = "bench.rs"]
 mod bench;
+#[path = "client.rs"]
+mod client;
 #[path = "worker.rs"]
 mod worker;
 

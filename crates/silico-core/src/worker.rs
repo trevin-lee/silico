@@ -160,6 +160,8 @@ impl From<&std::fs::Metadata> for Stamp {
 pub(crate) struct Executable {
     path: PathBuf,
     kind: WorkerKind,
+    /// Its arguments, the same at every start (the render worker's adapter policy).
+    args: Vec<std::ffi::OsString>,
     identity: String,
     /// The file as it was when last found to be this build: renewed when a change that
     /// keeps the bytes (a relink, a `chmod`) is hashed and found the same, so it's hashed
@@ -170,10 +172,20 @@ pub(crate) struct Executable {
 impl Executable {
     /// The executable at `path`, of a `kind` of worker, as it is now.
     pub(crate) fn of(path: &Path, kind: WorkerKind) -> Result<Arc<Self>, Error> {
+        Self::with_args(path, kind, Vec::new())
+    }
+
+    /// [`of`](Self::of), started with `args` each time.
+    pub(crate) fn with_args(
+        path: &Path,
+        kind: WorkerKind,
+        args: Vec<std::ffi::OsString>,
+    ) -> Result<Arc<Self>, Error> {
         let (identity, stamp) = hashed(path, kind)?;
         Ok(Arc::new(Self {
             path: path.to_owned(),
             kind,
+            args,
             identity,
             stamp: Mutex::new(stamp),
         }))
@@ -218,7 +230,12 @@ impl Executable {
     pub(crate) fn spawn(self: &Arc<Self>) -> Result<Worker, Error> {
         self.check()?;
         let again = Arc::clone(self);
-        Worker::spawn_checked(&self.path, self.kind, Some(Box::new(move || again.check())))
+        Worker::spawn_checked(
+            &self.path,
+            self.kind,
+            &self.args,
+            Some(Box::new(move || again.check())),
+        )
     }
 }
 
@@ -301,7 +318,7 @@ impl Worker {
 
     /// Starts the worker executable at `exe`, of the given kind.
     pub fn spawn_as(exe: &Path, kind: WorkerKind) -> Result<Self, Error> {
-        Self::spawn_checked(exe, kind, None)
+        Self::spawn_checked(exe, kind, &[], None)
     }
 
     /// Starts the worker executable at `exe`, of the given kind, and, once it has started
@@ -313,6 +330,7 @@ impl Worker {
     pub(crate) fn spawn_checked(
         exe: &Path,
         kind: WorkerKind,
+        args: &[std::ffi::OsString],
         check: Option<StartCheck>,
     ) -> Result<Self, Error> {
         let spawning = lock(&SPAWNING);
@@ -326,6 +344,7 @@ impl Worker {
             let _ = socket.set_recv_buffer_size(SOCKET_BUFFER);
         }
         let mut command = Command::new(exe);
+        command.args(args);
         command.env_clear();
         for name in WORKER_ENV {
             if let Some(value) = std::env::var_os(name) {

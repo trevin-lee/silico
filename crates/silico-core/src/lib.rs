@@ -29,6 +29,7 @@ pub mod pool;
 pub mod profile;
 pub mod recompute;
 mod references;
+pub mod render;
 pub mod sketch;
 pub mod sweep;
 pub mod worker;
