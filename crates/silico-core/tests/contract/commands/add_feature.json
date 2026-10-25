@@ -123,7 +123,7 @@
         "type": "string"
       },
       "NewFeature": {
-        "description": "A feature as the document writes it, to add at the end of the timeline. Its id may be left out, for one the core makes that no feature holds, and its v, for the type's current version. A fingerprint is refused: a commit writes it.",
+        "description": "A feature as the document writes it, to add at the end of the timeline. Its id may be left out, for one the core makes that no feature holds, and its v, for the type's current version. A fingerprint is refused, but for null: a commit writes it. Each member the feature may leave out (its id, v, note, and fingerprint, and a pad's or revolve's base) may be given as null, which is the same as leaving it out.",
         "oneOf": [
           {
             "description": "A box from `position` (its lowest corner), `length` along x, `width` along y, and\n`height` along z.",
@@ -457,7 +457,15 @@
             "description": "`sketch`'s profile swept along the sketch's normal as `extent` says, and fused with\n`base`'s solid, if it has one (left out when it has none).",
             "properties": {
               "base": {
-                "$ref": "#/$defs/FeatureId"
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/FeatureId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Null is the same as left out."
               },
               "extent": {
                 "$ref": "#/$defs/PadExtent"
@@ -509,7 +517,15 @@
                 "$ref": "#/$defs/Axis"
               },
               "base": {
-                "$ref": "#/$defs/FeatureId"
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/FeatureId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Null is the same as left out."
               },
               "extent": {
                 "$ref": "#/$defs/TurnExtent"
@@ -561,18 +577,45 @@
           }
         ],
         "properties": {
+          "fingerprint": {
+            "description": "Only null, which is the same as leaving it out: a commit writes a feature's fingerprint.",
+            "type": "null"
+          },
           "id": {
-            "$ref": "#/$defs/FeatureId"
+            "anyOf": [
+              {
+                "$ref": "#/$defs/FeatureId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its ID: null, or left out, for one the core makes that no feature holds."
           },
           "name": {
             "$ref": "#/$defs/Name"
           },
           "note": {
-            "description": "A note about the feature, kept with it (left out when there's none).",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A note about the feature, kept with it (left out when there's none). Null is the same as left out."
           },
           "v": {
-            "$ref": "#/$defs/FeatureVersion"
+            "anyOf": [
+              {
+                "$ref": "#/$defs/FeatureVersion"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its version: null, or left out, for the type's current version."
           }
         },
         "required": [
