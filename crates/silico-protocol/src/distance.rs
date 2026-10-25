@@ -166,12 +166,34 @@ mod tests {
         assert_eq!(witness(&[far, at]), Some(far));
         assert_eq!(witness_within(&[far, at], 10.0, 1e-7), Some(at));
         assert_eq!(witness_within(&[at, far], 10.0, 1e-7), Some(at));
-        // One off by exactly the precision is within it.
+        // One a hair under the precision off (10.0000001 is 9.99999994e-8 past 10 in f64)
+        // is within it.
         let edge = [[0.0, 0.0, 0.0], [0.0, 0.0, 10.000_000_1]];
         assert_eq!(witness_within(&[edge, at], 10.0, 1e-7), Some(edge));
         // None within: the witness of them all, never nothing.
         assert_eq!(witness_within(&[far, at], 20.0, 1e-7), Some(far));
         assert_eq!(witness_within(&[], 10.0, 1e-7), None);
+    }
+
+    #[test]
+    fn the_witness_is_chosen_by_each_pairs_whole_length() {
+        // Off the axes, every coordinate of both points its own: (3, 4, 12) apart is 13;
+        // (3, 4, 12.0000005) apart is 13.00000046, past 13 by more than the precision, and
+        // sorts first.
+        let at = [[1.0, 2.0, 3.0], [4.0, 6.0, 15.0]];
+        let far = [[0.0, 2.0, 3.0], [3.0, 6.0, 15.000_000_5]];
+        assert_eq!(witness(&[far, at]), Some(far));
+        assert_eq!(witness_within(&[far, at], 13.0, 1e-7), Some(at));
+        // Exactly the precision off is within it: 1e-7 apart is 1e-7 in f64, against a
+        // distance of 0; the pair at 0 sorts after it.
+        let edge = [[0.0, 0.0, 0.0], [0.0, 0.0, 1e-7]];
+        let zero = [[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        assert_eq!(witness_within(&[edge, zero], 0.0, 1e-7), Some(edge));
+        // Shorter than the distance by more than the precision (5e-7) is outside it too.
+        let short = [[0.0, 0.0, 0.0], [0.0, 0.0, 9.999_999_5]];
+        let ten = [[1.0, 0.0, 0.0], [1.0, 0.0, 10.0]];
+        assert_eq!(witness(&[short, ten]), Some(short));
+        assert_eq!(witness_within(&[short, ten], 10.0, 1e-7), Some(ten));
     }
 
     #[test]
