@@ -431,7 +431,7 @@ fn a_meshs_floor_is_a_ten_thousandth_of_its_diagonal_and_never_under_the_toleran
     // an ulp over 1e-7, so it's the product's).
     assert_eq!(mesh_floor(5e-4), 1e-7);
     assert_eq!(mesh_floor(1e-3f64.next_down()), 1e-7);
-    assert_eq!(mesh_floor(1e-3), 1e-3 * 1e-4);
+    assert_eq!(mesh_floor(1e-3), 1e-7f64.next_up());
     assert!((mesh_floor(2e-3) - 2e-7).abs() < 1e-22);
     assert_eq!(mesh_floor(0.0), 1e-7);
 }

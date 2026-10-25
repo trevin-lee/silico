@@ -1012,7 +1012,15 @@ pub fn classify(shape: &Shape, point: [f64; 3]) -> Result<PointPlace, KernelErro
     match ffi::classify_point(shape.get()?, &point3(point))? {
         ffi::PointState::Inside => Ok(PointPlace::Inside),
         ffi::PointState::On => Ok(PointPlace::OnBoundary),
-        _ => Ok(PointPlace::Outside),
+        ffi::PointState::Outside => Ok(PointPlace::Outside),
+        // The bridge returns only the three; any other value is the bridge's bug.
+        other => Err(KernelError::new(Refusal::InvalidParameter {
+            parameter: "point".to_owned(),
+            message: format!(
+                "OCCT's classifier gave no state Silico knows ({})",
+                other.repr
+            ),
+        })),
     }
 }
 
