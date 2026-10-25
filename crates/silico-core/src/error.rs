@@ -80,6 +80,11 @@ error_codes! {
     /// No solver algorithm could meet a sketch's constraints, starting from where its
     /// geometry is drawn.
     SolveFailed = "solve_failed",
+    /// What was asked was made against another state than the session's: a commit refused
+    /// because the document's file changed outside the session, an edit made against a
+    /// revision the session isn't at, or a cursor of another revision. Rolling back, or
+    /// reading again, resolves it; it's neither the document's problem nor the kernel's.
+    Conflict = "conflict",
 }
 
 impl ErrorCode {
@@ -102,7 +107,8 @@ impl ErrorCode {
             | ErrorCode::IoFailed
             | ErrorCode::ReferenceBroken
             | ErrorCode::OverConstrained
-            | ErrorCode::SolveFailed => false,
+            | ErrorCode::SolveFailed
+            | ErrorCode::Conflict => false,
         }
     }
 }
