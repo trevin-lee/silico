@@ -14,6 +14,7 @@ mod sketch_gate;
 mod validate;
 mod write;
 
+pub(crate) use decode::optional_members;
 pub use fingerprint::{Difference, Fingerprint, MEASURE_DECIMALS, Measure};
 pub use model::{
     Axis, ChamferSize, Document, ElementName, Extent, ExtentValue, FEATURE_TYPES, Feature,
@@ -28,8 +29,8 @@ pub use sketch::{
     TangentSide,
 };
 pub(crate) use sketch::{MemberPaths, member_id};
-pub(crate) use sketch_gate::too_small;
 pub use sketch_gate::{MAX_ANGLE_DEGREES, MAX_REFERENCE_LENGTH};
+pub(crate) use sketch_gate::{an_id_of_its_own, id_held, repeats, too_small};
 pub use validate::{Checked, Invalid, PROBLEMS_LISTED, validate};
 pub(crate) use write::sketch_elements;
 

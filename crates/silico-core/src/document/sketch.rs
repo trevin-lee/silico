@@ -37,6 +37,27 @@ impl Sketch {
             .flat_map(move |kind| self.ids(kind).into_iter().map(move |id| (id, kind)))
     }
 
+    /// Whether `self` and `other` are the same sketch as its canonical text writes it: the
+    /// same plane, and each list the same members once both are in ID order, as the writer
+    /// sorts them (stably). So a sketch read from a file whose lists aren't in ID order is
+    /// the sketch its canonical text reads as, as two texts that write it are one document.
+    pub fn canonically_eq(&self, other: &Sketch) -> bool {
+        fn sorted<'a, T>(items: &'a [T], id: &impl Fn(&T) -> &ElementId) -> Vec<&'a T> {
+            let mut sorted: Vec<&T> = items.iter().collect();
+            sorted.sort_by(|x, y| id(x).cmp(id(y)));
+            sorted
+        }
+        fn same<T: PartialEq>(a: &[T], b: &[T], id: impl Fn(&T) -> &ElementId) -> bool {
+            a.len() == b.len() && sorted(a, &id) == sorted(b, &id)
+        }
+        self.plane == other.plane
+            && same(&self.points, &other.points, |p| &p.id)
+            && same(&self.lines, &other.lines, |l| &l.id)
+            && same(&self.circles, &other.circles, |c| &c.id)
+            && same(&self.arcs, &other.arcs, |a| &a.id)
+            && same(&self.constraints, &other.constraints, |c| &c.id)
+    }
+
     /// The IDs of the elements of `kind`, in the order held.
     pub fn ids(&self, kind: ElementKind) -> Vec<&ElementId> {
         match kind {
@@ -207,6 +228,17 @@ impl ElementKind {
             ElementKind::Circle => "circle",
             ElementKind::Arc => "arc",
             ElementKind::Constraint => "constraint",
+        }
+    }
+
+    /// The element with its article, as messages name one: "a point", "an arc", ...
+    pub fn a_noun(self) -> &'static str {
+        match self {
+            ElementKind::Point => "a point",
+            ElementKind::Line => "a line",
+            ElementKind::Circle => "a circle",
+            ElementKind::Arc => "an arc",
+            ElementKind::Constraint => "a constraint",
         }
     }
 

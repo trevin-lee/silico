@@ -30,8 +30,11 @@
 //! they reached (decision 28), and [`Sessions::rollback`] restores what `begin` kept, the
 //! text byte for byte and the model `begin` saw, at a new revision whose state equals the
 //! old. One at a time, never nested; a session isn't closed while one is open, and a client
-//! that goes away (the sessions dropped) leaves its file as it was: only a commit or
-//! [`Sessions::format`], which accepts drift by name (decision 31), writes the document.
+//! that goes away (the sessions dropped) leaves its file as it was. An edit made outside a
+//! transaction ([`Sessions::add_feature`], [`Sessions::set_field`],
+//! [`Sessions::remove_feature`], [`Sessions::replace_text`]) is saved as it's made, as its
+//! own transaction (decision 1): so only a commit, such an edit, or [`Sessions::format`],
+//! which accepts drift by name (decision 31), writes the document.
 //!
 //! A session's path is UTF-8, so every response names it exactly: `open` refuses one that
 //! isn't.
@@ -56,7 +59,7 @@ use std::time::Duration;
 use super::edit::{self, Candidate, FeatureIds};
 use super::{Gated, Problems};
 use crate::cache::Cache;
-use crate::document::json::{MAX_INPUT_LEN, Node};
+use crate::document::json::{MAX_INPUT_LEN, Node, Plain};
 use crate::document::{
     self, Checked, Document, Feature, FeatureId, FormatVersion, NamingScheme, Units,
 };
@@ -337,8 +340,8 @@ pub struct Added {
 pub struct FieldSet {
     pub feature: FeatureId,
     pub field: String,
-    pub before: Node,
-    pub after: Node,
+    pub before: Plain,
+    pub after: Plain,
     pub changed: bool,
     pub commit: Option<Committed>,
 }
@@ -597,7 +600,9 @@ struct Rebuilds<C: Kernel + 'static> {
     /// the transaction's documents that ends after it never takes the restored state's place.
     floor: Revision,
     /// What the rebuild of an edit's candidate came to (an edit outside a transaction,
-    /// [`Session::candidate_model`]), for its commit, which takes it: never published.
+    /// [`Session::candidate_model`]), for its commit, which takes it: never published as
+    /// it is (its save publishes it as the saved revision's, rebound to the saved
+    /// document, when it writes no sketch's solve).
     candidate: Option<(Label, Result<RunOutcome, Error>)>,
     /// The threads watching the rebuilds started: those ended joined as the next starts,
     /// the rest by `Sessions::drop`, for the sessions open then.
@@ -616,7 +621,9 @@ impl<C: Kernel + 'static> Rebuilds<C> {
 /// revision whose state equals its own gives it for good, however many rollbacks give it on
 /// before it ends. Read and given only under the rebuilds' lock. A candidate's (an edit's
 /// outside a transaction) is of the revision its save would give: its model is its
-/// commit's alone, never published.
+/// commit's, never published as it is. While it runs, the session's revision is still the
+/// one before: so `status`, once it says what's running (M4.2 PR 8), says a candidate's
+/// is the current revision's edit being committed, not a rebuild of a revision to come.
 #[derive(Clone)]
 struct Label {
     revision: Arc<AtomicU64>,
@@ -932,14 +939,28 @@ impl<C: Kernel + 'static> Session<C> {
         {
             return Ok(false);
         }
-        rebuilds.watchers.reap();
-        let run = rebuilds.engine.start(Arc::clone(checked));
-        let label = Label::new(revision);
-        rebuilds.running = Some(label.clone());
         rebuilds.failed = None;
         if let Some(kept) = &mut rebuilds.kept {
             kept.started = true;
         }
+        self.spawn_rebuild(rebuilds, checked, Label::new(revision))?;
+        Ok(true)
+    }
+
+    /// Starts a rebuild of `checked` on the session's engine, labelled `label`, with a
+    /// thread watching it ([`watch`]) that records what it comes to: the rebuild running
+    /// from here on. Takes the lock's guard, so the start and the record of it are one
+    /// step; doesn't wait for it. Refused, with no rebuild running, if the watcher can't
+    /// start.
+    fn spawn_rebuild(
+        self: &Arc<Self>,
+        rebuilds: &mut Rebuilds<C>,
+        checked: &Arc<Checked>,
+        label: Label,
+    ) -> Result<(), Problems> {
+        rebuilds.watchers.reap();
+        let run = rebuilds.engine.start(Arc::clone(checked));
+        rebuilds.running = Some(label.clone());
         let session = Arc::downgrade(self);
         match std::thread::Builder::new()
             .name(format!("session-{}-rebuild", self.id))
@@ -947,7 +968,7 @@ impl<C: Kernel + 'static> Session<C> {
         {
             Ok(watcher) => {
                 rebuilds.watchers.push(watcher);
-                Ok(true)
+                Ok(())
             }
             Err(e) => {
                 rebuilds.running = None;
@@ -1300,8 +1321,10 @@ impl<C: Kernel + 'static> Session<C> {
             begun: Some(begun.clone()),
         }
         .reach();
+        // As canonical form writes them: a document read from a file whose sketch lists
+        // aren't in ID order is the one its canonical text reads as.
         let unchanged = match (begun.gated.document(), gated.document()) {
-            (Ok(before), Ok(now)) => before == now,
+            (Ok(before), Ok(now)) => before.canonically_eq(now),
             _ => begun.text == text,
         };
         let checked = match &*gated {
@@ -1323,7 +1346,11 @@ impl<C: Kernel + 'static> Session<C> {
         };
         let model = match through {
             Through::Transaction => self.model(revision, checked)?,
-            Through::Candidate => self.candidate_model(revision, checked)?,
+            Through::Candidate => {
+                // A file changed outside the session is found before the rebuild, not after.
+                self.still_as_read()?;
+                self.candidate_model(revision, checked)?
+            }
         };
         *read = Some(ModelRead {
             revision,
@@ -1344,7 +1371,10 @@ impl<C: Kernel + 'static> Session<C> {
             });
         }
         let saved = Arc::new(formatted.text.into_bytes());
-        self.write(saved, &model, &reach, claim)?;
+        // A candidate's model is the saved revision's too, unless the save wrote a sketch's
+        // solve, which a rebuild of the saved document would solve again from.
+        let publish = through == Through::Candidate && formatted.resolved.is_empty();
+        self.write(saved, &model, &reach, publish, claim)?;
         Ok(Committed {
             written: true,
             path,
@@ -1360,9 +1390,10 @@ impl<C: Kernel + 'static> Session<C> {
 
     /// The model of an edit's candidate, `checked`, which its save would put the session at
     /// `revision` with: rebuilt for the commit of an edit made outside a transaction, and
-    /// waited for. Never published: its document holds the fingerprints stored before the
-    /// save, so it's the model neither of the state the save leaves (a check of it would
-    /// say the fingerprints written drifted) nor of any the session was at. While it runs
+    /// waited for. Never published as it is: its document holds the fingerprints stored
+    /// before the save, so it's the model neither of the state the save leaves (a check of
+    /// it would say the fingerprints written drifted) nor of any the session was at; the
+    /// save publishes it rebound to the saved document ([`write`](Self::write)). While it runs
     /// it's the session's rebuild running, labelled with `revision`, so a published read of
     /// the session's revision starts none that would supersede it. Refused if the session
     /// closes meanwhile (its rebuild stopped), or the recompute fails (a bug).
@@ -1378,27 +1409,9 @@ impl<C: Kernel + 'static> Session<C> {
             if self.closed() {
                 return Err(Problems::from(not_open(self.id)));
             }
-            rebuilds.watchers.reap();
-            let run = rebuilds.engine.start(Arc::clone(checked));
-            let label = Label::candidate(revision);
-            rebuilds.running = Some(label.clone());
             rebuilds.candidate = None;
-            let session = Arc::downgrade(self);
-            let watched = label.clone();
-            match std::thread::Builder::new()
-                .name(format!("session-{}-rebuild", self.id))
-                .spawn(move || watch(&session, &watched, run))
-            {
-                Ok(watcher) => rebuilds.watchers.push(watcher),
-                Err(e) => {
-                    rebuilds.running = None;
-                    rebuilds.engine.cancel();
-                    return Err(Problems::from(crate::pool::thread_error(
-                        "rebuild watcher",
-                        &e,
-                    )));
-                }
-            }
+            let label = Label::candidate(revision);
+            self.spawn_rebuild(&mut rebuilds, checked, label.clone())?;
             let outcome = loop {
                 if let Some((ended, _)) = &rebuilds.candidate
                     && ended.is(&label)
@@ -1521,7 +1534,7 @@ impl<C: Kernel + 'static> Session<C> {
         let changed = saved != *bytes;
         let written = write && changed;
         if written {
-            self.write(Arc::new(saved), &model, &reach, claim)?;
+            self.write(Arc::new(saved), &model, &reach, false, claim)?;
         }
         Ok(Reformatted {
             changed,
@@ -1542,12 +1555,16 @@ impl<C: Kernel + 'static> Session<C> {
     /// the session last read or wrote as the bytes it holds ([`save`](Self::save)), its new
     /// file claimed with `claim`; then the session at a new revision whose text is `saved`,
     /// carrying the features of `reach` whose records `model` couldn't write, and any
-    /// transaction ended. Refused, nothing changed, as the save is.
+    /// transaction ended. With `publish`, `model` rebound to the saved document
+    /// ([`Model::rebound`]) is published as the new revision's, in the same step: for a
+    /// save that wrote only fingerprints, whose document a rebuild would build from the
+    /// steps `model` took. Refused, nothing changed, as the save is.
     fn write(
         &self,
         saved: Arc<Vec<u8>>,
         model: &Model,
         reach: &BTreeSet<FeatureId>,
+        publish: bool,
         claim: &dyn Fn(&Path),
     ) -> Result<(), Problems> {
         let (next, path, resolved, bytes) = {
@@ -1566,16 +1583,62 @@ impl<C: Kernel + 'static> Session<C> {
             .filter(|id| !model.records(id))
             .cloned()
             .collect();
+        let gated = Arc::new(Gated::of(&saved));
         let mut held = lock(&self.held);
         held.change(
             next,
             Arc::clone(&saved),
-            Arc::new(Gated::of(&saved)),
+            Arc::clone(&gated),
             Arc::new(carried),
         );
         held.bytes = saved;
-        end_transaction(&mut held, &mut lock(&self.rebuilds));
+        // Under the held state's lock, so no published read of the new revision starts its
+        // rebuild before its model is there.
+        let mut rebuilds = lock(&self.rebuilds);
+        end_transaction(&mut held, &mut rebuilds);
+        if publish
+            && let Gated::Checked(checked) = &*gated
+            && next >= rebuilds.floor
+            && rebuilds
+                .published
+                .as_ref()
+                .is_none_or(|newest| newest.revision <= next)
+        {
+            rebuilds.published = Some(Published {
+                revision: next,
+                model: Arc::new(model.rebound(Arc::clone(checked))),
+            });
+        }
         Ok(())
+    }
+
+    /// Refused as a save would refuse it, saying the same, if the session's file no longer
+    /// holds what the session last read or wrote (or this session's own save left it part
+    /// written): so a commit of an edit made outside a transaction finds a file changed
+    /// outside the session before it rebuilds for it. A file that can't be read is left
+    /// for the save to say why.
+    fn still_as_read(&self) -> Result<(), Problems> {
+        let (path, resolved, bytes) = {
+            let held = lock(&self.held);
+            if let Some(old) = &held.part_written {
+                return Err(Problems::from(part_written(&held.path, old)));
+            }
+            (
+                held.path.clone(),
+                held.resolved.clone(),
+                Arc::clone(&held.bytes),
+            )
+        };
+        match file::read(&resolved) {
+            Ok(now) if now != *bytes => Err(self.unsaved(
+                &path,
+                file::Unsaved::from(Error::new(
+                    ErrorCode::Conflict,
+                    "it changed since the session read it",
+                )),
+            )),
+            _ => Ok(()),
+        }
     }
 
     /// `text` saved over the document's file at `resolved` (`path` as `open` was given it),
@@ -1746,15 +1809,17 @@ fn stale(made: Revision, at: Revision) -> Error {
     ))
 }
 
-/// The refusal of a session's document replaced outside a transaction when its text isn't
-/// UTF-8 (`valid_up_to` its valid bytes): the text it replaced couldn't be given back.
-fn not_given_back(valid_up_to: usize) -> Error {
+/// The refusal of session `id`'s document replaced outside a transaction when its text
+/// isn't UTF-8 (`valid_up_to` its valid bytes): `replace_text` gives back the text it
+/// replaces, and couldn't give back this one.
+fn not_given_back(id: SessionId, valid_up_to: usize) -> Error {
     Error::new(
         ErrorCode::InvalidInput,
         format!(
-            "the document's text isn't UTF-8 (at byte {valid_up_to}), so the text replace_text replaces couldn't be given back"
+            "session {id}'s text isn't UTF-8 (at byte {valid_up_to}), so replace_text couldn't give it back"
         ),
     )
+    .with_parameter("session")
     .with_suggestion(
         "replace it inside a transaction (begin, replace_text, commit), where no text is given back",
     )
@@ -2517,7 +2582,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     } else {
                         Some(
                             std::str::from_utf8(base.text)
-                                .map_err(|e| not_given_back(e.valid_up_to()))?
+                                .map_err(|e| not_given_back(base.id, e.valid_up_to()))?
                                 .to_owned(),
                         )
                     };

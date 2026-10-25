@@ -1,10 +1,14 @@
 //! Edits of a session's document (docs/design/m4.1-command-api.md, section 5): a feature
-//! added, a field set, a feature removed, the whole text replaced. Each is made on the
-//! document's JSON tree (`document::json::Node`) and read back by the one reader every file
-//! is read by, then put through the gate, so a value is read exactly as the document reader
-//! reads it and a bad edit is refused whole, with every error the gate finds. What's
-//! accepted becomes the document's canonical text, read again, so the document a session
-//! holds is always the one its text reads as (its sketches' lists in the text's order).
+//! added, a field set, a feature removed, the whole text replaced. A feature added and a
+//! field set are made on a feature's JSON tree (`document::json::Node`): the request's
+//! feature, or the feature's canonical tree with the request's value put where its field
+//! is, read back by the one reader every file is read by, with no place in a text (so its
+//! errors name fields by their paths alone). A feature is removed from the document as it
+//! is; a text replaced is read as a file is. Each edited document is then written in
+//! canonical form, and that text put through the reader and the gate, once: a bad edit is
+//! refused whole, with every error the gate finds, places counted as that text has them.
+//! What's accepted is that text and the document it reads as, so the document a session
+//! holds after an edit is always its canonical text's (its sketches' lists in ID order).
 //!
 //! Paths to a field follow decision 15 (the design's section 2): a sketch's members by ID
 //! only, a place refused with the member's ID path as its candidate; any other array by
@@ -12,15 +16,13 @@
 //! session decides, with the revision and the transaction, what an edit's candidate
 //! becomes.
 
-use std::collections::BTreeMap;
-use std::io::Read as _;
 use std::sync::Arc;
 
 use super::{Gated, Problems};
-use crate::document::json::{Member, Node, Value};
+use crate::document::json::{self, Member, Node, Plain, Value};
 use crate::document::{
-    self, Checked, Document, ElementId, ElementKind, Feature, FeatureId, FeatureVersion,
-    ID_ALPHABET, ID_LENGTH, NamingScheme, Operation, PROBLEMS_LISTED, Sketch,
+    self, Document, ElementId, ElementKind, Feature, FeatureId, FeatureVersion, ID_ALPHABET,
+    ID_LENGTH, NamingScheme, Operation, PROBLEMS_LISTED, Sketch,
 };
 use crate::{Error, ErrorCode};
 
@@ -31,13 +33,12 @@ pub(super) struct Candidate {
     pub(super) gated: Arc<Gated>,
 }
 
-/// `document`, edited, through the gate, then written in canonical form and read again,
-/// so the document held is the text's; or every error the gate found. `field` is the
-/// request's field that holds the edit, which a document too long to write names.
-fn candidate(document: Document, field: &str) -> Result<Candidate, Problems> {
-    let checked = Checked::try_new(document).map_err(|(_, invalid)| Problems::from(invalid))?;
-    let text = document::write(checked.document()).map_err(|e| e.with_parameter(field))?;
-    // The same document, its lists in the canonical text's order: what the gate took.
+/// `document`, edited, written in canonical form, and that text through the reader and the
+/// gate, once: so the document held is the text's, and the gate's errors count places as
+/// the text has them; or every error the gate found. `field` is the request's field that
+/// holds the edit, which a document too long to write names.
+fn candidate(document: &Document, field: &str) -> Result<Candidate, Problems> {
+    let text = document::write(document).map_err(|e| e.with_parameter(field))?;
     let gated = Gated::of(text.as_bytes());
     if !matches!(gated, Gated::Checked(_)) {
         return Err(gated.problems());
@@ -76,8 +77,8 @@ fn feature_tree(feature: &Feature) -> Result<(String, Node), Error> {
 /// What `set_field` found: the field's value before the edit and after it, each as the
 /// document's canonical form writes it (`null` for a field the feature hasn't).
 pub(super) struct FieldValues {
-    pub(super) before: Node,
-    pub(super) after: Node,
+    pub(super) before: Plain,
+    pub(super) after: Plain,
 }
 
 /// `field` of the feature `id` of `document` set to `value` (the design's `set_field`):
@@ -89,40 +90,46 @@ pub(super) fn set_field(
     document: &Document,
     id: &FeatureId,
     field: &str,
-    value: Node,
+    mut value: Node,
 ) -> Result<(FieldValues, Option<Candidate>), Problems> {
     let (index, feature) = place_of(document, id)?;
     let (text, tree) = feature_tree(feature)?;
-    let steps = resolve(feature, &tree, field)?;
-    let before = found(&tree, &steps);
-    let after_field = renamed(field, &steps, &value);
+    let target = resolve(feature, &tree, field)?;
+    let before = found(&tree, &target.steps);
+    let after_field = renamed(field, &target, &value);
     let mut edited = tree;
-    put(&mut edited, &steps, value);
-    let changed = document::read_feature(index, edited)?;
-    if let Operation::Sketch(sketch) = &changed.operation {
-        repeated_ids(sketch, &steps, field, id)?;
+    json::unplace(&mut edited);
+    json::unplace(&mut value);
+    put(feature, &mut edited, &target.steps, value);
+    let set = document::read_feature(index, edited)?;
+    if let (Operation::Sketch(sketch), Some(sketched)) = (&set.operation, target.sketched) {
+        repeated_ids(sketch, sketched, field, id)?;
     }
-    let (changed_text, changed_tree) = feature_tree(&changed)?;
-    let after = resolve(&changed, &changed_tree, &after_field)
-        .map(|steps| found(&changed_tree, &steps))
-        .unwrap_or_else(|_| null());
+    let (set_text, set_tree) = feature_tree(&set)?;
+    // Found again by the path that names it now: a field removed (a note, a base) is
+    // there to give, as `null`, so any other miss is Silico's.
+    let after = resolve(&set, &set_tree, &after_field)
+        .map(|target| found(&set_tree, &target.steps))
+        .map_err(|e| {
+            Error::new(
+                ErrorCode::Internal,
+                format!(
+                    "the field set, {}, isn't in the feature it was set in: {}",
+                    shown_field(&after_field),
+                    e.message()
+                ),
+            )
+            .with_suggestion(crate::worker::SILICO_BUG)
+        })?;
     let values = FieldValues { before, after };
-    if changed_text == text {
+    if set_text == text {
         return Ok((values, None));
     }
     let mut edited = document.clone();
     if let Some(slot) = edited.features.get_mut(index) {
-        *slot = changed;
+        *slot = set;
     }
-    Ok((values, Some(candidate(edited, "value")?)))
-}
-
-/// A `null`, as a field the feature hasn't is given.
-fn null() -> Node {
-    Node {
-        at: document::json::At { line: 1, column: 1 },
-        value: Value::Null,
-    }
+    Ok((values, Some(candidate(&edited, "value")?)))
 }
 
 /// One step of a path into a feature's tree: an object's member by its place among the
@@ -134,11 +141,41 @@ enum Step {
     Absent(&'static str),
 }
 
-/// The fields of a feature no edit sets: what it is (a feature of another type is a new
-/// feature), its version (changed by an explicit upgrade, later), and its fingerprint (a
-/// commit's to write).
-fn unsettable(field: &str, feature: &Feature) -> Option<Error> {
-    let (message, suggestion) = match field {
+/// Where a field's path leads in a feature's tree ([`resolve`]): the steps there, and, if
+/// it names one of a sketch's lists whole, a member whole, or a member's `id`, which: the
+/// fields an edit can give an ID another member holds, and whose path names what it set
+/// by the member's new ID afterwards.
+struct Target {
+    steps: Vec<Step>,
+    sketched: Option<Sketched>,
+}
+
+/// What part of a sketch a path names, of the parts that hold IDs: one of its lists
+/// whole, a member whole, or a member's `id`, each member at its place in the tree's list.
+#[derive(Clone, Copy)]
+enum Sketched {
+    List(ElementKind),
+    Member(ElementKind, usize),
+    MemberId(ElementKind, usize),
+}
+
+impl Sketched {
+    /// Whether the member at `index` of `kind`'s list is in the part named.
+    fn holds(self, kind: ElementKind, index: usize) -> bool {
+        match self {
+            Sketched::List(list) => list == kind,
+            Sketched::Member(list, at) | Sketched::MemberId(list, at) => {
+                list == kind && at == index
+            }
+        }
+    }
+}
+
+/// Why `field`, a feature's own field, can't be set, and what to do instead: what it is
+/// (a feature of another type is a new feature), its version (changed by an explicit
+/// upgrade, later), and its fingerprint (a commit's to write). None for any other field.
+fn unsettable(field: &str) -> Option<(&'static str, &'static str)> {
+    Some(match field {
         "id" => (
             "a feature's id can't be set",
             "add a feature with the ID you want, and remove this one",
@@ -156,31 +193,26 @@ fn unsettable(field: &str, feature: &Feature) -> Option<Error> {
             "leave fingerprint to the commit; format accepts a fingerprint's drift by name",
         ),
         _ => return None,
-    };
-    Some(
-        Error::new(ErrorCode::InvalidInput, message)
-            .with_feature(feature.id.as_str())
-            .with_parameter("field")
-            .with_suggestion(suggestion),
-    )
+    })
 }
 
-/// The members a feature may leave out that an edit may give it: its note, and a pad's or
-/// revolve's base when it has none.
-fn may_add(feature: &Feature, key: &str) -> Option<&'static str> {
-    match (key, &feature.operation) {
-        ("note", _) => Some("note"),
-        ("base", Operation::Pad { base: None, .. } | Operation::Revolve { base: None, .. }) => {
-            Some("base")
-        }
-        _ => None,
-    }
+/// The member `key` of `feature`, if it's one the feature may leave out
+/// ([`document::optional_members`]): one an edit may give it, and take away with `null`.
+fn optional(feature: &Feature, key: &str) -> Option<&'static str> {
+    document::optional_members(feature.operation.type_name())
+        .iter()
+        .find(|optional| **optional == key)
+        .copied()
 }
 
-/// The sketch list `key` is, if `feature` is a sketch and `key` one of its lists of members.
-fn member_list(feature: &Feature, key: &str) -> Option<ElementKind> {
-    match feature.operation {
-        Operation::Sketch(_) => ElementKind::ALL.into_iter().find(|kind| kind.list() == key),
+/// The sketch, and the kind of its members the list `key` holds, if `feature` is a sketch
+/// and `key` one of its lists of members.
+fn member_list<'a>(feature: &'a Feature, key: &str) -> Option<(&'a Sketch, ElementKind)> {
+    match &feature.operation {
+        Operation::Sketch(sketch) => ElementKind::ALL
+            .into_iter()
+            .find(|kind| kind.list() == key)
+            .map(|kind| (sketch, kind)),
         _ => None,
     }
 }
@@ -194,15 +226,22 @@ fn place(segment: &str) -> Option<usize> {
     segment.parse().ok()
 }
 
-/// The steps `field` takes into `tree`, `feature`'s canonical tree; or the refusal of a
-/// field it can't set or hasn't, or of a sketch's member named by its place.
-fn resolve(feature: &Feature, tree: &Node, field: &str) -> Result<Vec<Step>, Error> {
-    let segments: Vec<&str> = field.split('.').collect();
-    let first = segments.first().copied().unwrap_or_default();
-    if let Some(refused) = unsettable(first, feature) {
-        return Err(refused);
+/// Where `field` leads in `tree`, `feature`'s canonical tree; or the refusal of a field
+/// it can't set or hasn't, or of a sketch's member named by its place. A path of more
+/// segments than a tree nests deep is refused before it's split.
+fn resolve(feature: &Feature, tree: &Node, field: &str) -> Result<Target, Error> {
+    let first = field.split('.').next().unwrap_or_default();
+    if let Some((message, suggestion)) = unsettable(first) {
+        return Err(Error::new(ErrorCode::InvalidInput, message)
+            .with_feature(feature.id.as_str())
+            .with_parameter("field")
+            .with_suggestion(suggestion));
     }
     let missing = || no_field(feature, tree, field);
+    if field.split('.').nth(json::MAX_DEPTH).is_some() {
+        return Err(missing());
+    }
+    let segments: Vec<&str> = field.split('.').collect();
     let Value::Object(members) = &tree.value else {
         return Err(missing());
     };
@@ -213,13 +252,20 @@ fn resolve(feature: &Feature, tree: &Node, field: &str) -> Result<Vec<Step>, Err
             members.get(i).map(|m| &m.value).ok_or_else(missing)?
         }
         None => {
-            return match may_add(feature, first) {
-                Some(key) if segments.len() == 1 => Ok(vec![Step::Absent(key)]),
+            return match optional(feature, first) {
+                Some(key) if segments.len() == 1 => Ok(Target {
+                    steps: vec![Step::Absent(key)],
+                    sketched: None,
+                }),
                 _ => Err(missing()),
             };
         }
     };
     let list = member_list(feature, first);
+    let mut sketched = match (list, segments.len()) {
+        (Some((_, kind)), 1) => Some(Sketched::List(kind)),
+        _ => None,
+    };
     for (depth, segment) in segments.iter().enumerate().skip(1) {
         match &node.value {
             Value::Object(members) => {
@@ -232,7 +278,15 @@ fn resolve(feature: &Feature, tree: &Node, field: &str) -> Result<Vec<Step>, Err
             }
             Value::Array(items) => {
                 let i = match list.filter(|_| depth == 1) {
-                    Some(kind) => member(feature, kind, items, &segments)?,
+                    Some((sketch, kind)) => {
+                        let i = member(feature, sketch, kind, items, &segments, field)?;
+                        sketched = match segments.get(2..) {
+                            Some([]) => Some(Sketched::Member(kind, i)),
+                            Some(["id"]) => Some(Sketched::MemberId(kind, i)),
+                            _ => None,
+                        };
+                        i
+                    }
                     None => place(segment)
                         .filter(|&i| i < items.len())
                         .ok_or_else(missing)?,
@@ -243,31 +297,32 @@ fn resolve(feature: &Feature, tree: &Node, field: &str) -> Result<Vec<Step>, Err
             _ => return Err(missing()),
         }
     }
-    Ok(steps)
+    Ok(Target { steps, sketched })
 }
 
-/// The place in `items`, the tree's list of `kind`'s members of the sketch `feature`, of
-/// the member `segments[1]` names by ID. A place there is refused, with the member's ID
-/// path as the candidate when the list has a member at that place, counted in the list as
-/// the session's text has it (which the held sketch's lists are in); an ID no member holds
-/// is refused, with its path in the list that holds it, if another does.
+/// The place in `items`, the tree's list of `kind`'s members of `sketch` (the sketch
+/// `feature`), of the member `segments[1]` of `field` names by ID. A place there is
+/// refused, with the member's ID path as the candidate when the list has a member at that
+/// place, counted in the list as the session's text has it (which the held sketch's lists
+/// are in); an ID no member holds is refused, with its path in the list that holds it, if
+/// another does. A candidate's path goes on with the rest of `field` only if that's plain
+/// ([`plain`]); otherwise it's the member's alone.
 fn member(
     feature: &Feature,
+    sketch: &Sketch,
     kind: ElementKind,
     items: &[Node],
     segments: &[&str],
+    field: &str,
 ) -> Result<usize, Error> {
     let segment = segments.get(1).copied().unwrap_or_default();
+    let rest = segments.get(2..).unwrap_or_default();
     let path = |list: &str, id: &str| {
         let mut path = vec![list, id];
-        path.extend(segments.iter().skip(2));
+        if rest.iter().all(|segment| plain(segment)) {
+            path.extend(rest);
+        }
         path.join(".")
-    };
-    let Operation::Sketch(sketch) = &feature.operation else {
-        return Err(Error::new(
-            ErrorCode::Internal,
-            "a sketch's list outside a sketch",
-        ));
     };
     let refuse = |message: String, suggestion: String| {
         Error::new(ErrorCode::InvalidInput, message)
@@ -280,9 +335,9 @@ fn member(
     {
         let error = refuse(
             format!(
-                "{} names a {} by its place: a request names a sketch's members by ID",
-                segments.join("."),
-                kind.noun()
+                "{} names {} by its place: a request names a sketch's members by ID",
+                shown_field(field),
+                kind.a_noun()
             ),
             format!(
                 "name the {} by its ID, as the sketch's text gives it",
@@ -305,9 +360,9 @@ fn member(
             "sketch {} has no {} {}",
             feature.id,
             kind.noun(),
-            document::json::shown(segment)
+            json::shown(segment)
         ),
-        format!("name a {} of this sketch by its ID", kind.noun()),
+        format!("name {} of this sketch by its ID", kind.a_noun()),
     );
     let elsewhere = ElementKind::ALL
         .into_iter()
@@ -331,37 +386,52 @@ fn no_field(feature: &Feature, tree: &Node, field: &str) -> Error {
     .with_candidates(fields(feature, tree))
 }
 
-/// A path as a message gives it: as written if it's plain (letters, digits, `_`, and `.`),
-/// quoted as messages show text otherwise.
+/// The longest path a message repeats as written: two names' worth, past any path a
+/// feature has (a sketch member's `constraints.k0000002.value` is 26).
+const SHOWN_PATH_CHARS: usize = 2 * json::SHOWN_CHARS;
+
+/// Whether `segment`, one name of a path, is written plainly: letters, digits, and `_`, at
+/// most [`json::SHOWN_CHARS`] of them.
+fn plain(segment: &str) -> bool {
+    segment.len() <= json::SHOWN_CHARS
+        && segment
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+/// A path as a message gives it: as written if it's plain (letters, digits, `_`, and `.`,
+/// at most [`SHOWN_PATH_CHARS`]), quoted as messages show text otherwise.
 fn shown_field(field: &str) -> String {
     let plain = !field.is_empty()
-        && field.len() <= 2 * document::json::SHOWN_CHARS
+        && field.len() <= SHOWN_PATH_CHARS
         && field
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.');
     if plain {
         field.to_owned()
     } else {
-        document::json::shown(field)
+        json::shown(field)
     }
 }
 
 /// Every field of `feature` an edit can set, in the order the design lists them: its name
-/// and note, then its operation's fields in schema order, each object's members after it;
-/// a list's members aren't listed (a sketch's by ID would be thousands).
+/// and note, a member it may have and hasn't (a pad's base), then its operation's fields
+/// in schema order, each object's members after it; a list's members aren't listed (a
+/// sketch's by ID would be thousands).
 fn fields(feature: &Feature, tree: &Node) -> Vec<String> {
+    let members = match &tree.value {
+        Value::Object(members) => members.as_slice(),
+        _ => &[],
+    };
     let mut fields = vec!["name".to_owned(), "note".to_owned()];
-    if may_add(feature, "base").is_some() {
-        fields.push("base".to_owned());
+    for key in document::optional_members(feature.operation.type_name()) {
+        if !fields.iter().any(|f| f.as_str() == *key) && !members.iter().any(|m| m.key == *key) {
+            fields.push((*key).to_owned());
+        }
     }
-    if let Value::Object(members) = &tree.value {
-        for member in members {
-            if !matches!(
-                member.key.as_str(),
-                "id" | "type" | "v" | "name" | "note" | "fingerprint"
-            ) {
-                listed(&member.key, &member.value, &mut fields);
-            }
+    for member in members {
+        if unsettable(&member.key).is_none() && !fields.contains(&member.key) {
+            listed(&member.key, &member.value, &mut fields);
         }
     }
     fields
@@ -377,8 +447,8 @@ fn listed(path: &str, node: &Node, fields: &mut Vec<String>) {
     }
 }
 
-/// The node `steps` reach in `tree`, as it is; `null` for a member the feature hasn't.
-fn found(tree: &Node, steps: &[Step]) -> Node {
+/// What `steps` reach in `tree`, as it is; `null` for a member the feature hasn't.
+fn found(tree: &Node, steps: &[Step]) -> Plain {
     let mut node = tree;
     for step in steps {
         let next = match (step, &node.value) {
@@ -388,16 +458,18 @@ fn found(tree: &Node, steps: &[Step]) -> Node {
         };
         match next {
             Some(next) => node = next,
-            None => return null(),
+            None => return Plain::Null,
         }
     }
-    node.clone()
+    Plain::of(node)
 }
 
-/// `value` put where `steps` reach in `tree`: in place of what's there, or as a member
-/// added; a note set to `null` removed (the design's section 5).
-fn put(tree: &mut Node, steps: &[Step], value: Node) {
-    let removes_note = |key: &str, value: &Node| key == "note" && value.value == Value::Null;
+/// `value` put where `steps` reach in `tree`, the tree of `feature`: in place of what's
+/// there, or as a member added; a member the feature may leave out (its note, a pad's
+/// base) set to `null` removed (the design's section 5).
+fn put(feature: &Feature, tree: &mut Node, steps: &[Step], value: Node) {
+    let removes =
+        |key: &str, value: &Node| value.value == Value::Null && optional(feature, key).is_some();
     let Some((last, path)) = steps.split_last() else {
         return;
     };
@@ -415,20 +487,18 @@ fn put(tree: &mut Node, steps: &[Step], value: Node) {
     }
     match (last, &mut node.value) {
         (Step::Absent(key), Value::Object(members)) => {
-            if !removes_note(key, &value) {
+            if !removes(key, &value) {
                 members.push(Member {
                     key: (*key).to_owned(),
-                    at: value.at,
+                    at: json::At::UNPLACED,
                     value,
                 });
             }
         }
         (Step::Member(i), Value::Object(members)) => {
-            let note = path.is_empty()
-                && members
-                    .get(*i)
-                    .is_some_and(|m| removes_note(&m.key, &value));
-            if note {
+            let removed =
+                path.is_empty() && members.get(*i).is_some_and(|m| removes(&m.key, &value));
+            if removed {
                 members.remove(*i);
             } else if let Some(member) = members.get_mut(*i) {
                 member.value = value;
@@ -443,117 +513,70 @@ fn put(tree: &mut Node, steps: &[Step], value: Node) {
     }
 }
 
-/// `field` as the edited feature names what it set: a sketch's member whose ID the edit
-/// changed (a whole member set, or its `id`) is found by its new ID.
-fn renamed(field: &str, steps: &[Step], value: &Node) -> String {
-    let segments: Vec<&str> = field.split('.').collect();
-    let new_id = match (steps, segments.as_slice()) {
-        ([Step::Member(_), Step::Item(_)], [_, _]) => document::member_id(value),
-        ([Step::Member(_), Step::Item(_), Step::Member(_)], [_, _, "id"]) => {
-            value.value.as_str().and_then(ElementId::new)
+/// `field` as the edited feature names what it set (`target`, set to `value`): a sketch's
+/// member whose ID the edit changed (a whole member set, or its `id`) is found by its new
+/// ID.
+fn renamed(field: &str, target: &Target, value: &Node) -> String {
+    let renamed = match target.sketched {
+        Some(Sketched::Member(kind, _)) => {
+            document::member_id(value).map(|id| format!("{}.{id}", kind.list()))
         }
-        _ => None,
+        Some(Sketched::MemberId(kind, _)) => value
+            .value
+            .as_str()
+            .and_then(ElementId::new)
+            .map(|id| format!("{}.{id}.id", kind.list())),
+        Some(Sketched::List(_)) | None => None,
     };
-    match (new_id, segments.as_slice()) {
-        (Some(id), [list, _, rest @ ..]) => {
-            let mut path = vec![*list, id.as_str()];
-            path.extend(rest);
-            path.join(".")
-        }
-        _ => field.to_owned(),
-    }
-}
-
-/// What part of a sketch an edit set: one of its lists whole, or one member of a list (at
-/// its place in the edited list).
-#[derive(Clone, Copy)]
-enum Region {
-    List(ElementKind),
-    Member(ElementKind, usize),
-}
-
-impl Region {
-    /// The region `steps` set, if they set one that can change an ID: a list, a member, or
-    /// a member's `id`.
-    fn of(steps: &[Step], field: &str) -> Option<Region> {
-        let segments: Vec<&str> = field.split('.').collect();
-        let kind = ElementKind::ALL
-            .into_iter()
-            .find(|kind| segments.first() == Some(&kind.list()))?;
-        match (steps, segments.as_slice()) {
-            ([Step::Member(_)], [_]) => Some(Region::List(kind)),
-            ([Step::Member(_), Step::Item(i)], [_, _])
-            | ([Step::Member(_), Step::Item(i), Step::Member(_)], [_, _, "id"]) => {
-                Some(Region::Member(kind, *i))
-            }
-            _ => None,
-        }
-    }
-
-    fn holds(self, kind: ElementKind, index: usize) -> bool {
-        match self {
-            Region::List(list) => list == kind,
-            Region::Member(list, at) => list == kind && at == index,
-        }
-    }
+    renamed.unwrap_or_else(|| field.to_owned())
 }
 
 /// The refusal of an edit that gives an ID to two members of `sketch` (the edited sketch of
-/// feature `feature`), each repeated ID refused at the request's `field`, the member that
-/// already holds it in `elements` and the message (the design's section 2): never at the
-/// untouched member the gate would name by its place. The sketch before the edit held each
-/// ID once, so a repeat is the edit's.
+/// feature `feature`), the part of it `sketched` the request's `field` set: each repeated
+/// ID ([`document::repeats`]) refused at `field`, the member that already holds it in
+/// `elements` and the message (the design's section 2), never at the untouched member the
+/// gate would name by its place. The sketch before the edit held each ID once, so a
+/// repeat is the edit's; one it didn't touch is left to the gate.
 fn repeated_ids(
     sketch: &Sketch,
-    steps: &[Step],
+    sketched: Sketched,
     field: &str,
     feature: &FeatureId,
 ) -> Result<(), Problems> {
-    let Some(region) = Region::of(steps, field) else {
-        return Ok(());
-    };
-    let mut holders: BTreeMap<&ElementId, Vec<(ElementKind, usize)>> = BTreeMap::new();
-    let mut order = Vec::new();
-    for kind in ElementKind::ALL {
-        for (index, id) in sketch.ids(kind).into_iter().enumerate() {
-            let held = holders.entry(id).or_default();
-            if held.len() == 1 {
-                order.push(id);
-            }
-            held.push((kind, index));
-        }
-    }
     let mut errors = Vec::new();
     let mut unlisted = 0u64;
-    for id in order {
+    for repeat in document::repeats(sketch) {
+        let id = repeat.id;
+        let Some(&(kind, _)) = repeat
+            .holders
+            .iter()
+            .find(|(kind, index)| sketched.holds(*kind, *index))
+        else {
+            continue;
+        };
         if errors.len() >= PROBLEMS_LISTED {
             unlisted += 1;
             continue;
         }
-        let held = holders.get(id).map(Vec::as_slice).unwrap_or_default();
-        let outside = held
+        let outside = repeat
+            .holders
             .iter()
-            .find(|(kind, index)| !region.holds(*kind, *index));
-        let edited = held
-            .iter()
-            .find(|(kind, index)| region.holds(*kind, *index))
-            .map(|(kind, _)| *kind);
-        let noun = edited.map(ElementKind::noun).unwrap_or("member");
+            .find(|(kind, index)| !sketched.holds(*kind, *index));
         let error = match outside {
-            Some((holder, _)) => Error::new(
+            Some(&(holder, _)) => Error::new(
                 ErrorCode::InvalidInput,
-                format!(
-                    "id {id} is already the ID of {} {id} ({}.{id})",
-                    holder.noun(),
-                    holder.list()
-                ),
+                document::id_held(id, holder, &format!("{}.{id}", holder.list())),
             )
-            .with_suggestion(format!("give this {noun} an ID of its own")),
+            .with_suggestion(document::an_id_of_its_own(kind)),
             None => Error::new(
                 ErrorCode::InvalidInput,
-                format!("id {id} is given to more than one {noun} of {field}"),
+                format!(
+                    "id {id} is given to more than one {} of {}",
+                    kind.noun(),
+                    shown_field(field)
+                ),
             )
-            .with_suggestion(format!("give each {noun} an ID of its own")),
+            .with_suggestion(format!("give each {} an ID of its own", kind.noun())),
         };
         errors.push(
             error
@@ -571,21 +594,22 @@ fn repeated_ids(
 
 /// `feature`, a feature as the document writes it, added to the end of `document`'s
 /// timeline (the design's `add_feature`): with the ID `new_id` makes if it gives none, and
-/// the feature type's current version if it gives no `v`; the feature as the document then
-/// holds it, and the state it leads to. Refused for a feature that isn't an object or gives
-/// a fingerprint (a commit writes it), and with every error the reader or the gate finds
-/// in the document with it added.
+/// the feature type's current version if it gives no `v` (each `null` given as none: the
+/// design's section 2); the feature as the document then holds it, and the state it leads
+/// to. Refused for a feature that isn't an object, gives a fingerprint (a commit writes
+/// it), or gives an ID that isn't one, or that the document holds (each naming
+/// `feature.id`); and with every error the reader or the gate finds in the document with
+/// it added.
 pub(super) fn add_feature(
     document: &Document,
     feature: Node,
     new_id: impl FnOnce(&Document) -> Result<FeatureId, Error>,
 ) -> Result<(Feature, Candidate), Problems> {
-    let Node { at, value } = feature;
-    let Value::Object(mut members) = value else {
+    let Value::Object(mut members) = feature.value else {
         return Err(Problems::from(
             Error::new(
                 ErrorCode::InvalidInput,
-                format!("feature is {}, not an object", value.kind()),
+                format!("feature is {}, not an object", feature.value.kind()),
             )
             .with_parameter("feature")
             .with_suggestion("give the feature as the document writes it: an object"),
@@ -601,41 +625,72 @@ pub(super) fn add_feature(
             .with_suggestion("leave fingerprint out"),
         ));
     }
-    if !members.iter().any(|m| m.key == "id") {
-        let id = new_id(document)?;
-        members.insert(
-            0,
-            Member {
-                key: "id".to_owned(),
-                at,
-                value: Node {
-                    at,
-                    value: Value::String(id.to_string()),
+    members.retain(|m| !(matches!(m.key.as_str(), "id" | "v") && m.value.value == Value::Null));
+    let unplaced = |value: Value| Node {
+        at: json::At::UNPLACED,
+        value,
+    };
+    match members.iter().find(|m| m.key == "id") {
+        None => {
+            let id = new_id(document)?;
+            members.insert(
+                0,
+                Member {
+                    key: "id".to_owned(),
+                    at: json::At::UNPLACED,
+                    value: unplaced(Value::String(id.to_string())),
                 },
-            },
-        );
+            );
+        }
+        Some(given) => {
+            if let Some(holder) = given
+                .value
+                .value
+                .as_str()
+                .and_then(FeatureId::new)
+                .and_then(|id| document.features.iter().find(|f| f.id == id))
+            {
+                return Err(Problems::from(
+                    Error::new(
+                        ErrorCode::InvalidInput,
+                        format!(
+                            "id {} is already the ID of feature {} ({})",
+                            holder.id,
+                            holder.id,
+                            json::shown(holder.name.as_str())
+                        ),
+                    )
+                    .with_parameter("feature.id")
+                    .with_element(holder.id.as_str())
+                    .with_suggestion(
+                        "give the feature an ID the document doesn't hold, or leave id out for a new one",
+                    ),
+                ));
+            }
+        }
     }
     if !members.iter().any(|m| m.key == "v") {
         members.push(Member {
             key: "v".to_owned(),
-            at,
-            value: Node {
-                at,
-                value: Value::Number(FeatureVersion::NUMBER.to_string()),
-            },
+            at: json::At::UNPLACED,
+            value: unplaced(Value::Number(FeatureVersion::NUMBER.to_string())),
         });
     }
     let index = document.features.len();
-    let added = document::read_feature(
-        index,
-        Node {
-            at,
-            value: Value::Object(members),
-        },
-    )?;
+    let mut node = unplaced(Value::Object(members));
+    json::unplace(&mut node);
+    let place = format!("features[{index}]");
+    let added = document::read_feature(index, node).map_err(|e| {
+        // The request's own field: an ID that isn't one is the request's `feature.id`.
+        if e.parameter() == Some("id") && e.feature() == Some(place.as_str()) {
+            e.with_parameter("feature.id")
+        } else {
+            e
+        }
+    })?;
     let mut edited = document.clone();
     edited.features.push(added);
-    let candidate = candidate(edited, "feature")?;
+    let candidate = candidate(&edited, "feature")?;
     // As the document now holds it: the text read again.
     let held = candidate
         .gated
@@ -667,15 +722,16 @@ pub(super) fn remove_feature(
     let removed = removed.clone();
     let mut edited = document.clone();
     edited.features.retain(|feature| feature.id != *id);
-    Ok((removed, index, candidate(edited, "feature")?))
+    Ok((removed, index, candidate(&edited, "feature")?))
 }
 
 /// The document's text replaced by `text` (the design's `replace_text`), put through the
 /// reader and the gate as `silico check` puts a file through them: the new document's
 /// number of features, and the state it leads to, none if it's the document `before` holds
-/// already. Refused with what the reader or the gate says of the text (the reader's own
-/// refusals naming `text`), and if its header has no `naming`: the reader takes a document
-/// without it as one saved before M4.0, and text written now isn't one.
+/// already, as canonical form writes them ([`Document::canonically_eq`]). Refused with
+/// what the reader or the gate says of the text (the reader's own refusals naming `text`),
+/// and if its header has no `naming`: the reader takes a document without it as one saved
+/// before M4.0, and text written now isn't one.
 pub(super) fn replace_text(
     before: &Gated,
     text: &[u8],
@@ -702,25 +758,26 @@ pub(super) fn replace_text(
     }
     let replaced = document::read_tree(root).map_err(of_text)?;
     let features = replaced.features.len();
-    let candidate = candidate(replaced, "text")?;
-    let unchanged = match before.document() {
-        Ok(before) => document::write(before).is_ok_and(|was| was.as_bytes() == *candidate.text),
-        Err(_) => false,
-    };
+    let candidate = candidate(&replaced, "text")?;
+    let unchanged = before
+        .document()
+        .is_ok_and(|before| before.canonically_eq(&replaced));
     Ok((features, (!unchanged).then_some(candidate)))
 }
 
 /// Where new feature IDs come from (M2.1, decision 20): the system's randomness, five bytes
-/// from `/dev/urandom` (as the cache reads its secret) for the eight characters of an ID,
-/// or, in this crate's own tests only, bytes they give (never through the API, the Rust
-/// API, or a request).
+/// (as the cache's secret is read, [`crate::system_random`]) for the eight characters of an
+/// ID, or, in this crate's own tests only, bytes they give (never through the API, the
+/// Rust API, or a request).
 pub(super) struct FeatureIds {
     #[cfg(test)]
     given: Option<std::collections::VecDeque<[u8; 5]>>,
 }
 
-/// The most IDs made for one feature before giving up: the chance that 2⁴⁰ IDs a document
-/// holds a hundred thousand of take even two in a row is about 1e-14.
+/// The most IDs made for one feature before giving up. Each is one of 2⁴⁰, so one made
+/// is an ID a document of a hundred thousand features holds with a chance of 1e5 / 2⁴⁰,
+/// about 1e-7, and two in a row about 1e-14: sixteen in a row is a source that isn't
+/// random.
 const ID_TRIES: usize = 16;
 
 impl FeatureIds {
@@ -748,18 +805,14 @@ impl FeatureIds {
                 .pop_front()
                 .ok_or_else(|| Error::new(ErrorCode::Internal, "the test gave no more ID bytes"));
         }
-        let mut bytes = [0; 5];
-        std::fs::File::open("/dev/urandom")
-            .and_then(|mut random| random.read_exact(&mut bytes))
-            .map_err(|e| {
-                Error::new(
-                    ErrorCode::IoFailed,
-                    format!("the system's randomness couldn't be read for a feature's ID: {e}"),
-                )
-                .with_parameter("feature.id")
-                .with_suggestion("give the feature an id, or add it again")
-            })?;
-        Ok(bytes)
+        crate::system_random().map_err(|e| {
+            Error::new(
+                ErrorCode::IoFailed,
+                format!("the system's randomness couldn't be read for a feature's ID: {e}"),
+            )
+            .with_parameter("feature.id")
+            .with_suggestion("give the feature an id, or add it again")
+        })
     }
 
     /// A new ID that no feature of `document` holds.

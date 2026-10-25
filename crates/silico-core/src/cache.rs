@@ -774,8 +774,7 @@ fn read_or_make_secret(file: &Path) -> std::io::Result<[u8; 32]> {
             FileRead::Unusable(why) => return Err(std::io::Error::other(format!("it {why}"))),
             FileRead::Failed(e) => return Err(e),
         }
-        let mut secret = [0; 32];
-        std::fs::File::open("/dev/urandom")?.read_exact(&mut secret)?;
+        let secret: [u8; 32] = crate::system_random()?;
         let dir = file
             .parent()
             .ok_or_else(|| std::io::Error::other("it has no directory"))?;

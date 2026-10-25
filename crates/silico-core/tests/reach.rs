@@ -88,6 +88,32 @@ fn a_name_a_note_and_a_fingerprint_reach_nothing() {
     assert_eq!(reached(&part(), &after), ids(&[]));
 }
 
+/// A sketch whose lists aren't in ID order (its points pb then pa, its constraints
+/// k0000002 then k0000001), and a pad of it.
+const UNSORTED: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [
+  {"id": "s0000001", "type": "sketch", "v": 1, "name": "Sketch", "plane": "xy", "points": [{"id": "pb000000", "x": 10, "y": 0, "construction": false}, {"id": "pa000000", "x": 0, "y": 0, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}], "circles": [], "arcs": [], "constraints": [{"id": "k0000002", "type": "length", "line": "na000000", "value": 10, "driving": true}, {"id": "k0000001", "type": "horizontal", "line": "na000000"}]},
+  {"id": "p0000001", "type": "pad", "v": 1, "name": "Plate", "sketch": "s0000001", "extent": {"type": "one_side", "length": 10, "reversed": false}}
+]}"#;
+
+#[test]
+fn canonical_order_alone_reaches_nothing() {
+    let file = read(UNSORTED.as_bytes()).unwrap();
+    // Its canonical text, read again: the sketch's lists in ID order.
+    let canonical = read(silico_core::document::write(&file).unwrap().as_bytes()).unwrap();
+    assert_ne!(file, canonical, "the lists are held in another order");
+    assert!(reached(&file, &canonical).is_empty());
+    assert!(reached(&canonical, &file).is_empty());
+    assert!(net_reach(Before::Read(&file), &BTreeSet::new(), &canonical).is_empty());
+    // A point moved in either order is still the sketch's change, and the pad's.
+    let moved = read(
+        UNSORTED
+            .replacen(r#""x": 10, "y": 0"#, r#""x": 11, "y": 0"#, 1)
+            .as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(reached(&canonical, &moved), ids(&["s0000001", "p0000001"]));
+}
+
 #[test]
 fn a_feature_made_another_type_under_its_id_is_reached() {
     let after = edited(

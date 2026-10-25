@@ -12,10 +12,11 @@ use std::sync::Arc;
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
 use silico_core::command::{ModelChoice, ModelRead, Response, Revision, SessionId, Sessions};
-use silico_core::document::json::{Node, Value};
+use silico_core::document::json::{Node, Plain};
 use silico_core::document::{self, Length, Operation};
-use silico_core::fake::FakeKernel;
+use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::kernel::{Op, Primitive};
+use silico_core::sketch::SketchSolver;
 use tempfile::TempDir;
 
 use crate::sessions::{answer, id, refusal};
@@ -42,25 +43,33 @@ const EMPTY: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"re
 struct Fixture {
     _dir: TempDir,
     kernel: Arc<FakeKernel>,
+    /// What solves the sessions' sketches: each as sent, unless a test says otherwise.
+    sketches: FakeSketches,
     sessions: Sessions<Arc<FakeKernel>>,
     id: SessionId,
     path: PathBuf,
 }
 
-/// Sessions on a fake kernel, with `text` in `a.silico` open as s1.
+/// Sessions on a fake kernel, their sketches solved by a fake, with `text` in `a.silico`
+/// open as s1.
 fn opened(text: &str) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let secret = dir.path().join("secret");
     let kernel = Arc::new(FakeKernel::new(2).unwrap());
-    let sessions = Sessions::with_cache_opener(Arc::clone(&kernel), move |cache| {
-        Cache::with_secret(cache, &secret)
-    });
+    let sketches = FakeSketches::new();
+    let solver = sketches.clone();
+    let sessions = Sessions::with_stand_ins(
+        Arc::clone(&kernel),
+        move |cache| Cache::with_secret(cache, &secret),
+        move || Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>),
+    );
     let path = dir.path().join("a.silico");
     std::fs::write(&path, text).unwrap();
     let id = answer(sessions.open(&path, false)).session.unwrap().id;
     Fixture {
         _dir: dir,
         kernel,
+        sketches,
         sessions,
         id,
         path,
@@ -114,26 +123,25 @@ fn value(text: &str) -> Node {
     document::json::read(text.as_bytes()).unwrap()
 }
 
-/// `node` as compact JSON, its numbers as written: so two trees are compared by what they
-/// hold, not by where in a text they were.
-fn json(node: &Node) -> String {
-    match &node.value {
-        Value::Null => "null".to_owned(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(text) => text.clone(),
-        Value::String(text) => serde_json::to_string(text).unwrap(),
-        Value::Array(items) => format!(
+/// `value` as compact JSON, its numbers as written, its members in order.
+fn json(value: &Plain) -> String {
+    match value {
+        Plain::Null => "null".to_owned(),
+        Plain::Bool(b) => b.to_string(),
+        Plain::Number(text) => text.clone(),
+        Plain::String(text) => serde_json::to_string(text).unwrap(),
+        Plain::Array(items) => format!(
             "[{}]",
             items.iter().map(json).collect::<Vec<_>>().join(", ")
         ),
-        Value::Object(members) => format!(
+        Plain::Object(members) => format!(
             "{{{}}}",
             members
                 .iter()
-                .map(|m| format!(
+                .map(|(key, value)| format!(
                     "{}: {}",
-                    serde_json::to_string(&m.key).unwrap(),
-                    json(&m.value)
+                    serde_json::to_string(key).unwrap(),
+                    json(value)
                 ))
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -178,8 +186,8 @@ fn a_field_set_outside_a_transaction_is_saved_with_the_fingerprints_it_reached()
     assert!(commit.problems.is_empty(), "{:?}", commit.problems);
     assert_eq!(f.file(), BLOCK_41);
     assert_eq!(f.text(), BLOCK_41);
-    // The saved revision's check finds no drift: its model is rebuilt from the saved
-    // document, never the edit's, which holds the fingerprint as it was.
+    // The saved revision's check finds no drift: its model is the edit's, rebound to the
+    // saved document, never the edit's own, which holds the fingerprint as it was.
     let check = answer(f.sessions.check(&f.id));
     assert!(check.result.unwrap().is_empty());
     assert_eq!(check.model.unwrap().revision.number(), 2);
@@ -310,8 +318,9 @@ fn a_refused_commit_of_an_edit_outside_a_transaction_leaves_the_session_as_it_wa
         (session.revision, session.transaction),
         (Revision::OPENED, false)
     );
-    // The edit's model was its commit's alone: none is read.
+    // Found before the edit's rebuild: nothing was built, and no model is read.
     assert_eq!(response.model, None);
+    assert!(f.kernel.calls().is_empty(), "{:?}", f.kernel.calls());
     let error = the_error(&response);
     assert_eq!(
         (error.code(), error.parameter()),
@@ -566,6 +575,11 @@ fn a_member_named_by_place_is_refused_with_its_id_path_counted_as_the_text_shows
     );
     assert_eq!(error.candidates(), ["constraints.k0000001.value"]);
     assert_eq!(place("points.0.x").candidates(), ["points.pb000000.x"]);
+    // An arc, with its article, though the sketch has none.
+    assert_eq!(
+        place("arcs.0.radius").message(),
+        "arcs.0.radius names an arc by its place: a request names a sketch's members by ID"
+    );
     // No member at that place: no candidate.
     assert!(place("constraints.2.value").candidates().is_empty());
     // After an edit, the session's text is canonical, its lists in ID order.
@@ -583,6 +597,10 @@ fn a_member_named_by_place_is_refused_with_its_id_path_counted_as_the_text_shows
     );
     assert_eq!(error.candidates(), ["points.pa000000.radius"]);
     assert!(place("circles.zz000000.radius").candidates().is_empty());
+    assert_eq!(
+        place("arcs.zz000000.radius").suggestion(),
+        Some("name an arc of this sketch by its ID")
+    );
 }
 
 #[test]
@@ -659,9 +677,10 @@ fn a_removed_feature_comes_back_with_its_place_and_one_others_use_is_refused() {
         ),
         1,
     );
-    answer(f.sessions.replace_text(&f.id, f.revision(), back))
+    let replaced = answer(f.sessions.replace_text(&f.id, f.revision(), back))
         .result
         .unwrap();
+    assert_eq!(replaced.features, 3);
     assert_eq!(f.text(), document::write(&held).unwrap());
     let missing = answer(
         f.sessions
@@ -739,14 +758,31 @@ fn a_feature_added_is_refused_with_what_the_request_may_not_give_and_the_gate_s_
             Some("sketch")
         )
     );
-    // An ID the document holds already.
+    // An ID the document holds already: the request's field, the holder by ID and name.
     let again = r#"{"id": "k7f2qx3m", "type": "sphere", "name": "Ball", "position": [0, 0, 50], "radius": 5}"#;
     let error = the_error(&answer(f.sessions.add_feature(
         &f.id,
         Revision::OPENED,
         value(again),
     )));
-    assert_eq!(error.parameter(), Some("id"));
+    assert_eq!(
+        (
+            error.code(),
+            error.message(),
+            error.feature(),
+            error.parameter(),
+            error.elements(),
+            error.suggestion()
+        ),
+        (
+            ErrorCode::InvalidInput,
+            "id k7f2qx3m is already the ID of feature k7f2qx3m (\"Block\")",
+            None,
+            Some("feature.id"),
+            &["k7f2qx3m".to_owned()][..],
+            Some("give the feature an ID the document doesn't hold, or leave id out for a new one")
+        )
+    );
     assert_eq!(f.file(), FUSED);
     assert_eq!(f.revision(), Revision::OPENED);
 }
@@ -914,8 +950,8 @@ fn a_text_that_isnt_utf8_is_replaced_only_inside_a_transaction() {
         refusal(&outside),
         (
             ErrorCode::InvalidInput,
-            "the document's text isn't UTF-8 (at byte 1), so the text replace_text replaces couldn't be given back".to_owned(),
-            None,
+            "session s1's text isn't UTF-8 (at byte 1), so replace_text couldn't give it back".to_owned(),
+            Some("session".to_owned()),
             Some("replace it inside a transaction (begin, replace_text, commit), where no text is given back".to_owned())
         )
     );
@@ -955,8 +991,12 @@ fn hostile_paths_and_ids_are_refused_saying_what_they_are() {
         value(bad),
     )));
     assert_eq!(
-        (error.feature(), error.parameter()),
-        (Some("features[1]"), Some("id"))
+        (error.feature(), error.parameter(), error.message()),
+        (
+            Some("features[1]"),
+            Some("feature.id"),
+            "id \"BAD\" isn't a feature ID"
+        )
     );
     // A sketch member named by an empty segment: no member has it.
     let f = opened(SKETCHED);
@@ -964,4 +1004,341 @@ fn hostile_paths_and_ids_are_refused_saying_what_they_are() {
     assert_eq!(error.message(), "sketch s0000001 has no point \"\"");
     assert!(error.candidates().is_empty());
     assert_eq!(f.file(), SKETCHED);
+}
+
+/// The bytes of [`BLOCK`] in canonical form, by hand: [`BLOCK_41`] 40 long, its fingerprint
+/// the one stored.
+fn block_canonical() -> String {
+    BLOCK_41
+        .replace("\"length\": 41,", "\"length\": 40,")
+        .replace(
+            r#""volume": 8200, "area": 2860, "bbox": [0, 0, 0, 41, 20, 10]"#,
+            r#""volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10]"#,
+        )
+}
+
+/// pb solved to x = 12.25 (the solver's values: the origin and the axes' ends, 0 to 5,
+/// then the points by ID, pa's x and y at 6 and 7, pb's at 8 and 9): its stored x is 10,
+/// so the solve is drift unless an edit reaches the sketch.
+fn moving_pb(sketches: &FakeSketches) {
+    sketches.answer(|system| {
+        let mut solved = FakeSketches::as_sent(system);
+        solved.values[8] = 12.25;
+        Ok(solved)
+    });
+}
+
+#[test]
+fn a_name_set_beside_a_sketch_whose_lists_arent_in_id_order_reaches_nothing() {
+    let f = opened(SKETCHED);
+    moving_pb(&f.sketches);
+    let set = f.set("s0000001", "name", "\"Renamed\"").result.unwrap();
+    let commit = set.commit.unwrap();
+    assert!(commit.written);
+    // Its lists put in ID order changed none of its values: nothing reached, so the stored
+    // solve is kept and its drift said.
+    assert!(commit.refingerprinted.is_empty());
+    assert!(commit.resolved.is_empty(), "{:?}", commit.resolved);
+    let drift: Vec<_> = commit
+        .problems
+        .errors()
+        .iter()
+        .map(|e| (e.code(), e.feature()))
+        .collect();
+    assert_eq!(drift, [(ErrorCode::Drift, Some("s0000001"))]);
+    assert!(f.file().contains(r#""id": "pb000000", "x": 10, "y": 0"#));
+}
+
+#[test]
+fn an_edit_and_its_undo_beside_a_sketch_whose_lists_arent_in_id_order_write_nothing() {
+    let f = opened(SKETCHED);
+    let inode = std::fs::metadata(&f.path).unwrap().ino();
+    f.begin();
+    assert!(
+        f.set("s0000001", "name", "\"Renamed\"")
+            .result
+            .unwrap()
+            .changed
+    );
+    assert!(
+        f.set("s0000001", "name", "\"Sketch\"")
+            .result
+            .unwrap()
+            .changed
+    );
+    let committed = answer(f.sessions.commit(&f.id)).result.unwrap();
+    assert!(!committed.written);
+    assert_eq!(f.file(), SKETCHED);
+    assert_eq!(std::fs::metadata(&f.path).unwrap().ino(), inode);
+}
+
+#[test]
+fn an_edit_outside_a_transaction_publishes_its_model_as_the_saved_revisions() {
+    let f = opened(BLOCK);
+    f.set("k7f2qx3m", "length", "41").result.unwrap();
+    let calls = f.kernel.calls().len();
+    // Published as revision 2's at once, its document the saved one, fingerprint and all.
+    let published = f.sessions.published(&f.id).result.unwrap();
+    assert_eq!(published.revision.number(), 2);
+    assert_eq!(
+        published.model.document(),
+        &document::read(BLOCK_41.as_bytes()).unwrap()
+    );
+    // Its check finds no drift and starts no rebuild: the model is the one published.
+    let check = answer(f.sessions.check(&f.id));
+    assert!(check.result.unwrap().is_empty());
+    assert_eq!(check.model.unwrap().revision.number(), 2);
+    assert_eq!(f.kernel.calls().len(), calls);
+    let after = f.sessions.published(&f.id).result.unwrap();
+    assert!(Arc::ptr_eq(&after.model, &published.model));
+}
+
+#[test]
+fn a_member_named_by_place_or_a_path_too_deep_repeats_nothing_raw() {
+    let f = opened(SKETCHED);
+    let error = the_error(&f.set("s0000001", "points.0.\u{202e}x", "1"));
+    assert_eq!(
+        error.message(),
+        r#""points.0.\u{202e}x" names a point by its place: a request names a sketch's members by ID"#
+    );
+    // The rest of the path isn't plain: the candidate is the member's path alone.
+    assert_eq!(error.candidates(), ["points.pb000000"]);
+    let error = the_error(&f.set("s0000001", "circles.pa000000.\u{202e}", "1"));
+    assert_eq!(error.candidates(), ["points.pa000000"]);
+    // A path of a million dots, deeper than any tree: refused as a field the sketch hasn't.
+    let started = std::time::Instant::now();
+    let error = the_error(&f.set("s0000001", &format!("points{}", ".".repeat(1_000_000)), "1"));
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    assert_eq!(error.parameter(), Some("field"));
+    assert!(
+        error
+            .message()
+            .starts_with("a sketch has no field \"points......"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn a_feature_added_with_a_null_id_or_version_is_given_them() {
+    let f = opened(BLOCK);
+    f.begin();
+    for ball in [
+        r#"{"id": null, "type": "sphere", "name": "Ball", "position": [0, 0, 50], "radius": 5}"#,
+        r#"{"id": "z0000001", "type": "sphere", "v": null, "name": "Ball", "position": [0, 0, 50], "radius": 5}"#,
+    ] {
+        let added = answer(f.sessions.add_feature(&f.id, f.revision(), value(ball)))
+            .result
+            .unwrap();
+        let new = added.feature.id.clone();
+        assert_ne!(new, id("k7f2qx3m"));
+        assert_eq!(
+            document::write_feature(&added.feature).unwrap(),
+            format!(
+                r#"{{"id": "{new}", "type": "sphere", "v": 1, "name": "Ball", "position": [0, 0, 50], "radius": 5}}"#
+            )
+        );
+    }
+}
+
+/// A box, an empty sketch, and a pad of it with no base.
+const PAD: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}, {"id": "s0000003", "type": "sketch", "v": 1, "name": "Profile", "plane": "xy", "points": [], "lines": [], "circles": [], "arcs": [], "constraints": []}, {"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "sketch": "s0000003", "extent": {"type": "one_side", "length": 6, "reversed": false}}]}"#;
+
+/// The held document's pad's base.
+fn pad_base(f: &Fixture) -> Option<document::FeatureId> {
+    let held = document::read(f.text().as_bytes()).unwrap();
+    match &held.features[2].operation {
+        Operation::Pad { base, .. } => base.clone(),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_pads_base_is_given_and_taken_away_by_null() {
+    let f = opened(PAD);
+    f.begin();
+    let set = f.set("p0000001", "base", "\"k7f2qx3m\"").result.unwrap();
+    assert!(set.changed);
+    assert_eq!(
+        (json(&set.before), json(&set.after)),
+        ("null".into(), "\"k7f2qx3m\"".into())
+    );
+    assert_eq!(pad_base(&f), Some(id("k7f2qx3m")));
+    let set = f.set("p0000001", "base", "null").result.unwrap();
+    assert!(set.changed);
+    assert_eq!(
+        (json(&set.before), json(&set.after)),
+        ("\"k7f2qx3m\"".into(), "null".into())
+    );
+    assert_eq!(pad_base(&f), None);
+    assert!(!f.text().contains("\"base\""));
+}
+
+#[test]
+fn an_edited_feature_s_errors_name_no_place_in_a_text() {
+    let f = opened(BLOCK);
+    let error = the_error(&f.set("k7f2qx3m", "length", "\"long\""));
+    assert_eq!(error.parameter(), Some("length"));
+    assert!(!error.message().contains(", at line"), "{error:?}");
+    let ball = r#"{"type": "sphere", "name": "Ball", "position": [0, 0, 50], "radius": "big"}"#;
+    let error = the_error(&answer(f.sessions.add_feature(
+        &f.id,
+        Revision::OPENED,
+        value(ball),
+    )));
+    assert_eq!(error.parameter(), Some("radius"));
+    assert!(!error.message().contains(", at line"), "{error:?}");
+}
+
+#[test]
+fn an_id_repeated_within_one_list_names_the_member_that_holds_it() {
+    let f = opened(SKETCHED);
+    f.begin();
+    let error = the_error(&f.set("s0000001", "points.pb000000.id", "\"pa000000\""));
+    assert_eq!(
+        (
+            error.message(),
+            error.parameter(),
+            error.elements(),
+            error.suggestion()
+        ),
+        (
+            "id pa000000 is already the ID of point pa000000 (points.pa000000)",
+            Some("points.pb000000.id"),
+            &["pa000000".to_owned()][..],
+            Some("give this point an ID of its own")
+        )
+    );
+}
+
+#[test]
+fn a_member_set_whole_under_a_new_id_reads_back_after_by_that_id() {
+    let f = opened(SKETCHED);
+    f.begin();
+    let set = f
+        .set(
+            "s0000001",
+            "constraints.k0000001",
+            r#"{"id": "k0000003", "type": "horizontal", "line": "na000000"}"#,
+        )
+        .result
+        .unwrap();
+    assert_eq!(
+        (json(&set.before), json(&set.after)),
+        (
+            r#"{"id": "k0000001", "type": "horizontal", "line": "na000000"}"#.into(),
+            r#"{"id": "k0000003", "type": "horizontal", "line": "na000000"}"#.into()
+        )
+    );
+}
+
+#[test]
+fn a_member_whose_id_is_eight_digits_is_named_by_it() {
+    let sketch = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "s0000001", "type": "sketch", "v": 1, "name": "Sketch", "plane": "xy", "points": [{"id": "12345678", "x": 1, "y": 2, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": []}]}"#;
+    let f = opened(sketch);
+    f.begin();
+    let set = f.set("s0000001", "points.12345678.x", "5").result.unwrap();
+    assert_eq!(
+        (json(&set.before), json(&set.after)),
+        ("1".into(), "5".into())
+    );
+}
+
+/// Three boxes: the block, a lug at x 100, a cap at x 200.
+const THREE: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}, {"id": "b0000001", "type": "box", "v": 1, "name": "Lug", "position": [100, 0, 0], "length": 10, "width": 10, "height": 10}, {"id": "b0000002", "type": "box", "v": 1, "name": "Cap", "position": [200, 0, 0], "length": 5, "width": 5, "height": 5}]}"#;
+
+#[test]
+fn a_feature_removed_from_the_middle_gives_its_place() {
+    let f = opened(THREE);
+    f.begin();
+    let removed = answer(
+        f.sessions
+            .remove_feature(&f.id, Revision::OPENED, id("b0000001")),
+    )
+    .result
+    .unwrap();
+    assert_eq!(removed.index, 1);
+    let held = document::read(f.text().as_bytes()).unwrap();
+    let ids: Vec<&str> = held.features.iter().map(|f| f.id.as_str()).collect();
+    assert_eq!(ids, ["k7f2qx3m", "b0000002"]);
+}
+
+#[test]
+fn a_feature_added_and_removed_outside_a_transaction_each_save_their_commit() {
+    let f = opened(BLOCK);
+    let lug = r#"{"id": "b0000001", "type": "box", "name": "Lug", "position": [100, 0, 0], "length": 1, "width": 2, "height": 3}"#;
+    let response = answer(f.sessions.add_feature(&f.id, Revision::OPENED, value(lug)));
+    assert_eq!(response.session.unwrap().revision.number(), 2);
+    let commit = response.result.unwrap().commit.unwrap();
+    assert!(commit.written);
+    assert_eq!(commit.refingerprinted, [id("b0000001")]);
+    // 1 × 2 × 3 = 6, area 2(2 + 3 + 6) = 22, to (101, 2, 3).
+    let with_lug = block_canonical().replace(
+        "\n    }\n  ]\n}\n",
+        "\n    },\n    {\n      \"id\": \"b0000001\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Lug\",\n      \"position\": [100, 0, 0],\n      \"length\": 1,\n      \"width\": 2,\n      \"height\": 3,\n      \"fingerprint\": {\"volume\": 6, \"area\": 22, \"bbox\": [100, 0, 0, 101, 2, 3], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n",
+    );
+    assert_eq!(f.file(), with_lug);
+    let removed = answer(
+        f.sessions
+            .remove_feature(&f.id, f.revision(), id("b0000001")),
+    )
+    .result
+    .unwrap();
+    assert_eq!(removed.index, 1);
+    let commit = removed.commit.unwrap();
+    assert!(commit.written);
+    assert!(commit.refingerprinted.is_empty());
+    assert_eq!(f.file(), block_canonical());
+}
+
+#[test]
+fn a_sketch_added_is_given_back_as_the_document_holds_it() {
+    let f = opened(BLOCK);
+    f.begin();
+    let sketch = r#"{"id": "s0000009", "type": "sketch", "name": "S", "plane": "xy", "points": [{"id": "pb000000", "x": 10, "y": 0, "construction": false}, {"id": "pa000000", "x": 0, "y": 0, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": []}"#;
+    let added = answer(
+        f.sessions
+            .add_feature(&f.id, Revision::OPENED, value(sketch)),
+    )
+    .result
+    .unwrap();
+    let held = document::read(f.text().as_bytes()).unwrap();
+    assert_eq!(added.feature, held.features[1]);
+    let Operation::Sketch(sketch) = &added.feature.operation else {
+        panic!("not a sketch");
+    };
+    let points: Vec<&str> = sketch.points.iter().map(|p| p.id.as_str()).collect();
+    assert_eq!(points, ["pa000000", "pb000000"]);
+}
+
+/// A circle about pa, radius 1, under `id`.
+fn circle(id: &str) -> String {
+    format!(r#"{{"id": "{id}", "center": "pa000000", "radius": 1, "construction": false}}"#)
+}
+
+#[test]
+fn a_circle_given_three_times_is_one_refusal() {
+    let f = opened(SKETCHED);
+    f.begin();
+    let three = format!("[{0}, {0}, {0}]", circle("ca000000"));
+    let response = f.set("s0000001", "circles", &three);
+    let error = the_error(&response);
+    assert_eq!(
+        error.message(),
+        "id ca000000 is given to more than one circle of circles"
+    );
+}
+
+#[test]
+fn a_hundred_and_one_ids_given_twice_list_a_hundred_and_count_them_all() {
+    let f = opened(SKETCHED);
+    f.begin();
+    let circles: Vec<String> = (0..101)
+        .flat_map(|i| {
+            let c = circle(&format!("c{i:07}"));
+            [c.clone(), c]
+        })
+        .collect();
+    let response = f.set("s0000001", "circles", &format!("[{}]", circles.join(", ")));
+    let problems = response.result.unwrap_err();
+    assert_eq!((problems.errors().len(), problems.total()), (100, 101));
 }
