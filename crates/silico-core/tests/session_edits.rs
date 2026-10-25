@@ -13,7 +13,7 @@ use silico_core::ErrorCode;
 use silico_core::cache::Cache;
 use silico_core::command::{ModelChoice, ModelRead, Response, Revision, SessionId, Sessions};
 use silico_core::document::json::{Node, Plain};
-use silico_core::document::{self, Length, Operation};
+use silico_core::document::{self, Length, Measure, Operation};
 use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::kernel::{Op, Primitive};
 use silico_core::sketch::SketchSolver;
@@ -191,6 +191,36 @@ fn a_field_set_outside_a_transaction_is_saved_with_the_fingerprints_it_reached()
     let check = answer(f.sessions.check(&f.id));
     assert!(check.result.unwrap().is_empty());
     assert_eq!(check.model.unwrap().revision.number(), 2);
+}
+
+#[test]
+fn a_field_set_outside_a_transaction_publishes_its_model_over_an_older_one() {
+    let f = opened(BLOCK);
+    // Revision 1's model published first: the edit's must take its place.
+    let check = answer(f.sessions.check(&f.id));
+    assert!(check.result.unwrap().is_empty());
+    assert_eq!(
+        f.sessions.published(&f.id).model.unwrap().revision,
+        Revision::OPENED
+    );
+    f.set("k7f2qx3m", "length", "41").result.unwrap();
+    let published = f.sessions.published(&f.id).result.unwrap();
+    assert_eq!(published.revision.number(), 2);
+    // The edit's model rebound to the saved document: its fingerprint the one written, by
+    // hand 41 × 20 × 10 = 8200, area 2(820 + 410 + 200) = 2860, and measured so.
+    let block = id("k7f2qx3m");
+    let stored = published.model.document().features[0].fingerprint.unwrap();
+    let measured = published.model.fingerprint(&block).unwrap();
+    for fingerprint in [stored, measured] {
+        assert_eq!(fingerprint.volume, Measure::from_millionths(8_200_000_000));
+        assert_eq!(fingerprint.area, Measure::from_millionths(2_860_000_000));
+    }
+    // The saved revision's check takes it: nothing is rebuilt.
+    let calls = f.kernel.calls().len();
+    let check = answer(f.sessions.check(&f.id));
+    assert!(check.result.unwrap().is_empty());
+    assert_eq!(check.model.unwrap().revision.number(), 2);
+    assert_eq!(f.kernel.calls().len(), calls);
 }
 
 #[test]
