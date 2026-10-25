@@ -493,13 +493,7 @@ pub fn quoted(text: &str) -> String {
         match c {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
-            // Controls, the line and paragraph separators, every character Unicode draws
-            // as nothing, and every space but the plain one, which would look like it.
-            c if c.is_control()
-                || matches!(c, '\u{2028}' | '\u{2029}')
-                || (c.is_whitespace() && c != ' ')
-                || document::json::invisible(c) =>
-            {
+            c if document::json::unseen(c) => {
                 let _ = write!(out, "\\u{{{:x}}}", c as u32);
             }
             c => out.push(c),
