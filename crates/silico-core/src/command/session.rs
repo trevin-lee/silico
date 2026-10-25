@@ -10,27 +10,37 @@
 //! caller's thread, from what the session holds. Each answer is a [`Response`]: the session
 //! as the command left it, and the command's result, or every reason it was refused.
 //!
-//! A file is open in one session a process (decision 22), by its path through links, so two
-//! sessions never save one file over each other. At most [`MAX_SESSIONS`] are open at once.
-//! A document the gate refuses still opens, holding its text and the gate's problems
-//! (decision 21), so it can be mended. Session IDs are `s1`, `s2`, ..., in the order opens
-//! were asked for, never reused within the process. Each session has its own client of the
-//! shared kernel ([`Clients::client`]: its rebuilds never supersede another session's), and
-//! sessions on documents in one directory share one rebuild cache, one value cloned, so its
-//! bound counts every session's writes.
+//! A file is open in one session a process (decision 22), known by its device and inode,
+//! so no path to it (a link, a hard link, another name the system gives it) opens it twice
+//! and two sessions never save one file over each other. At most [`MAX_SESSIONS`] are open
+//! at once. A document the gate refuses still opens, holding its text and the gate's
+//! problems (decision 21), so it can be mended; a file longer than Silico reads doesn't,
+//! since a session couldn't hold its text whole. Session IDs are `s1`, `s2`, ..., in the
+//! order opens were asked for, never reused within the process. Each session has its own
+//! client of the shared kernel ([`Clients::client`]: its rebuilds never supersede another
+//! session's), and sessions on documents in one directory share one rebuild cache, one
+//! value cloned, so its bound counts every session's writes.
+//!
+//! What it doesn't bound: the caches, one kept for each directory a session has opened a
+//! document in, for the process's life; and each session's queue, which holds every command
+//! queued and not yet run. Nor does it choose which files may be opened: `open` and `text`
+//! read any file this user may read, so a server for clients it doesn't trust gives them a
+//! workspace (decision 26) once there is one.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::Write as _;
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use super::Problems;
+use super::{Gated, Problems};
 use crate::cache::Cache;
-use crate::document::{self, Checked, Document, FeatureId, FormatVersion, NamingScheme, Units};
+use crate::document::json::MAX_INPUT_LEN;
+use crate::document::{self, Document, FeatureId, FormatVersion, NamingScheme, Units};
 use crate::file;
 use crate::kernel::{Clients, Kernel};
 use crate::recompute::Recompute;
@@ -68,6 +78,7 @@ impl Revision {
     /// A session's revision when it opens.
     pub const OPENED: Revision = Revision(1);
 
+    /// Its number, as a response writes it: 1 at `open`, then one more for each change.
     pub const fn number(self) -> u64 {
         self.0
     }
@@ -81,7 +92,8 @@ pub struct SessionInfo {
     /// Its document's path as `open` was given it.
     pub path: PathBuf,
     pub revision: Revision,
-    /// Whether a transaction is open: never yet, until transactions come (M4.2's PR 5).
+    /// Whether a transaction is open: never yet, until transactions come (the design's
+    /// section 4).
     pub transaction: bool,
     /// Whether the session read its file again before the command, finding it changed:
     /// never yet, until a file changed outside the session is reloaded (decision 2).
@@ -171,8 +183,8 @@ pub struct Status {
 }
 
 /// A process's open sessions, on one kernel: each session's commands are run on its own
-/// thread, in turn, on its own client of `kernel`. Dropping it closes every session, waiting
-/// for the command each is running.
+/// thread, in turn, on its own client of `kernel`. Dropping it closes every session,
+/// stopping its rebuild, and waits for each session's thread to end.
 pub struct Sessions<P: Clients + 'static> {
     registry: Arc<Registry<P>>,
 }
@@ -180,37 +192,93 @@ pub struct Sessions<P: Clients + 'static> {
 /// What opens a directory's cache: [`Cache::open`], or a test's.
 type CacheOpener = dyn Fn(&Path) -> Cache + Send + Sync;
 
-struct Registry<P> {
+struct Registry<P: Clients + 'static> {
     kernel: P,
     open_cache: Box<CacheOpener>,
-    book: Mutex<Book>,
+    book: Mutex<Book<P::Client>>,
+}
+
+/// A file as the system knows it, whatever path reaches it: its device and inode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct FileId {
+    device: u64,
+    inode: u64,
+}
+
+impl FileId {
+    /// The file `opened` is.
+    fn of(opened: &std::fs::File) -> Result<Self, Error> {
+        let metadata = opened.metadata().map_err(file::unreadable)?;
+        Ok(FileId {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
 }
 
 /// The registry's record of its sessions.
-struct Book {
+struct Book<C: Kernel + 'static> {
     /// The next session's number.
     next: u64,
     /// The sessions open.
-    sessions: BTreeMap<SessionId, Arc<Session>>,
+    sessions: BTreeMap<SessionId, Arc<Session<C>>>,
     /// The sessions opening: not open yet, but counted against [`MAX_SESSIONS`].
     opening: BTreeSet<SessionId>,
-    /// Each file a session holds, or is opening, by its path through links.
-    files: BTreeMap<PathBuf, SessionId>,
+    /// Each file a session holds, or is opening.
+    files: BTreeMap<FileId, SessionId>,
     /// Each directory's rebuild cache, by its path (`file::cache_directory`), cloned for
     /// each session on a document in it.
     caches: BTreeMap<PathBuf, Cache>,
-    /// The threads of the sessions open or opening, joined when the registry is dropped.
+    /// Every session thread not yet joined: those open, opening, or closed and ending,
+    /// joined once they've ended (at the next open) or when the registry is dropped, so
+    /// none outlives it.
     threads: BTreeMap<SessionId, JoinHandle<()>>,
     /// The sessions are being dropped: an open that finishes now doesn't open.
     stopping: bool,
 }
 
-/// One open session, shared by its thread and the callers that queue its commands.
-struct Session {
+impl<C: Kernel + 'static> Book<C> {
+    /// Session `id` gone from every record but its thread's: open, opening, and the file
+    /// it held.
+    fn release(&mut self, id: SessionId) {
+        self.sessions.remove(&id);
+        self.opening.remove(&id);
+        self.files.retain(|_, holder| *holder != id);
+    }
+
+    /// The threads that have ended, joined.
+    fn reap(&mut self) {
+        let ended: Vec<SessionId> = self
+            .threads
+            .iter()
+            .filter(|(_, thread)| thread.is_finished())
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ended {
+            if let Some(thread) = self.threads.remove(&id) {
+                let _ = thread.join();
+            }
+        }
+    }
+}
+
+/// One open session, shared by its thread, the callers that queue its commands, and the
+/// registry.
+struct Session<C: Kernel + 'static> {
     id: SessionId,
     held: Mutex<Held>,
     /// Where its commands are queued, in order: none once it's closed.
-    queue: Mutex<Option<Sender<Job>>>,
+    queue: Mutex<Option<Sender<Job<C>>>>,
+    /// Its rebuilds, under a lock of their own, never `held`'s, so `status` never waits
+    /// behind a rebuild's start; and reachable from outside its thread, so a rebuild can be
+    /// stopped while a command waits on it.
+    rebuilds: Mutex<Rebuilds<C>>,
+}
+
+/// A session's rebuilds: its engine, on its own client of the kernel, keeping its steps in
+/// its directory's cache. Its rebuilds come with the commands that read a model.
+struct Rebuilds<C: Kernel + 'static> {
+    engine: Recompute<C>,
 }
 
 /// What a session holds (docs/design/m4.1-command-api.md, section 3). Its values are shared
@@ -219,6 +287,8 @@ struct Session {
 struct Held {
     /// The document's path as `open` was given it.
     path: PathBuf,
+    /// The path as its links resolve, where saves and reloads go.
+    resolved: PathBuf,
     /// The document's text: the file's bytes as read or written, until an edit.
     text: Arc<Vec<u8>>,
     /// The text as the reader and the gate found it.
@@ -226,56 +296,16 @@ struct Held {
     revision: Revision,
 }
 
-/// A document's text as the reader and the gate found it.
-enum Gated {
-    /// It doesn't read as a document: the reader's error.
-    Unread(Problems),
-    /// It reads, but the gate refuses it: the document, and every problem with it.
-    Refused(Document, Problems),
-    Checked(Checked),
-}
-
-impl Gated {
-    /// `text` read and through the gate.
-    fn of(text: &[u8]) -> Self {
-        let _span = tracing::info_span!("gate", bytes = text.len()).entered();
-        match document::read(text) {
-            Err(error) => Gated::Unread(Problems::from(error)),
-            Ok(read) => match Checked::try_new(read) {
-                Ok(checked) => Gated::Checked(checked),
-                Err((read, invalid)) => Gated::Refused(read, Problems::from(invalid)),
-            },
-        }
-    }
-
-    /// The document, if the text reads as one; or the reader's error.
-    fn document(&self) -> Result<&Document, &Problems> {
-        match self {
-            Gated::Unread(problems) => Err(problems),
-            Gated::Refused(document, _) => Ok(document),
-            Gated::Checked(checked) => Ok(checked.document()),
-        }
-    }
-
-    /// The reader's or the gate's problems: none if the gate took it.
-    fn problems(&self) -> Problems {
-        match self {
-            Gated::Unread(problems) | Gated::Refused(_, problems) => problems.clone(),
-            Gated::Checked(_) => Problems::of(Vec::new()),
-        }
-    }
-}
-
 /// A command queued on a session: run on its thread with the session, or, if the session
 /// closed before its turn, told so.
-type Job = Box<dyn FnOnce(Turn<'_>) + Send>;
+type Job<C> = Box<dyn FnOnce(Turn<'_, C>) + Send>;
 
-enum Turn<'a> {
-    Run(&'a Session),
+enum Turn<'a, C: Kernel + 'static> {
+    Run(&'a Session<C>),
     Closed(SessionId),
 }
 
-impl Session {
+impl<C: Kernel + 'static> Session<C> {
     /// The session as it is now.
     fn info(&self) -> SessionInfo {
         self.info_of(&lock(&self.held))
@@ -299,7 +329,7 @@ impl Session {
     }
 
     /// Queues `job`; or, if the session has closed, tells it so at once.
-    fn queue(&self, job: Job) {
+    fn queue(&self, job: Job<C>) {
         let queue = lock(&self.queue);
         match queue.as_ref() {
             Some(sender) => {
@@ -335,7 +365,9 @@ impl<P: Clients + 'static> Sessions<P> {
     /// Sessions on `kernel`, opening each directory's cache with `open` (given the cache's
     /// directory, `.silico-cache/` beside the document) the first time a session on a
     /// document in it opens (or, if two open at once, by each, the first value kept), every
-    /// later session sharing that value: for tests, a cache with a secret of their own.
+    /// later session sharing that value: for tests, a cache with a secret of their own. A
+    /// cache without the user's secret, which keeps nothing, isn't kept, so the next open
+    /// in its directory tries again.
     pub fn with_cache_opener(
         kernel: P,
         open: impl Fn(&Path) -> Cache + Send + Sync + 'static,
@@ -358,18 +390,18 @@ impl<P: Clients + 'static> Sessions<P> {
     }
 
     /// Opens the document at `path` as a new session, on a thread of its own: reads the
-    /// file (a regular file, no more than a document may be) and puts it through the gate.
-    /// The session opens even if the gate refuses the document, holding it and the gate's
-    /// problems (decision 21). With `create`, writes a new, empty document at `path` in
-    /// canonical form first, refusing if anything is there. Refused if the file is open in
-    /// another session of this process (by its path through links), or [`MAX_SESSIONS`]
-    /// are open.
+    /// file (a regular file, no more than Silico reads of a document) and puts it through
+    /// the gate. The session opens even if the gate refuses the document, holding it and the
+    /// gate's problems (decision 21). With `create`, writes a new, empty document at `path`
+    /// in canonical form first, refusing if anything is there. Refused if the file is open
+    /// in another session of this process (by any path to it), or [`MAX_SESSIONS`] are open.
     pub fn open(&self, path: impl Into<PathBuf>, create: bool) -> Running<Opened> {
         let path = path.into();
         let mut book = lock(&self.registry.book);
         if book.stopping {
             return Running::answered(refused(closing()));
         }
+        book.reap();
         if book.sessions.len() + book.opening.len() >= MAX_SESSIONS {
             return Running::answered(refused(
                 Error::new(
@@ -393,11 +425,16 @@ impl<P: Clients + 'static> Sessions<P> {
         let (reply, answer) = mpsc::sync_channel(1);
         let registry = Arc::clone(&self.registry);
         let caller = tracing::Span::current();
-        // Spawned with the book held, so the thread's handle is recorded before the thread
-        // can look for it (an open that fails removes its own).
+        // Spawned with the book held, so the thread is recorded opening before it can end.
         let started = std::thread::Builder::new()
             .name(format!("session-{id}"))
             .spawn(move || {
+                // However the thread ends, even by a panic, the session is gone from the
+                // records, and its file free.
+                let _release = Release {
+                    registry: Arc::downgrade(&registry),
+                    id,
+                };
                 let started = {
                     let _caller = caller.enter();
                     let _span =
@@ -405,14 +442,8 @@ impl<P: Clients + 'static> Sessions<P> {
                             .entered();
                     start(registry, id, &path, create, &reply)
                 };
-                if let Some(Started {
-                    session,
-                    jobs,
-                    engine,
-                }) = started
-                {
+                if let Some(Started { session, jobs }) = started {
                     serve(&session, &jobs);
-                    drop(engine);
                 }
             });
         match started {
@@ -428,14 +459,12 @@ impl<P: Clients + 'static> Sessions<P> {
     /// Closes `session`, once the commands queued before it have run: commands queued
     /// after it are told the session closed. Its file is then free to open again.
     pub fn close(&self, session: &SessionId) -> Running<()> {
-        let registry = Arc::clone(&self.registry);
+        let registry = Arc::downgrade(&self.registry);
         self.queued(session, "close", move |session| {
             session.close();
-            let mut book = lock(&registry.book);
-            book.sessions.remove(&session.id);
-            book.files.retain(|_, holder| *holder != session.id);
-            // Its thread ends once this command answers; nothing need wait for it.
-            book.threads.remove(&session.id);
+            if let Some(registry) = registry.upgrade() {
+                lock(&registry.book).release(session.id);
+            }
             Ok(())
         })
     }
@@ -459,7 +488,7 @@ impl<P: Clients + 'static> Sessions<P> {
     /// The text `session`'s document is: the file's bytes exactly, until an edit; or, given
     /// a `feature`, that feature's canonical text ([`document::write_feature`]). Refused if
     /// the text isn't UTF-8 (the reader refused it), or, for a feature, if the text doesn't
-    /// read as a document or has no such feature.
+    /// read as a document or hasn't one feature of that ID.
     pub fn text(&self, session: &SessionId, feature: Option<FeatureId>) -> Running<String> {
         self.queued(session, "text", move |session| {
             let (text, gated) = session.document();
@@ -478,17 +507,7 @@ impl<P: Clients + 'static> Sessions<P> {
                 }),
                 Some(id) => {
                     let document = gated.document().map_err(Clone::clone)?;
-                    let found = document.features.iter().find(|f| f.id == id).ok_or_else(|| {
-                        Error::new(
-                            ErrorCode::InvalidInput,
-                            format!("the document has no feature {id}"),
-                        )
-                        .with_parameter("feature")
-                        .with_suggestion(
-                            "name a feature by its ID, as the document's outline lists them",
-                        )
-                    })?;
-                    Ok(document::write_feature(found)?)
+                    Ok(document::write_feature(document.feature(&id)?)?)
                 }
             }
         })
@@ -504,7 +523,7 @@ impl<P: Clients + 'static> Sessions<P> {
         })
     }
 
-    fn find(&self, session: &SessionId) -> Option<Arc<Session>> {
+    fn find(&self, session: &SessionId) -> Option<Arc<Session<P::Client>>> {
         lock(&self.registry.book).sessions.get(session).cloned()
     }
 
@@ -513,7 +532,7 @@ impl<P: Clients + 'static> Sessions<P> {
         &self,
         session: &SessionId,
         command: &'static str,
-        work: impl FnOnce(&Session) -> Result<T, Problems> + Send + 'static,
+        work: impl FnOnce(&Session<P::Client>) -> Result<T, Problems> + Send + 'static,
     ) -> Running<T> {
         let Some(found) = self.find(session) else {
             return Running::answered(refused(not_open(*session)));
@@ -554,12 +573,30 @@ impl<P: Clients + 'static> Drop for Sessions<P> {
                 std::mem::take(&mut book.threads),
             )
         };
+        // Each queue ended, so its thread ends once its command does, and its rebuild
+        // stopped, so a command waiting on one isn't waited for.
         for session in sessions.values() {
             session.close();
+            lock(&session.rebuilds).engine.cancel();
         }
         drop(sessions);
         for (_, thread) in threads {
             let _ = thread.join();
+        }
+    }
+}
+
+/// Removes its session from the registry's records when dropped: when the session's thread
+/// ends, however it ends.
+struct Release<P: Clients + 'static> {
+    registry: Weak<Registry<P>>,
+    id: SessionId,
+}
+
+impl<P: Clients + 'static> Drop for Release<P> {
+    fn drop(&mut self) {
+        if let Some(registry) = self.registry.upgrade() {
+            lock(&registry.book).release(self.id);
         }
     }
 }
@@ -588,12 +625,16 @@ fn closing() -> Error {
     .with_suggestion("open it again once the sessions are made again")
 }
 
+/// A path as a message says it: quoted, its control and invisible characters escaped, as
+/// `file`'s errors and the outline say text, so a file's name can't act on a terminal.
+fn shown(path: &Path) -> String {
+    super::quoted(&path.display().to_string())
+}
+
 /// A session opened on its thread: what the thread serves.
 struct Started<C: Kernel + 'static> {
-    session: Arc<Session>,
-    jobs: Receiver<Job>,
-    /// Its rebuilds' engine, on its own client of the kernel.
-    engine: Recompute<C>,
+    session: Arc<Session<C>>,
+    jobs: Receiver<Job<C>>,
 }
 
 /// The open, on its session's thread, answered through `reply`: if it opened, what the
@@ -606,46 +647,37 @@ fn start<P: Clients + 'static>(
     reply: &mpsc::SyncSender<Response<Opened>>,
 ) -> Option<Started<P::Client>> {
     let opened = open(&registry, id, path, create).and_then(|(held, opened, cache)| {
-        // The session's own client of the kernel, and its directory's cache: its rebuilds
-        // supersede only its own work, and keep their steps where the directory's other
-        // documents find them. Held for the session's life; its rebuilds come with the
-        // commands that read a model.
-        let engine = Recompute::with_cache(registry.kernel.client(), cache);
+        let mut book = lock(&registry.book);
+        if book.stopping {
+            drop(book);
+            if opened.created {
+                unmake(&held);
+            }
+            return Err(Problems::from(closing()));
+        }
         let (sender, jobs) = mpsc::channel();
         let session = Arc::new(Session {
             id,
             held: Mutex::new(held),
             queue: Mutex::new(Some(sender)),
+            rebuilds: Mutex::new(Rebuilds {
+                engine: Recompute::with_cache(registry.kernel.client(), cache),
+            }),
         });
-        let mut book = lock(&registry.book);
         book.opening.remove(&id);
-        if book.stopping {
-            return Err(Problems::from(closing()));
-        }
         book.sessions.insert(id, Arc::clone(&session));
-        Ok((session, opened, jobs, engine))
+        Ok((session, opened, jobs))
     });
     match opened {
-        Ok((session, opened, jobs, engine)) => {
+        Ok((session, opened, jobs)) => {
             let _ = reply.send(Response {
                 session: Some(session.info()),
                 result: Ok(opened),
             });
-            // The session's thread doesn't keep the registry: a dropped one ends with its
-            // kernel.
-            drop(registry);
-            Some(Started {
-                session,
-                jobs,
-                engine,
-            })
+            Some(Started { session, jobs })
         }
         Err(problems) => {
-            let mut book = lock(&registry.book);
-            book.opening.remove(&id);
-            book.files.retain(|_, holder| *holder != id);
-            book.threads.remove(&id);
-            drop(book);
+            lock(&registry.book).release(id);
             let _ = reply.send(Response {
                 session: None,
                 result: Err(problems),
@@ -655,9 +687,17 @@ fn start<P: Clients + 'static>(
     }
 }
 
+/// The empty document `open` made for a session that didn't open, removed, if it's still
+/// what was made: nothing else has written it since.
+fn unmake(held: &Held) {
+    if file::read(&held.resolved).is_ok_and(|bytes| bytes == *held.text) {
+        let _ = std::fs::remove_file(&held.resolved);
+    }
+}
+
 /// The session's commands, in the order they were queued, until its queue ends: each
 /// queued after it closed is told so.
-fn serve(session: &Session, jobs: &Receiver<Job>) {
+fn serve<C: Kernel + 'static>(session: &Session<C>, jobs: &Receiver<Job<C>>) {
     while let Ok(job) = jobs.recv() {
         if session.closed() {
             job(Turn::Closed(session.id));
@@ -669,7 +709,7 @@ fn serve(session: &Session, jobs: &Receiver<Job>) {
 
 /// The file at `path` read (or, with `create`, made) and through the gate, claimed for
 /// session `id`; what the session holds, `open`'s answer, and the cache of its directory.
-fn open<P: Clients>(
+fn open<P: Clients + 'static>(
     registry: &Registry<P>,
     id: SessionId,
     path: &Path,
@@ -680,11 +720,26 @@ fn open<P: Clients>(
     } else {
         let resolved =
             std::fs::canonicalize(path).map_err(|e| file::unreadable(e).with_parameter("path"))?;
-        claim(registry, &resolved, id, path)?;
-        let text = {
+        let (opened, text) = {
             let _span = tracing::info_span!("read").entered();
-            file::read(&resolved).map_err(|e| e.with_parameter("path"))?
+            file::opened_and_read(&resolved).map_err(|e| e.with_parameter("path"))?
         };
+        // Read one past the limit: what's past it isn't held, so the session couldn't give
+        // the file's text, or mend it, whole.
+        if text.len() > MAX_INPUT_LEN {
+            return Err(Problems::from(
+                Error::new(
+                    ErrorCode::InvalidInput,
+                    format!(
+                        "{} is more than the {MAX_INPUT_LEN} bytes Silico reads of a document",
+                        shown(path)
+                    ),
+                )
+                .with_parameter("path")
+                .with_suggestion("check it's the document you mean: no document is this long"),
+            ));
+        }
+        claim(registry, FileId::of(&opened)?, id, path)?;
         (resolved, text)
     };
     let gated = Gated::of(&text);
@@ -701,6 +756,7 @@ fn open<P: Clients>(
     };
     let held = Held {
         path: path.to_owned(),
+        resolved,
         text: Arc::new(text),
         gated: Arc::new(gated),
         revision: Revision::OPENED,
@@ -710,7 +766,7 @@ fn open<P: Clients>(
 
 /// A new, empty document made at `path`, claimed for session `id`: where it is through
 /// links, and its text.
-fn made<P: Clients>(
+fn made<P: Clients + 'static>(
     registry: &Registry<P>,
     id: SessionId,
     path: &Path,
@@ -718,7 +774,7 @@ fn made<P: Clients>(
     let name = path.file_name().ok_or_else(|| {
         Error::new(
             ErrorCode::InvalidInput,
-            format!("{} names no file to make", path.display()),
+            format!("{} names no file to make", shown(path)),
         )
         .with_parameter("path")
         .with_suggestion("give the path of the document to make, ending in its file's name")
@@ -731,7 +787,6 @@ fn made<P: Clients>(
     let resolved = std::fs::canonicalize(file::directory(path))
         .map_err(uncreatable)?
         .join(name);
-    claim(registry, &resolved, id, path)?;
     let text = document::write(&Document {
         silico: FormatVersion,
         units: Units,
@@ -739,48 +794,54 @@ fn made<P: Clients>(
         features: Vec::new(),
     })?
     .into_bytes();
-    match create_new(&resolved, &text) {
-        Ok(()) => Ok((resolved, text)),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(Problems::from(
-            Error::new(
-                ErrorCode::InvalidInput,
-                format!("{} already exists", path.display()),
-            )
-            .with_parameter("create")
-            .with_suggestion("open it without create, or give another path"),
-        )),
-        Err(e) => Err(Problems::from(uncreatable(e))),
-    }
+    let made = match create_new(&resolved, &text) {
+        Ok(made) => made,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(Problems::from(
+                Error::new(
+                    ErrorCode::InvalidInput,
+                    format!("{} already exists", shown(path)),
+                )
+                .with_parameter("create")
+                .with_suggestion("open it without create, or give another path"),
+            ));
+        }
+        Err(e) => return Err(Problems::from(uncreatable(e))),
+    };
+    claim(registry, FileId::of(&made)?, id, path)?;
+    Ok((resolved, text))
 }
 
 /// `text` written to a new file at `path`, never over one (nor through a link) already
-/// there; removed again if it couldn't be written whole.
-fn create_new(path: &Path, text: &[u8]) -> std::io::Result<()> {
+/// there, and the file; removed again if it couldn't be written whole.
+fn create_new(path: &Path, text: &[u8]) -> std::io::Result<std::fs::File> {
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)?;
-    let written = file.write_all(text).and_then(|()| file.sync_all());
-    if written.is_err() {
-        let _ = std::fs::remove_file(path);
+    match file.write_all(text).and_then(|()| file.sync_all()) {
+        Ok(()) => Ok(file),
+        Err(e) => {
+            let _ = std::fs::remove_file(path);
+            Err(e)
+        }
     }
-    written
 }
 
-/// The file at `resolved` (its path through links) claimed for session `id`; or, if another
-/// session holds or is opening it, a refusal naming that session.
-fn claim<P>(
+/// The file `file` claimed for session `id`; or, if another session holds or is opening
+/// it, a refusal naming that session.
+fn claim<P: Clients + 'static>(
     registry: &Registry<P>,
-    resolved: &Path,
+    file: FileId,
     id: SessionId,
     given: &Path,
 ) -> Result<(), Problems> {
     let mut book = lock(&registry.book);
-    match book.files.get(resolved) {
+    match book.files.get(&file) {
         Some(&holder) if holder != id => Err(Problems::from(
             Error::new(
                 ErrorCode::InvalidInput,
-                format!("{} is already open in session {holder}", given.display()),
+                format!("{} is already open in session {holder}", shown(given)),
             )
             .with_parameter("path")
             .with_suggestion(format!(
@@ -788,14 +849,16 @@ fn claim<P>(
             )),
         )),
         _ => {
-            book.files.insert(resolved.to_owned(), id);
+            book.files.insert(file, id);
             Ok(())
         }
     }
 }
 
-impl<P> Registry<P> {
-    /// The cache in `dir`: the one value its sessions share, opened the first time.
+impl<P: Clients + 'static> Registry<P> {
+    /// The cache in `dir`: the one value its sessions share, opened the first time; one
+    /// without the user's secret, which keeps nothing, isn't kept, so the next open tries
+    /// again.
     fn cache(&self, dir: &Path) -> Cache {
         if let Some(cache) = lock(&self.book).caches.get(dir) {
             return cache.clone();
@@ -803,10 +866,58 @@ impl<P> Registry<P> {
         // Opened without the book held (it reads the user's secret): should another session
         // have opened it meanwhile, its value is the one kept.
         let opened = (self.open_cache)(dir);
+        if !opened.sealed() {
+            return opened;
+        }
         lock(&self.book)
             .caches
             .entry(dir.to_owned())
             .or_insert(opened)
             .clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fake::FakeKernel;
+
+    #[test]
+    fn a_document_made_for_a_session_the_sessions_closing_refuse_is_removed() {
+        // The sessions began closing while the open made its file: it's refused, and what it
+        // made is gone; a file it didn't make is left.
+        let dir = tempfile::tempdir().unwrap();
+        let secret = dir.path().join("secret");
+        let sessions = Sessions::with_cache_opener(FakeKernel::new(1).unwrap(), move |cache| {
+            Cache::with_secret(cache, &secret)
+        });
+        lock(&sessions.registry.book).stopping = true;
+        let (reply, answer) = mpsc::sync_channel(1);
+        let made = dir.path().join("new.silico");
+        let started = start(
+            Arc::clone(&sessions.registry),
+            SessionId(1),
+            &made,
+            true,
+            &reply,
+        );
+        assert!(started.is_none());
+        let response = answer.recv().unwrap();
+        assert_eq!(response.result.unwrap_err().errors()[0], closing());
+        assert!(!made.exists());
+        let kept = dir.path().join("kept.silico");
+        std::fs::write(&kept, "{}").unwrap();
+        assert!(
+            start(
+                Arc::clone(&sessions.registry),
+                SessionId(2),
+                &kept,
+                false,
+                &reply
+            )
+            .is_none()
+        );
+        assert!(kept.exists());
+        assert!(lock(&sessions.registry.book).files.is_empty());
     }
 }

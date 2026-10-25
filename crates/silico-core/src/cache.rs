@@ -484,6 +484,11 @@ impl Cache {
         self.usage.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Whether it has the user's secret to seal entries with: without it, it keeps nothing.
+    pub(crate) fn sealed(&self) -> bool {
+        self.secret.is_some()
+    }
+
     /// The secret to key and seal entries with, if the cache keeps any: not when its
     /// directory is a link (one that came with a document may point anywhere: inside the
     /// repository, where its entries would be committed, or at anyone's files), which it

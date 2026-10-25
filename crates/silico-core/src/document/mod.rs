@@ -65,19 +65,19 @@ pub fn write(document: &Document) -> Result<String, Error> {
 
 /// One feature's canonical text, as the document's canonical form writes it, but not
 /// indented and with no newline after it: a value, as a command's result gives it. Refused,
-/// as `write` refuses a document, if it would be more than [`json::MAX_DOCUMENT_LEN`] (a
-/// feature of a document that was read never is).
+/// as `write` refuses a document, if it would be more than [`json::MAX_DOCUMENT_LEN`]: a
+/// feature of a document that was read never is, since the document's text holds it.
 pub fn write_feature(feature: &Feature) -> Result<String, Error> {
-    write::feature_text(feature, json::MAX_DOCUMENT_LEN).map_err(|write::TooLong| {
+    let limit = json::MAX_DOCUMENT_LEN;
+    write::feature_text(feature, limit).map_err(|write::TooLong| {
         Error::new(
             ErrorCode::InvalidInput,
             format!(
-                "the feature is too large to write: its canonical text would be more than the {} bytes a document may be",
-                json::MAX_DOCUMENT_LEN
+                "the feature is too large to write: its canonical text would be more than the {limit} bytes a document may be"
             ),
         )
         .with_feature(feature.id.as_str())
-        .with_suggestion("make this feature smaller")
+        .with_suggestion(smaller(feature))
     })
 }
 
@@ -116,35 +116,36 @@ fn too_long(document: &Document, what: &str) -> Error {
         .iter()
         .find(|f| !write::feature_fits(f, limit / 2));
     match large {
-        // By what can make the feature large, every type saying, so a new one has to.
-        Some(feature) => {
-            error
-                .with_feature(feature.id.as_str())
-                .with_suggestion(match feature.operation {
-                    Operation::Sketch(_) => {
-                        "make this sketch smaller: split it into several sketches"
-                    }
-                    Operation::Fillet { .. } | Operation::Chamfer { .. } => {
-                        "name fewer edges, or shorten this feature's name or note"
-                    }
-                    Operation::Box { .. }
-                    | Operation::Cylinder { .. }
-                    | Operation::Sphere { .. }
-                    | Operation::Cone { .. }
-                    | Operation::Torus { .. }
-                    | Operation::Fuse { .. }
-                    | Operation::Cut { .. }
-                    | Operation::Common { .. }
-                    | Operation::Pad { .. }
-                    | Operation::Pocket { .. }
-                    | Operation::Revolve { .. }
-                    | Operation::Groove { .. } => "make this feature's name or note shorter",
-                })
-        }
+        Some(feature) => error
+            .with_feature(feature.id.as_str())
+            .with_suggestion(smaller(feature)),
         None => error.with_suggestion(
             "make it smaller: fewer features, smaller sketches, fewer edges named, or shorter \
              names and notes",
         ),
+    }
+}
+
+/// How to make `feature`'s text shorter: by what can make it large, every type saying, so a
+/// new one has to.
+fn smaller(feature: &Feature) -> &'static str {
+    match feature.operation {
+        Operation::Sketch(_) => "make this sketch smaller: split it into several sketches",
+        Operation::Fillet { .. } | Operation::Chamfer { .. } => {
+            "name fewer edges, or shorten this feature's name or note"
+        }
+        Operation::Box { .. }
+        | Operation::Cylinder { .. }
+        | Operation::Sphere { .. }
+        | Operation::Cone { .. }
+        | Operation::Torus { .. }
+        | Operation::Fuse { .. }
+        | Operation::Cut { .. }
+        | Operation::Common { .. }
+        | Operation::Pad { .. }
+        | Operation::Pocket { .. }
+        | Operation::Revolve { .. }
+        | Operation::Groove { .. } => "make this feature's name or note shorter",
     }
 }
 

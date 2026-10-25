@@ -420,17 +420,7 @@ pub fn profile(
     feature: &FeatureId,
     solution: &SketchSolution,
 ) -> Result<Profile, Refused> {
-    let found = document
-        .document()
-        .features
-        .iter()
-        .find(|f| &f.id == feature)
-        .ok_or_else(|| {
-            Refused::of(Error::new(
-                ErrorCode::InvalidInput,
-                format!("the document has no feature {}", feature.as_str()),
-            ))
-        })?;
+    let found = document.document().feature(feature).map_err(Refused::of)?;
     let Operation::Sketch(sketch) = &found.operation else {
         return Err(Refused::of(
             Error::new(

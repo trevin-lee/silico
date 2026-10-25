@@ -4,6 +4,7 @@
 //! the test wrote them, the design's texts and messages, and counts by hand.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -259,23 +260,40 @@ fn a_file_is_open_in_one_session_by_any_of_its_paths_until_it_closes() {
     std::os::unix::fs::symlink(&path, &link).unwrap();
     std::fs::create_dir(f.dir.path().join("sub")).unwrap();
     let dotted = f.dir.path().join("sub/../block.silico");
-    for again in [&path, &link, &dotted] {
+    // A hard link is another name of the same file, which no path through links reaches.
+    let hard = f.dir.path().join("hard.silico");
+    std::fs::hard_link(&path, &hard).unwrap();
+    let mut paths = vec![path.clone(), link.clone(), dotted, hard];
+    // macOS names a file of the data volume twice (/private/var/... and
+    // /System/Volumes/Data/private/var/...), each its own path through links.
+    let data = Path::new("/System/Volumes/Data").join(
+        std::fs::canonicalize(&path)
+            .unwrap()
+            .strip_prefix("/")
+            .unwrap(),
+    );
+    if cfg!(target_os = "macos") {
+        assert!(data.exists(), "{}", data.display());
+        assert_eq!(std::fs::canonicalize(&data).unwrap(), data);
+        paths.push(data);
+    }
+    for again in &paths {
         let response = answer(f.sessions.open(again, false));
         assert_eq!(response.session, None);
         assert_eq!(
             refusal(&response),
             (
                 ErrorCode::InvalidInput,
-                format!("{} is already open in session s1", again.display()),
+                format!("\"{}\" is already open in session s1", again.display()),
                 Some("path".to_owned()),
                 Some("use session s1, which this client opened, or close it first".to_owned()),
             )
         );
     }
     assert_eq!(answer(f.sessions.close(&s1)).result, Ok(()));
-    // Closed, it opens again, through the link too.
-    let s5 = f.open(&link);
-    assert_eq!(s5.to_string(), "s5");
+    // Closed, it opens again, through the link too; each refused open took a number.
+    let again = f.open(&link);
+    assert_eq!(again.to_string(), format!("s{}", 2 + paths.len()));
 }
 
 #[test]
@@ -360,7 +378,7 @@ fn create_writes_an_empty_document_in_canonical_form_and_never_over_a_file() {
         refusal(&refused),
         (
             ErrorCode::InvalidInput,
-            format!("{} already exists", existing.display()),
+            format!("\"{}\" already exists", existing.display()),
             Some("create".to_owned()),
             Some("open it without create, or give another path".to_owned()),
         )
@@ -383,8 +401,13 @@ fn create_writes_an_empty_document_in_canonical_form_and_never_over_a_file() {
     let (code, _, parameter, _) = refusal(&nowhere);
     assert_eq!(code, ErrorCode::IoFailed);
     assert_eq!(parameter.as_deref(), Some("path"));
-    let nameless = answer(f.sessions.open(f.dir.path().join(".."), true));
-    let (code, _, parameter, _) = refusal(&nameless);
+    let up = f.dir.path().join("..");
+    let nameless = answer(f.sessions.open(&up, true));
+    let (code, message, parameter, _) = refusal(&nameless);
+    assert_eq!(
+        message,
+        format!("\"{}\" names no file to make", up.display())
+    );
     assert_eq!(code, ErrorCode::InvalidInput);
     assert_eq!(parameter.as_deref(), Some("path"));
 }
@@ -472,4 +495,129 @@ fn dropping_the_sessions_closes_them_and_ends_their_threads() {
         "{text:?}"
     );
     drop(dir);
+}
+
+#[test]
+fn a_file_longer_than_silico_reads_isnt_opened_and_one_at_the_limit_is_held_whole() {
+    // 64 MiB, four times the 16 MiB a document may be: what Silico reads of one.
+    const READ: u64 = 4 * 16 * 1024 * 1024;
+    let f = fixture();
+    let long = f.dir.path().join("long.silico");
+    std::fs::File::create(&long)
+        .unwrap()
+        .set_len(READ + 1)
+        .unwrap();
+    let response = answer(f.sessions.open(&long, false));
+    assert_eq!(response.session, None);
+    assert_eq!(
+        refusal(&response),
+        (
+            ErrorCode::InvalidInput,
+            format!(
+                "\"{}\" is more than the 67108864 bytes Silico reads of a document",
+                long.display()
+            ),
+            Some("path".to_owned()),
+            Some("check it's the document you mean: no document is this long".to_owned()),
+        )
+    );
+    // At the limit, it opens (the reader refusing it) and its text is all of it.
+    let at = f.dir.path().join("at.silico");
+    std::fs::File::create(&at).unwrap().set_len(READ).unwrap();
+    let s = f.open(&at);
+    let text = answer(f.sessions.text(&s, None)).result.unwrap();
+    assert_eq!(text.len() as u64, READ);
+    assert!(text.bytes().all(|b| b == 0));
+}
+
+#[test]
+fn an_open_whose_thread_panics_holds_neither_its_file_nor_a_place() {
+    let panicked = AtomicBool::new(false);
+    // The first cache opened in `boom` panics, as a bug in the open would.
+    let f = fixture_with(move |cache| {
+        if cache.parent().is_some_and(|p| p.ends_with("boom"))
+            && !panicked.swap(true, Ordering::SeqCst)
+        {
+            panic!("a bug in an open");
+        }
+    });
+    let path = f.file("boom/a.silico", BOX);
+    let response = answer(f.sessions.open(&path, false));
+    assert_eq!(response.session, None);
+    assert_eq!(
+        refusal(&response),
+        (
+            ErrorCode::Internal,
+            "the session stopped before the command answered".to_owned(),
+            None,
+            Some("this is a bug in Silico, not in the request: report it".to_owned()),
+        )
+    );
+    // Its file isn't held, and its place isn't taken: it opens, and 15 more beside it.
+    f.open(&path);
+    for n in 0..15 {
+        f.open(&f.file(&format!("p{n}.silico"), BOX));
+    }
+}
+
+#[test]
+fn text_of_a_feature_whose_id_a_refused_document_repeats_is_refused_naming_it() {
+    let twice = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}, {"id": "k7f2qx3m", "type": "sphere", "v": 1, "name": "Ball", "position": [0, 0, 0], "radius": 5}]}"#;
+    let f = fixture();
+    let response = answer(f.sessions.open(f.file("twice.silico", twice), false));
+    assert!(!response.result.unwrap().problems.is_empty());
+    let s = response.session.unwrap().id;
+    let text = answer(f.sessions.text(&s, FeatureId::new("k7f2qx3m")));
+    assert_eq!(
+        refusal(&text),
+        (
+            ErrorCode::InvalidInput,
+            "2 features in the document have the ID k7f2qx3m".to_owned(),
+            Some("feature".to_owned()),
+            Some(
+                "give each feature an ID of its own: the gate refuses an ID used twice".to_owned()
+            ),
+        )
+    );
+}
+
+#[test]
+fn a_feature_over_several_lines_is_written_as_the_document_writes_it_not_indented() {
+    // A box with its fingerprint (an object inside it), so one member a line; the canonical
+    // document holds it four spaces in.
+    let feature = "{\n  \"id\": \"k7f2qx3m\",\n  \"type\": \"box\",\n  \"v\": 1,\n  \"name\": \"Block\",\n  \"position\": [0, 0, 0],\n  \"length\": 40,\n  \"width\": 20,\n  \"height\": 10,\n  \"fingerprint\": {\"volume\": 8000, \"area\": 2800, \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n}";
+    let document = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 8000, \"area\": 2800, \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
+    let f = fixture();
+    let s = f.open(&f.file("block.silico", document));
+    let text = answer(f.sessions.text(&s, FeatureId::new("k7f2qx3m")))
+        .result
+        .unwrap();
+    assert_eq!(text, feature);
+    assert!(document.contains(&format!("    {}\n", text.replace('\n', "\n    "))));
+    // The document is in canonical form, so `text` of the whole is the same bytes.
+    assert_eq!(answer(f.sessions.text(&s, None)).result.unwrap(), document);
+}
+
+#[test]
+fn a_cache_without_the_users_secret_isnt_kept_so_the_next_open_tries_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = dir.path().join("secret");
+    // Not 32 bytes: the cache keeps nothing.
+    let bad = dir.path().join("bad-secret");
+    std::fs::write(&bad, "bad").unwrap();
+    let opened = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&opened);
+    let sessions = Sessions::with_cache_opener(FakeKernel::new(1).unwrap(), move |cache| {
+        let unsealed = cache.parent().is_some_and(|p| p.ends_with("unsealed"));
+        seen.lock().unwrap().push(unsealed);
+        Cache::with_secret(cache, if unsealed { &bad } else { &good })
+    });
+    for name in ["unsealed/a", "unsealed/b", "sealed/c", "sealed/d"] {
+        let path = dir.path().join(format!("{name}.silico"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, BOX).unwrap();
+        assert!(answer(sessions.open(&path, false)).result.is_ok());
+    }
+    // The unsealed directory's opened for each session, the sealed one's once.
+    assert_eq!(*opened.lock().unwrap(), [true, true, false]);
 }

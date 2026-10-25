@@ -655,8 +655,7 @@ pub struct Checked(Document);
 impl Checked {
     /// `document`, if it passes the gate ([`validate`]); every problem with it if not.
     pub fn new(document: Document) -> Result<Self, Invalid> {
-        validate(&document)?;
-        Ok(Checked(document))
+        Self::try_new(document).map_err(|(_, invalid)| invalid)
     }
 
     /// `document`, if it passes the gate; if not, the document back with every problem with

@@ -67,8 +67,51 @@ impl Problems {
 /// which needs no kernel, so a client can say what's wrong with a document it can't
 /// rebuild.
 pub fn gate(bytes: &[u8]) -> Result<Checked, Problems> {
-    let document = document::read(bytes).map_err(|error| Problems::of(vec![error]))?;
-    Checked::new(document).map_err(Problems::from)
+    match Gated::of(bytes) {
+        Gated::Checked(checked) => Ok(checked),
+        Gated::Unread(problems) | Gated::Refused(_, problems) => Err(problems),
+    }
+}
+
+/// A document's text as the reader and the gate found it: what [`gate`] gives, keeping the
+/// document the gate refused, for a session that holds it to be mended.
+enum Gated {
+    /// It doesn't read as a document: the reader's error.
+    Unread(Problems),
+    /// It reads, but the gate refuses it: the document, and every problem with it.
+    Refused(Document, Problems),
+    Checked(Checked),
+}
+
+impl Gated {
+    /// `text` read and through the gate.
+    fn of(text: &[u8]) -> Self {
+        let _span = tracing::info_span!("gate", bytes = text.len()).entered();
+        match document::read(text) {
+            Err(error) => Gated::Unread(Problems::from(error)),
+            Ok(read) => match Checked::try_new(read) {
+                Ok(checked) => Gated::Checked(checked),
+                Err((read, invalid)) => Gated::Refused(read, Problems::from(invalid)),
+            },
+        }
+    }
+
+    /// The document, if the text reads as one; or the reader's error.
+    fn document(&self) -> Result<&Document, &Problems> {
+        match self {
+            Gated::Unread(problems) => Err(problems),
+            Gated::Refused(document, _) => Ok(document),
+            Gated::Checked(checked) => Ok(checked.document()),
+        }
+    }
+
+    /// The reader's or the gate's problems: none if the gate took it.
+    fn problems(&self) -> Problems {
+        match self {
+            Gated::Unread(problems) | Gated::Refused(_, problems) => problems.clone(),
+            Gated::Checked(_) => Problems::of(Vec::new()),
+        }
+    }
 }
 
 impl From<Error> for Problems {
