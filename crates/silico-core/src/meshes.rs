@@ -98,8 +98,8 @@ impl<K: Ord + Clone> MeshCache<K> {
     /// if it's known and coarser (the kernel would mesh at it anyway).
     pub fn deflection_for(&self, key: &K, level: f64) -> f64 {
         match lock(&self.inner).floors.get(key) {
-            Some(&floor) if level < floor => floor,
-            _ => level,
+            Some(&floor) => level.max(floor),
+            None => level,
         }
     }
 
@@ -239,6 +239,12 @@ mod tests {
         for not in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             assert_eq!(mesh_level(not), None, "{not}");
         }
+    }
+
+    #[test]
+    fn the_cache_holds_256_mib() {
+        // The design's bound: 256 × 2²⁰ bytes.
+        assert_eq!(super::MESH_CACHE_BYTES, 268_435_456);
     }
 
     #[test]

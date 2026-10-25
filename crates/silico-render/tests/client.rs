@@ -139,7 +139,27 @@ fn a_worker_that_answers_other_than_asked_is_a_protocol_error_and_stopped() {
         cause(at(test_scenes::WRONG_REPLY)).as_deref(),
         Some("it answered Echo")
     );
+    assert_eq!(
+        cause(at(test_scenes::IDS_FLIPPED)).as_deref(),
+        Some("no ID buffer, though one was asked for")
+    );
+    let mut unasked = at(test_scenes::IDS_FLIPPED);
+    unasked.ids = false;
+    assert_eq!(
+        cause(unasked).as_deref(),
+        Some("an ID buffer that wasn't asked for")
+    );
     drawn(c.render(small()).wait());
+}
+
+#[test]
+fn a_render_without_the_id_buffer_draws_and_has_none() {
+    let c = client(WORKER, RenderSettings::default());
+    let mut scene = front_of_a_box(40, 30);
+    scene.ids = false;
+    let rendered = drawn(c.render(scene).wait());
+    assert_eq!(&rendered.png[1..4], b"PNG");
+    assert_eq!(rendered.ids, None);
 }
 
 #[test]
