@@ -1,0 +1,98 @@
+//! The least distance between two elements ([`crate::Op::Distance`], M4.5;
+//! docs/ports/measure.md): OCCT's `BRepExtrema_DistShapeShape` gives the distance and every
+//! pair of points where it found it met, in its own traversal's order; the worker sends the
+//! distance, one of those pairs, chosen by its points' coordinates ([`witness`]), so the
+//! pair is the same whatever order OCCT finds them in, and how many there were.
+
+use serde::{Deserialize, Serialize};
+
+/// What [`crate::Op::Distance`] found: the least distance between the two elements as
+/// bounded (never their infinite carriers), a pair of points where it's met, `from` on the
+/// first element and `to` on the second, and how many pairs OCCT found it met at.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Distance {
+    pub distance: f64,
+    pub from: [f64; 3],
+    pub to: [f64; 3],
+    pub solutions: u32,
+}
+
+/// The pair of `pairs` (each from the first element to the second) whose two points, as an
+/// unordered pair, come first by (x, y, z): each pair's lesser point first, then its
+/// greater, each compared by x, then y, then z (`f64::total_cmp`, so the order is total).
+/// A witness of where the least distance is met, not an identity: swapping the elements
+/// swaps its two points and nothing else. None for no pairs.
+pub fn witness(pairs: &[[[f64; 3]; 2]]) -> Option<[[f64; 3]; 2]> {
+    pairs
+        .iter()
+        .copied()
+        .min_by(|a, b| unordered(a).cmp_by(&unordered(b)))
+}
+
+/// A pair's points, the lesser by (x, y, z) first.
+fn unordered(pair: &[[f64; 3]; 2]) -> Ordered {
+    let [a, b] = *pair;
+    if by_coordinates(&a, &b).is_le() {
+        Ordered(a, b)
+    } else {
+        Ordered(b, a)
+    }
+}
+
+struct Ordered([f64; 3], [f64; 3]);
+
+impl Ordered {
+    fn cmp_by(&self, other: &Ordered) -> std::cmp::Ordering {
+        by_coordinates(&self.0, &other.0).then_with(|| by_coordinates(&self.1, &other.1))
+    }
+}
+
+fn by_coordinates(a: &[f64; 3], b: &[f64; 3]) -> std::cmp::Ordering {
+    a[0].total_cmp(&b[0])
+        .then_with(|| a[1].total_cmp(&b[1]))
+        .then_with(|| a[2].total_cmp(&b[2]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::witness;
+
+    #[test]
+    fn the_witness_is_the_pair_first_by_its_lesser_point_then_its_greater() {
+        // A box's bottom and top 10 apart: OCCT finds the corners' pairs, in its order.
+        let pairs = [
+            [[10.0, 20.0, 0.0], [10.0, 20.0, 10.0]],
+            [[0.0, 20.0, 0.0], [0.0, 20.0, 10.0]],
+            [[0.0, 0.0, 0.0], [0.0, 0.0, 10.0]],
+            [[10.0, 0.0, 0.0], [10.0, 0.0, 10.0]],
+        ];
+        assert_eq!(witness(&pairs), Some([[0.0, 0.0, 0.0], [0.0, 0.0, 10.0]]));
+        // In any order, the same pair.
+        let mut reversed = pairs;
+        reversed.reverse();
+        assert_eq!(witness(&reversed), witness(&pairs));
+        // Swapped elements: each pair's points swapped, and so the witness's, nothing else.
+        let swapped = pairs.map(|[a, b]| [b, a]);
+        assert_eq!(witness(&swapped), Some([[0.0, 0.0, 10.0], [0.0, 0.0, 0.0]]));
+    }
+
+    #[test]
+    fn pairs_alike_in_their_lesser_point_are_told_apart_by_their_greater() {
+        // Both pairs' lesser point is the origin; the one whose other point is first wins,
+        // whichever element it's on.
+        let pairs = [
+            [[0.0, 0.0, 0.0], [0.0, 5.0, 0.0]],
+            [[0.0, 3.0, 0.0], [0.0, 0.0, 0.0]],
+        ];
+        assert_eq!(witness(&pairs), Some([[0.0, 3.0, 0.0], [0.0, 0.0, 0.0]]));
+        // y decides only where x ties, z only where y does too; -0 comes before 0.
+        let pairs = [
+            [[1.0, 0.0, 0.0], [9.0, 9.0, 9.0]],
+            [[0.0, 1.0, 5.0], [9.0, 9.0, 9.0]],
+            [[0.0, 1.0, -0.0], [9.0, 9.0, 9.0]],
+            [[0.0, 1.0, 0.0], [9.0, 9.0, 9.0]],
+        ];
+        assert_eq!(witness(&pairs), Some([[0.0, 1.0, -0.0], [9.0, 9.0, 9.0]]));
+        assert_eq!(witness(&[]), None);
+    }
+}

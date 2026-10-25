@@ -9,6 +9,7 @@
 
 mod chamfer;
 mod describe;
+mod distance;
 mod export;
 mod faces;
 pub mod frame;
@@ -26,6 +27,7 @@ pub use describe::{
     DESCRIBE_BATCH, Description, EdgeCurve, EdgeDescription, FaceDescription, Quantity, Surface,
     What, batches, describe_in_batches,
 };
+pub use distance::{Distance, witness};
 pub use export::{
     DEFAULT_EXPORT_TOLERANCE, ExportMesh, MAX_EXPORT_TOLERANCE, MAX_EXPORT_TRIANGLES,
     MIN_EXPORT_TOLERANCE, check_export_tolerance, check_export_triangles, export_angle,
@@ -213,6 +215,16 @@ pub enum Op {
         start: f64,
         angle: f64,
     },
+    /// The least distance between two elements as bounded: `first` of `shape`, and `second`
+    /// of `other`, or of `shape` if there's no other, each a face, edge, or vertex numbered
+    /// from 1 in `TopExp::MapShapes` order. OCCT's `BRepExtrema_DistShapeShape`, on one
+    /// thread, at its default precision. Replies with [`Reply::Distance`].
+    Distance {
+        shape: ShapeData,
+        first: ElementRef,
+        other: Option<ShapeData>,
+        second: ElementRef,
+    },
     /// The geometry and measures of `shape`'s elements of `kind` numbered from `first` (from
     /// 1, in `TopExp::MapShapes` order), `count` of them or as many as there are
     /// (docs/design/m4.4-describe.md): one batch, at most [`DESCRIBE_BATCH`]. Replies with
@@ -249,6 +261,7 @@ impl Op {
             Op::Boolean { op, .. } => op.name(),
             Op::Tessellate { .. } => "Tessellate",
             Op::Describe { .. } => "Describe",
+            Op::Distance { .. } => "Distance",
             Op::ExportMesh { .. } => "ExportMesh",
             Op::Solve(_) => "Solve",
             Op::DragBegin(_) => "DragBegin",
@@ -418,6 +431,8 @@ pub enum Reply {
         total: u32,
         description: Description,
     },
+    /// The least distance between two elements ([`Op::Distance`]).
+    Distance(Distance),
     /// A shape's solids meshed for export ([`Op::ExportMesh`]), boxed, as it's many lists.
     ExportMesh(Box<ExportMesh>),
 }
@@ -432,6 +447,7 @@ impl Reply {
             Reply::FreecadMeasures(_) => "FreecadMeasures",
             Reply::Mesh(_) => "Mesh",
             Reply::Described { .. } => "Described",
+            Reply::Distance(_) => "Distance",
             Reply::ExportMesh(_) => "ExportMesh",
             Reply::Solved(_) => "Solved",
             Reply::DragStarted { .. } => "DragStarted",

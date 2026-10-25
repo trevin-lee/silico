@@ -264,6 +264,19 @@ mod ffi {
         vertices: Vec<Point3>,
     }
 
+    /// The least distance between two elements (`distance`): whether both were found (if
+    /// not, how many of each one's kind its shape has), whether OCCT found the distance, its
+    /// value, and each pair of points where OCCT found it met, two points a pair (on the
+    /// first element, then on the second), in OCCT's order.
+    struct DistanceOut {
+        found: bool,
+        first_total: u32,
+        second_total: u32,
+        done: bool,
+        value: f64,
+        pairs: Vec<Point3>,
+    }
+
     /// How many distinct faces, edges, vertices, and solids a shape has.
     struct Counts {
         faces: u32,
@@ -383,6 +396,14 @@ mod ffi {
             count: u32,
             precision: f64,
         ) -> Result<DescribeOut>;
+        fn distance(
+            first_shape: &Shape,
+            first_kind: Kind,
+            first: u32,
+            second_shape: &Shape,
+            second_kind: Kind,
+            second: u32,
+        ) -> Result<DistanceOut>;
         fn is_valid_where_changed(input: &Shape, result: &Shape) -> Result<bool>;
         fn is_valid_where_changed_from_two(
             first: &Shape,
@@ -984,6 +1005,98 @@ pub fn describe(
             vertices: d.vertices.iter().map(point).collect(),
         },
     ))
+}
+
+/// The least distance between `first`, an element of `shape`, and `second`, one of
+/// `other` (or of `shape` too, if there's no other), as bounded (docs/ports/measure.md):
+/// OCCT's `BRepExtrema_DistShapeShape` on one thread, its distance, one pair of points where
+/// it's met, chosen by their coordinates ([`silico_protocol::witness`]), and how many pairs
+/// OCCT found. Refused, naming `first` or `second`, for a solid or an element its shape
+/// hasn't; and if OCCT finds no distance.
+pub fn distance(
+    shape: &Shape,
+    first: silico_protocol::ElementRef,
+    other: Option<&Shape>,
+    second: silico_protocol::ElementRef,
+) -> Result<silico_protocol::Distance, KernelError> {
+    let kind = |element: silico_protocol::ElementRef, parameter: &str| match element.kind {
+        ElementKind::Face => Ok(ffi::Kind::Face),
+        ElementKind::Edge => Ok(ffi::Kind::Edge),
+        ElementKind::Vertex => Ok(ffi::Kind::Vertex),
+        ElementKind::Solid => Err(KernelError::new(Refusal::InvalidParameter {
+            parameter: parameter.to_owned(),
+            message: format!("{parameter} must be a face, an edge, or a vertex, not a solid"),
+        })),
+    };
+    let first_kind = kind(first, "first")?;
+    let second_kind = kind(second, "second")?;
+    let second_shape = other.unwrap_or(shape);
+    let out = ffi::distance(
+        shape.get()?,
+        first_kind,
+        first.index,
+        second_shape.get()?,
+        second_kind,
+        second.index,
+    )?;
+    if !out.found {
+        let missing = |element: silico_protocol::ElementRef, total: u32, parameter: &str| {
+            (element.index == 0 || element.index > total).then(|| {
+                KernelError::new(Refusal::InvalidParameter {
+                    parameter: parameter.to_owned(),
+                    message: format!(
+                        "{parameter} is {element}, and its shape has {total} {}",
+                        if total == 1 {
+                            one_of(element.kind)
+                        } else {
+                            element.kind.plural()
+                        }
+                    ),
+                })
+            })
+        };
+        return Err(missing(first, out.first_total, "first")
+            .or_else(|| missing(second, out.second_total, "second"))
+            .unwrap_or_else(|| {
+                KernelError::new(Refusal::Internal {
+                    what: "the bridge found no element, though both are in range".to_owned(),
+                })
+            }));
+    }
+    if !out.done {
+        return Err(KernelError::caused(
+            Refusal::DistanceNotDone,
+            Some("BRepExtrema_DistShapeShape: not done".to_owned()),
+        ));
+    }
+    let point = |p: &ffi::Point3| [p.x, p.y, p.z];
+    let pairs: Vec<[[f64; 3]; 2]> = out
+        .pairs
+        .chunks_exact(2)
+        .map(|pair| [point(&pair[0]), point(&pair[1])])
+        .collect();
+    let Some([from, to]) = silico_protocol::witness(&pairs) else {
+        return Err(KernelError::caused(
+            Refusal::DistanceNotDone,
+            Some("BRepExtrema_DistShapeShape: done, with no solution".to_owned()),
+        ));
+    };
+    Ok(silico_protocol::Distance {
+        distance: out.value,
+        from,
+        to,
+        solutions: u32::try_from(pairs.len()).unwrap_or(u32::MAX),
+    })
+}
+
+/// The word for one element of `kind`, for "its shape has 1 face".
+fn one_of(kind: ElementKind) -> &'static str {
+    match kind {
+        ElementKind::Face => "face",
+        ElementKind::Edge => "edge",
+        ElementKind::Vertex => "vertex",
+        ElementKind::Solid => "solid",
+    }
 }
 
 /// Every one of `shape`'s faces, edges, and vertices described, a batch of at most

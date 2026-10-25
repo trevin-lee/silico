@@ -34,6 +34,7 @@
 #include <BRep_Builder.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
+#include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
@@ -456,6 +457,67 @@ DescribeOut describe(const Shape &shape, Kind kind, uint32_t first, uint32_t cou
       out.vertices.push_back(point3(BRep_Tool::Pnt(TopoDS::Vertex(element)).XYZ()));
       break;
     }
+  }
+  return out;
+}
+
+namespace {
+// The shape type of a face, edge, or vertex; none for a solid, which distance doesn't take.
+bool element_type(Kind kind, TopAbs_ShapeEnum &type) {
+  switch (kind) {
+  case Kind::Face:
+    type = TopAbs_FACE;
+    return true;
+  case Kind::Edge:
+    type = TopAbs_EDGE;
+    return true;
+  case Kind::Vertex:
+    type = TopAbs_VERTEX;
+    return true;
+  default:
+    return false;
+  }
+}
+} // namespace
+
+DistanceOut distance(const Shape &first_shape, Kind first_kind, uint32_t first,
+                     const Shape &second_shape, Kind second_kind, uint32_t second) {
+  // Each element by its kind and number (from 1, TopExp::MapShapes order); if either isn't
+  // one, how many of its kind its shape has, and nothing measured.
+  DistanceOut out;
+  out.found = false;
+  out.done = false;
+  out.value = 0.0;
+  TopAbs_ShapeEnum first_type = TopAbs_FACE;
+  TopAbs_ShapeEnum second_type = TopAbs_FACE;
+  if (!element_type(first_kind, first_type) || !element_type(second_kind, second_type)) {
+    throw Standard_Failure("distance takes faces, edges, or vertices");
+  }
+  TopTools_IndexedMapOfShape firsts;
+  TopTools_IndexedMapOfShape seconds;
+  TopExp::MapShapes(first_shape.shape, first_type, firsts);
+  TopExp::MapShapes(second_shape.shape, second_type, seconds);
+  out.first_total = static_cast<uint32_t>(firsts.Extent());
+  out.second_total = static_cast<uint32_t>(seconds.Extent());
+  if (first == 0 || first > out.first_total || second == 0 || second > out.second_total) {
+    return out;
+  }
+  out.found = true;
+  // One thread, as FreeCAD runs it, so its solutions come the same way every run; OCCT's
+  // default precision.
+  BRepExtrema_DistShapeShape extrema;
+  extrema.SetMultiThread(Standard_False);
+  extrema.LoadS1(firsts(static_cast<int>(first)));
+  extrema.LoadS2(seconds(static_cast<int>(second)));
+  extrema.Perform();
+  if (!extrema.IsDone()) {
+    return out;
+  }
+  out.done = true;
+  out.value = extrema.Value();
+  for (int i = 1; i <= extrema.NbSolution(); ++i) {
+    out.pairs.push_back(point3(extrema.PointOnShape1(i).XYZ()));
+    out.pairs.push_back(point3(extrema.PointOnShape2(i).XYZ()));
   }
   return out;
 }

@@ -141,6 +141,9 @@ pub enum Refusal {
     /// An export's mesh of more `triangles`, in all, than the `limit` an export may have
     /// ([`crate::MAX_EXPORT_TRIANGLES`]).
     TooManyTriangles { triangles: u64, limit: u64 },
+    /// OCCT's `BRepExtrema_DistShapeShape` found no least distance between two elements
+    /// ([`crate::Op::Distance`]): it isn't done.
+    DistanceNotDone,
 }
 
 /// What OCCT gave back nothing of.
@@ -306,7 +309,8 @@ impl Refusal {
             | Refusal::ExtentNotFinite
             | Refusal::FacesUnmeshed { .. }
             | Refusal::NotFinite { .. }
-            | Refusal::SolutionOutOfReach { .. } => FailureKind::KernelFailed,
+            | Refusal::SolutionOutOfReach { .. }
+            | Refusal::DistanceNotDone => FailureKind::KernelFailed,
             Refusal::TestOperation { .. } | Refusal::OtherWorkersOp { .. } => {
                 FailureKind::UnknownOp
             }
@@ -641,6 +645,13 @@ impl Refusal {
                      origin",
                     format_number(2.0 * rounding)
                 )),
+            ),
+            Refusal::DistanceNotDone => (
+                "the kernel couldn't find the least distance between these elements".to_owned(),
+                Some(
+                    "report it with the document: the kernel couldn't measure this pair"
+                        .to_owned(),
+                ),
             ),
             Refusal::TooManyTriangles { triangles, limit } => (
                 format!(
@@ -1021,6 +1032,7 @@ mod tests {
                 triangles: 10_000_001,
                 limit: 10_000_000,
             },
+            Refusal::DistanceNotDone,
         ]
     }
 
@@ -1141,6 +1153,7 @@ mod tests {
             InvalidInput,      // SweepFlat
             InvalidInput,      // RoundingPastTolerance
             InvalidInput,      // TooManyTriangles
+            KernelFailed,      // DistanceNotDone (new with M4.5)
         ];
         let refusals = every_refusal();
         assert_eq!(refusals.len(), kinds.len());
@@ -1191,6 +1204,7 @@ mod tests {
             Some("axis"),       // SweepFlat
             Some("tolerance"),  // RoundingPastTolerance
             Some("tolerance"),  // TooManyTriangles
+            None,               // DistanceNotDone
         ];
         let refusals = every_refusal();
         assert_eq!(refusals.len(), parameters.len());

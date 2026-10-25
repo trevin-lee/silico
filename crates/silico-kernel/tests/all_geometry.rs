@@ -71,6 +71,8 @@ mod bridge;
 mod chamfer;
 #[path = "describe.rs"]
 mod describe;
+#[path = "distance.rs"]
+mod distance;
 #[path = "export.rs"]
 mod export;
 #[path = "faces.rs"]
