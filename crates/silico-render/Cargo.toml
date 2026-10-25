@@ -1,0 +1,22 @@
+[package]
+name = "silico-render"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Rerun's renderer, the one M5's viewport grows from, pinned with the workspace's Rerun SDK
+# (docs/design/m4.6-render.md, R1). Its importers are off: nothing here reads a mesh file.
+re_renderer = { version = "=0.38.1", default-features = false }
+# wgpu as re_renderer uses it, with Vulkan (lavapipe) and Metal, and Vulkan's portability
+# enumeration so lavapipe is found on macOS.
+wgpu = { version = "30", default-features = false, features = ["vulkan", "vulkan-portability", "metal", "wgsl", "std"] }
+glam = "0.30"
+macaw = "0.30"
+pollster = "0.4"
+smallvec = "1"
+
+[lints]
+workspace = true

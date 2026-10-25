@@ -20,6 +20,18 @@ cargo-deny = "0.20.*"
 # bundles: Eigen for its algebra, and Boost.Graph for one connected-components call.
 eigen = "==3.4.0"
 libboost-headers = "==1.86.0"
+# Mesa's software rasterizer and the Vulkan loader for the render worker (silico-render,
+# M4.6: docs/design/m4.6-render.md). Not under the deterministic recipe: the render worker's
+# pixels aren't results (ARCHITECTURE.md, Deterministic kernel). Its build compiles these
+# paths in, so nothing here sets a loader variable for other programs.
+mesa-lavapipe = "==26.2.5"
+libvulkan-loader = "1.4.*"
+
+# mesa-lavapipe's macOS builds (the render worker's rasterizer) need macOS 15 or later. The
+# table pixi 0.81 calls deprecated, kept: its replacement renames the platform every feature
+# lists.
+[system-requirements]
+macos = "15.0"
 
 # On macOS, linking uses Apple's ld: lld 21 can't read the macOS 27 SDK.
 [target.linux-64.dependencies]
