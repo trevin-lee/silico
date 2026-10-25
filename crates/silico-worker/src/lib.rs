@@ -27,19 +27,42 @@ use silico_protocol::{
 #[cfg(feature = "test_ops")]
 pub mod test_ops;
 
-/// How a worker reads and switches off floating-point traps, through the C++ it links.
+/// What a worker is to the loop: how its floating-point traps are kept off, and what it was
+/// built from.
 pub struct Platform {
-    /// The trap-enable bits that are set: 0 when every trap is off.
-    pub fp_trap_mask: fn() -> u32,
-    /// Switches every trap off.
-    pub disable_fp_traps: fn() -> Result<(), String>,
+    /// Whether, and how, the loop reads and switches off its floating-point traps.
+    pub traps: Traps,
     /// Logged when the worker is ready, naming what it was built from (its C++ library).
     pub built_from: &'static str,
 }
 
-/// Fails if any floating-point trap is on. Checked at startup and after every request.
-pub fn check_fp_traps(platform: &Platform) -> Result<(), String> {
-    check_fp_trap_mask((platform.fp_trap_mask)())
+/// How a worker's floating-point traps are kept off (ARCHITECTURE.md, *Deterministic
+/// kernel*, 7).
+#[derive(Clone, Copy)]
+pub enum Traps {
+    /// Read and switched off through the C++ the worker links, at startup and after every
+    /// request: the rule for every worker whose output is a result (a shape and its
+    /// history, a solve, a measure, a mesh).
+    Checked {
+        /// The trap-enable bits that are set: 0 when every trap is off.
+        mask: fn() -> u32,
+        /// Switches every trap off.
+        disable: fn() -> Result<(), String>,
+    },
+    /// Not read: a worker whose output is no result (the render worker's pixels), which
+    /// *Deterministic kernel*'s rules don't bind. Said so at startup, never stubbed as a mask
+    /// of 0, which would say every trap is off rather than that none was looked at.
+    Unchecked,
+}
+
+impl Traps {
+    /// Fails if any floating-point trap is on; none for traps that aren't checked.
+    pub fn check(self) -> Option<Result<(), String>> {
+        match self {
+            Traps::Checked { mask, .. } => Some(check_fp_trap_mask(mask())),
+            Traps::Unchecked => None,
+        }
+    }
 }
 
 /// The decision behind [`check_fp_traps`], on a given trap-enable mask, so it can be
@@ -76,14 +99,16 @@ where
         let mut result = handle(request.id, request.generation, request.op, &mut writer);
         // Traps switched on during a request would make later results platform-
         // dependent, so the request fails, and the traps are switched back off.
-        let mask = (platform.fp_trap_mask)();
-        if let Err(problem) = check_fp_traps(platform) {
-            let fixed = (platform.disable_fp_traps)().is_ok() && check_fp_traps(platform).is_ok();
-            tracing::error!("{problem} after {name}; switched off: {fixed}");
-            result = Err(Failure::new(Refusal::FpTrapsOn {
-                mask,
-                op: name.to_owned(),
-            }));
+        if let Traps::Checked { mask, disable } = platform.traps {
+            let bits = mask();
+            if let Err(problem) = check_fp_trap_mask(bits) {
+                let fixed = disable().is_ok() && check_fp_trap_mask(mask()).is_ok();
+                tracing::error!("{problem} after {name}; switched off: {fixed}");
+                result = Err(Failure::new(Refusal::FpTrapsOn {
+                    mask: bits,
+                    op: name.to_owned(),
+                }));
+            }
         }
         // The request's last log line, after any it logged and before its reply: the core
         // keeps the span the request was asked in until it has read this, so every line of
@@ -177,13 +202,21 @@ where
         .with_writer(std::io::stderr)
         .try_init();
 
-    if let Err(e) = (platform.disable_fp_traps)() {
-        tracing::error!("couldn't switch floating-point traps off: {e}");
-        return ExitCode::from(3);
-    }
-    if let Err(problem) = check_fp_traps(platform) {
-        tracing::error!("{problem}; refusing to run");
-        return ExitCode::from(3);
+    match platform.traps {
+        Traps::Checked { mask, disable } => {
+            if let Err(e) = disable() {
+                tracing::error!("couldn't switch floating-point traps off: {e}");
+                return ExitCode::from(3);
+            }
+            if let Err(problem) = check_fp_trap_mask(mask()) {
+                tracing::error!("{problem}; refusing to run");
+                return ExitCode::from(3);
+            }
+        }
+        Traps::Unchecked => tracing::info!(
+            traps = "unchecked",
+            "floating-point traps aren't checked: no result is computed in this worker"
+        ),
     }
     let socket = match inherited_socket() {
         Ok(socket) => socket,
@@ -214,7 +247,7 @@ mod tests {
         Response, TraceId, write_message,
     };
 
-    use super::{Platform, serve};
+    use super::{Platform, Traps, serve};
 
     /// What a test's subscriber writes.
     #[derive(Clone, Default)]
@@ -268,8 +301,10 @@ mod tests {
     fn traps_still_on_after_switching_off_are_logged_as_not_switched_off() {
         // Switching off says it worked, but a trap bit stays set: they aren't off.
         let platform = Platform {
-            fp_trap_mask: || 0x100,
-            disable_fp_traps: || Ok(()),
+            traps: Traps::Checked {
+                mask: || 0x100,
+                disable: || Ok(()),
+            },
             built_from: "test",
         };
         let (response, log) = serve_one(&platform);
@@ -289,10 +324,12 @@ mod tests {
         // log says they're off again (the other test's positive control).
         static ON: AtomicBool = AtomicBool::new(true);
         let platform = Platform {
-            fp_trap_mask: || u32::from(ON.load(Ordering::SeqCst)),
-            disable_fp_traps: || {
-                ON.store(false, Ordering::SeqCst);
-                Ok(())
+            traps: Traps::Checked {
+                mask: || u32::from(ON.load(Ordering::SeqCst)),
+                disable: || {
+                    ON.store(false, Ordering::SeqCst);
+                    Ok(())
+                },
             },
             built_from: "test",
         };
@@ -309,5 +346,25 @@ mod tests {
             response.result
         );
         assert!(log.contains("switched off: true"), "{log}");
+    }
+    #[test]
+    fn an_unchecked_platform_serves_without_reading_traps() {
+        // A worker whose output is no result (the render worker): its traps aren't read, so
+        // a request is answered as handled, never refused as traps on, and nothing about
+        // traps is logged. The checked tests above are its control: the same request with a
+        // mask set is refused.
+        let platform = Platform {
+            traps: Traps::Unchecked,
+            built_from: "test",
+        };
+        let (response, log) = serve_one(&platform);
+        assert_eq!(response.result, Ok(Reply::Done));
+        assert!(!log.contains("traps"), "{log}");
+        assert_eq!(Traps::Unchecked.check(), None);
+        let checked = Traps::Checked {
+            mask: || 0x100,
+            disable: || Ok(()),
+        };
+        assert!(checked.check().is_some_and(|r| r.is_err()));
     }
 }

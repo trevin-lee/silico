@@ -377,7 +377,9 @@ fn occt_doesnt_switch_fp_traps_on_on_macos() {
 
 #[test]
 fn fp_trap_check_fails_when_traps_are_on() {
-    // In-process: the check the worker runs at startup and after every request.
+    // In-process: the check the worker runs at startup and after every request, which a
+    // worker whose output is a result must run (ARCHITECTURE.md, Deterministic kernel, 7).
+    assert!(silico_kernel::worker::PLATFORM.traps.check().is_some());
     assert!(silico_kernel::worker::check_fp_traps().is_ok());
     silico_kernel::test_ops::enable_fp_traps().unwrap();
     let on = silico_kernel::worker::check_fp_traps();

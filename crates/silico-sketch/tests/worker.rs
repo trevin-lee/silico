@@ -127,12 +127,14 @@ fn fp_traps_switched_on_by_a_request_fail_it() {
 
 #[test]
 fn fp_trap_check_fails_when_traps_are_on() {
-    // In-process: the check the sketch worker runs at startup and after every request.
+    // In-process: the check the sketch worker runs at startup and after every request, which
+    // a worker whose output is a result must run (ARCHITECTURE.md, Deterministic kernel, 7).
     let platform = &silico_sketch::worker::PLATFORM;
-    assert!(silico_worker::check_fp_traps(platform).is_ok());
+    assert!(platform.traps.check().is_some());
+    assert!(platform.traps.check().unwrap().is_ok());
     let stays_on = traps_stay_on_here();
     silico_sketch::test_ops::enable_fp_traps().unwrap();
-    let on = silico_worker::check_fp_traps(platform);
+    let on = platform.traps.check().unwrap();
     silico_sketch::disable_fp_traps().unwrap();
     if cfg!(target_os = "linux") {
         assert!(stays_on, "Linux keeps trap-enable bits");
@@ -142,7 +144,7 @@ fn fp_trap_check_fails_when_traps_are_on() {
     } else {
         assert!(on.is_ok());
     }
-    assert!(silico_worker::check_fp_traps(platform).is_ok());
+    assert!(platform.traps.check().unwrap().is_ok());
 }
 
 #[test]

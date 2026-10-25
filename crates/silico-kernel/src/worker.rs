@@ -237,8 +237,10 @@ fn failure(e: KernelError) -> Failure {
 
 /// How the kernel worker reads and switches off floating-point traps: through OCCT.
 pub const PLATFORM: silico_worker::Platform = silico_worker::Platform {
-    fp_trap_mask: crate::fp_trap_mask,
-    disable_fp_traps,
+    traps: silico_worker::Traps::Checked {
+        mask: crate::fp_trap_mask,
+        disable: disable_fp_traps,
+    },
     built_from: crate::OCCT_BUILD,
 };
 
@@ -248,7 +250,7 @@ fn disable_fp_traps() -> Result<(), String> {
 
 /// Fails if any floating-point trap is on. Checked at startup and after every request.
 pub fn check_fp_traps() -> Result<(), String> {
-    silico_worker::check_fp_traps(&PLATFORM)
+    silico_worker::check_fp_trap_mask(crate::fp_trap_mask())
 }
 
 pub use silico_worker::check_fp_trap_mask;

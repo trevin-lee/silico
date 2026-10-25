@@ -10,8 +10,10 @@ use crate::Drag;
 /// How the sketch worker reads and switches off floating-point traps: directly, as it
 /// links no library that manages them.
 pub const PLATFORM: silico_worker::Platform = silico_worker::Platform {
-    fp_trap_mask: crate::fp_trap_mask,
-    disable_fp_traps: crate::disable_fp_traps,
+    traps: silico_worker::Traps::Checked {
+        mask: crate::fp_trap_mask,
+        disable: crate::disable_fp_traps,
+    },
     built_from: "PlaneGCS from FreeCAD 1.1.3",
 };
 
