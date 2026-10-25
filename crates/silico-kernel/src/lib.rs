@@ -994,12 +994,16 @@ pub fn describe(
 /// (M4.6: the core asks it of each body whose tight box holds a camera's eye). "On" is to
 /// about the tolerance, the classifier's band varying by face (on a box with tolerance
 /// 1e-7, from 5e-8 to 9e-8). A point that isn't finite is refused; a classifier that can't
-/// tell is OCCT's failure.
+/// tell is OCCT's failure. A point must be finite and within
+/// [`MAX_RENDER_COORDINATE`](silico_protocol::MAX_RENDER_COORDINATE) of the origin, as a
+/// render's points are: far past it OCCT's classifier answers wrongly (a box holds
+/// (1e18, 0, 0), as FreeCAD's `isInside` also says) or throws.
 pub fn classify(shape: &Shape, point: [f64; 3]) -> Result<bool, KernelError> {
-    if !point.iter().all(|c| c.is_finite()) {
+    let most = silico_protocol::MAX_RENDER_COORDINATE;
+    if !point.iter().all(|c| c.abs() <= most) {
         return Err(KernelError::new(Refusal::InvalidParameter {
             parameter: "point".to_owned(),
-            message: format!("point {point:?} isn't finite"),
+            message: format!("point {point:?} must be finite and within {most} mm of the origin"),
         }));
     }
     Ok(ffi::classify_point(shape.get()?, &point3(point))?)

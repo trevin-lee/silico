@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use silico_protocol::{Generation, Op, PixelId, RenderScene, Reply};
 
@@ -39,6 +39,10 @@ pub const LARGE_RENDER_PIXELS: u64 = 1_048_576;
 /// the worker's memory, so these hold about as much as [`LARGE_RENDER_PIXELS`] do.
 pub const LARGE_RENDER_FACES: usize = 10_000;
 
+/// A render of more triangles than this is large too: each holds about 0.5 KiB of the
+/// worker's memory (2 million held 1.2 GiB), so these about 100 MiB.
+pub const LARGE_RENDER_TRIANGLES: usize = 200_000;
+
 /// Which adapter the worker may draw on: the core's one say about the renderer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderAdapter {
@@ -59,6 +63,7 @@ pub struct RenderSettings {
     /// Past these, a render is large, and the worker stopped once it answers.
     pub large_pixels: u64,
     pub large_faces: usize,
+    pub large_triangles: usize,
 }
 
 impl Default for RenderSettings {
@@ -69,6 +74,7 @@ impl Default for RenderSettings {
             idle: RENDER_IDLE,
             large_pixels: LARGE_RENDER_PIXELS,
             large_faces: LARGE_RENDER_FACES,
+            large_triangles: LARGE_RENDER_TRIANGLES,
         }
     }
 }
@@ -94,14 +100,11 @@ pub struct RenderTicket {
 }
 
 impl RenderTicket {
-    /// Cancels the render: one still queued is never sent; one running is stopped by
-    /// killing the worker (the next render starts another). Cancelling one that has
-    /// answered does nothing.
+    /// Cancels the render: one still queued answers cancelled at once, and is never sent;
+    /// one running is stopped by killing the worker (the next render starts another).
+    /// Cancelling one that has answered does nothing.
     pub fn cancel(&self) {
-        self.job.cancelled.store(true, Ordering::SeqCst);
-        if let Some(killer) = lock(&self.job.killer).as_ref() {
-            killer.kill();
-        }
+        self.job.cancel();
     }
 
     /// Waits for the render's outcome.
@@ -116,25 +119,68 @@ impl RenderTicket {
 }
 
 /// What the client's thread and a ticket share about one render.
-#[derive(Default)]
 struct JobState {
-    cancelled: AtomicBool,
-    /// The worker's killer while the render runs on it.
-    killer: Mutex<Option<WorkerKiller>>,
+    stage: Mutex<Stage>,
+    /// Its outcome's channel, so a cancel can answer a render that hasn't been sent.
+    outcome: Sender<RenderOutcome>,
+}
+
+/// Where a render is, under one lock: cancelled or not, its scene sent or not, and the
+/// worker's killer while it runs on it.
+#[derive(Default)]
+struct Stage {
+    cancelled: bool,
+    sent: bool,
+    killer: Option<WorkerKiller>,
+}
+
+impl JobState {
+    /// Cancels it: a render not yet sent answers cancelled here, and its turn is skipped;
+    /// one running has its worker killed, and its turn answers cancelled when the call ends.
+    fn cancel(&self) {
+        let mut stage = lock(&self.stage);
+        if stage.cancelled {
+            return;
+        }
+        stage.cancelled = true;
+        match (&stage.killer, stage.sent) {
+            (Some(killer), _) => {
+                killer.kill();
+            }
+            (None, false) => {
+                let _ = self.outcome.send(RenderOutcome::Cancelled);
+            }
+            // Sent and answered, or about to be: its turn sees the cancel.
+            (None, true) => {}
+        }
+    }
+
+    fn answer(&self, outcome: RenderOutcome) {
+        let _ = self.outcome.send(outcome);
+    }
 }
 
 struct Job {
     scene: RenderScene,
     state: Arc<JobState>,
-    outcome: Sender<RenderOutcome>,
 }
 
 /// The render worker's client: renders in turn, on a worker of its own.
 pub struct RenderClient {
     jobs: Mutex<Option<Sender<Job>>>,
     thread: Option<JoinHandle<()>>,
+    shared: Arc<Shared>,
+}
+
+/// What the client and its thread share.
+#[derive(Default)]
+struct Shared {
     /// The worker's process ID while it runs, for tests that watch it stop.
-    pid: Arc<Mutex<Option<u32>>>,
+    pid: Mutex<Option<u32>>,
+    /// The render under way, so a client closing can stop it.
+    current: Mutex<Option<Arc<JobState>>>,
+    /// Set as the client closes: the renders still queued answer cancelled, unsent.
+    closing: AtomicBool,
 }
 
 impl RenderClient {
@@ -147,11 +193,11 @@ impl RenderClient {
         };
         let exe = Executable::with_args(exe, WorkerKind::Render, args)?;
         let (jobs, queue) = mpsc::channel();
-        let pid = Arc::new(Mutex::new(None));
-        let seen = Arc::clone(&pid);
+        let shared = Arc::new(Shared::default());
+        let theirs = Arc::clone(&shared);
         let thread = std::thread::Builder::new()
             .name("render".to_owned())
-            .spawn(move || serve(&exe, &settings, &queue, &seen))
+            .spawn(move || serve(&exe, &settings, &queue, &theirs))
             .map_err(|e| {
                 Error::new(
                     ErrorCode::Internal,
@@ -161,19 +207,21 @@ impl RenderClient {
         Ok(RenderClient {
             jobs: Mutex::new(Some(jobs)),
             thread: Some(thread),
-            pid,
+            shared,
         })
     }
 
     /// Queues `scene`, which must have passed [`RenderScene::check`] (the worker checks it
     /// again, and refuses one that doesn't).
     pub fn render(&self, scene: RenderScene) -> RenderTicket {
-        let state = Arc::new(JobState::default());
         let (outcome, reply) = mpsc::channel();
+        let state = Arc::new(JobState {
+            stage: Mutex::new(Stage::default()),
+            outcome,
+        });
         let job = Job {
             scene,
             state: Arc::clone(&state),
-            outcome,
         };
         if let Some(jobs) = lock(&self.jobs).as_ref() {
             // A send fails only once the thread is gone; the ticket then says so.
@@ -187,14 +235,19 @@ impl RenderClient {
 
     /// The worker's process ID, while one runs.
     pub fn pid(&self) -> Option<u32> {
-        *lock(&self.pid)
+        *lock(&self.shared.pid)
     }
 }
 
 impl Drop for RenderClient {
+    /// Closes the client as a session closing ends its renders: the one running stopped (its
+    /// worker killed), those queued answered cancelled, unsent; then the worker is stopped.
     fn drop(&mut self) {
-        // Closing the queue ends the thread, which stops the worker.
+        self.shared.closing.store(true, Ordering::SeqCst);
         lock(&self.jobs).take();
+        if let Some(current) = lock(&self.shared.current).as_ref() {
+            current.cancel();
+        }
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -203,87 +256,124 @@ impl Drop for RenderClient {
 
 /// The client's thread: each render in turn, the worker started for it as needed and
 /// stopped when it should be.
-fn serve(
-    exe: &Arc<Executable>,
-    settings: &RenderSettings,
-    queue: &Receiver<Job>,
-    pid: &Mutex<Option<u32>>,
-) {
-    let mut worker: Option<Worker> = None;
-    let stop = |worker: &mut Option<Worker>| {
-        if let Some(mut w) = worker.take() {
-            w.shut_down();
-        }
-        *lock(pid) = None;
+fn serve(exe: &Arc<Executable>, settings: &RenderSettings, queue: &Receiver<Job>, shared: &Shared) {
+    let mut server = Server {
+        exe,
+        settings,
+        shared,
+        worker: None,
+        drew: Instant::now(),
     };
     loop {
-        let job = match worker {
-            Some(_) => match queue.recv_timeout(settings.idle) {
-                Ok(job) => job,
-                Err(RecvTimeoutError::Timeout) => {
-                    stop(&mut worker);
-                    continue;
+        if shared.closing.load(Ordering::SeqCst) {
+            while let Ok(job) = queue.try_recv() {
+                job.state.cancel();
+            }
+            break;
+        }
+        let job = match server.worker {
+            // Idle from when it last drew, whatever else came.
+            Some(_) => {
+                match queue.recv_timeout(settings.idle.saturating_sub(server.drew.elapsed())) {
+                    Ok(job) => job,
+                    Err(RecvTimeoutError::Timeout) => {
+                        server.stop();
+                        continue;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break,
                 }
-                Err(RecvTimeoutError::Disconnected) => break,
-            },
+            }
             None => match queue.recv() {
                 Ok(job) => job,
                 Err(_) => break,
             },
         };
-        if job.state.cancelled.load(Ordering::SeqCst) {
-            let _ = job.outcome.send(RenderOutcome::Cancelled);
-            continue;
+        {
+            // A render cancelled while queued has answered: its turn is skipped.
+            let mut stage = lock(&job.state.stage);
+            if stage.cancelled {
+                continue;
+            }
+            stage.sent = true;
         }
-        if worker
+        *lock(&shared.current) = Some(Arc::clone(&job.state));
+        let outcome = server.turn(job.scene, &job.state);
+        lock(&shared.current).take();
+        job.state.answer(outcome);
+    }
+    server.stop();
+}
+
+/// The client's thread's state: its worker, while one runs, and when it last drew.
+struct Server<'a> {
+    exe: &'a Arc<Executable>,
+    settings: &'a RenderSettings,
+    shared: &'a Shared,
+    worker: Option<Worker>,
+    drew: Instant,
+}
+
+impl Server<'_> {
+    fn stop(&mut self) {
+        if let Some(mut w) = self.worker.take() {
+            w.shut_down();
+        }
+        *lock(&self.shared.pid) = None;
+    }
+
+    /// One render's turn: the worker started if there's none, the scene sent, and the
+    /// worker stopped after if it should be.
+    fn turn(&mut self, scene: RenderScene, state: &JobState) -> RenderOutcome {
+        if self
+            .worker
             .as_mut()
             .is_some_and(|w| w.is_stopped() || w.has_exited())
         {
-            stop(&mut worker);
+            self.stop();
         }
-        let running = match &mut worker {
+        let running = match &mut self.worker {
             Some(w) => w,
-            None => match exe.spawn() {
+            None => match self.exe.spawn() {
                 Ok(w) => {
-                    *lock(pid) = Some(w.pid());
-                    worker.insert(w)
+                    *lock(&self.shared.pid) = Some(w.pid());
+                    self.drew = Instant::now();
+                    self.worker.insert(w)
                 }
-                Err(e) => {
-                    let _ = job.outcome.send(RenderOutcome::Done(Err(e)));
-                    continue;
-                }
+                Err(e) => return RenderOutcome::Done(Err(e)),
             },
         };
-        // The ticket can kill the worker from here on; a cancel that came just before is
-        // seen next, and the scene isn't sent.
-        *lock(&job.state.killer) = Some(running.killer());
-        if job.state.cancelled.load(Ordering::SeqCst) {
-            lock(&job.state.killer).take();
-            let _ = job.outcome.send(RenderOutcome::Cancelled);
-            continue;
+        {
+            // The ticket can kill the worker from here on; a cancel that came while it
+            // started is seen here, and the scene isn't sent.
+            let mut stage = lock(&state.stage);
+            if stage.cancelled {
+                return RenderOutcome::Cancelled;
+            }
+            stage.killer = Some(running.killer());
         }
-        let large = u64::from(job.scene.width) * u64::from(job.scene.height)
-            > settings.large_pixels
-            || job
-                .scene
-                .bodies
-                .iter()
-                .map(|b| b.mesh.face_triangles.len())
-                .sum::<usize>()
-                > settings.large_faces;
-        let (width, height, ids) = (job.scene.width, job.scene.height, job.scene.ids);
-        let reply = running.call(
-            Generation(1),
-            Op::Render(Box::new(job.scene)),
-            settings.timeout,
-        );
-        lock(&job.state.killer).take();
-        if job.state.cancelled.load(Ordering::SeqCst) {
+        let settings = self.settings;
+        let faces: usize = scene
+            .bodies
+            .iter()
+            .map(|b| b.mesh.face_triangles.len())
+            .sum();
+        let triangles: usize = scene.bodies.iter().map(|b| b.mesh.triangles.len()).sum();
+        let large = u64::from(scene.width) * u64::from(scene.height) > settings.large_pixels
+            || faces > settings.large_faces
+            || triangles > settings.large_triangles;
+        let (width, height, ids) = (scene.width, scene.height, scene.ids);
+        let reply = running.call(Generation(1), Op::Render(Box::new(scene)), settings.timeout);
+        let cancelled = {
+            let mut stage = lock(&state.stage);
+            stage.killer = None;
+            stage.cancelled
+        };
+        if cancelled {
             // Killed, or about to be: no worker that was is trusted.
-            stop(&mut worker);
-            let _ = job.outcome.send(RenderOutcome::Cancelled);
-            continue;
+            self.stop();
+            return RenderOutcome::Cancelled;
         }
+        self.drew = Instant::now();
         let result = match reply {
             Ok(Reply::Rendered { png, ids: got }) => rendered(width, height, ids, png, got),
             Ok(other) => Err(Error::new(
@@ -293,17 +383,16 @@ fn serve(
             .with_cause(format!("a {} reply", other.kind()))),
             Err(e) => Err(e),
         };
-        // A scene the worker refused as invalid left it as it was; any other failure, and
-        // a large render, stop it (its memory isn't given back while it runs).
+        // A scene the worker refused as invalid left it as it was; any other failure, and a
+        // large render, stop it (its memory isn't given back while it runs).
         match &result {
             Err(e) if e.code() == ErrorCode::InvalidInput => {}
-            Err(_) => stop(&mut worker),
-            Ok(_) if large => stop(&mut worker),
+            Err(_) => self.stop(),
+            Ok(_) if large => self.stop(),
             Ok(_) => {}
         }
-        let _ = job.outcome.send(RenderOutcome::Done(result));
+        RenderOutcome::Done(result)
     }
-    stop(&mut worker);
 }
 
 /// The worker's render, if it's what was asked: a PNG, and the ID buffer exactly when asked,

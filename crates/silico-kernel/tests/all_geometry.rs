@@ -45,6 +45,8 @@ mod adversarial_boolean;
 mod adversarial_chamfer;
 #[path = "adversarial_chamfer_report.rs"]
 mod adversarial_chamfer_report;
+#[path = "adversarial_classify.rs"]
+mod adversarial_classify;
 #[path = "adversarial_describe.rs"]
 mod adversarial_describe;
 #[path = "adversarial_export.rs"]

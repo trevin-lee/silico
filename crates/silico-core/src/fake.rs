@@ -748,10 +748,11 @@ fn answer(op: &Op) -> Result<Reply, Error> {
         // The fake's solids are their boxes: a point is inside one if it's in its box,
         // boundary included.
         Op::Classify { shape, point } => {
-            if !point.iter().all(|c| c.is_finite()) {
+            let most = silico_protocol::MAX_RENDER_COORDINATE;
+            if !point.iter().all(|c| c.abs() <= most) {
                 return Err(Error::new(
                     ErrorCode::InvalidInput,
-                    format!("point {point:?} isn't finite"),
+                    format!("point {point:?} must be finite and within {most} mm of the origin"),
                 )
                 .with_parameter("point")
                 .with_suggestion("change the value the message names"));
