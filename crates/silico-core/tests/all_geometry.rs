@@ -20,6 +20,8 @@ mod sweeps;
 
 #[path = "adversarial_axis_regions.rs"]
 mod adversarial_axis_regions;
+#[path = "adversarial_distance_request.rs"]
+mod adversarial_distance_request;
 #[path = "adversarial_export.rs"]
 mod adversarial_export;
 #[path = "adversarial_export_unraised.rs"]
@@ -34,6 +36,8 @@ mod adversarial_profile_faces;
 mod adversarial_sweep_recompute;
 #[path = "adversarial_sweep_refusals.rs"]
 mod adversarial_sweep_refusals;
+#[path = "distance_request.rs"]
+mod distance_request;
 #[path = "error.rs"]
 mod error;
 #[path = "export.rs"]

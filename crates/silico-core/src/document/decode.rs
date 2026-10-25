@@ -21,9 +21,15 @@ use super::sketch::{
 use crate::naming::{NAMING_SCHEME_NUMBER, UNRECORDED_NAMING_SCHEME};
 use crate::{Error, ErrorCode};
 
-/// The document `bytes` hold, or why they don't hold one.
-pub fn decode(bytes: &[u8]) -> Result<Document, Error> {
-    let root = super::json::read(bytes).map_err(syntax)?;
+/// The reader's tree of `bytes`, or why they aren't a document's JSON.
+pub fn tree(bytes: &[u8]) -> Result<Node, Error> {
+    super::json::read(bytes).map_err(syntax)
+}
+
+/// The document the reader's tree `root` holds, or why it doesn't hold one: what a
+/// document's text is read as, once the reader has its tree ([`tree`]), so an edit of the
+/// tree is read exactly as a file is.
+pub fn decode_node(root: Node) -> Result<Document, Error> {
     let mut top = Fields::of(root, None, None, "the document")?;
     let silico = top.take("silico")?;
     let version = whole_number(&silico, None, "silico", FormatVersion::NUMBER)?;
@@ -87,6 +93,16 @@ fn syntax(e: SyntaxError) -> Error {
     .with_suggestion("fix the text there: a document is strict JSON (RFC 8259)")
 }
 
+/// Where `at` is, as a message ends with it: `, at line 1, column 5`; nothing for a value
+/// no one wrote ([`At::UNPLACED`]: an edit's), which its path alone names.
+fn place(at: At) -> String {
+    if at == At::UNPLACED {
+        String::new()
+    } else {
+        format!(", at {at}")
+    }
+}
+
 /// An `invalid_input` error about `parameter` of `feature` (none for the document's own
 /// fields), at `at`.
 fn refuse(
@@ -96,7 +112,7 @@ fn refuse(
     message: impl fmt::Display,
     suggestion: impl Into<String>,
 ) -> Error {
-    let error = Error::new(ErrorCode::InvalidInput, format!("{message}, at {at}"))
+    let error = Error::new(ErrorCode::InvalidInput, format!("{message}{}", place(at)))
         .with_parameter(parameter)
         .with_suggestion(suggestion);
     match feature {
@@ -141,9 +157,9 @@ impl Fields {
             let error = Error::new(
                 ErrorCode::InvalidInput,
                 format!(
-                    "{what} is {}, not an object, at {}",
+                    "{what} is {}, not an object{}",
                     node.value.kind(),
-                    node.at
+                    place(node.at)
                 ),
             )
             .with_suggestion(format!("write {what} as an object"));
@@ -351,7 +367,9 @@ fn id(node: Node, feature: Option<&str>, parameter: &str) -> Result<FeatureId, E
     })
 }
 
-fn feature(index: usize, node: Node) -> Result<Feature, Error> {
+/// The feature `node` holds, at `index` in the timeline (which names it until its ID is
+/// read), as a document's features are read.
+pub fn feature(index: usize, node: Node) -> Result<Feature, Error> {
     let place = format!("features[{index}]");
     let mut fields = Fields::of(node, Some(&place), None, &place)?;
     let id = id(fields.take("id")?, Some(&place), "id")?;
@@ -637,6 +655,17 @@ fn chamfer_size(fields: &mut Fields) -> Result<ChamferSize, Error> {
 fn reference(fields: &mut Fields, key: &str) -> Result<FeatureId, Error> {
     let node = fields.take(key)?;
     id(node, fields.feature(), key)
+}
+
+/// The members a feature of type `type_name` may leave out that an edit may give it, or
+/// take away by setting it to `null`: every feature's note, and a pad's or revolve's base
+/// ([`optional_reference`]). Its fingerprint may be left out too, but only a commit writes
+/// one. The reader below is held to it by a test.
+pub(crate) fn optional_members(type_name: &str) -> &'static [&'static str] {
+    match type_name {
+        "pad" | "revolve" => &["base", "note"],
+        _ => &["note"],
+    }
 }
 
 /// A reference that may be left out (a pad's or revolve's `base`): never `null`.
@@ -1298,4 +1327,71 @@ fn angle(fields: &mut Fields, key: &str) -> Result<Angle, Error> {
     };
     Angle::parse(text)
         .map_err(|e| number_refused(feature, &name, &node, text, &e, &angle_refused()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+
+    /// One feature of each type, written by hand, with every member it may have.
+    const FEATURES: [&str; 15] = [
+        r#"{"id": "b0000001", "type": "box", "v": 1, "name": "B", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
+        r#"{"id": "b0000002", "type": "cylinder", "v": 1, "name": "C", "position": [0, 0, 0], "radius": 1, "height": 1, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 3, "edges": 3, "vertices": 2}}"#,
+        r#"{"id": "b0000003", "type": "sphere", "v": 1, "name": "S", "position": [0, 0, 0], "radius": 1, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 1, "edges": 3, "vertices": 2}}"#,
+        r#"{"id": "b0000004", "type": "cone", "v": 1, "name": "C", "position": [0, 0, 0], "radius1": 2, "radius2": 1, "height": 1, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 3, "edges": 3, "vertices": 2}}"#,
+        r#"{"id": "b0000005", "type": "torus", "v": 1, "name": "T", "position": [0, 0, 0], "radius1": 2, "radius2": 1, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 1, "edges": 2, "vertices": 1}}"#,
+        r#"{"id": "b0000006", "type": "fuse", "v": 1, "name": "F", "base": "b0000001", "tool": "b0000002", "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
+        r#"{"id": "b0000007", "type": "cut", "v": 1, "name": "C", "base": "b0000001", "tool": "b0000002", "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
+        r#"{"id": "b0000008", "type": "common", "v": 1, "name": "C", "base": "b0000001", "tool": "b0000002", "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
+        r#"{"id": "b0000009", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [], "lines": [], "circles": [], "arcs": [], "constraints": [], "note": "N"}"#,
+        r#"{"id": "b000000a", "type": "fillet", "v": 1, "name": "F", "base": "b0000001", "edges": ["b0000001.box.Edge1"], "radius": 1, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 7, "edges": 15, "vertices": 10}}"#,
+        r#"{"id": "b000000b", "type": "chamfer", "v": 1, "name": "C", "base": "b0000001", "edges": ["b0000001.box.Edge1"], "size": {"distance": 1}, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 7, "edges": 15, "vertices": 10}}"#,
+        r#"{"id": "b000000c", "type": "pad", "v": 1, "name": "P", "base": "b0000001", "sketch": "b0000009", "extent": {"type": "one_side", "length": 6, "reversed": false}, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
+        r#"{"id": "b000000d", "type": "pocket", "v": 1, "name": "P", "base": "b0000001", "sketch": "b0000009", "extent": {"type": "through_all", "reversed": false}, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
+        r#"{"id": "b000000e", "type": "revolve", "v": 1, "name": "R", "base": "b0000001", "sketch": "b0000009", "axis": "x_axis", "extent": {"type": "one_side", "angle": 90, "reversed": false}, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
+        r#"{"id": "b000000f", "type": "groove", "v": 1, "name": "G", "base": "b0000001", "sketch": "b0000009", "axis": "x_axis", "extent": {"type": "one_side", "angle": 90, "reversed": false}, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
+    ];
+
+    #[test]
+    fn the_members_a_feature_may_leave_out_are_those_optional_members_names() {
+        let mut sampled = BTreeSet::new();
+        for text in FEATURES {
+            let tree = super::super::json::read(text.as_bytes()).unwrap();
+            feature(0, tree.clone()).unwrap();
+            let Value::Object(members) = &tree.value else {
+                panic!("{text}");
+            };
+            let type_name = members
+                .iter()
+                .find(|m| m.key == "type")
+                .and_then(|m| m.value.value.as_str())
+                .unwrap();
+            sampled.insert(type_name.to_owned());
+            // Each member the table names is one the sample has.
+            for key in optional_members(type_name) {
+                assert!(members.iter().any(|m| m.key == *key), "{type_name}'s {key}");
+            }
+            // Each member left out in turn: read only if the table (or a commit's
+            // fingerprint) says it may be.
+            for (i, member) in members.iter().enumerate() {
+                let mut without = members.clone();
+                without.remove(i);
+                let reads = feature(
+                    0,
+                    Node {
+                        at: tree.at,
+                        value: Value::Object(without),
+                    },
+                )
+                .is_ok();
+                let optional = member.key == "fingerprint"
+                    || optional_members(type_name).contains(&member.key.as_str());
+                assert_eq!(reads, optional, "{type_name} without {}", member.key);
+            }
+        }
+        let every: BTreeSet<String> = FEATURE_TYPES.iter().map(|t| (*t).to_owned()).collect();
+        assert_eq!(sampled, every);
+    }
 }

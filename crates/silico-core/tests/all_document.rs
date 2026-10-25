@@ -64,6 +64,8 @@ mod reach;
 mod refused_from_a_partial_cache;
 #[path = "session.rs"]
 mod session;
+#[path = "session_edits.rs"]
+mod session_edits;
 #[path = "session_elements.rs"]
 mod session_elements;
 #[path = "session_rebuild.rs"]

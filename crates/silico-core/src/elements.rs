@@ -536,6 +536,36 @@ mod tests {
     use crate::kernel::{EdgeCurve, ElementCounts, Surface};
     use crate::naming::OpCode;
 
+    #[test]
+    fn each_axis_token_is_its_signed_axis_and_default_x_follows_f1() {
+        let words: Vec<&str> = [
+            AxisToken::PlusX,
+            AxisToken::MinusX,
+            AxisToken::PlusY,
+            AxisToken::MinusY,
+            AxisToken::PlusZ,
+            AxisToken::MinusZ,
+        ]
+        .into_iter()
+        .map(AxisToken::word)
+        .collect();
+        assert_eq!(words, ["+x", "-x", "+y", "-y", "+z", "-z"]);
+        // F1: nearest x gives +y along +x, else -y; nearest y gives -x along +y, else +x;
+        // nearest z gives +x either way; ties go to x, then y.
+        for (normal, want) in [
+            ([1.0, 0.0, 0.0], AxisToken::PlusY),
+            ([-1.0, 0.0, 0.0], AxisToken::MinusY),
+            ([0.0, 1.0, 0.0], AxisToken::MinusX),
+            ([0.0, -1.0, 0.0], AxisToken::PlusX),
+            ([0.0, 0.0, 1.0], AxisToken::PlusX),
+            ([0.0, 0.0, -1.0], AxisToken::PlusX),
+            ([0.6, -0.6, 0.5], AxisToken::PlusY),
+            ([0.0, -0.6, 0.6], AxisToken::PlusX),
+        ] {
+            assert_eq!(AxisToken::default_x(normal), want, "{normal:?}");
+        }
+    }
+
     fn map(faces: u32, edges: u32, vertices: u32) -> ElementMap {
         ElementMap::by_number(
             FeatureId::new("k7f2qx3m").unwrap(),

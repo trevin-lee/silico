@@ -556,6 +556,22 @@ fn refusals_at_the_top_and_nested_are_counted_together_in_the_order_found() {
 }
 
 #[test]
+fn refusals_past_the_hundredth_inside_a_nested_object_are_counted_at_the_top() {
+    // 150 unknown keys inside, so 50 are only counted there, then one at the top.
+    let inner: Vec<String> = (0..150).map(|i| format!(r#""i{i}": 0"#)).collect();
+    let node = parsed(&format!(
+        r#"{{"facing": {{{}}}, "o": 0}}"#,
+        inner.join(", ")
+    ));
+    let refused = refused_by(&node, |fields| {
+        assert_eq!(fields.nullable_object("facing", |_| Some(())), None);
+    });
+    assert_eq!(refused.total(), 151);
+    assert_eq!(refused.errors().len(), PROBLEMS_LISTED);
+    assert_eq!(refused.errors()[99].parameter(), Some("facing.i99"));
+}
+
+#[test]
 fn a_flood_of_refusals_keeps_no_more_than_it_lists() {
     // A refusal past the hundredth is only counted. Every refusal was kept until `done`,
     // which then listed a hundred: an 8 MB request of a list of 4 million bad members
