@@ -21,6 +21,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Relative no-op thresholds on large parts (a change of at most 1e-9 × the base's volume is "nothing"): a 4 × 2 mm hole through a 200 m block removes 1.6 litres and is refused, the message claiming the volumes equal
 - Suggested values ("export with a tolerance of at least X") computed from a margin recovered by subtraction (tolerance − deflection) and checked against it, while the consumer subtracts the original rounding: an input landing an ulp past a rounding step (a whole nanometre) gets a suggestion an ulp short; check each suggestion with the consumer's own formula, and at the parameter's largest values (twice the largest tolerance is past the range)
 - Two results compared by their coordinates' bits where the same module elsewhere takes -0 as 0 (joining nodes, writing f32): a node at -0 in one and 0 in the other is called a different result
+- Directions a request gives that are valid but tiny or huge (1e-160, 1e-200, 1e200, `f64::MAX`), used without scaling: their squares underflow to subnormals (an angle off by thousandths of a degree) or to 0, or overflow to infinity, so a direction is refused as zero or answered wrong; scale by the largest component first
 
 ## Sketch geometry
 
@@ -171,6 +172,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Calls in the wrong order (editing before opening a document, committing a transaction that was never started)
 - Strict request readers that keep every refusal and list only the first hundred: an 8 MB list of 4 million bad members holds 4 million errors (a 1.4 GB peak); count past the listed ones
 - Schemas generated from `Option` fields (schemars) leave them out of `required` though the response always has them; `#[schemars(required)]` drops their `null` instead
+- One call wrong in many ways at once (a field of every kind wrong, a list of 150 bad members, a kind that makes the others meaningless, a bad limit with a feature that's a sketch): check every reason is given, the first hundred listed and all counted, none hidden behind an early return or behind the one checked first
+- Listings with cursors and limits: a cursor of another feature or naming nothing, the last entry's, pages of 1; a "never broken" tie exactly ending at the most a call returns and one past it, at the limit and one off it, ascending and descending
 
 ## Kernel worker and IPC
 
@@ -209,6 +212,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A naive sequential evaluator as the oracle: random timelines with value-based refusals (kept and not kept), several edits in a row, comparing every feature's outcome, the bodies, which keys are equal, and exactly which steps each edit ran
 - Results taken from the cache or memory without their inputs' (an entry lost, a subdirectory that's a link): a step that reads more than its inputs (a fillet naming its base's elements from the whole lineage) runs before they're rebuilt
 - A superseded recompute that ends after the newer one: both keep their results by key, the last wins, and the older one's copy (its measure superseded, so unmeasured) overwrites the newer's measured or refused one; hold the older one's requests, start the newer, and loop a few hundred rounds, since which keeps last is a race
+- A measure made of several requests (a summary, then batches of a description): refuse, crash, supersede, or cancel at a later batch after the earlier ones came back; nothing partial may be published, kept in memory, or written, and the retry starts from the first request
 - Features alike in every value but their IDs (two identical boxes each pocketed alike, or a refused feature deleted and re-added under a new ID): the deduplicated step, or the refusal kept by its key, carries the first feature's words, so the second is told another feature and base failed
 
 ## Oracles and comparisons
@@ -242,6 +246,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Partial or temporary files at predictable names (`.partial-<pid>-<n>`) planted beforehand as symlinks: `File::create` follows them and overwrites the link's target outside the cache; check a victim file is untouched
 - A sound entry re-encoded with an inconsistent payload and its checksum fixed (a checksum isn't a signature): whatever the core validates from a worker (a history's inputs and element numbers) must be validated when read back from disk
 - Decisions the core makes before writing, read back unchecked: an entry keeping a refusal of a code the core never keeps (a hang's), a summary no reply could give (a NaN volume), an error naming more elements than its total; each is never asked again
+- Parts of one entry that must agree, each sound alone (a description's element counts and its summary's, another solid's description under this one's key, 100,000 sound vertices for a box): checking each part's values but not one against another publishes a model whose parts disagree
 - Keys hashing parts joined by a separator the parts may contain (a newline in a kernel identity or platform): two different keys hash the same bytes
 - A kernel identity that hashes only the executable: libraries it loads at run time (OCCT's dylibs through an rpath symlink) change results without changing the identity; a worker binary replaced under a running pool is relaunched under the old identity
 - Directory sizes summed from file lengths: sparse files cost no disk, so a few hundred planted at the file system's longest (APFS: 2^55 bytes) sum past `u64::MAX`; a plain `+=` panics in debug and wraps in release

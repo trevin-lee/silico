@@ -10,12 +10,16 @@
 mod bound;
 #[path = "common/cache.rs"]
 mod cache;
+#[path = "common/cache_format.rs"]
+mod cache_format;
 #[path = "common/command.rs"]
 mod commands;
 #[path = "common/example.rs"]
 mod example;
 #[path = "common/lateness.rs"]
 mod lateness;
+#[path = "common/entries.rs"]
+mod listing;
 #[path = "common/model.rs"]
 mod model;
 #[path = "common/references.rs"]
@@ -58,6 +62,8 @@ mod reach;
 mod refused_from_a_partial_cache;
 #[path = "session.rs"]
 mod session;
+#[path = "session_elements.rs"]
+mod session_elements;
 #[path = "session_rebuild.rs"]
 mod session_rebuild;
 #[path = "session_tracing.rs"]

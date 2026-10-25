@@ -86,7 +86,7 @@ fn shape_ops(engine: &Recompute<FakeKernel>) -> Vec<Op> {
         .calls()
         .into_iter()
         .map(|call| call.op)
-        .filter(|op| op.name() != "Summarize")
+        .filter(|op| !matches!(op.name(), "Summarize" | "Describe"))
         .collect()
 }
 

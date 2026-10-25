@@ -36,7 +36,7 @@ fn made(engine: &Recompute<FakeKernel>) -> Vec<&'static str> {
         .calls()
         .iter()
         .map(|call| call.op.name())
-        .filter(|name| *name != "Summarize")
+        .filter(|name| !matches!(*name, "Summarize" | "Describe"))
         .collect()
 }
 
@@ -833,6 +833,61 @@ fn recompute_builds_a_sweep_from_its_sketch_and_what_uses_it() {
             .filter(|m| !["MakeBox", "Translate"].contains(m))
             .collect();
         assert_eq!(own, steps, "{word}");
+    }
+}
+
+#[test]
+fn a_sweep_whose_description_is_refused_or_fails_still_builds_and_so_does_what_uses_it() {
+    // A pad's check reads its solid's summary, never its description (M4.4's decision 4):
+    // a description refused for the solid's values, or a worker crashing on it, leaves every
+    // summary standing, so the pad builds, nothing that uses it is blocked, drift is empty,
+    // and only its description is missing, the reason kept beside it.
+    let refused = silico_protocol::Failure::new(silico_protocol::Refusal::ResultInvalid {
+        operation: silico_protocol::Operation::Other,
+        edges: Vec::new(),
+    });
+    for code in [ErrorCode::WorkerCrashed, ErrorCode::InvalidResult] {
+        let engine = Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(FakeSketches::new());
+        match code {
+            ErrorCode::InvalidResult => {
+                let refused = refused.clone();
+                engine
+                    .kernel()
+                    .refuse_as_worker(move |op| (op.name() == "Describe").then(|| refused.clone()));
+            }
+            _ => engine.kernel().refuse(|op| {
+                (op.name() == "Describe")
+                    .then(|| Error::new(ErrorCode::WorkerCrashed, "the kernel worker crashed"))
+            }),
+        }
+        let model = published(
+            &engine,
+            checked_document(&[
+                &rectangle("s0000001", "xy", [0.0, 0.0], 4.0, 2.0),
+                &box_at("k7f2qx3m", [-1.0, -1.0, -10.0], 10.0, 10.0, 10.0),
+                &pad("p0000001", Some("k7f2qx3m"), "s0000001", TEN),
+                &block("a91cw0de"),
+                r#"{"id": "f0000001", "type": "fuse", "v": 1, "name": "F", "base": "p0000001", "tool": "a91cw0de"}"#,
+            ]),
+        );
+        assert!(model.drift().is_empty(), "{code:?}: {:?}", model.drift());
+        assert_eq!(model.errors().count(), 0, "{code:?}");
+        for feature in ["k7f2qx3m", "p0000001", "a91cw0de", "f0000001"] {
+            let Some(FeatureOutcome::Built { built, .. }) = model.outcome(&id(feature)) else {
+                panic!("{code:?}: {feature}: {:?}", model.outcome(&id(feature)));
+            };
+            assert!(built.summary().is_some(), "{code:?}: {feature}");
+            assert!(
+                model.description(&id(feature)).is_none(),
+                "{code:?}: {feature}"
+            );
+            assert_eq!(
+                built.why_undescribed().map(Error::code),
+                Some(code),
+                "{code:?}: {feature}"
+            );
+        }
+        assert_eq!(model.bodies(), [id("f0000001")]);
     }
 }
 

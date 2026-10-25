@@ -19,6 +19,7 @@ use crate::document::{
 use crate::kernel::Kernel;
 use crate::recompute::{Model, Recompute, RunOutcome};
 
+pub mod elements;
 mod session;
 pub mod wire;
 
@@ -34,8 +35,8 @@ const API_VERSION: u32 = 1;
 
 /// What `version` answers: the API's version, the document format's and naming scheme's,
 /// and the limits (the design's section 6) of the commands built so far, as data. Each
-/// later step adds its own command's limits as it comes (elements listed with M4.4, renders
-/// with M4.6, logs with M4.7, exports with M4.8).
+/// later step adds its own command's limits as it comes (renders with M4.6, logs with M4.7,
+/// exports with M4.8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Version {
     pub api: u32,
@@ -61,6 +62,13 @@ pub struct Limits {
     pub sessions: usize,
     /// The published reads running at once in one session.
     pub published_reads: usize,
+    /// The most entries an `elements` call lists, and the most its `limit` asks for.
+    pub elements: u32,
+    /// The most entries a `query` returns, ties at the cut and all, and the most its
+    /// `limit` asks for.
+    pub query: u32,
+    /// The most ranges a `query`'s `measures` holds: as many as there are measures.
+    pub query_measures: usize,
     /// A kernel request's time, in seconds.
     pub kernel_seconds: u64,
     /// A sketch solve's time, in seconds.
@@ -80,6 +88,9 @@ pub const VERSION: Version = Version {
         listed: document::PROBLEMS_LISTED,
         sessions: MAX_SESSIONS,
         published_reads: MAX_PUBLISHED_READS,
+        elements: elements::ENTRIES_AT_MOST,
+        query: elements::ENTRIES_AT_MOST,
+        query_measures: elements::MEASURES_AT_MOST,
         kernel_seconds: crate::kernel::DEFAULT_TIMEOUT.as_secs(),
         sketch_seconds: crate::sketch::SKETCH_TIMEOUT.as_secs(),
     },
@@ -123,6 +134,44 @@ impl Problems {
     /// Whether there are none.
     pub fn is_empty(&self) -> bool {
         self.total == 0
+    }
+
+    /// None yet, to be added to as they're found ([`Problems::push`]), so every command
+    /// keeps the same rule: the first [`document::PROBLEMS_LISTED`] listed, all counted.
+    pub(crate) fn none() -> Self {
+        Problems::of(Vec::new())
+    }
+
+    /// Whether it lists all it can: any more are only counted.
+    pub(crate) fn is_full(&self) -> bool {
+        self.errors.len() >= document::PROBLEMS_LISTED
+    }
+
+    /// `error` counted, and listed if there's room.
+    pub(crate) fn push(&mut self, error: Error) {
+        self.push_with(|| error);
+    }
+
+    /// The error `error` makes counted, and listed if there's room: made only then, so a
+    /// request with a million reasons it's refused builds a hundred errors, not a million.
+    pub(crate) fn push_with(&mut self, error: impl FnOnce() -> Error) {
+        self.total += 1;
+        if !self.is_full() {
+            self.errors.push(error());
+        }
+    }
+
+    /// `more` added: as many of its listed as there's room for, and every one counted,
+    /// listed or not.
+    pub(crate) fn absorb(&mut self, more: Problems) {
+        let room = document::PROBLEMS_LISTED.saturating_sub(self.errors.len());
+        self.errors.extend(more.errors.into_iter().take(room));
+        self.total += more.total;
+    }
+
+    /// Nothing, if none were found; otherwise them all.
+    pub(crate) fn into_result(self) -> Result<(), Problems> {
+        if self.is_empty() { Ok(()) } else { Err(self) }
     }
 }
 
@@ -547,4 +596,54 @@ pub fn quoted(text: &str) -> String {
     }
     out.push('"');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ErrorCode;
+
+    fn error(n: usize) -> Error {
+        Error::new(ErrorCode::InvalidInput, format!("reason {n}"))
+    }
+
+    #[test]
+    fn problems_list_the_first_hundred_and_count_every_one() {
+        let mut problems = Problems::none();
+        assert_eq!(problems.clone().into_result(), Ok(()));
+        let mut made = 0;
+        for n in 0..150 {
+            problems.push_with(|| {
+                made += 1;
+                error(n)
+            });
+        }
+        // 150 counted, 100 listed, and only the listed made.
+        assert_eq!(
+            (problems.errors().len(), problems.total(), made),
+            (100, 150, 100)
+        );
+        assert!(problems.is_full());
+        assert_eq!(problems.errors()[99].message(), "reason 99");
+        problems.push(error(150));
+        assert_eq!(problems.total(), 151);
+        assert_eq!(problems.into_result().unwrap_err().total(), 151);
+    }
+
+    #[test]
+    fn problems_absorbed_keep_their_totals_and_fill_only_the_room_left() {
+        // 60 found, then a feature's 100 listed of 150: 40 of those listed, 210 counted.
+        let mut problems = Problems::none();
+        for n in 0..60 {
+            problems.push(error(n));
+        }
+        problems.absorb(Problems::with_unlisted((0..100).map(error).collect(), 50));
+        assert_eq!((problems.errors().len(), problems.total()), (100, 210));
+        assert_eq!(problems.errors()[60].message(), "reason 0");
+        assert_eq!(problems.errors()[99].message(), "reason 39");
+        // Absorbed into none: every one of its own.
+        let mut fresh = Problems::none();
+        fresh.absorb(Problems::with_unlisted(vec![error(0)], 7));
+        assert_eq!((fresh.errors().len(), fresh.total()), (1, 8));
+    }
 }

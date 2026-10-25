@@ -43,12 +43,12 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
 use crate::kernel::{Blob, History, ShapeData, ShapeSummary};
-use crate::recompute::{Built, Key};
-use silico_protocol::Failure;
+use crate::recompute::{Built, Described, Key};
+use silico_protocol::{Description, Failure};
 
 /// The first bytes of every entry, naming its format: a change to the format changes it.
 /// It's part of every entry's key too, so an entry of another format is never looked for.
-const MAGIC: &[u8] = b"silico cache 6\n";
+const MAGIC: &[u8] = b"silico cache 8\n";
 
 /// What the cache's directory holds besides its entries: it ignores itself.
 const GITIGNORE: &[u8] =
@@ -178,8 +178,9 @@ struct Entry {
     brep: Vec<u8>,
     valid: bool,
     history: Option<History>,
-    /// The shape's measure: none yet, its summary (a feature's solid is measured once it's
-    /// made), or the kernel's refusal to measure it, for its values.
+    /// The shape's measure: none yet, its summary and what's known of its description (a
+    /// feature's solid is measured once it's made), or the kernel's refusal to measure it,
+    /// for its values.
     measure: Measure,
 }
 
@@ -187,15 +188,28 @@ struct Entry {
 #[derive(Serialize, Deserialize)]
 enum Measure {
     Unmeasured,
-    Summary(ShapeSummary),
-    /// The kernel worker's refusal, as data, and the operation it was for (`Summarize`):
-    /// the core reading it back words it, so its words are always that core's (the entry's
-    /// key holds the worker's identity, not the core's). Only a worker's refusal of a
-    /// measure is kept so (`worker::failure_error_with_edge_names` keeps no other's).
+    Measured {
+        summary: ShapeSummary,
+        description: KeptDescription,
+    },
+    /// The kernel worker's refusal of its summary, as data (as [`KeptDescription::Refused`]).
     Refused {
         op: String,
         failure: Failure,
     },
+}
+
+/// What an entry keeps of its shape's description: nothing (not asked, or a worker failed,
+/// so it's asked again), the description, or the kernel worker's refusal of it, as data,
+/// and the operation it was for (`Describe`; `worker::MEASURES`): the core reading it back
+/// words it, so its words are always that core's (the entry's key holds the worker's
+/// identity, not the core's). Only a worker's refusal of a measure is kept so
+/// (`worker::failure_error_with_edge_names` keeps no other's).
+#[derive(Serialize, Deserialize)]
+enum KeptDescription {
+    Unknown,
+    Described(Description),
+    Refused { op: String, failure: Failure },
 }
 
 impl Cache {
@@ -300,7 +314,27 @@ impl Cache {
             valid,
             history: built.history.clone(),
             measure: match (built.summary(), built.measure_refused()) {
-                (Some(summary), _) => Measure::Summary(summary.clone()),
+                (Some(summary), _) => Measure::Measured {
+                    summary: summary.clone(),
+                    description: match built.described() {
+                        Some(Described::Whole(description)) => {
+                            KeptDescription::Described(description.clone())
+                        }
+                        Some(Described::Refused(refused)) if lasting(refused) => {
+                            match refused.worker_failure() {
+                                Some((op, failure)) => KeptDescription::Refused {
+                                    op: op.to_owned(),
+                                    failure: failure.clone(),
+                                },
+                                // Not a worker's (a fake kernel's): nothing to word it again from.
+                                None => KeptDescription::Unknown,
+                            }
+                        }
+                        Some(Described::Refused(_) | Described::Failed(_)) | None => {
+                            KeptDescription::Unknown
+                        }
+                    },
+                },
                 (None, Some(refused)) if lasting(refused) => match refused.worker_failure() {
                     Some((op, failure)) => Measure::Refused {
                         op: op.to_owned(),
@@ -309,7 +343,7 @@ impl Cache {
                     // Not a worker's (a fake kernel's): nothing to word it again from.
                     None => Measure::Unmeasured,
                 },
-                (None, _) => Measure::Unmeasured,
+                _ => Measure::Unmeasured,
             },
         };
         let payload = match postcard::to_allocvec(&entry) {
@@ -867,13 +901,35 @@ fn lasting(refused: &crate::Error) -> bool {
 }
 
 /// The result `entry` keeps, checked as a worker's reply is: a summary no shape has is a
-/// measure to make again, and a refusal is worded now, by this core, and kept only if the
-/// cache would keep it (this core may judge it otherwise than the one that wrote it).
+/// measure to make again, a description a worker couldn't send (a value out of range, or
+/// more or fewer of a kind than the summary counts) a description to ask for again, and a
+/// refusal is worded now, by this core, and kept only if the cache would keep it (this core
+/// may judge it otherwise than the one that wrote it).
 fn built_of(entry: Entry) -> Built {
     let shape = ShapeData::checked(Blob::inline(entry.brep), entry.valid);
     match entry.measure {
-        Measure::Summary(summary) if crate::kernel::summary_fault(&summary).is_none() => {
-            Built::new(shape, entry.history, Some(summary))
+        Measure::Measured {
+            summary,
+            description,
+        } if crate::kernel::summary_fault(&summary).is_none() => {
+            let built = Built::new(shape, entry.history, Some(summary.clone()));
+            match description {
+                KeptDescription::Described(description)
+                    if description.validate(1).is_ok()
+                        && crate::kernel::description_fault(&summary, &description).is_none() =>
+                {
+                    built.with_described(Described::Whole(description))
+                }
+                KeptDescription::Refused { op, failure } => {
+                    let refused = crate::worker::failure_error(&op, failure);
+                    if lasting(&refused) {
+                        built.with_described(Described::Refused(refused))
+                    } else {
+                        built
+                    }
+                }
+                KeptDescription::Unknown | KeptDescription::Described(_) => built,
+            }
         }
         Measure::Refused { op, failure } => {
             let refused = crate::worker::failure_error(&op, failure);
@@ -883,7 +939,7 @@ fn built_of(entry: Entry) -> Built {
                 Built::new(shape, entry.history, None)
             }
         }
-        Measure::Unmeasured | Measure::Summary(_) => Built::new(shape, entry.history, None),
+        Measure::Unmeasured | Measure::Measured { .. } => Built::new(shape, entry.history, None),
     }
 }
 
