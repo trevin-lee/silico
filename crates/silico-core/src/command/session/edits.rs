@@ -4,21 +4,21 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use super::cancel::Ticket;
 use super::{Committed, Gated, ModelRead, Problems, Revision, Session, SessionId, shown};
 use crate::command::edit::Candidate;
 use crate::document::Document;
 use crate::kernel::Kernel;
-use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
 impl<C: Kernel + 'static> Session<C> {
     /// An accepted edit's `candidate` held as the session's document, at a new revision,
     /// carrying what was carried: how an edit inside a transaction is applied (the design's
-    /// section 4), starting no rebuild (decision 13).
-    pub(super) fn hold(&self, candidate: Candidate) -> Result<Revision, Problems> {
-        self.keep()?;
-        let mut held = lock(&self.held);
+    /// section 4), starting no rebuild (decision 13). As the command `stop` stops.
+    pub(super) fn hold(&self, stop: &Ticket, candidate: Candidate) -> Result<Revision, Problems> {
+        let held = self.held.read();
         let next = held.next()?;
+        let mut held = held.changing(stop)?;
         let carried = Arc::clone(&held.carried);
         held.change(next, candidate.text, candidate.gated, carried);
         Ok(next)
@@ -32,16 +32,17 @@ impl<C: Kernel + 'static> Session<C> {
     /// its own transaction ([`commit_candidate`](Self::commit_candidate), decision 1), its
     /// new file claimed with `claim`, and the session holds it only once it's saved. An edit
     /// that changes nothing gives no new revision and writes nothing. Refused whole, the
-    /// session as it was, as `make` or the commit is.
+    /// session as it was, as `make` or the commit is. As the command `stop` stops.
     pub(super) fn edit<T>(
         self: &Arc<Self>,
+        stop: &Ticket,
         revision: Revision,
         make: impl FnOnce(Base<'_>) -> Result<(T, Option<Candidate>), Problems>,
         read: &mut Option<ModelRead>,
         claim: &dyn Fn(&Path),
     ) -> Result<Edited<T>, Problems> {
         let (text, gated, transaction) = {
-            let held = lock(&self.held);
+            let held = self.held.read();
             if held.revision != revision {
                 // Stale because the file changed outside the session, if a reload since
                 // the edit's revision moved the session on.
@@ -75,10 +76,10 @@ impl<C: Kernel + 'static> Session<C> {
             });
         };
         let (commit, saved) = if transaction {
-            self.hold(candidate)?;
+            self.hold(stop, candidate)?;
             (None, None)
         } else {
-            let (committed, saved) = self.commit_candidate(candidate, read, claim)?;
+            let (committed, saved) = self.commit_candidate(stop, candidate, read, claim)?;
             (Some(committed), saved)
         };
         Ok(Edited {

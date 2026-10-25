@@ -13,6 +13,7 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 #[cfg(doc)]
 use super::MAX_SESSIONS;
 use super::cancel::Ticket;
+use super::holding::Holding;
 use super::rebuilds::Rebuilds;
 use super::threads::{Reads, Threads};
 use super::transaction::{Held, not_reloaded, of_file, put_back, too_long};
@@ -156,11 +157,11 @@ pub(super) fn start<P: Clients + 'static>(
             return Err(Problems::from(closing()));
         }
         // From here it opens, unless it was cancelled first (the file it made goes as above).
-        ticket.keep()?;
+        ticket.settle()?;
         let (sender, jobs) = mpsc::channel();
         let session = Arc::new(Session {
             id,
-            held: Mutex::new(held),
+            held: Holding::new(held),
             queue: Mutex::new(Some(sender)),
             rebuilds: Mutex::new(Rebuilds {
                 engine: registry.engine(cache),
@@ -194,11 +195,16 @@ pub(super) fn start<P: Clients + 'static>(
         }
         Err(problems) => {
             lock(&registry.book).release(id);
-            let _ = reply.send(Response {
-                session: None,
-                model: None,
-                result: Err(problems),
-            });
+            // Settled, so a cancel after the refusal says it came too late; `cancelled`, if
+            // one came first.
+            let _ = reply.send(ticket.answer(
+                || None,
+                || Response {
+                    session: None,
+                    model: None,
+                    result: Err(problems),
+                },
+            ));
             None
         }
     }

@@ -39,7 +39,10 @@
 //! A file can change under a session (decision 2): before each queued command outside a
 //! transaction, the session reads its file again and compares its bytes with those it last
 //! read or wrote, and reloads a change at a new revision, the response's `reloaded` saying
-//! so; a file gone, unreadable, or another session's refuses the command. Inside a
+//! so; a file gone, unreadable, or another session's refuses the command. The reload is the
+//! session's own work, not the command's: it stands whatever the command comes to, so a
+//! command cancelled after it answers `cancelled` with `reloaded` true and the new revision.
+//! Inside a
 //! transaction, only `commit` reads the file, and a change (or a file gone) is its conflict:
 //! every other command runs on what the session holds. `close`, `status`, and published
 //! reads never read the file.
@@ -50,7 +53,9 @@
 //! A command can be stopped (decisions 10 and 34): through its handle
 //! ([`Running::cancel`], MCP's cancellation), or by [`Sessions::cancel`], naming the command
 //! running. Either way it stops before its work leaves a trace and answers `cancelled`, or,
-//! if it had done its work (an edit saved), answers with its real result. A kernel fault
+//! if it had done its work (an edit saved), answers with its real result: what the session
+//! holds is changed only once the command's stop is settled (`holding`), and its file
+//! written only so too. A kernel fault
 //! (a worker that crashed, hung, or couldn't be had) is given once, beside a command's
 //! result, in the model it read ([`ModelRead::fault`]), never among the document's problems,
 //! and kept as its revision's outcome: no read of that revision rebuilds it, and a save
@@ -64,6 +69,7 @@
 
 mod cancel;
 mod edits;
+mod holding;
 mod rebuilds;
 mod registry;
 mod threads;
@@ -87,8 +93,9 @@ use crate::sketch::SketchSolver;
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
-use cancel::{Interrupt, Ticket, cancelled, not_running};
+use cancel::{Interrupt, Ticket, Why, not_running};
 use edits::{as_committed, not_given_back};
+use holding::Holding;
 pub(super) use rebuilds::faulted;
 use rebuilds::{Rebuilds, Unbuilt, published_answer};
 use registry::{
@@ -129,7 +136,7 @@ pub struct Sessions<P: Clients + 'static> {
 /// running, under which none is taken. The registry's `feature_ids` is taken alone.
 struct Session<C: Kernel + 'static> {
     id: SessionId,
-    held: Mutex<Held>,
+    held: Holding,
     /// Where its commands are queued, in order: none once it's closed.
     queue: Mutex<Option<Sender<Job<C>>>>,
     /// Its rebuilds, under a lock of their own, never `held`'s, so `status` never waits
@@ -146,7 +153,7 @@ struct Session<C: Kernel + 'static> {
 
 /// A command waiting on a session's rebuild is woken by its cancel, to stop it.
 impl<C: Kernel + 'static> Interrupt for Session<C> {
-    fn interrupt(&self) {
+    fn interrupt(&self, _why: Why) {
         // Under the rebuilds' lock, so a waiter that saw no cancel before it waited is
         // waiting when it's told.
         let _rebuilds = lock(&self.rebuilds);
@@ -167,7 +174,7 @@ impl<C: Kernel + 'static> Session<C> {
     /// The session as it is now, `reloaded` saying whether it reloaded its file before the
     /// command.
     fn info(&self, reloaded: bool) -> SessionInfo {
-        self.info_of(&lock(&self.held), reloaded)
+        self.info_of(&self.held.read(), reloaded)
     }
 
     /// The session as `held` says it is, `reloaded` saying whether it reloaded its file
@@ -184,7 +191,7 @@ impl<C: Kernel + 'static> Session<C> {
 
     /// The text and the gate's finding, as held now.
     fn document(&self) -> (Arc<Vec<u8>>, Arc<Gated>) {
-        let held = lock(&self.held);
+        let held = self.held.read();
         (Arc::clone(&held.text), Arc::clone(&held.gated))
     }
 
@@ -205,25 +212,37 @@ impl<C: Kernel + 'static> Session<C> {
         }
     }
 
-    /// Ends its queue: commands queued after it are told the session closed.
+    /// Ends its queue: commands queued after it are told the session closed. And its
+    /// published reads interrupted as closed ([`Why::Closed`]), each running now and, since
+    /// the session's record of them stays closed, each counted after, at once: so a read's
+    /// own kernel client (M4.5's) is retired however late it's added, and the read answers
+    /// as of a session that closed, not `cancelled`.
     fn close(&self) {
         lock(&self.queue).take();
+        let unanswered = Arc::clone(&lock(&self.reads).unanswered);
+        let running = lock(&unanswered).close();
+        for ticket in running {
+            ticket.close();
+        }
     }
 
     fn closed(&self) -> bool {
         lock(&self.queue).is_none()
     }
 
-    /// `close`'s work: its queue ended, unless a transaction is open (commit or roll back
-    /// first), or the close was cancelled.
-    fn shut(&self) -> Result<(), Problems> {
-        if lock(&self.held).transaction.is_some() {
+    /// `close`'s work, as the command `stop` stops: its queue ended, unless a transaction is
+    /// open (commit or roll back first), or the close was cancelled first.
+    fn shut(&self, stop: &Ticket) -> Result<(), Problems> {
+        let held = self.held.read();
+        if held.transaction.is_some() {
             return Err(Problems::from(transaction_open(
                 self.id,
                 "close the session",
             )));
         }
-        self.keep()?;
+        // Settled with no transaction open: from here it closes. Let go first, as the
+        // queue's lock comes after the held state's.
+        drop(held.changing(stop)?);
         self.close();
         Ok(())
     }
@@ -237,19 +256,10 @@ impl<C: Kernel + 'static> Session<C> {
             .collect()
     }
 
-    /// The stop of the queued command running, if one is.
-    fn ticket(&self) -> Option<Arc<Ticket>> {
+    /// The stop of the queued command running, if one is: for `status` and `cancel`, never
+    /// for a command's own work, which is handed its own stop.
+    fn running(&self) -> Option<Arc<Ticket>> {
         lock(&self.command).clone()
-    }
-
-    /// The point past which the queued command running leaves a trace ([`Ticket::keep`]):
-    /// refused, `cancelled`, if it was stopped before.
-    fn keep(&self) -> Result<(), Problems> {
-        match self.ticket() {
-            Some(ticket) => ticket.keep().map_err(Problems::from),
-            // Not a queued command's work (the sessions dropped, rolling back).
-            None => Ok(()),
-        }
     }
 }
 
@@ -412,13 +422,18 @@ impl<P: Clients + 'static> Sessions<P> {
     /// is said by naming it ([`cancel`](Self::cancel)).
     pub fn close(&self, session: &SessionId) -> Running<()> {
         let registry = Arc::downgrade(&self.registry);
-        self.queued_with(session, "close", Rereads::Never, move |session, _, _| {
-            session.shut()?;
-            if let Some(registry) = registry.upgrade() {
-                lock(&registry.book).release(session.id);
-            }
-            Ok(())
-        })
+        self.queued_with(
+            session,
+            "close",
+            Rereads::Never,
+            move |session, stop, _, _| {
+                session.shut(stop)?;
+                if let Some(registry) = registry.upgrade() {
+                    lock(&registry.book).release(session.id);
+                }
+                Ok(())
+            },
+        )
     }
 
     /// `session`'s status, answered on the caller's thread from what the session holds,
@@ -431,8 +446,8 @@ impl<P: Clients + 'static> Sessions<P> {
             return refused(not_open(*session));
         };
         let reads = found.reads_running();
-        let running = found.ticket().map(|ticket| ticket.command());
-        let held = lock(&found.held);
+        let running = found.running().map(|ticket| ticket.command());
+        let held = found.held.read();
         let gated = matches!(*held.gated, Gated::Checked(_));
         let rebuild = if gated {
             lock(&found.rebuilds).state(held.revision)
@@ -472,7 +487,7 @@ impl<P: Clients + 'static> Sessions<P> {
         let Some(found) = self.find(session) else {
             return refused(not_open(*session));
         };
-        let queued = found.ticket();
+        let queued = found.running();
         let reads: Vec<Arc<Ticket>> = {
             let reads = lock(&found.reads);
             lock(&reads.unanswered).tickets().cloned().collect()
@@ -513,7 +528,7 @@ impl<P: Clients + 'static> Sessions<P> {
     /// the text isn't UTF-8 (the reader refused it), or, for a feature, if the text doesn't
     /// read as a document or hasn't one feature of that ID.
     pub fn text(&self, session: &SessionId, feature: Option<FeatureId>) -> Running<String> {
-        self.queued(session, "text", move |session, _| {
+        self.queued(session, "text", move |session, _, _| {
             let (text, gated) = session.document();
             match feature {
                 None => String::from_utf8(text.to_vec()).map_err(|e| {
@@ -545,15 +560,17 @@ impl<P: Clients + 'static> Sessions<P> {
     /// the response's `model` ([`ModelRead::fault`]), and kept as the revision's outcome, so
     /// the next check of the revision reads the same model (decision 32).
     pub fn check(&self, session: &SessionId) -> Running<Problems> {
-        self.queued(session, "check", |session, model| match session.current() {
-            Ok(current) => {
-                *model = Some(current.read);
-                let _span = tracing::info_span!("check").entered();
-                super::check_except(&current.model, &current.reached, Faults::Aside)
-                    .map_err(Problems::from)
+        self.queued(session, "check", |session, stop, model| {
+            match session.current(stop) {
+                Ok(current) => {
+                    *model = Some(current.read);
+                    let _span = tracing::info_span!("check").entered();
+                    super::check_except(&current.model, &current.reached, Faults::Aside)
+                        .map_err(Problems::from)
+                }
+                Err(Unbuilt::Gated(problems)) => Ok(problems),
+                Err(Unbuilt::Unavailable(problems)) => Err(problems),
             }
-            Err(Unbuilt::Gated(problems)) => Ok(problems),
-            Err(Unbuilt::Unavailable(problems)) => Err(problems),
         })
     }
 
@@ -577,14 +594,13 @@ impl<P: Clients + 'static> Sessions<P> {
         read: impl FnOnce(Read<'_>) -> Result<T, Problems> + Send + 'static,
     ) -> Running<T> {
         match choice {
-            ModelChoice::Current => self.queued(session, command, move |session, model| {
-                let current = session.current().map_err(Unbuilt::problems)?;
+            ModelChoice::Current => self.queued(session, command, move |session, stop, model| {
+                let current = session.current(stop).map_err(Unbuilt::problems)?;
                 *model = Some(current.read.clone());
-                let ticket = session.ticket();
                 read(Read {
                     model: &current.model,
                     read: current.read,
-                    ticket: ticket.as_deref(),
+                    stop,
                 })
             }),
             ModelChoice::Published => {
@@ -638,31 +654,19 @@ impl<P: Clients + 'static> Sessions<P> {
                             model = "published"
                         )
                         .entered();
-                        let response = if stop.cancelled() {
-                            Response {
-                                session: Some(session.info(false)),
-                                model: None,
-                                result: Err(Problems::from(cancelled(command))),
-                            }
-                        } else {
-                            let (info, published) = session.published_now();
-                            published_answer(info, published, |published, model| {
-                                read(Read {
-                                    model: &published.model,
-                                    read: model,
-                                    ticket: Some(&stop),
+                        let response = stop.answer(
+                            || Some(session.info(false)),
+                            || {
+                                let (info, published) = session.published_now();
+                                published_answer(info, published, |published, model| {
+                                    read(Read {
+                                        model: &published.model,
+                                        read: model,
+                                        stop: &stop,
+                                    })
                                 })
-                            })
-                        };
-                        // Its answer, unless it was stopped first.
-                        let response = match stop.keep() {
-                            Ok(()) => response,
-                            Err(cancelled) => Response {
-                                session: response.session,
-                                model: None,
-                                result: Err(Problems::from(cancelled)),
                             },
-                        };
+                        );
                         drop(counted);
                         let _ = reply.send(response);
                     });
@@ -697,7 +701,7 @@ impl<P: Clients + 'static> Sessions<P> {
     /// `session`'s document's outline ([`super::outline`]), as `silico show` prints it.
     /// Refused, with the reader's error, if the text doesn't read as a document.
     pub fn outline(&self, session: &SessionId) -> Running<String> {
-        self.queued(session, "outline", |session, _| {
+        self.queued(session, "outline", |session, _, _| {
             let (_, gated) = session.document();
             let document = gated.document().map_err(Clone::clone)?;
             Ok(super::outline(document))
@@ -709,7 +713,7 @@ impl<P: Clients + 'static> Sessions<P> {
     /// edits reached) for `rollback` to restore. Inside it, edits are applied without being
     /// saved or starting a rebuild. Refused if one is open: transactions don't nest.
     pub fn begin(&self, session: &SessionId) -> Running<Begun> {
-        self.queued(session, "begin", |session, _| session.begin())
+        self.queued(session, "begin", |session, stop, _| session.begin(stop))
     }
 
     /// Ends `session`'s transaction, saving its document (the design's section 4): waits for
@@ -730,9 +734,9 @@ impl<P: Clients + 'static> Sessions<P> {
             session,
             "commit",
             Rereads::Always,
-            move |session, model, reload| {
+            move |session, stop, model, reload| {
                 let id = session.id;
-                session.commit(reload.outside(), model, &|resolved| {
+                session.commit(stop, reload.outside(), model, &|resolved| {
                     reclaim(&registry, id, resolved);
                 })
             },
@@ -745,7 +749,9 @@ impl<P: Clients + 'static> Sessions<P> {
     /// restored document's rebuild started). Never touches the file. Refused if no
     /// transaction is open.
     pub fn rollback(&self, session: &SessionId) -> Running<RolledBack> {
-        self.queued(session, "rollback", |session, _| session.rollback())
+        self.queued(session, "rollback", |session, stop, _| {
+            session.rollback(stop)
+        })
     }
 
     /// Saves `session`'s document in canonical form with every feature's fingerprint and
@@ -763,9 +769,9 @@ impl<P: Clients + 'static> Sessions<P> {
         write: bool,
     ) -> Running<Reformatted> {
         let registry = Arc::downgrade(&self.registry);
-        self.queued(session, "format", move |session, model| {
+        self.queued(session, "format", move |session, stop, model| {
             let id = session.id;
-            session.format(features.as_deref(), write, model, &|resolved| {
+            session.format(stop, features.as_deref(), write, model, &|resolved| {
                 reclaim(&registry, id, resolved);
             })
         })
@@ -787,9 +793,10 @@ impl<P: Clients + 'static> Sessions<P> {
     ) -> Running<Added> {
         let registry = Arc::downgrade(&self.registry);
         let ids = Arc::clone(&self.registry.feature_ids);
-        self.queued(session, "add_feature", move |session, model| {
+        self.queued(session, "add_feature", move |session, stop, model| {
             let id = session.id;
             let edited = session.edit(
+                stop,
                 revision,
                 |base| {
                     let (added, candidate) =
@@ -830,9 +837,10 @@ impl<P: Clients + 'static> Sessions<P> {
         value: Node,
     ) -> Running<FieldSet> {
         let registry = Arc::downgrade(&self.registry);
-        self.queued(session, "set_field", move |session, model| {
+        self.queued(session, "set_field", move |session, stop, model| {
             let id = session.id;
             let edited = session.edit(
+                stop,
                 revision,
                 |base| edit::set_field(base.checked()?, &feature, &field, value),
                 model,
@@ -869,9 +877,10 @@ impl<P: Clients + 'static> Sessions<P> {
         feature: FeatureId,
     ) -> Running<Removed> {
         let registry = Arc::downgrade(&self.registry);
-        self.queued(session, "remove_feature", move |session, model| {
+        self.queued(session, "remove_feature", move |session, stop, model| {
             let id = session.id;
             let edited = session.edit(
+                stop,
                 revision,
                 |base| {
                     let (removed, index, candidate) =
@@ -905,9 +914,10 @@ impl<P: Clients + 'static> Sessions<P> {
         text: String,
     ) -> Running<Replaced> {
         let registry = Arc::downgrade(&self.registry);
-        self.queued(session, "replace_text", move |session, model| {
+        self.queued(session, "replace_text", move |session, stop, model| {
             let id = session.id;
             let edited = session.edit(
+                stop,
                 revision,
                 |base| {
                     let before = if base.transaction {
@@ -941,12 +951,17 @@ impl<P: Clients + 'static> Sessions<P> {
 
     /// `work` queued on `session`'s thread, under the caller's span and the command's, after
     /// the session reads its file again if no transaction is open ([`Session::reload`],
-    /// decision 2), refused if it can't take the file as it is.
+    /// decision 2), refused if it can't take the file as it is. `work` is handed the
+    /// command's stop, which it settles before it leaves a trace, and the model it reads.
     fn queued<T: Send + 'static>(
         &self,
         session: &SessionId,
         command: &'static str,
-        work: impl FnOnce(&Arc<Session<P::Client>>, &mut Option<ModelRead>) -> Result<T, Problems>
+        work: impl FnOnce(
+            &Arc<Session<P::Client>>,
+            &Ticket,
+            &mut Option<ModelRead>,
+        ) -> Result<T, Problems>
         + Send
         + 'static,
     ) -> Running<T> {
@@ -954,7 +969,7 @@ impl<P: Clients + 'static> Sessions<P> {
             session,
             command,
             Rereads::OutsideTransaction,
-            move |session, model, _| work(session, model),
+            move |session, stop, model, _| work(session, stop, model),
         )
     }
 
@@ -967,6 +982,7 @@ impl<P: Clients + 'static> Sessions<P> {
         rereads: Rereads,
         work: impl FnOnce(
             &Arc<Session<P::Client>>,
+            &Ticket,
             &mut Option<ModelRead>,
             Reload,
         ) -> Result<T, Problems>
@@ -994,42 +1010,43 @@ impl<P: Clients + 'static> Sessions<P> {
                     )
                     .entered();
                     *lock(&session.command) = Some(Arc::clone(&stop));
-                    let response = if stop.cancelled() {
-                        // Cancelled while it was queued: never run.
-                        Response {
-                            session: Some(session.info(false)),
-                            model: None,
-                            result: Err(Problems::from(cancelled(command))),
-                        }
-                    } else {
-                        let mut model = None;
-                        let id = session.id;
-                        let claimed = |found: Claim<'_>| match registry.upgrade() {
-                            Some(registry) => {
-                                claim(&registry, found.opened, found.resolved, found.found_at, id)
+                    let response = stop.answer(
+                        // Cancelled while it was queued: never run, the file not read.
+                        || Some(session.info(false)),
+                        || {
+                            let mut model = None;
+                            let id = session.id;
+                            let claimed = |found: Claim<'_>| match registry.upgrade() {
+                                Some(registry) => claim(
+                                    &registry,
+                                    found.opened,
+                                    found.resolved,
+                                    found.found_at,
+                                    id,
+                                ),
+                                // The sessions are being dropped: no claim is kept.
+                                None => Ok(()),
+                            };
+                            // The session's own work, which stands whatever the command
+                            // comes to: a cancel after it still says `reloaded`.
+                            let (reloaded, result) = match session.reload(rereads, &claimed) {
+                                Ok(reload) => {
+                                    (reload.reloaded(), work(session, &stop, &mut model, reload))
+                                }
+                                Err(problems) => (false, Err(problems)),
+                            };
+                            Response {
+                                session: Some(session.info(reloaded)),
+                                model,
+                                result,
                             }
-                            // The sessions are being dropped: no claim is kept.
-                            None => Ok(()),
-                        };
-                        let (reloaded, result) = match session.reload(rereads, &claimed) {
-                            Ok(reload) => (reload.reloaded(), work(session, &mut model, reload)),
-                            Err(problems) => (false, Err(problems)),
-                        };
-                        // Its answer, unless it was stopped before it kept its work.
-                        let (model, result) = match stop.keep() {
-                            Ok(()) => (model, result),
-                            Err(cancelled) => (None, Err(Problems::from(cancelled))),
-                        };
-                        Response {
-                            session: Some(session.info(reloaded)),
-                            model,
-                            result,
-                        }
-                    };
+                        },
+                    );
                     lock(&session.command).take();
                     response
                 }
-                Turn::Closed(id) => refused(not_open(id)),
+                // Never run: cancelled, if it was first, or refused, and either way settled.
+                Turn::Closed(id) => stop.answer(|| None, || refused(not_open(id))),
             };
             let _ = reply.send(response);
         }));

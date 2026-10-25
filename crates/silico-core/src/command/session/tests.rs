@@ -1,4 +1,5 @@
 use super::cancel::{Ticket, cancelled};
+use super::holding::Holding;
 use super::rebuilds::*;
 use super::transaction::*;
 use super::types::*;
@@ -17,6 +18,11 @@ const BOX: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"
 const SPHERE: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "a91cw0de", "type": "sphere", "v": 1, "name": "Ball", "position": [0, 0, 0], "radius": 5}]}"#;
 const WAIT: Duration = Duration::from_secs(60);
 
+/// The stop of a command no one cancels: as a queued command's work is handed its own.
+fn probe() -> Arc<Ticket> {
+    Ticket::new("probe")
+}
+
 fn checked(text: &str) -> Arc<Checked> {
     Arc::new(Checked::new(document::read(text.as_bytes()).unwrap()).unwrap())
 }
@@ -28,7 +34,7 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
     let (sender, jobs) = mpsc::channel();
     let session = Arc::new(Session {
         id: SessionId(1),
-        held: Mutex::new(Held {
+        held: Holding::new(Held {
             path: "a.silico".to_owned(),
             resolved: PathBuf::from("a.silico"),
             bytes: Arc::new(BOX.as_bytes().to_vec()),
@@ -68,12 +74,16 @@ fn a_revisions_model_is_its_own_and_a_late_one_of_an_older_never_replaces_it() {
     let kernel = FakeKernel::new(2).unwrap();
     let (session, _jobs) = session(&kernel);
     assert_eq!(
-        built_from(&session.model(Revision::OPENED, &checked(BOX)).unwrap()),
+        built_from(
+            &session
+                .model(&probe(), Revision::OPENED, &checked(BOX))
+                .unwrap()
+        ),
         "k7f2qx3m"
     );
     // Revision 2's read is never revision 1's model, published as it is.
     let second = session
-        .model(Revision::OPENED.next().unwrap(), &checked(SPHERE))
+        .model(&probe(), Revision::OPENED.next().unwrap(), &checked(SPHERE))
         .unwrap();
     assert_eq!(built_from(&second), "a91cw0de");
     // A model of revision 1 arriving late (another engine's, here) leaves 2's in place.
@@ -125,7 +135,7 @@ fn at_two(
     let id = sessions.open(&path, false).wait().session.unwrap().id;
     assert!(sessions.check(&id).wait().result.unwrap().is_empty());
     let session = sessions.find(&id).unwrap();
-    let mut held = lock(&session.held);
+    let mut held = session.held.session_changing();
     held.revision = Revision::OPENED.next().unwrap();
     held.text = Arc::new(text.as_bytes().to_vec());
     held.gated = Arc::new(Gated::of(text.as_bytes()));
@@ -294,7 +304,7 @@ fn a_superseded_rebuilds_watcher_leaves_the_newer_one_running() {
     drop(rebuilds);
     // Its model, when its sphere is let go, is revision 2's, from its one rebuild.
     spheres.release();
-    let model = session.model(second, &checked(SPHERE)).unwrap();
+    let model = session.model(&probe(), second, &checked(SPHERE)).unwrap();
     assert_eq!(built_from(&model), "a91cw0de");
     let published = lock(&session.rebuilds).published.clone().unwrap();
     assert_eq!(published.revision, second);
@@ -311,7 +321,9 @@ fn a_superseded_rebuilds_watcher_leaves_the_newer_one_running() {
 fn a_published_read_starts_its_revisions_rebuild_only_while_an_older_is_published() {
     let kernel = FakeKernel::new(1).unwrap();
     let (session, _jobs) = session(&kernel);
-    let first = session.model(Revision::OPENED, &checked(BOX)).unwrap();
+    let first = session
+        .model(&probe(), Revision::OPENED, &checked(BOX))
+        .unwrap();
     // At revision 1, with revision 1 published: that model, and nothing started.
     let read = session
         .published_read(Revision::OPENED, &checked(BOX))
@@ -346,7 +358,7 @@ fn a_rebuild_stopped_under_an_open_session_is_started_again() {
             .count()
     };
     std::thread::scope(|scope| {
-        let read = scope.spawn(|| session.model(Revision::OPENED, &checked(BOX)));
+        let read = scope.spawn(|| session.model(&probe(), Revision::OPENED, &checked(BOX)));
         assert!(kernel.wait_running(1, WAIT));
         lock(&session.rebuilds).engine.cancel();
         // The box asked for again, by the read, still waiting.
@@ -453,11 +465,11 @@ impl<C: Kernel + 'static> Session<C> {
     /// (`Session::hold`), at a new revision unless it's the same document, starting no
     /// rebuild and saving nothing (what it reaches is the session's to work out,
     /// `Reaching::reach`); refused whole, the session as it was, as the edit is.
-    fn applied(&self, text: &str) -> Result<Revision, Problems> {
+    fn applied(&self, stop: &Ticket, text: &str) -> Result<Revision, Problems> {
         let (_, gated) = self.document();
         match edit::replace_text(&gated, text.as_bytes())?.1 {
-            Some(candidate) => self.hold(candidate),
-            None => Ok(lock(&self.held).revision),
+            Some(candidate) => self.hold(stop, candidate),
+            None => Ok(self.held.read().revision),
         }
     }
 }
@@ -504,7 +516,7 @@ impl Fixture {
     }
 
     fn edit(&self, text: &str) -> Revision {
-        self.session().applied(text).unwrap()
+        self.session().applied(&probe(), text).unwrap()
     }
 
     fn file(&self) -> String {
@@ -622,7 +634,7 @@ fn a_commit_writes_new_fingerprints_only_for_what_edits_reached_and_keeps_drift_
     // The session holds what it wrote, as text and as the file's bytes, and nothing is
     // reached since the save.
     let session = f.session();
-    let held = lock(&session.held);
+    let held = session.held.read();
     assert_eq!(held.text.as_slice(), COMMITTED.as_bytes());
     assert_eq!(held.bytes.as_slice(), COMMITTED.as_bytes());
     assert!(held.reach().is_empty());
@@ -642,7 +654,7 @@ fn a_check_says_no_drift_of_what_edits_reached() {
     the_blocks_drift(&response.result.unwrap());
     assert_eq!(response.model.unwrap().revision, Revision(2));
     assert_eq!(
-        lock(&f.session().held).reach(),
+        f.session().held.read().reach(),
         BTreeSet::from([id("b0000001"), id("f0000001")])
     );
 }
@@ -697,7 +709,7 @@ fn a_commit_of_edits_undone_writes_nothing_and_reaches_what_begin_saw() {
     );
     assert_eq!(lock(&f.session().rebuilds).running(), None);
     assert_eq!(f.sessions.text(&f.id, None).wait().result.unwrap(), STORED);
-    assert!(lock(&f.session().held).reach().is_empty());
+    assert!(f.session().held.read().reach().is_empty());
 }
 
 #[test]
@@ -788,7 +800,7 @@ fn a_reached_feature_that_failed_stays_reached_after_its_commit() {
     // Neither's fingerprint written, so both still reached, and their stale fingerprints
     // kept as stored.
     assert_eq!(
-        *lock(&f.session().held).carried,
+        *f.session().held.read().carried,
         BTreeSet::from([id("b0000001"), id("f0000001")])
     );
     let saved = document::read(f.file().as_bytes()).unwrap();
@@ -999,7 +1011,7 @@ fn a_commit_writes_the_solves_only_of_the_sketches_edits_reached() {
         )
     );
     // Its solve written, the second sketch isn't reached after the commit.
-    assert!(lock(&f.session().held).reach().is_empty());
+    assert!(f.session().held.read().reach().is_empty());
     let saved = f.file();
     assert_eq!(pb_x(&saved, "s0000001"), 10.0);
     assert_eq!(pb_x(&saved, "s0000002"), 13.0);
@@ -1055,11 +1067,11 @@ fn a_rollback_restores_what_edits_reached_so_drift_is_said_again() {
     // Reaches the block and the fuse.
     f.edit(&STORED.replace(r#""length": 40"#, r#""length": 41"#));
     assert_eq!(
-        lock(&f.session().held).reach(),
+        f.session().held.read().reach(),
         BTreeSet::from([id("k7f2qx3m"), id("f0000001")])
     );
     f.sessions.rollback(&f.id).wait().result.unwrap();
-    assert!(lock(&f.session().held).reach().is_empty());
+    assert!(f.session().held.read().reach().is_empty());
     the_blocks_drift(&f.sessions.check(&f.id).wait().result.unwrap());
 }
 
@@ -1079,12 +1091,12 @@ fn a_rollback_restores_what_was_reached_before_begin() {
     f.edit(&longer());
     f.sessions.commit(&f.id).wait().result.unwrap();
     let before = BTreeSet::from([id("b0000001"), id("f0000001")]);
-    assert_eq!(*lock(&f.session().held).carried, before);
+    assert_eq!(*f.session().held.read().carried, before);
     f.begin();
     f.edit(&f.file().replace("\"length\": 40,", "\"length\": 41,"));
     f.sessions.rollback(&f.id).wait().result.unwrap();
-    assert_eq!(*lock(&f.session().held).carried, before);
-    assert_eq!(lock(&f.session().held).reach(), before);
+    assert_eq!(*f.session().held.read().carried, before);
+    assert_eq!(f.session().held.read().reach(), before);
 }
 
 #[test]
@@ -1165,7 +1177,7 @@ fn a_commit_saves_around_a_kernel_fault_given_once_beside_its_result() {
     );
     // Their fingerprints unwritten, the lug and the fuse are still reached.
     assert_eq!(
-        *lock(&f.session().held).carried,
+        *f.session().held.read().carried,
         BTreeSet::from([id("b0000001"), id("f0000001")])
     );
 }
@@ -1357,14 +1369,14 @@ fn from_text_that_didnt_read_a_commit_reaches_only_features_with_new_ids() {
         "\n<<<<<<< ours\n\"length\": 10, \"width\": 10\n=======\n\"length\": 20, \"width\": 10\n>>>>>>> theirs\n",
     );
     let f = opened(&markers);
-    assert!(matches!(*lock(&f.session().held).gated, Gated::Unread(_)));
+    assert!(matches!(*f.session().held.read().gated, Gated::Unread(_)));
     f.begin();
     let ball = r#", {"id": "z0000001", "type": "sphere", "v": 1, "name": "Ball", "position": [0, 0, 50], "radius": 5}"#;
     let mended = longer().replacen("\n]}", &format!("{ball}\n]}}"), 1);
     assert_ne!(mended, longer());
     f.edit(&mended);
     assert_eq!(
-        lock(&f.session().held).reach(),
+        f.session().held.read().reach(),
         BTreeSet::from([id("z0000001")])
     );
     let committed = f.sessions.commit(&f.id).wait().result.unwrap();
@@ -1532,7 +1544,7 @@ fn a_rollback_restores_what_begin_saw_published_and_no_transaction_model_comes_a
 fn a_save_this_session_left_part_written_refuses_the_next_saying_where_the_text_is() {
     let f = opened(STORED);
     let old = f.path.with_file_name(".a.silico.fmt-1");
-    lock(&f.session().held).part_written = Some(old.clone());
+    f.session().held.session_changing().part_written = Some(old.clone());
     // What a write in place cut short leaves: the first half of the new text.
     let half = &COMMITTED[..COMMITTED.len() / 2];
     std::fs::write(&f.path, half).unwrap();
@@ -1563,7 +1575,7 @@ fn a_save_this_session_left_part_written_refuses_the_next_saying_where_the_text_
     let again = f.sessions.format(&f.id, None, true).wait();
     assert!(!again.session.unwrap().reloaded);
     assert!(again.result.unwrap().written);
-    assert_eq!(lock(&f.session().held).part_written, None);
+    assert_eq!(f.session().held.read().part_written, None);
     assert_ne!(f.file(), STORED);
 }
 
@@ -1571,7 +1583,7 @@ fn a_save_this_session_left_part_written_refuses_the_next_saying_where_the_text_
 fn a_file_this_sessions_own_save_left_part_written_isnt_reloaded() {
     let f = opened(STORED);
     let old = f.path.with_file_name(".a.silico.fmt-1");
-    lock(&f.session().held).part_written = Some(old.clone());
+    f.session().held.session_changing().part_written = Some(old.clone());
     // What its save left: neither what the session wrote nor what was there.
     std::fs::write(&f.path, "part written").unwrap();
     let text = f.sessions.text(&f.id, None).wait();
@@ -1659,7 +1671,7 @@ fn a_rollback_of_a_closed_session_starts_no_rebuild() {
     let session = f.session();
     session.close();
     let calls = f.kernel.calls().len();
-    session.rollback().unwrap();
+    session.rollback(&probe()).unwrap();
     assert_eq!(lock(&session.rebuilds).running(), None);
     assert_eq!(f.kernel.calls().len(), calls);
 }
@@ -1711,7 +1723,7 @@ fn measures_no_fingerprint_holds_are_drift_however_reached_or_accepted() {
     f.begin();
     f.edit(&CUBE.replace(r#""length": 10"#, r#""length": 11"#));
     assert_eq!(
-        lock(&f.session().held).reach(),
+        f.session().held.read().reach(),
         BTreeSet::from([id("k7f2qx3m")])
     );
     plant_unholdable(&f);
@@ -1733,7 +1745,7 @@ fn a_save_that_left_the_file_part_written_is_marked_for_the_next() {
         Saver::Format,
     );
     assert_eq!(problems.errors()[0].parameter(), Some("path"));
-    assert_eq!(lock(&session.held).part_written, None);
+    assert_eq!(session.held.read().part_written, None);
     // Left part written, its old text beside it: marked, so the next save says where.
     let old = f.path.with_file_name(".a.silico.fmt-1");
     let problems = session.unsaved(
@@ -1751,7 +1763,7 @@ fn a_save_that_left_the_file_part_written_is_marked_for_the_next() {
         ),
         (ErrorCode::IoFailed, Some("path"))
     );
-    assert_eq!(lock(&session.held).part_written, Some(old));
+    assert_eq!(session.held.read().part_written, Some(old));
 }
 
 #[test]
@@ -1767,14 +1779,14 @@ fn a_format_after_a_reached_feature_builds_writes_its_record_and_carries_it_no_m
     f.edit(&longer());
     assert!(f.sessions.commit(&f.id).wait().result.unwrap().written);
     assert_eq!(
-        *lock(&f.session().held).carried,
+        *f.session().held.read().carried,
         BTreeSet::from([id("b0000001"), id("f0000001")])
     );
     f.edit(&f.file().replace("\"length\": 20,", "\"length\": 30,"));
     let formatted = f.sessions.format(&f.id, None, true).wait().result.unwrap();
     assert!(formatted.written);
-    assert!(lock(&f.session().held).carried.is_empty());
-    assert!(lock(&f.session().held).reach().is_empty());
+    assert!(f.session().held.read().carried.is_empty());
+    assert!(f.session().held.read().reach().is_empty());
     let saved = document::read(f.file().as_bytes()).unwrap();
     let measures: Vec<(Measure, Measure)> = saved.features[1..]
         .iter()
@@ -1801,7 +1813,7 @@ fn a_reload_carries_nothing_so_a_hand_edits_drift_is_said_and_not_written_over()
     f.edit(&longer());
     assert!(f.sessions.commit(&f.id).wait().result.unwrap().written);
     assert_eq!(
-        *lock(&f.session().held).carried,
+        *f.session().held.read().carried,
         BTreeSet::from([id("b0000001"), id("f0000001")])
     );
     let by_hand = f.file().replace("\"length\": 20,", "\"length\": 30,");
@@ -1826,7 +1838,7 @@ fn a_reload_carries_nothing_so_a_hand_edits_drift_is_said_and_not_written_over()
             (ErrorCode::Drift, Some("f0000001"))
         ]
     );
-    assert!(lock(&f.session().held).carried.is_empty());
+    assert!(f.session().held.read().carried.is_empty());
     // A note's edit reaches nothing: its commit writes no fingerprint over the drift.
     let note = f
         .sessions
@@ -1909,7 +1921,7 @@ fn a_commit_of_a_document_the_gate_took_at_begin_and_refuses_now_is_refused_and_
     f.begin();
     let session = f.session();
     {
-        let mut held = lock(&session.held);
+        let mut held = session.held.session_changing();
         let next = held.next().unwrap();
         let carried = Arc::clone(&held.carried);
         held.change(
@@ -2039,8 +2051,8 @@ fn a_cancel_after_the_command_kept_its_work_says_so_and_it_answers_its_result() 
     let f = opened(BOX);
     let (go, wait) = mpsc::channel::<()>();
     let (kept, was_kept) = mpsc::channel::<()>();
-    let running = f.sessions.queued(&f.id, "probe", move |session, _| {
-        session.keep()?;
+    let running = f.sessions.queued(&f.id, "probe", move |_, stop, _| {
+        stop.settle()?;
         kept.send(()).unwrap();
         wait.recv().unwrap();
         Ok(7)
@@ -2063,7 +2075,7 @@ fn a_command_cancelled_before_it_kept_its_work_answers_cancelled_whatever_it_giv
     let f = opened(BOX);
     let (go, wait) = mpsc::channel::<()>();
     let (started, was_started) = mpsc::channel::<()>();
-    let running = f.sessions.queued(&f.id, "probe", move |_, _| {
+    let running = f.sessions.queued(&f.id, "probe", move |_, _, _| {
         started.send(()).unwrap();
         wait.recv().unwrap();
         Ok(7)
@@ -2103,14 +2115,12 @@ fn an_open_cancelled_before_it_opens_leaves_no_session_and_no_file_it_made() {
     assert!(book.sessions.is_empty() && book.opening.is_empty() && book.files.is_empty());
 }
 
-/// `f`'s session, its record of the command running a command cancelled already: as the
-/// work of a command whose cancel came before it reached the point where it leaves a trace.
-fn cancelled_meanwhile(f: &Fixture) -> Arc<Session<FakeClient>> {
-    let session = f.session();
-    let ticket = Ticket::new("probe");
+/// `f`'s session, and the stop of a command cancelled already: as the work of a command
+/// whose cancel came before it reached the point where it leaves a trace.
+fn cancelled_meanwhile(f: &Fixture) -> (Arc<Session<FakeClient>>, Arc<Ticket>) {
+    let ticket = probe();
     assert!(ticket.cancel());
-    *lock(&session.command) = Some(ticket);
-    session
+    (f.session(), ticket)
 }
 
 #[test]
@@ -2121,16 +2131,16 @@ fn a_transactions_work_a_cancel_came_before_leaves_no_trace() {
     f.begin();
     let edited = f.edit(&longer());
     assert!(f.sessions.check(&f.id).wait().result.is_ok());
-    let session = cancelled_meanwhile(&f);
+    let (session, stop) = cancelled_meanwhile(&f);
     let refused = |result: Result<(), Problems>| {
         assert_eq!(result.unwrap_err().errors(), [cancelled("probe")]);
     };
     let mut read = None;
-    refused(session.commit(None, &mut read, &|_| {}).map(|_| ()));
+    refused(session.commit(&stop, None, &mut read, &|_| {}).map(|_| ()));
     assert_eq!(f.file(), STORED);
-    refused(session.applied(STORED).map(|_| ()));
-    refused(session.rollback().map(|_| ()));
-    let held = lock(&session.held);
+    refused(session.applied(&stop, STORED).map(|_| ()));
+    refused(session.rollback(&stop).map(|_| ()));
+    let held = session.held.read();
     assert_eq!(held.revision, edited);
     assert!(held.transaction.is_some());
 }
@@ -2140,25 +2150,86 @@ fn a_commit_writing_nothing_a_cancel_came_before_leaves_the_transaction_open() {
     let f = opened(STORED);
     f.begin();
     assert!(f.sessions.check(&f.id).wait().result.is_ok());
-    let session = cancelled_meanwhile(&f);
+    let (session, stop) = cancelled_meanwhile(&f);
     let mut read = None;
-    let refused = session.commit(None, &mut read, &|_| {});
+    let refused = session.commit(&stop, None, &mut read, &|_| {});
     assert_eq!(refused.unwrap_err().errors(), [cancelled("probe")]);
-    assert!(lock(&session.held).transaction.is_some());
+    assert!(session.held.read().transaction.is_some());
 }
 
 #[test]
 fn work_outside_a_transaction_a_cancel_came_before_leaves_no_trace() {
     let f = opened(STORED);
     assert!(f.sessions.check(&f.id).wait().result.is_ok());
-    let session = cancelled_meanwhile(&f);
+    let (session, stop) = cancelled_meanwhile(&f);
     let mut read = None;
-    let format = session.format(None, true, &mut read, &|_| {});
+    let format = session.format(&stop, None, true, &mut read, &|_| {});
     assert_eq!(format.unwrap_err().errors(), [cancelled("probe")]);
     assert_eq!(f.file(), STORED);
-    assert_eq!(session.begin().unwrap_err().errors(), [cancelled("probe")]);
-    assert!(lock(&session.held).transaction.is_none());
-    assert_eq!(session.shut().unwrap_err().errors(), [cancelled("probe")]);
+    assert_eq!(
+        session.begin(&stop).unwrap_err().errors(),
+        [cancelled("probe")]
+    );
+    assert!(session.held.read().transaction.is_none());
+    assert_eq!(
+        session.shut(&stop).unwrap_err().errors(),
+        [cancelled("probe")]
+    );
     assert!(!session.closed());
-    assert_eq!(lock(&session.held).revision, Revision::OPENED);
+    assert_eq!(session.held.read().revision, Revision::OPENED);
+}
+
+#[test]
+fn a_cancel_that_comes_during_a_save_is_too_late_and_the_save_stands() {
+    // Decision 34: the save settles the command's stop before it writes, so a cancel that
+    // comes once the file's written (here, as the new file is claimed) says it came too
+    // late, and the save, and the session's move to the saved revision, stand.
+    let f = opened(STORED);
+    assert!(f.sessions.check(&f.id).wait().result.is_ok());
+    let session = f.session();
+    let stop = probe();
+    let late = std::cell::Cell::new(None);
+    let mut read = None;
+    let formatted = session
+        .format(&stop, None, true, &mut read, &|_| {
+            late.set(Some(stop.cancel()))
+        })
+        .unwrap();
+    assert_eq!(late.get(), Some(false));
+    assert!(!stop.cancelled());
+    assert!(formatted.written);
+    assert_ne!(f.file(), STORED);
+    assert_eq!(f.file().as_bytes(), &**session.held.read().bytes);
+    assert_eq!(session.held.read().revision, Revision(2));
+}
+
+#[test]
+fn each_change_of_what_the_session_holds_is_past_a_cancel() {
+    // Each command's change of what the session holds settles its stop as it changes it,
+    // so a cancel after says it came too late: begin, an edit held in a transaction, a
+    // rollback, a commit that writes nothing, and close.
+    let f = opened(STORED);
+    let session = f.session();
+    let settled =
+        |stop: &Ticket| assert!(!stop.cancel(), "{}'s stop wasn't settled", stop.command());
+    let stop = Ticket::new("begin");
+    session.begin(&stop).unwrap();
+    settled(&stop);
+    let stop = Ticket::new("replace_text");
+    assert_eq!(session.applied(&stop, &longer()).unwrap(), Revision(2));
+    settled(&stop);
+    let stop = Ticket::new("rollback");
+    session.rollback(&stop).unwrap();
+    settled(&stop);
+    session.begin(&probe()).unwrap();
+    let stop = Ticket::new("commit");
+    let mut read = None;
+    let committed = session.commit(&stop, None, &mut read, &|_| {}).unwrap();
+    assert!(!committed.written);
+    assert!(session.held.read().transaction.is_none());
+    settled(&stop);
+    let stop = Ticket::new("close");
+    session.shut(&stop).unwrap();
+    assert!(session.closed());
+    settled(&stop);
 }

@@ -9,7 +9,8 @@ use std::time::Duration;
 use super::Problems;
 #[cfg(doc)]
 use super::Sessions;
-use super::cancel::{Ticket, kept};
+use super::cancel::Ticket;
+use super::rebuilds::kept_fault;
 #[cfg(doc)]
 use crate::document;
 use crate::document::json::Plain;
@@ -130,7 +131,7 @@ impl ModelRead {
         ModelRead {
             revision,
             of,
-            fault: model.fault().map(kept),
+            fault: model.fault().map(kept_fault),
         }
     }
 }
@@ -141,7 +142,7 @@ impl ModelRead {
 pub struct Read<'a> {
     pub(super) model: &'a Model,
     pub(super) read: ModelRead,
-    pub(super) ticket: Option<&'a Ticket>,
+    pub(super) stop: &'a Ticket,
 }
 
 impl Read<'_> {
@@ -159,7 +160,7 @@ impl Read<'_> {
     /// answers `cancelled` whatever it gives, so a read that's long may stop when it sees
     /// this.
     pub fn stopped(&self) -> bool {
-        self.ticket.is_some_and(Ticket::cancelled)
+        self.stop.cancelled()
     }
 }
 

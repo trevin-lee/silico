@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError, Weak};
 
-use super::cancel::cancelled;
+use super::cancel::{Ticket, cancelled};
 use super::threads::Threads;
 #[cfg(doc)]
 use super::transaction::Reaching;
@@ -60,6 +60,38 @@ impl<C: Kernel + 'static> Rebuilds<C> {
     /// The revision whose rebuild is running, if one is.
     pub(super) fn running(&self) -> Option<Revision> {
         self.running.as_ref().map(Label::revision)
+    }
+
+    /// Whether the command `stop` stops was cancelled: if so, the rebuild it waits on,
+    /// `waited`, stopped ([`stop_waited`](Self::stop_waited)), and its `cancelled` answer.
+    fn stopped(&mut self, stop: &Ticket, waited: Option<&Label>) -> Result<(), Problems> {
+        if !stop.cancelled() {
+            return Ok(());
+        }
+        if let Some(label) = waited {
+            self.stop_waited(label);
+        }
+        Err(Problems::from(cancelled(stop.command())))
+    }
+
+    /// The rebuild labelled `label` stopped, if it's still the one running, for a command
+    /// that was waiting on it and was cancelled (decision 34): through the pool's superseded
+    /// path, as a newer generation's would, and running no more from here, its end said as
+    /// cancelled ([`How::Cancelled`]; a candidate's is its commit's alone), so the command's
+    /// answer never comes before what `status` says of it.
+    fn stop_waited(&mut self, label: &Label) {
+        if self
+            .running
+            .as_ref()
+            .is_some_and(|running| running.is(label))
+        {
+            label.cancelled.store(true, Ordering::SeqCst);
+            self.engine.cancel();
+            self.running = None;
+            if !label.candidate {
+                self.end(label.revision(), How::Cancelled);
+            }
+        }
     }
 
     /// `revision`'s rebuild ended as `how`, without publishing: kept unless a newer
@@ -116,8 +148,9 @@ impl<C: Kernel + 'static> Rebuilds<C> {
 pub(super) struct Label {
     revision: Arc<AtomicU64>,
     candidate: bool,
-    /// Whether the command waiting on it was cancelled and stopped it ([`stop`], which says
-    /// how it ended then): if it ends superseded, that's why.
+    /// Whether the command waiting on it was cancelled and stopped it
+    /// ([`Rebuilds::stop_waited`], which says how it ended then): if it ends superseded,
+    /// that's why.
     cancelled: Arc<AtomicBool>,
 }
 
@@ -208,8 +241,9 @@ impl Ended {
 }
 
 impl<C: Kernel + 'static> Session<C> {
-    /// The model of `revision`, whose document is `checked`: the one its rebuild published,
-    /// waited for, the rebuild started if none of it is running (decision 13). A model that
+    /// The model of `revision`, whose document is `checked`, for the command `stop` stops:
+    /// the one its rebuild published, waited for, the rebuild started if none of it is
+    /// running (decision 13). A model that
     /// holds a kernel fault (a worker that crashed or hung) is the revision's outcome all
     /// the same, kept, never rebuilt for another read of the revision (decision 32: a feature
     /// that crashes the worker every time would cost every read a minute). Refused if the
@@ -218,30 +252,23 @@ impl<C: Kernel + 'static> Session<C> {
     /// was waiting on (the next command that needs the model starts it again).
     pub(super) fn model(
         self: &Arc<Self>,
+        stop: &Ticket,
         revision: Revision,
         checked: &Arc<Checked>,
     ) -> Result<Arc<Model>, Problems> {
         let _span = tracing::info_span!("rebuild", revision = revision.number()).entered();
-        let ticket = self.ticket();
         let mut rebuilds = lock(&self.rebuilds);
-        // The rebuild this read last waited on, which a cancel stops.
+        // The rebuild this read last waited on or started, which a cancel stops.
         let mut waited: Option<Label> = None;
         loop {
             // Had, it's given even to a command cancelled meanwhile, whose work then stops
-            // where it would leave a trace (`Session::keep`).
+            // where it would leave a trace (its stop settled).
             if let Some(published) = &rebuilds.published
                 && published.revision == revision
             {
                 return Ok(Arc::clone(&published.model));
             }
-            if let Some(ticket) = &ticket
-                && ticket.cancelled()
-            {
-                if let Some(label) = &waited {
-                    stop(&mut rebuilds, label);
-                }
-                return Err(Problems::from(cancelled(ticket.command())));
-            }
+            rebuilds.stopped(stop, waited.as_ref())?;
             if let Some(running) = &rebuilds.running
                 && running.revision() == revision
             {
@@ -263,8 +290,11 @@ impl<C: Kernel + 'static> Session<C> {
                 *said = true;
                 return Err(Problems::from(why.clone()));
             }
-            // Not built, or superseded: started again, unless the session has gone.
-            if !self.start_unless_newer(&mut rebuilds, revision, checked)? {
+            // Not built, or superseded: started again, unless the session has gone; and
+            // stopped by a cancel that comes before the wait does.
+            if self.start_unless_newer(&mut rebuilds, revision, checked)? {
+                waited.clone_from(&rebuilds.running);
+            } else {
                 return Err(Problems::from(
                     Error::new(
                         ErrorCode::Internal,
@@ -346,19 +376,20 @@ impl<C: Kernel + 'static> Session<C> {
         }
     }
 
-    /// The current revision's model, waited for ([`model`](Self::model)), what was read,
-    /// and what the session's edits reach at that revision ([`Reaching::reach`]); or why
-    /// there's none: the gate refused the document (its problems, the document's, which a
-    /// check gives as its result), or the model couldn't be had.
-    pub(super) fn current(self: &Arc<Self>) -> Result<Current, Unbuilt> {
+    /// The current revision's model, waited for by the command `stop` stops
+    /// ([`model`](Self::model)), what was read, and what the session's edits reach at that
+    /// revision ([`Reaching::reach`]); or why there's none: the gate refused the document
+    /// (its problems, the document's, which a check gives as its result), or the model
+    /// couldn't be had.
+    pub(super) fn current(self: &Arc<Self>, stop: &Ticket) -> Result<Current, Unbuilt> {
         let (revision, gated, reaching) = {
-            let held = lock(&self.held);
+            let held = self.held.read();
             (held.revision, Arc::clone(&held.gated), held.reaching())
         };
         let reached = reaching.reach();
         match &*gated {
             Gated::Checked(checked) => self
-                .model(revision, checked)
+                .model(stop, revision, checked)
                 .map(|model| Current {
                     read: ModelRead::of(revision, ModelChoice::Current, &model),
                     model,
@@ -379,7 +410,7 @@ impl<C: Kernel + 'static> Session<C> {
         self: &Arc<Self>,
     ) -> (Option<SessionInfo>, Result<Published, Unbuilt>) {
         let (info, revision, gated) = {
-            let held = lock(&self.held);
+            let held = self.held.read();
             (
                 self.info_of(&held, false),
                 held.revision,
@@ -453,8 +484,8 @@ impl<C: Kernel + 'static> Session<C> {
     }
 
     /// The model of an edit's candidate, `checked`, which its save would put the session at
-    /// `revision` with: rebuilt for the commit of an edit made outside a transaction, and
-    /// waited for. Never published as it is: its document holds the fingerprints stored
+    /// `revision` with: rebuilt for the commit of an edit made outside a transaction, the
+    /// command `stop` stops, and waited for. Never published as it is: its document holds the fingerprints stored
     /// before the save, so it's the model neither of the state the save leaves (a check of
     /// it would say the fingerprints written drifted) nor of any the session was at; the
     /// save publishes it rebound to the saved document ([`write`](Self::write)). While it runs
@@ -464,27 +495,18 @@ impl<C: Kernel + 'static> Session<C> {
     /// is cancelled (decision 34), which stops it.
     pub(super) fn candidate_model(
         self: &Arc<Self>,
+        stop: &Ticket,
         revision: Revision,
         checked: &Arc<Checked>,
     ) -> Result<Arc<Model>, Problems> {
         let _span = tracing::info_span!("rebuild", revision = revision.number(), candidate = true)
             .entered();
-        let ticket = self.ticket();
-        let stopped = |rebuilds: &mut Rebuilds<C>, label: Option<&Label>| {
-            let ticket = ticket.as_ref().filter(|ticket| ticket.cancelled())?;
-            if let Some(label) = label {
-                stop(rebuilds, label);
-            }
-            Some(Problems::from(cancelled(ticket.command())))
-        };
         let mut rebuilds = lock(&self.rebuilds);
         loop {
             if self.closed() {
                 return Err(Problems::from(not_open(self.id)));
             }
-            if let Some(cancelled) = stopped(&mut rebuilds, None) {
-                return Err(cancelled);
-            }
+            rebuilds.stopped(stop, None)?;
             rebuilds.candidate = None;
             let label = Label::candidate(revision);
             self.spawn_rebuild(&mut rebuilds, checked, label.clone())?;
@@ -495,9 +517,7 @@ impl<C: Kernel + 'static> Session<C> {
                 {
                     break outcome;
                 }
-                if let Some(cancelled) = stopped(&mut rebuilds, Some(&label)) {
-                    return Err(cancelled);
-                }
+                rebuilds.stopped(stop, Some(&label))?;
                 rebuilds = self
                     .rebuilt
                     .wait(rebuilds)
@@ -563,30 +583,31 @@ pub(super) fn published_answer<T>(
     }
 }
 
+/// A kernel fault as the model read gives it (the envelope's `model.fault`, decision 32): kept
+/// as the revision's outcome, so its suggestion says how to try again (a new revision; with
+/// M4.3, `check` with `fresh` too), never the worker's own "try again", which reading again
+/// wouldn't do. A worker that couldn't be had says nothing of the feature that asked for it,
+/// so it names none.
+pub(super) fn kept_fault(fault: &Error) -> Error {
+    const KEPT: &str = "this revision keeps the fault, so reading it again won't try again";
+    let fault = fault.clone();
+    match fault.code() {
+        ErrorCode::WorkerUnavailable => fault.without_feature().with_suggestion(format!(
+            "once a worker can be had (the log says why none could), edit the document to try again: {KEPT}"
+        )),
+        ErrorCode::ResourceExhausted => fault.with_suggestion(format!(
+            "free what's short, then edit the document to try again: {KEPT}"
+        )),
+        _ => fault.with_suggestion(format!(
+            "edit the document to try again: {KEPT}; if the same feature faults again, report it with the document"
+        )),
+    }
+}
+
 /// Whether `model` holds a kernel fault: a failure that says nothing about the document,
 /// which a rebuild may not meet again ([`Model::fault`]).
 pub(in crate::command) fn faulted(model: &Model) -> bool {
     model.fault().is_some()
-}
-
-/// The rebuild labelled `label` stopped, if it's still the one running, for a command that
-/// was waiting on it and was cancelled (decision 34): through the pool's superseded path,
-/// as a newer generation's would, and running no more from here, its end said as cancelled
-/// ([`How::Cancelled`]; a candidate's is its commit's alone), so the command's answer never
-/// comes before what `status` says of it.
-fn stop<C: Kernel + 'static>(rebuilds: &mut Rebuilds<C>, label: &Label) {
-    if rebuilds
-        .running
-        .as_ref()
-        .is_some_and(|running| running.is(label))
-    {
-        label.cancelled.store(true, Ordering::SeqCst);
-        rebuilds.engine.cancel();
-        rebuilds.running = None;
-        if !label.candidate {
-            rebuilds.end(label.revision(), How::Cancelled);
-        }
-    }
 }
 
 /// The refusal of a published read with nothing published yet, its rebuild started or

@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
+use super::cancel::Ticket;
 use super::rebuilds::{Kept, Rebuilds};
 use super::registry::Unclaimed;
 #[cfg(doc)]
@@ -28,7 +29,8 @@ use crate::{Error, ErrorCode};
 
 /// What a session holds (docs/design/m4.1-command-api.md, section 3). Its values are shared
 /// with the commands reading them, so a command takes them under the lock at once and works
-/// off it, and `status` never waits on a command's work.
+/// off it, and `status` never waits on a command's work. Changed only as `holding` allows:
+/// by a command once its stop is settled, or by the session's own reload.
 pub(super) struct Held {
     /// The document's path as `open` was given it.
     pub(super) path: String,
@@ -87,6 +89,15 @@ struct Saving {
     changed_outside: Option<Outside>,
 }
 
+/// What a save writes ([`Session::write`]): its text, the model it was formatted from, what
+/// the edits it saves reach, and whether that model, rebound, is the saved revision's too.
+struct Save<'a> {
+    text: Arc<Vec<u8>>,
+    model: &'a Model,
+    reach: &'a BTreeSet<FeatureId>,
+    publish: bool,
+}
+
 /// Whose state a commit saves: an open transaction's, or an edit's candidate, made outside
 /// one.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -111,7 +122,7 @@ impl Held {
 
     /// The session's document changed to `text`, as the reader and the gate found it
     /// (`gated`), at `revision` (from [`next`](Self::next)), carrying `carried`: the one
-    /// place a session's document changes (an edit, a save, a rollback).
+    /// place a session's document changes (an edit, a save, a rollback, a reload).
     pub(super) fn change(
         &mut self,
         revision: Revision,
@@ -195,11 +206,12 @@ fn end_transaction<C: Kernel + 'static>(
 }
 
 impl<C: Kernel + 'static> Session<C> {
-    /// `begin`: the session's state kept, and a transaction opened; refused if one is open.
-    /// The newest model published is kept with it, and its revision's model if it has been
-    /// published, or, if its rebuild is running, once that publishes it.
-    pub(super) fn begin(&self) -> Result<Begun, Problems> {
-        let mut held = lock(&self.held);
+    /// `begin`, as the command `stop` stops: the session's state kept, and a transaction
+    /// opened; refused if one is open. The newest model published is kept with it, and its
+    /// revision's model if it has been published, or, if its rebuild is running, once that
+    /// publishes it.
+    pub(super) fn begin(&self, stop: &Ticket) -> Result<Begun, Problems> {
+        let held = self.held.read();
         if held.transaction.is_some() {
             // Design section 2's words, which differ from close's and format's (section 7).
             return Err(Problems::from(
@@ -211,8 +223,8 @@ impl<C: Kernel + 'static> Session<C> {
                 .with_suggestion("commit or roll back the open transaction, then begin again"),
             ));
         }
+        let mut held = held.changing(stop)?;
         let revision = held.revision;
-        self.keep()?;
         // Under the held state's lock, then the rebuilds' (the only order both are taken
         // in), so a model published meanwhile is either seen here or kept by its watcher.
         let mut rebuilds = lock(&self.rebuilds);
@@ -248,12 +260,12 @@ impl<C: Kernel + 'static> Session<C> {
     /// is started, which the cache makes cheap; and if no rebuild started in the
     /// transaction at all, none is. A rebuild of the transaction's still running is
     /// stopped, and none of the transaction's models is published after. The file is never
-    /// touched.
-    pub(super) fn rollback(self: &Arc<Self>) -> Result<RolledBack, Problems> {
-        let mut held = lock(&self.held);
+    /// touched. As the command `stop` stops.
+    pub(super) fn rollback(self: &Arc<Self>, stop: &Ticket) -> Result<RolledBack, Problems> {
+        let held = self.held.read();
         self.transaction(&held)?;
         let revision = held.next()?;
-        self.keep()?;
+        let mut held = held.changing(stop)?;
         let mut rebuilds = lock(&self.rebuilds);
         let Some((begun, kept)) = end_transaction(&mut held, &mut rebuilds) else {
             return Err(Problems::from(no_transaction(self.id)));
@@ -317,15 +329,16 @@ impl<C: Kernel + 'static> Session<C> {
     /// the commit cancelled), the canonical text is too long, or the save is (a file changed
     /// since: a conflict too). A kernel fault the model holds is saved around (decision 32):
     /// the features it stopped keep what's stored with them, as failed ones do, and it's
-    /// given once, in the model read, not among the problems.
+    /// given once, in the model read, not among the problems. As the command `stop` stops.
     pub(super) fn commit(
         self: &Arc<Self>,
+        stop: &Ticket,
         changed_outside: Option<Outside>,
         read: &mut Option<ModelRead>,
         claim: &dyn Fn(&Path),
     ) -> Result<Committed, Problems> {
         let state = {
-            let held = lock(&self.held);
+            let held = self.held.read();
             let begun = self.transaction(&held)?;
             Saving {
                 path: held.path.clone(),
@@ -337,7 +350,7 @@ impl<C: Kernel + 'static> Session<C> {
                 changed_outside,
             }
         };
-        self.save_state(state, Through::Transaction, read, claim)
+        self.save_state(stop, state, Through::Transaction, read, claim)
             .map(|(committed, _)| committed)
     }
 
@@ -352,12 +365,13 @@ impl<C: Kernel + 'static> Session<C> {
     /// [`commit`]: Self::commit
     pub(super) fn commit_candidate(
         self: &Arc<Self>,
+        stop: &Ticket,
         candidate: Candidate,
         read: &mut Option<ModelRead>,
         claim: &dyn Fn(&Path),
     ) -> Result<(Committed, Option<Arc<Gated>>), Problems> {
         let state = {
-            let held = lock(&self.held);
+            let held = self.held.read();
             Saving {
                 path: held.path.clone(),
                 text: candidate.text,
@@ -369,7 +383,7 @@ impl<C: Kernel + 'static> Session<C> {
                 changed_outside: None,
             }
         };
-        let committed = self.save_state(state, Through::Candidate, read, claim);
+        let committed = self.save_state(stop, state, Through::Candidate, read, claim);
         if committed.is_err() {
             *read = None;
         }
@@ -386,9 +400,10 @@ impl<C: Kernel + 'static> Session<C> {
     /// only once saved, its model rebuilt for this commit alone). With the commit's result,
     /// the document saved, as the session then holds it ([`write`](Self::write)), if one was
     /// written. Refused, nothing written and nothing held changed, as
-    /// [`commit`](Self::commit) is.
+    /// [`commit`](Self::commit) is. As the command `stop` stops.
     fn save_state(
         self: &Arc<Self>,
+        stop: &Ticket,
         state: Saving,
         through: Through,
         read: &mut Option<ModelRead>,
@@ -432,7 +447,7 @@ impl<C: Kernel + 'static> Session<C> {
                 }));
             }
             // Only a transaction's commit is given what was found outside.
-            self.unwritten(&begun, revision)?;
+            self.unwritten(stop, &begun, revision)?;
             return Ok((
                 Committed {
                     written: false,
@@ -449,7 +464,7 @@ impl<C: Kernel + 'static> Session<C> {
             refused if unchanged => {
                 let problems = refused.problems();
                 if through == Through::Transaction {
-                    self.unwritten(&begun, revision)?;
+                    self.unwritten(stop, &begun, revision)?;
                 }
                 return Ok((
                     Committed {
@@ -465,15 +480,15 @@ impl<C: Kernel + 'static> Session<C> {
             refused => return Err(refused.problems()),
         };
         let model = match through {
-            Through::Transaction => self.model(revision, checked)?,
-            Through::Candidate => self.candidate_model(revision, checked)?,
+            Through::Transaction => self.model(stop, revision, checked)?,
+            Through::Candidate => self.candidate_model(stop, revision, checked)?,
         };
         *read = Some(ModelRead::of(revision, ModelChoice::Current, &model));
         let formatted = crate::command::formatted(&model, &reach, &model.drifted(), Faults::Aside)
             .map_err(Problems::from)??;
         if unchanged {
             if through == Through::Transaction {
-                self.unwritten(&begun, revision)?;
+                self.unwritten(stop, &begun, revision)?;
             }
             return Ok((
                 Committed {
@@ -495,7 +510,17 @@ impl<C: Kernel + 'static> Session<C> {
         // sketches' solves are those the save wrote, so its drift is none of theirs.
         let publish = through == Through::Candidate
             && (formatted.resolved.is_empty() || model.fault().is_some());
-        let written = self.write(saved, &model, &reach, publish, saver, claim)?;
+        let written = self.write(
+            stop,
+            Save {
+                text: saved,
+                model: &model,
+                reach: &reach,
+                publish,
+            },
+            saver,
+            claim,
+        )?;
         Ok((
             Committed {
                 written: true,
@@ -517,15 +542,20 @@ impl<C: Kernel + 'static> Session<C> {
     /// the file's as the session last read or wrote it (a change made outside since is
     /// reloaded by the next command), at a new revision if the edits left other bytes (the
     /// same document in canonical form, say), whose model is `revision`'s if it was
-    /// published.
-    fn unwritten(&self, begun: &Snapshot, revision: Revision) -> Result<(), Problems> {
-        self.keep()?;
-        let mut held = lock(&self.held);
+    /// published. As the command `stop` stops.
+    fn unwritten(
+        &self,
+        stop: &Ticket,
+        begun: &Snapshot,
+        revision: Revision,
+    ) -> Result<(), Problems> {
+        let held = self.held.read();
         let next = if held.text == begun.text {
             None
         } else {
             Some(held.next()?)
         };
+        let mut held = held.changing(stop)?;
         let mut rebuilds = lock(&self.rebuilds);
         end_transaction(&mut held, &mut rebuilds);
         if let Some(next) = next {
@@ -555,16 +585,18 @@ impl<C: Kernel + 'static> Session<C> {
     /// new file claimed with `claim`, the session then at a new revision, its saved
     /// text. Refused, writing nothing, inside a transaction, for a document the gate
     /// refused (its problems), for a feature in `accept` the document hasn't, and as a
-    /// commit is. A kernel fault is saved around, as a commit saves around it.
+    /// commit is. A kernel fault is saved around, as a commit saves around it. As the command
+    /// `stop` stops.
     pub(super) fn format(
         self: &Arc<Self>,
+        stop: &Ticket,
         accept: Option<&[FeatureId]>,
         write: bool,
         read: &mut Option<ModelRead>,
         claim: &dyn Fn(&Path),
     ) -> Result<Reformatted, Problems> {
         let (path, bytes, gated, revision, reaching) = {
-            let held = lock(&self.held);
+            let held = self.held.read();
             if held.transaction.is_some() {
                 return Err(Problems::from(transaction_open(self.id, "format")));
             }
@@ -586,7 +618,7 @@ impl<C: Kernel + 'static> Session<C> {
             None => None,
             Some(accept) => Some(named(document, accept)?),
         };
-        let model = self.model(revision, checked)?;
+        let model = self.model(stop, revision, checked)?;
         *read = Some(ModelRead::of(revision, ModelChoice::Current, &model));
         // Each feature's drift, once: a feature edits reached isn't drift.
         let drift = model.drifted();
@@ -613,7 +645,17 @@ impl<C: Kernel + 'static> Session<C> {
         let changed = saved != *bytes;
         let written = write && changed;
         if written {
-            self.write(Arc::new(saved), &model, &reach, false, Saver::Format, claim)?;
+            self.write(
+                stop,
+                Save {
+                    text: Arc::new(saved),
+                    model: &model,
+                    reach: &reach,
+                    publish: false,
+                },
+                Saver::Format,
+                claim,
+            )?;
         }
         Ok(Reformatted {
             changed,
@@ -630,28 +672,33 @@ impl<C: Kernel + 'static> Session<C> {
         })
     }
 
-    /// The save of a commit or a format: `saved` written over the document's file, which
-    /// the session last read or wrote as the bytes it holds ([`save`](Self::save)), its new
-    /// file claimed with `claim`; then the session at a new revision whose text is `saved`,
-    /// carrying the features of `reach` whose records `model` couldn't write, and any
-    /// transaction ended. With `publish`, `model` rebound to the saved document
-    /// ([`Model::rebound`]) is published as the new revision's, in the same step: for a
-    /// save that wrote only fingerprints, whose document a rebuild would build from the
-    /// steps `model` took. The document saved, as the gate found it, which the session now
-    /// holds. Refused, nothing changed, as the save is, a conflict with what `saver`
-    /// advises; or, `cancelled`, if the command was stopped before the save began (past it,
-    /// a cancel comes too late, and the command answers with its real result).
+    /// The save of a commit or a format, as the command `stop` stops: `save.text` written
+    /// over the document's file, which the session last read or wrote as the bytes it holds
+    /// ([`save`](Self::save)), its new file claimed with `claim`; then the session at a new
+    /// revision whose text is the one saved, carrying the features of `save.reach` whose
+    /// records `save.model` couldn't write, and any transaction ended. With `save.publish`,
+    /// the model rebound to the saved document ([`Model::rebound`]) is published as the new
+    /// revision's, in the same step: for a save that wrote only fingerprints, whose document
+    /// a rebuild would build from the steps the model took. The document saved, as the gate
+    /// found it, which the session now holds. Refused, nothing changed, as the save is, a
+    /// conflict with what `saver` advises; or, `cancelled`, if the command was stopped
+    /// before the save began (past it, a cancel comes too late, and the command answers with
+    /// its real result).
     fn write(
         &self,
-        saved: Arc<Vec<u8>>,
-        model: &Model,
-        reach: &BTreeSet<FeatureId>,
-        publish: bool,
+        stop: &Ticket,
+        save: Save<'_>,
         saver: Saver,
         claim: &dyn Fn(&Path),
     ) -> Result<Arc<Gated>, Problems> {
+        let Save {
+            text: saved,
+            model,
+            reach,
+            publish,
+        } = save;
         let (next, path, resolved, bytes) = {
-            let held = lock(&self.held);
+            let held = self.held.read();
             (
                 held.next()?,
                 held.path.clone(),
@@ -659,8 +706,7 @@ impl<C: Kernel + 'static> Session<C> {
                 Arc::clone(&held.bytes),
             )
         };
-        self.keep()?;
-        self.save(&path, &resolved, &bytes, &saved, saver)?;
+        self.save(stop, &path, &resolved, &bytes, &saved, saver)?;
         claim(&resolved);
         let carried = reach
             .iter()
@@ -668,7 +714,8 @@ impl<C: Kernel + 'static> Session<C> {
             .cloned()
             .collect();
         let gated = Arc::new(Gated::of(&saved));
-        let mut held = lock(&self.held);
+        // Settled by the save, so never refused.
+        let mut held = self.held.read().changing(stop)?;
         held.change(
             next,
             Arc::clone(&saved),
@@ -726,7 +773,7 @@ impl<C: Kernel + 'static> Session<C> {
         claim: &dyn Fn(Claim<'_>) -> Result<(), Unclaimed>,
     ) -> Result<Reload, Problems> {
         let (path, resolved, bytes, transaction, part_written) = {
-            let held = lock(&self.held);
+            let held = self.held.read();
             (
                 held.path.clone(),
                 held.resolved.clone(),
@@ -757,7 +804,7 @@ impl<C: Kernel + 'static> Session<C> {
                 && now == *bytes
             {
                 claimed(opened)?;
-                lock(&self.held).part_written = None;
+                self.held.session_changing().part_written = None;
                 tracing::info!(session = %self.id, "the file a save left part written holds its old text again");
             }
             return Ok(Reload::AsHeld);
@@ -801,10 +848,12 @@ impl<C: Kernel + 'static> Session<C> {
         // else changes what's held meanwhile, since only the session's thread changes it.
         let gated = Arc::new(Gated::of(&now));
         // Given before the claim moves, so a session with none left keeps its claim.
-        let next = lock(&self.held).next()?;
+        let next = self.held.read().next()?;
         claimed(opened)?;
         let now = Arc::new(now);
-        let mut held = lock(&self.held);
+        // The session's own change, not the command's: it stands whatever the command comes
+        // to (a cancel after it too), and the response says `reloaded`.
+        let mut held = self.held.session_changing();
         // Nothing carried: a reloaded session is as a fresh `open`.
         held.change(next, Arc::clone(&now), gated, Arc::new(BTreeSet::new()));
         held.bytes = now;
@@ -815,21 +864,25 @@ impl<C: Kernel + 'static> Session<C> {
     }
 
     /// `text` saved over the document's file at `resolved` (`path` as `open` was given it),
-    /// which the session last read or wrote as `bytes`: refused, nothing written, if the
-    /// file changed since (a conflict, naming the file, with what `saver` advises) or can't
-    /// be written; or if this session's own save left it part written before, saying where
-    /// its old text is. A save that leaves it so is marked, for the next to say.
+    /// which the session last read or wrote as `bytes`, as the command `stop` stops: the one
+    /// place a session writes its file, its stop settled first, so from here a cancel comes
+    /// too late. Refused, nothing written, if the command was cancelled first, if the file
+    /// changed since (a conflict, naming the file, with what `saver` advises) or can't be
+    /// written; or if this session's own save left it part written before, saying where its
+    /// old text is. A save that leaves it so is marked, for the next to say.
     fn save(
         &self,
+        stop: &Ticket,
         path: &str,
         resolved: &Path,
         bytes: &[u8],
         text: &[u8],
         saver: Saver,
     ) -> Result<(), Problems> {
-        if let Some(old) = &lock(&self.held).part_written {
+        if let Some(old) = &self.held.read().part_written {
             return Err(Problems::from(part_written(path, old)));
         }
+        stop.settle()?;
         file::save_over(resolved, bytes, text).map_err(|unsaved| self.unsaved(path, unsaved, saver))
     }
 
@@ -839,7 +892,8 @@ impl<C: Kernel + 'static> Session<C> {
     /// save to say.
     pub(super) fn unsaved(&self, path: &str, unsaved: file::Unsaved, saver: Saver) -> Problems {
         if let Some(old) = unsaved.old_text_in {
-            lock(&self.held).part_written = Some(old);
+            // The session's record of its file, past the command's settling: it stands.
+            self.held.session_changing().part_written = Some(old);
         }
         let error = unsaved.error;
         Problems::from(if error.code() == ErrorCode::Conflict {

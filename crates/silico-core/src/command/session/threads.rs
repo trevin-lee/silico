@@ -74,6 +74,7 @@ impl Reads {
             unanswered: Arc::new(Mutex::new(Unanswered {
                 next: 0,
                 reads: BTreeMap::new(),
+                closed: false,
             })),
             threads: Some(Threads::new()),
         }
@@ -85,8 +86,12 @@ pub(super) struct Unanswered {
     /// The number the next read takes.
     next: u64,
     /// Each one's stop, by its number. M4.5's reads keep their kernel clients with these
-    /// (through [`Ticket::interrupt_with`]), so a cancel retires the read's own client.
+    /// (through [`Ticket::interrupt_with`]), so a cancel or the session's close retires the
+    /// read's own client.
     reads: BTreeMap<u64, Arc<Ticket>>,
+    /// Whether the session closed ([`close`](Self::close)): kept, so a read counted after
+    /// is closed at once.
+    closed: bool,
 }
 
 impl Unanswered {
@@ -99,6 +104,13 @@ impl Unanswered {
     pub(super) fn tickets(&self) -> impl Iterator<Item = &Arc<Ticket>> {
         self.reads.values()
     }
+
+    /// The session closed: so it stays, and each read's stop running now given back, for
+    /// the caller to close ([`Ticket::close`]) once this lock is let go.
+    pub(super) fn close(&mut self) -> Vec<Arc<Ticket>> {
+        self.closed = true;
+        self.reads.values().cloned().collect()
+    }
 }
 
 /// A published read counted unanswered, its stop kept with the session's reads, until it's
@@ -109,12 +121,19 @@ pub(super) struct Counted {
 }
 
 impl Counted {
-    /// `ticket`'s read counted in `unanswered`.
+    /// `ticket`'s read counted in `unanswered`: closed at once ([`Ticket::close`]) if the
+    /// session has closed.
     pub(super) fn count(unanswered: &Arc<Mutex<Unanswered>>, ticket: &Arc<Ticket>) -> Self {
-        let mut reads = lock(unanswered);
-        let number = reads.next;
-        reads.next = number.wrapping_add(1);
-        reads.reads.insert(number, Arc::clone(ticket));
+        let (number, closed) = {
+            let mut reads = lock(unanswered);
+            let number = reads.next;
+            reads.next = number.wrapping_add(1);
+            reads.reads.insert(number, Arc::clone(ticket));
+            (number, reads.closed)
+        };
+        if closed {
+            ticket.close();
+        }
         Counted {
             unanswered: Arc::clone(unanswered),
             number,
