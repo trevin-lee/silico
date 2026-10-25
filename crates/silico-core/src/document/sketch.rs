@@ -5,6 +5,7 @@
 //! sorted by ID (D5). Solving is M3.3's; this is what the file holds.
 
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::fmt;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
@@ -43,6 +44,45 @@ impl Sketch {
             .chain(circles)
             .chain(arcs)
             .chain(constraints)
+    }
+}
+
+/// The dotted paths of a sketch's members, as every error's `parameter` names them
+/// (docs/design/m4.1-command-api.md, *Paths to a field* and decision 15): a member of a
+/// list of objects that have an `id` (a sketch's points, lines, circles, arcs, and
+/// constraints) by its ID, `constraints.g4h5j6k7`, and its field after it,
+/// `constraints.g4h5j6k7.value`.
+///
+/// A member is named by its ID only when its `id` reads as an ID and no member before it
+/// in the sketch holds that ID: IDs are unique within a sketch, whatever their kind, so
+/// "before" counts every list in the format's order (points, lines, circles, arcs,
+/// constraints, as [`Sketch::elements`] gives them, whatever order the file writes their
+/// keys in), each list in the order read. Every other member, whose `id` is missing, isn't
+/// an ID, or is an earlier member's, is named by its place in its list, from 0, with no
+/// leading zeros (`constraints.3`), as any array that isn't such a list is. So no two
+/// members share a path: an ID names its first holder alone, and a place, under 10,000,000
+/// in any document the reader takes (16 MiB, at least three bytes a member), is never an
+/// ID's eight characters.
+///
+/// The reader and the gate both name members through this, taking the members in that
+/// order, so a member has one path wherever it's refused.
+#[derive(Debug, Default)]
+pub(crate) struct MemberPaths {
+    /// The IDs earlier members hold.
+    held: BTreeSet<ElementId>,
+}
+
+impl MemberPaths {
+    /// The path of the next member, at `index` in `list`, whose `id` reads as `id` (none if
+    /// it's missing or isn't an ID); that ID held by it from here on.
+    pub(crate) fn next(&mut self, list: &str, index: usize, id: Option<&ElementId>) -> String {
+        match id {
+            Some(id) if !self.held.contains(id) => {
+                self.held.insert(id.clone());
+                format!("{list}.{id}")
+            }
+            _ => format!("{list}.{index}"),
+        }
     }
 }
 

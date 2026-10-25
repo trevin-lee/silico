@@ -88,21 +88,32 @@ pub fn problems(text: &str) -> Vec<Error> {
         Ok(()) => Vec::new(),
         Err(invalid) => invalid.errors().to_vec(),
     };
-    // A constraint's refusal names it by its ID too: its field is its place in the list,
-    // which `fmt` reorders, so the ID is what stays its name (the M3 audit). Every refusal
-    // of one, in every test.
+    // A constraint's refusal names it by its ID in its elements too, whether its field
+    // names it by its ID (`constraints.k0000000.value`) or, its ID an earlier element's, by
+    // its place in the list, which `fmt` reorders (the M3 audit). Every refusal of one, in
+    // every test.
     for error in &errors {
-        let place = error
+        let member = error
             .parameter()
             .and_then(|p| p.strip_prefix("constraints."))
-            .and_then(|rest| rest.split('.').next())
-            .and_then(|n| n.parse::<usize>().ok());
+            .and_then(|rest| rest.split('.').next());
         let sketch = document.features.iter().find_map(|f| match &f.operation {
             Operation::Sketch(s) if Some(f.id.as_str()) == error.feature() => Some(s),
             _ => None,
         });
-        if let (Some(i), Some(sketch)) = (place, sketch) {
-            let id = sketch.constraints[i].id.as_str();
+        if let (Some(member), Some(sketch)) = (member, sketch) {
+            // An ID is 8 characters; a place, in any sketch here, fewer.
+            let id = if member.len() == 8 {
+                assert!(
+                    sketch.constraints.iter().any(|c| c.id.as_str() == member),
+                    "{member} is no constraint's ID: {error:?}"
+                );
+                member
+            } else {
+                sketch.constraints[member.parse::<usize>().unwrap()]
+                    .id
+                    .as_str()
+            };
             assert!(
                 error.elements().iter().any(|e| e == id),
                 "{id} unnamed: {error:?}"

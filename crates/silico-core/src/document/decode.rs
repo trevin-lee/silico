@@ -14,8 +14,9 @@ use super::model::{
 };
 use super::quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
 use super::sketch::{
-    CONSTRAINT_TYPES, Coordinate, Direction, ElementId, Form, LineSide, Plane, Reference, Sketch,
-    SketchArc, SketchCircle, SketchConstraint, SketchLine, SketchPoint, TangentSide,
+    CONSTRAINT_TYPES, Coordinate, Direction, ElementId, Form, LineSide, MemberPaths, Plane,
+    Reference, Sketch, SketchArc, SketchCircle, SketchConstraint, SketchLine, SketchPoint,
+    TangentSide,
 };
 use crate::naming::{NAMING_SCHEME_NUMBER, UNRECORDED_NAMING_SCHEME};
 use crate::{Error, ErrorCode};
@@ -887,14 +888,16 @@ fn position(fields: &mut Fields) -> Result<Position, Error> {
 }
 
 /// A sketch's fields (docs/design/m3.2-sketch-format.md). Each list is kept in the order
-/// written; the writer sorts it by ID.
+/// written; the writer sorts it by ID. Its members are named as [`MemberPaths`] names them,
+/// the lists taken in its order.
 fn sketch(fields: &mut Fields) -> Result<Sketch, Error> {
     let plane = plane(fields)?;
-    let points = list(fields, "points", point)?;
-    let lines = list(fields, "lines", line)?;
-    let circles = list(fields, "circles", circle)?;
-    let arcs = list(fields, "arcs", arc)?;
-    let constraints = list(fields, "constraints", constraint)?;
+    let mut paths = MemberPaths::default();
+    let points = list(fields, &mut paths, "points", point)?;
+    let lines = list(fields, &mut paths, "lines", line)?;
+    let circles = list(fields, &mut paths, "circles", circle)?;
+    let arcs = list(fields, &mut paths, "arcs", arc)?;
+    let constraints = list(fields, &mut paths, "constraints", constraint)?;
     Ok(Sketch {
         plane,
         points,
@@ -923,9 +926,12 @@ fn plane(fields: &mut Fields) -> Result<Plane, Error> {
         })
 }
 
-/// The list `key`, each item an object read by `item` as `key.i`.
+/// The list `key`, each item an object read by `item`, named as `paths` names it: by its
+/// ID (`key.g4h5j6k7`), looked for among its members before any is read, since a field
+/// written before `id` can be the one refused; or by its place (`key.3`).
 fn list<T>(
     fields: &mut Fields,
+    paths: &mut MemberPaths,
     key: &str,
     item: fn(&mut Fields) -> Result<T, Error>,
 ) -> Result<Vec<T>, Error> {
@@ -944,7 +950,7 @@ fn list<T>(
         .into_iter()
         .enumerate()
         .map(|(i, node)| {
-            let name = format!("{key}.{i}");
+            let name = paths.next(key, i, member_id(&node).as_ref());
             let mut fields = Fields::of(node, feature, Some(&name), &name)?.under(&name);
             let value = item(&mut fields)?;
             fields.finish()?;
@@ -1122,20 +1128,36 @@ fn constraint(fields: &mut Fields) -> Result<SketchConstraint, Error> {
 
 fn element_id(fields: &mut Fields, key: &str) -> Result<ElementId, Error> {
     let node = fields.take(key)?;
-    let name = fields.name(key);
-    let at = node.at;
-    let text = string(node, fields.feature(), &name)?;
-    ElementId::new(&text).ok_or_else(|| {
+    id_value(&node, fields.feature(), &fields.name(key))
+}
+
+/// The sketch element's ID `node` writes, as its field `name` (of `feature`) is read: what
+/// [`element_id`] reads, and what a member's path is named by ([`member_id`]).
+fn id_value(node: &Node, feature: Option<&str>, name: &str) -> Result<ElementId, Error> {
+    let Value::String(text) = &node.value else {
+        return Err(wrong_kind(feature, name, node, "a string"));
+    };
+    ElementId::new(text).ok_or_else(|| {
         refuse(
-            fields.feature(),
-            &name,
-            at,
-            format!("{name} {} isn't a sketch element's ID", shown(&text)),
+            feature,
+            name,
+            node.at,
+            format!("{name} {} isn't a sketch element's ID", shown(text)),
             format!(
                 "an ID is {ID_LENGTH} characters of digits and lower-case letters but i, l, o, and u"
             ),
         )
     })
+}
+
+/// The ID a sketch member's object writes in its `id`, read as [`element_id`] reads it:
+/// none if the member isn't an object, has no `id`, or its `id` isn't an ID.
+fn member_id(node: &Node) -> Option<ElementId> {
+    let Value::Object(members) = &node.value else {
+        return None;
+    };
+    let id = members.iter().find(|m| m.key == "id")?;
+    id_value(&id.value, None, "id").ok()
 }
 
 fn sketch_reference(fields: &mut Fields, key: &str) -> Result<Reference, Error> {
@@ -1208,7 +1230,7 @@ fn coordinate(fields: &mut Fields, key: &str) -> Result<Coordinate, Error> {
     })
 }
 
-/// A length inside a sketch, named by its dotted field (`constraints.3.value`).
+/// A length inside a sketch, named by its dotted field (`constraints.g4h5j6k7.value`).
 fn sketch_length(fields: &mut Fields, key: &str) -> Result<Length, Error> {
     let node = fields.take(key)?;
     length_value(&node, fields.feature(), &fields.name(key))

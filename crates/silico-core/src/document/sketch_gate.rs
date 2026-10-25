@@ -28,7 +28,9 @@ use silico_protocol::{
 };
 
 use super::PROBLEMS_LISTED;
-use super::sketch::{ElementId, ElementKind, Form, Reference, Sketch, Takes, TangentSide};
+use super::sketch::{
+    ElementId, ElementKind, Form, MemberPaths, Reference, Sketch, Takes, TangentSide,
+};
 use crate::Error;
 use crate::profile::{Drawn, sent, unsigned};
 use crate::references::CANDIDATES;
@@ -86,24 +88,25 @@ struct Place {
     index: usize,
 }
 
-impl Place {
-    fn field(self) -> String {
-        format!("{}.{}", self.kind.list(), self.index)
-    }
-}
-
 /// The sketch's problems, in the order of its fields: each list in turn, each element's
 /// fields in order, then its size.
 pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Error)) {
     // Every element by ID: the first with an ID holds it. Each element whose ID an
-    // earlier one holds, by place, with that holder.
+    // earlier one holds, by place, with that holder. And each element's path, as
+    // `MemberPaths` names it: by its ID, or, if an earlier element holds it, its place.
     let mut by_id: BTreeMap<&ElementId, Place> = BTreeMap::new();
     let mut taken: BTreeMap<(ElementKind, usize), Place> = BTreeMap::new();
     let mut counts: BTreeMap<ElementKind, usize> = BTreeMap::new();
+    let mut members = MemberPaths::default();
+    let mut paths: BTreeMap<(ElementKind, usize), String> = BTreeMap::new();
     for (id, kind) in sketch.elements() {
         let slot = counts.entry(kind).or_default();
         let place = Place { kind, index: *slot };
         *slot += 1;
+        paths.insert(
+            (kind, place.index),
+            members.next(kind.list(), place.index, Some(id)),
+        );
         match by_id.get(id) {
             Some(&first) => {
                 taken.insert((kind, place.index), first);
@@ -113,16 +116,22 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
             }
         }
     }
+    // An element's path, every element's in `paths`.
+    let path = |place: Place| {
+        paths
+            .get(&(place.kind, place.index))
+            .cloned()
+            .unwrap_or_else(|| format!("{}.{}", place.kind.list(), place.index))
+    };
     // The element's ID, if an earlier element holds it.
     let unique = |kind: ElementKind, index: usize, id: &ElementId, add: &mut dyn FnMut(Error)| {
-        if let Some(first) = taken.get(&(kind, index)) {
-            let place = Place { kind, index };
+        if let Some(&first) = taken.get(&(kind, index)) {
             add(refuse(
-                &format!("{}.id", place.field()),
+                &format!("{}.id", path(Place { kind, index })),
                 format!(
                     "id {id} is already the ID of {} {id} ({})",
                     first.kind.noun(),
-                    first.field()
+                    path(first)
                 ),
                 format!("give this {} an ID of its own", kind.noun()),
             ));
@@ -130,15 +139,19 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
     };
 
     for (i, point) in sketch.points.iter().enumerate() {
+        let at = path(Place {
+            kind: ElementKind::Point,
+            index: i,
+        });
         let mut named = |e: Error| add(e.with_element(point.id.as_str()));
         let add: &mut dyn FnMut(Error) = &mut named;
         unique(ElementKind::Point, i, &point.id, add);
         for (axis, value) in [("x", point.x), ("y", point.y)] {
             if value.mm().abs() > MAX_LENGTH {
                 add(refuse(
-                    &format!("points.{i}.{axis}"),
+                    &format!("{at}.{axis}"),
                     format!(
-                        "points.{i}.{axis} is {value} mm, farther from the sketch's origin than the {} mm (a kilometre) a point may be",
+                        "{at}.{axis} is {value} mm, farther from the sketch's origin than the {} mm (a kilometre) a point may be",
                         format_number(MAX_LENGTH)
                     ),
                     "draw the sketch within a kilometre of its origin".to_owned(),
@@ -212,7 +225,10 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
     };
 
     for (i, line) in sketch.lines.iter().enumerate() {
-        let at = format!("lines.{i}");
+        let at = path(Place {
+            kind: ElementKind::Line,
+            index: i,
+        });
         let mut named = |e: Error| add(e.with_element(line.id.as_str()));
         let add: &mut dyn FnMut(Error) = &mut named;
         unique(ElementKind::Line, i, &line.id, add);
@@ -252,7 +268,10 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
         }
     }
     for (i, circle) in sketch.circles.iter().enumerate() {
-        let at = format!("circles.{i}");
+        let at = path(Place {
+            kind: ElementKind::Circle,
+            index: i,
+        });
         let mut named = |e: Error| add(e.with_element(circle.id.as_str()));
         let add: &mut dyn FnMut(Error) = &mut named;
         unique(ElementKind::Circle, i, &circle.id, add);
@@ -285,7 +304,10 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
         }
     }
     for (i, arc) in sketch.arcs.iter().enumerate() {
-        let at = format!("arcs.{i}");
+        let at = path(Place {
+            kind: ElementKind::Arc,
+            index: i,
+        });
         let mut named = |e: Error| add(e.with_element(arc.id.as_str()));
         let add: &mut dyn FnMut(Error) = &mut named;
         unique(ElementKind::Arc, i, &arc.id, add);
@@ -427,7 +449,10 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
         .collect();
 
     for (i, constraint) in sketch.constraints.iter().enumerate() {
-        let at = format!("constraints.{i}");
+        let at = path(Place {
+            kind: ElementKind::Constraint,
+            index: i,
+        });
         let mut named = |e: Error| add(e.with_element(constraint.id.as_str()));
         let add: &mut dyn FnMut(Error) = &mut named;
         unique(ElementKind::Constraint, i, &constraint.id, add);

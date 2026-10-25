@@ -17,7 +17,8 @@ use std::time::Duration;
 use fixture::{ARC, CIRCLE, FEATURE, LINE, POINTS, constrained, document, fields, problems};
 use proptest::prelude::*;
 use silico_core::document::{
-    Checked, FeatureId, Operation, PROBLEMS_LISTED, Sketch, read, schema, validate, write,
+    Checked, ElementId, FeatureId, Operation, PROBLEMS_LISTED, Sketch, read, schema, validate,
+    write,
 };
 use silico_core::{Error, ErrorCode};
 use within::within;
@@ -54,7 +55,7 @@ fn symmetric_of_a_lines_two_ends_about_the_line_itself() {
     let text = constrained(
         r#"{"id": "ka000000", "type": "symmetric", "a": "pa000000", "b": "pb000000", "about": "na000000"}"#,
     );
-    assert_refused_at(&text, "constraints.0.about");
+    assert_refused_at(&text, "constraints.ka000000.about");
 }
 
 #[test]
@@ -67,30 +68,30 @@ fn midpoint_of_a_line_at_its_own_end() {
     let text = constrained(
         r#"{"id": "ka000000", "type": "midpoint", "point": "pa000000", "line": "na000000"}"#,
     );
-    assert_refused_at(&text, "constraints.0.point");
+    assert_refused_at(&text, "constraints.ka000000.point");
 }
 
 #[test]
 fn a_circles_own_center_on_the_circle() {
     // BREAKS: pa is ca's center; pa on ca holds only at radius 0, a circle of no size, which
-    // the gate refuses when it's written (circles.N.radius) but not when a constraint forces
+    // the gate refuses when it's written (circles.<id>.radius) but not when a constraint forces
     // it. FreeCAD won't put a point of an element on the element itself (GeoIdVt ==
     // GeoIdCrv, CommandConstraints.cpp:5430: "because they are parts of the same element"),
     // and FreeCAD 1.1.3's solve calls it conflicting.
     let text = constrained(
         r#"{"id": "ka000000", "type": "on", "point": "pa000000", "curve": "ca000000"}"#,
     );
-    assert_refused_at(&text, "constraints.0.point");
+    assert_refused_at(&text, "constraints.ka000000.point");
 }
 
 #[test]
 fn an_arcs_own_center_on_the_arc() {
     // BREAKS: as a circle's: pa is aa's center, and on its circle only at radius 0, where
-    // its start is its center, which the gate refuses as drawn (arcs.N.start).
+    // its start is its center, which the gate refuses as drawn (arcs.<id>.start).
     let text = constrained(
         r#"{"id": "ka000000", "type": "on", "point": "pa000000", "curve": "aa000000"}"#,
     );
-    assert_refused_at(&text, "constraints.0.point");
+    assert_refused_at(&text, "constraints.ka000000.point");
 }
 
 // ---------------------------------------------------------------------------------------
@@ -111,7 +112,7 @@ fn a_line_between_two_points_drawn_at_the_same_place() {
         "",
         "",
     ));
-    let error = assert_refused_at(&text, "lines.0.to");
+    let error = assert_refused_at(&text, "lines.na000000.to");
     assert!(error.message().contains("na000000"), "{error:?}");
 }
 
@@ -131,7 +132,7 @@ fn an_arc_whose_radius_from_its_points_is_past_a_kilometre() {
         ARC,
         "",
     ));
-    assert_refused_at(&text, "arcs.0.start");
+    assert_refused_at(&text, "arcs.aa000000.start");
 }
 
 #[test]
@@ -154,10 +155,11 @@ fn an_arc_with_a_radius_of_a_kilometre_exactly_is_admitted() {
 #[test]
 fn a_refusal_names_the_element_it_refuses() {
     // BREAKS: the design says each refusal names "the feature, the field
-    // (`constraints.3.line`), and the element". The field is a place in the list as read,
-    // which `silico fmt` reorders (lists are written sorted by ID), so the element's ID is
-    // what stays true; but a dimension out of range, or a point too far away, is named
-    // only by its place: not in the error's elements, nor in its message.
+    // (`constraints.3.line`), and the element". The field was then a place in the list as
+    // read, which `silico fmt` reorders (lists are written sorted by ID), so the element's
+    // ID is what stays true; but a dimension out of range, or a point too far away, was
+    // named only by its place: not in the error's elements, nor in its message. (Its field
+    // names it by its ID now, decision 15; its elements still name it.)
     let text = document(&fields(
         r#"{"id": "pa000000", "x": 2000000, "y": 0, "construction": false}, {"id": "pb000000", "x": 10, "y": 0, "construction": false}"#,
         LINE,
@@ -166,8 +168,8 @@ fn a_refusal_names_the_element_it_refuses() {
         r#"{"id": "ka000000", "type": "length", "line": "na000000", "value": 0, "driving": true}"#,
     ));
     for (parameter, id) in [
-        ("points.0.x", "pa000000"),
-        ("constraints.0.value", "ka000000"),
+        ("points.pa000000.x", "pa000000"),
+        ("constraints.ka000000.value", "ka000000"),
     ] {
         let error = assert_refused_at(&text, parameter);
         assert!(
@@ -224,17 +226,17 @@ fn hostile_text_isnt_echoed_whole_into_errors() {
             constrained(&format!(
                 r#"{{"id": "ka000000", "type": "horizontal", "line": "{huge}"}}"#
             )),
-            "constraints.0.line",
+            "constraints.ka000000.line",
         ),
         (
             constrained(&format!(r#"{{"id": "ka000000", "type": "{huge}"}}"#)),
-            "constraints.0.type",
+            "constraints.ka000000.type",
         ),
         (
             constrained(&format!(
                 r#"{{"id": "ka000000", "type": "tangent", "a": "na000000", "b": "ca000000", "side": "{huge}"}}"#
             )),
-            "constraints.0.side",
+            "constraints.ka000000.side",
         ),
         (
             document(&fields(
@@ -247,14 +249,14 @@ fn hostile_text_isnt_echoed_whole_into_errors() {
                 "",
                 "",
             )),
-            "points.0.x",
+            "points.pa000000.x",
         ),
         (
             constrained(&format!(
                 r#"{{"id": "ka000000", "type": "angle", "a": "na000000", "b": "x_axis", "value": 1{}, "driving": true}}"#,
                 "0".repeat(1 << 20)
             )),
-            "constraints.0.value",
+            "constraints.ka000000.value",
         ),
     ];
     for (text, parameter) in cases {
@@ -316,7 +318,7 @@ fn hostile_ids_and_references_are_refused_naming_the_field() {
         assert_eq!(error.code(), ErrorCode::InvalidInput, "{reference:?}");
         assert_eq!(
             error.parameter(),
-            Some("constraints.0.curve"),
+            Some("constraints.ka000000.curve"),
             "{reference:?}: {error:?}"
         );
     }
@@ -325,7 +327,7 @@ fn hostile_ids_and_references_are_refused_naming_the_field() {
         &constrained(
             r#"{"id": "ka000000", "type": "on", "point": "pc000000", "curve": "k7f2qx3m"}"#,
         ),
-        "constraints.0.curve",
+        "constraints.ka000000.curve",
     );
     assert!(
         error.message().contains("isn't the ID of any element"),
@@ -337,7 +339,7 @@ fn hostile_ids_and_references_are_refused_naming_the_field() {
             &constrained(&format!(
                 r#"{{"id": "ka000000", "type": "on", "point": "pc000000", "curve": "{curve}"}}, {{"id": "kb000000", "type": "horizontal", "line": "na000000"}}"#
             )),
-            "constraints.0.curve",
+            "constraints.ka000000.curve",
         );
         assert!(error.message().contains("a constraint"), "{error:?}");
     }
@@ -391,75 +393,75 @@ fn every_field_of_the_wrong_kind_is_refused_naming_it() {
             ),
             "points.0",
         ),
-        (point("\"1\"", "false"), "points.0.x"),
-        (point("null", "false"), "points.0.x"),
-        (point("true", "false"), "points.0.x"),
-        (point("0", "0"), "points.0.construction"),
-        (point("0", "\"false\""), "points.0.construction"),
-        (point("0", "null"), "points.0.construction"),
+        (point("\"1\"", "false"), "points.pa000000.x"),
+        (point("null", "false"), "points.pa000000.x"),
+        (point("true", "false"), "points.pa000000.x"),
+        (point("0", "0"), "points.pa000000.construction"),
+        (point("0", "\"false\""), "points.pa000000.construction"),
+        (point("0", "null"), "points.pa000000.construction"),
         (
             constrained(r#"{"id": "ka000000", "type": 1, "line": "na000000"}"#),
-            "constraints.0.type",
+            "constraints.ka000000.type",
         ),
         (
             constrained(r#"{"id": "ka000000", "type": "Horizontal", "line": "na000000"}"#),
-            "constraints.0.type",
+            "constraints.ka000000.type",
         ),
         (
             constrained(r#"{"id": "ka000000", "type": "horizontal", "line": 7}"#),
-            "constraints.0.line",
+            "constraints.ka000000.line",
         ),
         (
             constrained(r#"{"id": "ka000000", "type": "horizontal", "line": ["na000000"]}"#),
-            "constraints.0.line",
+            "constraints.ka000000.line",
         ),
         (
             constrained(
                 r#"{"id": "ka000000", "type": "length", "line": "na000000", "value": "10", "driving": true}"#,
             ),
-            "constraints.0.value",
+            "constraints.ka000000.value",
         ),
         (
             constrained(
                 r#"{"id": "ka000000", "type": "length", "line": "na000000", "value": 10, "driving": 1}"#,
             ),
-            "constraints.0.driving",
+            "constraints.ka000000.driving",
         ),
         (
             constrained(
                 r#"{"id": "ka000000", "type": "angle", "a": "na000000", "b": "x_axis", "value": "30", "driving": true}"#,
             ),
-            "constraints.0.value",
+            "constraints.ka000000.value",
         ),
         (
             constrained(
                 r#"{"id": "ka000000", "type": "angle", "a": "na000000", "b": "x_axis", "value": 0.0000000001, "driving": true}"#,
             ),
-            "constraints.0.value",
+            "constraints.ka000000.value",
         ),
         (
             constrained(
                 r#"{"id": "ka000000", "type": "tangent", "a": "na000000", "b": "ca000000", "side": true}"#,
             ),
-            "constraints.0.side",
+            "constraints.ka000000.side",
         ),
         (
             constrained(
                 r#"{"id": "ka000000", "type": "tangent", "a": "na000000", "b": "ca000000", "side": "LEFT"}"#,
             ),
-            "constraints.0.side",
+            "constraints.ka000000.side",
         ),
         (
             constrained(
                 r#"{"id": "ka000000", "type": "tangent_at", "a": "na000000", "b": "aa000000", "at": "pb000000", "direction": "left"}"#,
             ),
-            "constraints.0.direction",
+            "constraints.ka000000.direction",
         ),
         (
             constrained(
                 r#"{"id": "ka000000", "type": "point_line_distance", "point": "pc000000", "line": "na000000", "value": 1, "side": "outside", "driving": true}"#,
             ),
-            "constraints.0.side",
+            "constraints.ka000000.side",
         ),
     ];
     for (text, parameter) in cases {
@@ -492,7 +494,11 @@ fn a_refused_angles_suggestion_says_how_to_write_it() {
         ("-0", "write 0"),
     ] {
         let error = read_error(&angle(value));
-        assert_eq!(error.parameter(), Some("constraints.0.value"), "{error:?}");
+        assert_eq!(
+            error.parameter(),
+            Some("constraints.ka000000.value"),
+            "{error:?}"
+        );
         assert_eq!(error.suggestion(), Some(says), "{value}: {error:?}");
     }
 }
@@ -503,27 +509,27 @@ fn a_constraint_with_another_forms_keys_or_missing_its_own_is_refused() {
         // A value on a form with none.
         (
             r#"{"id": "ka000000", "type": "horizontal", "line": "na000000", "value": 1}"#,
-            "constraints.0.value",
+            "constraints.ka000000.value",
         ),
         // A side on a distance with none.
         (
             r#"{"id": "ka000000", "type": "distance", "a": "pa000000", "b": "pb000000", "value": 1, "driving": true, "side": "left"}"#,
-            "constraints.0.side",
+            "constraints.ka000000.side",
         ),
         // A tangent with no side: never decided from the geometry (D4).
         (
             r#"{"id": "ka000000", "type": "tangent", "a": "na000000", "b": "ca000000"}"#,
-            "constraints.0.side",
+            "constraints.ka000000.side",
         ),
         // A dimension with no driving: always written.
         (
             r#"{"id": "ka000000", "type": "radius", "curve": "ca000000", "value": 5}"#,
-            "constraints.0.driving",
+            "constraints.ka000000.driving",
         ),
         // No type at all.
         (
             r#"{"id": "ka000000", "line": "na000000"}"#,
-            "constraints.0.type",
+            "constraints.ka000000.type",
         ),
         // A key written twice.
         (
@@ -581,7 +587,11 @@ fn ranges_hold_exactly_at_their_edges() {
         } else {
             // Both coordinates, each named.
             let parameters: Vec<_> = all.iter().filter_map(|e| e.parameter()).collect();
-            assert_eq!(parameters, ["points.0.x", "points.0.y"], "{x}");
+            assert_eq!(
+                parameters,
+                ["points.pa000000.x", "points.pa000000.y"],
+                "{x}"
+            );
         }
     }
     // A circle's radius: above 0, at most a kilometre.
@@ -815,7 +825,7 @@ fn every_kind_in_every_place_is_taken_exactly_where_the_design_says() {
             problems(&base)
         );
         for (key, _, takes) in places {
-            let field = format!("constraints.0.{key}");
+            let field = format!("constraints.ka000000.{key}");
             for (candidate, kind) in CANDIDATES {
                 let text = constrained(&format!("{}, {other}", filled(key, candidate)));
                 let all = problems(&text);
@@ -824,7 +834,7 @@ fn every_kind_in_every_place_is_taken_exactly_where_the_design_says() {
                     assert_eq!(e.feature(), Some(FEATURE), "{e:?}");
                     assert!(
                         e.parameter()
-                            .is_some_and(|p| p.starts_with("constraints.0")),
+                            .is_some_and(|p| p.starts_with("constraints.ka000000")),
                         "{e:?}"
                     );
                 }
@@ -1221,14 +1231,16 @@ fn verdict(document: &silico_core::document::Document) -> Vec<(ErrorCode, String
     }
 }
 
-/// The sketch's list fields a parameter may name: `list`, `list.i`, or `list.i.key`.
+/// The sketch's list fields a parameter may name: `list`, `list.m`, or `list.m.key`, where
+/// the member `m` is an ID or a place, from 0 with no leading zeros (decision 15).
 fn names_a_field(parameter: &str) -> bool {
     let mut parts = parameter.split('.');
     let list = parts.next().unwrap_or_default();
-    let index = parts.next();
+    let member = parts.next();
     let key = parts.next();
+    let place = |m: &str| m.parse::<usize>().is_ok_and(|n| n.to_string() == m);
     ["points", "lines", "circles", "arcs", "constraints"].contains(&list)
-        && index.is_none_or(|i| i.parse::<usize>().is_ok())
+        && member.is_none_or(|m| place(m) || ElementId::new(m).is_some())
         && key
             .is_none_or(|k| !k.is_empty() && k.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
         && parts.next().is_none()
