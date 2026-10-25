@@ -317,6 +317,89 @@ fn fields_of_their_types_are_read_and_null_only_where_the_shape_allows_it() {
 }
 
 #[test]
+fn each_reader_gives_a_value_it_accepts_unchanged_and_refuses_another_kind() {
+    use crate::document::{FeatureId, Length};
+    let node = read(
+        br#"{"write": true, "model": "current", "feature": "k7f2qx3m", "features": null, "facing": null, "name": "bracket", "title": "plate", "radius": 123456.123456, "base": 1, "last": 18446744073709551615}"#,
+    )
+    .unwrap();
+    let got = RequestFields::read(&node, |fields| {
+        Some((
+            fields.bool("write")?,
+            fields.model()?,
+            fields.nullable_feature("feature")?,
+            fields.nullable_feature_ids("features")?,
+            fields.nullable_object("facing", |facing| facing.u32("within"))?,
+            fields.string("name")?,
+            fields.nullable_string("title")?,
+            fields.length("radius")?,
+            fields.revision("base")?.number(),
+            fields.revision("last")?.number(),
+        ))
+    })
+    .unwrap();
+    assert_eq!(
+        got,
+        (
+            true,
+            ModelChoice::Current,
+            Some(FeatureId::new("k7f2qx3m").unwrap()),
+            None,
+            None,
+            "bracket",
+            Some("plate"),
+            // 123456.123456 mm, to the nanometre.
+            Length::from_nm(123_456_123_456),
+            1,
+            u64::MAX
+        )
+    );
+    // Another kind of each, or a value past what it takes.
+    let node = read(br#"{"name": null, "title": 5, "radius": 1.0000001, "base": 0}"#).unwrap();
+    let refused = RequestFields::read(&node, |fields| {
+        assert_eq!(fields.string("name"), None);
+        assert_eq!(fields.nullable_string("title"), None);
+        assert_eq!(fields.length("radius"), None);
+        assert_eq!(fields.revision("base"), None);
+        Some(())
+    })
+    .unwrap_err();
+    assert_eq!(
+        refusals(&refused),
+        [
+            ("name", "name must be a string, got null"),
+            ("title", "title must be a string or null, got 5"),
+            (
+                "radius",
+                "radius must be a length in millimetres, got 1.0000001, which has more than 6 decimals"
+            ),
+            (
+                "base",
+                "base must be a whole number from 1 to 18446744073709551615, got 0"
+            ),
+        ]
+        .map(|(at, message)| (at.to_owned(), message.to_owned()))
+    );
+}
+
+#[test]
+fn a_session_reloaded_outside_a_transaction_says_both() {
+    // `transaction` and `reloaded` each written from its own field, so neither is a
+    // constant or the other.
+    let mut reloaded = session(2, false);
+    reloaded.reloaded = true;
+    let answer = Response {
+        session: Some(reloaded),
+        model: None,
+        result: Ok(Began(revision(2))),
+    };
+    assert_eq!(
+        write(&response(&answer), Layout::OneLine).unwrap(),
+        r#"{"ok": true, "session": {"id": "s1", "path": "bracket.silico", "revision": 2, "transaction": false, "reloaded": true}, "model": null, "result": {"base": 2}}"#
+    );
+}
+
+#[test]
 fn a_value_is_had_only_from_a_request_with_nothing_refused() {
     // Every field read, but a key not taken: refused, though the reader gave a value.
     let node = read(br#"{"write": true, "extra": 1}"#).unwrap();

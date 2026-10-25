@@ -480,6 +480,7 @@ fn a_nested_object_that_is_not_one_is_refused_at_its_path() {
         });
         assert!(within.is_none());
     });
+    assert_eq!(refused.total(), 2);
     assert_eq!(
         said(&refused),
         [
