@@ -3,9 +3,8 @@
 //! or drawn, and what's drawn is checked against a projection computed by hand here, never
 //! against a stored image. After every refusal the same worker must still draw.
 //!
-//! Tests marked `BREAKS:` fail on purpose: each is a bug report, and turns green when the
-//! bug is fixed.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+//! Tests marked `Was a break:` each found a bug the break-it run reported, since fixed;
+//! they guard against its return.
 
 use std::cell::RefCell;
 use std::io::Write;
@@ -17,7 +16,8 @@ use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
 use silico_core::worker::{Worker, WorkerKind};
 use silico_core::{Error, ErrorCode};
 use silico_protocol::{
-    Camera, EDGE_BIT, Generation, Mesh, Op, PixelId, Projection, RenderBody, RenderScene, Reply,
+    Camera, EDGE_BIT, Generation, MAX_RENDER_EDGES, MAX_RENDER_FACES, Mesh, Op, PixelId,
+    Projection, RenderBody, RenderScene, Reply,
 };
 use silico_render::bench::{box_mesh, front_of_a_box};
 use silico_render::render::{AMBIENT, BACKGROUND, BODY};
@@ -480,11 +480,10 @@ fn a_body_numbered_u32_max_carries_its_number() {
 
 #[test]
 fn normals_of_no_length_inward_or_huge_light_by_lamberts_law_clamped() {
-    // BREAKS: the design shades in linear light (the albedo times 0.35 + 0.65 max(0, n·l)),
-    // but `albedo * light` scales the `Rgba`'s alpha too, and `Color32::from` then
-    // premultiplies in gamma: the sRGB value is scaled instead. A face lit at the ambient
-    // only is (60, 61, 64), not (105, 107, 111); only a face square to the eye is right. A
-    // highlighted face's tint off square is wrong the same way.
+    // Was a break: the design shades in linear light (the albedo times 0.35 + 0.65
+    // max(0, n·l)), but `albedo * light` scaled the `Rgba`'s alpha too, and `Color32::from`
+    // then premultiplied in gamma: a face lit at the ambient only was (60, 61, 64), not
+    // (105, 107, 111), and a highlighted face's tint off square was wrong the same way.
     let mut w = worker();
     let linear = |c: u8| {
         let c = f64::from(c) / 255.0;
@@ -585,11 +584,12 @@ fn timed(w: &mut Worker, scene: &RenderScene) -> (Duration, Result<Drawn, Error>
 }
 
 #[test]
-fn a_million_highlighted_edges_draw_within_the_limit() {
+fn the_most_edges_a_scene_may_have_draw_within_the_limit_and_one_more_is_refused() {
     let mut w = worker();
     let mut mesh = the_box();
-    let n = 1_000_000u32;
-    // A million short edges in a grid over the left of the view, in front of the box.
+    // MAX_RENDER_EDGES in all: the box's 12 and the rest short edges in a grid over the left
+    // of the view, in front of the box, each highlighted.
+    let n = u32::try_from(MAX_RENDER_EDGES).unwrap() - 12;
     for k in 0..n {
         let (i, j) = (f64::from(k % 1000), f64::from(k / 1000));
         let (x, z) = (-1.0 + i * 0.001, j * 0.01);
@@ -608,6 +608,21 @@ fn a_million_highlighted_edges_draw_within_the_limit() {
         "no flood edge drawn"
     );
     assert_eq!(ids[front_centre(400, 300)], FRONT_FACE);
+    // One more edge, in a body of its own: past the scene's limit, refused before drawing.
+    let mut more = scene.clone();
+    more.bodies.push(body(2, the_box()));
+    more.bodies[1].mesh.edge_point_counts.truncate(1);
+    more.bodies[1].mesh.edge_points.truncate(2);
+    more.bodies[1].mesh.edge_point_counts[0] = 2;
+    refused(
+        &mut w,
+        &more,
+        "bodies",
+        &format!(
+            "the bodies have {} edges, more than the {MAX_RENDER_EDGES}",
+            MAX_RENDER_EDGES + 1
+        ),
+    );
 }
 
 #[test]
@@ -632,18 +647,29 @@ fn ten_thousand_highlighted_faces_draw_within_a_tenth_of_the_limit() {
 }
 
 #[test]
-fn a_hundred_thousand_faces_are_drawn_or_refused_within_the_limit() {
-    // The scene check takes any number of faces under the edge bit; the worker must draw a
-    // hundred thousand inside the core's 30 s or refuse them, never be killed for them.
+fn the_most_faces_a_scene_may_have_draw_within_the_limit_and_one_more_is_refused() {
+    // Each face is a mesh of its own, about 75 KiB of the worker's memory: MAX_RENDER_FACES
+    // draw within the core's 30 s, and one more is refused before drawing, never killed.
     let mut w = worker();
-    let n = 100_000;
+    let n = u32::try_from(MAX_RENDER_FACES).unwrap() - 6;
     let mut scene = with_mesh(400, 300, tiles(n));
     scene.bodies[0].highlight_faces = (0..1000).collect();
     let (took, result) = timed(&mut w, &scene);
-    match result {
-        Ok(_) => assert!(took < LIMIT, "{took:?}"),
-        Err(e) => assert_eq!(e.code(), ErrorCode::InvalidInput, "{took:?}: {e:?}"),
-    }
+    result.unwrap_or_else(|e| panic!("{took:?}: {e:?}"));
+    assert!(took < LIMIT, "{took:?}");
+    scene.bodies.push(body(2, tiles(1)));
+    scene.bodies[1].mesh.face_triangles.truncate(1);
+    let keep = scene.bodies[1].mesh.face_triangles[0] as usize;
+    scene.bodies[1].mesh.triangles.truncate(keep);
+    refused(
+        &mut w,
+        &scene,
+        "bodies",
+        &format!(
+            "the bodies have {} faces, more than the {MAX_RENDER_FACES}",
+            MAX_RENDER_FACES + 1
+        ),
+    );
 }
 
 /// A part of real size and density, made here: a 680 x 860 x 400 slab of `faces` curved
@@ -741,7 +767,7 @@ fn front_from(distance: f64, width: u32, height: u32) -> RenderScene {
 
 #[test]
 fn an_up_too_long_for_f32_draws_as_a_unit_up() {
-    // BREAKS: 1e20 is finite, so the check takes it, but its square overflows f32 in
+    // Was a break: 1e20 is finite, so the check takes it, but its square overflows f32 in
     // macaw's look_at (normalize_or_zero gives zero), which returns None, and the worker
     // falls back to the identity view (from the target down −z): a wrong picture as Ok.
     let mut w = worker();
@@ -755,7 +781,7 @@ fn an_up_too_long_for_f32_draws_as_a_unit_up() {
 
 #[test]
 fn an_up_too_short_for_f32_draws_as_a_unit_up() {
-    // BREAKS: as above, with an up of 1e-25: its square underflows f32 to 0.
+    // Was a break: as above, with an up of 1e-25: its square underflows f32 to 0.
     let mut w = worker();
     let want = ids(&mut w, &front_from(60.0, 200, 150));
     let mut scene = front_from(60.0, 200, 150);
@@ -767,7 +793,7 @@ fn an_up_too_short_for_f32_draws_as_a_unit_up() {
 
 #[test]
 fn an_orthographic_eye_nearer_the_target_than_f32_holds_draws_the_same() {
-    // BREAKS: an eye 1e-30 from the target is apart from it, so the check takes it; in f32
+    // Was a break: an eye 1e-30 from the target is apart from it, so the check takes it; in f32
     // the view's direction has a square of 0, look_at fails, and the identity view is drawn.
     // The box is moved so the target is the origin, where 1e-30 is representable.
     let mut w = worker();
@@ -783,11 +809,18 @@ fn an_orthographic_eye_nearer_the_target_than_f32_holds_draws_the_same() {
         height: 150,
         ids: true,
     };
+    // Now refused, naming the eye: a nanometre is the nearest it may be, which draws as
+    // one 60 away does (an orthographic view uses only the eye's direction).
     let want = ids(&mut w, &scene(60.0));
     assert_eq!(want[front_centre(200, 150)], FRONT_FACE);
-    assert!(scene(1e-30).check().is_ok());
-    let got = ids(&mut w, &scene(1e-30));
-    assert_same_away_from_boundaries(&want, &got, 200, 150, "eye 1e-30 from the target");
+    refused(
+        &mut w,
+        &scene(1e-30),
+        "camera.eye",
+        "must be at least 0.000001 mm from camera.target",
+    );
+    let got = ids(&mut w, &scene(1e-6));
+    assert_same_away_from_boundaries(&want, &got, 200, 150, "eye a nanometre from the target");
 }
 
 #[test]
@@ -981,7 +1014,7 @@ fn a_box_from_a_corner_shows_exactly_its_three_near_faces_and_nine_near_edges_al
 
 #[test]
 fn an_up_nearly_along_an_oblique_view_keeps_the_roll_its_part_across_says() {
-    // BREAKS: the check takes an up whose part across the view is 1e-9 of its length or
+    // Was a break: the check takes an up whose part across the view is 1e-9 of its length or
     // more ("below it, the image's rotation about the view is lost in rounding"), but the
     // worker hands the up to look_at in f32, whose rounding of an oblique direction is
     // about 6e-8: an up 1e-8 across the view is rolled by rounding noise, not by its part
@@ -1015,7 +1048,7 @@ fn an_orthographic_eye_a_kilometre_away_draws_as_one_near() {
 
 #[test]
 fn an_orthographic_eye_far_past_the_documents_lengths_draws_as_one_near_or_is_refused() {
-    // BREAKS: the eye's f32 translation, rotated in f32, moves the image by about
+    // Was a break: the eye's f32 translation, rotated in f32, moves the image by about
     // |eye| × 6e-8 (60 mm at 1e9, against 0.25 mm pixels), and the far plane at |eye| leaves
     // the depth buffer no precision: hidden edges are drawn. The check takes any finite
     // eye; the document's lengths stop at 1e6, a camera's don't.
@@ -1038,9 +1071,9 @@ fn an_orthographic_eye_far_past_the_documents_lengths_draws_as_one_near_or_is_re
 
 #[test]
 fn a_perspective_view_doesnt_depend_on_how_far_along_its_ray_the_target_is() {
-    // BREAKS: the near plane is 1e-4 of the eye's distance to the target, not to what's in
-    // view, so a target 1e6 mm along the ray (the document's largest length) puts the near
-    // plane 100 mm out, past the box 80 mm away, and clips it whole.
+    // Was a break: the near plane was 1e-4 of the eye's distance to the target, not of
+    // what's in view, so a target 1e6 mm along the ray (the document's largest length) put
+    // the near plane 100 mm out, past the box 80 mm away, and clipped it whole.
     let mut w = worker();
     let scene = |target_y: f64| RenderScene {
         bodies: vec![body(1, the_box())],
@@ -1314,7 +1347,7 @@ fn allowed(scene: &RenderScene) -> std::collections::BTreeSet<PixelId> {
 
 #[test]
 fn random_hostile_scenes_are_refused_exactly_as_the_check_says_or_drawn_with_their_own_ids() {
-    // BREAKS: finite numbers past f32's reach (a position or target of 1e39, a camera's of
+    // Was a break: finite numbers past f32's reach (a position or target of 1e39, a camera's of
     // 1e300) pass the check and fail in the worker as `Internal` ("Face1: Mesh has an invalid
     // bounding box Vec3(inf, ...)"): the targeted tests above, at random.
     hostile_scenes(true);
@@ -1394,10 +1427,10 @@ const NO_LAVAPIPE_CHILD: &str = "SILICO_RENDER_TEST_NO_LAVAPIPE";
 
 #[test]
 fn no_software_adapter_is_refused_as_data_not_as_a_bug_in_silico() {
-    // BREAKS: with no CPU adapter (lavapipe's compiled-in paths gone, or none built in),
-    // the worker answers `Refusal::Internal`, which the core words as a bug in Silico
+    // Was a break: with no CPU adapter (lavapipe's compiled-in paths gone, or none built
+    // in), the worker answered `Refusal::Internal`, which the core words as a bug in Silico
     // ("report it"). The design wants `worker_unavailable`, its cause saying lavapipe wasn't
-    // found; nothing in the refusal tells it from a real internal failure but its text.
+    // found: now `Refusal::NoAdapter`, of kind `Unavailable`.
     //
     // The worker's own restart always sets lavapipe's variables, so the render worker's
     // state is driven here in this test binary, run again as a child with its environment
@@ -1406,15 +1439,19 @@ fn no_software_adapter_is_refused_as_data_not_as_a_bug_in_silico() {
     // CPU adapter.
     if std::env::var_os(NO_LAVAPIPE_CHILD).is_some() {
         let mut state =
-            silico_render::worker::State::new(silico_render::worker::AdapterPolicy::Software);
+            silico_render::worker::State::new(silico_render::worker::RenderAdapter::Software);
         match state.handle(Op::Render(Box::new(front_of_a_box(8, 8)))) {
             Ok(_) => panic!("NO_LAVAPIPE_CHILD drawn: a CPU adapter with no Vulkan driver"),
             Err(failure) => {
                 let refusal = format!("{failure:?}");
                 writeln!(std::io::stdout(), "NO_LAVAPIPE_CHILD refused: {refusal}").unwrap();
                 assert!(
-                    !refusal.contains("Internal"),
-                    "a missing rasterizer refused as internal: {refusal}"
+                    matches!(
+                        &failure.refusal,
+                        silico_protocol::Refusal::NoAdapter { cause }
+                            if cause.contains("no software rasterizer was found")
+                    ),
+                    "a missing rasterizer refused as other than NoAdapter: {refusal}"
                 );
             }
         }
@@ -1423,7 +1460,7 @@ fn no_software_adapter_is_refused_as_data_not_as_a_bug_in_silico() {
     let out = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "no_software_adapter_is_refused_as_data_not_as_a_bug_in_silico",
+            "adversarial_render::no_software_adapter_is_refused_as_data_not_as_a_bug_in_silico",
             "--nocapture",
         ])
         .env_clear()
@@ -1476,11 +1513,12 @@ fn a_position_past_f32_about_the_target_is_refused_not_an_internal_error() {
 }
 
 #[test]
-fn five_thousand_bodies_draw_within_a_tenth_of_the_limit_each_with_its_number() {
+fn three_thousand_bodies_draw_within_a_tenth_of_the_limit_each_with_its_number() {
     // A pattern of pins left unfused is a body each: each body is a line batch of its own
     // and each face a mesh of its own.
     let mut w = worker();
-    let n = 5000u32;
+    // 18,000 faces, within MAX_RENDER_FACES.
+    let n = 3000u32;
     let bodies: Vec<RenderBody> = (0..n)
         .map(|k| {
             let (i, j) = (f64::from(k % 100), f64::from(k / 100));
@@ -1495,14 +1533,14 @@ fn five_thousand_bodies_draw_within_a_tenth_of_the_limit_each_with_its_number() 
     let (_, ids) = result.unwrap_or_else(|e| panic!("{took:?}: {e:?}"));
     assert!(took < LIMIT / 10, "{took:?}");
     // By hand: body k + 1's front face is x 0.4i to 0.4i + 0.3, z 0.2j to 0.2j + 0.15, about
-    // the view's centre at (21, 7): the last row's first, j = 49 and i = 0 (body 4901), at
-    // z 9.8 to 9.95; its front face's centre is (0.15, 9.875), 2 by 1 pixels, so its face's
+    // the view's centre at (21, 7): the last row's first, j = 29 and i = 0 (body 2901), at
+    // z 5.8 to 5.95; its front face's centre is (0.15, 5.875), 2 by 1 pixels, so its face's
     // or an edge's.
     let ids = ids.unwrap();
     let pixel = 300.0 / 44.0;
     let col = (200.0 + (0.15 - 21.0) * pixel) as usize;
-    let row = (150.0 - (9.875 - 7.0) * pixel) as usize;
-    assert_eq!(ids[row * 400 + col][0], 4901, "{:?}", ids[row * 400 + col]);
+    let row = (150.0 - (5.875 - 7.0) * pixel) as usize;
+    assert_eq!(ids[row * 400 + col][0], 2901, "{:?}", ids[row * 400 + col]);
 }
 
 #[test]

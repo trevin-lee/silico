@@ -12,49 +12,46 @@ pub mod lavapipe;
 pub mod render;
 pub mod worker;
 
-use worker::AdapterPolicy;
+use worker::RenderAdapter;
 
-/// The first CPU adapter (`wgpu::DeviceType::Cpu`, lavapipe here) on Vulkan or Metal, or why
-/// there's none.
-pub fn cpu_adapter() -> Result<wgpu::Adapter, String> {
+/// Every adapter on Vulkan or Metal (lavapipe among them where the worker's environment
+/// names it), and their names, for a refusal to list.
+fn all_adapters() -> (Vec<wgpu::Adapter>, Vec<String>) {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::VULKAN | wgpu::Backends::METAL,
         flags: wgpu::InstanceFlags::ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER,
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
     let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
-    let names: Vec<String> = adapters.iter().map(|a| a.get_info().name).collect();
-    adapters
-        .into_iter()
-        .find(|a| a.get_info().device_type == wgpu::DeviceType::Cpu)
-        .ok_or_else(|| {
-            format!(
-                "no software rasterizer was found (lavapipe's ICD: {:?}); the adapters found: {names:?}",
-                lavapipe::ICD
-            )
-        })
+    let names = adapters.iter().map(|a| a.get_info().name).collect();
+    (adapters, names)
 }
 
-/// The adapter `policy` allows: under [`AdapterPolicy::Software`], [`cpu_adapter`]; under
-/// [`AdapterPolicy::Any`], a CPU adapter if there is one, then a discrete GPU, then any.
-pub fn adapter(policy: AdapterPolicy) -> Result<wgpu::Adapter, String> {
-    if policy == AdapterPolicy::Software {
-        return cpu_adapter();
-    }
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::VULKAN | wgpu::Backends::METAL,
-        flags: wgpu::InstanceFlags::ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER,
-        ..wgpu::InstanceDescriptor::new_without_display_handle()
-    });
-    let mut adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
+/// The adapters `policy` allows, best first: under [`RenderAdapter::Software`], the CPU
+/// adapters (`wgpu::DeviceType::Cpu`, lavapipe here); under [`RenderAdapter::Any`], those,
+/// then discrete GPUs, then the rest. Or why there's none.
+pub fn adapters(policy: RenderAdapter) -> Result<Vec<wgpu::Adapter>, String> {
+    let (mut adapters, names) = all_adapters();
     let rank = |a: &wgpu::Adapter| match a.get_info().device_type {
         wgpu::DeviceType::Cpu => 0,
         wgpu::DeviceType::DiscreteGpu => 1,
         _ => 2,
     };
     adapters.sort_by_key(rank);
-    let names: Vec<String> = adapters.iter().map(|a| a.get_info().name).collect();
-    adapters.into_iter().next().ok_or_else(|| {
-        format!("no adapter was found on Vulkan or Metal (lavapipe's ICD: {:?}); the adapters: {names:?}", lavapipe::ICD)
-    })
+    adapters.retain(|a| {
+        policy == RenderAdapter::Any || a.get_info().device_type == wgpu::DeviceType::Cpu
+    });
+    if adapters.is_empty() {
+        return Err(match policy {
+            RenderAdapter::Software => format!(
+                "no software rasterizer was found (lavapipe's ICD: {:?}); the adapters found: {names:?}",
+                lavapipe::ICD
+            ),
+            RenderAdapter::Any => format!(
+                "no adapter was found on Vulkan or Metal (lavapipe's ICD: {:?})",
+                lavapipe::ICD
+            ),
+        });
+    }
+    Ok(adapters)
 }

@@ -76,7 +76,7 @@ pub fn box_mesh(low: [f64; 3], size: [f64; 3]) -> Mesh {
 }
 
 /// The view's height in [`front_of_a_box`].
-pub const VIEW_HEIGHT: f64 = 44.0;
+const VIEW_HEIGHT: f64 = 44.0;
 
 /// The 40 x 20 x 10 box from the origin, body 1, from the front (from −y, z up),
 /// orthographic, [`VIEW_HEIGHT`] high about (21, 10, 7), `width` by `height` pixels, with

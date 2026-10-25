@@ -27,16 +27,31 @@ pub const MAX_RENDER_COORDINATE: f64 = 1e12;
 /// The least an orthographic view's height may be, in mm: a nanometre.
 pub const MIN_VIEW_HEIGHT: f64 = 1e-6;
 
+/// The least the eye may be from the target, in mm: a nanometre. Nearer, a perspective
+/// view's near plane is 0 in f32 and its projection degenerate.
+pub const MIN_EYE_DISTANCE: f64 = 1e-6;
+
+/// The most faces a scene may have, across its bodies. Each is drawn as a mesh of its own
+/// (its own ID in the ID buffer), at about 75 KiB of the worker's memory each: 100,000
+/// held 7.5 GiB, and a million took past the 30 s a render has. 20,000, about 1.4 GiB, is
+/// far past a real part's hundreds to thousands.
+pub const MAX_RENDER_FACES: usize = 20_000;
+
+/// The most edges a scene may have, across its bodies: a million held 0.6 GiB and drew in
+/// 6.5 s (a debug build); 200,000 leaves room beside the faces.
+pub const MAX_RENDER_EDGES: usize = 200_000;
+
 /// The least an orthographic view's height may be against how far the scene reaches from
 /// the target: deeper, the scene's far points land past where f32 clips them exactly, and
 /// pixels go missing (lavapipe drew a 40 mm face whole at 1e-4 of its reach, not at 1e-5).
 pub const MIN_VIEW_HEIGHT_OF_REACH: f64 = 1e-5;
 
-/// The narrowest and widest a perspective view's angle may be, in degrees: narrower, what
-/// it sees lands past where f32 clips it exactly (as [`MIN_VIEW_HEIGHT_OF_REACH`]; an
-/// orthographic view is the one for so close a look); wider, its half-angle rounds past a
-/// right angle.
+/// The narrowest a perspective view's angle may be, in degrees: narrower, what it sees lands
+/// past where f32 clips it exactly (as [`MIN_VIEW_HEIGHT_OF_REACH`]; an orthographic view is
+/// the one for so close a look).
 pub const MIN_FIELD_OF_VIEW: f64 = 1e-3;
+/// The widest a perspective view's angle may be, in degrees: wider, its half-angle in f32
+/// rounds past a right angle, and the view is drawn turned half a turn.
 pub const MAX_FIELD_OF_VIEW: f64 = 179.999;
 
 /// A scene for the render worker: the bodies in view, the camera, and the image's size.
@@ -174,11 +189,13 @@ impl Camera {
                 format!("camera.up {:?} isn't finite", self.up),
             ));
         }
-        let Some((distance, back)) = length_and_unit(sub(self.eye, self.target)) else {
+        let apart = length_and_unit(sub(self.eye, self.target))
+            .filter(|(distance, _)| *distance >= MIN_EYE_DISTANCE);
+        let Some((distance, back)) = apart else {
             return Err(invalid(
                 "camera.eye",
                 format!(
-                    "camera.eye {:?} must be apart from camera.target {:?}",
+                    "camera.eye {:?} must be at least {MIN_EYE_DISTANCE} mm from camera.target {:?}",
                     self.eye, self.target
                 ),
             ));
@@ -258,7 +275,6 @@ impl RenderScene {
         }
         self.camera.check()?;
         let mut last = 0;
-        let mut reach = 0.0f64;
         for (i, body) in self.bodies.iter().enumerate() {
             if body.body <= last {
                 return Err(invalid(
@@ -271,13 +287,36 @@ impl RenderScene {
             }
             last = body.body;
             body.check(i)?;
-            let mesh = &body.mesh;
-            for p in mesh.positions.iter().chain(&mesh.edge_points) {
-                let d = sub(*p, self.camera.target);
-                reach = reach.max(dot(d, d).sqrt());
+        }
+        for (what, count, most) in [
+            (
+                "faces",
+                self.bodies
+                    .iter()
+                    .map(|b| b.mesh.face_triangles.len())
+                    .sum::<usize>(),
+                MAX_RENDER_FACES,
+            ),
+            (
+                "edges",
+                self.bodies
+                    .iter()
+                    .map(|b| b.mesh.edge_point_counts.len())
+                    .sum(),
+                MAX_RENDER_EDGES,
+            ),
+        ] {
+            if count > most {
+                return Err(invalid(
+                    "bodies",
+                    format!(
+                        "the bodies have {count} {what}, more than the {most} a render draws within its time"
+                    ),
+                ));
             }
         }
         if let Projection::Orthographic { view_height } = self.camera.projection {
+            let reach = self.reach(self.camera.target);
             let least = reach * MIN_VIEW_HEIGHT_OF_REACH;
             if view_height < least {
                 return Err(invalid(
@@ -289,6 +328,22 @@ impl RenderScene {
             }
         }
         Ok(())
+    }
+}
+
+impl RenderScene {
+    /// How far the scene reaches from `from`: its farthest point (a mesh's position or an
+    /// edge's) from it, 0 for a scene with none. The check bounds an orthographic view's
+    /// zoom by it, and the renderer sets its clipping from it.
+    pub fn reach(&self, from: [f64; 3]) -> f64 {
+        self.bodies
+            .iter()
+            .flat_map(|b| b.mesh.positions.iter().chain(&b.mesh.edge_points))
+            .map(|p| {
+                let d = sub(*p, from);
+                dot(d, d).sqrt()
+            })
+            .fold(0.0, f64::max)
     }
 }
 
