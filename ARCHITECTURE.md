@@ -37,7 +37,7 @@ This document records decisions. The **Invariants** section is enforced by the r
 - **Worker pool.** Up to one kernel worker a core, each started when a request first needs it and kept, so a rebuild pays only for the workers it uses at once. Independent branches of the feature DAG recompute in parallel across them. OCCT isn't reliably thread-safe, so process-level parallelism is the safe route.
 - **Failure handling.** Every request has a timeout. A crashed or hung worker is killed and respawned, and the request fails with a structured error naming the feature. Each request carries a generation number of the client that submitted it (the pool's own, or a client the pool gives, `KernelPool::client`, each with generations of its own: a session's rebuilds take one, and its reads of the published model one or more others (docs/design/m4.1-command-api.md, decision 33)): results for that client's superseded generations are discarded, and work still running for them is stopped once it has run longer than replacing a worker takes (50 ms by default), unless it finishes first. One client's newer generation never touches another's work, and the pool serves its clients' waiting requests in turn.
 - **Worker output.** Serialized B-rep (OCCT binary format), raw history maps, and tessellation when requested.
-- **Sketches solve in the sketch worker, drags included** (the maintainer's decision, 2026-10-16, from M3.7's measurements). PlaneGCS stays linked in its worker: no port, no shared memory, no solver in the app process. A drag is a session in the worker (begin diagnoses once and pins the dragged point; each move solves from the begin state; end hands back to a normal solve), so a frame depends only on the begin state and the cursor. The round trip costs about 0.05 ms; what costs is the solver's own work (dense SQP on a large connected part), which no transport changes. For big connected sketches the UI solves only the newest cursor, with one request in flight, and drops stale frames. A sketch worker holds at most one session, so a drag's moves go to the worker that began it, and that worker isn't stopped for a superseded generation while the session lasts (a move can take longer than the 50 ms the pool waits); the session ends with a normal solve, a new begin, an exception in the solver, or the worker's restart, and a move after it is refused, so the client begins again. The exemption is from supersession only: each move is a request like any other, under its timeout and the crash and hang handling, so a move that hangs or crashes ends in a worker error and a restart, which ends the session. A drag's session holds only the part of the sketch its pins move (everything else held where it began), and takes at most 256 unknowns there, where SQP's dense work stays under a second a move.
+- **Sketches solve in the sketch worker, drags included** (the maintainer's decision, 2026-10-16, from M3.7's measurements). PlaneGCS stays linked in its worker: no port, no shared memory, no solver in the app process. A drag is a session in the worker (begin diagnoses once and pins the dragged point; each move solves from the begin state; end hands back to a normal solve), so a frame depends only on the begin state and the cursor. The round trip costs about 0.05 ms; what costs is the solver's own work (dense SQP on a large connected part), which no transport changes. For big connected sketches the UI solves only the newest cursor, with one request in flight, and drops stale frames. The pool's rules for drags are planned for M5, which brings the core's drag client (the worker's drag session is built, M3.7): a sketch worker holds at most one session, so a drag's moves go to the worker that began it, and that worker isn't stopped for a superseded generation while the session lasts (a move can take longer than the 50 ms the pool waits); the session ends with a normal solve, a new begin, an exception in the solver, or the worker's restart, and a move after it is refused, so the client begins again. The exemption is from supersession only: each move is a request like any other, under its timeout and the crash and hang handling, so a move that hangs or crashes ends in a worker error and a restart, which ends the session. A drag's session holds only the part of the sketch its pins move (everything else held where it began), and takes at most 256 unknowns there, where SQP's dense work stays under a second a move.
 - **Workers are Rust binaries.** They handle protocol, timeouts, and errors in Rust, and call OCCT through a thin `cxx` bridge. The C++ side only calls OCCT and returns shapes and history.
 - **OCCT 7.9.3**, built from source with the recipe below: the same release as the FreeCAD Silico references (conda-forge's FreeCAD 1.1.3, whose OCCT package carries no geometry patches), so FreeCAD is a clean reference. Silico's OCCT moves only when its reference FreeCAD's does, and only after the new release is checked against the cases Silico knows about: OCCT 8.0.1 was tried first, and has a boolean regression 7.9.3 doesn't (docs/ports/booleans.md). The recipe changes the last bits of results, so oracle comparisons still use tolerances, but the same cases succeed and fail on both sides.
 - **Platforms.** macOS first; Linux and Windows come later.
@@ -95,16 +95,27 @@ A `.silico` file is strict JSON describing the feature timeline. Silico rebuilds
       "id": "k7f2qx3m", "type": "sketch", "v": 1, "name": "base", "plane": "xy",
       "points": [
         {"id": "0a1b2c3d", "x": 0, "y": 0, "construction": false},
-        {"id": "4e5f6g7h", "x": 40, "y": 0, "construction": false}
+        {"id": "2p3q4r5s", "x": 0, "y": 20, "construction": false},
+        {"id": "4e5f6g7h", "x": 40, "y": 0, "construction": false},
+        {"id": "8j9k0m1n", "x": 40, "y": 20, "construction": false}
       ],
       "lines": [
-        {"id": "6t7v8w9x", "from": "0a1b2c3d", "to": "4e5f6g7h", "construction": false}
+        {"id": "6t7v8w9x", "from": "0a1b2c3d", "to": "4e5f6g7h", "construction": false},
+        {"id": "a0b1c2d3", "from": "4e5f6g7h", "to": "8j9k0m1n", "construction": false},
+        {"id": "j8k9m0n1", "from": "8j9k0m1n", "to": "2p3q4r5s", "construction": false},
+        {"id": "p2q3r4s5", "from": "2p3q4r5s", "to": "0a1b2c3d", "construction": false}
       ],
       "circles": [],
       "arcs": [],
       "constraints": [
         {"id": "c0d1e2f3", "type": "horizontal", "line": "6t7v8w9x"},
-        {"id": "g4h5j6k7", "type": "length", "line": "6t7v8w9x", "value": 40, "driving": true}
+        {"id": "g4h5j6k7", "type": "length", "line": "6t7v8w9x", "value": 40, "driving": true},
+        {"id": "m8n9p0q1", "type": "distance_x", "a": "origin", "b": "0a1b2c3d", "value": 0, "driving": true},
+        {"id": "r2s3t4v5", "type": "vertical", "line": "a0b1c2d3"},
+        {"id": "w6x7y8z9", "type": "length", "line": "a0b1c2d3", "value": 20, "driving": true},
+        {"id": "x0y1z2a3", "type": "horizontal", "line": "j8k9m0n1"},
+        {"id": "y4z5a6b7", "type": "distance_y", "a": "origin", "b": "0a1b2c3d", "value": 0, "driving": true},
+        {"id": "z8a9b0c1", "type": "vertical", "line": "p2q3r4s5"}
       ]
     },
     {
@@ -125,7 +136,7 @@ A `.silico` file is strict JSON describing the feature timeline. Silico rebuilds
 - **Parameters** are named, typed values with units, stored at the top of the document. Expressions reference them. This is the data model only. How parameters are presented and edited (a spreadsheet, a parameter panel, inline in dimension fields) is a separate UX decision.
 - **Sketches store solved coordinates.** On load they are the solver's initial guess. If the constraints changed, for example after a hand edit, the sketch is re-solved and `silico fmt` writes the corrected coordinates back.
 - **Fingerprints** record volume, area, bounding box, and face/edge/vertex counts for each feature, much as a lockfile does. A rebuild that doesn't match its fingerprint is flagged loudly, and CI fails on drift. Fingerprints also make PR diffs meaningful. As with a lockfile, an edit by hand or in a merge leaves the fingerprints it affects stale until the document is saved again (or `silico fmt` is run); a feature that fails to build keeps its last fingerprint.
-- **Features are versioned** with `v`. Changing a feature's behavior bumps its version. Old documents keep rebuilding with the old behavior until they're explicitly upgraded.
+- **Features are versioned** with `v`. Changing a feature's behavior bumps its version. Old documents keep rebuilding with the old behavior until they're explicitly upgraded. Until the first release, every feature's `v` stays 1, as the schema's `silico` does: no document has shipped, so a behavior change is agreed with the maintainer instead of bumping it.
 - **Notes** are a data field, not comments, so they survive UI saves and are visible in the UI and through MCP.
 - **Canonical form.** Keys are written in schema order, numbers as described in *Numbers in the file*, one leaf entity per line, LF line endings, and a trailing newline. `silico fmt` produces canonical form, and every save writes it.
 - **Imported geometry** is an `import` feature that references a STEP file committed next to the document.
