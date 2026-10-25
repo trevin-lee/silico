@@ -889,10 +889,26 @@ fn the_envelopes_snapshot_refuses_what_no_response_is() {
             r#"{{"ok": false, "session": null, "model": null, "errors": [{}], "total": 1}}"#,
             e.replace("[]}", r#"[], "extra": 1}"#)
         ),
+        // Past the snapshot's bounds: a refusal listing 101 errors, and revision 0.
+        format!(
+            r#"{{"ok": false, "session": null, "model": null, "errors": [{}], "total": 101}}"#,
+            vec![e; 101].join(", ")
+        ),
+        format!(
+            r#"{{"ok": true, "session": {}, "model": null, "result": 1}}"#,
+            s.replace(r#""revision": 1"#, r#""revision": 0"#)
+        ),
+        r#"{"ok": true, "session": null, "model": {"revision": 0, "of": "current", "fault": null}, "result": 1}"#.to_owned(),
     ] {
         let value: serde_json::Value = serde_json::from_str(&bad).unwrap();
         assert!(!validator.is_valid(&value), "{bad}");
     }
+    // And the bounds themselves are held to: 100 errors, and revision 1.
+    let hundred = format!(
+        r#"{{"ok": false, "session": {s}, "model": null, "errors": [{}], "total": 100}}"#,
+        vec![e; 100].join(", ")
+    );
+    assert!(validator.is_valid(&serde_json::from_str::<serde_json::Value>(&hundred).unwrap()));
 }
 
 #[test]

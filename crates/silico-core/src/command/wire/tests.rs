@@ -940,6 +940,11 @@ fn a_revision_is_a_whole_number_from_1() {
 fn a_direction_is_three_finite_numbers_each_at_fault_named_by_its_place() {
     let direction = |text: &str| one("normal", text, |f| f.direction("normal"));
     assert_eq!(direction("[0, 0, 1]"), Ok([0.0, 0.0, 1.0]));
+    // Not all zero: a zero vector points nowhere. A tiny or huge one still has a direction.
+    assert!(direction("[0, 0, 0]").is_err());
+    assert!(direction("[0, -0, 0]").is_err());
+    assert_eq!(direction("[1e-300, 0, 0]"), Ok([1e-300, 0.0, 0.0]));
+    assert_eq!(direction("[0, 1e300, 0]"), Ok([0.0, 1e300, 0.0]));
     // Correctly rounded, as a sketch's coordinate is read, and `-0` kept.
     let [x, y, z] = direction("[0.1, -0, 1e-3]").unwrap();
     assert_eq!((x, y.to_bits(), z), (0.1, (-0.0f64).to_bits(), 0.001));
@@ -1002,7 +1007,7 @@ fn a_response_past_its_limit_is_answered_with_a_refusal_saying_so() {
     assert_eq!(
         response_text_within(&answer, Layout::OneLine, limit),
         format!(
-            r#"{{"ok": false, "session": {{"id": "s1", "path": "bracket.silico", "revision": 4, "transaction": false, "reloaded": false}}, "model": {{"revision": 3, "of": "current", "fault": null}}, "errors": [{{"code": "invalid_input", "message": "the response would be more than the {limit} bytes a response may be", "feature": null, "elements": [], "elements_total": 0, "parameter": null, "cause": null, "suggestion": "ask for less at once", "candidates": []}}], "total": 1}}"#
+            r#"{{"ok": false, "session": {{"id": "s1", "path": "bracket.silico", "revision": 4, "transaction": false, "reloaded": false}}, "model": {{"revision": 3, "of": "current", "fault": null}}, "errors": [{{"code": "invalid_input", "message": "the response would be more than the {limit} bytes a response may be", "feature": null, "elements": [], "elements_total": 0, "parameter": null, "cause": "a command that changes the document may have done its work before its answer was written: read the session's revision before asking again", "suggestion": "ask for less at once", "candidates": []}}], "total": 1}}"#
         )
     );
     // A refusal too long itself is written without its session and model.

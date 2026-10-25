@@ -313,6 +313,10 @@ fn response_text_within<T: ToWire>(response: &Response<T>, layout: Layout, limit
             ErrorCode::InvalidInput,
             format!("the response would be more than the {limit} bytes a response may be"),
         )
+        .with_cause(
+            "a command that changes the document may have done its work before its answer was \
+             written: read the session's revision before asking again",
+        )
         .with_suggestion("ask for less at once"),
     );
     let session = response.session.as_ref();
@@ -637,7 +641,18 @@ impl<'a> RequestFields<'a> {
         };
         // Each read, so each member at fault is said.
         let (x, y, z) = (component(0, x), component(1, y), component(2, z));
-        Some([x?, y?, z?])
+        let direction = [x?, y?, z?];
+        // A direction points somewhere: not all zero. (Any other finite vector has a
+        // direction, however large or small, if scaled by its largest component first.)
+        if direction.iter().all(|&c| c == 0.0) {
+            self.refused.refuse_with(|| {
+                let at = join(&self.path, key);
+                invalid(&at, format!("{at} must be a direction, got [0, 0, 0]"))
+                    .with_suggestion("give a direction that isn't zero")
+            });
+            return None;
+        }
+        Some(direction)
     }
 
     /// The session a request names: its ID, `s1`, `s2`, ...
