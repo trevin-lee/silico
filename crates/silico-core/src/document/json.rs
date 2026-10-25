@@ -66,6 +66,67 @@ impl fmt::Display for At {
     }
 }
 
+impl At {
+    /// Where a value no one wrote is: one an edit made, or took apart and put back
+    /// together ([`unplace`]), whose line and column in a text would name a text no one
+    /// has. Line 0, which no value read is at, so an error about it says no place.
+    pub const UNPLACED: At = At { line: 0, column: 0 };
+}
+
+/// `node`, and every value and key in it, at [`At::UNPLACED`]: so a tree an edit made, of
+/// a request's values and a document's, is read with errors that name fields by their
+/// paths alone. An explicit stack, so a tree of any depth is walked.
+pub fn unplace(node: &mut Node) {
+    let mut stack = vec![node];
+    while let Some(node) = stack.pop() {
+        node.at = At::UNPLACED;
+        match &mut node.value {
+            Value::Array(items) => stack.extend(items.iter_mut()),
+            Value::Object(members) => {
+                for member in members {
+                    member.at = At::UNPLACED;
+                    stack.push(&mut member.value);
+                }
+            }
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+        }
+    }
+}
+
+/// A JSON value with no place in a text: what a command gives back of a document's
+/// values (`set_field`'s field before and after), each object's members in the order the
+/// document writes them and each number as its text writes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Plain {
+    Null,
+    Bool(bool),
+    /// The number's text, as written.
+    Number(String),
+    String(String),
+    Array(Vec<Plain>),
+    /// Members in order, no key twice.
+    Object(Vec<(String, Plain)>),
+}
+
+impl Plain {
+    /// What `node` holds, without where it was.
+    pub fn of(node: &Node) -> Plain {
+        match &node.value {
+            Value::Null => Plain::Null,
+            Value::Bool(b) => Plain::Bool(*b),
+            Value::Number(text) => Plain::Number(text.clone()),
+            Value::String(text) => Plain::String(text.clone()),
+            Value::Array(items) => Plain::Array(items.iter().map(Plain::of).collect()),
+            Value::Object(members) => Plain::Object(
+                members
+                    .iter()
+                    .map(|m| (m.key.clone(), Plain::of(&m.value)))
+                    .collect(),
+            ),
+        }
+    }
+}
+
 /// A JSON value, where it starts, and what it is.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node {

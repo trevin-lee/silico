@@ -44,3 +44,12 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
     }
     hex
 }
+
+/// `N` bytes of the system's randomness, from `/dev/urandom`: the cache's secret, and the
+/// IDs of new features.
+pub(crate) fn system_random<const N: usize>() -> std::io::Result<[u8; N]> {
+    use std::io::Read as _;
+    let mut bytes = [0; N];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(bytes)
+}
