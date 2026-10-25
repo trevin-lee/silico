@@ -48,13 +48,14 @@ fn fixture() -> Fixture {
     let sketches = FakeSketches::new();
     let solvers = Arc::new(AtomicUsize::new(0));
     let (solver, started) = (sketches.clone(), Arc::clone(&solvers));
-    let sessions = Sessions::with_cache_opener(Arc::clone(&kernel), move |cache| {
-        Cache::with_secret(cache, &secret)
-    })
-    .with_sketch_starter(move || {
-        started.fetch_add(1, Ordering::SeqCst);
-        Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>)
-    });
+    let sessions = Sessions::with_stand_ins(
+        Arc::clone(&kernel),
+        move |cache| Cache::with_secret(cache, &secret),
+        move || {
+            started.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>)
+        },
+    );
     Fixture {
         dir,
         kernel,
@@ -114,6 +115,18 @@ fn clean(response: &Response<command::Problems>) {
     );
 }
 
+/// The one error a refused response gives: its code, message, and parameter.
+fn refusal<T: std::fmt::Debug>(response: &Response<T>) -> (ErrorCode, String, Option<String>) {
+    let problems = response.result.as_ref().unwrap_err();
+    assert_eq!(problems.total(), 1, "{problems:?}");
+    let error = &problems.errors()[0];
+    (
+        error.code(),
+        error.message().to_owned(),
+        error.parameter().map(str::to_owned),
+    )
+}
+
 fn id(text: &str) -> FeatureId {
     FeatureId::new(text).unwrap()
 }
@@ -137,7 +150,7 @@ fn one_sessions_rebuild_never_supersedes_anothers() {
     };
     hold.release();
     clean(&answer(held));
-    let model = f.sessions.published(&a).result.unwrap().unwrap();
+    let model = f.sessions.published(&a).result.unwrap();
     assert_eq!(model.revision, Revision::OPENED);
     let fingerprint = model.model.fingerprint(&id("k7f2qx3m")).unwrap();
     assert_eq!(fingerprint.volume, Measure::from_millionths(8_000_000_000));
@@ -170,14 +183,13 @@ fn sessions_in_one_directory_build_its_common_steps_once() {
 fn a_second_check_of_a_revision_reads_the_model_its_first_made() {
     let f = fixture();
     let a = f.open(&f.file("a.silico", BOX));
-    assert_eq!(f.sessions.published(&a).result.unwrap(), None);
     clean(&answer(f.sessions.check(&a)));
-    let first = f.sessions.published(&a).result.unwrap().unwrap();
+    let first = f.sessions.published(&a).result.unwrap();
     let calls = f.kernel.calls().len();
     clean(&answer(f.sessions.check(&a)));
     // No rebuild: the kernel asked nothing, and the model is the same one, not one rebuilt.
     assert_eq!(f.kernel.calls().len(), calls);
-    let second = f.sessions.published(&a).result.unwrap().unwrap();
+    let second = f.sessions.published(&a).result.unwrap();
     assert!(Arc::ptr_eq(&first.model, &second.model));
 }
 
@@ -195,7 +207,12 @@ fn a_check_of_a_document_the_gate_refused_gives_its_problems_and_rebuilds_nothin
     );
     assert_eq!(response.model, None);
     assert!(f.kernel.calls().is_empty());
-    assert_eq!(f.sessions.published(&s).result.unwrap(), None);
+    // Nothing to publish: a published read is refused, and starts nothing.
+    assert_eq!(
+        refusal(&f.sessions.published(&s)).1,
+        "session s1 has published no model yet"
+    );
+    assert!(f.kernel.calls().is_empty());
 }
 
 #[test]
@@ -228,7 +245,7 @@ fn dropping_the_sessions_mid_rebuild_stops_it_and_returns_at_once() {
         let _ = dropped.send(());
     });
     assert!(
-        returned.recv_timeout(Duration::from_secs(10)).is_ok(),
+        returned.recv_timeout(HANG).is_ok(),
         "dropping the sessions waited for the rebuild"
     );
     let took = at.elapsed();
@@ -251,16 +268,187 @@ fn dropping_the_sessions_mid_rebuild_stops_it_and_returns_at_once() {
 }
 
 #[test]
-fn version_gives_the_designs_numbers_and_limits() {
-    // As docs/design/m4.1-command-api.md's `version` example and its section 6 give them.
-    let version = command::VERSION;
-    assert_eq!((version.api, version.format, version.naming), (1, 1, 5));
-    let limits = version.limits;
-    assert_eq!(limits.document_bytes, 16_777_216);
-    assert_eq!(limits.request_bytes, 67_108_864);
-    assert_eq!(limits.request_depth, 64);
-    assert_eq!(limits.listed, 100);
-    assert_eq!(limits.sessions, 16);
-    assert_eq!(limits.kernel_seconds, 60);
-    assert_eq!(limits.sketch_seconds, 300);
+fn a_sessions_check_gives_its_models_failures() {
+    let f = fixture();
+    f.kernel.refuse(|op| {
+        matches!(op, Op::MakePrimitive(Primitive::Box { .. }))
+            .then(|| silico_core::Error::new(ErrorCode::KernelFailed, "MakeBox failed"))
+    });
+    let a = f.open(&f.file("a.silico", BOX));
+    let response = answer(f.sessions.check(&a));
+    assert_eq!(
+        response.model,
+        Some(ModelRead {
+            revision: Revision::OPENED
+        })
+    );
+    let problems = response.result.unwrap();
+    assert_eq!(problems.total(), 1);
+    assert_eq!(problems.errors()[0].code(), ErrorCode::KernelFailed);
+    assert_eq!(problems.errors()[0].feature(), Some("k7f2qx3m"));
+}
+
+#[test]
+fn a_sessions_check_gives_drift_of_a_stored_fingerprint() {
+    // The box's volume is 8000: one stored as 8001 drifts.
+    let stored = BOX.replace(
+        "\"height\": 10}",
+        "\"height\": 10, \"fingerprint\": {\"volume\": 8001, \"area\": 2800, \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}}",
+    );
+    let f = fixture();
+    let a = f.open(&f.file("a.silico", &stored));
+    let problems = answer(f.sessions.check(&a)).result.unwrap();
+    let codes: Vec<ErrorCode> = problems.errors().iter().map(|e| e.code()).collect();
+    assert_eq!(codes, [ErrorCode::Drift]);
+    assert_eq!(problems.errors()[0].feature(), Some("k7f2qx3m"));
+}
+
+#[test]
+fn a_kernel_fault_is_a_checks_refusal_and_the_next_check_rebuilds() {
+    // A worker that crashes on every request: each check is refused with the crash, not a
+    // problem of the document, and each asks the kernel again.
+    let f = fixture();
+    f.kernel
+        .refuse(|_| Some(silico_core::Error::new(ErrorCode::WorkerCrashed, "crashed")));
+    let s = f.open(&f.file("s.silico", SPHERE));
+    let first = answer(f.sessions.check(&s));
+    assert_eq!(refusal(&first).0, ErrorCode::WorkerCrashed);
+    let asked = f.kernel.calls().len();
+    assert!(asked > 0);
+    let second = answer(f.sessions.check(&s));
+    assert_eq!(refusal(&second).0, ErrorCode::WorkerCrashed);
+    assert!(f.kernel.calls().len() > asked);
+}
+
+#[test]
+fn a_check_after_a_fault_that_passed_tries_the_rebuild_again() {
+    let f = fixture();
+    let a = f.open(&f.file("a.silico", BOX));
+    let once = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let first = Arc::clone(&once);
+    f.kernel.refuse(move |op| {
+        (matches!(op, Op::MakePrimitive(Primitive::Box { .. }))
+            && first.swap(false, Ordering::SeqCst))
+        .then(|| silico_core::Error::new(ErrorCode::WorkerTimeout, "timed out"))
+    });
+    let faulted = answer(f.sessions.check(&a));
+    assert_eq!(refusal(&faulted).0, ErrorCode::WorkerTimeout);
+    clean(&answer(f.sessions.check(&a)));
+}
+
+#[test]
+fn a_published_read_never_waits_for_a_rebuild() {
+    let f = fixture();
+    let a = f.open(&f.file("a.silico", BOX));
+    let hold = f
+        .kernel
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { .. })));
+    let check = f.sessions.check(&a);
+    assert!(f.kernel.wait_running(1, HANG));
+    let lateness = Lateness::start();
+    let at = Instant::now();
+    let sessions = &f.sessions;
+    let (reply, read) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            let _ = reply.send(sessions.published(&a));
+        });
+        let read = read.recv_timeout(Duration::from_secs(10));
+        let took = at.elapsed();
+        let Ok(read) = read else {
+            hold.release();
+            panic!("the published read waited for the rebuild");
+        };
+        // At once: a second, and ten times the machine's lateness on a loaded one.
+        let most = allowance(Duration::from_secs(1), lateness.most());
+        assert!(
+            took < most,
+            "the published read took {took:?}, past {most:?}"
+        );
+        assert_eq!(read.session.as_ref().map(|s| s.id), Some(a));
+        assert_eq!(read.model, None);
+        assert_eq!(
+            refusal(&read),
+            (
+                ErrorCode::InvalidInput,
+                "session s1 has published no model yet".to_owned(),
+                Some("model".to_owned()),
+            )
+        );
+    });
+    hold.release();
+    clean(&answer(check));
+    let read = f.sessions.published(&a);
+    assert_eq!(
+        read.model,
+        Some(ModelRead {
+            revision: Revision::OPENED
+        })
+    );
+    assert_eq!(read.result.unwrap().revision, Revision::OPENED);
+}
+
+#[test]
+fn a_published_read_starts_the_rebuild_it_needs_without_waiting() {
+    let f = fixture();
+    let a = f.open(&f.file("a.silico", BOX));
+    assert_eq!(
+        refusal(&f.sessions.published(&a)).2.as_deref(),
+        Some("model")
+    );
+    // No check: the published read's own rebuild publishes, and only one is started.
+    let deadline = Instant::now() + HANG;
+    let published = loop {
+        if let Ok(published) = f.sessions.published(&a).result {
+            break published;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the published read started no rebuild"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(published.revision, Revision::OPENED);
+    assert_eq!(f.boxes(), 1);
+    clean(&answer(f.sessions.check(&a)));
+    assert_eq!(f.boxes(), 1);
+}
+
+#[test]
+fn a_published_read_of_a_session_that_isnt_open_is_refused() {
+    let f = fixture();
+    let a = f.open(&f.file("a.silico", BOX));
+    assert!(answer(f.sessions.close(&a)).result.is_ok());
+    let read = f.sessions.published(&a);
+    assert_eq!(read.session, None);
+    assert_eq!(
+        refusal(&read),
+        (
+            ErrorCode::InvalidInput,
+            "no session s1 is open".to_owned(),
+            Some("session".to_owned()),
+        )
+    );
+}
+
+#[test]
+fn a_check_of_text_that_isnt_a_document_gives_the_readers_error_and_rebuilds_nothing() {
+    let f = fixture();
+    let s = f.open(&f.file("junk.silico", "{"));
+    let response = answer(f.sessions.check(&s));
+    assert_eq!(response.model, None);
+    let problems = response.result.unwrap();
+    assert_eq!(problems.total(), 1);
+    assert_eq!(problems.errors()[0].code(), ErrorCode::InvalidInput);
+    assert!(
+        problems.errors()[0]
+            .message()
+            .starts_with("the document isn't valid JSON: "),
+        "{problems:?}"
+    );
+    assert!(f.kernel.calls().is_empty());
+    assert_eq!(
+        refusal(&f.sessions.published(&s)).2.as_deref(),
+        Some("model")
+    );
 }

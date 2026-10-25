@@ -25,7 +25,7 @@ pub use session::{
 
 /// The command API's version (docs/design/m4.1-command-api.md, section 8): one more for
 /// each change to a request's or result's shape that an older client couldn't read.
-pub const API_VERSION: u32 = 1;
+const API_VERSION: u32 = 1;
 
 /// What `version` answers: the API's version, the document format's and naming scheme's,
 /// and the limits (the design's section 6) of the commands built so far, as data. Each

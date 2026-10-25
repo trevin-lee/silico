@@ -6,9 +6,10 @@
 //! its commands one at a time, in the order they arrive, on a thread of its own
 //! (`session-s1`, ...), never the caller's (ARCHITECTURE.md, invariant 4): even `open`'s
 //! file read and gate. A command returns a [`Running`] handle at once, which the app polls,
-//! MCP's server waits on, and the CLI waits for; only [`Sessions::status`] answers on the
-//! caller's thread, from what the session holds. Each answer is a [`Response`]: the session
-//! as the command left it, and the command's result, or every reason it was refused.
+//! MCP's server waits on, and the CLI waits for; only [`Sessions::status`] and
+//! [`Sessions::published`] answer on the caller's thread, from what the session holds. Each
+//! answer is a [`Response`]: the session as the command left it, the model it read, if it
+//! read one ([`ModelRead`]), and the command's result, or every reason it was refused.
 //!
 //! A file is open in one session a process (decision 22), known both by its path through
 //! links and by the file it is (its device and inode, held open while claimed), so neither
@@ -221,7 +222,7 @@ struct Registry<P: Clients + 'static> {
     kernel: P,
     open_cache: Box<CacheOpener>,
     /// Given to each session's engine as it opens; none for the sketch worker.
-    sketches: Mutex<Option<Arc<SketchStarter>>>,
+    sketches: Option<Arc<SketchStarter>>,
     book: Mutex<Book<P::Client>>,
 }
 
@@ -323,17 +324,20 @@ struct Session<C: Kernel + 'static> {
 /// wait, on `Session::rebuilt` (which lets it go). Never wait on a `Run` holding it, or
 /// `Sessions::drop`'s cancel, and any other command's, waits behind the whole rebuild; a
 /// watcher thread waits on each `Run`, holding only a `Weak` to the session. A command whose
-/// rebuild ends superseded checks `Session::closed` before starting another, so a closed or
-/// dropped session's command stops rather than rebuilding again.
+/// rebuild ends superseded checks `Session::closed` before starting another, so a dropped
+/// session's command stops rather than rebuilding again.
 struct Rebuilds<C: Kernel + 'static> {
     engine: Recompute<C>,
     /// The revision whose rebuild is running, if one is.
     running: Option<Revision>,
     /// The newest model the session's rebuilds published.
     published: Option<Published>,
-    /// The last rebuild that ended without a model: its revision, and, if the recompute
-    /// stopped (a bug) rather than being superseded, why.
-    ended: Option<(Revision, Option<Error>)>,
+    /// The last rebuild whose recompute failed (a bug), and why: said once, to the command
+    /// waiting on it, or the next to need that revision's model.
+    failed: Option<(Revision, Error)>,
+    /// The threads watching the rebuilds started: those ended joined as the next starts, the
+    /// rest by `Sessions::drop`, for the sessions open then.
+    watchers: Vec<JoinHandle<()>>,
 }
 
 /// What a session holds (docs/design/m4.1-command-api.md, section 3). Its values are shared
@@ -362,9 +366,11 @@ enum Turn<'a, C: Kernel + 'static> {
 
 impl<C: Kernel + 'static> Session<C> {
     /// The model of `revision`, whose document is `checked`: the one its rebuild published,
-    /// waited for, the rebuild started if none of it is running (decision 13). Refused if the
-    /// session closes meanwhile (its rebuild stopped, by `close` or a drop), or the recompute
-    /// stopped (a bug).
+    /// waited for, the rebuild started if none of it is running (decision 13). A model of it
+    /// published before that holds a kernel fault (a worker that crashed or hung) isn't taken
+    /// again: it's rebuilt, so a fault that passes is tried again (until faults are kept as a
+    /// revision's outcome, decision 32). Refused if the session is dropped meanwhile (its
+    /// rebuild stopped), or the recompute failed (a bug).
     fn model(
         self: &Arc<Self>,
         revision: Revision,
@@ -372,9 +378,13 @@ impl<C: Kernel + 'static> Session<C> {
     ) -> Result<Arc<Model>, Problems> {
         let _span = tracing::info_span!("rebuild", revision = revision.number()).entered();
         let mut rebuilds = lock(&self.rebuilds);
+        // Whether this read has waited for a rebuild of its own: then its model is the one,
+        // faulted or not.
+        let mut waited = false;
         loop {
             if let Some(published) = &rebuilds.published
                 && published.revision == revision
+                && (waited || !faulted(&published.model))
             {
                 return Ok(Arc::clone(&published.model));
             }
@@ -383,31 +393,81 @@ impl<C: Kernel + 'static> Session<C> {
                     .rebuilt
                     .wait(rebuilds)
                     .unwrap_or_else(PoisonError::into_inner);
+                waited = true;
                 continue;
             }
-            // Its rebuild ended without a model: stopped, said once; or superseded, so
-            // started again unless the session has closed.
-            if let Some((ended, Some(why))) = rebuilds.ended.take()
-                && ended == revision
+            // A failure of this revision's, said once; another's is left for whoever needs it.
+            if rebuilds
+                .failed
+                .as_ref()
+                .is_some_and(|(failed, _)| *failed == revision)
+                && let Some((_, why)) = rebuilds.failed.take()
             {
                 return Err(Problems::from(why));
             }
+            // Not built, or superseded: started again unless the session has gone.
             if self.closed() {
                 return Err(Problems::from(not_open(self.id)));
             }
-            let run = rebuilds.engine.start(checked.clone());
-            rebuilds.running = Some(revision);
-            let session = Arc::downgrade(self);
-            let watcher = std::thread::Builder::new()
-                .name(format!("session-{}-rebuild", self.id))
-                .spawn(move || watch(&session, revision, run));
-            if let Err(e) = watcher {
+            if !self.start_if_needed(&mut rebuilds, revision, checked)? {
+                return Err(Problems::from(
+                    Error::new(
+                        ErrorCode::Internal,
+                        format!(
+                            "session {} was asked for revision {}'s model after a newer revision's rebuild",
+                            self.id,
+                            revision.number()
+                        ),
+                    )
+                    .with_suggestion(crate::worker::SILICO_BUG),
+                ));
+            }
+        }
+    }
+
+    /// Starts `revision`'s rebuild, whose document is `checked`, unless one of it is running
+    /// or a newer revision's rebuild has started or published (whose model it would
+    /// supersede): whether it started. Doesn't wait for it: a watcher thread records what it
+    /// comes to. Takes the lock's guard, so the start and the record of it are one step.
+    fn start_if_needed(
+        self: &Arc<Self>,
+        rebuilds: &mut Rebuilds<C>,
+        revision: Revision,
+        checked: &Checked,
+    ) -> Result<bool, Problems> {
+        if rebuilds.running.is_some_and(|running| running >= revision)
+            || rebuilds
+                .published
+                .as_ref()
+                .is_some_and(|published| published.revision > revision)
+        {
+            return Ok(false);
+        }
+        let (ended, watching): (Vec<_>, Vec<_>) = std::mem::take(&mut rebuilds.watchers)
+            .into_iter()
+            .partition(JoinHandle::is_finished);
+        rebuilds.watchers = watching;
+        for watcher in ended {
+            let _ = watcher.join();
+        }
+        let run = rebuilds.engine.start(checked.clone());
+        rebuilds.running = Some(revision);
+        let session = Arc::downgrade(self);
+        match std::thread::Builder::new()
+            .name(format!("session-{}-rebuild", self.id))
+            .spawn(move || watch(&session, revision, run))
+        {
+            Ok(watcher) => {
+                rebuilds.watchers.push(watcher);
+                Ok(true)
+            }
+            Err(e) => {
                 rebuilds.running = None;
                 rebuilds.engine.cancel();
-                return Err(Problems::from(crate::pool::thread_error(
+                Err(Problems::from(crate::pool::thread_error(
                     "rebuild watcher",
                     &e,
-                )));
+                )))
             }
         }
     }
@@ -461,6 +521,26 @@ impl<C: Kernel + 'static> Session<C> {
     }
 }
 
+/// Whether `model` holds a kernel fault: a failure that says nothing about the document,
+/// which a rebuild may not meet again.
+fn faulted(model: &Model) -> bool {
+    model.errors().any(|e| e.code().is_kernel_fault())
+        || model.drift().iter().any(|e| e.code().is_kernel_fault())
+}
+
+/// The refusal of a published read with nothing published: the design's section 2.
+fn nothing_published(id: SessionId) -> Error {
+    Error::new(
+        ErrorCode::InvalidInput,
+        format!("session {id} has published no model yet"),
+    )
+    .with_parameter("model")
+    .with_suggestion(
+        "read the current model, which waits for its rebuild, or the published one again \
+         once the rebuild this read started is done",
+    )
+}
+
 /// Waits for `revision`'s rebuild, then records what it came to in `session`'s rebuilds and
 /// says so, if the session is still there.
 fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, revision: Revision, run: Run) {
@@ -473,6 +553,7 @@ fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, revision: Revision, ru
         rebuilds.running = None;
     }
     match outcome {
+        // A late model of an older revision never takes a newer one's place.
         Ok(RunOutcome::Published(model)) => {
             if rebuilds
                 .published
@@ -482,8 +563,9 @@ fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, revision: Revision, ru
                 rebuilds.published = Some(Published { revision, model });
             }
         }
-        Ok(RunOutcome::Superseded) => rebuilds.ended = Some((revision, None)),
-        Err(why) => rebuilds.ended = Some((revision, Some(why))),
+        // Whoever needs its model starts it again.
+        Ok(RunOutcome::Superseded) => {}
+        Err(why) => rebuilds.failed = Some((revision, why)),
     }
     drop(rebuilds);
     session.rebuilt.notify_all();
@@ -506,11 +588,32 @@ impl<P: Clients + 'static> Sessions<P> {
         kernel: P,
         open: impl Fn(&Path) -> Cache + Send + Sync + 'static,
     ) -> Self {
+        Self::build(kernel, Box::new(open), None)
+    }
+
+    /// Sessions on `kernel` with stand-ins, for tests: each directory's cache opened with
+    /// `open`, as [`with_cache_opener`](Self::with_cache_opener) does, and each session's
+    /// sketches solved with what `start` starts (`fake::FakeSketches`), rather than the
+    /// sketch worker. `start` is called from each session's engine, on its own thread, so
+    /// it's `Fn` and `Sync`.
+    pub fn with_stand_ins(
+        kernel: P,
+        open: impl Fn(&Path) -> Cache + Send + Sync + 'static,
+        start: impl Fn() -> Result<Box<dyn SketchSolver>, Error> + Send + Sync + 'static,
+    ) -> Self {
+        Self::build(kernel, Box::new(open), Some(Arc::new(start)))
+    }
+
+    fn build(
+        kernel: P,
+        open_cache: Box<CacheOpener>,
+        sketches: Option<Arc<SketchStarter>>,
+    ) -> Self {
         Sessions {
             registry: Arc::new(Registry {
                 kernel,
-                open_cache: Box::new(open),
-                sketches: Mutex::new(None),
+                open_cache,
+                sketches,
                 book: Mutex::new(Book {
                     next: 1,
                     sessions: BTreeMap::new(),
@@ -523,18 +626,6 @@ impl<P: Clients + 'static> Sessions<P> {
                 }),
             }),
         }
-    }
-
-    /// These sessions, each solving its sketches with what `start` starts, rather than the
-    /// sketch worker: for tests, a stand-in (`fake::FakeSketches`). Sessions opened before
-    /// keep theirs.
-    #[must_use]
-    pub fn with_sketch_starter(
-        self,
-        start: impl Fn() -> Result<Box<dyn SketchSolver>, Error> + Send + Sync + 'static,
-    ) -> Self {
-        *lock(&self.registry.sketches) = Some(Arc::new(start));
-        self
     }
 
     /// Opens the document at `path` as a new session, on a thread of its own: reads the
@@ -670,7 +761,8 @@ impl<P: Clients + 'static> Sessions<P> {
     /// document, or, from the session's current revision rebuilt (waited for, and started if
     /// it hasn't been: decision 13), each failed feature's and each drift. A kernel fault (a
     /// worker that crashed or hung) is the command's refusal, as `command::check` gives it,
-    /// until faults are reported beside the result (decision 32).
+    /// and the next check rebuilds, until faults are reported beside the result and kept as
+    /// the revision's outcome (decision 32).
     pub fn check(&self, session: &SessionId) -> Running<Problems> {
         self.queued(session, "check", |session, model| {
             let (revision, gated) = {
@@ -683,23 +775,59 @@ impl<P: Clients + 'static> Sessions<P> {
                     *model = Some(ModelRead { revision });
                     super::check(&built).map_err(Problems::from)
                 }
-                Gated::Unread(problems) | Gated::Refused(_, problems) => Ok(problems.clone()),
+                refused => Ok(refused.problems()),
             }
         })
     }
 
-    /// The newest model `session`'s rebuilds have published, if any has, and its revision:
-    /// answered on the caller's thread from what the session holds, never waiting for a
-    /// rebuild, for the app to draw.
-    pub fn published(&self, session: &SessionId) -> Response<Option<Published>> {
+    /// The newest model `session`'s rebuilds have published (the design's published read,
+    /// section 2), of the session's revision or an older one, its revision in the response's
+    /// `model`; refused, naming `model`, if none has been. Answered on the caller's thread,
+    /// never waiting for a rebuild, for the app to draw each frame; it starts the current
+    /// revision's rebuild if that has no model and none is running (decision 13). What comes
+    /// with decision 33's step: `published` as a request's `model` to every read command, and
+    /// published reads that need the kernel on a read lane of their own.
+    pub fn published(&self, session: &SessionId) -> Response<Published> {
         let Some(found) = self.find(session) else {
             return refused(not_open(*session));
         };
-        let published = lock(&found.rebuilds).published.clone();
-        Response {
-            session: Some(found.info()),
-            model: None,
-            result: Ok(published),
+        let (info, revision, gated) = {
+            let held = lock(&found.held);
+            (found.info_of(&held), held.revision, Arc::clone(&held.gated))
+        };
+        let mut rebuilds = lock(&found.rebuilds);
+        if let Gated::Checked(checked) = &*gated
+            && rebuilds.running != Some(revision)
+            && rebuilds
+                .published
+                .as_ref()
+                .is_none_or(|published| published.revision < revision)
+            && !found.closed()
+            && let Err(problems) = found.start_if_needed(&mut rebuilds, revision, checked)
+        {
+            return Response {
+                session: Some(info),
+                model: None,
+                result: Err(problems),
+            };
+        }
+        match rebuilds
+            .published
+            .as_ref()
+            .filter(|published| published.revision <= revision)
+        {
+            Some(published) => Response {
+                session: Some(info),
+                model: Some(ModelRead {
+                    revision: published.revision,
+                }),
+                result: Ok(published.clone()),
+            },
+            None => Response {
+                session: Some(info),
+                model: None,
+                result: Err(Problems::from(nothing_published(found.id))),
+            },
         }
     }
 
@@ -773,9 +901,16 @@ impl<P: Clients + 'static> Drop for Sessions<P> {
             session.close();
             lock(&session.rebuilds).engine.cancel();
         }
-        drop(sessions);
         for (_, thread) in threads {
             let _ = thread.join();
+        }
+        // And the threads watching its rebuilds, each of which ends once its stopped run
+        // does: so no session outlives the drop.
+        for session in sessions.values() {
+            let watchers = std::mem::take(&mut lock(&session.rebuilds).watchers);
+            for watcher in watchers {
+                let _ = watcher.join();
+            }
         }
     }
 }
@@ -856,7 +991,8 @@ fn start<P: Clients + 'static>(
                 engine: registry.engine(cache),
                 running: None,
                 published: None,
-                ended: None,
+                failed: None,
+                watchers: Vec::new(),
             }),
             rebuilt: Condvar::new(),
         });
@@ -1099,7 +1235,7 @@ impl<P: Clients + 'static> Registry<P> {
     /// `cache`, and solving sketches with the registry's starter, if it has one.
     fn engine(&self, cache: Cache) -> Recompute<P::Client> {
         let engine = Recompute::with_cache(self.kernel.client(), cache);
-        match lock(&self.sketches).clone() {
+        match self.sketches.clone() {
             Some(start) => engine.with_sketch_starter(move || start()),
             None => engine,
         }
@@ -1129,7 +1265,142 @@ impl<P: Clients + 'static> Registry<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fake::FakeKernel;
+    use crate::fake::{FakeClient, FakeKernel};
+    use crate::kernel::{Op, Primitive};
+
+    const BOX: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}]}"#;
+    const SPHERE: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "a91cw0de", "type": "sphere", "v": 1, "name": "Ball", "position": [0, 0, 0], "radius": 5}]}"#;
+    const WAIT: Duration = Duration::from_secs(60);
+
+    fn checked(text: &str) -> Checked {
+        Checked::new(document::read(text.as_bytes()).unwrap()).unwrap()
+    }
+
+    /// A session as `start` makes one, at revision 1 of [`BOX`], on its own client of
+    /// `kernel`; its queue open, though nothing serves it. Edits, which move a session to a
+    /// new revision, come later: these tests drive `Session::model` at revisions 1 and 2.
+    fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeClient>>) {
+        let (sender, jobs) = mpsc::channel();
+        let session = Arc::new(Session {
+            id: SessionId(1),
+            held: Mutex::new(Held {
+                path: PathBuf::from("a.silico"),
+                resolved: PathBuf::from("a.silico"),
+                text: Arc::new(BOX.as_bytes().to_vec()),
+                gated: Arc::new(Gated::of(BOX.as_bytes())),
+                revision: Revision(1),
+            }),
+            queue: Mutex::new(Some(sender)),
+            rebuilds: Mutex::new(Rebuilds {
+                engine: Recompute::new(kernel.client()),
+                running: None,
+                published: None,
+                failed: None,
+                watchers: Vec::new(),
+            }),
+            rebuilt: Condvar::new(),
+        });
+        (session, jobs)
+    }
+
+    /// The ID of the one feature `model` was built from.
+    fn built_from(model: &Model) -> String {
+        model.document().features[0].id.to_string()
+    }
+
+    #[test]
+    fn a_revisions_model_is_its_own_and_a_late_one_of_an_older_never_replaces_it() {
+        let kernel = FakeKernel::new(2).unwrap();
+        let (session, _jobs) = session(&kernel);
+        assert_eq!(
+            built_from(&session.model(Revision(1), &checked(BOX)).unwrap()),
+            "k7f2qx3m"
+        );
+        // Revision 2's read is never revision 1's model, published as it is.
+        let second = session.model(Revision(2), &checked(SPHERE)).unwrap();
+        assert_eq!(built_from(&second), "a91cw0de");
+        // A model of revision 1 arriving late (another engine's, here) leaves 2's in place.
+        let other = Recompute::new(kernel.client());
+        watch(
+            &Arc::downgrade(&session),
+            Revision(1),
+            other.start(checked(BOX)),
+        );
+        let published = lock(&session.rebuilds).published.clone().unwrap();
+        assert_eq!(published.revision, Revision(2));
+        assert!(Arc::ptr_eq(&published.model, &second));
+        // Nor is revision 1's rebuild started again now that 2's has published.
+        let mut rebuilds = lock(&session.rebuilds);
+        assert!(
+            !session
+                .start_if_needed(&mut rebuilds, Revision(1), &checked(BOX))
+                .unwrap()
+        );
+        assert_eq!(rebuilds.running, None);
+    }
+
+    #[test]
+    fn a_rebuild_stopped_under_an_open_session_is_started_again() {
+        let kernel = FakeKernel::new(1).unwrap();
+        let (session, _jobs) = session(&kernel);
+        let hold = kernel.hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { .. })));
+        let boxes = || {
+            kernel
+                .calls()
+                .iter()
+                .filter(|c| matches!(c.op, Op::MakePrimitive(Primitive::Box { .. })))
+                .count()
+        };
+        std::thread::scope(|scope| {
+            let read = scope.spawn(|| session.model(Revision(1), &checked(BOX)));
+            assert!(kernel.wait_running(1, WAIT));
+            lock(&session.rebuilds).engine.cancel();
+            // The box asked for again, by the read, still waiting.
+            let deadline = std::time::Instant::now() + WAIT;
+            while boxes() < 2 {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the rebuild wasn't started again"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            hold.release();
+            let model = read.join().unwrap().unwrap();
+            assert_eq!(built_from(&model), "k7f2qx3m");
+        });
+        assert_eq!(boxes(), 2);
+    }
+
+    #[test]
+    fn a_published_read_never_gives_a_model_newer_than_the_sessions_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = dir.path().join("secret");
+        let path = dir.path().join("a.silico");
+        std::fs::write(&path, BOX).unwrap();
+        let kernel = Arc::new(FakeKernel::new(1).unwrap());
+        let sessions = Sessions::with_cache_opener(Arc::clone(&kernel), move |cache| {
+            Cache::with_secret(cache, &secret)
+        });
+        let id = sessions.open(&path, false).wait().session.unwrap().id;
+        // A model of revision 2, which this session (at 1) hasn't reached.
+        let newer = match Recompute::new(FakeKernel::new(1).unwrap())
+            .start(checked(SPHERE))
+            .wait()
+            .unwrap()
+        {
+            RunOutcome::Published(model) => model,
+            RunOutcome::Superseded => panic!("superseded"),
+        };
+        let session = sessions.find(&id).unwrap();
+        lock(&session.rebuilds).published = Some(Published {
+            revision: Revision(2),
+            model: newer,
+        });
+        let read = sessions.published(&id);
+        assert_eq!(read.result.unwrap_err().errors()[0], nothing_published(id));
+        // Nor does it start revision 1's rebuild, whose model would be older than one there.
+        assert_eq!(lock(&session.rebuilds).running, None);
+    }
 
     #[test]
     fn a_document_made_for_a_session_the_sessions_closing_refuse_is_removed() {
