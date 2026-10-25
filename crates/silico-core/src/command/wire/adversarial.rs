@@ -874,6 +874,20 @@ fn the_envelopes_snapshot_refuses_what_no_response_is() {
         ),
         r#"{"ok": true, "session": {"id": "s1"}, "model": null, "result": 1}"#.to_owned(),
         r#"[]"#.to_owned(),
+        // A field no response has, at the top and in each part (`wire_shape`'s
+        // `additionalProperties`).
+        r#"{"ok": true, "session": null, "model": null, "result": 1, "extra": 1}"#.to_owned(),
+        r#"{"ok": false, "session": null, "model": null, "errors": [], "total": 0, "result": 1}"#
+            .to_owned(),
+        format!(
+            r#"{{"ok": true, "session": {}, "model": null, "result": 1}}"#,
+            s.replace('}', r#", "extra": 1}"#)
+        ),
+        r#"{"ok": true, "session": null, "model": {"revision": 1, "of": "current", "fault": null, "extra": 1}, "result": 1}"#.to_owned(),
+        format!(
+            r#"{{"ok": false, "session": null, "model": null, "errors": [{}], "total": 1}}"#,
+            e.replace("[]}", r#"[], "extra": 1}"#)
+        ),
     ] {
         let value: serde_json::Value = serde_json::from_str(&bad).unwrap();
         assert!(!validator.is_valid(&value), "{bad}");

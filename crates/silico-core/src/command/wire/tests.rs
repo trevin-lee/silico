@@ -463,7 +463,7 @@ fn the_envelopes_examples_are_the_designs_own_text() {
 /// A wire type holding a type of its own that isn't one, as a result holds a document's
 /// feature.
 #[derive(schemars::JsonSchema)]
-#[schemars(transform = super::always_present)]
+#[schemars(transform = super::wire_shape)]
 struct Wire {
     optional: Option<u32>,
     held: Held,
@@ -496,6 +496,142 @@ fn a_wire_type_requires_its_own_fields_and_a_type_it_holds_keeps_its_own() {
         schema["$defs"]["Held"]["required"],
         serde_json::json!(["id"])
     );
+}
+
+/// Every object schema in `schema` with `properties` that isn't closed to them
+/// (`"additionalProperties": false`) or doesn't require each of them: where it is.
+fn open_shapes(schema: &serde_json::Value, at: &str, found: &mut Vec<String>) {
+    match schema {
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::Object(properties)) = map.get("properties") {
+                let mut keys: Vec<&str> = properties.keys().map(String::as_str).collect();
+                keys.sort_unstable();
+                let mut required: Vec<&str> = map
+                    .get("required")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|r| r.iter().filter_map(serde_json::Value::as_str).collect())
+                    .unwrap_or_default();
+                required.sort_unstable();
+                let closed = map.get("additionalProperties") == Some(&serde_json::json!(false));
+                if !closed || required != keys {
+                    found.push(at.to_owned());
+                }
+            }
+            for (key, value) in map {
+                open_shapes(value, &format!("{at}/{key}"), found);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                open_shapes(item, &format!("{at}/{i}"), found);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A mirror whose author left out `wire_shape`.
+#[derive(schemars::JsonSchema)]
+struct Unshaped {
+    note: Option<String>,
+}
+
+#[test]
+fn every_object_of_the_envelopes_snapshot_is_closed_and_requires_its_fields() {
+    let schema = snapshot_value("envelope").unwrap();
+    let mut found = Vec::new();
+    open_shapes(&schema, "", &mut found);
+    assert!(found.is_empty(), "{found:?}");
+    // Its parts by the names an agent reads, the root `Response`.
+    let defs: Vec<&String> = schema["$defs"].as_object().unwrap().keys().collect();
+    assert_eq!(
+        defs,
+        ["Error", "Model", "ModelOf", "Ran", "Refused", "Session"]
+    );
+    assert_eq!(schema["title"], "Response");
+    // Five of them are objects, each found and checked.
+    for name in ["Error", "Model", "Ran", "Refused", "Session"] {
+        assert_eq!(
+            schema["$defs"][name]["additionalProperties"],
+            serde_json::json!(false),
+            "{name}"
+        );
+    }
+    // The walk can fail: a mirror without `wire_shape`, and a type a shaped one holds.
+    let mut found = Vec::new();
+    open_shapes(
+        &crate::document::schema_value_of::<Unshaped>(),
+        "",
+        &mut found,
+    );
+    assert_eq!(found, [""]);
+    let mut found = Vec::new();
+    open_shapes(&crate::document::schema_value_of::<Wire>(), "", &mut found);
+    assert_eq!(found, ["/$defs/Held"]);
+    // (A value of it, read, as a schema mirror's never is.)
+    assert_eq!(Unshaped { note: None }.note, None);
+}
+
+/// A mirror enum of struct variants, tagged internally: each variant an inline object.
+#[derive(schemars::JsonSchema)]
+#[schemars(tag = "kind", transform = super::wire_shape)]
+enum Tagged {
+    Point { x: u32, note: Option<String> },
+    Line { from: u32 },
+}
+
+/// One untagged.
+#[derive(schemars::JsonSchema)]
+#[schemars(untagged, transform = super::wire_shape)]
+enum Untagged {
+    A { a: Option<u32> },
+    B { b: String },
+}
+
+/// One whose author left out `wire_shape`.
+#[derive(schemars::JsonSchema)]
+#[schemars(tag = "kind")]
+enum TaggedUnshaped {
+    Point { note: Option<String> },
+}
+
+#[test]
+fn an_enums_variants_written_inline_are_closed_and_require_their_fields() {
+    // (Values of them, read, as a schema mirror's never are.)
+    let values = [Tagged::Point { x: 1, note: None }, Tagged::Line { from: 2 }];
+    assert!(matches!(values[1], Tagged::Line { from: 2 }));
+    assert!(matches!(&values[0], Tagged::Point { x: 1, note: None }));
+    let values = [Untagged::A { a: None }, Untagged::B { b: "b".to_owned() }];
+    assert!(matches!(&values[1], Untagged::B { b } if b == "b"));
+    assert!(matches!(values[0], Untagged::A { a: None }));
+    let TaggedUnshaped::Point { note } = TaggedUnshaped::Point { note: None };
+    assert_eq!(note, None);
+
+    let tagged = crate::document::schema_value_of::<Tagged>();
+    let variants = tagged["oneOf"].as_array().unwrap();
+    assert_eq!(variants.len(), 2);
+    assert_eq!(
+        variants[0]["required"],
+        serde_json::json!(["kind", "note", "x"])
+    );
+    assert_eq!(variants[1]["required"], serde_json::json!(["from", "kind"]));
+    let untagged = crate::document::schema_value_of::<Untagged>();
+    let variants = untagged["anyOf"].as_array().unwrap();
+    assert_eq!(variants[0]["required"], serde_json::json!(["a"]));
+    assert_eq!(variants[1]["required"], serde_json::json!(["b"]));
+    for schema in [&tagged, &untagged] {
+        let mut found = Vec::new();
+        open_shapes(schema, "", &mut found);
+        assert!(found.is_empty(), "{found:?}: {schema}");
+    }
+    // Without it, each variant is open.
+    let mut found = Vec::new();
+    open_shapes(
+        &crate::document::schema_value_of::<TaggedUnshaped>(),
+        "",
+        &mut found,
+    );
+    assert_eq!(found, ["/oneOf/0"]);
 }
 
 #[test]

@@ -18,8 +18,9 @@
 //!
 //! Each command's wire types live in a module of their own here, beside it: its request,
 //! read with [`RequestFields::read`]; its result's [`ToWire`]; and the mirror structs its
-//! snapshot is generated from, each with `#[schemars(transform = always_present)]`. Each
-//! command's snapshot will be
+//! snapshot is generated from, each with `#[schemars(transform = wire_shape)]`, a name an
+//! agent reads (`#[schemars(rename = "...")]`), and doc comments written for agents, since
+//! each becomes its schema's description. Each command's snapshot will be
 //! `{"request": S, "result": S}`, two standalone root schemas (each with its own `$defs`, as
 //! MCP's `inputSchema` and `outputSchema` take them), added with the command.
 
@@ -853,12 +854,24 @@ fn written(node: &Node) -> String {
     }
 }
 
-/// A wire type's schema requiring each of its own properties, for a container transform
-/// (`#[schemars(transform = always_present)]`) on every wire mirror struct: a response holds
-/// every field, `null` where it has nothing (section 2), where schemars leaves an `Option`
-/// field out of `required`; its type still takes `null`. Only the struct's own properties:
-/// a document type a result carries (a feature) keeps the document's own `required`.
-pub(crate) fn always_present(schema: &mut schemars::Schema) {
+/// A wire type's schema closed to its own properties, for a container transform
+/// (`#[schemars(transform = wire_shape)]`) on every wire mirror struct and enum: each of them
+/// required, since a response holds every field, `null` where it has nothing (section 2),
+/// where schemars leaves an `Option` field out of `required` (its type still takes `null`);
+/// and no other (`"additionalProperties": false`), so a field a `ToWire` writes that its
+/// mirror doesn't have fails the snapshot's validation. An enum's variants written inline
+/// (`oneOf` or `anyOf` of objects, as an internally tagged or untagged enum of struct
+/// variants is) are its own, and closed too; a variant that is a struct of its own (a
+/// `$ref`) is closed by its own `wire_shape`. Only the type's own properties: a document type
+/// a result carries (a feature) keeps the document's own schema.
+pub(crate) fn wire_shape(schema: &mut schemars::Schema) {
+    if let Some(schema) = schema.as_object_mut() {
+        close(schema);
+    }
+}
+
+/// `schema`, an object's schema, closed to its properties, and each variant it has inline.
+fn close(schema: &mut serde_json::Map<String, serde_json::Value>) {
     let keys: Option<Vec<serde_json::Value>> = schema
         .get("properties")
         .and_then(serde_json::Value::as_object)
@@ -871,87 +884,127 @@ pub(crate) fn always_present(schema: &mut schemars::Schema) {
         });
     if let Some(keys) = keys {
         schema.insert("required".to_owned(), serde_json::Value::Array(keys));
+        schema.insert(
+            "additionalProperties".to_owned(),
+            serde_json::Value::Bool(false),
+        );
+    }
+    for variants in ["oneOf", "anyOf"] {
+        if let Some(serde_json::Value::Array(variants)) = schema.get_mut(variants) {
+            for variant in variants {
+                if let serde_json::Value::Object(variant) = variant {
+                    close(variant);
+                }
+            }
+        }
     }
 }
 
-/// The error contract's shape, for the snapshots: the envelope's `errors` and every
-/// result's `problems` reference this one schema.
+/// Why a command was refused, or a problem it found, in Silico's error contract: a code, a
+/// message, and, where they apply, the feature, the elements at fault (the first of them, and
+/// how many in all), the request's field at fault, the cause, what to do, and the names that
+/// might have been meant. Every field is always present: null, or empty, where it doesn't
+/// apply.
 #[derive(JsonSchema)]
-#[schemars(transform = always_present)]
+#[schemars(rename = "Error", transform = wire_shape)]
 pub struct ErrorSchema {
+    /// What kind of error it is: one of Silico's error codes, such as `invalid_input`.
     pub code: String,
+    /// What went wrong, in a sentence.
     pub message: String,
+    /// The ID of the feature at fault, if one is.
     pub feature: Option<String>,
+    /// The elements at fault, by name: the first of them, if there are many.
     pub elements: Vec<String>,
+    /// How many elements are at fault, listed or not.
     pub elements_total: u64,
+    /// The field at fault, as a dotted path (`position.2`), if one is.
     pub parameter: Option<String>,
+    /// What lay under it, such as the kernel's own failure, if known.
     pub cause: Option<String>,
+    /// What to do about it, if Silico can say.
     pub suggestion: Option<String>,
+    /// What might have been meant, such as the names nearest one that found nothing.
     pub candidates: Vec<String>,
 }
 
-/// A session as a response gives it, for the envelope's snapshot.
+/// The session as the command left it.
 #[derive(JsonSchema)]
-#[schemars(transform = always_present)]
+#[schemars(rename = "Session", transform = wire_shape)]
 pub struct SessionSchema {
-    /// `s1`, `s2`, ...
+    /// The session's ID, `s1`, `s2`, ...: give it in each request to the session.
     pub id: String,
+    /// The document's path, as `open` was given it.
     pub path: String,
-    /// From 1, at `open`.
+    /// The session's revision: 1 at `open`, and one more for each change to its document.
     #[schemars(range(min = 1))]
     pub revision: u64,
+    /// Whether a transaction is open.
     pub transaction: bool,
+    /// Whether the session read its file again before the command, finding it changed on
+    /// disk.
     pub reloaded: bool,
 }
 
-/// Which model was read, for the envelope's snapshot.
+/// Which model was read: the session's current revision's (`current`), or the newest one
+/// published (`published`), which may be an older revision's.
 #[derive(JsonSchema)]
-#[schemars(rename_all = "lowercase")]
+#[schemars(rename = "ModelOf", rename_all = "lowercase")]
 pub enum ModelOfSchema {
     Current,
     Published,
 }
 
-/// The model a command read, for the envelope's snapshot.
+/// The model the command read.
 #[derive(JsonSchema)]
-#[schemars(transform = always_present)]
+#[schemars(rename = "Model", transform = wire_shape)]
 pub struct ModelSchema {
+    /// The revision the model was rebuilt from.
     #[schemars(range(min = 1))]
     pub revision: u64,
     pub of: ModelOfSchema,
-    /// The kernel fault its rebuild met, once (decision 32): always null until then.
+    /// The kernel fault the model's rebuild met, if it met one: null if none.
     pub fault: Option<ErrorSchema>,
 }
 
-/// A command that ran: its result, which each command's snapshot gives.
+/// A command that ran: `ok` is true, and `result` is the command's own result.
 #[derive(JsonSchema)]
-#[schemars(transform = always_present)]
+#[schemars(rename = "Ran", transform = wire_shape)]
 pub struct RanSchema {
     #[schemars(extend("const" = true))]
     pub ok: bool,
+    /// The session as the command left it: null for a command that takes no session.
     pub session: Option<SessionSchema>,
+    /// The model the command read: null if it read none.
     pub model: Option<ModelSchema>,
+    /// The command's result, as the command's own schema gives it.
     pub result: serde_json::Value,
 }
 
-/// A command refused: every reason, the first hundred, and how many there are.
+/// A command refused, or one that couldn't run: `ok` is false, and `errors` gives every
+/// reason, in the order found.
 #[derive(JsonSchema)]
-#[schemars(transform = always_present)]
+#[schemars(rename = "Refused", transform = wire_shape)]
 pub struct RefusedSchema {
     #[schemars(extend("const" = false))]
     pub ok: bool,
+    /// The session as the command left it: null for a command that takes no session, or a
+    /// session that isn't open.
     pub session: Option<SessionSchema>,
+    /// The model the command read: null if it read none.
     pub model: Option<ModelSchema>,
-    /// The first `PROBLEMS_LISTED`.
+    /// The reasons, in the order found: the first 100.
     #[schemars(length(max = 100))]
     pub errors: Vec<ErrorSchema>,
+    /// How many reasons there are, listed or not.
     pub total: u64,
 }
 
-/// Every response: one that ran, or one refused.
+/// Every command's response: one that ran, or one refused. Every field is always present,
+/// null where it doesn't apply.
 #[derive(JsonSchema)]
-#[schemars(untagged)]
-pub enum EnvelopeSchema {
+#[schemars(rename = "Response", untagged)]
+pub enum ResponseSchema {
     Ran(RanSchema),
     Refused(RefusedSchema),
 }
@@ -960,7 +1013,7 @@ pub enum EnvelopeSchema {
 /// records: `envelope`, the response's. None for a name with no snapshot.
 pub fn snapshot_value(of: &str) -> Option<serde_json::Value> {
     match of {
-        "envelope" => Some(crate::document::schema_value_of::<EnvelopeSchema>()),
+        "envelope" => Some(crate::document::schema_value_of::<ResponseSchema>()),
         _ => None,
     }
 }
