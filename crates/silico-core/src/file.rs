@@ -91,6 +91,31 @@ fn unwritable(why: impl std::fmt::Display) -> Error {
 /// (killed mid-write, the old text is in the file beside it, `.NAME.fmt-PID`). Refused if
 /// this process may not write it, or, as a conflict, if it changed since it was read.
 pub fn save(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Error> {
+    save_over(file, before, bytes).map_err(|unsaved| unsaved.error)
+}
+
+/// A save that failed ([`save_over`]): why, and, if its own write in place left the file
+/// part written and its old text couldn't be put back, the file beside it that holds that
+/// text, so whoever saves next can say so rather than take the file for one changed by
+/// someone else.
+#[derive(Debug)]
+pub struct Unsaved {
+    pub error: Error,
+    pub old_text_in: Option<PathBuf>,
+}
+
+impl From<Error> for Unsaved {
+    fn from(error: Error) -> Self {
+        Unsaved {
+            error,
+            old_text_in: None,
+        }
+    }
+}
+
+/// [`save`], saying, when it fails, whether its own write left the file part written
+/// ([`Unsaved`]).
+pub fn save_over(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Unsaved> {
     let _span = tracing::info_span!("save", bytes = bytes.len()).entered();
     let target = std::fs::canonicalize(file).map_err(unwritable)?;
     let metadata = std::fs::metadata(&target).map_err(unwritable)?;
@@ -105,17 +130,19 @@ pub fn save(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Error> {
         .open(&target)
         .map_err(unwritable)?;
     if !writable.metadata().map_err(unwritable)?.is_file() {
-        return Err(unwritable("it isn't a regular file now"));
+        return Err(Unsaved::from(unwritable("it isn't a regular file now")));
     }
     // Changed while it was rebuilt (another editor saved it): left to them.
     if read(&target)? != before {
-        return Err(Error::new(
-            ErrorCode::Conflict,
-            "couldn't be written: it changed while it was rebuilt",
-        )
-        .with_suggestion(
-            "it was saved by something else meanwhile: read it again (run `silico fmt` again), \
+        return Err(Unsaved::from(
+            Error::new(
+                ErrorCode::Conflict,
+                "couldn't be written: it changed while it was rebuilt",
+            )
+            .with_suggestion(
+                "it was saved by something else meanwhile: read it again (run `silico fmt` again), \
              then save",
+            ),
         ));
     }
     if metadata.nlink() > 1 {
@@ -141,9 +168,11 @@ pub fn save(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Error> {
                 ))
             })
         });
-    written.inspect_err(|_| {
-        let _ = std::fs::remove_file(&partial);
-    })
+    written
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&partial);
+        })
+        .map_err(Unsaved::from)
 }
 
 /// `bytes` written over `target`, open in `file`, which held `before`: the old text kept
@@ -154,7 +183,7 @@ fn in_place(
     metadata: &std::fs::Metadata,
     before: &[u8],
     bytes: &[u8],
-) -> Result<(), Error> {
+) -> Result<(), Unsaved> {
     use std::io::{Seek as _, SeekFrom};
     let (kept, mut copy) = beside(target, metadata)?;
     // Grown to its length first, as the document is below: a size limit stops the copy
@@ -166,13 +195,13 @@ fn in_place(
         .and_then(|()| synced(&copy, "its old text kept beside it"))
     {
         let _ = std::fs::remove_file(&kept);
-        return Err(limited(
+        return Err(Unsaved::from(limited(
             unwritable(format!(
                 "couldn't keep its text in {}: {e}",
                 shown_path(&kept)
             )),
             &e,
-        ));
+        )));
     }
     let over = |file: &mut std::fs::File, text: &[u8], what: &str| {
         // Grown to its new length before a byte is written: a limit on a file's size (a
@@ -194,12 +223,18 @@ fn in_place(
         Err(e) => match over(file, before, "its old text, put back") {
             Ok(()) => {
                 let _ = std::fs::remove_file(&kept);
-                Err(limited(unwritable(format!("{e}; it's as it was")), &e))
+                Err(Unsaved::from(limited(
+                    unwritable(format!("{e}; it's as it was")),
+                    &e,
+                )))
             }
-            Err(_) => Err(limited(
-                unwritable(format!("{e}; its text before is in {}", shown_path(&kept))),
-                &e,
-            )),
+            Err(_) => Err(Unsaved {
+                error: limited(
+                    unwritable(format!("{e}; its text before is in {}", shown_path(&kept))),
+                    &e,
+                ),
+                old_text_in: Some(kept),
+            }),
         },
     }
 }
