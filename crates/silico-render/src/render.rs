@@ -1,0 +1,456 @@
+//! A [`RenderScene`] drawn headless (docs/design/m4.6-render.md): each body's faces shaded
+//! by a headlight, its edges over them, its highlights in Fusion's selection blue, read back
+//! as an 8-bit sRGB PNG and, when asked, the ID buffer. Visuals follow Fusion 360 (the
+//! design's *What a render looks like*).
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use re_renderer::mesh::{CpuMesh, GpuMesh, Material};
+use re_renderer::renderer::{GpuMeshInstance, MeshDrawData};
+use re_renderer::view_builder::{
+    OrthographicCameraMode, Projection as ViewProjection, TargetConfiguration, ViewBuilder,
+    ViewBuilderId, ViewPickingConfiguration,
+};
+use re_renderer::{
+    Color32, LineDrawableBuilder, OutlineConfig, OutlineMaskPreference, PickingLayerId,
+    PickingLayerInstanceId, PickingLayerObjectId, PickingLayerProcessor, RectInt, RenderConfig,
+    RenderContext, Rgba, ScreenshotProcessor, Size,
+};
+use silico_protocol::{Camera, EDGE_BIT, PixelId, Projection, RenderBody, RenderScene};
+
+/// The background: a flat light grey, sRGB.
+pub const BACKGROUND: [u8; 3] = [230, 233, 237];
+/// Fusion's default appearance (steel, satin), sRGB.
+pub const BODY: [u8; 3] = [170, 175, 182];
+/// Edges, sRGB.
+pub const EDGE: [u8; 3] = [40, 40, 40];
+/// Fusion's selection blue, sRGB.
+pub const HIGHLIGHT: [u8; 3] = [6, 150, 215];
+/// The light a face facing away from the eye still gets, of its full albedo.
+pub const AMBIENT: f32 = 0.35;
+/// How much of the highlight's blue a highlighted face is tinted with.
+pub const HIGHLIGHT_STRENGTH: f32 = 0.5;
+/// Edges' widths in pixels: every edge, and a highlighted one.
+pub const EDGE_WIDTH: f32 = 1.5;
+pub const HIGHLIGHTED_EDGE_WIDTH: f32 = 3.0;
+/// How far edges are drawn toward the eye, so an edge on a face isn't hidden by it.
+const EDGE_DEPTH_OFFSET: re_renderer::DepthOffset = 1;
+/// The readbacks' identifiers.
+const PICKING: u64 = 1;
+const SCREENSHOT: u64 = 2;
+/// Frames to wait for the readbacks: re_renderer delivers them in a later frame, and each
+/// frame here waits for the GPU, so they come in the first or second. The bound is for a
+/// driver that never delivers them.
+const READBACK_FRAMES: u32 = 100;
+/// How long one wait for the GPU may take: past the core's 30 s render timeout, which ends
+/// a stuck worker first.
+const GPU_WAIT: Duration = Duration::from_secs(60);
+
+/// A render: the PNG, and the ID buffer if the scene asked for it.
+pub struct Rendered {
+    pub png: Vec<u8>,
+    pub ids: Option<Vec<PixelId>>,
+}
+
+/// A render context on one adapter, kept between renders.
+pub struct Renderer {
+    ctx: RenderContext,
+}
+
+impl Renderer {
+    /// A render context on `adapter`.
+    pub fn new(adapter: &wgpu::Adapter) -> Result<Renderer, String> {
+        let caps = re_renderer::device_caps::DeviceCaps::from_adapter(adapter)
+            .map_err(|e| format!("the adapter can't be used: {e}"))?;
+        let (device, queue) = pollster::block_on(adapter.request_device(&caps.device_descriptor()))
+            .map_err(|e| format!("no device: {e}"))?;
+        let ctx = RenderContext::new(
+            adapter,
+            device,
+            queue,
+            wgpu::TextureFormat::Rgba8Unorm,
+            RenderConfig::best_for_device_caps,
+        )
+        .map_err(|e| format!("no render context: {e}"))?;
+        Ok(Renderer { ctx })
+    }
+
+    /// `scene` drawn. The scene must have passed [`RenderScene::check`].
+    pub fn render(&mut self, scene: &RenderScene) -> Result<Rendered, String> {
+        let ctx = &mut self.ctx;
+        ctx.begin_frame();
+        let camera = &scene.camera;
+        let view = View::of(camera, scene);
+        let mut instances = Vec::new();
+        let mut lines = LineDrawableBuilder::new(ctx);
+        lines.enable_alpha_blending();
+        let highlighted = scene
+            .bodies
+            .iter()
+            .any(|b| !b.highlight_faces.is_empty() || !b.highlight_edges.is_empty());
+        for body in &scene.bodies {
+            faces(ctx, body, &view, &mut instances)?;
+            edges(&mut lines, body, &view);
+        }
+        let config = TargetConfiguration {
+            name: "render".into(),
+            resolution_in_pixel: [scene.width, scene.height],
+            view_from_world: view.view_from_world,
+            projection_from_view: view.projection,
+            outline_config: highlighted.then(|| OutlineConfig {
+                outline_radius_pixel: 1.5,
+                color_layer_a: srgb(HIGHLIGHT),
+                color_layer_b: Rgba::TRANSPARENT,
+            }),
+            picking_config: scene.ids.then(|| ViewPickingConfiguration {
+                picking_rect: RectInt {
+                    min: glam::IVec2::ZERO,
+                    extent: glam::UVec2::new(scene.width, scene.height),
+                },
+                readback_identifier: PICKING,
+                show_debug_view: false,
+            }),
+            ..Default::default()
+        };
+        let mut builder = ViewBuilder::new(ctx, config, ViewBuilderId::new(1))
+            .map_err(|e| format!("no view: {e}"))?;
+        if !instances.is_empty() {
+            let draw = MeshDrawData::new(ctx, &instances)
+                .map_err(|e| format!("no draw data for the faces: {e}"))?;
+            builder
+                .queue_draw(ctx, draw)
+                .map_err(|e| format!("couldn't queue the faces: {e}"))?;
+        }
+        if !lines.is_empty() {
+            let draw = lines
+                .into_draw_data()
+                .map_err(|e| format!("no draw data for the edges: {e}"))?;
+            builder
+                .queue_draw(ctx, draw)
+                .map_err(|e| format!("couldn't queue the edges: {e}"))?;
+        } else {
+            drop(lines);
+        }
+        builder
+            .schedule_screenshot(ctx, SCREENSHOT, ())
+            .map_err(|e| format!("couldn't schedule the image's readback: {e}"))?;
+        let commands = builder
+            .draw(ctx, srgb(BACKGROUND))
+            .map_err(|e| format!("couldn't draw: {e}"))?;
+        ctx.before_submit();
+        ctx.queue.submit([commands]);
+        read_back(ctx, scene)
+    }
+}
+
+/// The camera as re_renderer takes it, about the target (positions are drawn relative to
+/// it, in f64, then converted to f32: a part far from the origin keeps its precision).
+struct View {
+    view_from_world: macaw::IsoTransform,
+    projection: ViewProjection,
+    /// The eye, about the target.
+    eye: [f64; 3],
+    /// For an orthographic camera, the direction to the eye (the headlight's, everywhere).
+    toward_eye: Option<[f64; 3]>,
+    target: [f64; 3],
+}
+
+fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn length(a: [f64; 3]) -> f64 {
+    (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
+}
+
+fn unit(a: [f64; 3]) -> [f64; 3] {
+    let l = length(a);
+    [a[0] / l, a[1] / l, a[2] / l]
+}
+
+fn vec3(a: [f64; 3]) -> glam::Vec3 {
+    // f32 on purpose: re_renderer draws in f32, after the target is subtracted in f64.
+    #[allow(clippy::cast_possible_truncation)]
+    glam::Vec3::new(a[0] as f32, a[1] as f32, a[2] as f32)
+}
+
+impl View {
+    fn of(camera: &Camera, scene: &RenderScene) -> View {
+        let target = camera.target;
+        let eye = sub(camera.eye, target);
+        let distance = length(eye);
+        let view_from_world =
+            macaw::IsoTransform::look_at_rh(vec3(eye), glam::Vec3::ZERO, vec3(camera.up))
+                .unwrap_or(macaw::IsoTransform::IDENTITY);
+        // The farthest point of the scene from the eye, for an orthographic far plane.
+        let farthest = scene
+            .bodies
+            .iter()
+            .flat_map(|b| b.mesh.positions.iter().chain(&b.mesh.edge_points))
+            .map(|p| length(sub(sub(*p, target), eye)))
+            .fold(distance, f64::max);
+        #[allow(clippy::cast_possible_truncation)]
+        let (projection, toward_eye) = match camera.projection {
+            Projection::Orthographic { view_height } => (
+                ViewProjection::Orthographic {
+                    camera_mode: OrthographicCameraMode::NearPlaneCenter,
+                    vertical_world_size: view_height as f32,
+                    far_plane_distance: (farthest * 1.01 + 1.0) as f32,
+                },
+                Some(unit(eye)),
+            ),
+            Projection::Perspective { field_of_view } => (
+                ViewProjection::Perspective {
+                    vertical_fov: field_of_view.to_radians() as f32,
+                    near_plane_distance: (distance * 1e-4) as f32,
+                    aspect_ratio: scene.width as f32 / scene.height as f32,
+                },
+                None,
+            ),
+        };
+        View {
+            view_from_world,
+            projection,
+            eye,
+            toward_eye,
+            target,
+        }
+    }
+
+    /// A position about the target, as drawn.
+    fn place(&self, p: [f64; 3]) -> glam::Vec3 {
+        vec3(sub(p, self.target))
+    }
+
+    /// The headlight's share of a vertex's light, from its normal: the ambient, and the
+    /// rest by Lambert's law toward the eye.
+    fn light(&self, p: [f64; 3], normal: [f32; 3]) -> f32 {
+        let toward = self
+            .toward_eye
+            .unwrap_or_else(|| unit(sub(self.eye, sub(p, self.target))));
+        let n = [
+            f64::from(normal[0]),
+            f64::from(normal[1]),
+            f64::from(normal[2]),
+        ];
+        let lambert = (n[0] * toward[0] + n[1] * toward[1] + n[2] * toward[2]).max(0.0);
+        #[allow(clippy::cast_possible_truncation)]
+        let lambert = lambert as f32;
+        AMBIENT + (1.0 - AMBIENT) * lambert.min(1.0)
+    }
+}
+
+/// An sRGB colour as re_renderer's linear one.
+fn srgb([r, g, b]: [u8; 3]) -> Rgba {
+    Rgba::from_srgba_unmultiplied(r, g, b, 255)
+}
+
+/// Each face of `body` as a mesh instance of its own, its picking ID the body's number and
+/// the face's from 1. Its lighting is in its vertex colours, its normals zero, so
+/// re_renderer draws it unlit (a headlight, which its own lighting isn't).
+fn faces(
+    ctx: &RenderContext,
+    body: &RenderBody,
+    view: &View,
+    instances: &mut Vec<GpuMeshInstance>,
+) -> Result<(), String> {
+    let mesh = &body.mesh;
+    let albedo = srgb(BODY);
+    let blue = srgb(HIGHLIGHT);
+    let white = ctx.texture_manager_2d.white_texture_unorm_handle().clone();
+    let mut first = 0usize;
+    for (face, &count) in mesh.face_triangles.iter().enumerate() {
+        let count = usize::try_from(count).map_err(|e| e.to_string())?;
+        let triangles = &mesh.triangles[first..first + count];
+        first += count;
+        if triangles.is_empty() {
+            continue;
+        }
+        let number = u32::try_from(face + 1).map_err(|e| e.to_string())?;
+        let lit = body.highlight_faces.binary_search(&(number - 1)).is_ok();
+        // The face's own vertices, renumbered from 0.
+        let mut index = std::collections::BTreeMap::new();
+        let mut positions = Vec::new();
+        let mut colors = Vec::new();
+        let mut renumbered = Vec::with_capacity(triangles.len());
+        for t in triangles {
+            let mut out = [0u32; 3];
+            for (k, &v) in t.iter().enumerate() {
+                let next = u32::try_from(index.len()).map_err(|e| e.to_string())?;
+                out[k] = *index.entry(v).or_insert_with(|| {
+                    let i = usize::try_from(v).unwrap_or(0);
+                    let p = mesh.positions[i];
+                    let light = view.light(p, mesh.normals[i]);
+                    let mut c = albedo * light;
+                    if lit {
+                        c = c * (1.0 - HIGHLIGHT_STRENGTH) + blue * HIGHLIGHT_STRENGTH;
+                    }
+                    positions.push(view.place(p));
+                    let c = Color32::from(c);
+                    colors.push(re_renderer::Rgba32Unmul::from_rgba_unmul_array([
+                        c.r(),
+                        c.g(),
+                        c.b(),
+                        255,
+                    ]));
+                    next
+                });
+            }
+            renumbered.push(glam::UVec3::from(out));
+        }
+        let vertices = positions.len();
+        let cpu = CpuMesh {
+            label: format!("Body{}Face{number}", body.body).into(),
+            triangle_indices: renumbered,
+            vertex_colors: colors,
+            vertex_normals: vec![glam::Vec3::ZERO; vertices],
+            vertex_texcoords: vec![glam::Vec2::ZERO; vertices],
+            bbox: macaw::BoundingBox::from_points(positions.iter().copied()),
+            vertex_positions: positions,
+            materials: smallvec::smallvec![Material {
+                label: "body".into(),
+                index_range: re_renderer::Span {
+                    start: 0,
+                    len: u32::try_from(triangles.len() * 3).map_err(|e| e.to_string())?,
+                },
+                albedo: white.clone(),
+                albedo_factor: Rgba::WHITE,
+            }],
+        };
+        let gpu = GpuMesh::new(ctx, &cpu).map_err(|e| format!("Face{number}: {e}"))?;
+        instances.push(GpuMeshInstance {
+            gpu_mesh: Arc::new(gpu),
+            world_from_mesh: glam::Affine3A::IDENTITY,
+            // Opaque black: re_renderer adds the tint's colour and multiplies by its alpha,
+            // so this leaves the face's own colour.
+            additive_tint: Color32::BLACK,
+            outline_mask_ids: if lit {
+                OutlineMaskPreference::some(1, 0)
+            } else {
+                OutlineMaskPreference::NONE
+            },
+            picking_layer_id: PickingLayerId {
+                object: PickingLayerObjectId(u64::from(body.body)),
+                instance: PickingLayerInstanceId(u64::from(number)),
+            },
+            cull_mode: None,
+        });
+    }
+    Ok(())
+}
+
+/// Each edge of `body` as a line strip, its picking ID the body's number and the edge's
+/// from 1 with [`EDGE_BIT`]; a highlighted one wider, in the highlight's blue.
+fn edges(lines: &mut LineDrawableBuilder<'_>, body: &RenderBody, view: &View) {
+    let mesh = &body.mesh;
+    let mut batch = lines
+        .batch(format!("Body{}", body.body))
+        .picking_object_id(PickingLayerObjectId(u64::from(body.body)))
+        .depth_offset(EDGE_DEPTH_OFFSET);
+    let mut first = 0usize;
+    for (edge, &count) in mesh.edge_point_counts.iter().enumerate() {
+        let count = usize::try_from(count).unwrap_or(0);
+        let points = &mesh.edge_points[first..first + count];
+        first += count;
+        if points.len() < 2 {
+            continue;
+        }
+        let Ok(number) = u32::try_from(edge + 1) else {
+            continue;
+        };
+        let lit = body.highlight_edges.binary_search(&(number - 1)).is_ok();
+        let (width, colour) = if lit {
+            (HIGHLIGHTED_EDGE_WIDTH, HIGHLIGHT)
+        } else {
+            (EDGE_WIDTH, EDGE)
+        };
+        batch
+            .add_strip(points.iter().map(|p| view.place(*p)))
+            .radius(Size::new_ui_points(width / 2.0))
+            .color(Color32::from_rgb(colour[0], colour[1], colour[2]))
+            .picking_instance_id(PickingLayerInstanceId(u64::from(EDGE_BIT | number)));
+    }
+}
+
+/// The image, and the ID buffer if asked, read back once the GPU has drawn them.
+fn read_back(ctx: &mut RenderContext, scene: &RenderScene) -> Result<Rendered, String> {
+    let wait = || wgpu::PollType::Wait {
+        submission_index: None,
+        timeout: Some(GPU_WAIT),
+    };
+    let mut image: Option<Vec<u8>> = None;
+    let mut ids: Option<Vec<PixelId>> = None;
+    for _ in 0..READBACK_FRAMES {
+        ctx.device
+            .poll(wait())
+            .map_err(|e| format!("the GPU didn't finish: {e}"))?;
+        ctx.begin_frame();
+        ctx.device
+            .poll(wait())
+            .map_err(|e| format!("the GPU didn't finish: {e}"))?;
+        if image.is_none() {
+            ScreenshotProcessor::next_readback_result(ctx, SCREENSHOT, |data, _, ()| {
+                image = Some(data.to_vec());
+            });
+        }
+        if scene.ids
+            && ids.is_none()
+            && let Some(result) = PickingLayerProcessor::readback_result(ctx, PICKING)
+        {
+            {
+                ids = Some(
+                    result
+                        .picking_id_data
+                        .iter()
+                        .map(|id| {
+                            [
+                                u32::try_from(id.object.0).unwrap_or(u32::MAX),
+                                u32::try_from(id.instance.0).unwrap_or(u32::MAX),
+                            ]
+                        })
+                        .collect(),
+                );
+            }
+        }
+        ctx.before_submit();
+        if image.is_some() && (ids.is_some() || !scene.ids) {
+            break;
+        }
+    }
+    let image = image.ok_or("the image was never read back")?;
+    if scene.ids && ids.is_none() {
+        return Err("the ID buffer was never read back".to_owned());
+    }
+    let pixels = u64::from(scene.width) * u64::from(scene.height);
+    if image.len() as u64 != pixels * 4 || ids.as_ref().is_some_and(|i| i.len() as u64 != pixels) {
+        return Err("a readback isn't the image's size".to_owned());
+    }
+    Ok(Rendered {
+        png: png(&image, scene.width, scene.height)?,
+        ids,
+    })
+}
+
+/// RGBA pixels as an 8-bit sRGB RGB PNG, the `png` crate's default compression, no
+/// metadata.
+fn png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
+    let rgb: Vec<u8> = rgba
+        .chunks_exact(4)
+        .flat_map(|p| [p[0], p[1], p[2]])
+        .collect();
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, width, height);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder
+        .write_header()
+        .map_err(|e| format!("couldn't start the PNG: {e}"))?;
+    writer
+        .write_image_data(&rgb)
+        .map_err(|e| format!("couldn't write the PNG: {e}"))?;
+    writer
+        .finish()
+        .map_err(|e| format!("couldn't finish the PNG: {e}"))?;
+    Ok(out)
+}

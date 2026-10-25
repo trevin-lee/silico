@@ -74,25 +74,44 @@ fn a_system_that_fails_its_check_is_invalid_input_and_the_worker_lives_on() {
 }
 
 #[test]
-fn a_kernel_operation_is_refused_as_another_workers() {
+fn a_kernel_operation_or_a_render_is_refused_as_another_workers() {
     let mut w = worker();
-    let err = w
-        .call(
-            Generation(1),
+    for (op, name) in [
+        (
             Op::MakePrimitive(Primitive::Box {
                 dx: 1.0,
                 dy: 1.0,
                 dz: 1.0,
             }),
-            TIMEOUT,
-        )
-        .unwrap_err();
-    assert_eq!(err.code(), ErrorCode::Internal, "{err}");
-    assert_eq!(err.message(), "the sketch worker couldn't do MakeBox");
-    assert_eq!(
-        err.cause(),
-        Some("MakeBox is answered by another kind of worker, not this one")
-    );
+            "MakeBox",
+        ),
+        (
+            Op::Render(Box::new(silico_protocol::RenderScene {
+                bodies: vec![],
+                camera: silico_protocol::Camera {
+                    projection: silico_protocol::Projection::Orthographic { view_height: 1.0 },
+                    eye: [0.0, 0.0, 1.0],
+                    target: [0.0; 3],
+                    up: [0.0, 1.0, 0.0],
+                },
+                width: 1,
+                height: 1,
+                ids: false,
+            })),
+            "Render",
+        ),
+    ] {
+        let err = w.call(Generation(1), op, TIMEOUT).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::Internal, "{err}");
+        assert_eq!(
+            err.message(),
+            format!("the sketch worker couldn't do {name}")
+        );
+        assert_eq!(
+            err.cause(),
+            Some(format!("{name} is answered by another kind of worker, not this one").as_str())
+        );
+    }
     assert!(echo(&mut w));
 }
 

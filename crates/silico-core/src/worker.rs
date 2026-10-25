@@ -94,14 +94,17 @@ pub enum WorkerKind {
     Kernel,
     /// PlaneGCS's (silico-sketch).
     Sketch,
+    /// re_renderer's, on lavapipe (silico-render).
+    Render,
 }
 
 impl WorkerKind {
-    /// As errors name it: "kernel worker", "sketch worker".
+    /// As errors name it: "kernel worker", "sketch worker", "render worker".
     pub fn noun(self) -> &'static str {
         match self {
             WorkerKind::Kernel => "kernel worker",
             WorkerKind::Sketch => "sketch worker",
+            WorkerKind::Render => "render worker",
         }
     }
 
@@ -110,6 +113,7 @@ impl WorkerKind {
         match self {
             WorkerKind::Kernel => "the kernel",
             WorkerKind::Sketch => "the sketch solver",
+            WorkerKind::Render => "the renderer",
         }
     }
 }

@@ -13,6 +13,16 @@ glam.workspace = true
 macaw.workspace = true
 pollster.workspace = true
 smallvec.workspace = true
+png.workspace = true
+silico-protocol.workspace = true
+silico-worker.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# The core's worker client, to drive the worker as the core does (no OCCT: the core links
+# none).
+silico-core.workspace = true
+libm.workspace = true
 
 [lints]
 workspace = true

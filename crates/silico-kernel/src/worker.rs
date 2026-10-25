@@ -130,7 +130,7 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
             Ok(Reply::ExportMesh(Box::new(mesh)))
         }
         Op::Echo { data } => Ok(Reply::Echo { data }),
-        Op::Solve(_) | Op::DragBegin(_) | Op::DragMove { .. } | Op::DragEnd => {
+        Op::Solve(_) | Op::DragBegin(_) | Op::DragMove { .. } | Op::DragEnd | Op::Render(_) => {
             Err(Failure::new(Refusal::OtherWorkersOp {
                 op: op.name().to_owned(),
             }))
