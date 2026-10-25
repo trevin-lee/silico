@@ -331,3 +331,217 @@ mod tests {
         );
     }
 }
+
+/// The rules a file a command writes besides the document is held to (decision 35:
+/// `render`'s `to`, `export`'s `path`; docs/design/m4.1-command-api.md, *Files a command
+/// writes*).
+#[derive(Debug, Clone, Copy)]
+pub struct Output<'a> {
+    /// The request's field the path came in (`to`, `path`), which every refusal names.
+    pub field: &'a str,
+    /// The format's extension, without its dot (`png`, `3mf`).
+    pub extension: &'a str,
+    /// Whether a file already at the path may be replaced.
+    pub replace: bool,
+    /// The workspace the path must be inside, never through a link out of it, if the
+    /// sessions have one (decision 26).
+    pub workspace: Option<&'a Path>,
+    /// The documents the sessions hold, which it may never be.
+    pub held: &'a [PathBuf],
+}
+
+/// Writes `bytes` to `path` as `rules` allow, and gives where it wrote (the path through
+/// any links, canonical): refused, naming the field, if the path is a document (ends in
+/// `.silico`, is one the sessions hold, or lies in a `.silico-cache/` directory), lacks the
+/// format's extension, lies outside the workspace or reaches out of it through a link, has
+/// no directory, or names a file already there that `replace` doesn't allow replacing (one
+/// replaced keeps its permissions). Whole, to a new file beside it renamed into place, as
+/// [`save`] writes, so a write cut short leaves what was there.
+pub fn write_output(path: &Path, bytes: &[u8], rules: &Output) -> Result<PathBuf, Error> {
+    let refuse = |why: String, suggestion: &str| {
+        Error::new(
+            ErrorCode::InvalidInput,
+            format!("{} {}: {why}", rules.field, shown_path(path)),
+        )
+        .with_parameter(rules.field)
+        .with_suggestion(suggestion)
+    };
+    let has = |p: &Path, ext: &str| {
+        p.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case(ext))
+    };
+    if has(path, "silico") {
+        return Err(refuse(
+            "is a document's path: only commit and format write a document".to_owned(),
+            "write it to a path that isn't a document's",
+        ));
+    }
+    if !has(path, rules.extension) {
+        return Err(refuse(
+            format!("doesn't end in .{}", rules.extension),
+            &format!("give a path ending in .{}", rules.extension),
+        ));
+    }
+    let name = path.file_name().ok_or_else(|| {
+        refuse(
+            "has no file name".to_owned(),
+            "give the path of a file to write",
+        )
+    })?;
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let dir = std::fs::canonicalize(parent).map_err(|e| {
+        refuse(
+            format!("its directory can't be reached: {e}"),
+            "give a path in a directory that exists",
+        )
+    })?;
+    // Where it would be written: through a link already at the path, to what it names.
+    let existing = std::fs::symlink_metadata(dir.join(name)).ok();
+    let target = match &existing {
+        Some(meta) if meta.file_type().is_symlink() => std::fs::canonicalize(dir.join(name))
+            .map_err(|e| {
+                refuse(
+                    format!("is a link to nothing that can be reached: {e}"),
+                    "give a path that isn't a broken link",
+                )
+            })?,
+        _ => dir.join(name),
+    };
+    if target
+        .components()
+        .any(|c| c.as_os_str() == ".silico-cache")
+    {
+        return Err(refuse(
+            "lies in a .silico-cache directory, which holds a document's cache".to_owned(),
+            "write it outside the .silico-cache directory",
+        ));
+    }
+    if has(&target, "silico") {
+        return Err(refuse(
+            "is a link to a document".to_owned(),
+            "write it to a path that isn't a document's",
+        ));
+    }
+    let held: Vec<PathBuf> = rules
+        .held
+        .iter()
+        .filter_map(|p| std::fs::canonicalize(p).ok())
+        .collect();
+    if held.contains(&target) {
+        return Err(refuse(
+            "is a document a session holds".to_owned(),
+            "write it to a path that isn't a document's",
+        ));
+    }
+    if let Some(root) = rules.workspace {
+        let root = std::fs::canonicalize(root).map_err(|e| {
+            refuse(
+                format!("the workspace can't be reached: {e}"),
+                "start Silico in a workspace that exists",
+            )
+        })?;
+        if !target.starts_with(&root) {
+            return Err(refuse(
+                format!("is outside the workspace {}", shown_path(&root)),
+                "write it inside the workspace, not through a link out of it",
+            ));
+        }
+    }
+    let replaced = match std::fs::metadata(&target) {
+        Ok(meta) if !meta.is_file() => {
+            return Err(refuse(
+                "is there, and isn't a file".to_owned(),
+                "give the path of a file to write",
+            ));
+        }
+        Ok(_) if !rules.replace => {
+            return Err(refuse(
+                "is there already".to_owned(),
+                "give another path, or replace: true to replace it",
+            ));
+        }
+        Ok(meta) => Some(meta),
+        Err(_) => None,
+    };
+    write_beside(&target, replaced.as_ref(), bytes)?;
+    Ok(target)
+}
+
+/// `bytes` written to `target` through a new file beside it renamed into place, with the
+/// permissions of the file it replaces, if one (or the new file's own).
+fn write_beside(
+    target: &Path,
+    replaced: Option<&std::fs::Metadata>,
+    bytes: &[u8],
+) -> Result<(), Error> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mode = replaced.map_or(0o644, |m| m.permissions().mode() & 0o777);
+    let dir = directory(target);
+    let name = target
+        .file_name()
+        .ok_or_else(|| unwritable("it has no file name"))?;
+    let mut created = None;
+    for n in 0..TRIES {
+        let mut partial_name = OsString::from(".");
+        partial_name.push(name);
+        partial_name.push(format!(".part-{}", std::process::id()));
+        if n > 0 {
+            partial_name.push(format!("-{n}"));
+        }
+        let partial = dir.join(partial_name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(mode)
+            .open(&partial)
+        {
+            Ok(f) => {
+                created = Some((partial, f));
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => {
+                return Err(unwritable(format!(
+                    "couldn't create a file in {}: {e}",
+                    shown_path(dir)
+                )));
+            }
+        }
+    }
+    let (partial, mut f) = created.ok_or_else(|| {
+        unwritable(format!(
+            "every name for a file beside it is taken: remove the .part files in {}",
+            shown_path(dir)
+        ))
+    })?;
+    let written = f
+        .set_len(bytes.len() as u64)
+        .and_then(|()| f.write_all(bytes))
+        .and_then(|()| match replaced {
+            Some(m) => f.set_permissions(m.permissions()),
+            None => Ok(()),
+        })
+        .and_then(|()| synced(&f, "the new file"))
+        .map_err(|e| {
+            limited(
+                unwritable(format!("couldn't write {}: {e}", shown_path(&partial))),
+                &e,
+            )
+        })
+        .and_then(|()| {
+            std::fs::rename(&partial, target).map_err(|e| {
+                unwritable(format!(
+                    "couldn't rename {} into place: {e}",
+                    shown_path(&partial)
+                ))
+            })
+        });
+    if written.is_err() {
+        let _ = std::fs::remove_file(&partial);
+    }
+    written
+}
