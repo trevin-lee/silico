@@ -91,6 +91,8 @@ mod primitive_numbers;
 mod primitives;
 #[path = "profile_faces.rs"]
 mod profile_faces;
+#[path = "revolution_measures.rs"]
+mod revolution_measures;
 #[path = "sweep.rs"]
 mod sweep;
 #[path = "thin_wall.rs"]

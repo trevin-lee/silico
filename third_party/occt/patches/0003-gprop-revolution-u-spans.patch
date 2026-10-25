@@ -1,0 +1,36 @@
+Subject: Modeling Algorithms - BRepGProp_Face splits a surface of revolution's U into three spans, as a torus's
+Upstream: ISSUE-TO-COME (the issue the maintainer posts on BRepGProp_Gauss's U refinement; a PR needs OCCT's CLA)
+Applies to: OCCT V7_9_3.
+Why: BRepGProp_Gauss::Compute with an Eps (BRepGProp::VolumeProperties(shape, props, eps),
+     Silico's precise measure) never refines U: EpsU is left 0, so the U loop ends after its
+     first pass, and U is integrated once over the spans BRepGProp_Face::UKnots gives. Those
+     are thirds for a cylinder, cone, sphere, or torus, and one span for anything else, a
+     GeomAbs_SurfaceOfRevolution included, whose U is the same angle over [0, 2*pi]. So a
+     full turn of an arc whose circle crosses the axis (a barrel, a dome) measured 2.2e-7
+     low, and of a multi-span B-spline 3.9e-6 low; with three spans, both to round-off. The
+     default integration (Compute without an Eps, FreeCAD's) reads neither UKnots nor
+     SUIntSubs, and is unchanged to the bit.
+Drop when: Silico upgrades to an OCCT release that splits or refines a surface of revolution's
+     U (check BRepGProp_Face::UKnots and BRepGProp_Gauss::Compute).
+
+--- a/src/BRepGProp/BRepGProp_Face.cxx
++++ b/src/BRepGProp/BRepGProp_Face.cxx
+@@ -283,6 +283,10 @@
+     case GeomAbs_Torus:
+       N = 4;
+       break;
++    case GeomAbs_SurfaceOfRevolution:
++      // U is an angle over [0, 2*pi], as a torus's: three spans.
++      N = 4;
++      break;
+     case GeomAbs_BezierSurface:
+       N = 2;
+       break;
+@@ -345,6 +349,7 @@
+     case GeomAbs_Cone:
+     case GeomAbs_Sphere:
+     case GeomAbs_Torus:
++    case GeomAbs_SurfaceOfRevolution:
+       Knots(1) = 0.0;
+       Knots(2) = M_PI * 2.0 / 3.0;
+       Knots(3) = M_PI * 4.0 / 3.0;
