@@ -248,11 +248,6 @@ fn disable_fp_traps() -> Result<(), String> {
     crate::disable_fp_traps().map_err(|e| e.message().to_owned())
 }
 
-/// Fails if any floating-point trap is on. Checked at startup and after every request.
-pub fn check_fp_traps() -> Result<(), String> {
-    silico_worker::check_fp_trap_mask(crate::fp_trap_mask())
-}
-
 pub use silico_worker::check_fp_trap_mask;
 
 /// The kernel worker process (see [`silico_worker::run`]).
