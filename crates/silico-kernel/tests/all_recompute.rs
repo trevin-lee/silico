@@ -11,6 +11,8 @@
 mod cached;
 #[path = "../../silico-core/tests/common/example.rs"]
 mod example;
+#[path = "../../silico-core/tests/common/model.rs"]
+mod model;
 
 #[path = "adversarial_cache.rs"]
 mod adversarial_cache;

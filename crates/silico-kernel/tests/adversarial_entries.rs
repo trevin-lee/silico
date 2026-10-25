@@ -2,21 +2,22 @@
 //! (`silico_core::command::elements`): cones at their limits (narrowing either way, from a
 //! point, all but a cylinder, and with an apex far past the kernel's lengths but within a
 //! `Length`), every chamfer face of a box on F1's 45° boundaries, `query`'s `stable` against
-//! the element map where names have aliases and duplicates, and orders by a measure only
-//! some bodies' faces have. Every expected value by hand from the features' dimensions.
+//! the element map on booleans of boxes, and orders by a measure only some bodies' faces
+//! have. Every expected value by hand from the features' dimensions.
+
+use super::model::{checked, published};
 
 use std::f64::consts::{FRAC_1_SQRT_2, PI};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use silico_core::command::elements::{
     AxisToken, ElementType, Entry, Facing, MeasureName, Order, Query, entries, query,
 };
-use silico_core::document::{Angle, Checked, FeatureId, Length, read};
+use silico_core::document::{Angle, FeatureId, Length};
 use silico_core::kernel::ElementKind;
 use silico_core::pool::KernelPool;
-use silico_core::recompute::{Model, Recompute, RunOutcome};
+use silico_core::recompute::{Model, Recompute};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-worker");
 
@@ -28,18 +29,16 @@ fn engine() -> Recompute<KernelPool> {
 }
 
 fn rebuilt(engine: &Recompute<KernelPool>, features: &[String]) -> Arc<Model> {
-    let text = format!("{HEAD}{}]}}", features.join(", "));
-    let checked = Checked::new(read(text.as_bytes()).unwrap_or_else(|e| panic!("{e}\n{text}")))
-        .unwrap_or_else(|e| panic!("{e:?}\n{text}"));
-    match engine.start(checked).wait_timeout(Duration::from_secs(120)) {
-        Ok(Ok(RunOutcome::Published(model))) => model,
-        Ok(other) => panic!("{other:?}"),
-        Err(_) => panic!("the rebuild didn't finish within two minutes"),
-    }
+    published(
+        engine,
+        checked(&format!("{HEAD}{}]}}", features.join(", "))),
+    )
 }
 
 fn of(model: &Model, feature: &str) -> Vec<Entry> {
-    entries(model, &FeatureId::new(feature).unwrap()).unwrap()
+    entries(model, &FeatureId::new(feature).unwrap())
+        .unwrap()
+        .to_vec()
 }
 
 fn cone_doc(id: &str, x: f64, r1: f64, r2: f64, h: f64) -> String {
@@ -240,8 +239,11 @@ fn every_chamfer_face_of_a_box_takes_f1s_default_from_its_normal_as_written() {
     assert_eq!(normals.len(), 12, "{seen:?}");
 }
 
-/// Layouts whose names have aliases or duplicates (`~n`), each a document whose last
-/// feature is a boolean.
+/// Booleans of boxes coincident, sharing a face, cut by one sharing a side, slotted, and
+/// overlapping, each a document whose last feature is the boolean: layouts that might give
+/// an element an alias or a duplicate (`~n`), though none does on OCCT's histories (see
+/// the test below; core's tests/adversarial_entries.rs makes an unstable name on the fake,
+/// and command::elements's unit test an alias).
 fn layouts() -> Vec<(&'static str, Vec<String>)> {
     let unit = [10.0; 3];
     let op = |id: &str, op: &str, base: &str, tool: &str| {
@@ -295,9 +297,9 @@ fn layouts() -> Vec<(&'static str, Vec<String>)> {
 
 #[test]
 fn stable_keeps_elements_with_any_stable_name_by_the_element_map() {
-    // Booleans of coincident, touching, and overlapping boxes: `stable: true` keeps exactly the elements one of whose names (its own or an alias)
-    // the element map holds stable, and `false` the rest; an entry's own `stable` and its
-    // aliases' are the map's.
+    // Booleans of coincident, touching, and overlapping boxes: `stable: true` keeps exactly
+    // the elements one of whose names (its own or an alias) the element map holds stable,
+    // and `false` the rest; an entry's own `stable` and its aliases' are the map's.
     let engine = engine();
     for (layout, features) in layouts() {
         let model = rebuilt(&engine, &features);
@@ -413,4 +415,10 @@ fn an_order_by_radius_across_bodies_keeps_only_the_faces_that_have_one() {
     );
     let tied = two.tied.unwrap();
     assert_eq!((tied.count, tied.included), (2, true));
+    // The tie keeps `elements`' order: by name, Face1 (x = 0) before Face2 (x = 10).
+    let names: Vec<String> = two.entries[1..]
+        .iter()
+        .map(|e| e.name.to_string())
+        .collect();
+    assert_eq!(names, ["bbbbbbbb.box.Face1", "bbbbbbbb.box.Face2"]);
 }

@@ -3,17 +3,21 @@
 //! measures, axes, and defaults, every expected value by hand from the primitive's
 //! dimensions, or FreeCAD 1.1.3's where named.
 
+use super::model::{checked, published};
+
 use std::f64::consts::PI;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use silico_core::command::Revision;
-use silico_core::command::elements::{AxisToken, ElementType, Entry, entries, list};
-use silico_core::document::{Angle, Checked, FeatureId, Length, read};
+use silico_core::command::elements::{
+    AxisToken, ElementType, Entry, Facing, MeasureName, Order, Quantity, Query, Range, entries,
+    list, query,
+};
+use silico_core::document::{Angle, FeatureId, Length};
 use silico_core::kernel::ElementKind;
 use silico_core::pool::KernelPool;
-use silico_core::recompute::{Model, Recompute, RunOutcome};
+use silico_core::recompute::{Model, Recompute};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-worker");
 
@@ -34,17 +38,13 @@ const PRIMITIVES: &str = r#"{
 
 fn model() -> Arc<Model> {
     let pool = KernelPool::start_on_demand(Path::new(WORKER), 2).unwrap();
-    let engine = Recompute::new(pool);
-    let checked = Checked::new(read(PRIMITIVES.as_bytes()).unwrap()).unwrap();
-    match engine.start(checked).wait_timeout(Duration::from_secs(120)) {
-        Ok(Ok(RunOutcome::Published(model))) => model,
-        Ok(other) => panic!("{other:?}"),
-        Err(_) => panic!("the rebuild didn't finish within two minutes"),
-    }
+    published(&Recompute::new(pool), checked(PRIMITIVES))
 }
 
 fn of(model: &Model, feature: &str) -> Vec<Entry> {
-    entries(model, &FeatureId::new(feature).unwrap()).unwrap()
+    entries(model, &FeatureId::new(feature).unwrap())
+        .unwrap()
+        .to_vec()
 }
 
 /// `got` is `want` to the measure's precision (a relative 1e-9) and its rounding (half a
@@ -128,18 +128,111 @@ fn a_boxs_faces_are_planes_facing_out_with_their_areas_centres_and_default_x() {
         close_point("a line's middle", point(edge.midpoint), mid);
         assert_eq!(edge.diameter, None);
     }
-    // Eight corners.
-    let vertices: Vec<[f64; 3]> = entries
+    // Its eight corners, each once, by hand.
+    let mut vertices: Vec<[i64; 3]> = entries
         .iter()
         .filter(|e| e.kind == ElementKind::Vertex)
-        .map(|e| point(e.position))
+        .map(|e| e.position.unwrap().map(Length::nm))
         .collect();
-    assert_eq!(vertices.len(), 8);
-    for v in vertices {
-        assert!(v[0] == 0.0 || v[0] == 10.0);
-        assert!(v[1] == 0.0 || v[1] == 20.0);
-        assert!(v[2] == 0.0 || v[2] == 30.0);
+    vertices.sort();
+    let mut corners = Vec::new();
+    for x in [0, 10_000_000] {
+        for y in [0, 20_000_000] {
+            for z in [0, 30_000_000] {
+                corners.push([x, y, z]);
+            }
+        }
     }
+    assert_eq!(vertices, corners);
+}
+
+#[test]
+fn a_boxs_edges_run_from_their_first_vertex_to_their_last_as_freecad_gives_them() {
+    // FreeCAD 1.1.3's Part::Box 10 × 20 × 30: each edge's firstVertex() and lastVertex()
+    // (its curve's own order), by its number. Face1's outer wire uses Edge3 and Edge4
+    // reversed, Face2's Edge5 and Edge6, and so on: an entry's ends are the curve's, not the
+    // order a face takes it in.
+    let model = model();
+    let entries = of(&model, "bbbbbbbb");
+    for (n, start, end) in [
+        (1, [0, 0, 0], [0, 0, 30]),
+        (2, [0, 0, 30], [0, 20, 30]),
+        (3, [0, 20, 0], [0, 20, 30]),
+        (4, [0, 0, 0], [0, 20, 0]),
+        (5, [10, 0, 0], [10, 0, 30]),
+        (6, [10, 0, 30], [10, 20, 30]),
+        (7, [10, 20, 0], [10, 20, 30]),
+        (8, [10, 0, 0], [10, 20, 0]),
+        (9, [0, 0, 0], [10, 0, 0]),
+        (10, [0, 0, 30], [10, 0, 30]),
+        (11, [0, 20, 0], [10, 20, 0]),
+        (12, [0, 20, 30], [10, 20, 30]),
+    ] {
+        let name = format!("bbbbbbbb.box.Edge{n}");
+        let edge = entries
+            .iter()
+            .find(|e| e.name.to_string() == name)
+            .unwrap_or_else(|| panic!("no {name}"));
+        let mm = |p: [i64; 3]| Some(p.map(|c| Length::from_nm(c * 1_000_000)));
+        assert_eq!((edge.start, edge.end), (mm(start), mm(end)), "{name}");
+    }
+}
+
+#[test]
+fn the_largest_planar_face_facing_up_is_the_boxs_top_by_name() {
+    // The design's query (section 7): planar faces within 1° of +z, largest first, one.
+    // The box's top, 10 × 20 = 200 mm², beats the cylinder's top cap (6.25π); the box's
+    // 600 mm² sides don't face up. FreeCAD 1.1.3's Part::Box has its top as Face6, at
+    // (5, 10, 30).
+    let model = model();
+    let mut q = Query::of(ElementKind::Face, 1);
+    q.r#type = Some(ElementType::Plane);
+    q.stable = Some(true);
+    q.facing = Some(Facing {
+        direction: [0.0, 0.0, 1.0],
+        within: Angle::from_ndeg(1_000_000_000),
+    });
+    q.order = Some(Order {
+        by: MeasureName::Area,
+        descending: true,
+    });
+    let got = query(&model, &q).unwrap();
+    assert_eq!(got.tied, None);
+    let [top] = got.entries.as_slice() else {
+        panic!("{:?}", got.entries)
+    };
+    assert_eq!(top.name.to_string(), "bbbbbbbb.box.Face6");
+    assert_eq!(top.normal, Some([0.0, 0.0, 1.0]));
+    close_point("its centre", point(top.centroid), [5.0, 10.0, 30.0]);
+    close("its area", area(top), 200.0);
+    // Facing up: the box's top, the cylinder's top cap, and nothing of the cone (its base
+    // faces down) or the round solids.
+    assert_eq!(got.matched, 2);
+}
+
+#[test]
+fn a_radius_range_keeps_only_faces_that_have_a_radius_in_it() {
+    // Faces of radius 2 to 2.9 mm: the cylinder's side (2.5) alone. The sphere's 3 is past
+    // it, and a plane, a cone, and a torus have no radius, so no range holds them.
+    let model = model();
+    let mut q = Query::of(ElementKind::Face, 1000);
+    q.measures = vec![Range {
+        measure: MeasureName::Radius,
+        at_least: Some(Quantity::Length(Length::from_nm(2_000_000))),
+        at_most: Some(Quantity::Length(Length::from_nm(2_900_000))),
+    }];
+    let got = query(&model, &q).unwrap();
+    let found: Vec<(&str, ElementType)> = got
+        .entries
+        .iter()
+        .map(|e| (e.feature.as_str(), e.r#type))
+        .collect();
+    assert_eq!(found, [("cccccccc", ElementType::Cylinder)]);
+    // Open above: the sphere too, after the cylinder in timeline order.
+    q.measures[0].at_most = None;
+    let got = query(&model, &q).unwrap();
+    let found: Vec<&str> = got.entries.iter().map(|e| e.feature.as_str()).collect();
+    assert_eq!(found, ["cccccccc", "ssssssss"]);
 }
 
 #[test]
@@ -242,11 +335,10 @@ fn a_sphere_has_its_centre_and_radius_and_its_poles_are_degenerated_edges() {
     assert_eq!(ball.radius, Some(Length::from_nm(3_000_000)));
     // A sphere's diameter isn't an entry's (only a cylinder's and a circle's are).
     assert_eq!(ball.diameter, None);
-    close_point(
-        "its centre",
-        ball.axis.clone().unwrap().point.map(Length::mm),
-        [300.0, 0.0, 0.0],
-    );
+    let axis = ball.axis.clone().unwrap();
+    close_point("its centre", axis.point.map(Length::mm), [300.0, 0.0, 0.0]);
+    // +z, as FreeCAD 1.1.3's Part::Sphere has it (a forward face).
+    assert_eq!(axis.direction, [0.0, 0.0, 1.0]);
     let poles: Vec<&Entry> = entries
         .iter()
         .filter(|e| e.kind == ElementKind::Edge && e.length == Some(Length::from_nm(0)))
@@ -274,10 +366,13 @@ fn a_torus_has_its_two_radii_and_no_single_radius() {
     assert_eq!(ring.major_radius, Some(Length::from_nm(10_000_000)));
     assert_eq!(ring.minor_radius, Some(Length::from_nm(2_000_000)));
     assert_eq!((ring.radius, ring.diameter), (None, None));
-    close_point(
-        "its centre",
-        ring.axis.clone().unwrap().point.map(Length::mm),
-        [400.0, 0.0, 0.0],
+    let axis = ring.axis.clone().unwrap();
+    close_point("its centre", axis.point.map(Length::mm), [400.0, 0.0, 0.0]);
+    // −z, as FreeCAD 1.1.3's Part::Torus has it ((−0, −0, −1) on a reversed face), its
+    // zeros written 0.
+    assert_eq!(
+        axis.direction.map(f64::to_bits),
+        [0.0, 0.0, -1.0].map(f64::to_bits)
     );
 }
 
@@ -291,10 +386,12 @@ fn every_body_lists_in_timeline_order() {
         bodies,
         ["bbbbbbbb", "cccccccc", "kkkkkkkk", "ssssssss", "tttttttt"]
     );
-    // The box's 26, the cylinder's 8, ... all of them, once.
-    let total: usize = ["bbbbbbbb", "cccccccc", "kkkkkkkk", "ssssssss", "tttttttt"]
-        .iter()
-        .map(|f| of(&model, f).len())
-        .sum();
-    assert_eq!(listed.total as usize, total);
+    // Faces, edges, and vertices, as FreeCAD 1.1.3 counts its primitives': the box's 26
+    // (6, 12, 8), the cylinder's 8 (3, 3, 2), the cone's 7 (2, 3, 2), the sphere's 6 (1, 3,
+    // 2), and the torus's 4 (1, 2, 1): 51, each once.
+    assert_eq!(listed.total, 51);
+    assert_eq!(listed.entries.len(), 51);
+    let mut names: Vec<String> = listed.entries.iter().map(|e| e.name.to_string()).collect();
+    names.dedup();
+    assert_eq!(names.len(), 51);
 }
