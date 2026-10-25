@@ -179,7 +179,8 @@ pub struct Cursor {
 }
 
 /// A page of `elements`: its entries, how many there are in all, and where the next page
-/// starts (`None` after the last, and on a model that holds a kernel fault).
+/// starts (`None` after the last, and for a listing of every body of a model that holds a
+/// kernel fault).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Listed {
     pub entries: Vec<Entry>,
@@ -194,9 +195,10 @@ pub struct Listed {
 ///
 /// A model that holds a kernel fault (a worker that crashed or hung) may not be the
 /// revision's next read: a session rebuilds it (`Session::model`), and a feature that
-/// failed for the fault consumes nothing, so its inputs are bodies until it builds. So its
-/// listing gives no cursor, and a cursor on it is a `conflict`: pages of two models of one
-/// revision are never joined (until a revision's fault is its outcome, decision 32).
+/// failed for the fault consumes nothing, so its inputs are bodies until it builds. So a
+/// listing of its every body gives no cursor, and a cursor on one is a `conflict`: pages of
+/// two models of one revision are never joined (until a revision's fault is its outcome,
+/// decision 32). A feature's own listing pages on: its elements don't change.
 pub fn list(
     model: &Model,
     revision: Revision,
