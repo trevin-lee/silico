@@ -108,7 +108,7 @@ pub(crate) use types::SESSION_ID_PATTERN;
 pub use types::{
     Added, Begun, Cancelled, Committed, FieldSet, ModelChoice, ModelRead, Opened, Published, Read,
     Rebuild, RebuildState, Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running,
-    SessionId, SessionInfo, Status,
+    SessionId, SessionInfo, Status, Stopper,
 };
 use types::{READ_STOPPED, SESSION_STOPPED};
 

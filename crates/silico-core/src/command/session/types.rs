@@ -207,6 +207,21 @@ pub struct Running<T> {
     ticket: Option<Arc<Ticket>>,
 }
 
+/// What cancels a command apart from its handle ([`Running::stopper`]), from any thread.
+#[derive(Clone)]
+pub struct Stopper {
+    /// None for a command answered before it ran (refused).
+    ticket: Option<Arc<Ticket>>,
+}
+
+impl Stopper {
+    /// Cancels the command, as [`Running::cancel`] does: whether it was stopped before it
+    /// had done its work.
+    pub fn cancel(&self) -> bool {
+        self.ticket.as_ref().is_some_and(|ticket| ticket.cancel())
+    }
+}
+
 /// A queued command's thread ended without answering.
 pub(super) const SESSION_STOPPED: &str = "the session stopped before the command answered";
 
@@ -237,9 +252,19 @@ impl<T> Running<T> {
     /// work, it stops (a rebuild it waits on stopped through the pool's superseded path, a
     /// command still queued never run) and answers `cancelled`, having left no trace;
     /// otherwise it answers with its real result. Whether it was stopped before it had done
-    /// its work; false too for a command already answered without running (refused).
+    /// its work; false too for a command already answered without running (refused). As its
+    /// [`stopper`](Self::stopper) cancels it.
     pub fn cancel(&self) -> bool {
-        self.ticket.as_ref().is_some_and(|ticket| ticket.cancel())
+        self.stopper().cancel()
+    }
+
+    /// What cancels the command apart from this handle: cloned and sent to another thread,
+    /// it cancels the command while this handle waits on its answer (MCP's server, told a
+    /// request it waits on was cancelled).
+    pub fn stopper(&self) -> Stopper {
+        Stopper {
+            ticket: self.ticket.clone(),
+        }
     }
 
     /// Waits for the answer.

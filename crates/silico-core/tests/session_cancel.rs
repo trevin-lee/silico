@@ -369,6 +369,29 @@ fn a_published_read_is_stopped_by_name_and_answers_cancelled() {
 }
 
 #[test]
+fn a_stopper_cancels_the_command_from_another_thread_while_its_handle_waits() {
+    // MCP's server waits on a request's handle, and is told it was cancelled elsewhere.
+    fn shared<T: Clone + Send + Sync + 'static>(_: &T) {}
+    let f = opened();
+    let (_hold, check) = f.running_held(|| f.sessions.check(&f.id));
+    let stopper = check.stopper();
+    shared(&stopper);
+    let cancelling = std::thread::spawn(move || {
+        // Most likely once the handle is waiting: either way, the cancel stops the check.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        stopper.cancel()
+    });
+    let stopped = answer(check);
+    assert!(cancelling.join().unwrap());
+    assert_eq!(refusal(&stopped), cancelled("check"));
+    assert!(
+        f.kernel.wait_idle(HANG),
+        "the cancelled check's box still runs"
+    );
+    assert_eq!(f.rebuild(), RebuildState::Stopped);
+}
+
+#[test]
 fn close_waits_for_the_command_ahead_of_it_and_cancels_nothing() {
     // Commands run in turn, each to its end (section 3): stopping one is said by name.
     let f = opened();
