@@ -832,6 +832,11 @@ fn stop_error<T: std::fmt::Debug>(outcome: Outcome<T>) {
         error.message(),
         "the fake kernel stopped before Echo was done"
     );
+    // A client's: another client, of a running kernel, can run it.
+    assert_eq!(
+        error.suggestion(),
+        Some("take a client of a running fake kernel")
+    );
 }
 
 #[test]
