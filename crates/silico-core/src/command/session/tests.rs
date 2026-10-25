@@ -255,6 +255,54 @@ fn a_rebuild_is_refused_only_under_a_newer_revisions() {
 }
 
 #[test]
+fn a_superseded_rebuilds_watcher_leaves_the_newer_one_running() {
+    let kernel = FakeKernel::new(2).unwrap();
+    let (session, _jobs) = session(&kernel);
+    let boxes = kernel.hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { .. })));
+    let spheres = kernel.hold(|op| matches!(op, Op::MakePrimitive(Primitive::Sphere { .. })));
+    let second = Revision::OPENED.next().unwrap();
+    // Revision 1's rebuild, its box held.
+    let mut rebuilds = lock(&session.rebuilds);
+    assert!(
+        session
+            .start_unless_newer(&mut rebuilds, Revision::OPENED, &checked(BOX))
+            .unwrap()
+    );
+    drop(rebuilds);
+    assert!(kernel.wait_running(1, WAIT));
+    // Revision 2's supersedes it, its sphere held.
+    let mut rebuilds = lock(&session.rebuilds);
+    assert!(
+        session
+            .start_unless_newer(&mut rebuilds, second, &checked(SPHERE))
+            .unwrap()
+    );
+    assert_eq!(rebuilds.watchers.running.len(), 2);
+    drop(rebuilds);
+    // Revision 1's step let go (if its supersession hadn't stopped it), so its watcher ends.
+    boxes.release();
+    ended(|| lock(&session.rebuilds).watchers.running[0].is_finished());
+    // Revision 2's is still the rebuild running, and nothing is published of revision 1.
+    let rebuilds = lock(&session.rebuilds);
+    assert_eq!(rebuilds.running(), Some(second));
+    assert!(rebuilds.published.is_none());
+    drop(rebuilds);
+    // Its model, when its sphere is let go, is revision 2's, from its one rebuild.
+    spheres.release();
+    let model = session.model(second, &checked(SPHERE)).unwrap();
+    assert_eq!(built_from(&model), "a91cw0de");
+    let published = lock(&session.rebuilds).published.clone().unwrap();
+    assert_eq!(published.revision, second);
+    assert!(Arc::ptr_eq(&published.model, &model));
+    let spheres_made = kernel
+        .calls()
+        .iter()
+        .filter(|c| matches!(c.op, Op::MakePrimitive(Primitive::Sphere { .. })))
+        .count();
+    assert_eq!(spheres_made, 1);
+}
+
+#[test]
 fn a_published_read_starts_its_revisions_rebuild_only_while_an_older_is_published() {
     let kernel = FakeKernel::new(1).unwrap();
     let (session, _jobs) = session(&kernel);
