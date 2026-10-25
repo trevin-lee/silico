@@ -280,6 +280,10 @@ fn every_op() -> Vec<Op> {
             height: 1,
             ids: true,
         })),
+        Op::Classify {
+            shape: ShapeData::checked(Blob::inline(vec![9]), false),
+            point: [-0.0, f64::MIN_POSITIVE, -1e300],
+        },
     ];
     let indices: std::collections::BTreeSet<usize> = ops
         .iter()
@@ -344,9 +348,10 @@ fn every_op() -> Vec<Op> {
             Op::Describe { .. } => 40,
             Op::ExportMesh { .. } => 41,
             Op::Render(_) => 42,
+            Op::Classify { .. } => 43,
         })
         .collect();
-    assert_eq!(indices, (0..43).collect(), "an operation has no case");
+    assert_eq!(indices, (0..44).collect(), "an operation has no case");
     ops
 }
 
@@ -602,6 +607,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             png: vec![0x89, b'P', b'N', b'G', 0, 255],
             ids: Some(vec![[0, 0], [u32::MAX, EDGE_BIT | 7]]),
         }),
+        Ok(Reply::Classified { inside: true }),
         Err(Failure::new(Refusal::NoAdapter {
             cause: "no CPU adapter".to_owned(),
         })),
@@ -631,6 +637,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             Ok(Reply::Described { .. }) => 16,
             Ok(Reply::ExportMesh(_)) => 17,
             Ok(Reply::Rendered { .. }) => 18,
+            Ok(Reply::Classified { .. }) => 20,
             Err(failure) => match failure.kind() {
                 FailureKind::InvalidInput => 5,
                 FailureKind::KernelFailed => 6,
@@ -644,7 +651,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         .collect();
     assert_eq!(
         indices,
-        (0..20).collect(),
+        (0..21).collect(),
         "a reply or failure kind has no case"
     );
     results
@@ -1051,7 +1058,8 @@ fn every_op_has_its_own_name() {
             "Revolution",
             "Describe",
             "ExportMesh",
-            "Render"
+            "Render",
+            "Classify"
         ]
     );
 }

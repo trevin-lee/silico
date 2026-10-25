@@ -34,6 +34,11 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
             check_freecad_finite(&measures)?;
             Ok(Reply::FreecadMeasures(measures))
         }
+        Op::Classify { shape, point } => {
+            let shape = shape_of(&shape)?;
+            let inside = crate::classify(&shape, point).map_err(failure)?;
+            Ok(Reply::Classified { inside })
+        }
         Op::Describe {
             shape,
             kind,

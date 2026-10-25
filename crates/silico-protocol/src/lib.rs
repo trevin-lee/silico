@@ -241,6 +241,9 @@ pub enum Op {
     /// A scene drawn by the render worker, boxed, as it's every body's mesh. Replies with
     /// [`Reply::Rendered`].
     Render(Box<RenderScene>),
+    /// Whether `point` is inside the shape or on its boundary, by OCCT's solid classifier
+    /// (a camera's eye inside a body, M4.6). Replies with [`Reply::Classified`].
+    Classify { shape: ShapeData, point: [f64; 3] },
 }
 
 impl Op {
@@ -260,6 +263,7 @@ impl Op {
             Op::Describe { .. } => "Describe",
             Op::ExportMesh { .. } => "ExportMesh",
             Op::Render(_) => "Render",
+            Op::Classify { .. } => "Classify",
             Op::Solve(_) => "Solve",
             Op::DragBegin(_) => "DragBegin",
             Op::DragMove { .. } => "DragMove",
@@ -430,6 +434,10 @@ pub enum Reply {
         png: Vec<u8>,
         ids: Option<Vec<PixelId>>,
     },
+    /// Whether a point is inside a shape or on its boundary ([`Op::Classify`]).
+    Classified {
+        inside: bool,
+    },
 }
 
 impl Reply {
@@ -444,6 +452,7 @@ impl Reply {
             Reply::Described { .. } => "Described",
             Reply::ExportMesh(_) => "ExportMesh",
             Reply::Rendered { .. } => "Rendered",
+            Reply::Classified { .. } => "Classified",
             Reply::Solved(_) => "Solved",
             Reply::DragStarted { .. } => "DragStarted",
             Reply::Moved(_) => "Moved",

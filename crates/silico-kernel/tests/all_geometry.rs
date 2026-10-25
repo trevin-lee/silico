@@ -69,6 +69,8 @@ mod boolean_solids;
 mod bridge;
 #[path = "chamfer.rs"]
 mod chamfer;
+#[path = "classify.rs"]
+mod classify;
 #[path = "describe.rs"]
 mod describe;
 #[path = "export.rs"]

@@ -88,6 +88,11 @@ Flat flat_normal(const Shape &shape);
 // False)), if it has any.
 Bounds tight_bounds(const Shape &shape);
 
+// Whether `point` is inside the shape or on its boundary, by OCCT's solid classifier at the
+// shape's largest tolerance (FreeCAD's `Shape.isInside(point, tolerance, True)`). Throws if
+// the classifier can't tell.
+bool classify_point(const Shape &shape, const Point3 &point);
+
 // The volume and area by OCCT's quick fixed-order integration: up to 1% off on faces
 // trimmed by curves, and further on broken shapes (a "solid" of volume -2e-4 reads 1.9).
 Amounts rough_amounts(const Shape &shape);

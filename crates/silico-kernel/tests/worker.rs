@@ -1282,3 +1282,37 @@ fn every_failure_says_what_to_try() {
         "a refused radius reached the worker"
     );
 }
+
+#[test]
+fn a_point_is_classified_inside_or_out_through_the_worker() {
+    let mut w = worker();
+    let shape = make_box(&mut w, 40.0, 20.0, 10.0).unwrap();
+    for (point, inside) in [([20.0, 10.0, 5.0], true), ([20.0, -1.0, 5.0], false)] {
+        match w
+            .call(
+                Generation(1),
+                Op::Classify {
+                    shape: shape.clone(),
+                    point,
+                },
+                TIMEOUT,
+            )
+            .unwrap()
+        {
+            Reply::Classified { inside: got } => assert_eq!(got, inside, "{point:?}"),
+            other => panic!("Classify replied {other:?}"),
+        }
+    }
+    let err = w
+        .call(
+            Generation(1),
+            Op::Classify {
+                shape,
+                point: [f64::NAN, 0.0, 0.0],
+            },
+            TIMEOUT,
+        )
+        .unwrap_err();
+    assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
+    assert_eq!(err.parameter(), Some("point"), "{err}");
+}

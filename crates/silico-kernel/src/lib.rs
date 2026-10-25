@@ -285,6 +285,7 @@ mod ffi {
         fn make_torus(major_radius: f64, minor_radius: f64) -> Result<UniquePtr<Shape>>;
         fn measure(shape: &Shape, precision: f64) -> Result<Measures>;
         fn tight_bounds(shape: &Shape) -> Result<Bounds>;
+        fn classify_point(shape: &Shape, point: &Point3) -> Result<bool>;
         fn flat_normal(shape: &Shape) -> Result<Flat>;
         fn edge_facts(shape: &Shape) -> Result<EdgeFacts>;
 
@@ -986,6 +987,22 @@ pub fn describe(
             vertices: d.vertices.iter().map(point).collect(),
         },
     ))
+}
+
+/// Whether `point` is inside `shape` or on its boundary, by OCCT's solid classifier at the
+/// shape's largest tolerance, as FreeCAD's `Shape.isInside(point, tolerance, True)` asks
+/// (M4.6: the core asks it of each body whose tight box holds a camera's eye). "On" is to
+/// about the tolerance, the classifier's band varying by face (on a box with tolerance
+/// 1e-7, from 5e-8 to 9e-8). A point that isn't finite is refused; a classifier that can't
+/// tell is OCCT's failure.
+pub fn classify(shape: &Shape, point: [f64; 3]) -> Result<bool, KernelError> {
+    if !point.iter().all(|c| c.is_finite()) {
+        return Err(KernelError::new(Refusal::InvalidParameter {
+            parameter: "point".to_owned(),
+            message: format!("point {point:?} isn't finite"),
+        }));
+    }
+    Ok(ffi::classify_point(shape.get()?, &point3(point))?)
 }
 
 /// Every one of `shape`'s faces, edges, and vertices described, a batch of at most
