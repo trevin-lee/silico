@@ -882,7 +882,7 @@ fn a_sweep_whose_description_is_refused_or_fails_still_builds_and_so_does_what_u
                 "{code:?}: {feature}"
             );
             assert_eq!(
-                built.description_refused().map(Error::code),
+                built.why_undescribed().map(Error::code),
                 Some(code),
                 "{code:?}: {feature}"
             );

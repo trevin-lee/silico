@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 pub use chamfer::ChamferSize;
 pub use describe::{
     DESCRIBE_BATCH, Description, EdgeCurve, EdgeDescription, FaceDescription, Quantity, Surface,
-    What, describe_in_batches,
+    What, batches, describe_in_batches,
 };
 pub use export::{
     DEFAULT_EXPORT_TOLERANCE, ExportMesh, MAX_EXPORT_TOLERANCE, MAX_EXPORT_TRIANGLES,

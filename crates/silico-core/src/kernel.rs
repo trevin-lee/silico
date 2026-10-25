@@ -605,15 +605,6 @@ pub(crate) fn total_fault(summary: &ShapeSummary, kind: ElementKind, total: u32)
     })
 }
 
-/// The error for a description whose total of `kind` was `was` in one batch and `now` in a
-/// later one: the shape can't have changed between them.
-pub(crate) fn description_changed(kind: ElementKind, was: u32, now: u32) -> Error {
-    description_error(format!(
-        "it said the shape has {was} {}, then {now}",
-        kind.plural()
-    ))
-}
-
 /// What's wrong with `description` as the whole of a shape whose summary is `summary`, if
 /// anything: a kind it describes more or fewer of than the summary counts (both are counted
 /// in `TopExp::MapShapes` order, of the same shape, so a shape's agree).
@@ -1150,20 +1141,31 @@ impl KernelWorker {
     }
 
     /// Every one of a shape's faces, edges, and vertices described, a batch
-    /// ([`KernelRequest::describe`]) of at most [`DESCRIBE_BATCH`] after another, joined,
-    /// each batch's total checked against the shape's summary, asked first.
+    /// ([`KernelRequest::describe`]) of at most [`DESCRIBE_BATCH`] after another, planned from
+    /// the shape's summary, asked first ([`silico_protocol::batches`]), and joined, each
+    /// batch's total checked against the summary's count, and the whole against the summary.
     pub fn describe(&mut self, shape: &ShapeData) -> Result<Description, Error> {
         let summary = self.summarize(shape)?;
-        silico_protocol::describe_in_batches(
-            |kind, first, count| {
-                let batch = self.run(KernelRequest::describe(shape, kind, first, count)?)?;
-                match total_fault(&summary, kind, batch.total) {
-                    Some(fault) => Err(fault),
-                    None => Ok((batch.total, batch.description)),
-                }
-            },
-            description_changed,
-        )
+        let mut description = Description {
+            faces: Vec::new(),
+            edges: Vec::new(),
+            vertices: Vec::new(),
+        };
+        for (kind, first, count) in
+            silico_protocol::batches(summary.faces, summary.edges, summary.vertices)
+        {
+            let batch = self.run(KernelRequest::describe(shape, kind, first, count)?)?;
+            if let Some(fault) = total_fault(&summary, kind, batch.total) {
+                return Err(fault);
+            }
+            description.faces.extend(batch.description.faces);
+            description.edges.extend(batch.description.edges);
+            description.vertices.extend(batch.description.vertices);
+        }
+        match description_fault(&summary, &description) {
+            Some(fault) => Err(description_error(fault)),
+            None => Ok(description),
+        }
     }
 
     /// A shape's mesh ([`KernelRequest::tessellate`]).

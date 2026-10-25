@@ -14,7 +14,7 @@ use silico_protocol::{Description, Failure};
 use crate::cache::secret_of;
 
 /// The first bytes of every entry, naming its format.
-pub const MAGIC: &[u8] = b"silico cache 7\n";
+pub const MAGIC: &[u8] = b"silico cache 8\n";
 
 /// This platform's name, as the cache spells it.
 pub fn platform() -> String {
@@ -67,7 +67,7 @@ pub enum Measure {
     Unmeasured,
     Measured {
         summary: ShapeSummary,
-        description: Describe,
+        description: KeptDescription,
     },
     Refused {
         op: String,
@@ -78,7 +78,7 @@ pub enum Measure {
 /// What an entry keeps of its shape's description beside its summary: nothing (asked
 /// again), the description, or the kernel worker's refusal of it, as data.
 #[derive(Serialize, Deserialize)]
-pub enum Describe {
+pub enum KeptDescription {
     Unknown,
     Described(Description),
     Refused { op: String, failure: Failure },

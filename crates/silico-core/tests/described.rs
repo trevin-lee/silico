@@ -19,7 +19,7 @@ use super::refusals;
 use std::sync::Arc;
 
 use cache::{HOLE, Scratch, calls, files, hole, session};
-use cache_format::{Describe, Measure, decode, entry_path};
+use cache_format::{KeptDescription, Measure, decode, entry_path};
 use describing::{asked, fused_boxes, settled};
 use example::EXAMPLE;
 use model::{checked, id, published};
@@ -61,7 +61,7 @@ fn assert_summarized_not_described(model: &Model, code: ErrorCode) {
             "{code:?}: {feature}"
         );
         assert_eq!(
-            built.description_refused().map(silico_core::Error::code),
+            built.why_undescribed().map(silico_core::Error::code),
             Some(code),
             "{feature}"
         );
@@ -235,7 +235,7 @@ fn a_description_refused_for_its_values_keeps_the_summary_and_the_refusal() {
             let (key, _) = built(&model, feature);
             match decode(&std::fs::read(entry_path(&dir.0, &key)).unwrap()).measure {
                 Measure::Measured {
-                    description: Describe::Refused { op, failure },
+                    description: KeptDescription::Refused { op, failure },
                     ..
                 } => {
                     assert!(lasting, "{code:?}: {feature} kept on disk");
@@ -243,7 +243,7 @@ fn a_description_refused_for_its_values_keeps_the_summary_and_the_refusal() {
                     assert_eq!(Some(failure), worker_failure(code), "{code:?}");
                 }
                 Measure::Measured {
-                    description: Describe::Unknown,
+                    description: KeptDescription::Unknown,
                     ..
                 } => assert!(!lasting, "{code:?}: {feature} not kept on disk"),
                 _ => panic!("{code:?}: {feature} isn't written with its summary"),

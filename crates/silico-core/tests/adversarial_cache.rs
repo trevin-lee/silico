@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use cache::{HOLE, Scratch, calls, example_with_pin, files, hole, session};
 use cache_format::{
-    Describe, Entry, MAGIC, Measure, decode, encode, encode_with, entry_path, entry_path_in,
+    Entry, KeptDescription, MAGIC, Measure, decode, encode, encode_with, entry_path, entry_path_in,
 };
 use example::EXAMPLE;
 use model::{checked, made, published};
@@ -977,6 +977,68 @@ fn a_kept_refusal_this_core_wouldnt_keep_is_measured_again_not_made_again() {
 }
 
 #[test]
+fn a_kept_description_refusal_this_core_wouldnt_keep_is_described_again() {
+    // As a summary's: an entry keeping a refusal of the block's description of a kind the
+    // cache doesn't keep is worded now and judged now. Its summary is taken back, and only
+    // its description is asked again, its three batches; nothing is made or summarized, and
+    // the entry is written over, described.
+    for refusal in [
+        Refusal::NotFinite {
+            quantity: "the kernel's Face1's area".to_owned(),
+            value: f64::NAN,
+        },
+        Refusal::OutOfMemory,
+        Refusal::Internal {
+            what: "a bug".to_owned(),
+        },
+        Refusal::TestOperation {
+            op: "Abort".to_owned(),
+        },
+    ] {
+        let dir = Scratch::new(&format!(
+            "never-kept-description-{:?}",
+            std::mem::discriminant(&refusal)
+        ));
+        let model = seed(&dir.0);
+        let (_, block) = built(&model, "k7f2qx3m");
+        let path = forge_block(
+            &dir.0,
+            &model,
+            Measure::Measured {
+                summary: block.summary().unwrap().clone(),
+                description: KeptDescription::Refused {
+                    op: "Describe".to_owned(),
+                    failure: Failure::new(refusal.clone()),
+                },
+            },
+        );
+        let next = session(&dir.0);
+        let again = published(&next, checked(EXAMPLE));
+        assert!(calls(&next).is_empty(), "{refusal:?}: {:?}", calls(&next));
+        assert_eq!(measures(&next), 0, "{refusal:?}");
+        let describes = next
+            .kernel()
+            .calls()
+            .iter()
+            .filter(|call| call.op.name() == "Describe")
+            .count();
+        assert_eq!(describes, 3, "{refusal:?}");
+        assert_eq!(
+            again.description(&FeatureId::new("k7f2qx3m").unwrap()),
+            block.description(),
+            "{refusal:?}"
+        );
+        assert!(matches!(
+            decode(&std::fs::read(&path).unwrap()).measure,
+            Measure::Measured {
+                description: KeptDescription::Described(_),
+                ..
+            }
+        ));
+    }
+}
+
+#[test]
 fn a_kept_refusal_is_worded_by_the_core_that_reads_it() {
     // Kept as the worker said it, a refusal is worded on reading by this core: the entry
     // holds no words of its own (here, of an invalid result: the message names the
@@ -1085,7 +1147,7 @@ fn a_kept_summary_no_shape_has_is_measured_again() {
         &model,
         Measure::Measured {
             summary,
-            description: Describe::Described(description),
+            description: KeptDescription::Described(description),
         },
     );
     let next = session(&dir.0);
@@ -1121,7 +1183,7 @@ fn a_kept_description_no_worker_could_send_is_described_again_its_summary_kept()
         &model,
         Measure::Measured {
             summary,
-            description: Describe::Described(description),
+            description: KeptDescription::Described(description),
         },
     );
     let next = session(&dir.0);
@@ -1141,7 +1203,7 @@ fn a_kept_description_no_worker_could_send_is_described_again_its_summary_kept()
     assert_eq!(remeasured.description(), block.description());
     match decode(&std::fs::read(&path).unwrap()).measure {
         Measure::Measured {
-            description: Describe::Described(kept),
+            description: KeptDescription::Described(kept),
             ..
         } => assert_eq!(Some(&kept), block.description()),
         _ => panic!("the block's entry isn't written described"),
@@ -1152,16 +1214,16 @@ fn a_kept_description_no_worker_could_send_is_described_again_its_summary_kept()
 fn an_entry_of_the_format_before_is_never_looked_for_and_a_name_of_this_one_holding_it_is_rebuilt()
 {
     // Each format's magic is part of every entry's key: an older format's entry for a step
-    // ("silico cache 6") lives elsewhere, so this one never reads it. Planted where the format
+    // ("silico cache 7") lives elsewhere, so this one never reads it. Planted where the format
     // before keeps the block, it's left as it was (the cache's bound evicts it in time), and
     // the block is made and written in this format.
     let dir = Scratch::new("format-before");
     let model = seed(&dir.0);
     let (key, _) = built(&model, "k7f2qx3m");
-    let old = entry_path_in(&dir.0, b"silico cache 6\n", &key);
+    let old = entry_path_in(&dir.0, b"silico cache 7\n", &key);
     let new = entry_path(&dir.0, &key);
     assert_ne!(old, new);
-    let mut bytes = b"silico cache 6\n".to_vec();
+    let mut bytes = b"silico cache 7\n".to_vec();
     bytes.extend([7; 32]);
     bytes.extend(b"a payload of the format before");
     std::fs::create_dir_all(old.parent().unwrap()).unwrap();
@@ -1176,7 +1238,7 @@ fn an_entry_of_the_format_before_is_never_looked_for_and_a_name_of_this_one_hold
     // An entry of this format's name holding the format before's bytes doesn't hold
     // together: rebuilt, and written over in this format.
     let mut text = std::fs::read(&new).unwrap();
-    text[..MAGIC.len()].copy_from_slice(b"silico cache 6\n");
+    text[..MAGIC.len()].copy_from_slice(b"silico cache 7\n");
     std::fs::write(&new, &text).unwrap();
     let third = session(&dir.0);
     published(&third, checked(EXAMPLE));

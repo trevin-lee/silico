@@ -1067,7 +1067,11 @@ mod tests {
             for kind in ["Edge", "Face", "Vertex"] {
                 let words: Vec<&str> = bare.split_whitespace().collect();
                 for (i, word) in words.iter().enumerate() {
-                    let kernels = i > 0 && words[i - 1] == "kernel's";
+                    // A description's problem names its value by the kernel's own number
+                    // ("the kernel's Face1's area"), as `Description::validate` words it.
+                    let kernels = matches!(refusal, Refusal::DescriptionImpossible { .. })
+                        && i > 0
+                        && words[i - 1] == "kernel's";
                     assert!(
                         !word.starts_with(kind) || word.starts_with('<') || kernels,
                         "{refusal:?} names {word} itself: {text}"

@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use cache::{HOLE, Scratch, calls, example_with_pin, files, hole, session};
-use cache_format::{Describe, MAGIC, Measure, decode, encode, entry_path};
+use cache_format::{KeptDescription, MAGIC, Measure, decode, encode, entry_path};
 use describing::{asked, fused_boxes, fused_tree, settled};
 use example::EXAMPLE;
 use model::{WAIT, checked, id, published};
@@ -183,7 +183,7 @@ fn assert_refused_beside_its_summary(model: &Model, feature: &str, code: ErrorCo
     assert!(model.description(&id(feature)).is_none(), "{feature}");
     assert!(built.description().is_none(), "{feature}");
     assert_eq!(
-        built.description_refused().map(silico_core::Error::code),
+        built.why_undescribed().map(silico_core::Error::code),
         Some(code),
         "{feature}"
     );
@@ -233,7 +233,7 @@ fn a_later_edge_batch_refused_for_its_values_keeps_the_summary_and_the_refusal_o
     let (key, _) = built(&model, "f0000085");
     match decode(&std::fs::read(entry_path(&dir.0, &key)).unwrap()).measure {
         Measure::Measured {
-            description: Describe::Refused { op, failure: kept },
+            description: KeptDescription::Refused { op, failure: kept },
             ..
         } => {
             assert_eq!(op, "Describe");
@@ -322,7 +322,7 @@ fn a_face_batch_whose_total_isnt_the_summarys_is_a_workers_fault_kept_beside_the
     let block = assert_refused_beside_its_summary(&model, "k7f2qx3m", ErrorCode::ProtocolError);
     assert_eq!(block.summary().unwrap().faces, 6);
     assert_eq!(
-        block.description_refused().unwrap().cause(),
+        block.why_undescribed().unwrap().cause(),
         Some("it says the shape has 5 faces, and its summary counts 6")
     );
     assert_described_whole(&model, "a91cw0de");
@@ -338,7 +338,7 @@ fn a_face_batch_whose_total_isnt_the_summarys_is_a_workers_fault_kept_beside_the
     assert!(matches!(
         decode(&std::fs::read(entry_path(&dir.0, &key)).unwrap()).measure,
         Measure::Measured {
-            description: Describe::Unknown,
+            description: KeptDescription::Unknown,
             ..
         }
     ));
@@ -377,7 +377,7 @@ fn a_second_edge_batch_whose_total_isnt_the_summarys_is_a_workers_fault_and_the_
     assert!(model.drift().is_empty(), "{:?}", model.drift());
     let last = assert_refused_beside_its_summary(&model, "f0000084", ErrorCode::ProtocolError);
     assert_eq!(
-        last.description_refused().unwrap().cause(),
+        last.why_undescribed().unwrap().cause(),
         Some("it says the shape has 1021 edges, and its summary counts 1020")
     );
     assert_described_whole(&model, "f0000083");
@@ -419,7 +419,7 @@ fn a_batch_holding_more_elements_than_it_should_is_a_workers_fault_kept_beside_t
         let model = published(&engine, checked(EXAMPLE));
         assert!(model.drift().is_empty(), "{cause}: {:?}", model.drift());
         let block = assert_refused_beside_its_summary(&model, "k7f2qx3m", ErrorCode::ProtocolError);
-        assert_eq!(block.description_refused().unwrap().cause(), Some(cause));
+        assert_eq!(block.why_undescribed().unwrap().cause(), Some(cause));
         assert_described_whole(&model, "m3tq8v0z");
         assert_eq!(settled(engine.kernel(), describes_block, 3), 3, "{cause}");
         published(&engine, checked(EXAMPLE));
@@ -499,7 +499,7 @@ fn assert_no_entry_half_measured(dir: &Path) {
         }
         if let Measure::Measured {
             summary,
-            description: Describe::Described(description),
+            description: KeptDescription::Described(description),
         } = decode(&bytes).measure
         {
             assert_eq!(
@@ -645,7 +645,7 @@ fn forged(
     let mut entry = decode(&std::fs::read(&path).unwrap());
     entry.measure = Measure::Measured {
         summary: built.summary().unwrap().clone(),
-        description: Describe::Described(description),
+        description: KeptDescription::Described(description),
     };
     std::fs::write(&path, encode(&dir.0, &entry)).unwrap();
     let next = session(&dir.0);

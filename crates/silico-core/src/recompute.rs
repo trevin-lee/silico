@@ -55,8 +55,8 @@ use crate::document::{
     SweepFeature,
 };
 use crate::kernel::{
-    BooleanOp, BuiltData, DESCRIBE_BATCH, ElementKind, FaceRegions, Generation, History, Kernel,
-    KernelRequest, Primitive, ShapeData, ShapeSummary, SweepKind,
+    BooleanOp, BuiltData, FaceRegions, Generation, History, Kernel, KernelRequest, Primitive,
+    ShapeData, ShapeSummary, SweepKind,
 };
 use crate::naming::{ElementMap, Maker, NAMING_SCHEME, OpCode};
 use crate::pool::Outcome;
@@ -167,7 +167,7 @@ impl Built {
 
     /// Why the shape's elements couldn't be described, if they couldn't: refused for its
     /// values, or a worker's failure.
-    pub fn description_refused(&self) -> Option<&Error> {
+    pub fn why_undescribed(&self) -> Option<&Error> {
         match &self.described {
             Some(Described::Refused(error) | Described::Failed(error)) => Some(error),
             Some(Described::Whole(_)) | None => None,
@@ -196,7 +196,7 @@ impl Built {
     }
 
     /// This result, summarized.
-    fn measured(&self, summary: ShapeSummary) -> Self {
+    fn summarized(&self, summary: ShapeSummary) -> Self {
         Built {
             summary: Some(summary),
             ..self.clone()
@@ -392,7 +392,7 @@ impl Model {
     /// Each of the feature `id`'s solid's faces, edges, and vertices described, in the
     /// kernel's numbering, if it built and they were: described as part of the rebuild,
     /// before the model was published, so reading it asks the kernel nothing. Why they
-    /// weren't, if they couldn't be, is its `Built::description_refused`.
+    /// weren't, if they couldn't be, is its `Built::why_undescribed`.
     pub fn description(&self, id: &FeatureId) -> Option<&Description> {
         match self.outcome(id)? {
             FeatureOutcome::Built { built, .. } => built.description(),
@@ -3023,7 +3023,7 @@ impl<K: Kernel + 'static> Engine<K> {
                 .submit(generation, KernelRequest::summarize(&built.shape))
                 .wait()
             {
-                Outcome::Done(Ok(summary)) => (built.measured(summary.clone()), summary),
+                Outcome::Done(Ok(summary)) => (built.summarized(summary.clone()), summary),
                 Outcome::Done(Err(error)) => return Outcome::Done(Err(error)),
                 Outcome::Superseded => return Outcome::Superseded,
             },
@@ -3048,23 +3048,7 @@ impl<K: Kernel + 'static> Engine<K> {
         summary: &ShapeSummary,
         generation: Generation,
     ) -> Outcome<Description> {
-        let mut planned = std::collections::VecDeque::new();
-        for (kind, total) in [
-            (ElementKind::Face, summary.faces),
-            (ElementKind::Edge, summary.edges),
-            (ElementKind::Vertex, summary.vertices),
-        ] {
-            let mut first = 1u64;
-            while first <= u64::from(total) {
-                let count = (u64::from(total) + 1 - first).min(u64::from(DESCRIBE_BATCH));
-                // Both under `total`, a u32.
-                let (Ok(from), Ok(count)) = (u32::try_from(first), u32::try_from(count)) else {
-                    break;
-                };
-                planned.push_back((kind, from, count));
-                first += u64::from(count);
-            }
-        }
+        let mut planned = silico_protocol::batches(summary.faces, summary.edges, summary.vertices);
         let mut description = Description {
             faces: Vec::new(),
             edges: Vec::new(),
@@ -3073,7 +3057,7 @@ impl<K: Kernel + 'static> Engine<K> {
         let mut in_flight = VecDeque::new();
         loop {
             while in_flight.len() < DESCRIBE_AT_ONCE
-                && let Some((kind, first, count)) = planned.pop_front()
+                && let Some((kind, first, count)) = planned.next()
             {
                 let request = match KernelRequest::describe(shape, kind, first, count) {
                     Ok(request) => request,
@@ -3677,10 +3661,48 @@ mod tests {
             valid: true,
         };
         let refusal = Error::new(ErrorCode::KernelFailed, "Summarize failed");
-        let measured: StepResult = Ok(Arc::new(Built::new(shape(), None, Some(summary))));
+        let measured: StepResult = Ok(Arc::new(Built::new(shape(), None, Some(summary.clone()))));
         let refused: StepResult = Ok(Arc::new(Built::refused_measure(shape(), None, refusal)));
         let unmeasured: StepResult = Ok(Arc::new(Built::new(shape(), None, None)));
         let failed = |code| -> StepResult { Err(Error::new(code, "the step failed")) };
+        // And with what became of its description: a summarized result that knows its
+        // description, or why it was refused, knows more than one whose describe failed or
+        // wasn't asked, which knows as much as a summary alone.
+        {
+            let summarized = Built::new(shape(), None, Some(summary.clone()));
+            let description = Description {
+                faces: Vec::new(),
+                edges: Vec::new(),
+                vertices: Vec::new(),
+            };
+            let whole: StepResult = Ok(Arc::new(
+                summarized.with_described(Described::Whole(description)),
+            ));
+            let kept: StepResult = Ok(Arc::new(summarized.with_described(Described::Refused(
+                Error::new(ErrorCode::InvalidResult, "Describe failed"),
+            ))));
+            let lost: StepResult = Ok(Arc::new(summarized.with_described(Described::Failed(
+                Error::new(ErrorCode::WorkerCrashed, "the kernel worker crashed"),
+            ))));
+            // By hand: what each knows, most first.
+            let ranked = [
+                (&whole, 3),
+                (&kept, 3),
+                (&lost, 2),
+                (&measured, 2),
+                (&refused, 1),
+                (&unmeasured, 0),
+            ];
+            for (old, knows) in ranked {
+                for (new, coming) in ranked {
+                    assert_eq!(
+                        replaces(Some(old), new),
+                        coming >= knows,
+                        "{old:?} by {new:?}"
+                    );
+                }
+            }
+        }
         // [kept now][coming], as measured, refused, unmeasured: a result replaces one that
         // knows as much or less.
         let results = [&measured, &refused, &unmeasured];
