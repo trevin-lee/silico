@@ -1033,3 +1033,83 @@ fn an_extruded_bsplines_volume_is_right_or_occts_known_wrong_answer() {
         s.volume
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// Descriptions made in the rebuild (M4.4), on real workers.
+
+/// Every document Silico keeps as a fixture: the golden ones and the oracle's sketch
+/// features (pads, pockets, revolves and grooves about their axes, cones from a point,
+/// fillets and chamfers), rebuilt on a pool of two workers.
+#[test]
+fn every_fixture_documents_solids_are_described_in_the_rebuild_as_their_maps_name_them() {
+    // Each built feature's description, made a batch at a time on whichever worker of the
+    // pool was free, is the one a worker of its own gives for the same shape, value for
+    // value; it holds as many of each kind as its summary counts and its element map names;
+    // and `elements` names every element of it. A description the core refuses (a value out
+    // of range for a cone's apex, a sphere's pole, a seam) would leave the solid unmeasured
+    // and show here as drift.
+    use silico_core::document::{Checked, FeatureId, read};
+    use silico_core::elements::elements;
+    use silico_core::fake::FakeSketches;
+    use silico_core::kernel::ElementKind;
+    use silico_core::pool::KernelPool;
+    use silico_core::recompute::{FeatureOutcome, Recompute, RunOutcome};
+    use std::time::Duration;
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let documents = [
+        "tests/golden/example.silico",
+        "tests/golden/chamfered-box.silico",
+        "tests/golden/fused-boxes.silico",
+        "tests/golden/plate-with-boss.silico",
+        "tests/golden/plate-with-holes.silico",
+        "tests/golden/pointed-cone.silico",
+        "tests/oracle/sketch-features.silico",
+    ];
+    let engine = Recompute::new(KernelPool::start_workers(Path::new(WORKER), 2).unwrap())
+        .with_sketches(FakeSketches::new());
+    let mut worker = KernelWorker::start_worker(Path::new(WORKER)).unwrap();
+    let mut solids = 0;
+    for document in documents {
+        let text = std::fs::read(root.join(document)).unwrap();
+        let checked = Checked::new(read(&text).unwrap()).unwrap();
+        let model = match engine.start(checked).wait_timeout(Duration::from_secs(300)) {
+            Ok(Ok(RunOutcome::Published(model))) => model,
+            Ok(other) => panic!("{document}: {other:?}"),
+            Err(_) => panic!("{document}: the rebuild took more than five minutes"),
+        };
+        assert!(model.drift().is_empty(), "{document}: {:?}", model.drift());
+        for (id, outcome) in model.features() {
+            let FeatureOutcome::Built { built, .. } = outcome else {
+                continue;
+            };
+            let what = format!("{document} {id}");
+            let described = model
+                .description(&FeatureId::new(id.as_str()).unwrap())
+                .unwrap_or_else(|| panic!("{what}: not described"));
+            assert_eq!(described, &worker.describe(&built.shape).unwrap(), "{what}");
+            let summary = built.summary().unwrap();
+            let counts = [
+                described.faces.len(),
+                described.edges.len(),
+                described.vertices.len(),
+            ];
+            assert_eq!(
+                counts,
+                [summary.faces, summary.edges, summary.vertices].map(|n| n as usize),
+                "{what}"
+            );
+            let map = model.element_map(id).unwrap();
+            assert_eq!(
+                counts,
+                [ElementKind::Face, ElementKind::Edge, ElementKind::Vertex].map(|k| map.count(k)),
+                "{what}"
+            );
+            let listed = elements(map, described.clone()).unwrap();
+            assert_eq!(listed.len(), counts.iter().sum::<usize>(), "{what}");
+            solids += 1;
+        }
+    }
+    // Enough solids that the fixtures' cones, revolves, and grooves are among them.
+    assert!(solids > 100, "{solids}");
+}

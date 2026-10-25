@@ -47,8 +47,9 @@ fn a_document_built_on_occt_is_rebuilt_from_the_cache_to_the_same_bytes() {
     let session = || Recompute::with_cache(Counted::new(WORKER, 1), dir.cache());
     let first = session();
     let built = published(&first);
-    // Four steps made, and three features' solids measured.
-    assert_eq!(first.kernel().asked(), 7);
+    // Four steps made, and three features' solids measured, each a summary and a batch of
+    // each kind described (none has a batch's worth of any kind): 4 + 3 × 4.
+    assert_eq!(first.kernel().asked(), 16);
     drop(first);
     let second = session();
     let again = published(&second);
