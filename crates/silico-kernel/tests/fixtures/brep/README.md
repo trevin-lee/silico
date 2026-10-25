@@ -49,3 +49,10 @@ BinTools::Write(box, out, false, false, BinTools_FormatVersion_CURRENT);
   `Part.makeRuledSurface`, `Part.BezierSurface`, `extrude`, `revolve`, then `exportBrep`).
   FreeCAD's types, degrees, pole counts, and lengths for its faces and edges, in order, are
   in `describe`'s test of it.
+
+- `offsets_and_conics.brep`: a text B-rep (read with `from_text_brep`) of a compound FreeCAD
+  1.1.3 made of what no Silico operation makes yet: an offset surface (a biquadratic
+  B-spline patch offset 0.25, `Part.OffsetSurface`), a parabola of focal length 1 from −2 to
+  2, a hyperbola of radii 2 and 1 from −1 to 1, and a cubic B-spline offset 0.5 in its plane
+  (`Part.OffsetCurve`), each made a shape and compounded (`exportBrep`). FreeCAD's types and
+  lengths are in `describe`'s test of it.

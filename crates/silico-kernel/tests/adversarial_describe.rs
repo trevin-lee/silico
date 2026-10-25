@@ -963,3 +963,42 @@ fn bsplines_beziers_extrusions_and_revolutions_are_each_their_kind_with_their_po
         assert_close("a turned Bézier", e.length, 2.29558714939, 1e-11);
     }
 }
+
+#[test]
+fn offsets_parabolas_and_hyperbolas_are_each_their_kind() {
+    // offsets_and_conics.brep (the fixtures' README): FreeCAD 1.1.3 types its face an
+    // OffsetSurface (of area 4.67901767573915, its Face.Area) and its edges, in order, four
+    // BSplineCurves (the offset face's boundary), a Parabola, a Hyperbola, and an OffsetCurve,
+    // with those lengths (Edge.Length).
+    let shape = from_text_brep(&fixture("offsets_and_conics.brep")).unwrap();
+    let d = described(&shape);
+    assert_eq!(d.faces.len(), 1);
+    assert_eq!(d.faces[0].surface, Surface::Offset);
+    assert_close(
+        "the offset face's area",
+        d.faces[0].area,
+        4.67901767573915,
+        1e-6,
+    );
+    let lengths = [
+        2.107133381923591,
+        2.171824276612882,
+        2.107133381923591,
+        2.171824276612882,
+        4.591174298809582,
+        3.3078924645266357,
+        4.674293906728582,
+    ];
+    assert_eq!(d.edges.len(), lengths.len());
+    for (i, (e, length)) in d.edges.iter().zip(lengths).enumerate() {
+        let what = format!("Edge{}", i + 1);
+        assert_close(&what, e.length, length, 1e-9);
+        assert!(!e.curve.is_straight(), "{what}");
+    }
+    for e in &d.edges[..4] {
+        assert!(matches!(e.curve, EdgeCurve::Bspline { .. }), "{e:?}");
+    }
+    assert_eq!(d.edges[4].curve, EdgeCurve::Parabola);
+    assert_eq!(d.edges[5].curve, EdgeCurve::Hyperbola);
+    assert_eq!(d.edges[6].curve, EdgeCurve::Offset);
+}

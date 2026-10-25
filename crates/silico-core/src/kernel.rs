@@ -1168,6 +1168,44 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_batch_of_one_kind_counts_every_element_of_the_other_two() {
+        // For each kind asked for, a batch holding what was asked and one of one other kind
+        // and two of the third: three not asked for, counted by adding, whichever two they are.
+        use silico_protocol::{EdgeCurve, EdgeDescription, FaceDescription, Surface};
+        let face = FaceDescription {
+            surface: Surface::Plane {
+                normal: [0.0, 0.0, 1.0],
+            },
+            area: 1.0,
+            centroid: [0.5, 0.5, 0.0],
+        };
+        let edge = EdgeDescription {
+            curve: EdgeCurve::Line,
+            length: 1.0,
+            start: [0.0; 3],
+            end: [1.0, 0.0, 0.0],
+            middle: [0.5, 0.0, 0.0],
+        };
+        let vertex = [0.0; 3];
+        for (kind, faces, edges, vertices) in [
+            (ElementKind::Face, 1, 1, 2),
+            (ElementKind::Edge, 2, 1, 1),
+            (ElementKind::Vertex, 1, 2, 1),
+        ] {
+            let description = Description {
+                faces: vec![face.clone(); faces],
+                edges: vec![edge.clone(); edges],
+                vertices: vec![vertex; vertices],
+            };
+            assert_eq!(
+                batch_problem(kind, 1, 1, 1, &description).as_deref(),
+                Some("it describes elements of a kind not asked for (3 of them)"),
+                "{kind:?}"
+            );
+        }
+    }
+
     /// A 4 × 3 rectangle on XY with a circle hole, and a circle beside it: two regions,
     /// six curves, four points.
     fn two_regions() -> FaceRegions {

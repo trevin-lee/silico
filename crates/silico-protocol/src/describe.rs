@@ -705,7 +705,15 @@ mod tests {
             (quantity.to_string(), value.is_nan() || value.is_infinite())
         };
         type Spoil = fn(&mut Description);
-        let cases: [(Spoil, &str); 4] = [
+        let cases: [(Spoil, &str); 5] = [
+            (
+                |d| {
+                    d.faces[0].surface = Surface::Plane {
+                        normal: [0.0, f64::NAN, 1.0],
+                    }
+                },
+                "the kernel's Face1's normal",
+            ),
             (
                 |d| d.faces[4].centroid[2] = f64::NAN,
                 "the kernel's Face5's centre of area",
