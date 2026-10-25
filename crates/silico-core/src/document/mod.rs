@@ -22,12 +22,12 @@ pub use model::{
 };
 pub use quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
 pub use reach::{Before, QuotedIds, net_reach, reached, with_users};
-pub(crate) use sketch::MemberPaths;
 pub use sketch::{
     CONSTRAINT_TYPES, Coordinate, Direction, ElementId, ElementKind, Form, LineSide, Plane,
     Reference, Sketch, SketchArc, SketchCircle, SketchConstraint, SketchLine, SketchPoint,
     TangentSide,
 };
+pub(crate) use sketch::{MemberPaths, member_id};
 pub(crate) use sketch_gate::too_small;
 pub use sketch_gate::{MAX_ANGLE_DEGREES, MAX_REFERENCE_LENGTH};
 pub use validate::{Checked, Invalid, PROBLEMS_LISTED, validate};
@@ -46,7 +46,20 @@ use crate::{Error, ErrorCode};
 /// it's refused, as `write` refuses any document past it.
 pub fn read(bytes: &[u8]) -> Result<Document, Error> {
     let _span = tracing::debug_span!("document_read", bytes = bytes.len()).entered();
-    let document = decode::decode(bytes)?;
+    read_tree(decode::tree(bytes)?)
+}
+
+/// The reader's tree of `bytes` ([`json::read`]), or why they aren't a document's JSON, as
+/// [`read`] says it.
+pub(crate) fn tree(bytes: &[u8]) -> Result<json::Node, Error> {
+    decode::tree(bytes)
+}
+
+/// The document the reader's tree `root` holds, read and refused as [`read`] reads and
+/// refuses the text it's the tree of: so an edit made on a document's tree is read by the
+/// one reader every file is.
+pub(crate) fn read_tree(root: json::Node) -> Result<Document, Error> {
+    let document = decode::decode_node(root)?;
     if fits(&document) {
         Ok(document)
     } else {
@@ -55,6 +68,12 @@ pub fn read(bytes: &[u8]) -> Result<Document, Error> {
             "the document is too large for Silico to read",
         ))
     }
+}
+
+/// The feature the reader's tree `node` holds, at `index` in the timeline, read as [`read`]
+/// reads each of a document's features.
+pub(crate) fn read_feature(index: usize, node: json::Node) -> Result<Feature, Error> {
+    decode::feature(index, node)
 }
 
 /// The document's canonical text: the same document always writes the same bytes. Refused

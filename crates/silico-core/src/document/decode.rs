@@ -21,9 +21,15 @@ use super::sketch::{
 use crate::naming::{NAMING_SCHEME_NUMBER, UNRECORDED_NAMING_SCHEME};
 use crate::{Error, ErrorCode};
 
-/// The document `bytes` hold, or why they don't hold one.
-pub fn decode(bytes: &[u8]) -> Result<Document, Error> {
-    let root = super::json::read(bytes).map_err(syntax)?;
+/// The reader's tree of `bytes`, or why they aren't a document's JSON.
+pub fn tree(bytes: &[u8]) -> Result<Node, Error> {
+    super::json::read(bytes).map_err(syntax)
+}
+
+/// The document the reader's tree `root` holds, or why it doesn't hold one: what a
+/// document's text is read as, once the reader has its tree ([`tree`]), so an edit of the
+/// tree is read exactly as a file is.
+pub fn decode_node(root: Node) -> Result<Document, Error> {
     let mut top = Fields::of(root, None, None, "the document")?;
     let silico = top.take("silico")?;
     let version = whole_number(&silico, None, "silico", FormatVersion::NUMBER)?;
@@ -351,7 +357,9 @@ fn id(node: Node, feature: Option<&str>, parameter: &str) -> Result<FeatureId, E
     })
 }
 
-fn feature(index: usize, node: Node) -> Result<Feature, Error> {
+/// The feature `node` holds, at `index` in the timeline (which names it until its ID is
+/// read), as a document's features are read.
+pub fn feature(index: usize, node: Node) -> Result<Feature, Error> {
     let place = format!("features[{index}]");
     let mut fields = Fields::of(node, Some(&place), None, &place)?;
     let id = id(fields.take("id")?, Some(&place), "id")?;
