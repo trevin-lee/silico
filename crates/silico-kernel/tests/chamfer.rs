@@ -959,7 +959,7 @@ fn a_chamfer_whose_collision_is_at_a_corner_stripe_names_no_edge() {
     let logs = Captured::default();
     let writer = logs.clone();
     let subscriber = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::WARN)
+        .with_max_level(tracing::Level::DEBUG)
         .with_ansi(false)
         .with_writer(move || writer.clone())
         .finish();
@@ -973,6 +973,11 @@ fn a_chamfer_whose_collision_is_at_a_corner_stripe_names_no_edge() {
     assert!(err.suggestion().unwrap().contains("one at a time"), "{err}");
     let text = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
     assert!(!text.contains("couldn't be read"), "{text}");
+    // And the stripe was reported and left out: without it, no edge would be named either.
+    assert!(
+        text.contains("faulty stripes that aren't given contours, left out"),
+        "{text}"
+    );
     assert!(chamfer(&cube, &all, equal(4.9), false).is_ok());
     // Through the core, the same.
     let mut k = kernel();

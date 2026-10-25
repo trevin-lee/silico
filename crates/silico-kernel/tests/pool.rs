@@ -32,7 +32,9 @@ use silico_core::kernel::{
     ShapeData, ShapeSummary,
 };
 use silico_core::pool::{KernelPool, Outcome, Pending, PoolClient, STOP_AFTER};
-use silico_protocol::{DebugOp, Failure, Generation, Misbehavior, Op, Refusal, Reply};
+use silico_protocol::{
+    DebugOp, Failure, Generation, Misbehavior, Op, Refusal, Reply, RequestId, Response,
+};
 
 /// One of the mixed requests the concurrency test sends, for both the pool and the
 /// reference worker.
@@ -1475,4 +1477,65 @@ fn a_clients_stale_submit_is_superseded_at_once() {
     let late = late.try_take().map_err(|_| "still waiting").unwrap();
     assert!(matches!(late, Outcome::Superseded), "{late:?}");
     assert!(matches!(outcome(busy), Outcome::Done(Ok(()))));
+}
+
+#[test]
+fn a_worker_that_exited_is_replaced_before_its_next_request_though_its_socket_is_open() {
+    // The script's first run says it started, waits for its request, and exits; a process it
+    // started holds its socket open, so the pool never sees it hang up, and sends the
+    // request's answer only once the worker has exited. The second request, queued behind
+    // the first, finds the slot's worker exited but not hung up: it goes to a new worker
+    // (the script's later runs are the test worker), not the dead one, where it would wait
+    // out its timeout unanswered.
+    let dir = marks_dir("exited-open");
+    let (ran, reply) = (dir.join("ran"), dir.join("reply"));
+    // The first request's answer, as the worker would send it: request 0, generation 0, done.
+    let mut answer = Vec::new();
+    silico_protocol::write_message(
+        &mut answer,
+        &Response {
+            id: RequestId(0),
+            generation: Generation(0),
+            result: Ok(Reply::Done),
+        },
+    )
+    .unwrap();
+    std::fs::write(&reply, answer).unwrap();
+    let exe = scripts::script(
+        "exited-open",
+        &format!(
+            "if [ -e '{ran}' ]; then exec '{TEST_WORKER}'; fi
+: > '{ran}'
+printf '\\0\\0\\0\\0' >&3
+dd bs=1 count=1 <&3 >/dev/null 2>&1
+me=$$
+(
+  while ps -o stat= -p \"$me\" | grep -q '^ *[^Z ]'; do sleep 0.01; done
+  cat '{reply}' >&3
+  i=0
+  while [ ! -e '{release}' ] && [ \"$i\" -lt 2400 ]; do sleep 0.05; i=$((i + 1)); done
+) </dev/null >/dev/null 2>&1 &
+exit 0",
+            ran = ran.display(),
+            reply = reply.display(),
+            release = dir.join("release").display(),
+        ),
+    );
+    let pool = KernelPool::start_workers(&exe, 1).unwrap();
+    let first_pids = pool.pids();
+    let first = pool.submit(Generation(0), sleep(0));
+    // Under PATIENCE, so a request sent to the dead worker fails by its own timeout.
+    let second = pool.submit(
+        Generation(0),
+        sleep(0).with_timeout(Duration::from_secs(30)),
+    );
+    done(first).unwrap();
+    let second = done(second);
+    release(&dir);
+    second.unwrap();
+    assert_ne!(
+        pool.pids(),
+        first_pids,
+        "the second request went to the exited worker"
+    );
 }

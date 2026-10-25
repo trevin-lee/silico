@@ -3075,4 +3075,50 @@ mod tests {
             .unwrap();
         assert!(!found.success(), "process {pid} outlived its guard");
     }
+
+    #[test]
+    fn a_log_line_of_up_to_8_kib_is_kept_whole() {
+        // The limit is 8 KiB, newline included, written out here rather than taken from
+        // MAX_LOG_LINE, so a smaller limit fails.
+        let mut bytes = vec![b'y'; 8 * 1024 - 1];
+        bytes.extend(b"\nnext\n");
+        assert_eq!(
+            logs_of(&bytes),
+            ["y".repeat(8 * 1024 - 1), "next".to_owned()]
+        );
+        // One byte more is cut to 8 KiB, and the rest of the line dropped.
+        let mut bytes = vec![b'z'; 8 * 1024 + 1];
+        bytes.extend(b"\nnext\n");
+        assert_eq!(logs_of(&bytes), ["z".repeat(8 * 1024), "next".to_owned()]);
+    }
+
+    #[test]
+    fn a_workers_socket_has_the_buffers_asking_for_4_mib_gets() {
+        // 4 MiB each way is asked for; the system may cap it (Linux at net.core.wmem_max and
+        // rmem_max), so the core's end is compared with a pair asked for 4 MiB here.
+        use std::os::unix::net::UnixStream;
+        const ASKED: usize = 4 * 1024 * 1024;
+        let dir = scratch("buffers");
+        let worker = super::Worker::spawn(&script(&dir, "exec sleep 600")).unwrap();
+        let ours = socket2::SockRef::from(&worker.socket);
+        let (reference, _other) = UnixStream::pair().unwrap();
+        let reference = socket2::SockRef::from(&reference);
+        let _ = reference.set_send_buffer_size(ASKED);
+        let _ = reference.set_recv_buffer_size(ASKED);
+        assert_eq!(
+            ours.send_buffer_size().unwrap(),
+            reference.send_buffer_size().unwrap()
+        );
+        assert_eq!(
+            ours.recv_buffer_size().unwrap(),
+            reference.recv_buffer_size().unwrap()
+        );
+        // And larger than the platform's default (a pair asked for nothing), so the
+        // comparison can fail.
+        let (default, _other) = UnixStream::pair().unwrap();
+        assert!(
+            ours.send_buffer_size().unwrap()
+                > socket2::SockRef::from(&default).send_buffer_size().unwrap()
+        );
+    }
 }

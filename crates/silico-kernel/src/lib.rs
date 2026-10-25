@@ -1536,11 +1536,15 @@ fn amount_of(result: &ffi::Shape, inputs: &[&ffi::Shape]) -> Result<Amount, Kern
     // its error grows with the model (it read the cut above as 4e-6, and the cut of a torus
     // of radii 200 and 100 by a copy moved 30 as 1.9, where its volume is -1.7e-4: both
     // really negative), so it's compared with the cube of the
-    // bounding diagonal, not the area. What it doesn't clear (results that fill little of
+    // bounding diagonal, not the area; and only if it's thicker than the tolerance on
+    // average too, since a part a few micrometres across clears its size however thin it is
+    // (a 1e-3 square swept 1.5e-7). What it doesn't clear (results that fill little of
     // their box, too) is measured precisely, and judged by its mean thickness.
     let rough = ffi::rough_amounts(result)?;
     let diagonal = ffi::bounding_diagonal(result)?;
-    if rough.volume > 1e-5 * diagonal * diagonal * diagonal {
+    if rough.volume > 1e-5 * diagonal * diagonal * diagonal
+        && rough.volume > LENGTH_TOLERANCE * rough.area
+    {
         return Ok(Amount::Some);
     }
     let precise = ffi::measure(result, silico_protocol::MEASURE_PRECISION)?;
@@ -1967,8 +1971,53 @@ mod tests {
         // 1.5e-5 and area about 200: a mean thickness of 7.5e-8, within LENGTH_TOLERANCE
         // (1e-7) of none. Its rough volume is far below 1e-5 × the cube of its diagonal
         // (14.14³ × 1e-5 = 0.028), so it's measured precisely.
-        use silico_protocol::{Curve, FaceRegions, Refusal, Region, SketchPlane};
-        let square = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        let (faces, result, thin) = thin_prism(10.0);
+        assert!(result.is_valid().unwrap());
+        // But no volume to speak of.
+        assert!(matches!(
+            super::amount_of(result.get().unwrap(), &[]).unwrap(),
+            super::Amount::None
+        ));
+        // So the sweep is refused as an invalid result, for that, not built.
+        let refused = super::build_prism(&faces, [0.0; 3], thin).err().unwrap();
+        assert!(
+            matches!(
+                refused.refusal(),
+                silico_protocol::Refusal::ResultInvalid { .. }
+            ),
+            "{refused}"
+        );
+    }
+
+    #[test]
+    fn a_prism_too_thin_for_a_volume_is_refused_however_small_it_is() {
+        // The prism above at 1e-3 × 1e-3, swept the same 1.5e-7: volume 1.5e-13, area
+        // 2.0006e-6 (FreeCAD 1.1.3, which calls it valid), a mean thickness of 7.5e-8, as
+        // thin as the 10 × 10 one. Its bounding diagonal is about 1.4145e-3 (1.41421e-3 and
+        // OCCT's 1e-7 gap each side), so 1e-5 × its cube is 2.83e-14, which its rough volume
+        // exceeds 5.3 times: its size alone would clear it. Its mean thickness doesn't, so
+        // it's measured precisely, and refused (1.5e-13 against 1e-7 × 2.0006e-6 = 2.0e-13).
+        let (faces, result, thin) = thin_prism(1e-3);
+        assert!(result.is_valid().unwrap());
+        assert!(matches!(
+            super::amount_of(result.get().unwrap(), &[]).unwrap(),
+            super::Amount::None
+        ));
+        let refused = super::build_prism(&faces, [0.0; 3], thin).err().unwrap();
+        assert!(
+            matches!(
+                refused.refusal(),
+                silico_protocol::Refusal::ResultInvalid { .. }
+            ),
+            "{refused}"
+        );
+    }
+
+    /// A `side` × `side` square on the xy plane, its faces, swept 1.5e-7 up z, checked as
+    /// every operation's result is, and that sweep.
+    fn thin_prism(side: f64) -> (super::Shape, super::Shape, [f64; 3]) {
+        use silico_protocol::{Curve, FaceRegions, Region, SketchPlane};
+        let square = [[0.0, 0.0], [side, 0.0], [side, side], [0.0, side]];
         let outer = (0..4)
             .map(|i| Curve::Line {
                 start: square[i],
@@ -1996,18 +2045,7 @@ mod tests {
         // Valid to OCCT: the check every operation's result passes lets it through.
         let result = super::checked_result(&[&faces], solid, super::Operation::Extrusion)
             .unwrap_or_else(|e| panic!("OCCT called the thin prism invalid: {e}"));
-        assert!(result.is_valid().unwrap());
-        // But no volume to speak of.
-        assert!(matches!(
-            super::amount_of(result.get().unwrap(), &[]).unwrap(),
-            super::Amount::None
-        ));
-        // So the sweep is refused as an invalid result, for that, not built.
-        let refused = super::build_prism(&faces, [0.0; 3], thin).err().unwrap();
-        assert!(
-            matches!(refused.refusal(), Refusal::ResultInvalid { .. }),
-            "{refused}"
-        );
+        (faces, result, thin)
     }
 
     use super::ffi::{HistoryEntry, Kind, Relation};

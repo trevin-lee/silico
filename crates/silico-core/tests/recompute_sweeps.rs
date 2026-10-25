@@ -1228,6 +1228,62 @@ fn a_curve_exactly_the_tolerance_from_the_axis_isnt_named_off_it() {
 }
 
 #[test]
+fn a_region_reaching_exactly_the_tolerance_left_of_the_axis_touches_it() {
+    // The mirror of the rectangle above, on the axis's left (+y): from y = −1 to y = 1e-7
+    // about the x axis. Its highest point is exactly OCCT's 1e-7 from the axis (about the x
+    // axis a point's signed distance is its y, exactly), so on it, and the region doesn't
+    // cross it. Built.
+    let model = published(
+        &engine(),
+        &[
+            &polygon(
+                "ssssssss",
+                "xy",
+                &[[0.0, -1.0], [4.0, -1.0], [4.0, 1e-7], [0.0, 1e-7]],
+            ),
+            &turned("rrrrrrrr", "revolve", None, "ssssssss", "x_axis", TURN),
+        ],
+    );
+    assert!(built(&model, "rrrrrrrr"), "{:?}", model.features());
+}
+
+#[test]
+fn a_curve_exactly_the_tolerance_left_of_the_axis_isnt_named_off_it() {
+    // The mirror of the test above: A(0, −1), B(6, −1), C(6, 1), D(5, 1), E(5, 1e-7),
+    // F(0, 1e-7), about the x axis. The region crosses it (1 mm below along AB, 1 above
+    // along CD), and every side reaches off it but EF (na000005), which lies exactly 1e-7
+    // above it, on it by the tolerance.
+    let model = published(
+        &engine(),
+        &[
+            &polygon(
+                "ssssssss",
+                "xy",
+                &[
+                    [0.0, -1.0],
+                    [6.0, -1.0],
+                    [6.0, 1.0],
+                    [5.0, 1.0],
+                    [5.0, 1e-7],
+                    [0.0, 1e-7],
+                ],
+            ),
+            &turned("rrrrrrrr", "revolve", None, "ssssssss", "x_axis", TURN),
+        ],
+    );
+    let error = failed(&model, "rrrrrrrr");
+    assert_eq!(
+        error.message(),
+        "revolve rrrrrrrr turns sketch ssssssss about a line that crosses its profile: its axis, the sketch's x_axis, has the profile's curves on both sides, 1 mm on one and 1 mm on the other"
+    );
+    assert_eq!(
+        error.elements(),
+        ["na000001", "na000002", "na000003", "na000004", "na000006"]
+    );
+    assert_eq!(error.elements_total(), 5);
+}
+
+#[test]
 fn a_crossing_with_more_curves_than_are_listed_counts_them_all_and_the_axis() {
     // A region of 101 sides, every one reaching off the x axis: the bottom (0, −1) to
     // (98, −1), the right side up to (98, 1), a zigzag back along y = 1 and y = 2 to (1, 2),
