@@ -698,12 +698,89 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
         added["result"]["$defs"]["Feature"],
         document["$defs"]["Feature"]
     );
-    // A new feature is the document's, without a fingerprint, and its id and v optional.
+    // A new feature is the document's, its fingerprint only null, its id and v optional,
+    // and each member the reader takes null for (its id, v, and note, and a pad's or
+    // revolve's base) taking null.
     let new = &added["request"]["$defs"]["NewFeature"];
     assert_eq!(new["required"], serde_json::json!(["name"]));
-    assert!(new["properties"].get("fingerprint").is_none());
-    assert_eq!(new["oneOf"], document["$defs"]["Feature"]["oneOf"]);
+    assert_eq!(new["properties"]["fingerprint"]["type"], "null");
+    for (key, own) in [
+        ("id", serde_json::json!({"$ref": "#/$defs/FeatureId"})),
+        ("v", serde_json::json!({"$ref": "#/$defs/FeatureVersion"})),
+        ("note", serde_json::json!({"type": "string"})),
+    ] {
+        assert_eq!(
+            new["properties"][key]["anyOf"],
+            serde_json::json!([own, {"type": "null"}]),
+            "{key}"
+        );
+    }
+    let mut types = document["$defs"]["Feature"]["oneOf"].clone();
+    for variant in types.as_array_mut().unwrap() {
+        if matches!(
+            variant["properties"]["type"]["const"].as_str(),
+            Some("pad" | "revolve")
+        ) {
+            variant["properties"]["base"] = serde_json::json!({
+                "anyOf": [{"$ref": "#/$defs/FeatureId"}, {"type": "null"}],
+                "description": "Null is the same as left out.",
+            });
+        }
+    }
+    assert_eq!(new["oneOf"], types);
     assert_eq!(new["unevaluatedProperties"], false);
+}
+
+#[test]
+fn a_new_feature_given_null_where_the_reader_takes_it_holds_to_its_schema_and_is_added() {
+    let schema = schema_of("add_feature", "request");
+    let pocket = example("add_feature/request").replace(
+        r#""type": "pocket","#,
+        r#""id": null, "v": null, "type": "pocket", "note": null, "fingerprint": null,"#,
+    );
+    let pad = r#"{"session": "s1", "revision": 6, "feature": {"id": null, "type": "pad", "v": null, "name": "Pad", "note": null, "base": null, "sketch": "s0000002", "extent": {"type": "one_side", "length": 6, "reversed": false}, "fingerprint": null}}"#;
+    let f = opened(BRACKET);
+    f.begin();
+    for (what, text) in [("a pocket", pocket.as_str()), ("a pad", pad)] {
+        holds(&schema, text, what);
+        let request = AddFeatureRequest::read(&parsed(text)).unwrap();
+        let added = answer(
+            f.sessions
+                .add_feature(&request.session, f.revision(), request.feature),
+        )
+        .result
+        .unwrap();
+        // Each null left out: a new ID, no note, no fingerprint.
+        assert!(!["p0000001", "s0000002"].contains(&added.feature.id.as_str()));
+        assert_eq!(
+            (added.feature.note, added.feature.fingerprint),
+            (None, None),
+            "{what}"
+        );
+    }
+    // Null where the reader refuses it, the schema refuses too: a pocket's base, which it
+    // must have, and a name.
+    for (what, from, to) in [
+        (
+            "a pocket's null base",
+            r#""base": "p0000001""#,
+            r#""base": null"#,
+        ),
+        ("a null name", r#""name": "Leg holes""#, r#""name": null"#),
+    ] {
+        let text = example("add_feature/request").replace(from, to);
+        fails(&schema, &text, what);
+        let request = AddFeatureRequest::read(&parsed(&text)).unwrap();
+        assert!(
+            answer(
+                f.sessions
+                    .add_feature(&request.session, f.revision(), request.feature)
+            )
+            .result
+            .is_err(),
+            "{what}"
+        );
+    }
 }
 
 #[test]

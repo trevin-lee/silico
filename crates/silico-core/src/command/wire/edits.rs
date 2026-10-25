@@ -236,8 +236,11 @@ impl ToWire for Replaced {
     }
 }
 
-/// A feature to add: one as the document writes it, its `id` and `v` left out if wanted
-/// (the core makes an ID, and gives the type's current version), and no `fingerprint`.
+/// A feature to add: one as the document writes it, as the document's reader takes it for
+/// `add_feature` (`edit::add_feature`): its `id` and `v` left out if wanted (the core makes an
+/// ID, and gives the type's current version), and no `fingerprint`; and `null` for any
+/// member it may leave out (its `id`, `v`, and `note`, a pad's or revolve's `base`, and its
+/// fingerprint, which it can only leave out), taken as left out.
 pub struct NewFeatureSchema;
 
 impl JsonSchema for NewFeatureSchema {
@@ -253,20 +256,85 @@ impl JsonSchema for NewFeatureSchema {
                 serde_json::Value::String(
                     "A feature as the document writes it, to add at the end of the timeline. \
                      Its id may be left out, for one the core makes that no feature holds, and \
-                     its v, for the type's current version. A fingerprint is refused: a commit \
-                     writes it."
+                     its v, for the type's current version. A fingerprint is refused, but for \
+                     null: a commit writes it. Each member the feature may leave out (its id, \
+                     v, note, and fingerprint, and a pad's or revolve's base) may be given as \
+                     null, which is the same as leaving it out."
                         .to_owned(),
                 ),
             );
             if let Some(serde_json::Value::Object(properties)) = object.get_mut("properties") {
-                properties.remove("fingerprint");
+                for (key, said) in [
+                    (
+                        "id",
+                        Some("Its ID: null, or left out, for one the core makes that no feature holds."),
+                    ),
+                    (
+                        "v",
+                        Some("Its version: null, or left out, for the type's current version."),
+                    ),
+                    ("note", None),
+                ] {
+                    if let Some(property) = properties.get_mut(key) {
+                        null_left_out(property, said);
+                    }
+                }
+                properties.insert(
+                    "fingerprint".to_owned(),
+                    serde_json::json!({
+                        "description": "Only null, which is the same as leaving it out: a \
+                                        commit writes a feature's fingerprint.",
+                        "type": "null",
+                    }),
+                );
             }
             if let Some(serde_json::Value::Array(required)) = object.get_mut("required") {
                 required.retain(|key| key != "id" && key != "v");
             }
+            if let Some(serde_json::Value::Array(types)) = object.get_mut("oneOf") {
+                for variant in types {
+                    let type_name = variant
+                        .pointer("/properties/type/const")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned);
+                    let Some(type_name) = type_name else {
+                        continue;
+                    };
+                    let Some(serde_json::Value::Object(properties)) =
+                        variant.get_mut("properties")
+                    else {
+                        continue;
+                    };
+                    for key in crate::document::optional_members(&type_name) {
+                        if let Some(property) = properties.get_mut(*key) {
+                            null_left_out(property, None);
+                        }
+                    }
+                }
+            }
         }
         schema
     }
+}
+
+/// `property`, a member a new feature may leave out, taking `null` too, which the document's
+/// reader takes as the member left out: described as `said`, if given, or else by its own
+/// description and that null is the same as left out.
+fn null_left_out(property: &mut serde_json::Value, said: Option<&str>) {
+    let mut given = property.take();
+    let description = given
+        .as_object_mut()
+        .and_then(|given| given.remove("description"))
+        .and_then(|description| description.as_str().map(str::to_owned));
+    let said = match (said, description) {
+        (Some(said), _) => said.to_owned(),
+        (None, Some(description)) => format!("{description} Null is the same as left out."),
+        (None, None) => "Null is the same as left out.".to_owned(),
+    };
+    *property = serde_json::json!({
+        "anyOf": [given, {"type": "null"}],
+        "description": said,
+    });
 }
 
 /// A value of a document's, any JSON: a field's, as the document's reader reads that field
