@@ -8,19 +8,23 @@
 //! commands, each session's commands run in turn on a thread of its own, each answered by a
 //! [`Running`] handle; docs/design/m4.1-command-api.md, section 3).
 
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::sync::Arc;
 
-use crate::document::{self, Checked, Document, Feature, Fingerprint, NamingScheme, Operation};
+use crate::Error;
+use crate::document::{
+    self, Checked, Document, Feature, FeatureId, Fingerprint, NamingScheme, Operation,
+};
 use crate::kernel::Kernel;
 use crate::recompute::{Model, Recompute, RunOutcome};
-use crate::{Error, ErrorCode};
 
 mod session;
 
 pub use session::{
-    MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice, ModelRead, Opened, Published, Read, Response,
-    Revision, Running, SessionId, SessionInfo, Sessions, Status,
+    Begun, Committed, MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice, ModelRead, Opened, Published,
+    Read, Reformatted, Response, Revision, RolledBack, Running, SessionId, SessionInfo, Sessions,
+    Status,
 };
 
 /// The command API's version (docs/design/m4.1-command-api.md, section 8): one more for
@@ -207,9 +211,15 @@ pub fn rebuild<K: Kernel + 'static>(
 /// failure, not the document's.
 pub fn check(model: &Model) -> Result<Problems, Error> {
     let _span = tracing::info_span!("check").entered();
+    check_except(model, &BTreeSet::new())
+}
+
+/// [`check`], but no drift of a feature in `except` (`Model::drift_except`): one a
+/// session's edits reached since its last save, which its commit writes anew (decision 28).
+fn check_except(model: &Model, except: &BTreeSet<FeatureId>) -> Result<Problems, Error> {
     let mut problems = failures(model)?;
     let unlisted = model.unlisted_errors();
-    problems.extend(own(model.drift())?);
+    problems.extend(own(model.drift_except(except))?);
     Ok(Problems::with_unlisted(problems, unlisted))
 }
 
@@ -240,22 +250,44 @@ pub struct Formatted {
     /// The sketches whose stored values (points, circles' radii, reference dimensions'
     /// values) the solve changed, in timeline order.
     pub resolved: Vec<document::FeatureId>,
-    /// The features that didn't build, or whose solids couldn't be measured: each keeps
-    /// the fingerprint stored with it, and this says why. Drift isn't among them: it's
-    /// what formatting fixes.
+    /// What the text can't fix: the features that didn't build, or whose solids couldn't be
+    /// measured, each keeping the fingerprint stored with it, and the drift of each feature
+    /// whose record it leaves as stored. [`format`] writes every record it can, so its drift
+    /// is only of measures a fingerprint can't hold.
     pub problems: Problems,
 }
 
 /// The model's document in canonical form with each feature's fingerprint as the model
-/// rebuilt it and each sketch as it solved (`Model::saved`): what `silico fmt` writes, and
-/// what a save writes;
-/// or, if its canonical text would be too long, that problem. An error is a format that
-/// couldn't be done, as for [`check`]: nothing should be written then.
+/// rebuilt it and each sketch as it solved (`Model::saved`): what `silico fmt` writes, and a
+/// session's `format` with no features named; or, if its canonical text would be too long,
+/// that problem. An error is a format that couldn't be done, as for [`check`]: nothing
+/// should be written then.
 pub fn format(model: &Model) -> Result<Result<Formatted, Problems>, Error> {
     let _span = tracing::info_span!("format").entered();
+    let every = model
+        .document()
+        .features
+        .iter()
+        .map(|f| f.id.clone())
+        .collect();
+    formatted(model, &every, &model.drifted())
+}
+
+/// The model's document in canonical form with the fingerprint and solve of each feature in
+/// `writes` as the model rebuilt it (`Model::saved_for`), every other's as stored: what a
+/// session's commit writes (the features its edits reached, decision 28) and its `format`
+/// (every feature but those whose drift it doesn't accept, decision 31), as [`format`]
+/// writes every feature's. Its problems are the failures, the solids that couldn't be
+/// measured, and of `drift` (the model's, `Model::drifted`), that of every feature whose
+/// record it doesn't write, which it leaves as stored.
+fn formatted(
+    model: &Model,
+    writes: &BTreeSet<FeatureId>,
+    drift: &[(FeatureId, Error)],
+) -> Result<Result<Formatted, Problems>, Error> {
     let mut problems = failures(model)?;
     let unlisted = model.unlisted_errors();
-    let written = model.saved();
+    let written = model.saved_for(writes);
     let pairs = || model.document().features.iter().zip(&written.features);
     let refingerprinted = pairs()
         .filter(|(before, after)| before.fingerprint != after.fingerprint)
@@ -289,13 +321,12 @@ pub fn format(model: &Model) -> Result<Result<Formatted, Problems>, Error> {
             return Ok(Err(Problems::of(vec![error])));
         }
     };
-    // Problems the save can't fix: drift is what it fixes, so only the failures and the
-    // solids that couldn't be measured.
-    problems.extend(
-        own(model.drift())?
-            .into_iter()
-            .filter(|error| error.code() != ErrorCode::Drift),
-    );
+    // Problems the save can't fix: the failures, the solids that couldn't be measured, and
+    // the drift of what it leaves as stored; drift of what it writes is what it fixes.
+    problems.extend(own(model
+        .drift_left(drift, writes)
+        .map(|(_, error)| error.clone())
+        .collect())?);
     Ok(Ok(Formatted {
         text,
         refingerprinted,

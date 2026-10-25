@@ -292,8 +292,8 @@ fn sweep<'a>(
 }
 
 /// A sketch's plane, and each of its lists as the file writes it, by the kind of element
-/// it holds: taken apart whole, so a field added to a sketch is a compile error here until
-/// the file, and the outline, say it.
+/// it holds, in the format's order ([`ElementKind::ALL`]): taken apart whole, so a field
+/// added to a sketch is a compile error here until the file, and the outline, say it.
 fn sketch_lists(sketch: &Sketch) -> (&Plane, [(ElementKind, Vec<Out<'_>>); 5]) {
     let Sketch {
         plane,
@@ -309,65 +309,61 @@ fn sketch_lists(sketch: &Sketch) -> (&Plane, [(ElementKind, Vec<Out<'_>>); 5]) {
         items.sort_by(|a, b| id(a).cmp(id(b)));
         items
     }
-    let points = sorted(points, |p| &p.id)
-        .into_iter()
-        .map(|p| {
-            Out::Object(vec![
-                ("id", element(&p.id)),
-                ("x", coordinate(p.x)),
-                ("y", coordinate(p.y)),
-                ("construction", boolean(p.construction)),
-            ])
-        })
-        .collect();
-    let lines = sorted(lines, |l| &l.id)
-        .into_iter()
-        .map(|l| {
-            Out::Object(vec![
-                ("id", element(&l.id)),
-                ("from", element(&l.from)),
-                ("to", element(&l.to)),
-                ("construction", boolean(l.construction)),
-            ])
-        })
-        .collect();
-    let circles = sorted(circles, |c| &c.id)
-        .into_iter()
-        .map(|c| {
-            Out::Object(vec![
-                ("id", element(&c.id)),
-                ("center", element(&c.center)),
-                ("radius", coordinate(c.radius)),
-                ("construction", boolean(c.construction)),
-            ])
-        })
-        .collect();
-    let arcs = sorted(arcs, |a| &a.id)
-        .into_iter()
-        .map(|a| {
-            Out::Object(vec![
-                ("id", element(&a.id)),
-                ("center", element(&a.center)),
-                ("start", element(&a.start)),
-                ("end", element(&a.end)),
-                ("construction", boolean(a.construction)),
-            ])
-        })
-        .collect();
-    let constraints = sorted(constraints, |c| &c.id)
-        .into_iter()
-        .map(constraint)
-        .collect();
-    (
-        plane,
-        [
-            (ElementKind::Point, points),
-            (ElementKind::Line, lines),
-            (ElementKind::Circle, circles),
-            (ElementKind::Arc, arcs),
-            (ElementKind::Constraint, constraints),
-        ],
-    )
+    let lists = ElementKind::ALL.map(|kind| {
+        let items = match kind {
+            ElementKind::Point => sorted(points, |p| &p.id)
+                .into_iter()
+                .map(|p| {
+                    Out::Object(vec![
+                        ("id", element(&p.id)),
+                        ("x", coordinate(p.x)),
+                        ("y", coordinate(p.y)),
+                        ("construction", boolean(p.construction)),
+                    ])
+                })
+                .collect(),
+            ElementKind::Line => sorted(lines, |l| &l.id)
+                .into_iter()
+                .map(|l| {
+                    Out::Object(vec![
+                        ("id", element(&l.id)),
+                        ("from", element(&l.from)),
+                        ("to", element(&l.to)),
+                        ("construction", boolean(l.construction)),
+                    ])
+                })
+                .collect(),
+            ElementKind::Circle => sorted(circles, |c| &c.id)
+                .into_iter()
+                .map(|c| {
+                    Out::Object(vec![
+                        ("id", element(&c.id)),
+                        ("center", element(&c.center)),
+                        ("radius", coordinate(c.radius)),
+                        ("construction", boolean(c.construction)),
+                    ])
+                })
+                .collect(),
+            ElementKind::Arc => sorted(arcs, |a| &a.id)
+                .into_iter()
+                .map(|a| {
+                    Out::Object(vec![
+                        ("id", element(&a.id)),
+                        ("center", element(&a.center)),
+                        ("start", element(&a.start)),
+                        ("end", element(&a.end)),
+                        ("construction", boolean(a.construction)),
+                    ])
+                })
+                .collect(),
+            ElementKind::Constraint => sorted(constraints, |c| &c.id)
+                .into_iter()
+                .map(constraint)
+                .collect(),
+        };
+        (kind, items)
+    });
+    (plane, lists)
 }
 
 /// A sketch's fields (D5 of docs/design/m3.2-sketch-format.md): each list sorted by ID,

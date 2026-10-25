@@ -97,3 +97,9 @@ crates/silico-kernel/src/lib.rs | amount_of | replace > with >= | #129
 crates/silico-kernel/src/lib.rs | amount_of | replace > with == | #129
 crates/silico-kernel/src/lib.rs | amount_of | replace * with + | #129
 crates/silico-kernel/src/lib.rs | amount_of | replace * with / | #129
+# Equivalent until edits: no edit can yet make a document the gate took at begin and
+# refuses now. With the guard always true, such a commit would end the transaction as
+# unchanged and `unwritten` would put begin's text back, throwing the edits away; M4.2
+# PR 6, which adds edits, must test that the commit is refused, the edits stay held, and
+# the transaction stays open, and remove this line.
+crates/silico-core/src/command/session.rs | Session<C>::commit | replace match guard unchanged with true | #144
