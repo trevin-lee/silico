@@ -46,7 +46,7 @@ fn revision(n: u64) -> Revision {
 fn session(revision_number: u64, transaction: bool) -> SessionInfo {
     SessionInfo {
         id: SessionId::parse("s1").unwrap(),
-        path: PathBuf::from("bracket.silico"),
+        path: "bracket.silico".to_owned(),
         revision: revision(revision_number),
         transaction,
         reloaded: false,
@@ -1012,7 +1012,7 @@ fn a_response_past_its_limit_is_answered_with_a_refusal_saying_so() {
     );
     // A refusal too long itself is written without its session and model.
     let mut long_path = answer.session.clone().unwrap();
-    long_path.path = PathBuf::from("p".repeat(2000));
+    long_path.path = "p".repeat(2000);
     let answer = Response {
         session: Some(long_path),
         ..answer

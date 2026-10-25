@@ -127,6 +127,14 @@
     "mesh": "a6baaabbd1b36e15",
     "summary": "ad37b0aa431e9b4c"
   },
+  "cylinder_revolved_onto_a_box": {
+    "brep": "42bd0b4886173fac",
+    "history": "6da3d2a375787908",
+    "measures": "b107faeef173cc42",
+    "mesh": "4df176da26a58bd1",
+    "summary": "374bf3394fb793b9",
+    "topology": "d093f41de83a197a"
+  },
   "cylinder_slender": {
     "brep": "adadbc03e1e0ecf8",
     "measures": "106b47902579aecf",
@@ -1453,6 +1461,14 @@
     "summary": "d8eb368555146854",
     "topology": "b7fe2b2d96d27620"
   },
+  "torus_90_one_side_xy_about_x": {
+    "brep": "2bb0fe34636edf71",
+    "history": "616cc19e20092a6b",
+    "measures": "5764977e1fb177e6",
+    "mesh": "30b3bf5830ff3e7f",
+    "summary": "5c2ec4f6b08a4831",
+    "topology": "b7fe2b2d96d27620"
+  },
   "torus_90_one_side_xz": {
     "brep": "a85f0d2245fbc6ce",
     "history": "616cc19e20092a6b",
@@ -1483,6 +1499,14 @@
     "measures": "300f8dc6927fdcc0",
     "mesh": "a312a457a7ed4007",
     "summary": "f452ce62e87590cc",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_90_reversed_xz_about_x": {
+    "brep": "50f714bd7a584fbf",
+    "history": "616cc19e20092a6b",
+    "measures": "8ba49bd17b615c46",
+    "mesh": "a5b27b758592ddeb",
+    "summary": "5c2ec4f6b08a4831",
     "topology": "b7fe2b2d96d27620"
   },
   "torus_90_symmetric_xy": {
@@ -1531,6 +1555,14 @@
     "measures": "dcd649dffe53bd9d",
     "mesh": "d31711e41068eed1",
     "summary": "586fbd46dcbda940",
+    "topology": "b7fe2b2d96d27620"
+  },
+  "torus_90_symmetric_yz_about_x": {
+    "brep": "f818b77bfb110634",
+    "history": "616cc19e20092a6b",
+    "measures": "d393542a8b1783fb",
+    "mesh": "ebb949a8a3449599",
+    "summary": "11ad622a914df41f",
     "topology": "b7fe2b2d96d27620"
   },
   "torus_fat": {

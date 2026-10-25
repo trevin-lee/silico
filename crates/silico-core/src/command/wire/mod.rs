@@ -186,16 +186,12 @@ impl ToWire for ModelChoice {
 }
 
 impl ToWire for SessionInfo {
-    /// Its ID, its path as opened, its revision, and whether a transaction is open and its
-    /// file was read again. A path that isn't UTF-8 would be written lossily: unreachable
-    /// once `open` refuses non-UTF-8 paths (M4.2's PR 5).
+    /// Its ID, its path as opened (UTF-8: `open` refuses any other), its revision, and
+    /// whether a transaction is open and its file was read again.
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("id", self.id.to_wire()),
-            (
-                "path",
-                Json::string(self.path.to_string_lossy().into_owned()),
-            ),
+            ("path", Json::str(&self.path)),
             ("revision", self.revision.to_wire()),
             ("transaction", Json::bool(self.transaction)),
             ("reloaded", Json::bool(self.reloaded)),

@@ -8,6 +8,7 @@ mod fingerprint;
 pub mod json;
 mod model;
 mod quantity;
+mod reach;
 mod sketch;
 mod sketch_gate;
 mod validate;
@@ -22,6 +23,8 @@ pub use model::{
     Operation, PadExtent, PocketExtent, Position, SweepFeature, TurnExtent, Units,
 };
 pub use quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
+pub use reach::{Before, QuotedIds, net_reach, reached, with_users};
+pub(crate) use sketch::MemberPaths;
 pub use sketch::{
     CONSTRAINT_TYPES, Coordinate, Direction, ElementId, ElementKind, Form, LineSide, Plane,
     Reference, Sketch, SketchArc, SketchCircle, SketchConstraint, SketchLine, SketchPoint,
