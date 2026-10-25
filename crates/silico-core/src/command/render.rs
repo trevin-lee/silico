@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use silico_protocol::{
     Camera, MAX_FRAME_LEN, MAX_RENDER_EDGES, MAX_RENDER_FACES, MAX_RENDER_SIDE, Mesh, MeshAt,
-    Projection, RenderBody, RenderScene,
+    PointPlace, Projection, RenderBody, RenderScene,
 };
 
 use super::Problems;
@@ -523,7 +523,7 @@ fn eye_outside<K: Kernel>(
         return Ok(());
     }
     let eye = camera.eye;
-    let asked: Vec<(&Body, Pending<bool>)> = bodies
+    let asked: Vec<(&Body, Pending<PointPlace>)> = bodies
         .iter()
         // A body with no box (its measure failed) is asked too.
         .filter(|b| {
@@ -536,7 +536,8 @@ fn eye_outside<K: Kernel>(
         })
         .collect();
     for (body, pending) in asked {
-        if done(pending.wait()).map_err(|p| naming(p, body.id))? {
+        // On its boundary counts as inside (the design: an eye on a face is refused too).
+        if done(pending.wait()).map_err(|p| naming(p, body.id))? != PointPlace::Outside {
             return Err(Problems::from(
                 Error::new(
                     ErrorCode::InvalidInput,
