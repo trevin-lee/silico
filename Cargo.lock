@@ -4176,6 +4176,7 @@ version = "0.0.0"
 dependencies = [
  "command-fds",
  "cpu-time",
+ "crc32fast",
  "hmac",
  "jsonschema",
  "libc",
@@ -4209,6 +4210,7 @@ dependencies = [
  "proptest",
  "rustix",
  "serde_json",
+ "sha2",
  "silico-core",
  "silico-kernel",
  "silico-oracle",

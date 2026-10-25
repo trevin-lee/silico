@@ -6,6 +6,8 @@
 // Shared by the files below, each loaded once.
 #[path = "common/box_edges.rs"]
 mod box_edges;
+#[path = "common/brep_fixture.rs"]
+mod brep_fixture;
 #[path = "common/cached.rs"]
 mod cached;
 #[path = "common/chamfer_sizes.rs"]
@@ -14,6 +16,8 @@ mod chamfer_sizes;
 mod close;
 #[path = "../../silico-core/tests/common/profile.rs"]
 mod draw;
+#[path = "common/exported.rs"]
+mod exported;
 #[path = "common/face_where.rs"]
 mod face_where;
 #[path = "common/facts.rs"]
@@ -43,6 +47,8 @@ mod adversarial_chamfer;
 mod adversarial_chamfer_report;
 #[path = "adversarial_describe.rs"]
 mod adversarial_describe;
+#[path = "adversarial_export.rs"]
+mod adversarial_export;
 #[path = "adversarial_faces.rs"]
 mod adversarial_faces;
 #[path = "adversarial_fillet.rs"]
@@ -65,6 +71,8 @@ mod bridge;
 mod chamfer;
 #[path = "describe.rs"]
 mod describe;
+#[path = "export.rs"]
+mod export;
 #[path = "faces.rs"]
 mod faces;
 #[path = "fillet.rs"]

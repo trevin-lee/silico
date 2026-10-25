@@ -12,9 +12,10 @@ use std::time::Duration;
 
 pub use silico_protocol::{
     Axis, Blob, BooleanOp, BuiltData, ChamferSize, Curve, DESCRIBE_BATCH, Description, EdgeCurve,
-    EdgeDescription, ElementCounts, ElementFate, ElementKind, ElementRef, Ends, FaceDescription,
-    FaceRegions, FreecadMeasures, Generation, History, InputHistory, Mesh, Op, Primitive, Profile,
-    Region, Reported, ShapeData, ShapeSummary, SketchPlane, Surface, SweepKind, Topology,
+    EdgeDescription, ElementCounts, ElementFate, ElementKind, ElementRef, Ends, ExportMesh,
+    FaceDescription, FaceRegions, FreecadMeasures, Generation, History, InputHistory, Mesh, Op,
+    Primitive, Profile, Region, Reported, ShapeData, ShapeSummary, SketchPlane, Surface, SweepKind,
+    Topology,
 };
 use silico_protocol::{DebugOp, Failure, LENGTH_TOLERANCE, Reply};
 
@@ -652,6 +653,80 @@ impl KernelRequest<Mesh> {
     }
 }
 
+impl KernelRequest<ExportMesh> {
+    /// `shape`'s solids meshed for export at `tolerance` mm, and its angular rule
+    /// (docs/ports/mesh-export.md): each face's triangles and where its nodes lie on the
+    /// shape's edges and vertices, for [`crate::export::printable`] to join and check. A
+    /// tolerance outside the export's range is refused, naming it.
+    pub fn export_mesh(shape: &ShapeData, tolerance: f64) -> Result<Self, Error> {
+        Self::export_mesh_forced(shape, tolerance, false)
+    }
+
+    /// [`export_mesh`](Self::export_mesh) with no face's deflection raised for its own
+    /// tolerance (OCCT's `ForceFaceDeflection`): the mesh [`crate::export::printable`]
+    /// compares a raised face's with, asked for only when [`crate::export::needs_unraised`].
+    pub fn unraised_export_mesh(shape: &ShapeData, tolerance: f64) -> Result<Self, Error> {
+        Self::export_mesh_forced(shape, tolerance, true)
+    }
+
+    fn export_mesh_forced(
+        shape: &ShapeData,
+        tolerance: f64,
+        force_face_deflection: bool,
+    ) -> Result<Self, Error> {
+        if let Err(invalid) = silico_protocol::check_export_tolerance(tolerance) {
+            return Err(refused("export", None, invalid));
+        }
+        let op = Op::ExportMesh {
+            shape: shape.clone(),
+            tolerance,
+            force_face_deflection,
+        };
+        Ok(Self::new(op, move |name, reply| match reply {
+            // A report for another tolerance would hold the export's checks to it: the
+            // worker's, not the request's.
+            Reply::ExportMesh(mesh) if mesh.tolerance.to_bits() != tolerance.to_bits() => {
+                Err(Error::new(
+                    ErrorCode::ProtocolError,
+                    format!(
+                        "the kernel worker sent an export mesh for a tolerance of {} mm, not the \
+                         {} mm asked for",
+                        silico_protocol::format_number(mesh.tolerance),
+                        silico_protocol::format_number(tolerance)
+                    ),
+                )
+                .with_suggestion("start a new kernel worker"))
+            }
+            Reply::ExportMesh(mesh) if mesh.force_face_deflection != force_face_deflection => {
+                Err(Error::new(
+                    ErrorCode::ProtocolError,
+                    format!(
+                        "the kernel worker sent an export mesh {} each face's deflection \
+                         raised for its tolerance, not the one asked for",
+                        if mesh.force_face_deflection {
+                            "without"
+                        } else {
+                            "with"
+                        }
+                    ),
+                )
+                .with_suggestion("start a new kernel worker"))
+            }
+            Reply::ExportMesh(mesh) => match mesh.validate() {
+                Ok(()) => Ok(*mesh),
+                // As a display mesh that doesn't hold together: the worker can't be trusted.
+                Err(problem) => Err(Error::new(
+                    ErrorCode::ProtocolError,
+                    "the kernel worker sent an inconsistent export mesh",
+                )
+                .with_cause(problem)
+                .with_suggestion("start a new kernel worker")),
+            },
+            other => Err(unexpected(name, &other)),
+        }))
+    }
+}
+
 impl KernelRequest<Blob> {
     /// `data`, sent to the worker and back: a health check, and the cheapest round trip.
     pub fn echo(data: Blob) -> Self {
@@ -1042,6 +1117,20 @@ impl KernelWorker {
     pub fn tessellate(&mut self, shape: &ShapeData, deflection: f64) -> Result<Mesh, Error> {
         self.run(KernelRequest::tessellate(shape, deflection))
     }
+
+    /// [`KernelRequest::export_mesh`], run on this worker.
+    pub fn export_mesh(&mut self, shape: &ShapeData, tolerance: f64) -> Result<ExportMesh, Error> {
+        self.run(KernelRequest::export_mesh(shape, tolerance)?)
+    }
+
+    /// [`KernelRequest::unraised_export_mesh`], run on this worker.
+    pub fn unraised_export_mesh(
+        &mut self,
+        shape: &ShapeData,
+        tolerance: f64,
+    ) -> Result<ExportMesh, Error> {
+        self.run(KernelRequest::unraised_export_mesh(shape, tolerance)?)
+    }
 }
 
 /// An operation's values refused before sending, naming the parameter at fault as a dotted
@@ -1261,6 +1350,83 @@ mod tests {
                 Some("it describes elements of a kind not asked for (3 of them)"),
                 "{kind:?}"
             );
+        }
+    }
+
+    #[test]
+    fn an_export_mesh_for_another_tolerance_than_asked_is_a_protocol_error() {
+        // The council's robustness lens: the export's checks are held to the tolerance in
+        // the report, so a report for 10 mm taken for a 0.1 mm export would hold them to
+        // 10. One for another tolerance than the request's, by its bits, is the worker's
+        // fault.
+        let mesh = |tolerance: f64| silico_protocol::ExportMesh {
+            tolerance,
+            deflection: tolerance,
+            nodes: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            face_nodes: vec![3],
+            triangles: vec![[0, 1, 2]],
+            face_triangles: vec![1],
+            face_numbers: vec![1],
+            face_deflections: vec![0.0],
+            face_shells: vec![0],
+            face_tolerances: vec![1e-7],
+            shell_solids: vec![0],
+            shell_outer: vec![true],
+            solids: 1,
+            ..Default::default()
+        };
+        let shape = ShapeData::checked(Blob::inline(vec![]), true);
+        let asked = |tolerance: f64| {
+            KernelRequest::export_mesh(&shape, 0.1)
+                .unwrap()
+                .answer(Ok(Reply::ExportMesh(Box::new(mesh(tolerance)))))
+        };
+        let error = asked(10.0).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::ProtocolError, "{error}");
+        assert!(error.message().contains("10 mm, not the 0.1 mm"), "{error}");
+        // The next float up is another tolerance too.
+        assert!(asked(0.1f64.next_up()).is_err());
+        assert_eq!(asked(0.1).unwrap().tolerance, 0.1);
+    }
+
+    #[test]
+    fn an_export_mesh_raised_or_not_other_than_asked_is_a_protocol_error() {
+        // The unraised mesh is what a raised face is compared with: a raised one in its
+        // place would always compare the same, and the other way round always differ.
+        let mesh = |forced: bool| silico_protocol::ExportMesh {
+            tolerance: 0.1,
+            deflection: 0.1,
+            force_face_deflection: forced,
+            shell_solids: vec![0],
+            shell_outer: vec![true],
+            solids: 1,
+            ..Default::default()
+        };
+        let shape = ShapeData::checked(Blob::inline(vec![]), true);
+        for (asked_forced, sent_forced) in [(false, true), (true, false)] {
+            let request = if asked_forced {
+                KernelRequest::unraised_export_mesh(&shape, 0.1)
+            } else {
+                KernelRequest::export_mesh(&shape, 0.1)
+            };
+            let error = request
+                .unwrap()
+                .answer(Ok(Reply::ExportMesh(Box::new(mesh(sent_forced)))))
+                .unwrap_err();
+            assert_eq!(error.code(), ErrorCode::ProtocolError, "{error}");
+            assert!(error.message().contains("not the one asked for"), "{error}");
+        }
+        for forced in [false, true] {
+            let request = if forced {
+                KernelRequest::unraised_export_mesh(&shape, 0.1)
+            } else {
+                KernelRequest::export_mesh(&shape, 0.1)
+            };
+            let got = request
+                .unwrap()
+                .answer(Ok(Reply::ExportMesh(Box::new(mesh(forced)))))
+                .unwrap();
+            assert_eq!(got.force_face_deflection, forced);
         }
     }
 

@@ -19,6 +19,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Angles from `atan2` at a signed zero (a point at its centre's left with y = −0 gives −π, +0 gives π): a request whose points are placed with zeros as 0 still differs by a turn, and the kernel's bytes with it
 - One rule computed twice, by the core and again by a worker (a sliver's |area| ≤ tol × perimeter about different first points, sqrt against hypot): bisect a turned thin strip's width to the core's boundary and send it; a shoelace sum of coordinates ~10 cancels to ~1e-8 relative
 - Relative no-op thresholds on large parts (a change of at most 1e-9 × the base's volume is "nothing"): a 4 × 2 mm hole through a 200 m block removes 1.6 litres and is refused, the message claiming the volumes equal
+- Suggested values ("export with a tolerance of at least X") computed from a margin recovered by subtraction (tolerance − deflection) and checked against it, while the consumer subtracts the original rounding: an input landing an ulp past a rounding step (a whole nanometre) gets a suggestion an ulp short; check each suggestion with the consumer's own formula, and at the parameter's largest values (twice the largest tolerance is past the range)
+- Two results compared by their coordinates' bits where the same module elsewhere takes -0 as 0 (joining nodes, writing f32): a node at -0 in one and 0 in the other is called a different result
 
 ## Sketch geometry
 
@@ -90,6 +92,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Measured volumes of results with curved faces trimmed by curves: compare with a closed form (sphere lens), as fixed-order integration is off by 1e-4
 - Measured volumes of slender slanted prisms (travel 1e6 times their width) and tiny features far from the origin: each face's integral dwarfs the volume and cancels; check flat-faced solids against their mesh
 - Meshes of thin valid solids (100 × 100 × 1e-6, or 1.1e-7 thick 10 mm from the origin): meshing fails, or gives faces too few triangles that still pass validation
+- Mesh checks done triangle by triangle or shell by shell (each shell's signed volume): a solid whose shell has no faces, or whose triangles all weld into one point, passes with no triangles; a cavity larger than its outer shell, or a lone shell flagged a cavity, passes with a negative total
+- Parts thin beside their distance from the origin, written as 32-bit floats (a 1e-5 mm slab 1000 mm out): rounding flattens the solid, and whichever check runs first misnames the cause ("faces inward") and advises a finer tolerance, which makes it worse
 - Mesh normals at a surface's singular points (a cone's apex, a sphere's pole, a horn torus's center, a fillet's corner ball): check each vertex normal is on the outward side of every triangle it's in. Skip slivers by aspect, not absolute area: three collinear nodes 1e5 from the origin have a cross product of 1e-11 pointing anywhere
 - Fillet or chamfer an edge that ends where two solids touch at a single vertex (two cubes fused corner to corner): OCCT segfaults, as FreeCAD does
 - Edges whose faces meet at a few degrees (a 3° crease, every side edge of a regular 63-gon or finer prism): OCCT calls normals within 0.1 rad tangent and won't fillet or chamfer them; check the error doesn't misdescribe the corner
@@ -101,6 +105,9 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Two edges of one tangent chain given to a two-distance or distance-and-angle chamfer: the chain takes its reference face from the lower-numbered, so an edge that chamfers alone fails with its chain-mate; judge a named edge by chamfers of it with each other named edge, not alone
 - Planes whose axes are left-handed (gp_Ax3 indirect, Du × Dv opposite to `Axis()`): OCCT's chamfer faces, a revolve's bottom face, and anything mirrored have them. Code that takes `gp_Pln::Axis()` for the normal and flips it only for REVERSED faces gets those faces facing in; check normals with Σ A·n = 0 and V = ⅓ Σ A (n · c) over a flat solid
 - Booleans where one solid's edge lies in the other's face (a prism's face through a box's edge): OCCT's cut keeps the edge as an INTERNAL edge of the face, which `TopExp::Vertices(edge, f, l, true)` gives no vertices for, and `TopExp::MapShapes` keeps the orientation it first met
+- Mesh checks that trust OCCT's own deviation figure (`Poly_Triangulation::Deflection`, a centroid sample in the face's parameters): on cones it overstates by 10-1000x (a 30 mm, 1 mm tall cone says 0.128 mm at 0.1 mm, its mesh 0.001 mm off), so countersinks and rim chamfers are refused; measure each primitive's mesh against an analytic distance function instead
+- Real parts' cones (NIST CTC 01, FTC 06): OCCT meshes them with two nodes at exactly the same point inside one face, so a weld through B-rep edges and vertices alone leaves triangles of no area that FreeCAD's coordinate merge drops; export the corpus at the default tolerance
+- Fine mesh tolerances where an angular rule takes over (FreeCAD's min(0.1, 5t + 0.005) rad is 0.01 at 1e-3 mm whatever the size): a 1 mm sphere is 805,418 triangles and three minutes of OCCT, past a worker's time limit; time each primitive across the tolerance range
 
 ## Feature tree and naming
 

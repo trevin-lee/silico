@@ -9,6 +9,8 @@
 mod draw;
 #[path = "common/echo.rs"]
 mod echo;
+#[path = "common/export_report.rs"]
+mod export_report;
 #[path = "common/sketch.rs"]
 mod fixture;
 #[path = "common/hostile_profiles.rs"]
@@ -18,6 +20,10 @@ mod sweeps;
 
 #[path = "adversarial_axis_regions.rs"]
 mod adversarial_axis_regions;
+#[path = "adversarial_export.rs"]
+mod adversarial_export;
+#[path = "adversarial_export_unraised.rs"]
+mod adversarial_export_unraised;
 #[path = "adversarial_fake_kernel.rs"]
 mod adversarial_fake_kernel;
 #[path = "adversarial_profile.rs"]
@@ -30,6 +36,8 @@ mod adversarial_sweep_recompute;
 mod adversarial_sweep_refusals;
 #[path = "error.rs"]
 mod error;
+#[path = "export.rs"]
+mod export;
 #[path = "fake_kernel.rs"]
 mod fake_kernel;
 #[path = "pool.rs"]

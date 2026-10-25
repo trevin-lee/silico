@@ -393,6 +393,7 @@ mod ffi {
 
         type Tessellation;
         fn bounding_diagonal(shape: &Shape) -> Result<f64>;
+        fn bounding_reach(shape: &Shape) -> Result<f64>;
         fn tessellate(shape: &Shape, deflection: f64) -> Result<UniquePtr<Tessellation>>;
         fn positions(self: &Tessellation) -> &[f64];
         fn normals(self: &Tessellation) -> &[f32];
@@ -400,6 +401,35 @@ mod ffi {
         fn face_triangles(self: &Tessellation) -> &[u32];
         fn edge_points(self: &Tessellation) -> &[f64];
         fn edge_points_per_edge(self: &Tessellation) -> &[u32];
+
+        type ExportTriangulation;
+        fn export_mesh(
+            shape: &Shape,
+            tolerance: f64,
+            angle: f64,
+            force_face_deflection: bool,
+        ) -> Result<UniquePtr<ExportTriangulation>>;
+        fn nodes(self: &ExportTriangulation) -> &[f64];
+        fn face_nodes(self: &ExportTriangulation) -> &[u32];
+        fn triangles(self: &ExportTriangulation) -> &[u32];
+        fn face_triangles(self: &ExportTriangulation) -> &[u32];
+        fn face_numbers(self: &ExportTriangulation) -> &[u32];
+        fn face_deflections(self: &ExportTriangulation) -> &[f64];
+        fn face_shells(self: &ExportTriangulation) -> &[u32];
+        fn face_tolerances(self: &ExportTriangulation) -> &[f64];
+        fn unoriented_faces(self: &ExportTriangulation) -> &[u32];
+        fn unoriented_shells(self: &ExportTriangulation) -> &[u32];
+        fn shell_solids(self: &ExportTriangulation) -> &[u32];
+        fn shell_outer(self: &ExportTriangulation) -> &[u8];
+        fn solids(self: &ExportTriangulation) -> u32;
+        fn loose_faces(self: &ExportTriangulation) -> &[u32];
+        fn edge_faces(self: &ExportTriangulation) -> &[u32];
+        fn edge_numbers(self: &ExportTriangulation) -> &[u32];
+        fn edge_degenerate(self: &ExportTriangulation) -> &[u8];
+        fn edge_vertices(self: &ExportTriangulation) -> &[u32];
+        fn edge_deflections(self: &ExportTriangulation) -> &[f64];
+        fn edge_node_counts(self: &ExportTriangulation) -> &[u32];
+        fn edge_nodes(self: &ExportTriangulation) -> &[u32];
         fn shape_to_brep(shape: &Shape) -> Result<UniquePtr<CxxString>>;
         fn shape_from_brep(brep: &[u8]) -> Result<UniquePtr<Shape>>;
         fn shape_from_text_brep(brep: &[u8]) -> Result<UniquePtr<Shape>>;
@@ -428,10 +458,13 @@ mod ffi {
 
 pub use silico_protocol::{
     Axis, BooleanOp, ChamferSize, Curve, ElementCounts, ElementFate, ElementKind, ElementRef, Ends,
-    FaceRegions, History, InputHistory, LENGTH_TOLERANCE, MAX_LENGTH, Mesh, Primitive, Profile,
-    Refusal, Region, Reported, ShapeSummary, SketchPlane, Topology,
+    ExportMesh, FaceRegions, History, InputHistory, LENGTH_TOLERANCE, MAX_LENGTH, Mesh, Primitive,
+    Profile, Refusal, Region, Reported, ShapeSummary, SketchPlane, Topology,
 };
-use silico_protocol::{BrepDefect, FailureKind, HistoryDefect, Operation, Returned, Role};
+use silico_protocol::{
+    BrepDefect, FailureKind, HistoryDefect, MAX_EXPORT_TRIANGLES, Operation, Returned, Role,
+    check_export_tolerance, check_export_triangles, export_angle, export_deflection,
+};
 
 mod dressing;
 pub mod worker;
@@ -1878,11 +1911,114 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
     Ok(mesh)
 }
 
+/// Meshes `shape`'s solids for export within `tolerance` mm, as FreeCAD meshes for export
+/// (`TopoShape::getFaces`): absolute, with angular deflection [`export_angle`], but
+/// single-threaded, so the same shape always gives the same mesh, and with the deflection
+/// the tolerance less what rounding to 32 bits can move the shape's vertices, as far out as
+/// its bounding box reaches ([`export_deflection`]): a tolerance whose rounding there would
+/// take more than half of it is refused ([`Refusal::RoundingPastTolerance`]), as is a mesh
+/// of more than [`MAX_EXPORT_TRIANGLES`] triangles ([`Refusal::TooManyTriangles`]). It leaves
+/// the shape as it was. Reports each face's triangles and where its nodes lie on the shape's
+/// edges and vertices, for the core to join and check (docs/ports/mesh-export.md).
+pub fn export_mesh(
+    shape: &Shape,
+    tolerance: f64,
+    force_face_deflection: bool,
+) -> Result<ExportMesh, KernelError> {
+    export_mesh_within(
+        shape,
+        tolerance,
+        force_face_deflection,
+        MAX_EXPORT_TRIANGLES,
+    )
+}
+
+/// [`export_mesh`], refused past `limit` triangles.
+fn export_mesh_within(
+    shape: &Shape,
+    tolerance: f64,
+    force_face_deflection: bool,
+    limit: u64,
+) -> Result<ExportMesh, KernelError> {
+    check_export_tolerance(tolerance)?;
+    let inner = shape.get()?;
+    let reach = ffi::bounding_reach(inner)?;
+    if !reach.is_finite() {
+        return Err(KernelError::new(Refusal::ExtentNotFinite));
+    }
+    let deflection = export_deflection(tolerance, reach).map_err(KernelError::new)?;
+    let raw = ffi::export_mesh(
+        inner,
+        deflection,
+        export_angle(tolerance),
+        force_face_deflection,
+    )
+    .map_err(|e| KernelError::from(e).during(Operation::Tessellate))?;
+    let raw = raw.as_ref().ok_or_else(|| {
+        KernelError::new(Refusal::NothingReturned {
+            what: Returned::Mesh,
+        })
+    })?;
+    check_export_triangles(
+        raw.face_triangles().iter().map(|&n| u64::from(n)).sum(),
+        limit,
+    )
+    .map_err(KernelError::new)?;
+    let triples = |values: &[f64]| -> Vec<[f64; 3]> {
+        values.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect()
+    };
+    Ok(ExportMesh {
+        tolerance,
+        deflection,
+        force_face_deflection,
+        nodes: triples(raw.nodes()),
+        face_nodes: raw.face_nodes().to_vec(),
+        triangles: raw
+            .triangles()
+            .chunks_exact(3)
+            .map(|t| [t[0], t[1], t[2]])
+            .collect(),
+        face_triangles: raw.face_triangles().to_vec(),
+        face_numbers: raw.face_numbers().to_vec(),
+        face_deflections: raw.face_deflections().to_vec(),
+        face_shells: raw.face_shells().to_vec(),
+        face_tolerances: raw.face_tolerances().to_vec(),
+        unoriented_faces: raw.unoriented_faces().to_vec(),
+        unoriented_shells: raw.unoriented_shells().to_vec(),
+        shell_solids: raw.shell_solids().to_vec(),
+        shell_outer: raw.shell_outer().iter().map(|&b| b != 0).collect(),
+        solids: raw.solids(),
+        loose_faces: raw.loose_faces().to_vec(),
+        edge_faces: raw.edge_faces().to_vec(),
+        edge_numbers: raw.edge_numbers().to_vec(),
+        edge_degenerate: raw.edge_degenerate().iter().map(|&b| b != 0).collect(),
+        edge_vertices: raw
+            .edge_vertices()
+            .chunks_exact(2)
+            .map(|v| [v[0], v[1]])
+            .collect(),
+        edge_deflections: raw.edge_deflections().to_vec(),
+        edge_node_counts: raw.edge_node_counts().to_vec(),
+        edge_nodes: raw.edge_nodes().to_vec(),
+    })
+}
+
 /// Operations that exist only to test the bridge, built with the `test_ops` feature
 /// (which this crate's own tests turn on, and nothing else should).
 #[cfg(feature = "test_ops")]
 pub mod test_ops {
-    use super::{KernelError, ffi};
+    use super::{ExportMesh, KernelError, Shape, ffi};
+
+    /// [`super::export_mesh`] refused past `limit` triangles, not the export's ten million,
+    /// so the worker's limit is tested on a mesh small enough to make.
+    pub fn export_mesh_within(
+        shape: &Shape,
+        tolerance: f64,
+        force_face_deflection: bool,
+        limit: u64,
+    ) -> Result<ExportMesh, KernelError> {
+        super::export_mesh_within(shape, tolerance, force_face_deflection, limit)
+    }
 
     /// Throws OCCT's `Standard_Failure` with `message` on the C++ side.
     pub fn throw_standard_failure(message: &str) -> Result<(), KernelError> {

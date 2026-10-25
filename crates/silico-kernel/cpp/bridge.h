@@ -129,8 +129,102 @@ public:
   }
 };
 
+// A shape's solids meshed for export (docs/ports/mesh-export.md), as flat lists read from
+// Rust as slices: each face's nodes and triangles, solid by solid and shell by shell, and
+// each face's polygon on each of its edges, which the core joins the faces by. Facts only:
+// silico-protocol's ExportMesh (src/export.rs) documents each list.
+class ExportTriangulation {
+public:
+  std::vector<double> nodes_; // x, y, z per node
+  std::vector<uint32_t> face_nodes_;
+  std::vector<uint32_t> triangles_; // three node indices per triangle, outward
+  std::vector<uint32_t> face_triangles_;
+  std::vector<uint32_t> face_numbers_;
+  std::vector<double> face_deflections_;
+  std::vector<uint32_t> face_shells_;
+  std::vector<double> face_tolerances_;
+  std::vector<uint32_t> unoriented_faces_;
+  std::vector<uint32_t> unoriented_shells_;
+  std::vector<uint32_t> shell_solids_;
+  std::vector<uint8_t> shell_outer_;
+  uint32_t solids_ = 0;
+  std::vector<uint32_t> loose_faces_;
+  std::vector<uint32_t> edge_faces_;
+  std::vector<uint32_t> edge_numbers_;
+  std::vector<uint8_t> edge_degenerate_;
+  std::vector<uint32_t> edge_vertices_; // first and last per use
+  std::vector<double> edge_deflections_;
+  std::vector<uint32_t> edge_node_counts_;
+  std::vector<uint32_t> edge_nodes_;
+
+  rust::Slice<const double> nodes() const { return {nodes_.data(), nodes_.size()}; }
+  rust::Slice<const uint32_t> face_nodes() const { return {face_nodes_.data(), face_nodes_.size()}; }
+  rust::Slice<const uint32_t> triangles() const { return {triangles_.data(), triangles_.size()}; }
+  rust::Slice<const uint32_t> face_triangles() const {
+    return {face_triangles_.data(), face_triangles_.size()};
+  }
+  rust::Slice<const uint32_t> face_numbers() const {
+    return {face_numbers_.data(), face_numbers_.size()};
+  }
+  rust::Slice<const double> face_deflections() const {
+    return {face_deflections_.data(), face_deflections_.size()};
+  }
+  rust::Slice<const uint32_t> face_shells() const {
+    return {face_shells_.data(), face_shells_.size()};
+  }
+  rust::Slice<const double> face_tolerances() const {
+    return {face_tolerances_.data(), face_tolerances_.size()};
+  }
+  rust::Slice<const uint32_t> unoriented_faces() const {
+    return {unoriented_faces_.data(), unoriented_faces_.size()};
+  }
+  rust::Slice<const uint32_t> unoriented_shells() const {
+    return {unoriented_shells_.data(), unoriented_shells_.size()};
+  }
+  rust::Slice<const uint32_t> shell_solids() const {
+    return {shell_solids_.data(), shell_solids_.size()};
+  }
+  rust::Slice<const uint8_t> shell_outer() const {
+    return {shell_outer_.data(), shell_outer_.size()};
+  }
+  uint32_t solids() const { return solids_; }
+  rust::Slice<const uint32_t> loose_faces() const {
+    return {loose_faces_.data(), loose_faces_.size()};
+  }
+  rust::Slice<const uint32_t> edge_faces() const { return {edge_faces_.data(), edge_faces_.size()}; }
+  rust::Slice<const uint32_t> edge_numbers() const {
+    return {edge_numbers_.data(), edge_numbers_.size()};
+  }
+  rust::Slice<const uint8_t> edge_degenerate() const {
+    return {edge_degenerate_.data(), edge_degenerate_.size()};
+  }
+  rust::Slice<const uint32_t> edge_vertices() const {
+    return {edge_vertices_.data(), edge_vertices_.size()};
+  }
+  rust::Slice<const double> edge_deflections() const {
+    return {edge_deflections_.data(), edge_deflections_.size()};
+  }
+  rust::Slice<const uint32_t> edge_node_counts() const {
+    return {edge_node_counts_.data(), edge_node_counts_.size()};
+  }
+  rust::Slice<const uint32_t> edge_nodes() const { return {edge_nodes_.data(), edge_nodes_.size()}; }
+};
+
+// Meshes a copy of the shape for export as FreeCAD does (`TopoShape::getFaces`): absolute
+// deflection `tolerance`, angular deflection `angle`, but single-threaded, so the mesh is
+// deterministic. The shape itself is left exactly as it was. With `force_face_deflection`,
+// OCCT meshes every face at `tolerance` too, not raising a face's deflection to twice its
+// own tolerance (IMeshTools_Parameters::ForceFaceDeflection).
+std::unique_ptr<ExportTriangulation> export_mesh(const Shape &shape, double tolerance,
+                                                 double angle, bool force_face_deflection);
+
 // The length of the shape's bounding box diagonal (0 for an empty shape).
 double bounding_diagonal(const Shape &shape);
+
+// How far the shape's bounding box reaches from the origin on any axis: the largest
+// coordinate of its corners, either way (0 for an empty shape). The box is OCCT's, enlarged
+// by the shape's tolerances, so it bounds every point of the shape and its meshes.
+double bounding_reach(const Shape &shape);
 
 // Meshes a copy of the shape with OCCT's mesher, single-threaded so the mesh is
 // deterministic. The shape itself is left exactly as it was.

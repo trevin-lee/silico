@@ -9,6 +9,7 @@
 
 mod chamfer;
 mod describe;
+mod export;
 mod faces;
 pub mod frame;
 mod history;
@@ -24,6 +25,11 @@ pub use chamfer::ChamferSize;
 pub use describe::{
     DESCRIBE_BATCH, Description, EdgeCurve, EdgeDescription, FaceDescription, Quantity, Surface,
     What, describe_in_batches,
+};
+pub use export::{
+    DEFAULT_EXPORT_TOLERANCE, ExportMesh, MAX_EXPORT_TOLERANCE, MAX_EXPORT_TRIANGLES,
+    MIN_EXPORT_TOLERANCE, check_export_tolerance, check_export_triangles, export_angle,
+    export_deflection, export_rounding,
 };
 pub use faces::{
     ArcEnd, Curve, FaceRegions, MAX_ARC_ANGLE, MAX_FACE_CURVES, Region, SizeProblem, SketchPlane,
@@ -217,6 +223,15 @@ pub enum Op {
         first: u32,
         count: u32,
     },
+    /// A shape's solids meshed for export at `tolerance` mm, and its angular rule
+    /// ([`export_angle`]), with where each face's nodes lie on the shape's edges and
+    /// vertices; with `force_face_deflection`, no face's deflection raised for its own
+    /// tolerance (OCCT's `ForceFaceDeflection`). Replies with [`Reply::ExportMesh`].
+    ExportMesh {
+        shape: ShapeData,
+        tolerance: f64,
+        force_face_deflection: bool,
+    },
 }
 
 impl Op {
@@ -234,6 +249,7 @@ impl Op {
             Op::Boolean { op, .. } => op.name(),
             Op::Tessellate { .. } => "Tessellate",
             Op::Describe { .. } => "Describe",
+            Op::ExportMesh { .. } => "ExportMesh",
             Op::Solve(_) => "Solve",
             Op::DragBegin(_) => "DragBegin",
             Op::DragMove { .. } => "DragMove",
@@ -395,6 +411,8 @@ pub enum Reply {
         total: u32,
         description: Description,
     },
+    /// A shape's solids meshed for export ([`Op::ExportMesh`]), boxed, as it's many lists.
+    ExportMesh(Box<ExportMesh>),
 }
 
 impl Reply {
@@ -407,6 +425,7 @@ impl Reply {
             Reply::FreecadMeasures(_) => "FreecadMeasures",
             Reply::Mesh(_) => "Mesh",
             Reply::Described { .. } => "Described",
+            Reply::ExportMesh(_) => "ExportMesh",
             Reply::Solved(_) => "Solved",
             Reply::DragStarted { .. } => "DragStarted",
             Reply::Moved(_) => "Moved",

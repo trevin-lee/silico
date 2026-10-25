@@ -9,10 +9,10 @@ use silico_protocol::{
 };
 use silico_protocol::{
     Axis, Blob, BooleanOp, BuiltData, ChamferSize, DebugOp, DressingKind, ElementCounts,
-    ElementFate, ElementKind, ElementRef, Ends, Failure, FailureKind, FrameError, FrameReader,
-    FreecadMeasures, Generation, History, InputHistory, MAX_FRAME_LEN, Mesh, Misbehavior, Op,
-    Operation, OutOfTurn, Primitive, Profile, Refusal, Reply, Reported, Request, RequestId,
-    Response, ShapeData, ShapeSummary, Topology, TraceId, write_message,
+    ElementFate, ElementKind, ElementRef, Ends, ExportMesh, Failure, FailureKind, FrameError,
+    FrameReader, FreecadMeasures, Generation, History, InputHistory, MAX_FRAME_LEN, Mesh,
+    Misbehavior, Op, Operation, OutOfTurn, Primitive, Profile, Refusal, Reply, Reported, Request,
+    RequestId, Response, ShapeData, ShapeSummary, Topology, TraceId, write_message,
 };
 use silico_protocol::{Curve, FaceRegions, Region, SketchPlane};
 use silico_protocol::{Description, EdgeCurve, EdgeDescription, FaceDescription, Surface};
@@ -247,6 +247,11 @@ fn every_op() -> Vec<Op> {
             first: 1001,
             count: u32::MAX,
         },
+        Op::ExportMesh {
+            shape: ShapeData::checked(Blob::inline(vec![8]), true),
+            tolerance: 0.1,
+            force_face_deflection: true,
+        },
     ];
     let indices: std::collections::BTreeSet<usize> = ops
         .iter()
@@ -309,9 +314,10 @@ fn every_op() -> Vec<Op> {
             Op::Revolution { .. } => 38,
             Op::Debug(DebugOp::ThrowBadAlloc) => 39,
             Op::Describe { .. } => 40,
+            Op::ExportMesh { .. } => 41,
         })
         .collect();
-    assert_eq!(indices, (0..41).collect(), "an operation has no case");
+    assert_eq!(indices, (0..42).collect(), "an operation has no case");
     ops
 }
 
@@ -410,6 +416,32 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             valid: None,
         })),
         Ok(Reply::Done),
+        Ok(Reply::ExportMesh(Box::new(ExportMesh {
+            tolerance: 0.1,
+            deflection: 0.099_999_9,
+            force_face_deflection: true,
+            nodes: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            face_nodes: vec![3],
+            triangles: vec![[0, 1, 2]],
+            face_triangles: vec![1],
+            face_numbers: vec![1],
+            face_deflections: vec![0.0],
+            face_shells: vec![0],
+            face_tolerances: vec![1e-7],
+            unoriented_faces: vec![5],
+            unoriented_shells: vec![0],
+            shell_solids: vec![0],
+            shell_outer: vec![true],
+            solids: 1,
+            loose_faces: vec![4],
+            edge_faces: vec![0],
+            edge_numbers: vec![2],
+            edge_degenerate: vec![false],
+            edge_vertices: vec![[1, 2]],
+            edge_deflections: vec![0.1],
+            edge_node_counts: vec![2],
+            edge_nodes: vec![0, 1],
+        }))),
         Ok(Reply::Solved(Solved {
             dofs: -1,
             conflicting: vec![Tag(2), Tag(5)],
@@ -561,6 +593,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             Ok(Reply::DragStarted { .. }) => 14,
             Ok(Reply::Moved(_)) => 15,
             Ok(Reply::Described { .. }) => 16,
+            Ok(Reply::ExportMesh(_)) => 17,
             Err(failure) => match failure.kind() {
                 FailureKind::InvalidInput => 5,
                 FailureKind::KernelFailed => 6,
@@ -573,7 +606,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         .collect();
     assert_eq!(
         indices,
-        (0..17).collect(),
+        (0..18).collect(),
         "a reply or failure kind has no case"
     );
     results
@@ -978,7 +1011,8 @@ fn every_op_has_its_own_name() {
             "Prism",
             "PrismThroughAll",
             "Revolution",
-            "Describe"
+            "Describe",
+            "ExportMesh"
         ]
     );
 }

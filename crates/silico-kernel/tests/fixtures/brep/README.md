@@ -35,6 +35,11 @@ BinTools::Write(box, out, false, false, BinTools_FormatVersion_CURRENT);
   with `BRepTools::Read` and written with `BinTools::Write`, as `meshonly.bin` was (FreeCAD's
   own `exportBinary` writes a form `from_brep` doesn't read). The two differ in one byte, the
   face's orientation.
+- `nist_ctc_01_asme1_ap242-e1.brep`: NIST's CTC 01 test part (the MBE PMI validation and
+  conformance test models, AP242 edition, which "can be used without any restrictions"),
+  read from its STEP file by FreeCAD 1.1.3 and written with `exportBrep`, as the corpus
+  keeps it (`tests/corpus/run.sh`). At a 0.1 mm export tolerance OCCT meshes two of its
+  cones with coincident nodes inside the face (tests/adversarial_export.rs).
 
 - `mirrored_box.brep`: a text B-rep (not binary: read with `from_text_brep`) of a 10 × 20 × 30
   box mirrored in the plane x = 0 by FreeCAD 1.1.3 (`Part.makeBox(10, 20, 30).mirror(V(0, 0, 0),
