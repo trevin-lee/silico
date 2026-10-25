@@ -1,3 +1,4 @@
+use super::cancel::{Ticket, cancelled};
 use super::rebuilds::*;
 use super::transaction::*;
 use super::types::*;
@@ -2100,4 +2101,64 @@ fn an_open_cancelled_before_it_opens_leaves_no_session_and_no_file_it_made() {
     assert!(!made.exists());
     let book = lock(&sessions.registry.book);
     assert!(book.sessions.is_empty() && book.opening.is_empty() && book.files.is_empty());
+}
+
+/// `f`'s session, its record of the command running a command cancelled already: as the
+/// work of a command whose cancel came before it reached the point where it leaves a trace.
+fn cancelled_meanwhile(f: &Fixture) -> Arc<Session<FakeClient>> {
+    let session = f.session();
+    let ticket = Ticket::new("probe");
+    assert!(ticket.cancel());
+    *lock(&session.command) = Some(ticket);
+    session
+}
+
+#[test]
+fn a_transactions_work_a_cancel_came_before_leaves_no_trace() {
+    // Its revision's model published, so the commit reaches its save without waiting: there,
+    // and at each change of what the session holds, the cancel is found first.
+    let f = opened(STORED);
+    f.begin();
+    let edited = f.edit(&longer());
+    assert!(f.sessions.check(&f.id).wait().result.is_ok());
+    let session = cancelled_meanwhile(&f);
+    let refused = |result: Result<(), Problems>| {
+        assert_eq!(result.unwrap_err().errors(), [cancelled("probe")]);
+    };
+    let mut read = None;
+    refused(session.commit(None, &mut read, &|_| {}).map(|_| ()));
+    assert_eq!(f.file(), STORED);
+    refused(session.applied(STORED).map(|_| ()));
+    refused(session.rollback().map(|_| ()));
+    let held = lock(&session.held);
+    assert_eq!(held.revision, edited);
+    assert!(held.transaction.is_some());
+}
+
+#[test]
+fn a_commit_writing_nothing_a_cancel_came_before_leaves_the_transaction_open() {
+    let f = opened(STORED);
+    f.begin();
+    assert!(f.sessions.check(&f.id).wait().result.is_ok());
+    let session = cancelled_meanwhile(&f);
+    let mut read = None;
+    let refused = session.commit(None, &mut read, &|_| {});
+    assert_eq!(refused.unwrap_err().errors(), [cancelled("probe")]);
+    assert!(lock(&session.held).transaction.is_some());
+}
+
+#[test]
+fn work_outside_a_transaction_a_cancel_came_before_leaves_no_trace() {
+    let f = opened(STORED);
+    assert!(f.sessions.check(&f.id).wait().result.is_ok());
+    let session = cancelled_meanwhile(&f);
+    let mut read = None;
+    let format = session.format(None, true, &mut read, &|_| {});
+    assert_eq!(format.unwrap_err().errors(), [cancelled("probe")]);
+    assert_eq!(f.file(), STORED);
+    assert_eq!(session.begin().unwrap_err().errors(), [cancelled("probe")]);
+    assert!(lock(&session.held).transaction.is_none());
+    assert_eq!(session.shut().unwrap_err().errors(), [cancelled("probe")]);
+    assert!(!session.closed());
+    assert_eq!(lock(&session.held).revision, Revision::OPENED);
 }

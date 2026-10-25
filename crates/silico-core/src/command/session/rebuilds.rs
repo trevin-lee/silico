@@ -227,6 +227,13 @@ impl<C: Kernel + 'static> Session<C> {
         // The rebuild this read last waited on, which a cancel stops.
         let mut waited: Option<Label> = None;
         loop {
+            // Had, it's given even to a command cancelled meanwhile, whose work then stops
+            // where it would leave a trace (`Session::keep`).
+            if let Some(published) = &rebuilds.published
+                && published.revision == revision
+            {
+                return Ok(Arc::clone(&published.model));
+            }
             if let Some(ticket) = &ticket
                 && ticket.cancelled()
             {
@@ -234,11 +241,6 @@ impl<C: Kernel + 'static> Session<C> {
                     stop(&mut rebuilds, label);
                 }
                 return Err(Problems::from(cancelled(ticket.command())));
-            }
-            if let Some(published) = &rebuilds.published
-                && published.revision == revision
-            {
-                return Ok(Arc::clone(&published.model));
             }
             if let Some(running) = &rebuilds.running
                 && running.revision() == revision

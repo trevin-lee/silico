@@ -274,12 +274,20 @@ fn an_edit_cancelled_by_its_handle_while_queued_never_runs() {
     let (hold, check) = f.running_held(|| f.sessions.check(&f.id));
     let edit = f.longer();
     assert!(edit.cancel());
+    // Changed outside the session meanwhile: a command that ran would reload it first.
+    let outside = BOX.replace("\"Block\"", "\"Plate\"");
+    std::fs::write(&f.path, &outside).unwrap();
     hold.release();
     assert!(answer(check).result.unwrap().is_empty());
     let stopped = answer(edit);
     assert_eq!(refusal(&stopped), cancelled("set_field"));
-    assert_eq!(stopped.session.unwrap().revision, Revision::OPENED);
-    assert_eq!(f.file(), BOX);
+    let session = stopped.session.unwrap();
+    assert_eq!(
+        (session.revision, session.reloaded),
+        (Revision::OPENED, false)
+    );
+    assert_eq!(f.revision(), Revision::OPENED);
+    assert_eq!(f.file(), outside);
     // Only the check's box was made: the edit's commit never rebuilt.
     assert_eq!(f.boxes(), 1);
 }

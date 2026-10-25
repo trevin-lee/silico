@@ -214,6 +214,20 @@ impl<C: Kernel + 'static> Session<C> {
         lock(&self.queue).is_none()
     }
 
+    /// `close`'s work: its queue ended, unless a transaction is open (commit or roll back
+    /// first), or the close was cancelled.
+    fn shut(&self) -> Result<(), Problems> {
+        if lock(&self.held).transaction.is_some() {
+            return Err(Problems::from(transaction_open(
+                self.id,
+                "close the session",
+            )));
+        }
+        self.keep()?;
+        self.close();
+        Ok(())
+    }
+
     /// The names of its published reads running, in the order they started.
     fn reads_running(&self) -> Vec<&'static str> {
         let reads = lock(&self.reads);
@@ -399,14 +413,7 @@ impl<P: Clients + 'static> Sessions<P> {
     pub fn close(&self, session: &SessionId) -> Running<()> {
         let registry = Arc::downgrade(&self.registry);
         self.queued_with(session, "close", Rereads::Never, move |session, _, _| {
-            if lock(&session.held).transaction.is_some() {
-                return Err(Problems::from(transaction_open(
-                    session.id,
-                    "close the session",
-                )));
-            }
-            session.keep()?;
-            session.close();
+            session.shut()?;
             if let Some(registry) = registry.upgrade() {
                 lock(&registry.book).release(session.id);
             }
