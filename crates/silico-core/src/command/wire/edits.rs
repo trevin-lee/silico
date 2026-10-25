@@ -14,12 +14,14 @@ use schemars::{JsonSchema, Schema, SchemaGenerator};
 
 use super::transaction::CommitResultSchema;
 use super::{Json, RequestFields, ToWire, wire_shape};
+use crate::command::session::SESSION_ID_PATTERN;
 use crate::command::{Added, FieldSet, Problems, Removed, Replaced, Revision, SessionId};
 use crate::document::json::Node;
 use crate::document::{Feature, FeatureId};
 
 /// An `add_feature` request: the session, the revision the edit was made against, and the
-/// feature, as the document writes it, read by the document's reader when it's added.
+/// feature, an object as the document writes it, read by the document's reader when it's
+/// added.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AddFeatureRequest {
     pub session: SessionId,
@@ -33,7 +35,7 @@ impl AddFeatureRequest {
         RequestFields::read(node, |f| {
             let session = f.session();
             let revision = f.revision("revision");
-            let feature = f.node("feature");
+            let feature = f.whole_object("feature");
             Some(AddFeatureRequest {
                 session: session?,
                 revision: revision?,
@@ -92,7 +94,7 @@ impl ToWire for SetFieldRequest {
         Json::object([
             ("session", self.session.to_wire()),
             ("revision", self.revision.to_wire()),
-            ("feature", Json::str(self.feature.as_str())),
+            ("feature", self.feature.to_wire()),
             ("field", Json::str(&self.field)),
             ("value", Json::node(&self.value)),
         ])
@@ -130,7 +132,7 @@ impl ToWire for RemoveFeatureRequest {
         Json::object([
             ("session", self.session.to_wire()),
             ("revision", self.revision.to_wire()),
-            ("feature", Json::str(self.feature.as_str())),
+            ("feature", self.feature.to_wire()),
         ])
     }
 }
@@ -191,7 +193,7 @@ impl ToWire for FieldSet {
     /// whether the document changed, and the commit outside a transaction.
     fn to_wire(&self) -> Json<'_> {
         Json::object([
-            ("feature", Json::str(self.feature.as_str())),
+            ("feature", self.feature.to_wire()),
             ("field", Json::str(&self.field)),
             ("before", Json::plain(&self.before)),
             ("after", Json::plain(&self.after)),
@@ -267,7 +269,9 @@ impl JsonSchema for NewFeatureSchema {
                 for (key, said) in [
                     (
                         "id",
-                        Some("Its ID: null, or left out, for one the core makes that no feature holds."),
+                        Some(
+                            "Its ID: null, or left out, for one the core makes that no feature holds.",
+                        ),
                     ),
                     (
                         "v",
@@ -300,8 +304,7 @@ impl JsonSchema for NewFeatureSchema {
                     let Some(type_name) = type_name else {
                         continue;
                     };
-                    let Some(serde_json::Value::Object(properties)) =
-                        variant.get_mut("properties")
+                    let Some(serde_json::Value::Object(properties)) = variant.get_mut("properties")
                     else {
                         continue;
                     };
@@ -360,7 +363,7 @@ impl JsonSchema for FieldValueSchema {
 #[schemars(rename = "AddFeatureRequest", transform = wire_shape)]
 pub struct AddFeatureRequestSchema {
     /// The session's ID, as `open` gave it.
-    #[schemars(regex(pattern = r"^s[1-9][0-9]*$"))]
+    #[schemars(regex(pattern = SESSION_ID_PATTERN))]
     pub session: String,
     /// The session's revision the edit was made against: an edit against another is
     /// refused as a `conflict`, so it never writes over a change it didn't see.
@@ -388,7 +391,7 @@ pub struct AddFeatureResultSchema {
 #[schemars(rename = "SetFieldRequest", transform = wire_shape)]
 pub struct SetFieldRequestSchema {
     /// The session's ID, as `open` gave it.
-    #[schemars(regex(pattern = r"^s[1-9][0-9]*$"))]
+    #[schemars(regex(pattern = SESSION_ID_PATTERN))]
     pub session: String,
     /// The session's revision the edit was made against: an edit against another is
     /// refused as a `conflict`.
@@ -433,7 +436,7 @@ pub struct SetFieldResultSchema {
 #[schemars(rename = "RemoveFeatureRequest", transform = wire_shape)]
 pub struct RemoveFeatureRequestSchema {
     /// The session's ID, as `open` gave it.
-    #[schemars(regex(pattern = r"^s[1-9][0-9]*$"))]
+    #[schemars(regex(pattern = SESSION_ID_PATTERN))]
     pub session: String,
     /// The session's revision the edit was made against: an edit against another is
     /// refused as a `conflict`.
@@ -464,7 +467,7 @@ pub struct RemoveFeatureResultSchema {
 #[schemars(rename = "ReplaceTextRequest", transform = wire_shape)]
 pub struct ReplaceTextRequestSchema {
     /// The session's ID, as `open` gave it.
-    #[schemars(regex(pattern = r"^s[1-9][0-9]*$"))]
+    #[schemars(regex(pattern = SESSION_ID_PATTERN))]
     pub session: String,
     /// The session's revision the edit was made against: an edit against another is
     /// refused as a `conflict`.

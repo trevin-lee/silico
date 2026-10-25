@@ -645,8 +645,8 @@ fn each_requests_fields_are_of_their_types_and_null_only_where_the_shape_allows_
             "text must be a string, got null".to_owned()
         )]
     );
-    // `set_field`'s value and `add_feature`'s feature are any JSON, read by the document's
-    // reader in the session: null and a list are each taken as they are.
+    // `set_field`'s value is any JSON, read by the document's reader in the session: null
+    // and a list are each taken as they are.
     for value in ["null", "[1, 2]", r#"{"a": {"b": "c"}}"#, r#""text""#, "1e3"] {
         let text = set.replace(r#""value": 8"#, &format!(r#""value": {value}"#));
         let request = SetFieldRequest::read(&parsed(&text)).unwrap();
@@ -658,8 +658,31 @@ fn each_requests_fields_are_of_their_types_and_null_only_where_the_shape_allows_
     }
     let add = example("add_feature/request");
     let (head, _) = add.split_once(r#""feature": "#).unwrap();
-    let request = AddFeatureRequest::read(&parsed(&format!("{head}\"feature\": 7\n}}"))).unwrap();
-    assert_eq!(request.feature.value, Value::Number("7".to_owned()));
+    // `add_feature`'s feature is an object, any object, read by the document's reader in the
+    // session; anything else is refused by the wire, in its words.
+    let request = AddFeatureRequest::read(&parsed(&format!(
+        "{head}\"feature\": {{\"radius\": 7}}\n}}"
+    )))
+    .unwrap();
+    assert_eq!(
+        Plain::of(&request.feature),
+        Plain::of(&parsed(r#"{"radius": 7}"#))
+    );
+    for (value, got) in [
+        ("7", "a number"),
+        ("null", "null"),
+        ("[1]", "an array"),
+        (r#""box""#, "a string"),
+    ] {
+        assert_eq!(
+            refused("add_feature", &format!("{head}\"feature\": {value}\n}}")),
+            [(
+                "feature".to_owned(),
+                format!("feature must be an object, got {got}")
+            )],
+            "{value}"
+        );
+    }
 }
 
 #[test]
@@ -758,6 +781,44 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
     }
     assert_eq!(new["oneOf"], types);
     assert_eq!(new["unevaluatedProperties"], false);
+}
+
+/// Every definition `schema` refers to, by name.
+fn references(schema: &serde_json::Value, found: &mut Vec<String>) {
+    match schema {
+        serde_json::Value::Object(map) => {
+            for (key, value) in map {
+                match value.as_str() {
+                    Some(to) if key == "$ref" => found.push(to.replace("#/$defs/", "")),
+                    _ => references(value, found),
+                }
+            }
+        }
+        serde_json::Value::Array(items) => items.iter().for_each(|i| references(i, found)),
+        _ => {}
+    }
+}
+
+#[test]
+fn every_definition_in_a_commands_snapshot_is_one_it_uses() {
+    for (of, _) in silico_core::command::wire::COMMANDS {
+        let snapshot = snapshot_value(of).unwrap();
+        for part in ["request", "result"] {
+            let root = &snapshot[part];
+            let mut used = Vec::new();
+            references(root, &mut used);
+            let defined: Vec<&String> = root["$defs"]
+                .as_object()
+                .map(|defs| defs.keys().collect())
+                .unwrap_or_default();
+            let unused: Vec<&&String> = defined.iter().filter(|d| !used.contains(d)).collect();
+            assert!(unused.is_empty(), "{of} {part}: {unused:?}");
+        }
+    }
+    // The new feature's fingerprint is only null: the document's fingerprint isn't defined.
+    let added = snapshot_value("add_feature").unwrap();
+    assert!(added["request"]["$defs"].get("Fingerprint").is_none());
+    assert!(added["result"]["$defs"].get("Fingerprint").is_some());
 }
 
 #[test]

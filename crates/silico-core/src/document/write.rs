@@ -68,8 +68,8 @@ pub(crate) enum Out<'a> {
     /// An array written an item to a line, whatever it holds.
     Lines(Vec<Out<'a>>),
     Object(Vec<(&'static str, Out<'a>)>),
-    /// An object whose keys are known only when Silico runs (a JSON Schema's), in the
-    /// order given.
+    /// An object whose keys are known only when Silico runs (a JSON Schema's, or a value of
+    /// a document's or a request's), in the order given.
     Keyed(Vec<(String, Out<'a>)>),
 }
 

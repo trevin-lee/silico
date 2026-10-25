@@ -166,7 +166,7 @@ const SKETCH_AND_BOX: &str = r#"{"silico": 1, "units": {"length": "mm", "resolut
 
 #[test]
 fn each_commands_schemas_are_the_committed_snapshot() {
-    for of in COMMANDS {
+    for (of, _) in COMMANDS {
         let text = snapshot(of).unwrap().unwrap();
         assert_eq!(
             text,
@@ -220,7 +220,7 @@ fn open_shapes(schema: &serde_json::Value, at: &str, found: &mut Vec<String>) {
 fn every_object_of_the_commands_snapshots_is_closed_and_requires_its_fields() {
     let document: serde_json::Value =
         serde_json::from_str(&committed("document-schema.json")).unwrap();
-    for of in COMMANDS {
+    for (of, _) in COMMANDS {
         let mut value = snapshot_value(of).unwrap();
         // A document type a request or result holds keeps the document's own schema
         // (`wire_shape`): the document's definitions, as the document's schema has them, and
@@ -647,7 +647,7 @@ fn schema_answers_the_document_and_each_command_as_committed() {
     let document: serde_json::Value =
         serde_json::from_str(&committed("document-schema.json")).unwrap();
     assert_eq!(schema("document").unwrap().schema, document);
-    for of in COMMANDS {
+    for (of, _) in COMMANDS {
         let committed: serde_json::Value =
             serde_json::from_str(&committed(&format!("commands/{of}.json"))).unwrap();
         let described = schema(of).unwrap();
