@@ -130,67 +130,78 @@ const FRONT_EDGES: [PixelId; 4] = [
     [1, EDGE_BIT | 4],
 ];
 
-#[test]
-fn a_box_from_the_front_is_its_front_face_over_its_projection_its_edges_on_its_boundary() {
-    let mut w = worker();
-    // The smallest; wider than high, so the view's aspect is the image's, and 401 wide, so
-    // the readback's rows are padded; and the largest.
-    for (width, height) in [(1, 1), (401, 300), (4096, 4096)] {
-        let (image, ids) = render(&mut w, front_of_a_box(width, height));
-        let ids = ids.unwrap();
-        assert_eq!((image.width, image.height), (width, height));
-        assert_eq!(ids.len(), usize::try_from(width * height).unwrap());
-        let face = projected(width, height, 44.0, FRONT_FACE_MM);
-        let mut seen_edges = std::collections::BTreeSet::new();
-        for row in 0..height {
-            for col in 0..width {
-                let id = ids[usize::try_from(row * width + col).unwrap()];
-                if face.inside(col, row, 1.0) {
-                    assert_eq!(
-                        id, FRONT_FACE,
-                        "{width}: ({col}, {row}) inside the front face"
-                    );
-                } else if face.outside(col, row, 1.0) {
-                    assert_eq!(id, [0, 0], "{width}: ({col}, {row}) outside the box");
-                } else {
-                    assert!(
-                        id == FRONT_FACE || id == [0, 0] || FRONT_EDGES.contains(&id),
-                        "{width}: ({col}, {row}) on the front face's boundary is {id:?}"
-                    );
-                }
-                if FRONT_EDGES.contains(&id) {
-                    seen_edges.insert(id);
-                }
+/// The bench's box from the front at `width` by `height`: its front face over its
+/// projection by hand, its four edges on its boundary, the background beyond, and the
+/// image's colours there.
+fn assert_front_of_the_box(w: &mut Worker, width: u32, height: u32) {
+    let (image, ids) = render(w, front_of_a_box(width, height));
+    let ids = ids.unwrap();
+    assert_eq!((image.width, image.height), (width, height));
+    assert_eq!(ids.len(), usize::try_from(width * height).unwrap());
+    let face = projected(width, height, 44.0, FRONT_FACE_MM);
+    let mut seen_edges = std::collections::BTreeSet::new();
+    for row in 0..height {
+        for col in 0..width {
+            let id = ids[usize::try_from(row * width + col).unwrap()];
+            if face.inside(col, row, 1.0) {
+                assert_eq!(
+                    id, FRONT_FACE,
+                    "{width}: ({col}, {row}) inside the front face"
+                );
+            } else if face.outside(col, row, 1.0) {
+                assert_eq!(id, [0, 0], "{width}: ({col}, {row}) outside the box");
+            } else {
+                assert!(
+                    id == FRONT_FACE || id == [0, 0] || FRONT_EDGES.contains(&id),
+                    "{width}: ({col}, {row}) on the front face's boundary is {id:?}"
+                );
+            }
+            if FRONT_EDGES.contains(&id) {
+                seen_edges.insert(id);
             }
         }
-        if width == 1 {
-            // A pixel's centre over the face, near its top right.
-            assert!(
-                ids[0] == FRONT_FACE || FRONT_EDGES.contains(&ids[0]),
-                "{ids:?}"
-            );
-            continue;
-        }
-        assert_eq!(
-            seen_edges.len(),
-            4,
-            "{width}: the front face's edges seen: {seen_edges:?}"
-        );
-        // The image: the background where the box isn't, and the body's colour, lit straight
-        // on, inside the face.
-        assert_eq!(image.at(0, 0), BACKGROUND);
-        assert_eq!(image.at(width - 1, height - 1), BACKGROUND);
-        let inside = image.at(
-            ((face.x0 + face.x1) / 2.0) as u32,
-            ((face.y0 + face.y1) / 2.0) as u32,
-        );
-        for k in 0..3 {
-            assert!(
-                inside[k].abs_diff(BODY[k]) <= 1,
-                "{width}: inside the face {inside:?}"
-            );
-        }
     }
+    if width == 1 {
+        // A pixel's centre over the face, near its top right.
+        assert!(
+            ids[0] == FRONT_FACE || FRONT_EDGES.contains(&ids[0]),
+            "{ids:?}"
+        );
+        return;
+    }
+    assert_eq!(
+        seen_edges.len(),
+        4,
+        "{width}: the front face's edges seen: {seen_edges:?}"
+    );
+    // The image: the background where the box isn't, and the body's colour, lit straight
+    // on, inside the face.
+    assert_eq!(image.at(0, 0), BACKGROUND);
+    assert_eq!(image.at(width - 1, height - 1), BACKGROUND);
+    let inside = image.at(
+        ((face.x0 + face.x1) / 2.0) as u32,
+        ((face.y0 + face.y1) / 2.0) as u32,
+    );
+    for k in 0..3 {
+        assert!(
+            inside[k].abs_diff(BODY[k]) <= 1,
+            "{width}: inside the face {inside:?}"
+        );
+    }
+}
+
+#[test]
+fn a_box_from_the_front_is_its_front_face_over_its_projection_its_edges_on_its_boundary() {
+    // The smallest; and wider than high, so the view's aspect is the image's, and 401 wide,
+    // so the readback's rows are padded.
+    let mut w = worker();
+    assert_front_of_the_box(&mut w, 1, 1);
+    assert_front_of_the_box(&mut w, 401, 300);
+}
+
+#[test]
+fn the_largest_render_is_the_box_from_the_front_too() {
+    assert_front_of_the_box(&mut worker(), 4096, 4096);
 }
 
 #[test]
@@ -224,22 +235,6 @@ fn a_highlighted_face_is_bluer_over_it_and_nothing_away_from_it_changes() {
     }
     // Half the highlight's blue, by hand in linear light, at the centre: the face is lit
     // straight on, so its colour there is the body's.
-    let linear = |c: u8| {
-        let c = f64::from(c) / 255.0;
-        if c <= 0.04045 {
-            c / 12.92
-        } else {
-            libm::pow((c + 0.055) / 1.055, 2.4)
-        }
-    };
-    let srgb = |l: f64| {
-        let c = if l <= 0.003_130_8 {
-            l * 12.92
-        } else {
-            1.055 * libm::pow(l, 1.0 / 2.4) - 0.055
-        };
-        (c * 255.0).round()
-    };
     let centre = after.at(
         ((face.x0 + face.x1) / 2.0) as u32,
         ((face.y0 + face.y1) / 2.0) as u32,
@@ -507,7 +502,9 @@ fn a_highlighted_face_changes_only_itself_and_its_outline() {
             } else if !near_top[i] {
                 assert_eq!(a, b, "({col}, {row}), {:?}, away from the top face", ids[i]);
                 away += 1;
-            } else if a != b {
+            } else if ids[i] == [0, 0] && a != b {
+                // Background just past the top face: only the outline, drawn over all,
+                // changes it.
                 outlined += 1;
             }
         }

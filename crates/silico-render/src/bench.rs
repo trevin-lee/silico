@@ -79,7 +79,7 @@ pub fn box_mesh(low: [f64; 3], size: [f64; 3]) -> Mesh {
 const VIEW_HEIGHT: f64 = 44.0;
 
 /// The 40 x 20 x 10 box from the origin, body 1, from the front (from −y, z up),
-/// orthographic, [`VIEW_HEIGHT`] high about (21, 10, 7), `width` by `height` pixels, with
+/// orthographic, 44 mm high about (21, 10, 7), `width` by `height` pixels, with
 /// its ID buffer. Its front face lands at x −21 to 19 mm and z −7 to 3 mm about the view's
 /// centre: off the centre both ways, so a flipped or mirrored image shows, and every edge
 /// in view at any aspect from square to wider.

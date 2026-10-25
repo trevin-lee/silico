@@ -767,9 +767,10 @@ fn front_from(distance: f64, width: u32, height: u32) -> RenderScene {
 
 #[test]
 fn an_up_too_long_for_f32_draws_as_a_unit_up() {
-    // Was a break: 1e20 is finite, so the check takes it, but its square overflows f32 in
-    // macaw's look_at (normalize_or_zero gives zero), which returns None, and the worker
-    // falls back to the identity view (from the target down −z): a wrong picture as Ok.
+    // Was a break: 1e20 is finite, so the check took it, but its square overflowed f32 in
+    // macaw's look_at (normalize_or_zero gave zero), which returned None, and the worker fell
+    // back to the identity view (from the target down −z): a wrong picture as Ok. The frame
+    // is now made in f64 (Camera::frame).
     let mut w = worker();
     let want = ids(&mut w, &front_from(60.0, 200, 150));
     let mut scene = front_from(60.0, 200, 150);
@@ -792,10 +793,10 @@ fn an_up_too_short_for_f32_draws_as_a_unit_up() {
 }
 
 #[test]
-fn an_orthographic_eye_nearer_the_target_than_f32_holds_draws_the_same() {
-    // Was a break: an eye 1e-30 from the target is apart from it, so the check takes it; in f32
-    // the view's direction has a square of 0, look_at fails, and the identity view is drawn.
-    // The box is moved so the target is the origin, where 1e-30 is representable.
+fn an_eye_nearer_the_target_than_a_nanometre_is_refused_and_one_a_nanometre_away_draws_the_same() {
+    // Was a break: an eye 1e-30 from the target was apart from it, so the check took it; in
+    // f32 the view's direction had a square of 0, look_at failed, and the identity view was
+    // drawn. The box is moved so the target is the origin, where 1e-30 is representable.
     let mut w = worker();
     let scene = |distance: f64| RenderScene {
         bodies: vec![body(1, box_mesh([-21.0, 10.0, -7.0], [40.0, 20.0, 10.0]))],
@@ -1016,8 +1017,8 @@ fn a_box_from_a_corner_shows_exactly_its_three_near_faces_and_nine_near_edges_al
 fn an_up_nearly_along_an_oblique_view_keeps_the_roll_its_part_across_says() {
     // Was a break: the check takes an up whose part across the view is 1e-9 of its length or
     // more ("below it, the image's rotation about the view is lost in rounding"), but the
-    // worker hands the up to look_at in f32, whose rounding of an oblique direction is
-    // about 6e-8: an up 1e-8 across the view is rolled by rounding noise, not by its part
+    // worker handed the up to look_at in f32, whose rounding of an oblique direction is
+    // about 6e-8: an up 1e-8 across the view was rolled by rounding noise, not by its part
     // across.
     let mut w = worker();
     // The view's direction from the target to the eye is (1, −1, 1)/√3; the up's part
@@ -1048,10 +1049,10 @@ fn an_orthographic_eye_a_kilometre_away_draws_as_one_near() {
 
 #[test]
 fn an_orthographic_eye_far_past_the_documents_lengths_draws_as_one_near_or_is_refused() {
-    // Was a break: the eye's f32 translation, rotated in f32, moves the image by about
-    // |eye| × 6e-8 (60 mm at 1e9, against 0.25 mm pixels), and the far plane at |eye| leaves
-    // the depth buffer no precision: hidden edges are drawn. The check takes any finite
-    // eye; the document's lengths stop at 1e6, a camera's don't.
+    // Was a break: the eye's f32 translation, rotated in f32, moved the image by about
+    // |eye| × 6e-8 (60 mm at 1e9, against 0.25 mm pixels), and the far plane at |eye| left
+    // the depth buffer no precision: hidden edges were drawn. An orthographic view now uses
+    // only the eye's direction, and an eye past MAX_RENDER_COORDINATE is refused.
     let mut w = worker();
     let want = ids(&mut w, &corner(100.0, [0.0, 0.0, 1.0], ORTHO_50, 200));
     for distance in [1e9, 1e15] {
@@ -1348,8 +1349,9 @@ fn allowed(scene: &RenderScene) -> std::collections::BTreeSet<PixelId> {
 #[test]
 fn random_hostile_scenes_are_refused_exactly_as_the_check_says_or_drawn_with_their_own_ids() {
     // Was a break: finite numbers past f32's reach (a position or target of 1e39, a camera's of
-    // 1e300) pass the check and fail in the worker as `Internal` ("Face1: Mesh has an invalid
-    // bounding box Vec3(inf, ...)"): the targeted tests above, at random.
+    // 1e300) passed the check and failed in the worker as `Internal` ("Face1: Mesh has an
+    // invalid bounding box Vec3(inf, ...)"): the targeted tests above, at random. Now
+    // refused by the check, past MAX_RENDER_COORDINATE.
     hostile_scenes(true);
 }
 

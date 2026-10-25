@@ -62,11 +62,10 @@ fn run() -> Result<(), String> {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let (size, hold) = arguments(&args)?;
     let started = Instant::now();
-    let adapter = silico_render::adapters(RenderAdapter::Software)?
-        .into_iter()
-        .next()
-        .ok_or("no adapter")?;
-    let mut renderer = Renderer::new(&adapter)?;
+    // The first adapter the worker would try (adapters() refuses an empty list).
+    let adapters = silico_render::adapters(RenderAdapter::Software)?;
+    let adapter = &adapters[0];
+    let mut renderer = Renderer::new(adapter)?;
     let context = started.elapsed();
     let rendering = Instant::now();
     let rendered = renderer
