@@ -325,6 +325,7 @@ mod ffi {
             shape: &Shape,
             tolerance: f64,
             angle: f64,
+            force_face_deflection: bool,
         ) -> Result<UniquePtr<ExportTriangulation>>;
         fn nodes(self: &ExportTriangulation) -> &[f64];
         fn face_nodes(self: &ExportTriangulation) -> &[u32];
@@ -1693,7 +1694,11 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
 /// of more than [`silico_protocol::MAX_EXPORT_TRIANGLES`] triangles ([`Refusal::TooManyTriangles`]). It
 /// leaves the shape as it was. Reports each face's triangles and where its nodes lie on the shape's
 /// edges and vertices, for the core to join and check (docs/ports/mesh-export.md).
-pub fn export_mesh(shape: &Shape, tolerance: f64) -> Result<ExportMesh, KernelError> {
+pub fn export_mesh(
+    shape: &Shape,
+    tolerance: f64,
+    force_face_deflection: bool,
+) -> Result<ExportMesh, KernelError> {
     check_export_tolerance(tolerance)?;
     let inner = shape.get()?;
     let reach = ffi::bounding_reach(inner)?;
@@ -1701,8 +1706,13 @@ pub fn export_mesh(shape: &Shape, tolerance: f64) -> Result<ExportMesh, KernelEr
         return Err(KernelError::new(Refusal::ExtentNotFinite));
     }
     let deflection = export_deflection(tolerance, reach).map_err(KernelError::new)?;
-    let raw = ffi::export_mesh(inner, deflection, export_angle(tolerance))
-        .map_err(|e| KernelError::from(e).during(Operation::Tessellate))?;
+    let raw = ffi::export_mesh(
+        inner,
+        deflection,
+        export_angle(tolerance),
+        force_face_deflection,
+    )
+    .map_err(|e| KernelError::from(e).during(Operation::Tessellate))?;
     let raw = raw.as_ref().ok_or_else(|| {
         KernelError::new(Refusal::NothingReturned {
             what: Returned::Mesh,
@@ -1716,6 +1726,7 @@ pub fn export_mesh(shape: &Shape, tolerance: f64) -> Result<ExportMesh, KernelEr
     Ok(ExportMesh {
         tolerance,
         deflection,
+        force_face_deflection,
         nodes: triples(raw.nodes()),
         face_nodes: raw.face_nodes().to_vec(),
         triangles: raw

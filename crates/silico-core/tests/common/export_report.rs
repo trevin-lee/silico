@@ -124,7 +124,7 @@ pub fn with_shell(base: &ExportMesh, extra: &ExportMesh, solid: u32, outer: bool
 /// `faces`, with a suggestion.
 #[track_caller]
 pub fn refused(m: &ExportMesh, code: ErrorCode, says: &str, faces: &[&str]) {
-    let error = printable(m, None).unwrap_err();
+    let error = printable(m, None, None).unwrap_err();
     assert_eq!(error.code(), code, "{error}");
     assert!(error.message().contains(says), "{error}");
     assert_eq!(error.elements(), faces, "{error}");

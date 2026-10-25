@@ -210,8 +210,13 @@ pub enum Op {
     },
     /// A shape's solids meshed for export at `tolerance` mm, and its angular rule
     /// ([`export_angle`]), with where each face's nodes lie on the shape's edges and
-    /// vertices. Replies with [`Reply::ExportMesh`].
-    ExportMesh { shape: ShapeData, tolerance: f64 },
+    /// vertices; with `force_face_deflection`, no face's deflection raised for its own
+    /// tolerance (OCCT's `ForceFaceDeflection`). Replies with [`Reply::ExportMesh`].
+    ExportMesh {
+        shape: ShapeData,
+        tolerance: f64,
+        force_face_deflection: bool,
+    },
 }
 
 impl Op {

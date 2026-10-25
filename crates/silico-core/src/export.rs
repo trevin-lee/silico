@@ -19,8 +19,9 @@
 //!    one, and each solid a positive volume in all;
 //! 7. meshed at the tolerance, less what rounding to 32 bits can move a vertex: no face
 //!    meshed more coarsely for its own tolerance (OCCT meshes a face no finer than twice
-//!    it), each edge's deflection as OCCT gives it (it raises one to the gap between a
-//!    vertex and its curve), and each joined vertex's nodes.
+//!    it, so a face it raised is compared with OCCT's mesh of it at the tolerance, and
+//!    refused where its nodes differ), each edge's deflection as OCCT gives it (it raises
+//!    one to the gap between a vertex and its curve), and each joined vertex's nodes.
 //!
 //! The export tolerance is the mesher's deflection, as FreeCAD's export takes it, and a
 //! face's interior is OCCT's to meet: it holds on planes, cylinders, cones, and tori, and a
@@ -115,12 +116,33 @@ const INSIDE_OUT: &str = "the kernel's solid is inside out where the faces named
 const FINER: &str = "export with another tolerance, or change the part where the faces named \
                      meet: the kernel's mesh of them isn't a closed solid";
 
+/// Whether OCCT meshed a face of `mesh` more coarsely than asked for the face's own
+/// tolerance: a face whose tolerance is more than half the deflection, which OCCT raises the
+/// face's deflection to twice (`BRepMesh_Deflection.cxx:149-152`, OCCT's own test). Then
+/// [`printable`] needs the unraised mesh of the same shape too
+/// ([`crate::kernel::KernelRequest::unraised_export_mesh`]), to see whether the raise changed
+/// the face's nodes.
+pub fn needs_unraised(mesh: &ExportMesh) -> bool {
+    raised_faces(mesh).next().is_some()
+}
+
+/// The faces of `mesh` OCCT raised the deflection of, by index.
+fn raised_faces(mesh: &ExportMesh) -> impl Iterator<Item = usize> + '_ {
+    (0..mesh.face_tolerances.len()).filter(|&f| 2.0 * mesh.face_tolerances[f] > mesh.deflection)
+}
+
 /// Joins the faces of `mesh` at the edges they share, and checks the result is printable
-/// at the tolerance it was meshed for (the module's rules, in order). `names` names the
-/// faces in a refusal, as the feature's element map does, and must name every face of the
-/// shape; without it they're numbered (`Face3`). Each solid is joined on its own, so two
-/// solids that touch never share a vertex.
-pub fn printable(mesh: &ExportMesh, names: Option<&ElementMap>) -> Result<PrintableMesh, Error> {
+/// at the tolerance it was meshed for (the module's rules, in order). `unraised` is OCCT's
+/// mesh of the same shape with no face's deflection raised, which a face OCCT raised
+/// ([`needs_unraised`]) is compared with: needed only then. `names` names the faces in a
+/// refusal, as the feature's element map does, and must name every face of the shape;
+/// without it they're numbered (`Face3`). Each solid is joined on its own, so two solids
+/// that touch never share a vertex.
+pub fn printable(
+    mesh: &ExportMesh,
+    unraised: Option<&ExportMesh>,
+    names: Option<&ElementMap>,
+) -> Result<PrintableMesh, Error> {
     let namer = FaceNamer { names };
     let left_out: Vec<String> = mesh
         .unoriented_faces
@@ -134,7 +156,7 @@ pub fn printable(mesh: &ExportMesh, names: Option<&ElementMap>) -> Result<Printa
         );
     }
     // A refusal of a solid with faces left out says so, as they're why it may be open.
-    checked(mesh, names).map_err(|error| match (error.cause(), left_out.is_empty()) {
+    checked(mesh, unraised, names).map_err(|error| match (error.cause(), left_out.is_empty()) {
         (None, false) => {
             let cause = format!(
                 "left out of the mesh as bounding no material (INTERNAL or EXTERNAL): {}",
@@ -147,7 +169,11 @@ pub fn printable(mesh: &ExportMesh, names: Option<&ElementMap>) -> Result<Printa
 }
 
 /// [`printable`]'s checks, its faces left out unsaid.
-fn checked(mesh: &ExportMesh, names: Option<&ElementMap>) -> Result<PrintableMesh, Error> {
+fn checked(
+    mesh: &ExportMesh,
+    unraised: Option<&ExportMesh>,
+    names: Option<&ElementMap>,
+) -> Result<PrintableMesh, Error> {
     let _span = tracing::info_span!(
         "printable",
         faces = mesh.face_nodes.len(),
@@ -487,41 +513,65 @@ fn checked(mesh: &ExportMesh, names: Option<&ElementMap>) -> Result<PrintableMes
     // 7. Meshed at the tolerance, less what rounding to 32 bits moves a vertex
     // (the worker meshed with the tolerance less the most its bounding box allows). First,
     // OCCT's own raise: it meshes a face no finer than twice its tolerance (the largest of
-    // the face's, its edges', and its vertices', `BRepMesh_Deflection.cxx:149-152`), so a
-    // face whose geometry is exact only to more than half the deflection was meshed more
-    // coarsely than asked.
-    let raised: Vec<usize> = (0..mesh.face_nodes.len())
-        .filter(|&f| 2.0 * mesh.face_tolerances[f] > mesh.deflection)
-        .collect();
+    // the face's, its edges', and its vertices', `BRepMesh_Deflection.cxx:149-152`). Where
+    // it raised a face, the face is compared with OCCT's mesh of it unraised: the raise
+    // changes nothing on a plane or a cylinder (no nodes inside them), and often nothing on
+    // a sphere, cone, or torus (a step count rounded the same), so a face is refused only
+    // where its nodes differ. Its triangles may differ where its nodes don't, as a
+    // cylinder's quads' diagonals are ties, broken as the mesher meets them; the nodes are
+    // what the deflection places.
+    let raised: Vec<usize> = raised_faces(mesh).collect();
     if !raised.is_empty() {
-        let loosest = raised
-            .iter()
-            .map(|&f| mesh.face_tolerances[f])
-            .fold(0.0f64, f64::max);
-        // The margin the worker meshed with, from the part's bounding box (which reaches
-        // further than its nodes, by the shape's tolerances): the next export's too, so the
-        // least tolerance that works is twice the loosest face's tolerance plus it, and a
-        // hair more, so the worker's own subtraction can't land a rounding short.
-        let margin = mesh.tolerance - mesh.deflection;
-        return Err(faces
-            .refuse(
-                ErrorCode::InvalidResult,
-                format!(
-                    "the kernel meshed the faces named at {} mm, not {}: the part's geometry \
-                     there is only exact to {} mm, and OCCT meshes a face no finer than twice \
-                     its tolerance",
-                    silico_protocol::format_number(2.0 * loosest),
-                    silico_protocol::format_number(mesh.deflection),
-                    silico_protocol::format_number(loosest)
-                ),
-                raised.into_iter().map(number),
-                &format!(
-                    "export with a tolerance of at least {} mm, or rebuild the part so the faces \
-                     named meet more precisely",
-                    silico_protocol::format_number((2.0 * loosest + margin).next_up())
-                ),
-            )
-            .with_parameter("tolerance"));
+        let unraised = unraised_for(mesh, unraised)?;
+        let unraised_ranges = unraised.face_ranges();
+        let places = |m: &ExportMesh, range: &std::ops::Range<u32>| {
+            let mut places: Vec<[u64; 3]> = m.nodes[range.start as usize..range.end as usize]
+                .iter()
+                .map(|p| p.map(f64::to_bits))
+                .collect();
+            places.sort_unstable();
+            places
+        };
+        let (changed, same): (Vec<usize>, Vec<usize>) = raised
+            .into_iter()
+            .partition(|&f| places(mesh, &ranges[f]) != places(unraised, &unraised_ranges[f]));
+        if !same.is_empty() {
+            let named: Vec<String> = same.iter().map(|&f| faces.name(number(f))).collect();
+            tracing::info!(
+                faces = named.join(", "),
+                "OCCT raised the faces' deflection for their own tolerance and placed the same \
+                 nodes as unraised"
+            );
+        }
+        if !changed.is_empty() {
+            let loosest = changed
+                .iter()
+                .map(|&f| mesh.face_tolerances[f])
+                .fold(0.0f64, f64::max);
+            return Err(faces
+                .refuse(
+                    ErrorCode::InvalidResult,
+                    format!(
+                        "the kernel meshed the faces named at {raised} mm, not the {asked} mm \
+                         asked, and placed other nodes than it would at {asked}: the part's \
+                         geometry there is only exact to {loosest} mm, and OCCT meshes a face \
+                         no finer than twice its tolerance",
+                        raised = silico_protocol::format_number(2.0 * loosest),
+                        asked = silico_protocol::format_number(tolerance),
+                        loosest = silico_protocol::format_number(loosest)
+                    ),
+                    changed.into_iter().map(number),
+                    &format!(
+                        "export with a tolerance of at least {} mm, or rebuild the part so the \
+                         faces named meet more precisely",
+                        silico_protocol::format_number(unraising_tolerance(
+                            2.0 * loosest,
+                            mesh.tolerance - mesh.deflection
+                        ))
+                    ),
+                )
+                .with_parameter("tolerance"));
+        }
     }
     let mut far: Vec<u32> = (0..mesh.edge_faces.len())
         .filter(|&k| mesh.edge_deflections[k] > allowed)
@@ -561,6 +611,59 @@ fn checked(mesh: &ExportMesh, names: Option<&ElementMap>) -> Result<PrintableMes
             .map(|&f| faces.name(f))
             .collect(),
     })
+}
+
+/// `unraised`, checked to be OCCT's unraised mesh of the shape `mesh` is of: one that
+/// holds together, meshed unraised at the same tolerance and deflection, of the same faces.
+/// Without it, or with another, the caller has a bug.
+fn unraised_for<'a>(
+    mesh: &ExportMesh,
+    unraised: Option<&'a ExportMesh>,
+) -> Result<&'a ExportMesh, Error> {
+    let bug = |what: &str| {
+        Err(Error::new(
+            ErrorCode::Internal,
+            format!(
+                "OCCT meshed a face of the export more coarsely for its own tolerance, and {what} \
+                 to compare it with"
+            ),
+        )
+        .with_suggestion(crate::worker::SILICO_BUG))
+    };
+    let Some(unraised) = unraised else {
+        return bug("there's no unraised mesh");
+    };
+    if let Err(problem) = unraised.validate() {
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            "the unraised export mesh doesn't hold together",
+        )
+        .with_cause(problem)
+        .with_suggestion("export the mesh the kernel worker reports, as it reports it"));
+    }
+    if !unraised.force_face_deflection
+        || unraised.tolerance.to_bits() != mesh.tolerance.to_bits()
+        || unraised.deflection.to_bits() != mesh.deflection.to_bits()
+        || unraised.face_numbers != mesh.face_numbers
+    {
+        return bug("the unraised mesh given is another's");
+    }
+    Ok(unraised)
+}
+
+/// The least tolerance, rounded up to the nanometre, at which the worker, meshing with the
+/// tolerance less `margin`, meshes with a deflection of at least `least`, so OCCT raises no
+/// face whose tolerance is half of `least` or less. The margin is the rounding the part's
+/// bounding box allows for, the same at every tolerance; a nanometre more where the
+/// worker's own subtraction would land short.
+fn unraising_tolerance(least: f64, margin: f64) -> f64 {
+    let nanometres = ((least + margin) * 1e9).ceil();
+    let tolerance = nanometres / 1e9;
+    if tolerance - margin >= least {
+        tolerance
+    } else {
+        (nanometres + 1.0) / 1e9
+    }
 }
 
 /// Whether a shell's or solid's signed `volume` is enclosed the right way: positive for an

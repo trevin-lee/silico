@@ -501,12 +501,28 @@ impl KernelRequest<ExportMesh> {
     /// shape's edges and vertices, for [`crate::export::printable`] to join and check. A
     /// tolerance outside the export's range is refused, naming it.
     pub fn export_mesh(shape: &ShapeData, tolerance: f64) -> Result<Self, Error> {
+        Self::export_mesh_forced(shape, tolerance, false)
+    }
+
+    /// [`export_mesh`](Self::export_mesh) with no face's deflection raised for its own
+    /// tolerance (OCCT's `ForceFaceDeflection`): the mesh [`crate::export::printable`]
+    /// compares a raised face's with, asked for only when [`crate::export::needs_unraised`].
+    pub fn unraised_export_mesh(shape: &ShapeData, tolerance: f64) -> Result<Self, Error> {
+        Self::export_mesh_forced(shape, tolerance, true)
+    }
+
+    fn export_mesh_forced(
+        shape: &ShapeData,
+        tolerance: f64,
+        force_face_deflection: bool,
+    ) -> Result<Self, Error> {
         if let Err(invalid) = silico_protocol::check_export_tolerance(tolerance) {
             return Err(refused("export", None, invalid));
         }
         let op = Op::ExportMesh {
             shape: shape.clone(),
             tolerance,
+            force_face_deflection,
         };
         Ok(Self::new(op, move |name, reply| match reply {
             // A report for another tolerance would hold the export's checks to it: the
@@ -519,6 +535,21 @@ impl KernelRequest<ExportMesh> {
                          {} mm asked for",
                         silico_protocol::format_number(mesh.tolerance),
                         silico_protocol::format_number(tolerance)
+                    ),
+                )
+                .with_suggestion("start a new kernel worker"))
+            }
+            Reply::ExportMesh(mesh) if mesh.force_face_deflection != force_face_deflection => {
+                Err(Error::new(
+                    ErrorCode::ProtocolError,
+                    format!(
+                        "the kernel worker sent an export mesh {} each face's deflection \
+                         raised for its tolerance, not the one asked for",
+                        if mesh.force_face_deflection {
+                            "without"
+                        } else {
+                            "with"
+                        }
                     ),
                 )
                 .with_suggestion("start a new kernel worker"))
@@ -911,6 +942,15 @@ impl KernelWorker {
     pub fn export_mesh(&mut self, shape: &ShapeData, tolerance: f64) -> Result<ExportMesh, Error> {
         self.run(KernelRequest::export_mesh(shape, tolerance)?)
     }
+
+    /// [`KernelRequest::unraised_export_mesh`], run on this worker.
+    pub fn unraised_export_mesh(
+        &mut self,
+        shape: &ShapeData,
+        tolerance: f64,
+    ) -> Result<ExportMesh, Error> {
+        self.run(KernelRequest::unraised_export_mesh(shape, tolerance)?)
+    }
 }
 
 /// An operation's values refused before sending, naming the parameter at fault as a dotted
@@ -1070,6 +1110,47 @@ mod tests {
         // The next float up is another tolerance too.
         assert!(asked(0.1f64.next_up()).is_err());
         assert_eq!(asked(0.1).unwrap().tolerance, 0.1);
+    }
+
+    #[test]
+    fn an_export_mesh_raised_or_not_other_than_asked_is_a_protocol_error() {
+        // The unraised mesh is what a raised face is compared with: a raised one in its
+        // place would always compare the same, and the other way round always differ.
+        let mesh = |forced: bool| silico_protocol::ExportMesh {
+            tolerance: 0.1,
+            deflection: 0.1,
+            force_face_deflection: forced,
+            shell_solids: vec![0],
+            shell_outer: vec![true],
+            solids: 1,
+            ..Default::default()
+        };
+        let shape = ShapeData::checked(Blob::inline(vec![]), true);
+        for (asked_forced, sent_forced) in [(false, true), (true, false)] {
+            let request = if asked_forced {
+                KernelRequest::unraised_export_mesh(&shape, 0.1)
+            } else {
+                KernelRequest::export_mesh(&shape, 0.1)
+            };
+            let error = request
+                .unwrap()
+                .answer(Ok(Reply::ExportMesh(Box::new(mesh(sent_forced)))))
+                .unwrap_err();
+            assert_eq!(error.code(), ErrorCode::ProtocolError, "{error}");
+            assert!(error.message().contains("not the one asked for"), "{error}");
+        }
+        for forced in [false, true] {
+            let request = if forced {
+                KernelRequest::unraised_export_mesh(&shape, 0.1)
+            } else {
+                KernelRequest::export_mesh(&shape, 0.1)
+            };
+            let got = request
+                .unwrap()
+                .answer(Ok(Reply::ExportMesh(Box::new(mesh(forced)))))
+                .unwrap();
+            assert_eq!(got.force_face_deflection, forced);
+        }
     }
 
     /// A 4 × 3 rectangle on XY with a circle hole, and a circle beside it: two regions,

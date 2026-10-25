@@ -205,9 +205,11 @@ public:
 
 // Meshes a copy of the shape for export as FreeCAD does (`TopoShape::getFaces`): absolute
 // deflection `tolerance`, angular deflection `angle`, but single-threaded, so the mesh is
-// deterministic. The shape itself is left exactly as it was.
+// deterministic. The shape itself is left exactly as it was. With `force_face_deflection`,
+// OCCT meshes every face at `tolerance` too, not raising a face's deflection to twice its
+// own tolerance (IMeshTools_Parameters::ForceFaceDeflection).
 std::unique_ptr<ExportTriangulation> export_mesh(const Shape &shape, double tolerance,
-                                                 double angle);
+                                                 double angle, bool force_face_deflection);
 
 // The length of the shape's bounding box diagonal (0 for an empty shape).
 double bounding_diagonal(const Shape &shape);

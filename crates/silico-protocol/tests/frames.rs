@@ -243,6 +243,7 @@ fn every_op() -> Vec<Op> {
         Op::ExportMesh {
             shape: ShapeData::checked(Blob::inline(vec![8]), true),
             tolerance: 0.1,
+            force_face_deflection: true,
         },
     ];
     let indices: std::collections::BTreeSet<usize> = ops
@@ -404,6 +405,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         Ok(Reply::ExportMesh(Box::new(ExportMesh {
             tolerance: 0.1,
             deflection: 0.099_999_9,
+            force_face_deflection: true,
             nodes: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             face_nodes: vec![3],
             triangles: vec![[0, 1, 2]],

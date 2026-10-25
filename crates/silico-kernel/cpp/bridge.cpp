@@ -10,6 +10,7 @@
 #include <BRepClass3d.hxx>
 #include <BRepLib_ToolTriangulatedShape.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
+#include <IMeshTools_Parameters.hxx>
 #include <BRepMesh_ShapeTool.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
@@ -341,11 +342,20 @@ std::unique_ptr<Tessellation> tessellate(const Shape &shape, double deflection) 
 }
 
 std::unique_ptr<ExportTriangulation> export_mesh(const Shape &shape, double tolerance,
-                                                 double angle) {
+                                                 double angle, bool force_face_deflection) {
   // Mesh a copy, as tessellate does, so the shape's own bytes don't change.
   const TopoDS_Shape copy = BRepBuilderAPI_Copy(shape.shape, false, false).Shape();
-  // isRelative = false, as FreeCAD's export; isInParallel = false (deterministic).
-  BRepMesh_IncrementalMesh mesher(copy, tolerance, false, angle, false);
+  // As FreeCAD's export (BRepMesh_IncrementalMesh(shape, tolerance, false, angle, true),
+  // whose other parameters are IMeshTools_Parameters' defaults): Relative false, but
+  // InParallel false (deterministic). ForceFaceDeflection drops only the floors under a
+  // face's deflection (BRepMesh_Deflection.cxx:137).
+  IMeshTools_Parameters parameters;
+  parameters.Deflection = tolerance;
+  parameters.Angle = angle;
+  parameters.Relative = false;
+  parameters.InParallel = false;
+  parameters.ForceFaceDeflection = force_face_deflection;
+  BRepMesh_IncrementalMesh mesher(copy, parameters);
   if (!mesher.IsDone()) {
     throw Standard_Failure("the shape couldn't be meshed");
   }

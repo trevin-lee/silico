@@ -96,6 +96,10 @@ pub struct ExportMesh {
     /// The deflection OCCT meshed with ([`export_deflection`]): the tolerance less the
     /// rounding the shape's bounding box allows for.
     pub deflection: f64,
+    /// Whether OCCT was told not to raise a face's deflection for its own tolerance
+    /// (`IMeshTools_Parameters::ForceFaceDeflection`): the mesh an export compares a raised
+    /// face's with, never the one it writes.
+    pub force_face_deflection: bool,
     /// Every face's nodes, face after face, each where its face places it.
     pub nodes: Vec<[f64; 3]>,
     /// How many of `nodes` each face has.

@@ -7,11 +7,11 @@
 use super::exported;
 use super::kernel;
 
-use exported::{data, exported};
+use exported::{checked, data, exported};
 use kernel::kernel;
 use sha2::{Digest, Sha256};
 use silico_core::ErrorCode;
-use silico_core::export::{Object, PrintableMesh, printable, three_mf};
+use silico_core::export::{Object, PrintableMesh, needs_unraised, printable, three_mf};
 use silico_kernel::{
     BooleanOp, KernelErrorKind, Primitive, boolean, export_mesh, make, make_box, to_brep, translate,
 };
@@ -177,7 +177,7 @@ fn a_part_too_far_out_for_the_tolerance_in_32_bits_is_refused_naming_the_toleran
     let far = translate(&make_box(10.0, 10.0, 10.0).unwrap(), [5e4, 0.0, 0.0])
         .unwrap()
         .shape;
-    let refused = export_mesh(&far, 1e-3).unwrap_err();
+    let refused = export_mesh(&far, 1e-3, false).unwrap_err();
     assert_eq!(refused.kind(), KernelErrorKind::InvalidInput, "{refused}");
     let error = exported(&far, 1e-3).unwrap_err();
     assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
@@ -208,8 +208,10 @@ fn exporting_leaves_the_shape_as_it_was() {
     })
     .unwrap();
     let before = to_brep(&cylinder).unwrap();
-    export_mesh(&cylinder, 0.1).unwrap();
-    assert_eq!(to_brep(&cylinder).unwrap(), before);
+    for forced in [false, true] {
+        export_mesh(&cylinder, 0.1, forced).unwrap();
+        assert_eq!(to_brep(&cylinder).unwrap(), before);
+    }
 }
 
 #[test]
@@ -286,7 +288,7 @@ fn a_box_with_a_cavity_is_two_shells_the_cavitys_facing_in() {
     assert_eq!(raw.solids, 1);
     assert_eq!(raw.shell_outer.iter().filter(|&&o| o).count(), 1);
     assert_eq!(raw.shell_outer.len(), 2);
-    let mesh = printable(&raw, None).unwrap();
+    let mesh = printable(&raw, None, None).unwrap();
     assert_eq!(mesh.vertices().len(), 16);
     assert_eq!(mesh.triangles().len(), 24);
     assert!(
@@ -568,7 +570,95 @@ print("SILICO_ORACLE " + json.dumps({{"faces": len(c.Faces)}}))
     let shape = silico_kernel::from_text_brep(&std::fs::read(&path).unwrap()).unwrap();
     let raw = kernel().export_mesh(&data(&shape), 0.1).unwrap();
     assert_eq!((raw.solids, raw.loose_faces.clone()), (1, vec![7]));
-    let error = printable(&raw, None).unwrap_err();
+    let error = printable(&raw, None, None).unwrap_err();
     assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
     assert_eq!(error.elements(), ["Face7"], "{error}");
+}
+
+/// `part` (a Python expression for a shape) with its sub-shapes' tolerances raised to
+/// `tolerance` by FreeCAD 1.1.3's `fixTolerance`, as its B-rep reads back here; and FreeCAD's
+/// own export of it at `export` mm, read back: its points and facets.
+fn loosened(part: &str, tolerance: f64, export: f64) -> (silico_kernel::Shape, (u64, u64)) {
+    let dir = tempfile::Builder::new()
+        .prefix("silico-export-loosened-")
+        .tempdir()
+        .unwrap();
+    let brep = dir.path().join("part.brep");
+    let loose = format!("(lambda s: (s.fixTolerance({tolerance}), s)[1])({part})");
+    super::oracle::freecad(&format!(
+        r#"
+import json, Part
+s = {loose}
+s.exportBrep({brep:?})
+print("SILICO_ORACLE " + json.dumps({{"tolerance": s.getTolerance(1)}}))
+"#,
+        brep = brep.to_str().unwrap()
+    ));
+    let shape = silico_kernel::from_text_brep(&std::fs::read(&brep).unwrap()).unwrap();
+    let counts = freecads_export(&loose, export, &dir.path().join("part.3mf"));
+    (shape, counts)
+}
+
+#[test]
+fn a_face_raised_for_its_tolerance_but_meshed_with_the_same_nodes_is_exported() {
+    // Decided (m4.8-export-fable-2b): OCCT meshes a face no finer than twice its tolerance,
+    // which changes nothing on a plane (no nodes inside it) or a cylinder (none either: its
+    // splitter's V loop never runs, BRepMesh_CylinderRangeSplitter.cxx), so faces 0.06 mm
+    // loose at 0.1 mm are raised to 0.12 and exported, as FreeCAD exports them: the box's
+    // 8 points and 12 facets, and the cylinder's points and facets (its triangles may break
+    // the ties of its quads' diagonals otherwise, as Fable measured: the nodes are compared).
+    let (block, freecad) = loosened("Part.makeBox(10, 20, 30)", 0.06, 0.1);
+    let raw = kernel().export_mesh(&data(&block), 0.1).unwrap();
+    assert!(needs_unraised(&raw));
+    let mesh = checked(&data(&block), &raw).unwrap();
+    assert_eq!(freecad, (8, 12));
+    assert_eq!(mesh.vertices().len(), 8);
+    assert_eq!(mesh.triangles().len(), 12);
+    assert_eq!(mesh.volume(), 6000.0);
+    // Without the unraised mesh to compare with, it can't be told, and that's a bug.
+    let error = printable(&raw, None, None).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::Internal, "{error}");
+    let (cylinder, freecad) = loosened("Part.makeCylinder(100, 20)", 0.06, 0.1);
+    let raw = kernel().export_mesh(&data(&cylinder), 0.1).unwrap();
+    assert!(needs_unraised(&raw));
+    let mesh = checked(&data(&cylinder), &raw).unwrap();
+    assert_eq!(
+        (mesh.vertices().len() as u64, mesh.triangles().len() as u64),
+        freecad
+    );
+}
+
+#[test]
+fn a_tight_parts_unraised_mesh_is_its_mesh() {
+    // ForceFaceDeflection drops only the floors under a face's deflection: where no face is
+    // raised, the unraised mesh is the mesh, so the flag reaches nothing else.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/brep");
+    let nist = silico_kernel::from_text_brep(
+        &std::fs::read(dir.join("nist_ctc_01_asme1_ap242-e1.brep")).unwrap(),
+    )
+    .unwrap();
+    for shape in [make_box(10.0, 20.0, 30.0).unwrap(), nist] {
+        let raw = kernel().export_mesh(&data(&shape), 0.1).unwrap();
+        assert!(!needs_unraised(&raw));
+        let mut unraised = kernel().unraised_export_mesh(&data(&shape), 0.1).unwrap();
+        assert!(unraised.force_face_deflection);
+        unraised.force_face_deflection = false;
+        assert_eq!(unraised, raw);
+    }
+}
+
+#[test]
+fn a_b_spline_face_raised_for_its_tolerance_is_refused_where_its_nodes_move() {
+    // A 50 mm sphere as a B-spline surface, 0.02 mm loose, at 0.01 mm: OCCT's deflection
+    // control places a B-spline's nodes by the face's deflection, so the raise to 0.04
+    // places others, and fewer: FreeCAD's own export of it has fewer points than the tight
+    // sphere's at 0.01.
+    let (sphere, loose) = loosened("Part.makeSphere(50).toNurbs()", 0.02, 0.01);
+    let (_, tight) = loosened("Part.makeSphere(50).toNurbs()", 1e-7, 0.01);
+    assert!(loose.0 < tight.0, "{loose:?} {tight:?}");
+    let raw = kernel().export_mesh(&data(&sphere), 0.01).unwrap();
+    let error = checked(&data(&sphere), &raw).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::InvalidResult, "{error}");
+    assert_eq!(error.parameter(), Some("tolerance"), "{error}");
+    assert_eq!(error.elements(), ["Face1"], "{error}");
 }

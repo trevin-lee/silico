@@ -103,9 +103,14 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
             let mesh = crate::tessellate(&shape, deflection).map_err(failure)?;
             Ok(Reply::Mesh(mesh))
         }
-        Op::ExportMesh { shape, tolerance } => {
+        Op::ExportMesh {
+            shape,
+            tolerance,
+            force_face_deflection,
+        } => {
             let shape = shape_of(&shape)?;
-            let mesh = crate::export_mesh(&shape, tolerance).map_err(failure)?;
+            let mesh =
+                crate::export_mesh(&shape, tolerance, force_face_deflection).map_err(failure)?;
             Ok(Reply::ExportMesh(Box::new(mesh)))
         }
         Op::Echo { data } => Ok(Reply::Echo { data }),

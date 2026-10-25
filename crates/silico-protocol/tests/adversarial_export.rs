@@ -161,6 +161,7 @@ fn report(r: &Raw) -> ExportMesh {
     ExportMesh {
         tolerance: 0.1,
         deflection: r.deflection,
+        force_face_deflection: false,
         nodes: floats(nodes * 3)
             .chunks_exact(3)
             .map(|c| [c[0], c[1], c[2]])

@@ -11,7 +11,7 @@ use super::exported;
 use super::kernel;
 
 use brep_fixture::fixture;
-use exported::{data, exported};
+use exported::{checked, data, exported};
 use kernel::kernel;
 use silico_core::ErrorCode;
 use silico_core::export::{Object, PrintableMesh, printable, three_mf};
@@ -205,7 +205,7 @@ fn every_round_primitive_is_exported_exactly_when_its_mesh_is_within_the_toleran
                 continue;
             }
             let raw = worker.export_mesh(&shape, tolerance).unwrap();
-            match printable(&raw, None) {
+            match printable(&raw, None, None) {
                 Ok(mesh) => {
                     let d = deviation(&mesh, &*surface);
                     // A sphere's interior is OCCT's to meet, and misses along its seam by
@@ -264,7 +264,7 @@ fn a_spheres_mesh_misses_the_tolerance_at_its_seam_by_what_occt_makes() {
         let raw = worker
             .export_mesh(&data(&make(&sphere).unwrap()), tolerance)
             .unwrap();
-        let mesh = printable(&raw, None).unwrap();
+        let mesh = printable(&raw, None, None).unwrap();
         let ratio = deviation(&mesh, &*surface_of(&sphere)) / tolerance;
         got.push((radius, tolerance, (ratio * 1e3).round() / 1e3));
     }
@@ -322,7 +322,7 @@ fn a_cylinder_with_its_rim_chamfered_exports_at_ordinary_tolerances() {
                 })
                 .expect("the nodes lie on one of the two profiles");
             let surface = |p: [f64; 3]| to_revolved(&profile[..], p);
-            match printable(&raw, None) {
+            match printable(&raw, None, None) {
                 Ok(mesh) => {
                     let d = deviation(&mesh, &surface);
                     assert!(d <= tolerance, "Edge{edge} at {tolerance}: {d}");
@@ -472,7 +472,7 @@ fn a_solid_touching_itself_along_an_edge_is_refused_as_not_manifold() {
     let cut = boolean(BooleanOp::Cut, &block, &quarter).unwrap().shape;
     let cut = boolean(BooleanOp::Cut, &cut, &other).unwrap().shape;
     let raw = kernel().export_mesh(&data(&cut), 0.1).unwrap();
-    match printable(&raw, None) {
+    match printable(&raw, None, None) {
         Ok(mesh) => {
             assert_eq!(raw.solids, 2, "one solid, taken");
             assert_eq!(mesh.vertices().len(), 16);
@@ -598,7 +598,7 @@ fn an_export_refused_leaves_the_worker_able_to_export() {
     assert!(worker.export_mesh(&far, 1e-3).is_err());
     assert!(worker.export_mesh(&far, 1e-2).is_err());
     let mesh = worker.export_mesh(&cube, 0.1).unwrap();
-    let volume = printable(&mesh, None).unwrap().volume();
+    let volume = printable(&mesh, None, None).unwrap().volume();
     assert!((volume - 1.0).abs() <= 1e-12, "{volume}");
 }
 
@@ -771,7 +771,7 @@ fn a_countersunk_hole_exports_at_a_fine_tolerance_its_mesh_meets() {
     };
     for tolerance in [0.1, 0.05, 0.01] {
         let raw = kernel().export_mesh(&data(&sunk), tolerance).unwrap();
-        let Err(error) = printable(&raw, None) else {
+        let Err(error) = printable(&raw, None, None) else {
             continue;
         };
         // The cone's face: the one whose nodes all lie on the cone.
@@ -850,7 +850,7 @@ fn a_box_whose_face_is_unoriented_is_refused_as_open_saying_the_face_was_left_ou
             .collect();
         around.sort();
         assert_eq!(around.len(), 4, "{name}: {around:?}");
-        let error = printable(&raw, None).unwrap_err();
+        let error = printable(&raw, None, None).unwrap_err();
         assert_eq!(error.code(), ErrorCode::InvalidResult, "{name}: {error}");
         assert!(
             error.message().contains("the mesh is open"),
@@ -896,7 +896,7 @@ print("SILICO_ORACLE " + json.dumps({{"faces": len(s.Faces)}}))
     let shape = silico_kernel::from_text_brep(&std::fs::read(&path).unwrap()).unwrap();
     let raw = kernel().export_mesh(&data(&shape), 0.1).unwrap();
     assert_eq!(raw.unoriented_faces, [7]);
-    let mesh = printable(&raw, None).unwrap();
+    let mesh = printable(&raw, None, None).unwrap();
     assert_eq!(mesh.triangles().len(), 12);
     assert_eq!(mesh.vertices().len(), 8);
     assert_eq!(mesh.volume(), 6000.0);
@@ -905,12 +905,16 @@ print("SILICO_ORACLE " + json.dumps({{"faces": len(s.Faces)}}))
 
 #[test]
 fn a_face_meshed_coarser_than_asked_for_its_own_tolerance_is_refused_naming_the_tolerance() {
-    // Decided (m4.8-export-fable, item 2b): OCCT meshes a face no finer than twice its
-    // tolerance (BRepMesh_Deflection.cxx:149-152). A 50 mm sphere whose sub-shapes FreeCAD
-    // gave a tolerance of 0.02 (fixTolerance): at 0.01 OCCT meshes it at 0.04, 3.9 times the
-    // tolerance (the port review's run), so it's refused, naming Face1 and the tolerance; at
-    // 0.04, 2·0.02 = 0.04 is past the deflection, 0.04 less the rounding, and it's refused;
-    // at 0.05 it's taken.
+    // Decided (m4.8-export-fable, item 2b, and its revision, m4.8-export-fable-2b): OCCT
+    // meshes a face no finer than twice its tolerance (BRepMesh_Deflection.cxx:149-152),
+    // and a face it raised is refused where its nodes differ from OCCT's mesh of it
+    // unraised. A 50 mm sphere whose sub-shapes FreeCAD gave a tolerance of 0.02
+    // (fixTolerance): at 0.01 OCCT meshes it at 0.04, 3.9 times the tolerance (the port
+    // review's run), with other nodes, so it's refused, naming Face1 and the tolerance, and
+    // suggesting one rounded up to the nanometre at which nothing is raised. At 0.04 it's
+    // raised to 0.04 from 0.04 less the rounding, and OCCT places the same nodes (FreeCAD
+    // 1.1.3 at 0.0399: 6,348 points either way, Fable's run), so it's exported: a decided
+    // change from the first decision, which refused it. At 0.05 nothing is raised.
     let dir = tempfile::Builder::new()
         .prefix("silico-export-loose-tolerance-")
         .tempdir()
@@ -926,22 +930,43 @@ print("SILICO_ORACLE " + json.dumps({{"tolerance": s.getTolerance(1)}}))
 "#,
         path = path.to_str().unwrap()
     ));
-    let shape = silico_kernel::from_text_brep(&std::fs::read(&path).unwrap()).unwrap();
-    for tolerance in [0.01, 0.04] {
-        let raw = kernel().export_mesh(&data(&shape), tolerance).unwrap();
-        let error = printable(&raw, None).unwrap_err();
+    let shape = data(&silico_kernel::from_text_brep(&std::fs::read(&path).unwrap()).unwrap());
+    let raw = kernel().export_mesh(&shape, 0.01).unwrap();
+    let error = checked(&shape, &raw).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::InvalidResult, "{error}");
+    assert_eq!(error.parameter(), Some("tolerance"), "{error}");
+    assert_eq!(error.elements(), ["Face1"], "{error}");
+    assert!(
+        error
+            .message()
+            .contains("at 0.04 mm, not the 0.01 mm asked")
+            && error.message().contains("to 0.02 mm"),
+        "{error}"
+    );
+    let suggestion = error.suggestion().unwrap();
+    let suggested: f64 = suggestion
+        .strip_prefix("export with a tolerance of at least ")
+        .and_then(|s| s.split_once(" mm"))
+        .unwrap()
+        .0
+        .parse()
+        .unwrap();
+    // A whole number of nanometres, past 0.04 by no more than the margin and a nanometre,
+    // at which the worker meshes with a deflection OCCT doesn't raise.
+    let nanometres = suggested * 1e9;
+    assert_eq!(nanometres, nanometres.round(), "{suggested}");
+    assert!(suggested > 0.04 && suggested < 0.0401, "{suggested}");
+    let at = kernel().export_mesh(&shape, suggested).unwrap();
+    assert!(2.0 * at.face_tolerances[0] <= at.deflection, "{suggested}");
+    assert!(!silico_core::export::needs_unraised(&at), "{suggested}");
+    checked(&shape, &at).unwrap();
+    for tolerance in [0.04, 0.05] {
+        let raw = kernel().export_mesh(&shape, tolerance).unwrap();
         assert_eq!(
-            error.code(),
-            ErrorCode::InvalidResult,
-            "{tolerance}: {error}"
+            silico_core::export::needs_unraised(&raw),
+            tolerance == 0.04,
+            "{tolerance}"
         );
-        assert_eq!(error.parameter(), Some("tolerance"), "{tolerance}: {error}");
-        assert_eq!(error.elements(), ["Face1"], "{tolerance}: {error}");
-        assert!(
-            error.message().contains("at 0.04 mm") && error.message().contains("to 0.02 mm"),
-            "{tolerance}: {error}"
-        );
+        checked(&shape, &raw).unwrap();
     }
-    let raw = kernel().export_mesh(&data(&shape), 0.05).unwrap();
-    printable(&raw, None).unwrap();
 }
