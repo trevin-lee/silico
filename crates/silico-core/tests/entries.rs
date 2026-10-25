@@ -559,3 +559,38 @@ fn a_feature_whose_references_broke_is_refused_with_every_one_counted() {
         26
     );
 }
+
+/// A triangle in xy, padded 5 up: its faces, edges, and vertices named from the sketch's
+/// lines and points (`Face(G s0000001.sketch.Edge.na000000)`).
+const PADDED: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "s0000001", "type": "sketch", "v": 1, "name": "Triangle", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 20, "y": 0, "construction": false}, {"id": "pc000000", "x": 0, "y": 10, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []}, {"id": "w5mb4c2n", "type": "pad", "v": 1, "name": "Pad", "sketch": "s0000001", "extent": {"type": "one_side", "length": 5, "reversed": false}}]}"#;
+
+#[test]
+fn a_cursor_on_an_element_named_from_a_sketch_pages_on() {
+    // A pad's elements are named from its sketch's (a feature that makes no solid of its
+    // own): a cursor holding one is read as a name, as its rebuild reads them, and pages on.
+    // A prism of a triangle: 5 faces, 9 edges, 6 vertices.
+    let model = model_of(PADDED);
+    let all = list(&model, Revision::OPENED, None, None, 1000).unwrap();
+    assert_eq!(all.total, 20);
+    assert!(
+        all.entries
+            .iter()
+            .any(|e| e.name.to_string().contains("s0000001.sketch")),
+        "{:?}",
+        all.entries
+            .iter()
+            .map(|e| e.name.to_string())
+            .collect::<Vec<_>>()
+    );
+    let mut paged = Vec::new();
+    let mut after = None;
+    loop {
+        let page = list(&model, Revision::OPENED, None, after.as_ref(), 1).unwrap();
+        paged.extend(page.entries);
+        match page.next {
+            Some(next) => after = Some(next),
+            None => break,
+        }
+    }
+    assert_eq!(paged, all.entries);
+}

@@ -311,7 +311,6 @@ fn cursor_name(
             .features
             .iter()
             .find(|f| f.id == *id)
-            .filter(|f| f.operation.makes_solid())
             .map(|f| Maker::of(&f.operation))
     };
     match Name::parse(&cursor.name, &makers) {
