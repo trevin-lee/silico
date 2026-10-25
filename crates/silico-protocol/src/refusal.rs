@@ -112,9 +112,10 @@ pub enum Refusal {
     FpTrapsOn { mask: u32, op: String },
     /// Something went wrong in the worker itself, in a test worker's words.
     Internal { what: String },
-    /// A worker ran out of memory (OCCT's `Standard_OutOfMemory`, or `std::bad_alloc` in
-    /// either worker's C++): a shortage, not the values' fault, so the same request may
-    /// succeed once memory is free. Its words are the cause.
+    /// A worker ran out of memory (OCCT's `Standard_OutOfMemory`, `std::bad_alloc` in the
+    /// kernel's or the sketch worker's C++, or the render worker's GPU, lavapipe's being the
+    /// machine's memory): a shortage, not the values' fault, so the same request may succeed
+    /// once memory is free. Its words are the cause.
     OutOfMemory,
     /// A drag's move or end (`op`) with no drag under way in the sketch worker: none was
     /// begun, or one ended (by its end, a solve, a begin that found conflicts, or the

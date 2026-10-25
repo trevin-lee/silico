@@ -270,9 +270,9 @@ impl RenderScene {
     /// [`MAX_RENDER_COORDINATE`], and one each, every index in range, the faces' and edges'
     /// counts adding up, every number fitting the ID buffer), the highlights (ascending, each
     /// once, in range), the faces, edges, and triangles across the bodies (at most
-    /// [`MAX_RENDER_FACES`], [`MAX_RENDER_EDGES`], and [`MAX_RENDER_TRIANGLES`]), and an orthographic view's height against the bodies'
-    /// reach ([`MIN_VIEW_HEIGHT_OF_REACH`]). Only structure: what needs the model is the
-    /// core's.
+    /// [`MAX_RENDER_FACES`], [`MAX_RENDER_EDGES`], and [`MAX_RENDER_TRIANGLES`]), and an
+    /// orthographic view's height against the bodies' reach ([`MIN_VIEW_HEIGHT_OF_REACH`]).
+    /// Only structure: what needs the model is the core's.
     pub fn check(&self) -> Result<(), InvalidParameter> {
         for (parameter, side) in [("width", self.width), ("height", self.height)] {
             if !(1..=MAX_RENDER_SIDE).contains(&side) {
