@@ -330,12 +330,7 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
                         format!(
                             "{parameter}, {}, names a {}, not an edge",
                             shown(edge.as_str()),
-                            match name.kind() {
-                                ElementKind::Face => "face",
-                                ElementKind::Vertex => "vertex",
-                                ElementKind::Solid => "solid",
-                                ElementKind::Edge => "edge",
-                            }
+                            name.kind().word()
                         ),
                         advice.to_owned(),
                     )
