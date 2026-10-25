@@ -555,7 +555,10 @@ fn refusals_at_the_top_and_nested_are_counted_together_in_the_order_found() {
 fn refusals_past_the_hundredth_inside_a_nested_object_are_counted_at_the_top() {
     // 150 unknown keys inside, so 50 are only counted there, then one at the top.
     let inner: Vec<String> = (0..150).map(|i| format!(r#""i{i}": 0"#)).collect();
-    let node = parsed(&format!(r#"{{"facing": {{{}}}, "o": 0}}"#, inner.join(", ")));
+    let node = parsed(&format!(
+        r#"{{"facing": {{{}}}, "o": 0}}"#,
+        inner.join(", ")
+    ));
     let refused = refused_by(&node, |fields| {
         assert_eq!(fields.nullable_object("facing", |_| Some(())), None);
     });
