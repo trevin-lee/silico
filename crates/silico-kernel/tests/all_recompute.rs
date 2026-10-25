@@ -44,3 +44,5 @@ mod recompute_tracing;
 mod recompute_tracing_lagging;
 #[path = "refused_span_closes.rs"]
 mod refused_span_closes;
+#[path = "wire_examples.rs"]
+mod wire_examples;

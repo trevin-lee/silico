@@ -485,6 +485,15 @@ pub enum AxisToken {
 }
 
 impl AxisToken {
+    pub const ALL: [AxisToken; 6] = [
+        AxisToken::PlusX,
+        AxisToken::MinusX,
+        AxisToken::PlusY,
+        AxisToken::MinusY,
+        AxisToken::PlusZ,
+        AxisToken::MinusZ,
+    ];
+
     pub fn word(self) -> &'static str {
         match self {
             AxisToken::PlusX => "+x",

@@ -20,6 +20,7 @@ use crate::kernel::Kernel;
 use crate::recompute::{Model, Recompute, RunOutcome};
 
 pub mod elements;
+pub mod schema;
 mod session;
 pub mod wire;
 
