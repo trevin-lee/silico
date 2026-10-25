@@ -161,6 +161,29 @@ fn a_model_that_holds_a_fault_gives_no_cursor_and_refuses_one_as_a_conflict() {
     let page = page.result.unwrap();
     // Two boxes' 26 entries each, by hand; ten listed, and no cursor though more follow.
     assert_eq!((page.total, page.entries.len(), page.next), (52, 10, None));
+    // A feature's own listing pages on, fault or no fault: which bodies there are changes
+    // between two models of a revision, a feature's elements don't.
+    let block = FeatureId::new("k7f2qx3m").unwrap();
+    let own =
+        answer(
+            f.sessions
+                .elements(&s, ModelChoice::Published, Some(block.clone()), None, 10),
+        )
+        .result
+        .unwrap();
+    let on = own
+        .next
+        .expect("a feature's listing of a faulted model goes on");
+    let rest = answer(
+        f.sessions
+            .elements(&s, ModelChoice::Published, Some(block), Some(on), 100),
+    )
+    .result
+    .unwrap();
+    assert_eq!(
+        (own.entries.len(), rest.entries.len(), rest.next),
+        (10, 16, None)
+    );
     // A cursor made from the page's last entry, of the revision read.
     let last = page.entries.last().unwrap();
     let cursor = Cursor {

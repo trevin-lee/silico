@@ -10,8 +10,6 @@ use super::example;
 use super::listing::{TWO_BODIES, codes, model_of};
 use super::model;
 
-use std::time::Instant;
-
 use example::EXAMPLE;
 use model::{checked, id, published};
 use silico_core::ErrorCode;
@@ -488,11 +486,13 @@ fn walking_a_large_body_in_pages_costs_one_build_and_a_copy_of_each_page() {
     assert_eq!(model.bodies(), std::slice::from_ref(&body));
     // Named first, so the first page's time is the entries' build, not the naming's.
     assert!(model.element_map(&body).is_some());
-    let start = Instant::now();
+    // Each timed by the test thread's own CPU time, which a loaded machine doesn't change
+    // (a gate starting mid-test takes wall time, not this thread's: common/within.rs).
+    let start = cpu_time::ThreadTime::now();
     let first = list(&model, Revision::OPENED, None, None, ENTRIES_AT_MOST).unwrap();
     let page_one = start.elapsed();
     assert_eq!((first.total, first.entries.len()), (53_248, 1000));
-    let start = Instant::now();
+    let start = cpu_time::ThreadTime::now();
     let (mut pages, mut seen) = (1, first.entries.len());
     let mut after = first.next;
     let mut last = None;

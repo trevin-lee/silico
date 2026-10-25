@@ -206,8 +206,11 @@ pub fn list(
 ) -> Result<Listed, Problems> {
     let mut refused = Problems::none();
     let sources = sources(model, feature, &mut refused);
+    // Only a listing of every body changes between two models of a revision (which bodies
+    // there are follows from which features built); a feature's own listing doesn't.
+    let whole = feature.is_none();
     let resume = after.and_then(|cursor| {
-        cursor_name(model, revision, cursor, &mut refused).map(|name| (cursor, name))
+        cursor_name(model, revision, cursor, whole, &mut refused).map(|name| (cursor, name))
     });
     if let Some(error) = limit_refused(limit) {
         refused.push(error);
@@ -248,8 +251,8 @@ pub fn list(
     }
     let before: usize = sources.iter().take(body).map(|entries| entries.len()).sum();
     let end = before + from + entries.len();
-    // Whether it's faulted is asked only of a listing with more to come: it's a check.
-    let next = (end < total && !faulted(model))
+    // Whether it's faulted is asked only of a whole listing with more to come: it's a check.
+    let next = (end < total && !(whole && faulted(model)))
         .then(|| entries.last())
         .flatten()
         .map(|last| Cursor {
@@ -270,6 +273,7 @@ fn cursor_name(
     model: &Model,
     revision: Revision,
     cursor: &Cursor,
+    whole: bool,
     refused: &mut Problems,
 ) -> Option<Name> {
     let conflict = |message: String, suggestion: &str| {
@@ -288,7 +292,7 @@ fn cursor_name(
         ));
         return None;
     }
-    if faulted(model) {
+    if whole && faulted(model) {
         refused.push(conflict(
             format!(
                 "the model read of revision {} holds a kernel fault, so it may not be the \

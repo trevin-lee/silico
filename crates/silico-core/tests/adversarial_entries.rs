@@ -558,6 +558,44 @@ fn a_solid_not_described_is_refused_naming_it_and_its_neighbour_still_lists() {
     assert_eq!(query(&model, &faces).unwrap().matched, 6);
 }
 
+#[test]
+fn every_body_not_described_is_said_not_only_the_first() {
+    // Both boxes' descriptions refused: a listing of every body says each, in timeline
+    // order, two in all.
+    let engine = Recompute::new(FakeKernel::new(2).unwrap());
+    engine.kernel().refuse(|op| {
+        matches!(op, Op::Describe { .. })
+            .then(|| silico_core::Error::new(ErrorCode::KernelFailed, "no describing today"))
+    });
+    let model = published(&engine, checked(TWO_BODIES));
+    let all = list(&model, Revision::OPENED, None, None, 10).unwrap_err();
+    assert_eq!(all.total(), 2);
+    let features: Vec<Option<&str>> = all.errors().iter().map(|e| e.feature()).collect();
+    assert_eq!(features, [Some("aaaaaaaa"), Some("bbbbbbbb")]);
+}
+
+#[test]
+fn a_listings_refusals_come_in_its_requests_order_feature_then_cursor_then_limit() {
+    // A feature the document hasn't, a cursor of another revision, and a limit of 0:
+    // refused in that order, the order the request gives its fields.
+    let model = model_of(TWO_BODIES);
+    let cursor = Cursor {
+        revision: Revision::OPENED.next().unwrap(),
+        feature: id("bbbbbbbb"),
+        name: "bbbbbbbb.box.Face1".to_owned(),
+    };
+    let refused = list(
+        &model,
+        Revision::OPENED,
+        Some(&id("zzzzzzzz")),
+        Some(&cursor),
+        0,
+    )
+    .unwrap_err();
+    let parameters: Vec<Option<&str>> = refused.errors().iter().map(|e| e.parameter()).collect();
+    assert_eq!(parameters, [Some("feature"), Some("after"), Some("limit")]);
+}
+
 // ---------------------------------------------------------------------------------------
 // `query`: facing
 
