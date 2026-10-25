@@ -4,8 +4,8 @@
 
 use proptest::prelude::*;
 use silico_protocol::{
-    Algorithm, DragBegin, Geometry, Moved, PointOf, PointValues, SketchGeometry, SketchSystem,
-    SolveStatus, Solved, SolverConstraint, Tag, Value,
+    Algorithm, DragBegin, Geometry, MeshAt, Moved, PointOf, PointPlace, PointValues,
+    SketchGeometry, SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value,
 };
 use silico_protocol::{
     Axis, Blob, BooleanOp, BuiltData, ChamferSize, DebugOp, DressingKind, ElementCounts,
@@ -608,8 +608,16 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             png: vec![0x89, b'P', b'N', b'G', 0, 255],
             ids: Some(vec![[0, 0], [u32::MAX, EDGE_BIT | 7]]),
         }),
-        Ok(Reply::Classified { inside: true }),
-        Ok(Reply::MeshAt {
+        Ok(Reply::Classified {
+            place: PointPlace::Inside,
+        }),
+        Ok(Reply::Classified {
+            place: PointPlace::OnBoundary,
+        }),
+        Ok(Reply::Classified {
+            place: PointPlace::Outside,
+        }),
+        Ok(Reply::MeshAt(MeshAt {
             mesh: Mesh {
                 positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 normals: vec![[0.0, 0.0, 1.0]; 3],
@@ -620,7 +628,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
                 valid: Some(true),
             },
             deflection: 1.7e-2,
-        }),
+        })),
         Err(Failure::new(Refusal::NoAdapter {
             cause: "no CPU adapter".to_owned(),
         })),
@@ -651,7 +659,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             Ok(Reply::ExportMesh(_)) => 17,
             Ok(Reply::Rendered { .. }) => 18,
             Ok(Reply::Classified { .. }) => 20,
-            Ok(Reply::MeshAt { .. }) => 21,
+            Ok(Reply::MeshAt(_)) => 21,
             Err(failure) => match failure.kind() {
                 FailureKind::InvalidInput => 5,
                 FailureKind::KernelFailed => 6,

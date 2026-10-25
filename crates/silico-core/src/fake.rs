@@ -58,8 +58,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use silico_protocol::{
-    Algorithm, Reply, ShapeSummary, SketchSystem, SolveStatus, Solved, Tag, area_and_perimeter,
-    loop_area,
+    Algorithm, PointPlace, Reply, ShapeSummary, SketchSystem, SolveStatus, Solved, Tag,
+    area_and_perimeter, loop_area,
 };
 
 use crate::kernel::{
@@ -745,25 +745,24 @@ fn answer(op: &Op) -> Result<Reply, Error> {
             deflection,
             at_least_the_floor,
         } => fake_mesh(&Symbolic::read(shape)?, *deflection, *at_least_the_floor),
-        // The fake's solids are their boxes: a point is inside one if it's in its box,
-        // boundary included.
+        // The fake's solids are their boxes: a point is inside one if it's strictly within
+        // its box, on it if it's on the box's boundary.
         Op::Classify { shape, point } => {
-            let most = silico_protocol::MAX_RENDER_COORDINATE;
-            if !point.iter().all(|c| c.abs() <= most) {
-                return Err(Error::new(
-                    ErrorCode::InvalidInput,
-                    format!("point {point:?} must be finite and within {most} mm of the origin"),
-                )
-                .with_parameter("point")
-                .with_suggestion("change the value the message names"));
+            if let Err(invalid) = silico_protocol::check_classify_point(*point) {
+                return Err(Error::new(ErrorCode::InvalidInput, invalid.message)
+                    .with_parameter(invalid.parameter)
+                    .with_suggestion("change the value the message names"));
             }
-            let inside = Symbolic::read(shape)?
-                .summary()
-                .bounds
-                .is_some_and(|[low, high]| {
-                    (0..3).all(|k| low[k] <= point[k] && point[k] <= high[k])
-                });
-            Ok(Reply::Classified { inside })
+            let place = match Symbolic::read(shape)?.summary().bounds {
+                Some([low, high]) if (0..3).all(|k| low[k] < point[k] && point[k] < high[k]) => {
+                    PointPlace::Inside
+                }
+                Some([low, high]) if (0..3).all(|k| low[k] <= point[k] && point[k] <= high[k]) => {
+                    PointPlace::OnBoundary
+                }
+                _ => PointPlace::Outside,
+            };
+            Ok(Reply::Classified { place })
         }
         Op::Echo { data } => Ok(Reply::Echo { data: data.clone() }),
         other => Err(Error::new(
@@ -777,7 +776,7 @@ fn answer(op: &Op) -> Result<Reply, Error> {
 /// The fake's display mesh of `made`, as the kernel's is checked: a triangle for each face
 /// and a two-point polyline for each edge, all on its box's corners (a mesh that holds
 /// together, for the core's render, not one of the shape), at `deflection`. Its floor is
-/// the kernel's rule on the fake's box: 1e-4 of its diagonal, at least LENGTH_TOLERANCE.
+/// the kernel's rule, `mesh_floor`, on the fake's box.
 /// Under it, refused as the kernel refuses, or with `at_least_the_floor` meshed at it and
 /// said.
 fn fake_mesh(made: &Symbolic, deflection: f64, at_least_the_floor: bool) -> Result<Reply, Error> {
@@ -795,7 +794,7 @@ fn fake_mesh(made: &Symbolic, deflection: f64, at_least_the_floor: bool) -> Resu
         .map(|k| (high[k] - low[k]) * (high[k] - low[k]))
         .sum::<f64>()
         .sqrt();
-    let floor = (diagonal * 1e-4).max(silico_protocol::LENGTH_TOLERANCE);
+    let floor = silico_protocol::mesh_floor(diagonal);
     let used = if deflection >= floor {
         deflection
     } else if at_least_the_floor {
@@ -821,10 +820,10 @@ fn fake_mesh(made: &Symbolic, deflection: f64, at_least_the_floor: bool) -> Resu
         valid: None,
     };
     Ok(match at_least_the_floor {
-        true => Reply::MeshAt {
+        true => Reply::MeshAt(silico_protocol::MeshAt {
             mesh,
             deflection: used,
-        },
+        }),
         false => Reply::Mesh(mesh),
     })
 }

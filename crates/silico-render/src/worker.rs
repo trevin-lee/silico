@@ -15,15 +15,7 @@ pub const PLATFORM: silico_worker::Platform = silico_worker::Platform {
     built_from: "re_renderer 0.38.1 on wgpu 30",
 };
 
-/// Which adapter the worker draws on: the core's one say, given as an argument
-/// (docs/design/m4.6-render.md, *How the worker gets its rasterizer*).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RenderAdapter {
-    /// Only a CPU adapter (lavapipe), or none: the default.
-    Software,
-    /// A CPU adapter if there is one, then a discrete GPU, then any.
-    Any,
-}
+pub use silico_protocol::RenderAdapter;
 
 /// What the render worker keeps between requests: its render context, made on the first
 /// render.

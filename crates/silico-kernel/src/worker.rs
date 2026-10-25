@@ -36,8 +36,8 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
         }
         Op::Classify { shape, point } => {
             let shape = shape_of(&shape)?;
-            let inside = crate::classify(&shape, point).map_err(failure)?;
-            Ok(Reply::Classified { inside })
+            let place = crate::classify(&shape, point).map_err(failure)?;
+            Ok(Reply::Classified { place })
         }
         Op::Describe {
             shape,
@@ -134,9 +134,8 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
             at_least_the_floor: true,
         } => {
             let shape = shape_of(&shape)?;
-            let (mesh, deflection) =
-                crate::tessellate_at_least_the_floor(&shape, deflection).map_err(failure)?;
-            Ok(Reply::MeshAt { mesh, deflection })
+            let made = crate::tessellate_at_least_the_floor(&shape, deflection).map_err(failure)?;
+            Ok(Reply::MeshAt(made))
         }
         Op::ExportMesh {
             shape,

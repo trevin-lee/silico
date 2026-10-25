@@ -13,11 +13,11 @@ use std::time::Duration;
 pub use silico_protocol::{
     Axis, Blob, BooleanOp, BuiltData, ChamferSize, Curve, DESCRIBE_BATCH, Description, EdgeCurve,
     EdgeDescription, ElementCounts, ElementFate, ElementKind, ElementRef, Ends, ExportMesh,
-    FaceDescription, FaceRegions, FreecadMeasures, Generation, History, InputHistory, Mesh, Op,
-    Primitive, Profile, Region, Reported, ShapeData, ShapeSummary, SketchPlane, Surface, SweepKind,
-    Topology,
+    FaceDescription, FaceRegions, FreecadMeasures, Generation, History, InputHistory, Mesh, MeshAt,
+    Op, Primitive, Profile, Region, Reported, ShapeData, ShapeSummary, SketchPlane, Surface,
+    SweepKind, Topology,
 };
-use silico_protocol::{DebugOp, Failure, LENGTH_TOLERANCE, Reply};
+use silico_protocol::{DebugOp, Failure, LENGTH_TOLERANCE, PointPlace, Reply};
 
 use crate::pool::Pending;
 use crate::references::EdgeNames;
@@ -621,16 +621,17 @@ fn batch_problem(
 }
 
 impl KernelRequest<bool> {
-    /// Whether `point` is inside `shape` or on its boundary, by OCCT's solid classifier
-    /// (FreeCAD's `Shape.isInside(point, tolerance, True)`): M4.6 asks it of each body whose
-    /// tight box holds a camera's eye.
+    /// Whether `point` is inside `shape`, by OCCT's solid classifier (FreeCAD's
+    /// `Shape.isInside(point, tolerance, True)`), a point on its boundary counted as inside
+    /// (docs/design/m4.6-render.md: a camera's eye on a face is refused as one inside is).
+    /// M4.6 asks it of each body whose tight box holds a camera's eye.
     pub fn classify(shape: &ShapeData, point: [f64; 3]) -> Self {
         let op = Op::Classify {
             shape: shape.clone(),
             point,
         };
         Self::new(op, |name, reply| match reply {
-            Reply::Classified { inside } => Ok(inside),
+            Reply::Classified { place } => Ok(place != PointPlace::Outside),
             other => Err(unexpected(name, &other)),
         })
     }
@@ -654,7 +655,7 @@ impl KernelRequest<Mesh> {
     }
 }
 
-impl KernelRequest<(Mesh, f64)> {
+impl KernelRequest<MeshAt> {
     /// [`tessellate`](KernelRequest::tessellate), at the larger of `deflection` and the
     /// shape's floor (the finest the kernel meshes it), never refused for being too fine;
     /// and the deflection the kernel used, which must be the one asked or a coarser one.
@@ -666,29 +667,35 @@ impl KernelRequest<(Mesh, f64)> {
             at_least_the_floor: true,
         };
         Self::new(op, move |name, reply| match reply {
-            Reply::MeshAt {
-                mesh,
-                deflection: used,
-            } => {
-                // Coarser than asked only for the floor, so never finer, and never more
-                // than the floor's most (MIN_RELATIVE_DEFLECTION of a shape's extent, which
-                // the core can't check without the shape's box).
-                if !(used.is_finite() && used >= deflection) {
-                    return Err(Error::new(
-                        ErrorCode::ProtocolError,
-                        format!(
-                            "the kernel worker answered {name} with a deflection finer than asked"
-                        ),
-                    )
-                    .with_cause(format!("asked {deflection}, used {used}"))
-                    .with_suggestion("start a new kernel worker"));
-                }
-                Ok((checked_mesh(mesh)?, used))
-            }
+            Reply::MeshAt(made) => checked_mesh_at(name, deflection, made),
             other => Err(unexpected(name, &other)),
         })
-        .deciding(|name, (mesh, used): (Mesh, f64)| Ok((decided_mesh(name, mesh)?, used)))
+        .deciding(|name, made: MeshAt| {
+            Ok(MeshAt {
+                mesh: decided_mesh(name, made.mesh)?,
+                deflection: made.deflection,
+            })
+        })
     }
+}
+
+/// A mesh at the floor from a worker, if it was made no finer than `asked`: coarser only
+/// for the floor, so never finer. Its floor's most (`mesh_floor` of the shape's diagonal)
+/// isn't checked, as the core hasn't the shape's box.
+fn checked_mesh_at(name: &str, asked: f64, made: MeshAt) -> Result<MeshAt, Error> {
+    let used = made.deflection;
+    if !(used.is_finite() && used >= asked) {
+        return Err(Error::new(
+            ErrorCode::ProtocolError,
+            format!("the kernel worker answered {name} with a deflection finer than asked"),
+        )
+        .with_cause(format!("asked {asked}, used {used}"))
+        .with_suggestion("start a new kernel worker"));
+    }
+    Ok(MeshAt {
+        mesh: checked_mesh(made.mesh)?,
+        deflection: used,
+    })
 }
 
 /// A mesh from a worker, if it holds together: a worker that sends one that doesn't can't be
@@ -1318,6 +1325,83 @@ pub(crate) fn cone_caps(radius1: f64, radius2: f64, height: f64) -> (bool, bool)
 mod tests {
 
     use super::*;
+
+    /// A mesh that holds together: one triangle, one face.
+    fn triangle() -> Mesh {
+        Mesh {
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            normals: vec![[0.0, 0.0, 1.0]; 3],
+            triangles: vec![[0, 1, 2]],
+            face_triangles: vec![1],
+            edge_points: vec![],
+            edge_point_counts: vec![],
+            // Validity is sent only with a face left unmeshed.
+            valid: None,
+        }
+    }
+
+    #[test]
+    fn a_mesh_at_the_floor_finer_than_asked_or_the_wrong_reply_is_a_protocol_error() {
+        let shape = ShapeData::unchecked(Blob::inline(vec![1]));
+        let answer = |reply: Reply| {
+            KernelRequest::tessellate_at_least_the_floor(&shape, 0.25).answer(Ok(reply))
+        };
+        let at = |deflection| {
+            Reply::MeshAt(MeshAt {
+                mesh: triangle(),
+                deflection,
+            })
+        };
+        // As asked, or coarser (the floor): taken as said.
+        for used in [0.25, 0.25f64.next_up(), 3.0] {
+            let made = answer(at(used)).unwrap();
+            assert_eq!((made.mesh, made.deflection), (triangle(), used));
+        }
+        for (reply, cause) in [
+            (
+                at(0.25f64.next_down()),
+                Some("asked 0.25, used 0.24999999999999997"),
+            ),
+            (at(f64::NAN), Some("asked 0.25, used NaN")),
+            (at(f64::INFINITY), Some("asked 0.25, used inf")),
+            (at(-1.0), Some("asked 0.25, used -1")),
+            (Reply::Mesh(triangle()), None),
+        ] {
+            let e = answer(reply).unwrap_err();
+            assert_eq!(e.code(), ErrorCode::ProtocolError, "{e}");
+            if let Some(cause) = cause {
+                assert_eq!(e.cause(), Some(cause), "{e}");
+            }
+        }
+        // A mesh that doesn't hold together, at a good deflection.
+        let mut broken = triangle();
+        broken.triangles[0] = [0, 1, 3];
+        let e = answer(Reply::MeshAt(MeshAt {
+            mesh: broken,
+            deflection: 0.25,
+        }))
+        .unwrap_err();
+        assert_eq!(e.code(), ErrorCode::ProtocolError, "{e}");
+    }
+
+    #[test]
+    fn a_point_on_the_boundary_counts_as_inside_and_the_wrong_reply_is_a_protocol_error() {
+        let shape = ShapeData::unchecked(Blob::inline(vec![1]));
+        let answer = |reply| KernelRequest::classify(&shape, [0.0; 3]).answer(Ok(reply));
+        for (place, inside) in [
+            (PointPlace::Inside, true),
+            (PointPlace::OnBoundary, true),
+            (PointPlace::Outside, false),
+        ] {
+            assert_eq!(
+                answer(Reply::Classified { place }).unwrap(),
+                inside,
+                "{place:?}"
+            );
+        }
+        let e = answer(Reply::Mesh(triangle())).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::ProtocolError, "{e}");
+    }
 
     #[test]
     fn a_description_batch_that_isnt_what_was_asked_for_is_a_protocol_error() {

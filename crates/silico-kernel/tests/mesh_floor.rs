@@ -3,7 +3,8 @@
 //! the deflection used said (docs/design/m4.6-render.md, The meshes).
 
 use silico_kernel::{
-    LENGTH_TOLERANCE, MIN_RELATIVE_DEFLECTION, make_box, tessellate, tessellate_at_least_the_floor,
+    LENGTH_TOLERANCE, MIN_RELATIVE_DEFLECTION, MeshAt, make_box, tessellate,
+    tessellate_at_least_the_floor,
 };
 use silico_protocol::Refusal;
 
@@ -29,12 +30,17 @@ fn under_the_floor_a_shape_is_meshed_at_its_floor_and_says_so() {
         floor > 100.0 * 3.0f64.sqrt() * MIN_RELATIVE_DEFLECTION && floor < 0.0174,
         "{floor}"
     );
-    let (mesh, used) = tessellate_at_least_the_floor(&cube, asked).unwrap();
+    let MeshAt {
+        mesh,
+        deflection: used,
+    } = tessellate_at_least_the_floor(&cube, asked).unwrap();
     assert_eq!(used.to_bits(), floor.to_bits());
     // The same mesh as asked at the floor itself.
     assert_eq!(mesh, tessellate(&cube, floor).unwrap());
     // Far under it too, at the least a deflection may be.
-    let (_, used) = tessellate_at_least_the_floor(&cube, f64::MIN_POSITIVE).unwrap();
+    let MeshAt {
+        deflection: used, ..
+    } = tessellate_at_least_the_floor(&cube, f64::MIN_POSITIVE).unwrap();
     assert_eq!(used.to_bits(), floor.to_bits());
 }
 
@@ -43,7 +49,10 @@ fn at_or_over_the_floor_the_deflection_asked_is_used() {
     let cube = make_box(100.0, 100.0, 100.0).unwrap();
     let floor = floor_refusing(&cube, 1e-9).unwrap();
     for asked in [floor, 0.05, 1.0] {
-        let (mesh, used) = tessellate_at_least_the_floor(&cube, asked).unwrap();
+        let MeshAt {
+            mesh,
+            deflection: used,
+        } = tessellate_at_least_the_floor(&cube, asked).unwrap();
         assert_eq!(used.to_bits(), asked.to_bits(), "{asked}");
         assert_eq!(mesh, tessellate(&cube, asked).unwrap(), "{asked}");
     }
@@ -54,7 +63,9 @@ fn a_tiny_shapes_floor_is_the_length_tolerance() {
     // A box 1e-4 mm on a side: 1e-4 of its diagonal is under LENGTH_TOLERANCE, the floor's
     // least.
     let speck = make_box(1e-4, 1e-4, 1e-4).unwrap();
-    let (_, used) = tessellate_at_least_the_floor(&speck, 1e-12).unwrap();
+    let MeshAt {
+        deflection: used, ..
+    } = tessellate_at_least_the_floor(&speck, 1e-12).unwrap();
     assert_eq!(used.to_bits(), LENGTH_TOLERANCE.to_bits());
 }
 
@@ -88,7 +99,10 @@ fn through_the_worker_the_core_gets_the_mesh_and_the_deflection_used() {
         .unwrap();
     let local = make_box(100.0, 100.0, 100.0).unwrap();
     let floor = floor_refusing(&local, 1.0 / 128.0).unwrap();
-    let (mesh, used) = worker
+    let MeshAt {
+        mesh,
+        deflection: used,
+    } = worker
         .run(KernelRequest::tessellate_at_least_the_floor(
             &cube,
             1.0 / 128.0,

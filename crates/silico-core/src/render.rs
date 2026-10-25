@@ -1,11 +1,15 @@
 //! The render worker's client (docs/design/m4.6-render.md, *In the core*, the render): one
 //! worker, started on the first render, drawing one scene at a time in the order they come,
-//! on a thread of its own. It's stopped after a large render (by pixels or by faces), after
-//! any render that failed, and when it's been idle, which is what gives its memory back
-//! (macOS keeps a large render's after it's dropped); the next render starts another. Each
-//! render has its own timeout, from when its scene is sent, so waiting in the queue counts
-//! against nothing but the caller's own time. A render queued and cancelled is never sent;
-//! one running and cancelled is stopped by killing the worker.
+//! on a thread of its own. It's stopped after a large render (by pixels, faces, or
+//! triangles), after any render that failed, and when it's been idle, which is what gives
+//! its memory back (macOS keeps a large render's after it's dropped); the next render starts
+//! another. Each render has its own timeout, from when its scene is sent, so waiting in the
+//! queue counts against nothing but the caller's own time. A render queued and cancelled is
+//! never sent; one running and cancelled is stopped by killing the worker. Every scene is
+//! checked before it's queued, so the worker is sent none it would refuse.
+//!
+//! The queue isn't bounded: each scene queued is held, meshes and all, until it's drawn or
+//! cancelled, so a caller keeps as many queued as it can hold (a session, one at a time).
 //!
 //! Nothing it returns is a result (ARCHITECTURE.md, the render worker's rule): a PNG, and
 //! the ID buffer when asked, for the command that asked.
@@ -13,14 +17,15 @@
 use std::ffi::OsString;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+pub use silico_protocol::RenderAdapter;
 use silico_protocol::{Generation, Op, PixelId, RenderScene, Reply};
 
-use crate::worker::{Executable, Worker, WorkerKiller, WorkerKind};
+use crate::worker::{Executable, SILICO_BUG, Worker, WorkerKiller, WorkerKind, lock};
 use crate::{Error, ErrorCode};
 
 /// The environment variable that names the render worker executable.
@@ -42,15 +47,6 @@ pub const LARGE_RENDER_FACES: usize = 10_000;
 /// A render of more triangles than this is large too: each holds about 0.5 KiB of the
 /// worker's memory (2 million held 1.2 GiB), so these about 100 MiB.
 pub const LARGE_RENDER_TRIANGLES: usize = 200_000;
-
-/// Which adapter the worker may draw on: the core's one say about the renderer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RenderAdapter {
-    /// Only a CPU adapter (Mesa's lavapipe), or the render is `worker_unavailable`.
-    Software,
-    /// A CPU adapter if there is one, then a discrete GPU, then any.
-    Any,
-}
 
 /// How the client runs its worker. Tests set the times short.
 #[derive(Debug, Clone)]
@@ -93,7 +89,9 @@ pub enum RenderOutcome {
     Cancelled,
 }
 
-/// A render asked for: its outcome, when it comes, and a way to cancel it.
+/// A render asked for: its outcome, when it comes, and a way to cancel it. Dropped, the
+/// render goes on, its outcome unread (cancel it to stop it).
+#[must_use = "a render's outcome is only had by waiting for it"]
 pub struct RenderTicket {
     job: Arc<JobState>,
     outcome: Receiver<RenderOutcome>,
@@ -107,15 +105,52 @@ impl RenderTicket {
         self.job.cancel();
     }
 
+    /// A handle that cancels the render from another thread, while this one waits on it.
+    pub fn canceller(&self) -> RenderCancel {
+        RenderCancel(Arc::clone(&self.job))
+    }
+
     /// Waits for the render's outcome.
     pub fn wait(self) -> RenderOutcome {
-        self.outcome.recv().unwrap_or_else(|_| {
-            RenderOutcome::Done(Err(Error::new(
-                ErrorCode::Internal,
-                "the render client stopped before the render answered",
-            )))
-        })
+        self.outcome.recv().unwrap_or_else(|_| lost())
     }
+
+    /// Waits up to `timeout` for the outcome, or gives the ticket back to wait on again.
+    pub fn wait_timeout(self, timeout: Duration) -> Result<RenderOutcome, Self> {
+        match self.outcome.recv_timeout(timeout) {
+            Ok(outcome) => Ok(outcome),
+            Err(RecvTimeoutError::Timeout) => Err(self),
+            Err(RecvTimeoutError::Disconnected) => Ok(lost()),
+        }
+    }
+
+    /// The outcome, if it has come, or the ticket back to wait on.
+    pub fn try_take(self) -> Result<RenderOutcome, Self> {
+        match self.outcome.try_recv() {
+            Ok(outcome) => Ok(outcome),
+            Err(TryRecvError::Empty) => Err(self),
+            Err(TryRecvError::Disconnected) => Ok(lost()),
+        }
+    }
+}
+
+/// Cancels a render, as [`RenderTicket::cancel`] does, from any thread.
+#[derive(Clone)]
+pub struct RenderCancel(Arc<JobState>);
+
+impl RenderCancel {
+    pub fn cancel(&self) {
+        self.0.cancel();
+    }
+}
+
+/// The outcome of a render whose client ended without giving one (a bug).
+fn lost() -> RenderOutcome {
+    RenderOutcome::Done(Err(Error::new(
+        ErrorCode::Internal,
+        "the render client stopped before the render answered",
+    )
+    .with_suggestion(SILICO_BUG)))
 }
 
 /// What the client's thread and a ticket share about one render.
@@ -125,12 +160,13 @@ struct JobState {
     outcome: Sender<RenderOutcome>,
 }
 
-/// Where a render is, under one lock: cancelled or not, its scene sent or not, and the
-/// worker's killer while it runs on it.
+/// Where a render is, under one lock: cancelled or not, its scene sent or not, answered or
+/// not, and the worker's killer while it runs on it.
 #[derive(Default)]
 struct Stage {
     cancelled: bool,
     sent: bool,
+    answered: bool,
     killer: Option<WorkerKiller>,
 }
 
@@ -147,22 +183,37 @@ impl JobState {
             (Some(killer), _) => {
                 killer.kill();
             }
-            (None, false) => {
-                let _ = self.outcome.send(RenderOutcome::Cancelled);
-            }
+            (None, false) => self.answer_under(&mut stage, RenderOutcome::Cancelled),
             // Sent and answered, or about to be: its turn sees the cancel.
             (None, true) => {}
         }
     }
 
+    /// Answers it, once: a render's first answer is its outcome.
     fn answer(&self, outcome: RenderOutcome) {
-        let _ = self.outcome.send(outcome);
+        self.answer_under(&mut lock(&self.stage), outcome);
+    }
+
+    fn answer_under(&self, stage: &mut Stage, outcome: RenderOutcome) {
+        if !stage.answered {
+            stage.answered = true;
+            let _ = self.outcome.send(outcome);
+        }
     }
 }
 
+/// A render queued. However it leaves the queue, it's answered: dropped unanswered (the
+/// client's thread ending without drawing it, a bug), it answers that.
 struct Job {
-    scene: RenderScene,
+    /// Taken for its turn.
+    scene: Option<RenderScene>,
     state: Arc<JobState>,
+}
+
+impl Drop for Job {
+    fn drop(&mut self) {
+        self.state.answer(lost());
+    }
 }
 
 /// The render worker's client: renders in turn, on a worker of its own.
@@ -187,10 +238,7 @@ impl RenderClient {
     /// The client of the render worker at `exe`, checked to be a build (it isn't started
     /// until the first render).
     pub fn start(exe: &Path, settings: RenderSettings) -> Result<Self, Error> {
-        let args: Vec<OsString> = match settings.adapter {
-            RenderAdapter::Software => vec![],
-            RenderAdapter::Any => vec!["--any-adapter".into()],
-        };
+        let args: Vec<OsString> = settings.adapter.args().iter().map(OsString::from).collect();
         let exe = Executable::with_args(exe, WorkerKind::Render, args)?;
         let (jobs, queue) = mpsc::channel();
         let shared = Arc::new(Shared::default());
@@ -211,26 +259,39 @@ impl RenderClient {
         })
     }
 
-    /// Queues `scene`, which must have passed [`RenderScene::check`] (the worker checks it
-    /// again, and refuses one that doesn't).
+    /// Queues `scene`. It's checked first ([`RenderScene::check`]): the command builds
+    /// scenes from values it has checked, so one that fails is Silico's bug, answered
+    /// `internal` at once and never sent.
     pub fn render(&self, scene: RenderScene) -> RenderTicket {
         let (outcome, reply) = mpsc::channel();
         let state = Arc::new(JobState {
             stage: Mutex::new(Stage::default()),
             outcome,
         });
+        let ticket = RenderTicket {
+            job: Arc::clone(&state),
+            outcome: reply,
+        };
+        if let Err(invalid) = scene.check() {
+            state.answer(RenderOutcome::Done(Err(Error::new(
+                ErrorCode::Internal,
+                "the core built a scene the render worker can't draw",
+            )
+            .with_parameter(invalid.parameter)
+            .with_cause(invalid.message)
+            .with_suggestion(SILICO_BUG))));
+            return ticket;
+        }
         let job = Job {
-            scene,
-            state: Arc::clone(&state),
+            scene: Some(scene),
+            state,
         };
         if let Some(jobs) = lock(&self.jobs).as_ref() {
-            // A send fails only once the thread is gone; the ticket then says so.
+            // A send fails only once the thread is gone: the job comes back, and is
+            // answered as it's dropped.
             let _ = jobs.send(job);
         }
-        RenderTicket {
-            job: state,
-            outcome: reply,
-        }
+        ticket
     }
 
     /// The worker's process ID, while one runs.
@@ -271,7 +332,7 @@ fn serve(exe: &Arc<Executable>, settings: &RenderSettings, queue: &Receiver<Job>
             }
             break;
         }
-        let job = match server.worker {
+        let mut job = match server.worker {
             // Idle from when it last drew, whatever else came.
             Some(_) => {
                 match queue.recv_timeout(settings.idle.saturating_sub(server.drew.elapsed())) {
@@ -288,16 +349,27 @@ fn serve(exe: &Arc<Executable>, settings: &RenderSettings, queue: &Receiver<Job>
                 Err(_) => break,
             },
         };
+        // Made current before the client's closing is looked at again: a client closing
+        // sets that, then cancels what's current, so between them this render is seen.
+        *lock(&shared.current) = Some(Arc::clone(&job.state));
+        if shared.closing.load(Ordering::SeqCst) {
+            job.state.cancel();
+            lock(&shared.current).take();
+            continue;
+        }
         {
             // A render cancelled while queued has answered: its turn is skipped.
             let mut stage = lock(&job.state.stage);
             if stage.cancelled {
+                lock(&shared.current).take();
                 continue;
             }
             stage.sent = true;
         }
-        *lock(&shared.current) = Some(Arc::clone(&job.state));
-        let outcome = server.turn(job.scene, &job.state);
+        let Some(scene) = job.scene.take() else {
+            continue;
+        };
+        let outcome = server.turn(scene, &job.state);
         lock(&shared.current).take();
         job.state.answer(outcome);
     }
@@ -362,6 +434,8 @@ impl Server<'_> {
             || faces > settings.large_faces
             || triangles > settings.large_triangles;
         let (width, height, ids) = (scene.width, scene.height, scene.ids);
+        // The render worker has no generations: nothing it draws is superseded, only
+        // cancelled, by killing it. Every render is the first generation's.
         let reply = running.call(Generation(1), Op::Render(Box::new(scene)), settings.timeout);
         let cancelled = {
             let mut stage = lock(&state.stage);
@@ -380,16 +454,24 @@ impl Server<'_> {
                 ErrorCode::ProtocolError,
                 "the render worker answered Render with the wrong kind of reply",
             )
-            .with_cause(format!("a {} reply", other.kind()))),
+            .with_cause(format!("it answered {}", other.kind()))
+            .with_suggestion("render again: the next render starts another worker")),
             Err(e) => Err(e),
         };
-        // A scene the worker refused as invalid left it as it was; any other failure, and a
-        // large render, stop it (its memory isn't given back while it runs).
-        match &result {
-            Err(e) if e.code() == ErrorCode::InvalidInput => {}
-            Err(_) => self.stop(),
-            Ok(_) if large => self.stop(),
-            Ok(_) => {}
+        // Any failure, and a large render, stop it (its memory isn't given back while it
+        // runs, and nothing vouches for its context after a failure). The scene was
+        // checked, so a worker refusing it is at fault.
+        let result = result.map_err(|e| match e.code() {
+            ErrorCode::InvalidInput => Error::new(
+                ErrorCode::ProtocolError,
+                "the render worker refused a scene the core checked",
+            )
+            .with_cause(e.to_string())
+            .with_suggestion("render again: the next render starts another worker"),
+            _ => e,
+        });
+        if result.is_err() || large {
+            self.stop();
         }
         RenderOutcome::Done(result)
     }
@@ -423,10 +505,4 @@ fn rendered(
         .with_cause(fault)
         .with_suggestion("render again: the next render starts another worker")),
     }
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }

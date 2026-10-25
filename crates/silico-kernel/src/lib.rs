@@ -78,6 +78,14 @@ mod ffi {
         Other = 4,
     }
 
+    /// Where a point is against a solid, as OCCT's classifier says.
+    #[repr(u8)]
+    enum PointState {
+        Inside,
+        On,
+        Outside,
+    }
+
     /// How an input element relates to a result element.
     #[repr(u8)]
     enum Relation {
@@ -285,7 +293,7 @@ mod ffi {
         fn make_torus(major_radius: f64, minor_radius: f64) -> Result<UniquePtr<Shape>>;
         fn measure(shape: &Shape, precision: f64) -> Result<Measures>;
         fn tight_bounds(shape: &Shape) -> Result<Bounds>;
-        fn classify_point(shape: &Shape, point: &Point3) -> Result<bool>;
+        fn classify_point(shape: &Shape, point: &Point3) -> Result<PointState>;
         fn flat_normal(shape: &Shape) -> Result<Flat>;
         fn edge_facts(shape: &Shape) -> Result<EdgeFacts>;
 
@@ -459,8 +467,9 @@ mod ffi {
 
 pub use silico_protocol::{
     Axis, BooleanOp, ChamferSize, Curve, ElementCounts, ElementFate, ElementKind, ElementRef, Ends,
-    ExportMesh, FaceRegions, History, InputHistory, LENGTH_TOLERANCE, MAX_LENGTH, Mesh, Primitive,
-    Profile, Refusal, Region, Reported, ShapeSummary, SketchPlane, Topology,
+    ExportMesh, FaceRegions, History, InputHistory, LENGTH_TOLERANCE, MAX_LENGTH,
+    MIN_RELATIVE_DEFLECTION, Mesh, MeshAt, PointPlace, Primitive, Profile, Refusal, Region,
+    Reported, ShapeSummary, SketchPlane, Topology, mesh_floor,
 };
 use silico_protocol::{
     BrepDefect, FailureKind, HistoryDefect, MAX_EXPORT_TRIANGLES, Operation, Returned, Role,
@@ -989,24 +998,22 @@ pub fn describe(
     ))
 }
 
-/// Whether `point` is inside `shape` or on its boundary, by OCCT's solid classifier at the
-/// shape's largest tolerance, as FreeCAD's `Shape.isInside(point, tolerance, True)` asks
-/// (M4.6: the core asks it of each body whose tight box holds a camera's eye). "On" is to
-/// about the tolerance, the classifier's band varying by face (on a box with tolerance
-/// 1e-7, from 5e-8 to 9e-8). A point that isn't finite is refused; a classifier that can't
-/// tell is OCCT's failure. A point must be finite and within
-/// [`MAX_RENDER_COORDINATE`](silico_protocol::MAX_RENDER_COORDINATE) of the origin, as a
-/// render's points are: far past it OCCT's classifier answers wrongly (a box holds
-/// (1e18, 0, 0), as FreeCAD's `isInside` also says) or throws.
-pub fn classify(shape: &Shape, point: [f64; 3]) -> Result<bool, KernelError> {
-    let most = silico_protocol::MAX_RENDER_COORDINATE;
-    if !point.iter().all(|c| c.abs() <= most) {
-        return Err(KernelError::new(Refusal::InvalidParameter {
-            parameter: "point".to_owned(),
-            message: format!("point {point:?} must be finite and within {most} mm of the origin"),
-        }));
+/// Where `point` is against `shape`, by OCCT's solid classifier at the shape's largest
+/// tolerance, as FreeCAD's `Shape.isInside(point, tolerance, True)` asks (M4.6: the core asks
+/// it of each body whose tight box holds a camera's eye, and counts on the boundary as
+/// inside). "On" is to about the tolerance, the classifier's band varying by face (on a box
+/// with tolerance 1e-7, from 5e-8 to 9e-8). A point is checked by
+/// [`check_classify_point`](silico_protocol::check_classify_point), as the core checks it; a
+/// classifier that can't tell is OCCT's failure. A shape with no solid has no inside to
+/// tell, and OCCT says every point is inside an empty compound, as FreeCAD's `isInside`
+/// does: the core never asks of one, as it has no box to hold the eye.
+pub fn classify(shape: &Shape, point: [f64; 3]) -> Result<PointPlace, KernelError> {
+    silico_protocol::check_classify_point(point).map_err(|e| refused(None, e))?;
+    match ffi::classify_point(shape.get()?, &point3(point))? {
+        ffi::PointState::Inside => Ok(PointPlace::Inside),
+        ffi::PointState::On => Ok(PointPlace::OnBoundary),
+        _ => Ok(PointPlace::Outside),
     }
-    Ok(ffi::classify_point(shape.get()?, &point3(point))?)
 }
 
 /// Every one of `shape`'s faces, edges, and vertices described, a batch of at most
@@ -1852,11 +1859,6 @@ fn every_input_valid(inputs: &[&Shape]) -> Result<bool, KernelError> {
     Ok(true)
 }
 
-/// The smallest mesh deflection allowed, as a fraction of the shape's size. Finer meshes
-/// cost far more than they're worth for display: every tenth of the deflection is about
-/// ten times the triangles and seventy times the time.
-pub const MIN_RELATIVE_DEFLECTION: f64 = 1e-4;
-
 /// Meshes `shape` for display, with no point of the mesh further than `deflection` from
 /// the surface. Single-threaded, so the same shape always gives the same mesh, and it
 /// leaves the shape as it was (OCCT would otherwise keep the mesh on it). Faces and edges
@@ -1868,14 +1870,15 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
 }
 
 /// [`tessellate`], at the larger of `deflection` and the shape's floor (the finest it
-/// meshes: [`MIN_RELATIVE_DEFLECTION`] of its bounding box's diagonal, and no finer than
-/// [`LENGTH_TOLERANCE`]), never refused for being too fine; and the deflection it used. M4.6's
-/// renders ask for half a pixel, which a close view takes under the floor.
+/// meshes: [`mesh_floor`] of its bounding box's diagonal), never refused for being too fine;
+/// and the deflection it used. M4.6's renders ask for half a pixel, which a close view takes
+/// under the floor.
 pub fn tessellate_at_least_the_floor(
     shape: &Shape,
     deflection: f64,
-) -> Result<(Mesh, f64), KernelError> {
-    tessellated(shape, deflection, true)
+) -> Result<MeshAt, KernelError> {
+    let (mesh, deflection) = tessellated(shape, deflection, true)?;
+    Ok(MeshAt { mesh, deflection })
 }
 
 /// The mesh, and the deflection it was meshed at: `deflection`, or the floor if it's finer
@@ -1893,7 +1896,7 @@ fn tessellated(
     if !diagonal.is_finite() {
         return Err(KernelError::new(Refusal::ExtentNotFinite));
     }
-    let floor = (diagonal * MIN_RELATIVE_DEFLECTION).max(LENGTH_TOLERANCE);
+    let floor = mesh_floor(diagonal);
     let deflection = match deflection < floor {
         false => deflection,
         true if at_least_the_floor => floor,
