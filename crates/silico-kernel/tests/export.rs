@@ -678,19 +678,31 @@ fn the_worker_refuses_a_mesh_of_more_triangles_than_its_limit_counted_in_all() {
     // many triangles to make in a test, so the same check is run at the box's own count: its
     // 12 triangles (6 faces of 2) taken at a limit of 12 and refused at 11, the triangles
     // counted, not the faces, and the refusal naming the tolerance.
+    // Each mesh the worker makes, the unraised one too.
     let block = make_box(10.0, 20.0, 30.0).unwrap();
-    let mesh = silico_kernel::test_ops::export_mesh_within(&block, 0.1, 12).unwrap();
-    assert_eq!(mesh.triangles.len(), 12);
-    let error = silico_kernel::test_ops::export_mesh_within(&block, 0.1, 11).unwrap_err();
-    assert_eq!(error.kind(), KernelErrorKind::InvalidInput, "{error}");
-    assert_eq!(
-        error.refusal(),
-        &silico_protocol::Refusal::TooManyTriangles {
-            triangles: 12,
-            limit: 11
-        }
-    );
-    assert_eq!(error.refusal().parameter(), Some("tolerance"));
-    // The export's own limit takes it.
-    assert_eq!(export_mesh(&block, 0.1, false).unwrap(), mesh);
+    for forced in [false, true] {
+        let within =
+            |limit| silico_kernel::test_ops::export_mesh_within(&block, 0.1, forced, limit);
+        let mesh = within(12).unwrap();
+        assert_eq!(mesh.triangles.len(), 12);
+        let error = within(11).unwrap_err();
+        assert_eq!(error.kind(), KernelErrorKind::InvalidInput, "{error}");
+        assert_eq!(
+            error.refusal(),
+            &silico_protocol::Refusal::TooManyTriangles {
+                triangles: 12,
+                limit: 11
+            }
+        );
+        assert_eq!(error.refusal().parameter(), Some("tolerance"));
+        let said = error.refusal().describe(None, &|e| e.to_string());
+        assert!(
+            said.message
+                .contains("has 12 triangles, more than the 11 an export may have"),
+            "{}",
+            said.message
+        );
+        // The export's own limit takes it.
+        assert_eq!(export_mesh(&block, 0.1, forced).unwrap(), mesh);
+    }
 }

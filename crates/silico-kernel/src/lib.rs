@@ -2010,9 +2010,10 @@ pub mod test_ops {
     pub fn export_mesh_within(
         shape: &Shape,
         tolerance: f64,
+        force_face_deflection: bool,
         limit: u64,
     ) -> Result<ExportMesh, KernelError> {
-        super::export_mesh_within(shape, tolerance, false, limit)
+        super::export_mesh_within(shape, tolerance, force_face_deflection, limit)
     }
 
     /// Throws OCCT's `Standard_Failure` with `message` on the C++ side.
