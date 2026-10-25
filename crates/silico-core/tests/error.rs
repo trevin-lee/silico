@@ -217,3 +217,11 @@ fn errors_are_equal_by_every_field_they_say_and_no_fewer() {
         Error::new(ErrorCode::KernelFailed, "fillet failed").with_feature("Fillet1")
     );
 }
+
+#[test]
+fn a_conflict_is_no_kernel_fault() {
+    // Decision 16: an edit against another revision, or a commit over a file changed
+    // outside the session, is fixed by rolling back or reading again; the kernel's no part.
+    assert_eq!(ErrorCode::Conflict.as_str(), "conflict");
+    assert!(!ErrorCode::Conflict.is_kernel_fault());
+}

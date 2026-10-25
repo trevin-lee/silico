@@ -19,8 +19,8 @@ use crate::{Error, ErrorCode};
 mod session;
 
 pub use session::{
-    MAX_SESSIONS, ModelRead, Opened, Published, Response, Revision, Running, SessionId,
-    SessionInfo, Sessions, Status,
+    MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice, ModelRead, Opened, Published, Read, Response,
+    Revision, Running, SessionId, SessionInfo, Sessions, Status,
 };
 
 /// The command API's version (docs/design/m4.1-command-api.md, section 8): one more for
@@ -52,6 +52,8 @@ pub struct Limits {
     pub listed: usize,
     /// The sessions open in one process.
     pub sessions: usize,
+    /// The published reads running at once in one session.
+    pub published_reads: usize,
     /// A kernel request's time, in seconds.
     pub kernel_seconds: u64,
     /// A sketch solve's time, in seconds.
@@ -69,6 +71,7 @@ pub const VERSION: Version = Version {
         request_depth: document::json::MAX_DEPTH,
         listed: document::PROBLEMS_LISTED,
         sessions: MAX_SESSIONS,
+        published_reads: MAX_PUBLISHED_READS,
         kernel_seconds: crate::kernel::DEFAULT_TIMEOUT.as_secs(),
         sketch_seconds: crate::sketch::SKETCH_TIMEOUT.as_secs(),
     },
@@ -120,7 +123,7 @@ impl Problems {
 /// rebuild.
 pub fn gate(bytes: &[u8]) -> Result<Checked, Problems> {
     match Gated::of(bytes) {
-        Gated::Checked(checked) => Ok(checked),
+        Gated::Checked(checked) => Ok(Arc::unwrap_or_clone(checked)),
         Gated::Unread(problems) | Gated::Refused(_, problems) => Err(problems),
     }
 }
@@ -132,7 +135,8 @@ enum Gated {
     Unread(Problems),
     /// It reads, but the gate refuses it: the document, and every problem with it.
     Refused(Document, Problems),
-    Checked(Checked),
+    /// In an `Arc`, so each rebuild of it shares it rather than copying the document.
+    Checked(Arc<Checked>),
 }
 
 impl Gated {
@@ -142,7 +146,7 @@ impl Gated {
         match document::read(text) {
             Err(error) => Gated::Unread(Problems::from(error)),
             Ok(read) => match Checked::try_new(read) {
-                Ok(checked) => Gated::Checked(checked),
+                Ok(checked) => Gated::Checked(Arc::new(checked)),
                 Err((read, invalid)) => Gated::Refused(read, Problems::from(invalid)),
             },
         }

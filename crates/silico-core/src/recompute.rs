@@ -851,8 +851,10 @@ impl<K: Kernel + 'static> Recompute<K> {
     }
 
     /// Starts rebuilding `document` in the background, superseding the recompute running,
-    /// if any; returns at once.
-    pub fn start(&self, document: Checked) -> Run {
+    /// if any; returns at once. A document held already in an `Arc` (a session's) is shared,
+    /// not copied.
+    pub fn start(&self, document: impl Into<Arc<Checked>>) -> Run {
+        let document = document.into();
         let (reply, outcome) = mpsc::sync_channel(1);
         let (generation, later) = {
             let mut state = lock(&self.engine.state);
@@ -889,7 +891,7 @@ impl<K: Kernel + 'static> Recompute<K> {
             .spawn(move || {
                 let _caller = caller.enter();
                 let _entered = span.enter();
-                let outcome = engine.run(&Arc::new(document), generation);
+                let outcome = engine.run(&document, generation);
                 let published = match &outcome {
                     Ok(RunOutcome::Published(model)) => Some(Arc::clone(model)),
                     _ => None,
