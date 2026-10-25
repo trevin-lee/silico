@@ -8,6 +8,7 @@
 use std::os::unix::fs::MetadataExt as _;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
@@ -15,6 +16,7 @@ use silico_core::command::{Begun, Revision, SessionId, Sessions};
 use silico_core::fake::FakeKernel;
 use tempfile::TempDir;
 
+use crate::lateness::{Lateness, allowance};
 use crate::sessions::{answer, id, refusal};
 
 /// The box's fingerprint as the fake measures it, by formula.
@@ -338,4 +340,46 @@ fn format_refuses_past_a_hundred_unknown_features_listing_a_hundred_and_counting
         "the document has no feature z0000099 to accept the drift of"
     );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+}
+
+#[test]
+fn a_published_read_while_begin_takes_a_large_text_that_didnt_read_answers_promptly() {
+    // 48 MB of strings each of five escaped newlines (four million of them, twelve bytes
+    // each): text that didn't read, whose every string a scan for the IDs it holds must
+    // decode. `begin` keeps the text without scanning it, so the session's held state is
+    // never locked for the scan, and a published read (a UI's, each frame) never waits.
+    let f = fixture();
+    let text = r#""\n\n\n\n\n""#.repeat(4_000_000);
+    assert_eq!(text.len(), 48_000_000);
+    let (s1, _) = f.open(&text);
+    let lateness = Lateness::start();
+    let mut begin = f.sessions.begin(&s1);
+    let mut slowest = Duration::ZERO;
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        let at = Instant::now();
+        let read = f.sessions.published(&s1);
+        slowest = slowest.max(at.elapsed());
+        // Nothing published: the reader's problems.
+        assert!(read.result.is_err());
+        match begin.wait_timeout(Duration::from_millis(1)) {
+            Ok(begun) => {
+                assert_eq!(
+                    begun.result.unwrap(),
+                    Begun {
+                        base: Revision::OPENED
+                    }
+                );
+                break;
+            }
+            Err(running) => begin = running,
+        }
+        assert!(Instant::now() < deadline, "begin never answered");
+    }
+    // At once: a second, and ten times the machine's lateness on a loaded one.
+    let most = allowance(Duration::from_secs(1), lateness.most());
+    assert!(
+        slowest < most,
+        "a published read took {slowest:?}, past {most:?}"
+    );
 }

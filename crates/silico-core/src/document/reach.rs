@@ -75,6 +75,11 @@ fn id_of(between: &[u8]) -> Option<FeatureId> {
         }
         return FeatureId::new(std::str::from_utf8(between).ok()?);
     }
+    // An escape takes two bytes or more for one character, so an escaped run shorter than
+    // an ID and one byte more can't decode to one.
+    if between.len() <= super::model::ID_LENGTH {
+        return None;
+    }
     let mut literal = Vec::with_capacity(between.len() + 2);
     literal.push(b'"');
     literal.extend_from_slice(between);

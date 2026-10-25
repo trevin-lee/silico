@@ -49,7 +49,7 @@ use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
-use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, Weak};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -639,9 +639,11 @@ struct Snapshot {
     gated: Arc<Gated>,
     revision: Revision,
     carried: Arc<BTreeSet<FeatureId>>,
-    /// If its text didn't read as a document, the IDs it holds, found once, at `begin`,
-    /// for what the transaction's edits reach ([`Reaching`]); none if it read.
-    quoted: Arc<document::QuotedIds>,
+    /// If its text didn't read as a document, the IDs it holds, found once, the first time
+    /// what the transaction's edits reach is worked out ([`Reaching::reach`]): outside the
+    /// held state's lock, so a long text's scan never keeps `status` or a published read
+    /// waiting.
+    quoted: Arc<OnceLock<document::QuotedIds>>,
 }
 
 impl Held {
@@ -709,7 +711,11 @@ impl Reaching {
         };
         let before = match begun.gated.document() {
             Ok(before) => document::Before::Read(before),
-            Err(_) => document::Before::Unread(&begun.quoted),
+            Err(_) => document::Before::Unread(
+                begun
+                    .quoted
+                    .get_or_init(|| document::QuotedIds::of(&begun.text)),
+            ),
         };
         document::net_reach(before, &self.carried, now)
     }
@@ -1021,17 +1027,12 @@ impl<C: Kernel + 'static> Session<C> {
             started: false,
         });
         drop(rebuilds);
-        // A text that didn't read is scanned once, here, for the IDs it holds.
-        let quoted = match held.gated.document() {
-            Ok(_) => document::QuotedIds::default(),
-            Err(_) => document::QuotedIds::of(&held.text),
-        };
         held.transaction = Some(Snapshot {
             text: Arc::clone(&held.text),
             gated: Arc::clone(&held.gated),
             revision,
             carried: Arc::clone(&held.carried),
-            quoted: Arc::new(quoted),
+            quoted: Arc::new(OnceLock::new()),
         });
         Ok(Begun { base: revision })
     }

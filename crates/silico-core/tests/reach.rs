@@ -4,13 +4,13 @@
 //! Every expected set is read off the documents by hand.
 
 use std::collections::BTreeSet;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use silico_core::document::{
     Before, Document, FeatureId, QuotedIds, net_reach, reached, read, with_users,
 };
 
-use crate::lateness::{Lateness, allowance};
+use crate::within::within;
 
 /// Two sketches, a pad of the first, a pocket of the second in the pad, a box apart, a
 /// second box, and a cut of the second box from the pocket: who uses whom is
@@ -235,20 +235,23 @@ fn from_text_that_didnt_read_a_stray_quote_hides_no_id_after_it() {
 #[test]
 fn from_text_that_didnt_read_a_feature_that_uses_a_new_one_is_reached() {
     // Before: no lug, and the cut's tool the block. After (the part): the lug is new, and
-    // the cut, whose ID the text holds, uses it now: both are reached.
+    // the cut, whose ID the text holds, uses it now: both are reached. The cut's name, a
+    // quote then the lug's ID, holds the ID after an escaped quote, which ends no string:
+    // the text doesn't hold the lug's ID quoted.
     let before = PART.replacen("[", "[\n<<<<<<< ours", 1)
         .replace(
             r#",
   {"id": "b0000001", "type": "box", "v": 1, "name": "Lug", "position": [100, 0, 0], "length": 10, "width": 10, "height": 10}"#,
             "",
         )
-        .replace(r#""tool": "b0000001""#, r#""tool": "k7f2qx3m""#);
-    assert!(!before.contains("b0000001"));
+        .replace(r#""tool": "b0000001""#, r#""tool": "k7f2qx3m""#)
+        .replace(r#""name": "Notch""#, r#""name": "\"b0000001""#);
+    assert_eq!(before.matches("b0000001").count(), 1);
     assert_eq!(reached_from(&before), ids(&["b0000001", "c0000001"]));
 }
 
 #[test]
-fn from_a_large_text_that_didnt_read_what_edits_reach_is_found_at_once() {
+fn from_a_large_text_that_didnt_read_what_edits_reach_is_found_promptly() {
     // Five thousand boxes, the text before them with a merge's markers: each ID is held, so
     // nothing is reached. Searching the text for each ID would read its 0.8 MB five
     // thousand times over (4e9 bytes); one pass reads it once.
@@ -268,20 +271,13 @@ fn from_a_large_text_that_didnt_read_what_edits_reach_is_found_at_once() {
     let after = read(text.as_bytes()).unwrap();
     let before = text.replacen("[\n", "[\n<<<<<<< ours\n", 1);
     assert!(read(before.as_bytes()).is_err());
-    let lateness = Lateness::start();
-    let at = Instant::now();
-    let reached = net_reach(
-        Before::Unread(&QuotedIds::of(before.as_bytes())),
-        &ids(&[]),
-        &after,
-    );
-    let took = at.elapsed();
+    // Milliseconds of CPU: two seconds is room to spare.
+    let reached = within(Duration::from_secs(2), move || {
+        net_reach(
+            Before::Unread(&QuotedIds::of(before.as_bytes())),
+            &BTreeSet::new(),
+            &after,
+        )
+    });
     assert_eq!(reached, ids(&[]));
-    // Milliseconds on a quiet machine: two seconds, and ten times the machine's lateness on
-    // a loaded one.
-    let most = allowance(Duration::from_secs(2), lateness.most());
-    assert!(
-        took < most,
-        "finding the reach took {took:?}, past {most:?}"
-    );
 }
