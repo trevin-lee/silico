@@ -1615,3 +1615,35 @@ fn a_point_is_classified_inside_a_fake_solid_by_its_box() {
     assert_eq!(refused.code(), ErrorCode::InvalidInput, "{refused:?}");
     assert_eq!(refused.parameter(), Some("point"), "{refused:?}");
 }
+
+#[test]
+fn a_fake_solid_is_meshed_a_triangle_a_face_with_the_kernels_floor_on_its_box() {
+    // The block 40 x 20 x 10: six faces, twelve edges, its floor 1e-4 of its box's diagonal,
+    // √2100, by hand.
+    let fake = FakeKernel::new(1).unwrap();
+    let block = run(&fake, KernelRequest::make(block(40.0, 20.0, 10.0)).unwrap());
+    let floor = 1e-4 * 2100.0f64.sqrt();
+    let mesh = run(&fake, KernelRequest::tessellate(&block, 0.1));
+    assert_eq!(mesh.face_triangles, vec![1; 6]);
+    assert_eq!(mesh.edge_point_counts, vec![2; 12]);
+    let (mesh, used) = run(
+        &fake,
+        KernelRequest::tessellate_at_least_the_floor(&block, 1e-3),
+    );
+    assert_eq!(mesh.face_triangles.len(), 6);
+    assert!((used - floor).abs() <= 1e-15, "{used} for {floor}");
+    let (_, used) = run(
+        &fake,
+        KernelRequest::tessellate_at_least_the_floor(&block, 0.5),
+    );
+    assert_eq!(used, 0.5);
+    let refused = match fake
+        .submit(fake.generation(), KernelRequest::tessellate(&block, 1e-3))
+        .wait()
+    {
+        Outcome::Done(Err(e)) => e,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(refused.code(), ErrorCode::InvalidInput, "{refused:?}");
+    assert_eq!(refused.parameter(), Some("deflection"), "{refused:?}");
+}

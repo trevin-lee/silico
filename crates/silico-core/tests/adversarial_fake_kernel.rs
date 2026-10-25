@@ -587,8 +587,11 @@ fn every_operation_the_fake_does_not_do_is_a_structured_internal_error() {
         .unwrap()
         .map(|_| ()),
         within(
-            kernel.submit(Generation(0), KernelRequest::tessellate(&shape, 0.1)),
-            "tessellate",
+            kernel.submit(
+                Generation(0),
+                KernelRequest::export_mesh(&shape, 0.1).unwrap(),
+            ),
+            "export mesh",
         )
         .done()
         .unwrap()

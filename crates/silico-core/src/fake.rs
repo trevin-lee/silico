@@ -740,6 +740,11 @@ fn answer(op: &Op) -> Result<Reply, Error> {
             },
         ),
         Op::Summarize { shape } => Ok(Reply::Summary(Symbolic::read(shape)?.summary())),
+        Op::Tessellate {
+            shape,
+            deflection,
+            at_least_the_floor,
+        } => fake_mesh(&Symbolic::read(shape)?, *deflection, *at_least_the_floor),
         // The fake's solids are their boxes: a point is inside one if it's in its box,
         // boundary included.
         Op::Classify { shape, point } => {
@@ -766,6 +771,61 @@ fn answer(op: &Op) -> Result<Reply, Error> {
         )
         .with_suggestion("run this test on a real kernel worker")),
     }
+}
+
+/// The fake's display mesh of `made`, as the kernel's is checked: a triangle for each face
+/// and a two-point polyline for each edge, all on its box's corners (a mesh that holds
+/// together, for the core's render, not one of the shape), at `deflection`. Its floor is
+/// the kernel's rule on the fake's box: 1e-4 of its diagonal, at least LENGTH_TOLERANCE.
+/// Under it, refused as the kernel refuses, or with `at_least_the_floor` meshed at it and
+/// said.
+fn fake_mesh(made: &Symbolic, deflection: f64, at_least_the_floor: bool) -> Result<Reply, Error> {
+    if !(deflection.is_finite() && deflection > 0.0) {
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            format!("deflection {deflection} must be finite and positive"),
+        )
+        .with_parameter("deflection")
+        .with_suggestion("change the value the message names"));
+    }
+    let summary = made.summary();
+    let [low, high] = summary.bounds.unwrap_or([[0.0; 3]; 2]);
+    let diagonal = (0..3)
+        .map(|k| (high[k] - low[k]) * (high[k] - low[k]))
+        .sum::<f64>()
+        .sqrt();
+    let floor = (diagonal * 1e-4).max(silico_protocol::LENGTH_TOLERANCE);
+    let used = if deflection >= floor {
+        deflection
+    } else if at_least_the_floor {
+        floor
+    } else {
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            format!("deflection {deflection} is finer than the shape's floor, {floor}"),
+        )
+        .with_parameter("deflection")
+        .with_suggestion("ask for a coarser deflection"));
+    };
+    let corners = [low, [high[0], low[1], low[2]], [low[0], high[1], high[2]]];
+    let faces = usize::try_from(summary.faces).unwrap_or(0);
+    let edges = usize::try_from(summary.edges).unwrap_or(0);
+    let mesh = silico_protocol::Mesh {
+        positions: corners.to_vec(),
+        normals: vec![[0.0, 0.0, 1.0]; 3],
+        triangles: vec![[0, 1, 2]; faces],
+        face_triangles: vec![1; faces],
+        edge_points: (0..edges).flat_map(|_| [low, high]).collect(),
+        edge_point_counts: vec![2; edges],
+        valid: None,
+    };
+    Ok(match at_least_the_floor {
+        true => Reply::MeshAt {
+            mesh,
+            deflection: used,
+        },
+        false => Reply::Mesh(mesh),
+    })
 }
 
 /// The fake's sweep of `faces`, which must be faces a fake kernel made from regions, as the
