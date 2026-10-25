@@ -70,3 +70,4 @@ crates/silico-core/src/pool.rs | Shared::superseded | replace Shared::superseded
 crates/silico-core/src/pool.rs | Shared::supersede | delete ! | #125
 crates/silico-core/src/pool.rs | Shared::next | replace && with || | #125
 crates/silico-core/src/pool.rs | Shared::next | replace && with || | #125
+crates/silico-core/src/command/session.rs | Revision::number | replace Revision::number -> u64 with 1 | #127

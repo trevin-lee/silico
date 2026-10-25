@@ -655,8 +655,17 @@ pub struct Checked(Document);
 impl Checked {
     /// `document`, if it passes the gate ([`validate`]); every problem with it if not.
     pub fn new(document: Document) -> Result<Self, Invalid> {
-        validate(&document)?;
-        Ok(Checked(document))
+        Self::try_new(document).map_err(|(_, invalid)| invalid)
+    }
+
+    /// `document`, if it passes the gate; if not, the document back with every problem with
+    /// it, for a client that keeps a document the gate refuses (a session holds one, so it
+    /// can be mended).
+    pub fn try_new(document: Document) -> Result<Self, (Document, Invalid)> {
+        match validate(&document) {
+            Ok(()) => Ok(Checked(document)),
+            Err(invalid) => Err((document, invalid)),
+        }
     }
 
     pub fn document(&self) -> &Document {

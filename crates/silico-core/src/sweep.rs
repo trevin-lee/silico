@@ -35,12 +35,7 @@ fn solved_axis<'a>(
     solution: &SketchSolution,
 ) -> Result<SolvedAxis<'a>, Error> {
     let features = &document.document().features;
-    let found = features.iter().find(|f| &f.id == feature).ok_or_else(|| {
-        Error::new(
-            ErrorCode::InvalidInput,
-            format!("the document has no feature {feature}"),
-        )
-    })?;
+    let found = document.document().feature(feature)?;
     let (Some(axis), Some(sketch)) = (found.operation.axis(), found.operation.sketch()) else {
         return Err(Error::new(
             ErrorCode::InvalidInput,

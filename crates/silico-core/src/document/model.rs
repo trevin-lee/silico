@@ -27,6 +27,32 @@ pub struct Document {
     pub features: Vec<Feature>,
 }
 
+impl Document {
+    /// The feature whose ID is `id`; or, refused naming `feature`, why there's no one such
+    /// feature: none has it, or (in a document the gate refused) more than one does.
+    pub fn feature(&self, id: &FeatureId) -> Result<&Feature, crate::Error> {
+        let refused = |message: String, suggestion: &str| {
+            crate::Error::new(crate::ErrorCode::InvalidInput, message)
+                .with_parameter("feature")
+                .with_suggestion(suggestion)
+        };
+        let mut found = self.features.iter().filter(|f| &f.id == id);
+        let first = found.next().ok_or_else(|| {
+            refused(
+                format!("the document has no feature {id}"),
+                "name a feature by its ID, as the document's outline lists them",
+            )
+        })?;
+        match found.count() {
+            0 => Ok(first),
+            more => Err(refused(
+                format!("{} features in the document have the ID {id}", more + 1),
+                "give each feature an ID of its own: the gate refuses an ID used twice",
+            )),
+        }
+    }
+}
+
 /// The format's version: 1. A document of another version is refused, naming it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FormatVersion;
