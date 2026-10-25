@@ -119,10 +119,24 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
             let tool = shape_of(&tool)?;
             built_reply(crate::boolean(op, &base, &tool).map_err(failure)?)
         }
-        Op::Tessellate { shape, deflection } => {
+        Op::Tessellate {
+            shape,
+            deflection,
+            at_least_the_floor: false,
+        } => {
             let shape = shape_of(&shape)?;
             let mesh = crate::tessellate(&shape, deflection).map_err(failure)?;
             Ok(Reply::Mesh(mesh))
+        }
+        Op::Tessellate {
+            shape,
+            deflection,
+            at_least_the_floor: true,
+        } => {
+            let shape = shape_of(&shape)?;
+            let (mesh, deflection) =
+                crate::tessellate_at_least_the_floor(&shape, deflection).map_err(failure)?;
+            Ok(Reply::MeshAt { mesh, deflection })
         }
         Op::ExportMesh {
             shape,

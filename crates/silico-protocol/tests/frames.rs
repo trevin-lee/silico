@@ -54,6 +54,7 @@ fn every_op() -> Vec<Op> {
         Op::Tessellate {
             shape: ShapeData::unchecked(Blob::inline(vec![3])),
             deflection: 0.01,
+            at_least_the_floor: false,
         },
         Op::Translate {
             shape: ShapeData::checked(Blob::inline(vec![4]), true),
@@ -608,6 +609,18 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             ids: Some(vec![[0, 0], [u32::MAX, EDGE_BIT | 7]]),
         }),
         Ok(Reply::Classified { inside: true }),
+        Ok(Reply::MeshAt {
+            mesh: Mesh {
+                positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                normals: vec![[0.0, 0.0, 1.0]; 3],
+                triangles: vec![[0, 1, 2]],
+                face_triangles: vec![1],
+                edge_points: vec![],
+                edge_point_counts: vec![],
+                valid: Some(true),
+            },
+            deflection: 1.7e-2,
+        }),
         Err(Failure::new(Refusal::NoAdapter {
             cause: "no CPU adapter".to_owned(),
         })),
@@ -638,6 +651,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             Ok(Reply::ExportMesh(_)) => 17,
             Ok(Reply::Rendered { .. }) => 18,
             Ok(Reply::Classified { .. }) => 20,
+            Ok(Reply::MeshAt { .. }) => 21,
             Err(failure) => match failure.kind() {
                 FailureKind::InvalidInput => 5,
                 FailureKind::KernelFailed => 6,
@@ -651,7 +665,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         .collect();
     assert_eq!(
         indices,
-        (0..21).collect(),
+        (0..22).collect(),
         "a reply or failure kind has no case"
     );
     results

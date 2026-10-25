@@ -644,28 +644,74 @@ impl KernelRequest<Mesh> {
         let op = Op::Tessellate {
             shape: shape.clone(),
             deflection,
+            at_least_the_floor: false,
         };
         Self::new(op, |name, reply| match reply {
-            Reply::Mesh(mesh) => match mesh.validate() {
-                Ok(()) => Ok(mesh),
-                // A worker that sends a mesh that doesn't hold together can't be trusted, as
-                // one that replies with the wrong kind can't (`run_on` stops it).
-                Err(problem) => Err(Error::new(
-                    ErrorCode::ProtocolError,
-                    "the kernel worker sent an inconsistent mesh",
-                )
-                .with_cause(problem)
-                .with_suggestion("start a new kernel worker")),
-            },
+            Reply::Mesh(mesh) => checked_mesh(mesh),
             other => Err(unexpected(name, &other)),
         })
-        // Faces OCCT couldn't mesh: left out of a valid shape's mesh (slivers too narrow to
-        // show), and the mesh refused for one that isn't valid, naming them (there they say
-        // something is broken).
-        .deciding(|name, mesh: Mesh| match mesh.refusal() {
-            Some(refusal) => Err(crate::worker::failure_error(name, Failure::new(refusal))),
-            None => Ok(mesh),
+        .deciding(|name, mesh: Mesh| decided_mesh(name, mesh))
+    }
+}
+
+impl KernelRequest<(Mesh, f64)> {
+    /// [`tessellate`](KernelRequest::tessellate), at the larger of `deflection` and the
+    /// shape's floor (the finest the kernel meshes it), never refused for being too fine;
+    /// and the deflection the kernel used, which must be the one asked or a coarser one.
+    /// M4.6's renders ask for half a pixel, which a close view takes under the floor.
+    pub fn tessellate_at_least_the_floor(shape: &ShapeData, deflection: f64) -> Self {
+        let op = Op::Tessellate {
+            shape: shape.clone(),
+            deflection,
+            at_least_the_floor: true,
+        };
+        Self::new(op, move |name, reply| match reply {
+            Reply::MeshAt {
+                mesh,
+                deflection: used,
+            } => {
+                // Coarser than asked only for the floor, so never finer, and never more
+                // than the floor's most (MIN_RELATIVE_DEFLECTION of a shape's extent, which
+                // the core can't check without the shape's box).
+                if !(used.is_finite() && used >= deflection) {
+                    return Err(Error::new(
+                        ErrorCode::ProtocolError,
+                        format!(
+                            "the kernel worker answered {name} with a deflection finer than asked"
+                        ),
+                    )
+                    .with_cause(format!("asked {deflection}, used {used}"))
+                    .with_suggestion("start a new kernel worker"));
+                }
+                Ok((checked_mesh(mesh)?, used))
+            }
+            other => Err(unexpected(name, &other)),
         })
+        .deciding(|name, (mesh, used): (Mesh, f64)| Ok((decided_mesh(name, mesh)?, used)))
+    }
+}
+
+/// A mesh from a worker, if it holds together: a worker that sends one that doesn't can't be
+/// trusted, as one that replies with the wrong kind can't (`run_on` stops it).
+fn checked_mesh(mesh: Mesh) -> Result<Mesh, Error> {
+    match mesh.validate() {
+        Ok(()) => Ok(mesh),
+        Err(problem) => Err(Error::new(
+            ErrorCode::ProtocolError,
+            "the kernel worker sent an inconsistent mesh",
+        )
+        .with_cause(problem)
+        .with_suggestion("start a new kernel worker")),
+    }
+}
+
+/// Faces OCCT couldn't mesh: left out of a valid shape's mesh (slivers too narrow to show),
+/// and the mesh refused for one that isn't valid, naming them (there they say something is
+/// broken).
+fn decided_mesh(name: &str, mesh: Mesh) -> Result<Mesh, Error> {
+    match mesh.refusal() {
+        Some(refusal) => Err(crate::worker::failure_error(name, Failure::new(refusal))),
+        None => Ok(mesh),
     }
 }
 

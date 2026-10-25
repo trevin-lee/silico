@@ -83,6 +83,8 @@ mod fillet;
 mod finite;
 #[path = "mesh.rs"]
 mod mesh;
+#[path = "mesh_floor.rs"]
+mod mesh_floor;
 #[path = "primitive_numbers.rs"]
 mod primitive_numbers;
 #[path = "primitives.rs"]

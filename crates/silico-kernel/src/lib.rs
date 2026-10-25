@@ -1860,6 +1860,27 @@ pub const MIN_RELATIVE_DEFLECTION: f64 = 1e-4;
 /// carries its face's surface normal there, pointing out of the solid
 /// (docs/ports/tessellation.md).
 pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
+    Ok(tessellated(shape, deflection, false)?.0)
+}
+
+/// [`tessellate`], at the larger of `deflection` and the shape's floor (the finest it
+/// meshes: [`MIN_RELATIVE_DEFLECTION`] of its bounding box's diagonal, and no finer than
+/// [`LENGTH_TOLERANCE`]), never refused for being too fine; and the deflection it used. M4.6's
+/// renders ask for half a pixel, which a close view takes under the floor.
+pub fn tessellate_at_least_the_floor(
+    shape: &Shape,
+    deflection: f64,
+) -> Result<(Mesh, f64), KernelError> {
+    tessellated(shape, deflection, true)
+}
+
+/// The mesh, and the deflection it was meshed at: `deflection`, or the floor if it's finer
+/// and `at_least_the_floor`; refused if it's finer and not.
+fn tessellated(
+    shape: &Shape,
+    deflection: f64,
+    at_least_the_floor: bool,
+) -> Result<(Mesh, f64), KernelError> {
     if !(deflection.is_finite() && deflection > 0.0) {
         return Err(KernelError::new(Refusal::DeflectionInvalid { deflection }));
     }
@@ -1869,12 +1890,16 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
         return Err(KernelError::new(Refusal::ExtentNotFinite));
     }
     let floor = (diagonal * MIN_RELATIVE_DEFLECTION).max(LENGTH_TOLERANCE);
-    if deflection < floor {
-        return Err(KernelError::new(Refusal::DeflectionTooFine {
-            deflection,
-            floor,
-        }));
-    }
+    let deflection = match deflection < floor {
+        false => deflection,
+        true if at_least_the_floor => floor,
+        true => {
+            return Err(KernelError::new(Refusal::DeflectionTooFine {
+                deflection,
+                floor,
+            }));
+        }
+    };
     // A mesher that fails outright is almost always broken geometry, not the deflection:
     // the refusal says so.
     let raw = ffi::tessellate(inner, deflection)
@@ -1927,7 +1952,7 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
     // overflow its coordinates overflows its extent first: a mesh's coordinates are finite.
     // Anything else wrong with the mesh would be the bridge's bug, which the core's own
     // check catches (and stops the worker for).
-    Ok(mesh)
+    Ok((mesh, deflection))
 }
 
 /// Meshes `shape`'s solids for export within `tolerance` mm, as FreeCAD meshes for export

@@ -160,8 +160,14 @@ pub enum Op {
         tool: ShapeData,
     },
     /// A triangle mesh of a shape for display, no further than `deflection` from its
-    /// surface. Replies with [`Reply::Mesh`].
-    Tessellate { shape: ShapeData, deflection: f64 },
+    /// surface. Replies with [`Reply::Mesh`], or a deflection finer than the shape's floor is
+    /// refused; with `at_least_the_floor`, meshes at the larger of the two, never refused for
+    /// that, and replies with [`Reply::MeshAt`], saying which it used (M4.6's renders).
+    Tessellate {
+        shape: ShapeData,
+        deflection: f64,
+        at_least_the_floor: bool,
+    },
     /// Sends `data` straight back as [`Reply::Echo`]: a health check, and the cheapest
     /// round trip, which the IPC benchmark measures.
     Echo { data: Blob },
@@ -438,6 +444,12 @@ pub enum Reply {
     Classified {
         inside: bool,
     },
+    /// A display mesh, and the deflection it was meshed at ([`Op::Tessellate`] with
+    /// `at_least_the_floor`).
+    MeshAt {
+        mesh: Mesh,
+        deflection: f64,
+    },
 }
 
 impl Reply {
@@ -453,6 +465,7 @@ impl Reply {
             Reply::ExportMesh(_) => "ExportMesh",
             Reply::Rendered { .. } => "Rendered",
             Reply::Classified { .. } => "Classified",
+            Reply::MeshAt { .. } => "MeshAt",
             Reply::Solved(_) => "Solved",
             Reply::DragStarted { .. } => "DragStarted",
             Reply::Moved(_) => "Moved",
