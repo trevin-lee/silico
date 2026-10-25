@@ -1278,7 +1278,9 @@ fn schema_with_odd_arguments_is_a_schema_a_refusal_or_usage_never_a_panic() {
             format!(
                 "silico schema: invalid_input: of must be document or the name of a command \
                  with a schema, got {shown} (parameter of). Suggestion: give one of the \
-                 candidates. Candidates: document, elements, query, schema.\n"
+                 candidates. Candidates: document, begin, commit, rollback, format, \
+                 add_feature, set_field, remove_feature, replace_text, elements, query, \
+                 schema.\n"
             ),
             "{name:?}"
         );

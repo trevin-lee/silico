@@ -9,7 +9,10 @@
 //! [`Json::direction`], and [`Json::point`]; [`RequestFields::length`],
 //! [`RequestFields::angle`], [`RequestFields::direction`], and [`RequestFields::revision`]).
 //! Values are written as the document is, by its canonical writer (M2.1's D7), or on one
-//! line for a transport that takes one message a line ([`Layout::OneLine`]).
+//! line for a transport that takes one message a line ([`Layout::OneLine`]): a feature by the
+//! document's own feature writer ([`Json::feature`]), a value of the document's as it holds
+//! it ([`Json::plain`]), and a request's value as it was read ([`Json::node`], taken whole by
+//! [`RequestFields::node`] for the document's reader to read).
 //!
 //! The builders and readers are public for the core's command modules, which build their
 //! wire types on them. A client (the CLI, MCP, the app) reaches commands only through the
@@ -26,18 +29,19 @@
 //! result's, which is the envelope's `result` when the command runs, not the whole envelope,
 //! so not by itself what MCP's `outputSchema` checks `structuredContent`, the envelope,
 //! against (that is M4.9's to build from these and the envelope's). Each is added with the
-//! command's wire types ([`COMMANDS`]: [`elements`], for `elements` and `query`, and
-//! [`schema`]).
+//! command's wire types ([`COMMANDS`]: [`transaction`], for `begin`, `commit`, `rollback`,
+//! and `format`; [`edits`], for `add_feature`, `set_field`, `remove_feature`, and
+//! `replace_text`; [`elements`], for `elements` and `query`; and [`schema`]).
 
 use std::fmt;
 
 use schemars::JsonSchema;
 
 use super::{ModelChoice, ModelRead, Problems, Response, Revision, SessionId, SessionInfo};
-use crate::document::json::{Member, Node, Value};
+use crate::document::json::{Member, Node, Plain, Value};
 use crate::document::write::{self, Out, text};
 use crate::document::{
-    Angle, Coordinate, FeatureId, Length, Measure, NumberError, PROBLEMS_LISTED, Position,
+    Angle, Coordinate, Feature, FeatureId, Length, Measure, NumberError, PROBLEMS_LISTED, Position,
 };
 use crate::{Error, ErrorCode};
 
@@ -135,6 +139,56 @@ impl<'a> Json<'a> {
     /// strings escaped as every string is.
     pub fn value(value: &'a serde_json::Value) -> Self {
         Json(out_of(value))
+    }
+
+    /// A value of a document's, as a command gives it back (`set_field`'s field before and
+    /// after): each object's members in their order, each number as its text is written,
+    /// and strings escaped as every string is.
+    pub fn plain(value: &'a Plain) -> Self {
+        Json(plain_out(value))
+    }
+
+    /// A request's value as it was read (`add_feature`'s feature, `set_field`'s value),
+    /// written as [`plain`](Json::plain) writes its value.
+    pub fn node(node: &'a Node) -> Self {
+        Json(node_out(node))
+    }
+
+    /// A feature as the document's canonical form writes it, by the document's own writer.
+    pub fn feature(feature: &'a Feature) -> Self {
+        Json(write::feature(feature))
+    }
+}
+
+fn plain_out(value: &Plain) -> Out<'_> {
+    match value {
+        Plain::Null => Out::Raw("null".to_owned()),
+        Plain::Bool(b) => write::boolean(*b),
+        Plain::Number(text) => Out::Raw(text.clone()),
+        Plain::String(text) => Out::Str(text),
+        Plain::Array(items) => Out::Array(items.iter().map(plain_out).collect()),
+        Plain::Object(members) => Out::Keyed(
+            members
+                .iter()
+                .map(|(key, value)| (key.clone(), plain_out(value)))
+                .collect(),
+        ),
+    }
+}
+
+fn node_out(node: &Node) -> Out<'_> {
+    match &node.value {
+        Value::Null => Out::Raw("null".to_owned()),
+        Value::Bool(b) => write::boolean(*b),
+        Value::Number(text) => Out::Raw(text.clone()),
+        Value::String(text) => Out::Str(text),
+        Value::Array(items) => Out::Array(items.iter().map(node_out).collect()),
+        Value::Object(members) => Out::Keyed(
+            members
+                .iter()
+                .map(|member| (member.key.clone(), node_out(&member.value)))
+                .collect(),
+        ),
     }
 }
 
@@ -891,6 +945,13 @@ impl<'a> RequestFields<'a> {
         fine.then_some(values)
     }
 
+    /// The value of `key`, whatever it is, taken as it is: for a field another reader
+    /// reads (`add_feature`'s feature and `set_field`'s value, each read as the document
+    /// reads it). Refused only if it's missing.
+    pub fn node(&mut self, key: &str) -> Option<&'a Node> {
+        self.take(key)
+    }
+
     /// `key`, taken unread: for a field whose reading another decides (a range's bounds,
     /// read as its measure's quantity), when that one was refused. Refused only if it's
     /// missing.
@@ -1192,9 +1253,21 @@ pub enum ResponseSchema {
     Refused(RefusedSchema),
 }
 
-/// The commands whose wire types are built, each with its snapshot: what `schema`
-/// describes besides the document.
-pub const COMMANDS: [&str; 3] = ["elements", "query", "schema"];
+/// The commands whose wire types are built, each with its snapshot, in the design's order
+/// (section 7): what `schema` describes besides the document.
+pub const COMMANDS: [&str; 11] = [
+    "begin",
+    "commit",
+    "rollback",
+    "format",
+    "add_feature",
+    "set_field",
+    "remove_feature",
+    "replace_text",
+    "elements",
+    "query",
+    "schema",
+];
 
 /// The JSON Schema (draft 2020-12, every object's keys sorted) a snapshot (section 8)
 /// records: `envelope`, the response's; or a command's, `{"request": ..., "result": ...}`,
@@ -1202,6 +1275,38 @@ pub const COMMANDS: [&str; 3] = ["elements", "query", "schema"];
 pub fn snapshot_value(of: &str) -> Option<serde_json::Value> {
     match of {
         "envelope" => Some(crate::document::schema_value_of::<ResponseSchema>()),
+        "begin" => Some(command_schema::<
+            transaction::BeginRequestSchema,
+            transaction::BeginResultSchema,
+        >()),
+        "commit" => Some(command_schema::<
+            transaction::CommitRequestSchema,
+            transaction::CommitResultSchema,
+        >()),
+        "rollback" => Some(command_schema::<
+            transaction::RollbackRequestSchema,
+            transaction::RollbackResultSchema,
+        >()),
+        "format" => Some(command_schema::<
+            transaction::FormatRequestSchema,
+            transaction::FormatResultSchema,
+        >()),
+        "add_feature" => Some(command_schema::<
+            edits::AddFeatureRequestSchema,
+            edits::AddFeatureResultSchema,
+        >()),
+        "set_field" => Some(command_schema::<
+            edits::SetFieldRequestSchema,
+            edits::SetFieldResultSchema,
+        >()),
+        "remove_feature" => Some(command_schema::<
+            edits::RemoveFeatureRequestSchema,
+            edits::RemoveFeatureResultSchema,
+        >()),
+        "replace_text" => Some(command_schema::<
+            edits::ReplaceTextRequestSchema,
+            edits::ReplaceTextResultSchema,
+        >()),
         "elements" => Some(command_schema::<
             elements::ElementsRequestSchema,
             elements::ElementsResultSchema,
@@ -1234,10 +1339,14 @@ pub fn snapshot(of: &str) -> Option<Result<String, Error>> {
     Some(crate::document::schema_text(&value, &format!("the {of}")))
 }
 
+pub mod edits;
 pub mod elements;
 pub mod schema;
+pub mod transaction;
 
 #[cfg(test)]
 mod adversarial;
+#[cfg(test)]
+mod session_tests;
 #[cfg(test)]
 mod tests;

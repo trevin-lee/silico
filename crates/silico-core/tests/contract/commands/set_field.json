@@ -1,0 +1,234 @@
+{
+  "request": {
+    "$defs": {
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      },
+      "FieldValue": {
+        "description": "A field's value, as the document writes that field: a number, a string, true or false, a list, an object, or null (for a field the feature hasn't, or a note removed)."
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`set_field`'s request: set one field of one feature.",
+    "properties": {
+      "feature": {
+        "$ref": "#/$defs/FeatureId",
+        "description": "The feature, by ID."
+      },
+      "field": {
+        "description": "The field's dotted path (`extent.length`, `position.2`, `note`): a sketch's points,\nlines, circles, arcs, and constraints by their IDs (`constraints.g4h5j6k7.value`),\nany other list's items by place, from 0. A feature's id, type, v, and fingerprint\ncan't be set.",
+        "type": "string"
+      },
+      "revision": {
+        "description": "The session's revision the edit was made against: an edit against another is\nrefused as a `conflict`.",
+        "format": "uint64",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      },
+      "value": {
+        "$ref": "#/$defs/FieldValue",
+        "description": "The field's whole new value, read as the document reads that field: to add a circle\nto a sketch, set its `circles`. A note set to null is removed."
+      }
+    },
+    "required": [
+      "feature",
+      "field",
+      "revision",
+      "session",
+      "value"
+    ],
+    "title": "SetFieldRequest",
+    "type": "object"
+  },
+  "result": {
+    "$defs": {
+      "CommitResult": {
+        "additionalProperties": false,
+        "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
+        "properties": {
+          "path": {
+            "description": "The document's path, as `open` was given it.",
+            "type": "string"
+          },
+          "problems": {
+            "description": "What the commit couldn't fix, the first 100: failed features, and the drift of\nfeatures no edit reached, whose fingerprints it leaves as stored (only `format`\naccepts drift).",
+            "items": {
+              "$ref": "#/$defs/Error"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "problems_total": {
+            "description": "How many problems there are, listed or not.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "refingerprinted": {
+            "description": "The features the edits reached whose fingerprints were written anew, in timeline\norder.",
+            "items": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "type": "array"
+          },
+          "resolved": {
+            "description": "The sketches the edits reached whose solves were written anew, in timeline order.",
+            "items": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "type": "array"
+          },
+          "written": {
+            "description": "Whether the file was written: false when the document is the one the transaction\nbegan with.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "problems",
+          "problems_total",
+          "refingerprinted",
+          "resolved",
+          "written"
+        ],
+        "type": "object"
+      },
+      "Error": {
+        "additionalProperties": false,
+        "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+        "properties": {
+          "candidates": {
+            "description": "What might have been meant, such as the names nearest one that found nothing.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cause": {
+            "description": "What lay under it, such as the kernel's own failure, if known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code": {
+            "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+            "type": "string"
+          },
+          "elements": {
+            "description": "The elements at fault, by name: the first of them, if there are many.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "elements_total": {
+            "description": "How many elements are at fault, listed or not.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "feature": {
+            "description": "The ID of the feature at fault, if one is.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "description": "What went wrong, in a sentence.",
+            "type": "string"
+          },
+          "parameter": {
+            "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "suggestion": {
+            "description": "What to do about it, if Silico can say.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "candidates",
+          "cause",
+          "code",
+          "elements",
+          "elements_total",
+          "feature",
+          "message",
+          "parameter",
+          "suggestion"
+        ],
+        "type": "object"
+      },
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      },
+      "FieldValue": {
+        "description": "A field's value, as the document writes that field: a number, a string, true or false, a list, an object, or null (for a field the feature hasn't, or a note removed)."
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`set_field`'s result.",
+    "properties": {
+      "after": {
+        "$ref": "#/$defs/FieldValue",
+        "description": "The field's value after, as the document writes it."
+      },
+      "before": {
+        "$ref": "#/$defs/FieldValue",
+        "description": "The field's value before, as the document wrote it: null for a field the feature\nhadn't."
+      },
+      "changed": {
+        "description": "Whether the document changed: false for a field given the value it had, which makes\nno new revision and writes nothing.",
+        "type": "boolean"
+      },
+      "commit": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/CommitResult"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Outside a transaction, the commit that saved the edit; null inside one, or if\nnothing changed."
+      },
+      "feature": {
+        "$ref": "#/$defs/FeatureId",
+        "description": "The feature, as the request named it."
+      },
+      "field": {
+        "description": "The field, as the request named it.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "after",
+      "before",
+      "changed",
+      "commit",
+      "feature",
+      "field"
+    ],
+    "title": "SetFieldResult",
+    "type": "object"
+  }
+}

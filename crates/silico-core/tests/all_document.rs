@@ -78,6 +78,8 @@ mod session_transactions;
 mod shared_result_checks;
 #[path = "wire_commands.rs"]
 mod wire_commands;
+#[path = "wire_session_commands.rs"]
+mod wire_session_commands;
 
 /// Every file in tests/ is built: this crate lists its test programs (`autotests = false`),
 /// so a new file must be added as a module of one, or as one, or it would never run.
