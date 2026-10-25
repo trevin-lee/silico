@@ -55,4 +55,5 @@ BinTools::Write(box, out, false, false, BinTools_FormatVersion_CURRENT);
   B-spline patch offset 0.25, `Part.OffsetSurface`), a parabola of focal length 1 from −2 to
   2, a hyperbola of radii 2 and 1 from −1 to 1, and a cubic B-spline offset 0.5 in its plane
   (`Part.OffsetCurve`), each made a shape and compounded (`exportBrep`). FreeCAD's types and
-  lengths are in `describe`'s test of it.
+  lengths are in `describe`'s test of it. `offsets_and_conics.py` makes it
+  (`freecadcmd offsets_and_conics.py`, from this directory).

@@ -974,11 +974,12 @@ fn offsets_parabolas_and_hyperbolas_are_each_their_kind() {
     let d = described(&shape);
     assert_eq!(d.faces.len(), 1);
     assert_eq!(d.faces[0].surface, Surface::Offset);
+    // To the integration's precision (MEASURE_PRECISION, 1e-9).
     assert_close(
         "the offset face's area",
         d.faces[0].area,
         4.67901767573915,
-        1e-6,
+        1e-9,
     );
     let lengths = [
         2.107133381923591,
