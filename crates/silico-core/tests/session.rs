@@ -541,8 +541,10 @@ fn an_open_whose_thread_panics_holds_neither_its_file_nor_a_place() {
             panic!("a bug in an open");
         }
     });
-    let path = f.file("boom/a.silico", BOX);
-    let response = answer(f.sessions.open(&path, false));
+    // Made by the open, as `create` makes it, before the panic.
+    std::fs::create_dir(f.dir.path().join("boom")).unwrap();
+    let path = f.dir.path().join("boom/a.silico");
+    let response = answer(f.sessions.open(&path, true));
     assert_eq!(response.session, None);
     assert_eq!(
         refusal(&response),
@@ -553,8 +555,11 @@ fn an_open_whose_thread_panics_holds_neither_its_file_nor_a_place() {
             Some("this is a bug in Silico, not in the request: report it".to_owned()),
         )
     );
-    // Its file isn't held, and its place isn't taken: it opens, and 15 more beside it.
-    f.open(&path);
+    // What it made is gone, its file isn't held, and its place isn't taken: it's made and
+    // opens again, and 15 more beside it.
+    assert!(!path.exists());
+    let response = answer(f.sessions.open(&path, true));
+    assert!(response.result.unwrap().created);
     for n in 0..15 {
         f.open(&f.file(&format!("p{n}.silico"), BOX));
     }
@@ -620,4 +625,32 @@ fn a_cache_without_the_users_secret_isnt_kept_so_the_next_open_tries_again() {
     }
     // The unsealed directory's opened for each session, the sealed one's once.
     assert_eq!(*opened.lock().unwrap(), [true, true, false]);
+}
+
+#[test]
+fn a_file_replaced_at_its_path_as_a_save_by_rename_does_is_still_open_in_its_session() {
+    // An editor's, git's, or Silico's own save writes a copy beside the file and renames it
+    // over: the path's file is then another inode, and still s1's document.
+    let f = fixture();
+    let path = f.file("block.silico", BOX);
+    let s1 = f.open(&path);
+    let refused_naming_s1 = |response: &Response<_>| {
+        assert_eq!(response.session, None);
+        assert_eq!(
+            refusal(response),
+            (
+                ErrorCode::InvalidInput,
+                format!("\"{}\" is already open in session s1", path.display()),
+                Some("path".to_owned()),
+                Some("use session s1, which this client opened, or close it first".to_owned()),
+            )
+        );
+    };
+    refused_naming_s1(&answer(f.sessions.open(&path, false)));
+    let copy = f.file(".block.silico.new", BOX);
+    std::fs::rename(&copy, &path).unwrap();
+    refused_naming_s1(&answer(f.sessions.open(&path, false)));
+    assert_eq!(answer(f.sessions.close(&s1)).result, Ok(()));
+    // Closed, the new file opens, as s4: the two refused opens took s2 and s3.
+    assert_eq!(f.open(&path).to_string(), "s4");
 }
