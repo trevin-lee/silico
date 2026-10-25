@@ -874,9 +874,9 @@ fn schema_prints_the_documents_or_a_commands_as_committed() {
     assert!(out.stdout.is_empty());
     assert_eq!(
         stderr(&out),
-        "silico schema: invalid_input: of must be document or the name of a command with a schema, got envelope \
-         (parameter of). Suggestion: give document, or one of the candidates. Candidates: \
-         document, elements, query, schema.\n"
+        "silico schema: invalid_input: of must be document or the name of a command with a \
+         schema, got envelope (parameter of). Suggestion: give one of the candidates. \
+         Candidates: document, elements, query, schema.\n"
     );
     // Two names: a usage error.
     let out = schema(&["query", "elements"]);
