@@ -292,8 +292,8 @@ fn sweep<'a>(
 }
 
 /// A sketch's plane, and each of its lists as the file writes it, by the kind of element
-/// it holds, in the format's order ([`ElementKind::ALL`]): taken apart whole, so a field added to a sketch is a compile error here until
-/// the file, and the outline, say it.
+/// it holds, in the format's order ([`ElementKind::ALL`]): taken apart whole, so a field
+/// added to a sketch is a compile error here until the file, and the outline, say it.
 fn sketch_lists(sketch: &Sketch) -> (&Plane, [(ElementKind, Vec<Out<'_>>); 5]) {
     let Sketch {
         plane,

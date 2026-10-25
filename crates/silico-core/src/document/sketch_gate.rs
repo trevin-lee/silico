@@ -95,15 +95,19 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
     // each ID, which a reference finds. Each later holder, named by its place, with its
     // first holder's kind and path.
     let paths = MemberPaths::of(sketch);
-    let list = |kind: ElementKind| paths.get(&kind).map_or(&[][..], Vec::as_slice);
     let mut by_id: BTreeMap<&ElementId, Place> = BTreeMap::new();
     let mut taken: BTreeMap<(ElementKind, usize), (ElementKind, &str)> = BTreeMap::new();
     for kind in ElementKind::ALL {
-        for (index, (id, named)) in sketch.ids(kind).into_iter().zip(list(kind)).enumerate() {
+        for (index, (id, named)) in sketch
+            .ids(kind)
+            .into_iter()
+            .zip(paths.list(kind))
+            .enumerate()
+        {
             if named.by_id {
                 by_id.insert(id, Place { kind, index });
             } else if let Some(first) = by_id.get(id)
-                && let Some(holder) = list(first.kind).get(first.index)
+                && let Some(holder) = paths.list(first.kind).get(first.index)
             {
                 taken.insert((kind, index), (first.kind, holder.path.as_str()));
             }
@@ -124,12 +128,8 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
             }
         };
 
-    for ((i, point), named) in sketch
-        .points
-        .iter()
-        .enumerate()
-        .zip(list(ElementKind::Point))
-    {
+    // Each list in turn, in ElementKind::ALL's order, as its paths were named.
+    for ((i, point), named) in sketch.points.iter().enumerate().zip(&paths.points) {
         let at = named.path.as_str();
         let mut named = |e: Error| add(e.with_element(point.id.as_str()));
         let add: &mut dyn FnMut(Error) = &mut named;
@@ -212,7 +212,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
         }
     };
 
-    for ((i, line), named) in sketch.lines.iter().enumerate().zip(list(ElementKind::Line)) {
+    for ((i, line), named) in sketch.lines.iter().enumerate().zip(&paths.lines) {
         let at = named.path.as_str();
         let mut named = |e: Error| add(e.with_element(line.id.as_str()));
         let add: &mut dyn FnMut(Error) = &mut named;
@@ -252,12 +252,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
             .with_element(line.to.as_str()));
         }
     }
-    for ((i, circle), named) in sketch
-        .circles
-        .iter()
-        .enumerate()
-        .zip(list(ElementKind::Circle))
-    {
+    for ((i, circle), named) in sketch.circles.iter().enumerate().zip(&paths.circles) {
         let at = named.path.as_str();
         let mut named = |e: Error| add(e.with_element(circle.id.as_str()));
         let add: &mut dyn FnMut(Error) = &mut named;
@@ -290,7 +285,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
             ));
         }
     }
-    for ((i, arc), named) in sketch.arcs.iter().enumerate().zip(list(ElementKind::Arc)) {
+    for ((i, arc), named) in sketch.arcs.iter().enumerate().zip(&paths.arcs) {
         let at = named.path.as_str();
         let mut named = |e: Error| add(e.with_element(arc.id.as_str()));
         let add: &mut dyn FnMut(Error) = &mut named;
@@ -436,7 +431,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
         .constraints
         .iter()
         .enumerate()
-        .zip(list(ElementKind::Constraint))
+        .zip(&paths.constraints)
     {
         let at = named.path.as_str();
         let mut named = |e: Error| add(e.with_element(constraint.id.as_str()));

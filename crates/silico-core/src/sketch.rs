@@ -15,9 +15,8 @@ use silico_protocol::{
 };
 
 use crate::document::{
-    Angle as DocumentAngle, Checked, Coordinate, Direction, ElementId, ElementKind, FeatureId,
-    Form, Length, LineSide, MemberPaths, Operation, Reference, Sketch, SketchConstraint,
-    TangentSide,
+    Angle as DocumentAngle, Checked, Coordinate, Direction, ElementId, FeatureId, Form, Length,
+    LineSide, MemberPaths, Operation, Reference, Sketch, SketchConstraint, TangentSide,
 };
 use crate::worker::{Executable, Worker, WorkerKind};
 use crate::{Error, ErrorCode};
@@ -419,14 +418,10 @@ pub(crate) struct Moved {
 pub(crate) fn moved(stored: &Sketch, written: &Sketch) -> Vec<Moved> {
     let same = |a: Coordinate, b: Coordinate| a.mm().to_bits() == b.mm().to_bits();
     let paths = MemberPaths::of(stored);
-    let list = |kind: ElementKind| paths.get(&kind).map_or(&[][..], Vec::as_slice);
     let mut out = Vec::new();
-    for ((s, w), named) in stored
-        .points
-        .iter()
-        .zip(&written.points)
-        .zip(list(ElementKind::Point))
-    {
+    // Points, circles, then constraints: ElementKind::ALL's order, less the lists a
+    // write-back never moves (lines and arcs hold no values of their own).
+    for ((s, w), named) in stored.points.iter().zip(&written.points).zip(&paths.points) {
         let mut what = Vec::new();
         let mut first = None;
         if !same(s.x, w.x) {
@@ -449,7 +444,7 @@ pub(crate) fn moved(stored: &Sketch, written: &Sketch) -> Vec<Moved> {
         .circles
         .iter()
         .zip(&written.circles)
-        .zip(list(ElementKind::Circle))
+        .zip(&paths.circles)
     {
         if !same(s.radius, w.radius) {
             out.push(Moved {
@@ -463,7 +458,7 @@ pub(crate) fn moved(stored: &Sketch, written: &Sketch) -> Vec<Moved> {
         .constraints
         .iter()
         .zip(&written.constraints)
-        .zip(list(ElementKind::Constraint))
+        .zip(&paths.constraints)
     {
         if s.form != w.form {
             let said = match (s.form.value_text(), w.form.value_text()) {

@@ -213,6 +213,19 @@ fn a_solve_that_moves_a_point_or_a_radius_is_drift_naming_each() {
 }
 
 #[test]
+fn a_solve_that_moves_only_a_radius_is_drift_naming_the_circles_radius() {
+    // The test above moves pb000000 too, which comes first: here the radius alone, so
+    // drift's field is the circle's.
+    let errors = drift(HORIZONTAL, |v| v[CA_RADIUS] = 6.0);
+    let [e] = &errors[..] else {
+        panic!("{errors:?}")
+    };
+    assert_eq!(e.elements(), ["ca000000"]);
+    assert_eq!(e.parameter(), Some("circles.ca000000.radius"));
+    assert!(e.message().contains("ca000000 radius 5 → 6"), "{e}");
+}
+
+#[test]
 fn a_coordinate_solved_to_minus_zero_from_zero_is_drift_as_the_file_writes_them_apart() {
     let errors = drift(HORIZONTAL, |v| v[PA_X] = -0.0);
     let [e] = &errors[..] else {

@@ -5,7 +5,7 @@
 //! sorted by ID (D5). Solving is M3.3's; this is what the file holds.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fmt;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
@@ -115,21 +115,55 @@ impl MemberPaths {
         }
     }
 
-    /// Every member's path in `sketch`, each kind's list in the order held.
-    pub(crate) fn of(sketch: &Sketch) -> BTreeMap<ElementKind, Vec<Named>> {
+    /// Every member's path in `sketch`, each list's in the order held, the lists named in
+    /// [`ElementKind::ALL`]'s order.
+    pub(crate) fn of(sketch: &Sketch) -> SketchPaths {
         let mut paths = MemberPaths::default();
-        ElementKind::ALL
-            .into_iter()
-            .map(|kind| {
-                let named = sketch
-                    .ids(kind)
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, id)| paths.next(kind, i, Some(id)))
-                    .collect();
-                (kind, named)
-            })
-            .collect()
+        let mut all = SketchPaths::default();
+        for kind in ElementKind::ALL {
+            let named = sketch
+                .ids(kind)
+                .into_iter()
+                .enumerate()
+                .map(|(i, id)| paths.next(kind, i, Some(id)))
+                .collect();
+            *all.list_mut(kind) = named;
+        }
+        all
+    }
+}
+
+/// Every member's path in a sketch ([`MemberPaths::of`]): one list of paths for each of
+/// the sketch's lists, each in the order held.
+#[derive(Debug, Default)]
+pub(crate) struct SketchPaths {
+    pub(crate) points: Vec<Named>,
+    pub(crate) lines: Vec<Named>,
+    pub(crate) circles: Vec<Named>,
+    pub(crate) arcs: Vec<Named>,
+    pub(crate) constraints: Vec<Named>,
+}
+
+impl SketchPaths {
+    /// The paths of `kind`'s list.
+    pub(crate) fn list(&self, kind: ElementKind) -> &[Named] {
+        match kind {
+            ElementKind::Point => &self.points,
+            ElementKind::Line => &self.lines,
+            ElementKind::Circle => &self.circles,
+            ElementKind::Arc => &self.arcs,
+            ElementKind::Constraint => &self.constraints,
+        }
+    }
+
+    fn list_mut(&mut self, kind: ElementKind) -> &mut Vec<Named> {
+        match kind {
+            ElementKind::Point => &mut self.points,
+            ElementKind::Line => &mut self.lines,
+            ElementKind::Circle => &mut self.circles,
+            ElementKind::Arc => &mut self.arcs,
+            ElementKind::Constraint => &mut self.constraints,
+        }
     }
 }
 
