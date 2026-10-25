@@ -449,11 +449,9 @@ fn a_long_word_is_cut_short_in_every_word_field() {
 
 #[test]
 fn a_word_refused_as_a_string_is_told_apart_from_the_json_value_it_spells() {
-    // BREAKS: a refused word that's a plain word is shown bare, so the string "null" and
-    // the value null are refused in the same words, and the string "3" and the number 3:
-    // `"type": "null"` is told "type must be plane, ..., or point, got null", which says
-    // null is wrong where null is what `type` takes. Quote a word that spells a JSON
-    // literal or a number (or every string), so the two read apart.
+    // The string "null" and the value null are refused in other words, and the string "3"
+    // and the number 3: a refused word that spells a JSON value is quoted, so `"type":
+    // "null"` isn't told it can't be null, which is what `type` takes.
     for field in ["kind", "type"] {
         for (string, value) in [
             (r#""null""#, "null"),
@@ -492,10 +490,9 @@ fn a_word_refused_as_a_string_is_told_apart_from_the_json_value_it_spells() {
 
 #[test]
 fn a_nullable_words_refusal_says_null_is_one_of_its_values() {
-    // BREAKS: `type` takes null, as `stable`, `feature`, and a range's bounds do, and each of
-    // those says so when refused ("true, false, or null"); `type`'s refusal lists its 17
-    // words and not null, so an agent is told a type is required. `nullable_word` should
-    // say "..., or null", as `nullable_bool` does.
+    // `type` takes null, as `stable`, `feature`, and a range's bounds do, and its refusal
+    // says so, as theirs do ("true, false, or null"), so an agent isn't told a type is
+    // required.
     let stable = said(&query_refused(&query_with(
         r#""stable": null"#,
         r#""stable": "maybe""#,
