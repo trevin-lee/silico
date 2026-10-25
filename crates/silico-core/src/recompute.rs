@@ -54,6 +54,7 @@ use crate::document::{
     Checked, Document, ElementId, ElementName, FeatureId, Fingerprint, Made, Operation,
     SweepFeature,
 };
+use crate::elements::Entry;
 use crate::kernel::{
     BooleanOp, BuiltData, DESCRIBE_BATCH, FaceRegions, Generation, History, Kernel, KernelRequest,
     Primitive, ShapeData, ShapeSummary, SweepKind,
@@ -270,6 +271,10 @@ pub struct Model {
     /// a function of the model's own data alone, so they're the same whenever they're
     /// named.
     maps: Vec<OnceLock<Option<Arc<ElementMap>>>>,
+    /// Each feature's solid's elements as entries (`elements` and `query`'s), built from its
+    /// description and its names the first time they're read, once for the model, so paging
+    /// through a large solid costs one build and a copy of each page, not a build a page.
+    entries: Vec<OnceLock<Result<Arc<[Entry]>, Error>>>,
     /// The engine's maps named so far.
     known: NamedMaps,
 }
@@ -404,6 +409,23 @@ impl Model {
             | FeatureOutcome::Blocked { .. }
             | FeatureOutcome::Sketch(_) => None,
         }
+    }
+
+    /// Each of the feature `id`'s solid's elements as an entry, in the element list's order
+    /// (`elements::entries`), if it built and was described ([`Model::description`]): built
+    /// the first time they're asked for, naming its elements if they aren't yet, and kept for
+    /// the model. A fault if they couldn't be named, or don't fit an entry.
+    pub fn entries(&self, id: &FeatureId) -> Option<Result<&[Entry], &Error>> {
+        let description = self.description(id)?;
+        let slot = self.entries.get(self.index(id)?)?;
+        let built = slot.get_or_init(|| match self.element_map(id) {
+            Some(map) => crate::elements::entries(map, id, description).map(Arc::from),
+            None => Err(crate::elements::fault(
+                id,
+                "its solid built, but its elements couldn't be named",
+            )),
+        });
+        Some(built.as_deref())
     }
 
     /// The names of the elements of the feature `id`'s solid if they've been named
@@ -3283,6 +3305,7 @@ fn model(
         .collect();
     let naming = naming(plan, &features, done);
     let maps = (0..features.len()).map(|_| OnceLock::new()).collect();
+    let entries = (0..features.len()).map(|_| OnceLock::new()).collect();
     Model {
         source: Arc::clone(source),
         generation,
@@ -3291,6 +3314,7 @@ fn model(
         unmeasured,
         naming,
         maps,
+        entries,
         known,
     }
 }

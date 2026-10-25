@@ -18,6 +18,8 @@ mod commands;
 mod example;
 #[path = "common/lateness.rs"]
 mod lateness;
+#[path = "common/entries.rs"]
+mod listing;
 #[path = "common/model.rs"]
 mod model;
 #[path = "common/references.rs"]

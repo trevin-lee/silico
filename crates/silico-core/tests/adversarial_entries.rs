@@ -4,35 +4,34 @@
 //! all but a right angle, a radius of 0), degenerated edges, values past what a length
 //! holds; `facing` at 0 and 180 degrees, opposite and orthogonal normals, and directions
 //! tiny, huge, NaN, and infinite; ties exactly at 1,000 and 1,001; cursors that aren't the
-//! listing's; refusals by the hundred; and sessions not open. Every expected value is by
-//! hand from the values forged.
+//! listing's; more ranges than there are measures; types, ranges of measures some faces
+//! haven't, edges' ends, and names nothing in a history gives; and sessions not open. Every
+//! expected value is by hand from the values forged.
 
 use super::example;
+use super::listing::{BOX, TWO_BODIES, answer, codes, fixture, model_of};
 use super::model;
 
 use std::f64::consts::FRAC_1_SQRT_2;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use example::EXAMPLE;
 use model::{checked, id, published};
 use silico_core::ErrorCode;
-use silico_core::cache::Cache;
+use silico_core::command::ModelChoice;
+use silico_core::command::Revision;
 use silico_core::command::elements::{
-    AxisToken, Cursor, ENTRIES_AT_MOST, ElementType, Entry, Facing, MeasureName, Order, Quantity,
-    Query, Range, entries, list, query,
+    AxisToken, Cursor, ENTRIES_AT_MOST, ElementType, Entry, Facing, MEASURES_AT_MOST, MeasureName,
+    Order, Quantity, Query, Range, entries, list, query,
 };
-use silico_core::command::{ModelChoice, Problems, Revision, Sessions};
 use silico_core::document::{Angle, Length, Measure};
-use silico_core::fake::{FakeKernel, FakeSketches};
-use silico_core::kernel::{Axis, ElementKind, Op};
+use silico_core::fake::FakeKernel;
+use silico_core::kernel::{
+    Axis, BooleanOp, BuiltData, ElementCounts, ElementFate, ElementKind, History, InputHistory, Op,
+    Topology,
+};
 use silico_core::recompute::{Model, Recompute};
-use silico_core::sketch::SketchSolver;
 use silico_protocol::{Description, EdgeCurve, EdgeDescription, FaceDescription, Reply, Surface};
-
-const BOX: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "bbbbbbbb", "type": "box", "v": 1, "name": "Box", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1}]}"#;
-
-/// Two separate boxes, neither consumed: two bodies, in timeline order.
-const TWO_BODIES: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "aaaaaaaa", "type": "box", "v": 1, "name": "First", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1}, {"id": "bbbbbbbb", "type": "box", "v": 1, "name": "Second", "position": [5, 0, 0], "length": 1, "width": 1, "height": 1}]}"#;
 
 fn plane(normal: [f64; 3]) -> FaceDescription {
     FaceDescription {
@@ -116,27 +115,6 @@ fn named<'a>(entries: &'a [Entry], element: &str) -> &'a Entry {
         .unwrap_or_else(|| panic!("no {name}"))
 }
 
-fn codes(problems: &Problems) -> Vec<(ErrorCode, Option<String>)> {
-    problems
-        .errors()
-        .iter()
-        .map(|e| (e.code(), e.parameter().map(str::to_owned)))
-        .collect()
-}
-
-fn of_kind(kind: ElementKind, limit: u32) -> Query {
-    Query {
-        feature: None,
-        kind,
-        r#type: None,
-        stable: None,
-        facing: None,
-        measures: Vec::new(),
-        order: None,
-        limit,
-    }
-}
-
 fn deg(degrees: i64) -> Angle {
     Angle::from_ndeg(degrees * 1_000_000_000)
 }
@@ -163,11 +141,11 @@ fn a_normal_and_an_axis_with_negative_zeros_are_written_with_positive_ones() {
     faces.extend((0..4).map(|_| plane([1.0, 0.0, 0.0])));
     let model = forged_box(faces, None);
     let entries = entries(&model, &id("bbbbbbbb")).unwrap();
-    let top = named(&entries, "Face1");
+    let top = named(entries, "Face1");
     let normal = top.normal.unwrap();
     assert_eq!(normal.map(f64::to_bits), [0.0, 0.0, 1.0].map(f64::to_bits));
     assert_eq!(top.default_x, Some(AxisToken::PlusX));
-    let side = named(&entries, "Face2");
+    let side = named(entries, "Face2");
     let axis = side.axis.clone().unwrap();
     assert_eq!(
         axis.direction.map(f64::to_bits),
@@ -231,7 +209,7 @@ fn f1s_table_breaks_ties_x_then_y_then_z_on_the_normals_bits() {
     .into_iter()
     .enumerate()
     {
-        let face = named(&entries, &format!("Face{}", i + 1));
+        let face = named(entries, &format!("Face{}", i + 1));
         assert_eq!(face.default_x, Some(want), "Face{}", i + 1);
         assert_eq!(
             face.default_x,
@@ -267,7 +245,7 @@ fn a_cone_at_its_limits_has_its_half_angle_and_an_apex_only_where_a_length_holds
     ];
     let model = forged_box(faces, None);
     let entries = entries(&model, &id("bbbbbbbb")).unwrap();
-    let face = |n: u32| named(&entries, &format!("Face{n}"));
+    let face = |n: u32| named(entries, &format!("Face{n}"));
     for n in [1, 2] {
         assert_eq!(face(n).half_angle, Some(Angle::from_ndeg(0)), "Face{n}");
         assert_eq!(face(n).apex, None, "Face{n}");
@@ -313,7 +291,7 @@ fn a_degenerated_edge_is_other_0_long_not_straight_its_ends_its_point() {
     let faces = (0..6).map(|_| plane([0.0, 0.0, 1.0])).collect();
     let model = forged_box(faces, Some(edges));
     let entries = entries(&model, &id("bbbbbbbb")).unwrap();
-    let pole = named(&entries, "Edge1");
+    let pole = named(entries, "Edge1");
     let at = Some([1, 2, 3].map(|mm| Length::from_nm(mm * 1_000_000)));
     assert_eq!(pole.r#type, ElementType::Other);
     assert_eq!(pole.length, Some(Length::from_nm(0)));
@@ -324,7 +302,7 @@ fn a_degenerated_edge_is_other_0_long_not_straight_its_ends_its_point() {
         (None, None, None)
     );
     // A line beside it is straight, with its middle.
-    let edge = named(&entries, "Edge2");
+    let edge = named(entries, "Edge2");
     assert_eq!(edge.straight, Some(true));
     assert_eq!(
         edge.midpoint,
@@ -348,7 +326,7 @@ fn lengths_round_once_to_the_nanometre_and_a_tiny_negative_is_zero() {
     faces.extend((0..5).map(|_| plane([0.0, 0.0, 1.0])));
     let model = forged_box(faces, None);
     let entries = entries(&model, &id("bbbbbbbb")).unwrap();
-    let face = named(&entries, "Face1");
+    let face = named(entries, "Face1");
     assert_eq!(face.centroid, Some([0, 2, 2].map(Length::from_nm)));
     // An area of 4e-7 mm² is 0 to 6 places.
     assert_eq!(face.area, Some(Measure::from_millionths(0)));
@@ -503,7 +481,7 @@ fn a_model_with_no_bodies_lists_and_queries_nothing() {
         (listed.entries.len(), listed.total, listed.next),
         (0, 0, None)
     );
-    let mut largest = of_kind(ElementKind::Face, 1);
+    let mut largest = Query::of(ElementKind::Face, 1);
     largest.order = Some(Order {
         by: MeasureName::Area,
         descending: true,
@@ -529,7 +507,7 @@ fn a_bad_limit_and_a_feature_that_makes_no_solid_are_both_refused() {
         [Some("feature".to_owned()), Some("limit".to_owned())],
         "{refused:?}"
     );
-    let mut q = of_kind(ElementKind::Face, 0);
+    let mut q = Query::of(ElementKind::Face, 0);
     q.feature = Some(id("k7f2qx3m"));
     let refused = query(&model, &q).unwrap_err();
     assert_eq!(
@@ -563,15 +541,19 @@ fn a_solid_not_described_is_refused_naming_it_and_its_neighbour_still_lists() {
     assert_eq!(refused.errors()[0].feature(), Some("bbbbbbbb"));
     assert_eq!(refused.errors()[0].parameter(), Some("feature"));
     assert_eq!(refused.errors()[0].message(), "no describing today");
+    // Of every body, the request's feature null: the body named as the error's feature,
+    // and no parameter, since the request named none.
     let all = list(&model, Revision::OPENED, None, None, 10).unwrap_err();
     assert_eq!(all.errors()[0].feature(), Some("bbbbbbbb"));
+    assert_eq!(all.errors()[0].parameter(), None);
+    assert_eq!(all.total(), 1);
     assert_eq!(
         list(&model, Revision::OPENED, Some(&id("aaaaaaaa")), None, 100)
             .unwrap()
             .total,
         26
     );
-    let mut faces = of_kind(ElementKind::Face, 10);
+    let mut faces = Query::of(ElementKind::Face, 10);
     faces.feature = Some(id("aaaaaaaa"));
     assert_eq!(query(&model, &faces).unwrap().matched, 6);
 }
@@ -600,7 +582,7 @@ fn facing_box() -> Arc<Model> {
 
 /// The faces' numbers (`FaceN`) facing `direction` within `within`.
 fn facing(model: &Model, direction: [f64; 3], within: Angle) -> Vec<u32> {
-    let mut q = of_kind(ElementKind::Face, 1000);
+    let mut q = Query::of(ElementKind::Face, 1000);
     q.facing = Some(Facing { direction, within });
     let got = query(model, &q).unwrap_or_else(|e| panic!("{direction:?}: {e:?}"));
     got.entries
@@ -677,7 +659,7 @@ fn a_direction_that_isnt_one_is_refused_naming_facing_direction() {
         [f64::NEG_INFINITY, 0.0, 0.0],
         [f64::NAN, f64::NAN, f64::NAN],
     ] {
-        let mut q = of_kind(ElementKind::Face, 10);
+        let mut q = Query::of(ElementKind::Face, 10);
         q.facing = Some(Facing {
             direction: d,
             within: deg(1),
@@ -691,7 +673,7 @@ fn a_direction_that_isnt_one_is_refused_naming_facing_direction() {
     }
     // A negative within, and one past 180, are refused naming facing.within.
     for within in [Angle::from_ndeg(-1), Angle::from_ndeg(180_000_000_001)] {
-        let mut q = of_kind(ElementKind::Face, 10);
+        let mut q = Query::of(ElementKind::Face, 10);
         q.facing = Some(Facing {
             direction: [0.0, 0.0, 1.0],
             within,
@@ -749,7 +731,7 @@ fn mm(n: i64) -> Option<Quantity> {
 
 /// Faces of radius `lo` to `hi` mm and, if given, area at most `area`, by area, `limit`.
 fn by_area(lo: i64, hi: i64, area: Option<i128>, descending: bool, limit: u32) -> Query {
-    let mut q = of_kind(ElementKind::Face, limit);
+    let mut q = Query::of(ElementKind::Face, limit);
     q.measures = vec![Range {
         measure: MeasureName::Radius,
         at_least: mm(lo),
@@ -833,7 +815,7 @@ fn an_order_by_a_measure_keeps_only_entries_that_have_it_and_descending_reverses
             .collect(),
         None,
     );
-    let mut q = of_kind(ElementKind::Face, 2);
+    let mut q = Query::of(ElementKind::Face, 2);
     q.order = Some(Order {
         by: MeasureName::HalfAngle,
         descending: true,
@@ -888,26 +870,52 @@ fn an_order_by_a_measure_keeps_only_entries_that_have_it_and_descending_reverses
 // `query`: stability and refusals
 
 #[test]
-fn every_reason_past_a_hundred_is_counted_though_a_hundred_are_listed() {
-    // 150 ranges of a face's length (which a face hasn't), and a limit of 0: 151 reasons,
-    // the first hundred listed and all 151 counted, as the gate counts its problems. Broke
-    // before break-it's fix: the total said 100.
+fn more_ranges_than_there_are_measures_are_refused_as_one_reason_naming_measures() {
+    // The reliability review's: a million ranges built a million errors and checked every
+    // range against every element. Past one a measure (7), the list is refused naming
+    // `measures`, none of its ranges looked at: 150 ranges of a face's length (which a face
+    // hasn't), and a limit of 0, are two reasons, not 151.
+    assert_eq!(MEASURES_AT_MOST, 7);
     let model = model_of(BOX);
-    let mut q = of_kind(ElementKind::Face, 0);
-    q.measures = (0..150)
-        .map(|_| Range {
-            measure: MeasureName::Length,
-            at_least: None,
-            at_most: None,
-        })
-        .collect();
+    let length = Range {
+        measure: MeasureName::Length,
+        at_least: None,
+        at_most: None,
+    };
+    let mut q = Query::of(ElementKind::Face, 0);
+    q.measures = vec![length.clone(); 150];
     let refused = query(&model, &q).unwrap_err();
-    assert_eq!(refused.errors().len(), 100);
     assert_eq!(
-        refused.errors()[99].parameter(),
-        Some("measures.99.measure")
+        codes(&refused),
+        [
+            (ErrorCode::InvalidInput, Some("measures".to_owned())),
+            (ErrorCode::InvalidInput, Some("limit".to_owned())),
+        ]
     );
-    assert_eq!(refused.total(), 151, "{} counted", refused.total());
+    assert_eq!(
+        refused.errors()[0].message(),
+        "measures holds at most 7 ranges, as many as there are measures, got 150"
+    );
+    // At the limit, each range is checked: seven of a face's length, seven reasons.
+    q.measures = vec![length; 7];
+    q.limit = 1;
+    let refused = query(&model, &q).unwrap_err();
+    assert_eq!(refused.total(), 7);
+    assert_eq!(refused.errors()[6].parameter(), Some("measures.6.measure"));
+    // Eight good ranges are refused too; seven run.
+    let area = Range {
+        measure: MeasureName::Area,
+        at_least: Some(Quantity::Area(Measure::from_millionths(0))),
+        at_most: None,
+    };
+    q.measures = vec![area.clone(); 8];
+    assert_eq!(
+        codes(&query(&model, &q).unwrap_err()),
+        [(ErrorCode::InvalidInput, Some("measures".to_owned()))]
+    );
+    q.measures = vec![area; 7];
+    q.limit = 10;
+    assert_eq!(query(&model, &q).unwrap().matched, 6);
 }
 
 #[test]
@@ -916,7 +924,7 @@ fn a_solid_kind_is_refused_with_the_other_reasons_that_dont_depend_on_the_kind()
     // the kind, and every other reason a kind doesn't change, given at once. Broke before
     // break-it's fix: the kind alone.
     let model = model_of(BOX);
-    let mut q = of_kind(ElementKind::Solid, 0);
+    let mut q = Query::of(ElementKind::Solid, 0);
     q.facing = Some(Facing {
         direction: [0.0, 0.0, 0.0],
         within: deg(181),
@@ -950,7 +958,7 @@ fn a_query_of_a_feature_that_failed_gives_its_failure() {
             .then(|| silico_core::Error::new(ErrorCode::InvalidInput, "no pins today"))
     });
     let model = published(&engine, checked(EXAMPLE));
-    let mut q = of_kind(ElementKind::Face, 10);
+    let mut q = Query::of(ElementKind::Face, 10);
     q.feature = Some(id("a91cw0de"));
     let refused = query(&model, &q).unwrap_err();
     assert_eq!(refused.errors()[0].message(), "no pins today");
@@ -962,66 +970,262 @@ fn a_query_of_a_feature_that_failed_gives_its_failure() {
     assert_eq!(query(&model, &q).unwrap().matched, 6);
 }
 
+#[test]
+fn a_type_keeps_only_its_own_and_facing_needs_a_plane() {
+    // The skeptic's: a cylinder among five planes. `type: cylinder` keeps it alone, `type:
+    // plane` the five; `facing` under `type: cylinder` is refused, naming facing, and under
+    // `type: plane` it runs.
+    let mut faces = vec![FaceDescription {
+        surface: Surface::Cylinder {
+            axis: Axis {
+                origin: [0.0; 3],
+                direction: [0.0, 0.0, 1.0],
+            },
+            radius: 2.5,
+        },
+        area: 1.0,
+        centroid: [0.0; 3],
+    }];
+    faces.extend((0..5).map(|_| plane([0.0, 0.0, 1.0])));
+    let model = forged_box(faces, None);
+    let mut q = Query::of(ElementKind::Face, 100);
+    q.r#type = Some(ElementType::Cylinder);
+    let got = query(&model, &q).unwrap();
+    let names: Vec<String> = got.entries.iter().map(|e| e.name.to_string()).collect();
+    assert_eq!(
+        (got.matched, names),
+        (1, vec!["bbbbbbbb.box.Face1".to_owned()])
+    );
+    q.r#type = Some(ElementType::Plane);
+    let planes = query(&model, &q).unwrap();
+    assert_eq!(planes.matched, 5);
+    assert!(
+        planes
+            .entries
+            .iter()
+            .all(|e| e.r#type == ElementType::Plane)
+    );
+    // A type no face here is: none, and no refusal.
+    q.r#type = Some(ElementType::Torus);
+    assert_eq!(query(&model, &q).unwrap().matched, 0);
+    q.r#type = Some(ElementType::Cylinder);
+    q.facing = Some(Facing {
+        direction: [0.0, 0.0, 1.0],
+        within: deg(10),
+    });
+    let refused = query(&model, &q).unwrap_err();
+    assert_eq!(
+        codes(&refused),
+        [(ErrorCode::InvalidInput, Some("facing".to_owned()))]
+    );
+    assert_eq!(
+        refused.errors()[0].message(),
+        "only planar faces face a direction, and type isn't plane"
+    );
+    q.r#type = Some(ElementType::Plane);
+    assert_eq!(query(&model, &q).unwrap().matched, 5);
+}
+
+#[test]
+fn a_range_of_a_measure_an_entry_hasnt_leaves_it_out() {
+    // The skeptic's: of a cylinder (radius 2.5) and five planes, a radius range, however
+    // wide or open, keeps the cylinder alone: a plane has no radius, so no range of one
+    // holds it.
+    let mut faces = vec![FaceDescription {
+        surface: Surface::Cylinder {
+            axis: Axis {
+                origin: [0.0; 3],
+                direction: [0.0, 0.0, 1.0],
+            },
+            radius: 2.5,
+        },
+        area: 1.0,
+        centroid: [0.0; 3],
+    }];
+    faces.extend((0..5).map(|_| plane([0.0, 0.0, 1.0])));
+    let model = forged_box(faces, None);
+    for (at_least, at_most, matched) in [
+        (None, None, 1),
+        (mm(0), None, 1),
+        (mm(2), mm(3), 1),
+        (mm(3), None, 0),
+    ] {
+        let mut q = Query::of(ElementKind::Face, 100);
+        q.measures = vec![Range {
+            measure: MeasureName::Radius,
+            at_least,
+            at_most,
+        }];
+        let got = query(&model, &q).unwrap();
+        assert_eq!(got.matched, matched, "{at_least:?} to {at_most:?}");
+        assert!(
+            got.entries
+                .iter()
+                .all(|e| e.r#type == ElementType::Cylinder)
+        );
+    }
+}
+
+#[test]
+fn an_edges_start_and_end_are_its_curves_own_in_order() {
+    // The skeptic's: each forged line n runs from (n, 0, 0) to (n, 1, 0); its entry's start
+    // and end are those, in that order, never swapped.
+    let model = forged_box(
+        (0..6).map(|_| plane([0.0, 0.0, 1.0])).collect(),
+        Some((1..=12).map(line).collect()),
+    );
+    let entries = entries(&model, &id("bbbbbbbb")).unwrap();
+    for n in 1..=12 {
+        let edge = named(entries, &format!("Edge{n}"));
+        let x = i64::from(n) * 1_000_000;
+        assert_eq!(edge.start, Some([x, 0, 0].map(Length::from_nm)), "Edge{n}");
+        assert_eq!(
+            edge.end,
+            Some([x, 1_000_000, 0].map(Length::from_nm)),
+            "Edge{n}"
+        );
+        assert_eq!(
+            edge.midpoint,
+            Some([x, 500_000, 0].map(Length::from_nm)),
+            "Edge{n}"
+        );
+    }
+}
+
+/// Two boxes, and their fusion `rrrrrrrr`.
+const FUSED: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "aaaaaaaa", "type": "box", "v": 1, "name": "First", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1}, {"id": "bbbbbbbb", "type": "box", "v": 1, "name": "Second", "position": [5, 0, 0], "length": 1, "width": 1, "height": 1}, {"id": "rrrrrrrr", "type": "fuse", "v": 1, "name": "Both", "base": "aaaaaaaa", "tool": "bbbbbbbb"}]}"#;
+
+#[test]
+fn an_element_nothing_names_is_unstable_and_stable_filters_on_it() {
+    // The skeptic's: a fake whose fuse gives the base box back, with a history that reports
+    // nothing of the base's Face1 or Edge1 (Edge1 bounding Face1 alone, and no vertex) and
+    // nothing of the tool. Face1's outer wire has an edge nothing names, so it's named by
+    // its number, `rrrrrrrr.fuse.Face1`, which is unstable (N3, as naming.rs's
+    // a_face_is_named_from_below_only_when_every_edge_of_its_outer_wire_is_named): its
+    // entry isn't stable, `stable: false` keeps it alone, and `stable: true` the rest.
+    let kept = |n: u32| ElementFate {
+        kept: Some(n),
+        ..ElementFate::default()
+    };
+    let none = |n: usize| vec![ElementFate::default(); n];
+    let face1 = |rest: Vec<Vec<u32>>| -> Vec<Vec<u32>> {
+        std::iter::once(vec![1, 2]).chain(rest).collect()
+    };
+    let history = History {
+        inputs: vec![
+            InputHistory {
+                faces: none(1).into_iter().chain((2..=6).map(kept)).collect(),
+                edges: none(1).into_iter().chain((2..=12).map(kept)).collect(),
+                vertices: (1..=8).map(kept).collect(),
+            },
+            InputHistory {
+                faces: none(6),
+                edges: none(12),
+                vertices: none(8),
+            },
+        ],
+        result: ElementCounts {
+            faces: 6,
+            edges: 12,
+            vertices: 8,
+            solids: 1,
+        },
+        ends: Default::default(),
+        topology: Topology {
+            face_edges: face1(vec![vec![]; 5]),
+            outer_edges: face1(vec![vec![]; 5]),
+            edge_vertices: vec![vec![]; 12],
+        },
+    };
+    history.validate(2).unwrap();
+    let engine = Recompute::new(FakeKernel::new(2).unwrap());
+    engine.kernel().answer_instead(move |op| match op {
+        Op::Boolean {
+            op: BooleanOp::Fuse,
+            base,
+            ..
+        } => Some(Reply::Built(BuiltData {
+            shape: base.clone(),
+            history: history.clone(),
+        })),
+        _ => None,
+    });
+    let model = published(&engine, checked(FUSED));
+    let fused = id("rrrrrrrr");
+    let all = entries(&model, &fused).unwrap();
+    let by_name = |name: &str| {
+        all.iter()
+            .find(|e| e.name.to_string() == name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "no {name}: {:?}",
+                    all.iter().map(|e| e.name.to_string()).collect::<Vec<_>>()
+                )
+            })
+    };
+    let face = by_name("rrrrrrrr.fuse.Face1");
+    assert!(!face.stable);
+    assert!(face.aliases.is_empty());
+    // The faces kept are their box's, stable.
+    for n in 2..=6 {
+        assert!(by_name(&format!("aaaaaaaa.box.Face{n}")).stable, "Face{n}");
+    }
+    let mut q = Query::of(ElementKind::Face, 100);
+    q.feature = Some(fused.clone());
+    q.stable = Some(false);
+    let unstable = query(&model, &q).unwrap();
+    assert_eq!(unstable.entries, std::slice::from_ref(face));
+    q.stable = Some(true);
+    let stable = query(&model, &q).unwrap();
+    assert_eq!(stable.matched, 5);
+    assert!(
+        stable
+            .entries
+            .iter()
+            .all(|e| e.stable && e.name != face.name)
+    );
+    q.stable = None;
+    assert_eq!(query(&model, &q).unwrap().matched, 6);
+    // Of its edges, those `stable: false` keeps are exactly those whose entry isn't stable,
+    // the edge nothing named among them.
+    let mut edges = Query::of(ElementKind::Edge, 100);
+    edges.feature = Some(fused);
+    edges.stable = Some(false);
+    let unstable = query(&model, &edges).unwrap().entries;
+    let want: Vec<Entry> = all
+        .iter()
+        .filter(|e| e.kind == ElementKind::Edge && !e.stable)
+        .cloned()
+        .collect();
+    assert_eq!(unstable, want);
+    assert!(!unstable.is_empty());
+}
+
 // ---------------------------------------------------------------------------------------
 // Sessions
 
 #[test]
 fn a_session_not_open_is_refused_naming_session_for_either_model() {
-    let dir = tempfile::tempdir().unwrap();
-    let secret = dir.path().join("secret");
-    let kernel = Arc::new(FakeKernel::new(2).unwrap());
-    let sketches = FakeSketches::new();
-    let sessions = Sessions::with_stand_ins(
-        Arc::clone(&kernel),
-        move |cache| Cache::with_secret(cache, &secret),
-        move || Ok(Box::new(sketches.clone()) as Box<dyn SketchSolver>),
-    );
-    let path = dir.path().join("box.silico");
-    std::fs::write(&path, BOX).unwrap();
-    let wait = std::time::Duration::from_secs(60);
-    let s = sessions
-        .open(&path, false)
-        .wait_timeout(wait)
-        .ok()
-        .unwrap()
-        .session
-        .unwrap()
-        .id;
+    let f = fixture();
+    let s = f.open("box.silico", BOX);
     // Read once, so a model is published, then closed.
-    let current = sessions
-        .elements(&s, ModelChoice::Current, None, None, 10)
-        .wait_timeout(wait)
-        .ok()
-        .unwrap();
+    let current = answer(
+        f.sessions
+            .elements(&s, ModelChoice::Current, None, None, 10),
+    );
     assert_eq!(current.result.unwrap().total, 26);
-    sessions.close(&s).wait_timeout(wait).ok().unwrap();
-    let seen = Arc::new(Mutex::new(Vec::new()));
+    answer(f.sessions.close(&s));
     for model in [ModelChoice::Current, ModelChoice::Published] {
-        let listed = sessions
-            .elements(&s, model, None, None, 10)
-            .wait_timeout(wait)
-            .ok()
-            .unwrap();
-        let queried = sessions
-            .query(&s, model, of_kind(ElementKind::Face, 1))
-            .wait_timeout(wait)
-            .ok()
-            .unwrap();
+        let listed = answer(f.sessions.elements(&s, model, None, None, 10));
+        let queried = answer(f.sessions.query(&s, model, Query::of(ElementKind::Face, 1)));
         for problems in [listed.result.unwrap_err(), queried.result.unwrap_err()] {
-            seen.lock().unwrap().push(codes(&problems));
+            assert_eq!(
+                codes(&problems),
+                [(ErrorCode::InvalidInput, Some("session".to_owned()))],
+                "{model:?}"
+            );
         }
     }
-    for got in seen.lock().unwrap().iter() {
-        assert_eq!(
-            got,
-            &[(ErrorCode::InvalidInput, Some("session".to_owned()))]
-        );
-    }
-}
-
-fn model_of(text: &str) -> Arc<Model> {
-    let engine = Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(FakeSketches::new());
-    published(&engine, checked(text))
 }
 
 /// The sketch test's rectangle (tests/sketch.rs), alone.

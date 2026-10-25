@@ -1,16 +1,17 @@
 //! M4.4's element reads, `elements` and `query` (docs/design/m4.1-command-api.md, section 2's
 //! *Element entries* and section 7): a model's solids' faces, edges, and vertices as entries,
 //! each named by its element map and measured by its rebuild's description
-//! ([`Model::description`]), so a read asks the kernel nothing. These are the commands'
-//! answers from a model; a session runs them on the model a read names (decision 33).
+//! ([`Model::description`]), so a read asks the kernel nothing. A model builds each solid's
+//! entries once, the first time they're read ([`Model::entries`]), and each call copies only
+//! what it returns. These are the commands' answers from a model; a session runs them on the
+//! model a read names (decision 33).
 
-use std::sync::Arc;
-
+use super::session::faulted;
 use super::{ModelChoice, Problems, Revision, Running, SessionId, Sessions};
-use crate::document::{Angle, FeatureId, Length, Measure, PROBLEMS_LISTED};
-use crate::elements::{Element, Geometry, elements};
-use crate::kernel::{Axis, Clients, EdgeCurve, ElementKind, Surface};
-use crate::naming::{ElementMap, Name};
+use crate::document::{Angle, FeatureId, Length, Measure};
+pub use crate::elements::{Alias, AxisToken, ElementType, Entry, EntryAxis};
+use crate::kernel::{Clients, ElementKind};
+use crate::naming::{Maker, Name};
 use crate::recompute::{FeatureOutcome, Model};
 use crate::{Error, ErrorCode};
 
@@ -55,217 +56,319 @@ impl<P: Clients + 'static> Sessions<P> {
 /// The most entries one `elements` or `query` call returns, and the most a `limit` asks for.
 pub const ENTRIES_AT_MOST: u32 = 1000;
 
-/// One face, edge, or vertex, as `elements` and `query` give it: every field always there,
-/// `None` where it doesn't apply (the design's *Element entries*, whose order the fields
-/// keep). Lengths are rounded to the nanometre, areas to 6 decimals, and angles to 9, once,
-/// at the end; directions are unit vectors, a zero written `0`, never `-0`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Entry {
-    /// Its own name: the first of its names in the element map.
-    pub name: Arc<Name>,
-    /// Its other names, in the map's order, each with its stability.
-    pub aliases: Vec<Alias>,
-    /// Whether `name` is stable (`ElementMap::is_unstable`).
-    pub stable: bool,
-    /// The feature whose solid it's of.
-    pub feature: FeatureId,
-    pub kind: ElementKind,
-    pub r#type: ElementType,
-    /// A face's area.
-    pub area: Option<Measure>,
-    /// An edge's length.
-    pub length: Option<Length>,
-    /// A vertex's point.
-    pub position: Option<[Length; 3]>,
-    /// A planar face's outward unit normal.
-    pub normal: Option<[f64; 3]>,
-    /// A face's centre of area.
-    pub centroid: Option<[Length; 3]>,
-    /// An edge's ends, in its curve's own order.
-    pub start: Option<[Length; 3]>,
-    pub end: Option<[Length; 3]>,
-    /// A straight edge's middle.
-    pub midpoint: Option<[Length; 3]>,
-    /// Whether an edge is straight: a line, or a Bézier or B-spline of two poles.
-    pub straight: Option<bool>,
-    /// A cylinder's, cone's, sphere's, torus's, circle's, or arc's axis.
-    pub axis: Option<EntryAxis>,
-    /// A cylinder's, sphere's, circle's, or arc's radius.
-    pub radius: Option<Length>,
-    /// Twice the radius, for a circle or arc edge and a cylinder face.
-    pub diameter: Option<Length>,
-    /// A torus's radii.
-    pub major_radius: Option<Length>,
-    pub minor_radius: Option<Length>,
-    /// A cone's half-angle in degrees, keeping its sign, and its apex (`None` where it lies
-    /// further than a length holds: a cone all but a cylinder).
-    pub half_angle: Option<Angle>,
-    pub apex: Option<[Length; 3]>,
-    /// For a planar face, the axis a sketch on it would take as its x by default (F1).
-    pub default_x: Option<AxisToken>,
+/// The most ranges a `query`'s `measures` holds: as many as there are measures, so a
+/// request can't make a call check a million ranges against every element, or refuse it
+/// for a million reasons.
+pub const MEASURES_AT_MOST: usize = MeasureName::ALL.len();
+
+/// Each of the feature `id`'s solid's elements as an entry, in the element list's order:
+/// faces, then edges, then vertices, each by name, byte by byte. Refused, naming `feature`,
+/// for a feature the document doesn't have, a sketch, or one that didn't build or couldn't
+/// be described (its failure, as `check` reports it).
+pub fn entries<'m>(model: &'m Model, id: &FeatureId) -> Result<&'m [Entry], Problems> {
+    solid(model, id, true)
 }
 
-/// One of an element's other names, and whether it's stable.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Alias {
-    pub name: Arc<Name>,
-    pub stable: bool,
-}
-
-/// An axis: a point on it, and its unit direction, as its surface or curve has it.
-#[derive(Debug, Clone, PartialEq)]
-pub struct EntryAxis {
-    pub point: [Length; 3],
-    pub direction: [f64; 3],
-}
-
-/// An element's geometry, as OCCT names it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ElementType {
-    Plane,
-    Cylinder,
-    Cone,
-    Sphere,
-    Torus,
-    Bezier,
-    Bspline,
-    Revolution,
-    Extrusion,
-    Offset,
-    Other,
-    Line,
-    Circle,
-    Ellipse,
-    Hyperbola,
-    Parabola,
-    Point,
-}
-
-impl ElementType {
-    /// Every type, faces' then edges' then a vertex's.
-    pub const ALL: [ElementType; 17] = [
-        ElementType::Plane,
-        ElementType::Cylinder,
-        ElementType::Cone,
-        ElementType::Sphere,
-        ElementType::Torus,
-        ElementType::Bezier,
-        ElementType::Bspline,
-        ElementType::Revolution,
-        ElementType::Extrusion,
-        ElementType::Offset,
-        ElementType::Other,
-        ElementType::Line,
-        ElementType::Circle,
-        ElementType::Ellipse,
-        ElementType::Hyperbola,
-        ElementType::Parabola,
-        ElementType::Point,
-    ];
-
-    /// Its word in an entry.
-    pub fn word(self) -> &'static str {
-        match self {
-            ElementType::Plane => "plane",
-            ElementType::Cylinder => "cylinder",
-            ElementType::Cone => "cone",
-            ElementType::Sphere => "sphere",
-            ElementType::Torus => "torus",
-            ElementType::Bezier => "bezier",
-            ElementType::Bspline => "bspline",
-            ElementType::Revolution => "revolution",
-            ElementType::Extrusion => "extrusion",
-            ElementType::Offset => "offset",
-            ElementType::Other => "other",
-            ElementType::Line => "line",
-            ElementType::Circle => "circle",
-            ElementType::Ellipse => "ellipse",
-            ElementType::Hyperbola => "hyperbola",
-            ElementType::Parabola => "parabola",
-            ElementType::Point => "point",
-        }
-    }
-
-    /// Whether an element of `kind` can be of this type.
-    pub fn is_of(self, kind: ElementKind) -> bool {
-        match kind {
-            ElementKind::Face => matches!(
-                self,
-                ElementType::Plane
-                    | ElementType::Cylinder
-                    | ElementType::Cone
-                    | ElementType::Sphere
-                    | ElementType::Torus
-                    | ElementType::Bezier
-                    | ElementType::Bspline
-                    | ElementType::Revolution
-                    | ElementType::Extrusion
-                    | ElementType::Offset
-                    | ElementType::Other
-            ),
-            ElementKind::Edge => matches!(
-                self,
-                ElementType::Line
-                    | ElementType::Circle
-                    | ElementType::Ellipse
-                    | ElementType::Hyperbola
-                    | ElementType::Parabola
-                    | ElementType::Bezier
-                    | ElementType::Bspline
-                    | ElementType::Offset
-                    | ElementType::Other
-            ),
-            ElementKind::Vertex => self == ElementType::Point,
-            ElementKind::Solid => false,
-        }
-    }
-}
-
-/// A global axis, as a sketch on a face names its x (F1): `+x`, `-x`, `+y`, `-y`, `+z`, `-z`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AxisToken {
-    PlusX,
-    MinusX,
-    PlusY,
-    MinusY,
-    PlusZ,
-    MinusZ,
-}
-
-impl AxisToken {
-    pub fn word(self) -> &'static str {
-        match self {
-            AxisToken::PlusX => "+x",
-            AxisToken::MinusX => "-x",
-            AxisToken::PlusY => "+y",
-            AxisToken::MinusY => "-y",
-            AxisToken::PlusZ => "+z",
-            AxisToken::MinusZ => "-z",
-        }
-    }
-
-    /// The default x of a sketch on a planar face of outward normal `n` (F1: FreeCAD's legacy
-    /// nearest-axis table, in global axes, docs/ports/attacher.md): the axis `n` is nearest,
-    /// ties going to x, then y, then z; nearest x gives `+y` if `n` points along +x, else
-    /// `-y`; nearest y gives `-x` if it points along +y, else `+x`; nearest z gives `+x`.
-    pub fn default_x(n: [f64; 3]) -> Self {
-        let [x, y, z] = n.map(f64::abs);
-        if x >= y && x >= z {
-            if n[0] > 0.0 {
-                AxisToken::PlusY
-            } else {
-                AxisToken::MinusY
-            }
-        } else if y >= z {
-            if n[1] > 0.0 {
-                AxisToken::MinusX
-            } else {
-                AxisToken::PlusX
-            }
+/// The feature `id`'s solid's entries, or why they can't be had: naming the request's
+/// `feature` if `asked` (the request named it), and otherwise only the feature (a body of
+/// a listing of every body, its `feature` null).
+fn solid<'m>(model: &'m Model, id: &FeatureId, asked: bool) -> Result<&'m [Entry], Problems> {
+    let named = |error: Error| {
+        if asked {
+            error.with_parameter("feature")
         } else {
-            AxisToken::PlusX
+            error
+        }
+    };
+    let built = match model.outcome(id) {
+        None => {
+            return Err(named(
+                Error::new(
+                    ErrorCode::InvalidInput,
+                    format!("the document has no feature {id}"),
+                )
+                .with_suggestion("name a feature of the document, by its ID"),
+            )
+            .into());
+        }
+        Some(FeatureOutcome::Sketch(_)) => {
+            return Err(named(
+                Error::new(
+                    ErrorCode::InvalidInput,
+                    format!("{id} is a sketch, which makes no solid"),
+                )
+                .with_feature(id.as_str())
+                .with_suggestion("name a feature that makes a solid"),
+            )
+            .into());
+        }
+        Some(FeatureOutcome::Failed(error)) => return Err(error.clone().into()),
+        Some(FeatureOutcome::Broken { errors, total }) => {
+            return Err(Problems::with_unlisted(
+                errors.clone(),
+                total.saturating_sub(errors.len() as u64),
+            ));
+        }
+        Some(FeatureOutcome::Blocked { on }) => {
+            return Err(named(
+                Error::new(
+                    ErrorCode::InvalidInput,
+                    format!("{id} didn't build, since it uses {on}, which failed"),
+                )
+                .with_feature(id.as_str())
+                .with_suggestion(format!("mend {on} first: `check` says why it failed")),
+            )
+            .into());
+        }
+        Some(FeatureOutcome::Built { built, .. }) => built,
+    };
+    match model.entries(id) {
+        Some(Ok(entries)) => Ok(entries),
+        Some(Err(fault)) => Err(fault.clone().into()),
+        // Not described. Why: its description refused or failed, or, before that, its
+        // summary.
+        None => Err(named(
+            match built.why_undescribed().or(built.measure_refused()) {
+                Some(refused) => refused.clone(),
+                None => Error::new(
+                    ErrorCode::KernelFailed,
+                    format!("{id}'s solid couldn't be described, so its elements aren't known"),
+                )
+                .with_suggestion("check the document again: its rebuild describes it again"),
+            }
+            .with_feature(id.as_str()),
+        )
+        .into()),
+    }
+}
+
+/// The entries a call reads: the feature `feature`'s solid's, or, for none, each body's
+/// (the solids no later feature consumed), in timeline order; every reason one can't be
+/// read added to `refused`.
+fn sources<'m>(
+    model: &'m Model,
+    feature: Option<&FeatureId>,
+    refused: &mut Problems,
+) -> Vec<&'m [Entry]> {
+    let mut sources = Vec::new();
+    let read =
+        |id: &FeatureId, asked: bool, sources: &mut Vec<&'m [Entry]>, refused: &mut Problems| {
+            match solid(model, id, asked) {
+                Ok(entries) => sources.push(entries),
+                Err(problems) => refused.absorb(problems),
+            }
+        };
+    match feature {
+        Some(id) => read(id, true, &mut sources, refused),
+        None => {
+            for id in model.bodies() {
+                read(id, false, &mut sources, refused);
+            }
         }
     }
+    sources
+}
+
+/// Where a listing of elements goes on from: the revision it's of, and the last entry
+/// listed, by its solid's feature and its own name.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Cursor {
+    pub revision: Revision,
+    pub feature: FeatureId,
+    pub name: String,
+}
+
+/// A page of `elements`: its entries, how many there are in all, and where the next page
+/// starts (`None` after the last, and on a model that holds a kernel fault).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Listed {
+    pub entries: Vec<Entry>,
+    pub total: u64,
+    pub next: Option<Cursor>,
+}
+
+/// `elements` on `model`, of `revision`: `limit` entries of the feature `feature`'s solid,
+/// or, for none, of every body (the solids no later feature consumed, in timeline order),
+/// after `after`'s entry. Every reason it's refused is given, in the request's order: the
+/// feature's (or each body's), the cursor's, then the limit's.
+///
+/// A model that holds a kernel fault (a worker that crashed or hung) may not be the
+/// revision's next read: a session rebuilds it (`Session::model`), and a feature that
+/// failed for the fault consumes nothing, so its inputs are bodies until it builds. So its
+/// listing gives no cursor, and a cursor on it is a `conflict`: pages of two models of one
+/// revision are never joined (until a revision's fault is its outcome, decision 32).
+pub fn list(
+    model: &Model,
+    revision: Revision,
+    feature: Option<&FeatureId>,
+    after: Option<&Cursor>,
+    limit: u32,
+) -> Result<Listed, Problems> {
+    let mut refused = Problems::none();
+    let sources = sources(model, feature, &mut refused);
+    let resume = after.and_then(|cursor| {
+        cursor_name(model, revision, cursor, &mut refused).map(|name| (cursor, name))
+    });
+    if let Some(error) = limit_refused(limit) {
+        refused.push(error);
+    }
+    refused.into_result()?;
+    let total: usize = sources.iter().map(|entries| entries.len()).sum();
+    let (body, from) = match resume {
+        None => (0, 0),
+        Some((cursor, name)) => match found(&sources, &cursor.feature, &name) {
+            Some((body, at)) => (body, at + 1),
+            None => {
+                return Err(Error::new(
+                    ErrorCode::InvalidInput,
+                    format!(
+                        "the cursor names {} of {}, which this listing doesn't hold",
+                        cursor.name, cursor.feature
+                    ),
+                )
+                .with_parameter("after")
+                .with_suggestion(
+                    "start again with after set to null, or pass the last call's next as it was",
+                )
+                .into());
+            }
+        },
+    };
+    let limit = limit as usize;
+    let mut entries: Vec<Entry> = Vec::with_capacity(limit.min(total));
+    let mut skip = from;
+    for source in sources.get(body..).unwrap_or_default() {
+        let rest = source.get(skip..).unwrap_or_default();
+        skip = 0;
+        let take = limit.saturating_sub(entries.len()).min(rest.len());
+        entries.extend_from_slice(rest.get(..take).unwrap_or_default());
+        if entries.len() == limit {
+            break;
+        }
+    }
+    let before: usize = sources.iter().take(body).map(|entries| entries.len()).sum();
+    let end = before + from + entries.len();
+    // Whether it's faulted is asked only of a listing with more to come: it's a check.
+    let next = (end < total && !faulted(model))
+        .then(|| entries.last())
+        .flatten()
+        .map(|last| Cursor {
+            revision,
+            feature: last.feature.clone(),
+            name: last.name.to_string(),
+        });
+    Ok(Listed {
+        entries,
+        total: total as u64,
+        next,
+    })
+}
+
+/// The name a cursor goes on from, read once, if the cursor is of the model read: otherwise
+/// why it isn't, added to `refused`, naming `after`.
+fn cursor_name(
+    model: &Model,
+    revision: Revision,
+    cursor: &Cursor,
+    refused: &mut Problems,
+) -> Option<Name> {
+    let conflict = |message: String, suggestion: &str| {
+        Error::new(ErrorCode::Conflict, message)
+            .with_parameter("after")
+            .with_suggestion(suggestion)
+    };
+    if cursor.revision != revision {
+        refused.push(conflict(
+            format!(
+                "the cursor is of revision {}, and the model read is of revision {}",
+                cursor.revision.number(),
+                revision.number()
+            ),
+            "start again with after set to null",
+        ));
+        return None;
+    }
+    if faulted(model) {
+        refused.push(conflict(
+            format!(
+                "the model read of revision {} holds a kernel fault, so it may not be the \
+                 model the cursor's pages were listed from",
+                revision.number()
+            ),
+            "check again, then list from the start",
+        ));
+        return None;
+    }
+    let makers = |id: &FeatureId| {
+        model
+            .document()
+            .features
+            .iter()
+            .find(|f| f.id == *id)
+            .filter(|f| f.operation.makes_solid())
+            .map(|f| Maker::of(&f.operation))
+    };
+    match Name::parse(&cursor.name, &makers) {
+        Ok(name) => Some(name),
+        Err(error) => {
+            refused.push(
+                Error::new(
+                    ErrorCode::InvalidInput,
+                    format!(
+                        "the cursor's name, {}, isn't an element's name: {error}",
+                        super::quoted(&cursor.name)
+                    ),
+                )
+                .with_parameter("after")
+                .with_suggestion(
+                    "start again with after set to null, or pass the last call's next as it was",
+                ),
+            );
+            None
+        }
+    }
+}
+
+/// Where the entry named `name` of the feature `feature`'s solid is among `sources`: which
+/// of them, and where in it. Found by halves, on the order a solid's entries are in (by
+/// kind, then by name, byte by byte), so only the names it passes on the way are written
+/// out.
+fn found(sources: &[&[Entry]], feature: &FeatureId, name: &Name) -> Option<(usize, usize)> {
+    let key = (rank(name.kind()), name.to_string());
+    sources.iter().enumerate().find_map(|(i, entries)| {
+        // A solid's entries are all its feature's.
+        if entries.first()?.feature != *feature {
+            return None;
+        }
+        let at = entries
+            .binary_search_by(|e| (rank(e.kind), e.name.to_string()).cmp(&key))
+            .ok()?;
+        Some((i, at))
+    })
+}
+
+/// A kind's place in the element list's order: faces, edges, vertices.
+fn rank(kind: ElementKind) -> u8 {
+    match kind {
+        ElementKind::Face => 0,
+        ElementKind::Edge => 1,
+        ElementKind::Vertex => 2,
+        ElementKind::Solid => 3,
+    }
+}
+
+/// The refusal of a `limit` past what a call returns, if it is.
+fn limit_refused(limit: u32) -> Option<Error> {
+    (limit == 0 || limit > ENTRIES_AT_MOST).then(|| {
+        Error::new(
+            ErrorCode::InvalidInput,
+            format!("limit must be from 1 to {ENTRIES_AT_MOST}, got {limit}"),
+        )
+        .with_parameter("limit")
+        .with_suggestion(format!(
+            "list in pages of at most {ENTRIES_AT_MOST}, with after set to the last call's next"
+        ))
+    })
 }
 
 /// A measure an entry has, which `query` filters and orders by.
@@ -380,405 +483,6 @@ impl Quantity {
     }
 }
 
-/// Each of the feature `id`'s solid's elements as entries, in the element list's order:
-/// faces, then edges, then vertices, each by name, byte by byte. Refused, naming `feature`,
-/// for a feature the document doesn't have, a sketch, or one that didn't build or couldn't
-/// be measured (its failure, as `check` reports it).
-pub fn entries(model: &Model, id: &FeatureId) -> Result<Vec<Entry>, Problems> {
-    let built = match model.outcome(id) {
-        None => {
-            return Err(Error::new(
-                ErrorCode::InvalidInput,
-                format!("the document has no feature {id}"),
-            )
-            .with_parameter("feature")
-            .with_suggestion("name a feature of the document, by its ID")
-            .into());
-        }
-        Some(FeatureOutcome::Sketch(_)) => {
-            return Err(Error::new(
-                ErrorCode::InvalidInput,
-                format!("{id} is a sketch, which makes no solid"),
-            )
-            .with_feature(id.as_str())
-            .with_parameter("feature")
-            .with_suggestion("name a feature that makes a solid")
-            .into());
-        }
-        Some(FeatureOutcome::Failed(error)) => return Err(error.clone().into()),
-        Some(FeatureOutcome::Broken { errors, total }) => {
-            return Err(Problems::with_unlisted(
-                errors.clone(),
-                total.saturating_sub(errors.len() as u64),
-            ));
-        }
-        Some(FeatureOutcome::Blocked { on }) => {
-            return Err(Error::new(
-                ErrorCode::InvalidInput,
-                format!("{id} didn't build, since it uses {on}, which failed"),
-            )
-            .with_feature(id.as_str())
-            .with_parameter("feature")
-            .with_suggestion(format!("mend {on} first: `check` says why it failed"))
-            .into());
-        }
-        Some(FeatureOutcome::Built { built, .. }) => built,
-    };
-    let Some(description) = built.description() else {
-        // Why: its description refused or failed, or, before that, its summary.
-        return Err(match built.why_undescribed().or(built.measure_refused()) {
-            Some(refused) => refused.clone(),
-            None => Error::new(
-                ErrorCode::KernelFailed,
-                format!("{id}'s solid couldn't be described, so its elements aren't known"),
-            )
-            .with_suggestion("check the document again: its rebuild describes it again"),
-        }
-        .with_feature(id.as_str())
-        .with_parameter("feature")
-        .into());
-    };
-    let Some(map) = model.element_map(id) else {
-        return Err(fault(id, "its solid built, but its elements couldn't be named").into());
-    };
-    elements(map, description.clone())?
-        .into_iter()
-        .map(|element| entry(map, id, element))
-        .collect::<Result<_, _>>()
-        .map_err(Problems::from)
-}
-
-/// An error in Silico itself, of the feature `id`'s solid: a fault, not the document's.
-fn fault(id: &FeatureId, cause: &str) -> Error {
-    Error::new(
-        ErrorCode::Internal,
-        format!("{id}'s elements couldn't be listed"),
-    )
-    .with_feature(id.as_str())
-    .with_cause(cause)
-    .with_suggestion(crate::worker::SILICO_BUG)
-}
-
-/// `element`, of the feature `id`'s solid, whose names `map` holds, as an entry.
-fn entry(map: &ElementMap, id: &FeatureId, element: Element) -> Result<Entry, Error> {
-    let length =
-        |mm: f64| Length::rounded(mm).ok_or_else(|| fault(id, "a length past what a length holds"));
-    let point = |p: [f64; 3]| -> Result<[Length; 3], Error> {
-        Ok([length(p[0])?, length(p[1])?, length(p[2])?])
-    };
-    let axis = |a: &Axis| -> Result<EntryAxis, Error> {
-        Ok(EntryAxis {
-            point: point(a.origin)?,
-            direction: direction(a.direction),
-        })
-    };
-    let mut entry = Entry {
-        stable: !map.is_unstable(&element.name),
-        aliases: element
-            .aliases
-            .iter()
-            .map(|name| Alias {
-                stable: !map.is_unstable(name),
-                name: Arc::clone(name),
-            })
-            .collect(),
-        name: element.name,
-        feature: id.clone(),
-        kind: ElementKind::Vertex,
-        r#type: ElementType::Point,
-        area: None,
-        length: None,
-        position: None,
-        normal: None,
-        centroid: None,
-        start: None,
-        end: None,
-        midpoint: None,
-        straight: None,
-        axis: None,
-        radius: None,
-        diameter: None,
-        major_radius: None,
-        minor_radius: None,
-        half_angle: None,
-        apex: None,
-        default_x: None,
-    };
-    match element.geometry {
-        Geometry::Face(face) => {
-            entry.kind = ElementKind::Face;
-            entry.area = Some(
-                Measure::rounded(face.area)
-                    .ok_or_else(|| fault(id, "an area past what an area holds"))?,
-            );
-            entry.centroid = Some(point(face.centroid)?);
-            entry.r#type = match face.surface {
-                Surface::Plane { normal } => {
-                    entry.normal = Some(direction(normal));
-                    entry.default_x = Some(AxisToken::default_x(normal));
-                    ElementType::Plane
-                }
-                Surface::Cylinder { axis: a, radius } => {
-                    entry.axis = Some(axis(&a)?);
-                    let r = length(radius)?;
-                    entry.radius = Some(r);
-                    entry.diameter = Some(twice(id, r)?);
-                    ElementType::Cylinder
-                }
-                Surface::Cone {
-                    axis: a,
-                    radius,
-                    half_angle,
-                } => {
-                    entry.axis = Some(axis(&a)?);
-                    entry.half_angle = Some(
-                        Angle::rounded(half_angle.to_degrees())
-                            .ok_or_else(|| fault(id, "a cone's half-angle isn't an angle"))?,
-                    );
-                    entry.apex = apex(&a, radius, half_angle);
-                    ElementType::Cone
-                }
-                Surface::Sphere { axis: a, radius } => {
-                    entry.axis = Some(axis(&a)?);
-                    entry.radius = Some(length(radius)?);
-                    ElementType::Sphere
-                }
-                Surface::Torus {
-                    axis: a,
-                    major_radius,
-                    minor_radius,
-                } => {
-                    entry.axis = Some(axis(&a)?);
-                    entry.major_radius = Some(length(major_radius)?);
-                    entry.minor_radius = Some(length(minor_radius)?);
-                    ElementType::Torus
-                }
-                Surface::Bezier => ElementType::Bezier,
-                Surface::Bspline => ElementType::Bspline,
-                Surface::Revolution => ElementType::Revolution,
-                Surface::Extrusion => ElementType::Extrusion,
-                Surface::Offset => ElementType::Offset,
-                Surface::Other => ElementType::Other,
-            };
-        }
-        Geometry::Edge(edge) => {
-            entry.kind = ElementKind::Edge;
-            entry.length = Some(length(edge.length)?);
-            entry.start = Some(point(edge.start)?);
-            entry.end = Some(point(edge.end)?);
-            let straight = edge.curve.is_straight();
-            entry.straight = Some(straight);
-            if straight {
-                entry.midpoint = Some(point(edge.middle)?);
-            }
-            entry.r#type = match edge.curve {
-                EdgeCurve::Line => ElementType::Line,
-                EdgeCurve::Circle { axis: a, radius } => {
-                    entry.axis = Some(axis(&a)?);
-                    let r = length(radius)?;
-                    entry.radius = Some(r);
-                    entry.diameter = Some(twice(id, r)?);
-                    ElementType::Circle
-                }
-                EdgeCurve::Ellipse { .. } => ElementType::Ellipse,
-                EdgeCurve::Hyperbola => ElementType::Hyperbola,
-                EdgeCurve::Parabola => ElementType::Parabola,
-                EdgeCurve::Bezier { .. } => ElementType::Bezier,
-                EdgeCurve::Bspline { .. } => ElementType::Bspline,
-                EdgeCurve::Offset => ElementType::Offset,
-                // A sphere's pole, a cone's apex: no curve to speak of.
-                EdgeCurve::Other | EdgeCurve::Degenerated => ElementType::Other,
-            };
-        }
-        Geometry::Vertex(at) => {
-            entry.position = Some(point(at)?);
-        }
-    }
-    Ok(entry)
-}
-
-/// A direction as an entry writes it: a zero `0`, never `-0`.
-fn direction(d: [f64; 3]) -> [f64; 3] {
-    d.map(|c| if c == 0.0 { 0.0 } else { c })
-}
-
-/// Twice `radius`, exactly: a diameter as written is twice its radius as written.
-fn twice(id: &FeatureId, radius: Length) -> Result<Length, Error> {
-    radius
-        .nm()
-        .checked_mul(2)
-        .map(Length::from_nm)
-        .ok_or_else(|| fault(id, "a diameter past what a length holds"))
-}
-
-/// A cone's apex: where its radius would be 0, `radius` at `axis.origin` and shrinking at
-/// `half_angle` (radians, signed) along `axis.direction`. `None` where it lies past what a
-/// length holds (a cone all but a cylinder), or the cone has no apex (a half-angle of 0).
-fn apex(axis: &Axis, radius: f64, half_angle: f64) -> Option<[Length; 3]> {
-    let along = radius / libm::tan(half_angle);
-    if !along.is_finite() {
-        return None;
-    }
-    let at = |i: usize| Length::rounded(axis.origin[i] - axis.direction[i] * along);
-    Some([at(0)?, at(1)?, at(2)?])
-}
-
-/// Where a listing of elements goes on from: the revision it's of, and the last entry
-/// listed, by its solid's feature and its own name.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Cursor {
-    pub revision: Revision,
-    pub feature: FeatureId,
-    pub name: String,
-}
-
-/// A page of `elements`: its entries, how many there are in all, and where the next page
-/// starts (`None` after the last).
-#[derive(Debug, Clone, PartialEq)]
-pub struct Listed {
-    pub entries: Vec<Entry>,
-    pub total: u64,
-    pub next: Option<Cursor>,
-}
-
-/// `elements` on `model`, of `revision`: `limit` entries of the feature `feature`'s solid,
-/// or, for none, of every body (the solids no later feature consumed, in timeline order),
-/// after `after`'s entry. Every reason it's refused is given: the feature's, then the
-/// limit's and the cursor's.
-pub fn list(
-    model: &Model,
-    revision: Revision,
-    feature: Option<&FeatureId>,
-    after: Option<&Cursor>,
-    limit: u32,
-) -> Result<Listed, Problems> {
-    let mut refused = Refused::default();
-    let of_feature = feature.and_then(|id| refused.of(entries(model, id)));
-    if let Some(error) = limit_refused(limit) {
-        refused.errors.push(error);
-    }
-    if let Some(cursor) = after
-        && cursor.revision != revision
-    {
-        refused.errors.push(
-            Error::new(
-                ErrorCode::Conflict,
-                format!(
-                    "the cursor is of revision {}, and the model read is of revision {}",
-                    cursor.revision.number(),
-                    revision.number()
-                ),
-            )
-            .with_parameter("after")
-            .with_suggestion("start again with after set to null"),
-        );
-    }
-    refused.into_result()?;
-    let mut all = match of_feature {
-        Some(entries) => entries,
-        None => bodies(model)?,
-    };
-    let from = match after {
-        None => 0,
-        Some(cursor) => {
-            match all
-                .iter()
-                .position(|e| e.feature == cursor.feature && e.name.to_string() == cursor.name)
-            {
-                Some(at) => at + 1,
-                None => {
-                    return Err(Error::new(
-                        ErrorCode::InvalidInput,
-                        format!(
-                            "the cursor names {} of {}, which this listing doesn't hold",
-                            cursor.name, cursor.feature
-                        ),
-                    )
-                    .with_parameter("after")
-                    .with_suggestion("start again with after set to null, or pass the last call's next as it was")
-                    .into());
-                }
-            }
-        }
-    };
-    let total = all.len() as u64;
-    let to = from.saturating_add(limit as usize).min(all.len());
-    let entries: Vec<Entry> = all.drain(from..to).collect();
-    let next = (to < total as usize)
-        .then(|| entries.last())
-        .flatten()
-        .map(|last| Cursor {
-            revision,
-            feature: last.feature.clone(),
-            name: last.name.to_string(),
-        });
-    Ok(Listed {
-        entries,
-        total,
-        next,
-    })
-}
-
-/// The refusal of a `limit` past what a call returns, if it is.
-fn limit_refused(limit: u32) -> Option<Error> {
-    (limit == 0 || limit > ENTRIES_AT_MOST).then(|| {
-        Error::new(
-            ErrorCode::InvalidInput,
-            format!("limit must be from 1 to {ENTRIES_AT_MOST}, got {limit}"),
-        )
-        .with_parameter("limit")
-        .with_suggestion(format!(
-            "list in pages of at most {ENTRIES_AT_MOST}, with after set to the last call's next"
-        ))
-    })
-}
-
-/// Every body's entries, in timeline order.
-fn bodies(model: &Model) -> Result<Vec<Entry>, Problems> {
-    let mut all = Vec::new();
-    for id in model.bodies() {
-        all.extend(entries(model, id)?);
-    }
-    Ok(all)
-}
-
-/// Every reason a call is refused, in the order found, and how many more there are than
-/// the feature's refusal lists (its broken references past the first hundred).
-#[derive(Default)]
-struct Refused {
-    errors: Vec<Error>,
-    unlisted: u64,
-}
-
-impl Refused {
-    /// `found`'s entries, or none, its refusal kept.
-    fn of(&mut self, found: Result<Vec<Entry>, Problems>) -> Option<Vec<Entry>> {
-        match found {
-            Ok(entries) => Some(entries),
-            Err(problems) => {
-                self.unlisted += problems.total.saturating_sub(problems.errors.len() as u64);
-                self.errors.extend(problems.errors);
-                None
-            }
-        }
-    }
-
-    /// Nothing, if nothing was refused; otherwise every reason, the first
-    /// [`PROBLEMS_LISTED`] listed and all counted.
-    fn into_result(self) -> Result<(), Problems> {
-        let Refused {
-            mut errors,
-            unlisted,
-        } = self;
-        if errors.is_empty() {
-            return Ok(());
-        }
-        let unlisted = unlisted + errors.len().saturating_sub(PROBLEMS_LISTED) as u64;
-        errors.truncate(PROBLEMS_LISTED);
-        Err(Problems::with_unlisted(errors, unlisted))
-    }
-}
-
 /// `query`'s filter: a kind, and optionally a type, stability, a direction a planar face
 /// faces, ranges of measures, and an order (plan decision 4).
 #[derive(Debug, Clone, PartialEq)]
@@ -793,6 +497,22 @@ pub struct Query {
     pub measures: Vec<Range>,
     pub order: Option<Order>,
     pub limit: u32,
+}
+
+impl Query {
+    /// A query of every body's elements of `kind`, nothing else asked, `limit` at most.
+    pub fn of(kind: ElementKind, limit: u32) -> Self {
+        Query {
+            feature: None,
+            kind,
+            r#type: None,
+            stable: None,
+            facing: None,
+            measures: Vec::new(),
+            order: None,
+            limit,
+        }
+    }
 }
 
 /// Faces facing `direction`: whose outward normal is at most `within` from it.
@@ -840,33 +560,29 @@ pub struct Tied {
 /// `limit`, if it ends within [`ENTRIES_AT_MOST`] entries, and otherwise none of it is
 /// (decision 4). Every reason the query is refused is given, in the order of its fields.
 pub fn query(model: &Model, query: &Query) -> Result<Queried, Problems> {
-    let mut refused = Refused::default();
-    let of_feature = query
-        .feature
-        .as_ref()
-        .and_then(|id| refused.of(entries(model, id)));
-    refused.errors.extend(query_refused(query));
+    let mut refused = Problems::none();
+    let sources = sources(model, query.feature.as_ref(), &mut refused);
+    query_refused(query, &mut refused);
     refused.into_result()?;
-    let all = match of_feature {
-        Some(entries) => entries,
-        None => bodies(model)?,
-    };
-    let mut matched: Vec<Entry> = all
-        .into_iter()
+    let matched: Vec<&Entry> = sources
+        .iter()
+        .flat_map(|entries| entries.iter())
         .filter(|entry| matches(entry, query))
         .collect();
     let Some(order) = &query.order else {
-        let count = matched.len() as u64;
-        matched.truncate(query.limit as usize);
         return Ok(Queried {
-            entries: matched,
-            matched: count,
+            matched: matched.len() as u64,
+            entries: matched
+                .into_iter()
+                .take(query.limit as usize)
+                .cloned()
+                .collect(),
             tied: None,
         });
     };
-    let mut ordered: Vec<(i128, Entry)> = matched
+    let mut ordered: Vec<(i128, &Entry)> = matched
         .into_iter()
-        .filter_map(|entry| order.by.of(&entry).map(|v| (v.steps(), entry)))
+        .filter_map(|entry| order.by.of(entry).map(|v| (v.steps(), entry)))
         .collect();
     // Stable, so entries equal by the measure keep `elements`'s order.
     ordered.sort_by(|(a, _), (b, _)| {
@@ -884,7 +600,9 @@ pub fn query(model: &Model, query: &Query) -> Result<Queried, Problems> {
         Some(value) => {
             let first = ordered.iter().position(|(v, _)| *v == value).unwrap_or(0);
             let end = first
-                + ordered[first..]
+                + ordered
+                    .get(first..)
+                    .unwrap_or_default()
                     .iter()
                     .take_while(|(v, _)| *v == value)
                     .count();
@@ -898,9 +616,12 @@ pub fn query(model: &Model, query: &Query) -> Result<Queried, Problems> {
             )
         }
     };
-    ordered.truncate(keep);
     Ok(Queried {
-        entries: ordered.into_iter().map(|(_, entry)| entry).collect(),
+        entries: ordered
+            .into_iter()
+            .take(keep)
+            .map(|(_, entry)| entry.clone())
+            .collect(),
         matched: count,
         tied,
     })
@@ -949,10 +670,10 @@ fn faces(normal: [f64; 3], facing: &Facing) -> bool {
     Angle::rounded(libm::atan2(sin, cos).to_degrees()).is_some_and(|angle| angle <= facing.within)
 }
 
-/// Every reason `query` is refused but its feature's, in the order its fields come: for a
-/// kind of solid, which no element is, only those the kind doesn't decide.
-fn query_refused(query: &Query) -> Vec<Error> {
-    let mut refused = Vec::new();
+/// Every reason `query` is refused but its feature's, in the order its fields come, added
+/// to `refused`: for a kind of solid, which no element is, only those the kind doesn't
+/// decide; for more ranges than [`MEASURES_AT_MOST`], that, and none of theirs.
+fn query_refused(query: &Query, refused: &mut Problems) {
     let invalid = |message: String, parameter: &str| {
         Error::new(ErrorCode::InvalidInput, message).with_parameter(parameter)
     };
@@ -967,8 +688,8 @@ fn query_refused(query: &Query) -> Vec<Error> {
             .with_candidates(["face", "edge", "vertex"].map(str::to_owned)),
         );
     }
-    let kind = kind_word(query.kind);
-    let a_kind = a_kind(query.kind);
+    let kind = query.kind.word();
+    let a_kind = query.kind.a_word();
     if let Some(t) = query.r#type
         && !solid
         && !t.is_of(query.kind)
@@ -1035,49 +756,21 @@ fn query_refused(query: &Query) -> Vec<Error> {
             );
         }
     }
-    for (i, range) in query.measures.iter().enumerate() {
-        let at = |field: &str| format!("measures.{i}.{field}");
-        if !solid && !range.measure.is_of(query.kind) {
-            refused.push(
-                invalid(
-                    format!("{a_kind} has no {}", range.measure.word()),
-                    &at("measure"),
-                )
-                .with_suggestion(format!("give a measure {a_kind} has"))
-                .with_candidates(measures_of(query.kind)),
-            );
-        }
-        for (field, bound) in [("at_least", range.at_least), ("at_most", range.at_most)] {
-            if let Some(bound) = bound
-                && bound.kind() != range.measure.quantity()
-            {
-                refused.push(
-                    invalid(
-                        format!(
-                            "{} is {}, and {field} isn't",
-                            range.measure.word(),
-                            quantity_word(range.measure.quantity())
-                        ),
-                        &at(field),
-                    )
-                    .with_suggestion(format!(
-                        "give {field} as {}",
-                        quantity_word(range.measure.quantity())
-                    )),
-                );
-            }
-        }
-        if let (Some(low), Some(high)) = (range.at_least, range.at_most)
-            && low.kind() == high.kind()
-            && low.steps() > high.steps()
-        {
-            refused.push(
-                invalid(
-                    format!("measures.{i} is empty: at_least is more than at_most"),
-                    &at("at_least"),
-                )
-                .with_suggestion("give at_least no more than at_most"),
-            );
+    if query.measures.len() > MEASURES_AT_MOST {
+        refused.push(
+            invalid(
+                format!(
+                    "measures holds at most {MEASURES_AT_MOST} ranges, as many as there are \
+                     measures, got {}",
+                    query.measures.len()
+                ),
+                "measures",
+            )
+            .with_suggestion("give each measure one range at most, from at_least to at_most"),
+        );
+    } else {
+        for (i, range) in query.measures.iter().enumerate() {
+            range_refused(query.kind, solid, i, range, refused);
         }
     }
     if let Some(order) = &query.order
@@ -1093,25 +786,55 @@ fn query_refused(query: &Query) -> Vec<Error> {
     if let Some(error) = limit_refused(query.limit) {
         refused.push(error);
     }
-    refused
 }
 
-fn kind_word(kind: ElementKind) -> &'static str {
-    match kind {
-        ElementKind::Face => "face",
-        ElementKind::Edge => "edge",
-        ElementKind::Vertex => "vertex",
-        ElementKind::Solid => "solid",
+/// Every reason the `i`th range, of a query of `kind` (a `solid`, which decides nothing),
+/// is refused, added to `refused`: each made only if it's listed.
+fn range_refused(kind: ElementKind, solid: bool, i: usize, range: &Range, refused: &mut Problems) {
+    let at = |field: &str| format!("measures.{i}.{field}");
+    let a_kind = kind.a_word();
+    if !solid && !range.measure.is_of(kind) {
+        refused.push_with(|| {
+            Error::new(
+                ErrorCode::InvalidInput,
+                format!("{a_kind} has no {}", range.measure.word()),
+            )
+            .with_parameter(at("measure"))
+            .with_suggestion(format!("give a measure {a_kind} has"))
+            .with_candidates(measures_of(kind))
+        });
     }
-}
-
-/// "a face", "an edge", "a vertex".
-fn a_kind(kind: ElementKind) -> &'static str {
-    match kind {
-        ElementKind::Face => "a face",
-        ElementKind::Edge => "an edge",
-        ElementKind::Vertex => "a vertex",
-        ElementKind::Solid => "a solid",
+    let quantity = range.measure.quantity();
+    for (field, bound) in [("at_least", range.at_least), ("at_most", range.at_most)] {
+        if let Some(bound) = bound
+            && bound.kind() != quantity
+        {
+            refused.push_with(|| {
+                Error::new(
+                    ErrorCode::InvalidInput,
+                    format!(
+                        "{} is {}, and {field} isn't",
+                        range.measure.word(),
+                        quantity_word(quantity)
+                    ),
+                )
+                .with_parameter(at(field))
+                .with_suggestion(format!("give {field} as {}", quantity_word(quantity)))
+            });
+        }
+    }
+    if let (Some(low), Some(high)) = (range.at_least, range.at_most)
+        && low.kind() == high.kind()
+        && low.steps() > high.steps()
+    {
+        refused.push_with(|| {
+            Error::new(
+                ErrorCode::InvalidInput,
+                format!("measures.{i} is empty: at_least is more than at_most"),
+            )
+            .with_parameter(at("at_least"))
+            .with_suggestion("give at_least no more than at_most")
+        });
     }
 }
 
@@ -1129,4 +852,147 @@ fn measures_of(kind: ElementKind) -> impl Iterator<Item = String> {
         .into_iter()
         .filter(move |m| m.is_of(kind))
         .map(|m| m.word().to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kernel::{
+        Description, ElementCounts, ElementFate, FaceDescription, History, InputHistory, Surface,
+        Topology,
+    };
+    use crate::naming::{ElementMap, OpCode};
+
+    fn id(text: &str) -> FeatureId {
+        FeatureId::new(text).unwrap()
+    }
+
+    fn kept(index: u32) -> ElementFate {
+        ElementFate {
+            kept: Some(index),
+            ..ElementFate::default()
+        }
+    }
+
+    fn history(inputs: Vec<InputHistory>, faces: u32, edges: u32, topology: Topology) -> History {
+        let history = History {
+            inputs,
+            result: ElementCounts {
+                faces,
+                edges,
+                vertices: 0,
+                solids: 1,
+            },
+            ends: Default::default(),
+            topology,
+        };
+        let count = history.inputs.len();
+        history.validate(count).unwrap();
+        history
+    }
+
+    #[test]
+    fn stable_keeps_an_element_whose_own_name_is_unstable_and_an_alias_stable() {
+        // No layout of real solids gives an element an alias, so a map made by hand does
+        // (the design's rule: `stable: true` keeps an element any of whose names is
+        // stable). First a cut whose Face1 nothing reports, its outer wire's Edge2 named by
+        // nothing either: named by its number, `aaaaaaaa.cut.Face1`, unstable (N3). Then a
+        // fusion that keeps that face and another solid's Face1 as its one face: its names
+        // are the cut's, carried unstable, then the other's, `bbbbbbbb.fuse.Face1`, stable.
+        let block = ElementMap::by_number(
+            id("kkkkkkkk"),
+            OpCode::Fuse,
+            ElementCounts {
+                faces: 6,
+                edges: 12,
+                vertices: 8,
+                solids: 1,
+            },
+        );
+        let cut = history(
+            vec![InputHistory {
+                faces: vec![],
+                edges: vec![kept(1)],
+                vertices: vec![],
+            }],
+            1,
+            2,
+            Topology {
+                face_edges: vec![vec![1, 2]],
+                outer_edges: vec![vec![1, 2]],
+                edge_vertices: vec![vec![]; 2],
+            },
+        );
+        let cut = ElementMap::operation(id("aaaaaaaa"), OpCode::Cut, &[&block], &cut);
+        let other = ElementMap::by_number(
+            id("bbbbbbbb"),
+            OpCode::Fuse,
+            ElementCounts {
+                faces: 1,
+                edges: 0,
+                vertices: 0,
+                solids: 1,
+            },
+        );
+        let fused = history(
+            vec![
+                InputHistory {
+                    faces: vec![kept(1)],
+                    edges: vec![ElementFate::default(); 2],
+                    vertices: vec![],
+                },
+                InputHistory {
+                    faces: vec![kept(1)],
+                    edges: vec![],
+                    vertices: vec![],
+                },
+            ],
+            1,
+            0,
+            Topology {
+                face_edges: vec![vec![]],
+                outer_edges: vec![vec![]],
+                edge_vertices: vec![],
+            },
+        );
+        let fusion = id("rrrrrrrr");
+        let map = ElementMap::operation(fusion.clone(), OpCode::Fuse, &[&cut, &other], &fused);
+        let description = Description {
+            faces: vec![FaceDescription {
+                surface: Surface::Other,
+                area: 1.0,
+                centroid: [0.0; 3],
+            }],
+            edges: vec![],
+            vertices: vec![],
+        };
+        let built = crate::elements::entries(&map, &fusion, &description).unwrap();
+        let [face] = built.as_slice() else {
+            panic!("{built:?}")
+        };
+        assert_eq!(face.name.to_string(), "aaaaaaaa.cut.Face1");
+        assert!(!face.stable);
+        let aliases: Vec<(String, bool)> = face
+            .aliases
+            .iter()
+            .map(|a| (a.name.to_string(), a.stable))
+            .collect();
+        assert_eq!(aliases, [("bbbbbbbb.fuse.Face1".to_owned(), true)]);
+        let mut q = Query::of(ElementKind::Face, 10);
+        q.stable = Some(true);
+        assert!(matches(face, &q), "kept for its stable alias");
+        q.stable = Some(false);
+        assert!(!matches(face, &q), "it has a stable name");
+        // Its alias unstable too: no stable name, so `false` keeps it and `true` doesn't.
+        let mut unstable = face.clone();
+        unstable.aliases[0].stable = false;
+        assert!(matches(&unstable, &q));
+        q.stable = Some(true);
+        assert!(!matches(&unstable, &q));
+        // Its own name stable and no alias: `true` keeps it.
+        let mut own = face.clone();
+        own.stable = true;
+        own.aliases.clear();
+        assert!(matches(&own, &q));
+    }
 }

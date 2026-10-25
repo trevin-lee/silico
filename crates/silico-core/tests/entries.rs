@@ -5,8 +5,12 @@
 //! expected values here are counts by hand and those numbers; an entry's geometry is tested
 //! on a worker (silico-kernel's tests/entries.rs).
 
+use super::describing::fused_boxes;
 use super::example;
+use super::listing::{TWO_BODIES, codes, model_of};
 use super::model;
+
+use std::time::Instant;
 
 use example::EXAMPLE;
 use model::{checked, id, published};
@@ -17,60 +21,9 @@ use silico_core::command::elements::{
     entries, list, query,
 };
 use silico_core::document::{Angle, Length, Measure};
-use silico_core::fake::{FakeKernel, FakeSketches};
+use silico_core::fake::FakeKernel;
 use silico_core::kernel::ElementKind;
 use silico_core::recompute::Recompute;
-
-fn model_of(text: &str) -> std::sync::Arc<silico_core::recompute::Model> {
-    let engine = Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(FakeSketches::new());
-    published(&engine, checked(text))
-}
-
-/// A document of `n` boxes 20 apart along x, each fused onto the fusion of those before:
-/// one body of 6n faces, 12n edges, and 8n vertices (the fake keeps each box's).
-fn fused_boxes(n: usize) -> String {
-    let mut features = Vec::new();
-    for i in 0..n {
-        features.push(format!(
-            r#"    {{"id": "b{i:07}", "type": "box", "v": 1, "name": "Box", "position": [{}, 0, 0], "length": 10, "width": 10, "height": 10}}"#,
-            i * 20
-        ));
-    }
-    for i in 1..n {
-        let base = if i == 1 {
-            "b0000000".to_owned()
-        } else {
-            format!("f{:07}", i - 1)
-        };
-        features.push(format!(
-            r#"    {{"id": "f{i:07}", "type": "fuse", "v": 1, "name": "Fuse", "base": "{base}", "tool": "b{i:07}"}}"#
-        ));
-    }
-    format!(
-        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 5,\n  \"features\": [\n{}\n  ]\n}}\n",
-        features.join(",\n")
-    )
-}
-
-/// Two separate boxes, neither consumed: two bodies, in timeline order.
-const TWO_BODIES: &str = r#"{
-  "silico": 1,
-  "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
-  "features": [
-    {"id": "aaaaaaaa", "type": "box", "v": 1, "name": "First", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1},
-    {"id": "bbbbbbbb", "type": "box", "v": 1, "name": "Second", "position": [5, 0, 0], "length": 1, "width": 1, "height": 1}
-  ]
-}
-"#;
-
-fn codes(problems: &silico_core::command::Problems) -> Vec<(ErrorCode, Option<String>)> {
-    problems
-        .errors()
-        .iter()
-        .map(|e| (e.code(), e.parameter().map(str::to_owned)))
-        .collect()
-}
 
 #[test]
 fn every_body_is_listed_in_timeline_order_then_faces_edges_and_vertices_by_name() {
@@ -163,7 +116,7 @@ fn pages_follow_on_from_their_cursor_and_together_list_every_entry_once() {
 #[test]
 fn a_cursor_of_another_revision_is_a_conflict_said_with_every_other_reason() {
     // A cursor of revision 1, read against the model of revision 2, with a limit out of
-    // range too: both refused, in the request's order.
+    // range too: both refused, in the request's order (feature, after, limit).
     let model = model_of(TWO_BODIES);
     let stale = list(&model, Revision::OPENED, None, None, 1)
         .unwrap()
@@ -174,17 +127,17 @@ fn a_cursor_of_another_revision_is_a_conflict_said_with_every_other_reason() {
     assert_eq!(
         codes(&refused),
         [
-            (ErrorCode::InvalidInput, Some("limit".to_owned())),
             (ErrorCode::Conflict, Some("after".to_owned())),
+            (ErrorCode::InvalidInput, Some("limit".to_owned())),
         ]
     );
     assert_eq!(refused.total(), 2);
     assert_eq!(
-        refused.errors()[1].message(),
+        refused.errors()[0].message(),
         "the cursor is of revision 1, and the model read is of revision 2"
     );
     assert_eq!(
-        refused.errors()[1].suggestion(),
+        refused.errors()[0].suggestion(),
         Some("start again with after set to null")
     );
     // Of the revision read, it goes on.
@@ -308,25 +261,11 @@ fn a_feature_that_failed_gives_its_failure_and_one_it_used_says_so() {
     assert_eq!(blocked.errors()[0].parameter(), Some("feature"));
 }
 
-/// A query of `kind` and nothing else, `limit` at most.
-fn of_kind(kind: ElementKind, limit: u32) -> Query {
-    Query {
-        feature: None,
-        kind,
-        r#type: None,
-        stable: None,
-        facing: None,
-        measures: Vec::new(),
-        order: None,
-        limit,
-    }
-}
-
 #[test]
 fn a_query_without_an_order_lists_in_elements_order_and_counts_every_match() {
     let model = model_of(TWO_BODIES);
     let whole = list(&model, Revision::OPENED, None, None, ENTRIES_AT_MOST).unwrap();
-    let faces = query(&model, &of_kind(ElementKind::Face, 5)).unwrap();
+    let faces = query(&model, &Query::of(ElementKind::Face, 5)).unwrap();
     // 12 faces matched; the first 5, as elements lists them; no order, so no tie.
     assert_eq!(faces.matched, 12);
     let want: Vec<_> = whole
@@ -339,7 +278,7 @@ fn a_query_without_an_order_lists_in_elements_order_and_counts_every_match() {
     assert_eq!(faces.entries, want);
     assert_eq!(faces.tied, None);
     // Of one body only.
-    let mut one = of_kind(ElementKind::Vertex, 100);
+    let mut one = Query::of(ElementKind::Vertex, 100);
     one.feature = Some(id("bbbbbbbb"));
     let vertices = query(&model, &one).unwrap();
     assert_eq!(vertices.matched, 8);
@@ -356,7 +295,7 @@ fn a_tie_at_the_cut_is_returned_whole_past_the_limit_when_it_fits() {
     // Every face's area is 1: ordered by area, the largest is a tie of all 12, which fits,
     // so all 12 come back for a limit of 1.
     let model = model_of(TWO_BODIES);
-    let mut largest = of_kind(ElementKind::Face, 1);
+    let mut largest = Query::of(ElementKind::Face, 1);
     largest.order = Some(Order {
         by: MeasureName::Area,
         descending: true,
@@ -375,7 +314,7 @@ fn a_tie_at_the_cut_is_returned_whole_past_the_limit_when_it_fits() {
 fn a_tie_too_large_to_return_returns_none_of_it_and_says_how_large() {
     // 170 boxes fused: 1,020 faces of area 1, a tie past 1,000.
     let model = model_of(&fused_boxes(170));
-    let mut largest = of_kind(ElementKind::Face, 1);
+    let mut largest = Query::of(ElementKind::Face, 1);
     largest.order = Some(Order {
         by: MeasureName::Area,
         descending: true,
@@ -397,7 +336,7 @@ fn ranges_keep_what_they_include_at_both_ends_and_nothing_else() {
         (None, area(999_999), 0),
         (None, area(1_000_000), 12),
     ] {
-        let mut q = of_kind(ElementKind::Face, 100);
+        let mut q = Query::of(ElementKind::Face, 100);
         q.measures = vec![Range {
             measure: MeasureName::Area,
             at_least,
@@ -410,7 +349,7 @@ fn ranges_keep_what_they_include_at_both_ends_and_nothing_else() {
         );
     }
     // A face has no length; ordering by radius keeps only faces that have one (none here).
-    let mut by_radius = of_kind(ElementKind::Face, 100);
+    let mut by_radius = Query::of(ElementKind::Face, 100);
     by_radius.order = Some(Order {
         by: MeasureName::Radius,
         descending: false,
@@ -422,7 +361,7 @@ fn ranges_keep_what_they_include_at_both_ends_and_nothing_else() {
 #[test]
 fn a_query_that_cant_mean_anything_is_refused_with_every_reason() {
     let model = model_of(TWO_BODIES);
-    let mut q = of_kind(ElementKind::Edge, 0);
+    let mut q = Query::of(ElementKind::Edge, 0);
     q.r#type = Some(ElementType::Plane);
     q.facing = Some(Facing {
         direction: [0.0, 0.0, 0.0],
@@ -459,6 +398,31 @@ fn a_query_that_cant_mean_anything_is_refused_with_every_reason() {
         refused.errors()[0].message(),
         "an edge is never of type plane"
     );
+    // The types an edge can be, and the measures it can have, by hand from the design's
+    // *Element entries*.
+    assert_eq!(
+        refused.errors()[0].candidates(),
+        [
+            "bezier",
+            "bspline",
+            "offset",
+            "other",
+            "line",
+            "circle",
+            "ellipse",
+            "hyperbola",
+            "parabola"
+        ]
+    );
+    assert_eq!(
+        refused.errors()[4].candidates(),
+        ["length", "radius", "diameter"]
+    );
+    assert_eq!(refused.errors()[4].message(), "an edge has no area");
+    assert_eq!(
+        refused.errors()[5].message(),
+        "area is an area, and at_least isn't"
+    );
     assert_eq!(
         refused.errors()[1].message(),
         "only planar faces face a direction, and kind is edge"
@@ -468,10 +432,130 @@ fn a_query_that_cant_mean_anything_is_refused_with_every_reason() {
         "facing.direction must be a direction, got [0, 0, 0]"
     );
     // A solid is no kind to query, with the kinds as candidates.
-    let solid = query(&model, &of_kind(ElementKind::Solid, 1)).unwrap_err();
+    let solid = query(&model, &Query::of(ElementKind::Solid, 1)).unwrap_err();
     assert_eq!(
         solid.errors()[0].message(),
         "kind must be face, edge, or vertex, got solid"
     );
     assert_eq!(solid.errors()[0].candidates(), ["face", "edge", "vertex"]);
+}
+
+/// A document of `2^levels` boxes 20 apart along x, fused pairwise, then those fusions
+/// pairwise, and so on, into one, `f{levels}00000`: one body of every box's elements (the
+/// fake keeps each box's), named in `levels + 1` passes over them, not a chain's square.
+fn fused_tree(levels: u32) -> String {
+    let n = 1usize << levels;
+    let mut features = Vec::new();
+    for i in 0..n {
+        features.push(format!(
+            r#"{{"id": "b{i:07}", "type": "box", "v": 1, "name": "Box", "position": [{}, 0, 0], "length": 10, "width": 10, "height": 10}}"#,
+            i * 20
+        ));
+    }
+    let id = |level: u32, i: usize| {
+        if level == 0 {
+            format!("b{i:07}")
+        } else {
+            format!("f{level:02}{i:05}")
+        }
+    };
+    for level in 1..=levels {
+        for i in 0..(n >> level) {
+            features.push(format!(
+                r#"{{"id": "{}", "type": "fuse", "v": 1, "name": "Fuse", "base": "{}", "tool": "{}"}}"#,
+                id(level, i),
+                id(level - 1, 2 * i),
+                id(level - 1, 2 * i + 1)
+            ));
+        }
+    }
+    format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
+        features.join(", ")
+    )
+}
+
+#[test]
+fn walking_a_large_body_in_pages_costs_one_build_and_a_copy_of_each_page() {
+    // The architect's M1: 2,048 boxes fused into one body of 12,288 faces, 24,576 edges, and
+    // 16,384 vertices (53,248 entries, by hand), walked in pages of 1,000: 54 pages, the
+    // last of 248. Its entries are built once, by the first page, so the 53 pages after it
+    // take less than its time ten times over; built again for each page, as they were, they
+    // would take 53 times it. Compared with the first page's own time on this machine, so
+    // no wall clock decides it.
+    let model = model_of(&fused_tree(11));
+    let body = id("f1100000");
+    assert_eq!(model.bodies(), std::slice::from_ref(&body));
+    // Named first, so the first page's time is the entries' build, not the naming's.
+    assert!(model.element_map(&body).is_some());
+    let start = Instant::now();
+    let first = list(&model, Revision::OPENED, None, None, ENTRIES_AT_MOST).unwrap();
+    let page_one = start.elapsed();
+    assert_eq!((first.total, first.entries.len()), (53_248, 1000));
+    let start = Instant::now();
+    let (mut pages, mut seen) = (1, first.entries.len());
+    let mut after = first.next;
+    let mut last = None;
+    while let Some(cursor) = after {
+        let page = list(
+            &model,
+            Revision::OPENED,
+            None,
+            Some(&cursor),
+            ENTRIES_AT_MOST,
+        )
+        .unwrap();
+        assert_eq!(page.total, 53_248);
+        pages += 1;
+        seen += page.entries.len();
+        after = page.next;
+        last = page.entries.last().cloned();
+    }
+    let walk = start.elapsed();
+    assert_eq!((pages, seen), (54, 53_248));
+    // The walk ends on the body's last vertex, as a whole listing does.
+    let whole = entries(&model, &body).unwrap();
+    assert_eq!(last.as_ref(), whole.last());
+    assert!(
+        walk < page_one * 10,
+        "53 pages took {walk:?}, and the first {page_one:?}: each page builds them again"
+    );
+}
+
+#[test]
+fn a_feature_whose_references_broke_is_refused_with_every_one_counted() {
+    // A fillet of 150 edges the box hasn't (Edge13 to Edge162): its refusal lists its first
+    // 100 and counts all 150, as `check` does; with a limit of 0 too, 100 listed (the most
+    // a refusal lists) and 151 counted.
+    let edges: Vec<String> = (13..163)
+        .map(|n| format!("\"k7f2qx3m.box.Edge{n}\""))
+        .collect();
+    let text = format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}}, {{"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": [{}], "radius": 1}}]}}"#,
+        edges.join(", ")
+    );
+    let model = model_of(&text);
+    let fillet = id("f0000001");
+    let refused = entries(&model, &fillet).unwrap_err();
+    assert_eq!((refused.errors().len(), refused.total()), (100, 150));
+    assert!(
+        refused
+            .errors()
+            .iter()
+            .all(|e| e.code() == ErrorCode::ReferenceBroken && e.feature() == Some("f0000001"))
+    );
+    let listed = list(&model, Revision::OPENED, Some(&fillet), None, 0).unwrap_err();
+    assert_eq!((listed.errors().len(), listed.total()), (100, 151));
+    assert_eq!(listed.errors()[0].code(), ErrorCode::ReferenceBroken);
+    let mut q = Query::of(ElementKind::Face, 0);
+    q.feature = Some(fillet);
+    let queried = query(&model, &q).unwrap_err();
+    assert_eq!((queried.errors().len(), queried.total()), (100, 151));
+    // A fillet that failed consumes nothing: the box is the body, and lists.
+    assert_eq!(
+        list(&model, Revision::OPENED, None, None, 1000)
+            .unwrap()
+            .total,
+        26
+    );
 }
