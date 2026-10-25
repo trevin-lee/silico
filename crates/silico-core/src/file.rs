@@ -256,22 +256,25 @@ fn synced(file: &std::fs::File, what: &str) -> std::io::Result<()> {
 /// How many names [`beside`] tries.
 const TRIES: u32 = 64;
 
-/// The longest file name, in bytes, the systems Silico runs on take (`NAME_MAX` on Linux;
-/// APFS's, on macOS).
+/// The longest file name Silico makes, in bytes: Linux's `NAME_MAX`. macOS takes 255
+/// UTF-16 units, which 255 bytes never pass.
 const NAME_MAX: usize = 255;
 
 /// The `n`th name [`beside`] tries for a file beside one named `name`: `.NAME.fmt-PID`,
-/// then `-1`, `-2`, ... after it. A name too long for that is cut short, at a character's
-/// end if it's UTF-8 (as APFS requires every name to be), so a document whose own name is
-/// as long as a name may be is saved all the same (found by Worker 3): the file beside it
-/// is never another's, since each is made new, and a save that leaves it says its name.
+/// then `-1`, `-2`, ... after it. A name too long for the last of them is cut short, the
+/// same for every try, at a character's end if it's UTF-8 (as APFS requires every name to
+/// be), so a document whose own name is as long as a name may be is saved all the same
+/// (found by Worker 3), and an error that names the first try names the stem of all. The
+/// file beside it is never another's, since each is made new, and a save that leaves it
+/// says its name.
 fn partial_name(name: &std::ffi::OsStr, n: u32) -> OsString {
     use std::os::unix::ffi::OsStrExt as _;
     let mut suffix = format!(".fmt-{}", std::process::id());
+    let longest = suffix.len() + format!("-{}", TRIES - 1).len();
     if n > 0 {
         suffix.push_str(&format!("-{n}"));
     }
-    let room = NAME_MAX.saturating_sub(1 + suffix.len());
+    let room = NAME_MAX.saturating_sub(1 + longest);
     let bytes = name.as_bytes();
     let kept = match name.to_str() {
         Some(text) if bytes.len() > room => {
@@ -350,27 +353,33 @@ mod tests {
             partial_name(std::ffi::OsStr::new("part.silico"), 63),
             OsString::from(format!(".part.silico{suffix}-63"))
         );
-        // 255 bytes of ASCII: cut to 255 in all, the dot, the name's first bytes, the suffix.
+        // 255 bytes of ASCII: one stem for every try, cut so the last, `-63`, is 255 in all:
+        // the dot, the name's first bytes, the suffix (the robustness review: an error names
+        // the first try's stem as every try's).
         let long = "a".repeat(255);
-        for (n, tail) in [(0, suffix.clone()), (63, format!("{suffix}-63"))] {
+        let kept = 255 - 1 - suffix.len() - "-63".len();
+        for (n, tail) in [
+            (0, suffix.clone()),
+            (1, format!("{suffix}-1")),
+            (63, format!("{suffix}-63")),
+        ] {
             let cut = partial_name(std::ffi::OsStr::new(&long), n).into_vec();
-            assert_eq!(cut.len(), 255, "{n}");
-            let kept = 255 - 1 - tail.len();
             assert_eq!(cut, format!(".{}{tail}", &long[..kept]).into_bytes(), "{n}");
         }
+        assert_eq!(partial_name(std::ffi::OsStr::new(&long), 63).len(), 255);
         // Two-byte characters, cut where a character ends: valid UTF-8, one byte short when
         // the room is odd.
         let accented = "é".repeat(127);
         let cut =
             String::from_utf8(partial_name(std::ffi::OsStr::new(&accented), 0).into_vec()).unwrap();
-        let room = 255 - 1 - suffix.len();
+        let room = 255 - 1 - suffix.len() - "-63".len();
         let kept = room - room % 2;
         assert_eq!(cut, format!(".{}{suffix}", &accented[..kept]));
         // Not UTF-8 (Linux allows it): cut by bytes, to 255.
         let raw = std::ffi::OsStr::from_bytes(&[0xff; 255]);
-        let cut = partial_name(raw, 0).into_vec();
+        let cut = partial_name(raw, 63).into_vec();
         assert_eq!(cut.len(), 255);
-        assert!(cut.ends_with(suffix.as_bytes()));
+        assert!(cut.ends_with(format!("{suffix}-63").as_bytes()));
         assert!(cut[1..room + 1].iter().all(|b| *b == 0xff));
     }
 
