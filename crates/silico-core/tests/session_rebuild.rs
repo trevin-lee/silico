@@ -17,6 +17,7 @@ use silico_core::document::{FeatureId, Measure};
 use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::kernel::{Op, Primitive};
 use silico_core::sketch::SketchSolver;
+use silico_protocol::{SketchSystem, Solved};
 use tempfile::TempDir;
 
 use crate::lateness::{Lateness, allowance};
@@ -207,10 +208,16 @@ fn a_check_of_a_document_the_gate_refused_gives_its_problems_and_rebuilds_nothin
     );
     assert_eq!(response.model, None);
     assert!(f.kernel.calls().is_empty());
-    // Nothing to publish: a published read is refused, and starts nothing.
+    // Nothing to publish: a published read is refused with the gate's problem, and starts
+    // nothing.
     assert_eq!(
-        refusal(&f.sessions.published(&s)).1,
-        "session s1 has published no model yet"
+        refusal(&f.sessions.published(&s)),
+        (
+            ErrorCode::InvalidInput,
+            "box length must be a length above 1e-7 mm and at most 1e6 mm (a kilometre), got 0"
+                .to_owned(),
+            Some("length".to_owned()),
+        )
     );
     assert!(f.kernel.calls().is_empty());
 }
@@ -353,7 +360,7 @@ fn a_published_read_never_waits_for_a_rebuild() {
         scope.spawn(move || {
             let _ = reply.send(sessions.published(&a));
         });
-        let read = read.recv_timeout(Duration::from_secs(10));
+        let read = read.recv_timeout(HANG);
         let took = at.elapsed();
         let Ok(read) = read else {
             hold.release();
@@ -447,8 +454,76 @@ fn a_check_of_text_that_isnt_a_document_gives_the_readers_error_and_rebuilds_not
         "{problems:?}"
     );
     assert!(f.kernel.calls().is_empty());
-    assert_eq!(
-        refusal(&f.sessions.published(&s)).2.as_deref(),
-        Some("model")
+    // Nothing to publish: the reader's error, the same one.
+    let read = f.sessions.published(&s);
+    assert_eq!(read.result.unwrap_err(), problems);
+    assert!(f.kernel.calls().is_empty());
+}
+
+/// A sketch solver with a bug: every solve panics, after counting itself.
+struct Panics(Arc<AtomicUsize>);
+
+impl SketchSolver for Panics {
+    fn solve(&mut self, _: SketchSystem) -> Result<Solved, silico_core::Error> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        panic!("a bug in the solver")
+    }
+}
+
+#[test]
+fn a_check_whose_recompute_failed_is_refused_with_why_once_and_the_next_rebuilds() {
+    let sketch = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": []}]}"#;
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("secret");
+    let solves = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&solves);
+    let sessions = Sessions::with_stand_ins(
+        FakeKernel::new(1).unwrap(),
+        move |cache| Cache::with_secret(cache, &secret),
+        move || Ok(Box::new(Panics(Arc::clone(&counted))) as Box<dyn SketchSolver>),
     );
+    let path = dir.path().join("sketch.silico");
+    std::fs::write(&path, sketch).unwrap();
+    let s = answer(sessions.open(&path, false)).session.unwrap().id;
+    let panicked = (
+        ErrorCode::Internal,
+        "a sketch's solve panicked".to_owned(),
+        None,
+    );
+    let first = answer(sessions.check(&s));
+    assert_eq!(first.model, None);
+    assert_eq!(refusal(&first), panicked);
+    assert_eq!(solves.load(Ordering::SeqCst), 1);
+    // A published read doesn't start it again (it would fail again, each frame): it says
+    // why there's nothing.
+    for _ in 0..3 {
+        assert_eq!(refusal(&sessions.published(&s)), panicked);
+    }
+    assert_eq!(solves.load(Ordering::SeqCst), 1);
+    // The next check, the failure said, rebuilds: and it fails again, said again.
+    let second = answer(sessions.check(&s));
+    assert_eq!(refusal(&second), panicked);
+    assert_eq!(solves.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn a_check_after_a_measure_that_faulted_tries_the_rebuild_again() {
+    // The box's measure times out once: no failure of the box, a fault in its drift (a
+    // stored fingerprint the rebuild couldn't measure to compare), so the check is refused
+    // with it and the next measures again.
+    let stored = BOX.replace(
+        "\"height\": 10}",
+        "\"height\": 10, \"fingerprint\": {\"volume\": 8000, \"area\": 2800, \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}}",
+    );
+    let f = fixture();
+    let once = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let first = Arc::clone(&once);
+    f.kernel.refuse(move |op| {
+        (matches!(op, Op::Summarize { .. }) && first.swap(false, Ordering::SeqCst))
+            .then(|| silico_core::Error::new(ErrorCode::WorkerTimeout, "timed out"))
+    });
+    let a = f.open(&f.file("a.silico", &stored));
+    let faulted = answer(f.sessions.check(&a));
+    assert_eq!(refusal(&faulted).0, ErrorCode::WorkerTimeout);
+    clean(&answer(f.sessions.check(&a)));
 }

@@ -123,8 +123,9 @@ pub struct ModelRead {
     pub revision: Revision,
 }
 
-/// The newest model a session's rebuilds published, and the revision it was rebuilt from:
-/// what [`Sessions::published`] gives the app to draw, never waiting for a rebuild.
+/// The newest model a session's rebuilds published, and the revision it was rebuilt from
+/// (the same as its response's `model.revision`): what [`Sessions::published`] gives the
+/// app to draw, never waiting for a rebuild.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Published {
     pub revision: Revision,
@@ -332,12 +333,20 @@ struct Rebuilds<C: Kernel + 'static> {
     running: Option<Revision>,
     /// The newest model the session's rebuilds published.
     published: Option<Published>,
-    /// The last rebuild whose recompute failed (a bug), and why: said once, to the command
-    /// waiting on it, or the next to need that revision's model.
-    failed: Option<(Revision, Error)>,
+    /// The last rebuild whose recompute failed (a bug), until another starts.
+    failed: Option<Failed>,
     /// The threads watching the rebuilds started: those ended joined as the next starts, the
     /// rest by `Sessions::drop`, for the sessions open then.
     watchers: Vec<JoinHandle<()>>,
+}
+
+/// A revision's rebuild whose recompute failed (a bug), and why: said once, to the check
+/// waiting on it or the next to need its model; a check after that rebuilds it. A published
+/// read never starts it again (it would fail again, each frame), and refuses with `why`.
+struct Failed {
+    revision: Revision,
+    why: Error,
+    said: bool,
 }
 
 /// What a session holds (docs/design/m4.1-command-api.md, section 3). Its values are shared
@@ -396,20 +405,19 @@ impl<C: Kernel + 'static> Session<C> {
                 waited = true;
                 continue;
             }
-            // A failure of this revision's, said once; another's is left for whoever needs it.
-            if rebuilds
-                .failed
-                .as_ref()
-                .is_some_and(|(failed, _)| *failed == revision)
-                && let Some((_, why)) = rebuilds.failed.take()
+            // A failure of this revision's, said once; the read after that rebuilds it.
+            if let Some(failed) = &mut rebuilds.failed
+                && failed.revision == revision
+                && !failed.said
             {
-                return Err(Problems::from(why));
+                failed.said = true;
+                return Err(Problems::from(failed.why.clone()));
             }
             // Not built, or superseded: started again unless the session has gone.
             if self.closed() {
                 return Err(Problems::from(not_open(self.id)));
             }
-            if !self.start_if_needed(&mut rebuilds, revision, checked)? {
+            if !self.start_unless_newer(&mut rebuilds, revision, checked)? {
                 return Err(Problems::from(
                     Error::new(
                         ErrorCode::Internal,
@@ -425,17 +433,19 @@ impl<C: Kernel + 'static> Session<C> {
         }
     }
 
-    /// Starts `revision`'s rebuild, whose document is `checked`, unless one of it is running
-    /// or a newer revision's rebuild has started or published (whose model it would
-    /// supersede): whether it started. Doesn't wait for it: a watcher thread records what it
-    /// comes to. Takes the lock's guard, so the start and the record of it are one step.
-    fn start_if_needed(
+    /// Starts `revision`'s rebuild, whose document is `checked`, unless a newer revision's
+    /// rebuild is running or has published (whose model it would supersede, or come after):
+    /// whether it started. The caller decides whether the revision's model is wanted (none
+    /// of it, and no rebuild of it running). Doesn't wait for it: a watcher thread records
+    /// what it comes to. Takes the lock's guard, so the start and the record of it are one
+    /// step.
+    fn start_unless_newer(
         self: &Arc<Self>,
         rebuilds: &mut Rebuilds<C>,
         revision: Revision,
         checked: &Checked,
     ) -> Result<bool, Problems> {
-        if rebuilds.running.is_some_and(|running| running >= revision)
+        if rebuilds.running.is_some_and(|running| running > revision)
             || rebuilds
                 .published
                 .as_ref()
@@ -452,6 +462,7 @@ impl<C: Kernel + 'static> Session<C> {
         }
         let run = rebuilds.engine.start(checked.clone());
         rebuilds.running = Some(revision);
+        rebuilds.failed = None;
         let session = Arc::downgrade(self);
         match std::thread::Builder::new()
             .name(format!("session-{}-rebuild", self.id))
@@ -524,11 +535,13 @@ impl<C: Kernel + 'static> Session<C> {
 /// Whether `model` holds a kernel fault: a failure that says nothing about the document,
 /// which a rebuild may not meet again.
 fn faulted(model: &Model) -> bool {
-    model.errors().any(|e| e.code().is_kernel_fault())
-        || model.drift().iter().any(|e| e.code().is_kernel_fault())
+    // As `check` finds one, in a feature's failure or a measure its drift needed, so the
+    // two never differ (decision 32 changes both, there).
+    super::check(model).is_err()
 }
 
-/// The refusal of a published read with nothing published: the design's section 2.
+/// The refusal of a published read with nothing published yet, its rebuild started or
+/// running: the design's section 2.
 fn nothing_published(id: SessionId) -> Error {
     Error::new(
         ErrorCode::InvalidInput,
@@ -565,7 +578,13 @@ fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, revision: Revision, ru
         }
         // Whoever needs its model starts it again.
         Ok(RunOutcome::Superseded) => {}
-        Err(why) => rebuilds.failed = Some((revision, why)),
+        Err(why) => {
+            rebuilds.failed = Some(Failed {
+                revision,
+                why,
+                said: false,
+            });
+        }
     }
     drop(rebuilds);
     session.rebuilt.notify_all();
@@ -784,7 +803,10 @@ impl<P: Clients + 'static> Sessions<P> {
     /// section 2), of the session's revision or an older one, its revision in the response's
     /// `model`; refused, naming `model`, if none has been. Answered on the caller's thread,
     /// never waiting for a rebuild, for the app to draw each frame; it starts the current
-    /// revision's rebuild if that has no model and none is running (decision 13). What comes
+    /// revision's rebuild if that has no model and none is running (decision 13), unless its
+    /// recompute failed (then that failure is the refusal, until a check rebuilds it). A
+    /// document the gate refused has nothing to publish: its read is refused with the gate's
+    /// problems. What comes
     /// with decision 33's step: `published` as a request's `model` to every read command, and
     /// published reads that need the kernel on a read lane of their own.
     pub fn published(&self, session: &SessionId) -> Response<Published> {
@@ -795,15 +817,33 @@ impl<P: Clients + 'static> Sessions<P> {
             let held = lock(&found.held);
             (found.info_of(&held), held.revision, Arc::clone(&held.gated))
         };
+        let checked = match &*gated {
+            Gated::Checked(checked) => checked,
+            // Nothing is built of a document the gate refused: what's wrong is the gate's.
+            refused => {
+                return Response {
+                    session: Some(info),
+                    model: None,
+                    result: Err(refused.problems()),
+                };
+            }
+        };
         let mut rebuilds = lock(&found.rebuilds);
-        if let Gated::Checked(checked) = &*gated
+        // This revision's recompute failed (a bug): not started again each frame, its
+        // failure left for `check` to say once and rebuild.
+        let failed = rebuilds
+            .failed
+            .as_ref()
+            .filter(|failed| failed.revision == revision)
+            .map(|failed| failed.why.clone());
+        if failed.is_none()
             && rebuilds.running != Some(revision)
             && rebuilds
                 .published
                 .as_ref()
                 .is_none_or(|published| published.revision < revision)
             && !found.closed()
-            && let Err(problems) = found.start_if_needed(&mut rebuilds, revision, checked)
+            && let Err(problems) = found.start_unless_newer(&mut rebuilds, revision, checked)
         {
             return Response {
                 session: Some(info),
@@ -826,7 +866,9 @@ impl<P: Clients + 'static> Sessions<P> {
             None => Response {
                 session: Some(info),
                 model: None,
-                result: Err(Problems::from(nothing_published(found.id))),
+                result: Err(Problems::from(
+                    failed.unwrap_or_else(|| nothing_published(found.id)),
+                )),
             },
         }
     }
@@ -1333,7 +1375,7 @@ mod tests {
         let mut rebuilds = lock(&session.rebuilds);
         assert!(
             !session
-                .start_if_needed(&mut rebuilds, Revision(1), &checked(BOX))
+                .start_unless_newer(&mut rebuilds, Revision(1), &checked(BOX))
                 .unwrap()
         );
         assert_eq!(rebuilds.running, None);
