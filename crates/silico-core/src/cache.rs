@@ -827,12 +827,22 @@ fn read_file(path: &Path) -> FileRead {
         Ok(_) => {}
         Err(e) => return FileRead::Failed(e),
     }
-    let mut bytes = Vec::new();
-    match file.take(MAX_ENTRY + 1).read_to_end(&mut bytes) {
-        Ok(_) if bytes.len() as u64 > MAX_ENTRY => FileRead::Unusable("is too large"),
-        Ok(_) => FileRead::Bytes(bytes),
+    match read_at_most(file, MAX_ENTRY) {
+        Ok(Some(bytes)) => FileRead::Bytes(bytes),
+        // Grown past the limit since it was measured.
+        Ok(None) => FileRead::Unusable("is too large"),
         Err(e) => FileRead::Failed(e),
     }
+}
+
+/// All of `reader`, if it holds at most `limit` bytes; none if it holds more, read no further
+/// than one past the limit.
+fn read_at_most(reader: impl std::io::Read, limit: u64) -> std::io::Result<Option<Vec<u8>>> {
+    let mut bytes = Vec::new();
+    reader
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    Ok((bytes.len() as u64 <= limit).then_some(bytes))
 }
 
 /// The platform's name: its OS and architecture (`macos-aarch64`).
@@ -1340,6 +1350,61 @@ mod tests {
         // What's left is the newest.
         assert_eq!(scan.entries.len(), 1);
         assert_eq!(scan.entries[0].1, gone(2));
+    }
+
+    #[test]
+    fn a_read_takes_up_to_its_limit_and_refuses_more_however_much_more() {
+        // Found by the mutation run: an entry grown past the limit between measuring and
+        // reading it was untestable without a race. An endless reader is more than any limit.
+        assert_eq!(read_at_most(std::io::repeat(7), 8).unwrap(), None);
+        assert_eq!(read_at_most(&[7u8; 9][..], 8).unwrap(), None);
+        assert_eq!(read_at_most(&[7u8; 8][..], 8).unwrap(), Some(vec![7; 8]));
+        assert_eq!(read_at_most(&[][..], 8).unwrap(), Some(Vec::new()));
+    }
+
+    #[test]
+    fn a_scan_warns_of_the_first_file_it_couldnt_remove_and_only_that() {
+        // Found by the mutation run: warning at every failure but the first passed every
+        // test (two failures warn once either way). A path through a regular file can't be
+        // removed (ENOTDIR, on Linux and macOS, as root too): its first failure is warned
+        // of at once, and the two after it aren't.
+        use std::sync::Mutex;
+        use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+        struct Warnings(Arc<Mutex<u32>>);
+        impl<S: tracing::Subscriber> Layer<S> for Warnings {
+            fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
+                if *event.metadata().level() == tracing::Level::WARN {
+                    *self.0.lock().unwrap() += 1;
+                }
+            }
+        }
+        let scratch = Scratch::new("remove-warns");
+        let file = scratch.0.join("file");
+        std::fs::write(&file, b"x").unwrap();
+        let through = file.join("entry");
+        let mut scan = Scan {
+            entries: Vec::new(),
+            bytes: 0,
+            partials_removed: 0,
+            warned: false,
+        };
+        let warnings = Arc::new(Mutex::new(0));
+        let subscriber = tracing_subscriber::registry().with(Warnings(Arc::clone(&warnings)));
+        tracing::subscriber::with_default(subscriber, || {
+            assert!(!scan.remove(&through));
+            assert_eq!(
+                *warnings.lock().unwrap(),
+                1,
+                "the first failure is warned of"
+            );
+            assert!(!scan.remove(&through));
+            assert!(!scan.remove(&through));
+            // Gone already counts as removed, and isn't warned of.
+            assert!(scan.remove(&scratch.0.join("none")));
+        });
+        assert_eq!(*warnings.lock().unwrap(), 1);
+        assert!(scan.warned);
+        assert!(file.exists());
     }
 
     #[test]

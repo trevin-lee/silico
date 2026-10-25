@@ -71,3 +71,25 @@ crates/silico-core/src/pool.rs | Shared::supersede | delete ! | #125
 crates/silico-core/src/pool.rs | Shared::next | replace && with || | #125
 crates/silico-core/src/pool.rs | Shared::next | replace && with || | #125
 crates/silico-core/src/command/session.rs | Revision::number | replace Revision::number -> u64 with 1 | #127
+crates/silico-core/src/cache.rs | open_to_read | replace | with ^ | #129
+crates/silico-core/src/file.rs | in_place | replace > with >= | #129
+crates/silico-protocol/src/profile.rs | side_of_line | replace > with >= | #129
+crates/silico-core/src/document/quantity.rs | parse_wide | replace < with <= | #129
+crates/silico-core/src/naming/freecad.rs | compare | replace || with && | #129
+crates/silico-core/src/pool.rs | Keeper<'_>::tend | replace + with - | #129
+crates/silico-core/src/pool.rs | Keeper<'_>::tend | replace < with <= | #129
+crates/silico-core/src/worker.rs | <impl Read for PatientReader>::read | replace match guard e.kind() == io::ErrorKind::WouldBlock with true | #129
+crates/silico-core/src/worker.rs | Worker::wait_for_exit | replace < with <= | #129
+crates/silico-core/src/worker.rs | wait_for | replace * with + | #129
+crates/silico-core/src/worker.rs | wait_for | replace * with + | #129
+crates/silico-core/src/worker.rs | wait_for | replace * with / | #129
+crates/silico-kernel/src/lib.rs | amount_of | delete - | #129
+crates/silico-kernel/src/lib.rs | amount_of | replace < with <= | #129
+crates/silico-kernel/src/lib.rs | amount_of | replace > with >= | #129
+crates/silico-kernel/src/lib.rs | amount_of | replace > with == | #129
+crates/silico-kernel/src/lib.rs | amount_of | replace * with + | #129
+crates/silico-kernel/src/lib.rs | profile_face | replace || with && | #129
+crates/silico-kernel/src/lib.rs | amount_of | replace > with >= | #129
+crates/silico-kernel/src/lib.rs | amount_of | replace > with == | #129
+crates/silico-kernel/src/lib.rs | amount_of | replace * with + | #129
+crates/silico-kernel/src/lib.rs | amount_of | replace * with / | #129

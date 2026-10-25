@@ -839,3 +839,11 @@ fn a_sketchs_name_in_any_other_form_or_whole_is_refused_saying_why() {
     // A sketch's name inside a feature's is a source: read.
     assert!(parse("pppppppp.pad.Face(G ssssssss.sketch.Edge.6t7v8w9x)").is_ok());
 }
+
+#[test]
+fn a_name_errors_text_is_its_reason_then_its_column() {
+    // "aaaaaaaa.box.Face1" is 18 characters: the space after it is column 19 (found by the
+    // mutation run: the text was never read).
+    let error = parse("aaaaaaaa.box.Face1 ").unwrap_err();
+    assert_eq!(error.to_string(), "more after the name, at column 19");
+}

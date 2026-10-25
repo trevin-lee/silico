@@ -201,3 +201,113 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+    use std::os::unix::net::UnixStream;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use silico_protocol::{
+        DebugOp, Failure, FrameReader, Generation, Op, Refusal, Reply, Request, RequestId,
+        Response, TraceId, write_message,
+    };
+
+    use super::{Platform, serve};
+
+    /// What a test's subscriber writes.
+    #[derive(Clone, Default)]
+    struct Log(Arc<Mutex<Vec<u8>>>);
+
+    impl io::Write for Log {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Serves one request on `platform`, its handler answering `Done`: the response, and
+    /// what the worker logged.
+    fn serve_one(platform: &Platform) -> (Response, String) {
+        let (core, worker) = UnixStream::pair().unwrap();
+        let request = Request {
+            id: RequestId(0),
+            generation: Generation(0),
+            trace: TraceId(1),
+            op: Op::Debug(DebugOp::Sleep { millis: 0 }),
+        };
+        write_message(&mut &core, &request).unwrap();
+        core.shutdown(std::net::Shutdown::Write).unwrap();
+        let log = Log::default();
+        let writer = log.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            serve(worker, platform, |_, _, _, _| Ok(Reply::Done))
+        })
+        .unwrap();
+        let mut frames = FrameReader::new(core);
+        assert_eq!(
+            frames.read_frame().unwrap(),
+            Some(Vec::new()),
+            "the started frame"
+        );
+        let response = frames.read_message::<Response>().unwrap().unwrap();
+        let log = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+        (response, log)
+    }
+
+    #[test]
+    fn traps_still_on_after_switching_off_are_logged_as_not_switched_off() {
+        // Switching off says it worked, but a trap bit stays set: they aren't off.
+        let platform = Platform {
+            fp_trap_mask: || 0x100,
+            disable_fp_traps: || Ok(()),
+            built_from: "test",
+        };
+        let (response, log) = serve_one(&platform);
+        assert_eq!(
+            response.result,
+            Err(Failure::new(Refusal::FpTrapsOn {
+                mask: 0x100,
+                op: "DebugSleep".to_owned(),
+            }))
+        );
+        assert!(log.contains("switched off: false"), "{log}");
+    }
+
+    #[test]
+    fn traps_switched_back_off_are_logged_as_switched_off() {
+        // On after the request and off once switched off: the request still fails, and the
+        // log says they're off again (the other test's positive control).
+        static ON: AtomicBool = AtomicBool::new(true);
+        let platform = Platform {
+            fp_trap_mask: || u32::from(ON.load(Ordering::SeqCst)),
+            disable_fp_traps: || {
+                ON.store(false, Ordering::SeqCst);
+                Ok(())
+            },
+            built_from: "test",
+        };
+        let (response, log) = serve_one(&platform);
+        assert!(
+            matches!(
+                response.result,
+                Err(Failure {
+                    refusal: Refusal::FpTrapsOn { mask: 1, .. },
+                    ..
+                })
+            ),
+            "{:?}",
+            response.result
+        );
+        assert!(log.contains("switched off: true"), "{log}");
+    }
+}

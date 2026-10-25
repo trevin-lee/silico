@@ -441,6 +441,23 @@ fn an_empty_input_is_refused_naming_which() {
 }
 
 #[test]
+fn a_lone_vertex_isnt_an_empty_input() {
+    // An empty shape has no faces, edges, or vertices; a lone vertex has one, so a boolean
+    // takes it. Its common with a 10 mm box from the origin, the vertex at (20, 0, 0), is
+    // empty either way round (FreeCAD 1.1.3: a compound of nothing), so it's refused for
+    // its result, not for an empty input. The vertex is FreeCAD 1.1.3's
+    // Part.Vertex(20, 0, 0).exportBrepToString().
+    const VERTEX: &str = "\nCASCADE Topology V1, (c) Matra-Datavision\nLocations 0\nCurve2ds 0\nCurves 0\nPolygon3D 0\nPolygonOnTriangulations 0\nSurfaces 0\nTriangulations 0\n\nTShapes 1\nVe\n1e-07\n20 0 0\n0 0\n\n1101101\n*\n\n+1 0 ";
+    let vertex = silico_kernel::from_text_brep(VERTEX.as_bytes()).unwrap();
+    let b = make(&cube(10.0)).unwrap();
+    for (base, tool, order) in [(&b, &vertex, "box first"), (&vertex, &b, "vertex first")] {
+        let err = boolean(BooleanOp::Common, base, tool).err().unwrap();
+        assert_eq!(err.kind(), KernelErrorKind::Failed, "{order}: {err}");
+        assert_eq!(err.message(), "the common's result is empty", "{order}");
+    }
+}
+
+#[test]
 fn after_a_refused_boolean_the_worker_goes_on() {
     // Each refusal (an empty input, an empty result, an offset that isn't a number) is
     // followed by an operation that works, on the same worker.

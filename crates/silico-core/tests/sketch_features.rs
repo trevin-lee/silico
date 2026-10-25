@@ -485,6 +485,24 @@ fn a_sweep_that_doesnt_fit_its_type_is_refused_naming_its_feature_and_field() {
             "extent.type through_all is a pocket's: a pad goes a length from its sketch",
             "write extent.type as one_side, symmetric, or two_sides",
         ),
+        // A pad's up-to-face and a revolve's through-all are neither of theirs, not a
+        // pocket's through-all (found by the mutation run: either, not both, read as that).
+        (
+            pad_extent,
+            r#""extent": {"type": "up_to_face", "length": 10}"#,
+            "p0000001",
+            "extent.type",
+            "extent.type \"up_to_face\" isn't one of a pad's, one_side, symmetric, two_sides",
+            "write extent.type as one of one_side, symmetric, two_sides",
+        ),
+        (
+            revolve_extent,
+            r#""extent": {"type": "through_all", "reversed": false}"#,
+            "r0000001",
+            "extent.type",
+            "extent.type \"through_all\" isn't one of a revolve's, one_side, symmetric",
+            "write extent.type as one of one_side, symmetric",
+        ),
         (
             pocket_extent,
             r#""extent": {"type": "up_to_face", "reversed": true}"#,
@@ -684,6 +702,41 @@ fn a_fillet_naming_a_sweeps_element_says_the_sweeps_type_and_reads_its_names() {
 }
 
 // Recompute and the outline.
+
+#[test]
+fn a_fillet_naming_an_edge_made_from_a_sketchs_only_region_is_admitted() {
+    // Design S4: a sketch's only region, `s.sketch.Face1`, is stable by design. An edge
+    // where a box's side meets a pocket's floor names it inside, and passes the gate; the
+    // same edge named from the pocket's face by number doesn't (found by the mutation run).
+    let sketch = rectangle("s0000001", "xy", [0.0, 0.0], 4.0, 2.0);
+    let fillet = |edge: &str| {
+        format!(
+            r#"{{"id": "f0000001", "type": "fillet", "v": 1, "name": "F", "base": "q0000001", "edges": ["{edge}"], "radius": 1}}"#
+        )
+    };
+    let features = |edge: &str| {
+        [
+            sketch.clone(),
+            block("k7f2qx3m"),
+            pocket("q0000001", "k7f2qx3m", "s0000001", TEN),
+            fillet(edge),
+        ]
+    };
+    let floor = features(
+        "q0000001.pocket.Edge(G k7f2qx3m.box.Face1, G q0000001.pocket.Face(G s0000001.sketch.Face1))",
+    );
+    checked(&floor.iter().map(String::as_str).collect::<Vec<_>>()).unwrap();
+    let numbered = features("q0000001.pocket.Edge(G k7f2qx3m.box.Face1, G q0000001.pocket.Face3)");
+    let invalid = checked(&numbered.iter().map(String::as_str).collect::<Vec<_>>()).unwrap_err();
+    assert_eq!(invalid.total(), 1, "{:#?}", invalid.errors());
+    assert!(
+        invalid.errors()[0]
+            .message()
+            .contains("a duplicate (~n) or an operation's element by its number"),
+        "{}",
+        invalid.errors()[0]
+    );
+}
 
 #[test]
 fn recompute_builds_a_sweep_from_its_sketch_and_what_uses_it() {

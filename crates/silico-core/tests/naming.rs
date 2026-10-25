@@ -92,6 +92,56 @@ fn two_elements_that_come_about_alike_are_numbered_and_marked() {
     assert_eq!(map.element(&second), Some(element(ElementKind::Edge, 2)));
 }
 
+#[test]
+fn three_elements_that_come_about_alike_are_each_numbered_on_the_one_name() {
+    // Three edges joining the same two vertices, named from them alike: the name, `~1`,
+    // and `~2`, never a `~` on a `~` (found by the mutation run: two stop short of it).
+    // FreeCAD renames each try from the name itself, its i-th `;D<i>`
+    // (`ElementMap::renameDuplicateElement`, debug builds), so the third is `;D2`.
+    let history = History {
+        inputs: vec![InputHistory {
+            faces: vec![],
+            edges: vec![],
+            vertices: vec![kept(1), kept(2)],
+        }],
+        result: ElementCounts {
+            faces: 0,
+            edges: 3,
+            vertices: 2,
+            solids: 0,
+        },
+        ends: Default::default(),
+        topology: Topology {
+            face_edges: vec![],
+            outer_edges: vec![],
+            edge_vertices: vec![vec![1, 2], vec![2, 1], vec![1, 2]],
+        },
+    };
+    history.validate(1).unwrap();
+    let input = ElementMap::by_number(id("aaaaaaaa"), OpCode::Fuse, BOX);
+    let map = ElementMap::operation(id("rrrrrrrr"), OpCode::Fuse, &[&input], &history);
+    let x = "rrrrrrrr.fuse.Edge(L aaaaaaaa.fuse.Vertex1, aaaaaaaa.fuse.Vertex2)";
+    let mut got = names(&map, ElementKind::Edge, 3);
+    got.sort();
+    assert_eq!(got, [x.to_owned(), format!("{x}~1"), format!("{x}~2")]);
+    let mut freecads: Vec<String> = (1..=3)
+        .map(|i| freecad::text(&map.name(element(ElementKind::Edge, i)).unwrap()))
+        .collect();
+    freecads.sort();
+    assert_eq!(
+        freecads,
+        [
+            "Vertex1;:L(Vertex2);FUS",
+            "Vertex1;:L(Vertex2);FUS;D1",
+            "Vertex1;:L(Vertex2);FUS;D2"
+        ]
+    );
+    for i in 1..=3 {
+        let edge = element(ElementKind::Edge, i);
+        assert_eq!(map.element(&map.name(edge).unwrap()), Some(edge));
+    }
+}
+
 fn reported(kind: ElementKind, index: u32, position: u32) -> Reported {
     Reported {
         element: element(kind, index),
