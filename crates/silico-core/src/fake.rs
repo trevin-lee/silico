@@ -792,7 +792,7 @@ fn answer(op: &Op) -> Result<Reply, Error> {
 /// `second`, of one whose counts are `second_counts`: each element at (n, 0, 0), its number
 /// `n`, as its description has a face's centre and a vertex (`described`), so the distance
 /// is how far apart the numbers are, met there, once. An element the shape hasn't is
-/// refused, naming `first` or `second`, as a worker refuses it.
+/// refused, naming `first` or `second`, as a worker refuses it, in the same words.
 fn distance(
     first_counts: &ElementCounts,
     first: ElementRef,
@@ -810,9 +810,10 @@ fn distance(
             ElementKind::Solid => 0,
         };
         if element.index == 0 || element.index > total {
-            return Err(Error::new(
-                ErrorCode::InvalidInput,
-                format!(
+            // As a worker's refusal, worded as the worker client words one.
+            let refusal = silico_protocol::Refusal::InvalidParameter {
+                parameter: parameter.to_owned(),
+                message: format!(
                     "{parameter} is {element}, and its shape has {total} {}",
                     if total == 1 {
                         one_of(element.kind)
@@ -820,8 +821,11 @@ fn distance(
                         element.kind.plural()
                     }
                 ),
-            )
-            .with_parameter(parameter));
+            };
+            return Err(crate::worker::failure_error(
+                "Distance",
+                silico_protocol::Failure::new(refusal),
+            ));
         }
     }
     let at = |element: ElementRef| [f64::from(element.index), 0.0, 0.0];

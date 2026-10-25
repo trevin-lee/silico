@@ -1013,6 +1013,12 @@ pub fn describe(
 /// it's met, chosen by their coordinates ([`silico_protocol::witness`]), and how many pairs
 /// OCCT found. Refused, naming `first` or `second`, for a solid or an element its shape
 /// hasn't; and if OCCT finds no distance.
+///
+/// OCCT's search isn't symmetric: given the two elements the other way round, it can find
+/// other pairs, and so another witness, and a distance an ulp off. So it's always given them
+/// in one order, the lesser first (by their shapes' B-reps, then by kind and number), and its
+/// answer is swapped back: swapping the elements swaps the witness's points and nothing
+/// else.
 pub fn distance(
     shape: &Shape,
     first: silico_protocol::ElementRef,
@@ -1031,14 +1037,35 @@ pub fn distance(
     let first_kind = kind(first, "first")?;
     let second_kind = kind(second, "second")?;
     let second_shape = other.unwrap_or(shape);
-    let out = ffi::distance(
-        shape.get()?,
-        first_kind,
-        first.index,
-        second_shape.get()?,
-        second_kind,
-        second.index,
-    )?;
+    let reversed = match other {
+        None => (second.kind, second.index) < (first.kind, first.index),
+        Some(other) => {
+            let (a, b) = (to_brep(shape)?, to_brep(other)?);
+            (b.as_slice(), second.kind, second.index) < (a.as_slice(), first.kind, first.index)
+        }
+    };
+    // The first's totals and pairs as OCCT gives them, the second's after.
+    let mut out = if reversed {
+        let mut out = ffi::distance(
+            second_shape.get()?,
+            second_kind,
+            second.index,
+            shape.get()?,
+            first_kind,
+            first.index,
+        )?;
+        std::mem::swap(&mut out.first_total, &mut out.second_total);
+        out
+    } else {
+        ffi::distance(
+            shape.get()?,
+            first_kind,
+            first.index,
+            second_shape.get()?,
+            second_kind,
+            second.index,
+        )?
+    };
     if !out.found {
         let missing = |element: silico_protocol::ElementRef, total: u32, parameter: &str| {
             (element.index == 0 || element.index > total).then(|| {
@@ -1070,10 +1097,12 @@ pub fn distance(
         ));
     }
     let point = |p: &ffi::Point3| [p.x, p.y, p.z];
-    let pairs: Vec<[[f64; 3]; 2]> = out
-        .pairs
+    let pairs: Vec<[[f64; 3]; 2]> = std::mem::take(&mut out.pairs)
         .chunks_exact(2)
-        .map(|pair| [point(&pair[0]), point(&pair[1])])
+        .map(|pair| {
+            let (a, b) = (point(&pair[0]), point(&pair[1]));
+            if reversed { [b, a] } else { [a, b] }
+        })
         .collect();
     let Some([from, to]) = silico_protocol::witness(&pairs) else {
         return Err(KernelError::caused(

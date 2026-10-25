@@ -654,16 +654,13 @@ fn swapping_the_elements_swaps_the_witness_and_nothing_else() {
     // docs/ports/measure.md and `witness`'s doc: "swapping the elements swaps its points
     // and nothing else". Each pair below, measured with its elements one way and the other.
     //
-    // BREAKS: OCCT's BRepExtrema_DistShapeShape isn't symmetric in its two shapes where it
-    // iterates (surface and curve extrema), and the worker gives OCCT the elements in the
-    // order they came. Swapped, two skew spheres' witness moves by 3e-8; two conics of
-    // offsets_and_conics.brep (Edge5, Edge6) give distances an ulp apart
-    // (1.929613681389947 and 1.9296136813899467) and 2 solutions one way, 1 the other; and
-    // two faces of NIST's CTC 01 (Face25, Face39, 507.5 apart) give witnesses 47 mm apart
-    // (z = -0.01875 one way, z = -47.3635 the other), as each way finds other pairs and the
-    // witness is the first of whichever pairs it found. Measuring in one order whatever
-    // order the elements came in (say, by their kind, number, and B-rep bytes), and
-    // swapping the answer back, would make it hold.
+    // OCCT's BRepExtrema_DistShapeShape isn't symmetric in its two shapes where it iterates
+    // (surface and curve extrema): given them the other way round, two skew spheres'
+    // witness moved by 3e-8; two conics of offsets_and_conics.brep (Edge5, Edge6) gave
+    // distances an ulp apart and 2 solutions one way, 1 the other; and two faces of NIST's
+    // CTC 01 (Face25, Face39, 507.5 apart) gave witnesses 47 mm apart, as each way found
+    // other pairs. So `distance` gives OCCT the elements in one order, whatever order they
+    // came in (by their shapes' B-reps, then kind and number), and swaps its answer back.
     let ball = sphere(5.0);
     let skew = moved(&ball, [12.0, 5.0, -3.0]);
     let conics = from_text_brep(&fixture("offsets_and_conics.brep")).unwrap();
@@ -773,12 +770,10 @@ fn the_fakes_refusals_read_as_a_workers() {
     // code, parameter, message, cause, suggestion, and elements, so a core test on the fake
     // sees what an agent would.
     //
-    // BREAKS: the worker client words a worker's InvalidParameter refusal with the
-    // suggestion "change the value the message names" (`worker::failure_error`); the fake's
-    // distance (fake.rs, `distance`) builds its own `Error` with none, so the fake's
-    // refusal of Face7 has no suggestion and the worker's has one. Building the fake's
-    // refusal as the worker's `Failure` and wording it with `failure_error` (as
-    // `FakeKernel::refuse_as_worker` does) would make them one.
+    // The worker client words a worker's InvalidParameter refusal with the suggestion
+    // "change the value the message names" (`worker::failure_error`); the fake's distance
+    // builds its refusal as the worker's `Failure` and words it with `failure_error`, as
+    // `FakeKernel::refuse_as_worker` does, so the two are one.
     let fake = FakeKernel::new(1).unwrap();
     let block = Primitive::Box {
         dx: 1.0,

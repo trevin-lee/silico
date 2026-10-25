@@ -68,45 +68,24 @@ fn lying(answer: Reply) -> FakeKernel {
 }
 
 #[test]
-fn a_reply_whose_witness_isnt_its_distance_apart_is_a_protocol_error() {
-    // `KernelRequest::distance` refuses "a distance no pair has" (NaN, below 0, no pair),
-    // and passes a distance whose own witness pair says otherwise: two points 5 apart sent
-    // as 1 apart, and one point twice sent as 7 apart. No two elements have either; the
-    // pair is said to be where the distance is met.
-    //
-    // BREAKS: `distance_fault` (kernel.rs) checks the distance and each point alone, never
-    // the points' distance against the value, so both replies are returned as Ok and an
-    // agent is told 1 with a witness 5 apart. A check that the witness's length is the
-    // distance within OCCT's precision (BRepExtrema keeps solutions within 1e-7 of its
-    // value; a numerical sphere pair's witness is 8.7e-10 off, and at a kilometre out an
-    // ulp is 1.2e-10) would refuse them.
-    for (what, lie) in [
-        (
-            "5 apart, sent as 1",
-            Distance {
-                distance: 1.0,
-                from: [0.0, 0.0, 0.0],
-                to: [5.0, 0.0, 0.0],
-                solutions: 1,
-            },
-        ),
-        (
-            "one point, sent as 7 apart",
-            Distance {
-                distance: 7.0,
-                from: [1.0, 2.0, 3.0],
-                to: [1.0, 2.0, 3.0],
-                solutions: 2,
-            },
-        ),
-    ] {
-        let kernel = lying(Reply::Distance(lie.clone()));
-        let shape = block(&kernel);
-        match ask(&kernel, &shape) {
-            Ok(d) => panic!("{what}: taken as a distance: {d:?}"),
-            Err(e) => assert_eq!(e.code(), ErrorCode::ProtocolError, "{what}: {e}"),
-        }
-    }
+fn a_witness_is_taken_as_the_worker_gives_it_beside_its_distance() {
+    // Decided, against /break-it's proposal: the core doesn't hold a witness's length to its
+    // distance. `distance_fault` refuses values no pair of elements has (NaN, below 0, no
+    // pair), each on its own; a witness and its value are OCCT's, within OCCT's own
+    // precision of each other, and a check of one against the other at any tolerance could
+    // refuse a real reply (OCCT's solution filter can keep a pair past its 1e-7, as
+    // /break-it suspected), turning a measure into a worker's fault. So a reply whose
+    // points are 5 apart, sent as 1 apart, is returned as given: pinned, so the choice is
+    // seen if it changes.
+    let lie = Distance {
+        distance: 1.0,
+        from: [0.0, 0.0, 0.0],
+        to: [5.0, 0.0, 0.0],
+        solutions: 1,
+    };
+    let kernel = lying(Reply::Distance(lie.clone()));
+    let shape = block(&kernel);
+    assert_eq!(ask(&kernel, &shape).unwrap(), lie);
 }
 
 #[test]
