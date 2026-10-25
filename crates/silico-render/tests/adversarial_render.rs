@@ -3,8 +3,8 @@
 //! or drawn, and what's drawn is checked against a projection computed by hand here, never
 //! against a stored image. After every refusal the same worker must still draw.
 //!
-//! Tests marked `BREAKS:` fail on purpose: each is a bug report, and turns green when the
-//! bug is fixed.
+//! Tests marked `Was a break:` each found a bug the break-it run reported, since fixed;
+//! they guard against its return.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::cell::RefCell;
@@ -480,11 +480,10 @@ fn a_body_numbered_u32_max_carries_its_number() {
 
 #[test]
 fn normals_of_no_length_inward_or_huge_light_by_lamberts_law_clamped() {
-    // BREAKS: the design shades in linear light (the albedo times 0.35 + 0.65 max(0, n·l)),
-    // but `albedo * light` scales the `Rgba`'s alpha too, and `Color32::from` then
-    // premultiplies in gamma: the sRGB value is scaled instead. A face lit at the ambient
-    // only is (60, 61, 64), not (105, 107, 111); only a face square to the eye is right. A
-    // highlighted face's tint off square is wrong the same way.
+    // Was a break: the design shades in linear light (the albedo times 0.35 + 0.65
+    // max(0, n·l)), but `albedo * light` scaled the `Rgba`'s alpha too, and `Color32::from`
+    // then premultiplied in gamma: a face lit at the ambient only was (60, 61, 64), not
+    // (105, 107, 111), and a highlighted face's tint off square was wrong the same way.
     let mut w = worker();
     let linear = |c: u8| {
         let c = f64::from(c) / 255.0;
@@ -741,7 +740,7 @@ fn front_from(distance: f64, width: u32, height: u32) -> RenderScene {
 
 #[test]
 fn an_up_too_long_for_f32_draws_as_a_unit_up() {
-    // BREAKS: 1e20 is finite, so the check takes it, but its square overflows f32 in
+    // Was a break: 1e20 is finite, so the check takes it, but its square overflows f32 in
     // macaw's look_at (normalize_or_zero gives zero), which returns None, and the worker
     // falls back to the identity view (from the target down −z): a wrong picture as Ok.
     let mut w = worker();
@@ -755,7 +754,7 @@ fn an_up_too_long_for_f32_draws_as_a_unit_up() {
 
 #[test]
 fn an_up_too_short_for_f32_draws_as_a_unit_up() {
-    // BREAKS: as above, with an up of 1e-25: its square underflows f32 to 0.
+    // Was a break: as above, with an up of 1e-25: its square underflows f32 to 0.
     let mut w = worker();
     let want = ids(&mut w, &front_from(60.0, 200, 150));
     let mut scene = front_from(60.0, 200, 150);
@@ -767,7 +766,7 @@ fn an_up_too_short_for_f32_draws_as_a_unit_up() {
 
 #[test]
 fn an_orthographic_eye_nearer_the_target_than_f32_holds_draws_the_same() {
-    // BREAKS: an eye 1e-30 from the target is apart from it, so the check takes it; in f32
+    // Was a break: an eye 1e-30 from the target is apart from it, so the check takes it; in f32
     // the view's direction has a square of 0, look_at fails, and the identity view is drawn.
     // The box is moved so the target is the origin, where 1e-30 is representable.
     let mut w = worker();
@@ -981,7 +980,7 @@ fn a_box_from_a_corner_shows_exactly_its_three_near_faces_and_nine_near_edges_al
 
 #[test]
 fn an_up_nearly_along_an_oblique_view_keeps_the_roll_its_part_across_says() {
-    // BREAKS: the check takes an up whose part across the view is 1e-9 of its length or
+    // Was a break: the check takes an up whose part across the view is 1e-9 of its length or
     // more ("below it, the image's rotation about the view is lost in rounding"), but the
     // worker hands the up to look_at in f32, whose rounding of an oblique direction is
     // about 6e-8: an up 1e-8 across the view is rolled by rounding noise, not by its part
@@ -1015,7 +1014,7 @@ fn an_orthographic_eye_a_kilometre_away_draws_as_one_near() {
 
 #[test]
 fn an_orthographic_eye_far_past_the_documents_lengths_draws_as_one_near_or_is_refused() {
-    // BREAKS: the eye's f32 translation, rotated in f32, moves the image by about
+    // Was a break: the eye's f32 translation, rotated in f32, moves the image by about
     // |eye| × 6e-8 (60 mm at 1e9, against 0.25 mm pixels), and the far plane at |eye| leaves
     // the depth buffer no precision: hidden edges are drawn. The check takes any finite
     // eye; the document's lengths stop at 1e6, a camera's don't.
@@ -1038,9 +1037,9 @@ fn an_orthographic_eye_far_past_the_documents_lengths_draws_as_one_near_or_is_re
 
 #[test]
 fn a_perspective_view_doesnt_depend_on_how_far_along_its_ray_the_target_is() {
-    // BREAKS: the near plane is 1e-4 of the eye's distance to the target, not to what's in
-    // view, so a target 1e6 mm along the ray (the document's largest length) puts the near
-    // plane 100 mm out, past the box 80 mm away, and clips it whole.
+    // Was a break: the near plane was 1e-4 of the eye's distance to the target, not of
+    // what's in view, so a target 1e6 mm along the ray (the document's largest length) put
+    // the near plane 100 mm out, past the box 80 mm away, and clipped it whole.
     let mut w = worker();
     let scene = |target_y: f64| RenderScene {
         bodies: vec![body(1, the_box())],
@@ -1314,7 +1313,7 @@ fn allowed(scene: &RenderScene) -> std::collections::BTreeSet<PixelId> {
 
 #[test]
 fn random_hostile_scenes_are_refused_exactly_as_the_check_says_or_drawn_with_their_own_ids() {
-    // BREAKS: finite numbers past f32's reach (a position or target of 1e39, a camera's of
+    // Was a break: finite numbers past f32's reach (a position or target of 1e39, a camera's of
     // 1e300) pass the check and fail in the worker as `Internal` ("Face1: Mesh has an invalid
     // bounding box Vec3(inf, ...)"): the targeted tests above, at random.
     hostile_scenes(true);
@@ -1394,10 +1393,10 @@ const NO_LAVAPIPE_CHILD: &str = "SILICO_RENDER_TEST_NO_LAVAPIPE";
 
 #[test]
 fn no_software_adapter_is_refused_as_data_not_as_a_bug_in_silico() {
-    // BREAKS: with no CPU adapter (lavapipe's compiled-in paths gone, or none built in),
-    // the worker answers `Refusal::Internal`, which the core words as a bug in Silico
+    // Was a break: with no CPU adapter (lavapipe's compiled-in paths gone, or none built
+    // in), the worker answered `Refusal::Internal`, which the core words as a bug in Silico
     // ("report it"). The design wants `worker_unavailable`, its cause saying lavapipe wasn't
-    // found; nothing in the refusal tells it from a real internal failure but its text.
+    // found: now `Refusal::NoAdapter`, of kind `Unavailable`.
     //
     // The worker's own restart always sets lavapipe's variables, so the render worker's
     // state is driven here in this test binary, run again as a child with its environment
@@ -1406,7 +1405,7 @@ fn no_software_adapter_is_refused_as_data_not_as_a_bug_in_silico() {
     // CPU adapter.
     if std::env::var_os(NO_LAVAPIPE_CHILD).is_some() {
         let mut state =
-            silico_render::worker::State::new(silico_render::worker::AdapterPolicy::Software);
+            silico_render::worker::State::new(silico_render::worker::RenderAdapter::Software);
         match state.handle(Op::Render(Box::new(front_of_a_box(8, 8)))) {
             Ok(_) => panic!("NO_LAVAPIPE_CHILD drawn: a CPU adapter with no Vulkan driver"),
             Err(failure) => {

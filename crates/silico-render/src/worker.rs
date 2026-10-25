@@ -1,7 +1,8 @@
 //! The render worker (ARCHITECTURE.md, Process model; docs/design/m4.6-render.md): the
 //! worker loop every worker shares (`silico_worker`), drawing scenes with `re_renderer`. It
-//! keeps its render context between renders; the core stops the worker after a large render
-//! and when it's idle, which is what gives the context's memory back.
+//! keeps its render context between renders; stopping the worker is what gives the
+//! context's memory back (the core will, after a large render and when it's idle: the
+//! design's step 3).
 
 use silico_protocol::{Failure, Op, Refusal, Reply};
 
@@ -14,9 +15,10 @@ pub const PLATFORM: silico_worker::Platform = silico_worker::Platform {
     built_from: "re_renderer 0.38.1 on wgpu 30",
 };
 
-/// Which adapter the worker draws on (the core's one say, given as an argument).
+/// Which adapter the worker draws on: the core's one say, given as an argument
+/// (docs/design/m4.6-render.md, *How the worker gets its rasterizer*).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AdapterPolicy {
+pub enum RenderAdapter {
     /// Only a CPU adapter (lavapipe), or none: the default.
     Software,
     /// A CPU adapter if there is one, then a discrete GPU, then any.
@@ -26,12 +28,12 @@ pub enum AdapterPolicy {
 /// What the render worker keeps between requests: its render context, made on the first
 /// render.
 pub struct State {
-    policy: AdapterPolicy,
+    policy: RenderAdapter,
     renderer: Option<Renderer>,
 }
 
 impl State {
-    pub fn new(policy: AdapterPolicy) -> State {
+    pub fn new(policy: RenderAdapter) -> State {
         State {
             policy,
             renderer: None,

@@ -6,7 +6,7 @@
 use std::io::Write;
 use std::process::ExitCode;
 
-use silico_render::worker::{AdapterPolicy, PLATFORM, State};
+use silico_render::worker::{PLATFORM, RenderAdapter, State};
 
 fn main() -> ExitCode {
     if let Err(problem) = silico_render::lavapipe::reexec_with() {
@@ -14,9 +14,9 @@ fn main() -> ExitCode {
         return ExitCode::from(4);
     }
     let policy = if std::env::args_os().skip(1).any(|a| a == "--any-adapter") {
-        AdapterPolicy::Any
+        RenderAdapter::Any
     } else {
-        AdapterPolicy::Software
+        RenderAdapter::Software
     };
     let mut state = State::new(policy);
     silico_worker::run(&PLATFORM, move |_, _, op, _| state.handle(op))

@@ -2,9 +2,6 @@
 //! docs/design/m4.6-render.md, The protocol): the check against the design's rules restated
 //! here independently, over random scenes biased to their edges, and the numbers whose
 //! squares overflow or underflow f64.
-//!
-//! Tests marked `BREAKS:` fail on purpose: each is a bug report, and turns green when the
-//! bug is fixed.
 
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};

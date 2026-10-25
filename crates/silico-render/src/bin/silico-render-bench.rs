@@ -13,7 +13,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use silico_render::render::Renderer;
-use silico_render::worker::AdapterPolicy;
+use silico_render::worker::RenderAdapter;
 
 fn main() -> ExitCode {
     match run() {
@@ -61,7 +61,7 @@ fn run() -> Result<(), String> {
     silico_render::lavapipe::reexec_with()?;
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let (size, hold) = arguments(&args)?;
-    let adapter = silico_render::adapter(AdapterPolicy::Software)?;
+    let adapter = silico_render::adapter(RenderAdapter::Software)?;
     let started = Instant::now();
     let mut renderer = Renderer::new(&adapter)?;
     let context = started.elapsed();

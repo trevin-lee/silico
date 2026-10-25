@@ -32,11 +32,12 @@ pub const MIN_VIEW_HEIGHT: f64 = 1e-6;
 /// pixels go missing (lavapipe drew a 40 mm face whole at 1e-4 of its reach, not at 1e-5).
 pub const MIN_VIEW_HEIGHT_OF_REACH: f64 = 1e-5;
 
-/// The narrowest and widest a perspective view's angle may be, in degrees: narrower, what
-/// it sees lands past where f32 clips it exactly (as [`MIN_VIEW_HEIGHT_OF_REACH`]; an
-/// orthographic view is the one for so close a look); wider, its half-angle rounds past a
-/// right angle.
+/// The narrowest a perspective view's angle may be, in degrees: narrower, what it sees lands
+/// past where f32 clips it exactly (as [`MIN_VIEW_HEIGHT_OF_REACH`]; an orthographic view is
+/// the one for so close a look).
 pub const MIN_FIELD_OF_VIEW: f64 = 1e-3;
+/// The widest a perspective view's angle may be, in degrees: wider, its half-angle in f32
+/// rounds past a right angle, and the view is drawn turned half a turn.
 pub const MAX_FIELD_OF_VIEW: f64 = 179.999;
 
 /// A scene for the render worker: the bodies in view, the camera, and the image's size.
@@ -258,7 +259,6 @@ impl RenderScene {
         }
         self.camera.check()?;
         let mut last = 0;
-        let mut reach = 0.0f64;
         for (i, body) in self.bodies.iter().enumerate() {
             if body.body <= last {
                 return Err(invalid(
@@ -271,13 +271,9 @@ impl RenderScene {
             }
             last = body.body;
             body.check(i)?;
-            let mesh = &body.mesh;
-            for p in mesh.positions.iter().chain(&mesh.edge_points) {
-                let d = sub(*p, self.camera.target);
-                reach = reach.max(dot(d, d).sqrt());
-            }
         }
         if let Projection::Orthographic { view_height } = self.camera.projection {
+            let reach = self.reach(self.camera.target);
             let least = reach * MIN_VIEW_HEIGHT_OF_REACH;
             if view_height < least {
                 return Err(invalid(
@@ -289,6 +285,22 @@ impl RenderScene {
             }
         }
         Ok(())
+    }
+}
+
+impl RenderScene {
+    /// How far the scene reaches from `from`: its farthest point (a mesh's position or an
+    /// edge's) from it, 0 for a scene with none. The check bounds an orthographic view's
+    /// zoom by it, and the renderer sets its clipping from it.
+    pub fn reach(&self, from: [f64; 3]) -> f64 {
+        self.bodies
+            .iter()
+            .flat_map(|b| b.mesh.positions.iter().chain(&b.mesh.edge_points))
+            .map(|p| {
+                let d = sub(*p, from);
+                dot(d, d).sqrt()
+            })
+            .fold(0.0, f64::max)
     }
 }
 

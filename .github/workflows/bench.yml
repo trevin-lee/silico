@@ -87,7 +87,7 @@ jobs:
           ref: ${{ inputs.ref }}
       - name: Toolchains
         run: bash .github/tools.sh
-      - name: Render probe
+      - name: Render bench
         run: |
           echo "Measuring $(git log -1 --format='%h %s')"
           pixi run cargo build --release -p silico-render --bin silico-render-bench
@@ -104,7 +104,7 @@ jobs:
             grep -o -w -e fma -e avx2 -e avx512f /proc/cpuinfo | sort -u | tr '\n' ' '
           } | tee "$RUNNER_TEMP/render.txt"
           {
-            echo "## Render probe: $(git log -1 --format='%h %s')"
+            echo "## Render bench: $(git log -1 --format='%h %s')"
             echo
             echo '```'
             cat "$RUNNER_TEMP/render.txt"
