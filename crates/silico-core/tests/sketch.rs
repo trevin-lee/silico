@@ -1255,5 +1255,10 @@ fn a_document_with_a_sketch_rebuilds_its_solids_and_the_sketch_makes_none() {
         .iter()
         .map(|c| c.op.name())
         .collect();
-    assert_eq!(calls, ["MakeBox", "Summarize"]);
+    // The box made, then measured: summarized and described, a batch each of its faces,
+    // edges, and vertices.
+    assert_eq!(
+        calls,
+        ["MakeBox", "Summarize", "Describe", "Describe", "Describe"]
+    );
 }

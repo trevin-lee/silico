@@ -644,6 +644,52 @@ fn a_worker_asked_to_describe_garbage_says_so_and_goes_on() {
     }
 }
 
+#[test]
+fn a_worker_claiming_endless_elements_is_refused_at_its_first_batch_against_the_summary() {
+    // A test worker answering every batch with as many sound faces as it asks for (1,000)
+    // and a total of u32::MAX: unchecked, `KernelWorker::describe` would ask 4,294,968
+    // batches of faces. Checked against the box's summary (6 faces, by hand), the first
+    // batch is the worker's fault: a summary and one batch asked, no more.
+    use silico_core::kernel::KernelRequest;
+    use silico_protocol::{DebugOp, Misbehavior};
+    let mut worker =
+        KernelWorker::start_worker(Path::new(env!("CARGO_BIN_EXE_silico-kernel-test-worker")))
+            .unwrap();
+    worker
+        .run(KernelRequest::debug(DebugOp::Misbehave(
+            Misbehavior::EndlessDescription,
+        )))
+        .unwrap();
+    let block = worker
+        .make(Primitive::Box {
+            dx: 1.0,
+            dy: 2.0,
+            dz: 3.0,
+        })
+        .unwrap();
+    let sent = worker.requests_sent();
+    let err = worker.describe(&block).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::ProtocolError, "{err}");
+    assert_eq!(
+        err.cause(),
+        Some("it says the shape has 4294967295 faces, and its summary counts 6")
+    );
+    assert_eq!(worker.requests_sent(), sent + 2);
+    // A test worker told nothing describes as a worker does: the box whole, 6, 12, and 8.
+    let mut plain =
+        KernelWorker::start_worker(Path::new(env!("CARGO_BIN_EXE_silico-kernel-test-worker")))
+            .unwrap();
+    let block = plain
+        .make(Primitive::Box {
+            dx: 1.0,
+            dy: 2.0,
+            dz: 3.0,
+        })
+        .unwrap();
+    let d = plain.describe(&block).unwrap();
+    assert_eq!((d.faces.len(), d.edges.len(), d.vertices.len()), (6, 12, 8));
+}
+
 // ---- Random flat solids: the divergence theorem ----
 
 /// For a solid of flat faces: Σ A·n over its faces (0 for a closed solid), as its length
@@ -1032,4 +1078,84 @@ fn an_extruded_bsplines_volume_is_right_or_occts_known_wrong_answer() {
         "{}",
         s.volume
     );
+}
+
+// ---------------------------------------------------------------------------------------
+// Descriptions made in the rebuild (M4.4), on real workers.
+
+/// Every document Silico keeps as a fixture: the golden ones and the oracle's sketch
+/// features (pads, pockets, revolves and grooves about their axes, cones from a point,
+/// fillets and chamfers), rebuilt on a pool of two workers.
+#[test]
+fn every_fixture_documents_solids_are_described_in_the_rebuild_as_their_maps_name_them() {
+    // Each built feature's description, made a batch at a time on whichever worker of the
+    // pool was free, is the one a worker of its own gives for the same shape, value for
+    // value; it holds as many of each kind as its summary counts and its element map names;
+    // and `elements` names every element of it. A description the core refuses (a value out
+    // of range for a cone's apex, a sphere's pole, a seam) would leave the solid undescribed,
+    // its summary standing (so no drift), and fail here as not described.
+    use silico_core::document::{Checked, FeatureId, read};
+    use silico_core::elements::elements;
+    use silico_core::fake::FakeSketches;
+    use silico_core::kernel::ElementKind;
+    use silico_core::pool::KernelPool;
+    use silico_core::recompute::{FeatureOutcome, Recompute, RunOutcome};
+    use std::time::Duration;
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let documents = [
+        "tests/golden/example.silico",
+        "tests/golden/chamfered-box.silico",
+        "tests/golden/fused-boxes.silico",
+        "tests/golden/plate-with-boss.silico",
+        "tests/golden/plate-with-holes.silico",
+        "tests/golden/pointed-cone.silico",
+        "tests/oracle/sketch-features.silico",
+    ];
+    let engine = Recompute::new(KernelPool::start_workers(Path::new(WORKER), 2).unwrap())
+        .with_sketches(FakeSketches::new());
+    let mut worker = KernelWorker::start_worker(Path::new(WORKER)).unwrap();
+    let mut solids = 0;
+    for document in documents {
+        let text = std::fs::read(root.join(document)).unwrap();
+        let checked = Checked::new(read(&text).unwrap()).unwrap();
+        let model = match engine.start(checked).wait_timeout(Duration::from_secs(300)) {
+            Ok(Ok(RunOutcome::Published(model))) => model,
+            Ok(other) => panic!("{document}: {other:?}"),
+            Err(_) => panic!("{document}: the rebuild took more than five minutes"),
+        };
+        assert!(model.drift().is_empty(), "{document}: {:?}", model.drift());
+        for (id, outcome) in model.features() {
+            let FeatureOutcome::Built { built, .. } = outcome else {
+                continue;
+            };
+            let what = format!("{document} {id}");
+            let described = model
+                .description(&FeatureId::new(id.as_str()).unwrap())
+                .unwrap_or_else(|| panic!("{what}: not described"));
+            assert_eq!(described, &worker.describe(&built.shape).unwrap(), "{what}");
+            let summary = built.summary().unwrap();
+            let counts = [
+                described.faces.len(),
+                described.edges.len(),
+                described.vertices.len(),
+            ];
+            assert_eq!(
+                counts,
+                [summary.faces, summary.edges, summary.vertices].map(|n| n as usize),
+                "{what}"
+            );
+            let map = model.element_map(id).unwrap();
+            assert_eq!(
+                counts,
+                [ElementKind::Face, ElementKind::Edge, ElementKind::Vertex].map(|k| map.count(k)),
+                "{what}"
+            );
+            let listed = elements(map, described.clone()).unwrap();
+            assert_eq!(listed.len(), counts.iter().sum::<usize>(), "{what}");
+            solids += 1;
+        }
+    }
+    // Enough solids that the fixtures' cones, revolves, and grooves are among them.
+    assert!(solids > 100, "{solids}");
 }

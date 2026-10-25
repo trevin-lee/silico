@@ -177,15 +177,20 @@ fn check_finite(summary: &ShapeSummary) -> Result<(), Failure> {
 }
 
 /// A batch of a description, its first numbered `first`, as the worker sends it: refused,
-/// naming the value by the kernel's number for its element, if one isn't finite (the core's
-/// check, `Description::validate`, names a value the same way).
+/// naming the value by the kernel's number for its element, if one isn't finite, or is out
+/// of what any element has (the core's own check, `Description::validate`, which the
+/// worker runs too, so a description the core would refuse is refused as data, a fact
+/// about the shape, not a worker's fault).
 fn described(first: u32, total: u32, description: Description) -> Result<Reply, Failure> {
-    match description.non_finite(first) {
-        Some((quantity, value)) => Err(Failure::new(Refusal::NotFinite {
+    if let Some((quantity, value)) = description.non_finite(first) {
+        return Err(Failure::new(Refusal::NotFinite {
             quantity: quantity.to_string(),
             value,
-        })),
-        None => Ok(Reply::Described { total, description }),
+        }));
+    }
+    match description.validate(first) {
+        Err(problem) => Err(Failure::new(Refusal::DescriptionImpossible { problem })),
+        Ok(()) => Ok(Reply::Described { total, description }),
     }
 }
 
@@ -289,6 +294,46 @@ mod tests {
             described(1, 1, d),
             Ok(Reply::Described { total: 1, .. })
         ));
+    }
+
+    #[test]
+    fn a_description_finite_but_out_of_range_is_refused_as_impossible_and_one_in_range_passes() {
+        // What the core's check would refuse from a worker as its fault is refused here, as
+        // data about the shape: a face's area of -1, a plane's normal 1.5 long. Named by the
+        // kernel's number (a batch from 7: its first face is Face7), as the check names it.
+        use super::{Refusal, Reply, described};
+        use silico_protocol::{Description, FaceDescription, Surface};
+        let face = |surface, area| Description {
+            faces: vec![FaceDescription {
+                surface,
+                area,
+                centroid: [0.0; 3],
+            }],
+            edges: Vec::new(),
+            vertices: Vec::new(),
+        };
+        let plane = |z| Surface::Plane {
+            normal: [0.0, 0.0, z],
+        };
+        for (description, said) in [
+            (face(plane(1.0), -1.0), "the kernel's Face7's area is -1"),
+            (
+                face(plane(1.5), 1.0),
+                "the kernel's Face7's normal [0.0, 0.0, 1.5] isn't a unit vector",
+            ),
+        ] {
+            match described(7, 7, description).unwrap_err().refusal {
+                Refusal::DescriptionImpossible { problem } => assert_eq!(problem, said),
+                other => panic!("{said}: {other:?}"),
+            }
+        }
+        // In range: an area of 0 (a face can be that small), a unit normal pointing down.
+        for description in [face(plane(1.0), 0.0), face(plane(-1.0), 2.5)] {
+            assert!(matches!(
+                described(7, 7, description.clone()),
+                Ok(Reply::Described { total: 7, description: sent }) if sent == description
+            ));
+        }
     }
 
     #[test]
