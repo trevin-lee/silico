@@ -1505,3 +1505,24 @@ fn replace_text_that_changes_only_a_feature_s_id_changes_the_document() {
     assert!(f.file().contains(r#""id": "f0000002""#));
     assert!(!f.file().contains("f0000001"));
 }
+
+#[test]
+fn a_path_below_a_member_the_feature_hasnt_is_a_field_it_hasnt() {
+    // A box has no note, and a pad here no base: neither has anything below it to set.
+    let f = opened(PAD);
+    for (feature, field, what) in [
+        ("k7f2qx3m", "note.text", "box"),
+        ("p0000001", "base.id", "pad"),
+    ] {
+        let error = the_error(&f.set(feature, field, "\"k7f2qx3m\""));
+        assert_eq!(
+            (error.message(), error.feature(), error.parameter()),
+            (
+                format!("a {what} has no field {field}").as_str(),
+                Some(feature),
+                Some("field")
+            )
+        );
+    }
+    assert_eq!(f.file(), PAD);
+}

@@ -703,8 +703,10 @@ pub(super) fn add_feature(
     json::unplace(&mut node);
     let place = format!("features[{index}]");
     let added = document::read_feature(index, node).map_err(|e| {
-        // The request's own field: an ID that isn't one is the request's `feature.id`.
-        if e.parameter() == Some("id") && e.feature() == Some(place.as_str()) {
+        // The request's own field: an ID that isn't one is the request's `feature.id`. The
+        // reader names a feature by its place only until it has read its ID, and the feature
+        // is an object, so every error that names its place is its `id`'s.
+        if e.feature() == Some(place.as_str()) {
             e.with_parameter("feature.id")
         } else {
             e
