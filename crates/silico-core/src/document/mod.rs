@@ -14,7 +14,9 @@ mod sketch_gate;
 mod validate;
 pub(crate) mod write;
 
-pub(crate) use decode::{angle_suggestion, field_name, length_suggestion, shown_number};
+pub(crate) use decode::{
+    angle_suggestion, area_suggestion, field_name, length_suggestion, shown_number,
+};
 
 pub(crate) use decode::optional_members;
 pub use fingerprint::{Difference, Fingerprint, MEASURE_DECIMALS, Measure};

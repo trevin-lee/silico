@@ -1,0 +1,7 @@
+{
+  "elements": [
+    {"name": "k7f2qx3m.box.Face6", "aliases": [], "stable": true, "feature": "m3tq8v0z", "kind": "face", "type": "plane", "area": 780.365046, "length": null, "position": null, "normal": [0, 0, 1], "centroid": [20, 10, 10], "start": null, "end": null, "midpoint": null, "straight": null, "axis": null, "radius": null, "diameter": null, "major_radius": null, "minor_radius": null, "half_angle": null, "apex": null, "default_x": "+x"}
+  ],
+  "matched": 1,
+  "tied": null
+}

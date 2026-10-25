@@ -74,6 +74,8 @@ mod session_tracing;
 mod session_transactions;
 #[path = "shared_result_checks.rs"]
 mod shared_result_checks;
+#[path = "wire_commands.rs"]
+mod wire_commands;
 
 /// Every file in tests/ is built: this crate lists its test programs (`autotests = false`),
 /// so a new file must be added as a module of one, or as one, or it would never run.

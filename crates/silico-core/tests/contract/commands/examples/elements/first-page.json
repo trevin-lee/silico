@@ -1,0 +1,8 @@
+{
+  "elements": [
+    {"name": "k7f2qx3m.box.Face1", "aliases": [], "stable": true, "feature": "m3tq8v0z", "kind": "face", "type": "plane", "area": 200, "length": null, "position": null, "normal": [-1, 0, 0], "centroid": [0, 10, 5], "start": null, "end": null, "midpoint": null, "straight": null, "axis": null, "radius": null, "diameter": null, "major_radius": null, "minor_radius": null, "half_angle": null, "apex": null, "default_x": "-y"},
+    {"name": "k7f2qx3m.box.Face2", "aliases": [], "stable": true, "feature": "m3tq8v0z", "kind": "face", "type": "plane", "area": 200, "length": null, "position": null, "normal": [1, 0, 0], "centroid": [40, 10, 5], "start": null, "end": null, "midpoint": null, "straight": null, "axis": null, "radius": null, "diameter": null, "major_radius": null, "minor_radius": null, "half_angle": null, "apex": null, "default_x": "+y"}
+  ],
+  "total": 32,
+  "next": {"revision": 6, "feature": "m3tq8v0z", "name": "k7f2qx3m.box.Face2"}
+}
