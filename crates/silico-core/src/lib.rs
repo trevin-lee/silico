@@ -6,7 +6,8 @@
 //! ([`document`]), recompute ([`recompute::Recompute`]), and the rebuild cache
 //! ([`cache::Cache`]), with each feature's fingerprint ([`document::Fingerprint`]),
 //! topological naming ([`naming`]: each element's name, from the kernel's history), and the
-//! first of the commands every client runs ([`command`]: gate, rebuild, check, format, outline), and a
+//! first of the commands every client runs ([`command`]: gate, rebuild, check, format, outline,
+//! and sessions, each a document held open between commands on a thread of its own), and a
 //! document's file read and saved safely ([`file`]); and a solved sketch's profile
 //! ([`profile`]: its loops, nested into regions and oriented, or what keeps it from being
 //! one, named), and what a sketch feature's rebuild refuses of its profile, its solve, and
@@ -15,6 +16,7 @@
 pub mod cache;
 pub mod command;
 pub mod document;
+pub mod elements;
 mod error;
 pub mod export;
 #[cfg(feature = "fake")]

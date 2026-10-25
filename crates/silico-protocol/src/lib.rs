@@ -8,6 +8,7 @@
 //! there's no version negotiation.
 
 mod chamfer;
+mod describe;
 mod export;
 mod faces;
 pub mod frame;
@@ -21,6 +22,10 @@ mod sweep;
 use serde::{Deserialize, Serialize};
 
 pub use chamfer::ChamferSize;
+pub use describe::{
+    DESCRIBE_BATCH, Description, EdgeCurve, EdgeDescription, FaceDescription, Quantity, Surface,
+    What, describe_in_batches,
+};
 pub use export::{
     DEFAULT_EXPORT_TOLERANCE, ExportMesh, MAX_EXPORT_TOLERANCE, MAX_EXPORT_TRIANGLES,
     MIN_EXPORT_TOLERANCE, check_export_tolerance, check_export_triangles, export_angle,
@@ -208,6 +213,16 @@ pub enum Op {
         start: f64,
         angle: f64,
     },
+    /// The geometry and measures of `shape`'s elements of `kind` numbered from `first` (from
+    /// 1, in `TopExp::MapShapes` order), `count` of them or as many as there are
+    /// (docs/design/m4.4-describe.md): one batch, at most [`DESCRIBE_BATCH`]. Replies with
+    /// [`Reply::Described`].
+    Describe {
+        shape: ShapeData,
+        kind: ElementKind,
+        first: u32,
+        count: u32,
+    },
     /// A shape's solids meshed for export at `tolerance` mm, and its angular rule
     /// ([`export_angle`]), with where each face's nodes lie on the shape's edges and
     /// vertices; with `force_face_deflection`, no face's deflection raised for its own
@@ -233,6 +248,7 @@ impl Op {
             Op::Revolve { .. } => "Revolve",
             Op::Boolean { op, .. } => op.name(),
             Op::Tessellate { .. } => "Tessellate",
+            Op::Describe { .. } => "Describe",
             Op::ExportMesh { .. } => "ExportMesh",
             Op::Solve(_) => "Solve",
             Op::DragBegin(_) => "DragBegin",
@@ -388,6 +404,13 @@ pub enum Reply {
     },
     /// Where a drag's move left the sketch ([`Op::DragMove`]).
     Moved(Moved),
+    /// A batch of a shape's elements ([`Op::Describe`]): how many of the kind asked for the
+    /// shape has, and those asked for, in the description's list for that kind (its others
+    /// empty).
+    Described {
+        total: u32,
+        description: Description,
+    },
     /// A shape's solids meshed for export ([`Op::ExportMesh`]), boxed, as it's many lists.
     ExportMesh(Box<ExportMesh>),
 }
@@ -401,6 +424,7 @@ impl Reply {
             Reply::Summary(_) => "Summary",
             Reply::FreecadMeasures(_) => "FreecadMeasures",
             Reply::Mesh(_) => "Mesh",
+            Reply::Described { .. } => "Described",
             Reply::ExportMesh(_) => "ExportMesh",
             Reply::Solved(_) => "Solved",
             Reply::DragStarted { .. } => "DragStarted",

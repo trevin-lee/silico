@@ -16,9 +16,9 @@ use std::time::Duration;
 use example::EXAMPLE;
 use model::{WAIT, checked, described, id, published};
 use recompute::{calls_since, document, engine};
-use silico_core::document::{Checked, FeatureId};
+use silico_core::document::{Checked, FeatureId, Measure};
 use silico_core::fake::FakeKernel;
-use silico_core::kernel::{Generation, Kernel, KernelRequest, Op, Primitive};
+use silico_core::kernel::{Clients, Generation, Kernel, KernelRequest, Op, Primitive};
 use silico_core::pool::Pending;
 use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 use silico_core::{Error, ErrorCode};
@@ -960,4 +960,62 @@ fn a_key_debugs_as_its_hex() {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     );
     assert_eq!(format!("{key:?}"), format!("Key({hex})"));
+}
+
+#[test]
+fn engines_on_two_clients_of_one_kernel_at_once_never_supersede_each_other() {
+    // M4.2 (MA2): two documents' engines rebuilding at once, each on a client of one kernel.
+    // `B`'s five rebuilds advance only its own client, so `A`'s held box, of its first
+    // generation, survives them all. On one client (or global generations), `B`'s first
+    // rebuild supersedes `A`.
+    let kernel = FakeKernel::new(2).unwrap();
+    let first = Recompute::new(kernel.client());
+    let second = Recompute::new(kernel.client());
+    let hold = kernel.hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { .. })));
+    let a = first.start(checked(EXAMPLE));
+    // The box is held from the moment it's in the call record.
+    let deadline = std::time::Instant::now() + WAIT;
+    while !kernel.calls().iter().any(|c| c.op.name() == "MakeBox") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the box never started"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let runs: Vec<_> = (1..=5)
+        .map(|radius| {
+            second.start(document(&[&format!(
+                r#"{{"id": "s0000000", "type": "sphere", "v": 1, "name": "S", "position": [0, 0, 0], "radius": {radius}}}"#
+            )]))
+        })
+        .collect();
+    hold.release();
+    let Ok(Ok(RunOutcome::Published(model))) = a.wait_timeout(WAIT) else {
+        panic!("A wasn't published")
+    };
+    // 40 × 20 × 10 = 8000, in millionths.
+    let block = model.fingerprint(&id("k7f2qx3m")).unwrap();
+    assert_eq!(block.volume, Measure::from_millionths(8_000_000_000));
+    assert_eq!(
+        described(&model, "m3tq8v0z"),
+        "cut(box(40, 20, 10), translate(cylinder(2.5, 12), 20, 10, -1))"
+    );
+    // Each engine counts its own client's generations from 0: A's one rebuild is 1, B's
+    // fifth is 5.
+    assert_eq!(model.generation(), Generation(1));
+    let mut outcomes: Vec<RunOutcome> = runs
+        .into_iter()
+        .map(|run| run.wait_timeout(WAIT).ok().unwrap().unwrap())
+        .collect();
+    let Some(RunOutcome::Published(last)) = outcomes.pop() else {
+        panic!("B's last rebuild wasn't published")
+    };
+    assert_eq!(described(&last, "s0000000"), "sphere(5)");
+    assert_eq!(last.generation(), Generation(5));
+    // Its earlier ones were each published, or superseded by its own next.
+    assert!(
+        outcomes
+            .iter()
+            .all(|o| matches!(o, RunOutcome::Published(_) | RunOutcome::Superseded))
+    );
 }

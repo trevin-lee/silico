@@ -2,6 +2,17 @@
 #include "silico-kernel/src/lib.rs.h"
 
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepAdaptor_Surface.hxx>
+#include <algorithm>
+#include <GCPnts_AbscissaPoint.hxx>
+#include <Geom_BSplineCurve.hxx>
+#include <Geom_BezierCurve.hxx>
+#include <gp_Cone.hxx>
+#include <gp_Cylinder.hxx>
+#include <gp_Elips.hxx>
+#include <gp_Pln.hxx>
+#include <gp_Sphere.hxx>
+#include <gp_Torus.hxx>
 #include <BRepAlgo.hxx>
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
@@ -240,6 +251,213 @@ FreecadMeasures measure_as_freecad(const Shape &shape) {
   const bool bounded = tight_box(shape.shape, low, high);
   return FreecadMeasures{volume.Mass(), surface.Mass(), Point3{c.X(), c.Y(), c.Z()},
                          bounded,       low,           high};
+}
+
+namespace {
+Point3 point3(const gp_XYZ &p) { return Point3{p.X(), p.Y(), p.Z()}; }
+
+// An axis's origin and direction, into `origin` and `direction`.
+void put_axis(const gp_Ax1 &axis, Point3 &origin, Point3 &direction) {
+  origin = point3(axis.Location().XYZ());
+  direction = point3(axis.Direction().XYZ());
+}
+
+FaceOut describe_face(const TopoDS_Face &face, double precision) {
+  FaceOut out{};
+  GProp_GProps props;
+  BRepGProp::SurfaceProperties(face, props, precision);
+  out.area = props.Mass();
+  out.centroid = point3(props.CentreOfMass().XYZ());
+  const BRepAdaptor_Surface surface(face, false);
+  switch (surface.GetType()) {
+  case GeomAbs_Plane: {
+    // The surface's normal, Du × Dv: the plane's axis, or its opposite where the plane's
+    // frame is left-handed (a chamfer's, a revolve's, a mirrored shape's), as FreeCAD's
+    // Face.normalAt has it; reversed where the face is, so out of a solid. (An internal or
+    // external face's is its surface's: neither way is out.)
+    const gp_Pln plane = surface.Plane();
+    gp_Dir normal = plane.Axis().Direction();
+    if (!plane.Position().Direct()) {
+      normal.Reverse();
+    }
+    if (face.Orientation() == TopAbs_REVERSED) {
+      normal.Reverse();
+    }
+    out.surface = SurfaceType::Plane;
+    out.normal = point3(normal.XYZ());
+    break;
+  }
+  case GeomAbs_Cylinder: {
+    const gp_Cylinder c = surface.Cylinder();
+    out.surface = SurfaceType::Cylinder;
+    put_axis(c.Axis(), out.origin, out.direction);
+    out.radius = c.Radius();
+    break;
+  }
+  case GeomAbs_Cone: {
+    const gp_Cone c = surface.Cone();
+    out.surface = SurfaceType::Cone;
+    put_axis(c.Axis(), out.origin, out.direction);
+    out.radius = c.RefRadius();
+    out.angle = c.SemiAngle();
+    break;
+  }
+  case GeomAbs_Sphere: {
+    const gp_Sphere c = surface.Sphere();
+    out.surface = SurfaceType::Sphere;
+    put_axis(c.Position().Axis(), out.origin, out.direction);
+    out.radius = c.Radius();
+    break;
+  }
+  case GeomAbs_Torus: {
+    const gp_Torus c = surface.Torus();
+    out.surface = SurfaceType::Torus;
+    put_axis(c.Axis(), out.origin, out.direction);
+    out.radius = c.MajorRadius();
+    out.radius2 = c.MinorRadius();
+    break;
+  }
+  case GeomAbs_BezierSurface:
+    out.surface = SurfaceType::Bezier;
+    break;
+  case GeomAbs_BSplineSurface:
+    out.surface = SurfaceType::Bspline;
+    break;
+  case GeomAbs_SurfaceOfRevolution:
+    out.surface = SurfaceType::Revolution;
+    break;
+  case GeomAbs_SurfaceOfExtrusion:
+    out.surface = SurfaceType::Extrusion;
+    break;
+  case GeomAbs_OffsetSurface:
+    out.surface = SurfaceType::Offset;
+    break;
+  default:
+    out.surface = SurfaceType::Other;
+    break;
+  }
+  return out;
+}
+
+EdgeOut describe_edge(const TopoDS_Edge &edge, double precision) {
+  EdgeOut out{};
+  // Its ends in its curve's own order: its vertices as the edge runs forward, whatever
+  // orientation the face OCCT met it in first gives it, as FreeCAD's Edge.firstVertex()
+  // gives them, so they don't swap when an upstream edit reorders the faces. (Taken from the
+  // edge turned forward, since an internal or external edge, which a boolean can leave in a
+  // valid face, has no vertex forward or reversed in it as it is.)
+  TopoDS_Vertex first;
+  TopoDS_Vertex last;
+  TopExp::Vertices(TopoDS::Edge(edge.Oriented(TopAbs_FORWARD)), first, last, false);
+  if (first.IsNull() || last.IsNull()) {
+    throw Standard_Failure("an edge without both its vertices");
+  }
+  out.start = point3(BRep_Tool::Pnt(first).XYZ());
+  out.end = point3(BRep_Tool::Pnt(last).XYZ());
+  if (BRep_Tool::Degenerated(edge)) {
+    // No curve: a point (a sphere's pole, a cone's apex).
+    out.curve = CurveType::Other;
+    out.degenerated = true;
+    out.middle = out.start;
+    return out;
+  }
+  const BRepAdaptor_Curve curve(edge);
+  out.middle =
+      point3(curve.Value((curve.FirstParameter() + curve.LastParameter()) / 2.0).XYZ());
+  // OCCT's tolerance for a length is absolute (the integration stops when two estimates
+  // are that close): `precision` of a first estimate's length, so relative, as areas are.
+  const double rough = GCPnts_AbscissaPoint::Length(curve);
+  out.length = GCPnts_AbscissaPoint::Length(curve, precision * rough);
+  switch (curve.GetType()) {
+  case GeomAbs_Line:
+    out.curve = CurveType::Line;
+    break;
+  case GeomAbs_Circle: {
+    const gp_Circ c = curve.Circle();
+    out.curve = CurveType::Circle;
+    put_axis(c.Axis(), out.origin, out.direction);
+    out.radius = c.Radius();
+    break;
+  }
+  case GeomAbs_Ellipse: {
+    const gp_Elips c = curve.Ellipse();
+    out.curve = CurveType::Ellipse;
+    put_axis(c.Axis(), out.origin, out.direction);
+    out.radius = c.MajorRadius();
+    out.radius2 = c.MinorRadius();
+    break;
+  }
+  case GeomAbs_Hyperbola:
+    out.curve = CurveType::Hyperbola;
+    break;
+  case GeomAbs_Parabola:
+    out.curve = CurveType::Parabola;
+    break;
+  case GeomAbs_BezierCurve: {
+    const Handle(Geom_BezierCurve) b = curve.Bezier();
+    out.curve = CurveType::Bezier;
+    out.degree = static_cast<uint32_t>(b->Degree());
+    out.poles = static_cast<uint32_t>(b->NbPoles());
+    break;
+  }
+  case GeomAbs_BSplineCurve: {
+    const Handle(Geom_BSplineCurve) b = curve.BSpline();
+    out.curve = CurveType::Bspline;
+    out.degree = static_cast<uint32_t>(b->Degree());
+    out.poles = static_cast<uint32_t>(b->NbPoles());
+    break;
+  }
+  case GeomAbs_OffsetCurve:
+    out.curve = CurveType::Offset;
+    break;
+  default:
+    out.curve = CurveType::Other;
+    break;
+  }
+  return out;
+}
+} // namespace
+
+DescribeOut describe(const Shape &shape, Kind kind, uint32_t first, uint32_t count,
+                     double precision) {
+  // Elements of `kind` numbered first to first + count - 1 (from 1), as many as there are.
+  TopAbs_ShapeEnum type = TopAbs_FACE;
+  switch (kind) {
+  case Kind::Face:
+    type = TopAbs_FACE;
+    break;
+  case Kind::Edge:
+    type = TopAbs_EDGE;
+    break;
+  case Kind::Vertex:
+    type = TopAbs_VERTEX;
+    break;
+  default:
+    throw Standard_Failure("describe takes faces, edges, or vertices");
+  }
+  if (first == 0) {
+    throw Standard_Failure("elements are numbered from 1");
+  }
+  TopTools_IndexedMapOfShape elements;
+  TopExp::MapShapes(shape.shape, type, elements);
+  DescribeOut out;
+  out.total = static_cast<uint32_t>(elements.Extent());
+  const uint64_t last = std::min<uint64_t>(uint64_t{first} + count, uint64_t{out.total} + 1);
+  for (uint64_t i = first; i < last; ++i) {
+    const TopoDS_Shape &element = elements(static_cast<int>(i));
+    switch (kind) {
+    case Kind::Face:
+      out.faces.push_back(describe_face(TopoDS::Face(element), precision));
+      break;
+    case Kind::Edge:
+      out.edges.push_back(describe_edge(TopoDS::Edge(element), precision));
+      break;
+    default:
+      out.vertices.push_back(point3(BRep_Tool::Pnt(TopoDS::Vertex(element)).XYZ()));
+      break;
+    }
+  }
+  return out;
 }
 
 double bounding_diagonal(const Shape &shape) {

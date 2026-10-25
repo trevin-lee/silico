@@ -189,6 +189,81 @@ mod ffi {
         last: f64,
     }
 
+    /// A face's surface type, as OCCT's `GeomAbs_SurfaceType` names it.
+    #[repr(u8)]
+    enum SurfaceType {
+        Plane,
+        Cylinder,
+        Cone,
+        Sphere,
+        Torus,
+        Bezier,
+        Bspline,
+        Revolution,
+        Extrusion,
+        Offset,
+        Other,
+    }
+
+    /// An edge's curve type, as OCCT's `GeomAbs_CurveType` names it.
+    #[repr(u8)]
+    enum CurveType {
+        Line,
+        Circle,
+        Ellipse,
+        Hyperbola,
+        Parabola,
+        Bezier,
+        Bspline,
+        Offset,
+        Other,
+    }
+
+    /// A face as `describe` finds it (`silico_protocol::FaceDescription`): its surface, area,
+    /// and centre of area; a plane's outward `normal`; a cylinder's, cone's, sphere's, or
+    /// torus's axis (`origin`, `direction`); a cylinder's, cone's, or sphere's `radius`, or
+    /// a torus's major `radius` and minor `radius2`; and a cone's half-angle, `angle`.
+    /// Unused fields are 0.
+    struct FaceOut {
+        surface: SurfaceType,
+        area: f64,
+        centroid: Point3,
+        normal: Point3,
+        origin: Point3,
+        direction: Point3,
+        radius: f64,
+        radius2: f64,
+        angle: f64,
+    }
+
+    /// An edge as `describe` finds it (`silico_protocol::EdgeDescription`): its curve,
+    /// length, ends, and middle, whether it's degenerated; a circle's or ellipse's axis
+    /// (`origin`, `direction`), its `radius` (an ellipse's major) and an ellipse's minor
+    /// `radius2`; and a Bézier's or B-spline's `degree` and `poles`. Unused fields are 0.
+    struct EdgeOut {
+        curve: CurveType,
+        length: f64,
+        start: Point3,
+        end: Point3,
+        middle: Point3,
+        degenerated: bool,
+        origin: Point3,
+        direction: Point3,
+        radius: f64,
+        radius2: f64,
+        degree: u32,
+        poles: u32,
+    }
+
+    /// A batch of a shape's elements of one kind, in `TopExp::MapShapes` order (the others
+    /// empty), and how many of that kind the shape has.
+    struct DescribeOut {
+        total: u32,
+        faces: Vec<FaceOut>,
+        edges: Vec<EdgeOut>,
+        vertices: Vec<Point3>,
+    }
+
     /// How many distinct faces, edges, vertices, and solids a shape has.
     struct Counts {
         faces: u32,
@@ -301,6 +376,13 @@ mod ffi {
         fn topology(shape: &Shape) -> Result<TopologyFacts>;
         fn rough_amounts(shape: &Shape) -> Result<Amounts>;
         fn measure_as_freecad(shape: &Shape) -> Result<FreecadMeasures>;
+        fn describe(
+            shape: &Shape,
+            kind: Kind,
+            first: u32,
+            count: u32,
+            precision: f64,
+        ) -> Result<DescribeOut>;
         fn is_valid_where_changed(input: &Shape, result: &Shape) -> Result<bool>;
         fn is_valid_where_changed_from_two(
             first: &Shape,
@@ -779,6 +861,146 @@ pub fn measure_as_freecad(shape: &Shape) -> Result<silico_protocol::FreecadMeasu
         center: point(m.center),
         bounds: m.bounded.then(|| [point(m.low), point(m.high)]),
     })
+}
+
+/// The geometry and measures of `shape`'s elements of `kind` numbered from `first` (from 1,
+/// in `TopExp::MapShapes` order), `count` of them or as many as there are, its areas and
+/// lengths to the relative [`MEASURE_PRECISION`](silico_protocol::MEASURE_PRECISION), and
+/// how many of `kind` it has (docs/design/m4.4-describe.md): one batch of
+/// [`Op::Describe`](silico_protocol::Op::Describe).
+pub fn describe(
+    shape: &Shape,
+    kind: ElementKind,
+    first: u32,
+    count: u32,
+) -> Result<(u32, silico_protocol::Description), KernelError> {
+    use silico_protocol::{Axis, EdgeCurve, EdgeDescription, FaceDescription, Surface};
+    let kind = match kind {
+        ElementKind::Face => ffi::Kind::Face,
+        ElementKind::Edge => ffi::Kind::Edge,
+        ElementKind::Vertex => ffi::Kind::Vertex,
+        ElementKind::Solid => ffi::Kind::Solid,
+    };
+    let d = ffi::describe(
+        shape.get()?,
+        kind,
+        first,
+        count,
+        silico_protocol::MEASURE_PRECISION,
+    )?;
+    let point = |p: &ffi::Point3| [p.x, p.y, p.z];
+    let axis = |origin: &ffi::Point3, direction: &ffi::Point3| Axis {
+        origin: point(origin),
+        direction: point(direction),
+    };
+    let faces = d
+        .faces
+        .iter()
+        .map(|f| {
+            let axis = axis(&f.origin, &f.direction);
+            let surface = match f.surface {
+                ffi::SurfaceType::Plane => Surface::Plane {
+                    normal: point(&f.normal),
+                },
+                ffi::SurfaceType::Cylinder => Surface::Cylinder {
+                    axis,
+                    radius: f.radius,
+                },
+                ffi::SurfaceType::Cone => Surface::Cone {
+                    axis,
+                    radius: f.radius,
+                    half_angle: f.angle,
+                },
+                ffi::SurfaceType::Sphere => Surface::Sphere {
+                    axis,
+                    radius: f.radius,
+                },
+                ffi::SurfaceType::Torus => Surface::Torus {
+                    axis,
+                    major_radius: f.radius,
+                    minor_radius: f.radius2,
+                },
+                ffi::SurfaceType::Bezier => Surface::Bezier,
+                ffi::SurfaceType::Bspline => Surface::Bspline,
+                ffi::SurfaceType::Revolution => Surface::Revolution,
+                ffi::SurfaceType::Extrusion => Surface::Extrusion,
+                ffi::SurfaceType::Offset => Surface::Offset,
+                _ => Surface::Other,
+            };
+            FaceDescription {
+                surface,
+                area: f.area,
+                centroid: point(&f.centroid),
+            }
+        })
+        .collect();
+    let edges = d
+        .edges
+        .iter()
+        .map(|e| {
+            let axis = axis(&e.origin, &e.direction);
+            let curve = if e.degenerated {
+                EdgeCurve::Degenerated
+            } else {
+                match e.curve {
+                    ffi::CurveType::Line => EdgeCurve::Line,
+                    ffi::CurveType::Circle => EdgeCurve::Circle {
+                        axis,
+                        radius: e.radius,
+                    },
+                    ffi::CurveType::Ellipse => EdgeCurve::Ellipse {
+                        axis,
+                        major_radius: e.radius,
+                        minor_radius: e.radius2,
+                    },
+                    ffi::CurveType::Hyperbola => EdgeCurve::Hyperbola,
+                    ffi::CurveType::Parabola => EdgeCurve::Parabola,
+                    ffi::CurveType::Bezier => EdgeCurve::Bezier {
+                        degree: e.degree,
+                        poles: e.poles,
+                    },
+                    ffi::CurveType::Bspline => EdgeCurve::Bspline {
+                        degree: e.degree,
+                        poles: e.poles,
+                    },
+                    ffi::CurveType::Offset => EdgeCurve::Offset,
+                    _ => EdgeCurve::Other,
+                }
+            };
+            EdgeDescription {
+                curve,
+                length: e.length,
+                start: point(&e.start),
+                end: point(&e.end),
+                middle: point(&e.middle),
+            }
+        })
+        .collect();
+    Ok((
+        d.total,
+        silico_protocol::Description {
+            faces,
+            edges,
+            vertices: d.vertices.iter().map(point).collect(),
+        },
+    ))
+}
+
+/// Every one of `shape`'s faces, edges, and vertices described, a batch of at most
+/// [`DESCRIBE_BATCH`](silico_protocol::DESCRIBE_BATCH) after another, joined
+/// ([`silico_protocol::describe_in_batches`], as the core asks a worker).
+pub fn describe_whole(shape: &Shape) -> Result<silico_protocol::Description, KernelError> {
+    silico_protocol::describe_in_batches(
+        |kind, first, count| describe(shape, kind, first, count),
+        |kind, was, now| {
+            KernelError::new(silico_protocol::Refusal::Internal {
+                what: format!(
+                    "the shape's count of {} changed between batches, {was} then {now}",
+                    kind.plural()
+                ),
+            })
+        },
+    )
 }
 
 /// `shape` moved by `offset`. Each face, edge, and vertex is modified into its moved

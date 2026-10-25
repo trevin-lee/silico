@@ -4,7 +4,9 @@
 //! its fingerprints ([`format`]), and its outline ([`outline`]). [`check`] and [`format`]
 //! take a model, so a client with a live model (the app's, of the document it saves) uses
 //! that one, and one with none rebuilds it. Each gives structured errors; reading and
-//! writing files is the client's.
+//! writing files is the client's, or a session's ([`Sessions`]: a document held open between
+//! commands, each session's commands run in turn on a thread of its own, each answered by a
+//! [`Running`] handle; docs/design/m4.1-command-api.md, section 3).
 
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -13,6 +15,12 @@ use crate::document::{self, Checked, Document, Feature, Fingerprint, NamingSchem
 use crate::kernel::Kernel;
 use crate::recompute::{Model, Recompute, RunOutcome};
 use crate::{Error, ErrorCode};
+
+mod session;
+
+pub use session::{
+    MAX_SESSIONS, Opened, Response, Revision, Running, SessionId, SessionInfo, Sessions, Status,
+};
 
 /// What was wrong with a document: every problem found, in the order found (reading, then
 /// the gate, then each failed feature and each fingerprint that doesn't hold, in timeline
@@ -59,8 +67,57 @@ impl Problems {
 /// which needs no kernel, so a client can say what's wrong with a document it can't
 /// rebuild.
 pub fn gate(bytes: &[u8]) -> Result<Checked, Problems> {
-    let document = document::read(bytes).map_err(|error| Problems::of(vec![error]))?;
-    Checked::new(document).map_err(Problems::from)
+    match Gated::of(bytes) {
+        Gated::Checked(checked) => Ok(checked),
+        Gated::Unread(problems) | Gated::Refused(_, problems) => Err(problems),
+    }
+}
+
+/// A document's text as the reader and the gate found it: what [`gate`] gives, keeping the
+/// document the gate refused, for a session that holds it to be mended.
+enum Gated {
+    /// It doesn't read as a document: the reader's error.
+    Unread(Problems),
+    /// It reads, but the gate refuses it: the document, and every problem with it.
+    Refused(Document, Problems),
+    Checked(Checked),
+}
+
+impl Gated {
+    /// `text` read and through the gate.
+    fn of(text: &[u8]) -> Self {
+        let _span = tracing::info_span!("gate", bytes = text.len()).entered();
+        match document::read(text) {
+            Err(error) => Gated::Unread(Problems::from(error)),
+            Ok(read) => match Checked::try_new(read) {
+                Ok(checked) => Gated::Checked(checked),
+                Err((read, invalid)) => Gated::Refused(read, Problems::from(invalid)),
+            },
+        }
+    }
+
+    /// The document, if the text reads as one; or the reader's error.
+    fn document(&self) -> Result<&Document, &Problems> {
+        match self {
+            Gated::Unread(problems) => Err(problems),
+            Gated::Refused(document, _) => Ok(document),
+            Gated::Checked(checked) => Ok(checked.document()),
+        }
+    }
+
+    /// The reader's or the gate's problems: none if the gate took it.
+    fn problems(&self) -> Problems {
+        match self {
+            Gated::Unread(problems) | Gated::Refused(_, problems) => problems.clone(),
+            Gated::Checked(_) => Problems::of(Vec::new()),
+        }
+    }
+}
+
+impl From<Error> for Problems {
+    fn from(error: Error) -> Self {
+        Problems::of(vec![error])
+    }
 }
 
 impl From<document::Invalid> for Problems {
@@ -250,7 +307,7 @@ pub fn outline(document: &Document) -> String {
             let _ = writeln!(out, "  edge {}", quoted(edge.as_str()));
         }
     }
-    let bodies = bodies(document);
+    let bodies: Vec<&str> = bodies(document).into_iter().map(|id| id.as_str()).collect();
     let _ = writeln!(
         out,
         "bodies {}",
@@ -354,7 +411,7 @@ fn measures(f: &Fingerprint) -> String {
 
 /// The features that make a solid and that no later feature consumes, in timeline order:
 /// the solids the timeline ends with, if every feature builds.
-fn bodies(document: &Document) -> Vec<String> {
+fn bodies(document: &Document) -> Vec<&document::FeatureId> {
     let consumed: std::collections::BTreeSet<&document::FeatureId> = document
         .features
         .iter()
@@ -365,7 +422,7 @@ fn bodies(document: &Document) -> Vec<String> {
         .iter()
         // A sketch makes no solid, so it's no body.
         .filter(|f| f.operation.makes_solid() && !consumed.contains(&f.id))
-        .map(|f| f.id.to_string())
+        .map(|f| &f.id)
         .collect()
 }
 

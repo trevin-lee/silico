@@ -56,7 +56,7 @@ pub fn directory(file: &Path) -> &Path {
 }
 
 /// A file that couldn't be read, `why`, and what to try.
-fn unreadable(why: impl std::fmt::Display) -> Error {
+pub(crate) fn unreadable(why: impl std::fmt::Display) -> Error {
     Error::new(ErrorCode::IoFailed, format!("couldn't be read: {why}"))
         .with_suggestion("check the file's name, and that it's a regular file this user may read")
 }

@@ -458,17 +458,7 @@ pub fn solve(
     feature: &FeatureId,
     solver: &mut dyn SketchSolver,
 ) -> Result<SketchSolution, Error> {
-    let found = document
-        .document()
-        .features
-        .iter()
-        .find(|f| &f.id == feature)
-        .ok_or_else(|| {
-            Error::new(
-                ErrorCode::InvalidInput,
-                format!("the document has no feature {}", feature.as_str()),
-            )
-        })?;
+    let found = document.document().feature(feature)?;
     let Operation::Sketch(sketch) = &found.operation else {
         return Err(Error::new(
             ErrorCode::InvalidInput,

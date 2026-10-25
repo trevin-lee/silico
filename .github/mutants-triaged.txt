@@ -67,3 +67,8 @@ crates/silico-core/src/sweep.rs | significant | replace || with && | #84
 crates/silico-kernel/src/lib.rs | make_faces | replace > with >= | #44
 crates/silico-oracle/src/features.rs | run | replace || with && | #84
 crates/silico-protocol/src/faces.rs | check_area | replace > with >= | #44
+crates/silico-core/src/pool.rs | Shared::superseded | replace Shared::superseded -> bool with false | #125
+crates/silico-core/src/pool.rs | Shared::supersede | delete ! | #125
+crates/silico-core/src/pool.rs | Shared::next | replace && with || | #125
+crates/silico-core/src/pool.rs | Shared::next | replace && with || | #125
+crates/silico-core/src/command/session.rs | Revision::number | replace Revision::number -> u64 with 1 | #127

@@ -15,6 +15,7 @@ use silico_protocol::{
     RequestId, Response, ShapeData, ShapeSummary, Topology, TraceId, write_message,
 };
 use silico_protocol::{Curve, FaceRegions, Region, SketchPlane};
+use silico_protocol::{Description, EdgeCurve, EdgeDescription, FaceDescription, Surface};
 
 /// One request per operation. The match gives each variant its own index and every
 /// index must appear, so adding an `Op` without a case here fails: a missing arm doesn't
@@ -240,6 +241,12 @@ fn every_op() -> Vec<Op> {
             start: -std::f64::consts::PI,
             angle: std::f64::consts::TAU,
         },
+        Op::Describe {
+            shape: ShapeData::checked(Blob::inline(vec![8, 9]), true),
+            kind: ElementKind::Edge,
+            first: 1001,
+            count: u32::MAX,
+        },
         Op::ExportMesh {
             shape: ShapeData::checked(Blob::inline(vec![8]), true),
             tolerance: 0.1,
@@ -306,12 +313,19 @@ fn every_op() -> Vec<Op> {
             Op::PrismThroughAll { .. } => 37,
             Op::Revolution { .. } => 38,
             Op::Debug(DebugOp::ThrowBadAlloc) => 39,
-            Op::ExportMesh { .. } => 40,
+            Op::Describe { .. } => 40,
+            Op::ExportMesh { .. } => 41,
         })
         .collect();
-    assert_eq!(indices, (0..41).collect(), "an operation has no case");
+    assert_eq!(indices, (0..42).collect(), "an operation has no case");
     ops
 }
+
+/// An axis for the descriptions below.
+const AXIS: Axis = Axis {
+    origin: [-0.0, 1e-300, 1e6],
+    direction: [0.0, 0.6, -0.8],
+};
 
 /// One response per reply and failure kind, checked the same way.
 fn every_result() -> Vec<Result<Reply, Failure>> {
@@ -456,6 +470,83 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             status: SolveStatus::Failed,
             values: None,
         })),
+        // Every kind of surface and curve, at extremes a frame must carry exactly.
+        Ok(Reply::Described {
+            total: u32::MAX,
+            description: Description {
+                faces: [
+                    Surface::Plane {
+                        normal: [0.0, 0.0, -1.0],
+                    },
+                    Surface::Cylinder {
+                        axis: AXIS,
+                        radius: 5e-324,
+                    },
+                    Surface::Cone {
+                        axis: AXIS,
+                        radius: 0.0,
+                        half_angle: -1.5,
+                    },
+                    Surface::Sphere {
+                        axis: AXIS,
+                        radius: 1e6,
+                    },
+                    Surface::Torus {
+                        axis: AXIS,
+                        major_radius: 10.0,
+                        minor_radius: 2.0,
+                    },
+                    Surface::Bezier,
+                    Surface::Bspline,
+                    Surface::Revolution,
+                    Surface::Extrusion,
+                    Surface::Offset,
+                    Surface::Other,
+                ]
+                .into_iter()
+                .map(|surface| FaceDescription {
+                    surface,
+                    area: 0.1 + 0.2,
+                    centroid: [-0.0, 1.0, f64::MIN_POSITIVE],
+                })
+                .collect(),
+                edges: [
+                    EdgeCurve::Line,
+                    EdgeCurve::Circle {
+                        axis: AXIS,
+                        radius: 2.5,
+                    },
+                    EdgeCurve::Ellipse {
+                        axis: AXIS,
+                        major_radius: 3.0,
+                        minor_radius: 1.0,
+                    },
+                    EdgeCurve::Hyperbola,
+                    EdgeCurve::Parabola,
+                    EdgeCurve::Bezier {
+                        degree: 1,
+                        poles: 2,
+                    },
+                    EdgeCurve::Bspline {
+                        degree: 1,
+                        poles: u32::MAX,
+                    },
+                    EdgeCurve::Offset,
+                    EdgeCurve::Other,
+                    EdgeCurve::Degenerated,
+                ]
+                .into_iter()
+                .map(|curve| EdgeDescription {
+                    curve,
+                    length: 1e-7,
+                    start: [0.0; 3],
+                    end: [1e6, -1e6, 0.0],
+                    middle: [0.5, -0.5, -0.0],
+                })
+                .collect(),
+                vertices: vec![[1e-300, -1e300, 0.0]],
+            },
+        }),
         Err(Failure::new(Refusal::NoDragSession {
             op: "DragEnd".to_owned(),
         })),
@@ -501,7 +592,8 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             Ok(Reply::Solved(_)) => 13,
             Ok(Reply::DragStarted { .. }) => 14,
             Ok(Reply::Moved(_)) => 15,
-            Ok(Reply::ExportMesh(_)) => 16,
+            Ok(Reply::Described { .. }) => 16,
+            Ok(Reply::ExportMesh(_)) => 17,
             Err(failure) => match failure.kind() {
                 FailureKind::InvalidInput => 5,
                 FailureKind::KernelFailed => 6,
@@ -514,7 +606,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         .collect();
     assert_eq!(
         indices,
-        (0..17).collect(),
+        (0..18).collect(),
         "a reply or failure kind has no case"
     );
     results
@@ -919,6 +1011,7 @@ fn every_op_has_its_own_name() {
             "Prism",
             "PrismThroughAll",
             "Revolution",
+            "Describe",
             "ExportMesh"
         ]
     );

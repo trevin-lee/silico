@@ -49,6 +49,7 @@ struct Flat;
 struct Point3;
 struct Amounts;
 struct FreecadMeasures;
+struct DescribeOut;
 struct HistoryEntry;
 struct Counts;
 enum class Kind : uint8_t;
@@ -94,6 +95,12 @@ Amounts rough_amounts(const Shape &shape);
 // The volume, area, and center by OCCT's default integration, and the tight bounding box,
 // as FreeCAD measures them, for comparing with FreeCAD like for like.
 FreecadMeasures measure_as_freecad(const Shape &shape);
+
+// A batch of a shape's elements of `kind`, numbered from `first` (from 1, in
+// TopExp::MapShapes order), `count` of them or as many as there are: their geometry and
+// measures (areas and lengths to the relative `precision`), and how many of `kind` it has.
+DescribeOut describe(const Shape &shape, Kind kind, uint32_t first, uint32_t count,
+                     double precision);
 
 // A triangle mesh of a shape's faces and polylines along its edges, for display. Faces
 // and edges are in TopExp::MapShapes order (edges numbered as edge_facts's). Built whole in

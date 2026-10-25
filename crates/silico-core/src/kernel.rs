@@ -11,10 +11,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub use silico_protocol::{
-    Axis, Blob, BooleanOp, BuiltData, ChamferSize, Curve, ElementCounts, ElementFate, ElementKind,
-    ElementRef, Ends, ExportMesh, FaceRegions, FreecadMeasures, Generation, History, InputHistory,
-    Mesh, Op, Primitive, Profile, Region, Reported, ShapeData, ShapeSummary, SketchPlane,
-    SweepKind, Topology,
+    Axis, Blob, BooleanOp, BuiltData, ChamferSize, Curve, DESCRIBE_BATCH, Description, EdgeCurve,
+    EdgeDescription, ElementCounts, ElementFate, ElementKind, ElementRef, Ends, ExportMesh,
+    FaceDescription, FaceRegions, FreecadMeasures, Generation, History, InputHistory, Mesh, Op,
+    Primitive, Profile, Region, Reported, ShapeData, ShapeSummary, SketchPlane, Surface, SweepKind,
+    Topology,
 };
 use silico_protocol::{DebugOp, Failure, LENGTH_TOLERANCE, Reply};
 
@@ -25,24 +26,29 @@ use crate::{Error, ErrorCode};
 
 /// What runs kernel requests for recompute: the worker pool
 /// ([`KernelPool`](crate::pool::KernelPool)), or, in tests, the in-memory fake
-/// (`fake::FakeKernel`, with the `fake` feature). Every request is for a document generation;
-/// starting a newer one supersedes the older ones' requests, which come to
-/// [`Outcome::Superseded`](crate::pool::Outcome::Superseded), never a result.
+/// (`fake::FakeKernel`, with the `fake` feature), or a client of either ([`Clients`]:
+/// [`PoolClient`](crate::pool::PoolClient), `fake::FakeClient`). Every request is for a
+/// generation of the client that submits it; starting a newer one supersedes that client's
+/// older requests, which come to [`Outcome::Superseded`](crate::pool::Outcome::Superseded),
+/// never a result, and never another client's. A kernel itself is its own first client,
+/// [`ClientId::KERNEL`].
 pub trait Kernel: Send + Sync {
     /// What the kernel is, for keying results kept on disk ([`crate::cache`]): two kernels
     /// with the same identity give the same result for the same request, and a kernel that
     /// might not (another build of the worker) has another identity.
     fn identity(&self) -> &str;
 
-    /// The generation requests are for: the newest [`advance`](Self::advance) started.
+    /// The generation this client's requests are for: the newest [`advance`](Self::advance)
+    /// started.
     fn generation(&self) -> Generation;
 
-    /// Starts `generation`, superseding every older one. A generation no newer than the
-    /// current one changes nothing.
+    /// Starts `generation` for this client, superseding every older one of its own. A
+    /// generation no newer than the client's current one changes nothing.
     fn advance(&self, generation: Generation);
 
-    /// Queues `request` for `generation`, to run when the kernel is free. A request for a
-    /// generation older than the current one is superseded at once.
+    /// Queues `request` for this client's `generation`, to run when the kernel is free and
+    /// it's the client's turn. A request for a generation older than the client's current
+    /// one is superseded at once.
     fn submit<T: Send + 'static>(
         &self,
         generation: Generation,
@@ -50,9 +56,11 @@ pub trait Kernel: Send + Sync {
     ) -> Pending<T>;
 }
 
-/// A kernel shared, by the recomputes of several documents run one after another (the CLI's
-/// files): each starts a generation newer than the kernel's, so none supersedes another's
-/// finished work. Run at once, the newest supersedes the others, as on one engine.
+/// A kernel shared as one client, by the recomputes of several documents run one after
+/// another (the CLI's files): each starts a generation newer than the client's, so none
+/// supersedes another's finished work. Run at once on one client, the newest supersedes the
+/// others, as on one engine; engines that run at once each take a client of their own
+/// ([`Clients::client`]), and then none supersedes another's.
 impl<K: Kernel> Kernel for Arc<K> {
     fn identity(&self) -> &str {
         (**self).identity()
@@ -72,6 +80,57 @@ impl<K: Kernel> Kernel for Arc<K> {
         request: KernelRequest<T>,
     ) -> Pending<T> {
         (**self).submit(generation, request)
+    }
+}
+
+/// One client of a kernel: whose requests a generation is of. Each client's generations
+/// are its own, so one client's newer generation supersedes only its own older requests,
+/// and a kernel serves its clients' waiting requests in turn. [`ClientId::KERNEL`] is the
+/// kernel's own; every other is a [`Clients::client`] handle's, numbered from one in the
+/// order the kernel gave them, and never given again by that kernel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ClientId(u64);
+
+impl ClientId {
+    /// The kernel's own client: what a kernel's own [`Kernel`] implementation submits as.
+    pub const KERNEL: ClientId = ClientId(0);
+
+    /// The client numbered `number` by its kernel.
+    pub(crate) const fn new(number: u64) -> Self {
+        ClientId(number)
+    }
+
+    /// Its number: 0 for the kernel's own, then 1, 2, ... in the order the kernel gave them.
+    pub const fn number(self) -> u64 {
+        self.0
+    }
+}
+
+/// A kernel that gives handles of its own, each a client with its own generations: a
+/// handle's [`advance`](Kernel::advance) supersedes only the requests that handle
+/// submitted, never another handle's or the kernel's own, and the kernel serves its
+/// clients' waiting requests in turn, so one client's long queue doesn't starve another.
+/// Every handle has the same identity, the kernel's, so the results kept on disk are shared
+/// between clients. Dropping a handle retires its client: its requests still waiting or held
+/// come to [`Outcome::Superseded`](crate::pool::Outcome::Superseded), and those running are
+/// stopped as superseded requests are. Only the handles are clients to submit through: the
+/// trait gives no [`Kernel`] of its own, so code generic over it can't submit as the kernel's
+/// own client by mistake. How sessions use their clients is
+/// docs/design/m4.1-command-api.md's (section 3, and decision 33's read lane).
+pub trait Clients: Send + Sync {
+    /// A handle on the kernel, as a client of its own.
+    type Client: Kernel + 'static;
+
+    /// A new client of the kernel, at generation 0. It may outlive the kernel: its requests
+    /// then end as the kernel's do once it stops.
+    fn client(&self) -> Self::Client;
+}
+
+impl<K: Clients> Clients for Arc<K> {
+    type Client = K::Client;
+
+    fn client(&self) -> K::Client {
+        (**self).client()
     }
 }
 
@@ -459,6 +518,105 @@ impl KernelRequest<FreecadMeasures> {
             Reply::FreecadMeasures(measures) => Ok(measures),
             other => Err(unexpected(name, &other)),
         })
+    }
+}
+
+/// A batch of a shape's elements described ([`KernelRequest::describe`]): how many of its kind
+/// the shape has, and those asked for.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DescribedBatch {
+    pub total: u32,
+    pub description: Description,
+}
+
+impl KernelRequest<DescribedBatch> {
+    /// The geometry and measures of the shape's elements of `kind` numbered from `first`
+    /// (from 1, in OCCT's order), `count` of them (at most [`DESCRIBE_BATCH`]) or as many as
+    /// there are (docs/design/m4.4-describe.md). The batch is checked before it's returned
+    /// ([`Description::validate`], and that it holds what was asked for), so a value can be
+    /// trusted as its type says.
+    ///
+    /// Refused if `kind` is solids, which the kernel doesn't describe, or `first` is 0, which
+    /// numbers nothing.
+    pub fn describe(
+        shape: &ShapeData,
+        kind: ElementKind,
+        first: u32,
+        count: u32,
+    ) -> Result<Self, Error> {
+        if kind == ElementKind::Solid {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                "a description is of faces, edges, or vertices, not solids",
+            )
+            .with_parameter("kind"));
+        }
+        if first == 0 {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                "elements are numbered from 1, so a description can't start at 0",
+            )
+            .with_parameter("first"));
+        }
+        let count = count.min(DESCRIBE_BATCH);
+        let op = Op::Describe {
+            shape: shape.clone(),
+            kind,
+            first,
+            count,
+        };
+        Ok(Self::new(op, move |name, reply| match reply {
+            Reply::Described { total, description } => {
+                match batch_problem(kind, first, count, total, &description) {
+                    None => Ok(DescribedBatch { total, description }),
+                    Some(problem) => Err(Error::new(
+                        ErrorCode::ProtocolError,
+                        "the kernel worker sent a description it can't have",
+                    )
+                    .with_cause(problem)
+                    .with_suggestion("start a new kernel worker")),
+                }
+            }
+            other => Err(unexpected(name, &other)),
+        }))
+    }
+}
+
+/// What's wrong with a batch of a description for a request of `count` elements of `kind`
+/// from `first`, of `total`, if anything: a value it can't hold, elements of another kind,
+/// or more or fewer than there are from `first` up to `count`.
+fn batch_problem(
+    kind: ElementKind,
+    first: u32,
+    count: u32,
+    total: u32,
+    description: &Description,
+) -> Option<String> {
+    if let Err(problem) = description.validate(first) {
+        return Some(problem);
+    }
+    let (faces, edges, vertices) = (
+        description.faces.len(),
+        description.edges.len(),
+        description.vertices.len(),
+    );
+    let (of_kind, others) = match kind {
+        ElementKind::Face => (faces, edges + vertices),
+        ElementKind::Edge => (edges, faces + vertices),
+        _ => (vertices, faces + edges),
+    };
+    let left = u64::from(total).saturating_sub(u64::from(first) - 1);
+    let want = left.min(u64::from(count));
+    if others != 0 {
+        Some(format!(
+            "it describes elements of a kind not asked for ({others} of them)"
+        ))
+    } else if of_kind as u64 != want {
+        Some(format!(
+            "it describes {of_kind}, not {want} (from {first}, of {total})"
+        ))
+    } else {
+        None
     }
 }
 
@@ -933,6 +1091,28 @@ impl KernelWorker {
         self.run(KernelRequest::measure_as_freecad(shape))
     }
 
+    /// Every one of a shape's faces, edges, and vertices described, a batch
+    /// ([`KernelRequest::describe`]) of at most [`DESCRIBE_BATCH`] after another, joined.
+    pub fn describe(&mut self, shape: &ShapeData) -> Result<Description, Error> {
+        silico_protocol::describe_in_batches(
+            |kind, first, count| {
+                let batch = self.run(KernelRequest::describe(shape, kind, first, count)?)?;
+                Ok((batch.total, batch.description))
+            },
+            |kind, was, now| {
+                Error::new(
+                    ErrorCode::ProtocolError,
+                    "the kernel worker sent a description it can't have",
+                )
+                .with_cause(format!(
+                    "it said the shape has {was} {}, then {now}",
+                    kind.plural()
+                ))
+                .with_suggestion("start a new kernel worker")
+            },
+        )
+    }
+
     /// A shape's mesh ([`KernelRequest::tessellate`]).
     pub fn tessellate(&mut self, shape: &ShapeData, deflection: f64) -> Result<Mesh, Error> {
         self.run(KernelRequest::tessellate(shape, deflection))
@@ -1074,7 +1254,104 @@ pub(crate) fn cone_caps(radius1: f64, radius2: f64, height: f64) -> (bool, bool)
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
+
+    #[test]
+    fn a_description_batch_that_isnt_what_was_asked_for_is_a_protocol_error() {
+        use silico_protocol::{EdgeCurve, EdgeDescription};
+        let line = EdgeDescription {
+            curve: EdgeCurve::Line,
+            length: 1.0,
+            start: [0.0; 3],
+            end: [1.0, 0.0, 0.0],
+            middle: [0.5, 0.0, 0.0],
+        };
+        let edges = |n: usize| Description {
+            faces: Vec::new(),
+            edges: vec![line.clone(); n],
+            vertices: Vec::new(),
+        };
+        let shape = ShapeData::unchecked(Blob::inline(vec![1]));
+        let answer = |total: u32, description: Description| {
+            KernelRequest::describe(&shape, ElementKind::Edge, 3, 2)
+                .unwrap()
+                .answer(Ok(Reply::Described { total, description }))
+        };
+        // Edges 3 and 4 of 12; or the last of 3, edge 3 alone.
+        assert_eq!(answer(12, edges(2)).unwrap().total, 12);
+        assert_eq!(answer(3, edges(1)).unwrap().description, edges(1));
+        let mut bent = edges(2);
+        bent.edges[1].length = 0.0;
+        let mut faced = edges(2);
+        faced.vertices.push([0.0; 3]);
+        for (total, description, cause) in [
+            (12, edges(1), "it describes 1, not 2 (from 3, of 12)"),
+            (3, edges(2), "it describes 2, not 1 (from 3, of 3)"),
+            (
+                12,
+                faced,
+                "it describes elements of a kind not asked for (1 of them)",
+            ),
+            // Edges 3 and 4 asked for, the second the kernel's Edge4.
+            (12, bent, "the kernel's Edge4's length is 0"),
+        ] {
+            let e = answer(total, description).unwrap_err();
+            assert_eq!(e.code(), ErrorCode::ProtocolError);
+            assert_eq!(e.cause(), Some(cause));
+        }
+        // A request for solids, or from 0, isn't sent.
+        for (kind, first, parameter) in [
+            (ElementKind::Solid, 1, "kind"),
+            (ElementKind::Edge, 0, "first"),
+        ] {
+            let e = KernelRequest::describe(&shape, kind, first, 2)
+                .err()
+                .unwrap();
+            assert_eq!(
+                (e.code(), e.parameter()),
+                (ErrorCode::InvalidInput, Some(parameter))
+            );
+        }
+    }
+
+    #[test]
+    fn a_batch_of_one_kind_counts_every_element_of_the_other_two() {
+        // For each kind asked for, a batch holding what was asked and one of one other kind
+        // and two of the third: three not asked for, counted by adding, whichever two they are.
+        use silico_protocol::{EdgeCurve, EdgeDescription, FaceDescription, Surface};
+        let face = FaceDescription {
+            surface: Surface::Plane {
+                normal: [0.0, 0.0, 1.0],
+            },
+            area: 1.0,
+            centroid: [0.5, 0.5, 0.0],
+        };
+        let edge = EdgeDescription {
+            curve: EdgeCurve::Line,
+            length: 1.0,
+            start: [0.0; 3],
+            end: [1.0, 0.0, 0.0],
+            middle: [0.5, 0.0, 0.0],
+        };
+        let vertex = [0.0; 3];
+        for (kind, faces, edges, vertices) in [
+            (ElementKind::Face, 1, 1, 2),
+            (ElementKind::Edge, 2, 1, 1),
+            (ElementKind::Vertex, 1, 2, 1),
+        ] {
+            let description = Description {
+                faces: vec![face.clone(); faces],
+                edges: vec![edge.clone(); edges],
+                vertices: vec![vertex; vertices],
+            };
+            assert_eq!(
+                batch_problem(kind, 1, 1, 1, &description).as_deref(),
+                Some("it describes elements of a kind not asked for (3 of them)"),
+                "{kind:?}"
+            );
+        }
+    }
 
     #[test]
     fn an_export_mesh_for_another_tolerance_than_asked_is_a_protocol_error() {

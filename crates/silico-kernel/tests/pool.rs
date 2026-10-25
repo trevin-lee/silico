@@ -28,10 +28,10 @@ use pool::{
 };
 use silico_core::ErrorCode;
 use silico_core::kernel::{
-    Blob, BooleanOp, BuiltData, ChamferSize, KernelRequest, Mesh, Primitive, Profile, ShapeData,
-    ShapeSummary,
+    Blob, BooleanOp, BuiltData, ChamferSize, Kernel, KernelRequest, Mesh, Primitive, Profile,
+    ShapeData, ShapeSummary,
 };
-use silico_core::pool::{KernelPool, Outcome, Pending, STOP_AFTER};
+use silico_core::pool::{KernelPool, Outcome, Pending, PoolClient, STOP_AFTER};
 use silico_protocol::{DebugOp, Failure, Generation, Misbehavior, Op, Refusal, Reply};
 
 /// One of the mixed requests the concurrency test sends, for both the pool and the
@@ -1263,4 +1263,216 @@ fn a_pool_whose_later_workers_cant_start_stops_its_first_ones() {
 #[test]
 fn test_binary_imports_no_platform_math() {
     imports::assert_this_binary_imports_no_platform_math();
+}
+
+// The pool's clients (M4.2): each a handle with generations of its own, its requests served
+// in turn with the others'. (Those that count the workers launched are adversarial_pool.rs's,
+// with the launch log there.)
+
+#[test]
+fn a_pools_clients_are_numbered_from_one_and_share_its_identity() {
+    let pool = pool(TEST_WORKER, 1);
+    let clients: Vec<PoolClient> = (0..3).map(|_| pool.client()).collect();
+    let numbers: Vec<u64> = clients.iter().map(|c| c.id().number()).collect();
+    assert_eq!(numbers, [1, 2, 3]);
+    drop(clients);
+    // Never given again, even once retired.
+    assert_eq!(pool.client().id().number(), 4);
+    let client = pool.client();
+    assert_eq!(client.identity(), Kernel::identity(&pool));
+    // Each starts at generation 0, whatever the pool's own is.
+    pool.advance(Generation(7));
+    assert_eq!(pool.client().generation(), Generation(0));
+    assert_eq!(client.generation(), Generation(0));
+}
+
+#[test]
+fn a_clients_long_queue_never_starves_another() {
+    // On a pool of one, `a` queues ten 200 ms sleeps, then `b` one echo. The pool takes the
+    // clients in turn, so `b`'s echo runs after at most the sleep already running: second,
+    // or third if this thread wakes a whole sleep late to look; never eleventh, after all of
+    // `a`'s (as one queue for the pool, first come first served, ran it).
+    let pool = pool(TEST_WORKER, 1);
+    let (a, b) = (pool.client(), pool.client());
+    let sleeps: Vec<_> = (0..10)
+        .map(|_| a.submit(Generation(0), sleep(200)))
+        .collect();
+    let echoed = b.submit(Generation(0), echo(&[1]));
+    assert_eq!(done(echoed).unwrap(), Blob::inline(vec![1]));
+    // Outcomes are delivered in the order the requests ran, so the sleeps done now are at
+    // least those before the echo.
+    let mut before = 0;
+    let mut rest = Vec::new();
+    for pending in sleeps {
+        match pending.try_take() {
+            Ok(Outcome::Done(Ok(()))) => before += 1,
+            Ok(other) => panic!("a sleep came to {other:?}"),
+            Err(pending) => rest.push(pending),
+        }
+    }
+    let place = before + 1;
+    assert!(
+        (2..=3).contains(&place),
+        "b's echo ran {place}th of 11, after {before} of a's sleeps"
+    );
+    for pending in rest {
+        done(pending).unwrap();
+    }
+}
+
+#[test]
+fn many_clients_submitting_and_advancing_never_get_a_failure_or_anothers_supersession() {
+    // `many_submitters_never_get_a_failure_from_stopped_work`, with four clients: three
+    // advancing on their own, each every 0 to 300 µs at its own cadence, and one that never
+    // advances; two threads submitting for each at its current generation, on a pool of
+    // eight that stops every superseded request at once. No request fails; one is superseded
+    // only once its own client has advanced past it; and the client that never advances has
+    // none superseded, though the others' advances stop workers all along.
+    let pool = pool(TEST_WORKER, 8);
+    pool.set_stop_after(Duration::ZERO);
+    let clients: Vec<PoolClient> = (0..4).map(|_| pool.client()).collect();
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    // Per submitter: its client, its failures, its supersessions its client hadn't earned,
+    // and how many it had superseded.
+    type Tally = (usize, Vec<String>, Vec<String>, u32);
+    let (tallies, workers): (Vec<Tally>, BTreeSet<u32>) = std::thread::scope(|scope| {
+        let advancers: Vec<_> = clients[..3]
+            .iter()
+            .zip([37u64, 53, 71])
+            .map(|(client, step)| {
+                let (pool, stop) = (&pool, &stop);
+                scope.spawn(move || {
+                    let mut workers = BTreeSet::new();
+                    let mut generation = 0u64;
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        generation += 1;
+                        client.advance(Generation(generation));
+                        workers.extend(pool.pids());
+                        spin(Duration::from_micros((generation * step) % 300));
+                    }
+                    workers
+                })
+            })
+            .collect();
+        let submitters: Vec<_> = (0..8usize)
+            .map(|t| {
+                let c = t % 4;
+                let client = &clients[c];
+                scope.spawn(move || {
+                    let (mut failures, mut unearned, mut superseded) = (Vec::new(), Vec::new(), 0);
+                    while Instant::now() < deadline {
+                        let batch: Vec<_> = (0..16)
+                            .map(|_| {
+                                let g = client.generation();
+                                (g, client.submit(g, echo(&[t as u8])))
+                            })
+                            .collect();
+                        for (g, pending) in batch {
+                            match outcome(pending) {
+                                Outcome::Done(Ok(_)) => {}
+                                Outcome::Done(Err(e)) => failures.push(e.to_string()),
+                                Outcome::Superseded => {
+                                    superseded += 1;
+                                    // A client's generation only grows: newer now if it was
+                                    // when the request was superseded.
+                                    let now = client.generation();
+                                    if now <= g {
+                                        unearned.push(format!(
+                                            "client {c}: superseded at {g:?}, its generation {now:?}"
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    (c, failures, unearned, superseded)
+                })
+            })
+            .collect();
+        let tallies = submitters.into_iter().map(|s| s.join().unwrap()).collect();
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let workers = advancers
+            .into_iter()
+            .flat_map(|a| a.join().unwrap())
+            .collect();
+        (tallies, workers)
+    });
+    let failures: Vec<&String> = tallies.iter().flat_map(|t| &t.1).collect();
+    let unearned: Vec<&String> = tallies.iter().flat_map(|t| &t.2).collect();
+    assert!(failures.is_empty(), "{failures:#?}");
+    assert!(unearned.is_empty(), "{unearned:#?}");
+    let superseded = |c: usize| -> u32 { tallies.iter().filter(|t| t.0 == c).map(|t| t.3).sum() };
+    assert_eq!(superseded(3), 0, "the client that never advanced");
+    assert!(
+        (0..3).map(superseded).sum::<u32>() > 0,
+        "no advance ever superseded a request"
+    );
+    assert!(workers.len() > 8, "no worker was ever stopped");
+    wait_full(&pool, 8, &BTreeSet::new());
+}
+
+#[test]
+fn a_client_that_outlives_its_pool_ends_its_requests_without_a_result() {
+    // A client's request running as its pool is dropped, and one it submits after, end
+    // without a result, saying the pool stopped and to take a client of a running one; no
+    // worker or thread is left behind.
+    let pool = pool(TEST_WORKER, 1);
+    let client = pool.client();
+    let running = client.submit(Generation(0), sleep(30_000));
+    std::thread::sleep(Duration::from_millis(100));
+    drop(pool);
+    let late = client.submit(Generation(0), echo(&[1]));
+    let stopped = |name: &str, outcome: Result<(), silico_core::Error>| {
+        let e = outcome.unwrap_err();
+        assert_eq!(e.code(), ErrorCode::Internal, "{e}");
+        assert_eq!(
+            e.message(),
+            format!("the kernel pool stopped before {name} was done")
+        );
+        assert_eq!(
+            e.suggestion(),
+            Some("take a client of a running kernel pool")
+        );
+    };
+    stopped("DebugSleep", done(running));
+    stopped("Echo", done(late).map(drop));
+    client.advance(Generation(1));
+    assert_eq!(client.generation(), Generation(1));
+    drop(client);
+    wait_no_children("after the pool and its client");
+}
+
+#[test]
+fn an_idle_pool_still_tends_its_worker_after_a_clients_waiting_requests_are_superseded() {
+    // A client's advance takes its waiting request out of the count of those waiting, so
+    // the idle slot, finding none, tends its worker: one killed from outside is replaced.
+    // (A count left at one keeps the slot waiting for work that isn't there.)
+    let pool = pool(TEST_WORKER, 1);
+    let a = pool.client();
+    let running = a.submit(Generation(0), sleep(300));
+    std::thread::sleep(Duration::from_millis(100));
+    let waiting = a.submit(Generation(0), echo(&[1]));
+    a.advance(Generation(1));
+    assert!(matches!(waiting.try_take(), Ok(Outcome::Superseded)));
+    assert!(matches!(outcome(running), Outcome::Superseded));
+    let before = wait_full(&pool, 1, &BTreeSet::new());
+    signal("9", before[0]);
+    wait_full(&pool, 1, &BTreeSet::from([before[0]]));
+}
+
+#[test]
+fn a_clients_stale_submit_is_superseded_at_once() {
+    // `a` at generation 2 submits for its generation 1, while `b`'s sleep holds the pool's
+    // one worker: superseded at once, by `a`'s own generation (the pool's own is still 0),
+    // and `b`'s sleep runs on.
+    let pool = pool(TEST_WORKER, 1);
+    let (a, b) = (pool.client(), pool.client());
+    let busy = b.submit(Generation(0), sleep(300));
+    std::thread::sleep(Duration::from_millis(100));
+    a.advance(Generation(2));
+    let late = a.submit(Generation(1), echo(&[1]));
+    let late = late.try_take().map_err(|_| "still waiting").unwrap();
+    assert!(matches!(late, Outcome::Superseded), "{late:?}");
+    assert!(matches!(outcome(busy), Outcome::Done(Ok(()))));
 }

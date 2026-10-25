@@ -40,3 +40,25 @@ BinTools::Write(box, out, false, false, BinTools_FormatVersion_CURRENT);
   read from its STEP file by FreeCAD 1.1.3 and written with `exportBrep`, as the corpus
   keeps it (`tests/corpus/run.sh`). At a 0.1 mm export tolerance OCCT meshes two of its
   cones with coincident nodes inside the face (tests/adversarial_export.rs).
+
+- `mirrored_box.brep`: a text B-rep (not binary: read with `from_text_brep`) of a 10 × 20 × 30
+  box mirrored in the plane x = 0 by FreeCAD 1.1.3 (`Part.makeBox(10, 20, 30).mirror(V(0, 0, 0),
+  V(1, 0, 0)).exportBrep(...)`): the mirror is in its geometry, not a location, so each plane's
+  axes are left-handed (its normal, Du × Dv, opposite to its axis). For `describe`'s tests.
+
+- `curves_and_surfaces.brep`: a text B-rep (read with `from_text_brep`) of a compound FreeCAD
+  1.1.3 made of what no primitive is: Bézier edges of two and three poles, B-spline edges of
+  degree 1 with two poles and of degree 3 with five, a ruled surface between two cubic
+  B-splines, a Bézier surface, the five-pole B-spline extruded 2 along +z, and the three-pole
+  Bézier turned 90° about +x (`Part.BezierCurve`, `Part.BSplineCurve.buildFromPoles`,
+  `Part.makeRuledSurface`, `Part.BezierSurface`, `extrude`, `revolve`, then `exportBrep`).
+  FreeCAD's types, degrees, pole counts, and lengths for its faces and edges, in order, are
+  in `describe`'s test of it.
+
+- `offsets_and_conics.brep`: a text B-rep (read with `from_text_brep`) of a compound FreeCAD
+  1.1.3 made of what no Silico operation makes yet: an offset surface (a biquadratic
+  B-spline patch offset 0.25, `Part.OffsetSurface`), a parabola of focal length 1 from −2 to
+  2, a hyperbola of radii 2 and 1 from −1 to 1, and a cubic B-spline offset 0.5 in its plane
+  (`Part.OffsetCurve`), each made a shape and compounded (`exportBrep`). FreeCAD's types and
+  lengths are in `describe`'s test of it. `offsets_and_conics.py` makes it
+  (`freecadcmd offsets_and_conics.py`, from this directory).

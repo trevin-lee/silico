@@ -45,6 +45,8 @@ mod adversarial_boolean;
 mod adversarial_chamfer;
 #[path = "adversarial_chamfer_report.rs"]
 mod adversarial_chamfer_report;
+#[path = "adversarial_describe.rs"]
+mod adversarial_describe;
 #[path = "adversarial_export.rs"]
 mod adversarial_export;
 #[path = "adversarial_faces.rs"]
@@ -67,6 +69,8 @@ mod boolean_solids;
 mod bridge;
 #[path = "chamfer.rs"]
 mod chamfer;
+#[path = "describe.rs"]
+mod describe;
 #[path = "export.rs"]
 mod export;
 #[path = "faces.rs"]
