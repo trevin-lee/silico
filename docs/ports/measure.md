@@ -239,6 +239,28 @@ M1 measures a solid two ways (`crates/silico-kernel/cpp/bridge.cpp`):
 
 The Measure module's volume, area, and centre of mass are `BRepGProp` with default integration (`Measurement::volume`, `area`, `massCenter`, `MeasureArea`, `MeasureCOM`), so they are `measure_as_freecad`'s numbers: the same calls on the same OCCT. Default integration is up to 1% off on faces trimmed by curves (docs/ports/booleans.md), and its centre of mass for the tori above is 1e-5 off. M4.4's `describe` (each element's area, length, position, axis, and radius) is the other measure M4.5 builds on.
 
+## Known wrong results
+
+OCCT's precise integration, `BRepGProp::VolumeProperties` and `SurfaceProperties` to a relative 1e-9 (`measure`), is wrong on a B-spline swept straight, while it estimates its error far under that. Its default integration (FreeCAD's `Shape.Volume` and `Area`) is wrong there too, by less. Silico accepts both answers, as FreeCAD accepts OCCT's, and keeps the precise one, the maintainer's choice of accuracy over FreeCAD's parity (2026-10-09). Silico's own features make no such surface yet, so only an imported part reaches these. The right values are by hand:
+
+| Shape | By hand | Precise (its estimate) | Default (FreeCAD's) |
+|---|---|---|---|
+| A cubic B-spline of length 4.40405587355, extruded 2 (a `SurfaceOfExtrusion`): its area | 2 × 4.40405587355 = 8.8081117471 | 8.83202504977072, 0.27% over (2e-16) | 8.808420588300923, 3.5e-5 over |
+| A ruled B-spline surface between two copies of a cubic 2 apart: its area | 2 × 3.2682882396736437 = 6.536576479347287 | 6.53657440325774, 3.2e-7 short | the same |
+| That extruded cubic closed by its chord, a valid solid (`extruded_bspline.brep`): its volume | the cap's 1.9 (Green's theorem, Gauss–Legendre per knot span, exact for the cubic) × 2 = 3.8 | 3.7964232643296967, 9.4e-4 low (3.5e-16) | 3.7998345742369399, 4.4e-5 low |
+
+The first two are the faces of `curves_and_surfaces.brep`, pinned by `bsplines_beziers_extrusions_and_revolutions_are_each_their_kind_with_their_poles`. The third is pinned by `an_extruded_bsplines_volume_is_right_or_occts_known_wrong_answer`. Each test passes on the right value or on OCCT's wrong one (docs/design/m4.4-describe.md). The fixtures' README says how `extruded_bspline.brep` was made, for a report to OCCT.
+
+**What was tried, and why it isn't taken (2026-10-24).** Every shape of the determinism sweep (204: the oracle cases, the generated ones, and the sketch features) and every one of `stress.cpp`'s (554) was measured both ways:
+- **Gauss–Kronrod** (`VolumePropertiesGK` to 1e-9, its B-spline faces split at their knots; OCCT has no Gauss–Kronrod area) gives the extruded cubic's 3.8. On the 11 of the stress test's 55 B-spline prisms it finished, all invalid, it gives their caps' areas times their heights within 3e-11. But it doesn't finish within 60 s (the sweep's limit) or 30 s (the stress test's):
+  - on 3 valid sketch-feature tori (`torus_180_symmetric_*_about_a_line`), at 1e-6 too, with the spans split or not;
+  - on all 5 valid B-spline prisms of the stress test, and 2 more of its valid shapes (a compound, and a closed shell that isn't a solid).
+
+  It's also wrong where the precise integration is right. A cylinder of radius 2e-7 (`cylinder_hair`; π × (2e-7)² × 10 = 1.2566370614359172e-12 by hand) measures 1.2566814e-12, 3.5e-5 over, while it estimates 2.3e-10. Where it finishes, it took 1.3 times as long on the stress test's valid shapes (34 s against 26 s), and up to 26 times as long on one shape; on the sweep's, 0.5 s against 0.6 overall, and up to 18 times as long on one.
+- **OCCT's own error estimate**, which `VolumeProperties` returns, can't tell a wrong volume either: it's 3.5e-16 for the extruded cubic, 9.4e-4 off. On four valid stress shapes (booleans and meshed booleans) it's 0.7% to 3%, where both integrations agree to 4e-9; on the 5 valid B-spline prisms, 7e-4 to 3e-3, where the volume is right to 3e-15. Refusing a volume on it would refuse right ones.
+
+The stress test's B-spline prisms that the precise integration gets 1% to 7% wrong (cases 139, 403, and 282: 4319.050 for 4624.145, and so on) are invalid. Their B-spline crosses its chord, and Silico refuses an invalid result before measuring it. Its 5 valid ones (cases 62, 128, 337, 381, and 557) it gets right, their caps' areas times their heights (the sweep's z, from their vertices) to 3e-15, while estimating its error at 7e-4 to 3e-3. Of its other valid shapes, the 490 both integrations finished differ by at most 9.4e-8.
+
 ## Where Silico differs on purpose
 
 By the project's rules: exact results, structured refusals, determinism, and behaviour after SolidWorks. Five of these choose what a measure means or change M4.5's roadmap row, so they're decisions for the maintainer, each with a recommendation; the rest follow from the rules. What SolidWorks does is taken from its documentation (the SolidWorks 2024 Measure help, `HIDD_MEASURE`; the SolidWorks 2021 eDrawings measure help; CATI's blog on measuring the minimum distance between cylinders), not checked on SolidWorks.

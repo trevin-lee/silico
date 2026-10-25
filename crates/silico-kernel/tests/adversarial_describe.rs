@@ -1003,3 +1003,33 @@ fn offsets_parabolas_and_hyperbolas_are_each_their_kind() {
     assert_eq!(d.edges[5].curve, EdgeCurve::Hyperbola);
     assert_eq!(d.edges[6].curve, EdgeCurve::Offset);
 }
+
+#[test]
+fn an_extruded_bsplines_volume_is_right_or_occts_known_wrong_answer() {
+    // extruded_bspline.brep (the fixtures' README): curves_and_surfaces.brep's five-pole
+    // cubic, closed by its chord and extruded 2 along +z, a valid solid. Its cap's area is
+    // 1.9 by Green's theorem (Gauss–Legendre per knot span, exact for the cubic), so its
+    // volume is 3.8 by hand. OCCT's precise integration (to 1e-9, estimating its error at
+    // 3.5e-16) gives 3.7964232643296967, 9.4e-4 low; its default (FreeCAD's Shape.Volume)
+    // gives 3.7998345742369399, also low (docs/ports/measure.md, Known wrong results). Right,
+    // or that wrong answer.
+    let shape = from_text_brep(&fixture("extruded_bspline.brep")).unwrap();
+    let s = summarize(&shape).unwrap();
+    assert!(s.valid);
+    // Two caps, the extruded cubic, and the extruded chord, as FreeCAD 1.1.3 counts them.
+    assert_eq!((s.faces, s.edges, s.vertices), (4, 6, 4));
+    // Its area by hand: two caps of 1.9, the chord's face 4 × 2, and the cubic's length
+    // (4.404055873552449, FreeCAD's Edge.Length) × 2: 20.6081117471049. OCCT gives
+    // 20.632025049770718, its extruded face's wrong area (the test above). Right, or that.
+    assert!(
+        (s.area - 20.6081117471049).abs() < 1e-9 * s.area
+            || (s.area - 20.632025049770718).abs() < 1e-12,
+        "{}",
+        s.area
+    );
+    assert!(
+        (s.volume - 3.8).abs() < 1e-9 * 3.8 || (s.volume - 3.7964232643296967).abs() < 1e-12,
+        "{}",
+        s.volume
+    );
+}
