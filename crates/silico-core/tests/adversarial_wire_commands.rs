@@ -389,11 +389,9 @@ fn a_word_near_one_of_the_commands_is_refused_safe_to_print_and_told_apart() {
     );
     assert_eq!(shown(""), r#"kind must be face, edge, or vertex, got """#);
     // The word itself, spelled with JSON's escapes, is the word.
-    let escaped = QueryRequest::read(&parsed(&query_with(
-        r#""kind": "face""#,
-        r#""kind": "face""#,
-    )))
-    .unwrap();
+    let spelled = r#""kind": "\u0066a\u0063e""#;
+    assert!(spelled.contains("\\u0066"), "{spelled}");
+    let escaped = QueryRequest::read(&parsed(&query_with(r#""kind": "face""#, spelled))).unwrap();
     assert_eq!(escaped.query.kind, ElementKind::Face);
 }
 
@@ -457,6 +455,8 @@ fn a_word_refused_as_a_string_is_told_apart_from_the_json_value_it_spells() {
             (r#""null""#, "null"),
             (r#""3""#, "3"),
             (r#""true""#, "true"),
+            (r#""false""#, "false"),
+            (r#""-1""#, "-1"),
         ] {
             let from = if field == "kind" {
                 r#""kind": "face""#
@@ -989,7 +989,7 @@ fn schema_refuses_names_that_arent_names_safely_and_briefly() {
         assert!(
             error
                 .message()
-                .starts_with("of must be document or a command's name, got "),
+                .starts_with("of must be document or a command with a schema, got "),
             "{}",
             error.message()
         );

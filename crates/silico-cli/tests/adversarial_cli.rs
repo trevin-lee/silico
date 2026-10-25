@@ -1276,9 +1276,10 @@ fn schema_with_odd_arguments_is_a_schema_a_refusal_or_usage_never_a_panic() {
         assert_eq!(
             out.stderr,
             format!(
-                "silico schema: invalid_input: of must be document or a command's name, got \
+                "silico schema: invalid_input: of must be document or a command with a schema, got \
                  {shown} (parameter of). Suggestion: give document, or the name of a \
-                 command. Candidates: document, elements, query, schema.\n"
+                 command with a schema: the candidates are every one there is so far. \
+                 Candidates: document, elements, query, schema.\n"
             ),
             "{name:?}"
         );
@@ -1333,7 +1334,7 @@ fn schema_of_a_hostile_name_is_one_short_safe_line_on_stderr() {
         );
         assert!(
             out.stderr.starts_with(
-                "silico schema: invalid_input: of must be document or a command's name, got \""
+                "silico schema: invalid_input: of must be document or a command with a schema, got \""
             ),
             "{name:?}: {}",
             out.stderr
