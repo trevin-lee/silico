@@ -157,9 +157,8 @@ pub(crate) fn built<'m>(
 /// The feature `id`'s built solid's summary, or why it has none, as `check` says it: the
 /// kernel's refusal of its values (kept with the solid, or the model's
 /// [`unmeasured`](Model::unmeasured)), or a worker's failure to measure it (the model's
-/// alone); naming the
-/// request's `feature` if `asked`, as [`built`] does. Every read of a solid's measures
-/// (`mass_properties`) refuses one alike.
+/// alone); naming the request's `feature` if `asked`, as [`built`] does. Every read of a
+/// solid's measures (`mass_properties`) refuses one alike.
 pub(crate) fn summarized<'m>(
     model: &'m Model,
     id: &FeatureId,

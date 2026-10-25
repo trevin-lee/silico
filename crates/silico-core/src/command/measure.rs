@@ -51,7 +51,7 @@ pub struct Bodies {
 /// refuses a solid it can't read (naming `feature` if the request did), for each solid that
 /// can't be read, every one said; and for a solid that couldn't be measured, why, as
 /// `check` says it: the kernel's refusal of its values, or the worker's failure to measure
-/// it ([`summarized`]).
+/// it (`elements::summarized`).
 pub fn mass_properties(model: &Model, feature: Option<&FeatureId>) -> Result<Bodies, Problems> {
     let _span = tracing::debug_span!("mass_properties", ?feature).entered();
     let mut refused = Problems::none();
