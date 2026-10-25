@@ -63,6 +63,12 @@ pub struct Limits {
     pub kernel_seconds: u64,
     /// A sketch solve's time, in seconds.
     pub sketch_seconds: u64,
+    /// The elements one render highlights.
+    pub highlight: usize,
+    /// A render's side, in pixels, at most.
+    pub render_side: u32,
+    /// A render's time, in seconds, from when its scene is sent.
+    pub render_seconds: u64,
 }
 
 /// What `version` answers.
@@ -79,6 +85,9 @@ pub const VERSION: Version = Version {
         published_reads: MAX_PUBLISHED_READS,
         kernel_seconds: crate::kernel::DEFAULT_TIMEOUT.as_secs(),
         sketch_seconds: crate::sketch::SKETCH_TIMEOUT.as_secs(),
+        highlight: render::MAX_HIGHLIGHTS,
+        render_side: silico_protocol::MAX_RENDER_SIDE,
+        render_seconds: crate::render::RENDER_TIMEOUT.as_secs(),
     },
 };
 
