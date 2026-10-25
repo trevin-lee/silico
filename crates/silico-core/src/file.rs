@@ -256,9 +256,42 @@ fn synced(file: &std::fs::File, what: &str) -> std::io::Result<()> {
 /// How many names [`beside`] tries.
 const TRIES: u32 = 64;
 
-/// A new file beside `target` (`.NAME.fmt-PID`, or `-1`, `-2`, ... after it if one is
-/// left from a run killed with the same process number), no more open to others than
-/// `target` is.
+/// The longest file name, in bytes, the systems Silico runs on take (`NAME_MAX` on Linux;
+/// APFS's, on macOS).
+const NAME_MAX: usize = 255;
+
+/// The `n`th name [`beside`] tries for a file beside one named `name`: `.NAME.fmt-PID`,
+/// then `-1`, `-2`, ... after it. A name too long for that is cut short, at a character's
+/// end if it's UTF-8 (as APFS requires every name to be), so a document whose own name is
+/// as long as a name may be is saved all the same (found by Worker 3): the file beside it
+/// is never another's, since each is made new, and a save that leaves it says its name.
+fn partial_name(name: &std::ffi::OsStr, n: u32) -> OsString {
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut suffix = format!(".fmt-{}", std::process::id());
+    if n > 0 {
+        suffix.push_str(&format!("-{n}"));
+    }
+    let room = NAME_MAX.saturating_sub(1 + suffix.len());
+    let bytes = name.as_bytes();
+    let kept = match name.to_str() {
+        Some(text) if bytes.len() > room => {
+            let mut end = room;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            &bytes[..end]
+        }
+        _ => &bytes[..bytes.len().min(room)],
+    };
+    let mut partial = OsString::from(".");
+    partial.push(std::ffi::OsStr::from_bytes(kept));
+    partial.push(suffix);
+    partial
+}
+
+/// A new file beside `target` ([`partial_name`]: `.NAME.fmt-PID`, or `-1`, `-2`, ... after
+/// it if one is left from a run killed with the same process number), no more open to
+/// others than `target` is.
 fn beside(target: &Path, metadata: &std::fs::Metadata) -> Result<(PathBuf, std::fs::File), Error> {
     use std::os::unix::fs::PermissionsExt as _;
     let dir = directory(target);
@@ -266,13 +299,7 @@ fn beside(target: &Path, metadata: &std::fs::Metadata) -> Result<(PathBuf, std::
         .file_name()
         .ok_or_else(|| unwritable("it has no file name"))?;
     for n in 0..TRIES {
-        let mut partial_name = OsString::from(".");
-        partial_name.push(name);
-        partial_name.push(format!(".fmt-{}", std::process::id()));
-        if n > 0 {
-            partial_name.push(format!("-{n}"));
-        }
-        let partial = dir.join(partial_name);
+        let partial = dir.join(partial_name(name, n));
         match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -290,11 +317,7 @@ fn beside(target: &Path, metadata: &std::fs::Metadata) -> Result<(PathBuf, std::
             }
         }
     }
-    let first = dir.join(format!(
-        ".{}.fmt-{}",
-        name.to_string_lossy(),
-        std::process::id()
-    ));
+    let first = dir.join(partial_name(name, 0));
     Err(unwritable(format!(
         "every name for a file beside it is taken ({}, and -1 to -{}): remove those left by runs that were killed",
         shown_path(&first),
@@ -312,6 +335,44 @@ fn shown_path(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_name_beside_a_long_one_is_cut_to_the_most_a_name_may_be_at_a_characters_end() {
+        use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
+        let pid = std::process::id();
+        let suffix = format!(".fmt-{pid}");
+        // A short name, as it is.
+        assert_eq!(
+            partial_name(std::ffi::OsStr::new("part.silico"), 0),
+            OsString::from(format!(".part.silico{suffix}"))
+        );
+        assert_eq!(
+            partial_name(std::ffi::OsStr::new("part.silico"), 63),
+            OsString::from(format!(".part.silico{suffix}-63"))
+        );
+        // 255 bytes of ASCII: cut to 255 in all, the dot, the name's first bytes, the suffix.
+        let long = "a".repeat(255);
+        for (n, tail) in [(0, suffix.clone()), (63, format!("{suffix}-63"))] {
+            let cut = partial_name(std::ffi::OsStr::new(&long), n).into_vec();
+            assert_eq!(cut.len(), 255, "{n}");
+            let kept = 255 - 1 - tail.len();
+            assert_eq!(cut, format!(".{}{tail}", &long[..kept]).into_bytes(), "{n}");
+        }
+        // Two-byte characters, cut where a character ends: valid UTF-8, one byte short when
+        // the room is odd.
+        let accented = "é".repeat(127);
+        let cut =
+            String::from_utf8(partial_name(std::ffi::OsStr::new(&accented), 0).into_vec()).unwrap();
+        let room = 255 - 1 - suffix.len();
+        let kept = room - room % 2;
+        assert_eq!(cut, format!(".{}{suffix}", &accented[..kept]));
+        // Not UTF-8 (Linux allows it): cut by bytes, to 255.
+        let raw = std::ffi::OsStr::from_bytes(&[0xff; 255]);
+        let cut = partial_name(raw, 0).into_vec();
+        assert_eq!(cut.len(), 255);
+        assert!(cut.ends_with(suffix.as_bytes()));
+        assert!(cut[1..room + 1].iter().all(|b| *b == 0xff));
+    }
 
     #[test]
     fn only_a_size_limit_gets_the_limits_advice() {

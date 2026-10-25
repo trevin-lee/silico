@@ -90,6 +90,41 @@ fn a_save_takes_the_next_name_beside_the_file_when_one_is_left_from_a_killed_run
 }
 
 #[test]
+fn a_document_whose_name_is_as_long_as_a_name_may_be_is_saved() {
+    // Found by Worker 3: the file beside a document, `.NAME.fmt-PID`, passed the 255 bytes a
+    // name may be when the document's own was near them, so its save failed. A name of 255
+    // bytes, ASCII, and one of 254 in two-byte characters, are saved, by a rename and, with
+    // another name for the file (a hard link), in place; nothing is left beside them.
+    for (case, name) in [
+        ("ascii", format!("{}.silico", "a".repeat(255 - 7))),
+        ("utf8", "é".repeat(127)),
+    ] {
+        assert!(name.len() >= 254, "{case}");
+        for linked in [false, true] {
+            let dir = Scratch::new(&format!("long-{case}-{linked}"));
+            let file = dir.0.join(&name);
+            std::fs::write(&file, b"as read").unwrap();
+            if linked {
+                std::fs::hard_link(&file, dir.0.join("other")).unwrap();
+            }
+            silico_core::file::save(&file, b"as read", b"formatted").unwrap();
+            assert_eq!(
+                std::fs::read(&file).unwrap(),
+                b"formatted",
+                "{case} {linked}"
+            );
+            let mut names = vec![name.clone()];
+            if linked {
+                assert_eq!(std::fs::read(dir.0.join("other")).unwrap(), b"formatted");
+                names.insert(0, "other".to_owned());
+            }
+            names.sort();
+            assert_eq!(dir.names(), names, "{case} {linked}");
+        }
+    }
+}
+
+#[test]
 fn a_save_with_every_name_beside_the_file_taken_says_so_and_writes_nothing() {
     let dir = Scratch::new("taken");
     let file = dir.0.join("part.silico");
