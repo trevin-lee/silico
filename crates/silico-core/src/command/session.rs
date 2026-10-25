@@ -2752,6 +2752,13 @@ mod tests {
             ),
             "{drift:?}"
         );
+        // The design's words (section 7's commit example), which name format (decision 31).
+        assert_eq!(
+            drift.suggestion(),
+            Some(
+                "if this feature or one it uses was edited by hand or in a merge since it was saved, run format (or silico fmt) to accept its new fingerprint; if not, this is a determinism bug or a change in the kernel: find which before accepting it"
+            )
+        );
     }
 
     #[test]
@@ -3120,6 +3127,13 @@ mod tests {
                 ErrorCode::Drift,
                 Some("s0000001"),
                 &["pb000000".to_owned()][..]
+            )
+        );
+        // Decision 31's words for a sketch: format, beside silico fmt, accepts its solve.
+        assert_eq!(
+            drift.suggestion(),
+            Some(
+                "if this sketch was edited by hand or in a merge since it was saved, run format (or silico fmt) to accept its new solve; if not, this is a determinism bug or a change in the sketch solver: find which before accepting it"
             )
         );
         let saved = f.file();
