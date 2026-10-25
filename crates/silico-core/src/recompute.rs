@@ -65,6 +65,7 @@ use crate::references::EdgeNames;
 use crate::sketch::{SketchSolution, SketchSolver, SketchWorker, SolveStopper};
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
+use silico_protocol::Description;
 
 /// The most steps one recompute waits on at once: enough to keep a pool of workers busy
 /// (the kernel queues what it can't run yet), few enough that a document of thousands of
@@ -90,28 +91,39 @@ impl fmt::Debug for Key {
 
 /// What a kernel step made: its shape, for an operation on other shapes what it did to
 /// them, and, if it was measured, the shape's summary (from which a feature's fingerprint
-/// comes; a step that's a feature's solid is measured after it's made, by a job of its own,
-/// which puts a measured copy in its place), or why the kernel refused to measure it, if
-/// that follows from its values (so it would refuse again). Never changed once made: models
-/// share it.
+/// comes) and the description of each of its faces, edges, and vertices (which element
+/// reads give: docs/design/m4.1-command-api.md, *Where the entries come from*), or why the
+/// kernel refused to measure it, if that follows from its values (so it would refuse
+/// again). A step that's a feature's solid is measured after it's made, by a job of its
+/// own, which puts a measured copy in its place. Never changed once made: models share it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Built {
     pub shape: ShapeData,
     pub history: Option<History>,
-    summary: Option<ShapeSummary>,
+    measured: Option<Measured>,
     refused: Option<Error>,
+}
+
+/// A shape's measures: its summary, and its elements described, both or neither.
+#[derive(Debug, Clone, PartialEq)]
+struct Measured {
+    summary: ShapeSummary,
+    description: Description,
 }
 
 impl Built {
     pub(crate) fn new(
         shape: ShapeData,
         history: Option<History>,
-        summary: Option<ShapeSummary>,
+        measured: Option<(ShapeSummary, Description)>,
     ) -> Self {
         Built {
             shape,
             history,
-            summary,
+            measured: measured.map(|(summary, description)| Measured {
+                summary,
+                description,
+            }),
             refused: None,
         }
     }
@@ -125,14 +137,20 @@ impl Built {
         Built {
             shape,
             history,
-            summary: None,
+            measured: None,
             refused: Some(refused),
         }
     }
 
     /// The shape's summary, if it was measured.
     pub fn summary(&self) -> Option<&ShapeSummary> {
-        self.summary.as_ref()
+        self.measured.as_ref().map(|m| &m.summary)
+    }
+
+    /// Each of the shape's faces, edges, and vertices described, in the kernel's numbering
+    /// (`TopExp::MapShapes` order), if it was measured.
+    pub fn description(&self) -> Option<&Description> {
+        self.measured.as_ref().map(|m| &m.description)
     }
 
     /// Why the kernel refused to measure the shape, if it did for its values.
@@ -141,9 +159,12 @@ impl Built {
     }
 
     /// This result, measured.
-    fn measured(&self, summary: ShapeSummary) -> Self {
+    fn measured(&self, summary: ShapeSummary, description: Description) -> Self {
         Built {
-            summary: Some(summary),
+            measured: Some(Measured {
+                summary,
+                description,
+            }),
             ..self.clone()
         }
     }
@@ -320,6 +341,19 @@ impl Model {
             }
         }
         self.maps.get(i)?.get()?.as_deref()
+    }
+
+    /// Each of the feature `id`'s solid's faces, edges, and vertices described, in the
+    /// kernel's numbering, if it built and was measured: described as part of the rebuild,
+    /// before the model was published, so reading it asks the kernel nothing.
+    pub fn description(&self, id: &FeatureId) -> Option<&Description> {
+        match self.outcome(id)? {
+            FeatureOutcome::Built { built, .. } => built.description(),
+            FeatureOutcome::Failed(_)
+            | FeatureOutcome::Broken { .. }
+            | FeatureOutcome::Blocked { .. }
+            | FeatureOutcome::Sketch(_) => None,
+        }
     }
 
     /// The names of the elements of the feature `id`'s solid if they've been named
@@ -2928,14 +2962,36 @@ impl<K: Kernel + 'static> Engine<K> {
     }
 
     /// Measures `built`, a feature's solid, on the kernel, for `generation`: a copy of it
-    /// with its summary.
+    /// with its summary and its elements described, a batch at a time, so a read of the
+    /// model it's published in asks the kernel nothing.
     fn measure(&self, built: &Built, generation: Generation) -> Outcome<Built> {
-        map(
-            self.kernel
-                .submit(generation, KernelRequest::summarize(&built.shape))
-                .wait(),
-            |summary| built.measured(summary),
-        )
+        let summary = match self
+            .kernel
+            .submit(generation, KernelRequest::summarize(&built.shape))
+            .wait()
+        {
+            Outcome::Done(Ok(summary)) => summary,
+            Outcome::Done(Err(error)) => return Outcome::Done(Err(error)),
+            Outcome::Superseded => return Outcome::Superseded,
+        };
+        // A batch's error, or none for a batch superseded.
+        let described = silico_protocol::describe_in_batches(
+            |kind, first, count| {
+                let request =
+                    KernelRequest::describe(&built.shape, kind, first, count).map_err(Some)?;
+                match self.kernel.submit(generation, request).wait() {
+                    Outcome::Done(Ok(batch)) => Ok((batch.total, batch.description)),
+                    Outcome::Done(Err(error)) => Err(Some(error)),
+                    Outcome::Superseded => Err(None),
+                }
+            },
+            |kind, was, now| Some(crate::kernel::description_changed(kind, was, now)),
+        );
+        match described {
+            Ok(description) => Outcome::Done(Ok(built.measured(summary, description))),
+            Err(Some(error)) => Outcome::Done(Err(error)),
+            Err(None) => Outcome::Superseded,
+        }
     }
 
     /// What one step makes on the kernel, for `generation`: its shape, and its history.
@@ -3512,7 +3568,16 @@ mod tests {
             valid: true,
         };
         let refusal = Error::new(ErrorCode::KernelFailed, "Summarize failed");
-        let measured: StepResult = Ok(Arc::new(Built::new(shape(), None, Some(summary))));
+        let description = Description {
+            faces: Vec::new(),
+            edges: Vec::new(),
+            vertices: Vec::new(),
+        };
+        let measured: StepResult = Ok(Arc::new(Built::new(
+            shape(),
+            None,
+            Some((summary, description)),
+        )));
         let refused: StepResult = Ok(Arc::new(Built::refused_measure(shape(), None, refusal)));
         let unmeasured: StepResult = Ok(Arc::new(Built::new(shape(), None, None)));
         let failed = |code| -> StepResult { Err(Error::new(code, "the step failed")) };

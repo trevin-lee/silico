@@ -26,6 +26,8 @@ mod adversarial_measure_refusal;
 mod adversarial_recompute;
 #[path = "adversarial_validate.rs"]
 mod adversarial_validate;
+#[path = "described.rs"]
+mod described;
 #[path = "measure_refusal.rs"]
 mod measure_refusal;
 #[path = "name_parse.rs"]

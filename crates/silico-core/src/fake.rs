@@ -33,7 +33,8 @@
 //! turn, as if no edge were square to it (each edge's start its face's seam, each vertex's
 //! itself; the face reported nothing); its measures are its own model's too (below). It
 //! answers making primitives and faces, moving shapes, booleans, sweeps of faces,
-//! summaries, and echoes; anything else is refused as an internal error.
+//! summaries, descriptions (symbolic: each element stands for its number, `described`), and
+//! echoes; anything else is refused as an internal error.
 //!
 //! The real kernel writes some primitives (a cylinder, a torus) differently when it makes
 //! them than once it has read them back, so their bytes change once, on the first operation
@@ -58,8 +59,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use silico_protocol::{
-    Algorithm, Reply, ShapeSummary, SketchSystem, SolveStatus, Solved, Tag, area_and_perimeter,
-    loop_area,
+    Algorithm, Description, EdgeCurve, EdgeDescription, FaceDescription, Reply, ShapeSummary,
+    SketchSystem, SolveStatus, Solved, Surface, Tag, area_and_perimeter, loop_area,
 };
 
 use crate::kernel::{
@@ -740,6 +741,12 @@ fn answer(op: &Op) -> Result<Reply, Error> {
             },
         ),
         Op::Summarize { shape } => Ok(Reply::Summary(Symbolic::read(shape)?.summary())),
+        Op::Describe {
+            shape,
+            kind,
+            first,
+            count,
+        } => described(&Symbolic::read(shape)?.counts(), *kind, *first, *count),
         Op::Echo { data } => Ok(Reply::Echo { data: data.clone() }),
         other => Err(Error::new(
             ErrorCode::Internal,
@@ -747,6 +754,56 @@ fn answer(op: &Op) -> Result<Reply, Error> {
         )
         .with_suggestion("run this test on a real kernel worker")),
     }
+}
+
+/// The fake's description of a shape whose counts are `counts`: its `kind`'s elements from
+/// `first`, `count` of them or as many as there are, each standing for its number `n` alone
+/// (a face of type other, area 1, centred at (n, 0, 0); an edge of type other from (n, 0,
+/// 0) to (n, 1, 0), 1 long; a vertex at (n, 0, 0)), and the kind's total. Enough for a
+/// test of what's done with a description; a real worker's geometry is tested on a real
+/// worker.
+fn described(
+    counts: &ElementCounts,
+    kind: ElementKind,
+    first: u32,
+    count: u32,
+) -> Result<Reply, Error> {
+    let total = match kind {
+        ElementKind::Face => counts.faces,
+        ElementKind::Edge => counts.edges,
+        ElementKind::Vertex => counts.vertices,
+        ElementKind::Solid => {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                "the fake kernel describes faces, edges, and vertices, not solids",
+            ));
+        }
+    };
+    let numbers = first..=total.min(first.saturating_add(count).saturating_sub(1));
+    let at = |n: u32, y: f64| [f64::from(n), y, 0.0];
+    let mut description = Description {
+        faces: Vec::new(),
+        edges: Vec::new(),
+        vertices: Vec::new(),
+    };
+    for n in numbers {
+        match kind {
+            ElementKind::Face => description.faces.push(FaceDescription {
+                surface: Surface::Other,
+                area: 1.0,
+                centroid: at(n, 0.0),
+            }),
+            ElementKind::Edge => description.edges.push(EdgeDescription {
+                curve: EdgeCurve::Other,
+                length: 1.0,
+                start: at(n, 0.0),
+                end: at(n, 1.0),
+                middle: at(n, 0.5),
+            }),
+            ElementKind::Vertex | ElementKind::Solid => description.vertices.push(at(n, 0.0)),
+        }
+    }
+    Ok(Reply::Described { total, description })
 }
 
 /// The fake's sweep of `faces`, which must be faces a fake kernel made from regions, as the

@@ -36,7 +36,7 @@ fn made(engine: &Recompute<FakeKernel>) -> Vec<&'static str> {
         .calls()
         .iter()
         .map(|call| call.op.name())
-        .filter(|name| *name != "Summarize")
+        .filter(|name| !matches!(*name, "Summarize" | "Describe"))
         .collect()
 }
 

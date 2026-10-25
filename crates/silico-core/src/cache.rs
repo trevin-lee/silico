@@ -44,11 +44,11 @@ use sha2::Sha256;
 
 use crate::kernel::{Blob, History, ShapeData, ShapeSummary};
 use crate::recompute::{Built, Key};
-use silico_protocol::Failure;
+use silico_protocol::{Description, Failure};
 
 /// The first bytes of every entry, naming its format: a change to the format changes it.
 /// It's part of every entry's key too, so an entry of another format is never looked for.
-const MAGIC: &[u8] = b"silico cache 6\n";
+const MAGIC: &[u8] = b"silico cache 7\n";
 
 /// What the cache's directory holds besides its entries: it ignores itself.
 const GITIGNORE: &[u8] =
@@ -178,8 +178,9 @@ struct Entry {
     brep: Vec<u8>,
     valid: bool,
     history: Option<History>,
-    /// The shape's measure: none yet, its summary (a feature's solid is measured once it's
-    /// made), or the kernel's refusal to measure it, for its values.
+    /// The shape's measure: none yet, its summary and its elements described (a feature's
+    /// solid is measured once it's made), or the kernel's refusal to measure it, for its
+    /// values.
     measure: Measure,
 }
 
@@ -187,7 +188,10 @@ struct Entry {
 #[derive(Serialize, Deserialize)]
 enum Measure {
     Unmeasured,
-    Summary(ShapeSummary),
+    Summary {
+        summary: ShapeSummary,
+        description: Description,
+    },
     /// The kernel worker's refusal, as data, and the operation it was for (`Summarize`):
     /// the core reading it back words it, so its words are always that core's (the entry's
     /// key holds the worker's identity, not the core's). Only a worker's refusal of a
@@ -299,9 +303,16 @@ impl Cache {
             brep: built.shape.brep().as_bytes().to_vec(),
             valid,
             history: built.history.clone(),
-            measure: match (built.summary(), built.measure_refused()) {
-                (Some(summary), _) => Measure::Summary(summary.clone()),
-                (None, Some(refused)) if lasting(refused) => match refused.worker_failure() {
+            measure: match (
+                built.summary(),
+                built.description(),
+                built.measure_refused(),
+            ) {
+                (Some(summary), Some(description), _) => Measure::Summary {
+                    summary: summary.clone(),
+                    description: description.clone(),
+                },
+                (_, _, Some(refused)) if lasting(refused) => match refused.worker_failure() {
                     Some((op, failure)) => Measure::Refused {
                         op: op.to_owned(),
                         failure: failure.clone(),
@@ -309,7 +320,7 @@ impl Cache {
                     // Not a worker's (a fake kernel's): nothing to word it again from.
                     None => Measure::Unmeasured,
                 },
-                (None, _) => Measure::Unmeasured,
+                _ => Measure::Unmeasured,
             },
         };
         let payload = match postcard::to_allocvec(&entry) {
@@ -866,14 +877,20 @@ fn lasting(refused: &crate::Error) -> bool {
     )
 }
 
-/// The result `entry` keeps, checked as a worker's reply is: a summary no shape has is a
-/// measure to make again, and a refusal is worded now, by this core, and kept only if the
-/// cache would keep it (this core may judge it otherwise than the one that wrote it).
+/// The result `entry` keeps, checked as a worker's reply is: a summary no shape has, or a
+/// description a worker couldn't send, is a measure to make again, and a refusal is worded
+/// now, by this core, and kept only if the cache would keep it (this core may judge it
+/// otherwise than the one that wrote it).
 fn built_of(entry: Entry) -> Built {
     let shape = ShapeData::checked(Blob::inline(entry.brep), entry.valid);
     match entry.measure {
-        Measure::Summary(summary) if crate::kernel::summary_fault(&summary).is_none() => {
-            Built::new(shape, entry.history, Some(summary))
+        Measure::Summary {
+            summary,
+            description,
+        } if crate::kernel::summary_fault(&summary).is_none()
+            && description.validate(1).is_ok() =>
+        {
+            Built::new(shape, entry.history, Some((summary, description)))
         }
         Measure::Refused { op, failure } => {
             let refused = crate::worker::failure_error(&op, failure);
@@ -883,7 +900,7 @@ fn built_of(entry: Entry) -> Built {
                 Built::new(shape, entry.history, None)
             }
         }
-        Measure::Unmeasured | Measure::Summary(_) => Built::new(shape, entry.history, None),
+        Measure::Unmeasured | Measure::Summary { .. } => Built::new(shape, entry.history, None),
     }
 }
 

@@ -582,6 +582,20 @@ impl KernelRequest<DescribedBatch> {
     }
 }
 
+/// The error for a description whose total of `kind` was `was` in one batch and `now` in a
+/// later one: the shape can't have changed between them.
+pub(crate) fn description_changed(kind: ElementKind, was: u32, now: u32) -> Error {
+    Error::new(
+        ErrorCode::ProtocolError,
+        "the kernel worker sent a description it can't have",
+    )
+    .with_cause(format!(
+        "it said the shape has {was} {}, then {now}",
+        kind.plural()
+    ))
+    .with_suggestion("start a new kernel worker")
+}
+
 /// What's wrong with a batch of a description for a request of `count` elements of `kind`
 /// from `first`, of `total`, if anything: a value it can't hold, elements of another kind,
 /// or more or fewer than there are from `first` up to `count`.
@@ -1099,17 +1113,7 @@ impl KernelWorker {
                 let batch = self.run(KernelRequest::describe(shape, kind, first, count)?)?;
                 Ok((batch.total, batch.description))
             },
-            |kind, was, now| {
-                Error::new(
-                    ErrorCode::ProtocolError,
-                    "the kernel worker sent a description it can't have",
-                )
-                .with_cause(format!(
-                    "it said the shape has {was} {}, then {now}",
-                    kind.plural()
-                ))
-                .with_suggestion("start a new kernel worker")
-            },
+            description_changed,
         )
     }
 

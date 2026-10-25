@@ -34,9 +34,9 @@ use silico_core::kernel::{
 use silico_core::pool::Pending;
 use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 use silico_core::{Error, ErrorCode};
-use silico_protocol::{Failure, Operation, Refusal};
+use silico_protocol::{Description, Failure, Operation, Refusal};
 
-const MAGIC: &[u8] = b"silico cache 6\n";
+const MAGIC: &[u8] = b"silico cache 7\n";
 
 fn built(model: &Model, id: &str) -> (String, Arc<silico_core::recompute::Built>) {
     match model.outcome(&FeatureId::new(id).unwrap()) {
@@ -88,13 +88,20 @@ struct Entry {
     measure: Measure,
 }
 
-/// An entry's measure: none, its summary, or the kernel worker's refusal, as data, and the
-/// operation it was for (the protocol's own `Failure`: its layout is the protocol's).
+/// An entry's measure: none, its summary and its elements described, or the kernel worker's
+/// refusal, as data, and the operation it was for (the protocol's own `Failure` and
+/// `Description`: their layouts are the protocol's).
 #[derive(Serialize, Deserialize)]
 enum Measure {
     Unmeasured,
-    Summary(ShapeSummary),
-    Refused { op: String, failure: Failure },
+    Summary {
+        summary: ShapeSummary,
+        description: Description,
+    },
+    Refused {
+        op: String,
+        failure: Failure,
+    },
 }
 
 /// A measure refused, as a worker refuses it, with `refusal`.
@@ -989,7 +996,7 @@ fn a_refusal_kept_on_disk_is_written_as_the_worker_said_it_and_kernel_failed_is_
                     assert_eq!(failure, given, "as the worker said it");
                 }
                 Measure::Unmeasured => assert!(!kept, "{given:?}: {id} written unmeasured"),
-                Measure::Summary(_) => panic!("{given:?}: {id} measured"),
+                Measure::Summary { .. } => panic!("{given:?}: {id} measured"),
             }
         }
     }
@@ -1044,7 +1051,7 @@ fn a_kept_refusal_this_core_wouldnt_keep_is_measured_again_not_made_again() {
         // Written measured.
         assert!(matches!(
             decode(&std::fs::read(&path).unwrap()).measure,
-            Measure::Summary(_)
+            Measure::Summary { .. }
         ));
     }
 }
@@ -1136,7 +1143,7 @@ fn a_kept_refusal_of_a_kind_this_silico_doesnt_know_is_an_entry_that_doesnt_hold
             assert!(again.drift().is_empty());
             assert!(matches!(
                 decode(&std::fs::read(&path).unwrap()).measure,
-                Measure::Summary(_)
+                Measure::Summary { .. }
             ));
         }
     }
@@ -1152,7 +1159,15 @@ fn a_kept_summary_no_shape_has_is_measured_again() {
     let (_, block) = built(&model, "k7f2qx3m");
     let mut summary = block.summary().unwrap().clone();
     summary.volume = f64::NAN;
-    forge_block(&dir.0, &model, Measure::Summary(summary));
+    let description = block.description().unwrap().clone();
+    forge_block(
+        &dir.0,
+        &model,
+        Measure::Summary {
+            summary,
+            description,
+        },
+    );
     let next = session(&dir.0);
     let again = published(&next, checked(EXAMPLE));
     assert!(calls(&next).is_empty(), "{:?}", calls(&next));
@@ -1165,19 +1180,47 @@ fn a_kept_summary_no_shape_has_is_measured_again() {
 }
 
 #[test]
+fn a_kept_description_no_worker_could_send_is_measured_again() {
+    // As a summary no shape has: a description the core would refuse from a worker (here a
+    // face of area -1, its summary sound) isn't taken back from the cache. The block is
+    // measured and described again, and the model holds the kernel's description, not the
+    // planted one.
+    let dir = Scratch::new("bad-description");
+    let model = seed(&dir.0);
+    let (_, block) = built(&model, "k7f2qx3m");
+    let summary = block.summary().unwrap().clone();
+    let mut description = block.description().unwrap().clone();
+    description.faces[2].area = -1.0;
+    forge_block(
+        &dir.0,
+        &model,
+        Measure::Summary {
+            summary,
+            description,
+        },
+    );
+    let next = session(&dir.0);
+    let again = published(&next, checked(EXAMPLE));
+    assert!(calls(&next).is_empty(), "{:?}", calls(&next));
+    assert_eq!(measures(&next), 1);
+    let (_, remeasured) = built(&again, "k7f2qx3m");
+    assert_eq!(remeasured.description(), block.description());
+}
+
+#[test]
 fn an_entry_of_the_format_before_is_never_looked_for_and_a_name_of_this_one_holding_it_is_rebuilt()
 {
     // Each format's magic is part of every entry's key: an older format's entry for a step
-    // ("silico cache 4") lives elsewhere, so this one never reads it. Planted where the format
+    // ("silico cache 6") lives elsewhere, so this one never reads it. Planted where the format
     // before keeps the block, it's left as it was (the cache's bound evicts it in time), and
     // the block is made and written in this format.
     let dir = Scratch::new("format-before");
     let model = seed(&dir.0);
     let (key, _) = built(&model, "k7f2qx3m");
-    let old = entry_path_in(&dir.0, b"silico cache 4\n", &key);
+    let old = entry_path_in(&dir.0, b"silico cache 6\n", &key);
     let new = entry_path(&dir.0, &key);
     assert_ne!(old, new);
-    let mut bytes = b"silico cache 4\n".to_vec();
+    let mut bytes = b"silico cache 6\n".to_vec();
     bytes.extend([7; 32]);
     bytes.extend(b"a payload of the format before");
     std::fs::create_dir_all(old.parent().unwrap()).unwrap();
@@ -1192,7 +1235,7 @@ fn an_entry_of_the_format_before_is_never_looked_for_and_a_name_of_this_one_hold
     // An entry of this format's name holding the format before's bytes doesn't hold
     // together: rebuilt, and written over in this format.
     let mut text = std::fs::read(&new).unwrap();
-    text[..MAGIC.len()].copy_from_slice(b"silico cache 4\n");
+    text[..MAGIC.len()].copy_from_slice(b"silico cache 6\n");
     std::fs::write(&new, &text).unwrap();
     let third = session(&dir.0);
     published(&third, checked(EXAMPLE));
