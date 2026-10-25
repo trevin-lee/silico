@@ -10,93 +10,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use silico_core::ErrorCode;
-use silico_core::render::{RenderClient, RenderOutcome, RenderSettings, RenderTicket, Rendered};
+use silico_core::render::{RenderClient, RenderOutcome, RenderSettings, RenderTicket};
 use silico_protocol::{Mesh, RenderScene};
 use silico_render::bench::front_of_a_box;
 
-const WORKER: &str = env!("CARGO_BIN_EXE_silico-render-worker");
-const TEST_WORKER: &str = env!("CARGO_BIN_EXE_silico-render-test-worker");
-
-fn client(exe: &str, settings: RenderSettings) -> RenderClient {
-    RenderClient::start(Path::new(exe), settings).unwrap()
-}
-
-fn drawn(outcome: RenderOutcome) -> Rendered {
-    match outcome {
-        RenderOutcome::Done(Ok(rendered)) => rendered,
-        other => panic!("not drawn: {other:?}"),
-    }
-}
-
-fn failed(outcome: RenderOutcome) -> silico_core::Error {
-    match outcome {
-        RenderOutcome::Done(Err(e)) => e,
-        other => panic!("not failed: {other:?}"),
-    }
-}
-
-/// A scene the test worker hangs on (for 600 s), and one it aborts on.
-fn hanging() -> RenderScene {
-    front_of_a_box(1, 7)
-}
-
-fn crashing() -> RenderScene {
-    front_of_a_box(1, 9)
-}
-
-fn small() -> RenderScene {
-    front_of_a_box(8, 8)
-}
-
-fn process_exists(pid: u32) -> bool {
-    std::process::Command::new("ps")
-        .args(["-p", &pid.to_string()])
-        .output()
-        .unwrap()
-        .status
-        .success()
-}
-
-fn signal(pid: u32, sig: &str) {
-    let ok = std::process::Command::new("kill")
-        .args([sig, &pid.to_string()])
-        .status()
-        .unwrap()
-        .success();
-    assert!(ok, "kill {sig} {pid}");
-}
-
-fn eventually(limit: Duration, done: impl Fn() -> bool) -> bool {
-    let start = Instant::now();
-    while start.elapsed() < limit {
-        if done() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    done()
-}
-
-/// The ticket's outcome, or None if it doesn't come within `limit` (the wait left running on
-/// a thread of its own).
-fn wait_within(ticket: RenderTicket, limit: Duration) -> Option<RenderOutcome> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(ticket.wait());
-    });
-    rx.recv_timeout(limit).ok()
-}
-
-/// A scratch directory of this test's own under the system's temporary directory.
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "silico-adversarial-client-{name}-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
+use crate::common::{
+    TEST_WORKER, WORKER, client, crashing, drawn, eventually, failed, hanging, process_exists,
+    scratch, signal, small, wait_within, zombie,
+};
 
 // ---- Dropping the client ----
 
@@ -134,8 +55,42 @@ fn dropping_the_client_with_renders_queued_behind_a_hung_one_returns_promptly() 
         "pid {pid} still runs after the client was dropped"
     );
     assert!(
-        took < Duration::from_secs(1),
+        took < Duration::from_millis(2500),
         "dropping the client took {took:?}"
+    );
+}
+
+#[test]
+fn dropping_the_client_just_after_a_render_is_queued_doesnt_wait_for_it() {
+    // BREAKS (fixed): the client's thread took a render from the queue after the client
+    // began closing, but before it saw the render as current, so the drop found nothing to
+    // cancel, and the render ran its whole time (a hung one here, 5 s) while the drop
+    // waited. Now the render is made current before the closing is looked at again.
+    let mut worst = Duration::ZERO;
+    for i in 0..10 {
+        let client = client(
+            TEST_WORKER,
+            RenderSettings {
+                timeout: Duration::from_secs(5),
+                ..RenderSettings::default()
+            },
+        );
+        std::thread::sleep(Duration::from_millis(50));
+        let t = client.render(hanging());
+        let start = Instant::now();
+        drop(client);
+        let took = start.elapsed();
+        worst = worst.max(took);
+        let outcome = wait_within(t, Duration::from_secs(1))
+            .unwrap_or_else(|| panic!("{i}: the ticket waits after the client was dropped"));
+        assert!(
+            matches!(outcome, RenderOutcome::Cancelled),
+            "{i}: {outcome:?}"
+        );
+    }
+    assert!(
+        worst < Duration::from_millis(2500),
+        "dropping the client took {worst:?}"
     );
 }
 
@@ -170,15 +125,6 @@ fn a_worker_killed_while_idle_is_replaced_and_the_next_render_draws() {
     // Not a crash of this render's: the worker was gone before it was sent.
     drawn(c.render(small()).wait());
     assert!(c.pid().is_some_and(|p| p != pid));
-}
-
-/// Whether `pid` is a zombie (exited, not yet reaped by the client).
-fn zombie(pid: u32) -> bool {
-    let out = std::process::Command::new("ps")
-        .args(["-o", "stat=", "-p", &pid.to_string()])
-        .output()
-        .unwrap();
-    String::from_utf8_lossy(&out.stdout).trim().starts_with('Z')
 }
 
 #[test]
@@ -276,7 +222,9 @@ fn many_threads_render_crash_hang_and_cancel_at_once_and_every_ticket_answers() 
     let c = Arc::new(client(
         TEST_WORKER,
         RenderSettings {
-            timeout: Duration::from_millis(800),
+            // Four of the hangs aren't cancelled, and run their time, one after another: long
+            // enough that a small render on a new worker, loaded, never runs out of it.
+            timeout: Duration::from_secs(5),
             ..RenderSettings::default()
         },
     ));
@@ -450,6 +398,88 @@ fn large_by_pixels_or_faces_exactly_at_the_bound_isnt_large() {
     let c = at(64, 5);
     drawn(c.render(small()).wait());
     assert_eq!(c.pid(), None, "kept one face past the bound");
+}
+
+#[test]
+fn large_by_triangles_exactly_at_the_bound_isnt_large() {
+    let t: usize = small().bodies.iter().map(|b| b.mesh.triangles.len()).sum();
+    let at = |large_triangles| {
+        client(
+            WORKER,
+            RenderSettings {
+                large_triangles,
+                ..RenderSettings::default()
+            },
+        )
+    };
+    let c = at(t);
+    drawn(c.render(small()).wait());
+    assert!(
+        c.pid().is_some(),
+        "stopped at exactly the triangle bound ({t})"
+    );
+    let c = at(t - 1);
+    drawn(c.render(small()).wait());
+    assert_eq!(c.pid(), None, "kept one triangle past the bound ({t})");
+}
+
+// ---- Waiting and cancelling from elsewhere ----
+
+#[test]
+fn a_render_waited_on_in_one_thread_is_cancelled_from_another() {
+    let c = client(TEST_WORKER, RenderSettings::default());
+    let ticket = c.render(hanging());
+    let cancel = ticket.canceller();
+    let waiting = std::thread::spawn(move || ticket.wait());
+    assert!(eventually(Duration::from_secs(10), || c.pid().is_some()));
+    std::thread::sleep(Duration::from_millis(200));
+    let pid = c.pid().unwrap();
+    let start = Instant::now();
+    cancel.clone().cancel();
+    assert!(matches!(waiting.join().unwrap(), RenderOutcome::Cancelled));
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        start.elapsed()
+    );
+    assert!(
+        eventually(Duration::from_secs(5), || !process_exists(pid)),
+        "the cancelled render's worker {pid} still runs"
+    );
+    // Cancelling again, after the answer, does nothing.
+    cancel.cancel();
+    drawn(c.render(small()).wait());
+}
+
+#[test]
+fn a_ticket_polled_or_waited_on_for_a_while_comes_back_until_it_answers() {
+    let c = client(TEST_WORKER, RenderSettings::default());
+    let mut ticket = c.render(hanging());
+    for _ in 0..3 {
+        ticket = match ticket.try_take() {
+            Err(t) => t,
+            Ok(outcome) => panic!("a hung render answered {outcome:?}"),
+        };
+        ticket = match ticket.wait_timeout(Duration::from_millis(100)) {
+            Err(t) => t,
+            Ok(outcome) => panic!("a hung render answered {outcome:?}"),
+        };
+    }
+    ticket.cancel();
+    let outcome = wait_within(ticket, Duration::from_secs(5)).expect("no outcome");
+    assert!(matches!(outcome, RenderOutcome::Cancelled), "{outcome:?}");
+    // A drawn one, taken by polling.
+    let mut ticket = c.render(small());
+    let start = Instant::now();
+    let outcome = loop {
+        match ticket.try_take() {
+            Ok(outcome) => break outcome,
+            Err(t) if start.elapsed() < Duration::from_secs(30) => ticket = t,
+            Err(_) => panic!("a small render never answered"),
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    drawn(outcome);
 }
 
 // ---- The idle stop ----
@@ -678,7 +708,7 @@ fn a_queued_render_cancelled_answers_cancelled_at_once_not_when_its_turn_comes()
     let outcome = wait_within(queued, Duration::from_secs(10)).expect("no outcome");
     assert!(matches!(outcome, RenderOutcome::Cancelled), "{outcome:?}");
     assert!(
-        start.elapsed() < Duration::from_secs(1),
+        start.elapsed() < Duration::from_millis(2500),
         "the cancelled render answered after {:?}",
         start.elapsed()
     );

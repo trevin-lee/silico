@@ -4,9 +4,50 @@
 //! asked. Neither is a result: nothing the render worker returns reaches a result, a name, a
 //! document, the cache, or a stored expected value (R5).
 
+use std::ffi::OsString;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{InvalidParameter, Mesh};
+
+/// Which adapter the render worker may draw on: the core's one say about the renderer, given
+/// to the worker as its arguments (docs/design/m4.6-render.md, *How the worker gets its
+/// rasterizer*), written by [`RenderAdapter::args`] and read by [`RenderAdapter::from_args`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RenderAdapter {
+    /// Only a CPU adapter (Mesa's lavapipe), or the render is `worker_unavailable`.
+    #[default]
+    Software,
+    /// A CPU adapter if there is one, then a discrete GPU, then any.
+    Any,
+}
+
+/// The render worker's argument for [`RenderAdapter::Any`]; none is [`RenderAdapter::Software`].
+const ANY_ADAPTER: &str = "--any-adapter";
+
+impl RenderAdapter {
+    /// The render worker's arguments for this policy.
+    pub fn args(self) -> &'static [&'static str] {
+        match self {
+            RenderAdapter::Software => &[],
+            RenderAdapter::Any => &[ANY_ADAPTER],
+        }
+    }
+
+    /// The policy the render worker's arguments give, as [`RenderAdapter::args`] writes
+    /// them. Any other argument, or one given twice, is refused, naming it: a worker never
+    /// draws under a policy it wasn't given.
+    pub fn from_args(args: impl IntoIterator<Item = OsString>) -> Result<Self, String> {
+        let mut policy = RenderAdapter::Software;
+        for arg in args {
+            match policy {
+                RenderAdapter::Software if arg == ANY_ADAPTER => policy = RenderAdapter::Any,
+                _ => return Err(format!("unexpected argument {arg:?}")),
+            }
+        }
+        Ok(policy)
+    }
+}
 
 /// The most pixels along either side of a render (M4.1's `render_side`).
 pub const MAX_RENDER_SIDE: u32 = 4096;

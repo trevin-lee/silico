@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use proptest::prelude::*;
 use silico_core::meshes::{MeshCache, mesh_level};
-use silico_protocol::Mesh;
+use silico_protocol::{Mesh, MeshAt};
 
 // ---- The ladder ----
 
@@ -78,6 +78,10 @@ fn mesh(triangles: usize) -> Mesh {
     }
 }
 
+fn at(deflection: f64, mesh: Mesh) -> MeshAt {
+    MeshAt { mesh, deflection }
+}
+
 fn size(triangles: usize) -> u64 {
     3 * 36 + 12 * triangles as u64 + 4
 }
@@ -137,20 +141,26 @@ impl Model {
         self.kept.iter().map(|&(_, _, t)| size(t)).sum()
     }
 
+    /// A mesh too large is never kept, nor its floor; one kept replaces its own entry
+    /// (the step's floor staying), then the oldest go until it fits, each step's floor with
+    /// its last mesh; a mesh kept made coarser than asked records its step's floor.
     fn put(&mut self, bound: u64, key: u8, asked: f64, used: f64, triangles: usize) {
-        if used > asked {
-            self.floors.retain(|&(k, _)| k != key);
-            self.floors.push((key, used));
-        }
         if size(triangles) > bound {
             return;
         }
         self.kept
             .retain(|&(k, d, _)| (k, d) != (key, used.to_bits()));
         while self.bytes() + size(triangles) > bound && !self.kept.is_empty() {
-            self.kept.remove(0);
+            let (gone, _, _) = self.kept.remove(0);
+            if !self.kept.iter().any(|&(k, _, _)| k == gone) {
+                self.floors.retain(|&(k, _)| k != gone);
+            }
         }
         self.kept.push((key, used.to_bits(), triangles));
+        if used > asked {
+            self.floors.retain(|&(k, _)| k != key);
+            self.floors.push((key, used));
+        }
     }
 
     fn get(&mut self, key: u8, deflection: f64) -> Option<usize> {
@@ -184,7 +194,7 @@ proptest! {
         for (i, s) in steps.iter().enumerate() {
             match *s {
                 Step::Put { key, asked, used, triangles } => {
-                    let given = cache.put(&key, asked, used, mesh(triangles));
+                    let given = cache.put(&key, asked, MeshAt { mesh: mesh(triangles), deflection: used });
                     prop_assert_eq!(given.triangles.len(), triangles, "step {}", i);
                     model.put(bound, key, asked, used, triangles);
                 }
@@ -193,7 +203,7 @@ proptest! {
                     prop_assert_eq!(got, model.get(key, deflection), "step {}: {:?}", i, s);
                 }
                 Step::Level { key, level } => {
-                    let got = cache.level(&key, level);
+                    let got = cache.deflection_for(&key, level);
                     let want = model.level(key, level);
                     prop_assert_eq!(got.to_bits(), want.to_bits(), "step {}: {:?}", i, s);
                 }
@@ -208,7 +218,7 @@ proptest! {
 fn a_mesh_given_back_is_shared_not_copied() {
     // Two gets of one entry, and the put's own, are one mesh.
     let cache = MeshCache::new(1 << 20);
-    let put = cache.put(&1u8, 0.5, 0.5, mesh(4));
+    let put = cache.put(&1u8, 0.5, at(0.5, mesh(4)));
     let a = cache.get(&1, 0.5).unwrap();
     let b = cache.get(&1, 0.5).unwrap();
     assert!(Arc::ptr_eq(&put, &a) && Arc::ptr_eq(&a, &b));
@@ -228,7 +238,7 @@ fn many_threads_put_and_get_and_the_bound_holds() {
                     let key = u8::try_from((usize::from(t) + i) % 5).unwrap();
                     let d = [0.25, 0.5, 1.0][i % 3];
                     if i % 2 == 0 {
-                        cache.put(&key, d, d, mesh(i % 11));
+                        cache.put(&key, d, at(d, mesh(i % 11)));
                     } else if let Some(m) = cache.get(&key, d) {
                         assert!(m.triangles.len() <= 10);
                     }

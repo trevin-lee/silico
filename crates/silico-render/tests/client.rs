@@ -3,64 +3,17 @@
 //! and when idle; renders in turn, each with its own time; and cancelling, queued or
 //! running (docs/design/m4.6-render.md, In the core, the render; Tests, the worker).
 
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 use silico_core::ErrorCode;
-use silico_core::render::{RenderClient, RenderOutcome, RenderSettings, Rendered};
-use silico_protocol::RenderScene;
+use silico_core::render::{RenderAdapter, RenderOutcome, RenderSettings};
 use silico_render::bench::front_of_a_box;
+use silico_render::test_scenes;
 
-const WORKER: &str = env!("CARGO_BIN_EXE_silico-render-worker");
-const TEST_WORKER: &str = env!("CARGO_BIN_EXE_silico-render-test-worker");
-
-fn client(exe: &str, settings: RenderSettings) -> RenderClient {
-    RenderClient::start(Path::new(exe), settings).unwrap()
-}
-
-fn drawn(outcome: RenderOutcome) -> Rendered {
-    match outcome {
-        RenderOutcome::Done(Ok(rendered)) => rendered,
-        other => panic!("not drawn: {other:?}"),
-    }
-}
-
-fn failed(outcome: RenderOutcome) -> silico_core::Error {
-    match outcome {
-        RenderOutcome::Done(Err(e)) => e,
-        other => panic!("not failed: {other:?}"),
-    }
-}
-
-/// A scene the test worker hangs on, and one it aborts on.
-fn hanging() -> RenderScene {
-    front_of_a_box(1, 7)
-}
-
-fn crashing() -> RenderScene {
-    front_of_a_box(1, 9)
-}
-
-fn process_exists(pid: u32) -> bool {
-    std::process::Command::new("ps")
-        .args(["-p", &pid.to_string()])
-        .output()
-        .unwrap()
-        .status
-        .success()
-}
-
-/// Waits up to `limit` for `done`.
-fn eventually(limit: Duration, done: impl Fn() -> bool) -> bool {
-    let start = Instant::now();
-    while start.elapsed() < limit {
-        if done() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    done()
-}
+use crate::common::{
+    TEST_WORKER, WORKER, at, client, crashing, drawn, eventually, failed, hanging, process_exists,
+    small,
+};
 
 #[test]
 fn the_worker_starts_on_the_first_render_and_draws_what_the_worker_draws() {
@@ -126,13 +79,127 @@ fn a_large_render_by_pixels_or_faces_stops_the_worker_once_it_answers() {
 }
 
 #[test]
-fn a_scene_the_worker_refuses_leaves_it_running() {
+fn a_scene_that_fails_its_check_is_answered_at_once_as_a_bug_and_never_sent() {
+    // The command builds scenes from checked values: one that fails is Silico's bug, and
+    // the worker isn't started for it, nor stopped if it runs.
     let c = client(WORKER, RenderSettings::default());
-    drawn(c.render(front_of_a_box(8, 8)).wait());
-    let pid = c.pid().unwrap();
     let e = failed(c.render(front_of_a_box(0, 8)).wait());
-    assert_eq!(e.code(), ErrorCode::InvalidInput, "{e:?}");
+    assert_eq!(e.code(), ErrorCode::Internal, "{e:?}");
+    assert_eq!(e.parameter(), Some("width"), "{e:?}");
+    assert!(e.suggestion().is_some(), "{e:?}");
+    assert_eq!(c.pid(), None, "a worker started for a scene never sent");
+    drawn(c.render(small()).wait());
+    let pid = c.pid().unwrap();
+    let e = failed(c.render(front_of_a_box(8, 4097)).wait());
+    assert_eq!(
+        (e.code(), e.parameter()),
+        (ErrorCode::Internal, Some("height"))
+    );
     assert_eq!(c.pid(), Some(pid));
+}
+
+#[test]
+fn a_worker_that_answers_other_than_asked_is_a_protocol_error_and_stopped() {
+    // Each of the test worker's misbehaving answers to a checked scene: one ID short, no
+    // image, the wrong reply, an ID buffer not asked for and none when asked, and a refusal
+    // of a scene the core checked.
+    let c = client(TEST_WORKER, RenderSettings::default());
+    let mut unasked = at(test_scenes::IDS_FLIPPED);
+    unasked.ids = false;
+    for (what, scene) in [
+        ("one ID short", at(test_scenes::IDS_SHORT)),
+        ("no image", at(test_scenes::NO_IMAGE)),
+        ("an echo", at(test_scenes::WRONG_REPLY)),
+        ("no ID buffer, though asked", at(test_scenes::IDS_FLIPPED)),
+        ("an ID buffer not asked for", unasked),
+        ("a checked scene refused", at(test_scenes::REFUSES)),
+    ] {
+        drawn(c.render(small()).wait());
+        let pid = c.pid().unwrap();
+        let e = failed(c.render(scene).wait());
+        assert_eq!(e.code(), ErrorCode::ProtocolError, "{what}: {e:?}");
+        assert!(e.suggestion().is_some(), "{what}: {e:?}");
+        assert_eq!(c.pid(), None, "{what}: the worker kept");
+        assert!(
+            eventually(Duration::from_secs(5), || !process_exists(pid)),
+            "{what}: pid {pid} still runs"
+        );
+    }
+    // Each cause, said.
+    let cause = |scene| failed(c.render(scene).wait()).cause().map(str::to_owned);
+    assert_eq!(
+        cause(at(test_scenes::IDS_SHORT)).as_deref(),
+        Some("10 IDs for 11 pixels")
+    );
+    assert_eq!(
+        cause(at(test_scenes::NO_IMAGE)).as_deref(),
+        Some("no image")
+    );
+    assert_eq!(
+        cause(at(test_scenes::WRONG_REPLY)).as_deref(),
+        Some("it answered Echo")
+    );
+    drawn(c.render(small()).wait());
+}
+
+#[test]
+fn the_adapter_policy_reaches_the_worker_as_given() {
+    for (adapter, said) in [
+        (RenderAdapter::Software, "policy Software"),
+        (RenderAdapter::Any, "policy Any"),
+    ] {
+        let c = client(
+            TEST_WORKER,
+            RenderSettings {
+                adapter,
+                ..RenderSettings::default()
+            },
+        );
+        let e = failed(c.render(at(test_scenes::SAYS_POLICY)).wait());
+        assert_eq!(e.code(), ErrorCode::WorkerUnavailable, "{e:?}");
+        assert!(format!("{e:?}").contains(said), "{adapter:?}: {e:?}");
+    }
+}
+
+#[test]
+fn a_worker_given_an_argument_it_doesnt_know_exits_saying_so() {
+    for exe in [WORKER, TEST_WORKER] {
+        for args in [&["--any"][..], &["--any-adapter", "--any-adapter"]] {
+            let out = std::process::Command::new(exe).args(args).output().unwrap();
+            assert_eq!(out.status.code(), Some(2), "{exe} {args:?}");
+            let said = String::from_utf8_lossy(&out.stderr);
+            assert!(
+                said.contains("unexpected argument"),
+                "{exe} {args:?}: {said}"
+            );
+        }
+    }
+}
+
+#[test]
+fn renders_drawn_keep_the_worker_from_idling() {
+    // Idle 2 s; a render every 300 ms for 5 s, each counting the idle time afresh: the
+    // worker is never idle that long (a render may take 1.7 s, loaded, and still keep it).
+    let c = client(
+        WORKER,
+        RenderSettings {
+            idle: Duration::from_millis(2000),
+            ..RenderSettings::default()
+        },
+    );
+    drawn(c.render(small()).wait());
+    let pid = c.pid().unwrap();
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_millis(5000) {
+        std::thread::sleep(Duration::from_millis(300));
+        drawn(c.render(small()).wait());
+        assert_eq!(
+            c.pid(),
+            Some(pid),
+            "worker replaced after {:?}",
+            start.elapsed()
+        );
+    }
 }
 
 #[test]

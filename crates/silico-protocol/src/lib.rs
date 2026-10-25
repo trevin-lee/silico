@@ -8,6 +8,7 @@
 //! there's no version negotiation.
 
 mod chamfer;
+mod classify;
 mod describe;
 mod export;
 mod faces;
@@ -23,6 +24,7 @@ mod sweep;
 use serde::{Deserialize, Serialize};
 
 pub use chamfer::ChamferSize;
+pub use classify::{MAX_CLASSIFY_COORDINATE, PointPlace, check_classify_point};
 pub use describe::{
     DESCRIBE_BATCH, Description, EdgeCurve, EdgeDescription, FaceDescription, Quantity, Surface,
     What, describe_in_batches,
@@ -42,8 +44,8 @@ pub use history::{
     Topology,
 };
 pub use primitive::{
-    InvalidParameter, LENGTH_TOLERANCE, MAX_LENGTH, OFFSET_FIELD, Primitive, SIZE_FIELD,
-    check_offset, format_number,
+    InvalidParameter, LENGTH_TOLERANCE, MAX_LENGTH, MIN_RELATIVE_DEFLECTION, OFFSET_FIELD,
+    Primitive, SIZE_FIELD, check_offset, format_number, mesh_floor,
 };
 pub use profile::{
     Axis, MAX_PROFILE_POINTS, Profile, ProfilePlane, check_fillet_radius, check_revolve,
@@ -56,7 +58,8 @@ pub use refusal::{
 pub use render::{
     Camera, EDGE_BIT, Frame, MAX_FIELD_OF_VIEW, MAX_RENDER_COORDINATE, MAX_RENDER_EDGES,
     MAX_RENDER_FACES, MAX_RENDER_SIDE, MIN_EYE_DISTANCE, MIN_FIELD_OF_VIEW, MIN_UP_ACROSS_VIEW,
-    MIN_VIEW_HEIGHT, MIN_VIEW_HEIGHT_OF_REACH, PixelId, Projection, RenderBody, RenderScene,
+    MIN_VIEW_HEIGHT, MIN_VIEW_HEIGHT_OF_REACH, PixelId, Projection, RenderAdapter, RenderBody,
+    RenderScene,
 };
 pub use sketch::{
     Algorithm, DragBegin, Geometry, MAX_DRAG_UNKNOWNS, MAX_JACOBIAN_ENTRIES,
@@ -247,8 +250,9 @@ pub enum Op {
     /// A scene drawn by the render worker, boxed, as it's every body's mesh. Replies with
     /// [`Reply::Rendered`].
     Render(Box<RenderScene>),
-    /// Whether `point` is inside the shape or on its boundary, by OCCT's solid classifier
-    /// (a camera's eye inside a body, M4.6). Replies with [`Reply::Classified`].
+    /// Where `point` is against the shape, by OCCT's solid classifier (a camera's eye inside
+    /// a body, M4.6), the point checked by [`check_classify_point`]. Replies with
+    /// [`Reply::Classified`].
     Classify { shape: ShapeData, point: [f64; 3] },
 }
 
@@ -440,16 +444,13 @@ pub enum Reply {
         png: Vec<u8>,
         ids: Option<Vec<PixelId>>,
     },
-    /// Whether a point is inside a shape or on its boundary ([`Op::Classify`]).
+    /// Where a point is against a shape ([`Op::Classify`]).
     Classified {
-        inside: bool,
+        place: PointPlace,
     },
     /// A display mesh, and the deflection it was meshed at ([`Op::Tessellate`] with
     /// `at_least_the_floor`).
-    MeshAt {
-        mesh: Mesh,
-        deflection: f64,
-    },
+    MeshAt(MeshAt),
 }
 
 impl Reply {
@@ -509,6 +510,14 @@ pub struct FreecadMeasures {
 /// How far a [`Mesh`] normal's length may be from 1: about ten times what rounding a unit
 /// vector to 32-bit floats can leave (√3 · 2⁻²⁴, about 1e-7).
 pub const NORMAL_LENGTH_TOLERANCE: f64 = 1e-6;
+
+/// A display mesh and the deflection it was meshed at, which is the one asked, or the
+/// shape's floor ([`mesh_floor`]) when that's coarser.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MeshAt {
+    pub mesh: Mesh,
+    pub deflection: f64,
+}
 
 /// A triangle mesh of a shape's faces, and polylines along its edges, for display.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

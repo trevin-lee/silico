@@ -1252,7 +1252,7 @@ Bounds tight_bounds(const Shape &shape) {
   return Bounds{bounded, low, high};
 }
 
-bool classify_point(const Shape &shape, const Point3 &point) {
+PointState classify_point(const Shape &shape, const Point3 &point) {
   // The shape's largest tolerance: a vertex's is at least its edges', an edge's at least
   // its faces', but each is asked, as OCCT doesn't enforce it.
   double tolerance = Precision::Confusion();
@@ -1265,10 +1265,11 @@ bool classify_point(const Shape &shape, const Point3 &point) {
   classifier.Perform(gp_Pnt(point.x, point.y, point.z), tolerance);
   switch (classifier.State()) {
   case TopAbs_IN:
+    return PointState::Inside;
   case TopAbs_ON:
-    return true;
+    return PointState::On;
   case TopAbs_OUT:
-    return false;
+    return PointState::Outside;
   default:
     throw Standard_Failure("OCCT's solid classifier couldn't tell whether the point is inside");
   }

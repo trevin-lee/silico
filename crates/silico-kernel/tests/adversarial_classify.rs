@@ -10,11 +10,17 @@ use std::path::Path;
 use silico_core::ErrorCode;
 use silico_core::kernel::{KernelRequest, KernelWorker};
 use silico_kernel::{
-    BooleanOp, Curve, FaceRegions, LENGTH_TOLERANCE, Primitive, Region, Shape, SketchPlane,
-    boolean, classify, from_brep, from_text_brep, make, make_box, make_faces, tessellate,
-    tessellate_at_least_the_floor, to_brep, translate,
+    BooleanOp, Curve, FaceRegions, LENGTH_TOLERANCE, MeshAt, PointPlace, Primitive, Region, Shape,
+    SketchPlane, boolean, classify, from_brep, from_text_brep, make, make_box, make_faces,
+    tessellate, tessellate_at_least_the_floor, to_brep, translate,
 };
 use silico_protocol::{Blob, ShapeData};
+
+/// Whether `point` is inside `shape`, on its boundary counted as inside, as the core counts
+/// it (`KernelRequest::classify`).
+fn inside(shape: &Shape, point: [f64; 3]) -> Result<bool, silico_kernel::KernelError> {
+    classify(shape, point).map(|place| place != PointPlace::Outside)
+}
 
 /// The fixture `name` (tests/fixtures/brep), with Silico's checksum.
 fn fixture(name: &str) -> Vec<u8> {
@@ -62,7 +68,7 @@ fn a_bare_square_face_doesnt_hold_points_off_its_plane() {
     // faces"). Silico classifies whatever it's given; on a bare face OCCT's classifier
     // answers as the distance would.
     let face = square_face();
-    for (point, inside) in [
+    for (point, want) in [
         // On the face: on its boundary, as FreeCAD's distance ≤ tolerance says.
         ([5.0, 5.0, 0.0], true),
         ([0.0, 0.0, 0.0], true),
@@ -72,10 +78,10 @@ fn a_bare_square_face_doesnt_hold_points_off_its_plane() {
         ([50.0, 50.0, 0.0], false),
         ([5.0, 5.0, -1e-3], false),
     ] {
-        let got = classify(&face, point);
+        let got = inside(&face, point);
         assert!(
-            matches!(got, Ok(g) if g == inside),
-            "{point:?}: {got:?}, expected {inside}"
+            matches!(got, Ok(g) if g == want),
+            "{point:?}: {got:?}, expected {want}"
         );
     }
 }
@@ -87,7 +93,7 @@ fn a_compound_of_curves_and_surfaces_doesnt_hold_a_far_point() {
     // isn't a solid).
     let shape = from_text_brep(&fixture("curves_and_surfaces.brep")).unwrap();
     for point in [[1000.0, 1000.0, 1000.0], [-1000.0, 0.0, 0.0]] {
-        match classify(&shape, point) {
+        match inside(&shape, point) {
             Ok(inside) => assert!(!inside, "{point:?} inside a compound of no solid"),
             Err(e) => panic!("{point:?}: {e:?}"),
         }
@@ -105,7 +111,7 @@ fn a_point_in_a_boxs_cavity_isnt_inside() {
         .unwrap()
         .shape;
     let hollow = boolean(BooleanOp::Cut, &outer, &inner).unwrap().shape;
-    for (point, inside) in [
+    for (point, want) in [
         ([5.0, 5.0, 5.0], false),
         ([4.5, 5.5, 4.2], false),
         ([4.0, 5.0, 5.0], true),
@@ -113,7 +119,7 @@ fn a_point_in_a_boxs_cavity_isnt_inside() {
         ([3.9, 5.0, 5.0], true),
         ([11.0, 5.0, 5.0], false),
     ] {
-        assert_eq!(classify(&hollow, point).unwrap(), inside, "{point:?}");
+        assert_eq!(inside(&hollow, point).unwrap(), want, "{point:?}");
     }
 }
 
@@ -122,17 +128,17 @@ fn a_box_with_an_internal_or_external_face_holds_its_inside() {
     // The 10 × 20 × 30 box whose face at x = 0 is INTERNAL, or EXTERNAL, in its shell.
     for name in ["box_internal_face1.bin", "box_external_face1.bin"] {
         let shape = from_brep(&fixture(name)).unwrap();
-        for (point, inside) in [
+        for (point, want) in [
             ([5.0, 10.0, 15.0], true),
             ([9.0, 1.0, 29.0], true),
             ([10.0, 10.0, 15.0], true),
             ([11.0, 10.0, 15.0], false),
             ([5.0, 25.0, 15.0], false),
         ] {
-            let got = classify(&shape, point);
+            let got = inside(&shape, point);
             assert!(
-                matches!(got, Ok(g) if g == inside),
-                "{name} {point:?}: {got:?}, expected {inside}"
+                matches!(got, Ok(g) if g == want),
+                "{name} {point:?}: {got:?}, expected {want}"
             );
         }
     }
@@ -143,14 +149,14 @@ fn a_box_mirrored_in_its_geometry_holds_its_inside() {
     // FreeCAD's 10 × 20 × 30 box mirrored in x = 0: from x = -10 to 0, each plane's axes
     // left-handed.
     let shape = from_text_brep(&fixture("mirrored_box.brep")).unwrap();
-    for (point, inside) in [
+    for (point, want) in [
         ([-5.0, 10.0, 15.0], true),
         ([-0.5, 0.5, 0.5], true),
         ([0.0, 10.0, 15.0], true),
         ([5.0, 10.0, 15.0], false),
         ([-11.0, 10.0, 15.0], false),
     ] {
-        assert_eq!(classify(&shape, point).unwrap(), inside, "{point:?}");
+        assert_eq!(inside(&shape, point).unwrap(), want, "{point:?}");
     }
 }
 
@@ -158,9 +164,9 @@ fn a_box_mirrored_in_its_geometry_holds_its_inside() {
 fn a_thin_slab_holds_its_middle_and_not_a_hair_above() {
     // 100 × 100 × 1e-6: its middle (5e-7 up) is inside, 1e-3 above isn't.
     let slab = make_box(100.0, 100.0, 1e-6).unwrap();
-    assert!(classify(&slab, [50.0, 50.0, 5e-7]).unwrap());
-    assert!(!classify(&slab, [50.0, 50.0, 1e-3]).unwrap());
-    assert!(!classify(&slab, [50.0, 50.0, -1e-3]).unwrap());
+    assert!(inside(&slab, [50.0, 50.0, 5e-7]).unwrap());
+    assert!(!inside(&slab, [50.0, 50.0, 1e-3]).unwrap());
+    assert!(!inside(&slab, [50.0, 50.0, -1e-3]).unwrap());
 }
 
 #[test]
@@ -168,9 +174,9 @@ fn a_box_a_kilometre_out_holds_its_middle() {
     let far = translate(&make_box(10.0, 10.0, 10.0).unwrap(), [1e6, -1e6, 1e6])
         .unwrap()
         .shape;
-    assert!(classify(&far, [1e6 + 5.0, -1e6 + 5.0, 1e6 + 5.0]).unwrap());
-    assert!(!classify(&far, [5.0, 5.0, 5.0]).unwrap());
-    assert!(!classify(&far, [1e6 + 15.0, -1e6 + 5.0, 1e6 + 5.0]).unwrap());
+    assert!(inside(&far, [1e6 + 5.0, -1e6 + 5.0, 1e6 + 5.0]).unwrap());
+    assert!(!inside(&far, [5.0, 5.0, 5.0]).unwrap());
+    assert!(!inside(&far, [1e6 + 15.0, -1e6 + 5.0, 1e6 + 5.0]).unwrap());
 }
 
 #[test]
@@ -184,21 +190,18 @@ fn a_cones_apex_and_a_spheres_poles_are_on_them() {
         height: 10.0,
     })
     .unwrap();
-    assert!(classify(&cone, [0.0, 0.0, 10.0]).unwrap(), "the apex");
-    assert!(!classify(&cone, [0.0, 0.0, 11.0]).unwrap());
+    assert!(inside(&cone, [0.0, 0.0, 10.0]).unwrap(), "the apex");
+    assert!(!inside(&cone, [0.0, 0.0, 11.0]).unwrap());
+    assert!(inside(&cone, [0.0, 0.0, 0.0]).unwrap(), "the base's centre");
     assert!(
-        classify(&cone, [0.0, 0.0, 0.0]).unwrap(),
-        "the base's centre"
-    );
-    assert!(
-        classify(&cone, [5.0, 0.0, 0.0]).unwrap(),
+        inside(&cone, [5.0, 0.0, 0.0]).unwrap(),
         "the base's seam vertex"
     );
     let ball = make(&Primitive::Sphere { radius: 10.0 }).unwrap();
     for pole in [[0.0, 0.0, 10.0], [0.0, 0.0, -10.0], [10.0, 0.0, 0.0]] {
-        assert!(classify(&ball, pole).unwrap(), "{pole:?}");
+        assert!(inside(&ball, pole).unwrap(), "{pole:?}");
     }
-    assert!(!classify(&ball, [0.0, 0.0, 11.0]).unwrap());
+    assert!(!inside(&ball, [0.0, 0.0, 11.0]).unwrap());
 }
 
 #[test]
@@ -226,11 +229,7 @@ fn a_real_part_is_classified_as_freecad_classifies_it() {
                     low[c] + (f64::from(m) + 0.5) / f64::from(n) * (high[c] - low[c])
                 };
                 let p = [at(0, i), at(1, j), at(2, k)];
-                got.push(if classify(&part, p).unwrap() {
-                    '1'
-                } else {
-                    '0'
-                });
+                got.push(if inside(&part, p).unwrap() { '1' } else { '0' });
             }
         }
     }
@@ -354,22 +353,31 @@ fn the_floor_is_the_same_asked_again_of_a_shape_already_meshed() {
     // shape's triangulation into account: the same shape, meshed and asked again, must have
     // the same floor (the core's cache keys a mesh by the deflection used).
     let cube = make_box(100.0, 100.0, 100.0).unwrap();
-    let (first, used) = tessellate_at_least_the_floor(&cube, 1e-9).unwrap();
+    let MeshAt {
+        mesh: first,
+        deflection: used,
+    } = tessellate_at_least_the_floor(&cube, 1e-9).unwrap();
     for asked in [1e-9, 1.0 / 128.0, used] {
-        let (again, again_used) = tessellate_at_least_the_floor(&cube, asked).unwrap();
+        let MeshAt {
+            mesh: again,
+            deflection: again_used,
+        } = tessellate_at_least_the_floor(&cube, asked).unwrap();
         assert_eq!(again_used.to_bits(), used.to_bits(), "asked {asked}");
         assert_eq!(again, first, "asked {asked}");
     }
     // A fresh copy of it, and through the bytes, agree.
     let copy = from_brep(&to_brep(&cube).unwrap()).unwrap();
-    let (_, copy_used) = tessellate_at_least_the_floor(&copy, 1e-9).unwrap();
+    let MeshAt {
+        deflection: copy_used,
+        ..
+    } = tessellate_at_least_the_floor(&copy, 1e-9).unwrap();
     assert_eq!(copy_used.to_bits(), used.to_bits());
     // A sphere, whose box OCCT enlarges by its curved faces, the same way.
     let ball = make(&Primitive::Sphere { radius: 7.0 }).unwrap();
-    let (_, a) = tessellate_at_least_the_floor(&ball, 1e-9).unwrap();
-    let (_, b) = tessellate_at_least_the_floor(&ball, 1e-9).unwrap();
+    let MeshAt { deflection: a, .. } = tessellate_at_least_the_floor(&ball, 1e-9).unwrap();
+    let MeshAt { deflection: b, .. } = tessellate_at_least_the_floor(&ball, 1e-9).unwrap();
     let _ = tessellate(&ball, 0.5).unwrap();
-    let (_, c) = tessellate_at_least_the_floor(&ball, 1e-9).unwrap();
+    let MeshAt { deflection: c, .. } = tessellate_at_least_the_floor(&ball, 1e-9).unwrap();
     assert_eq!((a.to_bits(), b.to_bits()), (c.to_bits(), c.to_bits()));
 }
 
@@ -378,17 +386,23 @@ fn the_floor_asked_exactly_and_an_ulp_either_side() {
     // At the floor, the floor; an ulp under it, the floor (not refused, not the ulp); an ulp
     // over it, the ulp over.
     let cube = make_box(100.0, 100.0, 100.0).unwrap();
-    let (_, floor) = tessellate_at_least_the_floor(&cube, 1e-9).unwrap();
+    let MeshAt {
+        deflection: floor, ..
+    } = tessellate_at_least_the_floor(&cube, 1e-9).unwrap();
     for (asked, used) in [
         (floor, floor),
         (floor.next_down(), floor),
         (floor.next_up(), floor.next_up()),
     ] {
-        let (_, got) = tessellate_at_least_the_floor(&cube, asked).unwrap();
+        let MeshAt {
+            deflection: got, ..
+        } = tessellate_at_least_the_floor(&cube, asked).unwrap();
         assert_eq!(got.to_bits(), used.to_bits(), "asked {asked:e}");
     }
     // The least deflection, a subnormal, is the floor too.
-    let (_, got) = tessellate_at_least_the_floor(&cube, 5e-324).unwrap();
+    let MeshAt {
+        deflection: got, ..
+    } = tessellate_at_least_the_floor(&cube, 5e-324).unwrap();
     assert_eq!(got.to_bits(), floor.to_bits());
 }
 
@@ -401,7 +415,10 @@ fn a_huge_deflection_is_used_as_asked_through_the_worker() {
     for asked in [1e3, 1e100, f64::MAX] {
         let got = w.run(KernelRequest::tessellate_at_least_the_floor(&b, asked));
         match got {
-            Ok((mesh, used)) => {
+            Ok(MeshAt {
+                mesh,
+                deflection: used,
+            }) => {
                 assert_eq!(used.to_bits(), asked.to_bits(), "{asked:e}");
                 assert_eq!(mesh.face_triangles.len(), 6, "{asked:e}");
             }
@@ -417,7 +434,9 @@ fn a_tiny_shape_at_the_length_tolerance_floor_through_the_worker() {
     let mut w = worker();
     let speck = data(&make_box(1e-4, 1e-4, 1e-4).unwrap());
     for asked in [5e-324, 1e-300, 1e-12, LENGTH_TOLERANCE.next_down()] {
-        let (_, used) = w
+        let MeshAt {
+            deflection: used, ..
+        } = w
             .run(KernelRequest::tessellate_at_least_the_floor(&speck, asked))
             .unwrap();
         assert_eq!(used.to_bits(), LENGTH_TOLERANCE.to_bits(), "{asked:e}");
@@ -480,9 +499,9 @@ mod on_extensions {
                 static BOX: Shape = make_box(40.0, 20.0, 10.0).unwrap();
             }
             let p = [x, y, z];
-            if let Some(inside) = expected([40.0, 20.0, 10.0], p) {
-                let got = BOX.with(|b| classify(b, p));
-                prop_assert!(matches!(got, Ok(g) if g == inside), "{:?}: {:?}, expected {}", p, got, inside);
+            if let Some(want) = expected([40.0, 20.0, 10.0], p) {
+                let got = BOX.with(|b| inside(b, p));
+                prop_assert!(matches!(got, Ok(g) if g == want), "{:?}: {:?}, expected {}", p, got, want);
             }
         }
 
@@ -503,9 +522,9 @@ mod on_extensions {
             let height = (-z).max(z - 10.0);
             let past = radial.max(height);
             if past.abs() >= 1e-6 {
-                let inside = past < 0.0;
-                let got = CYLINDER.with(|c| classify(c, p));
-                prop_assert!(matches!(got, Ok(g) if g == inside), "{:?}: {:?}, expected {}", p, got, inside);
+                let want = past < 0.0;
+                let got = CYLINDER.with(|c| inside(c, p));
+                prop_assert!(matches!(got, Ok(g) if g == want), "{:?}: {:?}, expected {}", p, got, want);
             }
         }
     }

@@ -7,6 +7,19 @@ use serde::{Deserialize, Serialize};
 /// OCCT's length tolerance (`Precision::Confusion()`): lengths at or below it are zero.
 pub const LENGTH_TOLERANCE: f64 = 1e-7;
 
+/// The finest a display mesh is made, as a fraction of its shape's bounding-box diagonal.
+/// Finer meshes cost far more than they're worth for display: every tenth of the deflection
+/// is about ten times the triangles and seventy times the time (docs/ports/tessellation.md).
+pub const MIN_RELATIVE_DEFLECTION: f64 = 1e-4;
+
+/// The display mesh's floor for a shape whose bounding box's diagonal is `diagonal`: the
+/// finest deflection it's meshed at, [`MIN_RELATIVE_DEFLECTION`] of the diagonal and never
+/// under [`LENGTH_TOLERANCE`]. The kernel applies it to OCCT's enlarged box, the fake kernel
+/// to its own.
+pub fn mesh_floor(diagonal: f64) -> f64 {
+    (diagonal * MIN_RELATIVE_DEFLECTION).max(LENGTH_TOLERANCE)
+}
+
 /// The longest length a primitive may have: a kilometre, in millimetres. OCCT measures
 /// some valid-looking solids wrongly when their lengths span more than about fourteen
 /// orders of magnitude (a torus of radii 1e12 and 1e-3 comes out with a negative volume),

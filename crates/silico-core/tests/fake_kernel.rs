@@ -1595,6 +1595,9 @@ fn a_point_is_classified_inside_a_fake_solid_by_its_box() {
         ([0.0, 0.0, 0.0], true),
         ([40.000_001, 10.0, 5.0], false),
         ([20.0, -1.0, 5.0], false),
+        // As far as a point may be, either way.
+        ([1e12, 10.0, 5.0], false),
+        ([-1e12, 10.0, 5.0], false),
     ] {
         assert_eq!(
             run(&fake, KernelRequest::classify(&block, point)),
@@ -1602,18 +1605,21 @@ fn a_point_is_classified_inside_a_fake_solid_by_its_box() {
             "{point:?}"
         );
     }
-    let refused = match fake
-        .submit(
-            fake.generation(),
-            KernelRequest::classify(&block, [f64::NAN, 0.0, 0.0]),
-        )
-        .wait()
-    {
-        Outcome::Done(Err(e)) => e,
-        other => panic!("{other:?}"),
-    };
-    assert_eq!(refused.code(), ErrorCode::InvalidInput, "{refused:?}");
-    assert_eq!(refused.parameter(), Some("point"), "{refused:?}");
+    for point in [
+        [f64::NAN, 0.0, 0.0],
+        [1e12f64.next_up(), 10.0, 5.0],
+        [20.0, 10.0, -1e12f64.next_up()],
+    ] {
+        let refused = match fake
+            .submit(fake.generation(), KernelRequest::classify(&block, point))
+            .wait()
+        {
+            Outcome::Done(Err(e)) => e,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(refused.code(), ErrorCode::InvalidInput, "{refused:?}");
+        assert_eq!(refused.parameter(), Some("point"), "{refused:?}");
+    }
 }
 
 #[test]
@@ -1626,17 +1632,18 @@ fn a_fake_solid_is_meshed_a_triangle_a_face_with_the_kernels_floor_on_its_box() 
     let mesh = run(&fake, KernelRequest::tessellate(&block, 0.1));
     assert_eq!(mesh.face_triangles, vec![1; 6]);
     assert_eq!(mesh.edge_point_counts, vec![2; 12]);
-    let (mesh, used) = run(
+    let made = run(
         &fake,
         KernelRequest::tessellate_at_least_the_floor(&block, 1e-3),
     );
-    assert_eq!(mesh.face_triangles.len(), 6);
+    assert_eq!(made.mesh.face_triangles.len(), 6);
+    let used = made.deflection;
     assert!((used - floor).abs() <= 1e-15, "{used} for {floor}");
-    let (_, used) = run(
+    let made = run(
         &fake,
         KernelRequest::tessellate_at_least_the_floor(&block, 0.5),
     );
-    assert_eq!(used, 0.5);
+    assert_eq!(made.deflection, 0.5);
     let refused = match fake
         .submit(fake.generation(), KernelRequest::tessellate(&block, 1e-3))
         .wait()
