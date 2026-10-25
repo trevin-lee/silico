@@ -39,6 +39,14 @@ pub fn fits(document: &Document, limit: usize) -> bool {
     writer.put(&tree(document), 0).is_ok() && writer.push("\n").is_ok()
 }
 
+/// `feature`'s canonical text, as a document's canonical form writes it but not indented,
+/// with no newline after it (a value, not a file), if it's at most `limit` bytes.
+pub fn feature_text(feature: &Feature, limit: usize) -> Result<String, TooLong> {
+    let mut writer = Writer::new(limit, true);
+    writer.put(&self::feature(feature), 0)?;
+    Ok(writer.out)
+}
+
 /// Whether `feature`'s canonical text is at most `limit` bytes.
 pub fn feature_fits(feature: &Feature, limit: usize) -> bool {
     Writer::new(limit, false)

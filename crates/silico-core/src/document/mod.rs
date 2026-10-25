@@ -63,6 +63,24 @@ pub fn write(document: &Document) -> Result<String, Error> {
         .map_err(|write::TooLong| too_long(document, "the document is too large to write"))
 }
 
+/// One feature's canonical text, as the document's canonical form writes it, but not
+/// indented and with no newline after it: a value, as a command's result gives it. Refused,
+/// as `write` refuses a document, if it would be more than [`json::MAX_DOCUMENT_LEN`] (a
+/// feature of a document that was read never is).
+pub fn write_feature(feature: &Feature) -> Result<String, Error> {
+    write::feature_text(feature, json::MAX_DOCUMENT_LEN).map_err(|write::TooLong| {
+        Error::new(
+            ErrorCode::InvalidInput,
+            format!(
+                "the feature is too large to write: its canonical text would be more than the {} bytes a document may be",
+                json::MAX_DOCUMENT_LEN
+            ),
+        )
+        .with_feature(feature.id.as_str())
+        .with_suggestion("make this feature smaller")
+    })
+}
+
 /// Whether the document's canonical text is within [`json::MAX_DOCUMENT_LEN`]: whether it
 /// can be written, counted without writing it.
 pub(crate) fn fits(document: &Document) -> bool {
