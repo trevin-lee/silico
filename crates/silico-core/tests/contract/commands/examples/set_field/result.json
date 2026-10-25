@@ -1,0 +1,8 @@
+{
+  "feature": "p0000001",
+  "field": "extent.length",
+  "before": 6,
+  "after": 8,
+  "changed": true,
+  "commit": {"written": true, "path": "bracket.silico", "refingerprinted": ["p0000001", "q7m2x9kd", "f0000003"], "resolved": [], "problems": [], "problems_total": 0}
+}

@@ -1,0 +1,6 @@
+{
+  "changed": true,
+  "features": 0,
+  "before": "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\"id\": \"k7f2qx3m\", \"type\": \"box\", \"v\": 1, \"name\": \"Block\", \"position\": [0, 0, 0], \"length\": 40, \"width\": 20, \"height\": 10}\n  ]\n}\n",
+  "commit": {"written": true, "path": "bracket.silico", "refingerprinted": [], "resolved": [], "problems": [], "problems_total": 0}
+}

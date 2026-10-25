@@ -122,7 +122,9 @@ fn tree(document: &Document) -> Out<'_> {
     ])
 }
 
-fn feature(feature: &Feature) -> Out<'_> {
+/// `feature` as the canonical form writes it, inside a document or alone (the command
+/// API's results write a feature through this too, `command::wire`).
+pub(crate) fn feature(feature: &Feature) -> Out<'_> {
     let Feature {
         id,
         operation,
